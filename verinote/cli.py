@@ -196,6 +196,30 @@ def cmd_repair(cfg: Config, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_coverage(cfg: Config, args: argparse.Namespace) -> int:
+    from verinote.engine import coverage
+
+    store = _store(cfg)
+    cov = coverage(store, root=cfg.root)
+    store.close()
+    for s in cov.sources:
+        flags = []
+        if s.is_gap:
+            flags.append("GAP")
+        if s.is_orphan:
+            flags.append("ORPHAN")
+        tag = ("  " + " ".join(flags)) if flags else ""
+        print(f"  {s.path}: {s.engine_facts}/{s.total_facts} engine facts{tag}")
+    print(
+        f"coverage: {len(cov.covered)} covered, {len(cov.gaps)} gap(s), "
+        f"{len(cov.orphans)} orphan(s)"
+    )
+    if args.strict and cov.gaps:
+        print("strict: uncovered text source(s) present", file=sys.stderr)
+        return 1
+    return 0
+
+
 def cmd_status(cfg: Config, args: argparse.Namespace) -> int:
     store = _store(cfg)
     counts = store.status_counts()
@@ -257,6 +281,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     repair = sub.add_parser("repair", help="re-translate review_required questions (engine-gated)")
     repair.set_defaults(func=cmd_repair)
+
+    coverage = sub.add_parser("coverage", help="report per-source engine-fact coverage")
+    coverage.add_argument(
+        "--strict", action="store_true", help="exit non-zero if any text source has no engine facts"
+    )
+    coverage.set_defaults(func=cmd_coverage)
 
     status = sub.add_parser("status", help="summarise KB state")
     status.set_defaults(func=cmd_status)

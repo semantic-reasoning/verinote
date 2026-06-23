@@ -141,3 +141,16 @@ def test_repair_no_review_required_errors(tmp_path, monkeypatch, capsys):
     rc = cli.main(["repair"])
     assert rc == 1
     assert "no review_required questions" in capsys.readouterr().err
+
+
+def test_coverage_strict_gates_on_gap(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    s = Store(tmp_path / "kb.sqlite")
+    s.init_schema()
+    sid = s.add_source("sources/a.txt")
+    s.add_fact("A", "is_a", "B", status="needs_review", source_id=sid)  # not engine input
+    s.close()
+
+    assert cli.main(["coverage"]) == 0  # non-strict always succeeds
+    assert cli.main(["coverage", "--strict"]) == 1  # a gap exists
+    assert "GAP" in capsys.readouterr().out

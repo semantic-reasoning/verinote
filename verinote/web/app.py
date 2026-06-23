@@ -50,6 +50,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         return templates.TemplateResponse(request, "partials/fact_row.html", {"f": fact})
 
     def _dashboard(request: Request, *, error: str | None = None, status_code: int = 200):
+        from verinote.engine import coverage
+
         counts = store.status_counts()
         return templates.TemplateResponse(
             request,
@@ -58,6 +60,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 "counts": counts,
                 "total": sum(counts.values()),
                 "sources": store.sources(),
+                "coverage": coverage(store, root=cfg.root),
                 "provider": cfg.provider,
                 "model": cfg.model,
                 "error": error,

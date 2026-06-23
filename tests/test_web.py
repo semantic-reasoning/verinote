@@ -29,6 +29,18 @@ def test_dashboard_renders(tmp_path):
     assert "verinote" in r.text
 
 
+def test_dashboard_shows_coverage_gap(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    sid = store.add_source("sources/a.txt")  # no file on disk
+    store.add_fact("X", "is_a", "Y", status="needs_review", source_id=sid)
+    r = c.get("/")
+    assert r.status_code == 200
+    assert "Coverage" in r.text
+    assert "sources/a.txt" in r.text
+    assert "gap" in r.text
+
+
 def test_review_shows_queue(tmp_path):
     c = _client(tmp_path)
     r = c.get("/review")
