@@ -43,4 +43,11 @@ th { color: var(--muted); font-weight: 600; font-size: .85rem; }
   padding: .5rem .9rem; border-radius: 7px; font-weight: 600; }
 .empty { background: var(--panel); border: 1px dashed var(--line); border-radius: 10px; padding: 2rem; text-align: center; color: var(--muted); }
 .warn { color: var(--warn); }
+.error { background: rgba(240, 82, 109, .12); border: 1px solid var(--danger);
+  color: var(--danger); border-radius: 8px; padding: .6rem .9rem; margin: 1rem 0; }
+.upload { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 1rem; margin: 1.2rem 0; }
+.upload label { display: flex; align-items: center; gap: .6rem; color: var(--muted); }
+.upload button { border: 0; cursor: pointer; }
 .report { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 1rem; overflow-x: auto; white-space: pre-wrap; }

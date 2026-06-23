@@ -64,6 +64,23 @@ class Store:
     def sources(self) -> list[sqlite3.Row]:
         return list(self._conn.execute("SELECT * FROM sources ORDER BY path"))
 
+    # --- runs ------------------------------------------------------------
+    def add_run(self, *, provider: str | None, model: str | None, summary: str = "") -> int:
+        """Open an extraction run; facts produced by it cite the returned id."""
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO runs(provider, model, summary) VALUES(?,?,?) RETURNING id",
+                (provider, model, summary),
+            )
+            return int(cur.fetchone()[0])
+
+    def set_run_summary(self, run_id: int, summary: str) -> None:
+        with self._lock:
+            self._conn.execute("UPDATE runs SET summary = ? WHERE id = ?", (summary, run_id))
+
+    def get_run(self, run_id: int) -> sqlite3.Row | None:
+        return self._conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+
     # --- facts -----------------------------------------------------------
     def add_fact(
         self,

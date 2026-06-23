@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from verinote import __version__
 from verinote.config import Config
@@ -52,6 +53,60 @@ def cmd_seed(cfg: Config, args: argparse.Namespace) -> int:
     return 0
 
 
+def _rel_to_root(root: Path, p: Path) -> str:
+    """Cite a source by its path relative to the KB root when it lives under it."""
+    p = p.resolve()
+    try:
+        return str(p.relative_to(root))
+    except ValueError:
+        return str(p)
+
+
+def _resolve_sources(cfg: Config, path: str | None) -> list[tuple[str, str]]:
+    """Resolve a file path (or all sources under `<root>/sources/`) to (citation, text)."""
+    if path:
+        f = Path(path)
+        if not f.is_file():
+            raise FileNotFoundError(f"no such file: {path}")
+        files = [f]
+    else:
+        sources_dir = cfg.root / "sources"
+        files = sorted(sources_dir.glob("*.txt")) + sorted(sources_dir.glob("*.md"))
+    return [(_rel_to_root(cfg.root, f), f.read_text(encoding="utf-8")) for f in files]
+
+
+def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
+    from verinote.llm import LLMError, get_client
+    from verinote.pipeline import sync_sources
+
+    store = _store(cfg)
+    try:
+        sources = _resolve_sources(cfg, args.path)
+    except (FileNotFoundError, OSError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        store.close()
+        return 2
+    if not sources:
+        print(f"no sources to sync (looked under {cfg.root / 'sources'})", file=sys.stderr)
+        store.close()
+        return 1
+    try:
+        client = get_client(cfg)
+        result = sync_sources(store, client, sources, provider=cfg.provider, model=cfg.model)
+    except LLMError as e:
+        print(f"extraction failed: {e}", file=sys.stderr)
+        store.close()
+        return 1
+    for src, n in result.per_source:
+        print(f"  {src}: {n} candidate(s)")
+    print(
+        f"sync complete: {result.total} candidate(s) from {len(result.per_source)} "
+        f"source(s) (run #{result.run_id}) — review at `verinote ui`"
+    )
+    store.close()
+    return 0
+
+
 def cmd_status(cfg: Config, args: argparse.Namespace) -> int:
     store = _store(cfg)
     counts = store.status_counts()
@@ -94,6 +149,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     seed = sub.add_parser("seed", help="insert demo facts into the KB")
     seed.set_defaults(func=cmd_seed)
+
+    sync = sub.add_parser("sync", help="extract candidate facts from sources via the LLM")
+    sync.add_argument(
+        "path",
+        nargs="?",
+        help="a source file; omit to sync every .txt/.md under <root>/sources/",
+    )
+    sync.set_defaults(func=cmd_sync)
 
     status = sub.add_parser("status", help="summarise KB state")
     status.set_defaults(func=cmd_status)
