@@ -12,7 +12,14 @@ import urllib.request
 
 from verinote.config import Config
 from verinote.llm.base import ExtractedFact, LLMError
-from verinote.llm.schema import EXTRACTION_SYSTEM, FACT_ARRAY_SCHEMA, parse_facts
+from verinote.llm.schema import (
+    EXTRACTION_SYSTEM,
+    FACT_ARRAY_SCHEMA,
+    QUERY_SCHEMA,
+    parse_facts,
+    parse_query,
+    query_system,
+)
 
 
 class OllamaAdapter:
@@ -45,3 +52,26 @@ class OllamaAdapter:
             raise LLMError(f"ollama request failed: {exc}") from exc
 
         return parse_facts(body.get("message", {}).get("content", ""))
+
+    def translate_query(self, *, question: str, qid: int, schema_hint: str = "") -> str:
+        payload = {
+            "model": self.cfg.model,
+            "stream": False,
+            "format": QUERY_SCHEMA,
+            "messages": [
+                {"role": "system", "content": query_system(qid) + ("\n" + schema_hint if schema_hint else "")},
+                {"role": "user", "content": question},
+            ],
+        }
+        req = urllib.request.Request(
+            f"{self.base_url}/api/chat",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:  # noqa: S310 - local trusted endpoint
+                body = json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:  # noqa: BLE001 - normalise provider/transport errors
+            raise LLMError(f"ollama request failed: {exc}") from exc
+
+        return parse_query(body.get("message", {}).get("content", ""))

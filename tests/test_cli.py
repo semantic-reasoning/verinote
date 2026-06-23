@@ -92,3 +92,24 @@ def test_sync_surfaces_llm_error(tmp_path, monkeypatch, capsys, fake_client):
 
     assert rc == 1
     assert "extraction failed: provider down" in capsys.readouterr().err
+
+
+def test_query_adds_and_translates(tmp_path, monkeypatch, capsys, fake_client):
+    _env(monkeypatch, tmp_path)
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: fake_client())
+
+    rc = cli.main(["query", "What is Ada?"])
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "translated 1 question(s)" in out
+    s = Store(tmp_path / "kb.sqlite")
+    assert s.questions()[0]["status"] == "translated"
+    assert (tmp_path / "facts" / "query.dl").is_file()
+
+
+def test_query_no_pending_errors(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    rc = cli.main(["query"])
+    assert rc == 1
+    assert "no pending questions" in capsys.readouterr().err

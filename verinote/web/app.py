@@ -23,6 +23,7 @@ from verinote.pipeline import (
     store_source,
     supported_suffixes,
     sync_sources,
+    translate_questions,
     verify,
 )
 from verinote.store import Store
@@ -153,6 +154,31 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             "provenance.html",
             {"f": fact, "run": run, "log": store.fact_log(fact_id) if fact else []},
         )
+
+    def _questions(request: Request, *, error: str | None = None, status_code: int = 200):
+        return templates.TemplateResponse(
+            request,
+            "questions.html",
+            {"questions": store.questions(), "answers": verify(store).answers, "error": error},
+            status_code=status_code,
+        )
+
+    @app.get("/questions", response_class=HTMLResponse)
+    def questions_page(request: Request):
+        return _questions(request)
+
+    @app.post("/questions", response_class=HTMLResponse)
+    def add_question(request: Request, text: str = Form(...)):
+        store.add_question(text)
+        return RedirectResponse("/questions", status_code=303)
+
+    @app.post("/questions/translate", response_class=HTMLResponse)
+    def translate(request: Request):
+        try:
+            translate_questions(store, get_client(cfg), root=cfg.root)
+        except LLMError as e:
+            return _questions(request, error=f"translation failed: {e}", status_code=502)
+        return RedirectResponse("/questions", status_code=303)
 
     @app.get("/report", response_class=HTMLResponse)
     def report(request: Request):

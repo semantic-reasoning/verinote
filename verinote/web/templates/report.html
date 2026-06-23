@@ -22,5 +22,11 @@
   {% for f in rep.findings %}<li>{{ f }}</li>{% endfor %}
 </ul>
 {% endif %}
+{% if rep.answers %}
+<h2>Query answers</h2>
+<ul class="findings">
+  {% for a in rep.answers %}<li>{{ a }}</li>{% endfor %}
+</ul>
+{% endif %}
 <pre class="report">{{ rep.text }}</pre>
 {% endblock %}

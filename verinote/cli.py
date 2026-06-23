@@ -143,6 +143,33 @@ def cmd_ingest(cfg: Config, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_query(cfg: Config, args: argparse.Namespace) -> int:
+    from verinote.llm import LLMError, get_client
+    from verinote.pipeline import translate_questions
+
+    store = _store(cfg)
+    if args.question:
+        store.add_question(args.question)
+    pending = store.questions(pending_only=True)
+    if not pending:
+        print("no pending questions (add one: `verinote query \"...\"`)", file=sys.stderr)
+        store.close()
+        return 1
+    try:
+        client = get_client(cfg)
+        results = translate_questions(store, client, root=cfg.root)
+    except LLMError as e:
+        print(f"translation failed: {e}", file=sys.stderr)
+        store.close()
+        return 1
+    for r in results:
+        print(f"  q{r['id']}: {r['status']}")
+    print(f"translated {len(results)} question(s) -> {cfg.root / 'facts' / 'query.dl'}")
+    print("run the check to see answers (`verinote ui` → Report)")
+    store.close()
+    return 0
+
+
 def cmd_status(cfg: Config, args: argparse.Namespace) -> int:
     store = _store(cfg)
     counts = store.status_counts()
@@ -197,6 +224,10 @@ def build_parser() -> argparse.ArgumentParser:
     ingest = sub.add_parser("ingest", help="register a source file (converting docx/pdf to text)")
     ingest.add_argument("path", help="a .txt/.md file, or a .docx/.pdf to convert")
     ingest.set_defaults(func=cmd_ingest)
+
+    query = sub.add_parser("query", help="translate pending NL questions to Datalog queries")
+    query.add_argument("question", nargs="?", help="a question to add before translating")
+    query.set_defaults(func=cmd_query)
 
     status = sub.add_parser("status", help="summarise KB state")
     status.set_defaults(func=cmd_status)

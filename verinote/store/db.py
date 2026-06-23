@@ -188,6 +188,27 @@ class Store:
             self._log(fact_id, "amended", before, after)
             return after
 
+    # --- questions -------------------------------------------------------
+    def add_question(self, text: str) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO questions(text) VALUES(?) RETURNING id", (text,)
+            )
+            return int(cur.fetchone()[0])
+
+    def questions(self, *, pending_only: bool = False) -> list[sqlite3.Row]:
+        sql = "SELECT * FROM questions"
+        if pending_only:
+            sql += " WHERE status = 'pending'"
+        return list(self._conn.execute(sql + " ORDER BY id"))
+
+    def set_question_query(self, question_id: int, query_dl: str, status: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE questions SET query_dl = ?, status = ? WHERE id = ?",
+                (query_dl, status, question_id),
+            )
+
     # --- audit -----------------------------------------------------------
     def fact_log(self, fact_id: int) -> list[sqlite3.Row]:
         """Audit trail (oldest first) for one fact — drives the provenance view."""

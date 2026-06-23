@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Questions — verinote{% endblock %}
+{% block content %}
+<h1>Questions</h1>
+<p class="muted">Natural-language questions are translated to a Datalog query the
+  engine evaluates over confirmed facts. Untranslatable ones are flagged
+  <code>review_required</code>.</p>
+
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+
+<form class="upload" action="/questions" method="post">
+  <label>Ask a question
+    <input type="text" name="text" size="48" placeholder="Where was Ada Lovelace born?" required>
+  </label>
+  <button class="btn" type="submit">Add</button>
+</form>
+<p>
+  <button class="btn" hx-post="/questions/translate" hx-target="body" hx-swap="outerHTML">
+    Translate &amp; run
+  </button>
+</p>
+
+{% if questions %}
+<table class="counts">
+  <thead><tr><th>#</th><th>Question</th><th>Status</th><th>Query</th></tr></thead>
+  <tbody>
+    {% for q in questions %}
+    <tr>
+      <td>{{ q["id"] }}</td>
+      <td>{{ q["text"] }}</td>
+      <td><span class="badge">{{ q["status"] }}</span></td>
+      <td><pre class="report">{{ q["query_dl"] or "—" }}</pre></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty"><p>No questions yet — ask one above.</p></div>
+{% endif %}
+
+<h2>Answers</h2>
+{% if answers %}
+<ul class="findings">{% for a in answers %}<li>{{ a }}</li>{% endfor %}</ul>
+{% else %}
+<p class="muted">No answers yet — add a question, translate, and confirm the facts it needs.</p>
+{% endif %}
+{% endblock %}

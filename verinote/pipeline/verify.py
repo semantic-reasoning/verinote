@@ -26,6 +26,8 @@ def load_policy(store: Store) -> str | None:
 
 def verify(store: Store) -> CheckReport:
     """Project confirmed/accepted rows to `.dl` and run the deterministic check."""
+    from verinote.pipeline.query import load_query
+
     rows = store.facts(statuses=ENGINE_STATUSES)
     dl_text = compile_dl(rows)
-    return run_check(dl_text, policy_dl=load_policy(store))
+    return run_check(dl_text, policy_dl=load_policy(store), query_dl=load_query(store))

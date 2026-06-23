@@ -46,6 +46,17 @@ CREATE TABLE IF NOT EXISTS facts (
 CREATE INDEX IF NOT EXISTS idx_facts_status ON facts(status);
 CREATE INDEX IF NOT EXISTS idx_facts_triple ON facts(subject, relation, object);
 
+-- Natural-language questions translated to a Datalog query draft (#3). status:
+-- pending -> translated (an `answer_q<id>` rule) | review_required (untranslatable).
+CREATE TABLE IF NOT EXISTS questions (
+    id         INTEGER PRIMARY KEY,
+    text       TEXT NOT NULL,
+    query_dl   TEXT,
+    status     TEXT NOT NULL DEFAULT 'pending'
+                 CHECK (status IN ('pending','translated','review_required')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- Append-only audit of human review decisions (toggle/accept/reject/amend),
 -- mirroring the "decisions are preserved" property of the borrowed concept.
 CREATE TABLE IF NOT EXISTS review_log (
