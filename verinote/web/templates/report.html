@@ -6,10 +6,21 @@
 <p class="warn">wirelog engine (pyrewire) not installed — showing compiled engine input only.</p>
 {% endif %}
 <p>
-  <span class="badge {{ 'badge-confirmed' if rep.errors == 0 else 'badge-superseded' }}">
+  <span class="badge {{ 'badge-confirmed' if rep.ok and rep.errors == 0 else 'badge-superseded' }}">
     {{ 'OK' if rep.ok and rep.errors == 0 else 'ERRORS' }}
   </span>
   errors: {{ rep.errors }} · warnings: {{ rep.warnings }}
 </p>
+{% if rep.errors > 0 %}
+<p class="error" role="alert">
+  The knowledge base is inconsistent — promotion/query stay gated until the
+  errors below are resolved.
+</p>
+{% endif %}
+{% if rep.findings %}
+<ul class="findings">
+  {% for f in rep.findings %}<li>{{ f }}</li>{% endfor %}
+</ul>
+{% endif %}
 <pre class="report">{{ rep.text }}</pre>
 {% endblock %}
