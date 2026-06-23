@@ -227,3 +227,21 @@ def test_translate_surfaces_llm_error(tmp_path, monkeypatch, fake_client):
     r = c.post("/questions/translate")
     assert r.status_code == 502
     assert "translation failed: provider down" in r.text
+
+
+def test_repair_action_accepts_valid_fix(tmp_path, monkeypatch, fake_client):
+    monkeypatch.setattr(
+        webapp,
+        "get_client",
+        lambda cfg: fake_client(
+            query=lambda question, qid: f'answer_q{qid}(O) :- relation("Ada", "born_in", O).'
+        ),
+    )
+    c = _client(tmp_path)
+    store = c.app.state.store
+    qid = store.add_question("Where was Ada born?")
+    store.set_question_query(qid, 'review_required("Where was Ada born?")', "review_required")
+
+    r = c.post("/questions/repair", follow_redirects=False)
+    assert r.status_code == 303
+    assert store.questions()[0]["status"] == "translated"

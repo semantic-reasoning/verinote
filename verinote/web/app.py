@@ -22,6 +22,7 @@ from verinote.pipeline import (
     ingest_bytes,
     store_source,
     supported_suffixes,
+    repair_questions,
     sync_sources,
     translate_questions,
     verify,
@@ -178,6 +179,15 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             translate_questions(store, get_client(cfg), root=cfg.root)
         except LLMError as e:
             return _questions(request, error=f"translation failed: {e}", status_code=502)
+        return RedirectResponse("/questions", status_code=303)
+
+    @app.post("/questions/repair", response_class=HTMLResponse)
+    def repair(request: Request):
+        try:
+            client = get_client(cfg)
+        except LLMError as e:
+            return _questions(request, error=f"repair failed: {e}", status_code=502)
+        repair_questions(store, client, root=cfg.root)
         return RedirectResponse("/questions", status_code=303)
 
     @app.get("/report", response_class=HTMLResponse)
