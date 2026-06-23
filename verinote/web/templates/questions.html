@@ -18,6 +18,10 @@
   <button class="btn" hx-post="/questions/translate" hx-target="body" hx-swap="outerHTML">
     Translate &amp; run
   </button>
+  <button class="btn ghost" hx-post="/questions/repair" hx-target="body" hx-swap="outerHTML"
+          title="re-translate review_required questions; the engine re-validates each fix">
+    Repair review_required
+  </button>
 </p>
 
 {% if questions %}

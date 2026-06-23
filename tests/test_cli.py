@@ -113,3 +113,31 @@ def test_query_no_pending_errors(tmp_path, monkeypatch, capsys):
     rc = cli.main(["query"])
     assert rc == 1
     assert "no pending questions" in capsys.readouterr().err
+
+
+def test_repair_validates_and_translates(tmp_path, monkeypatch, capsys, fake_client):
+    _env(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "verinote.llm.get_client",
+        lambda cfg: fake_client(
+            query=lambda question, qid: f'answer_q{qid}(O) :- relation("Ada", "born_in", O).'
+        ),
+    )
+    s = Store(tmp_path / "kb.sqlite")
+    s.init_schema()
+    qid = s.add_question("Where was Ada born?")
+    s.set_question_query(qid, 'review_required("Where was Ada born?")', "review_required")
+    s.close()
+
+    rc = cli.main(["repair"])
+
+    assert rc == 0
+    assert "repaired 1/1" in capsys.readouterr().out
+    assert Store(tmp_path / "kb.sqlite").questions()[0]["status"] == "translated"
+
+
+def test_repair_no_review_required_errors(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    rc = cli.main(["repair"])
+    assert rc == 1
+    assert "no review_required questions" in capsys.readouterr().err

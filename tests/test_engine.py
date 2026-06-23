@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
 import verinote.engine.wirelog as wl
-from verinote.engine import DEFAULT_POLICY, compile_dl, run_check
+from verinote.engine import DEFAULT_POLICY, compile_dl, run_check, validate_query
 
 # A subject with two distinct objects for a functional relation is a conflict.
 _CONFLICT = compile_dl(
@@ -95,3 +95,20 @@ def test_run_check_evaluates_query():
 def test_run_check_without_query_has_no_answers():
     dl = compile_dl([{"subject": "Ada", "relation": "is_a", "object": "x"}])
     assert run_check(dl).answers == []
+
+
+def test_validate_query_accepts_relation_only():
+    ok, reason = validate_query(
+        '.decl answer_q1(value: symbol)\nanswer_q1(O) :- relation("a", "b", O).'
+    )
+    assert ok is True and reason == ""
+
+
+def test_validate_query_rejects_unknown_predicate():
+    ok, reason = validate_query(".decl answer_q1(value: symbol)\nanswer_q1(O) :- bogus(O).")
+    assert ok is False and "bogus" in reason
+
+
+def test_validate_query_rejects_syntax_error():
+    ok, reason = validate_query("this is not datalog")
+    assert ok is False and reason

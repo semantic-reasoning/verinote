@@ -148,6 +148,41 @@ def _degraded_report(dl_text: str) -> CheckReport:
     )
 
 
+_RELATION_DECL = ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
+_PREDICATE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+_STRING_LIT = re.compile(r'"(?:[^"\\]|\\.)*"')
+
+
+def validate_query(query_dl: str) -> tuple[bool, str]:
+    """Deterministically check a proposed query line — the engine has final say.
+
+    Returns ``(True, "")`` when the line only references the ``relation/3``
+    vocabulary (plus its own declared `answer_*` head) and parses+runs in
+    pyrewire, else ``(False, reason)``. Used to gate LLM-proposed repairs.
+    """
+    # 1. vocabulary: every predicate must be `relation` or a relation declared in
+    #    the snippet itself (the answer head). Strip string literals first so a
+    #    `word(` inside a literal isn't mistaken for a predicate call.
+    stripped = _STRING_LIT.sub('""', query_dl)
+    declared = {m.group(1) for m in re.finditer(r"\.decl\s+([A-Za-z_][A-Za-z0-9_]*)", stripped)}
+    allowed = {"relation"} | declared
+    unknown = sorted(set(_PREDICATE.findall(stripped)) - allowed)
+    if unknown:
+        return False, f"references unknown predicate(s): {', '.join(unknown)}"
+
+    # 2. parse/run check (catches syntax errors the vocabulary scan can't).
+    pyrewire = _load_engine()
+    if pyrewire is None:
+        return False, "wirelog engine (pyrewire) not installed"
+    try:
+        with pyrewire.EasySession(_RELATION_DECL + query_dl) as session:
+            session.insert_sym("relation", "_probe_s", "_probe_r", "_probe_o")
+            session.step()
+    except Exception as exc:  # parse/exec error -> not a valid query
+        return False, str(exc)
+    return True, ""
+
+
 def run_check(
     dl_text: str, *, policy_dl: str | None = None, query_dl: str | None = None
 ) -> CheckReport:

@@ -170,6 +170,32 @@ def cmd_query(cfg: Config, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_repair(cfg: Config, args: argparse.Namespace) -> int:
+    from verinote.llm import LLMError, get_client
+    from verinote.pipeline import repair_questions
+
+    store = _store(cfg)
+    pending = [q for q in store.questions() if q["status"] == "review_required"]
+    if not pending:
+        print("no review_required questions to repair", file=sys.stderr)
+        store.close()
+        return 1
+    try:
+        client = get_client(cfg)
+    except LLMError as e:
+        print(f"repair failed: {e}", file=sys.stderr)
+        store.close()
+        return 1
+    results = repair_questions(store, client, root=cfg.root)
+    repaired = sum(1 for r in results if r["accepted"])
+    for r in results:
+        mark = "repaired" if r["accepted"] else f"kept review_required ({r['reason']})"
+        print(f"  q{r['id']}: {mark}")
+    print(f"repaired {repaired}/{len(results)} question(s) (engine-validated)")
+    store.close()
+    return 0
+
+
 def cmd_status(cfg: Config, args: argparse.Namespace) -> int:
     store = _store(cfg)
     counts = store.status_counts()
@@ -228,6 +254,9 @@ def build_parser() -> argparse.ArgumentParser:
     query = sub.add_parser("query", help="translate pending NL questions to Datalog queries")
     query.add_argument("question", nargs="?", help="a question to add before translating")
     query.set_defaults(func=cmd_query)
+
+    repair = sub.add_parser("repair", help="re-translate review_required questions (engine-gated)")
+    repair.set_defaults(func=cmd_repair)
 
     status = sub.add_parser("status", help="summarise KB state")
     status.set_defaults(func=cmd_status)
