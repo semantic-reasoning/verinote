@@ -78,6 +78,19 @@ class Store:
             )
         )
 
+    def source_fact_counts(self) -> list[sqlite3.Row]:
+        """Per-source total vs engine-input (confirmed/accepted) fact counts."""
+        return list(
+            self._conn.execute(
+                "SELECT s.id, s.path, s.kind, "
+                "COUNT(f.id) AS total, "
+                "COALESCE(SUM(CASE WHEN f.status IN ('confirmed','accepted') "
+                "THEN 1 ELSE 0 END), 0) AS engine "
+                "FROM sources s LEFT JOIN facts f ON f.source_id = s.id "
+                "GROUP BY s.id ORDER BY s.path"
+            )
+        )
+
     # --- runs ------------------------------------------------------------
     def add_run(self, *, provider: str | None, model: str | None, summary: str = "") -> int:
         """Open an extraction run; facts produced by it cite the returned id."""

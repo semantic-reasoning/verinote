@@ -20,6 +20,30 @@
   </tbody>
 </table>
 
+<h2>Coverage <span class="muted">— engine-input facts per source</span></h2>
+{% if coverage.sources %}
+<table class="counts">
+  <thead><tr><th>Source</th><th>Engine facts</th><th></th></tr></thead>
+  <tbody>
+    {% for s in coverage.sources %}
+    <tr>
+      <td><code>{{ s.path }}</code></td>
+      <td class="conf">{{ s.engine_facts }} / {{ s.total_facts }}</td>
+      <td>
+        {% if s.is_gap %}<span class="badge badge-needs_review">gap</span>{% endif %}
+        {% if s.is_orphan %}<span class="badge badge-superseded">orphan</span>{% endif %}
+        {% if not s.is_gap and not s.is_orphan %}<span class="badge badge-confirmed">covered</span>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+<p class="muted">{{ coverage.covered|length }} covered · {{ coverage.gaps|length }} gap(s)
+  · {{ coverage.orphans|length }} orphan(s) (file missing under the KB root).</p>
+{% else %}
+<p class="muted">No sources yet.</p>
+{% endif %}
+
 <p><a class="btn" href="/review">Go to review queue →</a>
    <a class="btn ghost" href="/sources">Manage sources →</a></p>
 {% endblock %}
