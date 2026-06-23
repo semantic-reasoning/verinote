@@ -53,16 +53,30 @@ class Store:
 
     # --- sources ---------------------------------------------------------
     def add_source(self, path: str, kind: str = "text") -> int:
+        # kind is set at first registration (e.g. ingest marks 'conversion') and
+        # preserved on re-registration — the no-op SET keeps the existing kind
+        # while still letting RETURNING hand back the id on conflict, so a later
+        # extraction pass over the same path doesn't downgrade it to 'text'.
         with self._lock:
             cur = self._conn.execute(
                 "INSERT INTO sources(path, kind) VALUES(?, ?) "
-                "ON CONFLICT(path) DO UPDATE SET kind=excluded.kind RETURNING id",
+                "ON CONFLICT(path) DO UPDATE SET path=excluded.path RETURNING id",
                 (path, kind),
             )
             return int(cur.fetchone()[0])
 
     def sources(self) -> list[sqlite3.Row]:
         return list(self._conn.execute("SELECT * FROM sources ORDER BY path"))
+
+    def sources_with_counts(self) -> list[sqlite3.Row]:
+        """Sources plus how many facts cite each — for the Sources listing."""
+        return list(
+            self._conn.execute(
+                "SELECT s.id, s.path, s.kind, s.added_at, COUNT(f.id) AS fact_count "
+                "FROM sources s LEFT JOIN facts f ON f.source_id = s.id "
+                "GROUP BY s.id ORDER BY s.path"
+            )
+        )
 
     # --- runs ------------------------------------------------------------
     def add_run(self, *, provider: str | None, model: str | None, summary: str = "") -> int:

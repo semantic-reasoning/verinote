@@ -17,10 +17,15 @@ from fastapi.templating import Jinja2Templates
 
 from verinote.config import Config
 from verinote.llm import LLMError, get_client
-from verinote.pipeline import sync_sources, verify
+from verinote.pipeline import (
+    IngestError,
+    ingest_bytes,
+    store_source,
+    supported_suffixes,
+    sync_sources,
+    verify,
+)
 from verinote.store import Store
-
-_UPLOAD_SUFFIXES = {".txt", ".md"}
 
 _TEMPLATES = resources.files("verinote.web").joinpath("templates")
 _STATIC = resources.files("verinote.web").joinpath("static")
@@ -58,34 +63,42 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             status_code=status_code,
         )
 
+    def _sources(request: Request, *, error: str | None = None, status_code: int = 200):
+        return templates.TemplateResponse(
+            request,
+            "sources.html",
+            {
+                "sources": store.sources_with_counts(),
+                "suffixes": ", ".join(sorted(supported_suffixes())),
+                "accept": ",".join(sorted(supported_suffixes())),
+                "error": error,
+            },
+            status_code=status_code,
+        )
+
     @app.get("/", response_class=HTMLResponse)
     def dashboard(request: Request):
         return _dashboard(request)
 
+    @app.get("/sources", response_class=HTMLResponse)
+    def sources_page(request: Request):
+        return _sources(request)
+
     @app.post("/sources", response_class=HTMLResponse)
     async def upload_source(request: Request, file: UploadFile = File(...)):
         filename = Path(file.filename or "").name
-        if Path(filename).suffix.lower() not in _UPLOAD_SUFFIXES:
-            return _dashboard(
-                request,
-                error=f"unsupported file type: {filename or '(none)'!r} (upload a .txt or .md file)",
-                status_code=400,
-            )
+        raw = await file.read()
         try:
-            text = (await file.read()).decode("utf-8")
-        except UnicodeDecodeError:
-            return _dashboard(request, error="file is not valid UTF-8 text", status_code=400)
+            text, kind = ingest_bytes(raw, filename)
+        except IngestError as e:
+            return _sources(request, error=str(e), status_code=400)
 
-        sources_dir = cfg.root / "sources"
-        sources_dir.mkdir(parents=True, exist_ok=True)
-        (sources_dir / filename).write_text(text, encoding="utf-8")
-        citation = f"sources/{filename}"
-
+        citation = store_source(store, cfg.root, filename, text, kind)
         try:
             client = get_client(cfg)
             sync_sources(store, client, [(citation, text)], provider=cfg.provider, model=cfg.model)
         except LLMError as e:
-            return _dashboard(request, error=f"extraction failed: {e}", status_code=502)
+            return _sources(request, error=f"extraction failed: {e}", status_code=502)
         return RedirectResponse("/review", status_code=303)
 
     @app.get("/review", response_class=HTMLResponse)

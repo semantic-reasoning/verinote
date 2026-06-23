@@ -55,6 +55,30 @@ def test_sync_missing_file_errors(tmp_path, monkeypatch, capsys):
     assert "no such file" in capsys.readouterr().err
 
 
+def test_ingest_registers_text_source(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    src = tmp_path / "doc.txt"
+    src.write_text("body", encoding="utf-8")
+
+    rc = cli.main(["ingest", str(src)])
+
+    assert rc == 0
+    assert "text" in capsys.readouterr().out
+    s = Store(tmp_path / "kb.sqlite")
+    assert [(r["path"], r["kind"]) for r in s.sources_with_counts()] == [
+        ("sources/doc.txt", "text")
+    ]
+
+
+def test_ingest_unsupported_type_errors(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    src = tmp_path / "blob.bin"
+    src.write_bytes(b"\x00\x01")
+    rc = cli.main(["ingest", str(src)])
+    assert rc == 1
+    assert "unsupported source type" in capsys.readouterr().err
+
+
 def test_sync_surfaces_llm_error(tmp_path, monkeypatch, capsys, fake_client):
     _env(monkeypatch, tmp_path)
     monkeypatch.setattr(
