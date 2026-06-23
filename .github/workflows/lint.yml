@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: Apache-2.0
+name: lint
+
+# Lint every pull request. ruff config lives in pyproject.toml ([tool.ruff]).
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ruff:
+    name: ruff check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/ruff-action@v4.0.0
+        with:
+          version: "0.15.18"   # keep in sync with local dev
+          args: check
