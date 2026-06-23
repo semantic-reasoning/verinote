@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Provenance — verinote{% endblock %}
+{% block content %}
+{% if not f %}
+<div class="empty"><p>No such fact.</p></div>
+{% else %}
+<h1>Provenance — fact #{{ f["id"] }}</h1>
+<p class="triple">
+  <span class="subj">{{ f["subject"] }}</span>
+  <span class="rel">{{ f["relation"] }}</span>
+  <span class="obj">{{ f["object"] }}</span>
+  <span class="badge badge-{{ f['status'] }}">{{ f["status"] }}</span>
+</p>
+
+<table class="counts">
+  <tbody>
+    <tr><td>source</td><td><code>{{ f["source_path"] or "—" }}</code></td></tr>
+    <tr><td>confidence</td><td class="conf">{{ '%.2f'|format(f["confidence"]) }}</td></tr>
+    <tr><td>note</td><td>{{ f["note"] or "—" }}</td></tr>
+    <tr><td>run</td><td>
+      {% if run %}#{{ run["id"] }} · {{ run["provider"] or "—" }}/{{ run["model"] or "—" }}
+        {% if run["summary"] %}<span class="muted">({{ run["summary"] }})</span>{% endif %}
+      {% else %}— (seeded or hand-entered){% endif %}
+    </td></tr>
+    <tr><td>created</td><td class="src">{{ f["created_at"] }}</td></tr>
+    <tr><td>updated</td><td class="src">{{ f["updated_at"] }}</td></tr>
+  </tbody>
+</table>
+
+<h2>Audit trail</h2>
+{% if log %}
+<table class="counts">
+  <thead><tr><th>when</th><th>action</th></tr></thead>
+  <tbody>
+    {% for e in log %}
+    <tr><td class="src">{{ e["at"] }}</td><td><span class="badge">{{ e["action"] }}</span></td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No review decisions recorded yet.</p>
+{% endif %}
+
+<p><a class="btn ghost" href="/review">← back to review</a></p>
+{% endif %}
+{% endblock %}

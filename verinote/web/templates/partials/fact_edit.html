@@ -1,0 +1,17 @@
+{# Inline edit form for one fact. Swapped in by HTMX from the row's ✎ edit;
+   save POSTs /amend (re-renders the row), cancel GETs /row (reverts). #}
+<tr id="fact-{{ f['id'] }}" class="fact editing">
+  <td colspan="5">
+    <form class="amend" hx-post="/facts/{{ f['id'] }}/amend"
+          hx-target="#fact-{{ f['id'] }}" hx-swap="outerHTML">
+      <input name="subject" value="{{ f['subject'] }}" aria-label="subject" required>
+      <input name="relation" value="{{ f['relation'] }}" aria-label="relation" required>
+      <input name="object" value="{{ f['object'] }}" aria-label="object" required>
+      <input name="note" value="{{ f['note'] }}" aria-label="note" placeholder="note">
+      <button type="submit">save</button>
+      <button type="button" class="ghost"
+              hx-get="/facts/{{ f['id'] }}/row"
+              hx-target="#fact-{{ f['id'] }}" hx-swap="outerHTML">cancel</button>
+    </form>
+  </td>
+</tr>

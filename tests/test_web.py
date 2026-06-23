@@ -141,3 +141,36 @@ def test_report_gates_on_contradiction(tmp_path):
     assert r.status_code == 200
     assert "ERRORS" in r.text
     assert "functional_conflict" in r.text
+
+
+def test_edit_form_renders(tmp_path):
+    c = _client(tmp_path)
+    r = c.get(f"/facts/{c.fact_id}/edit")
+    assert r.status_code == 200
+    assert 'name="subject"' in r.text
+    assert "/amend" in r.text
+
+
+def test_amend_endpoint_updates_and_audits(tmp_path):
+    c = _client(tmp_path)
+    r = c.post(
+        f"/facts/{c.fact_id}/amend",
+        data={"subject": "NewSubj", "relation": "became", "object": "NewObj", "note": "n"},
+    )
+    assert r.status_code == 200
+    assert "NewSubj" in r.text and "NewObj" in r.text
+    store = c.app.state.store
+    assert store.get_fact(c.fact_id)["subject"] == "NewSubj"
+    assert any(e["action"] == "amended" for e in store.fact_log(c.fact_id))
+
+
+def test_provenance_shows_source_and_audit(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    sid = store.add_source("sources/x.txt", kind="text")
+    fid = store.add_fact("S", "r", "O", status="needs_review", source_id=sid)
+    store.toggle_review(fid)  # leaves an audit entry
+    r = c.get(f"/facts/{fid}/provenance")
+    assert r.status_code == 200
+    assert "sources/x.txt" in r.text
+    assert "toggled" in r.text
