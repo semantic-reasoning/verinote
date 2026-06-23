@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MPL-2.0
 """Shared test fakes — a canned `LLMClient` so the pipeline is exercised offline."""
 
 import pytest

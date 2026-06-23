@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MPL-2.0
 """The verinote web application.
 
 Server-rendered with Jinja; interactivity via HTMX (the review toggle posts and

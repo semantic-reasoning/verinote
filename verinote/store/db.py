@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MPL-2.0
 """Thin SQLite data-access layer — the system-of-record for verinote.
 
 Deliberately small and synchronous: the workload is a handful of small

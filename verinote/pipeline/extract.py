@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MPL-2.0
 """Extract candidate facts from sources and persist them as `candidate` rows.
 
 `extract_source` handles one source; `sync_sources` wraps a batch in a single

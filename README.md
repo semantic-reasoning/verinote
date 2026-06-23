@@ -56,4 +56,6 @@ verinote ui        # launch the web app at http://localhost:8731
 
 ## License
 
-Apache-2.0
+Mozilla Public License 2.0 — see [LICENSE](LICENSE). MPL-2.0 is a file-level
+copyleft: modifications to verinote's own source files stay open, while it can
+still be combined with proprietary code in separate files.

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MPL-2.0
 """Compile confirmed facts and run the wirelog check against the KB policy."""
 
 from __future__ import annotations

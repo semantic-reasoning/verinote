@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MPL-2.0
 """Compile confirmed facts into wirelog `.dl` and run the deterministic check.
 
 The database is the source of truth; the `.dl` text here is DERIVED from

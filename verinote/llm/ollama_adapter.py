@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MPL-2.0
 """Ollama adapter — fully local, no cloud vendor. Uses Ollama's JSON format mode.
 
 This adapter is the proof that anti-lock-in is real: with a local model the whole

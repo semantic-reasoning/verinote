@@ -1,4 +1,4 @@
--- SPDX-License-Identifier: Apache-2.0
+-- SPDX-License-Identifier: MPL-2.0
 -- verinote system-of-record (SQLite, OLTP). DuckDB attaches this file read-only
 -- for analytics. The wirelog `.dl` engine input is DERIVED from confirmed rows;
 -- it is never the source of truth.

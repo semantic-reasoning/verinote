@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MPL-2.0
 """Anthropic adapter. Forces structured output via tool use."""
 
 from __future__ import annotations

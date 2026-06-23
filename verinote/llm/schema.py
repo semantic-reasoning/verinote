@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MPL-2.0
 """Shared structured-output contract + parser used by every adapter.
 
 Keeping the JSON schema and the parse-into-`ExtractedFact` logic in one place is

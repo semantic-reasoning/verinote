@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MPL-2.0
 import verinote.engine.wirelog as wl
 from verinote.engine import DEFAULT_POLICY, compile_dl, run_check
 

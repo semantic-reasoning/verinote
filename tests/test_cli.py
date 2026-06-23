@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MPL-2.0
 import verinote.cli as cli
 from verinote.engine import DEFAULT_POLICY
 from verinote.llm.base import ExtractedFact, LLMError

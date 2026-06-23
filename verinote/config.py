@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MPL-2.0
 """Runtime configuration: where the KB lives and which LLM provider to use.
 
 Resolved from environment variables (and CLI overrides) so nothing about the
