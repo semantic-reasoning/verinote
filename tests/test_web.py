@@ -12,13 +12,19 @@ from verinote.web import create_app  # noqa: E402
 
 def _client(tmp_path) -> TestClient:
     cfg = Config(
-        root=tmp_path, db_path=tmp_path / "kb.sqlite",
-        provider="anthropic", model="m", api_key=None, base_url=None,
+        root=tmp_path,
+        db_path=tmp_path / "kb.sqlite",
+        provider="anthropic",
+        model="m",
+        api_key=None,
+        base_url=None,
     )
     app = create_app(cfg)
     client = TestClient(app)
     store = app.state.store
-    client.fact_id = store.add_fact("A", "is_a", "B", status="needs_review", confidence=0.9)
+    client.fact_id = store.add_fact(
+        "A", "is_a", "B", status="needs_review", confidence=0.9
+    )
     return client
 
 
@@ -47,7 +53,9 @@ def test_toggle_endpoint_swaps_row(tmp_path):
 
 def test_upload_extracts_and_redirects(tmp_path, monkeypatch, fake_client):
     monkeypatch.setattr(
-        webapp, "get_client", lambda cfg: fake_client([ExtractedFact("X", "is_a", "Y", 0.9)])
+        webapp,
+        "get_client",
+        lambda cfg: fake_client([ExtractedFact("X", "is_a", "Y", 0.9)]),
     )
     c = _client(tmp_path)
     r = c.post(

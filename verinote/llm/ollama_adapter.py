@@ -22,14 +22,20 @@ class OllamaAdapter:
         self.cfg = cfg
         self.base_url = (cfg.base_url or "http://localhost:11434").rstrip("/")
 
-    def extract_facts(self, *, source_text: str, schema_hint: str = "") -> list[ExtractedFact]:
+    def extract_facts(
+        self, *, source_text: str, schema_hint: str = ""
+    ) -> list[ExtractedFact]:
         payload = {
             "model": self.cfg.model,
             "stream": False,
             # Ollama accepts a JSON schema in `format` to constrain output.
             "format": FACT_ARRAY_SCHEMA,
             "messages": [
-                {"role": "system", "content": EXTRACTION_SYSTEM + ("\n" + schema_hint if schema_hint else "")},
+                {
+                    "role": "system",
+                    "content": EXTRACTION_SYSTEM
+                    + ("\n" + schema_hint if schema_hint else ""),
+                },
                 {"role": "user", "content": source_text},
             ],
         }

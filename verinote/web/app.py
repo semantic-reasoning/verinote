@@ -40,9 +40,13 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     def _row(request: Request, fact):
         # Starlette's current API is TemplateResponse(request, name, context).
-        return templates.TemplateResponse(request, "partials/fact_row.html", {"f": fact})
+        return templates.TemplateResponse(
+            request, "partials/fact_row.html", {"f": fact}
+        )
 
-    def _dashboard(request: Request, *, error: str | None = None, status_code: int = 200):
+    def _dashboard(
+        request: Request, *, error: str | None = None, status_code: int = 200
+    ):
         counts = store.status_counts()
         return templates.TemplateResponse(
             request,
@@ -74,7 +78,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         try:
             text = (await file.read()).decode("utf-8")
         except UnicodeDecodeError:
-            return _dashboard(request, error="file is not valid UTF-8 text", status_code=400)
+            return _dashboard(
+                request, error="file is not valid UTF-8 text", status_code=400
+            )
 
         sources_dir = cfg.root / "sources"
         sources_dir.mkdir(parents=True, exist_ok=True)
@@ -83,7 +89,13 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
         try:
             client = get_client(cfg)
-            sync_sources(store, client, [(citation, text)], provider=cfg.provider, model=cfg.model)
+            sync_sources(
+                store,
+                client,
+                [(citation, text)],
+                provider=cfg.provider,
+                model=cfg.model,
+            )
         except LLMError as e:
             return _dashboard(request, error=f"extraction failed: {e}", status_code=502)
         return RedirectResponse("/review", status_code=303)
@@ -108,7 +120,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.get("/report", response_class=HTMLResponse)
     def report(request: Request):
-        return templates.TemplateResponse(request, "report.html", {"rep": verify(store)})
+        return templates.TemplateResponse(
+            request, "report.html", {"rep": verify(store)}
+        )
 
     return app
 

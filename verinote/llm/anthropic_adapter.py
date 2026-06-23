@@ -14,13 +14,19 @@ class AnthropicAdapter:
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
 
-    def extract_facts(self, *, source_text: str, schema_hint: str = "") -> list[ExtractedFact]:
+    def extract_facts(
+        self, *, source_text: str, schema_hint: str = ""
+    ) -> list[ExtractedFact]:
         try:
             import anthropic
         except ImportError as exc:  # pragma: no cover - optional dep
-            raise LLMError("anthropic SDK not installed; `pip install verinote[anthropic]`") from exc
+            raise LLMError(
+                "anthropic SDK not installed; `pip install verinote[anthropic]`"
+            ) from exc
 
-        client = anthropic.Anthropic(api_key=self.cfg.api_key, base_url=self.cfg.base_url)
+        client = anthropic.Anthropic(
+            api_key=self.cfg.api_key, base_url=self.cfg.base_url
+        )
         tool = {
             "name": "emit_facts",
             "description": "Return the extracted facts.",

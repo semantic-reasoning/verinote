@@ -16,7 +16,9 @@ class FakeClient:
         self._error = error
         self.calls = 0
 
-    def extract_facts(self, *, source_text: str, schema_hint: str = "") -> list[ExtractedFact]:
+    def extract_facts(
+        self, *, source_text: str, schema_hint: str = ""
+    ) -> list[ExtractedFact]:
         self.calls += 1
         if self._error is not None:
             raise self._error

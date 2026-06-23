@@ -22,7 +22,11 @@ ENGINE_STATUSES = frozenset({"confirmed", "accepted"})
 
 
 def _load_schema() -> str:
-    return resources.files("verinote.store").joinpath("schema.sql").read_text(encoding="utf-8")
+    return (
+        resources.files("verinote.store")
+        .joinpath("schema.sql")
+        .read_text(encoding="utf-8")
+    )
 
 
 class Store:
@@ -33,7 +37,9 @@ class Store:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         # check_same_thread=False: FastAPI serves sync endpoints from a thread
         # pool. WAL allows concurrent readers; we serialise writes with _lock.
-        self._conn = sqlite3.connect(self.db_path, isolation_level=None, check_same_thread=False)
+        self._conn = sqlite3.connect(
+            self.db_path, isolation_level=None, check_same_thread=False
+        )
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON;")
         self._lock = threading.Lock()
@@ -65,7 +71,9 @@ class Store:
         return list(self._conn.execute("SELECT * FROM sources ORDER BY path"))
 
     # --- runs ------------------------------------------------------------
-    def add_run(self, *, provider: str | None, model: str | None, summary: str = "") -> int:
+    def add_run(
+        self, *, provider: str | None, model: str | None, summary: str = ""
+    ) -> int:
         """Open an extraction run; facts produced by it cite the returned id."""
         with self._lock:
             cur = self._conn.execute(
@@ -76,10 +84,14 @@ class Store:
 
     def set_run_summary(self, run_id: int, summary: str) -> None:
         with self._lock:
-            self._conn.execute("UPDATE runs SET summary = ? WHERE id = ?", (summary, run_id))
+            self._conn.execute(
+                "UPDATE runs SET summary = ? WHERE id = ?", (summary, run_id)
+            )
 
     def get_run(self, run_id: int) -> sqlite3.Row | None:
-        return self._conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+        return self._conn.execute(
+            "SELECT * FROM runs WHERE id = ?", (run_id,)
+        ).fetchone()
 
     # --- facts -----------------------------------------------------------
     def add_fact(
@@ -127,10 +139,14 @@ class Store:
         return self.facts(statuses=REVIEW_STATUSES)
 
     def status_counts(self) -> dict[str, int]:
-        rows = self._conn.execute("SELECT status, COUNT(*) c FROM facts GROUP BY status")
+        rows = self._conn.execute(
+            "SELECT status, COUNT(*) c FROM facts GROUP BY status"
+        )
         return {r["status"]: r["c"] for r in rows}
 
-    def set_status(self, fact_id: int, status: str, *, action: str = "set_status") -> sqlite3.Row | None:
+    def set_status(
+        self, fact_id: int, status: str, *, action: str = "set_status"
+    ) -> sqlite3.Row | None:
         with self._lock:
             before = self.get_fact(fact_id)
             if before is None:
@@ -152,7 +168,13 @@ class Store:
         return self.set_status(fact_id, new_status, action="toggled")
 
     # --- audit -----------------------------------------------------------
-    def _log(self, fact_id: int, action: str, before: sqlite3.Row | None, after: sqlite3.Row | None) -> None:
+    def _log(
+        self,
+        fact_id: int,
+        action: str,
+        before: sqlite3.Row | None,
+        after: sqlite3.Row | None,
+    ) -> None:
         self._conn.execute(
             "INSERT INTO review_log(fact_id, action, before_json, after_json) VALUES(?,?,?,?)",
             (

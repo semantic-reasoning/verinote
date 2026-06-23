@@ -32,7 +32,9 @@ class LLMClient(Protocol):
 
     name: str
 
-    def extract_facts(self, *, source_text: str, schema_hint: str = "") -> list[ExtractedFact]:
+    def extract_facts(
+        self, *, source_text: str, schema_hint: str = ""
+    ) -> list[ExtractedFact]:
         """Extract source-backed candidate facts from `source_text`.
 
         Adapters MUST force structured output (a JSON array of fact objects) and

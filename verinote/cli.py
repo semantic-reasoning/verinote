@@ -16,10 +16,42 @@ _DEMO_FACTS = [
     # Obviously-fictional placeholder data: it only demonstrates the status
     # lifecycle and the (subject, relation, object) shape. Do NOT put real
     # organisations, people, or grant references here.
-    ("Example Org", "is_a", "participant", "needs_review", 0.95, "sources/example-grant.txt", "participant"),
-    ("Example Org", "established_on", "2020-01-01", "confirmed", 0.98, "sources/example-grant.txt", ""),
-    ("Demo Project", "has_participant", "Example Org", "confirmed", 0.92, "sources/example-grant.txt", ""),
-    ("wirelog", "is_a", "deterministic logic engine", "candidate", 0.90, "sources/example-notes.txt", ""),
+    (
+        "Example Org",
+        "is_a",
+        "participant",
+        "needs_review",
+        0.95,
+        "sources/example-grant.txt",
+        "participant",
+    ),
+    (
+        "Example Org",
+        "established_on",
+        "2020-01-01",
+        "confirmed",
+        0.98,
+        "sources/example-grant.txt",
+        "",
+    ),
+    (
+        "Demo Project",
+        "has_participant",
+        "Example Org",
+        "confirmed",
+        0.92,
+        "sources/example-grant.txt",
+        "",
+    ),
+    (
+        "wirelog",
+        "is_a",
+        "deterministic logic engine",
+        "candidate",
+        0.90,
+        "sources/example-notes.txt",
+        "",
+    ),
 ]
 
 
@@ -45,7 +77,9 @@ def cmd_init(cfg: Config, args: argparse.Namespace) -> int:
 def _seed(store: Store) -> None:
     for subj, rel, obj, status, conf, src, note in _DEMO_FACTS:
         sid = store.add_source(src)
-        store.add_fact(subj, rel, obj, status=status, confidence=conf, source_id=sid, note=note)
+        store.add_fact(
+            subj, rel, obj, status=status, confidence=conf, source_id=sid, note=note
+        )
 
 
 def cmd_seed(cfg: Config, args: argparse.Namespace) -> int:
@@ -90,12 +124,16 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
         store.close()
         return 2
     if not sources:
-        print(f"no sources to sync (looked under {cfg.root / 'sources'})", file=sys.stderr)
+        print(
+            f"no sources to sync (looked under {cfg.root / 'sources'})", file=sys.stderr
+        )
         store.close()
         return 1
     try:
         client = get_client(cfg)
-        result = sync_sources(store, client, sources, provider=cfg.provider, model=cfg.model)
+        result = sync_sources(
+            store, client, sources, provider=cfg.provider, model=cfg.model
+        )
     except LLMError as e:
         print(f"extraction failed: {e}", file=sys.stderr)
         store.close()
@@ -137,23 +175,35 @@ def cmd_ui(cfg: Config, args: argparse.Namespace) -> int:
         import webbrowser
 
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
-    uvicorn.run("verinote.web.app:_default", factory=True, host=args.host, port=args.port, reload=args.reload)
+    uvicorn.run(
+        "verinote.web.app:_default",
+        factory=True,
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+    )
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="verinote", description="Honest KB: LLM extracts, wirelog verifies.")
+    p = argparse.ArgumentParser(
+        prog="verinote", description="Honest KB: LLM extracts, wirelog verifies."
+    )
     p.add_argument("--version", action="version", version=f"verinote {__version__}")
     sub = p.add_subparsers(dest="command", required=True)
 
-    init = sub.add_parser("init", help="scaffold a local KB (SQLite) under VERINOTE_ROOT (./data)")
+    init = sub.add_parser(
+        "init", help="scaffold a local KB (SQLite) under VERINOTE_ROOT (./data)"
+    )
     init.add_argument("--seed", action="store_true", help="insert demo facts")
     init.set_defaults(func=cmd_init)
 
     seed = sub.add_parser("seed", help="insert demo facts into the KB")
     seed.set_defaults(func=cmd_seed)
 
-    sync = sub.add_parser("sync", help="extract candidate facts from sources via the LLM")
+    sync = sub.add_parser(
+        "sync", help="extract candidate facts from sources via the LLM"
+    )
     sync.add_argument(
         "path",
         nargs="?",
@@ -170,7 +220,9 @@ def build_parser() -> argparse.ArgumentParser:
     ui.add_argument("--reload", action="store_true", help="auto-reload (dev)")
     ui.add_argument("--no-browser", action="store_true", help="do not open a browser")
     ui.set_defaults(func=cmd_ui)
-    sub.add_parser("serve", help="alias for ui").set_defaults(func=cmd_ui, host="127.0.0.1", port=8731, reload=False, no_browser=True)
+    sub.add_parser("serve", help="alias for ui").set_defaults(
+        func=cmd_ui, host="127.0.0.1", port=8731, reload=False, no_browser=True
+    )
 
     return p
 

@@ -20,7 +20,7 @@ def _root() -> Path:
 class Config:
     root: Path
     db_path: Path
-    provider: str            # "anthropic" | "openai" | "ollama"
+    provider: str  # "anthropic" | "openai" | "ollama"
     model: str
     api_key: str | None
     base_url: str | None
