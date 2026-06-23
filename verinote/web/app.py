@@ -158,6 +158,12 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     def report(request: Request):
         return templates.TemplateResponse(request, "report.html", {"rep": verify(store)})
 
+    @app.get("/analytics", response_class=HTMLResponse)
+    def analytics(request: Request):
+        from verinote.store.analytics import compute
+
+        return templates.TemplateResponse(request, "analytics.html", {"a": compute(cfg.db_path)})
+
     return app
 
 

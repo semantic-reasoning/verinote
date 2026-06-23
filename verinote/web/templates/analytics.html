@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Analytics — verinote{% endblock %}
+{% macro breakdown(title, rows, label) %}
+<h2>{{ title }}</h2>
+{% if rows %}
+<table class="counts">
+  <thead><tr><th>{{ label }}</th><th>facts</th></tr></thead>
+  <tbody>
+    {% for name, n in rows %}
+    <tr><td><code>{{ name }}</code></td><td class="conf">{{ n }}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}<p class="muted">No data yet.</p>{% endif %}
+{% endmacro %}
+{% block content %}
+<h1>Analytics</h1>
+<p class="muted">Read-only aggregates computed by DuckDB, which attaches the
+  SQLite system-of-record read-only — no second source of truth.</p>
+
+{% if not a.available %}
+<div class="empty">
+  <p>Analytics are disabled — DuckDB isn't installed.</p>
+  <p class="muted">Enable with <code>pip install verinote[analytics]</code>.</p>
+</div>
+{% else %}
+{{ breakdown("By status", a.by_status, "status") }}
+{{ breakdown("By relation", a.by_relation, "relation") }}
+{{ breakdown("By source", a.by_source, "source") }}
+{{ breakdown("Confidence distribution", a.by_confidence, "bucket") }}
+{% endif %}
+{% endblock %}
