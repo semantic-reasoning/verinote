@@ -38,10 +38,11 @@ def test_review_log_records_decision(tmp_path):
 
 def test_compile_dl_only_projects_triples(tmp_path):
     s = _store(tmp_path)
-    s.add_fact("AI프렌즈학회", "is_a", "참여기관", status="confirmed")
+    # non-ASCII placeholder keeps UTF-8 round-trip coverage (not a real entity)
+    s.add_fact("예시기관", "is_a", "참여기관", status="confirmed")
     s.add_fact("x", "y", "z", status="needs_review")  # must NOT appear
     dl = compile_dl(s.facts(statuses=ENGINE_STATUSES))
-    assert 'relation("AI프렌즈학회", "is_a", "참여기관").' in dl
+    assert 'relation("예시기관", "is_a", "참여기관").' in dl
     assert "needs_review" not in dl
     assert '"x"' not in dl
 

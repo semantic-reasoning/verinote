@@ -10,14 +10,17 @@ from __future__ import annotations
 from importlib import resources
 from pathlib import Path
 
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, File, Request, UploadFile
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from verinote.config import Config
-from verinote.pipeline import verify
+from verinote.llm import LLMError, get_client
+from verinote.pipeline import sync_sources, verify
 from verinote.store import Store
+
+_UPLOAD_SUFFIXES = {".txt", ".md"}
 
 _TEMPLATES = resources.files("verinote.web").joinpath("templates")
 _STATIC = resources.files("verinote.web").joinpath("static")
@@ -39,8 +42,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         # Starlette's current API is TemplateResponse(request, name, context).
         return templates.TemplateResponse(request, "partials/fact_row.html", {"f": fact})
 
-    @app.get("/", response_class=HTMLResponse)
-    def dashboard(request: Request):
+    def _dashboard(request: Request, *, error: str | None = None, status_code: int = 200):
         counts = store.status_counts()
         return templates.TemplateResponse(
             request,
@@ -51,8 +53,40 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 "sources": store.sources(),
                 "provider": cfg.provider,
                 "model": cfg.model,
+                "error": error,
             },
+            status_code=status_code,
         )
+
+    @app.get("/", response_class=HTMLResponse)
+    def dashboard(request: Request):
+        return _dashboard(request)
+
+    @app.post("/sources", response_class=HTMLResponse)
+    async def upload_source(request: Request, file: UploadFile = File(...)):
+        filename = Path(file.filename or "").name
+        if Path(filename).suffix.lower() not in _UPLOAD_SUFFIXES:
+            return _dashboard(
+                request,
+                error=f"unsupported file type: {filename or '(none)'!r} (upload a .txt or .md file)",
+                status_code=400,
+            )
+        try:
+            text = (await file.read()).decode("utf-8")
+        except UnicodeDecodeError:
+            return _dashboard(request, error="file is not valid UTF-8 text", status_code=400)
+
+        sources_dir = cfg.root / "sources"
+        sources_dir.mkdir(parents=True, exist_ok=True)
+        (sources_dir / filename).write_text(text, encoding="utf-8")
+        citation = f"sources/{filename}"
+
+        try:
+            client = get_client(cfg)
+            sync_sources(store, client, [(citation, text)], provider=cfg.provider, model=cfg.model)
+        except LLMError as e:
+            return _dashboard(request, error=f"extraction failed: {e}", status_code=502)
+        return RedirectResponse("/review", status_code=303)
 
     @app.get("/review", response_class=HTMLResponse)
     def review(request: Request):
