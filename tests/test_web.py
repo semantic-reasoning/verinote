@@ -257,3 +257,54 @@ def test_repair_action_accepts_valid_fix(tmp_path, monkeypatch, fake_client):
     r = c.post("/questions/repair", follow_redirects=False)
     assert r.status_code == 303
     assert store.questions()[0]["status"] == "translated"
+
+
+def test_settings_page_renders(tmp_path):
+    c = _client(tmp_path)
+    r = c.get("/settings")
+    assert r.status_code == 200
+    assert "Provider" in r.text and "anthropic" in r.text
+
+
+def test_settings_save_changes_active_provider(tmp_path, monkeypatch):
+    for var in ("VERINOTE_PROVIDER", "VERINOTE_MODEL", "VERINOTE_BASE_URL"):
+        monkeypatch.delenv(var, raising=False)
+    c = _client(tmp_path)
+    r = c.post(
+        "/settings",
+        data={"provider": "ollama", "model": "llama3.1", "base_url": ""},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    # the next get_client would pick the ollama adapter — no code change
+    assert c.app.state.cfg.provider == "ollama"
+    assert (tmp_path / "config.json").is_file()
+
+
+def test_settings_never_renders_api_key(tmp_path):
+    cfg = Config(
+        root=tmp_path, db_path=tmp_path / "kb.sqlite",
+        provider="anthropic", model="m", api_key="supersecret", base_url=None,
+    )
+    client = TestClient(create_app(cfg))
+    r = client.get("/settings")
+    assert "supersecret" not in r.text
+    assert "set (from environment)" in r.text
+
+
+def test_test_connection_reports_adapter(tmp_path, monkeypatch, fake_client):
+    monkeypatch.setattr(
+        webapp, "get_client", lambda c: fake_client([ExtractedFact("A", "is_a", "B", 0.9)])
+    )
+    c = _client(tmp_path)
+    r = c.post("/settings/test")
+    assert r.status_code == 200
+    assert "fake answered with 1 fact" in r.text
+
+
+def test_test_connection_surfaces_llm_error(tmp_path, monkeypatch, fake_client):
+    monkeypatch.setattr(webapp, "get_client", lambda c: fake_client(error=LLMError("no key")))
+    c = _client(tmp_path)
+    r = c.post("/settings/test")
+    assert r.status_code == 502
+    assert "connection failed: no key" in r.text

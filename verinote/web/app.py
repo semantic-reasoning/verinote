@@ -15,7 +15,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from verinote.config import Config
+from verinote.config import PROVIDERS, Config, save_settings
 from verinote.llm import LLMError, get_client
 from verinote.pipeline import (
     IngestError,
@@ -61,8 +61,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 "total": sum(counts.values()),
                 "sources": store.sources(),
                 "coverage": coverage(store, root=cfg.root),
-                "provider": cfg.provider,
-                "model": cfg.model,
+                "provider": app.state.cfg.provider,
+                "model": app.state.cfg.model,
                 "error": error,
             },
             status_code=status_code,
@@ -100,8 +100,14 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
         citation = store_source(store, cfg.root, filename, text, kind)
         try:
-            client = get_client(cfg)
-            sync_sources(store, client, [(citation, text)], provider=cfg.provider, model=cfg.model)
+            client = get_client(app.state.cfg)
+            sync_sources(
+                store,
+                client,
+                [(citation, text)],
+                provider=app.state.cfg.provider,
+                model=app.state.cfg.model,
+            )
         except LLMError as e:
             return _sources(request, error=f"extraction failed: {e}", status_code=502)
         return RedirectResponse("/review", status_code=303)
@@ -179,7 +185,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     @app.post("/questions/translate", response_class=HTMLResponse)
     def translate(request: Request):
         try:
-            translate_questions(store, get_client(cfg), root=cfg.root)
+            translate_questions(store, get_client(app.state.cfg), root=cfg.root)
         except LLMError as e:
             return _questions(request, error=f"translation failed: {e}", status_code=502)
         return RedirectResponse("/questions", status_code=303)
@@ -187,7 +193,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     @app.post("/questions/repair", response_class=HTMLResponse)
     def repair(request: Request):
         try:
-            client = get_client(cfg)
+            client = get_client(app.state.cfg)
         except LLMError as e:
             return _questions(request, error=f"repair failed: {e}", status_code=502)
         repair_questions(store, client, root=cfg.root)
@@ -202,6 +208,54 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         from verinote.store.analytics import compute
 
         return templates.TemplateResponse(request, "analytics.html", {"a": compute(cfg.db_path)})
+
+    def _settings(request: Request, *, test_result=None, error=None, status_code=200):
+        c = app.state.cfg
+        return templates.TemplateResponse(
+            request,
+            "settings.html",
+            {
+                "providers": PROVIDERS,
+                "provider": c.provider,
+                "model": c.model,
+                "base_url": c.base_url or "",
+                "has_key": bool(c.api_key),  # never render the key itself
+                "test_result": test_result,
+                "error": error,
+            },
+            status_code=status_code,
+        )
+
+    @app.get("/settings", response_class=HTMLResponse)
+    def settings_page(request: Request):
+        return _settings(request)
+
+    @app.post("/settings", response_class=HTMLResponse)
+    def save_settings_route(
+        request: Request,
+        provider: str = Form(...),
+        model: str = Form(""),
+        base_url: str = Form(""),
+    ):
+        save_settings(cfg.root, provider=provider, model=model, base_url=base_url or None)
+        # reload from the app's own root so the change takes effect on next sync
+        app.state.cfg = Config.for_root(cfg.root)
+        return RedirectResponse("/settings", status_code=303)
+
+    @app.post("/settings/test", response_class=HTMLResponse)
+    def test_connection(request: Request):
+        c = app.state.cfg
+        try:
+            client = get_client(c)
+            facts = client.extract_facts(
+                source_text="verinote connection test: Ada Lovelace is a mathematician."
+            )
+        except LLMError as e:
+            return _settings(request, error=f"connection failed: {e}", status_code=502)
+        return _settings(
+            request,
+            test_result=f"{client.name} answered with {len(facts)} fact(s) from {c.model}",
+        )
 
     return app
 
