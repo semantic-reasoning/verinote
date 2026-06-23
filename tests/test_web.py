@@ -174,3 +174,16 @@ def test_provenance_shows_source_and_audit(tmp_path):
     assert r.status_code == 200
     assert "sources/x.txt" in r.text
     assert "toggled" in r.text
+
+
+def test_analytics_page_renders(tmp_path):
+    from verinote.store.analytics import duckdb_available
+
+    c = _client(tmp_path)
+    c.app.state.store.add_fact("A", "is_a", "B", status="confirmed", confidence=0.95)
+    r = c.get("/analytics")
+    assert r.status_code == 200
+    if duckdb_available():
+        assert "By status" in r.text and "confirmed" in r.text
+    else:
+        assert "DuckDB isn't installed" in r.text
