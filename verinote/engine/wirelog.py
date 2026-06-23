@@ -3,8 +3,16 @@
 
 The database is the source of truth; the `.dl` text here is DERIVED from
 confirmed/accepted rows each time the check runs. `compile_dl` is pure and fully
-tested without the engine; `run_check` shells into the wirelog/pyrewire engine
-and degrades gracefully when it is not installed (so the scaffold runs today).
+tested without the engine; `run_check` runs the compiled facts through a wirelog
+(`pyrewire`) policy program and degrades gracefully when the engine is absent.
+
+Policy contract
+---------------
+A policy is a wirelog Datalog program over the base relation
+``relation(subject, rel, object)`` (verinote inserts the compiled facts into it).
+Any derived relation whose name starts with ``error_`` is a blocking finding and
+``warn_`` is a non-blocking one; verinote reads those back, so every column is a
+plain symbol it can render. See `DEFAULT_POLICY`.
 """
 
 from __future__ import annotations
@@ -15,6 +23,35 @@ from typing import Iterable, Mapping
 
 # Datalog string literals: escape embedded quotes/backslashes.
 _ESCAPE = re.compile(r'(["\\])')
+
+# Prefixes that mark a derived relation as a verinote finding.
+_ERROR_PREFIX = "error_"
+_WARN_PREFIX = "warn_"
+
+# Shipped default policy. `verinote init` scaffolds a copy to
+# `<root>/policy/logic-policy.dl`; edit that copy per-KB.
+DEFAULT_POLICY = """\
+// verinote logic policy (wirelog Datalog).
+//
+// verinote compiles confirmed/accepted facts to
+//   relation(subject, rel, object)
+// and runs this policy over them. A derived `error_*` relation FAILS the review
+// gate; a `warn_*` relation is a non-blocking note. Edit freely — the engine
+// re-checks every fact, so the policy is the one place review rules live.
+
+.decl relation(subject: symbol, rel: symbol, object: symbol)
+
+// Relations that may hold at most one object per subject. Add your own.
+.decl functional(rel: symbol)
+functional("established_on").
+functional("born_on").
+functional("died_on").
+
+// A functional relation must not carry two distinct objects for one subject.
+.decl error_functional_conflict(subject: symbol, rel: symbol)
+error_functional_conflict(S, R) :-
+    relation(S, R, A), relation(S, R, B), functional(R), A != B.
+"""
 
 
 def _lit(value: str) -> str:
@@ -34,6 +71,43 @@ def compile_dl(facts: Iterable[Mapping[str, object]]) -> str:
     return "\n".join(sorted(lines)) + ("\n" if lines else "")
 
 
+def _parse_relation_facts(dl_text: str) -> list[tuple[str, str, str]]:
+    """Recover (subject, rel, object) triples from `compile_dl` output.
+
+    Mirrors `_lit`'s escaping (``\\"`` -> ``"``, ``\\\\`` -> ``\\``) so the round
+    trip is exact, including embedded quotes.
+    """
+    facts: list[tuple[str, str, str]] = []
+    for line in dl_text.splitlines():
+        line = line.strip()
+        if not line.startswith("relation("):
+            continue
+        out: list[str] = []
+        i, n = 0, len(line)
+        while i < n and len(out) < 3:
+            while i < n and line[i] != '"':
+                i += 1
+            if i >= n:
+                break
+            i += 1
+            buf: list[str] = []
+            while i < n:
+                c = line[i]
+                if c == "\\" and i + 1 < n:
+                    buf.append(line[i + 1])
+                    i += 2
+                    continue
+                if c == '"':
+                    i += 1
+                    break
+                buf.append(c)
+                i += 1
+            out.append("".join(buf))
+        if len(out) == 3:
+            facts.append((out[0], out[1], out[2]))
+    return facts
+
+
 @dataclass
 class CheckReport:
     ok: bool
@@ -44,32 +118,84 @@ class CheckReport:
     engine_available: bool = True
 
 
-def run_check(dl_text: str) -> CheckReport:
-    """Run the wirelog engine over compiled facts (+ policy/query, future work).
+def _load_engine():
+    """Return the pyrewire module, or None when it is not installed.
 
-    Returns a structured report. If pyrewire is absent we still return a valid
-    report flagged `engine_available=False` so the UI renders during scaffolding.
+    Factored out so tests can exercise the graceful-degradation path.
     """
     try:
-        import pyrewire  # noqa: F401
+        import pyrewire
     except ImportError:
-        n = dl_text.count("relation(")
-        return CheckReport(
-            ok=True,
-            errors=0,
-            warnings=0,
-            engine_available=False,
-            text=(
-                "wirelog engine (pyrewire) not installed — showing compiled input only.\n"
-                f"compiled facts: {n}\n\n{dl_text}"
-            ),
-        )
+        return None
+    return pyrewire
 
-    # TODO(v1): feed dl_text + policy/*.dl + query.dl to pyrewire and parse its
-    # report into errors/warnings/findings. Wiring tracked in the v1 slice.
+
+def _degraded_report(dl_text: str) -> CheckReport:
+    n = dl_text.count("relation(")
     return CheckReport(
         ok=True,
         errors=0,
         warnings=0,
-        text="engine wiring pending (see TODO in engine/wirelog.py)",
+        engine_available=False,
+        text=(
+            "wirelog engine (pyrewire) not installed — showing compiled input only.\n"
+            f"compiled facts: {n}\n\n{dl_text}"
+        ),
+    )
+
+
+def run_check(dl_text: str, *, policy_dl: str | None = None) -> CheckReport:
+    """Run the wirelog policy over compiled facts and parse the report.
+
+    `dl_text` is `compile_dl` output (the verbatim engine input). `policy_dl`
+    defaults to `DEFAULT_POLICY`. Derived `error_*`/`warn_*` tuples become the
+    report's findings; `errors > 0` is the review gate. If pyrewire is absent we
+    still return a valid report flagged `engine_available=False`.
+    """
+    pyrewire = _load_engine()
+    if pyrewire is None:
+        return _degraded_report(dl_text)
+
+    policy = policy_dl if policy_dl is not None else DEFAULT_POLICY
+    facts = _parse_relation_facts(dl_text)
+
+    try:
+        with pyrewire.EasySession(policy) as session:
+            for subject, rel, obj in facts:
+                session.insert_sym("relation", subject, rel, obj)
+            deltas = session.step()
+    except Exception as exc:  # pyrewire parse/exec errors -> blocking, surfaced
+        return CheckReport(
+            ok=False,
+            errors=1,
+            warnings=0,
+            text=f"policy/engine error: {exc}\n\n{dl_text}",
+            findings=[f"engine error: {exc}"],
+        )
+
+    errors: list[str] = []
+    warnings: list[str] = []
+    for name, row, mult in deltas:
+        if mult <= 0:
+            continue
+        if name.startswith(_ERROR_PREFIX):
+            errors.append(f"{name[len(_ERROR_PREFIX) :]}: {' '.join(map(str, row))}")
+        elif name.startswith(_WARN_PREFIX):
+            warnings.append(f"{name[len(_WARN_PREFIX) :]}: {' '.join(map(str, row))}")
+
+    errors.sort()
+    warnings.sort()
+    findings = [f"ERROR {e}" for e in errors] + [f"WARN {w}" for w in warnings]
+    summary = f"errors: {len(errors)}  warnings: {len(warnings)}  facts: {len(facts)}"
+    body = (
+        "\n".join(findings)
+        if findings
+        else "no findings — knowledge base is consistent."
+    )
+    return CheckReport(
+        ok=not errors,
+        errors=len(errors),
+        warnings=len(warnings),
+        text=f"{summary}\n\n{body}\n\n--- engine input ---\n{dl_text}",
+        findings=findings,
     )

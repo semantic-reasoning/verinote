@@ -51,3 +51,5 @@ th { color: var(--muted); font-weight: 600; font-size: .85rem; }
 .upload label { display: flex; align-items: center; gap: .6rem; color: var(--muted); }
 .upload button { border: 0; cursor: pointer; }
 .report { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 1rem; overflow-x: auto; white-space: pre-wrap; }
+.findings { margin: 1rem 0; padding-left: 1.2rem; }
+.findings li { font-family: ui-monospace, monospace; font-size: .9rem; margin: .2rem 0; }

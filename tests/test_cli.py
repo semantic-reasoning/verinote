@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 import verinote.cli as cli
+from verinote.engine import DEFAULT_POLICY
 from verinote.llm.base import ExtractedFact, LLMError
 from verinote.store import Store
 
@@ -8,6 +9,25 @@ def _env(monkeypatch, tmp_path):
     """Point a fresh KB at tmp_path; `cli.main` reads these via Config.load()."""
     monkeypatch.setenv("VERINOTE_ROOT", str(tmp_path))
     monkeypatch.setenv("VERINOTE_PROVIDER", "anthropic")
+
+
+def test_init_scaffolds_policy(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    rc = cli.main(["init"])
+    assert rc == 0
+    policy = tmp_path / "policy" / "logic-policy.dl"
+    assert policy.is_file()
+    assert policy.read_text(encoding="utf-8") == DEFAULT_POLICY
+    assert "policy:" in capsys.readouterr().out
+
+
+def test_init_does_not_overwrite_existing_policy(tmp_path, monkeypatch):
+    _env(monkeypatch, tmp_path)
+    policy = tmp_path / "policy" / "logic-policy.dl"
+    policy.parent.mkdir(parents=True)
+    policy.write_text("// my custom policy\n", encoding="utf-8")
+    cli.main(["init"])
+    assert policy.read_text(encoding="utf-8") == "// my custom policy\n"
 
 
 def test_sync_file_inserts_candidates(tmp_path, monkeypatch, capsys, fake_client):

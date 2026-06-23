@@ -29,14 +29,30 @@ def _store(cfg: Config) -> Store:
     return store
 
 
+def _scaffold_policy(cfg: Config) -> Path | None:
+    """Write the default logic policy if the KB doesn't have one yet."""
+    from verinote.engine import DEFAULT_POLICY
+    from verinote.pipeline.verify import POLICY_RELPATH
+
+    path = cfg.root / POLICY_RELPATH
+    if path.exists():
+        return None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(DEFAULT_POLICY, encoding="utf-8")
+    return path
+
+
 def cmd_init(cfg: Config, args: argparse.Namespace) -> int:
     cfg.root.mkdir(parents=True, exist_ok=True)
     store = _store(cfg)
     if args.seed:
         _seed(store)
     store.close()
+    policy = _scaffold_policy(cfg)
     print(f"initialised KB at {cfg.root}")
     print(f"  db: {cfg.db_path}")
+    if policy is not None:
+        print(f"  policy: {policy}")
     if args.seed:
         print("  seeded demo facts (run `verinote status`)")
     return 0

@@ -78,3 +78,23 @@ def test_upload_surfaces_llm_error(tmp_path, monkeypatch, fake_client):
     # surfaced as a page, not a 500
     assert r.status_code == 502
     assert "extraction failed: provider down" in r.text
+
+
+def test_report_ok_for_consistent_kb(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    store.add_fact("Org", "established_on", "2020", status="confirmed")
+    r = c.get("/report")
+    assert r.status_code == 200
+    assert "errors: 0" in r.text
+
+
+def test_report_gates_on_contradiction(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    store.add_fact("Org", "established_on", "2020", status="confirmed")
+    store.add_fact("Org", "established_on", "2021", status="confirmed")
+    r = c.get("/report")
+    assert r.status_code == 200
+    assert "ERRORS" in r.text
+    assert "functional_conflict" in r.text
