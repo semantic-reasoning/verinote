@@ -78,3 +78,14 @@ def test_fact_log_orders_decisions(tmp_path):
     s.toggle_review(fid)
     s.amend_fact(fid, subject="A", relation="r", obj="B2")
     assert [e["action"] for e in s.fact_log(fid)] == ["toggled", "amended"]
+
+
+def test_questions_add_list_and_translate(tmp_path):
+    s = _store(tmp_path)
+    qid = s.add_question("Where was Ada born?")
+    assert [(q["id"], q["status"]) for q in s.questions()] == [(qid, "pending")]
+    assert [q["id"] for q in s.questions(pending_only=True)] == [qid]
+
+    s.set_question_query(qid, ".decl answer_q1(value: symbol)", "translated")
+    assert s.questions(pending_only=True) == []
+    assert s.questions()[0]["status"] == "translated"

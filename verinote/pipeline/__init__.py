@@ -13,6 +13,7 @@ from verinote.pipeline.ingest import (
     store_source,
     supported_suffixes,
 )
+from verinote.pipeline.query import translate_questions, write_query_file
 from verinote.pipeline.verify import verify
 
 __all__ = [
@@ -25,4 +26,6 @@ __all__ = [
     "store_source",
     "supported_suffixes",
     "IngestError",
+    "translate_questions",
+    "write_query_file",
 ]

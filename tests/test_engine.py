@@ -76,3 +76,22 @@ def test_run_check_degrades_without_engine(monkeypatch):
 def test_default_policy_declares_finding_relations():
     assert "error_functional_conflict" in DEFAULT_POLICY
     assert ".decl relation(" in DEFAULT_POLICY
+
+
+def test_run_check_evaluates_query():
+    dl = compile_dl(
+        [
+            {"subject": "Ada", "relation": "born_in", "object": "London"},
+            {"subject": "Ada", "relation": "is_a", "object": "mathematician"},
+        ]
+    )
+    query = '.decl answer_q1(value: symbol)\nanswer_q1(O) :- relation("Ada", "born_in", O).\n'
+    rep = run_check(dl, query_dl=query)
+    assert rep.ok is True
+    assert rep.answers == ["q1: London"]
+    assert "q1: London" in rep.text
+
+
+def test_run_check_without_query_has_no_answers():
+    dl = compile_dl([{"subject": "Ada", "relation": "is_a", "object": "x"}])
+    assert run_check(dl).answers == []

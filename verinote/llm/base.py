@@ -40,3 +40,12 @@ class LLMClient(Protocol):
         or schema violation so the caller can retry deterministically.
         """
         ...
+
+    def translate_query(self, *, question: str, qid: int, schema_hint: str = "") -> str:
+        """Translate an NL `question` into a single Datalog query line.
+
+        Return a rule whose head is ``answer_q<qid>(V)`` binding one answer
+        variable over ``relation/3``, or ``review_required("<question>")`` when
+        the question can't be expressed. Raise `LLMError` on provider/parse error.
+        """
+        ...

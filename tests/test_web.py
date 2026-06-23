@@ -187,3 +187,43 @@ def test_analytics_page_renders(tmp_path):
         assert "By status" in r.text and "confirmed" in r.text
     else:
         assert "DuckDB isn't installed" in r.text
+
+
+def test_add_question_persists(tmp_path):
+    c = _client(tmp_path)
+    r = c.post("/questions", data={"text": "Where was Ada born?"}, follow_redirects=False)
+    assert r.status_code == 303
+    assert [q["text"] for q in c.app.state.store.questions()] == ["Where was Ada born?"]
+
+
+def test_translate_and_report_answers(tmp_path, monkeypatch, fake_client):
+    # canned translator: answer_q<id>(O) :- relation("Ada","born_in",O)
+    monkeypatch.setattr(
+        webapp,
+        "get_client",
+        lambda cfg: fake_client(
+            query=lambda question, qid: f'answer_q{qid}(O) :- relation("Ada", "born_in", O).'
+        ),
+    )
+    c = _client(tmp_path)
+    store = c.app.state.store
+    store.add_fact("Ada", "born_in", "London", status="confirmed")
+    store.add_question("Where was Ada born?")
+
+    r = c.post("/questions/translate", follow_redirects=False)
+    assert r.status_code == 303
+    assert store.questions()[0]["status"] == "translated"
+    # the report and questions page now surface the engine-evaluated answer
+    assert "London" in c.get("/report").text
+    assert "London" in c.get("/questions").text
+
+
+def test_translate_surfaces_llm_error(tmp_path, monkeypatch, fake_client):
+    monkeypatch.setattr(
+        webapp, "get_client", lambda cfg: fake_client(error=LLMError("provider down"))
+    )
+    c = _client(tmp_path)
+    c.app.state.store.add_question("q?")
+    r = c.post("/questions/translate")
+    assert r.status_code == 502
+    assert "translation failed: provider down" in r.text

@@ -108,6 +108,9 @@ def _parse_relation_facts(dl_text: str) -> list[tuple[str, str, str]]:
     return facts
 
 
+_ANSWER_PREFIX = "answer_q"
+
+
 @dataclass
 class CheckReport:
     ok: bool
@@ -115,6 +118,7 @@ class CheckReport:
     warnings: int
     text: str
     findings: list[str] = field(default_factory=list)
+    answers: list[str] = field(default_factory=list)
     engine_available: bool = True
 
 
@@ -144,23 +148,27 @@ def _degraded_report(dl_text: str) -> CheckReport:
     )
 
 
-def run_check(dl_text: str, *, policy_dl: str | None = None) -> CheckReport:
-    """Run the wirelog policy over compiled facts and parse the report.
+def run_check(
+    dl_text: str, *, policy_dl: str | None = None, query_dl: str | None = None
+) -> CheckReport:
+    """Run the wirelog policy (+ optional query rules) over compiled facts.
 
     `dl_text` is `compile_dl` output (the verbatim engine input). `policy_dl`
-    defaults to `DEFAULT_POLICY`. Derived `error_*`/`warn_*` tuples become the
-    report's findings; `errors > 0` is the review gate. If pyrewire is absent we
-    still return a valid report flagged `engine_available=False`.
+    defaults to `DEFAULT_POLICY`. `query_dl` holds `answer_q<id>(...)` query rules
+    (see pipeline.query). Derived `error_*`/`warn_*` tuples become findings
+    (`errors > 0` is the review gate); `answer_q<id>` tuples become answers. If
+    pyrewire is absent we still return a valid report flagged `engine_available=False`.
     """
     pyrewire = _load_engine()
     if pyrewire is None:
         return _degraded_report(dl_text)
 
     policy = policy_dl if policy_dl is not None else DEFAULT_POLICY
+    program = policy + ("\n" + query_dl if query_dl else "")
     facts = _parse_relation_facts(dl_text)
 
     try:
-        with pyrewire.EasySession(policy) as session:
+        with pyrewire.EasySession(program) as session:
             for subject, rel, obj in facts:
                 session.insert_sym("relation", subject, rel, obj)
             deltas = session.step()
@@ -175,6 +183,7 @@ def run_check(dl_text: str, *, policy_dl: str | None = None) -> CheckReport:
 
     errors: list[str] = []
     warnings: list[str] = []
+    answers_by_q: dict[str, list[str]] = {}
     for name, row, mult in deltas:
         if mult <= 0:
             continue
@@ -182,9 +191,15 @@ def run_check(dl_text: str, *, policy_dl: str | None = None) -> CheckReport:
             errors.append(f"{name[len(_ERROR_PREFIX) :]}: {' '.join(map(str, row))}")
         elif name.startswith(_WARN_PREFIX):
             warnings.append(f"{name[len(_WARN_PREFIX) :]}: {' '.join(map(str, row))}")
+        elif name.startswith(_ANSWER_PREFIX):
+            qid = name[len(_ANSWER_PREFIX) :]
+            answers_by_q.setdefault(qid, []).append(" ".join(map(str, row)))
 
     errors.sort()
     warnings.sort()
+    answers = [
+        f"q{qid}: {', '.join(sorted(vals))}" for qid, vals in sorted(answers_by_q.items())
+    ]
     findings = [f"ERROR {e}" for e in errors] + [f"WARN {w}" for w in warnings]
     summary = f"errors: {len(errors)}  warnings: {len(warnings)}  facts: {len(facts)}"
     body = (
@@ -192,10 +207,13 @@ def run_check(dl_text: str, *, policy_dl: str | None = None) -> CheckReport:
         if findings
         else "no findings — knowledge base is consistent."
     )
+    if answers:
+        body += "\n\n--- answers ---\n" + "\n".join(answers)
     return CheckReport(
         ok=not errors,
         errors=len(errors),
         warnings=len(warnings),
+        answers=answers,
         text=f"{summary}\n\n{body}\n\n--- engine input ---\n{dl_text}",
         findings=findings,
     )
