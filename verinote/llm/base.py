@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MPL-2.0
 """The provider-agnostic LLM contract."""
 
 from __future__ import annotations

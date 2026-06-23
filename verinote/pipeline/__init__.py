@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MPL-2.0
 """Orchestration: extract -> (review) -> compile -> check.
 
 The pipeline is intentionally thin glue over store/, llm/ and engine/. The human

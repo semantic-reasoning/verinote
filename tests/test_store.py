@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MPL-2.0
 from verinote.engine import compile_dl
 from verinote.store import ENGINE_STATUSES, Store
 

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MPL-2.0
 """Select an `LLMClient` adapter from config — the one place provider choice lives."""
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MPL-2.0
 from verinote.pipeline.verify import policy_path, verify
 from verinote.store import Store
 

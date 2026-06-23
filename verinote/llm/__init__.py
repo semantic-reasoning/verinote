@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MPL-2.0
 """Provider-agnostic LLM layer.
 
 `LLMClient` is the single seam the rest of verinote talks to. Concrete adapters
