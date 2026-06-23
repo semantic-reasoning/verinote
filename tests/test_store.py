@@ -52,3 +52,29 @@ def test_compile_dl_escapes_quotes(tmp_path):
     s.add_fact('a"b', "r", "c", status="confirmed")
     dl = compile_dl(s.facts(statuses=ENGINE_STATUSES))
     assert r'relation("a\"b", "r", "c").' in dl
+
+
+def test_amend_fact_persists_and_audits(tmp_path):
+    s = _store(tmp_path)
+    fid = s.add_fact("A", "is_a", "B", status="needs_review", note="orig")
+    after = s.amend_fact(fid, subject="A2", relation="became", obj="C", note="fixed")
+    assert (after["subject"], after["relation"], after["object"], after["note"]) == (
+        "A2",
+        "became",
+        "C",
+        "fixed",
+    )
+    assert [e["action"] for e in s.fact_log(fid)] == ["amended"]
+
+
+def test_amend_missing_fact_returns_none(tmp_path):
+    s = _store(tmp_path)
+    assert s.amend_fact(999, subject="x", relation="y", obj="z") is None
+
+
+def test_fact_log_orders_decisions(tmp_path):
+    s = _store(tmp_path)
+    fid = s.add_fact("A", "r", "B", status="needs_review")
+    s.toggle_review(fid)
+    s.amend_fact(fid, subject="A", relation="r", obj="B2")
+    assert [e["action"] for e in s.fact_log(fid)] == ["toggled", "amended"]

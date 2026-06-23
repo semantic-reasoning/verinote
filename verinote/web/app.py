@@ -10,7 +10,7 @@ from __future__ import annotations
 from importlib import resources
 from pathlib import Path
 
-from fastapi import FastAPI, File, Request, UploadFile
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -118,6 +118,41 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     @app.post("/facts/{fact_id}/reject", response_class=HTMLResponse)
     def reject(request: Request, fact_id: int):
         return _row(request, store.set_status(fact_id, "superseded", action="rejected"))
+
+    @app.get("/facts/{fact_id}/edit", response_class=HTMLResponse)
+    def edit_fact(request: Request, fact_id: int):
+        return templates.TemplateResponse(
+            request, "partials/fact_edit.html", {"f": store.get_fact(fact_id)}
+        )
+
+    @app.get("/facts/{fact_id}/row", response_class=HTMLResponse)
+    def fact_row(request: Request, fact_id: int):
+        # Re-render the read-only row (used to cancel an inline edit).
+        return _row(request, store.get_fact(fact_id))
+
+    @app.post("/facts/{fact_id}/amend", response_class=HTMLResponse)
+    def amend_fact(
+        request: Request,
+        fact_id: int,
+        subject: str = Form(...),
+        relation: str = Form(...),
+        object: str = Form(...),
+        note: str = Form(""),
+    ):
+        amended = store.amend_fact(
+            fact_id, subject=subject, relation=relation, obj=object, note=note
+        )
+        return _row(request, amended)
+
+    @app.get("/facts/{fact_id}/provenance", response_class=HTMLResponse)
+    def provenance(request: Request, fact_id: int):
+        fact = store.get_fact(fact_id)
+        run = store.get_run(fact["run_id"]) if fact and fact["run_id"] else None
+        return templates.TemplateResponse(
+            request,
+            "provenance.html",
+            {"f": fact, "run": run, "log": store.fact_log(fact_id) if fact else []},
+        )
 
     @app.get("/report", response_class=HTMLResponse)
     def report(request: Request):

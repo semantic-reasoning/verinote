@@ -17,5 +17,8 @@
     <button hx-post="/facts/{{ f['id'] }}/reject"
             hx-target="#fact-{{ f['id'] }}" hx-swap="outerHTML"
             class="danger">✗ reject</button>
+    <button hx-get="/facts/{{ f['id'] }}/edit"
+            hx-target="#fact-{{ f['id'] }}" hx-swap="outerHTML">✎ edit</button>
+    <a class="srclink" href="/facts/{{ f['id'] }}/provenance" title="source &amp; audit trail">ⓘ source</a>
   </td>
 </tr>

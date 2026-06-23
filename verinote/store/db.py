@@ -165,7 +165,39 @@ class Store:
         new_status = "needs_review" if row["status"] in ENGINE_STATUSES else "confirmed"
         return self.set_status(fact_id, new_status, action="toggled")
 
+    def amend_fact(
+        self,
+        fact_id: int,
+        *,
+        subject: str,
+        relation: str,
+        obj: str,
+        note: str = "",
+    ) -> sqlite3.Row | None:
+        """Correct a fact's (subject, relation, object, note); audit as `amended`."""
+        with self._lock:
+            before = self.get_fact(fact_id)
+            if before is None:
+                return None
+            self._conn.execute(
+                "UPDATE facts SET subject = ?, relation = ?, object = ?, note = ?, "
+                "updated_at = datetime('now') WHERE id = ?",
+                (subject, relation, obj, note, fact_id),
+            )
+            after = self.get_fact(fact_id)
+            self._log(fact_id, "amended", before, after)
+            return after
+
     # --- audit -----------------------------------------------------------
+    def fact_log(self, fact_id: int) -> list[sqlite3.Row]:
+        """Audit trail (oldest first) for one fact — drives the provenance view."""
+        return list(
+            self._conn.execute(
+                "SELECT id, action, at FROM review_log WHERE fact_id = ? ORDER BY id",
+                (fact_id,),
+            )
+        )
+
     def _log(self, fact_id: int, action: str, before: sqlite3.Row | None, after: sqlite3.Row | None) -> None:
         self._conn.execute(
             "INSERT INTO review_log(fact_id, action, before_json, after_json) VALUES(?,?,?,?)",
