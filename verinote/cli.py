@@ -13,10 +13,13 @@ from verinote.store import Store
 
 _DEMO_FACTS = [
     # (subject, relation, object, status, confidence, source, note)
-    ("AI프렌즈학회", "is_a", "참여기관", "needs_review", 0.95, "sources/grant-0403.txt", "참여기관"),
-    ("AI프렌즈학회", "established_on", "2021.08.04", "confirmed", 0.98, "sources/grant-0403.txt", ""),
-    ("Wirelog 과제", "has_participant", "AI프렌즈학회", "confirmed", 0.92, "sources/grant-0403.txt", ""),
-    ("wirelog", "is_a", "deterministic logic engine", "candidate", 0.90, "sources/workshop.txt", ""),
+    # Obviously-fictional placeholder data: it only demonstrates the status
+    # lifecycle and the (subject, relation, object) shape. Do NOT put real
+    # organisations, people, or grant references here.
+    ("Example Org", "is_a", "participant", "needs_review", 0.95, "sources/example-grant.txt", "participant"),
+    ("Example Org", "established_on", "2020-01-01", "confirmed", 0.98, "sources/example-grant.txt", ""),
+    ("Demo Project", "has_participant", "Example Org", "confirmed", 0.92, "sources/example-grant.txt", ""),
+    ("wirelog", "is_a", "deterministic logic engine", "candidate", 0.90, "sources/example-notes.txt", ""),
 ]
 
 
