@@ -4,15 +4,6 @@
 <h1>Knowledge base</h1>
 <p class="muted">Provider <strong>{{ provider }}</strong> · model <code>{{ model }}</code></p>
 
-{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
-
-<form class="upload" action="/sources" method="post" enctype="multipart/form-data">
-  <label>Add a source
-    <input type="file" name="file" accept=".txt,.md" required>
-  </label>
-  <button class="btn" type="submit">Upload &amp; extract</button>
-</form>
-
 <section class="cards">
   <div class="card"><div class="num">{{ sources|length }}</div><div class="lbl">sources</div></div>
   <div class="card"><div class="num">{{ total }}</div><div class="lbl">facts</div></div>
@@ -29,5 +20,6 @@
   </tbody>
 </table>
 
-<p><a class="btn" href="/review">Go to review queue →</a></p>
+<p><a class="btn" href="/review">Go to review queue →</a>
+   <a class="btn ghost" href="/sources">Manage sources →</a></p>
 {% endblock %}

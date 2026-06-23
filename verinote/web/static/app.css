@@ -41,6 +41,7 @@ th { color: var(--muted); font-weight: 600; font-size: .85rem; }
 
 .btn { display: inline-block; background: var(--accent); color: #06101f; text-decoration: none;
   padding: .5rem .9rem; border-radius: 7px; font-weight: 600; }
+.btn.ghost { background: transparent; color: var(--accent); border: 1px solid var(--line); }
 .empty { background: var(--panel); border: 1px dashed var(--line); border-radius: 10px; padding: 2rem; text-align: center; color: var(--muted); }
 .warn { color: var(--warn); }
 .error { background: rgba(240, 82, 109, .12); border: 1px solid var(--danger);

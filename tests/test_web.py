@@ -64,9 +64,52 @@ def test_upload_extracts_and_redirects(tmp_path, monkeypatch, fake_client):
 
 def test_upload_rejects_unsupported_type(tmp_path):
     c = _client(tmp_path)
-    r = c.post("/sources", files={"file": ("note.pdf", b"x", "application/pdf")})
+    r = c.post("/sources", files={"file": ("blob.bin", b"\x00\x01", "application/octet-stream")})
     assert r.status_code == 400
-    assert "unsupported file type" in r.text
+    assert "unsupported source type" in r.text
+
+
+def test_sources_page_lists_sources(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    sid = store.add_source("sources/a.txt", kind="text")
+    store.add_fact("A", "is_a", "B", status="candidate", source_id=sid)
+    r = c.get("/sources")
+    assert r.status_code == 200
+    assert "sources/a.txt" in r.text
+    assert "text" in r.text
+
+
+def test_upload_docx_converts_and_extracts(tmp_path, monkeypatch, fake_client):
+    import io
+
+    import docx
+
+    monkeypatch.setattr(
+        webapp, "get_client", lambda cfg: fake_client([ExtractedFact("X", "is_a", "Y", 0.9)])
+    )
+    d = docx.Document()
+    d.add_paragraph("converted text")
+    buf = io.BytesIO()
+    d.save(buf)
+
+    c = _client(tmp_path)
+    r = c.post(
+        "/sources",
+        files={
+            "file": (
+                "report.docx",
+                buf.getvalue(),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    # the binary was converted to a text file and registered as a conversion
+    assert (tmp_path / "sources" / "report.txt").read_text().strip() == "converted text"
+    kinds = {s["kind"] for s in c.app.state.store.sources_with_counts()}
+    assert "conversion" in kinds
 
 
 def test_upload_surfaces_llm_error(tmp_path, monkeypatch, fake_client):

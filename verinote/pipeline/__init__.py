@@ -6,6 +6,23 @@ review gate sits between extract and compile and is driven from the web UI.
 """
 
 from verinote.pipeline.extract import SyncResult, extract_source, sync_sources
+from verinote.pipeline.ingest import (
+    IngestError,
+    ingest_bytes,
+    ingest_file,
+    store_source,
+    supported_suffixes,
+)
 from verinote.pipeline.verify import verify
 
-__all__ = ["extract_source", "sync_sources", "SyncResult", "verify"]
+__all__ = [
+    "extract_source",
+    "sync_sources",
+    "SyncResult",
+    "verify",
+    "ingest_bytes",
+    "ingest_file",
+    "store_source",
+    "supported_suffixes",
+    "IngestError",
+]

@@ -126,6 +126,23 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ingest(cfg: Config, args: argparse.Namespace) -> int:
+    from verinote.pipeline import IngestError, ingest_file
+
+    cfg.root.mkdir(parents=True, exist_ok=True)
+    store = _store(cfg)
+    try:
+        result = ingest_file(store, Path(args.path), root=cfg.root)
+    except IngestError as e:
+        print(f"ingest failed: {e}", file=sys.stderr)
+        store.close()
+        return 1
+    store.close()
+    print(f"ingested {args.path} -> {result['citation']} ({result['kind']})")
+    print("run `verinote sync` to extract candidate facts from it")
+    return 0
+
+
 def cmd_status(cfg: Config, args: argparse.Namespace) -> int:
     store = _store(cfg)
     counts = store.status_counts()
@@ -176,6 +193,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="a source file; omit to sync every .txt/.md under <root>/sources/",
     )
     sync.set_defaults(func=cmd_sync)
+
+    ingest = sub.add_parser("ingest", help="register a source file (converting docx/pdf to text)")
+    ingest.add_argument("path", help="a .txt/.md file, or a .docx/.pdf to convert")
+    ingest.set_defaults(func=cmd_ingest)
 
     status = sub.add_parser("status", help="summarise KB state")
     status.set_defaults(func=cmd_status)

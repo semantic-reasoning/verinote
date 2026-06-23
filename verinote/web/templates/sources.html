@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Sources — verinote{% endblock %}
+{% block content %}
+<h1>Sources</h1>
+<p class="muted">Files facts are extracted from and cited against. Text is stored
+  as-is; binaries ({{ suffixes }}) are converted to text on upload.</p>
+
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+
+<form class="upload" action="/sources" method="post" enctype="multipart/form-data">
+  <label>Add a source
+    <input type="file" name="file" accept="{{ accept }}" required>
+  </label>
+  <button class="btn" type="submit">Upload &amp; extract</button>
+</form>
+
+{% if sources %}
+<table class="sources">
+  <thead>
+    <tr><th>Path</th><th>Kind</th><th>Facts</th><th>Added</th></tr>
+  </thead>
+  <tbody>
+    {% for s in sources %}
+    <tr>
+      <td><code>{{ s["path"] }}</code></td>
+      <td><span class="badge">{{ s["kind"] }}</span></td>
+      <td class="conf">{{ s["fact_count"] }}</td>
+      <td class="src">{{ s["added_at"] }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty"><p>No sources yet — upload a file above to get started.</p></div>
+{% endif %}
+{% endblock %}
