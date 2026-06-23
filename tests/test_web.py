@@ -4,7 +4,9 @@ import pytest
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
+import verinote.web.app as webapp  # noqa: E402
 from verinote.config import Config  # noqa: E402
+from verinote.llm.base import ExtractedFact, LLMError  # noqa: E402
 from verinote.web import create_app  # noqa: E402
 
 
@@ -41,3 +43,38 @@ def test_toggle_endpoint_swaps_row(tmp_path):
     assert "confirmed" in r.text
     # the only queued fact was promoted, so the review queue is now empty
     assert "Review queue is empty" in c.get("/review").text
+
+
+def test_upload_extracts_and_redirects(tmp_path, monkeypatch, fake_client):
+    monkeypatch.setattr(
+        webapp, "get_client", lambda cfg: fake_client([ExtractedFact("X", "is_a", "Y", 0.9)])
+    )
+    c = _client(tmp_path)
+    r = c.post(
+        "/sources",
+        files={"file": ("note.txt", b"some text", "text/plain")},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/review"
+    # the file was saved under the KB's sources/ dir and the candidate is queued
+    assert (tmp_path / "sources" / "note.txt").read_text() == "some text"
+    assert "is_a" in c.get("/review").text
+
+
+def test_upload_rejects_unsupported_type(tmp_path):
+    c = _client(tmp_path)
+    r = c.post("/sources", files={"file": ("note.pdf", b"x", "application/pdf")})
+    assert r.status_code == 400
+    assert "unsupported file type" in r.text
+
+
+def test_upload_surfaces_llm_error(tmp_path, monkeypatch, fake_client):
+    monkeypatch.setattr(
+        webapp, "get_client", lambda cfg: fake_client(error=LLMError("provider down"))
+    )
+    c = _client(tmp_path)
+    r = c.post("/sources", files={"file": ("note.txt", b"x", "text/plain")})
+    # surfaced as a page, not a 500
+    assert r.status_code == 502
+    assert "extraction failed: provider down" in r.text
