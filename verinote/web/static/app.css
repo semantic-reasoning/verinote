@@ -47,6 +47,13 @@ th { color: var(--muted); font-weight: 600; font-size: .85rem; }
   padding: .3rem .7rem; cursor: pointer; font-weight: 600; }
 .amend button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); }
 tr.editing td { background: rgba(91, 157, 255, .06); }
+.settings { display: flex; flex-direction: column; gap: .8rem; max-width: 32rem; margin: 1.2rem 0; }
+.settings label { display: flex; flex-direction: column; gap: .3rem; color: var(--muted); }
+.settings select, .settings input { background: var(--bg); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 6px; padding: .4rem .55rem; }
+.settings .btn { align-self: flex-start; }
+.ok-note { background: rgba(63, 185, 80, .12); border: 1px solid var(--ok); color: var(--ok);
+  border-radius: 8px; padding: .6rem .9rem; margin: 1rem 0; }
 
 .btn { display: inline-block; background: var(--accent); color: #06101f; text-decoration: none;
   padding: .5rem .9rem; border-radius: 7px; font-weight: 600; }

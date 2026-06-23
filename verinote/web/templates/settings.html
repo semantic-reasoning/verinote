@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Settings — verinote{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+<p class="muted">Swap the LLM provider/model freely — the wirelog verifier
+  re-checks every fact, so correctness never depends on the model. Non-secret
+  settings are saved to <code>config.json</code>; the API key stays in the
+  environment (<code>VERINOTE_API_KEY</code>) and is never stored here.</p>
+
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+{% if test_result %}<p class="ok-note" role="status">✓ {{ test_result }}</p>{% endif %}
+
+<form class="settings" action="/settings" method="post">
+  <label>Provider
+    <select name="provider">
+      {% for p in providers %}
+      <option value="{{ p }}" {{ 'selected' if p == provider else '' }}>{{ p }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Model
+    <input type="text" name="model" value="{{ model }}" placeholder="model id">
+  </label>
+  <label>Base URL <span class="muted">(optional)</span>
+    <input type="text" name="base_url" value="{{ base_url }}" placeholder="https://…">
+  </label>
+  <button class="btn" type="submit">Save</button>
+</form>
+
+<p class="muted">API key: {{ 'set (from environment)' if has_key else 'not set — export VERINOTE_API_KEY' }}</p>
+
+<p>
+  <button class="btn ghost" hx-post="/settings/test" hx-target="body" hx-swap="outerHTML">
+    Test connection
+  </button>
+</p>
+{% endblock %}
