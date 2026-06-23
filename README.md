@@ -1,5 +1,7 @@
 # verinote
 
+[![ci](https://github.com/semantic-reasoning/verinote/actions/workflows/ci.yml/badge.svg)](https://github.com/semantic-reasoning/verinote/actions/workflows/ci.yml)
+
 **Honest knowledge base.** An LLM extracts source-backed *candidate* facts from your
 documents; the deterministic **wirelog** logic engine verifies them; you keep a human
 review gate before any fact is promoted to engine input. Runs as a local web app.
