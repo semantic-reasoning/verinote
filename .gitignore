@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# verinote local state (a KB's data is local, like a working dir)
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.duckdb
+/data/
+*.dl
+
+# tooling
+.pytest_cache/
+.ruff_cache/
+.DS_Store
+.env

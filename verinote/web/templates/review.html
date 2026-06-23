@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Review — verinote{% endblock %}
+{% block content %}
+<h1>Review queue</h1>
+<p class="muted">Facts awaiting the human gate (<code>candidate</code> / <code>needs_review</code>).
+  Toggle promotes to <code>confirmed</code>; accept/reject decide directly.</p>
+
+{% if queue %}
+<table class="facts">
+  <thead>
+    <tr><th>Fact (subject · relation · object)</th><th>Status</th><th>Conf.</th><th>Source</th><th>Decision</th></tr>
+  </thead>
+  <tbody>
+    {% for f in queue %}
+      {% include "partials/fact_row.html" %}
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty">
+  <p>✓ Review queue is empty — no <code>needs_review</code> or <code>candidate</code> facts.</p>
+</div>
+{% endif %}
+{% endblock %}

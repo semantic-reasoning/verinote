@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "verinote"
+version = "0.0.1"
+description = "Honest knowledge base: an LLM extracts source-backed facts, the wirelog logic engine verifies them. Local web app."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+authors = [{ name = "Justin Kim" }]
+keywords = ["knowledge-base", "datalog", "wirelog", "fact-extraction", "neurosymbolic", "verification"]
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.29",
+  "jinja2>=3.1",
+  "python-multipart>=0.0.9",
+  "pyrewire>=1.0.1,<2.0",
+]
+
+[project.optional-dependencies]
+# LLM providers are optional so the app installs without any single vendor SDK
+# (anti-lock-in: pick whichever you have a key for, or run Ollama locally).
+anthropic = ["anthropic>=0.40"]
+openai = ["openai>=1.40"]
+analytics = ["duckdb>=1.0"]
+test = ["pytest>=7", "httpx>=0.27"]
+
+[project.scripts]
+verinote = "verinote.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/semantic-reasoning/verinote"
+
+[tool.setuptools]
+packages = [
+  "verinote",
+  "verinote.llm",
+  "verinote.engine",
+  "verinote.store",
+  "verinote.pipeline",
+  "verinote.web",
+]
+
+[tool.setuptools.package-data]
+"verinote.store" = ["*.sql"]
+"verinote.web" = ["templates/*.html", "templates/partials/*.html", "static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"

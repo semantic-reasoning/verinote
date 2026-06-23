@@ -1,0 +1,46 @@
+:root {
+  --bg: #0f1115; --panel: #171a21; --line: #262b36; --fg: #e6e9ef;
+  --muted: #8b93a5; --accent: #5b9dff; --ok: #3fb950; --warn: #d29922; --danger: #f0526d;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg);
+  font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif; }
+header { display: flex; align-items: center; gap: 1.5rem;
+  padding: .8rem 1.4rem; border-bottom: 1px solid var(--line); background: var(--panel); }
+.brand { font-weight: 700; letter-spacing: .02em; color: var(--fg); text-decoration: none; }
+nav a { color: var(--muted); text-decoration: none; margin-right: 1rem; }
+nav a:hover { color: var(--fg); }
+main { max-width: 1000px; margin: 0 auto; padding: 1.6rem 1.4rem; }
+h1 { font-size: 1.4rem; } h2 { font-size: 1.05rem; margin-top: 1.8rem; }
+.muted { color: var(--muted); } code { color: var(--accent); }
+
+.cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin: 1.2rem 0; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 1rem; text-align: center; }
+.card .num { font-size: 1.8rem; font-weight: 700; }
+.card .lbl { color: var(--muted); font-size: .85rem; }
+.card.ok .num { color: var(--ok); }
+
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: .55rem .6rem; border-bottom: 1px solid var(--line); }
+th { color: var(--muted); font-weight: 600; font-size: .85rem; }
+.facts .triple .subj { font-weight: 600; }
+.facts .triple .rel { color: var(--accent); margin: 0 .35rem; }
+.conf { font-variant-numeric: tabular-nums; color: var(--muted); }
+.src { color: var(--muted); font-size: .85rem; }
+
+.badge { padding: .1rem .5rem; border-radius: 999px; font-size: .78rem; border: 1px solid var(--line); }
+.badge-candidate { color: var(--muted); }
+.badge-needs_review { color: var(--warn); border-color: var(--warn); }
+.badge-confirmed, .badge-accepted { color: var(--ok); border-color: var(--ok); }
+.badge-superseded { color: var(--danger); border-color: var(--danger); text-decoration: line-through; }
+
+.actions button { background: var(--panel); color: var(--fg); border: 1px solid var(--line);
+  border-radius: 6px; padding: .25rem .5rem; margin-right: .3rem; cursor: pointer; font-size: .82rem; }
+.actions button:hover { border-color: var(--accent); }
+.actions button.danger:hover { border-color: var(--danger); color: var(--danger); }
+
+.btn { display: inline-block; background: var(--accent); color: #06101f; text-decoration: none;
+  padding: .5rem .9rem; border-radius: 7px; font-weight: 600; }
+.empty { background: var(--panel); border: 1px dashed var(--line); border-radius: 10px; padding: 2rem; text-align: center; color: var(--muted); }
+.warn { color: var(--warn); }
+.report { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 1rem; overflow-x: auto; white-space: pre-wrap; }

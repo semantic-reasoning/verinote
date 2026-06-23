@@ -1,0 +1,21 @@
+{# A single fact row. Re-rendered and swapped in place by HTMX after a decision. #}
+<tr id="fact-{{ f['id'] }}" class="fact status-{{ f['status'] }}">
+  <td class="triple">
+    <span class="subj">{{ f['subject'] }}</span>
+    <span class="rel">{{ f['relation'] }}</span>
+    <span class="obj">{{ f['object'] }}</span>
+  </td>
+  <td><span class="badge badge-{{ f['status'] }}">{{ f['status'] }}</span></td>
+  <td class="conf">{{ '%.2f'|format(f['confidence']) }}</td>
+  <td class="src">{{ f['source_path'] or '—' }}</td>
+  <td class="actions">
+    <button hx-post="/facts/{{ f['id'] }}/toggle"
+            hx-target="#fact-{{ f['id'] }}" hx-swap="outerHTML"
+            title="needs_review ⇄ confirmed">⇄ toggle</button>
+    <button hx-post="/facts/{{ f['id'] }}/accept"
+            hx-target="#fact-{{ f['id'] }}" hx-swap="outerHTML">✓ accept</button>
+    <button hx-post="/facts/{{ f['id'] }}/reject"
+            hx-target="#fact-{{ f['id'] }}" hx-swap="outerHTML"
+            class="danger">✗ reject</button>
+  </td>
+</tr>

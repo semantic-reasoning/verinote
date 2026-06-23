@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}verinote{% endblock %}
+{% block content %}
+<h1>Knowledge base</h1>
+<p class="muted">Provider <strong>{{ provider }}</strong> · model <code>{{ model }}</code></p>
+
+<section class="cards">
+  <div class="card"><div class="num">{{ sources|length }}</div><div class="lbl">sources</div></div>
+  <div class="card"><div class="num">{{ total }}</div><div class="lbl">facts</div></div>
+  <div class="card"><div class="num">{{ counts.get('needs_review', 0) + counts.get('candidate', 0) }}</div><div class="lbl">needs review</div></div>
+  <div class="card ok"><div class="num">{{ counts.get('confirmed', 0) + counts.get('accepted', 0) }}</div><div class="lbl">engine input</div></div>
+</section>
+
+<h2>By status</h2>
+<table class="counts">
+  <tbody>
+    {% for s in ['candidate','needs_review','confirmed','accepted','superseded'] %}
+    <tr><td><span class="badge badge-{{ s }}">{{ s }}</span></td><td>{{ counts.get(s, 0) }}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<p><a class="btn" href="/review">Go to review queue →</a></p>
+{% endblock %}
