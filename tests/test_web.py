@@ -264,6 +264,7 @@ def test_settings_page_renders(tmp_path):
     r = c.get("/settings")
     assert r.status_code == 200
     assert "Provider" in r.text and "anthropic" in r.text
+    assert str(tmp_path) in r.text
 
 
 def test_settings_save_changes_active_provider(tmp_path, monkeypatch):
@@ -279,6 +280,30 @@ def test_settings_save_changes_active_provider(tmp_path, monkeypatch):
     # the next get_client would pick the ollama adapter — no code change
     assert c.app.state.cfg.provider == "ollama"
     assert (tmp_path / "config.json").is_file()
+
+
+def test_settings_switches_active_kb_root(tmp_path):
+    c = _client(tmp_path)
+    other = tmp_path / "other-kb"
+
+    r = c.post("/settings/root", data={"root": str(other)}, follow_redirects=False)
+
+    assert r.status_code == 303
+    assert r.headers["location"] == "/"
+    assert c.app.state.cfg.root == other.resolve()
+    assert c.app.state.store.db_path == other.resolve() / "kb.sqlite"
+    assert (other / "kb.sqlite").is_file()
+    assert "Review queue is empty" in c.get("/review").text
+    assert str(other.resolve()) in c.get("/").text
+
+
+def test_settings_rejects_empty_kb_root(tmp_path):
+    c = _client(tmp_path)
+
+    r = c.post("/settings/root", data={"root": "   "})
+
+    assert r.status_code == 400
+    assert "KB directory is required" in r.text
 
 
 def test_settings_never_renders_api_key(tmp_path):

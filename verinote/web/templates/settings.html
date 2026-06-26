@@ -2,14 +2,22 @@
 {% block title %}Settings — verinote{% endblock %}
 {% block content %}
 <h1>Settings</h1>
-<p class="muted">Swap the LLM provider/model freely — the wirelog verifier
-  re-checks every fact, so correctness never depends on the model. Non-secret
-  settings are saved to <code>config.json</code>; the API key stays in the
-  environment (<code>VERINOTE_API_KEY</code>) and is never stored here.</p>
+<p class="muted">Choose the local KB directory and swap the LLM provider/model
+  freely. Non-secret model settings are saved to that KB's <code>config.json</code>;
+  the API key stays in the environment (<code>VERINOTE_API_KEY</code>).</p>
 
 {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
 {% if test_result %}<p class="ok-note" role="status">✓ {{ test_result }}</p>{% endif %}
 
+<h2>Knowledge base</h2>
+<form class="settings" action="/settings/root" method="post">
+  <label>Directory
+    <input type="text" name="root" value="{{ root }}" placeholder="/path/to/kb">
+  </label>
+  <button class="btn" type="submit">Open KB</button>
+</form>
+
+<h2>LLM provider</h2>
 <form class="settings" action="/settings" method="post">
   <label>Provider
     <select name="provider">
