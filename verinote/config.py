@@ -19,11 +19,26 @@ SETTINGS_FILENAME = "config.json"
 
 _MODEL_DEFAULTS = {
     "anthropic": "claude-opus-4-8",
-    "claude": "",
+    "claudecli": "",
     "openai": "gpt-4o",
     "ollama": "llama3.1",
 }
 PROVIDERS = tuple(_MODEL_DEFAULTS)
+PROVIDER_LABELS = {
+    "anthropic": "Anthropic",
+    "claudecli": "ClaudeCLI",
+    "openai": "OpenAI",
+    "ollama": "Ollama",
+}
+TESTABLE_PROVIDERS = frozenset({"anthropic", "openai", "ollama"})
+
+
+def normalize_provider(provider: str | None) -> str:
+    """Canonical provider id used in config and dispatch."""
+    key = (provider or "").replace("-", "").replace("_", "").lower()
+    if key == "claude":
+        return "claudecli"
+    return key
 
 
 def _root() -> Path:
@@ -51,7 +66,11 @@ def save_settings(
 ) -> None:
     """Persist non-secret settings to `<root>/config.json` (never the API key)."""
     root.mkdir(parents=True, exist_ok=True)
-    payload = {"provider": provider, "model": model, "base_url": base_url or None}
+    payload = {
+        "provider": normalize_provider(provider),
+        "model": model,
+        "base_url": base_url or None,
+    }
     _settings_path(root).write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
@@ -70,7 +89,7 @@ def _pick(env: str, saved: str | None, default: str | None) -> str | None:
 class Config:
     root: Path
     db_path: Path
-    provider: str  # "anthropic" | "claude" | "openai" | "ollama"
+    provider: str  # "anthropic" | "claudecli" | "openai" | "ollama"
     model: str
     api_key: str | None
     base_url: str | None
@@ -78,7 +97,9 @@ class Config:
     @classmethod
     def for_root(cls, root: Path) -> "Config":
         saved = read_settings(root)
-        provider = (_pick("VERINOTE_PROVIDER", saved.get("provider"), "anthropic") or "").lower()
+        provider = normalize_provider(
+            _pick("VERINOTE_PROVIDER", saved.get("provider"), "anthropic")
+        )
         model = _pick("VERINOTE_MODEL", saved.get("model"), _MODEL_DEFAULTS.get(provider, "")) or ""
         base_url = _pick("VERINOTE_BASE_URL", saved.get("base_url"), None)
         return cls(

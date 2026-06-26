@@ -14,7 +14,7 @@ def _cfg(tmp_path, *, model: str = "") -> Config:
     return Config(
         root=tmp_path,
         db_path=tmp_path / "kb.sqlite",
-        provider="claude",
+        provider="claudecli",
         model=model,
         api_key=None,
         base_url=None,
@@ -44,7 +44,10 @@ def test_claude_cli_extracts_facts_from_stdout(tmp_path, monkeypatch):
     facts = ClaudeCliAdapter(_cfg(tmp_path)).extract_facts(source_text="Ada is a mathematician.")
 
     assert facts[0].subject == "Ada"
-    assert calls[0][0][0:2] == ["claude", "-p"]
+    assert calls[0][0][0] == "claude"
+    assert "--json-schema" in calls[0][0]
+    assert "--system-prompt" in calls[0][0]
+    assert "-p" in calls[0][0]
     assert calls[0][1]["capture_output"] is True
 
 

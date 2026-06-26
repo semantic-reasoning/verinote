@@ -22,7 +22,9 @@
   <label>Provider
     <select name="provider">
       {% for p in providers %}
-      <option value="{{ p }}" {{ 'selected' if p == provider else '' }}>{{ p }}</option>
+      <option value="{{ p }}" {{ 'selected' if p == provider else '' }}>
+        {{ provider_labels.get(p, p) }}
+      </option>
       {% endfor %}
     </select>
   </label>
@@ -38,7 +40,8 @@
 <p class="muted">API key: {{ 'set (from environment)' if has_key else 'not set — export VERINOTE_API_KEY' }}</p>
 
 <p>
-  <button class="btn ghost" hx-post="/settings/test" hx-target="body" hx-swap="outerHTML">
+  <button class="btn ghost" hx-post="/settings/test" hx-target="body" hx-swap="outerHTML"
+          {% if not connection_test_enabled %}aria-disabled="true"{% endif %}>
     Test connection
   </button>
 </p>

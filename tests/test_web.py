@@ -263,7 +263,8 @@ def test_settings_page_renders(tmp_path):
     c = _client(tmp_path)
     r = c.get("/settings")
     assert r.status_code == 200
-    assert "Provider" in r.text and "anthropic" in r.text
+    assert "Provider" in r.text and "Anthropic" in r.text
+    assert "ClaudeCLI" in r.text
     assert str(tmp_path) in r.text
 
 
@@ -280,6 +281,60 @@ def test_settings_save_changes_active_provider(tmp_path, monkeypatch):
     # the next get_client would pick the ollama adapter — no code change
     assert c.app.state.cfg.provider == "ollama"
     assert (tmp_path / "config.json").is_file()
+
+
+def test_settings_disables_connection_test_for_non_api_provider(tmp_path):
+    cfg = Config(
+        root=tmp_path,
+        db_path=tmp_path / "kb.sqlite",
+        provider="claudecli",
+        model="",
+        api_key=None,
+        base_url=None,
+    )
+    client = TestClient(create_app(cfg))
+
+    r = client.get("/settings")
+
+    assert "ClaudeCLI" in r.text
+    assert "Test connection" in r.text
+    assert 'aria-disabled="true"' in r.text
+    assert "Connection test is not available for this provider." not in r.text
+
+
+def test_test_connection_rejects_non_api_provider(tmp_path):
+    cfg = Config(
+        root=tmp_path,
+        db_path=tmp_path / "kb.sqlite",
+        provider="claudecli",
+        model="",
+        api_key=None,
+        base_url=None,
+    )
+    client = TestClient(create_app(cfg))
+
+    r = client.post("/settings/test")
+
+    assert r.status_code == 400
+    assert "Connection test is not available for this provider." in r.text
+
+
+def test_settings_enables_connection_test_for_ollama(tmp_path):
+    cfg = Config(
+        root=tmp_path,
+        db_path=tmp_path / "kb.sqlite",
+        provider="ollama",
+        model="llama3.1",
+        api_key=None,
+        base_url=None,
+    )
+    client = TestClient(create_app(cfg))
+
+    r = client.get("/settings")
+
+    assert "Ollama" in r.text
+    assert "Test connection" in r.text
+    assert 'aria-disabled="true"' not in r.text
 
 
 def test_settings_switches_active_kb_root(tmp_path):
