@@ -33,6 +33,7 @@ from verinote.pipeline import (
     translate_questions,
     verify,
 )
+from verinote.engine.terms import StringLit, render_term
 from verinote.store import Store
 from verinote.store.fact_input import structural_term, term_input_kind
 
@@ -65,9 +66,29 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         app.state.store = next_store
         old_store.close()
 
+    def _fact_view(fact):
+        if fact is None:
+            return None
+        view = dict(fact)
+        try:
+            terms = store.get_fact_terms(fact["id"])
+        except ValueError:
+            terms = None
+        if terms is None:
+            for field in ("subject", "relation", "object"):
+                view[f"{field}_display"] = fact[field]
+                view[f"{field}_edit"] = fact[field]
+                view[f"{field}_kind"] = "string"
+            return view
+        for field, term in zip(("subject", "relation", "object"), terms, strict=True):
+            view[f"{field}_display"] = render_term(term)
+            view[f"{field}_edit"] = term.value if isinstance(term, StringLit) else render_term(term)
+            view[f"{field}_kind"] = term_input_kind(term)
+        return view
+
     def _row(request: Request, fact):
         # Starlette's current API is TemplateResponse(request, name, context).
-        return templates.TemplateResponse(request, "partials/fact_row.html", {"f": fact})
+        return templates.TemplateResponse(request, "partials/fact_row.html", {"f": _fact_view(fact)})
 
     def _fact_edit_context(fact, *, error: str | None = None):
         kinds = {"subject": "string", "relation": "string", "object": "string"}
@@ -79,7 +100,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                     "relation": term_input_kind(terms[1]),
                     "object": term_input_kind(terms[2]),
                 }
-        return {"f": fact, "kinds": kinds, "error": error}
+        return {"f": _fact_view(fact), "kinds": kinds, "error": error}
 
     def _fact_input(value: str, kind: str):
         if kind == "string":
@@ -158,7 +179,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     @app.get("/review", response_class=HTMLResponse)
     def review(request: Request):
         return templates.TemplateResponse(
-            request, "review.html", {"queue": store.review_queue()}
+            request, "review.html", {"queue": [_fact_view(f) for f in store.review_queue()]}
         )
 
     @app.post("/facts/{fact_id}/toggle", response_class=HTMLResponse)
@@ -223,7 +244,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         return templates.TemplateResponse(
             request,
             "provenance.html",
-            {"f": fact, "run": run, "log": store.fact_log(fact_id) if fact else []},
+            {"f": _fact_view(fact), "run": run, "log": store.fact_log(fact_id) if fact else []},
         )
 
     def _questions(request: Request, *, error: str | None = None, status_code: int = 200):

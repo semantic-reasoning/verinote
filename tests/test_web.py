@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
 import builtins
+from html import unescape
 
 import pytest
 
@@ -51,6 +52,29 @@ def test_review_shows_queue(tmp_path):
     r = c.get("/review")
     assert r.status_code == 200
     assert "is_a" in r.text
+
+
+def test_review_renders_structural_terms_from_duckdb_and_distinguishes_strings(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    store.add_fact(
+        'person("Ada")',
+        "has_role",
+        'role(person("Ada"), "PI")',
+        status="candidate",
+    )
+    store.add_fact(
+        structural_term('person("Ada")'),
+        structural_term("has_role"),
+        structural_term('role(person("Ada"), "PI")'),
+        status="candidate",
+    )
+
+    body = unescape(c.get("/review").text)
+
+    assert 'class="subj term-string" title="string">"person(\\"Ada\\")"' in body
+    assert 'class="subj term-term" title="term">person("Ada")' in body
+    assert 'class="obj term-term" title="term">role(person("Ada"), "PI")' in body
 
 
 def test_toggle_endpoint_swaps_row(tmp_path):
@@ -238,6 +262,111 @@ def test_edit_form_preserves_structural_fact_input_kinds(tmp_path):
     assert '<option value="string" selected>string</option>' in r.text
 
 
+def test_edit_form_uses_duckdb_term_values_not_stale_sqlite_mirrors(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    fid = store.add_fact(
+        structural_term('person("Ada")'),
+        structural_term("has_role"),
+        structural_term('role(person("Ada"), "PI")'),
+        status="needs_review",
+    )
+    store._conn.execute(
+        "UPDATE facts SET subject = ?, relation = ?, object = ? WHERE id = ?",
+        ("stale_subject", "stale_relation", "stale_object", fid),
+    )
+
+    body = unescape(c.get(f"/facts/{fid}/edit").text)
+
+    assert 'value="person("Ada")"' in body
+    assert 'value="has_role"' in body
+    assert 'value="role(person("Ada"), "PI")"' in body
+    assert "stale_subject" not in body
+
+
+def test_edit_form_uses_raw_values_for_stringlit_inputs(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    fid = store.add_fact(
+        'person("Ada")',
+        "has_role",
+        'role(person("Ada"), "PI")',
+        status="needs_review",
+    )
+
+    body = unescape(c.get(f"/facts/{fid}/edit").text)
+
+    assert 'value="person("Ada")"' in body
+    assert 'value="role(person("Ada"), "PI")"' in body
+    assert 'value=""person(' not in body
+
+
+def test_edit_save_preserves_duckdb_terms_when_sqlite_mirror_is_stale(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    fid = store.add_fact(
+        structural_term('person("Ada")'),
+        structural_term("has_role"),
+        structural_term('role(person("Ada"), "PI")'),
+        status="needs_review",
+    )
+    store._conn.execute(
+        "UPDATE facts SET subject = ?, relation = ?, object = ? WHERE id = ?",
+        ("stale_subject", "stale_relation", "stale_object", fid),
+    )
+
+    r = c.post(
+        f"/facts/{fid}/amend",
+        data={
+            "subject": 'person("Ada")',
+            "subject_kind": "term",
+            "relation": "has_role",
+            "relation_kind": "term",
+            "object": 'role(person("Ada"), "PI")',
+            "object_kind": "term",
+            "note": "",
+        },
+    )
+
+    assert r.status_code == 200
+    assert store.get_fact_terms(fid) == (
+        Compound("person", (StringLit("Ada"),)),
+        Atom("has_role"),
+        Compound("role", (Compound("person", (StringLit("Ada"),)), StringLit("PI"))),
+    )
+
+
+def test_edit_save_preserves_unchanged_stringlit_without_adding_display_quotes(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    fid = store.add_fact(
+        'person("Ada")',
+        "has_role",
+        'role(person("Ada"), "PI")',
+        status="needs_review",
+    )
+
+    r = c.post(
+        f"/facts/{fid}/amend",
+        data={
+            "subject": 'person("Ada")',
+            "subject_kind": "string",
+            "relation": "has_role",
+            "relation_kind": "string",
+            "object": 'role(person("Ada"), "PI")',
+            "object_kind": "string",
+            "note": "",
+        },
+    )
+
+    assert r.status_code == 200
+    assert store.get_fact_terms(fid) == (
+        StringLit('person("Ada")'),
+        StringLit("has_role"),
+        StringLit('role(person("Ada"), "PI")'),
+    )
+
+
 def test_amend_endpoint_can_save_explicit_structural_terms(tmp_path):
     c = _client(tmp_path)
     store = c.app.state.store
@@ -262,6 +391,33 @@ def test_amend_endpoint_can_save_explicit_structural_terms(tmp_path):
         Atom("born_in"),
         StringLit("London"),
     )
+
+
+def test_amend_endpoint_saves_term_looking_text_as_stringlit_in_string_mode(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    fid = store.add_fact("A", "r", "B", status="needs_review")
+
+    r = c.post(
+        f"/facts/{fid}/amend",
+        data={
+            "subject": 'person("Ada")',
+            "subject_kind": "string",
+            "relation": "has_role",
+            "relation_kind": "string",
+            "object": 'role(person("Ada"), "PI")',
+            "object_kind": "string",
+            "note": "",
+        },
+    )
+
+    assert r.status_code == 200
+    assert store.get_fact_terms(fid) == (
+        StringLit('person("Ada")'),
+        StringLit("has_role"),
+        StringLit('role(person("Ada"), "PI")'),
+    )
+    assert 'class="subj term-string" title="string">"person(\\"Ada\\")"' in unescape(r.text)
 
 
 def test_amend_endpoint_rejects_invalid_structural_terms_without_writing(tmp_path):
@@ -333,6 +489,49 @@ def test_provenance_shows_source_and_audit(tmp_path):
     assert r.status_code == 200
     assert "sources/x.txt" in r.text
     assert "toggled" in r.text
+
+
+def test_provenance_renders_structural_terms_from_duckdb(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    sid = store.add_source("sources/x.txt", kind="text")
+    fid = store.add_fact(
+        structural_term('person("Ada")'),
+        structural_term("has_role"),
+        structural_term('role(person("Ada"), "PI")'),
+        status="needs_review",
+        source_id=sid,
+    )
+
+    body = unescape(c.get(f"/facts/{fid}/provenance").text)
+
+    assert 'class="subj term-term" title="term">person("Ada")' in body
+    assert 'class="rel term-term" title="term">has_role' in body
+    assert 'class="obj term-term" title="term">role(person("Ada"), "PI")' in body
+    assert "sources/x.txt" in body
+
+
+def test_report_renders_compound_fact_input_and_answer(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    store.add_fact(
+        structural_term('person("Ada")'),
+        structural_term("has_role"),
+        structural_term('role(person("Ada"), "PI")'),
+        status="confirmed",
+    )
+    path = query_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        ".decl answer_q1(value: symbol)\n"
+        'answer_q1(O) :- relation(person("Ada"), has_role, O).\n',
+        encoding="utf-8",
+    )
+
+    body = unescape(c.get("/report").text)
+
+    assert 'q1: role(person("Ada"), "PI")' in body
+    assert 'relation(person("Ada"), has_role, role(person("Ada"), "PI"))' in body
 
 
 def test_analytics_page_renders(tmp_path):
