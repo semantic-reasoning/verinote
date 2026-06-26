@@ -19,6 +19,7 @@ SETTINGS_FILENAME = "config.json"
 
 _MODEL_DEFAULTS = {
     "anthropic": "claude-opus-4-8",
+    "claude": "",
     "openai": "gpt-4o",
     "ollama": "llama3.1",
 }
@@ -69,7 +70,7 @@ def _pick(env: str, saved: str | None, default: str | None) -> str | None:
 class Config:
     root: Path
     db_path: Path
-    provider: str  # "anthropic" | "openai" | "ollama"
+    provider: str  # "anthropic" | "claude" | "openai" | "ollama"
     model: str
     api_key: str | None
     base_url: str | None

@@ -13,6 +13,10 @@ def get_client(cfg: Config) -> LLMClient:
         from verinote.llm.anthropic_adapter import AnthropicAdapter
 
         return AnthropicAdapter(cfg)
+    if provider == "claude":
+        from verinote.llm.claude_cli_adapter import ClaudeCliAdapter
+
+        return ClaudeCliAdapter(cfg)
     if provider == "openai":
         from verinote.llm.openai_adapter import OpenAIAdapter
 
@@ -22,5 +26,5 @@ def get_client(cfg: Config) -> LLMClient:
 
         return OllamaAdapter(cfg)
     raise LLMError(
-        f"unknown VERINOTE_PROVIDER={provider!r}; expected anthropic|openai|ollama"
+        f"unknown VERINOTE_PROVIDER={provider!r}; expected anthropic|claude|openai|ollama"
     )
