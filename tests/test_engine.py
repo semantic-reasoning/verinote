@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
+import builtins
+
 import pytest
 
 import verinote.engine.wirelog as wl
@@ -117,6 +119,14 @@ def test_validate_query_accepts_relation_only():
     assert ok is True and reason == ""
 
 
+def test_validate_query_accepts_supported_ground_compound_terms():
+    ok, reason = validate_query(
+        ".decl answer_q1(value: symbol)\n"
+        'answer_q1(S) :- relation(S, "has_role", role(person("Ada"), "PI")).'
+    )
+    assert ok is True and reason == ""
+
+
 def test_validate_query_does_not_flag_compound_functors_as_predicates():
     ok, reason = validate_query(
         ".decl answer_q1(value: symbol)\n"
@@ -125,6 +135,44 @@ def test_validate_query_does_not_flag_compound_functors_as_predicates():
     assert ok is False
     assert "unknown predicate" not in reason
     assert "person" not in reason
+    assert "variable-bearing compound" in reason
+
+
+@pytest.mark.parametrize(
+    ("query_dl", "message"),
+    [
+        (
+            ".decl answer_q1(value: symbol)\n"
+            'answer_q1(O) :- relation(person(O), "born_in", "London").',
+            "variable-bearing compound",
+        ),
+        (
+            ".decl answer_q1(value: symbol)\n"
+            'answer_q1(S) :- relation(S, "same_as", O), O == person(S).',
+            "variable-bearing compound",
+        ),
+    ],
+)
+def test_validate_query_rejects_duckdb_unsupported_compounds(query_dl, message):
+    ok, reason = validate_query(query_dl)
+    assert ok is False
+    assert message in reason
+
+
+def test_validate_query_does_not_require_pyrewire(monkeypatch):
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "pyrewire":
+            raise ImportError("missing")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    ok, reason = validate_query(
+        '.decl answer_q1(value: symbol)\nanswer_q1(O) :- relation("a", "b", O).'
+    )
+    assert ok is True and reason == ""
 
 
 def test_validate_query_rejects_unknown_predicate():

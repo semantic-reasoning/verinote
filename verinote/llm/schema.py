@@ -58,13 +58,15 @@ QUERY_SCHEMA: dict[str, Any] = {
 def query_system(qid: int) -> str:
     """System prompt for translating one question to a Datalog query line."""
     return (
-        "You translate a natural-language question into ONE line of wirelog Datalog "
+        "You translate a natural-language question into ONE line of DuckDB-supported Datalog "
         "over the base relation relation(subject, rel, object), which holds the "
         "knowledge base's confirmed facts. Produce a rule whose head is exactly "
         f"answer_q{qid}(V) binding a single answer variable V, for example:\n"
         f'  answer_q{qid}(O) :- relation("Ada Lovelace", "born_in", O).\n'
-        "Use only the relation/3 predicate and string literals. If the question "
-        "cannot be expressed this way, return exactly "
+        "Use only the relation/3 predicate in rule bodies. Terms may be variables, "
+        "string literals, integer literals, atoms, or fully ground compound terms; "
+        "do not construct compound terms from variables in the answer head or body. "
+        "If the question cannot be expressed this way, return exactly "
         'review_required("<the original question>"). Emit JSON matching the schema.'
     )
 
