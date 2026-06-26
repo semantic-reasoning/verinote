@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MPL-2.0
-from verinote.config import Config, read_settings, save_settings
+from verinote.config import PROVIDERS, Config, read_settings, save_settings
 
 
 def _clear_env(monkeypatch):
@@ -34,6 +34,10 @@ def test_default_model_when_nothing_set(tmp_path, monkeypatch):
     _clear_env(monkeypatch)
     cfg = Config.for_root(tmp_path)  # no settings file, no env
     assert (cfg.provider, cfg.model) == ("anthropic", "claude-opus-4-8")
+
+
+def test_claude_cli_provider_is_available():
+    assert "claude" in PROVIDERS
 
 
 def test_api_key_only_from_env_never_persisted(tmp_path, monkeypatch):
