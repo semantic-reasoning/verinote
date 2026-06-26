@@ -2,10 +2,25 @@
    save POSTs /amend (re-renders the row), cancel GETs /row (reverts). #}
 <tr id="fact-{{ f['id'] }}" class="fact editing">
   <td colspan="5">
+    {% if error %}
+    <p class="error">{{ error }}</p>
+    {% endif %}
     <form class="amend" hx-post="/facts/{{ f['id'] }}/amend"
           hx-target="#fact-{{ f['id'] }}" hx-swap="outerHTML">
+      <select name="subject_kind" aria-label="subject kind">
+        <option value="string" {% if kinds.subject == 'string' %}selected{% endif %}>string</option>
+        <option value="term" {% if kinds.subject == 'term' %}selected{% endif %}>term</option>
+      </select>
       <input name="subject" value="{{ f['subject'] }}" aria-label="subject" required>
+      <select name="relation_kind" aria-label="relation kind">
+        <option value="string" {% if kinds.relation == 'string' %}selected{% endif %}>string</option>
+        <option value="term" {% if kinds.relation == 'term' %}selected{% endif %}>term</option>
+      </select>
       <input name="relation" value="{{ f['relation'] }}" aria-label="relation" required>
+      <select name="object_kind" aria-label="object kind">
+        <option value="string" {% if kinds.object == 'string' %}selected{% endif %}>string</option>
+        <option value="term" {% if kinds.object == 'term' %}selected{% endif %}>term</option>
+      </select>
       <input name="object" value="{{ f['object'] }}" aria-label="object" required>
       <input name="note" value="{{ f['note'] }}" aria-label="note" placeholder="note">
       <button type="submit">save</button>

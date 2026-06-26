@@ -4,6 +4,7 @@ import pytest
 from verinote.llm.base import ExtractedFact, LLMError
 from verinote.pipeline import extract_source, sync_sources
 from verinote.store import Store
+from verinote.engine.terms import StringLit
 
 
 def _store(tmp_path) -> Store:
@@ -28,6 +29,30 @@ def test_extract_source_persists_candidates_with_linkage(tmp_path, fake_client):
     assert [f["status"] for f in facts] == ["candidate", "candidate"]
     assert {f["run_id"] for f in facts} == {run_id}
     assert {f["source_path"] for f in facts} == {"sources/x.txt"}
+
+
+def test_extract_source_stores_term_syntax_as_plain_strings(tmp_path, fake_client):
+    s = _store(tmp_path)
+    run_id = s.add_run(provider="fake", model="m")
+    client = fake_client([ExtractedFact('person("Ada")', "is_a", "person", 0.9)])
+
+    assert (
+        extract_source(
+            s,
+            client,
+            source_path="sources/x.txt",
+            source_text="...",
+            run_id=run_id,
+        )
+        == 1
+    )
+
+    fact = s.facts()[0]
+    assert s.get_fact_terms(fact["id"]) == (
+        StringLit('person("Ada")'),
+        StringLit("is_a"),
+        StringLit("person"),
+    )
 
 
 def test_sync_sources_opens_run_and_summarises(tmp_path, fake_client):
