@@ -6,9 +6,9 @@
 {% else %}
 <h1>Provenance — fact #{{ f["id"] }}</h1>
 <p class="triple">
-  <span class="subj">{{ f["subject"] }}</span>
-  <span class="rel">{{ f["relation"] }}</span>
-  <span class="obj">{{ f["object"] }}</span>
+  <span class="subj term-{{ f['subject_kind'] }}" title="{{ f['subject_kind'] }}">{{ f["subject_display"] }}</span>
+  <span class="rel term-{{ f['relation_kind'] }}" title="{{ f['relation_kind'] }}">{{ f["relation_display"] }}</span>
+  <span class="obj term-{{ f['object_kind'] }}" title="{{ f['object_kind'] }}">{{ f["object_display"] }}</span>
   <span class="badge badge-{{ f['status'] }}">{{ f["status"] }}</span>
 </p>
 
