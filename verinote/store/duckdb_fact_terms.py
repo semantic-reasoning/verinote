@@ -156,7 +156,15 @@ def _validate_fact_id(fact_id: int) -> int:
 
 
 def _coerce_term(value: object) -> Term:
-    if isinstance(value, (Atom, Compound, NumberLit, StringLit, Var)):
+    if isinstance(value, Var):
+        raise DuckDBFactTermStoreError("fact terms must be ground")
+    if isinstance(value, Compound):
+        from verinote.store.fact_input import is_ground_term
+
+        if not is_ground_term(value):
+            raise DuckDBFactTermStoreError("fact terms must be ground")
+        return value
+    if isinstance(value, (Atom, NumberLit, StringLit)):
         return value
     return StringLit(str(value))
 

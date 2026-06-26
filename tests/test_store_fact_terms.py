@@ -1,9 +1,17 @@
 # SPDX-License-Identifier: MPL-2.0
 import pytest
 
-from verinote.engine.terms import Atom, Compound, NumberLit, StringLit
+from verinote.engine.terms import (
+    Atom,
+    Compound,
+    NumberLit,
+    StringLit,
+    TermParseError,
+    Var,
+)
 from verinote.store import Store
 from verinote.store.duckdb_fact_terms import fact_terms_path
+from verinote.store.fact_input import structural_term
 
 
 def _store(tmp_path) -> Store:
@@ -53,6 +61,52 @@ def test_add_fact_accepts_structural_terms_without_parsing_strings(tmp_path):
     )
 
 
+def test_structural_term_is_an_explicit_input_boundary(tmp_path):
+    s = _store(tmp_path)
+
+    plain_id = s.add_fact('person("Ada")', "is_a", "person")
+    term_id = s.add_fact(
+        structural_term('person("Ada")'),
+        structural_term("is_a"),
+        structural_term("1815"),
+    )
+
+    assert s.get_fact(plain_id)["subject"] == s.get_fact(term_id)["subject"]
+    assert s.get_fact_terms(plain_id) == (
+        StringLit('person("Ada")'),
+        StringLit("is_a"),
+        StringLit("person"),
+    )
+    assert s.get_fact_terms(term_id) == (
+        Compound("person", (StringLit("Ada"),)),
+        Atom("is_a"),
+        NumberLit(1815),
+    )
+
+
+def test_structural_term_rejects_invalid_or_nonground_terms(tmp_path):
+    s = _store(tmp_path)
+
+    with pytest.raises(TermParseError):
+        structural_term('person("Ada"')
+    with pytest.raises(TermParseError, match="ground"):
+        structural_term("person(X)")
+
+    assert s.facts() == []
+
+
+def test_store_rejects_direct_nonground_term_inputs_without_writing(tmp_path):
+    s = _store(tmp_path)
+
+    with pytest.raises(ValueError, match="ground"):
+        s.add_fact(Var("S"), "r", "x")
+    with pytest.raises(ValueError, match="ground"):
+        s.add_fact(Compound("person", (Var("Name"),)), "r", "x")
+
+    assert s.facts() == []
+    assert s.fact_terms.get_many_fact_terms([1, 2]) == {}
+
+
 def test_fact_terms_sidecar_persists_across_store_reopen(tmp_path):
     s = _store(tmp_path)
     fid = s.add_fact(Compound("date", (NumberLit(2020), NumberLit(1), NumberLit(1))), "r", "x")
@@ -94,6 +148,24 @@ def test_amend_fact_updates_sqlite_duckdb_terms_and_audit(tmp_path):
         NumberLit(1815),
     )
     assert [e["action"] for e in s.fact_log(fid)] == ["amended"]
+
+
+def test_amend_fact_keeps_term_syntax_strings_as_stringlit(tmp_path):
+    s = _store(tmp_path)
+    fid = s.add_fact(Compound("person", (StringLit("Ada"),)), Atom("born_in"), "London")
+
+    s.amend_fact(
+        fid,
+        subject='person("Ada")',
+        relation="born_in",
+        obj='city("London")',
+    )
+
+    assert s.get_fact_terms(fid) == (
+        StringLit('person("Ada")'),
+        StringLit("born_in"),
+        StringLit('city("London")'),
+    )
 
 
 def test_backfill_fact_terms_migrates_legacy_sqlite_text_as_stringlit(tmp_path):
@@ -182,6 +254,26 @@ def test_amend_fact_duckdb_failure_leaves_sqlite_and_audit_unchanged(tmp_path, m
     )
     assert s.fact_log(fid) == []
     assert s.get_fact_terms(fid) == before_terms
+
+
+def test_amend_fact_rejects_direct_nonground_terms_and_restores_state(tmp_path):
+    s = _store(tmp_path)
+    fid = s.add_fact("A", "r", "B", status="needs_review", note="orig")
+    before = dict(s.get_fact(fid))
+    before_terms = s.get_fact_terms(fid)
+
+    with pytest.raises(ValueError, match="ground"):
+        s.amend_fact(
+            fid,
+            subject=Compound("person", (Var("Name"),)),
+            relation="r",
+            obj="B2",
+            note="bad",
+        )
+
+    assert dict(s.get_fact(fid)) == before
+    assert s.get_fact_terms(fid) == before_terms
+    assert s.fact_log(fid) == []
 
 
 def test_amend_fact_audit_failure_rolls_back_sqlite_and_restores_terms(

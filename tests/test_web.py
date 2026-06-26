@@ -8,8 +8,10 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import verinote.web.app as webapp  # noqa: E402
 from verinote.config import Config  # noqa: E402
+from verinote.engine.terms import Atom, Compound, StringLit  # noqa: E402
 from verinote.llm.base import ExtractedFact, LLMError  # noqa: E402
 from verinote.pipeline.query import query_path  # noqa: E402
+from verinote.store.fact_input import structural_term  # noqa: E402
 from verinote.web import create_app  # noqa: E402
 
 
@@ -200,6 +202,7 @@ def test_edit_form_renders(tmp_path):
     r = c.get(f"/facts/{c.fact_id}/edit")
     assert r.status_code == 200
     assert 'name="subject"' in r.text
+    assert 'name="subject_kind"' in r.text
     assert "/amend" in r.text
 
 
@@ -214,6 +217,110 @@ def test_amend_endpoint_updates_and_audits(tmp_path):
     store = c.app.state.store
     assert store.get_fact(c.fact_id)["subject"] == "NewSubj"
     assert any(e["action"] == "amended" for e in store.fact_log(c.fact_id))
+
+
+def test_edit_form_preserves_structural_fact_input_kinds(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    fid = store.add_fact(
+        structural_term('person("Ada")'),
+        structural_term("born_in"),
+        "London",
+        status="needs_review",
+    )
+
+    r = c.get(f"/facts/{fid}/edit")
+
+    assert r.status_code == 200
+    assert 'name="subject_kind"' in r.text
+    assert '<option value="term" selected>term</option>' in r.text
+    assert 'name="object_kind"' in r.text
+    assert '<option value="string" selected>string</option>' in r.text
+
+
+def test_amend_endpoint_can_save_explicit_structural_terms(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    fid = store.add_fact("A", "r", "B", status="needs_review")
+
+    r = c.post(
+        f"/facts/{fid}/amend",
+        data={
+            "subject": 'person("Ada")',
+            "subject_kind": "term",
+            "relation": "born_in",
+            "relation_kind": "term",
+            "object": "London",
+            "object_kind": "string",
+            "note": "",
+        },
+    )
+
+    assert r.status_code == 200
+    assert store.get_fact_terms(fid) == (
+        Compound("person", (StringLit("Ada"),)),
+        Atom("born_in"),
+        StringLit("London"),
+    )
+
+
+def test_amend_endpoint_rejects_invalid_structural_terms_without_writing(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    fid = store.add_fact(
+        structural_term('person("Ada")'),
+        structural_term("born_in"),
+        "London",
+        status="needs_review",
+    )
+    before_row = dict(store.get_fact(fid))
+    before_terms = store.get_fact_terms(fid)
+
+    r = c.post(
+        f"/facts/{fid}/amend",
+        data={
+            "subject": 'person("Ada"',
+            "subject_kind": "term",
+            "relation": "born_in",
+            "relation_kind": "term",
+            "object": "London",
+            "object_kind": "string",
+            "note": "bad",
+        },
+    )
+
+    assert r.status_code == 400
+    assert "expected" in r.text
+    assert dict(store.get_fact(fid)) == before_row
+    assert store.get_fact_terms(fid) == before_terms
+    assert store.fact_log(fid) == []
+
+
+def test_amend_endpoint_rejects_nonground_structural_terms_without_writing(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    fid = store.add_fact("A", "r", "B", status="needs_review")
+    before_row = dict(store.get_fact(fid))
+    before_terms = store.get_fact_terms(fid)
+
+    r = c.post(
+        f"/facts/{fid}/amend",
+        data={
+            "subject": "person(X)",
+            "subject_kind": "term",
+            "relation": "r",
+            "relation_kind": "string",
+            "object": "B",
+            "object_kind": "string",
+            "note": "bad",
+        },
+    )
+
+    assert r.status_code == 400
+    assert "ground" in r.text
+    assert dict(store.get_fact(fid)) == before_row
+    assert store.get_fact_terms(fid) == before_terms
+    assert store.fact_log(fid) == []
 
 
 def test_provenance_shows_source_and_audit(tmp_path):

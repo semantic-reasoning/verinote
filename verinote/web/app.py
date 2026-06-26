@@ -34,6 +34,7 @@ from verinote.pipeline import (
     verify,
 )
 from verinote.store import Store
+from verinote.store.fact_input import structural_term, term_input_kind
 
 _TEMPLATES = resources.files("verinote.web").joinpath("templates")
 _STATIC = resources.files("verinote.web").joinpath("static")
@@ -67,6 +68,25 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     def _row(request: Request, fact):
         # Starlette's current API is TemplateResponse(request, name, context).
         return templates.TemplateResponse(request, "partials/fact_row.html", {"f": fact})
+
+    def _fact_edit_context(fact, *, error: str | None = None):
+        kinds = {"subject": "string", "relation": "string", "object": "string"}
+        if fact is not None:
+            terms = store.get_fact_terms(fact["id"])
+            if terms is not None:
+                kinds = {
+                    "subject": term_input_kind(terms[0]),
+                    "relation": term_input_kind(terms[1]),
+                    "object": term_input_kind(terms[2]),
+                }
+        return {"f": fact, "kinds": kinds, "error": error}
+
+    def _fact_input(value: str, kind: str):
+        if kind == "string":
+            return value
+        if kind == "term":
+            return structural_term(value)
+        raise ValueError(f"unknown fact input kind: {kind}")
 
     def _dashboard(request: Request, *, error: str | None = None, status_code: int = 200):
         from verinote.engine import coverage
@@ -156,7 +176,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     @app.get("/facts/{fact_id}/edit", response_class=HTMLResponse)
     def edit_fact(request: Request, fact_id: int):
         return templates.TemplateResponse(
-            request, "partials/fact_edit.html", {"f": store.get_fact(fact_id)}
+            request, "partials/fact_edit.html", _fact_edit_context(store.get_fact(fact_id))
         )
 
     @app.get("/facts/{fact_id}/row", response_class=HTMLResponse)
@@ -171,10 +191,28 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         subject: str = Form(...),
         relation: str = Form(...),
         object: str = Form(...),
+        subject_kind: str = Form("string"),
+        relation_kind: str = Form("string"),
+        object_kind: str = Form("string"),
         note: str = Form(""),
     ):
+        try:
+            subject_value = _fact_input(subject, subject_kind)
+            relation_value = _fact_input(relation, relation_kind)
+            object_value = _fact_input(object, object_kind)
+        except ValueError as e:
+            return templates.TemplateResponse(
+                request,
+                "partials/fact_edit.html",
+                _fact_edit_context(store.get_fact(fact_id), error=str(e)),
+                status_code=400,
+            )
         amended = store.amend_fact(
-            fact_id, subject=subject, relation=relation, obj=object, note=note
+            fact_id,
+            subject=subject_value,
+            relation=relation_value,
+            obj=object_value,
+            note=note,
         )
         return _row(request, amended)
 
