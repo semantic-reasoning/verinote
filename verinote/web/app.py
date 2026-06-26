@@ -15,7 +15,13 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from verinote.config import PROVIDERS, Config, save_settings
+from verinote.config import (
+    PROVIDER_LABELS,
+    PROVIDERS,
+    TESTABLE_PROVIDERS,
+    Config,
+    save_settings,
+)
 from verinote.llm import LLMError, get_client
 from verinote.pipeline import (
     IngestError,
@@ -75,6 +81,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 "sources": store.sources(),
                 "coverage": coverage(store, root=cfg.root),
                 "provider": app.state.cfg.provider,
+                "provider_label": PROVIDER_LABELS.get(
+                    app.state.cfg.provider, app.state.cfg.provider
+                ),
                 "model": app.state.cfg.model,
                 "root": app.state.cfg.root,
                 "error": error,
@@ -230,11 +239,14 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             "settings.html",
             {
                 "providers": PROVIDERS,
+                "provider_labels": PROVIDER_LABELS,
                 "provider": c.provider,
+                "provider_label": PROVIDER_LABELS.get(c.provider, c.provider),
                 "model": c.model,
                 "base_url": c.base_url or "",
                 "root": c.root,
                 "has_key": bool(c.api_key),  # never render the key itself
+                "connection_test_enabled": c.provider in TESTABLE_PROVIDERS,
                 "test_result": test_result,
                 "error": error,
             },
@@ -271,6 +283,12 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     @app.post("/settings/test", response_class=HTMLResponse)
     def test_connection(request: Request):
         c = app.state.cfg
+        if c.provider not in TESTABLE_PROVIDERS:
+            return _settings(
+                request,
+                error="Connection test is not available for this provider.",
+                status_code=400,
+            )
         try:
             client = get_client(c)
             facts = client.extract_facts(

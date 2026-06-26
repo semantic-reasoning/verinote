@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MPL-2.0
-from verinote.config import PROVIDERS, Config, read_settings, save_settings
+from verinote.config import PROVIDERS, TESTABLE_PROVIDERS, Config, read_settings, save_settings
 
 
 def _clear_env(monkeypatch):
@@ -37,7 +37,16 @@ def test_default_model_when_nothing_set(tmp_path, monkeypatch):
 
 
 def test_claude_cli_provider_is_available():
-    assert "claude" in PROVIDERS
+    assert "claudecli" in PROVIDERS
+    assert "claudecli" not in TESTABLE_PROVIDERS
+    assert "ollama" in TESTABLE_PROVIDERS
+
+
+def test_legacy_claude_provider_normalizes_to_claudecli(tmp_path, monkeypatch):
+    _clear_env(monkeypatch)
+    save_settings(tmp_path, provider="claude", model="")
+    assert read_settings(tmp_path)["provider"] == "claudecli"
+    assert Config.for_root(tmp_path).provider == "claudecli"
 
 
 def test_api_key_only_from_env_never_persisted(tmp_path, monkeypatch):

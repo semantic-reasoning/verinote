@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MPL-2.0
-"""Claude Code CLI adapter. Uses `claude -p` and parses JSON from stdout."""
+"""Claude Code CLI adapter. Uses `claude -p --json-schema` and parses stdout."""
 
 from __future__ import annotations
 
@@ -20,31 +20,40 @@ from verinote.llm.schema import (
 
 
 class ClaudeCliAdapter:
-    name = "claude"
+    name = "ClaudeCLI"
 
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
 
     def extract_facts(self, *, source_text: str, schema_hint: str = "") -> list[ExtractedFact]:
-        prompt = _json_prompt(
+        prompt = _prompt(
             system=EXTRACTION_SYSTEM + ("\n" + schema_hint if schema_hint else ""),
             schema=FACT_ARRAY_SCHEMA,
             user=source_text,
         )
-        return parse_facts(self._run(prompt))
+        return parse_facts(self._run(prompt, schema=FACT_ARRAY_SCHEMA))
 
     def translate_query(self, *, question: str, qid: int, schema_hint: str = "") -> str:
-        prompt = _json_prompt(
+        prompt = _prompt(
             system=query_system(qid) + ("\n" + schema_hint if schema_hint else ""),
             schema=QUERY_SCHEMA,
             user=question,
         )
-        return parse_query(self._run(prompt))
+        return parse_query(self._run(prompt, schema=QUERY_SCHEMA))
 
-    def _run(self, prompt: str) -> str:
-        cmd = ["claude", "-p", prompt]
+    def _run(self, prompt: "_Prompt", *, schema: dict[str, Any]) -> str:
+        schema_json = json.dumps(schema, ensure_ascii=False)
+        cmd = [
+            "claude",
+            "--system-prompt",
+            prompt.system,
+            "--json-schema",
+            schema_json,
+            "-p",
+            prompt.user,
+        ]
         if self.cfg.model:
-            cmd = ["claude", "--model", self.cfg.model, "-p", prompt]
+            cmd = ["claude", "--model", self.cfg.model, *cmd[1:]]
         try:
             proc = subprocess.run(
                 cmd,
@@ -65,13 +74,23 @@ class ClaudeCliAdapter:
         return proc.stdout.strip()
 
 
-def _json_prompt(*, system: str, schema: dict[str, Any], user: str) -> str:
+class _Prompt:
+    def __init__(self, *, system: str, user: str) -> None:
+        self.system = system
+        self.user = user
+
+
+def _prompt(*, system: str, schema: dict[str, Any], user: str) -> _Prompt:
     schema_json = json.dumps(schema, ensure_ascii=False, indent=2)
-    return (
-        f"{system}\n\n"
-        "Return only a single JSON object. Do not wrap it in Markdown fences. "
-        "The JSON object must match this schema:\n"
-        f"{schema_json}\n\n"
-        "Input:\n"
-        f"{user}"
+    return _Prompt(
+        system=(
+            f"{system}\n\n"
+            "Return only a single JSON object. Do not wrap it in Markdown fences. "
+            "The JSON object must match this schema:\n"
+            f"{schema_json}"
+        ),
+        user=(
+            "Input:\n"
+            f"{user}"
+        ),
     )
