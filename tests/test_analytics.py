@@ -5,6 +5,7 @@ pytest.importorskip("duckdb")  # DuckDB is core; skip only in broken/minimal env
 
 from verinote.store import Store  # noqa: E402
 from verinote.store.analytics import compute  # noqa: E402
+from verinote.store.fact_input import structural_term  # noqa: E402
 
 
 def _seeded(tmp_path) -> Store:
@@ -30,3 +31,19 @@ def test_compute_aggregates_against_attached_sqlite(tmp_path):
     assert buckets["0.9–1.0"] == 1  # 0.95
     assert buckets["0.7–0.9"] == 1  # 0.8
     assert buckets["0.0–0.5"] == 1  # 0.4
+
+
+def test_compute_relation_aggregates_use_sqlite_display_mirror(tmp_path):
+    s = Store(tmp_path / "kb.sqlite")
+    s.init_schema()
+    s.add_fact(
+        structural_term('person("Ada")'),
+        structural_term("has_role"),
+        structural_term('role(person("Ada"), "PI")'),
+        status="confirmed",
+    )
+
+    a = compute(tmp_path / "kb.sqlite")
+    s.close()
+
+    assert dict(a.by_relation)["has_role"] == 1

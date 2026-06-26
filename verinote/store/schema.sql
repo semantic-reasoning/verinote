@@ -1,7 +1,8 @@
 -- SPDX-License-Identifier: MPL-2.0
--- verinote system-of-record (SQLite, OLTP). DuckDB reads confirmed rows for
--- inference and attaches this file read-only for analytics. Derived engine input
--- is never the source of truth.
+-- verinote metadata system-of-record (SQLite, OLTP). DuckDB owns canonical
+-- logical fact terms in <kb>/facts.duckdb, while verification selects
+-- confirmed/accepted fact ids from this file. Analytics attach this file
+-- read-only for metadata aggregates.
 
 PRAGMA journal_mode = WAL;        -- concurrent readers + a single writer
 PRAGMA foreign_keys = ON;
@@ -24,10 +25,12 @@ CREATE TABLE IF NOT EXISTS runs (
     summary    TEXT
 );
 
--- A candidate/verified fact: a (subject, relation, object) triple with status.
+-- A candidate/verified fact with review metadata. The subject/relation/object
+-- columns are text display mirrors and legacy backfill inputs; the authoritative
+-- logical terms live in DuckDB fact_terms keyed by this row id.
 -- Status lifecycle:  candidate -> needs_review -> confirmed -> accepted
 --                                              \-> superseded (retired)
--- Only confirmed/accepted rows become deterministic engine input.
+-- Only confirmed/accepted ids are eligible for deterministic engine input.
 CREATE TABLE IF NOT EXISTS facts (
     id         INTEGER PRIMARY KEY,
     subject    TEXT NOT NULL,

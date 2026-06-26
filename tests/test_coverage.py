@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 from verinote.engine import coverage
 from verinote.store import Store
+from verinote.store.fact_input import structural_term
 
 
 def _store(tmp_path) -> Store:
@@ -21,6 +22,24 @@ def test_confirmed_source_is_covered(tmp_path):
     s.add_fact("A", "is_a", "B", status="confirmed", source_id=sid)
     sc = coverage(s, root=tmp_path).sources[0]
     assert sc.engine_facts == 1 and not sc.is_gap and not sc.is_orphan
+
+
+def test_structural_confirmed_fact_uses_sqlite_metadata_for_coverage(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source(_with_file(tmp_path, "a.txt"))
+    s.add_fact(
+        structural_term('person("Ada")'),
+        structural_term("has_role"),
+        structural_term('role(person("Ada"), "PI")'),
+        status="confirmed",
+        source_id=sid,
+    )
+
+    sc = coverage(s, root=tmp_path).sources[0]
+
+    assert sc.engine_facts == 1
+    assert sc.total_facts == 1
+    assert not sc.is_gap
 
 
 def test_needs_review_only_is_a_gap(tmp_path):

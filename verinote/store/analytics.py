@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: MPL-2.0
-"""Read-only analytics over the KB via DuckDB.
+"""Read-only metadata analytics over the KB via DuckDB.
 
-SQLite stays the single system-of-record. Analytics reuse the same DuckDB
-dependency as the inference backend and ATTACH the SQLite file read-only (the
-`sqlite` extension auto-loads on attach). There is no second source of truth and
-no write path here.
+SQLite stays the system-of-record for metadata, review lifecycle, and text
+display mirrors. Logical fact terms live in the DuckDB fact-term sidecar and are
+used by verification, not by these aggregate counts. Analytics reuse the same
+DuckDB dependency as the inference backend and ATTACH the SQLite file read-only
+(the `sqlite` extension auto-loads on attach). There is no write path here.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ class Analytics:
     """Aggregates for the analytics panel. `available=False` when DuckDB is absent."""
 
     by_status: list[tuple[str, int]] = field(default_factory=list)
-    by_relation: list[tuple[str, int]] = field(default_factory=list)
+    by_relation: list[tuple[str, int]] = field(default_factory=list)  # display mirror
     by_source: list[tuple[str, int]] = field(default_factory=list)
     by_confidence: list[tuple[str, int]] = field(default_factory=list)
     available: bool = True
