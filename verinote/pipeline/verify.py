@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: MPL-2.0
-"""Compile confirmed facts and run the wirelog check against the KB policy."""
+"""Run the DuckDB-backed logic check against the KB policy."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from verinote.engine import CheckReport, compile_dl, run_check
+from verinote.engine import CheckReport, run_check_duckdb
 from verinote.store import ENGINE_STATUSES, Store
 
 # Per-KB policy location, relative to the KB root (the db file's directory).
@@ -25,9 +25,8 @@ def load_policy(store: Store) -> str | None:
 
 
 def verify(store: Store) -> CheckReport:
-    """Project confirmed/accepted rows to `.dl` and run the deterministic check."""
+    """Run confirmed/accepted rows through the deterministic DuckDB check."""
     from verinote.pipeline.query import load_query
 
     rows = store.facts(statuses=ENGINE_STATUSES)
-    dl_text = compile_dl(rows)
-    return run_check(dl_text, policy_dl=load_policy(store), query_dl=load_query(store))
+    return run_check_duckdb(rows, policy_dl=load_policy(store), query_dl=load_query(store))

@@ -3,7 +3,7 @@
 {% block content %}
 <h1>Logic check report</h1>
 {% if not rep.engine_available %}
-<p class="warn">wirelog engine (pyrewire) not installed — showing compiled engine input only.</p>
+<p class="warn">DuckDB verification backend is not available.</p>
 {% endif %}
 <p>
   <span class="badge {{ 'badge-confirmed' if rep.ok and rep.errors == 0 else 'badge-superseded' }}">

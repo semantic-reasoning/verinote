@@ -161,11 +161,11 @@ _ANSWER_DECL = re.compile(r"answer_q[0-9]+\Z")
 
 
 def validate_query(query_dl: str) -> tuple[bool, str]:
-    """Deterministically check a proposed query line — the engine has final say.
+    """Deterministically check a proposed query line — the DuckDB engine has final say.
 
     Returns ``(True, "")`` when the line only references the ``relation/3``
     vocabulary (plus its own declared `answer_*` head) and parses+runs in
-    pyrewire, else ``(False, reason)``. Used to gate LLM-proposed repairs.
+    DuckDB, else ``(False, reason)``. Used to gate LLM-proposed repairs.
     """
     # 1. structural parse/validation: this catches arity, unsupported syntax, and
     #    unsafe variables before the engine is involved.
@@ -175,16 +175,12 @@ def validate_query(query_dl: str) -> tuple[bool, str]:
     except (DatalogParseError, DatalogValidationError) as exc:
         return False, str(exc)
 
-    # 2. parse/run check (catches pyrewire compatibility errors).
-    pyrewire = _load_engine()
-    if pyrewire is None:
-        return False, "wirelog engine (pyrewire) not installed"
-    try:
-        with pyrewire.EasySession(_RELATION_DECL + query_dl) as session:
-            session.insert_sym("relation", "_probe_s", "_probe_r", "_probe_o")
-            session.step()
-    except Exception as exc:  # parse/exec error -> not a valid query
-        return False, str(exc)
+    # 2. compile/run check (catches DuckDB-backend subset limitations).
+    from verinote.engine.duckdb_backend import run_check_duckdb
+
+    rep = run_check_duckdb([], policy_dl=_RELATION_DECL, query_dl=query_dl)
+    if not rep.ok:
+        return False, rep.findings[0] if rep.findings else rep.text
     return True, ""
 
 

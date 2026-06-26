@@ -75,7 +75,13 @@ def run_check_duckdb(
         for rule in ordered_rules:
             compiled = _compile_rule(rule, declarations)
             con.execute(compiled.sql, list(compiled.params))
-        return _collect_report(con, declarations, len(fact_rows))
+        return _collect_report(
+            con,
+            declarations,
+            fact_rows,
+            policy_dl=policy,
+            query_dl=query_dl,
+        )
     except Exception as exc:
         return _engine_error(str(exc))
 
@@ -85,7 +91,7 @@ def _engine_error(message: str, *, engine_available: bool = True) -> CheckReport
         ok=False,
         errors=1,
         warnings=0,
-        text=f"policy/engine error: {message}",
+        text=f"backend: DuckDB\n\npolicy/engine error: {message}",
         findings=[f"ERROR engine error: {message}"],
         engine_available=engine_available,
     )
@@ -267,7 +273,14 @@ def _term_sql(term: Term, bindings: dict[str, str]) -> tuple[str, list[str]]:
     return "?", [term_to_duckdb_value(term)]
 
 
-def _collect_report(con, declarations: dict[str, Declaration], fact_count: int) -> CheckReport:
+def _collect_report(
+    con,
+    declarations: dict[str, Declaration],
+    facts: list[Mapping[str, object]],
+    *,
+    policy_dl: str,
+    query_dl: str | None,
+) -> CheckReport:
     errors: list[str] = []
     warnings: list[str] = []
     answers_by_q: dict[str, list[str]] = {}
@@ -301,7 +314,7 @@ def _collect_report(con, declarations: dict[str, Declaration], fact_count: int) 
         for qid, vals in sorted(answers_by_q.items())
     ]
     findings = [f"ERROR {e}" for e in errors] + [f"WARN {w}" for w in warnings]
-    summary = f"errors: {len(errors)}  warnings: {len(warnings)}  facts: {fact_count}"
+    summary = f"errors: {len(errors)}  warnings: {len(warnings)}  facts: {len(facts)}"
     body = (
         "\n".join(findings)
         if findings
@@ -309,14 +322,37 @@ def _collect_report(con, declarations: dict[str, Declaration], fact_count: int) 
     )
     if answers:
         body += "\n\n--- answers ---\n" + "\n".join(answers)
+    debug = (
+        "\n\n--- policy input ---\n"
+        + policy_dl
+        + ("\n--- query input ---\n" + query_dl if query_dl else "")
+        + "\n--- fact input ---\n"
+        + _render_fact_input(facts)
+    )
     return CheckReport(
         ok=not errors,
         errors=len(errors),
         warnings=len(warnings),
         answers=answers,
-        text=f"{summary}\n\n{body}",
+        text=f"backend: DuckDB\n{summary}\n\n{body}{debug}",
         findings=findings,
     )
+
+
+def _render_fact_input(facts: list[Mapping[str, object]]) -> str:
+    if not facts:
+        return "(none)"
+    lines = []
+    for row in facts:
+        lines.append(
+            "relation("
+            + ", ".join(
+                render_term(_coerce_fact_term(row[key]))
+                for key in ("subject", "relation", "object")
+            )
+            + ")"
+        )
+    return "\n".join(sorted(set(lines)))
 
 
 def _render_row(row: tuple[object, ...]) -> str:

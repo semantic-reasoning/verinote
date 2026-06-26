@@ -44,6 +44,9 @@ def test_duckdb_backend_default_policy_flags_functional_conflict():
     assert rep.errors == 1
     assert rep.warnings == 0
     assert rep.findings == ["ERROR functional_conflict: Org established_on"]
+    assert "backend: DuckDB" in rep.text
+    assert "--- policy input ---" in rep.text
+    assert "--- fact input ---" in rep.text
 
 
 def test_duckdb_backend_consistent_kb_is_ok():
@@ -310,3 +313,6 @@ def test_duckdb_backend_check_report_fields_are_compatible():
     assert isinstance(rep.answers, list)
     assert rep.engine_available is True
     assert "facts: 0" in rep.text
+    assert "backend: DuckDB" in rep.text
+    assert "--- policy input ---" in rep.text
+    assert "--- fact input ---" in rep.text
