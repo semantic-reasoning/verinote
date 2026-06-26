@@ -2,7 +2,7 @@
 """Engine integrations and deterministic KB checks."""
 
 from verinote.engine.coverage import Coverage, SourceCoverage, coverage
-from verinote.engine.duckdb_backend import run_check_duckdb
+from verinote.engine.duckdb_backend import DuckDBInferenceCache, run_check_duckdb
 from verinote.engine.wirelog import (
     DEFAULT_POLICY,
     CheckReport,
@@ -15,6 +15,7 @@ __all__ = [
     "compile_dl",
     "run_check",
     "run_check_duckdb",
+    "DuckDBInferenceCache",
     "validate_query",
     "CheckReport",
     "DEFAULT_POLICY",

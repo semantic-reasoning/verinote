@@ -37,13 +37,26 @@ class Store:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON;")
         self._lock = threading.Lock()
+        self._inference_cache: Any = None
 
     # --- lifecycle -------------------------------------------------------
     def init_schema(self) -> None:
         self._conn.executescript(_load_schema())
 
     def close(self) -> None:
+        if self._inference_cache is not None:
+            self._inference_cache.close()
+            self._inference_cache = None
         self._conn.close()
+
+    @property
+    def inference_cache(self):
+        """Per-store reusable DuckDB inference cache."""
+        if self._inference_cache is None:
+            from verinote.engine import DuckDBInferenceCache
+
+            self._inference_cache = DuckDBInferenceCache()
+        return self._inference_cache
 
     def __enter__(self) -> "Store":
         return self

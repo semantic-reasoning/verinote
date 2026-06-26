@@ -3,7 +3,8 @@ import builtins
 
 import pytest
 
-from verinote.engine.duckdb_backend import run_check_duckdb
+import verinote.engine.duckdb_backend as duckdb_backend
+from verinote.engine.duckdb_backend import DuckDBInferenceCache, run_check_duckdb
 from verinote.engine.terms import Compound, StringLit
 
 
@@ -316,3 +317,101 @@ def test_duckdb_backend_check_report_fields_are_compatible():
     assert "backend: DuckDB" in rep.text
     assert "--- policy input ---" in rep.text
     assert "--- fact input ---" in rep.text
+
+
+def test_duckdb_inference_cache_reuses_unchanged_relation(monkeypatch):
+    _duckdb()
+    loads = []
+    real_load = duckdb_backend._load_relation_facts
+
+    def counted_load(con, facts):
+        loads.append(list(facts))
+        return real_load(con, facts)
+
+    monkeypatch.setattr(duckdb_backend, "_load_relation_facts", counted_load)
+    cache = DuckDBInferenceCache()
+    try:
+        facts = [{"subject": "Org", "relation": "is_a", "object": "company"}]
+        assert cache.run_check(facts).ok is True
+        assert cache.run_check(list(facts)).ok is True
+    finally:
+        cache.close()
+
+    assert len(loads) == 1
+
+
+def test_duckdb_inference_cache_reloads_changed_relation(monkeypatch):
+    _duckdb()
+    loads = []
+    real_load = duckdb_backend._load_relation_facts
+
+    def counted_load(con, facts):
+        loads.append(list(facts))
+        return real_load(con, facts)
+
+    monkeypatch.setattr(duckdb_backend, "_load_relation_facts", counted_load)
+    cache = DuckDBInferenceCache()
+    try:
+        assert cache.run_check(
+            [{"subject": "Org", "relation": "established_on", "object": "2020"}]
+        ).ok is True
+        assert cache.run_check(
+            [
+                {"subject": "Org", "relation": "established_on", "object": "2020"},
+                {"subject": "Org", "relation": "established_on", "object": "2021"},
+            ]
+        ).ok is False
+    finally:
+        cache.close()
+
+    assert len(loads) == 2
+
+
+def test_duckdb_inference_cache_does_not_leak_query_answers():
+    _duckdb()
+    cache = DuckDBInferenceCache()
+    try:
+        facts = [{"subject": "Ada", "relation": "born_in", "object": "London"}]
+        query = '.decl answer_q1(value: symbol)\nanswer_q1(O) :- relation("Ada", "born_in", O).\n'
+
+        first = cache.run_check(facts, query_dl=query)
+        second = cache.run_check(facts)
+    finally:
+        cache.close()
+
+    assert first.answers == ["q1: London"]
+    assert second.answers == []
+    assert "--- answers ---" not in second.text
+
+
+def test_duckdb_inference_cache_does_not_leak_policy_findings():
+    _duckdb()
+    warning_policy = (
+        ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
+        ".decl warn_has_isa(subject: symbol)\n"
+        'warn_has_isa(S) :- relation(S, "is_a", O).\n'
+    )
+    quiet_policy = ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
+    cache = DuckDBInferenceCache()
+    try:
+        facts = [{"subject": "Ada", "relation": "is_a", "object": "person"}]
+        first = cache.run_check(facts, policy_dl=warning_policy)
+        second = cache.run_check(facts, policy_dl=quiet_policy)
+    finally:
+        cache.close()
+
+    assert first.findings == ["WARN has_isa: Ada"]
+    assert second.findings == []
+
+
+def test_duckdb_backend_rejects_policy_relation_facts():
+    _duckdb()
+    policy = (
+        ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
+        'relation("Ghost", "is_a", "phantom").\n'
+    )
+
+    rep = run_check_duckdb([], policy_dl=policy)
+
+    assert rep.ok is False
+    assert "relation facts must come from SQLite engine input" in rep.text
