@@ -179,6 +179,37 @@ class Store:
         """Return structural DuckDB terms for a fact metadata row."""
         return self.fact_terms.get_fact_terms(fact_id)
 
+    def engine_fact_terms(self) -> list[dict[str, object]]:
+        """Return confirmed/accepted facts using DuckDB terms as logical values."""
+        rows = self.facts(statuses=ENGINE_STATUSES)
+        ids = [int(row["id"]) for row in rows]
+        if not ids:
+            return []
+
+        terms = self.fact_terms.get_many_fact_terms(ids)
+        missing = [fact_id for fact_id in ids if fact_id not in terms]
+        if missing:
+            self.backfill_fact_terms()
+            terms = self.fact_terms.get_many_fact_terms(ids)
+            missing = [fact_id for fact_id in ids if fact_id not in terms]
+        if missing:
+            from verinote.store.duckdb_fact_terms import DuckDBFactTermStoreError
+
+            raise DuckDBFactTermStoreError(
+                "missing DuckDB fact terms for engine fact id(s): "
+                + ", ".join(str(fact_id) for fact_id in missing)
+            )
+
+        return [
+            {
+                "id": fact_id,
+                "subject": terms[fact_id][0],
+                "relation": terms[fact_id][1],
+                "object": terms[fact_id][2],
+            }
+            for fact_id in ids
+        ]
+
     def backfill_fact_terms(self) -> int:
         """Backfill missing DuckDB term rows from SQLite text mirrors as StringLit."""
         with self._lock:
