@@ -3,11 +3,11 @@
 [![ci](https://github.com/semantic-reasoning/verinote/actions/workflows/ci.yml/badge.svg)](https://github.com/semantic-reasoning/verinote/actions/workflows/ci.yml)
 
 **Honest knowledge base.** An LLM extracts source-backed *candidate* facts from your
-documents; the deterministic **wirelog** logic engine verifies them; you keep a human
-review gate before any fact is promoted to engine input. Runs as a local web app.
+documents; a deterministic DuckDB-backed Datalog engine verifies them; you keep a
+human review gate before any fact is promoted to engine input. Runs as a local web app.
 
 > Borrows the *concept* of [factlog](https://github.com/semantic-reasoning/factlog)
-> (neurosymbolic: LLM extracts, a Datalog/wirelog engine verifies) but is a
+> (neurosymbolic: LLM extracts, a Datalog engine verifies) but is a
 > from-scratch implementation — no shared code.
 
 ## Why
@@ -17,7 +17,7 @@ sources. verinote keeps the knowledge base *honest* by pairing a neural extracto
 with a symbolic verifier:
 
 - **LLM extracts** source-backed candidate facts (provider-agnostic — see below).
-- **wirelog verifies** consistency deterministically. Because every fact is
+- **DuckDB-backed Datalog verifies** consistency deterministically. Because every fact is
   re-checked by the engine, swapping to a cheaper or local model never compromises
   correctness.
 - **You review.** Facts move `candidate → needs_review → confirmed/accepted`
@@ -27,22 +27,22 @@ with a symbolic verifier:
 
 | Concern        | Decision |
 |----------------|----------|
-| Logic engine   | **wirelog** (`pyrewire`). Confirmed rows compile to `.dl`; the engine checks them. |
+| Logic engine   | **DuckDB-backed Datalog**. Confirmed rows load into in-memory DuckDB and non-recursive policy/query rules compile to SQL. |
 | LLM            | **Hand-rolled `LLMClient` adapters** (Anthropic / OpenAI / Ollama). No vendor lock-in. |
 | Web            | **FastAPI + HTMX + Jinja** — server-rendered partials, no JS build step. |
-| Storage        | **SQLite** is the system-of-record (OLTP). **DuckDB** attaches it read-only for analytics. `.dl` is derived from confirmed rows. |
+| Storage        | **SQLite** is the system-of-record (OLTP). **DuckDB** is the inference backend and also attaches SQLite read-only for analytics. `.dl` policy/query files remain editable inputs. |
 
 ## Status
 
-Early scaffold (`v0.0.1`). Working today: SQLite store + the review-queue toggle
-loop in the web UI. Stubbed: LLM extraction, wirelog compile/check wiring.
+Early scaffold (`v0.0.1`). Working today: SQLite store, LLM adapters, review queue,
+DuckDB-backed verification, question translation/repair, and local web UI.
 
 ### v1 vertical slice
 
 1. Upload a text source → DB
 2. Auto-extract candidates via one LLM adapter
 3. **Review queue UI** (toggle / accept / reject)
-4. Compile confirmed → wirelog `.dl` → run check → show report
+4. Load confirmed facts into DuckDB → run Datalog policy/query rules → show report
 5. Dashboard
 
 Deferred: NL→Datalog query, gated self-correction (repair), coverage critic,
@@ -51,10 +51,14 @@ multi-provider expansion.
 ## Quickstart
 
 ```bash
-pip install -e ".[anthropic,analytics,test]"   # pick the providers you use
+pip install -e ".[anthropic,test]"   # pick the providers you use
 verinote init      # scaffold a local KB (SQLite) under ./data
 verinote ui        # launch the web app at http://localhost:8731
 ```
+
+DuckDB is a core dependency because it powers verification. The `analytics` extra is
+kept as a compatibility no-op; analytics uses the same DuckDB dependency. The
+`wirelog` extra installs the legacy `pyrewire` path for compatibility/debugging only.
 
 ## License
 

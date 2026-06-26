@@ -1,15 +1,15 @@
 # SPDX-License-Identifier: MPL-2.0
-"""Compile confirmed facts into wirelog `.dl` and run the deterministic check.
+"""Legacy pyrewire/wirelog compatibility helpers.
 
-The database is the source of truth; the `.dl` text here is DERIVED from
-confirmed/accepted rows each time the check runs. `compile_dl` is pure and fully
-tested without the engine; `run_check` runs the compiled facts through a wirelog
-(`pyrewire`) policy program and degrades gracefully when the engine is absent.
+Production verification uses `verinote.engine.duckdb_backend.run_check_duckdb`.
+This module remains for compatibility/debug rendering of wirelog `.dl` programs:
+`compile_dl` is pure and fully tested without pyrewire, while `run_check` executes
+the legacy pyrewire path when the optional `wirelog` extra is installed.
 
 Policy contract
 ---------------
-A policy is a wirelog Datalog program over the base relation
-``relation(subject, rel, object)`` (verinote inserts the compiled facts into it).
+A policy is a Datalog program over the base relation
+``relation(subject, rel, object)``.
 Any derived relation whose name starts with ``error_`` is a blocking finding and
 ``warn_`` is a non-blocking one; verinote reads those back, so every column is a
 plain symbol it can render. See `DEFAULT_POLICY`.
@@ -150,7 +150,8 @@ def _degraded_report(dl_text: str) -> CheckReport:
         warnings=0,
         engine_available=False,
         text=(
-            "wirelog engine (pyrewire) not installed — showing compiled input only.\n"
+            "legacy wirelog compatibility engine (pyrewire) not installed — "
+            "showing compiled input only.\n"
             f"compiled facts: {n}\n\n{dl_text}"
         ),
     )
@@ -216,13 +217,14 @@ def _validate_query_contract(program: Program) -> None:
 def run_check(
     dl_text: str, *, policy_dl: str | None = None, query_dl: str | None = None
 ) -> CheckReport:
-    """Run the wirelog policy (+ optional query rules) over compiled facts.
+    """Run the legacy pyrewire policy path over compiled facts.
 
     `dl_text` is `compile_dl` output (the verbatim engine input). `policy_dl`
     defaults to `DEFAULT_POLICY`. `query_dl` holds `answer_q<id>(...)` query rules
     (see pipeline.query). Derived `error_*`/`warn_*` tuples become findings
     (`errors > 0` is the review gate); `answer_q<id>` tuples become answers. If
-    pyrewire is absent we still return a valid report flagged `engine_available=False`.
+    pyrewire is absent we still return a legacy compatibility report flagged
+    `engine_available=False`.
     """
     pyrewire = _load_engine()
     if pyrewire is None:

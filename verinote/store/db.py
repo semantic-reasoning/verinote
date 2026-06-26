@@ -3,8 +3,8 @@
 
 Deliberately small and synchronous: the workload is a handful of small
 transactional writes (the review toggle is a single-row UPDATE) plus reads for
-rendering. SQLite/WAL is the right fit; DuckDB is reserved for analytics and
-attaches this same file read-only (see engine/analytics, future work).
+rendering. SQLite/WAL is the right fit for writes; DuckDB reads confirmed rows
+for deterministic inference and attaches this same file read-only for analytics.
 """
 
 from __future__ import annotations
