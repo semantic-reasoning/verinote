@@ -45,6 +45,19 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     templates = Jinja2Templates(directory=str(_TEMPLATES))
     app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
 
+    def _switch_root(root: Path) -> None:
+        """Point this running app at a different KB root."""
+        nonlocal cfg, store
+        next_cfg = Config.for_root(root.expanduser().resolve())
+        next_store = Store(next_cfg.db_path)
+        next_store.init_schema()
+        old_store = store
+        cfg = next_cfg
+        store = next_store
+        app.state.cfg = next_cfg
+        app.state.store = next_store
+        old_store.close()
+
     def _row(request: Request, fact):
         # Starlette's current API is TemplateResponse(request, name, context).
         return templates.TemplateResponse(request, "partials/fact_row.html", {"f": fact})
@@ -63,6 +76,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 "coverage": coverage(store, root=cfg.root),
                 "provider": app.state.cfg.provider,
                 "model": app.state.cfg.model,
+                "root": app.state.cfg.root,
                 "error": error,
             },
             status_code=status_code,
@@ -219,6 +233,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 "provider": c.provider,
                 "model": c.model,
                 "base_url": c.base_url or "",
+                "root": c.root,
                 "has_key": bool(c.api_key),  # never render the key itself
                 "test_result": test_result,
                 "error": error,
@@ -241,6 +256,17 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         # reload from the app's own root so the change takes effect on next sync
         app.state.cfg = Config.for_root(cfg.root)
         return RedirectResponse("/settings", status_code=303)
+
+    @app.post("/settings/root", response_class=HTMLResponse)
+    def switch_root(request: Request, root: str = Form(...)):
+        path = root.strip()
+        if not path:
+            return _settings(request, error="KB directory is required", status_code=400)
+        try:
+            _switch_root(Path(path))
+        except OSError as e:
+            return _settings(request, error=f"could not open KB directory: {e}", status_code=400)
+        return RedirectResponse("/", status_code=303)
 
     @app.post("/settings/test", response_class=HTMLResponse)
     def test_connection(request: Request):
