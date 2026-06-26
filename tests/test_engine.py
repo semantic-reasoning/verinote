@@ -20,12 +20,17 @@ _CONSISTENT = compile_dl(
 )
 
 
+def _require_pyrewire():
+    return pytest.importorskip("pyrewire")
+
+
 def test_parse_relation_facts_roundtrips_escaping():
     dl = compile_dl([{"subject": 'a"b', "relation": "r", "object": "c"}])
     assert wl._parse_relation_facts(dl) == [('a"b', "r", "c")]
 
 
 def test_run_check_flags_functional_conflict():
+    _require_pyrewire()
     rep = run_check(_CONFLICT)
     assert rep.engine_available is True
     assert rep.errors > 0
@@ -37,6 +42,7 @@ def test_run_check_flags_functional_conflict():
 
 
 def test_run_check_consistent_is_ok():
+    _require_pyrewire()
     rep = run_check(_CONSISTENT)
     assert rep.errors == 0
     assert rep.ok is True
@@ -44,11 +50,13 @@ def test_run_check_consistent_is_ok():
 
 
 def test_run_check_empty_kb_is_ok():
+    _require_pyrewire()
     rep = run_check("")
     assert rep.ok is True and rep.errors == 0
 
 
 def test_run_check_uses_custom_policy():
+    _require_pyrewire()
     # A policy that flags *any* is_a edge as an error.
     policy = (
         ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
@@ -61,6 +69,7 @@ def test_run_check_uses_custom_policy():
 
 
 def test_run_check_surfaces_policy_error():
+    _require_pyrewire()
     rep = run_check(_CONSISTENT, policy_dl="this is not valid datalog !!!")
     assert rep.ok is False
     assert rep.errors == 1
@@ -81,6 +90,7 @@ def test_default_policy_declares_finding_relations():
 
 
 def test_run_check_evaluates_query():
+    _require_pyrewire()
     dl = compile_dl(
         [
             {"subject": "Ada", "relation": "born_in", "object": "London"},
@@ -95,6 +105,7 @@ def test_run_check_evaluates_query():
 
 
 def test_run_check_without_query_has_no_answers():
+    _require_pyrewire()
     dl = compile_dl([{"subject": "Ada", "relation": "is_a", "object": "x"}])
     assert run_check(dl).answers == []
 

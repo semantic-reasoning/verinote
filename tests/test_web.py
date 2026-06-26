@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
+import builtins
+
 import pytest
 
 pytest.importorskip("fastapi")
@@ -7,6 +9,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 import verinote.web.app as webapp  # noqa: E402
 from verinote.config import Config  # noqa: E402
 from verinote.llm.base import ExtractedFact, LLMError  # noqa: E402
+from verinote.pipeline.query import query_path  # noqa: E402
 from verinote.web import create_app  # noqa: E402
 
 
@@ -142,6 +145,7 @@ def test_report_ok_for_consistent_kb(tmp_path):
     r = c.get("/report")
     assert r.status_code == 200
     assert "errors: 0" in r.text
+    assert "backend: DuckDB" in r.text
 
 
 def test_report_gates_on_contradiction(tmp_path):
@@ -153,6 +157,34 @@ def test_report_gates_on_contradiction(tmp_path):
     assert r.status_code == 200
     assert "ERRORS" in r.text
     assert "functional_conflict" in r.text
+
+
+def test_report_shows_missing_duckdb_message(tmp_path, monkeypatch):
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "duckdb":
+            raise ImportError("missing")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    c = _client(tmp_path)
+    r = c.get("/report")
+    assert r.status_code == 200
+    assert "DuckDB verification backend is not available" in r.text
+    assert "DuckDB is not installed" in r.text
+
+
+def test_report_surfaces_invalid_query_file(tmp_path):
+    c = _client(tmp_path)
+    path = query_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(".decl answer_q1(value: symbol)\nanswer_q1(O) :- bogus(O).\n", encoding="utf-8")
+
+    r = c.get("/report")
+    assert r.status_code == 200
+    assert "ERRORS" in r.text
+    assert "bogus" in r.text
 
 
 def test_edit_form_renders(tmp_path):

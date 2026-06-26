@@ -4,8 +4,9 @@
 Each pending question is translated by the `LLMClient` into either an
 `answer_q<id>` rule (status `translated`) or a `review_required(...)` line
 (status `review_required`). The translated rules are written to
-`<root>/facts/query.dl`, which `verify()` feeds to pyrewire so `/report` shows
-each query's evaluation. `review_required` questions are tracked in the DB only.
+`<root>/facts/query.dl`, which `verify()` feeds to the DuckDB backend so
+`/report` shows each query's evaluation. `review_required` questions are tracked
+in the DB only.
 """
 
 from __future__ import annotations
