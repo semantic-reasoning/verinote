@@ -38,6 +38,7 @@ class Store:
         self._conn.execute("PRAGMA foreign_keys = ON;")
         self._lock = threading.Lock()
         self._inference_cache: Any = None
+        self._fact_terms: Any = None
 
     # --- lifecycle -------------------------------------------------------
     def init_schema(self) -> None:
@@ -47,6 +48,9 @@ class Store:
         if self._inference_cache is not None:
             self._inference_cache.close()
             self._inference_cache = None
+        if self._fact_terms is not None:
+            self._fact_terms.close()
+            self._fact_terms = None
         self._conn.close()
 
     @property
@@ -57,6 +61,15 @@ class Store:
 
             self._inference_cache = DuckDBInferenceCache()
         return self._inference_cache
+
+    @property
+    def fact_terms(self):
+        """Per-KB DuckDB sidecar for structural fact terms."""
+        if self._fact_terms is None:
+            from verinote.store.duckdb_fact_terms import DuckDBFactTermStore
+
+            self._fact_terms = DuckDBFactTermStore.for_root(self.db_path.parent)
+        return self._fact_terms
 
     def __enter__(self) -> "Store":
         return self
@@ -124,9 +137,9 @@ class Store:
     # --- facts -----------------------------------------------------------
     def add_fact(
         self,
-        subject: str,
-        relation: str,
-        obj: str,
+        subject: object,
+        relation: object,
+        obj: object,
         *,
         status: str = "candidate",
         confidence: float = 0.0,
@@ -135,12 +148,56 @@ class Store:
         note: str = "",
     ) -> int:
         with self._lock:
-            cur = self._conn.execute(
-                "INSERT INTO facts(subject, relation, object, status, confidence, source_id, run_id, note) "
-                "VALUES(?,?,?,?,?,?,?,?) RETURNING id",
-                (subject, relation, obj, status, confidence, source_id, run_id, note),
+            fact_id: int | None = None
+            self._conn.execute("BEGIN")
+            try:
+                cur = self._conn.execute(
+                    "INSERT INTO facts(subject, relation, object, status, confidence, source_id, run_id, note) "
+                    "VALUES(?,?,?,?,?,?,?,?) RETURNING id",
+                    (
+                        _display_fact_value(subject),
+                        _display_fact_value(relation),
+                        _display_fact_value(obj),
+                        status,
+                        confidence,
+                        source_id,
+                        run_id,
+                        note,
+                    ),
+                )
+                fact_id = int(cur.fetchone()[0])
+                self.fact_terms.put_fact_terms(fact_id, subject, relation, obj)
+                self._conn.execute("COMMIT")
+                return fact_id
+            except Exception:
+                self._rollback_quietly()
+                if fact_id is not None:
+                    self._delete_fact_terms_quietly(fact_id)
+                raise
+
+    def get_fact_terms(self, fact_id: int):
+        """Return structural DuckDB terms for a fact metadata row."""
+        return self.fact_terms.get_fact_terms(fact_id)
+
+    def backfill_fact_terms(self) -> int:
+        """Backfill missing DuckDB term rows from SQLite text mirrors as StringLit."""
+        with self._lock:
+            rows = list(
+                self._conn.execute(
+                    "SELECT id, subject, relation, object FROM facts ORDER BY id"
+                )
             )
-            return int(cur.fetchone()[0])
+            existing = self.fact_terms.get_many_fact_terms(row["id"] for row in rows)
+            written = 0
+            for row in rows:
+                fact_id = int(row["id"])
+                if fact_id in existing:
+                    continue
+                self.fact_terms.put_fact_terms(
+                    fact_id, row["subject"], row["relation"], row["object"]
+                )
+                written += 1
+            return written
 
     def get_fact(self, fact_id: int) -> sqlite3.Row | None:
         return self._conn.execute(
@@ -195,9 +252,9 @@ class Store:
         self,
         fact_id: int,
         *,
-        subject: str,
-        relation: str,
-        obj: str,
+        subject: object,
+        relation: object,
+        obj: object,
         note: str = "",
     ) -> sqlite3.Row | None:
         """Correct a fact's (subject, relation, object, note); audit as `amended`."""
@@ -205,14 +262,32 @@ class Store:
             before = self.get_fact(fact_id)
             if before is None:
                 return None
-            self._conn.execute(
-                "UPDATE facts SET subject = ?, relation = ?, object = ?, note = ?, "
-                "updated_at = datetime('now') WHERE id = ?",
-                (subject, relation, obj, note, fact_id),
-            )
-            after = self.get_fact(fact_id)
-            self._log(fact_id, "amended", before, after)
-            return after
+            previous_terms = self.fact_terms.get_fact_terms(fact_id)
+            terms_written = False
+            self._conn.execute("BEGIN")
+            try:
+                self.fact_terms.put_fact_terms(fact_id, subject, relation, obj)
+                terms_written = True
+                self._conn.execute(
+                    "UPDATE facts SET subject = ?, relation = ?, object = ?, note = ?, "
+                    "updated_at = datetime('now') WHERE id = ?",
+                    (
+                        _display_fact_value(subject),
+                        _display_fact_value(relation),
+                        _display_fact_value(obj),
+                        note,
+                        fact_id,
+                    ),
+                )
+                after = self.get_fact(fact_id)
+                self._log(fact_id, "amended", before, after)
+                self._conn.execute("COMMIT")
+                return after
+            except Exception:
+                self._rollback_quietly()
+                if terms_written:
+                    self._restore_fact_terms_quietly(fact_id, previous_terms)
+                raise
 
     # --- questions -------------------------------------------------------
     def add_question(self, text: str) -> int:
@@ -255,3 +330,34 @@ class Store:
                 json.dumps(dict(after), ensure_ascii=False) if after else None,
             ),
         )
+
+    def _rollback_quietly(self) -> None:
+        try:
+            self._conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
+
+    def _delete_fact_terms_quietly(self, fact_id: int) -> None:
+        try:
+            self.fact_terms.delete_fact_terms(fact_id)
+        except Exception:
+            pass
+
+    def _restore_fact_terms_quietly(
+        self, fact_id: int, terms: tuple[object, object, object] | None
+    ) -> None:
+        try:
+            if terms is None:
+                self.fact_terms.delete_fact_terms(fact_id)
+            else:
+                self.fact_terms.put_fact_terms(fact_id, *terms)
+        except Exception:
+            pass
+
+
+def _display_fact_value(value: object) -> str:
+    from verinote.engine.terms import Atom, Compound, NumberLit, StringLit, Var, render_term
+
+    if isinstance(value, (Atom, Compound, NumberLit, StringLit, Var)):
+        return render_term(value)
+    return str(value)
