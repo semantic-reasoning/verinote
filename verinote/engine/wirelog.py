@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: MPL-2.0
 """Legacy pyrewire/wirelog compatibility helpers.
 
-Production verification uses `verinote.engine.duckdb_backend.run_check_duckdb`.
-This module remains for compatibility/debug rendering of wirelog `.dl` programs:
+Production verification loads canonical fact terms from the DuckDB sidecar and
+uses `verinote.engine.duckdb_backend.run_check_duckdb`. This module remains for
+compatibility/debug rendering of string-only wirelog `.dl` programs:
 `compile_dl` is pure and fully tested without pyrewire, while `run_check` executes
 the legacy pyrewire path when the optional `wirelog` extra is installed.
 
@@ -67,10 +68,11 @@ def _lit(value: str) -> str:
 
 
 def compile_dl(facts: Iterable[Mapping[str, object]]) -> str:
-    """Render confirmed facts as `relation("s", "r", "o").` lines (sorted, unique).
+    """Render string-display facts as `relation("s", "r", "o").` lines.
 
     Accepts any row-like mapping with subject/relation/object keys (sqlite3.Row
-    included). Only this projection becomes engine input.
+    included). This is a legacy compatibility/debug helper; production
+    verification reads structural terms from the DuckDB fact-term store.
     """
     lines = set()
     for f in facts:

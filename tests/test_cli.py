@@ -3,6 +3,7 @@ import verinote.cli as cli
 from verinote.engine import DEFAULT_POLICY
 from verinote.llm.base import ExtractedFact, LLMError
 from verinote.store import Store
+from verinote.store.fact_input import structural_term
 
 
 def _env(monkeypatch, tmp_path):
@@ -154,3 +155,23 @@ def test_coverage_strict_gates_on_gap(tmp_path, monkeypatch, capsys):
     assert cli.main(["coverage"]) == 0  # non-strict always succeeds
     assert cli.main(["coverage", "--strict"]) == 1  # a gap exists
     assert "GAP" in capsys.readouterr().out
+
+
+def test_coverage_counts_structural_engine_fact_metadata(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    s = Store(tmp_path / "kb.sqlite")
+    s.init_schema()
+    sid = s.add_source("sources/a.txt")
+    s.add_fact(
+        structural_term('person("Ada")'),
+        structural_term("has_role"),
+        structural_term('role(person("Ada"), "PI")'),
+        status="confirmed",
+        source_id=sid,
+    )
+    s.close()
+
+    assert cli.main(["coverage", "--strict"]) == 0
+    out = capsys.readouterr().out
+    assert "sources/a.txt: 1/1 engine facts" in out
+    assert "gap(s)" in out
