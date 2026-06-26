@@ -21,7 +21,7 @@
 {% if not a.available %}
 <div class="empty">
   <p>Analytics are disabled — DuckDB isn't installed.</p>
-  <p class="muted">Enable with <code>pip install verinote[analytics]</code>.</p>
+  <p class="muted">Install the core DuckDB dependency to enable analytics.</p>
 </div>
 {% else %}
 {{ breakdown("By status", a.by_status, "status") }}

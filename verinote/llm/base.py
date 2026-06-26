@@ -15,8 +15,8 @@ class LLMError(RuntimeError):
 class ExtractedFact:
     """One candidate fact the extractor proposes from a source.
 
-    Mirrors the `facts` columns the store will persist. The wirelog verifier and
-    the human review gate decide whether it ever becomes engine input.
+    Mirrors the `facts` columns the store will persist. The DuckDB-backed
+    verifier and the human review gate decide whether it ever becomes engine input.
     """
 
     subject: str

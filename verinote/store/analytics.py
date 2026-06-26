@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: MPL-2.0
 """Read-only analytics over the KB via DuckDB.
 
-SQLite stays the single system-of-record; DuckDB only *reads* it by ATTACHing
-the same file read-only (the `sqlite` extension auto-loads on attach). There is
-no second source of truth and no write path here. `duckdb` is optional
-(`pip install verinote[analytics]`); callers feature-flag on `duckdb_available()`.
+SQLite stays the single system-of-record. Analytics reuse the same DuckDB
+dependency as the inference backend and ATTACH the SQLite file read-only (the
+`sqlite` extension auto-loads on attach). There is no second source of truth and
+no write path here.
 """
 
 from __future__ import annotations

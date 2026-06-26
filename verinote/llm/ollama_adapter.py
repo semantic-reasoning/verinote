@@ -2,7 +2,7 @@
 """Ollama adapter — fully local, no cloud vendor. Uses Ollama's JSON format mode.
 
 This adapter is the proof that anti-lock-in is real: with a local model the whole
-pipeline runs offline, and the wirelog verifier still guarantees correctness.
+pipeline runs offline, and the DuckDB-backed verifier still guarantees correctness.
 """
 
 from __future__ import annotations

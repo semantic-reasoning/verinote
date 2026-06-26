@@ -252,7 +252,7 @@ def cmd_ui(cfg: Config, args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="verinote", description="Honest KB: LLM extracts, wirelog verifies.")
+    p = argparse.ArgumentParser(prog="verinote", description="Honest KB: LLM extracts, DuckDB verifies.")
     p.add_argument("--version", action="version", version=f"verinote {__version__}")
     sub = p.add_subparsers(dest="command", required=True)
 

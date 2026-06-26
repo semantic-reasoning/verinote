@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 import pytest
 
-pytest.importorskip("duckdb")  # analytics is an optional extra
+pytest.importorskip("duckdb")  # DuckDB is core; skip only in broken/minimal envs.
 
 from verinote.store import Store  # noqa: E402
 from verinote.store.analytics import compute  # noqa: E402

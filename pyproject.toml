@@ -5,13 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "verinote"
 version = "0.0.1"
-description = "Honest knowledge base: an LLM extracts source-backed facts, the wirelog logic engine verifies them. Local web app."
+description = "Honest knowledge base: an LLM extracts source-backed facts, DuckDB-backed Datalog verifies them. Local web app."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MPL-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "Justin Kim" }]
-keywords = ["knowledge-base", "datalog", "wirelog", "fact-extraction", "neurosymbolic", "verification"]
+keywords = ["knowledge-base", "datalog", "duckdb", "fact-extraction", "neurosymbolic", "verification"]
 dependencies = [
   "fastapi>=0.110",
   "uvicorn[standard]>=0.29",
