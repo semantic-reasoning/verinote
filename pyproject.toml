@@ -29,7 +29,7 @@ analytics = []
 wirelog = ["pyrewire>=1.0.1,<2.0"]
 # Binary source ingestion (docx/pdf -> text). Optional so the core stays light.
 ingest = ["python-docx>=1.1", "pypdf>=4.0"]
-test = ["pytest>=7", "httpx>=0.27", "python-docx>=1.1"]
+test = ["pytest>=7", "httpx2>=2.5", "python-docx>=1.1"]
 
 [project.scripts]
 verinote = "verinote.cli:main"
