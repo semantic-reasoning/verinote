@@ -168,7 +168,15 @@ def test_report_shows_missing_duckdb_message(tmp_path, monkeypatch):
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
-    c = _client(tmp_path)
+    cfg = Config(
+        root=tmp_path,
+        db_path=tmp_path / "kb.sqlite",
+        provider="anthropic",
+        model="m",
+        api_key=None,
+        base_url=None,
+    )
+    c = TestClient(create_app(cfg))
     r = c.get("/report")
     assert r.status_code == 200
     assert "DuckDB verification backend is not available" in r.text
