@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from verinote.engine import CheckReport, run_check_duckdb
+from verinote.engine import CheckReport
 from verinote.store import ENGINE_STATUSES, Store
 
 # Per-KB policy location, relative to the KB root (the db file's directory).
@@ -29,4 +29,6 @@ def verify(store: Store) -> CheckReport:
     from verinote.pipeline.query import load_query
 
     rows = store.facts(statuses=ENGINE_STATUSES)
-    return run_check_duckdb(rows, policy_dl=load_policy(store), query_dl=load_query(store))
+    return store.inference_cache.run_check(
+        rows, policy_dl=load_policy(store), query_dl=load_query(store)
+    )

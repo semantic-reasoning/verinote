@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 import builtins
 
+import verinote.engine.duckdb_backend as duckdb_backend
 from verinote.pipeline.query import query_path
 from verinote.pipeline.verify import policy_path, verify
 from verinote.store import Store
@@ -99,3 +100,124 @@ def test_verify_reports_missing_duckdb_as_blocking(tmp_path, monkeypatch):
     assert rep.errors == 1
     assert "backend: DuckDB" in rep.text
     assert "DuckDB is not installed" in rep.text
+
+
+def test_verify_reuses_store_inference_cache(tmp_path, monkeypatch):
+    s = _store(tmp_path)
+    s.add_fact("Org", "is_a", "company", status="confirmed")
+    loads = []
+    real_load = duckdb_backend._load_relation_facts
+
+    def counted_load(con, facts):
+        loads.append(list(facts))
+        return real_load(con, facts)
+
+    monkeypatch.setattr(duckdb_backend, "_load_relation_facts", counted_load)
+
+    assert verify(s).ok is True
+    assert verify(s).ok is True
+
+    assert len(loads) == 1
+
+
+def test_store_close_clears_inference_cache(tmp_path):
+    s = _store(tmp_path)
+    _ = s.inference_cache
+
+    assert s._inference_cache is not None
+    s.close()
+
+    assert s._inference_cache is None
+
+
+def test_verify_candidate_change_does_not_enter_or_reload_cached_relation(
+    tmp_path, monkeypatch
+):
+    s = _store(tmp_path)
+    s.add_fact("Org", "established_on", "2020", status="confirmed")
+    loads = []
+    real_load = duckdb_backend._load_relation_facts
+
+    def counted_load(con, facts):
+        loads.append(list(facts))
+        return real_load(con, facts)
+
+    monkeypatch.setattr(duckdb_backend, "_load_relation_facts", counted_load)
+
+    assert verify(s).ok is True
+    s.add_fact("Org", "established_on", "2021", status="candidate")
+    rep = verify(s)
+
+    assert rep.ok is True
+    assert "2021" not in rep.text
+    assert len(loads) == 1
+
+
+def test_verify_cache_refreshes_after_status_promotion_and_demotion(tmp_path):
+    s = _store(tmp_path)
+    s.add_fact("Org", "established_on", "2020", status="confirmed")
+    conflict = s.add_fact("Org", "established_on", "2021", status="needs_review")
+
+    assert verify(s).ok is True
+    s.set_status(conflict, "confirmed")
+    rep = verify(s)
+    assert rep.ok is False
+    assert "functional_conflict" in "\n".join(rep.findings)
+
+    s.set_status(conflict, "superseded")
+    assert verify(s).ok is True
+
+
+def test_verify_cache_refreshes_after_engine_fact_amendment(tmp_path):
+    s = _store(tmp_path)
+    s.add_fact("Org", "established_on", "2020", status="confirmed")
+    conflict = s.add_fact("Org", "established_on", "2021", status="confirmed")
+
+    assert verify(s).ok is False
+    s.amend_fact(
+        conflict,
+        subject="Org",
+        relation="established_on",
+        obj="2020",
+    )
+
+    assert verify(s).ok is True
+
+
+def test_verify_cached_engine_does_not_leak_removed_query_answers(tmp_path):
+    s = _store(tmp_path)
+    s.add_fact("Ada", "born_in", "London", status="confirmed")
+    path = query_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '.decl answer_q1(value: symbol)\nanswer_q1(O) :- relation("Ada", "born_in", O).\n',
+        encoding="utf-8",
+    )
+
+    assert verify(s).answers == ["q1: London"]
+    path.unlink()
+
+    rep = verify(s)
+    assert rep.answers == []
+    assert "--- answers ---" not in rep.text
+
+
+def test_verify_cached_engine_does_not_leak_changed_policy_findings(tmp_path):
+    s = _store(tmp_path)
+    s.add_fact("Ada", "is_a", "person", status="confirmed")
+    path = policy_path(s)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
+        ".decl warn_has_isa(subject: symbol)\n"
+        'warn_has_isa(S) :- relation(S, "is_a", O).\n',
+        encoding="utf-8",
+    )
+
+    assert verify(s).findings == ["WARN has_isa: Ada"]
+    path.write_text(
+        ".decl relation(subject: symbol, rel: symbol, object: symbol)\n",
+        encoding="utf-8",
+    )
+
+    assert verify(s).findings == []

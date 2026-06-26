@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+import threading
 from dataclasses import dataclass
 from typing import Iterable, Mapping
 
@@ -19,6 +20,7 @@ from verinote.engine.datalog import (
     parse_and_validate_program,
 )
 from verinote.engine.duckdb_terms import (
+    create_relation_table_sql,
     create_decl_table_sql,
     duckdb_value_to_term,
     term_to_duckdb_value,
@@ -50,40 +52,110 @@ def run_check_duckdb(
     query_dl: str | None = None,
 ) -> CheckReport:
     """Run supported non-recursive Datalog rules through an in-memory DuckDB DB."""
+    cache = DuckDBInferenceCache()
     try:
-        import duckdb
-    except ImportError:
-        return _engine_error("DuckDB is not installed", engine_available=False)
+        return cache.run_check(facts, policy_dl=policy_dl, query_dl=query_dl)
+    finally:
+        cache.close()
 
-    policy = policy_dl if policy_dl is not None else DEFAULT_POLICY
-    source = policy + ("\n" + query_dl if query_dl else "")
-    try:
-        program = parse_and_validate_program(source)
-        _validate_relation_decl(program)
-        ordered_rules = _topological_rules(program)
-    except (DatalogParseError, DatalogValidationError, DuckDBBackendError) as exc:
-        return _engine_error(str(exc))
 
-    try:
-        con = duckdb.connect()
-        fact_rows = list(facts)
-        declarations = {decl.name: decl for decl in program.declarations}
-        for decl in program.declarations:
-            con.execute(_create_decl_table_sql(decl))
-        _load_relation_facts(con, fact_rows)
-        _load_extensional_facts(con, program.facts, declarations)
-        for rule in ordered_rules:
-            compiled = _compile_rule(rule, declarations)
-            con.execute(compiled.sql, list(compiled.params))
-        return _collect_report(
-            con,
-            declarations,
-            fact_rows,
-            policy_dl=policy,
-            query_dl=query_dl,
+class DuckDBInferenceCache:
+    """Reusable DuckDB inference session with cached engine-input facts.
+
+    SQLite remains the source-of-truth. This cache only keeps the derived
+    `relation(subject, rel, object)` table in an in-memory DuckDB connection and
+    refreshes it when the engine-input facts change. Policy/query derived tables
+    are recreated on every run so rule output cannot leak across checks.
+    """
+
+    def __init__(self) -> None:
+        self._con = None
+        self._relation_fingerprint: tuple[tuple[object, ...], ...] | None = None
+        self._decl_tables: set[str] = set()
+        self._lock = threading.Lock()
+
+    def close(self) -> None:
+        with self._lock:
+            if self._con is not None:
+                self._con.close()
+                self._con = None
+            self._relation_fingerprint = None
+            self._decl_tables.clear()
+
+    def run_check(
+        self,
+        facts: Iterable[Mapping[str, object]],
+        *,
+        policy_dl: str | None = None,
+        query_dl: str | None = None,
+    ) -> CheckReport:
+        """Run a check while reusing the cached DuckDB base relation."""
+        try:
+            import duckdb
+        except ImportError:
+            return _engine_error("DuckDB is not installed", engine_available=False)
+
+        policy = policy_dl if policy_dl is not None else DEFAULT_POLICY
+        source = policy + ("\n" + query_dl if query_dl else "")
+        try:
+            program = parse_and_validate_program(source)
+            _validate_relation_decl(program)
+            ordered_rules = _topological_rules(program)
+        except (DatalogParseError, DatalogValidationError, DuckDBBackendError) as exc:
+            return _engine_error(str(exc))
+
+        try:
+            fact_rows = list(facts)
+            with self._lock:
+                if self._con is None:
+                    self._con = duckdb.connect()
+                    self._con.execute(create_relation_table_sql())
+                con = self._con
+                self._reset_derived_tables()
+                fingerprint = _relation_fingerprint(fact_rows)
+                if fingerprint != self._relation_fingerprint:
+                    con.execute('DELETE FROM "relation"')
+                    _load_relation_facts(con, fact_rows)
+                    self._relation_fingerprint = fingerprint
+
+                declarations = {decl.name: decl for decl in program.declarations}
+                for decl in program.declarations:
+                    if decl.name == "relation":
+                        continue
+                    con.execute(_create_decl_table_sql(decl))
+                    self._decl_tables.add(decl.name)
+                _load_extensional_facts(con, program.facts, declarations)
+                for rule in ordered_rules:
+                    compiled = _compile_rule(rule, declarations)
+                    con.execute(compiled.sql, list(compiled.params))
+                return _collect_report(
+                    con,
+                    declarations,
+                    fact_rows,
+                    policy_dl=policy,
+                    query_dl=query_dl,
+                )
+        except Exception as exc:
+            return _engine_error(str(exc))
+
+    def _reset_derived_tables(self) -> None:
+        assert self._con is not None
+        for name in sorted(self._decl_tables):
+            self._con.execute(f"DROP TABLE IF EXISTS {_quote_ident(name)}")
+        self._decl_tables.clear()
+
+
+def _relation_fingerprint(facts: list[Mapping[str, object]]) -> tuple[tuple[object, ...], ...]:
+    """Stable fingerprint for the facts materialized into DuckDB."""
+    rows: list[tuple[object, ...]] = []
+    for row in facts:
+        rows.append(
+            tuple(
+                term_to_duckdb_value(_coerce_fact_term(row[key]))
+                for key in ("subject", "relation", "object")
+            )
         )
-    except Exception as exc:
-        return _engine_error(str(exc))
+    return tuple(sorted(set(rows)))
 
 
 def _engine_error(message: str, *, engine_available: bool = True) -> CheckReport:
@@ -126,6 +198,8 @@ def _load_extensional_facts(
     con, facts: tuple[Fact, ...], declarations: dict[str, Declaration]
 ) -> None:
     for fact in facts:
+        if fact.atom.predicate == "relation":
+            raise DuckDBBackendError("relation facts must come from SQLite engine input")
         decl = declarations[fact.atom.predicate]
         columns = _insert_columns(decl)
         placeholders = ", ".join("?" for _ in _insert_values(fact.atom.args))
