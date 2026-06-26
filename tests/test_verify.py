@@ -2,9 +2,11 @@
 import builtins
 
 import verinote.engine.duckdb_backend as duckdb_backend
+from verinote.engine.terms import Compound, StringLit
 from verinote.pipeline.query import query_path
 from verinote.pipeline.verify import policy_path, verify
 from verinote.store import Store
+from verinote.store.fact_input import structural_term
 
 
 def _store(tmp_path) -> Store:
@@ -73,6 +75,68 @@ def test_verify_loads_query_file(tmp_path):
     assert "--- query input ---" in rep.text
 
 
+def test_verify_uses_duckdb_fact_terms_for_structural_compounds(tmp_path):
+    s = _store(tmp_path)
+    s.add_fact(
+        structural_term('person("Ada")'),
+        structural_term("has_role"),
+        structural_term('role(person("Ada"), "PI")'),
+        status="confirmed",
+    )
+    path = query_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        ".decl answer_q1(value: symbol)\n"
+        'answer_q1(O) :- relation(person("Ada"), has_role, O).\n',
+        encoding="utf-8",
+    )
+
+    rep = verify(s)
+
+    assert rep.ok is True
+    assert rep.answers == ['q1: role(person("Ada"), "PI")']
+
+
+def test_verify_ignores_candidate_structural_terms(tmp_path):
+    s = _store(tmp_path)
+    s.add_fact(
+        structural_term('person("Ada")'),
+        structural_term("has_role"),
+        structural_term('role(person("Ada"), "PI")'),
+        status="candidate",
+    )
+    path = query_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        ".decl answer_q1(value: symbol)\n"
+        'answer_q1(S) :- relation(S, has_role, role(person("Ada"), "PI")).\n',
+        encoding="utf-8",
+    )
+
+    rep = verify(s)
+
+    assert rep.ok is True
+    assert "--- fact input ---\n(none)" in rep.text
+
+
+def test_verify_keeps_plain_term_syntax_as_stringlit(tmp_path):
+    s = _store(tmp_path)
+    s.add_fact('person("Ada")', "has_role", 'role(person("Ada"), "PI")', status="confirmed")
+    path = query_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        ".decl answer_q1(value: symbol)\n"
+        'answer_q1(O) :- relation(person("Ada"), "has_role", O).\n',
+        encoding="utf-8",
+    )
+
+    rep = verify(s)
+
+    assert rep.ok is True
+    assert 'relation("person(\\"Ada\\")", "has_role", "role(person(\\"Ada\\"), \\"PI\\")")' in rep.text
+    assert 'relation(person("Ada"), "has_role", role(person("Ada"), "PI"))' not in rep.text
+
+
 def test_verify_debug_fact_input_is_quoted_and_escaped(tmp_path):
     s = _store(tmp_path)
     s.add_fact('a"b', "r", "line\nnext", status="confirmed")
@@ -80,6 +144,46 @@ def test_verify_debug_fact_input_is_quoted_and_escaped(tmp_path):
     rep = verify(s)
 
     assert 'relation("a\\"b", "r", "line\\nnext")' in rep.text
+
+
+def test_verify_backfills_missing_duckdb_terms_for_legacy_engine_rows(tmp_path):
+    s = _store(tmp_path)
+    cur = s._conn.execute(
+        "INSERT INTO facts(subject, relation, object, status) VALUES(?,?,?,?) RETURNING id",
+        ("Ada", "born_in", "London", "confirmed"),
+    )
+    fid = int(cur.fetchone()[0])
+    path = query_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '.decl answer_q1(value: symbol)\nanswer_q1(O) :- relation("Ada", "born_in", O).\n',
+        encoding="utf-8",
+    )
+
+    rep = verify(s)
+
+    assert rep.ok is True
+    assert rep.answers == ["q1: London"]
+    assert s.get_fact_terms(fid) == (
+        StringLit("Ada"),
+        StringLit("born_in"),
+        StringLit("London"),
+    )
+
+
+def test_verify_fails_closed_when_engine_fact_terms_remain_missing(tmp_path, monkeypatch):
+    s = _store(tmp_path)
+    s._conn.execute(
+        "INSERT INTO facts(subject, relation, object, status) VALUES(?,?,?,?)",
+        ("Ada", "born_in", "London", "confirmed"),
+    )
+    monkeypatch.setattr(s, "backfill_fact_terms", lambda: 0)
+
+    rep = verify(s)
+
+    assert rep.ok is False
+    assert rep.errors == 1
+    assert "missing DuckDB fact terms" in rep.text
 
 
 def test_verify_reports_missing_duckdb_as_blocking(tmp_path, monkeypatch):
@@ -182,6 +286,49 @@ def test_verify_cache_refreshes_after_engine_fact_amendment(tmp_path):
     )
 
     assert verify(s).ok is True
+
+
+def test_verify_cache_refreshes_after_duckdb_term_payload_change(tmp_path):
+    s = _store(tmp_path)
+    fid = s.add_fact("Ada", "born_in", "London", status="confirmed")
+    path = query_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '.decl answer_q1(value: symbol)\nanswer_q1(O) :- relation("Ada", "born_in", O).\n',
+        encoding="utf-8",
+    )
+
+    assert verify(s).answers == ["q1: London"]
+    s.fact_terms.put_fact_terms(fid, "Ada", "born_in", "Paris")
+
+    assert verify(s).answers == ["q1: Paris"]
+
+
+def test_verify_cache_does_not_reload_for_candidate_term_payload_change(
+    tmp_path, monkeypatch
+):
+    s = _store(tmp_path)
+    s.add_fact("Ada", "born_in", "London", status="confirmed")
+    candidate = s.add_fact(
+        Compound("person", (StringLit("Ada"),)),
+        "has_role",
+        "PI",
+        status="candidate",
+    )
+    loads = []
+    real_load = duckdb_backend._load_relation_facts
+
+    def counted_load(con, facts):
+        loads.append(list(facts))
+        return real_load(con, facts)
+
+    monkeypatch.setattr(duckdb_backend, "_load_relation_facts", counted_load)
+
+    assert verify(s).ok is True
+    s.fact_terms.put_fact_terms(candidate, Compound("person", (StringLit("Grace"),)), "has_role", "PI")
+    assert verify(s).ok is True
+
+    assert len(loads) == 1
 
 
 def test_verify_cached_engine_does_not_leak_removed_query_answers(tmp_path):
