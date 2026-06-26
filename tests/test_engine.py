@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
+import pytest
+
 import verinote.engine.wirelog as wl
 from verinote.engine import DEFAULT_POLICY, compile_dl, run_check, validate_query
 
@@ -104,9 +106,61 @@ def test_validate_query_accepts_relation_only():
     assert ok is True and reason == ""
 
 
+def test_validate_query_does_not_flag_compound_functors_as_predicates():
+    ok, reason = validate_query(
+        ".decl answer_q1(value: symbol)\n"
+        'answer_q1(person(O)) :- relation(person("Ada"), born_in, O).'
+    )
+    assert ok is False
+    assert "unknown predicate" not in reason
+    assert "person" not in reason
+
+
 def test_validate_query_rejects_unknown_predicate():
     ok, reason = validate_query(".decl answer_q1(value: symbol)\nanswer_q1(O) :- bogus(O).")
     assert ok is False and "bogus" in reason
+
+
+def test_validate_query_rejects_fabricated_predicate_declarations():
+    ok, reason = validate_query(
+        ".decl answer_q1(value: symbol)\n"
+        ".decl bogus(value: symbol)\n"
+        'bogus("x").\n'
+        "answer_q1(X) :- bogus(X)."
+    )
+    assert ok is False and "only declare answer predicates" in reason
+
+
+@pytest.mark.parametrize(
+    "query_dl",
+    [
+        ".decl answer_q1(value: symbol)\n"
+        ".decl answer_query(value: symbol)\n"
+        'answer_query(O) :- relation("Ada", "born_in", O).',
+        ".decl answer_q1(value: symbol)\n"
+        ".decl answer_qevil(a: symbol, b: symbol)\n"
+        'answer_qevil(S, O) :- relation(S, "born_in", O).',
+    ],
+)
+def test_validate_query_rejects_fabricated_answer_like_predicates(query_dl):
+    ok, reason = validate_query(query_dl)
+    assert ok is False
+    assert "answer" in reason
+
+
+def test_validate_query_rejects_arity_mismatch_before_engine():
+    ok, reason = validate_query(
+        ".decl answer_q1(value: symbol)\n"
+        'answer_q1(O) :- relation("Ada", "born_in", O, "extra").'
+    )
+    assert ok is False and "arity mismatch" in reason
+
+
+def test_validate_query_rejects_unsafe_variable_before_engine():
+    ok, reason = validate_query(
+        ".decl answer_q1(value: symbol)\n" 'answer_q1(O) :- relation("Ada", "born_in", X).'
+    )
+    assert ok is False and "unsafe head variable" in reason
 
 
 def test_validate_query_rejects_syntax_error():

@@ -21,6 +21,14 @@ import re
 from dataclasses import dataclass, field
 from typing import Iterable, Mapping
 
+from verinote.engine.datalog import (
+    AtomExpr,
+    DatalogParseError,
+    DatalogValidationError,
+    Program,
+    parse_and_validate_program,
+)
+
 # Datalog string literals: escape embedded quotes/backslashes.
 _ESCAPE = re.compile(r'(["\\])')
 
@@ -149,8 +157,7 @@ def _degraded_report(dl_text: str) -> CheckReport:
 
 
 _RELATION_DECL = ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
-_PREDICATE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(")
-_STRING_LIT = re.compile(r'"(?:[^"\\]|\\.)*"')
+_ANSWER_DECL = re.compile(r"answer_q[0-9]+\Z")
 
 
 def validate_query(query_dl: str) -> tuple[bool, str]:
@@ -160,17 +167,15 @@ def validate_query(query_dl: str) -> tuple[bool, str]:
     vocabulary (plus its own declared `answer_*` head) and parses+runs in
     pyrewire, else ``(False, reason)``. Used to gate LLM-proposed repairs.
     """
-    # 1. vocabulary: every predicate must be `relation` or a relation declared in
-    #    the snippet itself (the answer head). Strip string literals first so a
-    #    `word(` inside a literal isn't mistaken for a predicate call.
-    stripped = _STRING_LIT.sub('""', query_dl)
-    declared = {m.group(1) for m in re.finditer(r"\.decl\s+([A-Za-z_][A-Za-z0-9_]*)", stripped)}
-    allowed = {"relation"} | declared
-    unknown = sorted(set(_PREDICATE.findall(stripped)) - allowed)
-    if unknown:
-        return False, f"references unknown predicate(s): {', '.join(unknown)}"
+    # 1. structural parse/validation: this catches arity, unsupported syntax, and
+    #    unsafe variables before the engine is involved.
+    try:
+        program = parse_and_validate_program(_RELATION_DECL + query_dl)
+        _validate_query_contract(program)
+    except (DatalogParseError, DatalogValidationError) as exc:
+        return False, str(exc)
 
-    # 2. parse/run check (catches syntax errors the vocabulary scan can't).
+    # 2. parse/run check (catches pyrewire compatibility errors).
     pyrewire = _load_engine()
     if pyrewire is None:
         return False, "wirelog engine (pyrewire) not installed"
@@ -181,6 +186,35 @@ def validate_query(query_dl: str) -> tuple[bool, str]:
     except Exception as exc:  # parse/exec error -> not a valid query
         return False, str(exc)
     return True, ""
+
+
+def _validate_query_contract(program: Program) -> None:
+    """Ensure LLM-generated query snippets only answer from `relation/3`."""
+    answer_decls: set[str] = set()
+    for decl in program.declarations:
+        if decl.name == "relation":
+            continue
+        if not _ANSWER_DECL.fullmatch(decl.name):
+            raise DatalogValidationError(
+                f"query may only declare answer predicates, got: {decl.name}"
+            )
+        if len(decl.columns) != 1:
+            raise DatalogValidationError(
+                f"query answer predicate must have arity 1: {decl.name}"
+            )
+        answer_decls.add(decl.name)
+    if program.facts:
+        raise DatalogValidationError("query snippets must not contain facts")
+    for rule in program.rules:
+        if rule.head.predicate not in answer_decls:
+            raise DatalogValidationError(
+                f"query rule head must be an answer predicate: {rule.head.predicate}"
+            )
+        for item in rule.body:
+            if isinstance(item, AtomExpr) and item.predicate != "relation":
+                raise DatalogValidationError(
+                    f"query may only reference relation/3, got: {item.predicate}"
+                )
 
 
 def run_check(
