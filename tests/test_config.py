@@ -1,9 +1,27 @@
 # SPDX-License-Identifier: MPL-2.0
-from verinote.config import PROVIDERS, TESTABLE_PROVIDERS, Config, read_settings, save_settings
+import sys
+
+from verinote.config import (
+    Config,
+    PROVIDERS,
+    TESTABLE_PROVIDERS,
+    active_root,
+    app_config_path,
+    read_settings,
+    save_active_root,
+    save_settings,
+)
 
 
 def _clear_env(monkeypatch):
-    for var in ("VERINOTE_PROVIDER", "VERINOTE_MODEL", "VERINOTE_BASE_URL", "VERINOTE_API_KEY"):
+    for var in (
+        "VERINOTE_PROVIDER",
+        "VERINOTE_MODEL",
+        "VERINOTE_BASE_URL",
+        "VERINOTE_API_KEY",
+        "VERINOTE_ROOT",
+        "XDG_CONFIG_HOME",
+    ):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -56,3 +74,47 @@ def test_api_key_only_from_env_never_persisted(tmp_path, monkeypatch):
     cfg = Config.for_root(tmp_path)
     assert cfg.api_key == "supersecret"
     assert "supersecret" not in (tmp_path / "config.json").read_text(encoding="utf-8")
+
+
+def test_active_root_uses_env_first(tmp_path, monkeypatch):
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("VERINOTE_ROOT", str(tmp_path))
+    assert active_root() == tmp_path.resolve()
+
+
+def test_active_root_uses_app_config_when_kb_exists(tmp_path, monkeypatch):
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    (kb / "kb.sqlite").write_text("", encoding="utf-8")
+
+    save_active_root(kb)
+
+    if sys.platform == "darwin":
+        expected = (
+            tmp_path
+            / "home"
+            / "Library"
+            / "Application Support"
+            / "verinote"
+            / "app.json"
+        )
+    elif sys.platform == "win32":
+        expected = tmp_path / "appdata" / "verinote" / "app.json"
+    else:
+        expected = tmp_path / "xdg" / "verinote" / "app.json"
+    assert app_config_path() == expected
+    assert active_root() == kb.resolve()
+
+
+def test_ui_config_is_none_without_selected_kb(tmp_path, monkeypatch):
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    monkeypatch.chdir(tmp_path)
+
+    assert Config.load_for_ui() is None

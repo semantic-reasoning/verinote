@@ -45,15 +45,34 @@ DuckDB-backed verification, question translation/repair, and local web UI.
 4. Load confirmed facts into DuckDB → run Datalog policy/query rules → show report
 5. Dashboard
 
-Deferred: NL→Datalog query, gated self-correction (repair), coverage critic,
-multi-provider expansion.
-
 ## Quickstart
 
 ```bash
 pip install -e ".[anthropic,test]"   # pick the providers you use
-verinote init      # scaffold a local KB (SQLite) under ./data
 verinote ui        # launch the web app at http://localhost:8731
+```
+
+On first launch, if verinote cannot find an active KB, the web app opens a KB
+selection screen. Choose a KB folder there; if the folder has no `kb.sqlite`,
+verinote creates one. On later launches, the app opens that KB directly.
+
+The active KB path is saved in a platform-native app config file:
+
+- Windows: `%APPDATA%\verinote\app.json`
+- macOS: `~/Library/Application Support/verinote/app.json`
+- Linux/Unix: `${XDG_CONFIG_HOME:-~/.config}/verinote/app.json`
+
+`VERINOTE_ROOT` overrides the saved active KB and is still useful for scripts,
+tests, and one-off launches.
+
+```bash
+VERINOTE_ROOT=/path/to/kb verinote ui
+```
+
+You can also scaffold a KB explicitly:
+
+```bash
+verinote init      # uses VERINOTE_ROOT, the saved active KB, or ./data
 ```
 
 DuckDB is a core dependency because it powers verification. The `analytics` extra is
