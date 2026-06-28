@@ -6,16 +6,24 @@ anti-lock-in seam. Precedence (highest first): environment variable, then the
 saved non-secret settings file (`<root>/config.json`, written by the Settings
 UI), then a built-in default. The API key is **only** ever read from the
 environment — it is never persisted to or read from the settings file.
+
+The active KB root is stored in a platform-native app config file when the web
+UI selects one: Windows uses `%APPDATA%`, macOS uses `~/Library/Application
+Support`, and Unix uses `${XDG_CONFIG_HOME:-~/.config}`. `VERINOTE_ROOT` still
+overrides this for scripts and tests.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 SETTINGS_FILENAME = "config.json"
+APP_CONFIG_FILENAME = "app.json"
+APP_NAME = "verinote"
 
 _MODEL_DEFAULTS = {
     "anthropic": "claude-opus-4-8",
@@ -41,8 +49,69 @@ def normalize_provider(provider: str | None) -> str:
     return key
 
 
+def _default_root() -> Path:
+    return Path("./data").expanduser().resolve()
+
+
 def _root() -> Path:
-    return Path(os.environ.get("VERINOTE_ROOT", "./data")).expanduser().resolve()
+    root = active_root()
+    return root if root is not None else _default_root()
+
+
+def app_config_dir() -> Path:
+    """Return the platform-native directory for verinote's app-level config."""
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or os.environ.get("LOCALAPPDATA")
+        if base:
+            return Path(base).expanduser() / APP_NAME
+        return Path.home() / "AppData" / "Roaming" / APP_NAME
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / APP_NAME
+    base = os.environ.get("XDG_CONFIG_HOME")
+    return (Path(base).expanduser() if base else Path.home() / ".config") / APP_NAME
+
+
+def app_config_path() -> Path:
+    return app_config_dir() / APP_CONFIG_FILENAME
+
+
+def read_app_config() -> dict:
+    path = app_config_path()
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_active_root(root: Path) -> None:
+    """Persist the active KB root outside any individual KB."""
+    path = app_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"active_root": str(Path(root).expanduser().resolve())}
+    path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+
+
+def active_root() -> Path | None:
+    """Return the selected KB root, or None when the web UI should ask."""
+    env_root = os.environ.get("VERINOTE_ROOT")
+    if env_root:
+        return Path(env_root).expanduser().resolve()
+
+    saved = read_app_config().get("active_root")
+    if saved:
+        root = Path(str(saved)).expanduser().resolve()
+        if (root / "kb.sqlite").is_file():
+            return root
+
+    default = _default_root()
+    if (default / "kb.sqlite").is_file():
+        return default
+    return None
 
 
 def _settings_path(root: Path) -> Path:
@@ -114,3 +183,8 @@ class Config:
     @classmethod
     def load(cls) -> "Config":
         return cls.for_root(_root())
+
+    @classmethod
+    def load_for_ui(cls) -> "Config | None":
+        root = active_root()
+        return cls.for_root(root) if root is not None else None

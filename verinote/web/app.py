@@ -20,6 +20,8 @@ from verinote.config import (
     PROVIDERS,
     TESTABLE_PROVIDERS,
     Config,
+    app_config_path,
+    save_active_root,
     save_settings,
 )
 from verinote.llm import LLMError, get_client
@@ -42,33 +44,66 @@ _STATIC = resources.files("verinote.web").joinpath("static")
 
 
 def create_app(cfg: Config | None = None) -> FastAPI:
-    cfg = cfg or Config.load()
-    store = Store(cfg.db_path)
-    store.init_schema()
+    cfg = cfg if cfg is not None else Config.load_for_ui()
 
     app = FastAPI(title="verinote")
-    app.state.store = store
     app.state.cfg = cfg
+    app.state.store = None
+    if cfg is not None:
+        store = Store(cfg.db_path)
+        store.init_schema()
+        app.state.store = store
 
     templates = Jinja2Templates(directory=str(_TEMPLATES))
     app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
 
-    def _switch_root(root: Path) -> None:
-        """Point this running app at a different KB root."""
-        nonlocal cfg, store
-        next_cfg = Config.for_root(root.expanduser().resolve())
+    def _active_store() -> Store:
+        store = app.state.store
+        if store is None:
+            raise RuntimeError("no active KB")
+        return store
+
+    def _active_cfg() -> Config:
+        cfg = app.state.cfg
+        if cfg is None:
+            raise RuntimeError("no active KB")
+        return cfg
+
+    def _open_root(root: Path) -> None:
+        """Point this running app at a KB root, creating it if needed."""
+        root = root.expanduser().resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        next_cfg = Config.for_root(root)
         next_store = Store(next_cfg.db_path)
         next_store.init_schema()
-        old_store = store
-        cfg = next_cfg
-        store = next_store
+
+        from verinote.engine import DEFAULT_POLICY
+        from verinote.pipeline.verify import POLICY_RELPATH
+
+        policy_path = root / POLICY_RELPATH
+        if not policy_path.exists():
+            policy_path.parent.mkdir(parents=True, exist_ok=True)
+            policy_path.write_text(DEFAULT_POLICY, encoding="utf-8")
+
+        save_active_root(root)
+        old_store = app.state.store
+        if old_store is not None:
+            old_store.close()
         app.state.cfg = next_cfg
         app.state.store = next_store
-        old_store.close()
+
+    def _kb_select(request: Request, *, error: str | None = None, status_code: int = 200):
+        return templates.TemplateResponse(
+            request,
+            "kb_select.html",
+            {"error": error, "config_path": app_config_path()},
+            status_code=status_code,
+        )
 
     def _fact_view(fact):
         if fact is None:
             return None
+        store = _active_store()
         view = dict(fact)
         try:
             terms = store.get_fact_terms(fact["id"])
@@ -93,6 +128,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     def _fact_edit_context(fact, *, error: str | None = None):
         kinds = {"subject": "string", "relation": "string", "object": "string"}
         if fact is not None:
+            store = _active_store()
             terms = store.get_fact_terms(fact["id"])
             if terms is not None:
                 kinds = {
@@ -112,6 +148,10 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     def _dashboard(request: Request, *, error: str | None = None, status_code: int = 200):
         from verinote.engine import coverage
 
+        if app.state.store is None:
+            return _kb_select(request, error=error, status_code=status_code)
+        store = _active_store()
+        cfg = _active_cfg()
         counts = store.status_counts()
         return templates.TemplateResponse(
             request,
@@ -133,6 +173,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         )
 
     def _sources(request: Request, *, error: str | None = None, status_code: int = 200):
+        if app.state.store is None:
+            return _kb_select(request, error=error, status_code=status_code)
+        store = _active_store()
         return templates.TemplateResponse(
             request,
             "sources.html",
@@ -149,12 +192,22 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     def dashboard(request: Request):
         return _dashboard(request)
 
+    @app.post("/kb/select", response_class=HTMLResponse)
+    def select_kb(request: Request, root: str = Form(...)):
+        try:
+            _open_root(Path(root))
+        except OSError as e:
+            return _kb_select(request, error=f"could not open KB: {e}", status_code=400)
+        return RedirectResponse("/", status_code=303)
+
     @app.get("/sources", response_class=HTMLResponse)
     def sources_page(request: Request):
         return _sources(request)
 
     @app.post("/sources", response_class=HTMLResponse)
     async def upload_source(request: Request, file: UploadFile = File(...)):
+        store = _active_store()
+        cfg = _active_cfg()
         filename = Path(file.filename or "").name
         raw = await file.read()
         try:
@@ -178,32 +231,35 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.get("/review", response_class=HTMLResponse)
     def review(request: Request):
+        store = _active_store()
         return templates.TemplateResponse(
             request, "review.html", {"queue": [_fact_view(f) for f in store.review_queue()]}
         )
 
     @app.post("/facts/{fact_id}/toggle", response_class=HTMLResponse)
     def toggle(request: Request, fact_id: int):
-        return _row(request, store.toggle_review(fact_id))
+        return _row(request, _active_store().toggle_review(fact_id))
 
     @app.post("/facts/{fact_id}/accept", response_class=HTMLResponse)
     def accept(request: Request, fact_id: int):
-        return _row(request, store.set_status(fact_id, "confirmed", action="accepted"))
+        return _row(request, _active_store().set_status(fact_id, "confirmed", action="accepted"))
 
     @app.post("/facts/{fact_id}/reject", response_class=HTMLResponse)
     def reject(request: Request, fact_id: int):
-        return _row(request, store.set_status(fact_id, "superseded", action="rejected"))
+        return _row(request, _active_store().set_status(fact_id, "superseded", action="rejected"))
 
     @app.get("/facts/{fact_id}/edit", response_class=HTMLResponse)
     def edit_fact(request: Request, fact_id: int):
         return templates.TemplateResponse(
-            request, "partials/fact_edit.html", _fact_edit_context(store.get_fact(fact_id))
+            request,
+            "partials/fact_edit.html",
+            _fact_edit_context(_active_store().get_fact(fact_id)),
         )
 
     @app.get("/facts/{fact_id}/row", response_class=HTMLResponse)
     def fact_row(request: Request, fact_id: int):
         # Re-render the read-only row (used to cancel an inline edit).
-        return _row(request, store.get_fact(fact_id))
+        return _row(request, _active_store().get_fact(fact_id))
 
     @app.post("/facts/{fact_id}/amend", response_class=HTMLResponse)
     def amend_fact(
@@ -225,10 +281,10 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             return templates.TemplateResponse(
                 request,
                 "partials/fact_edit.html",
-                _fact_edit_context(store.get_fact(fact_id), error=str(e)),
+                _fact_edit_context(_active_store().get_fact(fact_id), error=str(e)),
                 status_code=400,
             )
-        amended = store.amend_fact(
+        amended = _active_store().amend_fact(
             fact_id,
             subject=subject_value,
             relation=relation_value,
@@ -239,6 +295,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.get("/facts/{fact_id}/provenance", response_class=HTMLResponse)
     def provenance(request: Request, fact_id: int):
+        store = _active_store()
         fact = store.get_fact(fact_id)
         run = store.get_run(fact["run_id"]) if fact and fact["run_id"] else None
         return templates.TemplateResponse(
@@ -248,6 +305,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         )
 
     def _questions(request: Request, *, error: str | None = None, status_code: int = 200):
+        if app.state.store is None:
+            return _kb_select(request, error=error, status_code=status_code)
+        store = _active_store()
         return templates.TemplateResponse(
             request,
             "questions.html",
@@ -261,11 +321,13 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.post("/questions", response_class=HTMLResponse)
     def add_question(request: Request, text: str = Form(...)):
-        store.add_question(text)
+        _active_store().add_question(text)
         return RedirectResponse("/questions", status_code=303)
 
     @app.post("/questions/translate", response_class=HTMLResponse)
     def translate(request: Request):
+        store = _active_store()
+        cfg = _active_cfg()
         try:
             translate_questions(store, get_client(app.state.cfg), root=cfg.root)
         except LLMError as e:
@@ -274,6 +336,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.post("/questions/repair", response_class=HTMLResponse)
     def repair(request: Request):
+        store = _active_store()
+        cfg = _active_cfg()
         try:
             client = get_client(app.state.cfg)
         except LLMError as e:
@@ -283,16 +347,18 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.get("/report", response_class=HTMLResponse)
     def report(request: Request):
-        return templates.TemplateResponse(request, "report.html", {"rep": verify(store)})
+        return templates.TemplateResponse(request, "report.html", {"rep": verify(_active_store())})
 
     @app.get("/analytics", response_class=HTMLResponse)
     def analytics(request: Request):
         from verinote.store.analytics import compute
 
-        return templates.TemplateResponse(request, "analytics.html", {"a": compute(cfg.db_path)})
+        return templates.TemplateResponse(request, "analytics.html", {"a": compute(_active_cfg().db_path)})
 
     def _settings(request: Request, *, test_result=None, error=None, status_code=200):
         c = app.state.cfg
+        if c is None:
+            return _kb_select(request)
         return templates.TemplateResponse(
             request,
             "settings.html",
@@ -323,6 +389,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         model: str = Form(""),
         base_url: str = Form(""),
     ):
+        cfg = _active_cfg()
         save_settings(cfg.root, provider=provider, model=model, base_url=base_url or None)
         # reload from the app's own root so the change takes effect on next sync
         app.state.cfg = Config.for_root(cfg.root)
@@ -334,7 +401,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         if not path:
             return _settings(request, error="KB directory is required", status_code=400)
         try:
-            _switch_root(Path(path))
+            _open_root(Path(path))
         except OSError as e:
             return _settings(request, error=f"could not open KB directory: {e}", status_code=400)
         return RedirectResponse("/", status_code=303)
@@ -342,6 +409,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     @app.post("/settings/test", response_class=HTMLResponse)
     def test_connection(request: Request):
         c = app.state.cfg
+        if c is None:
+            return _kb_select(request)
         if c.provider not in TESTABLE_PROVIDERS:
             return _settings(
                 request,

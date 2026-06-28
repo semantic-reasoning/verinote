@@ -232,16 +232,17 @@ def cmd_status(cfg: Config, args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_ui(cfg: Config, args: argparse.Namespace) -> int:
+def cmd_ui(cfg: Config | None, args: argparse.Namespace) -> int:
     try:
         import uvicorn
     except ImportError:  # pragma: no cover
         print("uvicorn not installed; `pip install verinote`", file=sys.stderr)
         return 1
-    # Ensure the KB exists before serving.
-    _store(cfg).close()
     url = f"http://{args.host}:{args.port}"
-    print(f"verinote ui → {url}  (KB: {cfg.root})")
+    if cfg is None:
+        print(f"verinote ui → {url}  (select a KB in the browser)")
+    else:
+        print(f"verinote ui → {url}  (KB: {cfg.root})")
     if not args.no_browser:
         import threading
         import webbrowser
@@ -304,7 +305,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    cfg = Config.load()
+    cfg = Config.load_for_ui() if args.command in {"ui", "serve"} else Config.load()
     return args.func(cfg, args)
 
 

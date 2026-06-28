@@ -35,6 +35,38 @@ def test_dashboard_renders(tmp_path):
     assert "verinote" in r.text
 
 
+def test_no_active_kb_shows_selector(tmp_path, monkeypatch):
+    monkeypatch.delenv("VERINOTE_ROOT", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    monkeypatch.chdir(tmp_path)
+
+    c = TestClient(create_app())
+    r = c.get("/")
+
+    assert r.status_code == 200
+    assert "Select a knowledge base" in r.text
+
+
+def test_select_kb_activates_app(tmp_path, monkeypatch):
+    monkeypatch.delenv("VERINOTE_ROOT", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    monkeypatch.chdir(tmp_path)
+    kb = tmp_path / "chosen"
+
+    c = TestClient(create_app())
+    r = c.post("/kb/select", data={"root": str(kb)}, follow_redirects=False)
+
+    assert r.status_code == 303
+    assert (kb / "kb.sqlite").is_file()
+    assert (kb / "policy" / "logic-policy.dl").is_file()
+    assert c.app.state.cfg.root == kb.resolve()
+    assert "Knowledge base" in c.get("/").text
+
+
 def test_dashboard_shows_coverage_gap(tmp_path):
     c = _client(tmp_path)
     store = c.app.state.store
