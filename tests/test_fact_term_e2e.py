@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
 from html import unescape
+import time
 
 import pytest
 
@@ -12,6 +13,20 @@ from verinote.llm.base import ExtractedFact  # noqa: E402
 from verinote.pipeline.query import query_path  # noqa: E402
 from verinote.store.fact_input import structural_term  # noqa: E402
 from verinote.web import create_app  # noqa: E402
+
+
+def _wait_for(assertion, *, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    last_error = None
+    while time.monotonic() < deadline:
+        try:
+            assertion()
+            return
+        except AssertionError as e:
+            last_error = e
+            time.sleep(0.01)
+    if last_error is not None:
+        raise last_error
 
 
 def test_plain_extraction_and_structural_fact_report_end_to_end(
@@ -41,7 +56,17 @@ def test_plain_extraction_and_structural_fact_report_end_to_end(
     )
     assert upload.status_code == 303
     store = client.app.state.store
-    extracted = store.review_queue()[0]
+
+    extracted = None
+
+    def extracted_fact_exists():
+        nonlocal extracted
+        queue = store.review_queue()
+        assert queue
+        extracted = queue[0]
+
+    _wait_for(extracted_fact_exists)
+    assert extracted is not None
 
     review_body = unescape(client.get("/review").text)
     assert 'class="subj term-string" title="string">"person(\\"Ada\\")"' in review_body

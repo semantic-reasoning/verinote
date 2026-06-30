@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
 import builtins
+import time
 from html import unescape
 
 import pytest
@@ -26,6 +27,20 @@ def _client(tmp_path) -> TestClient:
     store = app.state.store
     client.fact_id = store.add_fact("A", "is_a", "B", status="needs_review", confidence=0.9)
     return client
+
+
+def _wait_for(assertion, *, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    last_error = None
+    while time.monotonic() < deadline:
+        try:
+            assertion()
+            return
+        except AssertionError as e:
+            last_error = e
+            time.sleep(0.01)
+    if last_error is not None:
+        raise last_error
 
 
 def test_dashboard_renders(tmp_path):
@@ -129,10 +144,16 @@ def test_upload_extracts_and_redirects(tmp_path, monkeypatch, fake_client):
         follow_redirects=False,
     )
     assert r.status_code == 303
-    assert r.headers["location"] == "/review"
-    # the file was saved under the KB's sources/ dir and the candidate is queued
+    assert r.headers["location"] == "/sources"
+    # the file is saved immediately; extraction finishes in a background job.
     assert (tmp_path / "sources" / "note.txt").read_text() == "some text"
-    assert "is_a" in c.get("/review").text
+
+    def extracted():
+        assert "is_a" in c.get("/review").text
+        body = c.get("/sources").text
+        assert "Analysis complete: 1 candidate(s)" in body
+
+    _wait_for(extracted)
 
 
 def test_upload_rejects_unsupported_type(tmp_path):
@@ -184,16 +205,30 @@ def test_upload_docx_converts_and_extracts(tmp_path, monkeypatch, fake_client):
     kinds = {s["kind"] for s in c.app.state.store.sources_with_counts()}
     assert "conversion" in kinds
 
+    def extracted():
+        assert "is_a" in c.get("/review").text
+
+    _wait_for(extracted)
+
 
 def test_upload_surfaces_llm_error(tmp_path, monkeypatch, fake_client):
     monkeypatch.setattr(
         webapp, "get_client", lambda cfg: fake_client(error=LLMError("provider down"))
     )
     c = _client(tmp_path)
-    r = c.post("/sources", files={"file": ("note.txt", b"x", "text/plain")})
-    # surfaced as a page, not a 500
-    assert r.status_code == 502
-    assert "extraction failed: provider down" in r.text
+    r = c.post(
+        "/sources",
+        files={"file": ("note.txt", b"x", "text/plain")},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/sources"
+
+    def failed():
+        body = c.get("/sources").text
+        assert "extraction failed: provider down" in body
+
+    _wait_for(failed)
 
 
 def test_report_ok_for_consistent_kb(tmp_path):

@@ -9,6 +9,9 @@ from __future__ import annotations
 
 from importlib import resources
 from pathlib import Path
+import threading
+import time
+from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -49,6 +52,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     app = FastAPI(title="verinote")
     app.state.cfg = cfg
     app.state.store = None
+    app.state.source_jobs = {}
+    app.state.source_jobs_lock = threading.Lock()
     if cfg is not None:
         store = Store(cfg.db_path)
         store.init_schema()
@@ -176,6 +181,13 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         if app.state.store is None:
             return _kb_select(request, error=error, status_code=status_code)
         store = _active_store()
+        with app.state.source_jobs_lock:
+            jobs = sorted(
+                app.state.source_jobs.values(),
+                key=lambda job: job["created_at"],
+                reverse=True,
+            )
+        has_running_jobs = any(job["status"] == "running" for job in jobs)
         return templates.TemplateResponse(
             request,
             "sources.html",
@@ -184,9 +196,56 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 "suffixes": ", ".join(sorted(supported_suffixes())),
                 "accept": ",".join(sorted(supported_suffixes())),
                 "error": error,
+                "jobs": jobs,
+                "has_running_jobs": has_running_jobs,
             },
             status_code=status_code,
         )
+
+    def _set_source_job(job_id: str, **updates: object) -> None:
+        with app.state.source_jobs_lock:
+            job = app.state.source_jobs.get(job_id)
+            if job is not None:
+                job.update(updates)
+
+    def _start_source_extraction(citation: str, text: str, cfg: Config) -> None:
+        job_id = uuid4().hex
+        with app.state.source_jobs_lock:
+            app.state.source_jobs[job_id] = {
+                "id": job_id,
+                "source": citation,
+                "status": "running",
+                "message": "Analyzing source...",
+                "created_at": time.time(),
+            }
+
+        def run() -> None:
+            try:
+                with Store(cfg.db_path) as worker_store:
+                    worker_store.init_schema()
+                    client = get_client(cfg)
+                    result = sync_sources(
+                        worker_store,
+                        client,
+                        [(citation, text)],
+                        provider=cfg.provider,
+                        model=cfg.model,
+                    )
+                _set_source_job(
+                    job_id,
+                    status="done",
+                    message=f"Analysis complete: {result.total} candidate(s)",
+                )
+            except LLMError as e:
+                _set_source_job(job_id, status="failed", message=f"extraction failed: {e}")
+            except Exception as e:  # noqa: BLE001 - keep background failures visible in UI
+                _set_source_job(job_id, status="failed", message=f"analysis failed: {e}")
+
+        threading.Thread(
+            target=run,
+            name=f"verinote-source-extract-{job_id}",
+            daemon=True,
+        ).start()
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard(request: Request):
@@ -216,18 +275,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             return _sources(request, error=str(e), status_code=400)
 
         citation = store_source(store, cfg.root, filename, text, kind)
-        try:
-            client = get_client(app.state.cfg)
-            sync_sources(
-                store,
-                client,
-                [(citation, text)],
-                provider=app.state.cfg.provider,
-                model=app.state.cfg.model,
-            )
-        except LLMError as e:
-            return _sources(request, error=f"extraction failed: {e}", status_code=502)
-        return RedirectResponse("/review", status_code=303)
+        _start_source_extraction(citation, text, app.state.cfg)
+        return RedirectResponse("/sources", status_code=303)
 
     @app.get("/review", response_class=HTMLResponse)
     def review(request: Request):

@@ -11,8 +11,21 @@
   <label>Add a source
     <input type="file" name="file" accept="{{ accept }}" required>
   </label>
-  <button class="btn" type="submit">Upload &amp; extract</button>
+  <button class="btn" type="submit">Upload &amp; analyze</button>
 </form>
+
+{% if jobs %}
+<div class="jobs" aria-live="polite"
+     {% if has_running_jobs %}hx-get="/sources" hx-trigger="every 2s" hx-target="main" hx-select="main" hx-swap="outerHTML"{% endif %}>
+  {% for job in jobs %}
+  <p class="job job-{{ job["status"] }}">
+    <span class="badge">{{ job["status"] }}</span>
+    <code>{{ job["source"] }}</code>
+    <span>{{ job["message"] }}</span>
+  </p>
+  {% endfor %}
+</div>
+{% endif %}
 
 {% if sources %}
 <table class="sources">
