@@ -57,9 +57,16 @@ tr.editing td { background: rgba(91, 157, 255, .06); }
   border-radius: 8px; padding: .6rem .9rem; margin: 1rem 0; }
 
 .btn { display: inline-block; background: var(--accent); color: #06101f; text-decoration: none;
-  padding: .5rem .9rem; border-radius: 7px; font-weight: 600; }
+  padding: .5rem .9rem; border: 1px solid transparent; border-radius: 7px;
+  font-weight: 600; cursor: pointer; transition: transform .08s ease, filter .08s ease, opacity .08s ease; }
 .btn.ghost { background: transparent; color: var(--accent); border: 1px solid var(--line); }
-.btn:disabled, .btn[aria-disabled="true"] { color: var(--muted); opacity: .55; }
+.btn:hover:not(:disabled) { filter: brightness(1.08); }
+.btn:active:not(:disabled) { transform: translateY(1px); filter: brightness(.95); }
+.btn:disabled, .btn[aria-disabled="true"] { color: var(--muted); opacity: .55; cursor: not-allowed; }
+.connection-test { display: flex; align-items: center; gap: .8rem; margin: 1rem 0 .6rem; }
+.htmx-indicator { display: none; }
+.htmx-request .htmx-indicator,
+.htmx-request.htmx-indicator { display: inline; }
 .empty { background: var(--panel); border: 1px dashed var(--line); border-radius: 10px; padding: 2rem; text-align: center; color: var(--muted); }
 .warn { color: var(--warn); }
 .error { background: rgba(240, 82, 109, .12); border: 1px solid var(--danger);

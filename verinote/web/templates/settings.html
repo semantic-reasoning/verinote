@@ -6,9 +6,6 @@
   freely. Non-secret model settings are saved to that KB's <code>config.json</code>;
   the API key stays in the environment (<code>VERINOTE_API_KEY</code>).</p>
 
-{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
-{% if test_result %}<p class="ok-note" role="status">✓ {{ test_result }}</p>{% endif %}
-
 <h2>Knowledge base</h2>
 <form class="settings" action="/settings/root" method="post">
   <label>Directory
@@ -39,10 +36,18 @@
 
 <p class="muted">API key: {{ 'set (from environment)' if has_key else 'not set — export VERINOTE_API_KEY' }}</p>
 
-<p>
-  <button class="btn ghost" hx-post="/settings/test" hx-target="body" hx-swap="outerHTML"
-          {% if not connection_test_enabled %}aria-disabled="true"{% endif %}>
+<form class="connection-test" action="/settings/test" method="post"
+      hx-post="/settings/test" hx-target="main" hx-select="main" hx-swap="outerHTML"
+      hx-disabled-elt="find button" hx-indicator="#connection-testing">
+  <button class="btn ghost" type="submit"
+          {% if not connection_test_enabled %}disabled aria-disabled="true"{% endif %}>
     Test connection
   </button>
-</p>
+  <span id="connection-testing" class="htmx-indicator muted" role="status">Testing provider...</span>
+</form>
+
+<div id="connection-result" aria-live="polite">
+  {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+  {% if test_result %}<p class="ok-note" role="status">✓ {{ test_result }}</p>{% endif %}
+</div>
 {% endblock %}
