@@ -195,6 +195,71 @@ def test_extract_source_keeps_real_relation_to_structural_object(tmp_path, fake_
     )
 
 
+def test_extract_source_drops_chinese_translation_from_korean_source(
+    tmp_path, fake_client
+):
+    s = _store(tmp_path)
+    run_id = s.add_run(provider="fake", model="m")
+    client = fake_client(
+        [
+            ExtractedFact(
+                "示例企业",
+                "拥有",
+                "123个场所",
+                0.9,
+            )
+        ]
+    )
+
+    assert (
+        extract_source(
+            s,
+            client,
+            source_path="sources/x.txt",
+            source_text="샘플기업은 여러 사업장을 운영한다.",
+            run_id=run_id,
+        )
+        == 0
+    )
+
+    assert s.facts() == []
+
+
+def test_extract_source_keeps_han_text_that_appears_in_korean_source(
+    tmp_path, fake_client
+):
+    s = _store(tmp_path)
+    run_id = s.add_run(provider="fake", model="m")
+    client = fake_client(
+        [
+            ExtractedFact(
+                "법인",
+                "法定代表人",
+                "Ada",
+                0.9,
+            )
+        ]
+    )
+
+    assert (
+        extract_source(
+            s,
+            client,
+            source_path="sources/x.txt",
+            source_text="이 문서는 법인의 法定代表人을 명시한다.",
+            run_id=run_id,
+        )
+        == 1
+    )
+
+    fact = s.facts()[0]
+    assert s.get_fact_terms(fact["id"]) == (
+        StringLit("법인"),
+        StringLit("法定代表人"),
+        StringLit("Ada"),
+    )
+
+
 def test_extract_source_rejects_invalid_structural_term_without_partial_facts(
     tmp_path, fake_client
 ):
