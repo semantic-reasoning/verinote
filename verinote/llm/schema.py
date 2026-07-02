@@ -56,6 +56,9 @@ EXTRACTION_SYSTEM = (
     "person(\"Ada\") or role(person(\"Ada\"), \"PI\"). Bare names, labels, Korean, "
     "Chinese, whitespace, or punctuation outside quoted string arguments are not "
     "valid terms; use kind=\"string\" for those values. "
+    "Preserve the source document's language in extracted strings and relation "
+    "labels; do not translate, romanize, or summarize names, labels, or facts "
+    "into another language. "
     "Use note=\"\" when there is no extra source note. Do not invent facts. Emit JSON "
     "matching the provided schema."
 )
