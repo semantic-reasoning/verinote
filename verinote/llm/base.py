@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from dataclasses import KW_ONLY, dataclass
+from typing import Literal, Protocol, runtime_checkable
+
+FactSlotKind = Literal["string", "term"]
 
 
 class LLMError(RuntimeError):
@@ -24,6 +26,16 @@ class ExtractedFact:
     object: str
     confidence: float
     note: str = ""
+    _: KW_ONLY
+    subject_kind: FactSlotKind = "string"
+    relation_kind: FactSlotKind = "string"
+    object_kind: FactSlotKind = "string"
+
+    def __post_init__(self) -> None:
+        for name in ("subject_kind", "relation_kind", "object_kind"):
+            value = getattr(self, name)
+            if value not in {"string", "term"}:
+                raise ValueError(f"{name} must be 'string' or 'term', got {value!r}")
 
 
 @runtime_checkable

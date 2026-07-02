@@ -93,3 +93,68 @@ def test_plain_extraction_and_structural_fact_report_end_to_end(
     assert 'q1: role(person("Ada"), "PI")' in report
     assert 'relation("person(\\"Ada\\")", "has_role", "role(person(\\"Ada\\"), \\"PI\\")")' in report
     assert 'relation(person("Ada"), has_role, role(person("Ada"), "PI"))' in report
+
+
+def test_explicit_structural_extraction_answers_compound_query(
+    tmp_path, monkeypatch, fake_client
+):
+    cfg = Config(
+        root=tmp_path,
+        db_path=tmp_path / "kb.sqlite",
+        provider="anthropic",
+        model="m",
+        api_key=None,
+        base_url=None,
+    )
+    monkeypatch.setattr(
+        webapp,
+        "get_client",
+        lambda cfg: fake_client(
+            [
+                ExtractedFact(
+                    'person("Ada")',
+                    "has_role",
+                    'role(person("Ada"), "PI")',
+                    0.9,
+                    subject_kind="term",
+                    relation_kind="term",
+                    object_kind="term",
+                )
+            ]
+        ),
+    )
+    client = TestClient(create_app(cfg))
+
+    upload = client.post(
+        "/sources",
+        files={"file": ("note.txt", b"Ada has a role.", "text/plain")},
+        follow_redirects=False,
+    )
+    assert upload.status_code == 303
+    store = client.app.state.store
+
+    extracted = None
+
+    def extracted_fact_exists():
+        nonlocal extracted
+        queue = store.review_queue()
+        assert queue
+        extracted = queue[0]
+
+    _wait_for(extracted_fact_exists)
+    assert extracted is not None
+
+    review_body = unescape(client.get("/review").text)
+    assert 'class="subj term-term" title="term">person("Ada")' in review_body
+    assert client.post(f"/facts/{extracted['id']}/accept").status_code == 200
+
+    path = query_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        ".decl answer_q1(value: symbol)\n"
+        'answer_q1(O) :- relation(person("Ada"), has_role, O).\n',
+        encoding="utf-8",
+    )
+
+    report = unescape(client.get("/report").text)
+    assert 'q1: role(person("Ada"), "PI")' in report

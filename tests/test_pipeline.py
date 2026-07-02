@@ -4,7 +4,7 @@ import pytest
 from verinote.llm.base import ExtractedFact, LLMError
 from verinote.pipeline import extract_source, sync_sources
 from verinote.store import Store
-from verinote.engine.terms import StringLit
+from verinote.engine.terms import Atom, Compound, StringLit
 
 
 def _store(tmp_path) -> Store:
@@ -53,6 +53,72 @@ def test_extract_source_stores_term_syntax_as_plain_strings(tmp_path, fake_clien
         StringLit("is_a"),
         StringLit("person"),
     )
+
+
+def test_extract_source_stores_explicit_structural_terms(tmp_path, fake_client):
+    s = _store(tmp_path)
+    run_id = s.add_run(provider="fake", model="m")
+    client = fake_client(
+        [
+            ExtractedFact(
+                'person("Ada")',
+                "has_role",
+                'role(person("Ada"), "PI")',
+                0.9,
+                subject_kind="term",
+                relation_kind="term",
+                object_kind="term",
+            )
+        ]
+    )
+
+    assert (
+        extract_source(
+            s,
+            client,
+            source_path="sources/x.txt",
+            source_text="...",
+            run_id=run_id,
+        )
+        == 1
+    )
+
+    fact = s.facts()[0]
+    assert s.get_fact_terms(fact["id"]) == (
+        Compound("person", (StringLit("Ada"),)),
+        Atom("has_role"),
+        Compound("role", (Compound("person", (StringLit("Ada"),)), StringLit("PI"))),
+    )
+
+
+def test_extract_source_rejects_invalid_structural_term_without_partial_facts(
+    tmp_path, fake_client
+):
+    s = _store(tmp_path)
+    run_id = s.add_run(provider="fake", model="m")
+    client = fake_client(
+        [
+            ExtractedFact("A", "is_a", "B", 0.9),
+            ExtractedFact(
+                "person(Name)",
+                "has_role",
+                "PI",
+                0.9,
+                subject_kind="term",
+            ),
+        ]
+    )
+
+    with pytest.raises(LLMError, match="malformed extracted structural term"):
+        extract_source(
+            s,
+            client,
+            source_path="sources/x.txt",
+            source_text="...",
+            run_id=run_id,
+        )
+
+    assert s.facts() == []
 
 
 def test_sync_sources_opens_run_and_summarises(tmp_path, fake_client):
