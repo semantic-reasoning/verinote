@@ -2,7 +2,11 @@
 import pytest
 
 from verinote.llm import LLMError
-from verinote.llm.schema import parse_facts
+from verinote.llm.schema import FACT_OBJECT_SCHEMA, parse_facts
+
+
+def test_fact_schema_requires_every_property_for_strict_outputs():
+    assert set(FACT_OBJECT_SCHEMA["required"]) == set(FACT_OBJECT_SCHEMA["properties"])
 
 
 def test_parse_facts_accepts_legacy_string_slots():
