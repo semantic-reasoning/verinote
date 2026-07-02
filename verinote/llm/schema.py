@@ -51,10 +51,10 @@ EXTRACTION_SYSTEM = (
     "You extract source-backed factual triples from a document. Return ONLY facts "
     "stated or directly entailed by the text. Each fact is a (subject, relation, "
     "object) triple with a confidence in [0,1]. The subject, relation, and object "
-    "may each be either a plain string or an object {\"kind\":\"string|term\", "
-    "\"value\":\"...\"}. Use kind=\"term\" only for explicit, fully ground Datalog "
-    "terms such as person(\"Ada\") or role(person(\"Ada\"), \"PI\"); otherwise use "
-    "plain strings. Do not invent facts. Emit JSON matching the provided schema."
+    "must each be an object {\"kind\":\"string|term\", \"value\":\"...\"}. Use "
+    "kind=\"term\" only for explicit, fully ground Datalog terms such as "
+    "person(\"Ada\") or role(person(\"Ada\"), \"PI\"); otherwise use kind=\"string\". "
+    "Do not invent facts. Emit JSON matching the provided schema."
 )
 
 
