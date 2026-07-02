@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 from typing import Iterable
 
 from verinote.engine.terms import TermParseError
@@ -25,6 +26,8 @@ _NORMALIZATION_BRIDGE_RELATIONS = {
     "canonical",
     "canonical_form",
 }
+_HANGUL_RE = re.compile(r"[\uac00-\ud7a3]")
+_HAN_RUN_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
 
 
 def extract_source(
@@ -47,6 +50,8 @@ def extract_source(
     try:
         for f in facts:
             if _is_normalization_bridge(f):
+                continue
+            if _has_unbacked_han_translation(f, source_text):
                 continue
             rows.append(
                 (
@@ -80,6 +85,20 @@ def _is_normalization_bridge(f: ExtractedFact) -> bool:
     if relation_kind != "string" or relation not in _NORMALIZATION_BRIDGE_RELATIONS:
         return False
     return f.subject_kind == "term" or f.object_kind == "term"
+
+
+def _has_unbacked_han_translation(f: ExtractedFact, source_text: str) -> bool:
+    """Drop likely Chinese/Hanja translations hallucinated from Korean sources."""
+    if _HANGUL_RE.search(source_text) is None:
+        return False
+    return any(
+        _has_han_run_not_in_source(value, source_text)
+        for value in (f.subject, f.relation, f.object)
+    )
+
+
+def _has_han_run_not_in_source(value: str, source_text: str) -> bool:
+    return any(match.group(0) not in source_text for match in _HAN_RUN_RE.finditer(value))
 
 
 def _extracted_value(value: str, kind: str) -> object:
