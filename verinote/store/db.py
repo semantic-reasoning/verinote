@@ -117,6 +117,42 @@ class Store:
             )
         )
 
+    def delete_source(self, source_id: int) -> sqlite3.Row | None:
+        """Delete a source and every fact extracted from it.
+
+        Returns the deleted source row, or None if it did not exist. Facts are
+        deleted with their DuckDB term rows so source removal does not leave
+        engine-side term data behind.
+        """
+        with self._lock:
+            source = self._conn.execute(
+                "SELECT * FROM sources WHERE id = ?", (source_id,)
+            ).fetchone()
+            if source is None:
+                return None
+            fact_ids = [
+                int(row["id"])
+                for row in self._conn.execute(
+                    "SELECT id FROM facts WHERE source_id = ? ORDER BY id",
+                    (source_id,),
+                )
+            ]
+            deleted_terms: list[int] = []
+            self._conn.execute("BEGIN")
+            try:
+                for fact_id in fact_ids:
+                    self.fact_terms.delete_fact_terms(fact_id)
+                    deleted_terms.append(fact_id)
+                self._conn.execute("DELETE FROM facts WHERE source_id = ?", (source_id,))
+                self._conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
+                self._conn.execute("COMMIT")
+                return source
+            except Exception:
+                self._rollback_quietly()
+                for fact_id in deleted_terms:
+                    self._restore_fact_terms_from_row_quietly(fact_id)
+                raise
+
     # --- runs ------------------------------------------------------------
     def add_run(self, *, provider: str | None, model: str | None, summary: str = "") -> int:
         """Open an extraction run; facts produced by it cite the returned id."""
@@ -386,6 +422,18 @@ class Store:
                 self.fact_terms.delete_fact_terms(fact_id)
             else:
                 self.fact_terms.put_fact_terms(fact_id, *terms)
+        except Exception:
+            pass
+
+    def _restore_fact_terms_from_row_quietly(self, fact_id: int) -> None:
+        try:
+            row = self._conn.execute(
+                "SELECT subject, relation, object FROM facts WHERE id = ?", (fact_id,)
+            ).fetchone()
+            if row is not None:
+                self.fact_terms.put_fact_terms(
+                    fact_id, row["subject"], row["relation"], row["object"]
+                )
         except Exception:
             pass
 
