@@ -72,6 +72,27 @@ def test_amend_missing_fact_returns_none(tmp_path):
     assert s.amend_fact(999, subject="x", relation="y", obj="z") is None
 
 
+def test_delete_source_removes_source_facts_and_terms(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    source_fact = s.add_fact("A", "r", "B", status="candidate", source_id=sid)
+    unrelated_fact = s.add_fact("C", "r", "D", status="candidate")
+
+    deleted = s.delete_source(sid)
+
+    assert deleted is not None
+    assert deleted["path"] == "sources/a.txt"
+    assert s.sources() == []
+    assert [f["id"] for f in s.facts()] == [unrelated_fact]
+    assert s.get_fact_terms(source_fact) is None
+    assert s.get_fact_terms(unrelated_fact) is not None
+
+
+def test_delete_missing_source_returns_none(tmp_path):
+    s = _store(tmp_path)
+    assert s.delete_source(999) is None
+
+
 def test_fact_log_orders_decisions(tmp_path):
     s = _store(tmp_path)
     fid = s.add_fact("A", "r", "B", status="needs_review")

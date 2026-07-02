@@ -55,6 +55,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     app.state.store = None
     app.state.source_jobs = {}
     app.state.source_jobs_lock = threading.Lock()
+    app.state.deleted_source_paths = set()
     if cfg is not None:
         store = Store(cfg.db_path)
         store.init_schema()
@@ -209,8 +210,21 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             if job is not None:
                 job.update(updates)
 
+    def _source_was_deleted(citation: str) -> bool:
+        with app.state.source_jobs_lock:
+            return citation in app.state.deleted_source_paths
+
+    def _forget_source_deletion(citation: str) -> None:
+        with app.state.source_jobs_lock:
+            app.state.deleted_source_paths.discard(citation)
+
+    def _mark_source_deleted(citation: str) -> None:
+        with app.state.source_jobs_lock:
+            app.state.deleted_source_paths.add(citation)
+
     def _start_source_extraction(citation: str, text: str, cfg: Config) -> None:
         job_id = uuid4().hex
+        _forget_source_deletion(citation)
         with app.state.source_jobs_lock:
             app.state.source_jobs[job_id] = {
                 "id": job_id,
@@ -222,6 +236,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
         def run() -> None:
             try:
+                if _source_was_deleted(citation):
+                    _set_source_job(job_id, status="done", message="Source deleted")
+                    return
                 with Store(cfg.db_path) as worker_store:
                     worker_store.init_schema()
                     client = get_client(cfg)
@@ -232,6 +249,19 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                         provider=cfg.provider,
                         model=cfg.model,
                     )
+                    if _source_was_deleted(citation):
+                        source = next(
+                            (
+                                row
+                                for row in worker_store.sources()
+                                if row["path"] == citation
+                            ),
+                            None,
+                        )
+                        if source is not None:
+                            worker_store.delete_source(source["id"])
+                        _set_source_job(job_id, status="done", message="Source deleted")
+                        return
                 _set_source_job(
                     job_id,
                     status="done",
@@ -247,6 +277,15 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             name=f"verinote-source-extract-{job_id}",
             daemon=True,
         ).start()
+
+    def _delete_source_file(source_path: str, root: Path) -> None:
+        path = (root / source_path).resolve()
+        try:
+            path.relative_to(root.resolve())
+        except ValueError as e:
+            raise OSError(f"refusing to delete source outside KB root: {source_path}") from e
+        if path.is_file():
+            path.unlink()
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard(request: Request):
@@ -277,6 +316,23 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
         citation = store_source(store, cfg.root, filename, text, kind)
         _start_source_extraction(citation, text, app.state.cfg)
+        return RedirectResponse("/sources", status_code=303)
+
+    @app.post("/sources/{source_id}/delete", response_class=HTMLResponse)
+    def delete_source(request: Request, source_id: int):
+        store = _active_store()
+        cfg = _active_cfg()
+        source = store.delete_source(source_id)
+        if source is not None:
+            _mark_source_deleted(source["path"])
+            try:
+                _delete_source_file(source["path"], cfg.root)
+            except OSError as e:
+                return _sources(
+                    request,
+                    error=f"source deleted, but file removal failed: {e}",
+                    status_code=500,
+                )
         return RedirectResponse("/sources", status_code=303)
 
     @app.get("/review", response_class=HTMLResponse)
