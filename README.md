@@ -94,7 +94,9 @@ and analytics use SQLite metadata; relation analytics intentionally summarize th
 SQLite display mirror rather than acting as logical inference input.
 
 Plain extractor output remains `StringLit` by default, so text such as
-`person("Ada")` is not reinterpreted as a compound term. Structural facts must be
+`person("Ada")` is not reinterpreted as a compound term. Source extraction can
+produce structural facts only by explicitly marking a slot as a term, for example
+`{"kind": "term", "value": "person(\"Ada\")"}`. Structural facts can also be
 entered through explicit term mode or `structural_term(...)`. Legacy SQLite rows
 without DuckDB term rows are backfilled as `StringLit` values the first time they
 are selected for verification.
