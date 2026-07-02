@@ -621,6 +621,27 @@ def test_add_question_persists(tmp_path):
     assert [q["text"] for q in c.app.state.store.questions()] == ["Where was Ada born?"]
 
 
+def test_delete_question_removes_query_file_entry(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    qid = store.add_question("Where was Ada born?")
+    store.set_question_query(
+        qid,
+        '.decl answer_q1(value: symbol)\nanswer_q1(O) :- relation("Ada", "born_in", O).',
+        "translated",
+    )
+    query_file = query_path(tmp_path)
+    query_file.parent.mkdir(parents=True, exist_ok=True)
+    query_file.write_text(store.questions()[0]["query_dl"] + "\n", encoding="utf-8")
+
+    r = c.post(f"/questions/{qid}/delete", follow_redirects=False)
+
+    assert r.status_code == 303
+    assert store.questions() == []
+    assert query_file.read_text(encoding="utf-8") == ""
+    assert "No questions yet" in c.get("/questions").text
+
+
 def test_translate_and_report_answers(tmp_path, monkeypatch, fake_client):
     # canned translator: answer_q<id>(O) :- relation("Ada","born_in",O)
     monkeypatch.setattr(

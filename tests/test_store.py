@@ -89,3 +89,6 @@ def test_questions_add_list_and_translate(tmp_path):
     s.set_question_query(qid, ".decl answer_q1(value: symbol)", "translated")
     assert s.questions(pending_only=True) == []
     assert s.questions()[0]["status"] == "translated"
+
+    s.delete_question(qid)
+    assert s.questions() == []

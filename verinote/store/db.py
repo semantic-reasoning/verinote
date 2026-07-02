@@ -341,6 +341,10 @@ class Store:
                 (query_dl, status, question_id),
             )
 
+    def delete_question(self, question_id: int) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM questions WHERE id = ?", (question_id,))
+
     # --- audit -----------------------------------------------------------
     def fact_log(self, fact_id: int) -> list[sqlite3.Row]:
         """Audit trail (oldest first) for one fact — drives the provenance view."""

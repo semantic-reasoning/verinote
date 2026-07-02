@@ -39,6 +39,7 @@ th { color: var(--muted); font-weight: 600; font-size: .85rem; }
   border-radius: 6px; padding: .25rem .5rem; margin-right: .3rem; cursor: pointer; font-size: .82rem; }
 .actions button:hover { border-color: var(--accent); }
 .actions button.danger:hover { border-color: var(--danger); color: var(--danger); }
+.actions form { display: inline; }
 .actions .srclink { color: var(--muted); text-decoration: none; font-size: .82rem; margin-left: .3rem; }
 .actions .srclink:hover { color: var(--accent); }
 .amend { display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; }
