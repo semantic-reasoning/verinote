@@ -9,9 +9,11 @@ def test_fact_schema_requires_every_property_for_strict_outputs():
     assert set(FACT_OBJECT_SCHEMA["required"]) == set(FACT_OBJECT_SCHEMA["properties"])
 
 
-def test_extraction_prompt_preserves_source_language():
-    assert "Preserve the source document's language" in EXTRACTION_SYSTEM
+def test_extraction_prompt_extracts_verbatim_source_text():
+    assert "verbatim from the source document" in EXTRACTION_SYSTEM
+    assert "exact language, spelling, script, casing, and wording" in EXTRACTION_SYSTEM
     assert "do not translate" in EXTRACTION_SYSTEM
+    assert "paraphrase" in EXTRACTION_SYSTEM
 
 
 def test_parse_facts_accepts_legacy_string_slots():
