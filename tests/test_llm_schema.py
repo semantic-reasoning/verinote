@@ -61,17 +61,60 @@ def test_parse_facts_accepts_explicit_term_slots():
     assert fact.note == "source-backed"
 
 
+def test_parse_facts_downgrades_invalid_term_slots_to_strings():
+    facts = parse_facts(
+        {
+            "facts": [
+                {
+                    "subject": {"kind": "term", "value": "주식회사 클레버플랜트"},
+                    "relation": {"kind": "string", "value": "法定代表人"},
+                    "object": {"kind": "term", "value": 'person("김정석")'},
+                    "confidence": 1,
+                    "note": "",
+                }
+            ]
+        }
+    )
+
+    fact = facts[0]
+    assert fact.subject == "주식회사 클레버플랜트"
+    assert fact.object == 'person("김정석")'
+    assert (fact.subject_kind, fact.relation_kind, fact.object_kind) == (
+        "string",
+        "string",
+        "term",
+    )
+    assert "subject marked term but stored as string" in fact.note
+
+
+def test_parse_facts_downgrades_variable_bearing_term_slots_to_strings():
+    fact = parse_facts(
+        {
+            "facts": [
+                {
+                    "subject": {"kind": "term", "value": "person(Name)"},
+                    "relation": {"kind": "string", "value": "has_role"},
+                    "object": {"kind": "string", "value": "PI"},
+                    "confidence": 0.9,
+                    "note": "",
+                }
+            ]
+        }
+    )[0]
+
+    assert fact.subject_kind == "string"
+    assert "structural term must be ground" in fact.note
+
+
 @pytest.mark.parametrize(
     "slot",
     [
         {"kind": "bogus", "value": "Ada"},
-        {"kind": "term", "value": 'person("Ada"'},
-        {"kind": "term", "value": "person(Name)"},
         {"kind": "string", "value": ""},
         {"kind": "term"},
     ],
 )
-def test_parse_facts_rejects_invalid_explicit_slots(slot):
+def test_parse_facts_rejects_malformed_explicit_slots(slot):
     with pytest.raises(LLMError):
         parse_facts(
             {

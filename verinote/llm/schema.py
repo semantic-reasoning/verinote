@@ -53,7 +53,9 @@ EXTRACTION_SYSTEM = (
     "object) triple with a confidence in [0,1]. The subject, relation, and object "
     "must each be an object {\"kind\":\"string|term\", \"value\":\"...\"}. Use "
     "kind=\"term\" only for explicit, fully ground Datalog terms such as "
-    "person(\"Ada\") or role(person(\"Ada\"), \"PI\"); otherwise use kind=\"string\". "
+    "person(\"Ada\") or role(person(\"Ada\"), \"PI\"). Bare names, labels, Korean, "
+    "Chinese, whitespace, or punctuation outside quoted string arguments are not "
+    "valid terms; use kind=\"string\" for those values. "
     "Use note=\"\" when there is no extra source note. Do not invent facts. Emit JSON "
     "matching the provided schema."
 )
@@ -109,16 +111,20 @@ def parse_facts(raw: str | dict[str, Any]) -> list[ExtractedFact]:
     facts: list[ExtractedFact] = []
     for item in items:
         try:
-            subject, subject_kind = _parse_fact_slot(item, "subject")
-            relation, relation_kind = _parse_fact_slot(item, "relation")
-            obj, object_kind = _parse_fact_slot(item, "object")
+            subject, subject_kind, subject_warning = _parse_fact_slot(item, "subject")
+            relation, relation_kind, relation_warning = _parse_fact_slot(item, "relation")
+            obj, object_kind, object_warning = _parse_fact_slot(item, "object")
+            note = str(item.get("note", "")).strip()
+            warnings = [w for w in (subject_warning, relation_warning, object_warning) if w]
+            if warnings:
+                note = "; ".join([part for part in (note, *warnings) if part])
             facts.append(
                 ExtractedFact(
                     subject=subject,
                     relation=relation,
                     object=obj,
                     confidence=float(item["confidence"]),
-                    note=str(item.get("note", "")).strip(),
+                    note=note,
                     subject_kind=subject_kind,
                     relation_kind=relation_kind,
                     object_kind=object_kind,
@@ -129,7 +135,7 @@ def parse_facts(raw: str | dict[str, Any]) -> list[ExtractedFact]:
     return facts
 
 
-def _parse_fact_slot(item: dict[str, Any], field: str) -> tuple[str, str]:
+def _parse_fact_slot(item: dict[str, Any], field: str) -> tuple[str, str, str]:
     raw = item[field]
     if isinstance(raw, str):
         value = raw.strip()
@@ -144,10 +150,13 @@ def _parse_fact_slot(item: dict[str, Any], field: str) -> tuple[str, str]:
     if not value:
         raise ValueError(f"{field} was empty")
     if kind == "term":
-        term = parse_term(value)
-        if not _is_ground_term(term):
-            raise TermParseError(f"{field} structural term must be ground")
-    return value, kind
+        try:
+            term = parse_term(value)
+            if not _is_ground_term(term):
+                raise TermParseError(f"{field} structural term must be ground")
+        except TermParseError as exc:
+            return value, "string", f"{field} marked term but stored as string: {exc}"
+    return value, kind, ""
 
 
 def _is_ground_term(term: Term) -> bool:
