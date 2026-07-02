@@ -37,6 +37,7 @@ from verinote.pipeline import (
     sync_sources,
     translate_questions,
     verify,
+    write_query_file,
 )
 from verinote.engine.terms import StringLit, render_term
 from verinote.store import Store
@@ -371,6 +372,13 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     @app.post("/questions", response_class=HTMLResponse)
     def add_question(request: Request, text: str = Form(...)):
         _active_store().add_question(text)
+        return RedirectResponse("/questions", status_code=303)
+
+    @app.post("/questions/{question_id}/delete", response_class=HTMLResponse)
+    def delete_question(request: Request, question_id: int):
+        store = _active_store()
+        store.delete_question(question_id)
+        write_query_file(store, _active_cfg().root)
         return RedirectResponse("/questions", status_code=303)
 
     @app.post("/questions/translate", response_class=HTMLResponse)
