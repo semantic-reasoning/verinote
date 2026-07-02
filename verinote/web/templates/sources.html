@@ -30,7 +30,7 @@
 {% if sources %}
 <table class="sources">
   <thead>
-    <tr><th>Path</th><th>Kind</th><th>Facts</th><th>Added</th></tr>
+    <tr><th>Path</th><th>Kind</th><th>Facts</th><th>Added</th><th>Actions</th></tr>
   </thead>
   <tbody>
     {% for s in sources %}
@@ -39,6 +39,11 @@
       <td><span class="badge">{{ s["kind"] }}</span></td>
       <td class="conf">{{ s["fact_count"] }}</td>
       <td class="src">{{ s["added_at"] }}</td>
+      <td class="actions">
+        <form action="/sources/{{ s["id"] }}/delete" method="post">
+          <button class="danger" type="submit">Delete</button>
+        </form>
+      </td>
     </tr>
     {% endfor %}
   </tbody>

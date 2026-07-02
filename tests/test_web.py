@@ -174,6 +174,27 @@ def test_sources_page_lists_sources(tmp_path):
     assert "text" in r.text
 
 
+def test_delete_source_removes_file_and_extracted_facts(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    source_path = tmp_path / "sources" / "a.txt"
+    source_path.parent.mkdir()
+    source_path.write_text("source body", encoding="utf-8")
+    sid = store.add_source("sources/a.txt", kind="text")
+    source_fact = store.add_fact("A", "is_a", "B", status="candidate", source_id=sid)
+    unrelated_fact = c.fact_id
+
+    r = c.post(f"/sources/{sid}/delete", follow_redirects=False)
+
+    assert r.status_code == 303
+    assert r.headers["location"] == "/sources"
+    assert not source_path.exists()
+    assert store.sources() == []
+    assert store.get_fact(source_fact) is None
+    assert store.get_fact_terms(source_fact) is None
+    assert store.get_fact(unrelated_fact) is not None
+
+
 def test_upload_docx_converts_and_extracts(tmp_path, monkeypatch, fake_client):
     import io
 
