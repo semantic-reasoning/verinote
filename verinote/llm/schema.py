@@ -12,18 +12,29 @@ import json
 from typing import Any
 
 from verinote.llm.base import ExtractedFact, LLMError
+from verinote.engine.terms import Compound, Term, TermParseError, Var, parse_term
 
 # JSON Schema for a batch of extracted facts. Adapters pass this to whatever
 # structured-output mechanism the provider offers (tool use / response_format /
 # json mode) so the model is constrained to emit exactly this shape.
+FACT_SLOT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["kind", "value"],
+    "additionalProperties": False,
+    "properties": {
+        "kind": {"type": "string", "enum": ["string", "term"]},
+        "value": {"type": "string", "minLength": 1},
+    },
+}
+
 FACT_OBJECT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": ["subject", "relation", "object", "confidence"],
     "additionalProperties": False,
     "properties": {
-        "subject": {"type": "string", "minLength": 1},
-        "relation": {"type": "string", "minLength": 1},
-        "object": {"type": "string", "minLength": 1},
+        "subject": FACT_SLOT_SCHEMA,
+        "relation": FACT_SLOT_SCHEMA,
+        "object": FACT_SLOT_SCHEMA,
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "note": {"type": "string"},
     },
@@ -39,8 +50,11 @@ FACT_ARRAY_SCHEMA: dict[str, Any] = {
 EXTRACTION_SYSTEM = (
     "You extract source-backed factual triples from a document. Return ONLY facts "
     "stated or directly entailed by the text. Each fact is a (subject, relation, "
-    "object) triple with a confidence in [0,1]. Do not invent facts. Emit JSON "
-    "matching the provided schema."
+    "object) triple with a confidence in [0,1]. The subject, relation, and object "
+    "may each be either a plain string or an object {\"kind\":\"string|term\", "
+    "\"value\":\"...\"}. Use kind=\"term\" only for explicit, fully ground Datalog "
+    "terms such as person(\"Ada\") or role(person(\"Ada\"), \"PI\"); otherwise use "
+    "plain strings. Do not invent facts. Emit JSON matching the provided schema."
 )
 
 
@@ -94,15 +108,50 @@ def parse_facts(raw: str | dict[str, Any]) -> list[ExtractedFact]:
     facts: list[ExtractedFact] = []
     for item in items:
         try:
+            subject, subject_kind = _parse_fact_slot(item, "subject")
+            relation, relation_kind = _parse_fact_slot(item, "relation")
+            obj, object_kind = _parse_fact_slot(item, "object")
             facts.append(
                 ExtractedFact(
-                    subject=str(item["subject"]).strip(),
-                    relation=str(item["relation"]).strip(),
-                    object=str(item["object"]).strip(),
+                    subject=subject,
+                    relation=relation,
+                    object=obj,
                     confidence=float(item["confidence"]),
                     note=str(item.get("note", "")).strip(),
+                    subject_kind=subject_kind,
+                    relation_kind=relation_kind,
+                    object_kind=object_kind,
                 )
             )
-        except (KeyError, TypeError, ValueError) as exc:
+        except (KeyError, TypeError, ValueError, TermParseError) as exc:
             raise LLMError(f"malformed fact object {item!r}: {exc}") from exc
     return facts
+
+
+def _parse_fact_slot(item: dict[str, Any], field: str) -> tuple[str, str]:
+    raw = item[field]
+    if isinstance(raw, str):
+        value = raw.strip()
+        kind = "string"
+    elif isinstance(raw, dict):
+        kind = str(raw["kind"]).strip()
+        value = str(raw["value"]).strip()
+    else:
+        raise TypeError(f"{field} must be a string or {{kind,value}} object")
+    if kind not in {"string", "term"}:
+        raise ValueError(f"{field}.kind must be 'string' or 'term'")
+    if not value:
+        raise ValueError(f"{field} was empty")
+    if kind == "term":
+        term = parse_term(value)
+        if not _is_ground_term(term):
+            raise TermParseError(f"{field} structural term must be ground")
+    return value, kind
+
+
+def _is_ground_term(term: Term) -> bool:
+    if isinstance(term, Var):
+        return False
+    if isinstance(term, Compound):
+        return all(_is_ground_term(arg) for arg in term.args)
+    return True

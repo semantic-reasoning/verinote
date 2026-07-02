@@ -10,8 +10,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterable
 
-from verinote.llm.base import LLMClient
+from verinote.engine.terms import TermParseError
+from verinote.llm.base import LLMClient, LLMError
 from verinote.store import Store
+from verinote.store.fact_input import structural_term
 
 
 def extract_source(
@@ -31,11 +33,25 @@ def extract_source(
     """
     source_id = store.add_source(source_path)
     facts = client.extract_facts(source_text=source_text, schema_hint=schema_hint)
-    for f in facts:
+    rows = []
+    try:
+        for f in facts:
+            rows.append(
+                (
+                    _extracted_value(f.subject, f.subject_kind),
+                    _extracted_value(f.relation, f.relation_kind),
+                    _extracted_value(f.object, f.object_kind),
+                    f,
+                )
+            )
+    except TermParseError as exc:
+        raise LLMError(f"malformed extracted structural term: {exc}") from exc
+
+    for subject, relation, obj, f in rows:
         store.add_fact(
-            f.subject,
-            f.relation,
-            f.object,
+            subject,
+            relation,
+            obj,
             status="candidate",
             confidence=f.confidence,
             source_id=source_id,
@@ -43,6 +59,12 @@ def extract_source(
             note=f.note,
         )
     return len(facts)
+
+
+def _extracted_value(value: str, kind: str) -> object:
+    if kind == "term":
+        return structural_term(value)
+    return value
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,83 @@
+# SPDX-License-Identifier: MPL-2.0
+import pytest
+
+from verinote.llm import LLMError
+from verinote.llm.schema import parse_facts
+
+
+def test_parse_facts_accepts_legacy_string_slots():
+    facts = parse_facts(
+        {
+            "facts": [
+                {
+                    "subject": 'person("Ada")',
+                    "relation": "has_role",
+                    "object": 'role(person("Ada"), "PI")',
+                    "confidence": 0.9,
+                }
+            ]
+        }
+    )
+
+    fact = facts[0]
+    assert fact.subject == 'person("Ada")'
+    assert fact.relation == "has_role"
+    assert fact.object == 'role(person("Ada"), "PI")'
+    assert (fact.subject_kind, fact.relation_kind, fact.object_kind) == (
+        "string",
+        "string",
+        "string",
+    )
+
+
+def test_parse_facts_accepts_explicit_term_slots():
+    facts = parse_facts(
+        {
+            "facts": [
+                {
+                    "subject": {"kind": "term", "value": 'person("Ada")'},
+                    "relation": {"kind": "term", "value": "has_role"},
+                    "object": {"kind": "term", "value": 'role(person("Ada"), "PI")'},
+                    "confidence": 0.9,
+                    "note": "source-backed",
+                }
+            ]
+        }
+    )
+
+    fact = facts[0]
+    assert fact.subject == 'person("Ada")'
+    assert fact.relation == "has_role"
+    assert fact.object == 'role(person("Ada"), "PI")'
+    assert (fact.subject_kind, fact.relation_kind, fact.object_kind) == (
+        "term",
+        "term",
+        "term",
+    )
+    assert fact.note == "source-backed"
+
+
+@pytest.mark.parametrize(
+    "slot",
+    [
+        {"kind": "bogus", "value": "Ada"},
+        {"kind": "term", "value": 'person("Ada"'},
+        {"kind": "term", "value": "person(Name)"},
+        {"kind": "string", "value": ""},
+        {"kind": "term"},
+    ],
+)
+def test_parse_facts_rejects_invalid_explicit_slots(slot):
+    with pytest.raises(LLMError):
+        parse_facts(
+            {
+                "facts": [
+                    {
+                        "subject": slot,
+                        "relation": "has_role",
+                        "object": "PI",
+                        "confidence": 0.9,
+                    }
+                ]
+            }
+        )
