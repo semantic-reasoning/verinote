@@ -91,6 +91,44 @@ def test_extract_source_stores_explicit_structural_terms(tmp_path, fake_client):
     )
 
 
+def test_extract_source_stores_mixed_string_and_structural_terms(tmp_path, fake_client):
+    s = _store(tmp_path)
+    run_id = s.add_run(provider="fake", model="m")
+    client = fake_client(
+        [
+            ExtractedFact(
+                "Example Corp",
+                "legal_representative",
+                'person("Ada")',
+                1.0,
+                subject_kind="string",
+                relation_kind="string",
+                object_kind="term",
+                note="subject marked term but stored as string",
+            )
+        ]
+    )
+
+    assert (
+        extract_source(
+            s,
+            client,
+            source_path="sources/x.txt",
+            source_text="...",
+            run_id=run_id,
+        )
+        == 1
+    )
+
+    fact = s.facts()[0]
+    assert s.get_fact_terms(fact["id"]) == (
+        StringLit("Example Corp"),
+        StringLit("legal_representative"),
+        Compound("person", (StringLit("Ada"),)),
+    )
+    assert "stored as string" in fact["note"]
+
+
 def test_extract_source_rejects_invalid_structural_term_without_partial_facts(
     tmp_path, fake_client
 ):
