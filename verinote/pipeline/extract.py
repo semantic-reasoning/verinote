@@ -11,9 +11,20 @@ from dataclasses import dataclass, field
 from typing import Iterable
 
 from verinote.engine.terms import TermParseError
-from verinote.llm.base import LLMClient, LLMError
+from verinote.llm.base import ExtractedFact, LLMClient, LLMError
 from verinote.store import Store
 from verinote.store.fact_input import structural_term
+
+
+_NORMALIZATION_BRIDGE_RELATIONS = {
+    "주체",
+    "subject",
+    "entity",
+    "normalized",
+    "normalized_as",
+    "canonical",
+    "canonical_form",
+}
 
 
 def extract_source(
@@ -35,6 +46,8 @@ def extract_source(
     rows = []
     try:
         for f in facts:
+            if _is_normalization_bridge(f):
+                continue
             rows.append(
                 (
                     _extracted_value(f.subject, f.subject_kind),
@@ -58,7 +71,15 @@ def extract_source(
             run_id=run_id,
             note=f.note,
         )
-    return len(facts)
+    return len(rows)
+
+
+def _is_normalization_bridge(f: ExtractedFact) -> bool:
+    relation = f.relation.strip().lower()
+    relation_kind = f.relation_kind
+    if relation_kind != "string" or relation not in _NORMALIZATION_BRIDGE_RELATIONS:
+        return False
+    return f.subject_kind == "term" or f.object_kind == "term"
 
 
 def _extracted_value(value: str, kind: str) -> object:

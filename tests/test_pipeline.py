@@ -129,6 +129,72 @@ def test_extract_source_stores_mixed_string_and_structural_terms(tmp_path, fake_
     assert "stored as string" in fact["note"]
 
 
+def test_extract_source_drops_string_to_term_normalization_bridge(
+    tmp_path, fake_client
+):
+    s = _store(tmp_path)
+    run_id = s.add_run(provider="fake", model="m")
+    client = fake_client(
+        [
+            ExtractedFact(
+                "Ada",
+                "주체",
+                'person("Ada")',
+                1.0,
+                object_kind="term",
+            )
+        ]
+    )
+
+    assert (
+        extract_source(
+            s,
+            client,
+            source_path="sources/x.txt",
+            source_text="...",
+            run_id=run_id,
+        )
+        == 0
+    )
+
+    assert s.facts() == []
+    assert [source["path"] for source in s.sources()] == ["sources/x.txt"]
+
+
+def test_extract_source_keeps_real_relation_to_structural_object(tmp_path, fake_client):
+    s = _store(tmp_path)
+    run_id = s.add_run(provider="fake", model="m")
+    client = fake_client(
+        [
+            ExtractedFact(
+                "Example Corp",
+                "legal_representative",
+                'person("Ada")',
+                1.0,
+                object_kind="term",
+            )
+        ]
+    )
+
+    assert (
+        extract_source(
+            s,
+            client,
+            source_path="sources/x.txt",
+            source_text="...",
+            run_id=run_id,
+        )
+        == 1
+    )
+
+    fact = s.facts()[0]
+    assert s.get_fact_terms(fact["id"]) == (
+        StringLit("Example Corp"),
+        StringLit("legal_representative"),
+        Compound("person", (StringLit("Ada"),)),
+    )
+
+
 def test_extract_source_rejects_invalid_structural_term_without_partial_facts(
     tmp_path, fake_client
 ):
