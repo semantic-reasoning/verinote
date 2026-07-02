@@ -31,7 +31,6 @@ def extract_source(
     after passing the human review gate (see the web review queue). Each fact
     cites its `source` and (when given) the `run` that produced it.
     """
-    source_id = store.add_source(source_path)
     facts = client.extract_facts(source_text=source_text, schema_hint=schema_hint)
     rows = []
     try:
@@ -47,6 +46,7 @@ def extract_source(
     except TermParseError as exc:
         raise LLMError(f"malformed extracted structural term: {exc}") from exc
 
+    source_id = store.add_source(source_path)
     for subject, relation, obj, f in rows:
         store.add_fact(
             subject,

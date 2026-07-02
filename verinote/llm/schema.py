@@ -29,7 +29,7 @@ FACT_SLOT_SCHEMA: dict[str, Any] = {
 
 FACT_OBJECT_SCHEMA: dict[str, Any] = {
     "type": "object",
-    "required": ["subject", "relation", "object", "confidence"],
+    "required": ["subject", "relation", "object", "confidence", "note"],
     "additionalProperties": False,
     "properties": {
         "subject": FACT_SLOT_SCHEMA,
@@ -54,7 +54,8 @@ EXTRACTION_SYSTEM = (
     "must each be an object {\"kind\":\"string|term\", \"value\":\"...\"}. Use "
     "kind=\"term\" only for explicit, fully ground Datalog terms such as "
     "person(\"Ada\") or role(person(\"Ada\"), \"PI\"); otherwise use kind=\"string\". "
-    "Do not invent facts. Emit JSON matching the provided schema."
+    "Use note=\"\" when there is no extra source note. Do not invent facts. Emit JSON "
+    "matching the provided schema."
 )
 
 

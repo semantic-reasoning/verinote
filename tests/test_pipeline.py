@@ -119,6 +119,7 @@ def test_extract_source_rejects_invalid_structural_term_without_partial_facts(
         )
 
     assert s.facts() == []
+    assert s.sources() == []
 
 
 def test_sync_sources_opens_run_and_summarises(tmp_path, fake_client):
