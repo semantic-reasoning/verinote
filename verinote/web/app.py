@@ -10,8 +10,6 @@ from __future__ import annotations
 from importlib import resources
 from pathlib import Path
 import threading
-import time
-from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -29,12 +27,13 @@ from verinote.config import (
 )
 from verinote.llm import LLMError, get_client
 from verinote.pipeline import (
+    create_chunked_extraction_job,
     IngestError,
     ingest_bytes,
+    process_extraction_job,
     store_source,
     supported_suffixes,
     repair_questions,
-    sync_sources,
     translate_questions,
     verify,
     write_query_file,
@@ -53,9 +52,6 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     app = FastAPI(title="verinote")
     app.state.cfg = cfg
     app.state.store = None
-    app.state.source_jobs = {}
-    app.state.source_jobs_lock = threading.Lock()
-    app.state.deleted_source_paths = set()
     if cfg is not None:
         store = Store(cfg.db_path)
         store.init_schema()
@@ -183,13 +179,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         if app.state.store is None:
             return _kb_select(request, error=error, status_code=status_code)
         store = _active_store()
-        with app.state.source_jobs_lock:
-            jobs = sorted(
-                app.state.source_jobs.values(),
-                key=lambda job: job["created_at"],
-                reverse=True,
-            )
-        has_running_jobs = any(job["status"] == "running" for job in jobs)
+        jobs = store.source_extraction_jobs()
+        has_running_jobs = any(job["status"] in {"pending", "running"} for job in jobs)
         return templates.TemplateResponse(
             request,
             "sources.html",
@@ -204,73 +195,21 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             status_code=status_code,
         )
 
-    def _set_source_job(job_id: str, **updates: object) -> None:
-        with app.state.source_jobs_lock:
-            job = app.state.source_jobs.get(job_id)
-            if job is not None:
-                job.update(updates)
-
-    def _source_was_deleted(citation: str) -> bool:
-        with app.state.source_jobs_lock:
-            return citation in app.state.deleted_source_paths
-
-    def _forget_source_deletion(citation: str) -> None:
-        with app.state.source_jobs_lock:
-            app.state.deleted_source_paths.discard(citation)
-
-    def _mark_source_deleted(citation: str) -> None:
-        with app.state.source_jobs_lock:
-            app.state.deleted_source_paths.add(citation)
-
-    def _start_source_extraction(citation: str, text: str, cfg: Config) -> None:
-        job_id = uuid4().hex
-        _forget_source_deletion(citation)
-        with app.state.source_jobs_lock:
-            app.state.source_jobs[job_id] = {
-                "id": job_id,
-                "source": citation,
-                "status": "running",
-                "message": "Analyzing source...",
-                "created_at": time.time(),
-            }
-
+    def _start_source_extraction(job_id: int, cfg: Config) -> None:
         def run() -> None:
             try:
-                if _source_was_deleted(citation):
-                    _set_source_job(job_id, status="done", message="Source deleted")
-                    return
                 with Store(cfg.db_path) as worker_store:
                     worker_store.init_schema()
                     client = get_client(cfg)
-                    result = sync_sources(
-                        worker_store,
-                        client,
-                        [(citation, text)],
-                        provider=cfg.provider,
-                        model=cfg.model,
-                    )
-                    if _source_was_deleted(citation):
-                        source = next(
-                            (
-                                row
-                                for row in worker_store.sources()
-                                if row["path"] == citation
-                            ),
-                            None,
-                        )
-                        if source is not None:
-                            worker_store.delete_source(source["id"])
-                        _set_source_job(job_id, status="done", message="Source deleted")
-                        return
-                _set_source_job(
-                    job_id,
-                    status="done",
-                    message=f"Analysis complete: {result.total} candidate(s)",
-                )
+                    process_extraction_job(worker_store, client, job_id=job_id)
             except LLMError as e:
-                _set_source_job(job_id, status="failed", message=f"extraction failed: {e}")
+                with Store(cfg.db_path) as worker_store:
+                    worker_store.init_schema()
+                    worker_store.fail_extraction_job(job_id, f"extraction failed: {e}")
             except Exception as e:  # noqa: BLE001 - keep background failures visible in UI
-                _set_source_job(job_id, status="failed", message=f"analysis failed: {e}")
+                with Store(cfg.db_path) as worker_store:
+                    worker_store.init_schema()
+                    worker_store.fail_extraction_job(job_id, f"analysis failed: {e}")
 
         threading.Thread(
             target=run,
@@ -286,6 +225,13 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             raise OSError(f"refusing to delete source outside KB root: {source_path}") from e
         if path.is_file():
             path.unlink()
+
+    def _resume_source_extraction_jobs() -> None:
+        if app.state.store is None or app.state.cfg is None:
+            return
+        for job in app.state.store.source_extraction_jobs():
+            if job["status"] in {"pending", "running"}:
+                _start_source_extraction(int(job["id"]), app.state.cfg)
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard(request: Request):
@@ -315,7 +261,29 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             return _sources(request, error=str(e), status_code=400)
 
         citation = store_source(store, cfg.root, filename, text, kind)
-        _start_source_extraction(citation, text, app.state.cfg)
+        source = store.get_source_by_path(citation)
+        if source is None:
+            return _sources(
+                request,
+                error=f"source registration failed: {citation}",
+                status_code=500,
+            )
+        job_id = create_chunked_extraction_job(
+            store,
+            source_id=int(source["id"]),
+            source_text=text,
+            provider=cfg.provider,
+            model=cfg.model,
+        )
+        _start_source_extraction(job_id, app.state.cfg)
+        return RedirectResponse("/sources", status_code=303)
+
+    @app.post("/sources/jobs/{job_id}/retry", response_class=HTMLResponse)
+    def retry_source_job(request: Request, job_id: int):
+        store = _active_store()
+        retried = store.retry_failed_chunks(job_id)
+        if retried:
+            _start_source_extraction(job_id, _active_cfg())
         return RedirectResponse("/sources", status_code=303)
 
     @app.post("/sources/{source_id}/delete", response_class=HTMLResponse)
@@ -324,7 +292,6 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         cfg = _active_cfg()
         source = store.delete_source(source_id)
         if source is not None:
-            _mark_source_deleted(source["path"])
             try:
                 _delete_source_file(source["path"], cfg.root)
             except OSError as e:
@@ -541,6 +508,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             request,
             test_result=f"{client.name} answered with {len(facts)} fact(s) from {c.model}",
         )
+
+    _resume_source_extraction_jobs()
 
     return app
 

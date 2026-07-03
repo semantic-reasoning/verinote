@@ -20,8 +20,14 @@
   {% for job in jobs %}
   <p class="job job-{{ job["status"] }}">
     <span class="badge">{{ job["status"] }}</span>
-    <code>{{ job["source"] }}</code>
+    <code>{{ job["source_path"] }}</code>
     <span>{{ job["message"] }}</span>
+    <span class="conf">{{ job["candidate_count"] }} candidate(s)</span>
+    {% if job["failed_chunks"] %}
+    <form action="/sources/jobs/{{ job["id"] }}/retry" method="post">
+      <button class="btn ghost" type="submit">Retry failed chunks</button>
+    </form>
+    {% endif %}
   </p>
   {% endfor %}
 </div>
