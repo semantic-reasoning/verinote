@@ -44,6 +44,49 @@
 <p class="muted">No sources yet.</p>
 {% endif %}
 
+<h2>Source corroboration <span class="muted">- engine-input facts only</span></h2>
+{% if corroboration %}
+<table class="counts">
+  <thead><tr><th>Fact</th><th>Sources</th></tr></thead>
+  <tbody>
+    {% for item in corroboration %}
+    <tr>
+      <td>
+        <code>{{ item.subject }}</code> / <code>{{ item.relation }}</code> /
+        <code>{{ item.object }}</code>
+      </td>
+      <td class="conf">{{ item.source_count }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No source-backed engine-input facts yet.</p>
+{% endif %}
+
+<h2>Single-valued conflicts <span class="muted">- source support by value</span></h2>
+{% if single_valued_conflicts %}
+<table class="counts">
+  <thead><tr><th>Subject / relation</th><th>Competing values</th></tr></thead>
+  <tbody>
+    {% for conflict in single_valued_conflicts %}
+    <tr>
+      <td><code>{{ conflict.subject }}</code> / <code>{{ conflict.relation }}</code></td>
+      <td>
+        {% for value in conflict.values %}
+          <code>{{ value.object }}</code>
+          ({{ value.source_count }} source{% if value.source_count != 1 %}s{% endif %})
+          {% if not loop.last %}; {% endif %}
+        {% endfor %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No source-backed single-valued conflicts.</p>
+{% endif %}
+
 <p><a class="btn" href="/review">Go to review queue →</a>
    <a class="btn ghost" href="/sources">Manage sources →</a></p>
 {% endblock %}
