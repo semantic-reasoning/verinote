@@ -5,10 +5,12 @@ from verinote.pipeline.corroboration import (
     CorroborationPolicyError,
     corroboration,
     functional_relations,
+    normalize_typed_value,
     relation_aliases,
     single_valued_conflicts,
     store_corroboration,
     store_single_valued_conflicts,
+    typed_relations,
 )
 from verinote.store import Store
 
@@ -287,3 +289,164 @@ def test_store_single_valued_conflicts_loads_relation_alias_file(tmp_path):
     assert [(c.subject, c.relation) for c in store_conflicts] == [
         ("논문A", "published_year")
     ]
+
+
+def test_normalize_typed_values_to_comparable_scalars():
+    assert normalize_typed_value("date", "2024.7.3") == 20240703
+    assert normalize_typed_value("date", "date(2024, 7)") == 20240701
+    assert normalize_typed_value("number", "1,234.567") == 1234567
+    assert normalize_typed_value("number", "number(1.0005)") == 1001
+    assert normalize_typed_value("ordinal", "제3호") == 3
+    assert normalize_typed_value("ordinal", "4th") == 4
+    assert normalize_typed_value("amount", 'amount(5400,"억")') == 540000000000
+    assert normalize_typed_value("amount", 'amount(0.54,"조")') == 540000000000
+
+
+def test_typed_relations_parse_amount_units():
+    specs = typed_relations(
+        "- `매출` : amount as revenue (억원=100000000, 조원=1000000000000)\n"
+    )
+
+    assert specs["매출"].type == "amount"
+    assert specs["매출"].alias == "revenue"
+    assert specs["매출"].units == {"억원": 100000000, "조원": 1000000000000}
+
+
+def test_typed_relations_reject_unit_clause_on_non_amount():
+    try:
+        typed_relations("- `출시일` : date as released_on (일=1)\n")
+    except CorroborationPolicyError as exc:
+        assert "units are only valid" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected CorroborationPolicyError")
+
+
+def test_typed_scalar_equal_values_do_not_conflict():
+    rows = [
+        {
+            "subject": "갑사",
+            "relation": "매출",
+            "object": 'amount(5400,"억")',
+            "status": "confirmed",
+            "source": "sources/a.md",
+        },
+        {
+            "subject": "갑사",
+            "relation": "매출",
+            "object": 'amount(0.54,"조")',
+            "status": "confirmed",
+            "source": "sources/b.md",
+        },
+    ]
+    typed = typed_relations("- `매출` : amount as revenue\n")
+
+    conflicts = single_valued_conflicts(rows, {"매출"}, typed=typed)
+
+    assert conflicts == []
+
+
+def test_typed_scalar_equal_values_through_alias_do_not_conflict():
+    rows = [
+        {
+            "subject": "갑사",
+            "relation": "매출액",
+            "object": 'amount(5400,"억")',
+            "status": "confirmed",
+            "source": "sources/a.md",
+        },
+        {
+            "subject": "갑사",
+            "relation": "revenue",
+            "object": 'amount(0.54,"조")',
+            "status": "confirmed",
+            "source": "sources/b.md",
+        },
+    ]
+    aliases = {"매출액": "revenue"}
+    typed = typed_relations("- revenue : amount as revenue_scalar\n")
+
+    conflicts = single_valued_conflicts(rows, {"revenue"}, aliases, typed)
+
+    assert conflicts == []
+
+
+def test_typed_scalar_different_values_conflict_with_representatives():
+    rows = [
+        {
+            "subject": "갑사",
+            "relation": "매출",
+            "object": 'amount(5000,"억")',
+            "status": "confirmed",
+            "source": "sources/a.md",
+        },
+        {
+            "subject": "갑사",
+            "relation": "매출",
+            "object": 'amount(5400,"억")',
+            "status": "confirmed",
+            "source": "sources/b.md",
+        },
+        {
+            "subject": "갑사",
+            "relation": "매출",
+            "object": 'amount(0.54,"조")',
+            "status": "accepted",
+            "source": "sources/c.md",
+        },
+    ]
+    typed = typed_relations("- `매출` : amount as revenue\n")
+
+    conflicts = single_valued_conflicts(rows, {"매출"}, typed=typed)
+
+    assert [(c.subject, c.relation) for c in conflicts] == [("갑사", "매출")]
+    assert [value.object for value in conflicts[0].values] == [
+        'amount(0.54,"조")',
+        'amount(5000,"억")',
+    ]
+    assert [value.source_count for value in conflicts[0].values] == [2, 1]
+
+
+def test_typed_scalar_lookup_uses_nfc_relation_without_changing_conflict_key():
+    nfd_relation = unicodedata.normalize("NFD", "매출")
+    rows = [
+        {
+            "subject": "갑사",
+            "relation": nfd_relation,
+            "object": 'amount(5000,"억")',
+            "status": "confirmed",
+            "source": "sources/a.md",
+        },
+        {
+            "subject": "갑사",
+            "relation": nfd_relation,
+            "object": 'amount(0.54,"조")',
+            "status": "confirmed",
+            "source": "sources/b.md",
+        },
+    ]
+    typed = typed_relations("- `매출` : amount as revenue\n")
+
+    conflicts = single_valued_conflicts(rows, {nfd_relation}, typed=typed)
+
+    assert [(c.subject, c.relation) for c in conflicts] == [("갑사", nfd_relation)]
+    assert [value.source_count for value in conflicts[0].values] == [1, 1]
+
+
+def test_store_single_valued_conflicts_loads_typed_relations_file(tmp_path):
+    s = _store(tmp_path)
+    policy = tmp_path / "policy"
+    policy.mkdir()
+    (policy / "logic-policy.dl").write_text(
+        '.decl functional(rel: symbol)\nfunctional("매출").\n',
+        encoding="utf-8",
+    )
+    (policy / "typed-relations.md").write_text(
+        "- `매출` : amount as revenue\n",
+        encoding="utf-8",
+    )
+    a = s.add_source("sources/a.md")
+    b = s.add_source("sources/b.md")
+    s.add_fact("갑사", "매출", 'amount(5400,"억")', status="confirmed", source_id=a)
+    s.add_fact("갑사", "매출", 'amount(0.54,"조")', status="confirmed", source_id=b)
+
+    assert store_single_valued_conflicts(s) == []
