@@ -38,6 +38,10 @@ from verinote.pipeline import (
     verify,
     write_query_file,
 )
+from verinote.pipeline.corroboration import (
+    store_corroboration,
+    store_single_valued_conflicts,
+)
 from verinote.engine.terms import StringLit, render_term
 from verinote.store import Store
 from verinote.store.fact_input import structural_term, term_input_kind
@@ -164,6 +168,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 "total": sum(counts.values()),
                 "sources": store.sources(),
                 "coverage": coverage(store, root=cfg.root),
+                "corroboration": store_corroboration(store),
+                "single_valued_conflicts": store_single_valued_conflicts(store),
                 "provider": app.state.cfg.provider,
                 "provider_label": PROVIDER_LABELS.get(
                     app.state.cfg.provider, app.state.cfg.provider
