@@ -13,6 +13,7 @@ from verinote.config import Config  # noqa: E402
 from verinote.engine.terms import Atom, Compound, StringLit  # noqa: E402
 from verinote.llm.base import ExtractedFact, LLMError  # noqa: E402
 from verinote.pipeline.query import query_path  # noqa: E402
+from verinote.store import Store  # noqa: E402
 from verinote.store.fact_input import structural_term  # noqa: E402
 from verinote.web import create_app  # noqa: E402
 
@@ -151,7 +152,8 @@ def test_upload_extracts_and_redirects(tmp_path, monkeypatch, fake_client):
     def extracted():
         assert "is_a" in c.get("/review").text
         body = c.get("/sources").text
-        assert "Analysis complete: 1 candidate(s)" in body
+        assert "Analysis complete: 1/1 chunk(s)" in body
+        assert "1 candidate(s)" in body
 
     _wait_for(extracted)
 
@@ -193,6 +195,7 @@ def test_delete_source_removes_file_and_extracted_facts(tmp_path):
     assert store.get_fact(source_fact) is None
     assert store.get_fact_terms(source_fact) is None
     assert store.get_fact(unrelated_fact) is not None
+    assert store.source_extraction_jobs() == []
 
 
 def test_upload_docx_converts_and_extracts(tmp_path, monkeypatch, fake_client):
@@ -247,9 +250,76 @@ def test_upload_surfaces_llm_error(tmp_path, monkeypatch, fake_client):
 
     def failed():
         body = c.get("/sources").text
-        assert "extraction failed: provider down" in body
+        assert "Analysis failed: 1 chunk(s) failed" in body
+        assert "provider down" in body
 
     _wait_for(failed)
+
+
+def test_retry_failed_source_chunks(tmp_path, monkeypatch, fake_client):
+    state = {"error": LLMError("provider down")}
+
+    def client_factory(cfg):
+        if state["error"] is not None:
+            return fake_client(error=state["error"])
+        return fake_client([ExtractedFact("X", "is_a", "Y", 0.9)])
+
+    monkeypatch.setattr(webapp, "get_client", client_factory)
+    c = _client(tmp_path)
+    upload = c.post(
+        "/sources",
+        files={"file": ("note.txt", b"some text", "text/plain")},
+        follow_redirects=False,
+    )
+    assert upload.status_code == 303
+
+    def failed():
+        assert "provider down" in c.get("/sources").text
+
+    _wait_for(failed)
+    job_id = c.app.state.store.source_extraction_jobs()[0]["id"]
+    state["error"] = None
+
+    retry = c.post(f"/sources/jobs/{job_id}/retry", follow_redirects=False)
+
+    assert retry.status_code == 303
+
+    def retried():
+        assert "is_a" in c.get("/review").text
+        assert "Analysis complete: 1/1 chunk(s)" in c.get("/sources").text
+
+    _wait_for(retried)
+
+
+def test_create_app_resumes_pending_source_jobs(tmp_path, monkeypatch, fake_client):
+    cfg = Config(
+        root=tmp_path,
+        db_path=tmp_path / "kb.sqlite",
+        provider="anthropic",
+        model="m",
+        api_key=None,
+        base_url=None,
+    )
+    with Store(cfg.db_path) as store:
+        store.init_schema()
+        sid = store.add_source("sources/a.txt")
+        job_id = store.create_extraction_job(
+            source_id=sid, provider="anthropic", model="m", total_chunks=1
+        )
+        store.add_source_chunks(job_id=job_id, source_id=sid, chunks=["some text"])
+    monkeypatch.setattr(
+        webapp,
+        "get_client",
+        lambda cfg: fake_client([ExtractedFact("X", "is_a", "Y", 0.9)]),
+    )
+
+    c = TestClient(create_app(cfg))
+
+    def resumed():
+        assert "is_a" in c.get("/review").text
+        assert "Analysis complete: 1/1 chunk(s)" in c.get("/sources").text
+
+    _wait_for(resumed)
 
 
 def test_report_ok_for_consistent_kb(tmp_path):
