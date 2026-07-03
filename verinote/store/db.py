@@ -307,6 +307,14 @@ class Store:
         with self._lock:
             self._refresh_extraction_job(job_id, final=True)
 
+    def fail_extraction_job(self, job_id: int, message: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE extraction_jobs SET status = 'failed', message = ?, "
+                "updated_at = datetime('now') WHERE id = ?",
+                (message, job_id),
+            )
+
     def fact_exists_for_source(
         self, *, source_id: int, subject: object, relation: object, obj: object
     ) -> bool:
@@ -636,7 +644,16 @@ class Store:
         if status == "done":
             message = f"Analysis complete: {done}/{total} chunk(s)"
         elif status == "failed":
-            message = f"Analysis failed: {failed} chunk(s) failed, {done}/{total} complete"
+            error = self._conn.execute(
+                "SELECT error FROM source_chunks WHERE job_id = ? "
+                "AND status = 'failed' AND error != '' ORDER BY chunk_index LIMIT 1",
+                (job_id,),
+            ).fetchone()
+            detail = f": {error['error']}" if error is not None else ""
+            message = (
+                f"Analysis failed: {failed} chunk(s) failed, "
+                f"{done}/{total} complete{detail}"
+            )
         elif status == "running":
             message = f"Analyzing: {done}/{total} chunk(s) complete"
         else:
