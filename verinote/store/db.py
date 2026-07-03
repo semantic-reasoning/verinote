@@ -256,12 +256,14 @@ class Store:
 
     def mark_chunk_running(self, chunk_id: int) -> sqlite3.Row | None:
         with self._lock:
-            self._conn.execute(
+            cur = self._conn.execute(
                 "UPDATE source_chunks SET status = 'running', attempts = attempts + 1, "
                 "error = '', updated_at = datetime('now') "
                 "WHERE id = ? AND status = 'pending'",
                 (chunk_id,),
             )
+            if cur.rowcount != 1:
+                return None
             return self.get_source_chunk(chunk_id)
 
     def mark_chunk_done(self, chunk_id: int, *, candidates: int = 0) -> None:
