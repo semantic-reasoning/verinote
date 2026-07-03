@@ -144,6 +144,18 @@ def test_reset_running_chunks_makes_job_resumable(tmp_path):
     assert s.get_extraction_job(job_id)["status"] == "pending"
 
 
+def test_mark_chunk_running_returns_none_when_chunk_already_claimed(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    job_id = s.create_extraction_job(
+        source_id=sid, provider="fake", model="m", total_chunks=1
+    )
+    chunk_id = s.add_source_chunks(job_id=job_id, source_id=sid, chunks=["a"])[0]
+
+    assert s.mark_chunk_running(chunk_id) is not None
+    assert s.mark_chunk_running(chunk_id) is None
+
+
 def test_fact_log_orders_decisions(tmp_path):
     s = _store(tmp_path)
     fid = s.add_fact("A", "r", "B", status="needs_review")
