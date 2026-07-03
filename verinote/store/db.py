@@ -43,6 +43,7 @@ class Store:
     # --- lifecycle -------------------------------------------------------
     def init_schema(self) -> None:
         self._conn.executescript(_load_schema())
+        self._ensure_schema_migrations()
 
     def close(self) -> None:
         if self._inference_cache is not None:
@@ -358,6 +359,7 @@ class Store:
         confidence: float = 0.0,
         source_id: int | None = None,
         run_id: int | None = None,
+        job_id: int | None = None,
         note: str = "",
     ) -> int:
         with self._lock:
@@ -365,8 +367,10 @@ class Store:
             self._conn.execute("BEGIN")
             try:
                 cur = self._conn.execute(
-                    "INSERT INTO facts(subject, relation, object, status, confidence, source_id, run_id, note) "
-                    "VALUES(?,?,?,?,?,?,?,?) RETURNING id",
+                    "INSERT INTO facts("
+                    "subject, relation, object, status, confidence, source_id, "
+                    "run_id, job_id, note"
+                    ") VALUES(?,?,?,?,?,?,?,?,?) RETURNING id",
                     (
                         _display_fact_value(subject),
                         _display_fact_value(relation),
@@ -375,6 +379,7 @@ class Store:
                         confidence,
                         source_id,
                         run_id,
+                        job_id,
                         note,
                     ),
                 )
@@ -613,6 +618,16 @@ class Store:
                 )
         except Exception:
             pass
+
+    def _ensure_schema_migrations(self) -> None:
+        fact_columns = {
+            row["name"] for row in self._conn.execute("PRAGMA table_info(facts)")
+        }
+        if "job_id" not in fact_columns:
+            self._conn.execute(
+                "ALTER TABLE facts ADD COLUMN job_id INTEGER "
+                "REFERENCES extraction_jobs(id) ON DELETE SET NULL"
+            )
 
     def _refresh_extraction_job(self, job_id: int, *, final: bool = False) -> None:
         counts = self._conn.execute(

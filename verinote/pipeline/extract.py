@@ -128,6 +128,7 @@ def process_extraction_job(
                 source_id=int(source["id"]),
                 source_text=str(running["text"]),
                 run_id=run_id,
+                job_id=job_id,
                 schema_hint=schema_hint,
             )
         except LLMError as exc:
@@ -159,6 +160,7 @@ def _extract_chunk(
     source_id: int,
     source_text: str,
     run_id: int,
+    job_id: int,
     schema_hint: str = "",
 ) -> int:
     facts = client.extract_facts(source_text=source_text, schema_hint=schema_hint)
@@ -177,6 +179,7 @@ def _extract_chunk(
             confidence=f.confidence,
             source_id=source_id,
             run_id=run_id,
+            job_id=job_id,
             note=f.note,
         )
         inserted += 1
