@@ -2,7 +2,12 @@
 import pytest
 
 from verinote.llm.base import ExtractedFact, LLMError
-from verinote.pipeline import extract_source, sync_sources
+from verinote.pipeline import (
+    create_chunked_extraction_job,
+    extract_source,
+    process_extraction_job,
+    sync_sources,
+)
 from verinote.store import Store
 from verinote.engine.terms import Atom, Compound, StringLit
 
@@ -320,3 +325,84 @@ def test_sync_sources_propagates_llm_error(tmp_path, fake_client):
 
     with pytest.raises(LLMError):
         sync_sources(s, client, [("sources/a.txt", "t")], provider="fake", model="m")
+
+
+class _ChunkAwareClient:
+    name = "chunk-aware"
+
+    def __init__(self):
+        self.calls = 0
+
+    def extract_facts(self, *, source_text: str, schema_hint: str = ""):
+        self.calls += 1
+        if "bad" in source_text:
+            raise LLMError("provider down")
+        label = "alpha" if "alpha" in source_text else "beta"
+        return [ExtractedFact(label, "seen_in", "source", 0.9)]
+
+
+def test_create_chunked_extraction_job_persists_chunks(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    text = "alpha\n\n" + ("b" * 6100)
+
+    job_id = create_chunked_extraction_job(
+        s, source_id=sid, source_text=text, provider="fake", model="m"
+    )
+
+    job = s.get_extraction_job(job_id)
+    chunks = s.source_chunks(job_id)
+    assert job["source_id"] == sid
+    assert job["total_chunks"] == len(chunks)
+    assert len(chunks) >= 2
+    assert chunks[0]["status"] == "pending"
+
+
+def test_process_extraction_job_extracts_chunks_and_tracks_progress(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    job_id = s.create_extraction_job(
+        source_id=sid, provider="fake", model="m", total_chunks=2
+    )
+    s.add_source_chunks(job_id=job_id, source_id=sid, chunks=["alpha", "beta"])
+
+    result = process_extraction_job(s, _ChunkAwareClient(), job_id=job_id)
+
+    assert result.candidates == 2
+    assert result.completed_chunks == 2
+    assert result.failed_chunks == 0
+    assert s.get_extraction_job(job_id)["status"] == "done"
+    assert [f["subject"] for f in s.facts()] == ["alpha", "beta"]
+
+
+def test_process_extraction_job_keeps_successful_chunks_when_one_fails(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    job_id = s.create_extraction_job(
+        source_id=sid, provider="fake", model="m", total_chunks=2
+    )
+    s.add_source_chunks(job_id=job_id, source_id=sid, chunks=["alpha", "bad"])
+
+    result = process_extraction_job(s, _ChunkAwareClient(), job_id=job_id)
+
+    assert result.candidates == 1
+    assert result.completed_chunks == 1
+    assert result.failed_chunks == 1
+    assert s.get_extraction_job(job_id)["status"] == "failed"
+    assert [chunk["status"] for chunk in s.source_chunks(job_id)] == ["done", "failed"]
+    assert [f["subject"] for f in s.facts()] == ["alpha"]
+
+
+def test_process_extraction_job_dedupes_chunk_facts_by_source(tmp_path, fake_client):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    job_id = s.create_extraction_job(
+        source_id=sid, provider="fake", model="m", total_chunks=2
+    )
+    s.add_source_chunks(job_id=job_id, source_id=sid, chunks=["alpha", "alpha again"])
+    client = fake_client([ExtractedFact("alpha", "seen_in", "source", 0.9)])
+
+    result = process_extraction_job(s, client, job_id=job_id)
+
+    assert result.candidates == 1
+    assert len(s.facts()) == 1

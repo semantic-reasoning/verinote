@@ -13,6 +13,7 @@ from typing import Iterable
 
 from verinote.engine.terms import TermParseError
 from verinote.llm.base import ExtractedFact, LLMClient, LLMError
+from verinote.pipeline.chunk import chunk_text
 from verinote.store import Store
 from verinote.store.fact_input import structural_term
 
@@ -46,6 +47,145 @@ def extract_source(
     cites its `source` and (when given) the `run` that produced it.
     """
     facts = client.extract_facts(source_text=source_text, schema_hint=schema_hint)
+    rows = _candidate_rows(facts, source_text)
+
+    source_id = store.add_source(source_path)
+    for subject, relation, obj, f in rows:
+        store.add_fact(
+            subject,
+            relation,
+            obj,
+            status="candidate",
+            confidence=f.confidence,
+            source_id=source_id,
+            run_id=run_id,
+            note=f.note,
+        )
+    return len(rows)
+
+
+def create_chunked_extraction_job(
+    store: Store,
+    *,
+    source_id: int,
+    source_text: str,
+    provider: str | None,
+    model: str | None,
+) -> int:
+    """Create a durable extraction job and its source chunks."""
+    chunks = chunk_text(source_text)
+    job_id = store.create_extraction_job(
+        source_id=source_id,
+        provider=provider,
+        model=model,
+        total_chunks=len(chunks),
+        message=f"Queued: 0/{len(chunks)} chunk(s) complete",
+    )
+    store.add_source_chunks(job_id=job_id, source_id=source_id, chunks=chunks)
+    if not chunks:
+        store.finish_extraction_job(job_id)
+    return job_id
+
+
+@dataclass(frozen=True)
+class ChunkedExtractionResult:
+    """Outcome of processing one persisted extraction job."""
+
+    job_id: int
+    candidates: int = 0
+    completed_chunks: int = 0
+    failed_chunks: int = 0
+
+
+def process_extraction_job(
+    store: Store,
+    client: LLMClient,
+    *,
+    job_id: int,
+    schema_hint: str = "",
+) -> ChunkedExtractionResult:
+    """Process pending chunks for one durable extraction job."""
+    job = store.get_extraction_job(job_id)
+    if job is None:
+        raise LLMError(f"missing extraction job: {job_id}")
+    source = store.get_source(int(job["source_id"]))
+    if source is None:
+        raise LLMError(f"missing source for extraction job: {job_id}")
+
+    store.reset_running_chunks(job_id)
+    store.mark_extraction_job_running(job_id)
+    run_id = store.add_run(provider=job["provider"], model=job["model"])
+
+    candidates = 0
+    while chunk := store.next_pending_chunk(job_id):
+        running = store.mark_chunk_running(int(chunk["id"]))
+        if running is None:
+            continue
+        try:
+            inserted = _extract_chunk(
+                store,
+                client,
+                source_id=int(source["id"]),
+                source_text=str(running["text"]),
+                run_id=run_id,
+                schema_hint=schema_hint,
+            )
+        except LLMError as exc:
+            store.mark_chunk_failed(int(running["id"]), str(exc))
+            continue
+        candidates += inserted
+        store.mark_chunk_done(int(running["id"]), candidates=inserted)
+
+    store.finish_extraction_job(job_id)
+    final = store.get_extraction_job(job_id)
+    summary = (
+        f"{source['path']}: {final['completed_chunks']}/{final['total_chunks']} "
+        f"chunk(s), {final['candidate_count']} candidate(s), "
+        f"{final['failed_chunks']} failed"
+    )
+    store.set_run_summary(run_id, summary)
+    return ChunkedExtractionResult(
+        job_id=job_id,
+        candidates=int(final["candidate_count"]),
+        completed_chunks=int(final["completed_chunks"]),
+        failed_chunks=int(final["failed_chunks"]),
+    )
+
+
+def _extract_chunk(
+    store: Store,
+    client: LLMClient,
+    *,
+    source_id: int,
+    source_text: str,
+    run_id: int,
+    schema_hint: str = "",
+) -> int:
+    facts = client.extract_facts(source_text=source_text, schema_hint=schema_hint)
+    rows = _candidate_rows(facts, source_text)
+    inserted = 0
+    for subject, relation, obj, f in rows:
+        if store.fact_exists_for_source(
+            source_id=source_id, subject=subject, relation=relation, obj=obj
+        ):
+            continue
+        store.add_fact(
+            subject,
+            relation,
+            obj,
+            status="candidate",
+            confidence=f.confidence,
+            source_id=source_id,
+            run_id=run_id,
+            note=f.note,
+        )
+        inserted += 1
+    return inserted
+
+
+def _candidate_rows(
+    facts: list[ExtractedFact], source_text: str
+) -> list[tuple[object, object, object, ExtractedFact]]:
     rows = []
     try:
         for f in facts:
@@ -63,20 +203,7 @@ def extract_source(
             )
     except TermParseError as exc:
         raise LLMError(f"malformed extracted structural term: {exc}") from exc
-
-    source_id = store.add_source(source_path)
-    for subject, relation, obj, f in rows:
-        store.add_fact(
-            subject,
-            relation,
-            obj,
-            status="candidate",
-            confidence=f.confidence,
-            source_id=source_id,
-            run_id=run_id,
-            note=f.note,
-        )
-    return len(rows)
+    return rows
 
 
 def _is_normalization_bridge(f: ExtractedFact) -> bool:
