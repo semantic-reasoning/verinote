@@ -94,6 +94,16 @@ class Store:
     def sources(self) -> list[sqlite3.Row]:
         return list(self._conn.execute("SELECT * FROM sources ORDER BY path"))
 
+    def get_source(self, source_id: int) -> sqlite3.Row | None:
+        return self._conn.execute(
+            "SELECT * FROM sources WHERE id = ?", (source_id,)
+        ).fetchone()
+
+    def get_source_by_path(self, path: str) -> sqlite3.Row | None:
+        return self._conn.execute(
+            "SELECT * FROM sources WHERE path = ?", (path,)
+        ).fetchone()
+
     def sources_with_counts(self) -> list[sqlite3.Row]:
         """Sources plus how many facts cite each — for the Sources listing."""
         return list(
@@ -298,12 +308,17 @@ class Store:
             self._refresh_extraction_job(job_id, final=True)
 
     def fact_exists_for_source(
-        self, *, source_id: int, subject: str, relation: str, obj: str
+        self, *, source_id: int, subject: object, relation: object, obj: object
     ) -> bool:
         row = self._conn.execute(
             "SELECT 1 FROM facts WHERE source_id = ? AND subject = ? "
             "AND relation = ? AND object = ? LIMIT 1",
-            (source_id, subject, relation, obj),
+            (
+                source_id,
+                _display_fact_value(subject),
+                _display_fact_value(relation),
+                _display_fact_value(obj),
+            ),
         ).fetchone()
         return row is not None
 
