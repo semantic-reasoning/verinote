@@ -117,6 +117,16 @@ class Store:
             )
         )
 
+    def source_extraction_jobs(self) -> list[sqlite3.Row]:
+        """Latest extraction jobs, newest first, for the Sources listing."""
+        return list(
+            self._conn.execute(
+                "SELECT j.*, s.path AS source_path "
+                "FROM extraction_jobs j JOIN sources s ON s.id = j.source_id "
+                "ORDER BY j.id DESC"
+            )
+        )
+
     def delete_source(self, source_id: int) -> sqlite3.Row | None:
         """Delete a source and every fact extracted from it.
 
@@ -152,6 +162,150 @@ class Store:
                 for fact_id in deleted_terms:
                     self._restore_fact_terms_from_row_quietly(fact_id)
                 raise
+
+    # --- extraction jobs/chunks -----------------------------------------
+    def create_extraction_job(
+        self,
+        *,
+        source_id: int,
+        provider: str | None,
+        model: str | None,
+        total_chunks: int,
+        message: str = "",
+    ) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO extraction_jobs("
+                "source_id, provider, model, total_chunks, message"
+                ") VALUES(?,?,?,?,?) RETURNING id",
+                (source_id, provider, model, total_chunks, message),
+            )
+            return int(cur.fetchone()[0])
+
+    def add_source_chunks(
+        self, *, job_id: int, source_id: int, chunks: Iterable[str]
+    ) -> list[int]:
+        with self._lock:
+            ids: list[int] = []
+            for index, text in enumerate(chunks):
+                cur = self._conn.execute(
+                    "INSERT INTO source_chunks(source_id, job_id, chunk_index, text) "
+                    "VALUES(?,?,?,?) RETURNING id",
+                    (source_id, job_id, index, text),
+                )
+                ids.append(int(cur.fetchone()[0]))
+            return ids
+
+    def get_extraction_job(self, job_id: int) -> sqlite3.Row | None:
+        return self._conn.execute(
+            "SELECT * FROM extraction_jobs WHERE id = ?", (job_id,)
+        ).fetchone()
+
+    def get_source_chunk(self, chunk_id: int) -> sqlite3.Row | None:
+        return self._conn.execute(
+            "SELECT * FROM source_chunks WHERE id = ?", (chunk_id,)
+        ).fetchone()
+
+    def source_chunks(self, job_id: int) -> list[sqlite3.Row]:
+        return list(
+            self._conn.execute(
+                "SELECT * FROM source_chunks WHERE job_id = ? ORDER BY chunk_index",
+                (job_id,),
+            )
+        )
+
+    def reset_running_chunks(self, job_id: int) -> int:
+        """Return stale running chunks for a job to pending before resume."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE source_chunks SET status = 'pending', error = '', "
+                "updated_at = datetime('now') "
+                "WHERE job_id = ? AND status = 'running'",
+                (job_id,),
+            )
+            self._refresh_extraction_job(job_id)
+            return int(cur.rowcount)
+
+    def next_pending_chunk(self, job_id: int) -> sqlite3.Row | None:
+        return self._conn.execute(
+            "SELECT * FROM source_chunks "
+            "WHERE job_id = ? AND status = 'pending' "
+            "ORDER BY chunk_index LIMIT 1",
+            (job_id,),
+        ).fetchone()
+
+    def mark_extraction_job_running(self, job_id: int) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE extraction_jobs SET status = 'running', "
+                "message = 'Analyzing chunks...', updated_at = datetime('now') "
+                "WHERE id = ? AND status != 'canceled'",
+                (job_id,),
+            )
+
+    def mark_chunk_running(self, chunk_id: int) -> sqlite3.Row | None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE source_chunks SET status = 'running', attempts = attempts + 1, "
+                "error = '', updated_at = datetime('now') "
+                "WHERE id = ? AND status = 'pending'",
+                (chunk_id,),
+            )
+            return self.get_source_chunk(chunk_id)
+
+    def mark_chunk_done(self, chunk_id: int, *, candidates: int = 0) -> None:
+        with self._lock:
+            chunk = self.get_source_chunk(chunk_id)
+            if chunk is None:
+                return
+            self._conn.execute(
+                "UPDATE source_chunks SET status = 'done', error = '', "
+                "updated_at = datetime('now') WHERE id = ?",
+                (chunk_id,),
+            )
+            self._conn.execute(
+                "UPDATE extraction_jobs SET candidate_count = candidate_count + ?, "
+                "updated_at = datetime('now') WHERE id = ?",
+                (candidates, chunk["job_id"]),
+            )
+            self._refresh_extraction_job(int(chunk["job_id"]))
+
+    def mark_chunk_failed(self, chunk_id: int, error: str) -> None:
+        with self._lock:
+            chunk = self.get_source_chunk(chunk_id)
+            if chunk is None:
+                return
+            self._conn.execute(
+                "UPDATE source_chunks SET status = 'failed', error = ?, "
+                "updated_at = datetime('now') WHERE id = ?",
+                (error, chunk_id),
+            )
+            self._refresh_extraction_job(int(chunk["job_id"]))
+
+    def retry_failed_chunks(self, job_id: int) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE source_chunks SET status = 'pending', error = '', "
+                "updated_at = datetime('now') "
+                "WHERE job_id = ? AND status = 'failed'",
+                (job_id,),
+            )
+            self._refresh_extraction_job(job_id)
+            return int(cur.rowcount)
+
+    def finish_extraction_job(self, job_id: int) -> None:
+        with self._lock:
+            self._refresh_extraction_job(job_id, final=True)
+
+    def fact_exists_for_source(
+        self, *, source_id: int, subject: str, relation: str, obj: str
+    ) -> bool:
+        row = self._conn.execute(
+            "SELECT 1 FROM facts WHERE source_id = ? AND subject = ? "
+            "AND relation = ? AND object = ? LIMIT 1",
+            (source_id, subject, relation, obj),
+        ).fetchone()
+        return row is not None
 
     # --- runs ------------------------------------------------------------
     def add_run(self, *, provider: str | None, model: str | None, summary: str = "") -> int:
@@ -436,6 +590,49 @@ class Store:
                 )
         except Exception:
             pass
+
+    def _refresh_extraction_job(self, job_id: int, *, final: bool = False) -> None:
+        counts = self._conn.execute(
+            "SELECT "
+            "COALESCE(SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END), 0) AS done, "
+            "COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) AS failed, "
+            "COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0) AS running, "
+            "COUNT(*) AS total "
+            "FROM source_chunks WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()
+        if counts is None:
+            return
+        done = int(counts["done"])
+        failed = int(counts["failed"])
+        running = int(counts["running"])
+        total = int(counts["total"])
+        if final and failed:
+            status = "failed"
+        elif final or (total and done == total):
+            status = "done"
+        elif running:
+            status = "running"
+        elif failed:
+            status = "failed"
+        else:
+            status = "pending"
+
+        if status == "done":
+            message = f"Analysis complete: {done}/{total} chunk(s)"
+        elif status == "failed":
+            message = f"Analysis failed: {failed} chunk(s) failed, {done}/{total} complete"
+        elif status == "running":
+            message = f"Analyzing: {done}/{total} chunk(s) complete"
+        else:
+            message = f"Pending: {done}/{total} chunk(s) complete"
+
+        self._conn.execute(
+            "UPDATE extraction_jobs SET status = ?, completed_chunks = ?, "
+            "failed_chunks = ?, message = ?, updated_at = datetime('now') "
+            "WHERE id = ?",
+            (status, done, failed, message, job_id),
+        )
 
 
 def _display_fact_value(value: object) -> str:
