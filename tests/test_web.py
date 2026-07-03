@@ -51,6 +51,31 @@ def test_dashboard_renders(tmp_path):
     assert "verinote" in r.text
 
 
+def test_dashboard_shows_factlog_borrowed_source_signals(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    a = store.add_source("sources/a.md")
+    b = store.add_source("sources/b.md")
+    csrc = store.add_source("sources/c.md")
+    store.add_fact("Acme", "uses", "FastAPI", status="confirmed", source_id=a)
+    store.add_fact("Acme", "uses", "FastAPI", status="accepted", source_id=b)
+    store.add_fact("Acme", "uses", "FastAPI", status="candidate", source_id=csrc)
+    store.add_fact("Org", "established_on", "2020", status="confirmed", source_id=a)
+    store.add_fact("Org", "established_on", "2021", status="confirmed", source_id=b)
+
+    body = unescape(c.get("/").text)
+
+    assert "Source corroboration" in body
+    assert "Acme" in body
+    assert "FastAPI" in body
+    assert ">2</td>" in body
+    assert "Single-valued conflicts" in body
+    assert "Org" in body
+    assert "2020" in body
+    assert "2021" in body
+    assert "(1 source)" in body
+
+
 def test_no_active_kb_shows_selector(tmp_path, monkeypatch):
     monkeypatch.delenv("VERINOTE_ROOT", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
