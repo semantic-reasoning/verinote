@@ -25,6 +25,42 @@ CREATE TABLE IF NOT EXISTS runs (
     summary    TEXT
 );
 
+-- Durable source-analysis progress. A job owns chunk rows so analysis can
+-- resume/retry without depending on an in-memory web process.
+CREATE TABLE IF NOT EXISTS extraction_jobs (
+    id               INTEGER PRIMARY KEY,
+    source_id        INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    status           TEXT NOT NULL DEFAULT 'pending'
+                       CHECK (status IN ('pending','running','done','failed','canceled')),
+    provider         TEXT,
+    model            TEXT,
+    total_chunks     INTEGER NOT NULL DEFAULT 0,
+    completed_chunks INTEGER NOT NULL DEFAULT 0,
+    failed_chunks    INTEGER NOT NULL DEFAULT 0,
+    candidate_count  INTEGER NOT NULL DEFAULT 0,
+    message          TEXT NOT NULL DEFAULT '',
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS source_chunks (
+    id          INTEGER PRIMARY KEY,
+    source_id   INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    job_id      INTEGER NOT NULL REFERENCES extraction_jobs(id) ON DELETE CASCADE,
+    chunk_index INTEGER NOT NULL,
+    text        TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'pending'
+                  CHECK (status IN ('pending','running','done','failed')),
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    error       TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(job_id, chunk_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_extraction_jobs_source ON extraction_jobs(source_id);
+CREATE INDEX IF NOT EXISTS idx_source_chunks_job_status ON source_chunks(job_id, status);
+
 -- A candidate/verified fact with review metadata. The subject/relation/object
 -- columns are text display mirrors and legacy backfill inputs; the authoritative
 -- logical terms live in DuckDB fact_terms keyed by this row id.
