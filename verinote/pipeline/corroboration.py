@@ -10,12 +10,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
+import unicodedata
 from typing import Any, Iterable, Mapping
 
 from verinote.engine import DEFAULT_POLICY
 from verinote.store import ENGINE_STATUSES, Store
 
 _FUNCTIONAL_RE = re.compile(r'functional\("((?:\\.|[^"\\])*)"\)\.')
+_ALIAS_RE = re.compile(r"`([^`]+)`\s*->\s*`([^`]+)`")
+RELATION_ALIASES_RELPATH = "policy/relation-aliases.md"
+
+
+class CorroborationPolicyError(ValueError):
+    """Raised when optional corroboration policy files are malformed."""
 
 
 @dataclass(frozen=True)
@@ -60,6 +67,46 @@ def store_functional_relations(store: Store) -> set[str]:
     return functional_relations(load_policy(store))
 
 
+def relation_aliases(text: str) -> dict[str, str]:
+    """Parse factlog-style relation aliases into ``{raw: canonical}``."""
+    aliases: dict[str, str] = {}
+    for line in text.splitlines():
+        stripped = re.sub(r"^\s*[-*]\s+", "", line.strip()).strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        match = _ALIAS_RE.fullmatch(stripped)
+        if match is None:
+            continue
+        raw = unicodedata.normalize("NFC", match.group(1).strip())
+        canonical = unicodedata.normalize("NFC", match.group(2).strip())
+        if not raw or not canonical:
+            continue
+        if raw == canonical:
+            raise CorroborationPolicyError(
+                f"relation-aliases.md: self-map {raw!r} is not allowed"
+            )
+        if raw in aliases and aliases[raw] != canonical:
+            raise CorroborationPolicyError(
+                f"relation-aliases.md: {raw!r} mapped to both "
+                f"{aliases[raw]!r} and {canonical!r}"
+            )
+        aliases[raw] = canonical
+    canonical_values = set(aliases.values())
+    for raw in aliases:
+        if raw in canonical_values:
+            raise CorroborationPolicyError(
+                f"relation-aliases.md: {raw!r} is both raw and canonical"
+            )
+    return aliases
+
+
+def store_relation_aliases(store: Store) -> dict[str, str]:
+    path = store.db_path.parent / RELATION_ALIASES_RELPATH
+    if not path.is_file():
+        return {}
+    return relation_aliases(path.read_text(encoding="utf-8"))
+
+
 def corroboration(facts: Iterable[Mapping[str, object]]) -> list[FactSupport]:
     """Return distinct-source support for confirmed/accepted SPO triples."""
     sources: dict[tuple[str, str, str], set[str]] = {}
@@ -78,15 +125,19 @@ def corroboration(facts: Iterable[Mapping[str, object]]) -> list[FactSupport]:
 
 
 def single_valued_conflicts(
-    facts: Iterable[Mapping[str, object]], single_valued: set[str]
+    facts: Iterable[Mapping[str, object]],
+    single_valued: set[str],
+    aliases: dict[str, str] | None = None,
 ) -> list[SingleValuedConflict]:
     """Return conflicting values for single-valued relations with source support."""
+    aliases = aliases or {}
+    canonical_single_valued = {_canonical_relation(r, aliases) for r in single_valued}
     by_subject_relation: dict[tuple[str, str], dict[str, set[str]]] = {}
     for row in facts:
         if str(_value(row, "status", "")) not in ENGINE_STATUSES:
             continue
-        relation = str(row["relation"])
-        if relation not in single_valued:
+        relation = _canonical_relation(str(row["relation"]), aliases)
+        if relation not in canonical_single_valued:
             continue
         source = _source_ref(row)
         if not source:
@@ -118,12 +169,25 @@ def store_corroboration(store: Store) -> list[FactSupport]:
 
 
 def store_single_valued_conflicts(store: Store) -> list[SingleValuedConflict]:
-    return single_valued_conflicts(store.facts(), store_functional_relations(store))
+    return single_valued_conflicts(
+        store.facts(), store_functional_relations(store), store_relation_aliases(store)
+    )
 
 
 def _source_ref(row: Mapping[str, object]) -> str:
     value = _value(row, "source_path", "") or _value(row, "source", "")
     return str(value).strip()
+
+
+def _canonical_relation(relation: str, aliases: dict[str, str]) -> str:
+    if not aliases:
+        return relation
+    normalized = unicodedata.normalize("NFC", relation)
+    if normalized in aliases:
+        return aliases[normalized]
+    if normalized in set(aliases.values()):
+        return normalized
+    return relation
 
 
 def _value(row: Mapping[str, object], key: str, default: object = None) -> Any:
