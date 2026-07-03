@@ -154,6 +154,17 @@ def _pick(env: str, saved: str | None, default: str | None) -> str | None:
     return default
 
 
+def _llm_timeout_seconds() -> float:
+    raw = os.environ.get("VERINOTE_LLM_TIMEOUT")
+    if raw is None:
+        return 600.0
+    try:
+        value = float(raw)
+    except ValueError:
+        return 600.0
+    return value if value > 0 else 600.0
+
+
 @dataclass(frozen=True)
 class Config:
     root: Path
@@ -162,6 +173,7 @@ class Config:
     model: str
     api_key: str | None
     base_url: str | None
+    llm_timeout_seconds: float = 600.0
 
     @classmethod
     def for_root(cls, root: Path) -> "Config":
@@ -178,6 +190,7 @@ class Config:
             model=model,
             api_key=os.environ.get("VERINOTE_API_KEY"),  # secrets only from env
             base_url=base_url,
+            llm_timeout_seconds=_llm_timeout_seconds(),
         )
 
     @classmethod

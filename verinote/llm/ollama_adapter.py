@@ -46,7 +46,9 @@ class OllamaAdapter:
             headers={"Content-Type": "application/json"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=120) as resp:  # noqa: S310 - local trusted endpoint
+            with urllib.request.urlopen(  # noqa: S310 - local trusted endpoint
+                req, timeout=self.cfg.llm_timeout_seconds
+            ) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
         except Exception as exc:  # noqa: BLE001 - normalise provider/transport errors
             raise LLMError(f"ollama request failed: {exc}") from exc
@@ -69,7 +71,9 @@ class OllamaAdapter:
             headers={"Content-Type": "application/json"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=120) as resp:  # noqa: S310 - local trusted endpoint
+            with urllib.request.urlopen(  # noqa: S310 - local trusted endpoint
+                req, timeout=self.cfg.llm_timeout_seconds
+            ) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
         except Exception as exc:  # noqa: BLE001 - normalise provider/transport errors
             raise LLMError(f"ollama request failed: {exc}") from exc

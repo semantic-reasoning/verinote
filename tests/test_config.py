@@ -19,6 +19,7 @@ def _clear_env(monkeypatch):
         "VERINOTE_MODEL",
         "VERINOTE_BASE_URL",
         "VERINOTE_API_KEY",
+        "VERINOTE_LLM_TIMEOUT",
         "VERINOTE_ROOT",
         "XDG_CONFIG_HOME",
     ):
@@ -52,6 +53,13 @@ def test_default_model_when_nothing_set(tmp_path, monkeypatch):
     _clear_env(monkeypatch)
     cfg = Config.for_root(tmp_path)  # no settings file, no env
     assert (cfg.provider, cfg.model) == ("anthropic", "claude-opus-4-8")
+    assert cfg.llm_timeout_seconds == 600.0
+
+
+def test_llm_timeout_env_override(tmp_path, monkeypatch):
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("VERINOTE_LLM_TIMEOUT", "900")
+    assert Config.for_root(tmp_path).llm_timeout_seconds == 900.0
 
 
 def test_claude_cli_provider_is_available():
