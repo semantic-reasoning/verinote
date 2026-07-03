@@ -8,7 +8,10 @@ only over facts that have crossed the review gate.
 
 from __future__ import annotations
 
+import datetime
+import decimal
 from dataclasses import dataclass
+from decimal import Decimal
 import re
 import unicodedata
 from typing import Any, Iterable, Mapping
@@ -18,7 +21,43 @@ from verinote.store import ENGINE_STATUSES, Store
 
 _FUNCTIONAL_RE = re.compile(r'functional\("((?:\\.|[^"\\])*)"\)\.')
 _ALIAS_RE = re.compile(r"`([^`]+)`\s*->\s*`([^`]+)`")
+_TYPED_REL_RE = re.compile(
+    r"^(?:`(?P<qname>[^`]+)`|(?P<name>\S+))\s*:\s*(?P<type>\w+)\s+as\s+(?P<alias>\S+)"
+    r"(?:\s*\((?P<units>[^)]*)\))?\s*$"
+)
+_DATE_RE = re.compile(r"^(\d{4})[.\-/](\d{1,2})(?:[.\-/](\d{1,2}))?$")
+_DATE_COMPOUND_RE = re.compile(
+    r"^date\(\s*(\d{4})\s*,\s*(\d{1,2})(?:\s*,\s*(\d{1,2}))?\s*\)$",
+    re.IGNORECASE,
+)
+_NUMBER_RE = re.compile(r"^-?\d[\d,]*(?:\.\d+)?$")
+_NUMBER_COMPOUND_RE = re.compile(
+    r"^number\(\s*\"?(-?\d[\d,]*(?:\.\d+)?)\"?\s*\)$",
+    re.IGNORECASE,
+)
+_ORDINAL_KO_RE = re.compile(r"^제?(\d+)\s*(?:호|위|번|차|등|째)$")
+_ORDINAL_EN_RE = re.compile(r"^(\d+)\s*(?:st|nd|rd|th)$", re.IGNORECASE)
+_ORDINAL_COMPOUND_RE = re.compile(r"^ordinal\(\s*(\d+)\s*\)$", re.IGNORECASE)
+_AMOUNT_RE = re.compile(r"^(?P<num>-?\d[\d,]*(?:\.\d+)?) ?(?P<unit>\D+)$")
+_AMOUNT_COMPOUND_RE = re.compile(
+    r'^amount\(\s*"?(?P<num>-?\d[\d,]*(?:\.\d+)?)"?\s*,\s*'
+    r'(?:"(?P<qunit>[^"]*)"|(?P<unit>[^,)"]+))\s*\)$',
+    re.IGNORECASE,
+)
+_NUMBER_SCALE = 1000
+_CURRENCY_MARKER = "원"
+_INT64_MIN = -(2**63)
+_INT64_MAX = 2**63 - 1
+_TYPED_TYPES = frozenset({"date", "number", "ordinal", "amount"})
+_DEFAULT_AMOUNT_UNITS = {
+    "원": 1,
+    "천": 10**3,
+    "만": 10**4,
+    "억": 10**8,
+    "조": 10**12,
+}
 RELATION_ALIASES_RELPATH = "policy/relation-aliases.md"
+TYPED_RELATIONS_RELPATH = "policy/typed-relations.md"
 
 
 class CorroborationPolicyError(ValueError):
@@ -52,6 +91,13 @@ class SingleValuedConflict:
     subject: str
     relation: str
     values: tuple[CompetingValue, ...]
+
+
+@dataclass(frozen=True)
+class TypedRelationSpec:
+    type: str
+    alias: str
+    units: dict[str, int] | None = None
 
 
 def functional_relations(policy_dl: str | None) -> set[str]:
@@ -107,6 +153,49 @@ def store_relation_aliases(store: Store) -> dict[str, str]:
     return relation_aliases(path.read_text(encoding="utf-8"))
 
 
+def typed_relations(text: str) -> dict[str, TypedRelationSpec]:
+    """Parse factlog-style ``policy/typed-relations.md`` declarations."""
+    specs: dict[str, TypedRelationSpec] = {}
+    aliases: dict[str, str] = {}
+    for line in text.splitlines():
+        stripped = re.sub(r"^\s*[-*]\s+", "", line.strip()).strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        stripped = re.sub(r"\s*#.*$", "", stripped).strip()
+        match = _TYPED_REL_RE.match(stripped)
+        if match is None:
+            continue
+        name = unicodedata.normalize(
+            "NFC", (match.group("qname") or match.group("name")).strip()
+        )
+        type_tag = match.group("type").strip()
+        alias = match.group("alias").strip()
+        if type_tag not in _TYPED_TYPES:
+            continue
+        if alias in aliases and aliases[alias] != name:
+            raise CorroborationPolicyError(
+                f"typed-relations.md: alias {alias!r} used for both "
+                f"{aliases[alias]!r} and {name!r}"
+            )
+        aliases[alias] = name
+        units = None
+        if match.group("units") is not None:
+            if type_tag != "amount":
+                raise CorroborationPolicyError(
+                    f"typed-relations.md: units are only valid for amount: {name!r}"
+                )
+            units = _parse_amount_units(match.group("units"))
+        specs[name] = TypedRelationSpec(type=type_tag, alias=alias, units=units)
+    return specs
+
+
+def store_typed_relations(store: Store) -> dict[str, TypedRelationSpec]:
+    path = store.db_path.parent / TYPED_RELATIONS_RELPATH
+    if not path.is_file():
+        return {}
+    return typed_relations(path.read_text(encoding="utf-8"))
+
+
 def corroboration(facts: Iterable[Mapping[str, object]]) -> list[FactSupport]:
     """Return distinct-source support for confirmed/accepted SPO triples."""
     sources: dict[tuple[str, str, str], set[str]] = {}
@@ -128,37 +217,48 @@ def single_valued_conflicts(
     facts: Iterable[Mapping[str, object]],
     single_valued: set[str],
     aliases: dict[str, str] | None = None,
+    typed: dict[str, TypedRelationSpec] | None = None,
 ) -> list[SingleValuedConflict]:
     """Return conflicting values for single-valued relations with source support."""
     aliases = aliases or {}
+    typed = typed or {}
     canonical_single_valued = {_canonical_relation(r, aliases) for r in single_valued}
-    by_subject_relation: dict[tuple[str, str], dict[str, set[str]]] = {}
+    by_subject_relation: dict[
+        tuple[str, str], dict[tuple[str, object], dict[str, set[str]]]
+    ] = {}
     for row in facts:
         if str(_value(row, "status", "")) not in ENGINE_STATUSES:
             continue
         relation = _canonical_relation(str(row["relation"]), aliases)
         if relation not in canonical_single_valued:
             continue
+        spec = typed.get(relation) or typed.get(unicodedata.normalize("NFC", relation))
         source = _source_ref(row)
         if not source:
             continue
         key = (str(row["subject"]), relation)
-        by_subject_relation.setdefault(key, {}).setdefault(
-            str(row["object"]), set()
+        obj = str(row["object"])
+        object_key = _object_group_key(obj, spec)
+        by_subject_relation.setdefault(key, {}).setdefault(object_key, {}).setdefault(
+            obj, set()
         ).add(source)
 
     conflicts: list[SingleValuedConflict] = []
-    for (subject, relation), values in sorted(by_subject_relation.items()):
-        if len(values) < 2:
+    for (subject, relation), groups in sorted(by_subject_relation.items()):
+        if len(groups) < 2:
             continue
+        values = []
+        for raws in groups.values():
+            representative = sorted(raws)[0]
+            sources = set().union(*raws.values())
+            values.append(
+                CompetingValue(object=representative, sources=tuple(sorted(sources)))
+            )
         conflicts.append(
             SingleValuedConflict(
                 subject=subject,
                 relation=relation,
-                values=tuple(
-                    CompetingValue(object=obj, sources=tuple(sorted(srcs)))
-                    for obj, srcs in sorted(values.items())
-                ),
+                values=tuple(sorted(values, key=lambda value: value.object)),
             )
         )
     return conflicts
@@ -170,7 +270,10 @@ def store_corroboration(store: Store) -> list[FactSupport]:
 
 def store_single_valued_conflicts(store: Store) -> list[SingleValuedConflict]:
     return single_valued_conflicts(
-        store.facts(), store_functional_relations(store), store_relation_aliases(store)
+        store.facts(),
+        store_functional_relations(store),
+        store_relation_aliases(store),
+        store_typed_relations(store),
     )
 
 
@@ -199,3 +302,123 @@ def _value(row: Mapping[str, object], key: str, default: object = None) -> Any:
 
 def _unescape(value: str) -> str:
     return re.sub(r"\\(.)", r"\1", value)
+
+
+def _object_group_key(obj: str, spec: TypedRelationSpec | None) -> tuple[str, object]:
+    if spec is not None:
+        scalar = normalize_typed_value(spec.type, obj, spec.units)
+        if scalar is not None:
+            return ("scalar", scalar)
+    return ("raw", obj)
+
+
+def normalize_typed_value(
+    type_tag: str, raw: str, units: dict[str, int] | None = None
+) -> int | None:
+    if type_tag == "date":
+        return _parse_date(raw)
+    if type_tag == "number":
+        return _parse_number_scaled(raw)
+    if type_tag == "ordinal":
+        return _parse_ordinal(raw)
+    if type_tag == "amount":
+        return _parse_amount(raw, units or _DEFAULT_AMOUNT_UNITS)
+    return None
+
+
+def _parse_date(raw: str) -> int | None:
+    match = _DATE_COMPOUND_RE.match(raw.strip()) or _DATE_RE.match(raw.strip())
+    if match is None:
+        return None
+    year = int(match.group(1))
+    month = int(match.group(2))
+    day = int(match.group(3)) if match.group(3) is not None else 1
+    try:
+        datetime.date(year, month, day)
+    except ValueError:
+        return None
+    return year * 10000 + month * 100 + day
+
+
+def _parse_number_scaled(raw: str) -> int | None:
+    text = raw.strip()
+    compound = _NUMBER_COMPOUND_RE.match(text)
+    if compound is not None:
+        text = compound.group(1)
+    if _NUMBER_RE.match(text) is None:
+        return None
+    try:
+        product = Decimal(text.replace(",", "")) * _NUMBER_SCALE
+    except decimal.InvalidOperation:
+        return None
+    if product == product.to_integral_value():
+        return int(product)
+    return int(product.to_integral_value(rounding=decimal.ROUND_HALF_UP))
+
+
+def _parse_ordinal(raw: str) -> int | None:
+    match = (
+        _ORDINAL_COMPOUND_RE.match(raw.strip())
+        or _ORDINAL_KO_RE.match(raw.strip())
+        or _ORDINAL_EN_RE.match(raw.strip())
+    )
+    return int(match.group(1)) if match else None
+
+
+def _parse_amount(raw: str, units: dict[str, int]) -> int | None:
+    text = raw.strip()
+    match = _AMOUNT_COMPOUND_RE.match(text)
+    if match is not None:
+        unit = (match.groupdict().get("qunit") or match.group("unit")).strip()
+    else:
+        match = _AMOUNT_RE.match(text)
+        if match is None:
+            return None
+        unit = match.group("unit").strip()
+    multiplier = units.get(unit)
+    if multiplier is None and unit.endswith(_CURRENCY_MARKER):
+        multiplier = units.get(unit[: -len(_CURRENCY_MARKER)])
+    if multiplier is None:
+        return None
+    try:
+        product = Decimal(match.group("num").replace(",", "")) * multiplier
+    except decimal.InvalidOperation:
+        return None
+    if product == product.to_integral_value():
+        value = int(product)
+    else:
+        value = int(product.to_integral_value(rounding=decimal.ROUND_HALF_UP))
+    if value < _INT64_MIN or value > _INT64_MAX:
+        return None
+    return value
+
+
+def _parse_amount_units(body: str) -> dict[str, int]:
+    units: dict[str, int] = {}
+    for pair in body.split(","):
+        if not pair.strip():
+            continue
+        unit, sep, value = pair.partition("=")
+        if not sep:
+            raise CorroborationPolicyError(
+                f"typed-relations.md: malformed unit pair {pair!r}"
+            )
+        unit = unit.strip()
+        value = value.strip()
+        try:
+            number = decimal.Decimal(value)
+        except decimal.InvalidOperation as exc:
+            raise CorroborationPolicyError(
+                f"typed-relations.md: non-numeric unit value {value!r}"
+            ) from exc
+        if (
+            not unit
+            or not number.is_finite()
+            or number != number.to_integral_value()
+            or number <= 0
+        ):
+            raise CorroborationPolicyError(
+                f"typed-relations.md: invalid unit mapping {pair!r}"
+            )
+        units[unit] = int(number)
+    return units
