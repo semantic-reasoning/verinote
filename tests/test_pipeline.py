@@ -372,7 +372,9 @@ def test_process_extraction_job_extracts_chunks_and_tracks_progress(tmp_path):
     assert result.completed_chunks == 2
     assert result.failed_chunks == 0
     assert s.get_extraction_job(job_id)["status"] == "done"
-    assert [f["subject"] for f in s.facts()] == ["alpha", "beta"]
+    facts = s.facts()
+    assert [f["subject"] for f in facts] == ["alpha", "beta"]
+    assert {f["job_id"] for f in facts} == {job_id}
 
 
 def test_process_extraction_job_keeps_successful_chunks_when_one_fails(tmp_path):
