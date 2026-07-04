@@ -75,10 +75,13 @@ def test_amend_missing_fact_returns_none(tmp_path):
 def test_delete_source_removes_source_facts_and_terms(tmp_path):
     s = _store(tmp_path)
     sid = s.add_source("sources/a.txt")
+    artifact_id = s.add_source_artifact(
+        source_id=sid, kind="original_text", path="sources/a.txt"
+    )
     source_fact = s.add_fact("A", "r", "B", status="candidate", source_id=sid)
     unrelated_fact = s.add_fact("C", "r", "D", status="candidate")
     job_id = s.create_extraction_job(
-        source_id=sid, provider="fake", model="m", total_chunks=1
+        source_id=sid, artifact_id=artifact_id, provider="fake", model="m", total_chunks=1
     )
     s.add_source_chunks(job_id=job_id, source_id=sid, chunks=["body"])
 
@@ -92,11 +95,46 @@ def test_delete_source_removes_source_facts_and_terms(tmp_path):
     assert s.get_fact_terms(unrelated_fact) is not None
     assert s.get_extraction_job(job_id) is None
     assert s.source_chunks(job_id) == []
+    assert s.source_artifacts(sid) == []
 
 
 def test_delete_missing_source_returns_none(tmp_path):
     s = _store(tmp_path)
     assert s.delete_source(999) is None
+
+
+def test_source_artifacts_are_upserted_and_listed_with_counts(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/report.pdf", kind="binary")
+    first = s.add_source_artifact(
+        source_id=sid,
+        kind="extracted_text",
+        path="artifacts/sources/1/extracted.txt",
+    )
+    second = s.add_source_artifact(
+        source_id=sid,
+        kind="extracted_text",
+        path="artifacts/sources/1/extracted-v2.txt",
+    )
+    s.add_source_artifact(
+        source_id=sid,
+        kind="original_text",
+        path="sources/report.pdf",
+        content_type="application/pdf",
+    )
+    s.add_fact("A", "r", "B", status="candidate", source_id=sid)
+
+    assert first == second
+    artifacts = s.source_artifacts(sid)
+    assert [(a["kind"], a["path"]) for a in artifacts] == [
+        ("extracted_text", "artifacts/sources/1/extracted-v2.txt"),
+        ("original_text", "sources/report.pdf"),
+    ]
+    rows = s.sources_with_counts()
+    assert rows[0]["path"] == "sources/report.pdf"
+    assert rows[0]["kind"] == "binary"
+    assert rows[0]["fact_count"] == 1
+    assert "artifacts/sources/1/extracted-v2.txt" in rows[0]["artifact_paths"]
 
 
 def test_extraction_job_tracks_chunk_progress_and_retry(tmp_path):

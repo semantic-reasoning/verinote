@@ -7,12 +7,25 @@
 PRAGMA journal_mode = WAL;        -- concurrent readers + a single writer
 PRAGMA foreign_keys = ON;
 
--- A source document the facts are extracted from and cited against.
+-- A source document the facts are cited against. For binary uploads this is the
+-- original file, not the converted text used for extraction.
 CREATE TABLE IF NOT EXISTS sources (
     id         INTEGER PRIMARY KEY,
     path       TEXT NOT NULL UNIQUE,      -- relative path under the KB root
-    kind       TEXT NOT NULL DEFAULT 'text',  -- text | conversion | binary
+    kind       TEXT NOT NULL DEFAULT 'text',  -- text | binary
     added_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Text artifacts used by extraction. Text sources point at their original file;
+-- binary sources point at a derived UTF-8 text artifact.
+CREATE TABLE IF NOT EXISTS source_artifacts (
+    id           INTEGER PRIMARY KEY,
+    source_id    INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    kind         TEXT NOT NULL CHECK (kind IN ('original_text','extracted_text')),
+    path         TEXT NOT NULL UNIQUE,
+    content_type TEXT NOT NULL DEFAULT 'text/plain',
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(source_id, kind)
 );
 
 -- One extraction run (an LLM pass over sources). Facts cite the run that
@@ -30,6 +43,7 @@ CREATE TABLE IF NOT EXISTS runs (
 CREATE TABLE IF NOT EXISTS extraction_jobs (
     id               INTEGER PRIMARY KEY,
     source_id        INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    artifact_id      INTEGER REFERENCES source_artifacts(id) ON DELETE SET NULL,
     status           TEXT NOT NULL DEFAULT 'pending'
                        CHECK (status IN ('pending','running','done','failed','canceled')),
     provider         TEXT,
