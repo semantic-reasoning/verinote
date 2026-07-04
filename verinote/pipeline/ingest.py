@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: MPL-2.0
-"""Source ingestion: register text sources, convert binaries (docx/pdf) to text.
+"""Source ingestion: register original sources and extraction text artifacts.
 
-Extraction reads text, but real sources are often docx/pdf. This turns a file
-into a text source under the KB so the extractor — and the coverage view — can
-use it. Text files are stored as-is (`kind='text'`); a binary is run through a
-per-extension converter and stored as a `.txt` alongside, with the registered
-source marked `kind='conversion'`.
+Extraction reads text, but facts cite original files. Text uploads are stored
+under `sources/` and reused as their own extraction artifact. Binary uploads are
+stored under `sources/` with their original filename, converted through a
+per-extension converter, and the converted text is stored separately under
+`artifacts/sources/<source_id>/`.
 
 The converter table is open: `register_converter('.ext', fn)` adds a format.
 The built-in docx/pdf converters import their (optional) library lazily and
@@ -15,6 +15,7 @@ raise a helpful `IngestError` when it is missing — install with
 
 from __future__ import annotations
 
+import hashlib
 from io import BytesIO
 from pathlib import Path
 from typing import Callable
@@ -72,7 +73,7 @@ register_converter(".pdf", _convert_pdf)
 
 
 def ingest_bytes(raw: bytes, filename: str) -> tuple[str, str]:
-    """Resolve raw upload bytes to ``(text, kind)``; kind is ``text``/``conversion``.
+    """Resolve raw upload bytes to ``(text, kind)``; kind is ``text``/``binary``.
 
     Raises `IngestError` for unsupported suffixes or conversion failures.
     """
@@ -83,20 +84,44 @@ def ingest_bytes(raw: bytes, filename: str) -> tuple[str, str]:
         except UnicodeDecodeError as e:
             raise IngestError("file is not valid UTF-8 text") from e
     if suffix in _CONVERTERS:
-        return _CONVERTERS[suffix](raw), "conversion"
+        return _CONVERTERS[suffix](raw), "binary"
     raise IngestError(f"unsupported source type: {suffix or filename!r}")
 
 
-def store_source(store: Store, root: Path, filename: str, text: str, kind: str) -> str:
-    """Write `text` under `<root>/sources/` and register it. Returns the citation."""
+def store_source(
+    store: Store, root: Path, filename: str, raw: bytes, text: str, kind: str
+) -> dict:
+    """Persist an original source and its extraction text artifact."""
     sources_dir = root / "sources"
     sources_dir.mkdir(parents=True, exist_ok=True)
     name = Path(filename).name
-    out_name = name if kind == "text" else f"{Path(name).stem}.txt"
-    (sources_dir / out_name).write_text(text, encoding="utf-8")
-    citation = f"sources/{out_name}"
-    store.add_source(citation, kind=kind)
-    return citation
+    source_path = sources_dir / name
+    source_path.write_bytes(raw)
+    citation = f"sources/{name}"
+    source_id = store.add_source(citation, kind=kind)
+
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    artifact_dir = root / "artifacts" / "sources" / str(source_id)
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    artifact_path = artifact_dir / f"{digest}.txt"
+    if not artifact_path.exists():
+        artifact_path.write_text(text, encoding="utf-8")
+    artifact_relpath = f"artifacts/sources/{source_id}/{digest}.txt"
+
+    artifact_id = store.add_source_artifact(
+        source_id=source_id,
+        kind="extracted_text",
+        path=artifact_relpath,
+        checksum=digest,
+    )
+    return {
+        "citation": citation,
+        "text": text,
+        "kind": kind,
+        "source_id": source_id,
+        "artifact_id": artifact_id,
+        "artifact_path": artifact_relpath,
+    }
 
 
 def ingest_file(store: Store, src: Path, *, root: Path) -> dict:
@@ -104,6 +129,6 @@ def ingest_file(store: Store, src: Path, *, root: Path) -> dict:
     src = Path(src)
     if not src.is_file():
         raise IngestError(f"no such file: {src}")
-    text, kind = ingest_bytes(src.read_bytes(), src.name)
-    citation = store_source(store, root, src.name, text, kind)
-    return {"citation": citation, "text": text, "kind": kind}
+    raw = src.read_bytes()
+    text, kind = ingest_bytes(raw, src.name)
+    return store_source(store, root, src.name, raw, text, kind)

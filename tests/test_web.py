@@ -208,6 +208,14 @@ def test_delete_source_removes_file_and_extracted_facts(tmp_path):
     source_path.parent.mkdir()
     source_path.write_text("source body", encoding="utf-8")
     sid = store.add_source("sources/a.txt", kind="text")
+    artifact_path = tmp_path / "artifacts" / "sources" / str(sid) / "extracted.txt"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_text("artifact body", encoding="utf-8")
+    store.add_source_artifact(
+        source_id=sid,
+        kind="extracted_text",
+        path=f"artifacts/sources/{sid}/extracted.txt",
+    )
     source_fact = store.add_fact("A", "is_a", "B", status="candidate", source_id=sid)
     unrelated_fact = c.fact_id
 
@@ -216,6 +224,7 @@ def test_delete_source_removes_file_and_extracted_facts(tmp_path):
     assert r.status_code == 303
     assert r.headers["location"] == "/sources"
     assert not source_path.exists()
+    assert not artifact_path.exists()
     assert store.sources() == []
     assert store.get_fact(source_fact) is None
     assert store.get_fact_terms(source_fact) is None
@@ -249,15 +258,25 @@ def test_upload_docx_converts_and_extracts(tmp_path, monkeypatch, fake_client):
         follow_redirects=False,
     )
     assert r.status_code == 303
-    # the binary was converted to a text file and registered as a conversion
-    assert (tmp_path / "sources" / "report.txt").read_text().strip() == "converted text"
+    # the original file is preserved and converted text is tracked as an artifact.
+    assert (tmp_path / "sources" / "report.docx").is_file()
+    artifact_files = list((tmp_path / "artifacts" / "sources" / "1").glob("*.txt"))
+    assert len(artifact_files) == 1
+    assert artifact_files[0].read_text().strip() == "converted text"
     kinds = {s["kind"] for s in c.app.state.store.sources_with_counts()}
-    assert "conversion" in kinds
+    assert "binary" in kinds
+    sources_body = c.get("/sources").text
+    assert "sources/report.docx" in sources_body
+    assert "artifacts/sources/1/" in sources_body
 
     def extracted():
-        assert "is_a" in c.get("/review").text
+        assert any(row["subject"] == "X" for row in c.app.state.store.review_queue())
 
     _wait_for(extracted)
+    fact = [row for row in c.app.state.store.review_queue() if row["subject"] == "X"][0]
+    provenance = c.get(f"/facts/{fact['id']}/provenance").text
+    assert "sources/report.docx" in provenance
+    assert "artifacts/sources/1/" in provenance
 
 
 def test_upload_surfaces_llm_error(tmp_path, monkeypatch, fake_client):

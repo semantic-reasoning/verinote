@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import sys
 from pathlib import Path
 
@@ -21,6 +22,21 @@ _DEMO_FACTS = [
     ("Demo Project", "has_participant", "Example Org", "confirmed", 0.92, "sources/example-grant.txt", ""),
     ("wirelog", "is_a", "deterministic logic engine", "candidate", 0.90, "sources/example-notes.txt", ""),
 ]
+
+
+@dataclass(frozen=True)
+class _SourceInput:
+    source_path: str
+    text: str
+    source_id: int | None = None
+    artifact_id: int | None = None
+
+
+@dataclass(frozen=True)
+class _SyncSummary:
+    per_source: list[tuple[str, int]]
+    total: int
+    run_id: int
 
 
 def _store(cfg: Config) -> Store:
@@ -81,26 +97,45 @@ def _rel_to_root(root: Path, p: Path) -> str:
         return str(p)
 
 
-def _resolve_sources(cfg: Config, path: str | None) -> list[tuple[str, str]]:
-    """Resolve a file path (or all sources under `<root>/sources/`) to (citation, text)."""
+def _resolve_sources(cfg: Config, store: Store, path: str | None) -> list[_SourceInput]:
+    """Resolve a file path or registered text artifacts to extraction inputs."""
     if path:
         f = Path(path)
         if not f.is_file():
             raise FileNotFoundError(f"no such file: {path}")
-        files = [f]
-    else:
-        sources_dir = cfg.root / "sources"
-        files = sorted(sources_dir.glob("*.txt")) + sorted(sources_dir.glob("*.md"))
-    return [(_rel_to_root(cfg.root, f), f.read_text(encoding="utf-8")) for f in files]
+        return [_SourceInput(_rel_to_root(cfg.root, f), f.read_text(encoding="utf-8"))]
+
+    inputs = [
+        _SourceInput(
+            source_path=row["source_path"],
+            text=(cfg.root / row["artifact_path"]).read_text(encoding="utf-8"),
+            source_id=int(row["source_id"]),
+            artifact_id=int(row["artifact_id"]),
+        )
+        for row in store.source_text_inputs()
+    ]
+    if inputs:
+        return inputs
+
+    sources_dir = cfg.root / "sources"
+    files = sorted(sources_dir.glob("*.txt")) + sorted(sources_dir.glob("*.md"))
+    return [
+        _SourceInput(_rel_to_root(cfg.root, f), f.read_text(encoding="utf-8"))
+        for f in files
+    ]
 
 
 def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
     from verinote.llm import LLMError, get_client
-    from verinote.pipeline import sync_sources
+    from verinote.pipeline import (
+        create_chunked_extraction_job,
+        process_extraction_job,
+        sync_sources,
+    )
 
     store = _store(cfg)
     try:
-        sources = _resolve_sources(cfg, args.path)
+        sources = _resolve_sources(cfg, store, args.path)
     except (FileNotFoundError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)
         store.close()
@@ -111,7 +146,28 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
         return 1
     try:
         client = get_client(cfg)
-        result = sync_sources(store, client, sources, provider=cfg.provider, model=cfg.model)
+        registered = [source for source in sources if source.source_id is not None]
+        if registered:
+            per_source = []
+            total = 0
+            run_id = 0
+            for source in registered:
+                job_id = create_chunked_extraction_job(
+                    store,
+                    source_id=source.source_id,
+                    artifact_id=source.artifact_id,
+                    source_text=source.text,
+                    provider=cfg.provider,
+                    model=cfg.model,
+                )
+                outcome = process_extraction_job(store, client, job_id=job_id)
+                per_source.append((source.source_path, outcome.candidates))
+                total += outcome.candidates
+                run_id = job_id
+            result = _SyncSummary(per_source=per_source, total=total, run_id=run_id)
+        else:
+            pairs = [(source.source_path, source.text) for source in sources]
+            result = sync_sources(store, client, pairs, provider=cfg.provider, model=cfg.model)
     except LLMError as e:
         print(f"extraction failed: {e}", file=sys.stderr)
         store.close()

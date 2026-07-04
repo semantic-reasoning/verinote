@@ -126,23 +126,62 @@ class Store:
         kind: str,
         path: str,
         content_type: str = "text/plain",
+        checksum: str = "",
     ) -> int:
         with self._lock:
-            cur = self._conn.execute(
-                "INSERT INTO source_artifacts(source_id, kind, path, content_type) "
-                "VALUES(?,?,?,?) "
-                "ON CONFLICT(source_id, kind) DO UPDATE SET "
-                "path=excluded.path, content_type=excluded.content_type "
-                "RETURNING id",
-                (source_id, kind, path, content_type),
+            self._conn.execute(
+                "INSERT INTO source_artifacts("
+                "source_id, kind, path, content_type, checksum"
+                ") VALUES(?,?,?,?,?) "
+                "ON CONFLICT(source_id, kind, checksum) DO NOTHING",
+                (source_id, kind, path, content_type, checksum),
             )
-            return int(cur.fetchone()[0])
+            row = self._conn.execute(
+                "SELECT id FROM source_artifacts "
+                "WHERE source_id = ? AND kind = ? AND checksum = ?",
+                (source_id, kind, checksum),
+            ).fetchone()
+            if row is None:
+                raise sqlite3.IntegrityError("source artifact insert failed")
+            return int(row["id"])
+
+    def get_source_artifact(self, artifact_id: int) -> sqlite3.Row | None:
+        return self._conn.execute(
+            "SELECT * FROM source_artifacts WHERE id = ?", (artifact_id,)
+        ).fetchone()
+
+    def get_extraction_job_detail(self, job_id: int) -> sqlite3.Row | None:
+        return self._conn.execute(
+            "SELECT j.*, s.path AS source_path, a.path AS artifact_path "
+            "FROM extraction_jobs j "
+            "JOIN sources s ON s.id = j.source_id "
+            "LEFT JOIN source_artifacts a ON a.id = j.artifact_id "
+            "WHERE j.id = ?",
+            (job_id,),
+        ).fetchone()
 
     def source_artifacts(self, source_id: int) -> list[sqlite3.Row]:
         return list(
             self._conn.execute(
                 "SELECT * FROM source_artifacts WHERE source_id = ? ORDER BY id",
                 (source_id,),
+            )
+        )
+
+    def source_text_inputs(self) -> list[sqlite3.Row]:
+        """Original source path plus the text artifact path to feed extraction."""
+        return list(
+            self._conn.execute(
+                "SELECT s.id AS source_id, s.path AS source_path, "
+                "a.id AS artifact_id, a.path AS artifact_path "
+                "FROM sources s JOIN source_artifacts a ON a.source_id = s.id "
+                "WHERE a.kind IN ('original_text','extracted_text') "
+                "AND a.id = ("
+                "  SELECT MAX(a2.id) FROM source_artifacts a2 "
+                "  WHERE a2.source_id = s.id "
+                "  AND a2.kind IN ('original_text','extracted_text')"
+                ") "
+                "ORDER BY s.path, a.id"
             )
         )
 
@@ -218,6 +257,12 @@ class Store:
         message: str = "",
     ) -> int:
         with self._lock:
+            if artifact_id is not None:
+                artifact = self.get_source_artifact(artifact_id)
+                if artifact is None or int(artifact["source_id"]) != source_id:
+                    raise sqlite3.IntegrityError(
+                        "extraction job artifact must belong to the source"
+                    )
             cur = self._conn.execute(
                 "INSERT INTO extraction_jobs("
                 "source_id, artifact_id, provider, model, total_chunks, message"
@@ -663,11 +708,20 @@ class Store:
                 kind         TEXT NOT NULL CHECK (kind IN ('original_text','extracted_text')),
                 path         TEXT NOT NULL UNIQUE,
                 content_type TEXT NOT NULL DEFAULT 'text/plain',
+                checksum     TEXT NOT NULL DEFAULT '',
                 created_at   TEXT NOT NULL DEFAULT (datetime('now')),
-                UNIQUE(source_id, kind)
+                UNIQUE(source_id, kind, checksum)
             );
             """
         )
+        artifact_columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(source_artifacts)")
+        }
+        if "checksum" not in artifact_columns:
+            self._conn.execute(
+                "ALTER TABLE source_artifacts ADD COLUMN checksum TEXT NOT NULL DEFAULT ''"
+            )
         job_columns = {
             row["name"]
             for row in self._conn.execute("PRAGMA table_info(extraction_jobs)")
