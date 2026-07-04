@@ -5,6 +5,7 @@ import pytest
 
 from verinote.pipeline import ingest_bytes, ingest_file, supported_suffixes
 from verinote.pipeline.ingest import IngestError
+from verinote.pipeline.ingest import register_converter
 from verinote.store import Store
 
 
@@ -42,7 +43,7 @@ def test_non_utf8_text_raises():
 
 def test_docx_converts_to_text():
     text, kind = ingest_bytes(_docx_bytes("hello world"), "report.docx")
-    assert kind == "conversion"
+    assert kind == "binary"
     assert "hello world" in text
 
 
@@ -69,8 +70,51 @@ def test_ingest_file_converts_binary_source(tmp_path):
     src = tmp_path / "report.docx"
     src.write_bytes(_docx_bytes("converted body"))
     result = ingest_file(s, src, root=tmp_path)
-    assert result["kind"] == "conversion"
-    # the produced text file lives under sources/ as .txt
-    assert result["citation"] == "sources/report.txt"
-    assert "converted body" in (tmp_path / "sources" / "report.txt").read_text()
-    assert s.sources_with_counts()[0]["kind"] == "conversion"
+    assert result["kind"] == "binary"
+    assert result["citation"] == "sources/report.docx"
+    assert (tmp_path / "sources" / "report.docx").read_bytes() == src.read_bytes()
+    assert result["artifact_path"].startswith("artifacts/sources/1/")
+    assert result["artifact_path"].endswith(".txt")
+    assert "converted body" in (tmp_path / result["artifact_path"]).read_text()
+    assert s.sources_with_counts()[0]["kind"] == "binary"
+
+
+def test_binary_sources_with_same_stem_keep_distinct_originals_and_artifacts(tmp_path):
+    register_converter(".pptx", lambda raw: raw.decode("utf-8"))
+    register_converter(".pdfx", lambda raw: raw.decode("utf-8"))
+    s = _store(tmp_path)
+
+    pptx = tmp_path / "report.pptx"
+    pdf = tmp_path / "report.pdfx"
+    pptx.write_bytes(b"slides")
+    pdf.write_bytes(b"document")
+
+    first = ingest_file(s, pptx, root=tmp_path)
+    second = ingest_file(s, pdf, root=tmp_path)
+
+    assert first["citation"] == "sources/report.pptx"
+    assert second["citation"] == "sources/report.pdfx"
+    assert first["artifact_path"].startswith("artifacts/sources/1/")
+    assert second["artifact_path"].startswith("artifacts/sources/2/")
+    assert (tmp_path / first["artifact_path"]).read_text() == "slides"
+    assert (tmp_path / second["artifact_path"]).read_text() == "document"
+    assert [row["path"] for row in s.sources()] == [
+        "sources/report.pdfx",
+        "sources/report.pptx",
+    ]
+
+
+def test_reingesting_same_source_keeps_previous_text_artifact(tmp_path):
+    register_converter(".rtfx", lambda raw: raw.decode("utf-8"))
+    s = _store(tmp_path)
+    src = tmp_path / "report.rtfx"
+    src.write_bytes(b"first")
+    first = ingest_file(s, src, root=tmp_path)
+
+    src.write_bytes(b"second")
+    second = ingest_file(s, src, root=tmp_path)
+
+    assert first["source_id"] == second["source_id"]
+    assert first["artifact_id"] != second["artifact_id"]
+    assert (tmp_path / first["artifact_path"]).read_text() == "first"
+    assert (tmp_path / second["artifact_path"]).read_text() == "second"

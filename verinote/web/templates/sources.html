@@ -2,8 +2,7 @@
 {% block title %}Sources — verinote{% endblock %}
 {% block content %}
 <h1>Sources</h1>
-<p class="muted">Files facts are extracted from and cited against. Text is stored
-  as-is; binaries ({{ suffixes }}) are converted to text on upload.</p>
+<p class="muted">Facts cite original files. Text artifacts used for extraction are tracked separately.</p>
 
 {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
 
@@ -36,13 +35,22 @@
 {% if sources %}
 <table class="sources">
   <thead>
-    <tr><th>Path</th><th>Kind</th><th>Facts</th><th>Added</th><th>Actions</th></tr>
+    <tr><th>Source</th><th>Kind</th><th>Artifact</th><th>Facts</th><th>Added</th><th>Actions</th></tr>
   </thead>
   <tbody>
     {% for s in sources %}
     <tr>
       <td><code>{{ s["path"] }}</code></td>
       <td><span class="badge">{{ s["kind"] }}</span></td>
+      <td class="src">
+        {% if s["artifact_paths"] %}
+          {% for path in s["artifact_paths"].split("\n") %}
+            <code>{{ path }}</code>{% if not loop.last %}<br>{% endif %}
+          {% endfor %}
+        {% else %}
+          —
+        {% endif %}
+      </td>
       <td class="conf">{{ s["fact_count"] }}</td>
       <td class="src">{{ s["added_at"] }}</td>
       <td class="actions">

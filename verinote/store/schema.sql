@@ -24,8 +24,9 @@ CREATE TABLE IF NOT EXISTS source_artifacts (
     kind         TEXT NOT NULL CHECK (kind IN ('original_text','extracted_text')),
     path         TEXT NOT NULL UNIQUE,
     content_type TEXT NOT NULL DEFAULT 'text/plain',
+    checksum     TEXT NOT NULL DEFAULT '',
     created_at   TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE(source_id, kind)
+    UNIQUE(source_id, kind, checksum)
 );
 
 -- One extraction run (an LLM pass over sources). Facts cite the run that

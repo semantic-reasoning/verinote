@@ -68,6 +68,7 @@ def create_chunked_extraction_job(
     store: Store,
     *,
     source_id: int,
+    artifact_id: int | None = None,
     source_text: str,
     provider: str | None,
     model: str | None,
@@ -76,6 +77,7 @@ def create_chunked_extraction_job(
     chunks = chunk_text(source_text)
     job_id = store.create_extraction_job(
         source_id=source_id,
+        artifact_id=artifact_id,
         provider=provider,
         model=model,
         total_chunks=len(chunks),

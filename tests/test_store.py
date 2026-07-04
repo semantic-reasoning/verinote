@@ -109,32 +109,79 @@ def test_source_artifacts_are_upserted_and_listed_with_counts(tmp_path):
     first = s.add_source_artifact(
         source_id=sid,
         kind="extracted_text",
-        path="artifacts/sources/1/extracted.txt",
+        path="artifacts/sources/1/aaa.txt",
+        checksum="aaa",
     )
     second = s.add_source_artifact(
         source_id=sid,
         kind="extracted_text",
-        path="artifacts/sources/1/extracted-v2.txt",
-    )
-    s.add_source_artifact(
-        source_id=sid,
-        kind="original_text",
-        path="sources/report.pdf",
-        content_type="application/pdf",
+        path="artifacts/sources/1/bbb.txt",
+        checksum="bbb",
     )
     s.add_fact("A", "r", "B", status="candidate", source_id=sid)
 
-    assert first == second
+    assert first != second
     artifacts = s.source_artifacts(sid)
     assert [(a["kind"], a["path"]) for a in artifacts] == [
-        ("extracted_text", "artifacts/sources/1/extracted-v2.txt"),
-        ("original_text", "sources/report.pdf"),
+        ("extracted_text", "artifacts/sources/1/aaa.txt"),
+        ("extracted_text", "artifacts/sources/1/bbb.txt"),
     ]
     rows = s.sources_with_counts()
     assert rows[0]["path"] == "sources/report.pdf"
     assert rows[0]["kind"] == "binary"
     assert rows[0]["fact_count"] == 1
-    assert "artifacts/sources/1/extracted-v2.txt" in rows[0]["artifact_paths"]
+    assert "artifacts/sources/1/aaa.txt" in rows[0]["artifact_paths"]
+    assert "artifacts/sources/1/bbb.txt" in rows[0]["artifact_paths"]
+
+
+def test_extraction_job_rejects_artifact_from_another_source(tmp_path):
+    s = _store(tmp_path)
+    source_a = s.add_source("sources/a.pdf", kind="binary")
+    source_b = s.add_source("sources/b.pdf", kind="binary")
+    artifact_b = s.add_source_artifact(
+        source_id=source_b,
+        kind="extracted_text",
+        path="artifacts/sources/2/bbb.txt",
+        checksum="bbb",
+    )
+
+    import sqlite3
+
+    try:
+        s.create_extraction_job(
+            source_id=source_a,
+            artifact_id=artifact_b,
+            provider="fake",
+            model="m",
+            total_chunks=1,
+        )
+    except sqlite3.IntegrityError as exc:
+        assert "artifact must belong" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected IntegrityError")
+
+
+def test_source_text_inputs_use_latest_artifact_per_source(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/report.pdf", kind="binary")
+    s.add_source_artifact(
+        source_id=sid,
+        kind="extracted_text",
+        path="artifacts/sources/1/old.txt",
+        checksum="old",
+    )
+    latest = s.add_source_artifact(
+        source_id=sid,
+        kind="extracted_text",
+        path="artifacts/sources/1/new.txt",
+        checksum="new",
+    )
+
+    rows = s.source_text_inputs()
+
+    assert [(row["source_path"], row["artifact_id"], row["artifact_path"]) for row in rows] == [
+        ("sources/report.pdf", latest, "artifacts/sources/1/new.txt")
+    ]
 
 
 def test_extraction_job_tracks_chunk_progress_and_retry(tmp_path):

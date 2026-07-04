@@ -2,6 +2,7 @@
 import verinote.cli as cli
 from verinote.engine import DEFAULT_POLICY
 from verinote.llm.base import ExtractedFact, LLMError
+from verinote.pipeline.ingest import register_converter
 from verinote.store import Store
 from verinote.store.fact_input import structural_term
 
@@ -69,6 +70,30 @@ def test_ingest_registers_text_source(tmp_path, monkeypatch, capsys):
     assert [(r["path"], r["kind"]) for r in s.sources_with_counts()] == [
         ("sources/doc.txt", "text")
     ]
+
+
+def test_sync_uses_registered_artifact_after_binary_ingest(
+    tmp_path, monkeypatch, capsys, fake_client
+):
+    _env(monkeypatch, tmp_path)
+    register_converter(".rtfx", lambda raw: raw.decode("utf-8"))
+    monkeypatch.setattr(
+        "verinote.llm.get_client",
+        lambda cfg: fake_client([ExtractedFact("A", "is_a", "B", 0.9)]),
+    )
+    src = tmp_path / "report.rtfx"
+    src.write_bytes(b"artifact text")
+
+    assert cli.main(["ingest", str(src)]) == 0
+    assert cli.main(["sync"]) == 0
+
+    out = capsys.readouterr().out
+    assert "sources/report.rtfx: 1 candidate(s)" in out
+    s = Store(tmp_path / "kb.sqlite")
+    fact = s.review_queue()[0]
+    job = s.get_extraction_job_detail(fact["job_id"])
+    assert fact["source_path"] == "sources/report.rtfx"
+    assert job["artifact_path"].startswith("artifacts/sources/")
 
 
 def test_ingest_unsupported_type_errors(tmp_path, monkeypatch, capsys):
