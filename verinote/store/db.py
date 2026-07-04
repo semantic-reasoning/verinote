@@ -80,7 +80,7 @@ class Store:
 
     # --- sources ---------------------------------------------------------
     def add_source(self, path: str, kind: str = "text") -> int:
-        # kind is set at first registration (e.g. ingest marks 'conversion') and
+        # kind is set at first registration (e.g. upload marks 'binary') and
         # preserved on re-registration — the no-op SET keeps the existing kind
         # while still letting RETURNING hand back the id on conflict, so a later
         # extraction pass over the same path doesn't downgrade it to 'text'.
@@ -109,9 +109,40 @@ class Store:
         """Sources plus how many facts cite each — for the Sources listing."""
         return list(
             self._conn.execute(
-                "SELECT s.id, s.path, s.kind, s.added_at, COUNT(f.id) AS fact_count "
-                "FROM sources s LEFT JOIN facts f ON f.source_id = s.id "
+                "SELECT s.id, s.path, s.kind, s.added_at, "
+                "GROUP_CONCAT(a.path, '\n') AS artifact_paths, "
+                "COUNT(DISTINCT f.id) AS fact_count "
+                "FROM sources s "
+                "LEFT JOIN source_artifacts a ON a.source_id = s.id "
+                "LEFT JOIN facts f ON f.source_id = s.id "
                 "GROUP BY s.id ORDER BY s.path"
+            )
+        )
+
+    def add_source_artifact(
+        self,
+        *,
+        source_id: int,
+        kind: str,
+        path: str,
+        content_type: str = "text/plain",
+    ) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO source_artifacts(source_id, kind, path, content_type) "
+                "VALUES(?,?,?,?) "
+                "ON CONFLICT(source_id, kind) DO UPDATE SET "
+                "path=excluded.path, content_type=excluded.content_type "
+                "RETURNING id",
+                (source_id, kind, path, content_type),
+            )
+            return int(cur.fetchone()[0])
+
+    def source_artifacts(self, source_id: int) -> list[sqlite3.Row]:
+        return list(
+            self._conn.execute(
+                "SELECT * FROM source_artifacts WHERE source_id = ? ORDER BY id",
+                (source_id,),
             )
         )
 
@@ -132,8 +163,9 @@ class Store:
         """Latest extraction jobs, newest first, for the Sources listing."""
         return list(
             self._conn.execute(
-                "SELECT j.*, s.path AS source_path "
+                "SELECT j.*, s.path AS source_path, a.path AS artifact_path "
                 "FROM extraction_jobs j JOIN sources s ON s.id = j.source_id "
+                "LEFT JOIN source_artifacts a ON a.id = j.artifact_id "
                 "ORDER BY j.id DESC"
             )
         )
@@ -179,6 +211,7 @@ class Store:
         self,
         *,
         source_id: int,
+        artifact_id: int | None = None,
         provider: str | None,
         model: str | None,
         total_chunks: int,
@@ -187,9 +220,9 @@ class Store:
         with self._lock:
             cur = self._conn.execute(
                 "INSERT INTO extraction_jobs("
-                "source_id, provider, model, total_chunks, message"
-                ") VALUES(?,?,?,?,?) RETURNING id",
-                (source_id, provider, model, total_chunks, message),
+                "source_id, artifact_id, provider, model, total_chunks, message"
+                ") VALUES(?,?,?,?,?,?) RETURNING id",
+                (source_id, artifact_id, provider, model, total_chunks, message),
             )
             return int(cur.fetchone()[0])
 
@@ -622,6 +655,28 @@ class Store:
             pass
 
     def _ensure_schema_migrations(self) -> None:
+        self._conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS source_artifacts (
+                id           INTEGER PRIMARY KEY,
+                source_id    INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+                kind         TEXT NOT NULL CHECK (kind IN ('original_text','extracted_text')),
+                path         TEXT NOT NULL UNIQUE,
+                content_type TEXT NOT NULL DEFAULT 'text/plain',
+                created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(source_id, kind)
+            );
+            """
+        )
+        job_columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(extraction_jobs)")
+        }
+        if "artifact_id" not in job_columns:
+            self._conn.execute(
+                "ALTER TABLE extraction_jobs ADD COLUMN artifact_id INTEGER "
+                "REFERENCES source_artifacts(id) ON DELETE SET NULL"
+            )
         fact_columns = {
             row["name"] for row in self._conn.execute("PRAGMA table_info(facts)")
         }
