@@ -223,14 +223,24 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             daemon=True,
         ).start()
 
-    def _delete_source_file(source_path: str, root: Path) -> None:
+    def _source_file_path(source_path: str, root: Path) -> Path:
         path = (root / source_path).resolve()
         try:
             path.relative_to(root.resolve())
         except ValueError as e:
             raise OSError(f"refusing to delete source outside KB root: {source_path}") from e
+        return path
+
+    def _delete_source_file(source_path: str, root: Path) -> None:
+        path = _source_file_path(source_path, root)
         if path.is_file():
             path.unlink()
+
+    def _delete_source_files(paths: set[str], root: Path) -> None:
+        for path in paths:
+            _source_file_path(path, root)
+        for path in sorted(paths):
+            _delete_source_file(path, root)
 
     def _resume_source_extraction_jobs() -> None:
         if app.state.store is None or app.state.cfg is None:
@@ -266,17 +276,18 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         except IngestError as e:
             return _sources(request, error=str(e), status_code=400)
 
-        citation = store_source(store, cfg.root, filename, text, kind)
-        source = store.get_source_by_path(citation)
+        result = store_source(store, cfg.root, filename, raw, text, kind)
+        source = store.get_source_by_path(result["citation"])
         if source is None:
             return _sources(
                 request,
-                error=f"source registration failed: {citation}",
+                error=f"source registration failed: {result['citation']}",
                 status_code=500,
             )
         job_id = create_chunked_extraction_job(
             store,
             source_id=int(source["id"]),
+            artifact_id=int(result["artifact_id"]),
             source_text=text,
             provider=cfg.provider,
             model=cfg.model,
@@ -296,10 +307,18 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     def delete_source(request: Request, source_id: int):
         store = _active_store()
         cfg = _active_cfg()
+        source = store.get_source(source_id)
+        paths = {source["path"]} if source is not None else set()
+        paths.update(row["path"] for row in store.source_artifacts(source_id))
+        try:
+            for path in paths:
+                _source_file_path(path, cfg.root)
+        except OSError as e:
+            return _sources(request, error=f"source removal failed: {e}", status_code=500)
         source = store.delete_source(source_id)
         if source is not None:
             try:
-                _delete_source_file(source["path"], cfg.root)
+                _delete_source_files(paths, cfg.root)
             except OSError as e:
                 return _sources(
                     request,
@@ -377,10 +396,20 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         store = _active_store()
         fact = store.get_fact(fact_id)
         run = store.get_run(fact["run_id"]) if fact and fact["run_id"] else None
+        job = (
+            store.get_extraction_job_detail(fact["job_id"])
+            if fact and fact["job_id"]
+            else None
+        )
         return templates.TemplateResponse(
             request,
             "provenance.html",
-            {"f": _fact_view(fact), "run": run, "log": store.fact_log(fact_id) if fact else []},
+            {
+                "f": _fact_view(fact),
+                "run": run,
+                "job": job,
+                "log": store.fact_log(fact_id) if fact else [],
+            },
         )
 
     def _questions(request: Request, *, error: str | None = None, status_code: int = 200):

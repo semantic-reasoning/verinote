@@ -22,6 +22,11 @@
         {% if run["summary"] %}<span class="muted">({{ run["summary"] }})</span>{% endif %}
       {% else %}— (seeded or hand-entered){% endif %}
     </td></tr>
+    <tr><td>extraction</td><td>
+      {% if job %}
+        job #{{ job["id"] }} · artifact <code>{{ job["artifact_path"] or "—" }}</code>
+      {% else %}—{% endif %}
+    </td></tr>
     <tr><td>created</td><td class="src">{{ f["created_at"] }}</td></tr>
     <tr><td>updated</td><td class="src">{{ f["updated_at"] }}</td></tr>
   </tbody>
