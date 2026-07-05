@@ -87,3 +87,12 @@ tr.editing td { background: rgba(91, 157, 255, .06); }
 .report { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 1rem; overflow-x: auto; white-space: pre-wrap; }
 .findings { margin: 1rem 0; padding-left: 1.2rem; }
 .findings li { font-family: ui-monospace, monospace; font-size: .9rem; margin: .2rem 0; }
+.trust-block { margin: 1.2rem 0; }
+.trust-labels { display: flex; flex-wrap: wrap; gap: .45rem; margin: .7rem 0; }
+.trust-corroborated, .trust-source_backed, .trust-reviewed { color: var(--ok); border-color: var(--ok); }
+.trust-conflicted, .trust-evidence_missing { color: var(--danger); border-color: var(--danger); }
+.trust-unsupported, .trust-single_source { color: var(--warn); border-color: var(--warn); }
+.evidence { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: .75rem; margin: .7rem 0; }
+.evidence pre { margin: .55rem 0 0; max-height: 14rem; overflow: auto; white-space: pre-wrap;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: .65rem; }
+.error-inline { color: var(--danger); }

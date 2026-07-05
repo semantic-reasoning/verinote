@@ -28,6 +28,7 @@ from verinote.config import (
 from verinote.llm import LLMError, get_client
 from verinote.pipeline import (
     create_chunked_extraction_job,
+    fact_trust_summary,
     IngestError,
     ingest_bytes,
     process_extraction_job,
@@ -450,6 +451,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     def provenance(request: Request, fact_id: int):
         store = _active_store()
         fact = store.get_fact(fact_id)
+        trust = fact_trust_summary(store, fact_id) if fact else None
         run = store.get_run(fact["run_id"]) if fact and fact["run_id"] else None
         job = (
             store.get_extraction_job_detail(fact["job_id"])
@@ -461,6 +463,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             "provenance.html",
             {
                 "f": _fact_view(fact),
+                "trust": trust,
                 "run": run,
                 "job": job,
                 "log": store.fact_log(fact_id) if fact else [],

@@ -770,6 +770,87 @@ def test_provenance_shows_source_and_audit(tmp_path):
     assert "toggled" in r.text
 
 
+def test_provenance_renders_trust_dossier_sections(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    policy = tmp_path / "policy"
+    policy.mkdir()
+    (policy / "logic-policy.dl").write_text(
+        '.decl functional(rel: symbol)\nfunctional("published_year").\n',
+        encoding="utf-8",
+    )
+    source_id = store.add_source("sources/sample-source.txt")
+    artifact_id = store.add_source_artifact(
+        source_id=source_id,
+        kind="original_text",
+        path="sources/sample-source.txt",
+    )
+    job_id = store.create_extraction_job(
+        source_id=source_id,
+        artifact_id=artifact_id,
+        provider="fake",
+        model="sample-model",
+        total_chunks=1,
+    )
+    chunk_id = store.add_source_chunks(
+        job_id=job_id,
+        source_id=source_id,
+        chunks=["Sample Report was published in 2024."],
+    )[0]
+    store.mark_extraction_job_running(job_id)
+    store.mark_chunk_running(chunk_id)
+    store.mark_chunk_done(chunk_id, candidates=1)
+    run_id = store.add_run(provider="fake", model="sample-model", summary="sample run")
+    fact_id = store.add_fact(
+        "Sample Report",
+        "published_year",
+        "2024",
+        status="confirmed",
+        confidence=0.99,
+        source_id=source_id,
+        run_id=run_id,
+        job_id=job_id,
+        note="model note",
+    )
+    store.add_fact_evidence(
+        fact_id=fact_id,
+        source_id=source_id,
+        artifact_id=artifact_id,
+        job_id=job_id,
+        chunk_id=chunk_id,
+        snippet="Sample Report was published in 2024.",
+    )
+    store.set_status(fact_id, "accepted", action="accepted")
+    other_source = store.add_source("sources/sample-conflict.txt")
+    store.add_fact(
+        "Sample Report",
+        "published_year",
+        "2025",
+        status="accepted",
+        source_id=other_source,
+    )
+
+    body = unescape(c.get(f"/facts/{fact_id}/provenance").text)
+
+    assert "Trust dossier" in body
+    assert "Trust summary" in body
+    assert "source backed" in body
+    assert "single source" in body
+    assert "conflicted" in body
+    assert "source support" in body
+    assert "sources/sample-source.txt" in body
+    assert "Conflict summary" in body
+    assert "2024" in body
+    assert "2025" in body
+    assert "Lifecycle timeline" in body
+    assert "accepted" in body
+    assert "Source evidence" in body
+    assert "Sample Report was published in 2024." in body
+    assert "Metadata" in body
+    assert "model metadata only" in body
+    assert body.index("Trust summary") < body.index("Metadata")
+
+
 def test_provenance_renders_structural_terms_from_duckdb(tmp_path):
     c = _client(tmp_path)
     store = c.app.state.store
