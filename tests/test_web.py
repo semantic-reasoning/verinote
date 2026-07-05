@@ -232,6 +232,62 @@ def test_delete_source_removes_file_and_extracted_facts(tmp_path):
     assert store.source_extraction_jobs() == []
 
 
+def test_reanalyze_source_reuses_artifact_and_replaces_extracted_facts(
+    tmp_path, monkeypatch, fake_client
+):
+    monkeypatch.setattr(
+        webapp,
+        "get_client",
+        lambda cfg: fake_client([ExtractedFact("New", "is_a", "Fact", 0.9)]),
+    )
+    c = _client(tmp_path)
+    store = c.app.state.store
+    sid = store.add_source("sources/a.txt", kind="text")
+    artifact_path = tmp_path / "sources" / "a.txt"
+    artifact_path.parent.mkdir()
+    artifact_path.write_text("source body", encoding="utf-8")
+    artifact_id = store.add_source_artifact(
+        source_id=sid,
+        kind="original_text",
+        path="sources/a.txt",
+    )
+    store.add_fact("Old", "is_a", "Fact", status="candidate", source_id=sid)
+    old_job = store.create_extraction_job(
+        source_id=sid,
+        artifact_id=artifact_id,
+        provider="fake",
+        model="old",
+        total_chunks=1,
+    )
+    old_chunk = store.add_source_chunks(
+        job_id=old_job, source_id=sid, chunks=["old body"]
+    )[0]
+    store.mark_extraction_job_running(old_job)
+    store.mark_chunk_running(old_chunk)
+    store.mark_chunk_done(old_chunk, candidates=1)
+
+    body = c.get("/sources").text
+    assert "Re-analyze" in body
+
+    r = c.post(f"/sources/{sid}/reanalyze", follow_redirects=False)
+
+    assert r.status_code == 303
+    assert r.headers["location"] == "/sources"
+
+    def reanalyzed():
+        assert any(row["subject"] == "New" for row in store.review_queue())
+        assert "Analysis complete: 1/1 chunk(s)" in c.get("/sources").text
+
+    _wait_for(reanalyzed)
+    assert not any(row["subject"] == "Old" for row in store.review_queue())
+    assert len(store.source_extraction_jobs()) == 1
+    assert store.get_source(sid)["path"] == "sources/a.txt"
+    assert artifact_path.read_text(encoding="utf-8") == "source body"
+    fact = [row for row in store.review_queue() if row["subject"] == "New"][0]
+    assert fact["source_id"] == sid
+    assert store.get_extraction_job_detail(fact["job_id"])["artifact_id"] == artifact_id
+
+
 def test_upload_docx_converts_and_extracts(tmp_path, monkeypatch, fake_client):
     import io
 
@@ -906,7 +962,10 @@ def test_settings_enables_connection_test_for_ollama(tmp_path):
     assert 'aria-disabled="true"' not in r.text
 
 
-def test_settings_switches_active_kb_root(tmp_path):
+def test_settings_switches_active_kb_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
     c = _client(tmp_path)
     other = tmp_path / "other-kb"
 

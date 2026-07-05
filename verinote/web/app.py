@@ -303,6 +303,52 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             _start_source_extraction(job_id, _active_cfg())
         return RedirectResponse("/sources", status_code=303)
 
+    @app.post("/sources/{source_id}/reanalyze", response_class=HTMLResponse)
+    def reanalyze_source(request: Request, source_id: int):
+        store = _active_store()
+        cfg = _active_cfg()
+        source = store.get_source(source_id)
+        if source is None:
+            return _sources(request, error="source not found", status_code=404)
+        if any(
+            int(job["source_id"]) == source_id
+            and job["status"] in {"pending", "running"}
+            for job in store.source_extraction_jobs()
+        ):
+            return _sources(
+                request,
+                error=f"analysis already running for {source['path']}",
+                status_code=409,
+            )
+        artifact = store.latest_source_text_artifact(source_id)
+        if artifact is None:
+            return _sources(
+                request,
+                error=f"source has no extraction text artifact: {source['path']}",
+                status_code=400,
+            )
+        try:
+            artifact_path = _source_file_path(str(artifact["path"]), cfg.root)
+            source_text = artifact_path.read_text(encoding="utf-8")
+        except OSError as e:
+            return _sources(
+                request,
+                error=f"could not read source artifact: {e}",
+                status_code=500,
+            )
+
+        store.clear_source_analysis(source_id)
+        job_id = create_chunked_extraction_job(
+            store,
+            source_id=source_id,
+            artifact_id=int(artifact["id"]),
+            source_text=source_text,
+            provider=cfg.provider,
+            model=cfg.model,
+        )
+        _start_source_extraction(job_id, cfg)
+        return RedirectResponse("/sources", status_code=303)
+
     @app.post("/sources/{source_id}/delete", response_class=HTMLResponse)
     def delete_source(request: Request, source_id: int):
         store = _active_store()

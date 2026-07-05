@@ -59,4 +59,7 @@ def test_ollama_extract_uses_configured_timeout(tmp_path, monkeypatch):
     facts = OllamaAdapter(_cfg(tmp_path, timeout=900.0)).extract_facts(source_text="Ada")
 
     assert calls[0].timeout == 900.0
+    payload = json.loads(calls[0].req.data.decode("utf-8"))
+    assert payload["think"] is False
+    assert payload["options"] == {"temperature": 0}
     assert facts[0].subject == "Ada"

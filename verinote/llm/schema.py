@@ -49,9 +49,14 @@ FACT_ARRAY_SCHEMA: dict[str, Any] = {
 
 EXTRACTION_SYSTEM = (
     "You extract source-backed factual triples from a document. Return ONLY facts "
-    "stated or directly entailed by the text. Each fact is a (subject, relation, "
-    "object) triple with a confidence in [0,1]. The subject, relation, and object "
-    "must each be an object {\"kind\":\"string|term\", \"value\":\"...\"}. Use "
+    "explicitly stated by the text. Extract all explicit factual triples, not only "
+    "the most important ones. Prefer many small source-backed triples over one broad "
+    "summary triple. For each sentence, table row, or bullet, extract every distinct "
+    "subject-predicate-object fact that is explicitly stated. Do not omit explicit "
+    "facts merely because they seem repetitive or low importance. Each fact is a "
+    "(subject, relation, object) triple with a confidence in [0,1]. The subject, "
+    "relation, and object must each be an object "
+    "{\"kind\":\"string|term\", \"value\":\"...\"}. Use "
     "kind=\"term\" only for explicit, fully ground Datalog terms such as "
     "person(\"Ada\") or role(person(\"Ada\"), \"PI\"). Bare names, labels, Korean, "
     "Chinese, whitespace, or punctuation outside quoted string arguments are not "
