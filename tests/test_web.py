@@ -204,6 +204,72 @@ def test_review_shows_queue(tmp_path):
     assert "Conf." not in r.text
 
 
+def test_review_paginates_large_queue_and_preserves_controls(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    for idx in range(1200):
+        store.add_fact(f"Bulk {idx:03d}", "uses", "Sample", status="candidate")
+
+    body = unescape(c.get("/review").text)
+
+    assert body.count('<tr id="fact-') == 50
+    assert "Showing 1-50 of 1201 review facts" in body
+    assert "Bulk 1199" in body
+    assert "Bulk 1149" not in body
+    assert 'href="/review?filter=needs-human-decision&sort=newest&page_size=50&page=2"' in body
+
+    page_two = unescape(c.get("/review?page=2").text)
+    assert page_two.count('<tr id="fact-') == 50
+    assert "Showing 51-100 of 1201 review facts" in page_two
+    assert "Bulk 1149" in page_two
+    assert "Bulk 1099" not in page_two
+
+    controls = unescape(c.get("/review?sort=oldest&page_size=25&page=2").text)
+    assert 'href="/review?filter=unsupported&sort=oldest&page_size=25&page=1"' in controls
+    assert '<option value="oldest" selected>Oldest</option>' in controls
+    assert '<option value="25" selected>25</option>' in controls
+
+
+def test_review_clamps_invalid_pagination_params(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    for idx in range(60):
+        store.add_fact(f"Clamp {idx:03d}", "uses", "Sample", status="candidate")
+
+    body = unescape(c.get("/review?page=bad&page_size=1000&sort=subject").text)
+
+    assert body.count('<tr id="fact-') == 50
+    assert "Showing 1-50 of 61 review facts" in body
+    assert '<option value="newest" selected>Newest</option>' in body
+    assert '<option value="50" selected>50</option>' in body
+
+
+def test_review_trust_filter_applies_before_pagination(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    for idx in range(60):
+        source_id = store.add_source(f"sources/support-{idx:03d}.txt")
+        store.add_fact(f"Supported {idx:03d}", "uses", "Sample", status="candidate")
+        store.add_fact(
+            f"Supported {idx:03d}",
+            "uses",
+            "Sample",
+            status="confirmed",
+            source_id=source_id,
+        )
+
+    unfiltered = unescape(c.get("/review").text)
+    assert "is_a" not in unfiltered
+
+    body = unescape(c.get("/review?filter=unsupported").text)
+
+    assert body.count('<tr id="fact-') == 1
+    assert "Showing 1-1 of 1 review facts" in body
+    assert "is_a" in body
+    assert "Supported 059" not in body
+    assert "Trust filter is applied to this page" not in body
+
+
 def test_review_renders_structural_terms_from_duckdb_and_distinguishes_strings(tmp_path):
     c = _client(tmp_path)
     store = c.app.state.store

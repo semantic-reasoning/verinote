@@ -6,10 +6,68 @@
   Toggle promotes to <code>confirmed</code>; accept/reject decide directly.</p>
 
 <nav class="filters" aria-label="review filters">
-  {% for key, label in filters %}
-    <a class="badge {% if active_filter == key %}active{% endif %}" href="/review?filter={{ key }}">{{ label }}</a>
+  {% for item in filters %}
+    <a class="badge {% if item.active %}active{% endif %}"
+       href="{{ item.href }}"
+       {% if item.active %}aria-current="page"{% endif %}>{{ item.label }}</a>
   {% endfor %}
 </nav>
+
+<form class="review-toolbar" action="/review" method="get">
+  <input type="hidden" name="filter" value="{{ active_filter }}">
+  <input type="hidden" name="page" value="1">
+  <label>
+    Sort
+    <select name="sort">
+      {% for key, label in pager.sort_options %}
+        <option value="{{ key }}" {% if pager.sort == key %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>
+    Page size
+    <select name="page_size">
+      {% for size in pager.page_sizes %}
+        <option value="{{ size }}" {% if pager.page_size == size %}selected{% endif %}>{{ size }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <button type="submit">Apply</button>
+</form>
+
+<div class="review-status" aria-live="polite">
+  {% if pager.total %}
+    Showing {{ pager.start }}-{{ pager.end }} of {{ pager.total }} review facts
+  {% else %}
+    Showing 0 of 0 review facts
+  {% endif %}
+</div>
+
+{% macro review_pages(pager) -%}
+<nav class="pagination" aria-label="Review pages">
+  {% if pager.prev_href %}
+    <a class="btn ghost" href="{{ pager.prev_href }}">Previous</a>
+  {% else %}
+    <span class="btn ghost disabled" aria-disabled="true">Previous</span>
+  {% endif %}
+  {% for item in pager.pages %}
+    {% if item.ellipsis %}
+      <span class="page-ellipsis">...</span>
+    {% elif item.active %}
+      <span class="badge active" aria-current="page">{{ item.number }}</span>
+    {% else %}
+      <a class="badge" href="{{ item.href }}">{{ item.number }}</a>
+    {% endif %}
+  {% endfor %}
+  {% if pager.next_href %}
+    <a class="btn ghost" href="{{ pager.next_href }}">Next</a>
+  {% else %}
+    <span class="btn ghost disabled" aria-disabled="true">Next</span>
+  {% endif %}
+</nav>
+{%- endmacro %}
+
+{{ review_pages(pager) }}
 
 {% if queue %}
 <table class="facts">
@@ -27,7 +85,15 @@
 </table>
 {% else %}
 <div class="empty">
-  <p>Review queue is empty for this filter.</p>
+  {% if active_filter == "needs-human-decision" %}
+    <p>Review queue is empty.</p>
+    <p>No facts need review.</p>
+    <p>Candidate and needs_review facts will appear here after extraction.</p>
+  {% else %}
+    <p>No facts match this filter.</p>
+    <p>Try another review filter.</p>
+  {% endif %}
 </div>
 {% endif %}
+{{ review_pages(pager) }}
 {% endblock %}

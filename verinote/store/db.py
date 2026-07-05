@@ -9,6 +9,7 @@ for deterministic inference and attaches this same file read-only for analytics.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import sqlite3
 import threading
@@ -20,10 +21,85 @@ from typing import Any, Iterable
 REVIEW_STATUSES = frozenset({"candidate", "needs_review"})
 ENGINE_STATUSES = frozenset({"confirmed", "accepted"})
 MAX_EVIDENCE_SNIPPET_CHARS = 1000
+REVIEW_PAGE_SIZES = (25, 50, 100)
+DEFAULT_REVIEW_PAGE_SIZE = 50
+DEFAULT_REVIEW_SORT = "newest"
+REVIEW_SORT_SQL = {
+    "newest": "f.id DESC",
+    "oldest": "f.id ASC",
+    "updated": "f.updated_at DESC, f.id DESC",
+    "confidence": "f.confidence DESC, f.id DESC",
+    "source": "s.path IS NULL ASC, lower(s.path) ASC, f.id DESC",
+}
 
 
 def _load_schema() -> str:
     return resources.files("verinote.store").joinpath("schema.sql").read_text(encoding="utf-8")
+
+
+@dataclass(frozen=True)
+class ReviewQueuePage:
+    rows: list[sqlite3.Row]
+    total: int
+    page: int
+    page_size: int
+    sort: str
+
+    @property
+    def page_count(self) -> int:
+        if self.total == 0:
+            return 1
+        return (self.total + self.page_size - 1) // self.page_size
+
+    @property
+    def start(self) -> int:
+        if self.total == 0:
+            return 0
+        return (self.page - 1) * self.page_size + 1
+
+    @property
+    def end(self) -> int:
+        return min(self.page * self.page_size, self.total)
+
+    @classmethod
+    def from_rows(
+        cls,
+        rows: list[sqlite3.Row],
+        *,
+        total: int,
+        page: object,
+        page_size: object,
+        sort: object,
+    ) -> "ReviewQueuePage":
+        page_size = _review_page_size(page_size)
+        page = _positive_int(page, 1)
+        sort = _review_sort(sort)
+        page_count = max(1, (total + page_size - 1) // page_size)
+        return cls(
+            rows=rows,
+            total=total,
+            page=min(page, page_count),
+            page_size=page_size,
+            sort=sort,
+        )
+
+
+def _positive_int(value: object, default: int) -> int:
+    try:
+        parsed = int(str(value))
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _review_page_size(value: object) -> int:
+    parsed = _positive_int(value, DEFAULT_REVIEW_PAGE_SIZE)
+    return parsed if parsed in REVIEW_PAGE_SIZES else DEFAULT_REVIEW_PAGE_SIZE
+
+
+def _review_sort(value: object) -> str:
+    sort = str(value)
+    return sort if sort in REVIEW_SORT_SQL else DEFAULT_REVIEW_SORT
 
 
 class Store:
@@ -742,6 +818,75 @@ class Store:
 
     def review_queue(self) -> list[sqlite3.Row]:
         return self.facts(statuses=REVIEW_STATUSES)
+
+    def review_queue_ids(self, *, sort: object = DEFAULT_REVIEW_SORT) -> list[int]:
+        sort = _review_sort(sort)
+        statuses = tuple(sorted(REVIEW_STATUSES))
+        placeholders = ",".join("?" * len(statuses))
+        rows = self._conn.execute(
+            "SELECT f.id FROM facts f "
+            "LEFT JOIN sources s ON s.id = f.source_id "
+            f"WHERE f.status IN ({placeholders}) "
+            f"ORDER BY {REVIEW_SORT_SQL[sort]}",
+            statuses,
+        )
+        return [int(row["id"]) for row in rows]
+
+    def facts_by_ids(self, fact_ids: Iterable[int]) -> list[sqlite3.Row]:
+        ids = [int(fact_id) for fact_id in fact_ids]
+        if not ids:
+            return []
+        placeholders = ",".join("?" * len(ids))
+        rows = list(
+            self._conn.execute(
+                "SELECT f.*, s.path AS source_path FROM facts f "
+                "LEFT JOIN sources s ON s.id = f.source_id "
+                f"WHERE f.id IN ({placeholders})",
+                tuple(ids),
+            )
+        )
+        by_id = {int(row["id"]): row for row in rows}
+        return [by_id[fact_id] for fact_id in ids if fact_id in by_id]
+
+    def review_queue_page(
+        self,
+        *,
+        page: object = 1,
+        page_size: object = DEFAULT_REVIEW_PAGE_SIZE,
+        sort: object = DEFAULT_REVIEW_SORT,
+    ) -> ReviewQueuePage:
+        page_size = _review_page_size(page_size)
+        page = _positive_int(page, 1)
+        sort = _review_sort(sort)
+        statuses = tuple(sorted(REVIEW_STATUSES))
+        placeholders = ",".join("?" * len(statuses))
+        where = f"f.status IN ({placeholders})"
+        total = int(
+            self._conn.execute(
+                f"SELECT COUNT(*) AS c FROM facts f WHERE {where}",
+                statuses,
+            ).fetchone()["c"]
+        )
+        page_count = max(1, (total + page_size - 1) // page_size)
+        page = min(page, page_count)
+        offset = (page - 1) * page_size
+        rows = list(
+            self._conn.execute(
+                "SELECT f.*, s.path AS source_path FROM facts f "
+                "LEFT JOIN sources s ON s.id = f.source_id "
+                f"WHERE {where} "
+                f"ORDER BY {REVIEW_SORT_SQL[sort]} "
+                "LIMIT ? OFFSET ?",
+                (*statuses, page_size, offset),
+            )
+        )
+        return ReviewQueuePage.from_rows(
+            rows=rows,
+            total=total,
+            page=page,
+            page_size=page_size,
+            sort=sort,
+        )
 
     def status_counts(self) -> dict[str, int]:
         rows = self._conn.execute("SELECT status, COUNT(*) c FROM facts GROUP BY status")

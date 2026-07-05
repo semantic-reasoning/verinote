@@ -32,6 +32,70 @@ def test_review_queue_excludes_confirmed(tmp_path):
     assert [q["subject"] for q in queue] == ["A"]
 
 
+def test_review_queue_page_limits_counts_and_sorts(tmp_path):
+    s = _store(tmp_path)
+    for idx in range(1, 56):
+        s.add_fact(f"Candidate {idx:02d}", "r", "B", status="candidate")
+    s.add_fact("Confirmed", "r", "B", status="confirmed")
+
+    first = s.review_queue_page(page=1, page_size=25, sort="newest")
+    second = s.review_queue_page(page=2, page_size=25, sort="newest")
+
+    assert first.total == 55
+    assert len(first.rows) == 25
+    assert first.start == 1
+    assert first.end == 25
+    assert first.page_count == 3
+    assert first.rows[0]["subject"] == "Candidate 55"
+    assert second.rows[0]["subject"] == "Candidate 30"
+
+
+def test_review_queue_page_clamps_invalid_params(tmp_path):
+    s = _store(tmp_path)
+    for idx in range(3):
+        s.add_fact(f"Candidate {idx}", "r", "B", status="candidate")
+
+    page = s.review_queue_page(page="bad", page_size=999, sort="unsafe")
+
+    assert page.page == 1
+    assert page.page_size == 50
+    assert page.sort == "newest"
+    assert [row["subject"] for row in page.rows] == [
+        "Candidate 2",
+        "Candidate 1",
+        "Candidate 0",
+    ]
+
+
+def test_review_queue_page_sort_source_is_allowlisted(tmp_path):
+    s = _store(tmp_path)
+    b = s.add_source("sources/b.txt")
+    a = s.add_source("sources/a.txt")
+    s.add_fact("No Source", "r", "B", status="candidate")
+    s.add_fact("B Source", "r", "B", status="candidate", source_id=b)
+    s.add_fact("A Source", "r", "B", status="candidate", source_id=a)
+
+    page = s.review_queue_page(page=1, page_size=25, sort="source")
+
+    assert [row["subject"] for row in page.rows] == ["A Source", "B Source", "No Source"]
+
+
+def test_review_queue_ids_and_facts_by_ids_preserve_sort_order(tmp_path):
+    s = _store(tmp_path)
+    ids = [
+        s.add_fact("First", "r", "B", status="candidate"),
+        s.add_fact("Second", "r", "B", status="candidate"),
+        s.add_fact("Third", "r", "B", status="candidate"),
+    ]
+    s.add_fact("Confirmed", "r", "B", status="confirmed")
+
+    newest_ids = s.review_queue_ids(sort="newest")
+    rows = s.facts_by_ids([ids[1], ids[0]])
+
+    assert newest_ids == [ids[2], ids[1], ids[0]]
+    assert [row["subject"] for row in rows] == ["Second", "First"]
+
+
 def test_review_log_records_decision(tmp_path):
     s = _store(tmp_path)
     fid = s.add_fact("A", "r", "B", status="needs_review")

@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS facts (
 );
 
 CREATE INDEX IF NOT EXISTS idx_facts_status ON facts(status);
+CREATE INDEX IF NOT EXISTS idx_facts_review_status_id ON facts(status, id);
 CREATE INDEX IF NOT EXISTS idx_facts_triple ON facts(subject, relation, object);
 
 -- Source-backed evidence anchors for extracted facts. Chunk-level anchors are

@@ -46,6 +46,22 @@ th { color: var(--muted); font-weight: 600; font-size: .85rem; }
 .filters { display: flex; gap: .45rem; flex-wrap: wrap; margin: 1rem 0; }
 .filters a { text-decoration: none; color: var(--muted); }
 .filters a.active { color: var(--accent); border-color: var(--accent); }
+.review-toolbar { display: flex; align-items: end; gap: .8rem; flex-wrap: wrap;
+  margin: .8rem 0; }
+.review-toolbar label { display: flex; flex-direction: column; gap: .25rem;
+  color: var(--muted); font-size: .85rem; }
+.review-toolbar select { background: var(--bg); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 6px; padding: .35rem .5rem; }
+.review-toolbar button { background: var(--accent); color: #06101f; border: 0;
+  border-radius: 6px; padding: .4rem .75rem; cursor: pointer; font-weight: 600; }
+.review-status { color: var(--muted); margin: .65rem 0; }
+.review-status .muted { margin-left: .5rem; }
+.pagination { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap;
+  margin: .8rem 0 1rem; }
+.pagination a { text-decoration: none; }
+.pagination .active { color: var(--accent); border-color: var(--accent); }
+.pagination .disabled { pointer-events: none; }
+.page-ellipsis { color: var(--muted); padding: 0 .2rem; }
 .row-meta { display: flex; gap: .4rem; flex-wrap: wrap; margin-top: .35rem; }
 .signals { min-width: 13rem; }
 .signals .badge { display: inline-block; margin: .12rem .1rem; }
