@@ -19,6 +19,7 @@ from typing import Any, Iterable
 # Status tiers (kept in code so the web/pipeline layers share one definition).
 REVIEW_STATUSES = frozenset({"candidate", "needs_review"})
 ENGINE_STATUSES = frozenset({"confirmed", "accepted"})
+MAX_EVIDENCE_SNIPPET_CHARS = 1000
 
 
 def _load_schema() -> str:
@@ -464,6 +465,66 @@ class Store:
         ).fetchone()
         return row is not None
 
+    # --- fact evidence ---------------------------------------------------
+    def add_fact_evidence(
+        self,
+        *,
+        fact_id: int,
+        source_id: int,
+        artifact_id: int | None = None,
+        job_id: int | None = None,
+        chunk_id: int | None = None,
+        evidence_kind: str = "chunk",
+        start_offset: int | None = None,
+        end_offset: int | None = None,
+        locator: str = "",
+        snippet: str = "",
+    ) -> int:
+        """Persist a bounded source-backed evidence anchor for a fact."""
+        snippet = snippet[:MAX_EVIDENCE_SNIPPET_CHARS]
+        with self._lock:
+            self._validate_fact_evidence_refs(
+                fact_id=fact_id,
+                source_id=source_id,
+                artifact_id=artifact_id,
+                job_id=job_id,
+                chunk_id=chunk_id,
+            )
+            cur = self._conn.execute(
+                "INSERT INTO fact_evidence("
+                "fact_id, source_id, artifact_id, job_id, chunk_id, "
+                "evidence_kind, start_offset, end_offset, locator, snippet"
+                ") VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id",
+                (
+                    fact_id,
+                    source_id,
+                    artifact_id,
+                    job_id,
+                    chunk_id,
+                    evidence_kind,
+                    start_offset,
+                    end_offset,
+                    locator,
+                    snippet,
+                ),
+            )
+            return int(cur.fetchone()[0])
+
+    def fact_evidence(self, fact_id: int) -> list[sqlite3.Row]:
+        """Evidence anchors for one fact, oldest first."""
+        return list(
+            self._conn.execute(
+                "SELECT e.*, s.path AS source_path, a.path AS artifact_path, "
+                "c.chunk_index "
+                "FROM fact_evidence e "
+                "JOIN sources s ON s.id = e.source_id "
+                "LEFT JOIN source_artifacts a ON a.id = e.artifact_id "
+                "LEFT JOIN source_chunks c ON c.id = e.chunk_id "
+                "WHERE e.fact_id = ? ORDER BY e.id",
+                (fact_id,),
+            )
+        )
+
     # --- runs ------------------------------------------------------------
     def add_run(self, *, provider: str | None, model: str | None, summary: str = "") -> int:
         """Open an extraction run; facts produced by it cite the returned id."""
@@ -752,6 +813,43 @@ class Store:
         except Exception:
             pass
 
+    def _validate_fact_evidence_refs(
+        self,
+        *,
+        fact_id: int,
+        source_id: int,
+        artifact_id: int | None,
+        job_id: int | None,
+        chunk_id: int | None,
+    ) -> None:
+        fact = self.get_fact(fact_id)
+        if fact is None:
+            raise sqlite3.IntegrityError("fact evidence fact does not exist")
+        if fact["source_id"] is not None and int(fact["source_id"]) != source_id:
+            raise sqlite3.IntegrityError("fact evidence source must match the fact")
+        if self.get_source(source_id) is None:
+            raise sqlite3.IntegrityError("fact evidence source does not exist")
+        if artifact_id is not None:
+            artifact = self.get_source_artifact(artifact_id)
+            if artifact is None or int(artifact["source_id"]) != source_id:
+                raise sqlite3.IntegrityError(
+                    "fact evidence artifact must belong to the source"
+                )
+        if job_id is not None:
+            job = self.get_extraction_job(job_id)
+            if job is None or int(job["source_id"]) != source_id:
+                raise sqlite3.IntegrityError("fact evidence job must belong to the source")
+        if chunk_id is not None:
+            chunk = self.get_source_chunk(chunk_id)
+            if chunk is None or int(chunk["source_id"]) != source_id:
+                raise sqlite3.IntegrityError(
+                    "fact evidence chunk must belong to the source"
+                )
+            if job_id is not None and int(chunk["job_id"]) != job_id:
+                raise sqlite3.IntegrityError(
+                    "fact evidence chunk must belong to the job"
+                )
+
     def _ensure_schema_migrations(self) -> None:
         self._conn.executescript(
             """
@@ -792,6 +890,38 @@ class Store:
                 "ALTER TABLE facts ADD COLUMN job_id INTEGER "
                 "REFERENCES extraction_jobs(id) ON DELETE SET NULL"
             )
+        self._conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS fact_evidence (
+                id            INTEGER PRIMARY KEY,
+                fact_id       INTEGER NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
+                source_id     INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+                artifact_id   INTEGER REFERENCES source_artifacts(id) ON DELETE SET NULL,
+                job_id        INTEGER REFERENCES extraction_jobs(id) ON DELETE SET NULL,
+                chunk_id      INTEGER REFERENCES source_chunks(id) ON DELETE SET NULL,
+                evidence_kind TEXT NOT NULL DEFAULT 'chunk',
+                start_offset  INTEGER,
+                end_offset    INTEGER,
+                locator       TEXT NOT NULL DEFAULT '',
+                snippet       TEXT NOT NULL DEFAULT '',
+                created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+                CHECK (length(evidence_kind) > 0),
+                CHECK (start_offset IS NULL OR start_offset >= 0),
+                CHECK (end_offset IS NULL OR end_offset >= 0),
+                CHECK (
+                    start_offset IS NULL
+                    OR end_offset IS NULL
+                    OR end_offset >= start_offset
+                )
+            );
+            CREATE INDEX IF NOT EXISTS idx_fact_evidence_fact
+                ON fact_evidence(fact_id);
+            CREATE INDEX IF NOT EXISTS idx_fact_evidence_source
+                ON fact_evidence(source_id);
+            CREATE INDEX IF NOT EXISTS idx_fact_evidence_chunk
+                ON fact_evidence(chunk_id);
+            """
+        )
 
     def _refresh_extraction_job(self, job_id: int, *, final: bool = False) -> None:
         counts = self._conn.execute(

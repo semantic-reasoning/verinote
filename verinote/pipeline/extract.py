@@ -83,7 +83,7 @@ def extract_source(
 
     source_id = store.add_source(source_path)
     for subject, relation, obj, f in rows:
-        store.add_fact(
+        fact_id = store.add_fact(
             subject,
             relation,
             obj,
@@ -92,6 +92,13 @@ def extract_source(
             source_id=source_id,
             run_id=run_id,
             note=f.note,
+        )
+        store.add_fact_evidence(
+            fact_id=fact_id,
+            source_id=source_id,
+            evidence_kind="chunk",
+            locator="source",
+            snippet=analysis_text,
         )
     return len(rows)
 
@@ -171,6 +178,10 @@ def process_extraction_job(
                 source_text=str(running["text"]),
                 run_id=run_id,
                 job_id=job_id,
+                artifact_id=(
+                    int(job["artifact_id"]) if job["artifact_id"] is not None else None
+                ),
+                chunk_id=int(running["id"]),
                 schema_hint=schema_hint,
             )
         except LLMError as exc:
@@ -203,6 +214,8 @@ def _extract_chunk(
     source_text: str,
     run_id: int,
     job_id: int,
+    artifact_id: int | None = None,
+    chunk_id: int | None = None,
     schema_hint: str = "",
 ) -> int:
     facts = _extract_chunk_facts(client, source_text=source_text, schema_hint=schema_hint)
@@ -213,7 +226,7 @@ def _extract_chunk(
             source_id=source_id, subject=subject, relation=relation, obj=obj
         ):
             continue
-        store.add_fact(
+        fact_id = store.add_fact(
             subject,
             relation,
             obj,
@@ -223,6 +236,16 @@ def _extract_chunk(
             run_id=run_id,
             job_id=job_id,
             note=f.note,
+        )
+        store.add_fact_evidence(
+            fact_id=fact_id,
+            source_id=source_id,
+            artifact_id=artifact_id,
+            job_id=job_id,
+            chunk_id=chunk_id,
+            evidence_kind="chunk",
+            locator="chunk",
+            snippet=source_text,
         )
         inserted += 1
     return inserted

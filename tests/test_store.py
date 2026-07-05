@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
+import pytest
+
 from verinote.engine import compile_dl
 from verinote.store import ENGINE_STATUSES, Store
 
@@ -102,6 +104,42 @@ def test_delete_source_removes_source_facts_and_terms(tmp_path):
     assert s.source_artifacts(sid) == []
 
 
+def test_delete_source_removes_fact_evidence(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/sample.txt")
+    artifact_id = s.add_source_artifact(
+        source_id=sid, kind="original_text", path="sources/sample.txt"
+    )
+    job_id = s.create_extraction_job(
+        source_id=sid, artifact_id=artifact_id, provider="fake", model="m", total_chunks=1
+    )
+    chunk_id = s.add_source_chunks(
+        job_id=job_id, source_id=sid, chunks=["Sample Company uses Sample Service."]
+    )[0]
+    fact_id = s.add_fact(
+        "Sample Company",
+        "uses",
+        "Sample Service",
+        source_id=sid,
+        job_id=job_id,
+    )
+    evidence_id = s.add_fact_evidence(
+        fact_id=fact_id,
+        source_id=sid,
+        artifact_id=artifact_id,
+        job_id=job_id,
+        chunk_id=chunk_id,
+        snippet="Sample Company uses Sample Service.",
+    )
+
+    assert evidence_id > 0
+    assert s.fact_evidence(fact_id)
+
+    s.delete_source(sid)
+
+    assert list(s._conn.execute("SELECT * FROM fact_evidence")) == []
+
+
 def test_delete_missing_source_returns_none(tmp_path):
     s = _store(tmp_path)
     assert s.delete_source(999) is None
@@ -130,6 +168,128 @@ def test_clear_source_analysis_keeps_source_and_artifacts(tmp_path):
     assert s.get_fact_terms(unrelated_fact) is not None
     assert s.get_extraction_job(job_id) is None
     assert s.source_chunks(job_id) == []
+
+
+def test_clear_source_analysis_removes_fact_evidence(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/sample.txt")
+    artifact_id = s.add_source_artifact(
+        source_id=sid, kind="original_text", path="sources/sample.txt"
+    )
+    job_id = s.create_extraction_job(
+        source_id=sid, artifact_id=artifact_id, provider="fake", model="m", total_chunks=1
+    )
+    chunk_id = s.add_source_chunks(job_id=job_id, source_id=sid, chunks=["evidence"])[0]
+    fact_id = s.add_fact("Sample Company", "uses", "Sample Service", source_id=sid)
+    s.add_fact_evidence(
+        fact_id=fact_id,
+        source_id=sid,
+        artifact_id=artifact_id,
+        job_id=job_id,
+        chunk_id=chunk_id,
+        snippet="evidence",
+    )
+
+    assert s.clear_source_analysis(sid) == 1
+
+    assert list(s._conn.execute("SELECT * FROM fact_evidence")) == []
+
+
+def test_fact_evidence_persists_chunk_and_span_references(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/sample.txt")
+    artifact_id = s.add_source_artifact(
+        source_id=sid, kind="original_text", path="sources/sample.txt"
+    )
+    job_id = s.create_extraction_job(
+        source_id=sid, artifact_id=artifact_id, provider="fake", model="m", total_chunks=1
+    )
+    chunk_id = s.add_source_chunks(
+        job_id=job_id,
+        source_id=sid,
+        chunks=["Sample Company provides Sample Service."],
+    )[0]
+    fact_id = s.add_fact(
+        "Sample Company",
+        "provides",
+        "Sample Service",
+        source_id=sid,
+        job_id=job_id,
+    )
+
+    s.add_fact_evidence(
+        fact_id=fact_id,
+        source_id=sid,
+        artifact_id=artifact_id,
+        job_id=job_id,
+        chunk_id=chunk_id,
+        evidence_kind="span",
+        start_offset=0,
+        end_offset=14,
+        locator="paragraph:1",
+        snippet="Sample Company",
+    )
+
+    evidence = s.fact_evidence(fact_id)[0]
+    assert evidence["evidence_kind"] == "span"
+    assert evidence["source_path"] == "sources/sample.txt"
+    assert evidence["artifact_path"] == "sources/sample.txt"
+    assert evidence["chunk_index"] == 0
+    assert evidence["start_offset"] == 0
+    assert evidence["end_offset"] == 14
+    assert evidence["locator"] == "paragraph:1"
+    assert evidence["snippet"] == "Sample Company"
+
+
+def test_fact_evidence_allows_future_evidence_kinds(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/sample.txt")
+    fact_id = s.add_fact("Sample Company", "uses", "Sample Service", source_id=sid)
+
+    s.add_fact_evidence(
+        fact_id=fact_id,
+        source_id=sid,
+        evidence_kind="layout_region",
+        locator="page:1:x:0:y:0",
+        snippet="Sample Company",
+    )
+
+    assert s.fact_evidence(fact_id)[0]["evidence_kind"] == "layout_region"
+
+
+def test_fact_evidence_bounds_snippet_text(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/sample.txt")
+    fact_id = s.add_fact("Sample Company", "uses", "Sample Service", source_id=sid)
+
+    s.add_fact_evidence(
+        fact_id=fact_id,
+        source_id=sid,
+        snippet="x" * 1200,
+    )
+
+    assert len(s.fact_evidence(fact_id)[0]["snippet"]) == 1000
+
+
+def test_fact_evidence_rejects_mismatched_chunk_source(tmp_path):
+    import sqlite3
+
+    s = _store(tmp_path)
+    source_a = s.add_source("sources/a.txt")
+    source_b = s.add_source("sources/b.txt")
+    fact_id = s.add_fact("Sample Company", "uses", "Sample Service", source_id=source_a)
+    job_b = s.create_extraction_job(
+        source_id=source_b, provider="fake", model="m", total_chunks=1
+    )
+    chunk_b = s.add_source_chunks(job_id=job_b, source_id=source_b, chunks=["body"])[0]
+
+    with pytest.raises(sqlite3.IntegrityError, match="chunk must belong"):
+        s.add_fact_evidence(
+            fact_id=fact_id,
+            source_id=source_a,
+            chunk_id=chunk_b,
+            snippet="body",
+        )
 
 
 def test_source_artifacts_are_upserted_and_listed_with_counts(tmp_path):
