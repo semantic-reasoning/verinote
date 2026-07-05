@@ -195,10 +195,30 @@ def test_sources_page_lists_sources(tmp_path):
     store = c.app.state.store
     sid = store.add_source("sources/a.txt", kind="text")
     store.add_fact("A", "is_a", "B", status="candidate", source_id=sid)
+    job_id = store.create_extraction_job(
+        source_id=sid,
+        provider="ollama",
+        model="qwen3.5:9b",
+        total_chunks=2,
+    )
+    chunks = store.add_source_chunks(job_id=job_id, source_id=sid, chunks=["a", "b"])
+    store.mark_extraction_job_running(job_id)
+    store.mark_chunk_running(chunks[0])
+    store.mark_chunk_done(chunks[0], candidates=1)
+    store.mark_chunk_running(chunks[1])
+    store.mark_chunk_failed(chunks[1], "provider down")
+
     r = c.get("/sources")
+
     assert r.status_code == 200
     assert "sources/a.txt" in r.text
     assert "text" in r.text
+    assert "failed" in r.text
+    assert "1/2 chunk(s)" in r.text
+    assert "1 candidate(s)" in r.text
+    assert "ollama" in r.text
+    assert "qwen3.5:9b" in r.text
+    assert "Retry" in r.text
 
 
 def test_delete_source_removes_file_and_extracted_facts(tmp_path):
@@ -323,10 +343,11 @@ def test_upload_docx_converts_and_extracts(tmp_path, monkeypatch, fake_client):
     assert "binary" in kinds
     sources_body = c.get("/sources").text
     assert "sources/report.docx" in sources_body
-    assert "artifacts/sources/1/" in sources_body
+    assert "artifacts/sources/1/" not in sources_body
 
     def extracted():
         assert any(row["subject"] == "X" for row in c.app.state.store.review_queue())
+        assert "complete" in c.get("/sources").text
 
     _wait_for(extracted)
     fact = [row for row in c.app.state.store.review_queue() if row["subject"] == "X"][0]
