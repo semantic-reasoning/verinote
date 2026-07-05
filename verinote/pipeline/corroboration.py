@@ -283,6 +283,11 @@ def _source_ref(row: Mapping[str, object]) -> str:
 
 
 def _canonical_relation(relation: str, aliases: dict[str, str]) -> str:
+    return canonical_relation(relation, aliases)
+
+
+def canonical_relation(relation: str, aliases: dict[str, str]) -> str:
+    """Return the relation name used for alias-aware trust comparisons."""
     if not aliases:
         return relation
     normalized = unicodedata.normalize("NFC", relation)
