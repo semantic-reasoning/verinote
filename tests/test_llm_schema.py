@@ -9,12 +9,23 @@ def test_fact_schema_requires_every_property_for_strict_outputs():
     assert set(FACT_OBJECT_SCHEMA["required"]) == set(FACT_OBJECT_SCHEMA["properties"])
 
 
-def test_extraction_prompt_preserves_entities_but_allows_relation_normalization():
-    assert "normalize relation labels" in EXTRACTION_SYSTEM
-    assert "exact language, spelling, script, casing" in EXTRACTION_SYSTEM
-    assert "for subjects and objects" in EXTRACTION_SYSTEM
+def test_extraction_prompt_prioritizes_semantic_spo_facts():
+    assert "semantic subject-predicate-object statement" in EXTRACTION_SYSTEM
+    assert "subject is the entity being described" in EXTRACTION_SYSTEM
+    assert "relation is a concise predicate" in EXTRACTION_SYSTEM
+    assert "object is the related entity or value" in EXTRACTION_SYSTEM
+    assert "instead of copying whole source phrases" in EXTRACTION_SYSTEM
+    assert "named-entity spelling" in EXTRACTION_SYSTEM
     assert "do not translate" in EXTRACTION_SYSTEM
-    assert "exact original phrase in note" in EXTRACTION_SYSTEM
+    assert "exact original supporting phrase in note" in EXTRACTION_SYSTEM
+    assert "merely because two entities appear in the same chunk" in EXTRACTION_SYSTEM
+    assert "numeric, percentage, count, date, or money facts" in EXTRACTION_SYSTEM
+    assert "same local evidence record" in EXTRACTION_SYSTEM
+    assert "key-value or label-value text" in EXTRACTION_SYSTEM
+    assert "use relation `value`" in EXTRACTION_SYSTEM
+    assert "Do not use `is_a` unless" in EXTRACTION_SYSTEM
+    assert "sentence endings such as `입니다`" in EXTRACTION_SYSTEM
+    assert "predicates ending in `여부`" in EXTRACTION_SYSTEM
 
 
 def test_extraction_prompt_biases_toward_explicit_fact_recall():

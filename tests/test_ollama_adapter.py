@@ -72,6 +72,13 @@ def test_ollama_extract_uses_configured_timeout(tmp_path, monkeypatch):
     assert payload["format"]["items"]["properties"]["subject"] == {"type": "string"}
     assert "document chunk" in payload["messages"][0]["content"]
     assert "up to 8 facts" in payload["messages"][0]["content"]
+    assert "semantic subject-predicate-object statement" in payload["messages"][0]["content"]
+    assert "instead of copying whole source phrases" in payload["messages"][0]["content"]
+    assert "co-occurrence in the same chunk" in payload["messages"][0]["content"]
+    assert "same local evidence record" in payload["messages"][0]["content"]
+    assert "key-value or label-value text" in payload["messages"][0]["content"]
+    assert "use relation `value`" in payload["messages"][0]["content"]
+    assert "Do not use `is_a` unless" in payload["messages"][0]["content"]
     assert facts[0].subject == "Ada"
 
 
