@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from itertools import product
 from pathlib import Path
+import re
 import unicodedata
 
 from verinote.engine.datalog import AtomExpr, Comparison, DatalogParseError, parse_program
@@ -24,6 +25,12 @@ from verinote.store import Store
 # Query draft, relative to the KB root (the db file's directory).
 QUERY_RELPATH = Path("facts") / "query.dl"
 MAX_ALIAS_EXPANDED_RULES_PER_RULE = 64
+_ESCAPE = re.compile(r'(["\\])')
+_ROLE_QUESTION = re.compile(
+    r'["“”\']?(?P<person>[^"“”\'?？\n]{1,80}?)["“”\']?\s*'
+    r"(?:의|에\s*대한)\s*(?:역할|직책|직위)"
+)
+_GENERIC_ROLE_RELATIONS = ("역할", "직책", "직위", "role", "has_role")
 
 
 def query_path(root: Path) -> Path:
@@ -34,6 +41,40 @@ def _is_review_required(line: str) -> bool:
     return line.lstrip().startswith("review_required")
 
 
+def _lit(value: str) -> str:
+    return '"' + _ESCAPE.sub(r"\\\1", value) + '"'
+
+
+def deterministic_query_dl(question: str, qid: int) -> str | None:
+    """Return deterministic query drafts for common shapes LLMs mistranslate."""
+    match = _ROLE_QUESTION.search(question.strip())
+    if not match:
+        return None
+    person = match.group("person").strip()
+    if not person:
+        return None
+
+    person_lit = _lit(person)
+    person_term = f"person({person_lit})"
+    person_term_lit = _lit(f'person("{person}")')
+    excluded = ", ".join(f"R != {_lit(rel)}" for rel in _GENERIC_ROLE_RELATIONS)
+    role_object_rules = "\n".join(
+        f"answer_q{qid}(O) :- relation({person_lit}, {_lit(rel)}, O)."
+        for rel in _GENERIC_ROLE_RELATIONS
+    )
+    return "\n".join(
+        [
+            f".decl answer_q{qid}(value: symbol)",
+            role_object_rules,
+            f"answer_q{qid}(O) :- relation({person_term}, has_role, O).",
+            f"answer_q{qid}(R) :- relation({person_lit}, R, O), {excluded}.",
+            f"answer_q{qid}(R) :- relation(S, R, {person_lit}).",
+            f"answer_q{qid}(R) :- relation(S, R, {person_term}).",
+            f"answer_q{qid}(R) :- relation(S, R, {person_term_lit}).",
+        ]
+    )
+
+
 def translate_questions(store: Store, client: LLMClient, *, root: Path) -> list[dict]:
     """Translate every pending question, persist drafts, rewrite `query.dl`.
 
@@ -41,12 +82,16 @@ def translate_questions(store: Store, client: LLMClient, *, root: Path) -> list[
     """
     results: list[dict] = []
     for q in store.questions(pending_only=True):
-        line = client.translate_query(question=q["text"], qid=q["id"])
-        if _is_review_required(line):
-            status, query_dl = "review_required", line
-        else:
+        query_dl = deterministic_query_dl(q["text"], q["id"])
+        if query_dl is not None:
             status = "translated"
-            query_dl = f".decl answer_q{q['id']}(value: symbol)\n{line}"
+        else:
+            line = client.translate_query(question=q["text"], qid=q["id"])
+            if _is_review_required(line):
+                status, query_dl = "review_required", line
+            else:
+                status = "translated"
+                query_dl = f".decl answer_q{q['id']}(value: symbol)\n{line}"
         store.set_question_query(q["id"], query_dl, status)
         results.append({"id": q["id"], "status": status, "query_dl": query_dl})
     write_query_file(store, root)
