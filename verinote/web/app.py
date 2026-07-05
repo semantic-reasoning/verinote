@@ -43,6 +43,7 @@ from verinote.pipeline.corroboration import (
     store_corroboration,
     store_single_valued_conflicts,
 )
+from verinote.pipeline.workbench import trust_workbench
 from verinote.engine.terms import StringLit, render_term
 from verinote.store import Store
 from verinote.store.fact_input import structural_term, term_input_kind
@@ -483,6 +484,14 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 "active_filter": filter,
                 "filters": _review_filters(),
             },
+        )
+
+    @app.get("/workbench", response_class=HTMLResponse)
+    def workbench(request: Request):
+        return templates.TemplateResponse(
+            request,
+            "workbench.html",
+            {"workbench": trust_workbench(_active_store())},
         )
 
     @app.post("/facts/{fact_id}/toggle", response_class=HTMLResponse)

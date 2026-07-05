@@ -286,6 +286,90 @@ def test_review_filters_by_deterministic_trust_signals(tmp_path):
     assert f'href="/facts/{corroborated}/provenance"' in corroborated_body
 
 
+def test_workbench_renders_corroboration_conflicts_and_normalization(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    policy = tmp_path / "policy"
+    policy.mkdir()
+    (policy / "logic-policy.dl").write_text(
+        '.decl functional(rel: symbol)\n'
+        'functional("published_year").\n'
+        'functional("revenue").\n',
+        encoding="utf-8",
+    )
+    (policy / "relation-aliases.md").write_text(
+        "- `pub_year` -> `published_year`\n",
+        encoding="utf-8",
+    )
+    (policy / "typed-relations.md").write_text(
+        "- revenue : amount as revenue_scalar\n",
+        encoding="utf-8",
+    )
+    source_a = store.add_source("sources/a.txt")
+    source_b = store.add_source("sources/b.txt")
+    source_c = store.add_source("sources/c.txt")
+    candidate_source = store.add_source("sources/candidate.txt")
+    fact_id = store.add_fact(
+        "Sample Report",
+        "pub_year",
+        "2024",
+        status="confirmed",
+        source_id=source_a,
+    )
+    store.add_fact(
+        "Sample Report",
+        "published_year",
+        "2024",
+        status="accepted",
+        source_id=source_b,
+    )
+    candidate_id = store.add_fact(
+        "Sample Report",
+        "published_year",
+        "2024",
+        status="candidate",
+        source_id=candidate_source,
+    )
+    store.add_fact(
+        "Sample Company",
+        "revenue",
+        'amount(5000,"억")',
+        status="confirmed",
+        source_id=source_a,
+    )
+    store.add_fact(
+        "Sample Company",
+        "revenue",
+        'amount(0.54,"조")',
+        status="accepted",
+        source_id=source_b,
+    )
+    store.add_fact(
+        "Sample Company",
+        "revenue",
+        'amount(5400,"억")',
+        status="confirmed",
+        source_id=source_c,
+    )
+
+    body = unescape(c.get("/workbench").text)
+
+    assert "Trust workbench" in body
+    assert "Corroborated facts" in body
+    assert "Sample Report" in body
+    assert "pub_year -> published_year" in body
+    assert "sources/a.txt" in body
+    assert "sources/b.txt" in body
+    assert "Related candidates" in body
+    assert f'href="/facts/{candidate_id}/provenance"' in body
+    assert "Single-valued conflicts" in body
+    assert "Sample Company" in body
+    assert 'amount(5000,"억")' in body
+    assert 'amount(0.54,"조")' in body
+    assert "revenue_scalar=540000000000" in body
+    assert f'href="/facts/{fact_id}/provenance"' in body
+
+
 def test_toggle_endpoint_swaps_row(tmp_path):
     c = _client(tmp_path)
     r = c.post(f"/facts/{c.fact_id}/toggle")
