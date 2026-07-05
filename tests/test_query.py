@@ -24,6 +24,7 @@ def _store(tmp_path) -> Store:
 
 def test_translate_persists_query_and_writes_file(tmp_path, fake_client):
     s = _store(tmp_path)
+    s.add_fact("What is Ada?", "is_a", "Synthetic Answer", status="confirmed")
     qid = s.add_question("What is Ada?")
     results = translate_questions(s, fake_client(), root=tmp_path)
 
@@ -47,6 +48,7 @@ def test_translate_korean_role_question_bypasses_llm(tmp_path):
             raise AssertionError("deterministic role questions must not call the LLM")
 
     s = _store(tmp_path)
+    s.add_fact("샘플인물", "역할", "검토자", status="confirmed")
     qid = s.add_question("샘플인물의 역할은 무엇인가?")
     results = translate_questions(s, FailingClient(), root=tmp_path)
 
@@ -81,6 +83,7 @@ def test_load_query_expands_relation_aliases(tmp_path, fake_client):
     policy = tmp_path / "policy"
     policy.mkdir()
     (policy / "relation-aliases.md").write_text("- `role` -> `역할`\n", encoding="utf-8")
+    s.add_fact("샘플인물", "역할", "검토자", status="confirmed")
     qid = s.add_question("Find the sample person's role")
     client = fake_client(
         query=lambda question, qid: f'answer_q{qid}(V) :- relation("샘플인물", "role", V).'

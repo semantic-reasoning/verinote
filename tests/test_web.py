@@ -1525,6 +1525,7 @@ def test_add_question_persists(tmp_path):
 def test_delete_question_removes_query_file_entry(tmp_path):
     c = _client(tmp_path)
     store = c.app.state.store
+    store.add_fact("Ada", "born_in", "London", status="confirmed")
     qid = store.add_question("Where was Ada born?")
     store.set_question_query(
         qid,
@@ -1630,6 +1631,7 @@ def test_repair_action_accepts_valid_fix(tmp_path, monkeypatch, fake_client):
     )
     c = _client(tmp_path)
     store = c.app.state.store
+    store.add_fact("Ada", "born_in", "London", status="confirmed")
     qid = store.add_question("Where was Ada born?")
     store.set_question_query(qid, 'review_required("Where was Ada born?")', "review_required")
 

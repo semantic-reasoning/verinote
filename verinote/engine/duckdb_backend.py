@@ -378,8 +378,9 @@ def _collect_report(
                 f"{name[len(_WARN_PREFIX) :]}: {row}" for row in rendered_rows
             )
         elif name.startswith(_ANSWER_PREFIX):
-            qid = name[len(_ANSWER_PREFIX) :]
-            answers_by_q.setdefault(qid, []).extend(rendered_rows)
+            if rendered_rows:
+                qid = name[len(_ANSWER_PREFIX) :]
+                answers_by_q.setdefault(qid, []).extend(rendered_rows)
 
     errors = sorted(set(errors))
     warnings = sorted(set(warnings))

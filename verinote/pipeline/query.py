@@ -16,7 +16,6 @@ from pathlib import Path
 import re
 import unicodedata
 
-from verinote.engine import validate_query
 from verinote.engine.datalog import AtomExpr, Comparison, DatalogParseError, parse_program
 from verinote.engine.terms import Atom, StringLit, render_term
 from verinote.llm.base import LLMClient, LLMError
@@ -104,6 +103,54 @@ def deterministic_query_intent_dl(intent: QueryIntent, qid: int) -> str | None:
     )
 
 
+def classify_query_draft(store: Store, qid: int, query_dl: str) -> tuple[str, str, str]:
+    """Validate and dry-run one query draft before it can be persisted.
+
+    Returns ``(status, query_dl, reason)`` using question lifecycle states.
+    """
+    from verinote.pipeline.query_candidate_eval import (
+        QueryCandidateSetOutcome,
+        evaluate_query_candidate_plan,
+    )
+    from verinote.pipeline.query_planner import QueryCandidate, QueryCandidatePlan
+
+    candidate = QueryCandidate(
+        query_dl=query_dl,
+        relation_display=None,
+        relation_executable=None,
+        subject_executable=None,
+        object_executable=None,
+    )
+    evaluation = evaluate_query_candidate_plan(
+        store,
+        QueryCandidatePlan(qid=qid, candidates=(candidate,)),
+    )
+    if evaluation.outcome == QueryCandidateSetOutcome.VALID:
+        return "translated", query_dl, ""
+    if evaluation.outcome == QueryCandidateSetOutcome.NO_ANSWER:
+        reason = "no confirmed facts match"
+        return "no_answer", f"no_answer({_lit(reason)})", reason
+    if evaluation.outcome == QueryCandidateSetOutcome.AMBIGUOUS_CONFLICTING:
+        reason = "multiple query candidates returned conflicting answers"
+        return "ambiguous", f"ambiguous({_lit(reason)})", reason
+    if evaluation.outcome == QueryCandidateSetOutcome.ENGINE_POLICY_ERROR:
+        reason = _short_reason("engine/policy error: " + _evaluation_reason(evaluation))
+    else:
+        reason = _short_reason("invalid query: " + _evaluation_reason(evaluation))
+    return "review_required", f"review_required({_lit(reason)})", reason
+
+
+def _evaluation_reason(evaluation) -> str:
+    for item in evaluation.evaluations:
+        if item.validation_reason:
+            return item.validation_reason
+        if item.report is not None:
+            if item.report.findings:
+                return item.report.findings[0]
+            return item.report.text
+    return evaluation.outcome.value
+
+
 def translate_questions(store: Store, client: LLMClient, *, root: Path) -> list[dict]:
     """Translate every pending question, persist drafts, rewrite `query.dl`.
 
@@ -114,7 +161,7 @@ def translate_questions(store: Store, client: LLMClient, *, root: Path) -> list[
         reason = ""
         query_dl = deterministic_query_dl(q["text"], q["id"])
         if query_dl is not None:
-            status = "translated"
+            status, query_dl, reason = classify_query_draft(store, q["id"], query_dl)
         else:
             try:
                 line = client.translate_query(question=q["text"], qid=q["id"])
@@ -132,13 +179,9 @@ def translate_questions(store: Store, client: LLMClient, *, root: Path) -> list[
                     reason = _short_reason(line.removeprefix("review_required"))
                 else:
                     query_dl = f".decl answer_q{q['id']}(value: symbol)\n{line}"
-                    ok, validation_reason = validate_query(query_dl)
-                    if ok:
-                        status = "translated"
-                    else:
-                        status = "review_required"
-                        reason = _short_reason(f"invalid query: {validation_reason}")
-                        query_dl = f"review_required({_lit(reason)})"
+                    status, query_dl, reason = classify_query_draft(
+                        store, q["id"], query_dl
+                    )
         store.set_question_query(q["id"], query_dl, status, reason)
         results.append(
             {"id": q["id"], "status": status, "query_dl": query_dl, "reason": reason}
