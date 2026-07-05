@@ -10,6 +10,7 @@ from pathlib import Path
 
 from verinote import __version__
 from verinote.config import Config
+from verinote.pipeline.question_outcome import format_question_outcome
 from verinote.store import Store
 
 _DEMO_FACTS = [
@@ -232,8 +233,7 @@ def cmd_query(cfg: Config, args: argparse.Namespace) -> int:
     else:
         results = translate_questions(store, client, root=cfg.root)
     for r in results:
-        reason = f" ({r['reason']})" if r.get("reason") else ""
-        print(f"  q{r['id']}: {r['status']}{reason}")
+        print(f"  {format_question_outcome(r)}")
     print(f"translated {len(results)} question(s) -> {cfg.root / 'facts' / 'query.dl'}")
     print("run the check to see answers (`verinote ui` → Report)")
     store.close()
@@ -265,8 +265,13 @@ def cmd_repair(cfg: Config, args: argparse.Namespace) -> int:
     repaired = sum(1 for r in results if r["accepted"])
     for r in results:
         status = r.get("status") or statuses.get(r["id"], "review_required")
-        mark = "repaired" if r["accepted"] else f"kept {status} ({r['reason']})"
-        print(f"  q{r['id']}: {mark}")
+        reason = "" if r["accepted"] else r.get("reason", "")
+        print(
+            "  "
+            + format_question_outcome(
+                {"id": r["id"], "text": "", "status": status, "reason": reason}
+            )
+        )
     print(f"repaired {repaired}/{len(results)} question(s) (engine-validated)")
     store.close()
     return 0

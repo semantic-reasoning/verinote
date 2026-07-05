@@ -27,19 +27,20 @@
 
 {% if questions %}
 <table class="counts">
-  <thead><tr><th>#</th><th>Question</th><th>Status</th><th>Query</th><th>Actions</th></tr></thead>
+  <thead><tr><th>#</th><th>Question</th><th>Outcome</th><th>Query</th><th>Actions</th></tr></thead>
   <tbody>
     {% for q in questions %}
-    <tr>
-      <td>{{ q["id"] }}</td>
-      <td>{{ q["text"] }}</td>
+    <tr class="question-row question-{{ q.status }}">
+      <td>{{ q.id }}</td>
+      <td>{{ q.text }}</td>
       <td>
-        <span class="badge">{{ q["status"] }}</span>
-        {% if q["reason"] %}<div class="muted">{{ q["reason"] }}</div>{% endif %}
+        <span class="badge {{ q.badge_class }}">{{ q.label }}</span>
+        <div class="question-message">{{ q.message }}</div>
+        {% if q.action %}<div class="muted">{{ q.action }}</div>{% endif %}
       </td>
-      <td><pre class="report">{{ q["query_dl"] or "—" }}</pre></td>
+      <td><pre class="report question-query">{{ q.query_dl or "—" }}</pre></td>
       <td class="actions">
-        <form action="/questions/{{ q['id'] }}/delete" method="post">
+        <form action="/questions/{{ q.id }}/delete" method="post">
           <button class="danger" type="submit">Delete</button>
         </form>
       </td>
@@ -55,6 +56,6 @@
 {% if answers %}
 <ul class="findings">{% for a in answers %}<li>{{ a }}</li>{% endfor %}</ul>
 {% else %}
-<p class="muted">No answers yet — add a question, translate, and confirm the facts it needs.</p>
+<p class="muted">No engine answers yet. Check each question outcome above for translation, review, ambiguity, or no-answer details.</p>
 {% endif %}
 {% endblock %}

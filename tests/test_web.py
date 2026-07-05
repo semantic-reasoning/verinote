@@ -1605,6 +1605,31 @@ def test_translate_persists_get_client_failure_reason(tmp_path, monkeypatch):
     assert "missing provider credentials" in page
 
 
+def test_translate_shows_invalid_model_output_reason_in_question_row(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(webapp, "get_client", lambda cfg: object())
+
+    def translate(store, client, *, root, allow_direct_datalog_fallback=False):
+        q = store.questions(pending_only=True)[0]
+        reason = "invalid model output: missing answer rule"
+        store.set_question_query(
+            q["id"], f'review_required("{reason}")', "review_required", reason
+        )
+        return [{"id": q["id"], "status": "review_required", "reason": reason}]
+
+    monkeypatch.setattr(webapp, "translate_questions", translate)
+    c = _client(tmp_path)
+    c.app.state.store.add_question("Which synthetic result is available?")
+
+    r = c.post("/questions/translate", follow_redirects=False)
+
+    assert r.status_code == 303
+    body = unescape(c.get("/questions").text)
+    assert "Review required" in body
+    assert "invalid model output: missing answer rule" in body
+
+
 def test_questions_page_shows_non_executable_reason(tmp_path):
     c = _client(tmp_path)
     qid = c.app.state.store.add_question("Which sample item is current?")
@@ -1620,6 +1645,76 @@ def test_questions_page_shows_non_executable_reason(tmp_path):
     assert r.status_code == 200
     assert "ambiguous" in r.text
     assert "multiple sample entities match" in r.text
+
+
+def test_questions_page_shows_all_visible_outcomes(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    rows = [
+        (
+            "Translated synthetic question?",
+            '.decl answer_q1(value: symbol)\nanswer_q1(O) :- relation("S", "r", O).',
+            "translated",
+            "",
+        ),
+        (
+            "Review synthetic question?",
+            'review_required("unsupported synthetic question")',
+            "review_required",
+            "unsupported synthetic question",
+        ),
+        (
+            "No synthetic answer?",
+            'no_answer("no confirmed facts match")',
+            "no_answer",
+            "no confirmed facts match",
+        ),
+        (
+            "Failed synthetic translation?",
+            None,
+            "translation_failed",
+            "provider returned invalid schema",
+        ),
+        (
+            "Ambiguous synthetic question?",
+            'ambiguous("multiple synthetic candidates matched")',
+            "ambiguous",
+            "multiple synthetic candidates matched",
+        ),
+    ]
+    for text, query_dl, status, reason in rows:
+        qid = store.add_question(text)
+        store.set_question_query(qid, query_dl, status, reason)
+
+    body = unescape(c.get("/questions").text)
+
+    assert "Translated" in body
+    assert "Review required" in body
+    assert "No answer" in body
+    assert "Translation failed" in body
+    assert "Ambiguous" in body
+    assert "badge-question-no-answer" in body
+    assert "badge-question-translation-failed" in body
+    assert "unsupported synthetic question" in body
+    assert "provider returned invalid schema" in body
+    assert "multiple synthetic candidates matched" in body
+    assert "No engine answers yet" in body
+    assert "Check each question outcome above" in body
+
+
+def test_questions_page_recovers_reason_from_non_executable_query(tmp_path):
+    c = _client(tmp_path)
+    qid = c.app.state.store.add_question("Which synthetic item matches?")
+    c.app.state.store.set_question_query(
+        qid,
+        'ambiguous("legacy synthetic ambiguity")',
+        "ambiguous",
+        "",
+    )
+
+    body = unescape(c.get("/questions").text)
+
+    assert "legacy synthetic ambiguity" in body
 
 
 def test_repair_action_accepts_valid_fix(tmp_path, monkeypatch, fake_client, intent_payload):

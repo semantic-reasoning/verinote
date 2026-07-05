@@ -35,6 +35,13 @@ th { color: var(--muted); font-weight: 600; font-size: .85rem; }
 .badge-needs_review { color: var(--warn); border-color: var(--warn); }
 .badge-confirmed, .badge-accepted { color: var(--ok); border-color: var(--ok); }
 .badge-superseded { color: var(--danger); border-color: var(--danger); text-decoration: line-through; }
+.badge-question-pending { color: var(--muted); }
+.badge-question-translated { color: var(--ok); border-color: var(--ok); }
+.badge-question-review-required, .badge-question-ambiguous { color: var(--warn); border-color: var(--warn); }
+.badge-question-translation-failed { color: var(--danger); border-color: var(--danger); }
+.badge-question-no-answer { color: var(--accent); border-color: var(--accent); }
+.question-message { margin-top: .25rem; }
+.question-query { max-width: 26rem; max-height: 9rem; }
 
 .actions button { background: var(--panel); color: var(--fg); border: 1px solid var(--line);
   border-radius: 6px; padding: .25rem .5rem; margin-right: .3rem; cursor: pointer; font-size: .82rem; }
