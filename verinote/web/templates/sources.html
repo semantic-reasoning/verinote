@@ -23,7 +23,7 @@
     {% for s in sources %}
     <tr>
       <td>
-        <code>{{ s["path"] }}</code>
+        <code class="truncate" title="{{ s["path"] }}">{{ s["path"] }}</code>
         <div class="row-meta">
           <span class="badge">{{ s["kind"] }}</span>
           <span class="src">added {{ s["added_at"] }}</span>
@@ -31,7 +31,10 @@
         {% if s["artifacts"] %}
         <div class="mini-list">
           {% for artifact in s["artifacts"] %}
-            <div><span class="badge">{{ artifact["kind"] }}</span> <code>{{ artifact["path"] }}</code></div>
+            <div class="artifact-row">
+              <span class="badge">{{ artifact["kind"] }}</span>
+              <code class="truncate" title="{{ artifact["path"] }}">{{ artifact["path"] }}</code>
+            </div>
           {% endfor %}
         </div>
         {% endif %}
