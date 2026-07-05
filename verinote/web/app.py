@@ -41,6 +41,7 @@ from verinote.pipeline import (
     verify,
     write_query_file,
 )
+from verinote.pipeline.question_outcome import question_outcome_view
 from verinote.pipeline.acceptance import (
     accept_recommendations,
     accept_recommendations_for,
@@ -850,7 +851,11 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         return templates.TemplateResponse(
             request,
             "questions.html",
-            {"questions": store.questions(), "answers": rep.answers, "error": page_error},
+            {
+                "questions": [question_outcome_view(q) for q in store.questions()],
+                "answers": rep.answers,
+                "error": page_error,
+            },
             status_code=status_code,
         )
 

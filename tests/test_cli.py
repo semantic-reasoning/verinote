@@ -139,6 +139,7 @@ def test_query_adds_and_translates(tmp_path, monkeypatch, capsys, fake_client, i
 
     assert rc == 0
     out = capsys.readouterr().out
+    assert "q1: translated - Executable query is ready." in out
     assert "translated 1 question(s)" in out
     assert Store(tmp_path / "kb.sqlite").questions()[0]["status"] == "translated"
     assert (tmp_path / "facts" / "query.dl").is_file()
@@ -155,7 +156,7 @@ def test_query_persists_translation_failure_reason(tmp_path, monkeypatch, capsys
 
     assert rc == 0
     out = capsys.readouterr().out
-    assert "q1: translation_failed (provider unavailable)" in out
+    assert "q1: translation_failed - provider unavailable" in out
     s = Store(tmp_path / "kb.sqlite")
     q = s.questions()[0]
     assert q["status"] == "translation_failed"
@@ -175,7 +176,7 @@ def test_query_persists_get_client_failure_reason(tmp_path, monkeypatch, capsys)
 
     assert rc == 0
     out = capsys.readouterr().out
-    assert "q1: translation_failed (missing provider credentials)" in out
+    assert "q1: translation_failed - missing provider credentials" in out
     s = Store(tmp_path / "kb.sqlite")
     q = s.questions()[0]
     assert q["status"] == "translation_failed"
@@ -214,7 +215,9 @@ def test_repair_validates_and_translates(
     rc = cli.main(["repair"])
 
     assert rc == 0
-    assert "repaired 1/1" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "q1: translated - Executable query is ready." in out
+    assert "repaired 1/1" in out
     assert Store(tmp_path / "kb.sqlite").questions()[0]["status"] == "translated"
 
 
@@ -252,9 +255,68 @@ def test_repair_reports_durable_rejected_status(
 
     assert rc == 0
     out = capsys.readouterr().out
-    assert "q1: kept no_answer (no confirmed facts match)" in out
+    assert "q1: no_answer - no confirmed facts match" in out
     assert "repaired 0/1" in out
     assert Store(tmp_path / "kb.sqlite").questions()[0]["status"] == "no_answer"
+
+
+def test_query_prints_review_required_outcome(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: object())
+
+    def translate(store, client, *, root, allow_direct_datalog_fallback=False):
+        q = store.questions(pending_only=True)[0]
+        reason = "unsupported synthetic question"
+        store.set_question_query(
+            q["id"], f'review_required("{reason}")', "review_required", reason
+        )
+        return [{"id": q["id"], "status": "review_required", "reason": reason}]
+
+    monkeypatch.setattr("verinote.pipeline.translate_questions", translate)
+
+    rc = cli.main(["query", "What synthetic relation is missing?"])
+
+    assert rc == 0
+    assert (
+        "q1: review_required - unsupported synthetic question"
+        in capsys.readouterr().out
+    )
+
+
+def test_query_prints_no_answer_outcome(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: object())
+
+    def translate(store, client, *, root, allow_direct_datalog_fallback=False):
+        q = store.questions(pending_only=True)[0]
+        reason = "no confirmed facts match"
+        store.set_question_query(q["id"], f'no_answer("{reason}")', "no_answer", reason)
+        return [{"id": q["id"], "status": "no_answer", "reason": reason}]
+
+    monkeypatch.setattr("verinote.pipeline.translate_questions", translate)
+
+    rc = cli.main(["query", "Which synthetic answer exists?"])
+
+    assert rc == 0
+    assert "q1: no_answer - no confirmed facts match" in capsys.readouterr().out
+
+
+def test_query_prints_ambiguous_outcome(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: object())
+
+    def translate(store, client, *, root, allow_direct_datalog_fallback=False):
+        q = store.questions(pending_only=True)[0]
+        reason = "multiple synthetic candidates matched"
+        store.set_question_query(q["id"], f'ambiguous("{reason}")', "ambiguous", reason)
+        return [{"id": q["id"], "status": "ambiguous", "reason": reason}]
+
+    monkeypatch.setattr("verinote.pipeline.translate_questions", translate)
+
+    rc = cli.main(["query", "Which synthetic candidate matches?"])
+
+    assert rc == 0
+    assert "q1: ambiguous - multiple synthetic candidates matched" in capsys.readouterr().out
 
 
 def test_repair_no_review_required_errors(tmp_path, monkeypatch, capsys):
