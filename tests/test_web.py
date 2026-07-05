@@ -610,6 +610,15 @@ def test_sources_page_lists_sources(tmp_path):
     c = _client(tmp_path)
     store = c.app.state.store
     sid = store.add_source("sources/a.txt", kind="text")
+    long_artifact_path = (
+        "artifacts/sources/1/"
+        "very-long-extracted-text-artifact-name-that-should-not-stretch-the-sources-table.txt"
+    )
+    store.add_source_artifact(
+        source_id=sid,
+        kind="extracted_text",
+        path=long_artifact_path,
+    )
     store.add_fact("A", "is_a", "B", status="candidate", source_id=sid)
     job_id = store.create_extraction_job(
         source_id=sid,
@@ -628,6 +637,7 @@ def test_sources_page_lists_sources(tmp_path):
 
     assert r.status_code == 200
     assert "sources/a.txt" in r.text
+    assert 'title="sources/a.txt"' in r.text
     assert "text" in r.text
     assert "failed" in r.text
     assert "1/2 chunk(s)" in r.text
@@ -637,6 +647,9 @@ def test_sources_page_lists_sources(tmp_path):
     assert "ollama" in r.text
     assert "qwen3.5:9b" in r.text
     assert "Retry" in r.text
+    assert "extracted_text" in r.text
+    assert f'title="{long_artifact_path}"' in r.text
+    assert 'class="truncate"' in r.text
 
 
 def test_sources_page_shows_trust_counts_and_evidence_snippets(tmp_path):

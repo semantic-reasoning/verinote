@@ -24,6 +24,7 @@ h1 { font-size: 1.4rem; } h2 { font-size: 1.05rem; margin-top: 1.8rem; }
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: .55rem .6rem; border-bottom: 1px solid var(--line); }
 th { color: var(--muted); font-weight: 600; font-size: .85rem; }
+.sources { table-layout: fixed; }
 .facts .triple .subj { font-weight: 600; }
 .facts .triple .rel { color: var(--accent); margin: 0 .35rem; }
 .conf { font-variant-numeric: tabular-nums; color: var(--muted); }
@@ -70,6 +71,11 @@ th { color: var(--muted); font-weight: 600; font-size: .85rem; }
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .mini-list { margin-top: .45rem; color: var(--muted); font-size: .85rem; }
 .mini-list > div { margin-top: .2rem; }
+.artifact-row { display: flex; align-items: center; gap: .35rem; min-width: 0; }
+.artifact-row .badge { flex: 0 0 auto; }
+.truncate { display: inline-block; min-width: 0; max-width: 100%; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+.artifact-row .truncate { flex: 1 1 auto; }
 .analysis-cell { min-width: 16rem; }
 .source-trust { display: flex; gap: .35rem; flex-wrap: wrap; margin-top: .45rem; }
 .amend { display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; }
