@@ -652,7 +652,7 @@ def test_sources_page_lists_sources(tmp_path):
     assert 'class="truncate"' in r.text
 
 
-def test_sources_page_shows_trust_counts_and_evidence_snippets(tmp_path):
+def test_sources_page_shows_trust_counts_and_evidence_snippets(tmp_path, monkeypatch):
     c = _client(tmp_path)
     store = c.app.state.store
     policy = tmp_path / "policy"
@@ -721,6 +721,11 @@ def test_sources_page_shows_trust_counts_and_evidence_snippets(tmp_path):
         "2025",
         status="accepted",
         source_id=conflict,
+    )
+    monkeypatch.setattr(
+        webapp,
+        "fact_trust_summary",
+        lambda *args, **kwargs: pytest.fail("sources page should use source rollups"),
     )
 
     body = unescape(c.get("/sources").text)
