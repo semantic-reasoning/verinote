@@ -43,6 +43,7 @@ from verinote.pipeline.acceptance import (
     accept_recommendations,
     apply_auto_accept_recommendations,
 )
+from verinote.pipeline.report_trace import report_trace
 from verinote.pipeline.corroboration import (
     store_corroboration,
     store_single_valued_conflicts,
@@ -639,7 +640,12 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.get("/report", response_class=HTMLResponse)
     def report(request: Request):
-        return templates.TemplateResponse(request, "report.html", {"rep": verify(_active_store())})
+        store = _active_store()
+        return templates.TemplateResponse(
+            request,
+            "report.html",
+            {"rep": verify(store), "trace": report_trace(store)},
+        )
 
     @app.get("/analytics", response_class=HTMLResponse)
     def analytics(request: Request):
