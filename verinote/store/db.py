@@ -863,6 +863,18 @@ class Store:
             )
         )
 
+    def count_facts_with_events(self, event_types: Iterable[str]) -> int:
+        event_types = tuple(event_types)
+        if not event_types:
+            return 0
+        placeholders = ",".join("?" * len(event_types))
+        row = self._conn.execute(
+            "SELECT COUNT(DISTINCT fact_id) AS c FROM fact_events "
+            f"WHERE fact_id IS NOT NULL AND event_type IN ({placeholders})",
+            event_types,
+        ).fetchone()
+        return int(row["c"])
+
     def add_fact_event(
         self,
         *,
