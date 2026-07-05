@@ -45,10 +45,14 @@ def test_claude_cli_extracts_facts_from_stdout(tmp_path, monkeypatch):
 
     assert facts[0].subject == "Ada"
     assert calls[0][0][0] == "claude"
+    assert "--safe-mode" in calls[0][0]
+    assert "--no-session-persistence" in calls[0][0]
     assert "--json-schema" in calls[0][0]
     assert "--system-prompt" in calls[0][0]
     assert "-p" in calls[0][0]
     assert calls[0][1]["capture_output"] is True
+    assert "cwd" in calls[0][1]
+    assert calls[0][1]["stdin"] is subprocess.DEVNULL
 
 
 def test_claude_cli_uses_model_when_configured(tmp_path, monkeypatch):
@@ -67,6 +71,7 @@ def test_claude_cli_uses_model_when_configured(tmp_path, monkeypatch):
     line = ClaudeCliAdapter(_cfg(tmp_path, model="sonnet")).translate_query(question="Who?", qid=7)
 
     assert commands[0][0:3] == ["claude", "--model", "sonnet"]
+    assert "--safe-mode" in commands[0]
     assert line.startswith("answer_q7")
 
 

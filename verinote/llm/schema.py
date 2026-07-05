@@ -126,7 +126,7 @@ def parse_facts(raw: str | list[Any] | dict[str, Any]) -> list[ExtractedFact]:
     """Parse provider output (a JSON string or already-decoded dict) into facts."""
     try:
         data = _decode_first_json(raw) if isinstance(raw, str) else raw
-        items = data if isinstance(data, list) else data["facts"]
+        items = _fact_items(data)
     except (json.JSONDecodeError, KeyError, TypeError) as exc:
         raise LLMError(f"extractor output did not match schema: {exc}") from exc
 
@@ -159,6 +159,18 @@ def parse_facts(raw: str | list[Any] | dict[str, Any]) -> list[ExtractedFact]:
     if not facts and errors:
         raise LLMError(errors[0])
     return facts
+
+
+def _fact_items(data: Any) -> list[Any]:
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        raise TypeError("facts output must be an array or object")
+    for key in ("facts", "items", "data", "results"):
+        value = data.get(key)
+        if isinstance(value, list):
+            return value
+    raise KeyError("facts")
 
 
 def _decode_first_json(raw: str) -> Any:

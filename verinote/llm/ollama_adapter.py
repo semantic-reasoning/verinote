@@ -101,7 +101,11 @@ class OllamaAdapter:
         try:
             return parse_facts(body.get("message", {}).get("content", ""))
         except LLMError as exc:
-            if "malformed fact object" in str(exc):
+            message = str(exc)
+            if (
+                "malformed fact object" in message
+                or "extractor output did not match schema" in message
+            ):
                 return []
             raise
 

@@ -101,3 +101,22 @@ def test_ollama_extract_ignores_malformed_only_fact_payload(tmp_path, monkeypatc
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
     assert OllamaAdapter(_cfg(tmp_path)).extract_facts(source_text="Ada") == []
+
+
+def test_ollama_extract_ignores_schema_mismatch_payload(tmp_path, monkeypatch):
+    def fake_urlopen(req, *, timeout):
+        return _Response(
+            json.dumps(
+                {
+                    "subject": "Ada",
+                    "relation": "is_a",
+                    "object": "mathematician",
+                    "confidence": 0.9,
+                    "note": "",
+                }
+            )
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    assert OllamaAdapter(_cfg(tmp_path)).extract_facts(source_text="Ada") == []

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tempfile
 from typing import Any
 
 from verinote.config import Config
@@ -45,6 +46,8 @@ class ClaudeCliAdapter:
         schema_json = json.dumps(schema, ensure_ascii=False)
         cmd = [
             "claude",
+            "--safe-mode",
+            "--no-session-persistence",
             "--system-prompt",
             prompt.system,
             "--json-schema",
@@ -55,13 +58,16 @@ class ClaudeCliAdapter:
         if self.cfg.model:
             cmd = ["claude", "--model", self.cfg.model, *cmd[1:]]
         try:
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                check=False,
-                text=True,
-                timeout=180,
-            )
+            with tempfile.TemporaryDirectory(prefix="verinote-claudecli-") as tmpdir:
+                proc = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    check=False,
+                    cwd=tmpdir,
+                    stdin=subprocess.DEVNULL,
+                    text=True,
+                    timeout=180,
+                )
         except FileNotFoundError as exc:
             raise LLMError("claude CLI not found; install Claude Code and ensure `claude` is on PATH") from exc
         except subprocess.TimeoutExpired as exc:
