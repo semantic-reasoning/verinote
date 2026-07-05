@@ -72,9 +72,16 @@ def create_chunked_extraction_job(
     source_text: str,
     provider: str | None,
     model: str | None,
+    chunk_chars: int | None = None,
+    chunk_overlap_chars: int | None = None,
 ) -> int:
     """Create a durable extraction job and its source chunks."""
-    chunks = chunk_text(source_text)
+    kwargs = {}
+    if chunk_chars is not None:
+        kwargs["max_chars"] = chunk_chars
+    if chunk_overlap_chars is not None:
+        kwargs["overlap_chars"] = chunk_overlap_chars
+    chunks = chunk_text(source_text, **kwargs)
     job_id = store.create_extraction_job(
         source_id=source_id,
         artifact_id=artifact_id,

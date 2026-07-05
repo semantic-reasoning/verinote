@@ -131,7 +131,14 @@ def read_settings(root: Path) -> dict:
 
 
 def save_settings(
-    root: Path, *, provider: str, model: str, base_url: str | None = None
+    root: Path,
+    *,
+    provider: str,
+    model: str,
+    base_url: str | None = None,
+    extraction_chunk_chars: int | None = None,
+    extraction_chunk_overlap_chars: int | None = None,
+    extraction_max_facts_per_chunk: int | None = None,
 ) -> None:
     """Persist non-secret settings to `<root>/config.json` (never the API key)."""
     root.mkdir(parents=True, exist_ok=True)
@@ -140,6 +147,12 @@ def save_settings(
         "model": model,
         "base_url": base_url or None,
     }
+    if extraction_chunk_chars is not None:
+        payload["extraction_chunk_chars"] = extraction_chunk_chars
+    if extraction_chunk_overlap_chars is not None:
+        payload["extraction_chunk_overlap_chars"] = extraction_chunk_overlap_chars
+    if extraction_max_facts_per_chunk is not None:
+        payload["extraction_max_facts_per_chunk"] = extraction_max_facts_per_chunk
     _settings_path(root).write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
@@ -165,6 +178,19 @@ def _llm_timeout_seconds() -> float:
     return value if value > 0 else 600.0
 
 
+def _pick_int(env: str, saved: object, default: int, *, minimum: int = 1) -> int:
+    raw = os.environ.get(env)
+    if raw is None:
+        raw = saved
+    if raw is None or raw == "":
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value >= minimum else default
+
+
 @dataclass(frozen=True)
 class Config:
     root: Path
@@ -174,6 +200,16 @@ class Config:
     api_key: str | None
     base_url: str | None
     llm_timeout_seconds: float = 600.0
+    extraction_chunk_chars: int = 300
+    extraction_chunk_overlap_chars: int = 40
+    extraction_max_facts_per_chunk: int = 8
+
+    def extraction_schema_hint(self) -> str:
+        return (
+            f"Extract at most {self.extraction_max_facts_per_chunk} facts from "
+            "this chunk. Prefer the most explicit source-backed facts when more "
+            "facts are available."
+        )
 
     @classmethod
     def for_root(cls, root: Path) -> "Config":
@@ -183,6 +219,22 @@ class Config:
         )
         model = _pick("VERINOTE_MODEL", saved.get("model"), _MODEL_DEFAULTS.get(provider, "")) or ""
         base_url = _pick("VERINOTE_BASE_URL", saved.get("base_url"), None)
+        chunk_chars = _pick_int(
+            "VERINOTE_EXTRACTION_CHUNK_CHARS",
+            saved.get("extraction_chunk_chars"),
+            300,
+        )
+        chunk_overlap = _pick_int(
+            "VERINOTE_EXTRACTION_CHUNK_OVERLAP_CHARS",
+            saved.get("extraction_chunk_overlap_chars"),
+            40,
+            minimum=0,
+        )
+        max_facts = _pick_int(
+            "VERINOTE_EXTRACTION_MAX_FACTS_PER_CHUNK",
+            saved.get("extraction_max_facts_per_chunk"),
+            8,
+        )
         return cls(
             root=root,
             db_path=root / "kb.sqlite",
@@ -191,6 +243,9 @@ class Config:
             api_key=os.environ.get("VERINOTE_API_KEY"),  # secrets only from env
             base_url=base_url,
             llm_timeout_seconds=_llm_timeout_seconds(),
+            extraction_chunk_chars=chunk_chars,
+            extraction_chunk_overlap_chars=chunk_overlap,
+            extraction_max_facts_per_chunk=max_facts,
         )
 
     @classmethod

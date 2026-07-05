@@ -19,6 +19,9 @@ def _cfg(tmp_path, *, timeout: float = 900.0) -> Config:
 
 
 class _Response:
+    def __init__(self, content=None):
+        self.content = content
+
     def __enter__(self):
         return self
 
@@ -26,22 +29,25 @@ class _Response:
         return None
 
     def read(self):
+        content = self.content
+        if content is None:
+            content = json.dumps(
+                {
+                    "facts": [
+                        {
+                            "subject": {"kind": "string", "value": "Ada"},
+                            "relation": {"kind": "string", "value": "is_a"},
+                            "object": {"kind": "string", "value": "person"},
+                            "confidence": 0.9,
+                            "note": "",
+                        }
+                    ]
+                }
+            )
         return json.dumps(
             {
                 "message": {
-                    "content": json.dumps(
-                        {
-                            "facts": [
-                                {
-                                    "subject": {"kind": "string", "value": "Ada"},
-                                    "relation": {"kind": "string", "value": "is_a"},
-                                    "object": {"kind": "string", "value": "person"},
-                                    "confidence": 0.9,
-                                    "note": "",
-                                }
-                            ]
-                        }
-                    )
+                    "content": content
                 }
             }
         ).encode("utf-8")
@@ -61,5 +67,30 @@ def test_ollama_extract_uses_configured_timeout(tmp_path, monkeypatch):
     assert calls[0].timeout == 900.0
     payload = json.loads(calls[0].req.data.decode("utf-8"))
     assert payload["think"] is False
-    assert payload["options"] == {"temperature": 0}
+    assert payload["options"] == {"temperature": 0, "num_predict": 1800}
+    assert payload["format"]["type"] == "array"
+    assert payload["format"]["items"]["properties"]["subject"] == {"type": "string"}
+    assert "document chunk" in payload["messages"][0]["content"]
+    assert "up to 8 facts" in payload["messages"][0]["content"]
     assert facts[0].subject == "Ada"
+
+
+def test_ollama_extract_ignores_malformed_only_fact_payload(tmp_path, monkeypatch):
+    def fake_urlopen(req, *, timeout):
+        return _Response(
+            json.dumps(
+                [
+                    {
+                        "subject": "Ada",
+                        "relation": "is_a",
+                        "object": None,
+                        "confidence": 0.9,
+                        "note": "",
+                    }
+                ]
+            )
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    assert OllamaAdapter(_cfg(tmp_path)).extract_facts(source_text="Ada") == []

@@ -31,6 +31,15 @@
   <label>Base URL <span class="muted">(optional)</span>
     <input type="text" name="base_url" value="{{ base_url }}" placeholder="https://…">
   </label>
+  <label>Chunk size
+    <input type="number" name="extraction_chunk_chars" value="{{ extraction_chunk_chars }}" min="1" step="50">
+  </label>
+  <label>Chunk overlap
+    <input type="number" name="extraction_chunk_overlap_chars" value="{{ extraction_chunk_overlap_chars }}" min="0" step="10">
+  </label>
+  <label>Max facts per chunk
+    <input type="number" name="extraction_max_facts_per_chunk" value="{{ extraction_max_facts_per_chunk }}" min="1" step="1">
+  </label>
   <button class="btn" type="submit">Save</button>
 </form>
 
