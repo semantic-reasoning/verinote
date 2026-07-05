@@ -17,22 +17,50 @@
 <table class="sources" aria-live="polite"
        {% if has_running_jobs %}hx-get="/sources" hx-trigger="every 2s" hx-target="main" hx-select="main" hx-swap="outerHTML"{% endif %}>
   <thead>
-    <tr><th>Source</th><th>Type</th><th>Analysis</th><th>Facts</th><th>Last analyzed</th><th>Model</th><th>Actions</th></tr>
+    <tr><th>Source</th><th>Analysis</th><th>Trust counts</th><th>Evidence</th><th>Actions</th></tr>
   </thead>
   <tbody>
     {% for s in sources %}
     <tr>
-      <td><code>{{ s["path"] }}</code></td>
-      <td><span class="badge">{{ s["kind"] }}</span></td>
       <td>
+        <code>{{ s["path"] }}</code>
+        <div class="row-meta">
+          <span class="badge">{{ s["kind"] }}</span>
+          <span class="src">added {{ s["added_at"] }}</span>
+        </div>
+        {% if s["artifacts"] %}
+        <div class="mini-list">
+          {% for artifact in s["artifacts"] %}
+            <div><span class="badge">{{ artifact["kind"] }}</span> <code>{{ artifact["path"] }}</code></div>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </td>
+      <td class="analysis-cell">
         {% if s["analysis_status"] %}
           <span class="badge">{{ 'complete' if s["analysis_status"] == 'done' else s["analysis_status"] }}</span>
           <span>{{ s["completed_chunks"] }}/{{ s["total_chunks"] }} chunk(s)</span>
           {% if s["failed_chunks"] %}
-            <span class="error">{{ s["failed_chunks"] }} failed</span>
+            <span class="error-inline">{{ s["failed_chunks"] }} failed</span>
           {% endif %}
+          {% if s["pending_chunks"] %}
+            <span class="warn">{{ s["pending_chunks"] }} pending</span>
+          {% endif %}
+          <div class="src">
+            {{ s["provider"] or '—' }} / <code>{{ s["model"] or '—' }}</code>
+            · chunk size {{ chunk_chars }}
+            · max facts {{ max_facts_per_chunk }}
+          </div>
+          <div class="src">last analyzed {{ s["last_analyzed_at"] or '—' }}</div>
           {% if s["analysis_message"] %}
             <br><span class="muted">{{ s["analysis_message"] }}</span>
+          {% endif %}
+          {% if s["failed_chunk_details"] %}
+          <div class="mini-list">
+            {% for chunk in s["failed_chunk_details"] %}
+              <div><span class="badge trust-conflicted">chunk {{ chunk["chunk_index"] }}</span> {{ chunk["error"] or "failed" }}</div>
+            {% endfor %}
+          </div>
           {% endif %}
         {% else %}
           <span class="muted">Not analyzed</span>
@@ -42,13 +70,19 @@
         {{ s["candidate_count"] }} candidate(s)
         {% if s["needs_review_count"] %}<br>{{ s["needs_review_count"] }} needs review{% endif %}
         {% if s["engine_count"] %}<br>{{ s["engine_count"] }} confirmed{% endif %}
+        <div class="source-trust">
+          <span class="badge trust-unsupported">{{ s["unsupported_count"] }} unsupported</span>
+          <span class="badge trust-conflicted">{{ s["conflicted_count"] }} conflicted</span>
+          <span class="badge trust-corroborated">{{ s["corroborated_count"] }} corroborated</span>
+        </div>
       </td>
-      <td class="src">{{ s["last_analyzed_at"] or '—' }}</td>
-      <td class="src">
-        {% if s["provider"] or s["model"] %}
-          {{ s["provider"] or '—' }} / <code>{{ s["model"] or '—' }}</code>
+      <td class="evidence-cell">
+        {% if s["evidence_snippets"] %}
+          {% for snippet in s["evidence_snippets"] %}
+            <div class="snippet">{{ snippet }}</div>
+          {% endfor %}
         {% else %}
-          —
+          <span class="muted">No evidence snippets</span>
         {% endif %}
       </td>
       <td class="actions">
