@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}Trust workbench - verinote{% endblock %}
+{% block content %}
+<h1>Trust workbench</h1>
+<p class="muted">Source-backed corroboration and single-valued conflicts for reviewed engine-input facts.</p>
+
+<h2>Corroborated facts <span class="muted">- grouped by normalized SPO</span></h2>
+{% if workbench.corroborated %}
+<table class="counts">
+  <thead><tr><th>Normalized fact</th><th>Source support</th><th>Facts</th></tr></thead>
+  <tbody>
+    {% for group in workbench.corroborated %}
+    <tr>
+      <td>
+        <code>{{ group.subject }}</code> /
+        <code>{{ group.relation }}</code> /
+        <code>{{ group.object }}</code>
+      </td>
+      <td>
+        <strong>{{ group.source_count }}</strong>
+        <div class="mini-list">
+          {% for source in group.sources %}<div><code>{{ source }}</code></div>{% endfor %}
+        </div>
+      </td>
+      <td>
+        {% for fact in group.facts %}
+        <div class="mini-list">
+          <a href="/facts/{{ fact.id }}/provenance">#{{ fact.id }}</a>
+          <span class="badge badge-{{ fact.status }}">{{ fact.status }}</span>
+          <code>{{ fact.relation }}</code> / <code>{{ fact.object }}</code>
+          {% if fact.relation_alias %}<span class="muted">alias {{ fact.relation_alias }}</span>{% endif %}
+          {% if fact.typed_normalization %}<span class="muted">{{ fact.typed_normalization }}</span>{% endif %}
+        </div>
+        {% endfor %}
+        {% if group.related_candidates %}
+        <div class="mini-list"><strong>Related candidates</strong></div>
+        {% for fact in group.related_candidates %}
+        <div class="mini-list">
+          <a href="/facts/{{ fact.id }}/provenance">#{{ fact.id }}</a>
+          <span class="badge badge-{{ fact.status }}">{{ fact.status }}</span>
+          <code>{{ fact.source }}</code>
+        </div>
+        {% endfor %}
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No facts are corroborated by multiple distinct sources.</p>
+{% endif %}
+
+<h2>Single-valued conflicts <span class="muted">- engine-input facts only</span></h2>
+{% if workbench.conflicts %}
+<table class="counts">
+  <thead><tr><th>Subject / relation</th><th>Competing values</th><th>Related candidates</th></tr></thead>
+  <tbody>
+    {% for conflict in workbench.conflicts %}
+    <tr>
+      <td><code>{{ conflict.subject }}</code> / <code>{{ conflict.relation }}</code></td>
+      <td>
+        {% for value in conflict.values %}
+        <div class="evidence">
+          <code>{{ value.object }}</code>
+          <span class="muted">{{ value.source_count }} source{% if value.source_count != 1 %}s{% endif %}</span>
+          {% if value.typed_normalization %}<span class="muted">{{ value.typed_normalization }}</span>{% endif %}
+          <div class="mini-list">
+            {% for source in value.sources %}<div><code>{{ source }}</code></div>{% endfor %}
+          </div>
+          {% for fact in value.facts %}
+          <div class="mini-list">
+            <a href="/facts/{{ fact.id }}/provenance">#{{ fact.id }}</a>
+            <span class="badge badge-{{ fact.status }}">{{ fact.status }}</span>
+            <code>{{ fact.relation }}</code> / <code>{{ fact.object }}</code>
+            {% if fact.relation_alias %}<span class="muted">alias {{ fact.relation_alias }}</span>{% endif %}
+          </div>
+          {% endfor %}
+        </div>
+        {% endfor %}
+      </td>
+      <td>
+        {% if conflict.related_candidates %}
+          {% for fact in conflict.related_candidates %}
+          <div class="mini-list">
+            <a href="/facts/{{ fact.id }}/provenance">#{{ fact.id }}</a>
+            <span class="badge badge-{{ fact.status }}">{{ fact.status }}</span>
+            <code>{{ fact.object }}</code>
+          </div>
+          {% endfor %}
+        {% else %}
+          <span class="muted">None</span>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No source-backed single-valued conflicts.</p>
+{% endif %}
+{% endblock %}
