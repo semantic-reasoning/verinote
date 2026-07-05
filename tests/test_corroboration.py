@@ -266,6 +266,31 @@ def test_relation_aliases_parser_rejects_self_map():
         raise AssertionError("expected CorroborationPolicyError")
 
 
+def test_relation_aliases_parser_accepts_plain_arrow_lines():
+    assert relation_aliases("- role -> 역할\n- title -> 직함\n") == {
+        "role": "역할",
+        "title": "직함",
+    }
+
+
+def test_relation_aliases_parser_rejects_malformed_non_empty_lines():
+    try:
+        relation_aliases("- role 역할\n")
+    except CorroborationPolicyError as exc:
+        assert "expected `raw` -> `canonical`" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected CorroborationPolicyError")
+
+
+def test_relation_aliases_parser_rejects_malformed_backticks():
+    try:
+        relation_aliases("- `role -> 역할\n")
+    except CorroborationPolicyError as exc:
+        assert "malformed backtick alias" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected CorroborationPolicyError")
+
+
 def test_store_single_valued_conflicts_loads_relation_alias_file(tmp_path):
     s = _store(tmp_path)
     policy = tmp_path / "policy"

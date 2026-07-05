@@ -50,6 +50,23 @@ def test_report_trace_links_direct_answers_to_engine_facts_and_evidence(tmp_path
     assert answer.facts[0].evidence == "Sample Person was born in Sample City."
 
 
+def test_report_trace_ignores_invalid_relation_alias_policy(tmp_path):
+    s = _store(tmp_path)
+    policy = tmp_path / "policy"
+    policy.mkdir()
+    (policy / "relation-aliases.md").write_text("- `role` -> `role`\n", encoding="utf-8")
+    query_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    query_path(tmp_path).write_text(
+        '.decl answer_q1(value: symbol)\n'
+        'answer_q1(O) :- relation("Sample Person", "role", O).\n',
+        encoding="utf-8",
+    )
+
+    trace = report_trace(s)
+
+    assert trace.answers == ()
+
+
 def test_report_trace_marks_answers_from_conflicted_relations(tmp_path):
     s = _store(tmp_path)
     source_a = s.add_source("sources/a.txt")

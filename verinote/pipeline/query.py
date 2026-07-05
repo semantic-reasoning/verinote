@@ -11,13 +11,19 @@ in the DB only.
 
 from __future__ import annotations
 
+from itertools import product
 from pathlib import Path
+import unicodedata
 
+from verinote.engine.datalog import AtomExpr, Comparison, DatalogParseError, parse_program
+from verinote.engine.terms import Atom, StringLit, render_term
 from verinote.llm.base import LLMClient
+from verinote.pipeline.corroboration import CorroborationPolicyError, store_relation_aliases
 from verinote.store import Store
 
 # Query draft, relative to the KB root (the db file's directory).
 QUERY_RELPATH = Path("facts") / "query.dl"
+MAX_ALIAS_EXPANDED_RULES_PER_RULE = 64
 
 
 def query_path(root: Path) -> Path:
@@ -64,5 +70,92 @@ def load_query(store: Store) -> str | None:
     """Read the KB's query draft, or None when none has been generated."""
     path = store.db_path.parent / QUERY_RELPATH
     if path.is_file():
-        return path.read_text(encoding="utf-8")
+        return expand_query_relation_aliases(
+            path.read_text(encoding="utf-8"), store_relation_aliases(store)
+        )
     return None
+
+
+def expand_query_relation_aliases(query_dl: str, aliases: dict[str, str]) -> str:
+    """Append alias-expanded answer rules for relation/3 query bodies.
+
+    Relation aliases are user policy, so the engine should honor them even when a
+    query draft was translated before the alias existed. For example, with
+    ``role -> 역할`` this appends a canonical rule for a model-generated
+    ``relation(S, "role", O)`` body without mutating the stored draft.
+    """
+    if not aliases:
+        return query_dl
+    try:
+        program = parse_program(query_dl)
+    except DatalogParseError:
+        return query_dl
+
+    existing = {_render_rule(rule) for rule in program.rules}
+    extra: list[str] = []
+    for rule in program.rules:
+        alternatives: list[list[object]] = []
+        has_alias = False
+        for index, item in enumerate(rule.body):
+            if not (isinstance(item, AtomExpr) and item.predicate == "relation"):
+                alternatives.append([item])
+                continue
+            if len(item.args) != 3:
+                alternatives.append([item])
+                continue
+            raw = _relation_name(item.args[1])
+            if raw is None or raw not in aliases:
+                alternatives.append([item])
+                continue
+            canonical = aliases[raw]
+            alternatives.append(
+                [item, AtomExpr("relation", (item.args[0], StringLit(canonical), item.args[2]))]
+            )
+            has_alias = True
+        if not has_alias:
+            continue
+        expanded_count = 1
+        for choices in alternatives:
+            expanded_count *= len(choices)
+        if expanded_count > MAX_ALIAS_EXPANDED_RULES_PER_RULE:
+            raise CorroborationPolicyError(
+                "relation-aliases.md: query alias expansion exceeds "
+                f"{MAX_ALIAS_EXPANDED_RULES_PER_RULE} rules for {rule.head.predicate}"
+            )
+        for body in product(*alternatives):
+            rendered = _render_rule_with_body(rule.head, body)
+            if rendered not in existing:
+                existing.add(rendered)
+                extra.append(rendered)
+    if not extra:
+        return query_dl
+    suffix = "\n" if query_dl.endswith("\n") else "\n"
+    return query_dl + suffix + "\n".join(extra) + "\n"
+
+
+def _relation_name(term: object) -> str | None:
+    if isinstance(term, StringLit):
+        return unicodedata.normalize("NFC", term.value)
+    if isinstance(term, Atom):
+        return unicodedata.normalize("NFC", term.name)
+    return None
+
+
+def _render_rule(rule) -> str:
+    return _render_rule_with_body(rule.head, rule.body)
+
+
+def _render_rule_with_body(head: AtomExpr, body: tuple[object, ...]) -> str:
+    return _render_atom(head) + " :- " + ", ".join(_render_body_item(item) for item in body) + "."
+
+
+def _render_body_item(item: object) -> str:
+    if isinstance(item, AtomExpr):
+        return _render_atom(item)
+    if isinstance(item, Comparison):
+        return f"{render_term(item.left)} {item.op} {render_term(item.right)}"
+    raise TypeError(f"unsupported body item: {item!r}")
+
+
+def _render_atom(atom: AtomExpr) -> str:
+    return atom.predicate + "(" + ", ".join(render_term(arg) for arg in atom.args) + ")"

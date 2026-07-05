@@ -75,6 +75,70 @@ def test_verify_loads_query_file(tmp_path):
     assert "--- query input ---" in rep.text
 
 
+def test_verify_answers_query_through_relation_alias(tmp_path):
+    s = _store(tmp_path)
+    s.add_fact("샘플인물", "역할", "샘플역할", status="confirmed")
+    policy = tmp_path / "policy"
+    policy.mkdir()
+    (policy / "relation-aliases.md").write_text("- `role` -> `역할`\n", encoding="utf-8")
+    path = query_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '.decl answer_q1(value: symbol)\n'
+        'answer_q1(V) :- relation("샘플인물", "role", V).\n',
+        encoding="utf-8",
+    )
+
+    rep = verify(s)
+
+    assert rep.ok is True
+    assert rep.answers == ["q1: 샘플역할"]
+
+
+def test_verify_answers_query_through_multiple_relation_aliases(tmp_path):
+    s = _store(tmp_path)
+    s.add_fact("샘플인물", "역할", "샘플과제", status="confirmed")
+    s.add_fact("샘플과제", "직함", "샘플역할", status="confirmed")
+    policy = tmp_path / "policy"
+    policy.mkdir()
+    (policy / "relation-aliases.md").write_text(
+        "- `role` -> `역할`\n- `title` -> `직함`\n",
+        encoding="utf-8",
+    )
+    path = query_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        ".decl answer_q1(value: symbol)\n"
+        'answer_q1(V) :- relation("샘플인물", "role", X), relation(X, "title", V).\n',
+        encoding="utf-8",
+    )
+
+    rep = verify(s)
+
+    assert rep.ok is True
+    assert rep.answers == ["q1: 샘플역할"]
+
+
+def test_verify_reports_invalid_relation_alias_policy(tmp_path):
+    s = _store(tmp_path)
+    policy = tmp_path / "policy"
+    policy.mkdir()
+    (policy / "relation-aliases.md").write_text("- `role` -> `role`\n", encoding="utf-8")
+    path = query_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '.decl answer_q1(value: symbol)\n'
+        'answer_q1(V) :- relation("샘플인물", "role", V).\n',
+        encoding="utf-8",
+    )
+
+    rep = verify(s)
+
+    assert rep.ok is False
+    assert rep.errors == 1
+    assert "policy error" in rep.findings[0]
+
+
 def test_verify_uses_duckdb_fact_terms_for_structural_compounds(tmp_path):
     s = _store(tmp_path)
     s.add_fact(

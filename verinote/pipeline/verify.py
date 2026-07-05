@@ -6,6 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from verinote.engine import CheckReport
+from verinote.pipeline.corroboration import CorroborationPolicyError
 from verinote.store import Store
 
 # Per-KB policy location, relative to the KB root (the db file's directory).
@@ -39,6 +40,14 @@ def verify(store: Store) -> CheckReport:
             text=f"backend: DuckDB\n\npolicy/engine error: {exc}",
             findings=[f"ERROR engine error: {exc}"],
         )
-    return store.inference_cache.run_check(
-        rows, policy_dl=load_policy(store), query_dl=load_query(store)
-    )
+    try:
+        query_dl = load_query(store)
+    except CorroborationPolicyError as exc:
+        return CheckReport(
+            ok=False,
+            errors=1,
+            warnings=0,
+            text=f"backend: DuckDB\n\npolicy/error: {exc}",
+            findings=[f"ERROR policy error: {exc}"],
+        )
+    return store.inference_cache.run_check(rows, policy_dl=load_policy(store), query_dl=query_dl)

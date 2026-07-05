@@ -1,5 +1,13 @@
 # SPDX-License-Identifier: MPL-2.0
-from verinote.pipeline.query import load_query, query_path, translate_questions
+import unicodedata
+
+from verinote.pipeline.query import (
+    expand_query_relation_aliases,
+    load_query,
+    query_path,
+    translate_questions,
+)
+from verinote.pipeline.corroboration import CorroborationPolicyError
 from verinote.store import Store
 
 
@@ -26,6 +34,71 @@ def test_translate_persists_query_and_writes_file(tmp_path, fake_client):
     assert draft.is_file()
     assert load_query(s) == draft.read_text(encoding="utf-8")
     assert f"answer_q{qid}" in load_query(s)
+
+
+def test_load_query_expands_relation_aliases(tmp_path, fake_client):
+    s = _store(tmp_path)
+    policy = tmp_path / "policy"
+    policy.mkdir()
+    (policy / "relation-aliases.md").write_text("- `role` -> `역할`\n", encoding="utf-8")
+    qid = s.add_question("샘플인물의 역할은 무엇인가")
+    client = fake_client(
+        query=lambda question, qid: f'answer_q{qid}(V) :- relation("샘플인물", "role", V).'
+    )
+
+    translate_questions(s, client, root=tmp_path)
+
+    stored_query = s.questions()[0]["query_dl"]
+    assert f'answer_q{qid}(V) :- relation("샘플인물", "role", V).' in stored_query
+    assert f'answer_q{qid}(V) :- relation("샘플인물", "역할", V).' not in stored_query
+    loaded_query = load_query(s)
+    assert f'answer_q{qid}(V) :- relation("샘플인물", "role", V).' in loaded_query
+    assert f'answer_q{qid}(V) :- relation("샘플인물", "역할", V).' in loaded_query
+
+
+def test_expand_query_relation_aliases_handles_atoms_and_combinations():
+    query_dl = (
+        ".decl answer_q1(value: symbol)\n"
+        'answer_q1(O) :- relation("샘플인물", role, X), relation(X, "title", O).\n'
+    )
+
+    expanded = expand_query_relation_aliases(query_dl, {"role": "역할", "title": "직함"})
+
+    assert 'answer_q1(O) :- relation("샘플인물", role, X), relation(X, "title", O).' in expanded
+    assert 'answer_q1(O) :- relation("샘플인물", "역할", X), relation(X, "title", O).' in expanded
+    assert 'answer_q1(O) :- relation("샘플인물", role, X), relation(X, "직함", O).' in expanded
+    assert 'answer_q1(O) :- relation("샘플인물", "역할", X), relation(X, "직함", O).' in expanded
+
+
+def test_expand_query_relation_aliases_does_not_expand_variable_relations():
+    query_dl = ".decl answer_q1(value: symbol)\n" 'answer_q1(R) :- relation("샘플인물", R, O).\n'
+
+    assert expand_query_relation_aliases(query_dl, {"role": "역할"}) == query_dl
+
+
+def test_expand_query_relation_aliases_normalizes_query_relation_names():
+    decomposed = unicodedata.normalize("NFD", "역할")
+    query_dl = (
+        ".decl answer_q1(value: symbol)\n"
+        f'answer_q1(O) :- relation("샘플인물", "{decomposed}", O).\n'
+    )
+
+    expanded = expand_query_relation_aliases(query_dl, {"역할": "role"})
+
+    assert 'answer_q1(O) :- relation("샘플인물", "role", O).' in expanded
+
+
+def test_expand_query_relation_aliases_caps_combinations():
+    body = ", ".join(f'relation(X{i}, "r{i}", X{i + 1})' for i in range(7))
+    query_dl = ".decl answer_q1(value: symbol)\n" f"answer_q1(O) :- {body}.\n"
+    aliases = {f"r{i}": f"canonical_{i}" for i in range(7)}
+
+    try:
+        expand_query_relation_aliases(query_dl, aliases)
+    except CorroborationPolicyError as exc:
+        assert "query alias expansion exceeds" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected CorroborationPolicyError")
 
 
 def test_review_required_question_is_flagged_not_in_draft(tmp_path, fake_client):
