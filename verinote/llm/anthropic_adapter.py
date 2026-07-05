@@ -8,11 +8,14 @@ from verinote.llm.base import ExtractedFact, LLMError
 from verinote.llm.schema import (
     EXTRACTION_SYSTEM,
     FACT_ARRAY_SCHEMA,
+    QUERY_INTENT_SCHEMA,
+    QUERY_INTENT_SYSTEM,
     QUERY_SCHEMA,
     parse_facts,
     parse_query,
     query_system,
 )
+from verinote.pipeline.query_intent import QueryIntent, parse_query_intent
 
 
 class AnthropicAdapter:
@@ -77,4 +80,33 @@ class AnthropicAdapter:
         for block in msg.content:
             if getattr(block, "type", None) == "tool_use":
                 return parse_query(block.input)
+        raise LLMError("anthropic response contained no tool_use block")
+
+    def extract_query_intent(self, *, question: str, schema_hint: str = "") -> QueryIntent:
+        try:
+            import anthropic
+        except ImportError as exc:  # pragma: no cover - optional dep
+            raise LLMError("anthropic SDK not installed; `pip install verinote[anthropic]`") from exc
+
+        client = anthropic.Anthropic(api_key=self.cfg.api_key, base_url=self.cfg.base_url)
+        tool = {
+            "name": "emit_query_intent",
+            "description": "Return the structured query intent.",
+            "input_schema": QUERY_INTENT_SCHEMA,
+        }
+        try:
+            msg = client.messages.create(
+                model=self.cfg.model,
+                max_tokens=1024,
+                system=QUERY_INTENT_SYSTEM + ("\n" + schema_hint if schema_hint else ""),
+                tools=[tool],
+                tool_choice={"type": "tool", "name": "emit_query_intent"},
+                messages=[{"role": "user", "content": question}],
+            )
+        except Exception as exc:  # noqa: BLE001 - normalise provider errors
+            raise LLMError(f"anthropic request failed: {exc}") from exc
+
+        for block in msg.content:
+            if getattr(block, "type", None) == "tool_use":
+                return parse_query_intent(block.input)
         raise LLMError("anthropic response contained no tool_use block")

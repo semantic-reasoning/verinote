@@ -14,11 +14,14 @@ from verinote.llm.base import ExtractedFact, LLMError
 from verinote.llm.schema import (
     EXTRACTION_SYSTEM,
     FACT_ARRAY_SCHEMA,
+    QUERY_INTENT_SCHEMA,
+    QUERY_INTENT_SYSTEM,
     QUERY_SCHEMA,
     parse_facts,
     parse_query,
     query_system,
 )
+from verinote.pipeline.query_intent import QueryIntent, parse_query_intent
 
 _MODEL_ALIASES = {
     "fable": "fable",
@@ -48,6 +51,14 @@ class ClaudeCliAdapter:
             user=question,
         )
         return parse_query(self._run(prompt, schema=QUERY_SCHEMA))
+
+    def extract_query_intent(self, *, question: str, schema_hint: str = "") -> QueryIntent:
+        prompt = _prompt(
+            system=QUERY_INTENT_SYSTEM + ("\n" + schema_hint if schema_hint else ""),
+            schema=QUERY_INTENT_SCHEMA,
+            user=question,
+        )
+        return parse_query_intent(self._run(prompt, schema=QUERY_INTENT_SCHEMA))
 
     def _run(self, prompt: "_Prompt", *, schema: dict[str, Any]) -> str:
         schema_json = json.dumps(schema, ensure_ascii=False)

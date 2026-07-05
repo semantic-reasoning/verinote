@@ -155,6 +155,59 @@ def parse_query(raw: str | dict[str, Any]) -> str:
     return line
 
 
+# --- query intent extraction (#113) ---------------------------------------
+
+QUERY_INTENT_TARGET_SCHEMA: dict[str, Any] = {
+    "type": ["object", "null"],
+    "required": ["kind", "value"],
+    "additionalProperties": False,
+    "properties": {
+        "kind": {"type": "string", "enum": ["entity", "relation", "value", "typed_value"]},
+        "value": {"type": "string", "minLength": 1},
+    },
+}
+
+QUERY_INTENT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "kind": {
+            "type": "string",
+            "enum": [
+                "lookup_object",
+                "lookup_subject",
+                "lookup_relation",
+                "count",
+                "compare_typed_value",
+                "unknown_or_unsupported",
+            ],
+        },
+        "subject": QUERY_INTENT_TARGET_SCHEMA,
+        "relation": QUERY_INTENT_TARGET_SCHEMA,
+        "object": QUERY_INTENT_TARGET_SCHEMA,
+        "relation_candidates": {
+            "type": ["array", "null"],
+            "items": {"type": "string", "minLength": 1},
+        },
+        "operator": {"type": ["string", "null"], "enum": ["=", "!=", "<", "<=", ">", ">=", None]},
+        "value_type": {
+            "type": ["string", "null"],
+            "enum": ["date", "number", "amount", "ordinal", None],
+        },
+        "value": {"type": ["string", "null"], "minLength": 1},
+        "reason": {"type": ["string", "null"], "minLength": 1},
+    },
+}
+QUERY_INTENT_SCHEMA["required"] = list(QUERY_INTENT_SCHEMA["properties"])
+
+
+QUERY_INTENT_SYSTEM = (
+    "Classify one natural-language question into a constrained query intent. "
+    "Return only JSON matching the schema. Use null for fields that do not apply. "
+    "Do not emit Datalog, relation/3 rules, answer_q predicates, or execution plans."
+)
+
+
 def parse_facts(raw: str | list[Any] | dict[str, Any]) -> list[ExtractedFact]:
     """Parse provider output (a JSON string or already-decoded dict) into facts."""
     try:

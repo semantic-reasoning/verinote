@@ -2,11 +2,194 @@
 import pytest
 
 from verinote.llm import LLMError
-from verinote.llm.schema import EXTRACTION_SYSTEM, FACT_OBJECT_SCHEMA, parse_facts
+from verinote.llm.schema import (
+    EXTRACTION_SYSTEM,
+    FACT_OBJECT_SCHEMA,
+    QUERY_INTENT_SCHEMA,
+    parse_facts,
+)
+from verinote.pipeline.query_intent import IntentTarget, QueryIntentKind, parse_query_intent
+
+
+def _intent_payload(**overrides):
+    payload = {
+        "kind": "unknown_or_unsupported",
+        "subject": None,
+        "relation": None,
+        "object": None,
+        "relation_candidates": None,
+        "operator": None,
+        "value_type": None,
+        "value": None,
+        "reason": "unsupported",
+    }
+    payload.update(overrides)
+    return payload
 
 
 def test_fact_schema_requires_every_property_for_strict_outputs():
     assert set(FACT_OBJECT_SCHEMA["required"]) == set(FACT_OBJECT_SCHEMA["properties"])
+
+
+def test_query_intent_schema_is_separate_from_datalog_query_schema():
+    assert QUERY_INTENT_SCHEMA["required"] == list(QUERY_INTENT_SCHEMA["properties"])
+    assert "datalog" not in QUERY_INTENT_SCHEMA["properties"]
+    assert QUERY_INTENT_SCHEMA["additionalProperties"] is False
+    for field in ("subject", "relation", "object"):
+        schema = QUERY_INTENT_SCHEMA["properties"][field]
+        assert schema["type"] == ["object", "null"]
+        assert schema["required"] == list(schema["properties"])
+        assert schema["additionalProperties"] is False
+    assert QUERY_INTENT_SCHEMA["properties"]["value_type"]["enum"] == [
+        "date",
+        "number",
+        "amount",
+        "ordinal",
+        None,
+    ]
+
+
+def test_parse_query_intent_accepts_valid_lookup_object():
+    intent = parse_query_intent(
+        _intent_payload(
+            kind="lookup_object",
+            subject={"kind": "entity", "value": "샘플인물"},
+            relation_candidates=["역할", "직책", "직위"],
+            reason=None,
+        )
+    )
+
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.subject == IntentTarget("entity", "샘플인물")
+    assert intent.relation_candidates == ("역할", "직책", "직위")
+
+
+def test_parse_query_intent_accepts_valid_lookup_subject_lookup_relation_and_count():
+    assert (
+        parse_query_intent(
+            _intent_payload(
+                kind="lookup_subject",
+                relation={"kind": "relation", "value": "역할"},
+                object={"kind": "entity", "value": "검토자"},
+                reason=None,
+            )
+        ).kind
+        == QueryIntentKind.LOOKUP_SUBJECT
+    )
+    assert (
+        parse_query_intent(
+            _intent_payload(
+                kind="lookup_relation",
+                subject={"kind": "entity", "value": "샘플인물"},
+                object={"kind": "entity", "value": "샘플문서"},
+                reason=None,
+            )
+        ).kind
+        == QueryIntentKind.LOOKUP_RELATION
+    )
+    assert (
+        parse_query_intent(
+            _intent_payload(
+                kind="count",
+                relation={"kind": "relation", "value": "참여"},
+                reason=None,
+            )
+        ).kind
+        == QueryIntentKind.COUNT
+    )
+
+
+def test_parse_query_intent_accepts_valid_compare_typed_value():
+    intent = parse_query_intent(
+        _intent_payload(
+            kind="compare_typed_value",
+            subject={"kind": "entity", "value": "샘플항목"},
+            relation={"kind": "relation", "value": "수량"},
+            operator=">",
+            value_type="number",
+            value="10",
+            reason=None,
+        )
+    )
+
+    assert intent.kind == QueryIntentKind.COMPARE_TYPED_VALUE
+    assert intent.operator == ">"
+    assert intent.value_type == "number"
+    assert intent.value == "10"
+
+
+def test_parse_query_intent_accepts_unsupported_with_reason():
+    intent = parse_query_intent(
+        _intent_payload(reason="requires planning")
+    )
+
+    assert intent.kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED
+    assert intent.reason == "requires planning"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "not json",
+        {"subject": {"kind": "entity", "value": "샘플인물"}},
+        _intent_payload(kind="not_a_kind"),
+        _intent_payload(kind="lookup_object", unexpected="field"),
+        _intent_payload(
+            kind="lookup_object",
+            subject={"kind": "entity", "value": "샘플인물", "extra": "x"},
+            relation={"kind": "relation", "value": "역할"},
+            reason=None,
+        ),
+        _intent_payload(
+            kind="lookup_object",
+            subject={"kind": "entity", "value": ""},
+            relation={"kind": "relation", "value": "역할"},
+            reason=None,
+        ),
+        _intent_payload(
+            kind="lookup_object",
+            subject={"kind": "entity", "value": "샘플인물"},
+            relation_candidates=["역할", 3],
+            reason=None,
+        ),
+        _intent_payload(
+            kind="lookup_object",
+            subject={"kind": "entity", "value": "샘플인물"},
+            reason=None,
+        ),
+        _intent_payload(reason=""),
+        _intent_payload(
+            kind="lookup_object",
+            subject={"kind": "relation", "value": "역할"},
+            relation={"kind": "entity", "value": "샘플인물"},
+            reason=None,
+        ),
+        _intent_payload(
+            kind="lookup_subject",
+            relation={"kind": "entity", "value": "샘플인물"},
+            object={"kind": "relation", "value": "역할"},
+            reason=None,
+        ),
+        _intent_payload(
+            kind="lookup_relation",
+            relation={"kind": "relation", "value": "역할"},
+            subject={"kind": "entity", "value": "샘플인물"},
+            reason=None,
+        ),
+        _intent_payload(
+            kind="compare_typed_value",
+            subject={"kind": "entity", "value": "샘플항목"},
+            relation={"kind": "relation", "value": "수량"},
+            operator=">",
+            value_type="duration",
+            value="10",
+            reason=None,
+        ),
+    ],
+)
+def test_parse_query_intent_rejects_malformed_or_invalid_output(raw):
+    with pytest.raises(LLMError):
+        parse_query_intent(raw)
 
 
 def test_extraction_prompt_prioritizes_semantic_spo_facts():
