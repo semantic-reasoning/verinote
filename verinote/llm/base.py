@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 from dataclasses import KW_ONLY, dataclass
-from typing import Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from verinote.pipeline.query_intent import QueryIntent
 
 FactSlotKind = Literal["string", "term"]
 
@@ -61,5 +64,13 @@ class LLMClient(Protocol):
         return a durable non-executable outcome:
         ``review_required("reason")``, ``no_answer("reason")``, or
         ``ambiguous("reason")``. Raise `LLMError` on provider/parse error.
+        """
+        ...
+
+    def extract_query_intent(self, *, question: str, schema_hint: str = "") -> "QueryIntent":
+        """Extract a constrained query intent from `question`.
+
+        This structured-output boundary is separate from Datalog translation.
+        Adapters raise `LLMError` for malformed or schema-invalid intent output.
         """
         ...

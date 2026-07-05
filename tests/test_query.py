@@ -1,14 +1,18 @@
 # SPDX-License-Identifier: MPL-2.0
 import unicodedata
 
+import pytest
+
 from verinote.llm.base import LLMError
 from verinote.pipeline.query import (
+    deterministic_query_intent_dl,
     expand_query_relation_aliases,
     load_query,
     query_path,
     translate_questions,
 )
 from verinote.pipeline.corroboration import CorroborationPolicyError
+from verinote.pipeline.query_intent import deterministic_query_intent
 from verinote.store import Store
 
 
@@ -59,6 +63,17 @@ def test_translate_korean_role_question_bypasses_llm(tmp_path):
     assert f'answer_q{qid}(R) :- relation(S, R, "샘플인물").' in query_dl
     assert f'answer_q{qid}(R) :- relation(S, R, person("샘플인물")).' in query_dl
     assert load_query(s) == query_dl + "\n"
+
+
+def test_korean_role_query_datalog_is_derived_from_intent():
+    intent = deterministic_query_intent("샘플인물의 역할은 무엇인가?")
+
+    query_dl = deterministic_query_intent_dl(intent, 7)
+
+    assert query_dl is not None
+    assert 'answer_q7(O) :- relation("샘플인물", "역할", O).' in query_dl
+    assert 'answer_q7(O) :- relation(person("샘플인물"), has_role, O).' in query_dl
+    assert 'answer_q7(R) :- relation(S, R, "샘플인물").' in query_dl
 
 
 def test_load_query_expands_relation_aliases(tmp_path, fake_client):
@@ -160,6 +175,24 @@ def test_invalid_generated_query_requires_review_and_skips_draft(tmp_path, fake_
     assert "this is not datalog" not in q["query_dl"]
     assert f"answer_q{qid}" not in (load_query(s) or "")
     assert load_query(s) == ""
+
+
+def test_query_intent_errors_are_catchable_and_separate_from_datalog_translation(
+    tmp_path, fake_client
+):
+    intent_client = fake_client(intent="not json")
+    with pytest.raises(LLMError, match="query intent output was not JSON"):
+        intent_client.extract_query_intent(question="What is the sample answer?")
+
+    s = _store(tmp_path)
+    qid = s.add_question("What is the sample answer?")
+    datalog_client = fake_client(query=lambda question, qid: "this is not datalog")
+
+    results = translate_questions(s, datalog_client, root=tmp_path)
+
+    assert results[0]["id"] == qid
+    assert results[0]["status"] == "review_required"
+    assert "invalid query:" in results[0]["reason"]
 
 
 def test_non_executable_question_states_store_reasons_and_skip_draft(tmp_path, fake_client):

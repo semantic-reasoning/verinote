@@ -21,16 +21,18 @@ from verinote.engine.datalog import AtomExpr, Comparison, DatalogParseError, par
 from verinote.engine.terms import Atom, StringLit, render_term
 from verinote.llm.base import LLMClient, LLMError
 from verinote.pipeline.corroboration import CorroborationPolicyError, store_relation_aliases
+from verinote.pipeline.query_intent import (
+    KOREAN_ROLE_RELATION_CANDIDATES,
+    QueryIntent,
+    QueryIntentKind,
+    deterministic_query_intent,
+)
 from verinote.store import Store
 
 # Query draft, relative to the KB root (the db file's directory).
 QUERY_RELPATH = Path("facts") / "query.dl"
 MAX_ALIAS_EXPANDED_RULES_PER_RULE = 64
 _ESCAPE = re.compile(r'(["\\])')
-_ROLE_QUESTION = re.compile(
-    r'["“”\']?(?P<person>[^"“”\'?？\n]{1,80}?)["“”\']?\s*'
-    r"(?:의|에\s*대한)\s*(?:역할|직책|직위)"
-)
 _GENERIC_ROLE_RELATIONS = ("역할", "직책", "직위", "role", "has_role")
 _STATUS_LINE = re.compile(
     r"^\s*(?P<status>review_required|no_answer|ambiguous)\s*\((?P<reason>.*)\)\s*\.?\s*$",
@@ -67,12 +69,19 @@ def _lit(value: str) -> str:
 
 def deterministic_query_dl(question: str, qid: int) -> str | None:
     """Return deterministic query drafts for common shapes LLMs mistranslate."""
-    match = _ROLE_QUESTION.search(question.strip())
-    if not match:
+    intent = deterministic_query_intent(question)
+    return deterministic_query_intent_dl(intent, qid)
+
+
+def deterministic_query_intent_dl(intent: QueryIntent, qid: int) -> str | None:
+    """Bridge supported deterministic intents to the legacy query draft shape."""
+    if (
+        intent.kind != QueryIntentKind.LOOKUP_OBJECT
+        or intent.subject is None
+        or intent.relation_candidates != KOREAN_ROLE_RELATION_CANDIDATES
+    ):
         return None
-    person = match.group("person").strip()
-    if not person:
-        return None
+    person = intent.subject.value
 
     person_lit = _lit(person)
     person_term = f"person({person_lit})"
