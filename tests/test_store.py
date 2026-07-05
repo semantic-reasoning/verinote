@@ -159,8 +159,56 @@ def test_source_artifacts_are_upserted_and_listed_with_counts(tmp_path):
     assert rows[0]["path"] == "sources/report.pdf"
     assert rows[0]["kind"] == "binary"
     assert rows[0]["fact_count"] == 1
-    assert "artifacts/sources/1/aaa.txt" in rows[0]["artifact_paths"]
-    assert "artifacts/sources/1/bbb.txt" in rows[0]["artifact_paths"]
+    assert rows[0]["candidate_count"] == 1
+    assert rows[0]["needs_review_count"] == 0
+    assert rows[0]["engine_count"] == 0
+    assert "artifact_paths" not in rows[0].keys()
+
+
+def test_sources_with_counts_includes_latest_analysis_summary(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/report.pdf", kind="binary")
+    artifact_id = s.add_source_artifact(
+        source_id=sid,
+        kind="extracted_text",
+        path="artifacts/sources/1/text.txt",
+        checksum="text",
+    )
+    old_job = s.create_extraction_job(
+        source_id=sid,
+        artifact_id=artifact_id,
+        provider="ollama",
+        model="old",
+        total_chunks=1,
+    )
+    old_chunk = s.add_source_chunks(job_id=old_job, source_id=sid, chunks=["old"])[0]
+    s.mark_extraction_job_running(old_job)
+    s.mark_chunk_running(old_chunk)
+    s.mark_chunk_done(old_chunk, candidates=1)
+    job_id = s.create_extraction_job(
+        source_id=sid,
+        artifact_id=artifact_id,
+        provider="ollama",
+        model="qwen3.5:9b",
+        total_chunks=2,
+    )
+    chunks = s.add_source_chunks(job_id=job_id, source_id=sid, chunks=["a", "b"])
+    s.mark_extraction_job_running(job_id)
+    s.mark_chunk_running(chunks[0])
+    s.mark_chunk_done(chunks[0], candidates=3)
+    s.mark_chunk_running(chunks[1])
+    s.mark_chunk_failed(chunks[1], "provider down")
+
+    row = s.sources_with_counts()[0]
+
+    assert row["job_id"] == job_id
+    assert row["analysis_status"] == "failed"
+    assert row["completed_chunks"] == 1
+    assert row["total_chunks"] == 2
+    assert row["failed_chunks"] == 1
+    assert row["analysis_candidate_count"] == 3
+    assert row["provider"] == "ollama"
+    assert row["model"] == "qwen3.5:9b"
 
 
 def test_extraction_job_rejects_artifact_from_another_source(tmp_path):

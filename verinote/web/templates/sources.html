@@ -2,7 +2,7 @@
 {% block title %}Sources — verinote{% endblock %}
 {% block content %}
 <h1>Sources</h1>
-<p class="muted">Facts cite original files. Text artifacts used for extraction are tracked separately.</p>
+<p class="muted">Review uploaded sources, analysis progress, fact counts, and next actions.</p>
 
 {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
 
@@ -13,47 +13,50 @@
   <button class="btn" type="submit">Upload &amp; analyze</button>
 </form>
 
-{% if jobs %}
-<div class="jobs" aria-live="polite"
-     {% if has_running_jobs %}hx-get="/sources" hx-trigger="every 2s" hx-target="main" hx-select="main" hx-swap="outerHTML"{% endif %}>
-  {% for job in jobs %}
-  <p class="job job-{{ job["status"] }}">
-    <span class="badge">{{ job["status"] }}</span>
-    <code>{{ job["source_path"] }}</code>
-    <span>{{ job["message"] }}</span>
-    <span class="conf">{{ job["candidate_count"] }} candidate(s)</span>
-    {% if job["failed_chunks"] %}
-    <form action="/sources/jobs/{{ job["id"] }}/retry" method="post">
-      <button class="btn ghost" type="submit">Retry failed chunks</button>
-    </form>
-    {% endif %}
-  </p>
-  {% endfor %}
-</div>
-{% endif %}
-
 {% if sources %}
-<table class="sources">
+<table class="sources" aria-live="polite"
+       {% if has_running_jobs %}hx-get="/sources" hx-trigger="every 2s" hx-target="main" hx-select="main" hx-swap="outerHTML"{% endif %}>
   <thead>
-    <tr><th>Source</th><th>Kind</th><th>Artifact</th><th>Facts</th><th>Added</th><th>Actions</th></tr>
+    <tr><th>Source</th><th>Type</th><th>Analysis</th><th>Facts</th><th>Last analyzed</th><th>Model</th><th>Actions</th></tr>
   </thead>
   <tbody>
     {% for s in sources %}
     <tr>
       <td><code>{{ s["path"] }}</code></td>
       <td><span class="badge">{{ s["kind"] }}</span></td>
+      <td>
+        {% if s["analysis_status"] %}
+          <span class="badge">{{ 'complete' if s["analysis_status"] == 'done' else s["analysis_status"] }}</span>
+          <span>{{ s["completed_chunks"] }}/{{ s["total_chunks"] }} chunk(s)</span>
+          {% if s["failed_chunks"] %}
+            <span class="error">{{ s["failed_chunks"] }} failed</span>
+          {% endif %}
+          {% if s["analysis_message"] %}
+            <br><span class="muted">{{ s["analysis_message"] }}</span>
+          {% endif %}
+        {% else %}
+          <span class="muted">Not analyzed</span>
+        {% endif %}
+      </td>
+      <td class="conf">
+        {{ s["candidate_count"] }} candidate(s)
+        {% if s["needs_review_count"] %}<br>{{ s["needs_review_count"] }} needs review{% endif %}
+        {% if s["engine_count"] %}<br>{{ s["engine_count"] }} confirmed{% endif %}
+      </td>
+      <td class="src">{{ s["last_analyzed_at"] or '—' }}</td>
       <td class="src">
-        {% if s["artifact_paths"] %}
-          {% for path in s["artifact_paths"].split("\n") %}
-            <code>{{ path }}</code>{% if not loop.last %}<br>{% endif %}
-          {% endfor %}
+        {% if s["provider"] or s["model"] %}
+          {{ s["provider"] or '—' }} / <code>{{ s["model"] or '—' }}</code>
         {% else %}
           —
         {% endif %}
       </td>
-      <td class="conf">{{ s["fact_count"] }}</td>
-      <td class="src">{{ s["added_at"] }}</td>
       <td class="actions">
+        {% if s["job_id"] and s["failed_chunks"] %}
+        <form action="/sources/jobs/{{ s["job_id"] }}/retry" method="post">
+          <button class="btn ghost" type="submit">Retry</button>
+        </form>
+        {% endif %}
         <form action="/sources/{{ s["id"] }}/reanalyze" method="post">
           <button class="btn ghost" type="submit">Re-analyze</button>
         </form>
