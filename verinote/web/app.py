@@ -129,9 +129,16 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             view[f"{field}_kind"] = term_input_kind(term)
         return view
 
+    def _fact_row_context(fact):
+        view = _fact_view(fact)
+        trust = fact_trust_summary(_active_store(), int(fact["id"])) if fact else None
+        return {"f": view, "trust": trust}
+
     def _row(request: Request, fact):
         # Starlette's current API is TemplateResponse(request, name, context).
-        return templates.TemplateResponse(request, "partials/fact_row.html", {"f": _fact_view(fact)})
+        return templates.TemplateResponse(
+            request, "partials/fact_row.html", _fact_row_context(fact)
+        )
 
     def _fact_edit_context(fact, *, error: str | None = None):
         kinds = {"subject": "string", "relation": "string", "object": "string"}
@@ -152,6 +159,28 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         if kind == "term":
             return structural_term(value)
         raise ValueError(f"unknown fact input kind: {kind}")
+
+    def _review_filters() -> list[tuple[str, str]]:
+        return [
+            ("needs-human-decision", "Needs decision"),
+            ("unsupported", "Unsupported"),
+            ("single-source", "Single source"),
+            ("corroborated", "Corroborated"),
+            ("conflicted", "Conflicted"),
+        ]
+
+    def _filter_review_rows(rows: list[dict[str, object]], active_filter: str):
+        labels = {key for key, _ in _review_filters()}
+        if active_filter not in labels:
+            active_filter = "needs-human-decision"
+        if active_filter == "needs-human-decision":
+            return rows
+        label = active_filter.replace("-", "_")
+        return [
+            row
+            for row in rows
+            if row["trust"] is not None and label in row["trust"].trust_labels
+        ]
 
     def _dashboard(request: Request, *, error: str | None = None, status_code: int = 200):
         from verinote.engine import coverage
@@ -384,10 +413,18 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         return RedirectResponse("/sources", status_code=303)
 
     @app.get("/review", response_class=HTMLResponse)
-    def review(request: Request):
+    def review(request: Request, filter: str = "needs-human-decision"):
         store = _active_store()
+        rows = [_fact_row_context(f) for f in store.review_queue()]
+        rows = _filter_review_rows(rows, filter)
         return templates.TemplateResponse(
-            request, "review.html", {"queue": [_fact_view(f) for f in store.review_queue()]}
+            request,
+            "review.html",
+            {
+                "queue": rows,
+                "active_filter": filter,
+                "filters": _review_filters(),
+            },
         )
 
     @app.post("/facts/{fact_id}/toggle", response_class=HTMLResponse)
