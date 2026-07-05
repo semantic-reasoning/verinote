@@ -34,6 +34,10 @@ def test_extract_source_persists_candidates_with_linkage(tmp_path, fake_client):
     assert [f["status"] for f in facts] == ["candidate", "candidate"]
     assert {f["run_id"] for f in facts} == {run_id}
     assert {f["source_path"] for f in facts} == {"sources/x.txt"}
+    evidence = [s.fact_evidence(f["id"])[0] for f in facts]
+    assert {e["evidence_kind"] for e in evidence} == {"chunk"}
+    assert {e["locator"] for e in evidence} == {"source"}
+    assert {e["snippet"] for e in evidence} == {"..."}
 
 
 def test_extract_source_stores_term_syntax_as_plain_strings(tmp_path, fake_client):
@@ -721,6 +725,10 @@ def test_process_extraction_job_extracts_chunks_and_tracks_progress(tmp_path):
     facts = s.facts()
     assert [f["subject"] for f in facts] == ["alpha", "beta"]
     assert {f["job_id"] for f in facts} == {job_id}
+    evidence = [s.fact_evidence(f["id"])[0] for f in facts]
+    assert [e["chunk_index"] for e in evidence] == [0, 1]
+    assert {e["job_id"] for e in evidence} == {job_id}
+    assert [e["snippet"] for e in evidence] == ["alpha", "beta"]
 
 
 def test_process_extraction_job_runs_focused_role_pass_with_original_note(tmp_path):

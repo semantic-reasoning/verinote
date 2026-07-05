@@ -101,6 +101,34 @@ CREATE TABLE IF NOT EXISTS facts (
 CREATE INDEX IF NOT EXISTS idx_facts_status ON facts(status);
 CREATE INDEX IF NOT EXISTS idx_facts_triple ON facts(subject, relation, object);
 
+-- Source-backed evidence anchors for extracted facts. Chunk-level anchors are
+-- available for every chunked extraction; exact spans/table cells can be added
+-- later without changing the fact contract.
+CREATE TABLE IF NOT EXISTS fact_evidence (
+    id            INTEGER PRIMARY KEY,
+    fact_id       INTEGER NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
+    source_id     INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    artifact_id   INTEGER REFERENCES source_artifacts(id) ON DELETE SET NULL,
+    job_id        INTEGER REFERENCES extraction_jobs(id) ON DELETE SET NULL,
+    chunk_id      INTEGER REFERENCES source_chunks(id) ON DELETE SET NULL,
+    evidence_kind TEXT NOT NULL DEFAULT 'chunk',
+    start_offset  INTEGER,
+    end_offset    INTEGER,
+    locator       TEXT NOT NULL DEFAULT '',
+    snippet       TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    CHECK (length(evidence_kind) > 0),
+    CHECK (start_offset IS NULL OR start_offset >= 0),
+    CHECK (end_offset IS NULL OR end_offset >= 0),
+    CHECK (
+        start_offset IS NULL OR end_offset IS NULL OR end_offset >= start_offset
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_fact_evidence_fact ON fact_evidence(fact_id);
+CREATE INDEX IF NOT EXISTS idx_fact_evidence_source ON fact_evidence(source_id);
+CREATE INDEX IF NOT EXISTS idx_fact_evidence_chunk ON fact_evidence(chunk_id);
+
 -- Natural-language questions translated to a Datalog query draft (#3). status:
 -- pending -> translated (an `answer_q<id>` rule) | review_required (untranslatable).
 CREATE TABLE IF NOT EXISTS questions (
