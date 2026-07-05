@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
+import json
+
 import pytest
 
 from verinote.engine import compile_dl
@@ -484,6 +486,148 @@ def test_fact_log_orders_decisions(tmp_path):
     s.toggle_review(fid)
     s.amend_fact(fid, subject="A", relation="r", obj="B2")
     assert [e["action"] for e in s.fact_log(fid)] == ["toggled", "amended"]
+
+
+def test_fact_events_record_creation_and_review_lifecycle(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/sample.txt")
+    fid = s.add_fact(
+        "Sample Company",
+        "uses",
+        "Sample Service",
+        status="needs_review",
+        source_id=sid,
+    )
+
+    s.toggle_review(fid)
+    s.amend_fact(
+        fid,
+        subject="Sample Company",
+        relation="uses",
+        obj="Sample Service v2",
+    )
+
+    events = s.fact_events(fid)
+    assert [event["event_type"] for event in events] == [
+        "candidate_created",
+        "toggled",
+        "amended",
+    ]
+    assert [event["actor"] for event in events] == ["system", "human", "human"]
+    assert [event["action"] for event in s.fact_log(fid)] == ["toggled", "amended"]
+    assert json.loads(events[0]["after_json"]) == {
+        "status": "needs_review",
+        "run_id": None,
+        "has_note": False,
+    }
+    assert json.loads(events[-1]["after_json"])["object"] == "Sample Service v2"
+
+
+def test_fact_events_can_represent_rule_and_reanalysis_events(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/sample.txt")
+    job_id = s.create_extraction_job(
+        source_id=sid,
+        provider="fake",
+        model="sample-model",
+        total_chunks=1,
+    )
+    fid = s.add_fact(
+        "Sample Company",
+        "uses",
+        "Sample Service",
+        status="candidate",
+        source_id=sid,
+        job_id=job_id,
+    )
+
+    s.add_fact_event(
+        fact_id=fid,
+        event_type="auto_accept_recommended",
+        actor="rule",
+        source_id=sid,
+        job_id=job_id,
+        rule_name="corroborated_no_conflict",
+        after={"support_sources": 2},
+    )
+    s.add_fact_event(
+        fact_id=fid,
+        event_type="reanalyzed",
+        actor="system",
+        source_id=sid,
+        job_id=job_id,
+        after={"replacement_candidate_id": 123},
+    )
+
+    events = s.fact_events(fid)
+    assert [event["event_type"] for event in events] == [
+        "candidate_created",
+        "auto_accept_recommended",
+        "reanalyzed",
+    ]
+    assert events[1]["actor"] == "rule"
+    assert events[1]["rule_name"] == "corroborated_no_conflict"
+    assert json.loads(events[1]["after_json"])["support_sources"] == 2
+    assert json.loads(events[2]["after_json"])["replacement_candidate_id"] == 123
+
+
+def test_extraction_job_records_lifecycle_events(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/sample.txt")
+    failed_job = s.create_extraction_job(
+        source_id=sid,
+        provider="fake",
+        model="sample-model",
+        total_chunks=1,
+    )
+    failed_chunk = s.add_source_chunks(
+        job_id=failed_job,
+        source_id=sid,
+        chunks=["Sample body"],
+    )[0]
+
+    s.mark_extraction_job_running(failed_job)
+    s.mark_chunk_running(failed_chunk)
+    s.mark_chunk_failed(failed_chunk, "provider down")
+    s.retry_failed_chunks(failed_job)
+    s.fail_extraction_job(failed_job, "analysis failed")
+
+    done_job = s.create_extraction_job(
+        source_id=sid,
+        provider="fake",
+        model="sample-model",
+        total_chunks=1,
+    )
+    done_chunk = s.add_source_chunks(
+        job_id=done_job,
+        source_id=sid,
+        chunks=["Sample body"],
+    )[0]
+    s.mark_extraction_job_running(done_job)
+    s.mark_chunk_running(done_chunk)
+    s.mark_chunk_done(done_chunk, candidates=1)
+    s.finish_extraction_job(done_job)
+
+    events = list(
+        s._conn.execute(
+            "SELECT event_type, actor, job_id, chunk_id, after_json "
+            "FROM fact_events ORDER BY id"
+        )
+    )
+    event_types = [event["event_type"] for event in events]
+    assert event_types == [
+        "extraction_job_started",
+        "chunk_failed",
+        "chunk_retried",
+        "extraction_job_failed",
+        "extraction_job_started",
+        "extraction_job_completed",
+    ]
+    assert {event["actor"] for event in events} == {"system"}
+    failed_event = [event for event in events if event["event_type"] == "chunk_failed"][0]
+    assert failed_event["job_id"] == failed_job
+    assert failed_event["chunk_id"] == failed_chunk
+    assert json.loads(failed_event["after_json"])["error"] == "provider down"
 
 
 def test_questions_add_list_and_translate(tmp_path):

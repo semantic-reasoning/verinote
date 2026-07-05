@@ -150,3 +150,25 @@ CREATE TABLE IF NOT EXISTS review_log (
     after_json  TEXT,
     at          TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Append-only lifecycle events for facts. Unlike review_log, this records
+-- system-origin events such as extraction and chunk processing as well as human
+-- review actions. Payloads carry metadata only, not source document bodies.
+CREATE TABLE IF NOT EXISTS fact_events (
+    id          INTEGER PRIMARY KEY,
+    fact_id     INTEGER REFERENCES facts(id) ON DELETE SET NULL,
+    event_type  TEXT NOT NULL,
+    actor       TEXT NOT NULL DEFAULT 'system',
+    source_id   INTEGER REFERENCES sources(id) ON DELETE SET NULL,
+    job_id      INTEGER REFERENCES extraction_jobs(id) ON DELETE SET NULL,
+    chunk_id    INTEGER REFERENCES source_chunks(id) ON DELETE SET NULL,
+    rule_name   TEXT NOT NULL DEFAULT '',
+    before_json TEXT,
+    after_json  TEXT,
+    at          TEXT NOT NULL DEFAULT (datetime('now')),
+    CHECK (length(event_type) > 0),
+    CHECK (actor IN ('system','human','rule'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_fact_events_fact ON fact_events(fact_id, id);
+CREATE INDEX IF NOT EXISTS idx_fact_events_job ON fact_events(job_id);

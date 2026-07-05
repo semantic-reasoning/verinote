@@ -990,7 +990,10 @@ def test_provenance_shows_source_and_audit(tmp_path):
     r = c.get(f"/facts/{fid}/provenance")
     assert r.status_code == 200
     assert "sources/x.txt" in r.text
+    assert "candidate_created" in r.text
+    assert "system" in r.text
     assert "toggled" in r.text
+    assert "human" in r.text
 
 
 def test_provenance_renders_trust_dossier_sections(tmp_path):
@@ -1066,7 +1069,9 @@ def test_provenance_renders_trust_dossier_sections(tmp_path):
     assert "2024" in body
     assert "2025" in body
     assert "Lifecycle timeline" in body
+    assert "candidate_created" in body
     assert "accepted" in body
+    assert f"job #{job_id}" in body
     assert "Source evidence" in body
     assert "Sample Report was published in 2024." in body
     assert "Metadata" in body

@@ -104,8 +104,17 @@ class TypedValueSummary:
 @dataclass(frozen=True)
 class AuditEntry:
     id: int
-    action: str
+    event_type: str
+    actor: str
+    source_id: int | None
+    job_id: int | None
+    chunk_id: int | None
+    rule_name: str
     at: str
+
+    @property
+    def action(self) -> str:
+        return self.event_type
 
 
 @dataclass(frozen=True)
@@ -176,8 +185,17 @@ def fact_trust_summary(store: Store, fact_id: int) -> FactTrustSummary | None:
         typed_value=typed_value,
         conflict=conflict,
         audit=tuple(
-            AuditEntry(id=int(row["id"]), action=str(row["action"]), at=str(row["at"]))
-            for row in store.fact_log(fact_id)
+            AuditEntry(
+                id=int(row["id"]),
+                event_type=str(row["event_type"]),
+                actor=str(row["actor"]),
+                source_id=_optional_int(row["source_id"]),
+                job_id=_optional_int(row["job_id"]),
+                chunk_id=_optional_int(row["chunk_id"]),
+                rule_name=str(row["rule_name"]),
+                at=str(row["at"]),
+            )
+            for row in store.fact_events(fact_id)
         ),
         trust_labels=_trust_labels(
             status=status,

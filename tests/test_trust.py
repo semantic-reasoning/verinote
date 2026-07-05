@@ -92,7 +92,10 @@ def test_fact_trust_summary_includes_source_run_job_evidence_and_audit(tmp_path)
     assert summary.evidence[0].chunk_index == 0
     assert summary.evidence[0].chunk_status == "done"
     assert summary.evidence[0].snippet == "Sample Company uses Sample Service."
-    assert [entry.action for entry in summary.audit] == ["toggled"]
+    assert [entry.action for entry in summary.audit] == ["candidate_created", "toggled"]
+    assert [entry.actor for entry in summary.audit] == ["system", "human"]
+    assert summary.audit[0].source_id == source_id
+    assert summary.audit[0].job_id == job_id
     assert summary.trust_labels == ("source_backed", "single_source", "reviewed")
 
 
