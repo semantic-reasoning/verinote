@@ -123,14 +123,17 @@ def test_sync_surfaces_llm_error(tmp_path, monkeypatch, capsys, fake_client):
 def test_query_adds_and_translates(tmp_path, monkeypatch, capsys, fake_client):
     _env(monkeypatch, tmp_path)
     monkeypatch.setattr("verinote.llm.get_client", lambda cfg: fake_client())
+    s = Store(tmp_path / "kb.sqlite")
+    s.init_schema()
+    s.add_fact("What is Ada?", "is_a", "Synthetic Answer", status="confirmed")
+    s.close()
 
     rc = cli.main(["query", "What is Ada?"])
 
     assert rc == 0
     out = capsys.readouterr().out
     assert "translated 1 question(s)" in out
-    s = Store(tmp_path / "kb.sqlite")
-    assert s.questions()[0]["status"] == "translated"
+    assert Store(tmp_path / "kb.sqlite").questions()[0]["status"] == "translated"
     assert (tmp_path / "facts" / "query.dl").is_file()
 
 
@@ -190,6 +193,7 @@ def test_repair_validates_and_translates(tmp_path, monkeypatch, capsys, fake_cli
     )
     s = Store(tmp_path / "kb.sqlite")
     s.init_schema()
+    s.add_fact("Ada", "born_in", "London", status="confirmed")
     qid = s.add_question("Where was Ada born?")
     s.set_question_query(qid, 'review_required("Where was Ada born?")', "review_required")
     s.close()

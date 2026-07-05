@@ -100,6 +100,19 @@ def test_duckdb_backend_answer_query_format_matches_check_report():
     assert "q1: London" in rep.text
 
 
+def test_duckdb_backend_omits_answer_bucket_when_query_has_no_rows():
+    _duckdb()
+    query = '.decl answer_q1(value: symbol)\nanswer_q1(O) :- relation("Other", "born_in", O).\n'
+    rep = run_check_duckdb(
+        [{"subject": "Ada", "relation": "born_in", "object": "London"}],
+        query_dl=query,
+    )
+
+    assert rep.ok is True
+    assert rep.answers == []
+    assert "--- answers ---" not in rep.text
+
+
 def test_duckdb_backend_supports_joins_projection_and_duplicates_are_set_semantics():
     _duckdb()
     policy = (

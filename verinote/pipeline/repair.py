@@ -12,10 +12,10 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from verinote.engine import validate_query
 from verinote.llm.base import LLMClient, LLMError
 from verinote.pipeline.query import (
     _non_executable_outcome,
+    classify_query_draft,
     deterministic_query_dl,
     write_query_file,
 )
@@ -35,8 +35,11 @@ def repair_questions(store: Store, client: LLMClient, *, root: Path) -> list[dic
         qid = q["id"]
         deterministic = deterministic_query_dl(q["text"], qid)
         if deterministic:
-            store.set_question_query(qid, deterministic, "translated")
-            results.append({"id": qid, "accepted": True, "reason": ""})
+            status, query_dl, reason = classify_query_draft(store, qid, deterministic)
+            store.set_question_query(qid, query_dl, status, reason)
+            results.append(
+                {"id": qid, "accepted": status == "translated", "reason": reason}
+            )
             continue
 
         try:
@@ -64,14 +67,14 @@ def repair_questions(store: Store, client: LLMClient, *, root: Path) -> list[dic
             continue
 
         proposal = f".decl answer_q{qid}(value: symbol)\n{line}"
-        ok, reason = validate_query(proposal)
-        if ok:
-            store.set_question_query(qid, proposal, "translated")
+        status, query_dl, reason = classify_query_draft(store, qid, proposal)
+        if status == "translated":
+            store.set_question_query(qid, query_dl, status, reason)
             results.append({"id": qid, "accepted": True, "reason": ""})
         else:
-            store.set_question_query(qid, q["query_dl"], "review_required", reason)
+            store.set_question_query(qid, query_dl, status, reason)
             results.append({"id": qid, "accepted": False, "reason": reason})
-            _log.warning("repair q%d rejected by engine: %s", qid, reason)
+            _log.warning("repair q%d rejected by dry-run: %s", qid, reason)
 
     write_query_file(store, root)
     return results

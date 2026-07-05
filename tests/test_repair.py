@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 import builtins
 
+from verinote.engine.terms import Compound, StringLit
 from verinote.llm.base import LLMError
 from verinote.pipeline.query import load_query
 from verinote.pipeline.repair import repair_questions
@@ -17,6 +18,7 @@ def _store_with_review_required(tmp_path):
 
 def test_repair_accepts_engine_valid_proposal(tmp_path, fake_client):
     s, qid = _store_with_review_required(tmp_path)
+    s.add_fact("Ada", "born_in", "London", status="confirmed")
     s.set_question_query(qid, s.questions()[0]["query_dl"], "review_required", "stale")
     client = fake_client(query=lambda q, i: f'answer_q{i}(O) :- relation("Ada", "born_in", O).')
     results = repair_questions(s, client, root=tmp_path)
@@ -29,6 +31,12 @@ def test_repair_accepts_engine_valid_proposal(tmp_path, fake_client):
 
 def test_repair_accepts_duckdb_supported_compound_query(tmp_path, fake_client):
     s, qid = _store_with_review_required(tmp_path)
+    s.add_fact(
+        "Ada",
+        "has_role",
+        Compound("role", (Compound("person", (StringLit("Ada"),)), StringLit("PI"))),
+        status="confirmed",
+    )
     client = fake_client(
         query=lambda q, i: (
             f'answer_q{i}(S) :- relation(S, "has_role", role(person("Ada"), "PI")).'
@@ -50,6 +58,7 @@ def test_repair_accepts_valid_proposal_without_pyrewire(tmp_path, monkeypatch, f
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
     s, qid = _store_with_review_required(tmp_path)
+    s.add_fact("Ada", "born_in", "London", status="confirmed")
     client = fake_client(query=lambda q, i: f'answer_q{i}(O) :- relation("Ada", "born_in", O).')
 
     results = repair_questions(s, client, root=tmp_path)
