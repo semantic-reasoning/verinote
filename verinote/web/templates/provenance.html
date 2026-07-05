@@ -1,50 +1,158 @@
 {% extends "base.html" %}
-{% block title %}Provenance — verinote{% endblock %}
+{% block title %}Trust — verinote{% endblock %}
 {% block content %}
 {% if not f %}
 <div class="empty"><p>No such fact.</p></div>
 {% else %}
-<h1>Provenance — fact #{{ f["id"] }}</h1>
-<p class="triple">
-  <span class="subj term-{{ f['subject_kind'] }}" title="{{ f['subject_kind'] }}">{{ f["subject_display"] }}</span>
-  <span class="rel term-{{ f['relation_kind'] }}" title="{{ f['relation_kind'] }}">{{ f["relation_display"] }}</span>
-  <span class="obj term-{{ f['object_kind'] }}" title="{{ f['object_kind'] }}">{{ f["object_display"] }}</span>
-  <span class="badge badge-{{ f['status'] }}">{{ f["status"] }}</span>
-</p>
+<h1>Trust dossier — fact #{{ f["id"] }}</h1>
 
-<table class="counts">
-  <tbody>
-    <tr><td>source</td><td><code>{{ f["source_path"] or "—" }}</code></td></tr>
-    <tr><td>confidence</td><td class="conf">{{ '%.2f'|format(f["confidence"]) }}</td></tr>
-    <tr><td>note</td><td>{{ f["note"] or "—" }}</td></tr>
-    <tr><td>run</td><td>
-      {% if run %}#{{ run["id"] }} · {{ run["provider"] or "—" }}/{{ run["model"] or "—" }}
-        {% if run["summary"] %}<span class="muted">({{ run["summary"] }})</span>{% endif %}
-      {% else %}— (seeded or hand-entered){% endif %}
-    </td></tr>
-    <tr><td>extraction</td><td>
-      {% if job %}
-        job #{{ job["id"] }} · artifact <code>{{ job["artifact_path"] or "—" }}</code>
-      {% else %}—{% endif %}
-    </td></tr>
-    <tr><td>created</td><td class="src">{{ f["created_at"] }}</td></tr>
-    <tr><td>updated</td><td class="src">{{ f["updated_at"] }}</td></tr>
-  </tbody>
-</table>
-
-<h2>Audit trail</h2>
-{% if log %}
-<table class="counts">
-  <thead><tr><th>when</th><th>action</th></tr></thead>
-  <tbody>
-    {% for e in log %}
-    <tr><td class="src">{{ e["at"] }}</td><td><span class="badge">{{ e["action"] }}</span></td></tr>
+<section class="trust-block">
+  <h2>Trust summary</h2>
+  <div class="trust-labels" aria-label="trust signals">
+    {% for label in trust.trust_labels %}
+      <span class="badge trust-{{ label }}">{{ label|replace("_", " ") }}</span>
     {% endfor %}
-  </tbody>
-</table>
-{% else %}
-<p class="muted">No review decisions recorded yet.</p>
-{% endif %}
+  </div>
+  <table class="counts">
+    <tbody>
+      <tr>
+        <td>source support</td>
+        <td>
+          {{ trust.support.source_count }} source{% if trust.support.source_count != 1 %}s{% endif %}
+          {% if trust.support.sources %}
+            <span class="muted">— {{ trust.support.sources|join(", ") }}</span>
+          {% else %}
+            <span class="muted">— no accepted/confirmed source support</span>
+          {% endif %}
+        </td>
+      </tr>
+      <tr><td>source evidence</td><td>{{ trust.evidence|length }} anchor{% if trust.evidence|length != 1 %}s{% endif %}</td></tr>
+      <tr><td>canonical relation</td><td><code>{{ trust.canonical_relation }}</code></td></tr>
+      {% if trust.typed_value %}
+      <tr>
+        <td>typed value</td>
+        <td>
+          {{ trust.typed_value.type }} as <code>{{ trust.typed_value.alias }}</code>
+          {% if trust.typed_value.normalized_value is not none %}
+            <span class="muted">normalized: {{ trust.typed_value.normalized_value }}</span>
+          {% else %}
+            <span class="muted">not normalized</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+</section>
+
+<section class="trust-block">
+  <h2>Fact identity</h2>
+  <p class="triple">
+    <span class="subj term-{{ f['subject_kind'] }}" title="{{ f['subject_kind'] }}">{{ f["subject_display"] }}</span>
+    <span class="rel term-{{ f['relation_kind'] }}" title="{{ f['relation_kind'] }}">{{ f["relation_display"] }}</span>
+    <span class="obj term-{{ f['object_kind'] }}" title="{{ f['object_kind'] }}">{{ f["object_display"] }}</span>
+    <span class="badge badge-{{ f['status'] }}">{{ f["status"] }}</span>
+  </p>
+  {% if trust.canonical_terms %}
+  <table class="counts">
+    <tbody>
+      <tr><td>canonical subject</td><td><code>{{ trust.canonical_terms.subject }}</code></td></tr>
+      <tr><td>canonical relation</td><td><code>{{ trust.canonical_terms.relation }}</code></td></tr>
+      <tr><td>canonical object</td><td><code>{{ trust.canonical_terms.object }}</code></td></tr>
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+
+<section class="trust-block">
+  <h2>Evidence summary</h2>
+  <table class="counts">
+    <tbody>
+      <tr><td>source</td><td>{% if trust.source %}<code>{{ trust.source.path }}</code> <span class="badge">{{ trust.source.kind }}</span>{% else %}—{% endif %}</td></tr>
+      <tr><td>run</td><td>
+        {% if trust.run %}#{{ trust.run.id }} · {{ trust.run.provider or "—" }}/{{ trust.run.model or "—" }}
+          {% if trust.run.summary %}<span class="muted">({{ trust.run.summary }})</span>{% endif %}
+        {% else %}— (seeded or hand-entered){% endif %}
+      </td></tr>
+      <tr><td>extraction</td><td>
+        {% if trust.job %}
+          job #{{ trust.job.id }} · {{ trust.job.status }} · {{ trust.job.completed_chunks }}/{{ trust.job.total_chunks }} chunk(s)
+          {% if trust.job.failed_chunks %}<span class="error-inline">{{ trust.job.failed_chunks }} failed</span>{% endif %}
+          {% if trust.job.artifact_path %}<br><code>{{ trust.job.artifact_path }}</code>{% endif %}
+        {% else %}—{% endif %}
+      </td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section class="trust-block">
+  <h2>Conflict summary</h2>
+  {% if trust.conflict %}
+  <table class="counts">
+    <thead><tr><th>value</th><th>sources</th></tr></thead>
+    <tbody>
+      {% for value in trust.conflict.values %}
+      <tr>
+        <td><code>{{ value.object }}</code></td>
+        <td>{{ value.source_count }} source{% if value.source_count != 1 %}s{% endif %} <span class="muted">{{ value.sources|join(", ") }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No deterministic single-valued conflict for this fact.</p>
+  {% endif %}
+</section>
+
+<section class="trust-block">
+  <h2>Lifecycle timeline</h2>
+  <table class="counts">
+    <tbody>
+      <tr><td class="src">{{ f["created_at"] }}</td><td><span class="badge">created</span></td></tr>
+      {% if trust.job %}
+      <tr><td class="src">—</td><td><span class="badge">extracted</span> job #{{ trust.job.id }} · {{ trust.job.status }}</td></tr>
+      {% endif %}
+      {% for e in trust.audit %}
+      <tr><td class="src">{{ e.at }}</td><td><span class="badge">{{ e.action }}</span></td></tr>
+      {% endfor %}
+      <tr><td class="src">{{ f["updated_at"] }}</td><td><span class="badge">updated</span></td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section class="trust-block">
+  <h2>Source evidence</h2>
+  {% if trust.evidence %}
+    {% for e in trust.evidence %}
+    <div class="evidence">
+      <div>
+        <span class="badge">{{ e.evidence_kind }}</span>
+        <code>{{ e.source_path }}</code>
+        {% if e.artifact_path %}<span class="muted">artifact <code>{{ e.artifact_path }}</code></span>{% endif %}
+      </div>
+      <div class="src">
+        {% if e.chunk_index is not none %}chunk {{ e.chunk_index }}{% else %}source{% endif %}
+        {% if e.chunk_status %}· {{ e.chunk_status }}{% endif %}
+        {% if e.locator %}· {{ e.locator }}{% endif %}
+        {% if e.start_offset is not none or e.end_offset is not none %}· {{ e.start_offset or 0 }}..{{ e.end_offset or "?" }}{% endif %}
+      </div>
+      {% if e.snippet %}<pre>{{ e.snippet }}</pre>{% endif %}
+    </div>
+    {% endfor %}
+  {% else %}
+  <p class="muted">No source evidence anchors recorded for this fact.</p>
+  {% endif %}
+</section>
+
+<section class="trust-block">
+  <h2>Metadata</h2>
+  <table class="counts">
+    <tbody>
+      <tr><td>confidence</td><td class="conf">{{ '%.2f'|format(f["confidence"]) }} <span class="muted">model metadata only</span></td></tr>
+      <tr><td>note</td><td>{{ f["note"] or "—" }}</td></tr>
+    </tbody>
+  </table>
+</section>
 
 <p><a class="btn ghost" href="/review">← back to review</a></p>
 {% endif %}
