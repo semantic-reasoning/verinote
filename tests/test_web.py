@@ -351,10 +351,96 @@ def test_sources_page_lists_sources(tmp_path):
     assert "text" in r.text
     assert "failed" in r.text
     assert "1/2 chunk(s)" in r.text
+    assert "provider down" in r.text
     assert "1 candidate(s)" in r.text
+    assert "1 unsupported" in r.text
     assert "ollama" in r.text
     assert "qwen3.5:9b" in r.text
     assert "Retry" in r.text
+
+
+def test_sources_page_shows_trust_counts_and_evidence_snippets(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    policy = tmp_path / "policy"
+    policy.mkdir()
+    (policy / "logic-policy.dl").write_text(
+        '.decl functional(rel: symbol)\nfunctional("published_year").\n',
+        encoding="utf-8",
+    )
+    source_id = store.add_source("sources/sample-source.txt", kind="text")
+    artifact_id = store.add_source_artifact(
+        source_id=source_id,
+        kind="original_text",
+        path="sources/sample-source.txt",
+    )
+    job_id = store.create_extraction_job(
+        source_id=source_id,
+        artifact_id=artifact_id,
+        provider="fake",
+        model="sample-model",
+        total_chunks=1,
+    )
+    chunk_id = store.add_source_chunks(
+        job_id=job_id,
+        source_id=source_id,
+        chunks=["Sample Report was published in 2024."],
+    )[0]
+    store.mark_extraction_job_running(job_id)
+    store.mark_chunk_running(chunk_id)
+    store.mark_chunk_done(chunk_id, candidates=1)
+    fact_id = store.add_fact(
+        "Sample Report",
+        "published_year",
+        "2024",
+        status="candidate",
+        source_id=source_id,
+        job_id=job_id,
+    )
+    store.add_fact_evidence(
+        fact_id=fact_id,
+        source_id=source_id,
+        artifact_id=artifact_id,
+        job_id=job_id,
+        chunk_id=chunk_id,
+        snippet="Sample Report was published in 2024.",
+    )
+    support_a = store.add_source("sources/sample-support-a.txt")
+    support_b = store.add_source("sources/sample-support-b.txt")
+    conflict = store.add_source("sources/sample-conflict.txt")
+    store.add_fact(
+        "Sample Report",
+        "published_year",
+        "2024",
+        status="accepted",
+        source_id=support_a,
+    )
+    store.add_fact(
+        "Sample Report",
+        "published_year",
+        "2024",
+        status="confirmed",
+        source_id=support_b,
+    )
+    store.add_fact(
+        "Sample Report",
+        "published_year",
+        "2025",
+        status="accepted",
+        source_id=conflict,
+    )
+
+    body = unescape(c.get("/sources").text)
+
+    assert "sources/sample-source.txt" in body
+    assert "original_text" in body
+    assert "sample-model" in body
+    assert "chunk size" in body
+    assert "max facts" in body
+    assert "0 unsupported" in body
+    assert "1 conflicted" in body
+    assert "1 corroborated" in body
+    assert "Sample Report was published in 2024." in body
 
 
 def test_delete_source_removes_file_and_extracted_facts(tmp_path):
@@ -479,7 +565,8 @@ def test_upload_docx_converts_and_extracts(tmp_path, monkeypatch, fake_client):
     assert "binary" in kinds
     sources_body = c.get("/sources").text
     assert "sources/report.docx" in sources_body
-    assert "artifacts/sources/1/" not in sources_body
+    assert "artifacts/sources/1/" in sources_body
+    assert "extracted_text" in sources_body
 
     def extracted():
         assert any(row["subject"] == "X" for row in c.app.state.store.review_queue())

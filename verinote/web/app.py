@@ -182,6 +182,62 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             if row["trust"] is not None and label in row["trust"].trust_labels
         ]
 
+    def _source_inspector_rows(store: Store) -> list[dict[str, object]]:
+        facts = store.facts()
+        facts_by_source: dict[int, list[object]] = {}
+        for fact in facts:
+            if fact["source_id"] is None:
+                continue
+            facts_by_source.setdefault(int(fact["source_id"]), []).append(fact)
+
+        rows = []
+        for source in store.sources_with_counts():
+            row = dict(source)
+            source_id = int(source["id"])
+            summaries = [
+                fact_trust_summary(store, int(fact["id"]))
+                for fact in facts_by_source.get(source_id, [])
+            ]
+            summaries = [summary for summary in summaries if summary is not None]
+            row["unsupported_count"] = sum(
+                1 for summary in summaries if "unsupported" in summary.trust_labels
+            )
+            row["conflicted_count"] = sum(
+                1 for summary in summaries if "conflicted" in summary.trust_labels
+            )
+            row["corroborated_count"] = sum(
+                1 for summary in summaries if "corroborated" in summary.trust_labels
+            )
+            row["evidence_snippets"] = _source_evidence_snippets(summaries, source_id)
+            row["artifacts"] = [dict(artifact) for artifact in store.source_artifacts(source_id)]
+            row["failed_chunk_details"] = []
+            row["pending_chunks"] = 0
+            if source["job_id"]:
+                chunks = store.source_chunks(int(source["job_id"]))
+                row["failed_chunk_details"] = [
+                    dict(chunk) for chunk in chunks if chunk["status"] == "failed"
+                ]
+                row["pending_chunks"] = sum(
+                    1 for chunk in chunks if chunk["status"] in {"pending", "running"}
+                )
+            rows.append(row)
+        return rows
+
+    def _source_evidence_snippets(summaries, source_id: int) -> list[str]:
+        snippets: list[str] = []
+        seen: set[str] = set()
+        for summary in summaries:
+            for evidence in summary.evidence:
+                if evidence.source_id != source_id or not evidence.snippet:
+                    continue
+                if evidence.snippet in seen:
+                    continue
+                snippets.append(evidence.snippet)
+                seen.add(evidence.snippet)
+                if len(snippets) == 2:
+                    return snippets
+        return snippets
+
     def _dashboard(request: Request, *, error: str | None = None, status_code: int = 200):
         from verinote.engine import coverage
 
@@ -221,12 +277,14 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             request,
             "sources.html",
             {
-                "sources": store.sources_with_counts(),
+                "sources": _source_inspector_rows(store),
                 "suffixes": ", ".join(sorted(supported_suffixes())),
                 "accept": ",".join(sorted(supported_suffixes())),
                 "error": error,
                 "jobs": jobs,
                 "has_running_jobs": has_running_jobs,
+                "chunk_chars": app.state.cfg.extraction_chunk_chars,
+                "max_facts_per_chunk": app.state.cfg.extraction_max_facts_per_chunk,
             },
             status_code=status_code,
         )
