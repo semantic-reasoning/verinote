@@ -379,12 +379,24 @@ class Store:
 
     def mark_extraction_job_running(self, job_id: int) -> None:
         with self._lock:
+            job = self.get_extraction_job(job_id)
             self._conn.execute(
                 "UPDATE extraction_jobs SET status = 'running', "
                 "message = 'Analyzing chunks...', updated_at = datetime('now') "
                 "WHERE id = ? AND status != 'canceled'",
                 (job_id,),
             )
+            after = self.get_extraction_job(job_id)
+            if job is not None and after is not None:
+                self._add_fact_event(
+                    fact_id=None,
+                    event_type="extraction_job_started",
+                    actor="system",
+                    source_id=int(after["source_id"]),
+                    job_id=job_id,
+                    before=_job_event_payload(job),
+                    after=_job_event_payload(after),
+                )
 
     def mark_chunk_running(self, chunk_id: int) -> sqlite3.Row | None:
         with self._lock:
@@ -425,30 +437,83 @@ class Store:
                 "updated_at = datetime('now') WHERE id = ?",
                 (error, chunk_id),
             )
+            failed = self.get_source_chunk(chunk_id)
+            self._add_fact_event(
+                fact_id=None,
+                event_type="chunk_failed",
+                actor="system",
+                source_id=int(chunk["source_id"]),
+                job_id=int(chunk["job_id"]),
+                chunk_id=chunk_id,
+                before=_chunk_event_payload(chunk),
+                after=_chunk_event_payload(failed) if failed is not None else None,
+            )
             self._refresh_extraction_job(int(chunk["job_id"]))
 
     def retry_failed_chunks(self, job_id: int) -> int:
         with self._lock:
+            failed_chunks = list(
+                self._conn.execute(
+                    "SELECT * FROM source_chunks WHERE job_id = ? AND status = 'failed'",
+                    (job_id,),
+                )
+            )
             cur = self._conn.execute(
                 "UPDATE source_chunks SET status = 'pending', error = '', "
                 "updated_at = datetime('now') "
                 "WHERE job_id = ? AND status = 'failed'",
                 (job_id,),
             )
+            for chunk in failed_chunks:
+                pending = self.get_source_chunk(int(chunk["id"]))
+                self._add_fact_event(
+                    fact_id=None,
+                    event_type="chunk_retried",
+                    actor="system",
+                    source_id=int(chunk["source_id"]),
+                    job_id=job_id,
+                    chunk_id=int(chunk["id"]),
+                    before=_chunk_event_payload(chunk),
+                    after=_chunk_event_payload(pending) if pending is not None else None,
+                )
             self._refresh_extraction_job(job_id)
             return int(cur.rowcount)
 
     def finish_extraction_job(self, job_id: int) -> None:
         with self._lock:
+            before = self.get_extraction_job(job_id)
             self._refresh_extraction_job(job_id, final=True)
+            after = self.get_extraction_job(job_id)
+            if after is not None:
+                self._add_fact_event(
+                    fact_id=None,
+                    event_type="extraction_job_completed",
+                    actor="system",
+                    source_id=int(after["source_id"]),
+                    job_id=job_id,
+                    before=_job_event_payload(before) if before is not None else None,
+                    after=_job_event_payload(after),
+                )
 
     def fail_extraction_job(self, job_id: int, message: str) -> None:
         with self._lock:
+            before = self.get_extraction_job(job_id)
             self._conn.execute(
                 "UPDATE extraction_jobs SET status = 'failed', message = ?, "
                 "updated_at = datetime('now') WHERE id = ?",
                 (message, job_id),
             )
+            after = self.get_extraction_job(job_id)
+            if after is not None:
+                self._add_fact_event(
+                    fact_id=None,
+                    event_type="extraction_job_failed",
+                    actor="system",
+                    source_id=int(after["source_id"]),
+                    job_id=job_id,
+                    before=_job_event_payload(before) if before is not None else None,
+                    after=_job_event_payload(after),
+                )
 
     def fact_exists_for_source(
         self, *, source_id: int, subject: object, relation: object, obj: object
@@ -579,6 +644,18 @@ class Store:
                 )
                 fact_id = int(cur.fetchone()[0])
                 self.fact_terms.put_fact_terms(fact_id, subject, relation, obj)
+                self._add_fact_event(
+                    fact_id=fact_id,
+                    event_type="candidate_created",
+                    actor="system",
+                    source_id=source_id,
+                    job_id=job_id,
+                    after={
+                        "status": status,
+                        "run_id": run_id,
+                        "has_note": bool(note),
+                    },
+                )
                 self._conn.execute("COMMIT")
                 return fact_id
             except Exception:
@@ -767,7 +844,48 @@ class Store:
             )
         )
 
-    def _log(self, fact_id: int, action: str, before: sqlite3.Row | None, after: sqlite3.Row | None) -> None:
+    def fact_events(self, fact_id: int) -> list[sqlite3.Row]:
+        """Lifecycle events (oldest first) for one fact."""
+        return list(
+            self._conn.execute(
+                "SELECT id, fact_id, event_type, actor, source_id, job_id, chunk_id, "
+                "rule_name, before_json, after_json, at "
+                "FROM fact_events WHERE fact_id = ? ORDER BY id",
+                (fact_id,),
+            )
+        )
+
+    def add_fact_event(
+        self,
+        *,
+        fact_id: int | None,
+        event_type: str,
+        actor: str = "system",
+        source_id: int | None = None,
+        job_id: int | None = None,
+        chunk_id: int | None = None,
+        rule_name: str = "",
+        before: dict[str, object] | sqlite3.Row | None = None,
+        after: dict[str, object] | sqlite3.Row | None = None,
+    ) -> int:
+        with self._lock:
+            return self._add_fact_event(
+                fact_id=fact_id,
+                event_type=event_type,
+                actor=actor,
+                source_id=source_id,
+                job_id=job_id,
+                chunk_id=chunk_id,
+                rule_name=rule_name,
+                before=before,
+                after=after,
+            )
+
+    def _log(
+        self, fact_id: int, action: str, before: sqlite3.Row | None, after: sqlite3.Row | None
+    ) -> None:
+        source_id = int(after["source_id"]) if after and after["source_id"] is not None else None
+        job_id = int(after["job_id"]) if after and after["job_id"] is not None else None
         self._conn.execute(
             "INSERT INTO review_log(fact_id, action, before_json, after_json) VALUES(?,?,?,?)",
             (
@@ -777,6 +895,47 @@ class Store:
                 json.dumps(dict(after), ensure_ascii=False) if after else None,
             ),
         )
+        self._add_fact_event(
+            fact_id=fact_id,
+            event_type=action,
+            actor="human",
+            source_id=source_id,
+            job_id=job_id,
+            before=before,
+            after=after,
+        )
+
+    def _add_fact_event(
+        self,
+        *,
+        fact_id: int | None,
+        event_type: str,
+        actor: str = "system",
+        source_id: int | None = None,
+        job_id: int | None = None,
+        chunk_id: int | None = None,
+        rule_name: str = "",
+        before: dict[str, object] | sqlite3.Row | None = None,
+        after: dict[str, object] | sqlite3.Row | None = None,
+    ) -> int:
+        cur = self._conn.execute(
+            "INSERT INTO fact_events("
+            "fact_id, event_type, actor, source_id, job_id, chunk_id, "
+            "rule_name, before_json, after_json"
+            ") VALUES(?,?,?,?,?,?,?,?,?) RETURNING id",
+            (
+                fact_id,
+                event_type,
+                actor,
+                source_id,
+                job_id,
+                chunk_id,
+                rule_name,
+                _json_payload(before),
+                _json_payload(after),
+            ),
+        )
+        return int(cur.fetchone()[0])
 
     def _rollback_quietly(self) -> None:
         try:
@@ -922,6 +1081,29 @@ class Store:
                 ON fact_evidence(chunk_id);
             """
         )
+        self._conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS fact_events (
+                id          INTEGER PRIMARY KEY,
+                fact_id     INTEGER REFERENCES facts(id) ON DELETE SET NULL,
+                event_type  TEXT NOT NULL,
+                actor       TEXT NOT NULL DEFAULT 'system',
+                source_id   INTEGER REFERENCES sources(id) ON DELETE SET NULL,
+                job_id      INTEGER REFERENCES extraction_jobs(id) ON DELETE SET NULL,
+                chunk_id    INTEGER REFERENCES source_chunks(id) ON DELETE SET NULL,
+                rule_name   TEXT NOT NULL DEFAULT '',
+                before_json TEXT,
+                after_json  TEXT,
+                at          TEXT NOT NULL DEFAULT (datetime('now')),
+                CHECK (length(event_type) > 0),
+                CHECK (actor IN ('system','human','rule'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_fact_events_fact
+                ON fact_events(fact_id, id);
+            CREATE INDEX IF NOT EXISTS idx_fact_events_job
+                ON fact_events(job_id);
+            """
+        )
 
     def _refresh_extraction_job(self, job_id: int, *, final: bool = False) -> None:
         counts = self._conn.execute(
@@ -982,3 +1164,37 @@ def _display_fact_value(value: object) -> str:
     if isinstance(value, (Atom, Compound, NumberLit, StringLit, Var)):
         return render_term(value)
     return str(value)
+
+
+def _json_payload(value: dict[str, object] | sqlite3.Row | None) -> str | None:
+    if value is None:
+        return None
+    return json.dumps(dict(value), ensure_ascii=False)
+
+
+def _job_event_payload(row: sqlite3.Row | None) -> dict[str, object] | None:
+    if row is None:
+        return None
+    return {
+        "status": row["status"],
+        "source_id": row["source_id"],
+        "artifact_id": row["artifact_id"],
+        "total_chunks": row["total_chunks"],
+        "completed_chunks": row["completed_chunks"],
+        "failed_chunks": row["failed_chunks"],
+        "candidate_count": row["candidate_count"],
+        "message": row["message"],
+    }
+
+
+def _chunk_event_payload(row: sqlite3.Row | None) -> dict[str, object] | None:
+    if row is None:
+        return None
+    return {
+        "status": row["status"],
+        "source_id": row["source_id"],
+        "job_id": row["job_id"],
+        "chunk_index": row["chunk_index"],
+        "attempts": row["attempts"],
+        "error": row["error"],
+    }

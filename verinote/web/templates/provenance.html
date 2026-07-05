@@ -113,7 +113,13 @@
       <tr><td class="src">—</td><td><span class="badge">extracted</span> job #{{ trust.job.id }} · {{ trust.job.status }}</td></tr>
       {% endif %}
       {% for e in trust.audit %}
-      <tr><td class="src">{{ e.at }}</td><td><span class="badge">{{ e.action }}</span></td></tr>
+      <tr><td class="src">{{ e.at }}</td><td>
+        <span class="badge">{{ e.event_type }}</span>
+        <span class="muted">{{ e.actor }}</span>
+        {% if e.job_id %}<span class="muted">job #{{ e.job_id }}</span>{% endif %}
+        {% if e.chunk_id %}<span class="muted">chunk #{{ e.chunk_id }}</span>{% endif %}
+        {% if e.rule_name %}<span class="muted">rule {{ e.rule_name }}</span>{% endif %}
+      </td></tr>
       {% endfor %}
       <tr><td class="src">{{ f["updated_at"] }}</td><td><span class="badge">updated</span></td></tr>
     </tbody>
