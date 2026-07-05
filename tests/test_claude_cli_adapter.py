@@ -75,6 +75,24 @@ def test_claude_cli_uses_model_when_configured(tmp_path, monkeypatch):
     assert line.startswith("answer_q7")
 
 
+def test_claude_cli_normalizes_display_model_names(tmp_path, monkeypatch):
+    commands = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        return SimpleNamespace(
+            returncode=0,
+            stdout='{"facts":[]}',
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    ClaudeCliAdapter(_cfg(tmp_path, model="Opus 4.8")).extract_facts(source_text="x")
+
+    assert commands[0][0:3] == ["claude", "--model", "opus"]
+
+
 def test_claude_cli_missing_binary_is_llm_error(tmp_path, monkeypatch):
     def fake_run(cmd, **kwargs):
         raise FileNotFoundError
