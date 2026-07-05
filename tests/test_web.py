@@ -1565,15 +1565,59 @@ def test_translate_and_report_answers(tmp_path, monkeypatch, fake_client):
     assert "London" in c.get("/questions").text
 
 
-def test_translate_surfaces_llm_error(tmp_path, monkeypatch, fake_client):
+def test_translate_persists_llm_error_reason(tmp_path, monkeypatch, fake_client):
     monkeypatch.setattr(
-        webapp, "get_client", lambda cfg: fake_client(error=LLMError("provider down"))
+        webapp,
+        "get_client",
+        lambda cfg: fake_client(error=LLMError("provider unavailable")),
     )
     c = _client(tmp_path)
-    c.app.state.store.add_question("q?")
-    r = c.post("/questions/translate")
-    assert r.status_code == 502
-    assert "translation failed: provider down" in r.text
+    c.app.state.store.add_question("What is the sample answer?")
+    r = c.post("/questions/translate", follow_redirects=False)
+
+    assert r.status_code == 303
+    q = c.app.state.store.questions()[0]
+    assert q["status"] == "translation_failed"
+    assert q["reason"] == "provider unavailable"
+    page = c.get("/questions").text
+    assert "translation_failed" in page
+    assert "provider unavailable" in page
+
+
+def test_translate_persists_get_client_failure_reason(tmp_path, monkeypatch):
+    def raise_client_error(cfg):
+        raise LLMError("missing provider credentials")
+
+    monkeypatch.setattr(webapp, "get_client", raise_client_error)
+    c = _client(tmp_path)
+    c.app.state.store.add_question("What is the sample answer?")
+    r = c.post("/questions/translate", follow_redirects=False)
+
+    assert r.status_code == 303
+    q = c.app.state.store.questions()[0]
+    assert q["status"] == "translation_failed"
+    assert q["reason"] == "missing provider credentials"
+    assert (tmp_path / "facts" / "query.dl").read_text(encoding="utf-8") == ""
+    page = c.get("/questions").text
+    assert "translation_failed" in page
+    assert "missing provider credentials" in page
+
+
+def test_questions_page_shows_non_executable_reason(tmp_path):
+    c = _client(tmp_path)
+    qid = c.app.state.store.add_question("Which sample item is current?")
+    c.app.state.store.set_question_query(
+        qid,
+        'ambiguous("multiple sample entities match")',
+        "ambiguous",
+        "multiple sample entities match",
+    )
+
+    r = c.get("/questions")
+
+    assert r.status_code == 200
+    assert "ambiguous" in r.text
+    assert "multiple sample entities match" in r.text
 
 
 def test_repair_action_accepts_valid_fix(tmp_path, monkeypatch, fake_client):

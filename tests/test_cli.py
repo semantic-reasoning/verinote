@@ -134,6 +134,45 @@ def test_query_adds_and_translates(tmp_path, monkeypatch, capsys, fake_client):
     assert (tmp_path / "facts" / "query.dl").is_file()
 
 
+def test_query_persists_translation_failure_reason(tmp_path, monkeypatch, capsys, fake_client):
+    _env(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "verinote.llm.get_client",
+        lambda cfg: fake_client(error=LLMError("provider unavailable")),
+    )
+
+    rc = cli.main(["query", "What is the sample answer?"])
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "q1: translation_failed (provider unavailable)" in out
+    s = Store(tmp_path / "kb.sqlite")
+    q = s.questions()[0]
+    assert q["status"] == "translation_failed"
+    assert q["reason"] == "provider unavailable"
+    assert (tmp_path / "facts" / "query.dl").read_text(encoding="utf-8") == ""
+
+
+def test_query_persists_get_client_failure_reason(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+
+    def raise_client_error(cfg):
+        raise LLMError("missing provider credentials")
+
+    monkeypatch.setattr("verinote.llm.get_client", raise_client_error)
+
+    rc = cli.main(["query", "What is the sample answer?"])
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "q1: translation_failed (missing provider credentials)" in out
+    s = Store(tmp_path / "kb.sqlite")
+    q = s.questions()[0]
+    assert q["status"] == "translation_failed"
+    assert q["reason"] == "missing provider credentials"
+    assert (tmp_path / "facts" / "query.dl").read_text(encoding="utf-8") == ""
+
+
 def test_query_no_pending_errors(tmp_path, monkeypatch, capsys):
     _env(monkeypatch, tmp_path)
     rc = cli.main(["query"])
@@ -160,6 +199,31 @@ def test_repair_validates_and_translates(tmp_path, monkeypatch, capsys, fake_cli
     assert rc == 0
     assert "repaired 1/1" in capsys.readouterr().out
     assert Store(tmp_path / "kb.sqlite").questions()[0]["status"] == "translated"
+
+
+def test_repair_reports_durable_rejected_status(tmp_path, monkeypatch, capsys, fake_client):
+    _env(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "verinote.llm.get_client",
+        lambda cfg: fake_client(
+            query=lambda q, i: 'no_answer("no confirmed facts match")'
+        ),
+    )
+    s = Store(tmp_path / "kb.sqlite")
+    s.init_schema()
+    qid = s.add_question("What is the sample answer?")
+    s.set_question_query(
+        qid, 'review_required("What is the sample answer?")', "review_required"
+    )
+    s.close()
+
+    rc = cli.main(["repair"])
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "q1: kept no_answer (no confirmed facts match)" in out
+    assert "repaired 0/1" in out
+    assert Store(tmp_path / "kb.sqlite").questions()[0]["status"] == "no_answer"
 
 
 def test_repair_no_review_required_errors(tmp_path, monkeypatch, capsys):

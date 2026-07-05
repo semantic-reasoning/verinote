@@ -131,13 +131,24 @@ CREATE INDEX IF NOT EXISTS idx_fact_evidence_source ON fact_evidence(source_id);
 CREATE INDEX IF NOT EXISTS idx_fact_evidence_chunk ON fact_evidence(chunk_id);
 
 -- Natural-language questions translated to a Datalog query draft (#3). status:
--- pending -> translated (an `answer_q<id>` rule) | review_required (untranslatable).
+-- pending -> translated (an `answer_q<id>` rule) | review_required/no_answer/
+-- translation_failed/ambiguous (visible non-executable outcomes).
 CREATE TABLE IF NOT EXISTS questions (
     id         INTEGER PRIMARY KEY,
     text       TEXT NOT NULL,
     query_dl   TEXT,
     status     TEXT NOT NULL DEFAULT 'pending'
-                 CHECK (status IN ('pending','translated','review_required')),
+                 CHECK (
+                     status IN (
+                         'pending',
+                         'translated',
+                         'review_required',
+                         'translation_failed',
+                         'no_answer',
+                         'ambiguous'
+                     )
+                 ),
+    reason     TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
