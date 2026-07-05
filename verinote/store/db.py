@@ -24,6 +24,16 @@ MAX_EVIDENCE_SNIPPET_CHARS = 1000
 REVIEW_PAGE_SIZES = (25, 50, 100)
 DEFAULT_REVIEW_PAGE_SIZE = 50
 DEFAULT_REVIEW_SORT = "newest"
+QUESTION_STATUSES = frozenset(
+    {
+        "pending",
+        "translated",
+        "review_required",
+        "translation_failed",
+        "no_answer",
+        "ambiguous",
+    }
+)
 REVIEW_SORT_SQL = {
     "newest": "f.id DESC",
     "oldest": "f.id ASC",
@@ -988,11 +998,15 @@ class Store:
             sql += " WHERE status = 'pending'"
         return list(self._conn.execute(sql + " ORDER BY id"))
 
-    def set_question_query(self, question_id: int, query_dl: str, status: str) -> None:
+    def set_question_query(
+        self, question_id: int, query_dl: str | None, status: str, reason: str = ""
+    ) -> None:
+        if status not in QUESTION_STATUSES:
+            raise ValueError(f"unknown question status: {status}")
         with self._lock:
             self._conn.execute(
-                "UPDATE questions SET query_dl = ?, status = ? WHERE id = ?",
-                (query_dl, status, question_id),
+                "UPDATE questions SET query_dl = ?, status = ?, reason = ? WHERE id = ?",
+                (query_dl, status, reason, question_id),
             )
 
     def delete_question(self, question_id: int) -> None:
@@ -1289,6 +1303,59 @@ class Store:
                 ON fact_events(job_id);
             """
         )
+        self._ensure_question_schema()
+
+    def _ensure_question_schema(self) -> None:
+        columns = {
+            row["name"] for row in self._conn.execute("PRAGMA table_info(questions)")
+        }
+        row = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'questions'"
+        ).fetchone()
+        create_sql = row["sql"] if row is not None and row["sql"] is not None else ""
+        needs_rebuild = "reason" not in columns or any(
+            status not in create_sql for status in QUESTION_STATUSES
+        )
+        if not needs_rebuild:
+            return
+
+        select_reason = "reason" if "reason" in columns else "''"
+        self._conn.execute("BEGIN")
+        try:
+            self._conn.execute("DROP TABLE IF EXISTS questions_new")
+            self._conn.execute(
+                """
+                CREATE TABLE questions_new (
+                    id         INTEGER PRIMARY KEY,
+                    text       TEXT NOT NULL,
+                    query_dl   TEXT,
+                    status     TEXT NOT NULL DEFAULT 'pending'
+                                 CHECK (
+                                     status IN (
+                                         'pending',
+                                         'translated',
+                                         'review_required',
+                                         'translation_failed',
+                                         'no_answer',
+                                         'ambiguous'
+                                     )
+                                 ),
+                    reason     TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+                """
+            )
+            self._conn.execute(
+                "INSERT INTO questions_new(id, text, query_dl, status, reason, created_at) "
+                f"SELECT id, text, query_dl, status, {select_reason}, created_at "
+                "FROM questions"
+            )
+            self._conn.execute("DROP TABLE questions")
+            self._conn.execute("ALTER TABLE questions_new RENAME TO questions")
+            self._conn.execute("COMMIT")
+        except Exception:
+            self._rollback_quietly()
+            raise
 
     def _refresh_extraction_job(self, job_id: int, *, final: bool = False) -> None:
         counts = self._conn.execute(

@@ -99,6 +99,15 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             raise RuntimeError("no active KB")
         return cfg
 
+    def _short_error(exc: BaseException) -> str:
+        return " ".join(str(exc).split())[:240]
+
+    def _fail_pending_translations(store: Store, cfg: Config, exc: LLMError) -> None:
+        reason = _short_error(exc)
+        for q in store.questions(pending_only=True):
+            store.set_question_query(q["id"], None, "translation_failed", reason)
+        write_query_file(store, cfg.root)
+
     def _relation_aliases_path() -> Path:
         return _active_cfg().root / RELATION_ALIASES_RELPATH
 
@@ -866,9 +875,11 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         store = _active_store()
         cfg = _active_cfg()
         try:
-            translate_questions(store, get_client(app.state.cfg), root=cfg.root)
+            client = get_client(app.state.cfg)
         except LLMError as e:
-            return _questions(request, error=f"translation failed: {e}", status_code=502)
+            _fail_pending_translations(store, cfg, e)
+            return RedirectResponse("/questions", status_code=303)
+        translate_questions(store, client, root=cfg.root)
         return RedirectResponse("/questions", status_code=303)
 
     @app.post("/questions/repair", response_class=HTMLResponse)

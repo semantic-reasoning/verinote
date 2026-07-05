@@ -14,7 +14,11 @@ from pathlib import Path
 
 from verinote.engine import validate_query
 from verinote.llm.base import LLMClient, LLMError
-from verinote.pipeline.query import deterministic_query_dl, write_query_file
+from verinote.pipeline.query import (
+    _non_executable_outcome,
+    deterministic_query_dl,
+    write_query_file,
+)
 from verinote.store import Store
 
 _log = logging.getLogger("verinote.repair")
@@ -38,12 +42,24 @@ def repair_questions(store: Store, client: LLMClient, *, root: Path) -> list[dic
         try:
             line = client.translate_query(question=q["text"], qid=qid)
         except LLMError as exc:
-            results.append({"id": qid, "accepted": False, "reason": f"llm error: {exc}"})
+            reason = f"llm error: {exc}"
+            store.set_question_query(qid, q["query_dl"], "review_required", reason)
+            results.append({"id": qid, "accepted": False, "reason": reason})
             _log.warning("repair q%d: llm error: %s", qid, exc)
             continue
 
+        outcome = _non_executable_outcome(line)
+        if outcome is not None:
+            status, reason = outcome
+            store.set_question_query(qid, line, status, reason)
+            results.append({"id": qid, "accepted": False, "reason": reason})
+            _log.warning("repair q%d: model returned %s: %s", qid, status, reason)
+            continue
+
         if line.lstrip().startswith("review_required"):
-            results.append({"id": qid, "accepted": False, "reason": "model still cannot express it"})
+            reason = "model still cannot express it"
+            store.set_question_query(qid, line, "review_required", reason)
+            results.append({"id": qid, "accepted": False, "reason": reason})
             _log.warning("repair q%d: still review_required", qid)
             continue
 
@@ -53,6 +69,7 @@ def repair_questions(store: Store, client: LLMClient, *, root: Path) -> list[dic
             store.set_question_query(qid, proposal, "translated")
             results.append({"id": qid, "accepted": True, "reason": ""})
         else:
+            store.set_question_query(qid, q["query_dl"], "review_required", reason)
             results.append({"id": qid, "accepted": False, "reason": reason})
             _log.warning("repair q%d rejected by engine: %s", qid, reason)
 

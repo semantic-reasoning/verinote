@@ -2,11 +2,11 @@
 """Translate NL questions to Datalog query drafts and persist them for the engine.
 
 Each pending question is translated by the `LLMClient` into either an
-`answer_q<id>` rule (status `translated`) or a `review_required(...)` line
-(status `review_required`). The translated rules are written to
-`<root>/facts/query.dl`, which `verify()` feeds to the DuckDB backend so
-`/report` shows each query's evaluation. `review_required` questions are tracked
-in the DB only.
+`answer_q<id>` rule (status `translated`) or a durable non-executable lifecycle
+state such as `review_required`, `no_answer`, `ambiguous`, or
+`translation_failed`. The translated rules are written to `<root>/facts/query.dl`,
+which `verify()` feeds to the DuckDB backend so `/report` shows each query's
+evaluation. Non-executable outcomes are tracked in the DB only.
 """
 
 from __future__ import annotations
@@ -16,9 +16,10 @@ from pathlib import Path
 import re
 import unicodedata
 
+from verinote.engine import validate_query
 from verinote.engine.datalog import AtomExpr, Comparison, DatalogParseError, parse_program
 from verinote.engine.terms import Atom, StringLit, render_term
-from verinote.llm.base import LLMClient
+from verinote.llm.base import LLMClient, LLMError
 from verinote.pipeline.corroboration import CorroborationPolicyError, store_relation_aliases
 from verinote.store import Store
 
@@ -31,6 +32,10 @@ _ROLE_QUESTION = re.compile(
     r"(?:의|에\s*대한)\s*(?:역할|직책|직위)"
 )
 _GENERIC_ROLE_RELATIONS = ("역할", "직책", "직위", "role", "has_role")
+_STATUS_LINE = re.compile(
+    r"^\s*(?P<status>review_required|no_answer|ambiguous)\s*\((?P<reason>.*)\)\s*\.?\s*$",
+    re.DOTALL,
+)
 
 
 def query_path(root: Path) -> Path:
@@ -39,6 +44,21 @@ def query_path(root: Path) -> Path:
 
 def _is_review_required(line: str) -> bool:
     return line.lstrip().startswith("review_required")
+
+
+def _non_executable_outcome(line: str) -> tuple[str, str] | None:
+    match = _STATUS_LINE.match(line)
+    if not match:
+        return None
+    return match.group("status"), _short_reason(match.group("reason"))
+
+
+def _short_reason(value: object) -> str:
+    text = str(value).strip()
+    if len(text) >= 2 and text[0] == text[-1] == '"':
+        text = text[1:-1]
+    text = text.replace('\\"', '"').replace("\\\\", "\\")
+    return " ".join(text.split())[:240]
 
 
 def _lit(value: str) -> str:
@@ -78,22 +98,42 @@ def deterministic_query_dl(question: str, qid: int) -> str | None:
 def translate_questions(store: Store, client: LLMClient, *, root: Path) -> list[dict]:
     """Translate every pending question, persist drafts, rewrite `query.dl`.
 
-    Returns one dict per translated question: {id, status, query_dl}.
+    Returns one dict per processed question: {id, status, query_dl, reason}.
     """
     results: list[dict] = []
     for q in store.questions(pending_only=True):
+        reason = ""
         query_dl = deterministic_query_dl(q["text"], q["id"])
         if query_dl is not None:
             status = "translated"
         else:
-            line = client.translate_query(question=q["text"], qid=q["id"])
-            if _is_review_required(line):
-                status, query_dl = "review_required", line
+            try:
+                line = client.translate_query(question=q["text"], qid=q["id"])
+            except LLMError as exc:
+                status = "translation_failed"
+                query_dl = None
+                reason = _short_reason(exc)
             else:
-                status = "translated"
-                query_dl = f".decl answer_q{q['id']}(value: symbol)\n{line}"
-        store.set_question_query(q["id"], query_dl, status)
-        results.append({"id": q["id"], "status": status, "query_dl": query_dl})
+                outcome = _non_executable_outcome(line)
+                if outcome is not None:
+                    status, reason = outcome
+                    query_dl = line
+                elif _is_review_required(line):
+                    status, query_dl = "review_required", line
+                    reason = _short_reason(line.removeprefix("review_required"))
+                else:
+                    query_dl = f".decl answer_q{q['id']}(value: symbol)\n{line}"
+                    ok, validation_reason = validate_query(query_dl)
+                    if ok:
+                        status = "translated"
+                    else:
+                        status = "review_required"
+                        reason = _short_reason(f"invalid query: {validation_reason}")
+                        query_dl = f"review_required({_lit(reason)})"
+        store.set_question_query(q["id"], query_dl, status, reason)
+        results.append(
+            {"id": q["id"], "status": status, "query_dl": query_dl, "reason": reason}
+        )
     write_query_file(store, root)
     return results
 

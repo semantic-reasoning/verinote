@@ -57,7 +57,9 @@ class LLMClient(Protocol):
         """Translate an NL `question` into a single Datalog query line.
 
         Return a rule whose head is ``answer_q<qid>(V)`` binding one answer
-        variable over ``relation/3``, or ``review_required("<question>")`` when
-        the question can't be expressed. Raise `LLMError` on provider/parse error.
+        variable over ``relation/3``. When no executable rule is appropriate,
+        return a durable non-executable outcome:
+        ``review_required("reason")``, ``no_answer("reason")``, or
+        ``ambiguous("reason")``. Raise `LLMError` on provider/parse error.
         """
         ...

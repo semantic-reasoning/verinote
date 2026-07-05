@@ -114,8 +114,8 @@ EXTRACTION_SYSTEM = (
 
 
 # --- query translation (#3) ------------------------------------------------
-# A single Datalog query line: a rule deriving the question's answer relation,
-# or a review_required(...) fallback when the question can't be expressed.
+# A single Datalog query line: either a rule deriving the question's answer
+# relation, or a durable non-executable outcome with a concise reason.
 QUERY_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": ["datalog"],
@@ -135,8 +135,11 @@ def query_system(qid: int) -> str:
         "Use only the relation/3 predicate in rule bodies. Terms may be variables, "
         "string literals, integer literals, atoms, or fully ground compound terms; "
         "do not construct compound terms from variables in the answer head or body. "
-        "If the question cannot be expressed this way, return exactly "
-        'review_required("<the original question>"). Emit JSON matching the schema.'
+        "If no executable rule is appropriate, return a durable status line "
+        "with a concise reason instead: review_required(\"reason\") when a human "
+        "must clarify or model the query, no_answer(\"reason\") when confirmed "
+        "facts cannot answer it, or ambiguous(\"reason\") when multiple meanings "
+        "or entities fit. Emit JSON matching the schema."
     )
 
 

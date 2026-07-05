@@ -208,7 +208,7 @@ def cmd_ingest(cfg: Config, args: argparse.Namespace) -> int:
 
 def cmd_query(cfg: Config, args: argparse.Namespace) -> int:
     from verinote.llm import LLMError, get_client
-    from verinote.pipeline import translate_questions
+    from verinote.pipeline import translate_questions, write_query_file
 
     store = _store(cfg)
     if args.question:
@@ -220,17 +220,28 @@ def cmd_query(cfg: Config, args: argparse.Namespace) -> int:
         return 1
     try:
         client = get_client(cfg)
-        results = translate_questions(store, client, root=cfg.root)
     except LLMError as e:
-        print(f"translation failed: {e}", file=sys.stderr)
-        store.close()
-        return 1
+        reason = _short_error(e)
+        results = []
+        for q in pending:
+            store.set_question_query(q["id"], None, "translation_failed", reason)
+            results.append(
+                {"id": q["id"], "status": "translation_failed", "reason": reason}
+            )
+        write_query_file(store, cfg.root)
+    else:
+        results = translate_questions(store, client, root=cfg.root)
     for r in results:
-        print(f"  q{r['id']}: {r['status']}")
+        reason = f" ({r['reason']})" if r.get("reason") else ""
+        print(f"  q{r['id']}: {r['status']}{reason}")
     print(f"translated {len(results)} question(s) -> {cfg.root / 'facts' / 'query.dl'}")
     print("run the check to see answers (`verinote ui` → Report)")
     store.close()
     return 0
+
+
+def _short_error(exc: BaseException) -> str:
+    return " ".join(str(exc).split())[:240]
 
 
 def cmd_repair(cfg: Config, args: argparse.Namespace) -> int:
@@ -250,9 +261,11 @@ def cmd_repair(cfg: Config, args: argparse.Namespace) -> int:
         store.close()
         return 1
     results = repair_questions(store, client, root=cfg.root)
+    statuses = {q["id"]: q["status"] for q in store.questions()}
     repaired = sum(1 for r in results if r["accepted"])
     for r in results:
-        mark = "repaired" if r["accepted"] else f"kept review_required ({r['reason']})"
+        status = r.get("status") or statuses.get(r["id"], "review_required")
+        mark = "repaired" if r["accepted"] else f"kept {status} ({r['reason']})"
         print(f"  q{r['id']}: {mark}")
     print(f"repaired {repaired}/{len(results)} question(s) (engine-validated)")
     store.close()

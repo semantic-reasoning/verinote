@@ -697,12 +697,47 @@ def test_extraction_job_records_lifecycle_events(tmp_path):
 def test_questions_add_list_and_translate(tmp_path):
     s = _store(tmp_path)
     qid = s.add_question("Where was Ada born?")
-    assert [(q["id"], q["status"]) for q in s.questions()] == [(qid, "pending")]
+    assert [(q["id"], q["status"], q["reason"]) for q in s.questions()] == [
+        (qid, "pending", "")
+    ]
     assert [q["id"] for q in s.questions(pending_only=True)] == [qid]
 
     s.set_question_query(qid, ".decl answer_q1(value: symbol)", "translated")
     assert s.questions(pending_only=True) == []
     assert s.questions()[0]["status"] == "translated"
+    assert s.questions()[0]["reason"] == ""
 
     s.delete_question(qid)
     assert s.questions() == []
+
+
+def test_question_schema_migration_preserves_legacy_rows_and_adds_reason(tmp_path):
+    db_path = tmp_path / "kb.sqlite"
+    s = Store(db_path)
+    s._conn.executescript(
+        """
+        CREATE TABLE questions (
+            id         INTEGER PRIMARY KEY,
+            text       TEXT NOT NULL,
+            query_dl   TEXT,
+            status     TEXT NOT NULL DEFAULT 'pending'
+                         CHECK (status IN ('pending','translated','review_required')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT INTO questions(id, text, query_dl, status, created_at)
+        VALUES(7, 'Synthetic question?', 'review_required("needs sample policy")',
+               'review_required', '2026-01-01 00:00:00');
+        """
+    )
+    s.init_schema()
+
+    row = s.questions()[0]
+    assert row["id"] == 7
+    assert row["text"] == "Synthetic question?"
+    assert row["status"] == "review_required"
+    assert row["reason"] == ""
+
+    s.set_question_query(7, None, "translation_failed", "provider unavailable")
+    row = s.questions()[0]
+    assert row["status"] == "translation_failed"
+    assert row["reason"] == "provider unavailable"
