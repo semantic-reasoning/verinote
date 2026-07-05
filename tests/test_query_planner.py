@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 
+import unicodedata
+
 from verinote.pipeline.query_intent import IntentTarget, QueryIntent, QueryIntentKind
 from verinote.pipeline.query_planner import (
     QueryPlannerBounds,
@@ -186,6 +188,54 @@ def test_source_language_relation_is_preserved_for_alias_backed_lookup():
     ]
 
 
+def test_canonical_observed_relation_matches_raw_alias_without_rewrite():
+    snapshot = _snapshot(
+        _relation(
+            "revenue",
+            '"revenue"',
+            subjects=(_entity("Synthetic Company", '"Synthetic Company"'),),
+            objects=(_entity("100", '"100"'),),
+            aliases=(RelationAliasEntry(alias="매출", canonical="revenue"),),
+        )
+    )
+    intent = QueryIntent(
+        kind=QueryIntentKind.LOOKUP_OBJECT,
+        subject=IntentTarget("entity", "Synthetic Company"),
+        relation=IntentTarget("relation", "매출"),
+    )
+
+    plan = plan_query_candidates(intent, snapshot, qid=20)
+
+    assert [candidate.query_dl for candidate in plan.candidates] == [
+        '.decl answer_q20(value: symbol)\n'
+        'answer_q20(O) :- relation("Synthetic Company", "revenue", O).'
+    ]
+
+
+def test_unicode_nfd_observed_relation_matches_nfc_alias_policy():
+    nfd_role = unicodedata.normalize("NFD", "역할")
+    snapshot = _snapshot(
+        _relation(
+            nfd_role,
+            f'"{nfd_role}"',
+            subjects=(_entity("Sample Person", '"Sample Person"'),),
+            objects=(_entity("Reviewer", '"Reviewer"'),),
+            aliases=(RelationAliasEntry(alias="role", canonical="역할"),),
+        )
+    )
+    intent = QueryIntent(
+        kind=QueryIntentKind.LOOKUP_OBJECT,
+        subject=IntentTarget("entity", "Sample Person"),
+        relation=IntentTarget("relation", "role"),
+    )
+
+    plan = plan_query_candidates(intent, snapshot, qid=21)
+
+    assert [candidate.relation_executable for candidate in plan.candidates] == [
+        f'"{nfd_role}"'
+    ]
+
+
 def test_typed_relation_metadata_can_match_without_inventing_relation_terms():
     snapshot = _snapshot(
         _relation(
@@ -212,6 +262,75 @@ def test_typed_relation_metadata_can_match_without_inventing_relation_terms():
     assert [candidate.query_dl for candidate in plan.candidates] == [
         '.decl answer_q16(value: symbol)\n'
         'answer_q16(O) :- relation("Synthetic Company", "매출액", O).'
+    ]
+
+
+def test_generic_typed_type_does_not_match_all_typed_amount_relations():
+    snapshot = _snapshot(
+        _relation(
+            "매출액",
+            '"매출액"',
+            subjects=(_entity("Synthetic Company", '"Synthetic Company"'),),
+            objects=(_entity("amount(5, \"억\")", 'amount(5, "억")', "Compound"),),
+            typed=TypedRelationEntry(
+                relation="매출액",
+                type="amount",
+                alias="revenue_scalar",
+            ),
+        ),
+        _relation(
+            "비용",
+            '"비용"',
+            subjects=(_entity("Synthetic Company", '"Synthetic Company"'),),
+            objects=(_entity("amount(2, \"억\")", 'amount(2, "억")', "Compound"),),
+            typed=TypedRelationEntry(
+                relation="비용",
+                type="amount",
+                alias="cost_scalar",
+            ),
+        ),
+    )
+    intent = QueryIntent(
+        kind=QueryIntentKind.LOOKUP_OBJECT,
+        subject=IntentTarget("entity", "Synthetic Company"),
+        relation=IntentTarget("relation", "amount"),
+    )
+
+    plan = plan_query_candidates(intent, snapshot, qid=22)
+
+    assert plan.candidates == ()
+
+
+def test_candidate_cap_truncates_alias_backed_matches_deterministically():
+    snapshot = _snapshot(
+        *(
+            _relation(
+                display,
+                f'"{display}"',
+                subjects=(_entity("Sample Person", '"Sample Person"'),),
+                objects=(_entity(f"Value {index}", f'"Value {index}"'),),
+                aliases=(RelationAliasEntry(alias=f"raw_{index}", canonical=display),),
+            )
+            for index, display in enumerate(("표시0", "표시1", "표시2"))
+        )
+    )
+    intent = QueryIntent(
+        kind=QueryIntentKind.LOOKUP_OBJECT,
+        subject=IntentTarget("entity", "Sample Person"),
+        relation_candidates=("raw_0", "raw_1", "raw_2"),
+    )
+
+    plan = plan_query_candidates(
+        intent,
+        snapshot,
+        qid=23,
+        bounds=QueryPlannerBounds(max_candidates=2),
+    )
+
+    assert plan.truncated is True
+    assert [candidate.relation_display for candidate in plan.candidates] == [
+        "표시0",
+        "표시1",
     ]
 
 

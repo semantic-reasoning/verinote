@@ -96,7 +96,7 @@ def evaluate_query_candidate(
             outcome=QueryCandidateOutcome.ENGINE_POLICY_ERROR,
             report=report,
         )
-    answers = tuple(report.answers)
+    answers = tuple(dict.fromkeys(report.answers))
     if not answers:
         return QueryCandidateEvaluation(
             candidate=candidate,
