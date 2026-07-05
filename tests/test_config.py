@@ -23,6 +23,7 @@ def _clear_env(monkeypatch):
         "VERINOTE_EXTRACTION_CHUNK_CHARS",
         "VERINOTE_EXTRACTION_CHUNK_OVERLAP_CHARS",
         "VERINOTE_EXTRACTION_MAX_FACTS_PER_CHUNK",
+        "VERINOTE_AUTO_ACCEPT_RECOMMENDATIONS",
         "VERINOTE_ROOT",
         "XDG_CONFIG_HOME",
     ):
@@ -60,6 +61,7 @@ def test_default_model_when_nothing_set(tmp_path, monkeypatch):
     assert cfg.extraction_chunk_chars == 300
     assert cfg.extraction_chunk_overlap_chars == 40
     assert cfg.extraction_max_facts_per_chunk == 8
+    assert cfg.auto_accept_recommendations is False
 
 
 def test_llm_timeout_env_override(tmp_path, monkeypatch):
@@ -77,6 +79,7 @@ def test_extraction_settings_round_trip_and_env_override(tmp_path, monkeypatch):
         extraction_chunk_chars=450,
         extraction_chunk_overlap_chars=25,
         extraction_max_facts_per_chunk=6,
+        auto_accept_recommendations=True,
     )
 
     cfg = Config.for_root(tmp_path)
@@ -84,14 +87,17 @@ def test_extraction_settings_round_trip_and_env_override(tmp_path, monkeypatch):
     assert cfg.extraction_chunk_chars == 450
     assert cfg.extraction_chunk_overlap_chars == 25
     assert cfg.extraction_max_facts_per_chunk == 6
+    assert cfg.auto_accept_recommendations is True
 
     monkeypatch.setenv("VERINOTE_EXTRACTION_CHUNK_CHARS", "200")
     monkeypatch.setenv("VERINOTE_EXTRACTION_CHUNK_OVERLAP_CHARS", "0")
     monkeypatch.setenv("VERINOTE_EXTRACTION_MAX_FACTS_PER_CHUNK", "3")
+    monkeypatch.setenv("VERINOTE_AUTO_ACCEPT_RECOMMENDATIONS", "false")
     cfg = Config.for_root(tmp_path)
     assert cfg.extraction_chunk_chars == 200
     assert cfg.extraction_chunk_overlap_chars == 0
     assert cfg.extraction_max_facts_per_chunk == 3
+    assert cfg.auto_accept_recommendations is False
 
 
 def test_claude_cli_provider_is_available():

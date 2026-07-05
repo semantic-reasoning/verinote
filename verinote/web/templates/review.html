@@ -20,6 +20,7 @@
     {% for row in queue %}
       {% set f = row.f %}
       {% set trust = row.trust %}
+      {% set recommendation = row.recommendation %}
       {% include "partials/fact_row.html" %}
     {% endfor %}
   </tbody>

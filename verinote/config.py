@@ -139,6 +139,7 @@ def save_settings(
     extraction_chunk_chars: int | None = None,
     extraction_chunk_overlap_chars: int | None = None,
     extraction_max_facts_per_chunk: int | None = None,
+    auto_accept_recommendations: bool | None = None,
 ) -> None:
     """Persist non-secret settings to `<root>/config.json` (never the API key)."""
     root.mkdir(parents=True, exist_ok=True)
@@ -153,6 +154,8 @@ def save_settings(
         payload["extraction_chunk_overlap_chars"] = extraction_chunk_overlap_chars
     if extraction_max_facts_per_chunk is not None:
         payload["extraction_max_facts_per_chunk"] = extraction_max_facts_per_chunk
+    if auto_accept_recommendations is not None:
+        payload["auto_accept_recommendations"] = bool(auto_accept_recommendations)
     _settings_path(root).write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
@@ -191,6 +194,17 @@ def _pick_int(env: str, saved: object, default: int, *, minimum: int = 1) -> int
     return value if value >= minimum else default
 
 
+def _pick_bool(env: str, saved: object, default: bool) -> bool:
+    raw = os.environ.get(env)
+    if raw is None:
+        raw = saved
+    if raw is None or raw == "":
+        return default
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class Config:
     root: Path
@@ -203,6 +217,7 @@ class Config:
     extraction_chunk_chars: int = 300
     extraction_chunk_overlap_chars: int = 40
     extraction_max_facts_per_chunk: int = 8
+    auto_accept_recommendations: bool = False
 
     def extraction_schema_hint(self) -> str:
         return (
@@ -235,6 +250,11 @@ class Config:
             saved.get("extraction_max_facts_per_chunk"),
             8,
         )
+        auto_accept = _pick_bool(
+            "VERINOTE_AUTO_ACCEPT_RECOMMENDATIONS",
+            saved.get("auto_accept_recommendations"),
+            False,
+        )
         return cls(
             root=root,
             db_path=root / "kb.sqlite",
@@ -246,6 +266,7 @@ class Config:
             extraction_chunk_chars=chunk_chars,
             extraction_chunk_overlap_chars=chunk_overlap,
             extraction_max_facts_per_chunk=max_facts,
+            auto_accept_recommendations=auto_accept,
         )
 
     @classmethod

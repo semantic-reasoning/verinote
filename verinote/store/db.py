@@ -747,7 +747,15 @@ class Store:
         rows = self._conn.execute("SELECT status, COUNT(*) c FROM facts GROUP BY status")
         return {r["status"]: r["c"] for r in rows}
 
-    def set_status(self, fact_id: int, status: str, *, action: str = "set_status") -> sqlite3.Row | None:
+    def set_status(
+        self,
+        fact_id: int,
+        status: str,
+        *,
+        action: str = "set_status",
+        actor: str = "human",
+        rule_name: str = "",
+    ) -> sqlite3.Row | None:
         with self._lock:
             before = self.get_fact(fact_id)
             if before is None:
@@ -757,7 +765,7 @@ class Store:
                 (status, fact_id),
             )
             after = self.get_fact(fact_id)
-            self._log(fact_id, action, before, after)
+            self._log(fact_id, action, before, after, actor=actor, rule_name=rule_name)
             return after
 
     def toggle_review(self, fact_id: int) -> sqlite3.Row | None:
@@ -882,7 +890,14 @@ class Store:
             )
 
     def _log(
-        self, fact_id: int, action: str, before: sqlite3.Row | None, after: sqlite3.Row | None
+        self,
+        fact_id: int,
+        action: str,
+        before: sqlite3.Row | None,
+        after: sqlite3.Row | None,
+        *,
+        actor: str = "human",
+        rule_name: str = "",
     ) -> None:
         source_id = int(after["source_id"]) if after and after["source_id"] is not None else None
         job_id = int(after["job_id"]) if after and after["job_id"] is not None else None
@@ -898,9 +913,10 @@ class Store:
         self._add_fact_event(
             fact_id=fact_id,
             event_type=action,
-            actor="human",
+            actor=actor,
             source_id=source_id,
             job_id=job_id,
+            rule_name=rule_name,
             before=before,
             after=after,
         )

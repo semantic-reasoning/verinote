@@ -67,6 +67,8 @@ tr.editing td { background: rgba(91, 157, 255, .06); }
 .settings label { display: flex; flex-direction: column; gap: .3rem; color: var(--muted); }
 .settings select, .settings input { background: var(--bg); color: var(--fg);
   border: 1px solid var(--line); border-radius: 6px; padding: .4rem .55rem; }
+.settings .inline-setting { flex-direction: row; align-items: center; color: var(--fg); }
+.settings .inline-setting input { width: auto; }
 .settings .btn { align-self: flex-start; }
 .ok-note { background: rgba(63, 185, 80, .12); border: 1px solid var(--ok); color: var(--ok);
   border-radius: 8px; padding: .6rem .9rem; margin: 1rem 0; }
