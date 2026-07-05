@@ -36,12 +36,31 @@ def test_translate_persists_query_and_writes_file(tmp_path, fake_client):
     assert f"answer_q{qid}" in load_query(s)
 
 
+def test_translate_korean_role_question_bypasses_llm(tmp_path):
+    class FailingClient:
+        def translate_query(self, *, question: str, qid: int, schema_hint: str = "") -> str:
+            raise AssertionError("deterministic role questions must not call the LLM")
+
+    s = _store(tmp_path)
+    qid = s.add_question("샘플인물의 역할은 무엇인가?")
+    results = translate_questions(s, FailingClient(), root=tmp_path)
+
+    assert results == [
+        {"id": qid, "status": "translated", "query_dl": s.questions()[0]["query_dl"]}
+    ]
+    query_dl = s.questions()[0]["query_dl"]
+    assert f'answer_q{qid}(O) :- relation("샘플인물", "역할", O).' in query_dl
+    assert f'answer_q{qid}(R) :- relation(S, R, "샘플인물").' in query_dl
+    assert f'answer_q{qid}(R) :- relation(S, R, person("샘플인물")).' in query_dl
+    assert load_query(s) == query_dl + "\n"
+
+
 def test_load_query_expands_relation_aliases(tmp_path, fake_client):
     s = _store(tmp_path)
     policy = tmp_path / "policy"
     policy.mkdir()
     (policy / "relation-aliases.md").write_text("- `role` -> `역할`\n", encoding="utf-8")
-    qid = s.add_question("샘플인물의 역할은 무엇인가")
+    qid = s.add_question("Find the sample person's role")
     client = fake_client(
         query=lambda question, qid: f'answer_q{qid}(V) :- relation("샘플인물", "role", V).'
     )
