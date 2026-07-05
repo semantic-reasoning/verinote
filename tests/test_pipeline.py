@@ -265,6 +265,32 @@ def test_extract_source_keeps_han_text_that_appears_in_korean_source(
     )
 
 
+def test_extract_source_normalizes_and_runs_focused_role_pass(tmp_path):
+    s = _store(tmp_path)
+    run_id = s.add_run(provider="fake", model="m")
+    client = _FocusedRoleClient()
+
+    assert (
+        extract_source(
+            s,
+            client,
+            source_path="sources/a.pdf",
+            source_text="발표· 성명대표| 샘플조직",
+            run_id=run_id,
+        )
+        == 1
+    )
+
+    assert len(client.calls) == 2
+    assert "성명 대표 (원문: 성명대표)" in client.calls[0][0]
+    assert "Additional focused pass" in client.calls[1][1]
+    fact = s.facts()[0]
+    assert fact["subject"] == "샘플조직"
+    assert fact["relation"] == "대표"
+    assert fact["object"] == "성명"
+    assert fact["note"] == "원문: 성명대표"
+
+
 def test_extract_source_rejects_invalid_structural_term_without_partial_facts(
     tmp_path, fake_client
 ):
@@ -341,6 +367,40 @@ class _ChunkAwareClient:
         return [ExtractedFact(label, "seen_in", "source", 0.9)]
 
 
+class _FocusedRoleClient:
+    name = "focused-role"
+
+    def __init__(self):
+        self.calls: list[tuple[str, str]] = []
+
+    def extract_facts(self, *, source_text: str, schema_hint: str = ""):
+        self.calls.append((source_text, schema_hint))
+        if "Additional focused pass" not in schema_hint:
+            return []
+        return [
+            ExtractedFact(
+                "샘플조직",
+                "대표",
+                "성명",
+                0.9,
+                note="원문: 성명대표",
+            )
+        ]
+
+
+class _FocusedRoleFailureClient:
+    name = "focused-role-failure"
+
+    def __init__(self):
+        self.calls = 0
+
+    def extract_facts(self, *, source_text: str, schema_hint: str = ""):
+        self.calls += 1
+        if "Additional focused pass" in schema_hint:
+            raise LLMError("role pass failed")
+        return [ExtractedFact("alpha", "seen_in", "source", 0.9)]
+
+
 def test_create_chunked_extraction_job_persists_chunks(tmp_path):
     s = _store(tmp_path)
     sid = s.add_source("sources/a.txt")
@@ -356,6 +416,27 @@ def test_create_chunked_extraction_job_persists_chunks(tmp_path):
     assert job["total_chunks"] == len(chunks)
     assert len(chunks) >= 2
     assert chunks[0]["status"] == "pending"
+
+
+def test_create_chunked_extraction_job_normalizes_role_text_for_analysis_chunks(
+    tmp_path,
+):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.pdf")
+
+    job_id = create_chunked_extraction_job(
+        s,
+        source_id=sid,
+        source_text="발표· 성명대표| 샘플조직",
+        provider="fake",
+        model="m",
+        chunk_chars=1000,
+        chunk_overlap_chars=0,
+    )
+
+    chunks = s.source_chunks(job_id)
+    assert len(chunks) == 1
+    assert "성명 대표 (원문: 성명대표)" in chunks[0]["text"]
 
 
 def test_process_extraction_job_extracts_chunks_and_tracks_progress(tmp_path):
@@ -375,6 +456,54 @@ def test_process_extraction_job_extracts_chunks_and_tracks_progress(tmp_path):
     facts = s.facts()
     assert [f["subject"] for f in facts] == ["alpha", "beta"]
     assert {f["job_id"] for f in facts} == {job_id}
+
+
+def test_process_extraction_job_runs_focused_role_pass_with_original_note(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.pdf")
+    job_id = create_chunked_extraction_job(
+        s,
+        source_id=sid,
+        source_text="발표· 성명대표| 샘플조직",
+        provider="fake",
+        model="m",
+        chunk_chars=1000,
+        chunk_overlap_chars=0,
+    )
+    client = _FocusedRoleClient()
+
+    result = process_extraction_job(s, client, job_id=job_id)
+
+    assert result.candidates == 1
+    assert len(client.calls) == 2
+    assert "성명 대표 (원문: 성명대표)" in client.calls[0][0]
+    assert "Additional focused pass" in client.calls[1][1]
+    fact = s.facts()[0]
+    assert fact["subject"] == "샘플조직"
+    assert fact["relation"] == "대표"
+    assert fact["object"] == "성명"
+    assert fact["note"] == "원문: 성명대표"
+
+
+def test_process_extraction_job_ignores_focused_role_pass_failure(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    job_id = create_chunked_extraction_job(
+        s,
+        source_id=sid,
+        source_text="alpha 대표성명",
+        provider="fake",
+        model="m",
+        chunk_chars=1000,
+        chunk_overlap_chars=0,
+    )
+
+    result = process_extraction_job(s, _FocusedRoleFailureClient(), job_id=job_id)
+
+    assert result.candidates == 1
+    assert result.completed_chunks == 1
+    assert result.failed_chunks == 0
+    assert [f["subject"] for f in s.facts()] == ["alpha"]
 
 
 def test_process_extraction_job_keeps_successful_chunks_when_one_fails(tmp_path):

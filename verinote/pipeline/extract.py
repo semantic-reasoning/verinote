@@ -14,10 +14,21 @@ from typing import Iterable
 from verinote.engine.terms import TermParseError
 from verinote.llm.base import ExtractedFact, LLMClient, LLMError
 from verinote.pipeline.chunk import chunk_text
+from verinote.pipeline.normalize import normalize_for_extraction
 from verinote.store import Store
 from verinote.store.fact_input import structural_term
 
 
+ORG_PERSON_ROLE_SCHEMA_HINT = (
+    "Additional focused pass: extract only organization/person/role facts. "
+    "Target facts where an organization has a person in a role, or a person has "
+    "a role/title/affiliation. Normalize compact Korean role text such as "
+    "`성명 대표 (원문: 성명대표)` or `대표 성명 (원문: 대표성명)` into "
+    "source-language relation labels like `대표`, `대표이사`, `CTO`, `발표자`, "
+    "or `소속`. Use source-language organization/person names. If the chunk "
+    "contains a `원문:` marker, copy that original phrase into note. Do not invent "
+    "organization-person-role facts."
+)
 _NORMALIZATION_BRIDGE_RELATIONS = {
     "주체",
     "subject",
@@ -29,6 +40,7 @@ _NORMALIZATION_BRIDGE_RELATIONS = {
 }
 _HANGUL_RE = re.compile(r"[\uac00-\ud7a3]")
 _HAN_RUN_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
+_ROLE_CUE_RE = re.compile(r"원문:|대표|대표이사|CTO|CEO|CFO|담당자|발표자|총괄|소속")
 
 
 def extract_source(
@@ -46,8 +58,11 @@ def extract_source(
     after passing the human review gate (see the web review queue). Each fact
     cites its `source` and (when given) the `run` that produced it.
     """
-    facts = client.extract_facts(source_text=source_text, schema_hint=schema_hint)
-    rows = _candidate_rows(facts, source_text)
+    analysis_text = normalize_for_extraction(source_text)
+    facts = _extract_chunk_facts(
+        client, source_text=analysis_text, schema_hint=schema_hint
+    )
+    rows = _candidate_rows(facts, analysis_text)
 
     source_id = store.add_source(source_path)
     for subject, relation, obj, f in rows:
@@ -81,7 +96,8 @@ def create_chunked_extraction_job(
         kwargs["max_chars"] = chunk_chars
     if chunk_overlap_chars is not None:
         kwargs["overlap_chars"] = chunk_overlap_chars
-    chunks = chunk_text(source_text, **kwargs)
+    analysis_text = normalize_for_extraction(source_text)
+    chunks = chunk_text(analysis_text, **kwargs)
     job_id = store.create_extraction_job(
         source_id=source_id,
         artifact_id=artifact_id,
@@ -172,7 +188,7 @@ def _extract_chunk(
     job_id: int,
     schema_hint: str = "",
 ) -> int:
-    facts = client.extract_facts(source_text=source_text, schema_hint=schema_hint)
+    facts = _extract_chunk_facts(client, source_text=source_text, schema_hint=schema_hint)
     rows = _candidate_rows(facts, source_text)
     inserted = 0
     for subject, relation, obj, f in rows:
@@ -193,6 +209,30 @@ def _extract_chunk(
         )
         inserted += 1
     return inserted
+
+
+def _extract_chunk_facts(
+    client: LLMClient, *, source_text: str, schema_hint: str = ""
+) -> list[ExtractedFact]:
+    facts = client.extract_facts(source_text=source_text, schema_hint=schema_hint)
+    if _ROLE_CUE_RE.search(source_text) is None:
+        return facts
+    try:
+        facts.extend(
+            client.extract_facts(
+                source_text=source_text,
+                schema_hint=_focused_role_schema_hint(schema_hint),
+            )
+        )
+    except LLMError:
+        pass
+    return facts
+
+
+def _focused_role_schema_hint(schema_hint: str) -> str:
+    if not schema_hint:
+        return ORG_PERSON_ROLE_SCHEMA_HINT
+    return f"{schema_hint}\n{ORG_PERSON_ROLE_SCHEMA_HINT}"
 
 
 def _candidate_rows(
