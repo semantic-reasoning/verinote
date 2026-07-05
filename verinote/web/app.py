@@ -10,6 +10,7 @@ from __future__ import annotations
 from importlib import resources
 from pathlib import Path
 import threading
+import unicodedata
 from urllib.parse import urlencode
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
@@ -47,16 +48,21 @@ from verinote.pipeline.acceptance import (
 )
 from verinote.pipeline.report_trace import report_trace
 from verinote.pipeline.corroboration import (
+    canonical_relation,
     CorroborationPolicyError,
+    normalize_typed_value,
     RELATION_ALIASES_RELPATH,
     relation_aliases,
     store_corroboration,
+    store_relation_aliases,
     store_single_valued_conflicts,
+    store_typed_relations,
 )
 from verinote.pipeline.workbench import trust_workbench
 from verinote.engine.terms import StringLit, render_term
 from verinote.store import (
     DEFAULT_REVIEW_PAGE_SIZE,
+    ENGINE_STATUSES,
     REVIEW_PAGE_SIZES,
     ReviewQueuePage,
     Store,
@@ -335,31 +341,19 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     def _source_inspector_rows(store: Store) -> list[dict[str, object]]:
         facts = store.facts()
-        facts_by_source: dict[int, list[object]] = {}
-        for fact in facts:
-            if fact["source_id"] is None:
-                continue
-            facts_by_source.setdefault(int(fact["source_id"]), []).append(fact)
-
+        trust_rollup = _source_trust_rollup(store, facts)
         rows = []
         for source in store.sources_with_counts():
             row = dict(source)
             source_id = int(source["id"])
-            summaries = [
-                fact_trust_summary(store, int(fact["id"]))
-                for fact in facts_by_source.get(source_id, [])
-            ]
-            summaries = [summary for summary in summaries if summary is not None]
-            row["unsupported_count"] = sum(
-                1 for summary in summaries if "unsupported" in summary.trust_labels
+            counts = trust_rollup.get(
+                source_id,
+                {"unsupported": 0, "conflicted": 0, "corroborated": 0},
             )
-            row["conflicted_count"] = sum(
-                1 for summary in summaries if "conflicted" in summary.trust_labels
-            )
-            row["corroborated_count"] = sum(
-                1 for summary in summaries if "corroborated" in summary.trust_labels
-            )
-            row["evidence_snippets"] = _source_evidence_snippets(summaries, source_id)
+            row["unsupported_count"] = counts["unsupported"]
+            row["conflicted_count"] = counts["conflicted"]
+            row["corroborated_count"] = counts["corroborated"]
+            row["evidence_snippets"] = store.source_evidence_snippets(source_id)
             row["artifacts"] = [dict(artifact) for artifact in store.source_artifacts(source_id)]
             row["failed_chunk_details"] = []
             row["pending_chunks"] = 0
@@ -374,20 +368,65 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             rows.append(row)
         return rows
 
-    def _source_evidence_snippets(summaries, source_id: int) -> list[str]:
-        snippets: list[str] = []
-        seen: set[str] = set()
-        for summary in summaries:
-            for evidence in summary.evidence:
-                if evidence.source_id != source_id or not evidence.snippet:
-                    continue
-                if evidence.snippet in seen:
-                    continue
-                snippets.append(evidence.snippet)
-                seen.add(evidence.snippet)
-                if len(snippets) == 2:
-                    return snippets
-        return snippets
+    def _source_trust_rollup(store: Store, facts) -> dict[int, dict[str, int]]:
+        aliases = store_relation_aliases(store)
+        typed = store_typed_relations(store)
+        support_sources: dict[tuple[str, str, tuple[str, object]], set[str]] = {}
+        for fact in facts:
+            if str(fact["status"]) not in ENGINE_STATUSES:
+                continue
+            source_path = str(fact["source_path"] or "").strip()
+            if not source_path:
+                continue
+            relation = canonical_relation(str(fact["relation"]), aliases)
+            support_sources.setdefault(
+                (
+                    str(fact["subject"]),
+                    relation,
+                    _source_object_key(relation, str(fact["object"]), typed),
+                ),
+                set(),
+            ).add(source_path)
+
+        conflict_keys = {
+            (conflict.subject, conflict.relation)
+            for conflict in store_single_valued_conflicts(store)
+        }
+        counts: dict[int, dict[str, int]] = {}
+        for fact in facts:
+            if fact["source_id"] is None:
+                continue
+            source_id = int(fact["source_id"])
+            bucket = counts.setdefault(
+                source_id,
+                {"unsupported": 0, "conflicted": 0, "corroborated": 0},
+            )
+            relation = canonical_relation(str(fact["relation"]), aliases)
+            support_count = len(
+                support_sources.get(
+                    (
+                        str(fact["subject"]),
+                        relation,
+                        _source_object_key(relation, str(fact["object"]), typed),
+                    ),
+                    set(),
+                )
+            )
+            if support_count == 0:
+                bucket["unsupported"] += 1
+            elif support_count > 1:
+                bucket["corroborated"] += 1
+            if (str(fact["subject"]), relation) in conflict_keys:
+                bucket["conflicted"] += 1
+        return counts
+
+    def _source_object_key(relation: str, obj: str, typed) -> tuple[str, object]:
+        spec = typed.get(relation) or typed.get(unicodedata.normalize("NFC", relation))
+        if spec is not None:
+            scalar = normalize_typed_value(spec.type, obj, spec.units)
+            if scalar is not None:
+                return ("scalar", scalar)
+        return ("raw", obj)
 
     def _dashboard_queues(store: Store) -> list[dict[str, object]]:
         review_summaries = [

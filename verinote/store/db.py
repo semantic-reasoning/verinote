@@ -666,6 +666,18 @@ class Store:
             )
         )
 
+    def source_evidence_snippets(self, source_id: int, *, limit: int = 2) -> list[str]:
+        """Distinct evidence snippets for one source, oldest first."""
+        rows = self._conn.execute(
+            "SELECT e.snippet FROM fact_evidence e "
+            "WHERE e.source_id = ? AND e.snippet != '' "
+            "GROUP BY e.snippet "
+            "ORDER BY MIN(e.id) "
+            "LIMIT ?",
+            (source_id, limit),
+        )
+        return [str(row["snippet"]) for row in rows]
+
     # --- runs ------------------------------------------------------------
     def add_run(self, *, provider: str | None, model: str | None, summary: str = "") -> int:
         """Open an extraction run; facts produced by it cite the returned id."""
