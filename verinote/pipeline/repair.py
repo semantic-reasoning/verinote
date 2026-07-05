@@ -14,7 +14,7 @@ from pathlib import Path
 
 from verinote.engine import validate_query
 from verinote.llm.base import LLMClient, LLMError
-from verinote.pipeline.query import write_query_file
+from verinote.pipeline.query import deterministic_query_dl, write_query_file
 from verinote.store import Store
 
 _log = logging.getLogger("verinote.repair")
@@ -29,6 +29,12 @@ def repair_questions(store: Store, client: LLMClient, *, root: Path) -> list[dic
         if q["status"] != "review_required":
             continue
         qid = q["id"]
+        deterministic = deterministic_query_dl(q["text"], qid)
+        if deterministic:
+            store.set_question_query(qid, deterministic, "translated")
+            results.append({"id": qid, "accepted": True, "reason": ""})
+            continue
+
         try:
             line = client.translate_query(question=q["text"], qid=qid)
         except LLMError as exc:
