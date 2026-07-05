@@ -19,7 +19,11 @@ import unicodedata
 from verinote.engine.datalog import AtomExpr, Comparison, DatalogParseError, parse_program
 from verinote.engine.terms import Atom, StringLit, render_term
 from verinote.llm.base import LLMClient, LLMError
-from verinote.pipeline.corroboration import CorroborationPolicyError, store_relation_aliases
+from verinote.pipeline.corroboration import (
+    CorroborationPolicyError,
+    relation_canonical_variant,
+    store_relation_aliases,
+)
 from verinote.pipeline.query_intent import (
     KOREAN_ROLE_RELATION_CANDIDATES,
     QueryIntent,
@@ -233,7 +237,7 @@ def expand_query_relation_aliases(query_dl: str, aliases: dict[str, str]) -> str
     for rule in program.rules:
         alternatives: list[list[object]] = []
         has_alias = False
-        for index, item in enumerate(rule.body):
+        for item in rule.body:
             if not (isinstance(item, AtomExpr) and item.predicate == "relation"):
                 alternatives.append([item])
                 continue
@@ -241,12 +245,21 @@ def expand_query_relation_aliases(query_dl: str, aliases: dict[str, str]) -> str
                 alternatives.append([item])
                 continue
             raw = _relation_name(item.args[1])
-            if raw is None or raw not in aliases:
+            if raw is None:
                 alternatives.append([item])
                 continue
-            canonical = aliases[raw]
+            canonical = relation_canonical_variant(raw, aliases)
+            if canonical == unicodedata.normalize("NFC", raw):
+                alternatives.append([item])
+                continue
             alternatives.append(
-                [item, AtomExpr("relation", (item.args[0], StringLit(canonical), item.args[2]))]
+                [
+                    item,
+                    AtomExpr(
+                        "relation",
+                        (item.args[0], StringLit(canonical), item.args[2]),
+                    ),
+                ]
             )
             has_alias = True
         if not has_alias:

@@ -131,6 +131,36 @@ def test_expand_query_relation_aliases_normalizes_query_relation_names():
     assert 'answer_q1(O) :- relation("샘플인물", "role", O).' in expanded
 
 
+def test_expand_query_relation_aliases_does_not_duplicate_existing_canonical_rule():
+    query_dl = (
+        ".decl answer_q1(value: symbol)\n"
+        'answer_q1(O) :- relation("Sample Person", "role", O).\n'
+        'answer_q1(O) :- relation("Sample Person", "역할", O).\n'
+    )
+
+    expanded = expand_query_relation_aliases(query_dl, {"role": "역할"})
+
+    assert (
+        expanded.count('answer_q1(O) :- relation("Sample Person", "역할", O).')
+        == 1
+    )
+    assert (
+        expanded.count('answer_q1(O) :- relation("Sample Person", "role", O).')
+        == 1
+    )
+
+
+def test_expand_query_relation_aliases_does_not_expand_canonical_back_to_raw():
+    query_dl = (
+        ".decl answer_q1(value: symbol)\n"
+        'answer_q1(O) :- relation("Sample Person", "역할", O).\n'
+    )
+
+    expanded = expand_query_relation_aliases(query_dl, {"role": "역할"})
+
+    assert expanded == query_dl
+
+
 def test_expand_query_relation_aliases_caps_combinations():
     body = ", ".join(f'relation(X{i}, "r{i}", X{i + 1})' for i in range(7))
     query_dl = ".decl answer_q1(value: symbol)\n" f"answer_q1(O) :- {body}.\n"

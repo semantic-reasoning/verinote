@@ -213,6 +213,47 @@ def test_evaluate_query_candidate_plan_reports_alias_policy_error(tmp_path):
     assert "relation-aliases.md" in evaluation.evaluations[0].report.text
 
 
+def test_evaluate_query_candidate_plan_reports_alias_expansion_cap_as_policy_error(
+    tmp_path,
+):
+    store = _store(tmp_path)
+    policy = tmp_path / "policy"
+    policy.mkdir()
+    (policy / "relation-aliases.md").write_text(
+        "\n".join(f"- `r{i}` -> `canonical_{i}`" for i in range(7)) + "\n",
+        encoding="utf-8",
+    )
+    body = ", ".join(f'relation(X{i}, "r{i}", X{i + 1})' for i in range(7))
+    candidate = _candidate(
+        ".decl answer_q1(value: symbol)\n" f"answer_q1(X7) :- {body}."
+    )
+
+    evaluation = evaluate_query_candidate_plan(store, _plan(candidate))
+
+    assert evaluation.outcome == QueryCandidateSetOutcome.ENGINE_POLICY_ERROR
+    assert evaluation.evaluations[0].outcome == QueryCandidateOutcome.ENGINE_POLICY_ERROR
+    assert evaluation.evaluations[0].report is not None
+    assert "query alias expansion exceeds" in evaluation.evaluations[0].report.text
+
+
+def test_evaluate_query_candidate_plan_dedupes_mixed_raw_and_canonical_answers(
+    tmp_path,
+):
+    store = _store(tmp_path)
+    policy = tmp_path / "policy"
+    policy.mkdir()
+    (policy / "relation-aliases.md").write_text("- `role` -> `역할`\n", encoding="utf-8")
+    store.add_fact("Sample Person", "role", "Reviewer", status="confirmed")
+    store.add_fact("Sample Person", "역할", "Reviewer", status="confirmed")
+
+    evaluation = evaluate_query_candidate_plan(
+        store, _plan(_lookup(1, "Sample Person", "role"))
+    )
+
+    assert evaluation.outcome == QueryCandidateSetOutcome.VALID
+    assert evaluation.answers == ("q1: Reviewer",)
+
+
 def test_evaluate_query_candidate_plan_empty(tmp_path):
     store = _store(tmp_path)
 

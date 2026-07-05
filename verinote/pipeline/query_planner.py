@@ -6,6 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import unicodedata
 
+from verinote.pipeline.corroboration import relation_label_matches
 from verinote.pipeline.query_intent import QueryIntent, QueryIntentKind
 from verinote.pipeline.query_schema import (
     EntityRef,
@@ -190,19 +191,23 @@ def _relation_requests(intent: QueryIntent) -> tuple[str, ...]:
 
 
 def _relation_matches_any(relation: RelationSchema, wanted: tuple[str, ...]) -> bool:
-    observed = {
+    aliases = {entry.alias: entry.canonical for entry in relation.aliases}
+    observed = [
         _nfc(relation.relation.display),
         _nfc(relation.relation.executable),
         _nfc(relation.canonical_relation),
-    }
+    ]
     for alias in relation.aliases:
-        observed.add(_nfc(alias.alias))
-        observed.add(_nfc(alias.canonical))
+        observed.append(_nfc(alias.alias))
+        observed.append(_nfc(alias.canonical))
     if relation.typed is not None:
-        observed.add(_nfc(relation.typed.relation))
-        observed.add(_nfc(relation.typed.alias))
-        observed.add(_nfc(relation.typed.type))
-    return any(value in observed for value in wanted)
+        observed.append(_nfc(relation.typed.relation))
+        observed.append(_nfc(relation.typed.alias))
+    return any(
+        relation_label_matches(observed_value, wanted_value, aliases)
+        for observed_value in observed
+        for wanted_value in wanted
+    )
 
 
 def _matching_entities(

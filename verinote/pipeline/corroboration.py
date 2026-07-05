@@ -315,14 +315,60 @@ def _canonical_relation(relation: str, aliases: dict[str, str]) -> str:
 
 def canonical_relation(relation: str, aliases: dict[str, str]) -> str:
     """Return the relation name used for alias-aware trust comparisons."""
+    return relation_canonical_variant(relation, aliases)
+
+
+def relation_canonical_variant(relation: str, aliases: Mapping[str, str]) -> str:
+    """Return the alias canonical label for ``relation`` when policy defines one."""
     if not aliases:
         return relation
     normalized = unicodedata.normalize("NFC", relation)
-    if normalized in aliases:
-        return aliases[normalized]
-    if normalized in set(aliases.values()):
+    normalized_aliases = {
+        unicodedata.normalize("NFC", raw): unicodedata.normalize("NFC", canonical)
+        for raw, canonical in aliases.items()
+    }
+    if normalized in normalized_aliases:
+        return normalized_aliases[normalized]
+    if normalized in set(normalized_aliases.values()):
         return normalized
     return relation
+
+
+def relation_label_variants(relation: str, aliases: Mapping[str, str]) -> tuple[str, ...]:
+    """Return deterministic alias-equivalent labels for a relation label.
+
+    The input label is preserved as the first variant after NFC normalization so
+    callers that render queries keep observed labels ahead of policy-derived
+    alternatives.
+    """
+    normalized = unicodedata.normalize("NFC", relation)
+    variants = [normalized]
+    canonical = relation_canonical_variant(normalized, aliases)
+    if canonical != normalized:
+        variants.append(canonical)
+    normalized_aliases = {
+        unicodedata.normalize("NFC", raw): unicodedata.normalize("NFC", target)
+        for raw, target in aliases.items()
+    }
+    for alias, target in sorted(
+        normalized_aliases.items(),
+        key=lambda item: (
+            item[1],
+            item[0],
+        ),
+    ):
+        if target == canonical and alias not in variants:
+            variants.append(alias)
+    return tuple(variants)
+
+
+def relation_label_matches(
+    observed: str, wanted: str, aliases: Mapping[str, str]
+) -> bool:
+    """Return whether two relation labels match under alias/canonical semantics."""
+    observed_variants = set(relation_label_variants(observed, aliases))
+    wanted_variants = set(relation_label_variants(wanted, aliases))
+    return not observed_variants.isdisjoint(wanted_variants)
 
 
 def _value(row: Mapping[str, object], key: str, default: object = None) -> Any:
