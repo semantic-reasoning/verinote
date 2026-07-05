@@ -40,6 +40,10 @@
   <label>Max facts per chunk
     <input type="number" name="extraction_max_facts_per_chunk" value="{{ extraction_max_facts_per_chunk }}" min="1" step="1">
   </label>
+  <label class="inline-setting">
+    <input type="checkbox" name="auto_accept_recommendations" {{ 'checked' if auto_accept_recommendations else '' }}>
+    Auto-accept eligible deterministic recommendations
+  </label>
   <button class="btn" type="submit">Save</button>
 </form>
 

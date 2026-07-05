@@ -370,6 +370,61 @@ def test_workbench_renders_corroboration_conflicts_and_normalization(tmp_path):
     assert f'href="/facts/{fact_id}/provenance"' in body
 
 
+def test_review_shows_accept_recommendation(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    policy = tmp_path / "policy"
+    policy.mkdir()
+    (policy / "logic-policy.dl").write_text(
+        '.decl functional(rel: symbol)\nfunctional("published_year").\n',
+        encoding="utf-8",
+    )
+    source_a = store.add_source("sources/a.txt")
+    source_b = store.add_source("sources/b.txt")
+    job_a = store.create_extraction_job(
+        source_id=source_a,
+        provider="fake",
+        model="sample-model",
+        total_chunks=1,
+    )
+    job_b = store.create_extraction_job(
+        source_id=source_b,
+        provider="fake",
+        model="sample-model",
+        total_chunks=1,
+    )
+    chunk_a = store.add_source_chunks(job_id=job_a, source_id=source_a, chunks=["a"])[0]
+    chunk_b = store.add_source_chunks(job_id=job_b, source_id=source_b, chunks=["b"])[0]
+    store.mark_extraction_job_running(job_a)
+    store.mark_chunk_running(chunk_a)
+    store.mark_chunk_done(chunk_a, candidates=1)
+    store.finish_extraction_job(job_a)
+    store.mark_extraction_job_running(job_b)
+    store.mark_chunk_running(chunk_b)
+    store.mark_chunk_done(chunk_b, candidates=1)
+    store.finish_extraction_job(job_b)
+    store.add_fact(
+        "Sample Report",
+        "published_year",
+        "2024",
+        status="candidate",
+        source_id=source_a,
+        job_id=job_a,
+    )
+    store.add_fact(
+        "Sample Report",
+        "published_year",
+        "2024",
+        status="confirmed",
+        source_id=source_b,
+        job_id=job_b,
+    )
+
+    body = unescape(c.get("/review").text)
+
+    assert "accept recommended" in body
+
+
 def test_toggle_endpoint_swaps_row(tmp_path):
     c = _client(tmp_path)
     r = c.post(f"/facts/{c.fact_id}/toggle")
@@ -1308,6 +1363,7 @@ def test_settings_page_renders(tmp_path):
     assert 'name="extraction_chunk_chars"' in r.text
     assert 'name="extraction_chunk_overlap_chars"' in r.text
     assert 'name="extraction_max_facts_per_chunk"' in r.text
+    assert 'name="auto_accept_recommendations"' in r.text
 
 
 def test_settings_save_changes_active_provider(tmp_path, monkeypatch):
@@ -1323,6 +1379,7 @@ def test_settings_save_changes_active_provider(tmp_path, monkeypatch):
             "extraction_chunk_chars": "500",
             "extraction_chunk_overlap_chars": "20",
             "extraction_max_facts_per_chunk": "5",
+            "auto_accept_recommendations": "on",
         },
         follow_redirects=False,
     )
@@ -1332,6 +1389,7 @@ def test_settings_save_changes_active_provider(tmp_path, monkeypatch):
     assert c.app.state.cfg.extraction_chunk_chars == 500
     assert c.app.state.cfg.extraction_chunk_overlap_chars == 20
     assert c.app.state.cfg.extraction_max_facts_per_chunk == 5
+    assert c.app.state.cfg.auto_accept_recommendations is True
     assert (tmp_path / "config.json").is_file()
 
 

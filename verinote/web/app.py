@@ -39,6 +39,10 @@ from verinote.pipeline import (
     verify,
     write_query_file,
 )
+from verinote.pipeline.acceptance import (
+    accept_recommendations,
+    apply_auto_accept_recommendations,
+)
 from verinote.pipeline.corroboration import (
     store_corroboration,
     store_single_valued_conflicts,
@@ -130,10 +134,17 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             view[f"{field}_kind"] = term_input_kind(term)
         return view
 
-    def _fact_row_context(fact):
+    def _fact_row_context(fact, recommendations=None):
         view = _fact_view(fact)
         trust = fact_trust_summary(_active_store(), int(fact["id"])) if fact else None
-        return {"f": view, "trust": trust}
+        if fact and recommendations is None:
+            recommendations = accept_recommendations(_active_store())
+        recommendation = recommendations.get(int(fact["id"])) if fact else None
+        return {"f": view, "trust": trust, "recommendation": recommendation}
+
+    def _maybe_apply_auto_accept() -> None:
+        if _active_cfg().auto_accept_recommendations:
+            apply_auto_accept_recommendations(_active_store())
 
     def _row(request: Request, fact):
         # Starlette's current API is TemplateResponse(request, name, context).
@@ -302,6 +313,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                         job_id=job_id,
                         schema_hint=cfg.extraction_schema_hint(),
                     )
+                    if cfg.auto_accept_recommendations:
+                        apply_auto_accept_recommendations(worker_store)
             except LLMError as e:
                 with Store(cfg.db_path) as worker_store:
                     worker_store.init_schema()
@@ -474,7 +487,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     @app.get("/review", response_class=HTMLResponse)
     def review(request: Request, filter: str = "needs-human-decision"):
         store = _active_store()
-        rows = [_fact_row_context(f) for f in store.review_queue()]
+        _maybe_apply_auto_accept()
+        recommendations = accept_recommendations(store)
+        rows = [_fact_row_context(f, recommendations) for f in store.review_queue()]
         rows = _filter_review_rows(rows, filter)
         return templates.TemplateResponse(
             request,
@@ -649,6 +664,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 "extraction_chunk_chars": c.extraction_chunk_chars,
                 "extraction_chunk_overlap_chars": c.extraction_chunk_overlap_chars,
                 "extraction_max_facts_per_chunk": c.extraction_max_facts_per_chunk,
+                "auto_accept_recommendations": c.auto_accept_recommendations,
                 "root": c.root,
                 "has_key": bool(c.api_key),  # never render the key itself
                 "connection_test_enabled": c.provider in TESTABLE_PROVIDERS,
@@ -671,6 +687,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         extraction_chunk_chars: int = Form(300),
         extraction_chunk_overlap_chars: int = Form(40),
         extraction_max_facts_per_chunk: int = Form(8),
+        auto_accept_recommendations: str | None = Form(None),
     ):
         cfg = _active_cfg()
         save_settings(
@@ -681,6 +698,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             extraction_chunk_chars=extraction_chunk_chars,
             extraction_chunk_overlap_chars=extraction_chunk_overlap_chars,
             extraction_max_facts_per_chunk=extraction_max_facts_per_chunk,
+            auto_accept_recommendations=auto_accept_recommendations == "on",
         )
         # reload from the app's own root so the change takes effect on next sync
         app.state.cfg = Config.for_root(cfg.root)

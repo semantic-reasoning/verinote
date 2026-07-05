@@ -24,6 +24,15 @@
       {% if trust.typed_value %}
         <span class="badge">{{ trust.typed_value.type }} <code>{{ trust.typed_value.alias }}</code></span>
       {% endif %}
+      {% if recommendation %}
+        {% if recommendation.eligible %}
+          <span class="badge trust-reviewed">accept recommended</span>
+        {% else %}
+          {% for reason in recommendation.reasons[:2] %}
+            <span class="badge trust-unsupported">{{ reason|replace("_", " ") }}</span>
+          {% endfor %}
+        {% endif %}
+      {% endif %}
     {% else %}
       <span class="badge trust-evidence_missing">trust unavailable</span>
     {% endif %}
