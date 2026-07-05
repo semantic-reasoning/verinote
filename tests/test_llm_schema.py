@@ -79,6 +79,27 @@ def test_parse_facts_accepts_top_level_array_from_local_models():
     assert facts[0].object == "mathematician"
 
 
+def test_parse_facts_accepts_common_array_wrappers_from_local_models():
+    for key in ("facts", "items", "data", "results"):
+        facts = parse_facts(
+            {
+                key: [
+                    {
+                        "subject": "Ada",
+                        "relation": "is_a",
+                        "object": "mathematician",
+                        "confidence": 0.9,
+                        "note": "",
+                    }
+                ]
+            }
+        )
+
+        assert [(fact.subject, fact.relation, fact.object) for fact in facts] == [
+            ("Ada", "is_a", "mathematician")
+        ]
+
+
 def test_parse_facts_uses_first_json_value_from_noisy_local_output():
     facts = parse_facts(
         '```json\n'
