@@ -1,7 +1,7 @@
 {# Inline edit form for one fact. Swapped in by HTMX from the row's ✎ edit;
    save POSTs /amend (re-renders the row), cancel GETs /row (reverts). #}
 <tr id="fact-{{ f['id'] }}" class="fact editing">
-  <td colspan="5">
+  <td colspan="4">
     {% if error %}
     <p class="error">{{ error }}</p>
     {% endif %}

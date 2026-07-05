@@ -1,14 +1,48 @@
 {# A single fact row. Re-rendered and swapped in place by HTMX after a decision. #}
 <tr id="fact-{{ f['id'] }}" class="fact status-{{ f['status'] }}">
   <td class="triple">
-    <span class="subj term-{{ f['subject_kind'] }}" title="{{ f['subject_kind'] }}">{{ f['subject_display'] }}</span>
-    <span class="rel term-{{ f['relation_kind'] }}" title="{{ f['relation_kind'] }}">{{ f['relation_display'] }}</span>
-    <span class="obj term-{{ f['object_kind'] }}" title="{{ f['object_kind'] }}">{{ f['object_display'] }}</span>
+    <div>
+      <span class="subj term-{{ f['subject_kind'] }}" title="{{ f['subject_kind'] }}">{{ f['subject_display'] }}</span>
+      <span class="rel term-{{ f['relation_kind'] }}" title="{{ f['relation_kind'] }}">{{ f['relation_display'] }}</span>
+      <span class="obj term-{{ f['object_kind'] }}" title="{{ f['object_kind'] }}">{{ f['object_display'] }}</span>
+    </div>
+    <div class="row-meta">
+      <span class="badge badge-{{ f['status'] }}">{{ f['status'] }}</span>
+      {% if f['source_path'] %}<code>{{ f['source_path'] }}</code>{% else %}<span class="muted">no source</span>{% endif %}
+    </div>
   </td>
-  <td><span class="badge badge-{{ f['status'] }}">{{ f['status'] }}</span></td>
-  <td class="conf">{{ '%.2f'|format(f['confidence']) }}</td>
-  <td class="src">{{ f['source_path'] or '—' }}</td>
+  <td class="signals">
+    {% if trust %}
+      {% for label in trust.trust_labels %}
+        <span class="badge trust-{{ label }}">{{ label|replace("_", " ") }}</span>
+      {% endfor %}
+      <span class="badge">{{ trust.support.source_count }} source{% if trust.support.source_count != 1 %}s{% endif %}</span>
+      {% if trust.conflict %}<span class="badge trust-conflicted">conflict</span>{% endif %}
+      {% if trust.canonical_relation != f['relation'] %}
+        <span class="badge">canonical <code>{{ trust.canonical_relation }}</code></span>
+      {% endif %}
+      {% if trust.typed_value %}
+        <span class="badge">{{ trust.typed_value.type }} <code>{{ trust.typed_value.alias }}</code></span>
+      {% endif %}
+    {% else %}
+      <span class="badge trust-evidence_missing">trust unavailable</span>
+    {% endif %}
+  </td>
+  <td class="evidence-cell">
+    {% if trust and trust.evidence %}
+      {% set e = trust.evidence[0] %}
+      <div><span class="badge">{{ e.evidence_kind }}</span> <code>{{ e.source_path }}</code></div>
+      <div class="src">
+        {% if e.chunk_index is not none %}chunk {{ e.chunk_index }}{% else %}source{% endif %}
+        {% if e.chunk_status %}· {{ e.chunk_status }}{% endif %}
+      </div>
+      {% if e.snippet %}<div class="snippet">{{ e.snippet }}</div>{% endif %}
+    {% else %}
+      <span class="muted">No evidence anchor</span>
+    {% endif %}
+  </td>
   <td class="actions">
+    <a class="btn ghost" href="/facts/{{ f['id'] }}/provenance" title="inspect trust dossier">Inspect</a>
     <button hx-post="/facts/{{ f['id'] }}/toggle"
             hx-target="#fact-{{ f['id'] }}" hx-swap="outerHTML"
             title="needs_review ⇄ confirmed">⇄ toggle</button>
@@ -19,6 +53,5 @@
             class="danger">✗ reject</button>
     <button hx-get="/facts/{{ f['id'] }}/edit"
             hx-target="#fact-{{ f['id'] }}" hx-swap="outerHTML">✎ edit</button>
-    <a class="srclink" href="/facts/{{ f['id'] }}/provenance" title="source &amp; audit trail">ⓘ source</a>
   </td>
 </tr>

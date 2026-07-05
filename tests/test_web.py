@@ -125,6 +125,8 @@ def test_review_shows_queue(tmp_path):
     r = c.get("/review")
     assert r.status_code == 200
     assert "is_a" in r.text
+    assert "Inspect" in r.text
+    assert "Conf." not in r.text
 
 
 def test_review_renders_structural_terms_from_duckdb_and_distinguishes_strings(tmp_path):
@@ -148,6 +150,140 @@ def test_review_renders_structural_terms_from_duckdb_and_distinguishes_strings(t
     assert 'class="subj term-string" title="string">"person(\\"Ada\\")"' in body
     assert 'class="subj term-term" title="term">person("Ada")' in body
     assert 'class="obj term-term" title="term">role(person("Ada"), "PI")' in body
+
+
+def test_review_rows_show_trust_signals_evidence_and_inspect_link(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    policy = tmp_path / "policy"
+    policy.mkdir()
+    (policy / "logic-policy.dl").write_text(
+        '.decl functional(rel: symbol)\nfunctional("published_year").\n',
+        encoding="utf-8",
+    )
+    (policy / "relation-aliases.md").write_text(
+        "- `publication_year` -> `published_year`\n",
+        encoding="utf-8",
+    )
+    (policy / "typed-relations.md").write_text(
+        "- published_year : number as year_number\n",
+        encoding="utf-8",
+    )
+    source_id = store.add_source("sources/sample-candidate.txt")
+    artifact_id = store.add_source_artifact(
+        source_id=source_id,
+        kind="original_text",
+        path="sources/sample-candidate.txt",
+    )
+    job_id = store.create_extraction_job(
+        source_id=source_id,
+        artifact_id=artifact_id,
+        provider="fake",
+        model="sample-model",
+        total_chunks=1,
+    )
+    chunk_id = store.add_source_chunks(
+        job_id=job_id,
+        source_id=source_id,
+        chunks=["Sample Report was published in 2024."],
+    )[0]
+    fact_id = store.add_fact(
+        "Sample Report",
+        "publication_year",
+        "2024",
+        status="candidate",
+        source_id=source_id,
+        job_id=job_id,
+    )
+    store.add_fact_evidence(
+        fact_id=fact_id,
+        source_id=source_id,
+        artifact_id=artifact_id,
+        job_id=job_id,
+        chunk_id=chunk_id,
+        snippet="Sample Report was published in 2024.",
+    )
+    support_a = store.add_source("sources/sample-support-a.txt")
+    support_b = store.add_source("sources/sample-support-b.txt")
+    conflict = store.add_source("sources/sample-conflict.txt")
+    store.add_fact(
+        "Sample Report",
+        "published_year",
+        "2024",
+        status="accepted",
+        source_id=support_a,
+    )
+    store.add_fact(
+        "Sample Report",
+        "published_year",
+        "2024",
+        status="confirmed",
+        source_id=support_b,
+    )
+    store.add_fact(
+        "Sample Report",
+        "published_year",
+        "2025",
+        status="accepted",
+        source_id=conflict,
+    )
+
+    body = unescape(c.get("/review").text)
+
+    assert "source backed" in body
+    assert "corroborated" in body
+    assert "conflicted" in body
+    assert "canonical" in body
+    assert "published_year" in body
+    assert "year_number" in body
+    assert "Sample Report was published in 2024." in body
+    assert f'href="/facts/{fact_id}/provenance"' in body
+    assert "Inspect" in body
+
+
+def test_review_filters_by_deterministic_trust_signals(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    unsupported = store.add_fact(
+        "Unsupported Sample",
+        "uses",
+        "Sample Service",
+        status="candidate",
+    )
+    source_a = store.add_source("sources/sample-a.txt")
+    source_b = store.add_source("sources/sample-b.txt")
+    reviewed = store.add_source("sources/sample-reviewed.txt")
+    corroborated = store.add_fact(
+        "Reviewed Sample",
+        "uses",
+        "Sample Service",
+        status="candidate",
+        source_id=reviewed,
+    )
+    store.add_fact(
+        "Reviewed Sample",
+        "uses",
+        "Sample Service",
+        status="accepted",
+        source_id=source_a,
+    )
+    store.add_fact(
+        "Reviewed Sample",
+        "uses",
+        "Sample Service",
+        status="confirmed",
+        source_id=source_b,
+    )
+
+    unsupported_body = unescape(c.get("/review?filter=unsupported").text)
+    assert "Unsupported Sample" in unsupported_body
+    assert "Reviewed Sample" not in unsupported_body
+    assert f'href="/facts/{unsupported}/provenance"' in unsupported_body
+
+    corroborated_body = unescape(c.get("/review?filter=corroborated").text)
+    assert "Reviewed Sample" in corroborated_body
+    assert "Unsupported Sample" not in corroborated_body
+    assert f'href="/facts/{corroborated}/provenance"' in corroborated_body
 
 
 def test_toggle_endpoint_swaps_row(tmp_path):

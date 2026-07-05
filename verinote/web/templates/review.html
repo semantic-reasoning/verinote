@@ -5,20 +5,28 @@
 <p class="muted">Facts awaiting the human gate (<code>candidate</code> / <code>needs_review</code>).
   Toggle promotes to <code>confirmed</code>; accept/reject decide directly.</p>
 
+<nav class="filters" aria-label="review filters">
+  {% for key, label in filters %}
+    <a class="badge {% if active_filter == key %}active{% endif %}" href="/review?filter={{ key }}">{{ label }}</a>
+  {% endfor %}
+</nav>
+
 {% if queue %}
 <table class="facts">
   <thead>
-    <tr><th>Fact (subject · relation · object)</th><th>Status</th><th>Conf.</th><th>Source</th><th>Decision</th></tr>
+    <tr><th>Fact</th><th>Trust signals</th><th>Evidence</th><th>Decision</th></tr>
   </thead>
   <tbody>
-    {% for f in queue %}
+    {% for row in queue %}
+      {% set f = row.f %}
+      {% set trust = row.trust %}
       {% include "partials/fact_row.html" %}
     {% endfor %}
   </tbody>
 </table>
 {% else %}
 <div class="empty">
-  <p>✓ Review queue is empty — no <code>needs_review</code> or <code>candidate</code> facts.</p>
+  <p>Review queue is empty for this filter.</p>
 </div>
 {% endif %}
 {% endblock %}
