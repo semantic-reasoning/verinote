@@ -7,8 +7,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import re
+import unicodedata
 from typing import Iterable
 
 from verinote.engine.terms import TermParseError
@@ -21,12 +22,17 @@ from verinote.store.fact_input import structural_term
 
 ORG_PERSON_ROLE_SCHEMA_HINT = (
     "Additional focused pass: extract only organization/person/role facts. "
-    "Target facts where an organization has a person in a role, or a person has "
-    "a role/title/affiliation. Normalize compact Korean role text such as "
+    "Write role facts as organization subject, role predicate, person object when "
+    "the source explicitly says a person holds that role for the organization. "
+    "For presenter lines like `발표· 성명 대표 (원문: 성명대표)| 샘플조직`, emit "
+    "`샘플조직`, `대표`, `성명`; do not emit person-subject role facts. "
+    "Normalize compact Korean role text such as "
     "`성명 대표 (원문: 성명대표)` or `대표 성명 (원문: 대표성명)` into "
     "source-language relation labels like `대표`, `대표이사`, `CTO`, `발표자`, "
-    "or `소속`. Use source-language organization/person names. If the chunk "
-    "contains a `원문:` marker, copy that original phrase into note. Do not invent "
+    "or `소속`. Use only the organization in the same line, table row, bullet, or "
+    "layout record as the person/role phrase. If another organization appears "
+    "elsewhere in the chunk, do not connect it to the person. If the chunk contains "
+    "a `원문:` marker, copy that original phrase into note. Do not invent "
     "organization-person-role facts."
 )
 _NORMALIZATION_BRIDGE_RELATIONS = {
@@ -38,8 +44,19 @@ _NORMALIZATION_BRIDGE_RELATIONS = {
     "canonical",
     "canonical_form",
 }
+_KEY_VALUE_RELATIONS = {"값", "value", "has_value", "label_value"}
+_STANDARD_ASCII_RELATIONS = {"value"}
+_COPULA_OBJECTS = {"입니다", "이다", "임", "있습니다", "없습니다", "합니다"}
 _HANGUL_RE = re.compile(r"[\uac00-\ud7a3]")
 _HAN_RUN_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
+_ASCII_RELATION_RE = re.compile(r"^[A-Za-z0-9_ -]+$")
+_COMPACT_SEP_RE = re.compile(r"[\s\W_]+", re.UNICODE)
+_METRIC_OBJECT_RE = re.compile(
+    r"(?:\d[\d,]*(?:\.\d+)?\s*(?:%|％|명|곳|건|년|개|원|조|억|만))|"
+    r"(?:\d+\s*조(?:\s*\d[\d,]*\s*억)?)|"
+    r"(?:\d[\d,]*\s*억)"
+)
+_RECORD_SPLIT_RE = re.compile(r"[\n\r]+|[。.!?;；]")
 _ROLE_CUE_RE = re.compile(r"원문:|대표|대표이사|CTO|CEO|CFO|담당자|발표자|총괄|소속")
 
 
@@ -241,9 +258,16 @@ def _candidate_rows(
     rows = []
     try:
         for f in facts:
+            f = _canonical_fact(f)
+            if f is None:
+                continue
             if _is_normalization_bridge(f):
                 continue
             if _has_unbacked_han_translation(f, source_text):
+                continue
+            if _has_unbacked_ascii_relation(f, source_text):
+                continue
+            if _has_unsupported_metric_subject(f, source_text):
                 continue
             rows.append(
                 (
@@ -256,6 +280,25 @@ def _candidate_rows(
     except TermParseError as exc:
         raise LLMError(f"malformed extracted structural term: {exc}") from exc
     return rows
+
+
+def _canonical_fact(f: ExtractedFact) -> ExtractedFact | None:
+    """Normalize shallow fact shapes and drop malformed S-P-O fragments."""
+    if _is_bad_spo_shape(f):
+        return None
+    if f.relation_kind == "string" and f.relation.strip() in _KEY_VALUE_RELATIONS:
+        return replace(f, relation="value")
+    return f
+
+
+def _is_bad_spo_shape(f: ExtractedFact) -> bool:
+    relation = f.relation.strip()
+    obj = f.object.strip()
+    if f.object_kind == "string" and obj in _COPULA_OBJECTS:
+        return True
+    if f.relation_kind == "string" and _compact_text(relation).endswith("여부"):
+        return True
+    return False
 
 
 def _is_normalization_bridge(f: ExtractedFact) -> bool:
@@ -274,6 +317,49 @@ def _has_unbacked_han_translation(f: ExtractedFact, source_text: str) -> bool:
         _has_han_run_not_in_source(value, source_text)
         for value in (f.subject, f.relation, f.object)
     )
+
+
+def _has_unbacked_ascii_relation(f: ExtractedFact, source_text: str) -> bool:
+    """Drop English/snake_case relation labels hallucinated from Korean sources."""
+    if _HANGUL_RE.search(source_text) is None:
+        return False
+    relation = f.relation.strip()
+    if relation.casefold() in _STANDARD_ASCII_RELATIONS:
+        return False
+    if _ASCII_RELATION_RE.fullmatch(relation) is None:
+        return False
+    return _compact_text(relation) not in _compact_text(source_text)
+
+
+def _has_unsupported_metric_subject(f: ExtractedFact, source_text: str) -> bool:
+    """Drop numeric facts whose subject is absent from the local evidence record."""
+    if _METRIC_OBJECT_RE.search(f.object) is None:
+        return False
+    subject = _compact_text(f.subject)
+    if not subject:
+        return True
+    for record in _metric_evidence_records(f, source_text):
+        if subject in _compact_text(record):
+            return False
+    return True
+
+
+def _metric_evidence_records(f: ExtractedFact, source_text: str) -> list[str]:
+    records = []
+    compact_object = _compact_text(f.object)
+    compact_relation = _compact_text(f.relation)
+    for record in _RECORD_SPLIT_RE.split(source_text):
+        compact_record = _compact_text(record)
+        if compact_object and compact_object in compact_record:
+            records.append(record)
+        elif compact_relation and compact_relation in compact_record:
+            records.append(record)
+    return records
+
+
+def _compact_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value)
+    return _COMPACT_SEP_RE.sub("", normalized).casefold()
 
 
 def _has_han_run_not_in_source(value: str, source_text: str) -> bool:

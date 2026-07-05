@@ -265,6 +265,269 @@ def test_extract_source_keeps_han_text_that_appears_in_korean_source(
     )
 
 
+def test_extract_source_drops_unbacked_ascii_relation_from_korean_source(
+    tmp_path, fake_client
+):
+    s = _store(tmp_path)
+    run_id = s.add_run(provider="fake", model="m")
+    client = fake_client(
+        [
+            ExtractedFact(
+                "샘플파트너",
+                "projected_revenue_2025",
+                "123억원",
+                0.9,
+                note="123억원 2099 샘플매출",
+            )
+        ]
+    )
+
+    assert (
+        extract_source(
+            s,
+            client,
+            source_path="sources/x.txt",
+            source_text="샘플파트너\n샘플현황 123억원 2099 샘플매출",
+            run_id=run_id,
+        )
+        == 0
+    )
+
+    assert s.facts() == []
+
+
+def test_extract_source_drops_metric_fact_when_subject_not_in_local_evidence(
+    tmp_path, fake_client
+):
+    s = _store(tmp_path)
+    run_id = s.add_run(provider="fake", model="m")
+    client = fake_client(
+        [
+            ExtractedFact(
+                "샘플파트너",
+                "샘플매출",
+                "123억원",
+                0.9,
+                note="샘플현황 123억원 2099 샘플매출",
+            )
+        ]
+    )
+
+    assert (
+        extract_source(
+            s,
+            client,
+            source_path="sources/x.txt",
+            source_text="샘플파트너\n샘플현황 123억원 2099 샘플매출",
+            run_id=run_id,
+        )
+        == 0
+    )
+
+    assert s.facts() == []
+
+
+def test_extract_source_ignores_hallucinated_note_for_metric_evidence(
+    tmp_path, fake_client
+):
+    s = _store(tmp_path)
+    run_id = s.add_run(provider="fake", model="m")
+    client = fake_client(
+        [
+            ExtractedFact(
+                "샘플파트너",
+                "샘플매출",
+                "123억원",
+                0.9,
+                note="샘플파트너 2099 샘플매출 123억원",
+            )
+        ]
+    )
+
+    assert (
+        extract_source(
+            s,
+            client,
+            source_path="sources/x.txt",
+            source_text="샘플파트너\n샘플현황 123억원 2099 샘플매출",
+            run_id=run_id,
+        )
+        == 0
+    )
+
+    assert s.facts() == []
+
+
+def test_extract_source_keeps_metric_fact_with_subject_in_local_evidence(
+    tmp_path, fake_client
+):
+    s = _store(tmp_path)
+    run_id = s.add_run(provider="fake", model="m")
+    client = fake_client(
+        [
+            ExtractedFact(
+                "샘플기업",
+                "샘플매출",
+                "123억원",
+                0.9,
+                note="샘플기업 2099 샘플매출 123억원",
+            )
+        ]
+    )
+
+    assert (
+        extract_source(
+            s,
+            client,
+            source_path="sources/x.txt",
+            source_text="샘플기업 2099 샘플매출 123억원",
+            run_id=run_id,
+        )
+        == 1
+    )
+
+    fact = s.facts()[0]
+    assert fact["subject"] == "샘플기업"
+    assert fact["relation"] == "샘플매출"
+    assert fact["object"] == "123억원"
+
+
+def test_extract_source_keeps_non_metric_korean_object_without_local_subject(
+    tmp_path, fake_client
+):
+    s = _store(tmp_path)
+    run_id = s.add_run(provider="fake", model="m")
+    client = fake_client(
+        [
+            ExtractedFact(
+                "샘플서비스",
+                "제공기능",
+                "샘플기능",
+                0.9,
+                note="샘플 항목에는 색상·샘플기능이 포함된다",
+            )
+        ]
+    )
+
+    assert (
+        extract_source(
+            s,
+            client,
+            source_path="sources/x.txt",
+            source_text="샘플 항목에는 색상·샘플기능이 포함된다",
+            run_id=run_id,
+        )
+        == 1
+    )
+
+    assert s.facts()[0]["object"] == "샘플기능"
+
+
+def test_extract_source_canonicalizes_generic_value_relation(tmp_path, fake_client):
+    s = _store(tmp_path)
+    run_id = s.add_run(provider="fake", model="m")
+    client = fake_client(
+        [
+            ExtractedFact(
+                "문서번호",
+                "값",
+                "A-001",
+                0.9,
+                note="문서번호 A-001",
+            )
+        ]
+    )
+
+    assert (
+        extract_source(
+            s,
+            client,
+            source_path="sources/x.txt",
+            source_text="문서번호 A-001",
+            run_id=run_id,
+        )
+        == 1
+    )
+
+    fact = s.facts()[0]
+    assert fact["subject"] == "문서번호"
+    assert fact["relation"] == "value"
+    assert fact["object"] == "A-001"
+
+
+def test_extract_source_allows_standard_value_relation_in_korean_source(
+    tmp_path, fake_client
+):
+    s = _store(tmp_path)
+    run_id = s.add_run(provider="fake", model="m")
+    client = fake_client(
+        [ExtractedFact("문서번호", "value", "A-001", 0.9, note="문서번호 A-001")]
+    )
+
+    assert (
+        extract_source(
+            s,
+            client,
+            source_path="sources/x.txt",
+            source_text="문서번호 A-001",
+            run_id=run_id,
+        )
+        == 1
+    )
+
+    assert s.facts()[0]["relation"] == "value"
+
+
+def test_extract_source_drops_sentence_ending_object(tmp_path, fake_client):
+    s = _store(tmp_path)
+    run_id = s.add_run(provider="fake", model="m")
+    client = fake_client(
+        [
+            ExtractedFact(
+                "샘플 입력",
+                "처리 결과 여부",
+                "입니다",
+                0.9,
+                note="샘플 입력을 처리하는 예시입니다",
+            )
+        ]
+    )
+
+    assert (
+        extract_source(
+            s,
+            client,
+            source_path="sources/x.txt",
+            source_text="샘플 입력을 처리하는 예시입니다",
+            run_id=run_id,
+        )
+        == 0
+    )
+
+    assert s.facts() == []
+
+
+def test_extract_source_drops_judgment_relation_shape(tmp_path, fake_client):
+    s = _store(tmp_path)
+    run_id = s.add_run(provider="fake", model="m")
+    client = fake_client(
+        [ExtractedFact("샘플 입력", "처리 결과 여부", "예", 0.9)]
+    )
+
+    assert (
+        extract_source(
+            s,
+            client,
+            source_path="sources/x.txt",
+            source_text="샘플 입력을 처리하는 예시입니다",
+            run_id=run_id,
+        )
+        == 0
+    )
+
+    assert s.facts() == []
+
+
 def test_extract_source_normalizes_and_runs_focused_role_pass(tmp_path):
     s = _store(tmp_path)
     run_id = s.add_run(provider="fake", model="m")
@@ -284,6 +547,8 @@ def test_extract_source_normalizes_and_runs_focused_role_pass(tmp_path):
     assert len(client.calls) == 2
     assert "성명 대표 (원문: 성명대표)" in client.calls[0][0]
     assert "Additional focused pass" in client.calls[1][1]
+    assert "do not emit person-subject role facts" in client.calls[1][1]
+    assert "same line, table row, bullet, or layout record" in client.calls[1][1]
     fact = s.facts()[0]
     assert fact["subject"] == "샘플조직"
     assert fact["relation"] == "대표"
@@ -398,7 +663,7 @@ class _FocusedRoleFailureClient:
         self.calls += 1
         if "Additional focused pass" in schema_hint:
             raise LLMError("role pass failed")
-        return [ExtractedFact("alpha", "seen_in", "source", 0.9)]
+        return [ExtractedFact("alpha", "출처", "source", 0.9)]
 
 
 def test_create_chunked_extraction_job_persists_chunks(tmp_path):
@@ -478,6 +743,8 @@ def test_process_extraction_job_runs_focused_role_pass_with_original_note(tmp_pa
     assert len(client.calls) == 2
     assert "성명 대표 (원문: 성명대표)" in client.calls[0][0]
     assert "Additional focused pass" in client.calls[1][1]
+    assert "do not emit person-subject role facts" in client.calls[1][1]
+    assert "same line, table row, bullet, or layout record" in client.calls[1][1]
     fact = s.facts()[0]
     assert fact["subject"] == "샘플조직"
     assert fact["relation"] == "대표"
