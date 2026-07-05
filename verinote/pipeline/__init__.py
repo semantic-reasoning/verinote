@@ -22,6 +22,7 @@ from verinote.pipeline.ingest import (
 )
 from verinote.pipeline.query import translate_questions, write_query_file
 from verinote.pipeline.repair import repair_questions
+from verinote.pipeline.trust import fact_trust_summary
 from verinote.pipeline.verify import verify
 
 __all__ = [
@@ -40,4 +41,5 @@ __all__ = [
     "translate_questions",
     "write_query_file",
     "repair_questions",
+    "fact_trust_summary",
 ]

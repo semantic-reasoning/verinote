@@ -515,7 +515,7 @@ class Store:
         return list(
             self._conn.execute(
                 "SELECT e.*, s.path AS source_path, a.path AS artifact_path, "
-                "c.chunk_index "
+                "c.chunk_index, c.status AS chunk_status "
                 "FROM fact_evidence e "
                 "JOIN sources s ON s.id = e.source_id "
                 "LEFT JOIN source_artifacts a ON a.id = e.artifact_id "
