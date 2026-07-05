@@ -12,6 +12,8 @@ from verinote.pipeline.query_schema import (
     EntityRef,
     QuerySchemaSnapshot,
     RelationSchema,
+    SnapshotFact,
+    TermRef,
 )
 
 
@@ -94,6 +96,9 @@ def _lookup_object_candidates(
                     object_executable=None,
                 )
             )
+    candidates.extend(
+        _lookup_object_exact_fact_candidates(intent, snapshot, qid)
+    )
     return _dedupe_candidates(candidates)
 
 
@@ -119,6 +124,9 @@ def _lookup_subject_candidates(
                     object_executable=obj.executable,
                 )
             )
+    candidates.extend(
+        _lookup_subject_exact_fact_candidates(intent, snapshot, qid)
+    )
     return _dedupe_candidates(candidates)
 
 
@@ -156,7 +164,101 @@ def _lookup_relation_candidates(
                         ),
                     )
                 )
+    candidates.extend(_lookup_relation_exact_fact_candidates(intent, snapshot, qid))
     return _dedupe_candidates(candidates)
+
+
+def _lookup_object_exact_fact_candidates(
+    intent: QueryIntent, snapshot: QuerySchemaSnapshot, qid: int
+) -> list[QueryCandidate]:
+    if intent.subject is None:
+        return []
+    candidates: list[QueryCandidate] = []
+    for fact in snapshot.exact_entity_facts:
+        if fact.matched_side not in {"subject", "both"}:
+            continue
+        if not _entity_ref_matches(fact.subject, intent.subject.value):
+            continue
+        if not _fact_relation_matches_any(fact, intent, snapshot):
+            continue
+        candidates.append(
+            QueryCandidate(
+                query_dl=_query_dl(
+                    qid,
+                    "O",
+                    f"relation({fact.subject.executable}, {fact.relation.executable}, O)",
+                ),
+                relation_display=fact.relation.display,
+                relation_executable=fact.relation.executable,
+                subject_executable=fact.subject.executable,
+                object_executable=None,
+            )
+        )
+    return candidates
+
+
+def _lookup_subject_exact_fact_candidates(
+    intent: QueryIntent, snapshot: QuerySchemaSnapshot, qid: int
+) -> list[QueryCandidate]:
+    if intent.object is None:
+        return []
+    candidates: list[QueryCandidate] = []
+    for fact in snapshot.exact_entity_facts:
+        if fact.matched_side not in {"object", "both"}:
+            continue
+        if not _entity_ref_matches(fact.object, intent.object.value):
+            continue
+        if not _fact_relation_matches_any(fact, intent, snapshot):
+            continue
+        candidates.append(
+            QueryCandidate(
+                query_dl=_query_dl(
+                    qid,
+                    "S",
+                    f"relation(S, {fact.relation.executable}, {fact.object.executable})",
+                ),
+                relation_display=fact.relation.display,
+                relation_executable=fact.relation.executable,
+                subject_executable=None,
+                object_executable=fact.object.executable,
+            )
+        )
+    return candidates
+
+
+def _lookup_relation_exact_fact_candidates(
+    intent: QueryIntent, snapshot: QuerySchemaSnapshot, qid: int
+) -> list[QueryCandidate]:
+    subject_value = intent.subject.value if intent.subject is not None else None
+    object_value = intent.object.value if intent.object is not None else None
+    candidates: list[QueryCandidate] = []
+    for fact in snapshot.exact_entity_facts:
+        subject = (
+            _entity_from_term_ref(fact.subject)
+            if subject_value is not None
+            and _entity_ref_matches(fact.subject, subject_value)
+            else None
+        )
+        obj = (
+            _entity_from_term_ref(fact.object)
+            if object_value is not None
+            and _entity_ref_matches(fact.object, object_value)
+            else None
+        )
+        if subject_value is not None and subject is None:
+            continue
+        if object_value is not None and obj is None:
+            continue
+        candidates.append(
+            QueryCandidate(
+                query_dl=_query_dl(qid, "R", _lookup_relation_body(subject, obj)),
+                relation_display=None,
+                relation_executable=None,
+                subject_executable=subject.executable if subject is not None else None,
+                object_executable=obj.executable if obj is not None else None,
+            )
+        )
+    return candidates
 
 
 def _lookup_relation_body(subject: EntityRef | None, obj: EntityRef | None) -> str:
@@ -224,6 +326,36 @@ def _matching_entities(
             _nfc(entity.executable),
             _nfc(entity.key),
         }
+    )
+
+
+def _entity_ref_matches(ref: TermRef, value: str) -> bool:
+    wanted = _nfc(value)
+    return wanted in {_nfc(ref.display), _nfc(ref.executable), _nfc(ref.key)}
+
+
+def _fact_relation_matches_any(
+    fact: SnapshotFact, intent: QueryIntent, snapshot: QuerySchemaSnapshot
+) -> bool:
+    wanted = _relation_requests(intent)
+    if not wanted:
+        return False
+    aliases = {entry.alias: entry.canonical for entry in snapshot.relation_aliases}
+    observed = (_nfc(fact.relation.display), _nfc(fact.relation.executable))
+    return any(
+        relation_label_matches(observed_value, wanted_value, aliases)
+        for observed_value in observed
+        for wanted_value in wanted
+    )
+
+
+def _entity_from_term_ref(ref: TermRef) -> EntityRef:
+    return EntityRef(
+        display=ref.display,
+        executable=ref.executable,
+        kind=ref.kind,
+        key=ref.key,
+        fact_count=1,
     )
 
 

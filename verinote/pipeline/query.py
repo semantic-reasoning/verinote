@@ -30,6 +30,11 @@ from verinote.pipeline.query_intent import (
     QueryIntentKind,
     deterministic_query_intent,
 )
+from verinote.pipeline.query_planner import plan_query_candidates
+from verinote.pipeline.query_schema import (
+    QuerySchemaSnapshot,
+    build_query_schema_snapshot,
+)
 from verinote.store import Store
 
 # Query draft, relative to the KB root (the db file's directory).
@@ -68,6 +73,30 @@ def _short_reason(value: object) -> str:
 
 def _lit(value: str) -> str:
     return '"' + _ESCAPE.sub(r"\\\1", value) + '"'
+
+
+def query_schema_hint(snapshot: QuerySchemaSnapshot) -> str:
+    """Render a bounded schema-only hint for structured intent extraction."""
+    lines = [f"Confirmed relation/3 schema snapshot: {snapshot.fact_count} fact(s)."]
+    if snapshot.relations:
+        lines.append("Observed relations:")
+    for relation in snapshot.relations:
+        labels = [relation.relation.display]
+        if relation.canonical_relation != relation.relation.display:
+            labels.append(relation.canonical_relation)
+        labels.extend(alias.alias for alias in relation.aliases)
+        labels.extend(alias.canonical for alias in relation.aliases)
+        if relation.typed is not None:
+            labels.extend((relation.typed.relation, relation.typed.alias))
+        label_text = ", ".join(dict.fromkeys(labels))
+        lines.append(
+            f"- {label_text} "
+            f"(subjects={relation.distinct_subject_count}, "
+            f"objects={relation.distinct_object_count})"
+        )
+    if snapshot.relations_truncated:
+        lines.append("- relation list truncated")
+    return "\n".join(lines)
 
 
 def deterministic_query_dl(question: str, qid: int) -> str | None:
@@ -144,6 +173,103 @@ def classify_query_draft(store: Store, qid: int, query_dl: str) -> tuple[str, st
     return "review_required", f"review_required({_lit(reason)})", reason
 
 
+def schema_aware_query_flow(
+    store: Store,
+    client: LLMClient,
+    *,
+    qid: int,
+    question: str,
+    llm_error_status: str,
+) -> tuple[str, str | None, str]:
+    """Translate one question through intent extraction, planning, and dry-run evaluation."""
+    from verinote.pipeline.query_candidate_eval import QueryCandidateSetOutcome
+
+    snapshot = build_query_schema_snapshot(store)
+    intent = deterministic_query_intent(question)
+    if intent.kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED:
+        try:
+            intent = client.extract_query_intent(
+                question=question,
+                schema_hint=query_schema_hint(snapshot),
+            )
+        except LLMError as exc:
+            reason = _short_reason(exc)
+            if llm_error_status == "translation_failed":
+                return "translation_failed", None, reason
+            reason = _short_reason(f"llm error: {exc}")
+            return "review_required", f"review_required({_lit(reason)})", reason
+
+    if intent.kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED:
+        reason = _short_reason(intent.reason or "unsupported query intent")
+        return "review_required", f"review_required({_lit(reason)})", reason
+
+    exact_entities = _intent_exact_entities(intent)
+    if exact_entities:
+        snapshot = build_query_schema_snapshot(store, exact_entities=exact_entities)
+    plan = plan_query_candidates(intent, snapshot, qid=qid)
+    evaluation = evaluate_query_candidate_plan(store, plan)
+
+    if evaluation.outcome == QueryCandidateSetOutcome.VALID and evaluation.selected:
+        return "translated", evaluation.selected.query_dl, ""
+    if evaluation.outcome == QueryCandidateSetOutcome.NO_ANSWER:
+        reason = "no confirmed facts match"
+        return "no_answer", f"no_answer({_lit(reason)})", reason
+    if evaluation.outcome == QueryCandidateSetOutcome.AMBIGUOUS_CONFLICTING:
+        reason = "multiple query candidates returned conflicting answers"
+        return "ambiguous", f"ambiguous({_lit(reason)})", reason
+    if evaluation.outcome == QueryCandidateSetOutcome.EMPTY:
+        reason = _short_reason(plan.reason or "no query candidates matched the schema")
+    elif evaluation.outcome == QueryCandidateSetOutcome.ENGINE_POLICY_ERROR:
+        reason = _short_reason("engine/policy error: " + _evaluation_reason(evaluation))
+    else:
+        reason = _short_reason("invalid query: " + _evaluation_reason(evaluation))
+    return "review_required", f"review_required({_lit(reason)})", reason
+
+
+def _intent_exact_entities(intent: QueryIntent) -> tuple[str, ...]:
+    values = []
+    for target in (intent.subject, intent.object):
+        if target is not None and target.kind in {"entity", "value", "typed_value"}:
+            values.append(target.value)
+    return tuple(dict.fromkeys(values))
+
+
+def evaluate_query_candidate_plan(store: Store, plan):
+    from verinote.pipeline.query_candidate_eval import (
+        evaluate_query_candidate_plan as _evaluate_query_candidate_plan,
+    )
+
+    return _evaluate_query_candidate_plan(store, plan)
+
+
+def _translate_direct_datalog_fallback(
+    store: Store,
+    client: LLMClient,
+    *,
+    qid: int,
+    question: str,
+    llm_error_status: str,
+) -> tuple[str, str | None, str]:
+    try:
+        line = client.translate_query(question=question, qid=qid)
+    except LLMError as exc:
+        reason = _short_reason(exc)
+        if llm_error_status == "translation_failed":
+            return "translation_failed", None, reason
+        reason = _short_reason(f"llm error: {exc}")
+        return "review_required", f"review_required({_lit(reason)})", reason
+
+    outcome = _non_executable_outcome(line)
+    if outcome is not None:
+        status, reason = outcome
+        return status, line, reason
+    if _is_review_required(line):
+        reason = _short_reason(line.removeprefix("review_required"))
+        return "review_required", line, reason
+    proposal = f".decl answer_q{qid}(value: symbol)\n{line}"
+    return classify_query_draft(store, qid, proposal)
+
+
 def _evaluation_reason(evaluation) -> str:
     for item in evaluation.evaluations:
         if item.validation_reason:
@@ -155,37 +281,34 @@ def _evaluation_reason(evaluation) -> str:
     return evaluation.outcome.value
 
 
-def translate_questions(store: Store, client: LLMClient, *, root: Path) -> list[dict]:
+def translate_questions(
+    store: Store,
+    client: LLMClient,
+    *,
+    root: Path,
+    allow_direct_datalog_fallback: bool = False,
+) -> list[dict]:
     """Translate every pending question, persist drafts, rewrite `query.dl`.
 
     Returns one dict per processed question: {id, status, query_dl, reason}.
     """
     results: list[dict] = []
     for q in store.questions(pending_only=True):
-        reason = ""
-        query_dl = deterministic_query_dl(q["text"], q["id"])
-        if query_dl is not None:
-            status, query_dl, reason = classify_query_draft(store, q["id"], query_dl)
-        else:
-            try:
-                line = client.translate_query(question=q["text"], qid=q["id"])
-            except LLMError as exc:
-                status = "translation_failed"
-                query_dl = None
-                reason = _short_reason(exc)
-            else:
-                outcome = _non_executable_outcome(line)
-                if outcome is not None:
-                    status, reason = outcome
-                    query_dl = line
-                elif _is_review_required(line):
-                    status, query_dl = "review_required", line
-                    reason = _short_reason(line.removeprefix("review_required"))
-                else:
-                    query_dl = f".decl answer_q{q['id']}(value: symbol)\n{line}"
-                    status, query_dl, reason = classify_query_draft(
-                        store, q["id"], query_dl
-                    )
+        status, query_dl, reason = schema_aware_query_flow(
+            store,
+            client,
+            qid=q["id"],
+            question=q["text"],
+            llm_error_status="translation_failed",
+        )
+        if allow_direct_datalog_fallback and status == "review_required":
+            status, query_dl, reason = _translate_direct_datalog_fallback(
+                store,
+                client,
+                qid=q["id"],
+                question=q["text"],
+                llm_error_status="translation_failed",
+            )
         store.set_question_query(q["id"], query_dl, status, reason)
         results.append(
             {"id": q["id"], "status": status, "query_dl": query_dl, "reason": reason}

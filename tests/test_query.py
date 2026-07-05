@@ -9,6 +9,7 @@ from verinote.pipeline.query import (
     expand_query_relation_aliases,
     load_query,
     query_path,
+    query_schema_hint,
     translate_questions,
 )
 from verinote.pipeline.corroboration import CorroborationPolicyError
@@ -22,11 +23,20 @@ def _store(tmp_path) -> Store:
     return s
 
 
-def test_translate_persists_query_and_writes_file(tmp_path, fake_client):
+def test_translate_persists_query_and_writes_file(tmp_path, fake_client, intent_payload):
     s = _store(tmp_path)
-    s.add_fact("What is Ada?", "is_a", "Synthetic Answer", status="confirmed")
-    qid = s.add_question("What is Ada?")
-    results = translate_questions(s, fake_client(), root=tmp_path)
+    s.add_fact("Sample Subject", "is_a", "Synthetic Answer", status="confirmed")
+    qid = s.add_question("What is Sample Subject?")
+    client = fake_client(
+        intent=intent_payload(
+            "lookup_object", subject="Sample Subject", relation="is_a"
+        )
+    )
+    client.translate_query = lambda **kwargs: (_ for _ in ()).throw(
+        AssertionError("schema-aware translation must not call direct Datalog")
+    )
+
+    results = translate_questions(s, client, root=tmp_path)
 
     assert results[0]["id"] == qid
     assert results[0]["status"] == "translated"
@@ -34,7 +44,10 @@ def test_translate_persists_query_and_writes_file(tmp_path, fake_client):
     q = s.questions()[0]
     assert q["status"] == "translated"
     assert f".decl answer_q{qid}" in q["query_dl"]
-    assert "answer_q%d(O) :- relation(" % qid in q["query_dl"]
+    assert (
+        f'answer_q{qid}(O) :- relation("Sample Subject", "is_a", O).'
+        in q["query_dl"]
+    )
     # and the engine draft file was written
     draft = query_path(tmp_path)
     assert draft.is_file()
@@ -44,8 +57,11 @@ def test_translate_persists_query_and_writes_file(tmp_path, fake_client):
 
 def test_translate_korean_role_question_bypasses_llm(tmp_path):
     class FailingClient:
+        def extract_query_intent(self, *, question: str, schema_hint: str = ""):
+            raise AssertionError("deterministic role questions must not call intent LLM")
+
         def translate_query(self, *, question: str, qid: int, schema_hint: str = "") -> str:
-            raise AssertionError("deterministic role questions must not call the LLM")
+            raise AssertionError("deterministic role questions must not call direct Datalog")
 
     s = _store(tmp_path)
     s.add_fact("샘플인물", "역할", "검토자", status="confirmed")
@@ -62,8 +78,6 @@ def test_translate_korean_role_question_bypasses_llm(tmp_path):
     ]
     query_dl = s.questions()[0]["query_dl"]
     assert f'answer_q{qid}(O) :- relation("샘플인물", "역할", O).' in query_dl
-    assert f'answer_q{qid}(R) :- relation(S, R, "샘플인물").' in query_dl
-    assert f'answer_q{qid}(R) :- relation(S, R, person("샘플인물")).' in query_dl
     assert load_query(s) == query_dl + "\n"
 
 
@@ -78,18 +92,22 @@ def test_korean_role_query_datalog_is_derived_from_intent():
     assert 'answer_q7(R) :- relation(S, R, "샘플인물").' in query_dl
 
 
-def test_load_query_expands_relation_aliases(tmp_path, fake_client):
+def test_load_query_expands_relation_aliases(tmp_path):
     s = _store(tmp_path)
     policy = tmp_path / "policy"
     policy.mkdir()
     (policy / "relation-aliases.md").write_text("- `role` -> `역할`\n", encoding="utf-8")
-    s.add_fact("샘플인물", "역할", "검토자", status="confirmed")
     qid = s.add_question("Find the sample person's role")
-    client = fake_client(
-        query=lambda question, qid: f'answer_q{qid}(V) :- relation("샘플인물", "role", V).'
+    s.set_question_query(
+        qid,
+        f'.decl answer_q{qid}(value: symbol)\n'
+        f'answer_q{qid}(V) :- relation("샘플인물", "role", V).',
+        "translated",
     )
 
-    translate_questions(s, client, root=tmp_path)
+    from verinote.pipeline.query import write_query_file
+
+    write_query_file(s, tmp_path)
 
     stored_query = s.questions()[0]["query_dl"]
     assert f'answer_q{qid}(V) :- relation("샘플인물", "role", V).' in stored_query
@@ -174,11 +192,13 @@ def test_expand_query_relation_aliases_caps_combinations():
         raise AssertionError("expected CorroborationPolicyError")
 
 
-def test_review_required_question_is_flagged_not_in_draft(tmp_path, fake_client):
+def test_review_required_question_is_flagged_not_in_draft(tmp_path, fake_client, intent_payload):
     s = _store(tmp_path)
     qid = s.add_question("What is the meaning of life?")
     client = fake_client(
-        query=lambda question, qid: 'review_required("requires a synthetic relation")'
+        intent=intent_payload(
+            "unknown_or_unsupported", reason="requires a synthetic relation"
+        )
     )
     translate_questions(s, client, root=tmp_path)
 
@@ -191,21 +211,20 @@ def test_review_required_question_is_flagged_not_in_draft(tmp_path, fake_client)
     assert "review_required" not in (load_query(s) or "")
 
 
-def test_invalid_generated_query_requires_review_and_skips_draft(tmp_path, fake_client):
+def test_invalid_intent_output_fails_translation_and_skips_draft(tmp_path, fake_client):
     s = _store(tmp_path)
     qid = s.add_question("What is the sample answer?")
-    client = fake_client(query=lambda question, qid: "this is not datalog")
+    client = fake_client(intent={"kind": "lookup_object"})
 
     results = translate_questions(s, client, root=tmp_path)
 
     q = s.questions()[0]
-    assert results[0]["status"] == "review_required"
-    assert results[0]["query_dl"].startswith("review_required(")
-    assert "invalid query:" in results[0]["reason"]
-    assert q["status"] == "review_required"
+    assert results[0]["status"] == "translation_failed"
+    assert results[0]["query_dl"] is None
+    assert "query intent output did not match schema:" in results[0]["reason"]
+    assert q["status"] == "translation_failed"
     assert q["reason"] == results[0]["reason"]
-    assert q["query_dl"].startswith("review_required(")
-    assert "this is not datalog" not in q["query_dl"]
+    assert q["query_dl"] is None
     assert f"answer_q{qid}" not in (load_query(s) or "")
     assert load_query(s) == ""
 
@@ -221,47 +240,81 @@ def test_query_intent_errors_are_catchable_and_separate_from_datalog_translation
     qid = s.add_question("What is the sample answer?")
     datalog_client = fake_client(query=lambda question, qid: "this is not datalog")
 
-    results = translate_questions(s, datalog_client, root=tmp_path)
+    results = translate_questions(
+        s, datalog_client, root=tmp_path, allow_direct_datalog_fallback=True
+    )
 
     assert results[0]["id"] == qid
     assert results[0]["status"] == "review_required"
     assert "invalid query:" in results[0]["reason"]
 
 
-def test_non_executable_question_states_store_reasons_and_skip_draft(tmp_path, fake_client):
+def test_planner_no_candidates_requires_review(tmp_path, fake_client, intent_payload):
     s = _store(tmp_path)
-    no_answer_id = s.add_question("What is the sample answer?")
-    ambiguous_id = s.add_question("Which sample item is current?")
-    responses = iter(
-        [
-            'no_answer("no confirmed facts match")',
-            'ambiguous("multiple sample entities match")',
-        ]
+    s.add_fact("Sample Subject", "is_a", "Synthetic Answer", status="confirmed")
+    qid = s.add_question("What is the sample answer?")
+    client = fake_client(
+        intent=intent_payload(
+            "lookup_object", subject="Missing Subject", relation="is_a"
+        )
     )
-    client = fake_client(query=lambda question, qid: next(responses))
+
+    results = translate_questions(s, client, root=tmp_path)
+
+    assert results[0]["id"] == qid
+    assert results[0]["status"] == "review_required"
+    assert results[0]["reason"] == "no query candidates matched the schema"
+    assert load_query(s) == ""
+
+
+def test_planned_executable_without_rows_becomes_no_answer(
+    tmp_path, fake_client, intent_payload, monkeypatch
+):
+    from verinote.pipeline.query_candidate_eval import QueryCandidateSetEvaluation
+    from verinote.pipeline.query_candidate_eval import QueryCandidateSetOutcome
+
+    s = _store(tmp_path)
+    s.add_fact("Sample Subject", "is_a", "Synthetic Answer", status="confirmed")
+    qid = s.add_question("What is Sample Subject?")
+    client = fake_client(
+        intent=intent_payload(
+            "lookup_object", subject="Sample Subject", relation="is_a"
+        )
+    )
+
+    def no_rows(store, plan):
+        assert plan.candidates
+        return QueryCandidateSetEvaluation(
+            plan=plan, outcome=QueryCandidateSetOutcome.NO_ANSWER
+        )
+
+    monkeypatch.setattr("verinote.pipeline.query.evaluate_query_candidate_plan", no_rows)
 
     results = translate_questions(s, client, root=tmp_path)
 
     assert results == [
         {
-            "id": no_answer_id,
+            "id": qid,
             "status": "no_answer",
             "query_dl": 'no_answer("no confirmed facts match")',
             "reason": "no confirmed facts match",
-        },
-        {
-            "id": ambiguous_id,
-            "status": "ambiguous",
-            "query_dl": 'ambiguous("multiple sample entities match")',
-            "reason": "multiple sample entities match",
-        },
-    ]
-    rows = s.questions()
-    assert [(q["status"], q["reason"]) for q in rows] == [
-        ("no_answer", "no confirmed facts match"),
-        ("ambiguous", "multiple sample entities match"),
+        }
     ]
     assert load_query(s) == ""
+
+
+def test_query_schema_hint_is_bounded_schema_only(tmp_path):
+    from verinote.pipeline.query_schema import build_query_schema_snapshot
+
+    s = _store(tmp_path)
+    s.add_fact("Sample Subject", "is_a", "Synthetic Answer", status="confirmed")
+
+    hint = query_schema_hint(build_query_schema_snapshot(s))
+
+    assert "Observed relations:" in hint
+    assert "is_a" in hint
+    assert "Sample Subject" not in hint
+    assert "Synthetic Answer" not in hint
 
 
 def test_translate_persists_llm_error_as_translation_failed(tmp_path, fake_client):

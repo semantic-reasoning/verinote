@@ -1544,26 +1544,27 @@ def test_delete_question_removes_query_file_entry(tmp_path):
     assert "No questions yet" in c.get("/questions").text
 
 
-def test_translate_and_report_answers(tmp_path, monkeypatch, fake_client):
-    # canned translator: answer_q<id>(O) :- relation("Ada","born_in",O)
+def test_translate_and_report_answers(tmp_path, monkeypatch, fake_client, intent_payload):
     monkeypatch.setattr(
         webapp,
         "get_client",
         lambda cfg: fake_client(
-            query=lambda question, qid: f'answer_q{qid}(O) :- relation("Ada", "born_in", O).'
+            intent=intent_payload(
+                "lookup_object", subject="Sample Person", relation="born_in"
+            )
         ),
     )
     c = _client(tmp_path)
     store = c.app.state.store
-    store.add_fact("Ada", "born_in", "London", status="confirmed")
-    store.add_question("Where was Ada born?")
+    store.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
+    store.add_question("Where was Sample Person born?")
 
     r = c.post("/questions/translate", follow_redirects=False)
     assert r.status_code == 303
     assert store.questions()[0]["status"] == "translated"
     # the report and questions page now surface the engine-evaluated answer
-    assert "London" in c.get("/report").text
-    assert "London" in c.get("/questions").text
+    assert "Sample Place" in c.get("/report").text
+    assert "Sample Place" in c.get("/questions").text
 
 
 def test_translate_persists_llm_error_reason(tmp_path, monkeypatch, fake_client):
@@ -1621,19 +1622,23 @@ def test_questions_page_shows_non_executable_reason(tmp_path):
     assert "multiple sample entities match" in r.text
 
 
-def test_repair_action_accepts_valid_fix(tmp_path, monkeypatch, fake_client):
+def test_repair_action_accepts_valid_fix(tmp_path, monkeypatch, fake_client, intent_payload):
     monkeypatch.setattr(
         webapp,
         "get_client",
         lambda cfg: fake_client(
-            query=lambda question, qid: f'answer_q{qid}(O) :- relation("Ada", "born_in", O).'
+            intent=intent_payload(
+                "lookup_object", subject="Sample Person", relation="born_in"
+            )
         ),
     )
     c = _client(tmp_path)
     store = c.app.state.store
-    store.add_fact("Ada", "born_in", "London", status="confirmed")
-    qid = store.add_question("Where was Ada born?")
-    store.set_question_query(qid, 'review_required("Where was Ada born?")', "review_required")
+    store.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
+    qid = store.add_question("Where was Sample Person born?")
+    store.set_question_query(
+        qid, 'review_required("Where was Sample Person born?")', "review_required"
+    )
 
     r = c.post("/questions/repair", follow_redirects=False)
     assert r.status_code == 303

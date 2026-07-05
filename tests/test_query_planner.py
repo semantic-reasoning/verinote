@@ -12,6 +12,7 @@ from verinote.pipeline.query_schema import (
     QuerySchemaSnapshot,
     RelationAliasEntry,
     RelationSchema,
+    SnapshotFact,
     TermRef,
     TypedRelationEntry,
 )
@@ -71,6 +72,39 @@ def _snapshot(*relations: RelationSchema) -> QuerySchemaSnapshot:
         exact_entity_facts=(),
         exact_entity_facts_truncated=False,
         fact_count=len(relations),
+    )
+
+
+def _snapshot_with_exact(
+    *relations: RelationSchema, exact_facts: tuple[SnapshotFact, ...]
+) -> QuerySchemaSnapshot:
+    return QuerySchemaSnapshot(
+        relations=relations,
+        relations_truncated=False,
+        relation_aliases=(),
+        typed_relations=(),
+        exact_entity_facts=exact_facts,
+        exact_entity_facts_truncated=False,
+        fact_count=len(relations) + len(exact_facts),
+    )
+
+
+def _fact(
+    subject: TermRef,
+    relation: TermRef,
+    obj: TermRef,
+    *,
+    matched_entity: str,
+    matched_side: str,
+) -> SnapshotFact:
+    return SnapshotFact(
+        fact_id=1,
+        subject=subject,
+        relation=relation,
+        object=obj,
+        status="confirmed",
+        matched_entity=matched_entity,
+        matched_side=matched_side,
     )
 
 
@@ -331,6 +365,38 @@ def test_candidate_cap_truncates_alias_backed_matches_deterministically():
     assert [candidate.relation_display for candidate in plan.candidates] == [
         "표시0",
         "표시1",
+    ]
+
+
+def test_lookup_object_uses_exact_entity_facts_when_subject_examples_are_bounded():
+    snapshot = _snapshot_with_exact(
+        _relation(
+            "role",
+            '"role"',
+            subjects=(_entity("Other Subject", '"Other Subject"'),),
+            objects=(_entity("Other Value", '"Other Value"'),),
+        ),
+        exact_facts=(
+            _fact(
+                _term("Needle Subject", '"Needle Subject"'),
+                _term("role", '"role"'),
+                _term("Reviewer", '"Reviewer"'),
+                matched_entity="Needle Subject",
+                matched_side="subject",
+            ),
+        ),
+    )
+    intent = QueryIntent(
+        kind=QueryIntentKind.LOOKUP_OBJECT,
+        subject=IntentTarget("entity", "Needle Subject"),
+        relation=IntentTarget("relation", "role"),
+    )
+
+    plan = plan_query_candidates(intent, snapshot, qid=24)
+
+    assert [candidate.query_dl for candidate in plan.candidates] == [
+        '.decl answer_q24(value: symbol)\n'
+        'answer_q24(O) :- relation("Needle Subject", "role", O).'
     ]
 
 

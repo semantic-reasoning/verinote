@@ -120,15 +120,22 @@ def test_sync_surfaces_llm_error(tmp_path, monkeypatch, capsys, fake_client):
     assert "extraction failed: provider down" in capsys.readouterr().err
 
 
-def test_query_adds_and_translates(tmp_path, monkeypatch, capsys, fake_client):
+def test_query_adds_and_translates(tmp_path, monkeypatch, capsys, fake_client, intent_payload):
     _env(monkeypatch, tmp_path)
-    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: fake_client())
+    monkeypatch.setattr(
+        "verinote.llm.get_client",
+        lambda cfg: fake_client(
+            intent=intent_payload(
+                "lookup_object", subject="Sample Subject", relation="is_a"
+            )
+        ),
+    )
     s = Store(tmp_path / "kb.sqlite")
     s.init_schema()
-    s.add_fact("What is Ada?", "is_a", "Synthetic Answer", status="confirmed")
+    s.add_fact("Sample Subject", "is_a", "Synthetic Answer", status="confirmed")
     s.close()
 
-    rc = cli.main(["query", "What is Ada?"])
+    rc = cli.main(["query", "What is Sample Subject?"])
 
     assert rc == 0
     out = capsys.readouterr().out
@@ -183,19 +190,25 @@ def test_query_no_pending_errors(tmp_path, monkeypatch, capsys):
     assert "no pending questions" in capsys.readouterr().err
 
 
-def test_repair_validates_and_translates(tmp_path, monkeypatch, capsys, fake_client):
+def test_repair_validates_and_translates(
+    tmp_path, monkeypatch, capsys, fake_client, intent_payload
+):
     _env(monkeypatch, tmp_path)
     monkeypatch.setattr(
         "verinote.llm.get_client",
         lambda cfg: fake_client(
-            query=lambda question, qid: f'answer_q{qid}(O) :- relation("Ada", "born_in", O).'
+            intent=intent_payload(
+                "lookup_object", subject="Sample Person", relation="born_in"
+            )
         ),
     )
     s = Store(tmp_path / "kb.sqlite")
     s.init_schema()
-    s.add_fact("Ada", "born_in", "London", status="confirmed")
-    qid = s.add_question("Where was Ada born?")
-    s.set_question_query(qid, 'review_required("Where was Ada born?")', "review_required")
+    s.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
+    qid = s.add_question("Where was Sample Person born?")
+    s.set_question_query(
+        qid, 'review_required("Where was Sample Person born?")', "review_required"
+    )
     s.close()
 
     rc = cli.main(["repair"])
@@ -205,19 +218,33 @@ def test_repair_validates_and_translates(tmp_path, monkeypatch, capsys, fake_cli
     assert Store(tmp_path / "kb.sqlite").questions()[0]["status"] == "translated"
 
 
-def test_repair_reports_durable_rejected_status(tmp_path, monkeypatch, capsys, fake_client):
+def test_repair_reports_durable_rejected_status(
+    tmp_path, monkeypatch, capsys, fake_client, intent_payload
+):
+    from verinote.pipeline.query_candidate_eval import QueryCandidateSetEvaluation
+    from verinote.pipeline.query_candidate_eval import QueryCandidateSetOutcome
+
     _env(monkeypatch, tmp_path)
     monkeypatch.setattr(
         "verinote.llm.get_client",
         lambda cfg: fake_client(
-            query=lambda q, i: 'no_answer("no confirmed facts match")'
+            intent=intent_payload(
+                "lookup_object", subject="Sample Person", relation="born_in"
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "verinote.pipeline.query.evaluate_query_candidate_plan",
+        lambda store, plan: QueryCandidateSetEvaluation(
+            plan=plan, outcome=QueryCandidateSetOutcome.NO_ANSWER
         ),
     )
     s = Store(tmp_path / "kb.sqlite")
     s.init_schema()
-    qid = s.add_question("What is the sample answer?")
+    s.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
+    qid = s.add_question("Where was Sample Person born?")
     s.set_question_query(
-        qid, 'review_required("What is the sample answer?")', "review_required"
+        qid, 'review_required("Where was Sample Person born?")', "review_required"
     )
     s.close()
 

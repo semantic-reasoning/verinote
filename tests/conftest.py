@@ -57,3 +57,36 @@ class FakeClient:
 @pytest.fixture
 def fake_client():
     return FakeClient
+
+
+def query_intent_payload(
+    kind,
+    *,
+    subject=None,
+    relation=None,
+    object=None,
+    relation_candidates=(),
+    operator=None,
+    value_type=None,
+    value=None,
+    reason=None,
+):
+    def target(kind, value):
+        return None if value is None else {"kind": kind, "value": value}
+
+    return {
+        "kind": kind,
+        "subject": target("entity", subject),
+        "relation": target("relation", relation),
+        "object": target("entity", object),
+        "relation_candidates": list(relation_candidates),
+        "operator": operator,
+        "value_type": value_type,
+        "value": value,
+        "reason": reason,
+    }
+
+
+@pytest.fixture
+def intent_payload():
+    return query_intent_payload
