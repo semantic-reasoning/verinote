@@ -6,8 +6,8 @@ from __future__ import annotations
 import re
 
 
-DEFAULT_CHUNK_CHARS = 6000
-DEFAULT_OVERLAP_CHARS = 500
+DEFAULT_CHUNK_CHARS = 300
+DEFAULT_OVERLAP_CHARS = 40
 
 
 def chunk_text(

@@ -20,6 +20,9 @@ def _clear_env(monkeypatch):
         "VERINOTE_BASE_URL",
         "VERINOTE_API_KEY",
         "VERINOTE_LLM_TIMEOUT",
+        "VERINOTE_EXTRACTION_CHUNK_CHARS",
+        "VERINOTE_EXTRACTION_CHUNK_OVERLAP_CHARS",
+        "VERINOTE_EXTRACTION_MAX_FACTS_PER_CHUNK",
         "VERINOTE_ROOT",
         "XDG_CONFIG_HOME",
     ):
@@ -54,12 +57,41 @@ def test_default_model_when_nothing_set(tmp_path, monkeypatch):
     cfg = Config.for_root(tmp_path)  # no settings file, no env
     assert (cfg.provider, cfg.model) == ("anthropic", "claude-opus-4-8")
     assert cfg.llm_timeout_seconds == 600.0
+    assert cfg.extraction_chunk_chars == 300
+    assert cfg.extraction_chunk_overlap_chars == 40
+    assert cfg.extraction_max_facts_per_chunk == 8
 
 
 def test_llm_timeout_env_override(tmp_path, monkeypatch):
     _clear_env(monkeypatch)
     monkeypatch.setenv("VERINOTE_LLM_TIMEOUT", "900")
     assert Config.for_root(tmp_path).llm_timeout_seconds == 900.0
+
+
+def test_extraction_settings_round_trip_and_env_override(tmp_path, monkeypatch):
+    _clear_env(monkeypatch)
+    save_settings(
+        tmp_path,
+        provider="ollama",
+        model="qwen3.5:9b",
+        extraction_chunk_chars=450,
+        extraction_chunk_overlap_chars=25,
+        extraction_max_facts_per_chunk=6,
+    )
+
+    cfg = Config.for_root(tmp_path)
+
+    assert cfg.extraction_chunk_chars == 450
+    assert cfg.extraction_chunk_overlap_chars == 25
+    assert cfg.extraction_max_facts_per_chunk == 6
+
+    monkeypatch.setenv("VERINOTE_EXTRACTION_CHUNK_CHARS", "200")
+    monkeypatch.setenv("VERINOTE_EXTRACTION_CHUNK_OVERLAP_CHARS", "0")
+    monkeypatch.setenv("VERINOTE_EXTRACTION_MAX_FACTS_PER_CHUNK", "3")
+    cfg = Config.for_root(tmp_path)
+    assert cfg.extraction_chunk_chars == 200
+    assert cfg.extraction_chunk_overlap_chars == 0
+    assert cfg.extraction_max_facts_per_chunk == 3
 
 
 def test_claude_cli_provider_is_available():

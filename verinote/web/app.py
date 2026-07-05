@@ -207,7 +207,12 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 with Store(cfg.db_path) as worker_store:
                     worker_store.init_schema()
                     client = get_client(cfg)
-                    process_extraction_job(worker_store, client, job_id=job_id)
+                    process_extraction_job(
+                        worker_store,
+                        client,
+                        job_id=job_id,
+                        schema_hint=cfg.extraction_schema_hint(),
+                    )
             except LLMError as e:
                 with Store(cfg.db_path) as worker_store:
                     worker_store.init_schema()
@@ -291,6 +296,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             source_text=text,
             provider=cfg.provider,
             model=cfg.model,
+            chunk_chars=cfg.extraction_chunk_chars,
+            chunk_overlap_chars=cfg.extraction_chunk_overlap_chars,
         )
         _start_source_extraction(job_id, app.state.cfg)
         return RedirectResponse("/sources", status_code=303)
@@ -345,6 +352,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             source_text=source_text,
             provider=cfg.provider,
             model=cfg.model,
+            chunk_chars=cfg.extraction_chunk_chars,
+            chunk_overlap_chars=cfg.extraction_chunk_overlap_chars,
         )
         _start_source_extraction(job_id, cfg)
         return RedirectResponse("/sources", status_code=303)
@@ -530,6 +539,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 "provider_label": PROVIDER_LABELS.get(c.provider, c.provider),
                 "model": c.model,
                 "base_url": c.base_url or "",
+                "extraction_chunk_chars": c.extraction_chunk_chars,
+                "extraction_chunk_overlap_chars": c.extraction_chunk_overlap_chars,
+                "extraction_max_facts_per_chunk": c.extraction_max_facts_per_chunk,
                 "root": c.root,
                 "has_key": bool(c.api_key),  # never render the key itself
                 "connection_test_enabled": c.provider in TESTABLE_PROVIDERS,
@@ -549,9 +561,20 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         provider: str = Form(...),
         model: str = Form(""),
         base_url: str = Form(""),
+        extraction_chunk_chars: int = Form(300),
+        extraction_chunk_overlap_chars: int = Form(40),
+        extraction_max_facts_per_chunk: int = Form(8),
     ):
         cfg = _active_cfg()
-        save_settings(cfg.root, provider=provider, model=model, base_url=base_url or None)
+        save_settings(
+            cfg.root,
+            provider=provider,
+            model=model,
+            base_url=base_url or None,
+            extraction_chunk_chars=extraction_chunk_chars,
+            extraction_chunk_overlap_chars=extraction_chunk_overlap_chars,
+            extraction_max_facts_per_chunk=extraction_max_facts_per_chunk,
+        )
         # reload from the app's own root so the change takes effect on next sync
         app.state.cfg = Config.for_root(cfg.root)
         return RedirectResponse("/settings", status_code=303)
