@@ -10,6 +10,7 @@ from __future__ import annotations
 from importlib import resources
 from pathlib import Path
 import threading
+from urllib.parse import urlencode
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -41,6 +42,7 @@ from verinote.pipeline import (
 )
 from verinote.pipeline.acceptance import (
     accept_recommendations,
+    accept_recommendations_for,
     apply_auto_accept_recommendations,
 )
 from verinote.pipeline.report_trace import report_trace
@@ -53,7 +55,12 @@ from verinote.pipeline.corroboration import (
 )
 from verinote.pipeline.workbench import trust_workbench
 from verinote.engine.terms import StringLit, render_term
-from verinote.store import Store
+from verinote.store import (
+    DEFAULT_REVIEW_PAGE_SIZE,
+    REVIEW_PAGE_SIZES,
+    ReviewQueuePage,
+    Store,
+)
 from verinote.store.fact_input import structural_term, term_input_kind
 
 _TEMPLATES = resources.files("verinote.web").joinpath("templates")
@@ -194,18 +201,137 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             ("conflicted", "Conflicted"),
         ]
 
-    def _filter_review_rows(rows: list[dict[str, object]], active_filter: str):
+    def _active_review_filter(active_filter: str) -> str:
         labels = {key for key, _ in _review_filters()}
-        if active_filter not in labels:
-            active_filter = "needs-human-decision"
-        if active_filter == "needs-human-decision":
-            return rows
-        label = active_filter.replace("-", "_")
+        return active_filter if active_filter in labels else "needs-human-decision"
+
+    def _review_url(
+        *,
+        active_filter: str,
+        sort: str,
+        page_size: int,
+        page: int = 1,
+    ) -> str:
+        return "/review?" + urlencode(
+            {
+                "filter": active_filter,
+                "sort": sort,
+                "page_size": page_size,
+                "page": page,
+            }
+        )
+
+    def _review_filter_links(active_filter: str, sort: str, page_size: int):
         return [
-            row
-            for row in rows
-            if row["trust"] is not None and label in row["trust"].trust_labels
+            {
+                "key": key,
+                "label": label,
+                "href": _review_url(
+                    active_filter=key,
+                    sort=sort,
+                    page_size=page_size,
+                    page=1,
+                ),
+                "active": active_filter == key,
+            }
+            for key, label in _review_filters()
         ]
+
+    def _review_pages(active_filter: str, sort: str, page_size: int, page: int, page_count: int):
+        candidates = {1, page_count}
+        for nearby in range(page - 2, page + 3):
+            if 1 <= nearby <= page_count:
+                candidates.add(nearby)
+        pages = []
+        last = 0
+        for number in sorted(candidates):
+            if last and number > last + 1:
+                pages.append({"ellipsis": True})
+            pages.append(
+                {
+                    "number": number,
+                    "active": number == page,
+                    "href": _review_url(
+                        active_filter=active_filter,
+                        sort=sort,
+                        page_size=page_size,
+                        page=number,
+                    ),
+                }
+            )
+            last = number
+        return pages
+
+    def _review_pager(active_filter: str, page_data):
+        page_count = page_data.page_count
+        page = page_data.page
+        return {
+            "total": page_data.total,
+            "start": page_data.start,
+            "end": page_data.end,
+            "page": page,
+            "page_size": page_data.page_size,
+            "page_count": page_count,
+            "sort": page_data.sort,
+            "page_sizes": REVIEW_PAGE_SIZES,
+            "sort_options": [
+                ("newest", "Newest"),
+                ("oldest", "Oldest"),
+                ("updated", "Recently updated"),
+                ("confidence", "Confidence"),
+                ("source", "Source"),
+            ],
+            "prev_href": (
+                _review_url(
+                    active_filter=active_filter,
+                    sort=page_data.sort,
+                    page_size=page_data.page_size,
+                    page=page - 1,
+                )
+                if page > 1
+                else None
+            ),
+            "next_href": (
+                _review_url(
+                    active_filter=active_filter,
+                    sort=page_data.sort,
+                    page_size=page_data.page_size,
+                    page=page + 1,
+                )
+                if page < page_count
+                else None
+            ),
+            "pages": _review_pages(
+                active_filter, page_data.sort, page_data.page_size, page, page_count
+            ),
+        }
+
+    def _review_page(store: Store, active_filter: str, page: str, page_size: str, sort: str):
+        if active_filter == "needs-human-decision":
+            return store.review_queue_page(page=page, page_size=page_size, sort=sort)
+        label = active_filter.replace("-", "_")
+        matching_ids = [
+            fact_id
+            for fact_id in store.review_queue_ids(sort=sort)
+            if (summary := fact_trust_summary(store, fact_id)) is not None
+            and label in summary.trust_labels
+        ]
+        page_data = ReviewQueuePage.from_rows(
+            rows=[],
+            total=len(matching_ids),
+            page=page,
+            page_size=page_size,
+            sort=sort,
+        )
+        start = (page_data.page - 1) * page_data.page_size
+        rows = store.facts_by_ids(matching_ids[start : start + page_data.page_size])
+        return ReviewQueuePage.from_rows(
+            rows=rows,
+            total=len(matching_ids),
+            page=page_data.page,
+            page_size=page_data.page_size,
+            sort=page_data.sort,
+        )
 
     def _source_inspector_rows(store: Store) -> list[dict[str, object]]:
         facts = store.facts()
@@ -547,19 +673,30 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         return RedirectResponse("/sources", status_code=303)
 
     @app.get("/review", response_class=HTMLResponse)
-    def review(request: Request, filter: str = "needs-human-decision"):
+    def review(
+        request: Request,
+        filter: str = "needs-human-decision",
+        page: str = "1",
+        page_size: str = str(DEFAULT_REVIEW_PAGE_SIZE),
+        sort: str = "newest",
+    ):
         store = _active_store()
-        _maybe_apply_auto_accept()
-        recommendations = accept_recommendations(store)
-        rows = [_fact_row_context(f, recommendations) for f in store.review_queue()]
-        rows = _filter_review_rows(rows, filter)
+        active_filter = _active_review_filter(filter)
+        page_data = _review_page(store, active_filter, page, page_size, sort)
+        recommendations = accept_recommendations_for(
+            store, [int(f["id"]) for f in page_data.rows]
+        )
+        rows = [_fact_row_context(f, recommendations) for f in page_data.rows]
         return templates.TemplateResponse(
             request,
             "review.html",
             {
                 "queue": rows,
-                "active_filter": filter,
-                "filters": _review_filters(),
+                "active_filter": active_filter,
+                "filters": _review_filter_links(
+                    active_filter, page_data.sort, page_data.page_size
+                ),
+                "pager": _review_pager(active_filter, page_data),
             },
         )
 

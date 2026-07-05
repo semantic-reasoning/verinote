@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Iterable
 import unicodedata
 
 from verinote.pipeline.corroboration import (
@@ -41,6 +42,19 @@ def accept_recommendations(store: Store) -> dict[int, AcceptRecommendation]:
     engine = _engine(store)
     recommendations = {}
     for fact in store.facts(statuses=REVIEW_STATUSES):
+        recommendations[int(fact["id"])] = engine.recommend(fact)
+    return recommendations
+
+
+def accept_recommendations_for(
+    store: Store, fact_ids: Iterable[int]
+) -> dict[int, AcceptRecommendation]:
+    engine = _engine(store)
+    recommendations = {}
+    for fact_id in fact_ids:
+        fact = store.get_fact(int(fact_id))
+        if fact is None:
+            continue
         recommendations[int(fact["id"])] = engine.recommend(fact)
     return recommendations
 
