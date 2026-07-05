@@ -168,6 +168,14 @@ class Store:
             )
         )
 
+    def latest_source_text_artifact(self, source_id: int) -> sqlite3.Row | None:
+        return self._conn.execute(
+            "SELECT * FROM source_artifacts "
+            "WHERE source_id = ? AND kind IN ('original_text','extracted_text') "
+            "ORDER BY id DESC LIMIT 1",
+            (source_id,),
+        ).fetchone()
+
     def source_text_inputs(self) -> list[sqlite3.Row]:
         """Original source path plus the text artifact path to feed extraction."""
         return list(
@@ -239,6 +247,38 @@ class Store:
                 self._conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
                 self._conn.execute("COMMIT")
                 return source
+            except Exception:
+                self._rollback_quietly()
+                for fact_id in deleted_terms:
+                    self._restore_fact_terms_from_row_quietly(fact_id)
+                raise
+
+    def clear_source_analysis(self, source_id: int) -> int:
+        """Remove extracted facts and extraction jobs while keeping source files.
+
+        Returns the number of facts removed. DuckDB term rows are deleted in the
+        same logical operation so re-analysis starts from a clean source state.
+        """
+        with self._lock:
+            fact_ids = [
+                int(row["id"])
+                for row in self._conn.execute(
+                    "SELECT id FROM facts WHERE source_id = ? ORDER BY id",
+                    (source_id,),
+                )
+            ]
+            deleted_terms: list[int] = []
+            self._conn.execute("BEGIN")
+            try:
+                for fact_id in fact_ids:
+                    self.fact_terms.delete_fact_terms(fact_id)
+                    deleted_terms.append(fact_id)
+                self._conn.execute("DELETE FROM facts WHERE source_id = ?", (source_id,))
+                self._conn.execute(
+                    "DELETE FROM extraction_jobs WHERE source_id = ?", (source_id,)
+                )
+                self._conn.execute("COMMIT")
+                return len(fact_ids)
             except Exception:
                 self._rollback_quietly()
                 for fact_id in deleted_terms:

@@ -16,6 +16,14 @@ def test_extraction_prompt_extracts_verbatim_source_text():
     assert "paraphrase" in EXTRACTION_SYSTEM
 
 
+def test_extraction_prompt_biases_toward_explicit_fact_recall():
+    assert "Extract all explicit factual triples" in EXTRACTION_SYSTEM
+    assert "not only the most important ones" in EXTRACTION_SYSTEM
+    assert "many small source-backed triples" in EXTRACTION_SYSTEM
+    assert "For each sentence, table row, or bullet" in EXTRACTION_SYSTEM
+    assert "Do not omit explicit facts" in EXTRACTION_SYSTEM
+
+
 def test_parse_facts_accepts_legacy_string_slots():
     facts = parse_facts(
         {

@@ -30,13 +30,16 @@ class OllamaAdapter:
         self.base_url = (cfg.base_url or "http://localhost:11434").rstrip("/")
 
     def extract_facts(self, *, source_text: str, schema_hint: str = "") -> list[ExtractedFact]:
+        system = EXTRACTION_SYSTEM + ("\n" + schema_hint if schema_hint else "")
         payload = {
             "model": self.cfg.model,
             "stream": False,
+            "think": False,
             # Ollama accepts a JSON schema in `format` to constrain output.
             "format": FACT_ARRAY_SCHEMA,
+            "options": {"temperature": 0},
             "messages": [
-                {"role": "system", "content": EXTRACTION_SYSTEM + ("\n" + schema_hint if schema_hint else "")},
+                {"role": "system", "content": system},
                 {"role": "user", "content": source_text},
             ],
         }
@@ -56,12 +59,15 @@ class OllamaAdapter:
         return parse_facts(body.get("message", {}).get("content", ""))
 
     def translate_query(self, *, question: str, qid: int, schema_hint: str = "") -> str:
+        system = query_system(qid) + ("\n" + schema_hint if schema_hint else "")
         payload = {
             "model": self.cfg.model,
             "stream": False,
+            "think": False,
             "format": QUERY_SCHEMA,
+            "options": {"temperature": 0},
             "messages": [
-                {"role": "system", "content": query_system(qid) + ("\n" + schema_hint if schema_hint else "")},
+                {"role": "system", "content": system},
                 {"role": "user", "content": question},
             ],
         }

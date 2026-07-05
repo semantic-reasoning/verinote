@@ -81,7 +81,11 @@ def test_delete_source_removes_source_facts_and_terms(tmp_path):
     source_fact = s.add_fact("A", "r", "B", status="candidate", source_id=sid)
     unrelated_fact = s.add_fact("C", "r", "D", status="candidate")
     job_id = s.create_extraction_job(
-        source_id=sid, artifact_id=artifact_id, provider="fake", model="m", total_chunks=1
+        source_id=sid,
+        artifact_id=artifact_id,
+        provider="fake",
+        model="m",
+        total_chunks=1,
     )
     s.add_source_chunks(job_id=job_id, source_id=sid, chunks=["body"])
 
@@ -101,6 +105,31 @@ def test_delete_source_removes_source_facts_and_terms(tmp_path):
 def test_delete_missing_source_returns_none(tmp_path):
     s = _store(tmp_path)
     assert s.delete_source(999) is None
+
+
+def test_clear_source_analysis_keeps_source_and_artifacts(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    artifact_id = s.add_source_artifact(
+        source_id=sid, kind="original_text", path="sources/a.txt"
+    )
+    source_fact = s.add_fact("A", "r", "B", status="candidate", source_id=sid)
+    unrelated_fact = s.add_fact("C", "r", "D", status="candidate")
+    job_id = s.create_extraction_job(
+        source_id=sid, artifact_id=artifact_id, provider="fake", model="m", total_chunks=1
+    )
+    s.add_source_chunks(job_id=job_id, source_id=sid, chunks=["body"])
+
+    removed = s.clear_source_analysis(sid)
+
+    assert removed == 1
+    assert s.get_source(sid)["path"] == "sources/a.txt"
+    assert [a["id"] for a in s.source_artifacts(sid)] == [artifact_id]
+    assert [f["id"] for f in s.facts()] == [unrelated_fact]
+    assert s.get_fact_terms(source_fact) is None
+    assert s.get_fact_terms(unrelated_fact) is not None
+    assert s.get_extraction_job(job_id) is None
+    assert s.source_chunks(job_id) == []
 
 
 def test_source_artifacts_are_upserted_and_listed_with_counts(tmp_path):

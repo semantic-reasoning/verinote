@@ -54,6 +54,9 @@
       <td class="conf">{{ s["fact_count"] }}</td>
       <td class="src">{{ s["added_at"] }}</td>
       <td class="actions">
+        <form action="/sources/{{ s["id"] }}/reanalyze" method="post">
+          <button class="btn ghost" type="submit">Re-analyze</button>
+        </form>
         <form action="/sources/{{ s["id"] }}/delete" method="post">
           <button class="danger" type="submit">Delete</button>
         </form>
