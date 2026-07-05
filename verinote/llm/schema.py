@@ -109,15 +109,16 @@ def parse_query(raw: str | dict[str, Any]) -> str:
     return line
 
 
-def parse_facts(raw: str | dict[str, Any]) -> list[ExtractedFact]:
+def parse_facts(raw: str | list[Any] | dict[str, Any]) -> list[ExtractedFact]:
     """Parse provider output (a JSON string or already-decoded dict) into facts."""
     try:
-        data = json.loads(raw) if isinstance(raw, str) else raw
-        items = data["facts"]
+        data = _decode_first_json(raw) if isinstance(raw, str) else raw
+        items = data if isinstance(data, list) else data["facts"]
     except (json.JSONDecodeError, KeyError, TypeError) as exc:
         raise LLMError(f"extractor output did not match schema: {exc}") from exc
 
     facts: list[ExtractedFact] = []
+    errors = []
     for item in items:
         try:
             subject, subject_kind, subject_warning = _parse_fact_slot(item, "subject")
@@ -140,8 +141,25 @@ def parse_facts(raw: str | dict[str, Any]) -> list[ExtractedFact]:
                 )
             )
         except (KeyError, TypeError, ValueError, TermParseError) as exc:
-            raise LLMError(f"malformed fact object {item!r}: {exc}") from exc
+            errors.append(f"malformed fact object {item!r}: {exc}")
+            continue
+    if not facts and errors:
+        raise LLMError(errors[0])
     return facts
+
+
+def _decode_first_json(raw: str) -> Any:
+    text = raw.strip()
+    if not text:
+        raise json.JSONDecodeError("empty provider output", raw, 0)
+    decoder = json.JSONDecoder()
+    try:
+        return decoder.raw_decode(text)[0]
+    except json.JSONDecodeError:
+        starts = [idx for idx in (text.find("["), text.find("{")) if idx >= 0]
+        if not starts:
+            raise
+        return decoder.raw_decode(text[min(starts):])[0]
 
 
 def _parse_fact_slot(item: dict[str, Any], field: str) -> tuple[str, str, str]:

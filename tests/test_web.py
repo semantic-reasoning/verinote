@@ -891,6 +891,9 @@ def test_settings_page_renders(tmp_path):
     assert "Provider" in r.text and "Anthropic" in r.text
     assert "ClaudeCLI" in r.text
     assert str(tmp_path) in r.text
+    assert 'name="extraction_chunk_chars"' in r.text
+    assert 'name="extraction_chunk_overlap_chars"' in r.text
+    assert 'name="extraction_max_facts_per_chunk"' in r.text
 
 
 def test_settings_save_changes_active_provider(tmp_path, monkeypatch):
@@ -899,12 +902,22 @@ def test_settings_save_changes_active_provider(tmp_path, monkeypatch):
     c = _client(tmp_path)
     r = c.post(
         "/settings",
-        data={"provider": "ollama", "model": "llama3.1", "base_url": ""},
+        data={
+            "provider": "ollama",
+            "model": "llama3.1",
+            "base_url": "",
+            "extraction_chunk_chars": "500",
+            "extraction_chunk_overlap_chars": "20",
+            "extraction_max_facts_per_chunk": "5",
+        },
         follow_redirects=False,
     )
     assert r.status_code == 303
     # the next get_client would pick the ollama adapter — no code change
     assert c.app.state.cfg.provider == "ollama"
+    assert c.app.state.cfg.extraction_chunk_chars == 500
+    assert c.app.state.cfg.extraction_chunk_overlap_chars == 20
+    assert c.app.state.cfg.extraction_max_facts_per_chunk == 5
     assert (tmp_path / "config.json").is_file()
 
 

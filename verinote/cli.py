@@ -159,8 +159,15 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     source_text=source.text,
                     provider=cfg.provider,
                     model=cfg.model,
+                    chunk_chars=cfg.extraction_chunk_chars,
+                    chunk_overlap_chars=cfg.extraction_chunk_overlap_chars,
                 )
-                outcome = process_extraction_job(store, client, job_id=job_id)
+                outcome = process_extraction_job(
+                    store,
+                    client,
+                    job_id=job_id,
+                    schema_hint=cfg.extraction_schema_hint(),
+                )
                 per_source.append((source.source_path, outcome.candidates))
                 total += outcome.candidates
                 run_id = job_id

@@ -49,6 +49,39 @@ def test_parse_facts_accepts_legacy_string_slots():
     )
 
 
+def test_parse_facts_accepts_top_level_array_from_local_models():
+    facts = parse_facts(
+        [
+            {
+                "subject": "Ada",
+                "relation": "is_a",
+                "object": "mathematician",
+                "confidence": 0.9,
+                "note": "",
+            }
+        ]
+    )
+
+    assert facts[0].subject == "Ada"
+    assert facts[0].relation == "is_a"
+    assert facts[0].object == "mathematician"
+
+
+def test_parse_facts_uses_first_json_value_from_noisy_local_output():
+    facts = parse_facts(
+        '```json\n'
+        '[{"subject":"Ada","relation":"is_a","object":"mathematician",'
+        '"confidence":0.9,"note":""}]\n'
+        '```\n'
+        '[{"subject":"ignored","relation":"ignored","object":"ignored",'
+        '"confidence":0.1,"note":""}]'
+    )
+
+    assert [(fact.subject, fact.relation, fact.object) for fact in facts] == [
+        ("Ada", "is_a", "mathematician")
+    ]
+
+
 def test_parse_facts_accepts_explicit_term_slots():
     facts = parse_facts(
         {
@@ -143,3 +176,30 @@ def test_parse_facts_rejects_malformed_explicit_slots(slot):
                 ]
             }
         )
+
+
+def test_parse_facts_skips_malformed_items_when_valid_facts_remain():
+    facts = parse_facts(
+        {
+            "facts": [
+                {
+                    "subject": "Ada",
+                    "relation": "",
+                    "object": "mathematician",
+                    "confidence": 0.9,
+                    "note": "",
+                },
+                {
+                    "subject": "Ada",
+                    "relation": "is_a",
+                    "object": "mathematician",
+                    "confidence": 0.9,
+                    "note": "",
+                },
+            ]
+        }
+    )
+
+    assert [(fact.subject, fact.relation, fact.object) for fact in facts] == [
+        ("Ada", "is_a", "mathematician")
+    ]
