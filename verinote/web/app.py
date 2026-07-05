@@ -45,6 +45,9 @@ from verinote.pipeline.acceptance import (
 )
 from verinote.pipeline.report_trace import report_trace
 from verinote.pipeline.corroboration import (
+    CorroborationPolicyError,
+    RELATION_ALIASES_RELPATH,
+    relation_aliases,
     store_corroboration,
     store_single_valued_conflicts,
 )
@@ -82,6 +85,15 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         if cfg is None:
             raise RuntimeError("no active KB")
         return cfg
+
+    def _relation_aliases_path() -> Path:
+        return _active_cfg().root / RELATION_ALIASES_RELPATH
+
+    def _relation_aliases_text() -> str:
+        path = _relation_aliases_path()
+        if not path.is_file():
+            return ""
+        return path.read_text(encoding="utf-8")
 
     def _open_root(root: Path) -> None:
         """Point this running app at a KB root, creating it if needed."""
@@ -643,10 +655,17 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         if app.state.store is None:
             return _kb_select(request, error=error, status_code=status_code)
         store = _active_store()
+        rep = verify(store)
+        page_error = error
+        if page_error is None:
+            page_error = next(
+                (finding for finding in rep.findings if "policy error" in finding),
+                None,
+            )
         return templates.TemplateResponse(
             request,
             "questions.html",
-            {"questions": store.questions(), "answers": verify(store).answers, "error": error},
+            {"questions": store.questions(), "answers": rep.answers, "error": page_error},
             status_code=status_code,
         )
 
@@ -723,6 +742,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 "root": c.root,
                 "has_key": bool(c.api_key),  # never render the key itself
                 "connection_test_enabled": c.provider in TESTABLE_PROVIDERS,
+                "relation_aliases": _relation_aliases_text(),
                 "test_result": test_result,
                 "error": error,
             },
@@ -757,6 +777,21 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         )
         # reload from the app's own root so the change takes effect on next sync
         app.state.cfg = Config.for_root(cfg.root)
+        return RedirectResponse("/settings", status_code=303)
+
+    @app.post("/settings/relation-aliases", response_class=HTMLResponse)
+    def save_relation_aliases(request: Request, relation_aliases_text: str = Form("")):
+        text = relation_aliases_text.strip()
+        try:
+            relation_aliases(text)
+        except CorroborationPolicyError as e:
+            return _settings(request, error=str(e), status_code=400)
+        path = _relation_aliases_path()
+        if text:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text + "\n", encoding="utf-8")
+        elif path.exists():
+            path.unlink()
         return RedirectResponse("/settings", status_code=303)
 
     @app.post("/settings/root", response_class=HTMLResponse)

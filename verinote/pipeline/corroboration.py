@@ -20,7 +20,6 @@ from verinote.engine import DEFAULT_POLICY
 from verinote.store import ENGINE_STATUSES, Store
 
 _FUNCTIONAL_RE = re.compile(r'functional\("((?:\\.|[^"\\])*)"\)\.')
-_ALIAS_RE = re.compile(r"`([^`]+)`\s*->\s*`([^`]+)`")
 _TYPED_REL_RE = re.compile(
     r"^(?:`(?P<qname>[^`]+)`|(?P<name>\S+))\s*:\s*(?P<type>\w+)\s+as\s+(?P<alias>\S+)"
     r"(?:\s*\((?P<units>[^)]*)\))?\s*$"
@@ -116,17 +115,17 @@ def store_functional_relations(store: Store) -> set[str]:
 def relation_aliases(text: str) -> dict[str, str]:
     """Parse factlog-style relation aliases into ``{raw: canonical}``."""
     aliases: dict[str, str] = {}
-    for line in text.splitlines():
+    for line_no, line in enumerate(text.splitlines(), start=1):
         stripped = re.sub(r"^\s*[-*]\s+", "", line.strip()).strip()
         if not stripped or stripped.startswith("#"):
             continue
-        match = _ALIAS_RE.fullmatch(stripped)
-        if match is None:
-            continue
-        raw = unicodedata.normalize("NFC", match.group(1).strip())
-        canonical = unicodedata.normalize("NFC", match.group(2).strip())
-        if not raw or not canonical:
-            continue
+        raw_text, separator, canonical_text = stripped.partition("->")
+        if not separator or "->" in canonical_text:
+            raise CorroborationPolicyError(
+                f"relation-aliases.md:{line_no}: expected `raw` -> `canonical`"
+            )
+        raw = _relation_alias_token(raw_text, line_no=line_no)
+        canonical = _relation_alias_token(canonical_text, line_no=line_no)
         if raw == canonical:
             raise CorroborationPolicyError(
                 f"relation-aliases.md: self-map {raw!r} is not allowed"
@@ -144,6 +143,34 @@ def relation_aliases(text: str) -> dict[str, str]:
                 f"relation-aliases.md: {raw!r} is both raw and canonical"
             )
     return aliases
+
+
+def _relation_alias_token(text: str, *, line_no: int) -> str:
+    token = text.strip()
+    if not token:
+        raise CorroborationPolicyError(
+            f"relation-aliases.md:{line_no}: alias names must not be empty"
+        )
+    if token.startswith("`") or token.endswith("`"):
+        if len(token) < 2 or not token.startswith("`") or not token.endswith("`"):
+            raise CorroborationPolicyError(
+                f"relation-aliases.md:{line_no}: malformed backtick alias"
+            )
+        token = token[1:-1].strip()
+        if "`" in token:
+            raise CorroborationPolicyError(
+                f"relation-aliases.md:{line_no}: malformed backtick alias"
+            )
+    elif "`" in token:
+        raise CorroborationPolicyError(
+            f"relation-aliases.md:{line_no}: malformed backtick alias"
+        )
+    token = unicodedata.normalize("NFC", token)
+    if not token:
+        raise CorroborationPolicyError(
+            f"relation-aliases.md:{line_no}: alias names must not be empty"
+        )
+    return token
 
 
 def store_relation_aliases(store: Store) -> dict[str, str]:

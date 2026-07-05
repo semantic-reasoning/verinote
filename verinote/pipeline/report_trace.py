@@ -14,6 +14,7 @@ from verinote.engine.datalog import (
     parse_and_validate_program,
 )
 from verinote.engine.terms import Compound, StringLit, Term, Var, render_term
+from verinote.pipeline.corroboration import CorroborationPolicyError
 from verinote.pipeline.query import load_query
 from verinote.pipeline.trust import fact_trust_summary
 from verinote.store import Store
@@ -51,7 +52,10 @@ def report_trace(store: Store) -> ReportTrace:
     candidates = store.status_counts().get("candidate", 0) + store.status_counts().get(
         "needs_review", 0
     )
-    query = load_query(store)
+    try:
+        query = load_query(store)
+    except CorroborationPolicyError:
+        return ReportTrace(answers=(), excluded_candidate_count=candidates)
     if not query:
         return ReportTrace(answers=(), excluded_candidate_count=candidates)
 

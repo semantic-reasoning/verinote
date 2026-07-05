@@ -977,6 +977,48 @@ def test_report_surfaces_invalid_query_file(tmp_path):
     assert "bogus" in r.text
 
 
+def test_report_surfaces_invalid_relation_alias_policy(tmp_path):
+    c = _client(tmp_path)
+    policy = tmp_path / "policy"
+    policy.mkdir()
+    (policy / "relation-aliases.md").write_text("- `role` -> `role`\n", encoding="utf-8")
+    path = query_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '.decl answer_q1(value: symbol)\n'
+        'answer_q1(O) :- relation("Sample Person", "role", O).\n',
+        encoding="utf-8",
+    )
+
+    r = c.get("/report")
+
+    assert r.status_code == 200
+    assert "ERRORS" in r.text
+    assert "policy error" in r.text
+    assert "self-map" in r.text
+
+
+def test_questions_surfaces_invalid_relation_alias_policy(tmp_path):
+    c = _client(tmp_path)
+    c.app.state.store.add_question("What is the sample role?")
+    policy = tmp_path / "policy"
+    policy.mkdir()
+    (policy / "relation-aliases.md").write_text("- `role` -> `role`\n", encoding="utf-8")
+    path = query_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '.decl answer_q1(value: symbol)\n'
+        'answer_q1(O) :- relation("Sample Person", "role", O).\n',
+        encoding="utf-8",
+    )
+
+    r = c.get("/questions")
+
+    assert r.status_code == 200
+    assert "policy error" in r.text
+    assert "self-map" in r.text
+
+
 def test_edit_form_renders(tmp_path):
     c = _client(tmp_path)
     r = c.get(f"/facts/{c.fact_id}/edit")
@@ -1479,6 +1521,63 @@ def test_settings_page_renders(tmp_path):
     assert 'name="extraction_chunk_overlap_chars"' in r.text
     assert 'name="extraction_max_facts_per_chunk"' in r.text
     assert 'name="auto_accept_recommendations"' in r.text
+    assert 'name="relation_aliases_text"' in r.text
+
+
+def test_settings_saves_relation_aliases(tmp_path):
+    c = _client(tmp_path)
+
+    r = c.post(
+        "/settings/relation-aliases",
+        data={"relation_aliases_text": "- `role` -> `역할`"},
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 303
+    alias_path = tmp_path / "policy" / "relation-aliases.md"
+    assert alias_path.read_text(encoding="utf-8") == "- `role` -> `역할`\n"
+    body = c.get("/settings").text
+    assert "- `role` -&gt; `역할`" in body
+
+
+def test_settings_saves_plain_relation_aliases(tmp_path):
+    c = _client(tmp_path)
+
+    r = c.post(
+        "/settings/relation-aliases",
+        data={"relation_aliases_text": "- role -> 역할"},
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 303
+    alias_path = tmp_path / "policy" / "relation-aliases.md"
+    assert alias_path.read_text(encoding="utf-8") == "- role -> 역할\n"
+
+
+def test_settings_rejects_invalid_relation_aliases(tmp_path):
+    c = _client(tmp_path)
+
+    r = c.post(
+        "/settings/relation-aliases",
+        data={"relation_aliases_text": "- `role` -> `role`"},
+    )
+
+    assert r.status_code == 400
+    assert "self-map" in r.text
+    assert not (tmp_path / "policy" / "relation-aliases.md").exists()
+
+
+def test_settings_rejects_malformed_relation_aliases(tmp_path):
+    c = _client(tmp_path)
+
+    r = c.post(
+        "/settings/relation-aliases",
+        data={"relation_aliases_text": "- role 역할"},
+    )
+
+    assert r.status_code == 400
+    assert "expected `raw` -&gt; `canonical`" in r.text
+    assert not (tmp_path / "policy" / "relation-aliases.md").exists()
 
 
 def test_settings_save_changes_active_provider(tmp_path, monkeypatch):
