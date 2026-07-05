@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import tempfile
 from typing import Any
@@ -18,6 +19,12 @@ from verinote.llm.schema import (
     parse_query,
     query_system,
 )
+
+_MODEL_ALIASES = {
+    "fable": "fable",
+    "opus": "opus",
+    "sonnet": "sonnet",
+}
 
 
 class ClaudeCliAdapter:
@@ -55,8 +62,9 @@ class ClaudeCliAdapter:
             "-p",
             prompt.user,
         ]
-        if self.cfg.model:
-            cmd = ["claude", "--model", self.cfg.model, *cmd[1:]]
+        model = _cli_model(self.cfg.model)
+        if model:
+            cmd = ["claude", "--model", model, *cmd[1:]]
         try:
             with tempfile.TemporaryDirectory(prefix="verinote-claudecli-") as tmpdir:
                 proc = subprocess.run(
@@ -100,3 +108,12 @@ def _prompt(*, system: str, schema: dict[str, Any], user: str) -> _Prompt:
             f"{user}"
         ),
     )
+
+
+def _cli_model(model: str) -> str:
+    """Convert UI/display model names to Claude CLI aliases."""
+    normalized = re.sub(r"[^a-z0-9]+", "", model.casefold())
+    for key, value in _MODEL_ALIASES.items():
+        if key in normalized:
+            return value
+    return model.strip()
