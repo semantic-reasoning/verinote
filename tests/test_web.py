@@ -815,6 +815,46 @@ def test_report_ok_for_consistent_kb(tmp_path):
     assert "backend: DuckDB" in r.text
 
 
+def test_report_shows_query_trace_links_and_candidate_exclusion(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    source_id = store.add_source("sources/sample.txt")
+    fact_id = store.add_fact(
+        "Sample Person",
+        "born_in",
+        "Sample City",
+        status="confirmed",
+        source_id=source_id,
+    )
+    store.add_fact_evidence(
+        fact_id=fact_id,
+        source_id=source_id,
+        snippet="Sample Person was born in Sample City.",
+    )
+    store.add_fact(
+        "Candidate Person",
+        "born_in",
+        "Draft City",
+        status="candidate",
+        source_id=source_id,
+    )
+    path = query_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '.decl answer_q1(value: symbol)\n'
+        'answer_q1(O) :- relation("Sample Person", "born_in", O).\n',
+        encoding="utf-8",
+    )
+
+    body = unescape(c.get("/report").text)
+
+    assert "Traceability" in body
+    assert "candidate/needs-review fact(s) were excluded from engine input" in body
+    assert f'href="/facts/{fact_id}/provenance"' in body
+    assert "Sample Person was born in Sample City." in body
+    assert "Draft City" not in body
+
+
 def test_report_gates_on_contradiction(tmp_path):
     c = _client(tmp_path)
     store = c.app.state.store

@@ -28,5 +28,40 @@
   {% for a in rep.answers %}<li>{{ a }}</li>{% endfor %}
 </ul>
 {% endif %}
+<h2>Traceability</h2>
+{% if trace.excluded_candidate_count %}
+<p class="muted">{{ trace.excluded_candidate_count }} candidate/needs-review fact(s) were excluded from engine input.</p>
+{% else %}
+<p class="muted">No candidate facts were included in engine input.</p>
+{% endif %}
+{% if trace.answers %}
+<table class="counts">
+  <thead><tr><th>Answer</th><th>Contributing facts</th></tr></thead>
+  <tbody>
+    {% for answer in trace.answers %}
+    <tr>
+      <td>
+        q{{ answer.qid }}: <code>{{ answer.value }}</code>
+        {% if answer.conflicted %}<span class="badge trust-conflicted">conflict</span>{% endif %}
+      </td>
+      <td>
+        {% for fact in answer.facts %}
+        <div class="mini-list">
+          <a href="/facts/{{ fact.id }}/provenance">#{{ fact.id }}</a>
+          <code>{{ fact.subject }}</code> / <code>{{ fact.relation }}</code> /
+          <code>{{ fact.object }}</code>
+          {% if fact.source %}<span class="muted">{{ fact.source }}</span>{% endif %}
+          {% if fact.conflicted %}<span class="badge trust-conflicted">conflicted relation</span>{% endif %}
+          {% if fact.evidence %}<div class="snippet">{{ fact.evidence }}</div>{% endif %}
+        </div>
+        {% endfor %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No direct relation fact traces are available for these report rows.</p>
+{% endif %}
 <pre class="report">{{ rep.text }}</pre>
 {% endblock %}
