@@ -11,6 +11,23 @@
   <div class="card ok"><div class="num">{{ counts.get('confirmed', 0) + counts.get('accepted', 0) }}</div><div class="lbl">engine input</div></div>
 </section>
 
+<h2>Action queues</h2>
+<table class="counts">
+  <thead><tr><th>Queue</th><th>Count</th><th>Next step</th></tr></thead>
+  <tbody>
+    {% for queue in queues %}
+    <tr>
+      <td>
+        <strong>{{ queue.label }}</strong>
+        <div class="src">{{ queue.detail }}</div>
+      </td>
+      <td class="conf">{{ queue.count }}</td>
+      <td><a class="btn ghost" href="{{ queue.href }}">Open</a></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
 <h2>By status</h2>
 <table class="counts">
   <tbody>

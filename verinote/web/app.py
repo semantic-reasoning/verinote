@@ -251,6 +251,54 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                     return snippets
         return snippets
 
+    def _dashboard_queues(store: Store) -> list[dict[str, object]]:
+        review_summaries = [
+            fact_trust_summary(store, int(fact["id"])) for fact in store.review_queue()
+        ]
+        review_summaries = [summary for summary in review_summaries if summary is not None]
+        jobs = store.source_extraction_jobs()
+        workbench = trust_workbench(store)
+        corroboration = store_corroboration(store)
+        recent_lifecycle = store.count_facts_with_events(("amended", "reanalyzed"))
+        return [
+            {
+                "label": "Unsupported review items",
+                "count": sum(1 for summary in review_summaries if "unsupported" in summary.trust_labels),
+                "href": "/review?filter=unsupported",
+                "detail": "candidate facts without deterministic source support",
+            },
+            {
+                "label": "Corroborated review targets",
+                "count": sum(1 for summary in review_summaries if "corroborated" in summary.trust_labels),
+                "href": "/review?filter=corroborated",
+                "detail": "review items backed by repeated source support",
+            },
+            {
+                "label": "Single-valued conflicts",
+                "count": len(workbench.conflicts),
+                "href": "/workbench",
+                "detail": "accepted/confirmed values competing under functional rules",
+            },
+            {
+                "label": "Failed source analyses",
+                "count": sum(1 for job in jobs if job["status"] == "failed"),
+                "href": "/sources",
+                "detail": "sources with failed extraction chunks ready for retry",
+            },
+            {
+                "label": "Recent lifecycle changes",
+                "count": int(recent_lifecycle),
+                "href": "/review",
+                "detail": "facts amended or reanalyzed after extraction",
+            },
+            {
+                "label": "Source-backed engine facts",
+                "count": len(corroboration),
+                "href": "/workbench",
+                "detail": "accepted/confirmed facts with source support",
+            },
+        ]
+
     def _dashboard(request: Request, *, error: str | None = None, status_code: int = 200):
         from verinote.engine import coverage
 
@@ -269,6 +317,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 "coverage": coverage(store, root=cfg.root),
                 "corroboration": store_corroboration(store),
                 "single_valued_conflicts": store_single_valued_conflicts(store),
+                "queues": _dashboard_queues(store),
                 "provider": app.state.cfg.provider,
                 "provider_label": PROVIDER_LABELS.get(
                     app.state.cfg.provider, app.state.cfg.provider

@@ -76,6 +76,81 @@ def test_dashboard_shows_factlog_borrowed_source_signals(tmp_path):
     assert "(1 source)" in body
 
 
+def test_dashboard_shows_action_queue_counts_and_links(tmp_path):
+    cfg = Config(
+        root=tmp_path,
+        db_path=tmp_path / "kb.sqlite",
+        provider="anthropic",
+        model="m",
+        api_key=None,
+        base_url=None,
+    )
+    c = TestClient(create_app(cfg))
+    store = c.app.state.store
+    store.add_fact("Unsupported Sample", "uses", "Sample Service", status="candidate")
+    review_source = store.add_source("sources/review.txt")
+    support_a = store.add_source("sources/support-a.txt")
+    support_b = store.add_source("sources/support-b.txt")
+    store.add_fact(
+        "Reviewed Sample",
+        "uses",
+        "Sample Service",
+        status="candidate",
+        source_id=review_source,
+    )
+    store.add_fact(
+        "Reviewed Sample",
+        "uses",
+        "Sample Service",
+        status="confirmed",
+        source_id=support_a,
+    )
+    store.add_fact(
+        "Reviewed Sample",
+        "uses",
+        "Sample Service",
+        status="accepted",
+        source_id=support_b,
+    )
+    conflict_a = store.add_source("sources/conflict-a.txt")
+    conflict_b = store.add_source("sources/conflict-b.txt")
+    store.add_fact("Org", "established_on", "2020", status="confirmed", source_id=conflict_a)
+    store.add_fact("Org", "established_on", "2021", status="accepted", source_id=conflict_b)
+    failed_source = store.add_source("sources/failed.txt")
+    job_id = store.create_extraction_job(
+        source_id=failed_source,
+        provider="fake",
+        model="sample-model",
+        total_chunks=1,
+    )
+    chunk_id = store.add_source_chunks(
+        job_id=job_id,
+        source_id=failed_source,
+        chunks=["Sample body"],
+    )[0]
+    store.mark_extraction_job_running(job_id)
+    store.mark_chunk_running(chunk_id)
+    store.mark_chunk_failed(chunk_id, "provider down")
+    changed = store.add_fact("Changed Sample", "uses", "Service", status="confirmed")
+    store.amend_fact(changed, subject="Changed Sample", relation="uses", obj="Service v2")
+
+    body = unescape(c.get("/").text)
+
+    assert "Action queues" in body
+    assert "Unsupported review items" in body
+    assert "Corroborated review targets" in body
+    assert "Single-valued conflicts" in body
+    assert "Failed source analyses" in body
+    assert "Recent lifecycle changes" in body
+    assert "Source-backed engine facts" in body
+    assert 'href="/review?filter=unsupported"' in body
+    assert 'href="/review?filter=corroborated"' in body
+    assert 'href="/workbench"' in body
+    assert 'href="/sources"' in body
+    assert ">1</td>" in body
+    assert ">3</td>" in body
+
+
 def test_no_active_kb_shows_selector(tmp_path, monkeypatch):
     monkeypatch.delenv("VERINOTE_ROOT", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
