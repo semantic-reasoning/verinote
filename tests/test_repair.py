@@ -11,16 +11,25 @@ from verinote.store import Store
 def _store_with_review_required(tmp_path):
     s = Store(tmp_path / "kb.sqlite")
     s.init_schema()
-    qid = s.add_question("Where was Ada born?")
-    s.set_question_query(qid, 'review_required("Where was Ada born?")', "review_required")
+    qid = s.add_question("Where was Sample Person born?")
+    s.set_question_query(
+        qid, 'review_required("Where was Sample Person born?")', "review_required"
+    )
     return s, qid
 
 
-def test_repair_accepts_engine_valid_proposal(tmp_path, fake_client):
+def test_repair_accepts_engine_valid_planned_query(tmp_path, fake_client, intent_payload):
     s, qid = _store_with_review_required(tmp_path)
-    s.add_fact("Ada", "born_in", "London", status="confirmed")
+    s.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
     s.set_question_query(qid, s.questions()[0]["query_dl"], "review_required", "stale")
-    client = fake_client(query=lambda q, i: f'answer_q{i}(O) :- relation("Ada", "born_in", O).')
+    client = fake_client(
+        intent=intent_payload(
+            "lookup_object", subject="Sample Person", relation="born_in"
+        )
+    )
+    client.translate_query = lambda **kwargs: (_ for _ in ()).throw(
+        AssertionError("repair must not call direct Datalog before the planner")
+    )
     results = repair_questions(s, client, root=tmp_path)
 
     assert results == [{"id": qid, "accepted": True, "reason": ""}]
@@ -29,26 +38,34 @@ def test_repair_accepts_engine_valid_proposal(tmp_path, fake_client):
     assert f"answer_q{qid}" in (load_query(s) or "")
 
 
-def test_repair_accepts_duckdb_supported_compound_query(tmp_path, fake_client):
+def test_repair_fallback_accepts_duckdb_supported_compound_query(tmp_path, fake_client):
     s, qid = _store_with_review_required(tmp_path)
     s.add_fact(
-        "Ada",
+        "Sample Person",
         "has_role",
-        Compound("role", (Compound("person", (StringLit("Ada"),)), StringLit("PI"))),
+        Compound(
+            "role",
+            (Compound("person", (StringLit("Sample Person"),)), StringLit("Lead")),
+        ),
         status="confirmed",
     )
     client = fake_client(
         query=lambda q, i: (
-            f'answer_q{i}(S) :- relation(S, "has_role", role(person("Ada"), "PI")).'
+            f'answer_q{i}(S) :- relation(S, "has_role", '
+            'role(person("Sample Person"), "Lead")).'
         )
     )
-    results = repair_questions(s, client, root=tmp_path)
+    results = repair_questions(
+        s, client, root=tmp_path, allow_direct_datalog_fallback=True
+    )
 
     assert results == [{"id": qid, "accepted": True, "reason": ""}]
     assert s.questions()[0]["status"] == "translated"
 
 
-def test_repair_accepts_valid_proposal_without_pyrewire(tmp_path, monkeypatch, fake_client):
+def test_repair_fallback_accepts_valid_proposal_without_pyrewire(
+    tmp_path, monkeypatch, fake_client
+):
     real_import = builtins.__import__
 
     def fake_import(name, *args, **kwargs):
@@ -58,10 +75,14 @@ def test_repair_accepts_valid_proposal_without_pyrewire(tmp_path, monkeypatch, f
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
     s, qid = _store_with_review_required(tmp_path)
-    s.add_fact("Ada", "born_in", "London", status="confirmed")
-    client = fake_client(query=lambda q, i: f'answer_q{i}(O) :- relation("Ada", "born_in", O).')
+    s.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
+    client = fake_client(
+        query=lambda q, i: f'answer_q{i}(O) :- relation("Sample Person", "born_in", O).'
+    )
 
-    results = repair_questions(s, client, root=tmp_path)
+    results = repair_questions(
+        s, client, root=tmp_path, allow_direct_datalog_fallback=True
+    )
 
     assert results == [{"id": qid, "accepted": True, "reason": ""}]
     assert s.questions()[0]["status"] == "translated"
@@ -71,7 +92,9 @@ def test_repair_rejects_engine_invalid_proposal(tmp_path, fake_client):
     s, qid = _store_with_review_required(tmp_path)
     # references an undeclared predicate -> engine rejects, question untouched
     client = fake_client(query=lambda q, i: f"answer_q{i}(O) :- bogus(O).")
-    results = repair_questions(s, client, root=tmp_path)
+    results = repair_questions(
+        s, client, root=tmp_path, allow_direct_datalog_fallback=True
+    )
 
     assert results[0]["accepted"] is False
     assert "bogus" in results[0]["reason"]
@@ -84,9 +107,13 @@ def test_repair_rejects_engine_invalid_proposal(tmp_path, fake_client):
 def test_repair_rejects_duckdb_unsupported_compound_query(tmp_path, fake_client):
     s, qid = _store_with_review_required(tmp_path)
     client = fake_client(
-        query=lambda q, i: f'answer_q{i}(person(O)) :- relation("Ada", "born_in", O).'
+        query=lambda q, i: (
+            f'answer_q{i}(person(O)) :- relation("Sample Person", "born_in", O).'
+        )
     )
-    results = repair_questions(s, client, root=tmp_path)
+    results = repair_questions(
+        s, client, root=tmp_path, allow_direct_datalog_fallback=True
+    )
 
     assert results[0]["accepted"] is False
     assert "variable-bearing compound" in results[0]["reason"]
@@ -96,22 +123,42 @@ def test_repair_rejects_duckdb_unsupported_compound_query(tmp_path, fake_client)
     assert f"answer_q{qid}" not in (load_query(s) or "")
 
 
-def test_repair_rejects_still_unanswerable(tmp_path, fake_client):
+def test_repair_rejects_unsupported_intent(tmp_path, fake_client, intent_payload):
     s, qid = _store_with_review_required(tmp_path)
-    client = fake_client(query=lambda q, i: 'review_required("still nope")')
+    client = fake_client(
+        intent=intent_payload("unknown_or_unsupported", reason="still unsupported")
+    )
     results = repair_questions(s, client, root=tmp_path)
 
-    assert results == [{"id": qid, "accepted": False, "reason": "still nope"}]
+    assert results == [{"id": qid, "accepted": False, "reason": "still unsupported"}]
     q = s.questions()[0]
     assert q["status"] == "review_required"
-    assert q["query_dl"] == 'review_required("still nope")'
-    assert q["reason"] == "still nope"
+    assert q["query_dl"] == 'review_required("still unsupported")'
+    assert q["reason"] == "still unsupported"
     assert "review_required" not in (load_query(s) or "")
 
 
-def test_repair_persists_no_answer_lifecycle_outcome(tmp_path, fake_client):
+def test_repair_persists_no_answer_lifecycle_outcome(
+    tmp_path, fake_client, intent_payload, monkeypatch
+):
+    from verinote.pipeline.query_candidate_eval import QueryCandidateSetEvaluation
+    from verinote.pipeline.query_candidate_eval import QueryCandidateSetOutcome
+
     s, qid = _store_with_review_required(tmp_path)
-    client = fake_client(query=lambda q, i: 'no_answer("no confirmed facts match")')
+    s.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
+    client = fake_client(
+        intent=intent_payload(
+            "lookup_object", subject="Sample Person", relation="born_in"
+        )
+    )
+
+    def no_rows(store, plan):
+        assert plan.candidates
+        return QueryCandidateSetEvaluation(
+            plan=plan, outcome=QueryCandidateSetOutcome.NO_ANSWER
+        )
+
+    monkeypatch.setattr("verinote.pipeline.query.evaluate_query_candidate_plan", no_rows)
     results = repair_questions(s, client, root=tmp_path)
 
     assert results == [
@@ -124,18 +171,43 @@ def test_repair_persists_no_answer_lifecycle_outcome(tmp_path, fake_client):
     assert "no_answer" not in (load_query(s) or "")
 
 
-def test_repair_persists_ambiguous_lifecycle_outcome(tmp_path, fake_client):
+def test_repair_persists_ambiguous_lifecycle_outcome(
+    tmp_path, fake_client, intent_payload, monkeypatch
+):
+    from verinote.pipeline.query_candidate_eval import QueryCandidateSetEvaluation
+    from verinote.pipeline.query_candidate_eval import QueryCandidateSetOutcome
+
     s, qid = _store_with_review_required(tmp_path)
-    client = fake_client(query=lambda q, i: 'ambiguous("multiple sample entities match")')
+    s.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
+    client = fake_client(
+        intent=intent_payload(
+            "lookup_object", subject="Sample Person", relation="born_in"
+        )
+    )
+
+    def ambiguous(store, plan):
+        assert plan.candidates
+        return QueryCandidateSetEvaluation(
+            plan=plan, outcome=QueryCandidateSetOutcome.AMBIGUOUS_CONFLICTING
+        )
+
+    monkeypatch.setattr("verinote.pipeline.query.evaluate_query_candidate_plan", ambiguous)
     results = repair_questions(s, client, root=tmp_path)
 
     assert results == [
-        {"id": qid, "accepted": False, "reason": "multiple sample entities match"}
+        {
+            "id": qid,
+            "accepted": False,
+            "reason": "multiple query candidates returned conflicting answers",
+        }
     ]
     q = s.questions()[0]
     assert q["status"] == "ambiguous"
-    assert q["query_dl"] == 'ambiguous("multiple sample entities match")'
-    assert q["reason"] == "multiple sample entities match"
+    assert (
+        q["query_dl"]
+        == 'ambiguous("multiple query candidates returned conflicting answers")'
+    )
+    assert q["reason"] == "multiple query candidates returned conflicting answers"
     assert "ambiguous" not in (load_query(s) or "")
 
 
