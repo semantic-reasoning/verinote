@@ -106,16 +106,29 @@ class Store:
         ).fetchone()
 
     def sources_with_counts(self) -> list[sqlite3.Row]:
-        """Sources plus how many facts cite each — for the Sources listing."""
+        """Sources plus analysis and fact summaries for the Sources listing."""
         return list(
             self._conn.execute(
                 "SELECT s.id, s.path, s.kind, s.added_at, "
-                "GROUP_CONCAT(a.path, '\n') AS artifact_paths, "
-                "COUNT(DISTINCT f.id) AS fact_count "
+                "(SELECT COUNT(*) FROM facts f WHERE f.source_id = s.id) "
+                "AS fact_count, "
+                "(SELECT COUNT(*) FROM facts f WHERE f.source_id = s.id "
+                "AND f.status = 'candidate') AS candidate_count, "
+                "(SELECT COUNT(*) FROM facts f WHERE f.source_id = s.id "
+                "AND f.status = 'needs_review') AS needs_review_count, "
+                "(SELECT COUNT(*) FROM facts f WHERE f.source_id = s.id "
+                "AND f.status IN ('confirmed','accepted')) AS engine_count, "
+                "j.id AS job_id, j.status AS analysis_status, "
+                "j.total_chunks, j.completed_chunks, j.failed_chunks, "
+                "j.candidate_count AS analysis_candidate_count, "
+                "j.message AS analysis_message, j.provider, j.model, "
+                "j.updated_at AS last_analyzed_at "
                 "FROM sources s "
-                "LEFT JOIN source_artifacts a ON a.source_id = s.id "
-                "LEFT JOIN facts f ON f.source_id = s.id "
-                "GROUP BY s.id ORDER BY s.path"
+                "LEFT JOIN extraction_jobs j ON j.id = ("
+                "  SELECT MAX(j2.id) FROM extraction_jobs j2 "
+                "  WHERE j2.source_id = s.id"
+                ") "
+                "ORDER BY s.path"
             )
         )
 
