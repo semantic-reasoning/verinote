@@ -13,6 +13,7 @@ from verinote.config import Config  # noqa: E402
 from verinote.engine.terms import Atom, Compound, StringLit  # noqa: E402
 from verinote.llm.base import ExtractedFact, LLMError  # noqa: E402
 from verinote.pipeline.query import query_path  # noqa: E402
+from verinote.pipeline.query_intent import parse_query_intent  # noqa: E402
 from verinote.store import Store  # noqa: E402
 from verinote.store.fact_input import structural_term  # noqa: E402
 from verinote.web import create_app  # noqa: E402
@@ -28,6 +29,42 @@ def _client(tmp_path) -> TestClient:
     store = app.state.store
     client.fact_id = store.add_fact("A", "is_a", "B", status="needs_review", confidence=0.9)
     return client
+
+
+def _target(kind: str, value: str | None) -> dict | None:
+    return None if value is None else {"kind": kind, "value": value}
+
+
+def _intent(kind: str, *, subject: str | None = None) -> dict:
+    return {
+        "kind": kind,
+        "subject": _target("entity", subject),
+        "relation": None,
+        "object": None,
+        "relation_candidates": [],
+        "operator": None,
+        "value_type": None,
+        "value": None,
+        "reason": None,
+    }
+
+
+class IntentOnlyClient:
+    name = "intent-only"
+
+    def __init__(self, intent):
+        self.intent = intent
+        self.intent_calls = 0
+        self.direct_datalog_calls = 0
+
+    def extract_query_intent(self, *, question: str, schema_hint: str = ""):
+        self.intent_calls += 1
+        raw = self.intent(question) if callable(self.intent) else self.intent
+        return parse_query_intent(raw)
+
+    def translate_query(self, *, question: str, qid: int, schema_hint: str = "") -> str:
+        self.direct_datalog_calls += 1
+        raise AssertionError("supported planner path must not call direct Datalog")
 
 
 def _wait_for(assertion, *, timeout: float = 2.0) -> None:
@@ -1565,6 +1602,103 @@ def test_translate_and_report_answers(tmp_path, monkeypatch, fake_client, intent
     # the report and questions page now surface the engine-evaluated answer
     assert "Sample Place" in c.get("/report").text
     assert "Sample Place" in c.get("/questions").text
+
+
+def test_questions_translate_relation_discovery_shows_actual_lifecycle_states(
+    tmp_path, monkeypatch
+):
+    from verinote.pipeline.query_candidate_eval import QueryCandidateSetEvaluation
+    from verinote.pipeline.query_candidate_eval import QueryCandidateSetOutcome
+
+    def intent_for(question: str):
+        if question.startswith("Translated"):
+            return _intent(
+                "discover_entity_relations", subject="Synthetic Web Entity"
+            )
+        if question.startswith("Review"):
+            return _intent(
+                "discover_entity_relations", subject="Synthetic Web Review Entity"
+            )
+        if question.startswith("Ambiguous"):
+            return _intent(
+                "discover_entity_relations", subject="Synthetic Web Ambiguous Entity"
+            )
+        return _intent("discover_entity_relations", subject="Synthetic Web Missing Entity")
+
+    client = IntentOnlyClient(intent_for)
+    monkeypatch.setattr(webapp, "get_client", lambda cfg: client)
+    from verinote.pipeline.query import evaluate_query_candidate_plan as real_eval
+
+    def no_answer_for_empty_plan(store, plan):
+        if plan.reason == "no relation discovery candidates matched the schema":
+            return QueryCandidateSetEvaluation(
+                plan=plan,
+                outcome=QueryCandidateSetOutcome.NO_ANSWER,
+            )
+        return real_eval(store, plan)
+
+    monkeypatch.setattr(
+        "verinote.pipeline.query.evaluate_query_candidate_plan",
+        no_answer_for_empty_plan,
+    )
+    c = _client(tmp_path)
+    store = c.app.state.store
+    store.add_fact(
+        "Synthetic Web Entity",
+        "synthetic_web_relation",
+        "Synthetic Web Value",
+        status="confirmed",
+    )
+    store.add_fact(
+        "Synthetic Web Review Entity",
+        "source",
+        "Synthetic Review Value",
+        status="confirmed",
+    )
+    store.add_fact(
+        "Synthetic Web Ambiguous Entity",
+        "subject_relation",
+        "Synthetic Subject Value",
+        status="confirmed",
+    )
+    store.add_fact(
+        "Synthetic Web Source",
+        "object_relation",
+        "Synthetic Web Ambiguous Entity",
+        status="confirmed",
+    )
+    store.add_question("Translated relation discovery?")
+    store.add_question("Review relation discovery?")
+    store.add_question("Ambiguous relation discovery?")
+    store.add_question("No answer relation discovery?")
+
+    r = c.post("/questions/translate", follow_redirects=False)
+
+    assert r.status_code == 303
+    assert [q["status"] for q in store.questions()] == [
+        "translated",
+        "review_required",
+        "ambiguous",
+        "no_answer",
+    ]
+    body = unescape(c.get("/questions").text)
+    assert "Translated" in body
+    assert "Review required" in body
+    assert "Ambiguous" in body
+    assert "No answer" in body
+    assert "synthetic_web_relation" in body
+    assert "relation label requires review: source" in body
+    assert "multiple query candidates returned conflicting answers" in body
+    assert "no confirmed facts match" in body
+    assert client.direct_datalog_calls == 0
+    query_dl = query_path(tmp_path).read_text(encoding="utf-8")
+    assert (
+        'answer_q1("synthetic_web_relation") :- '
+        'relation("Synthetic Web Entity", "synthetic_web_relation", O).'
+    ) in query_dl
+    assert "review_required" not in query_dl
+    assert "ambiguous" not in query_dl
+    assert "no_answer" not in query_dl
 
 
 def test_translate_persists_llm_error_reason(tmp_path, monkeypatch, fake_client):
