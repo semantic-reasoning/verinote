@@ -101,6 +101,23 @@ entered through explicit term mode or `structural_term(...)`. Legacy SQLite rows
 without DuckDB term rows are backfilled as `StringLit` values the first time they
 are selected for verification.
 
+## Relation Canonicalization
+
+New extraction prefers stable English canonical relation labels such as `role`,
+`affiliation`, and `provides`. Source-language labels remain supported through
+`policy/relation-aliases.md`, where each line maps a source or local label to the
+canonical relation:
+
+```text
+- `역할` -> `role`
+- `제공 요소` -> `provides`
+```
+
+Subjects and objects preserve the source document's language and named-entity
+spelling. Relation aliases are used by extraction, query planning, trust views,
+and verification query expansion so older source-language facts can still answer
+canonical English questions.
+
 ## License
 
 Mozilla Public License 2.0 — see [LICENSE](LICENSE). MPL-2.0 is a file-level
