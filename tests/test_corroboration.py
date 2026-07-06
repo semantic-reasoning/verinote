@@ -9,6 +9,7 @@ from verinote.pipeline.corroboration import (
     relation_aliases,
     single_valued_conflicts,
     store_corroboration,
+    store_relation_aliases,
     store_single_valued_conflicts,
     typed_relations,
 )
@@ -32,6 +33,26 @@ functional("quoted \" relation").
         "established_on",
         'quoted " relation',
     }
+
+
+def test_store_relation_aliases_include_default_policy(tmp_path):
+    s = _store(tmp_path)
+
+    aliases = store_relation_aliases(s)
+
+    assert aliases["제공 요소"] == "제공"
+
+
+def test_store_relation_aliases_merge_user_policy_with_defaults(tmp_path):
+    s = _store(tmp_path)
+    policy = tmp_path / "policy"
+    policy.mkdir()
+    (policy / "relation-aliases.md").write_text("- `role` -> `역할`\n", encoding="utf-8")
+
+    aliases = store_relation_aliases(s)
+
+    assert aliases["role"] == "역할"
+    assert aliases["제공 요소"] == "제공"
 
 
 def test_corroboration_counts_distinct_engine_sources_only():

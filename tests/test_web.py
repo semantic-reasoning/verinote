@@ -1891,6 +1891,9 @@ def test_settings_page_renders(tmp_path):
 def test_settings_saves_relation_aliases(tmp_path):
     c = _client(tmp_path)
 
+    initial_body = c.get("/settings").text
+    assert "- `제공 요소` -&gt; `제공`" in initial_body
+
     r = c.post(
         "/settings/relation-aliases",
         data={"relation_aliases_text": "- `role` -> `역할`"},
@@ -1902,6 +1905,7 @@ def test_settings_saves_relation_aliases(tmp_path):
     assert alias_path.read_text(encoding="utf-8") == "- `role` -> `역할`\n"
     body = c.get("/settings").text
     assert "- `role` -&gt; `역할`" in body
+    assert "- `제공 요소` -&gt; `제공`" in body
 
 
 def test_settings_saves_plain_relation_aliases(tmp_path):

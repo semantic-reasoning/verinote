@@ -211,15 +211,6 @@ _KOREAN_ENTITY_DIRECT_RELATION_DISCOVERY_QUESTION = re.compile(
 )
 KOREAN_ROLE_RELATION_CANDIDATES = ("역할", "직책", "직위")
 ENGLISH_ROLE_RELATION_CANDIDATES = ("role", "title", "position", "has_role")
-KOREAN_PROVIDE_RELATION_CANDIDATES = (
-    "제공",
-    "제공기능",
-    "제공 기능",
-    "제공서비스",
-    "제공 서비스",
-    "제공요소",
-    "제공 요소",
-)
 _GENERIC_ENTITY_ANCHORS = {
     "anything",
     "it",
@@ -279,7 +270,7 @@ def deterministic_query_intent(question: str) -> QueryIntent:
             return QueryIntent(
                 kind=QueryIntentKind.DISCOVER_ENTITY_RELATIONS,
                 subject=IntentTarget("entity", entity),
-                relation_candidates=KOREAN_PROVIDE_RELATION_CANDIDATES,
+                relation=IntentTarget("relation", "제공"),
             )
 
     match = _KOREAN_ENTITY_RELATION_DISCOVERY_QUESTION.match(text)

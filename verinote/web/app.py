@@ -28,6 +28,7 @@ from verinote.config import (
     save_settings,
 )
 from verinote.llm import LLMError, get_client
+from verinote.policy_defaults import DEFAULT_RELATION_ALIASES
 from verinote.pipeline import (
     create_chunked_extraction_job,
     fact_trust_summary,
@@ -115,8 +116,25 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     def _relation_aliases_text() -> str:
         path = _relation_aliases_path()
         if not path.is_file():
-            return ""
-        return path.read_text(encoding="utf-8")
+            return DEFAULT_RELATION_ALIASES
+        text = path.read_text(encoding="utf-8")
+        defaults = relation_aliases(DEFAULT_RELATION_ALIASES)
+        try:
+            existing = relation_aliases(text)
+        except CorroborationPolicyError:
+            return text
+        missing_defaults = {
+            alias: canonical
+            for alias, canonical in defaults.items()
+            if alias not in existing
+        }
+        if not missing_defaults:
+            return text
+        missing_text = "\n".join(
+            f"- `{alias}` -> `{canonical}`"
+            for alias, canonical in sorted(missing_defaults.items())
+        )
+        return f"{text.rstrip()}\n\n# Default aliases not yet saved in this KB\n{missing_text}\n"
 
     def _open_root(root: Path) -> None:
         """Point this running app at a KB root, creating it if needed."""
