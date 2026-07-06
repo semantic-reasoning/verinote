@@ -14,8 +14,8 @@ from pathlib import Path
 
 from verinote.llm.base import LLMClient
 from verinote.pipeline.query import (
+    _schema_aware_query_flow_result,
     _translate_direct_datalog_fallback,
-    schema_aware_query_flow,
     write_query_file,
 )
 from verinote.store import Store
@@ -38,14 +38,19 @@ def repair_questions(
         if q["status"] != "review_required":
             continue
         qid = q["id"]
-        status, query_dl, reason = schema_aware_query_flow(
+        flow = _schema_aware_query_flow_result(
             store,
             client,
             qid=qid,
             question=q["text"],
             llm_error_status="review_required",
         )
-        if allow_direct_datalog_fallback and status == "review_required":
+        status, query_dl, reason = flow.status, flow.query_dl, flow.reason
+        if (
+            allow_direct_datalog_fallback
+            and status == "review_required"
+            and flow.allow_direct_datalog_fallback
+        ):
             status, query_dl, reason = _translate_direct_datalog_fallback(
                 store,
                 client,

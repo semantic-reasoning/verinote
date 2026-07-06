@@ -5,7 +5,6 @@ import pytest
 
 from verinote.llm.base import LLMError
 from verinote.pipeline.query import (
-    deterministic_query_intent_dl,
     expand_query_relation_aliases,
     load_query,
     query_path,
@@ -78,18 +77,18 @@ def test_translate_korean_role_question_bypasses_llm(tmp_path):
     ]
     query_dl = s.questions()[0]["query_dl"]
     assert f'answer_q{qid}(O) :- relation("샘플인물", "역할", O).' in query_dl
+    assert "has_role" not in query_dl
+    assert "person(" not in query_dl
     assert load_query(s) == query_dl + "\n"
 
 
-def test_korean_role_query_datalog_is_derived_from_intent():
+def test_korean_role_question_is_parsed_as_structured_intent():
     intent = deterministic_query_intent("샘플인물의 역할은 무엇인가?")
 
-    query_dl = deterministic_query_intent_dl(intent, 7)
-
-    assert query_dl is not None
-    assert 'answer_q7(O) :- relation("샘플인물", "역할", O).' in query_dl
-    assert 'answer_q7(O) :- relation(person("샘플인물"), has_role, O).' in query_dl
-    assert 'answer_q7(R) :- relation(S, R, "샘플인물").' in query_dl
+    assert intent.kind.value == "lookup_object"
+    assert intent.subject is not None
+    assert intent.subject.value == "샘플인물"
+    assert intent.relation_candidates == ("역할", "직책", "직위")
 
 
 def test_load_query_expands_relation_aliases(tmp_path):
@@ -339,6 +338,40 @@ def test_quality_policy_review_required_outcome_is_persisted(
     )
 
     results = translate_questions(s, client, root=tmp_path)
+
+    assert results == [
+        {
+            "id": qid,
+            "status": "review_required",
+            "query_dl": 'review_required("relation label requires review: source")',
+            "reason": "relation label requires review: source",
+        }
+    ]
+    assert load_query(s) == ""
+
+
+def test_supported_planner_review_required_does_not_call_direct_fallback(
+    tmp_path, fake_client, intent_payload
+):
+    s = _store(tmp_path)
+    s.add_fact("Sample Entity", "source", "Sample Value", status="confirmed")
+    qid = s.add_question("Synthetic planner-supported review?")
+    client = fake_client(
+        intent=intent_payload(
+            "discover_entity_relations",
+            subject="Sample Entity",
+        )
+    )
+    client.translate_query = lambda **kwargs: (_ for _ in ()).throw(
+        AssertionError("planner-supported review must not call direct Datalog fallback")
+    )
+
+    results = translate_questions(
+        s,
+        client,
+        root=tmp_path,
+        allow_direct_datalog_fallback=True,
+    )
 
     assert results == [
         {

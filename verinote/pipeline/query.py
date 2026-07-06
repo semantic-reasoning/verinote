@@ -11,6 +11,7 @@ evaluation. Non-executable outcomes are tracked in the DB only.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from itertools import product
 from pathlib import Path
 import re
@@ -25,8 +26,6 @@ from verinote.pipeline.corroboration import (
     store_relation_aliases,
 )
 from verinote.pipeline.query_intent import (
-    KOREAN_ROLE_RELATION_CANDIDATES,
-    QueryIntent,
     QueryIntentKind,
     deterministic_query_intent,
 )
@@ -41,11 +40,18 @@ from verinote.store import Store
 QUERY_RELPATH = Path("facts") / "query.dl"
 MAX_ALIAS_EXPANDED_RULES_PER_RULE = 64
 _ESCAPE = re.compile(r'(["\\])')
-_GENERIC_ROLE_RELATIONS = ("역할", "직책", "직위", "role", "has_role")
 _STATUS_LINE = re.compile(
     r"^\s*(?P<status>review_required|no_answer|ambiguous)\s*\((?P<reason>.*)\)\s*\.?\s*$",
     re.DOTALL,
 )
+
+
+@dataclass(frozen=True)
+class _QueryFlowResult:
+    status: str
+    query_dl: str | None
+    reason: str
+    allow_direct_datalog_fallback: bool = False
 
 
 def query_path(root: Path) -> Path:
@@ -97,43 +103,6 @@ def query_schema_hint(snapshot: QuerySchemaSnapshot) -> str:
     if snapshot.relations_truncated:
         lines.append("- relation list truncated")
     return "\n".join(lines)
-
-
-def deterministic_query_dl(question: str, qid: int) -> str | None:
-    """Return deterministic query drafts for common shapes LLMs mistranslate."""
-    intent = deterministic_query_intent(question)
-    return deterministic_query_intent_dl(intent, qid)
-
-
-def deterministic_query_intent_dl(intent: QueryIntent, qid: int) -> str | None:
-    """Bridge supported deterministic intents to the legacy query draft shape."""
-    if (
-        intent.kind != QueryIntentKind.LOOKUP_OBJECT
-        or intent.subject is None
-        or intent.relation_candidates != KOREAN_ROLE_RELATION_CANDIDATES
-    ):
-        return None
-    person = intent.subject.value
-
-    person_lit = _lit(person)
-    person_term = f"person({person_lit})"
-    person_term_lit = _lit(f'person("{person}")')
-    excluded = ", ".join(f"R != {_lit(rel)}" for rel in _GENERIC_ROLE_RELATIONS)
-    role_object_rules = "\n".join(
-        f"answer_q{qid}(O) :- relation({person_lit}, {_lit(rel)}, O)."
-        for rel in _GENERIC_ROLE_RELATIONS
-    )
-    return "\n".join(
-        [
-            f".decl answer_q{qid}(value: symbol)",
-            role_object_rules,
-            f"answer_q{qid}(O) :- relation({person_term}, has_role, O).",
-            f"answer_q{qid}(R) :- relation({person_lit}, R, O), {excluded}.",
-            f"answer_q{qid}(R) :- relation(S, R, {person_lit}).",
-            f"answer_q{qid}(R) :- relation(S, R, {person_term}).",
-            f"answer_q{qid}(R) :- relation(S, R, {person_term_lit}).",
-        ]
-    )
 
 
 def classify_query_draft(store: Store, qid: int, query_dl: str) -> tuple[str, str, str]:
@@ -188,6 +157,24 @@ def schema_aware_query_flow(
     llm_error_status: str,
 ) -> tuple[str, str | None, str]:
     """Translate one question through intent extraction, planning, and dry-run evaluation."""
+    result = _schema_aware_query_flow_result(
+        store,
+        client,
+        qid=qid,
+        question=question,
+        llm_error_status=llm_error_status,
+    )
+    return result.status, result.query_dl, result.reason
+
+
+def _schema_aware_query_flow_result(
+    store: Store,
+    client: LLMClient,
+    *,
+    qid: int,
+    question: str,
+    llm_error_status: str,
+) -> _QueryFlowResult:
     from verinote.pipeline.query_candidate_eval import QueryCandidateSetOutcome
 
     snapshot = build_query_schema_snapshot(store)
@@ -201,13 +188,23 @@ def schema_aware_query_flow(
         except LLMError as exc:
             reason = _short_reason(exc)
             if llm_error_status == "translation_failed":
-                return "translation_failed", None, reason
+                return _QueryFlowResult("translation_failed", None, reason)
             reason = _short_reason(f"llm error: {exc}")
-            return "review_required", f"review_required({_lit(reason)})", reason
+            return _QueryFlowResult(
+                "review_required",
+                f"review_required({_lit(reason)})",
+                reason,
+                allow_direct_datalog_fallback=True,
+            )
 
     if intent.kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED:
         reason = _short_reason(intent.reason or "unsupported query intent")
-        return "review_required", f"review_required({_lit(reason)})", reason
+        return _QueryFlowResult(
+            "review_required",
+            f"review_required({_lit(reason)})",
+            reason,
+            allow_direct_datalog_fallback=True,
+        )
 
     exact_entities = _intent_exact_entities(intent)
     if exact_entities:
@@ -216,28 +213,30 @@ def schema_aware_query_flow(
     evaluation = evaluate_query_candidate_plan(store, plan)
 
     if evaluation.outcome == QueryCandidateSetOutcome.VALID and evaluation.selected:
-        return "translated", evaluation.selected.query_dl, ""
+        return _QueryFlowResult("translated", evaluation.selected.query_dl, "")
     if evaluation.outcome == QueryCandidateSetOutcome.NO_ANSWER:
         reason = "no confirmed facts match"
-        return "no_answer", f"no_answer({_lit(reason)})", reason
+        return _QueryFlowResult("no_answer", f"no_answer({_lit(reason)})", reason)
     if evaluation.outcome == QueryCandidateSetOutcome.AMBIGUOUS_CONFLICTING:
         reason = "multiple query candidates returned conflicting answers"
-        return "ambiguous", f"ambiguous({_lit(reason)})", reason
+        return _QueryFlowResult("ambiguous", f"ambiguous({_lit(reason)})", reason)
     if evaluation.outcome == QueryCandidateSetOutcome.REVIEW_REQUIRED:
         reason = _short_reason(_evaluation_reason(evaluation))
-        return "review_required", f"review_required({_lit(reason)})", reason
+        return _QueryFlowResult(
+            "review_required", f"review_required({_lit(reason)})", reason
+        )
     if evaluation.outcome == QueryCandidateSetOutcome.EMPTY:
         reason = _short_reason(plan.reason or "no query candidates matched the schema")
     elif evaluation.outcome == QueryCandidateSetOutcome.ENGINE_POLICY_ERROR:
         reason = _short_reason("engine/policy error: " + _evaluation_reason(evaluation))
     else:
         reason = _short_reason("invalid query: " + _evaluation_reason(evaluation))
-    return "review_required", f"review_required({_lit(reason)})", reason
+    return _QueryFlowResult("review_required", f"review_required({_lit(reason)})", reason)
 
 
-def _intent_exact_entities(intent: QueryIntent) -> tuple[str, ...]:
+def _intent_exact_entities(intent: object) -> tuple[str, ...]:
     values = []
-    for target in (intent.subject, intent.object):
+    for target in (getattr(intent, "subject", None), getattr(intent, "object", None)):
         if target is not None and target.kind in {"entity", "value", "typed_value"}:
             values.append(target.value)
     return tuple(dict.fromkeys(values))
@@ -306,14 +305,19 @@ def translate_questions(
     """
     results: list[dict] = []
     for q in store.questions(pending_only=True):
-        status, query_dl, reason = schema_aware_query_flow(
+        flow = _schema_aware_query_flow_result(
             store,
             client,
             qid=q["id"],
             question=q["text"],
             llm_error_status="translation_failed",
         )
-        if allow_direct_datalog_fallback and status == "review_required":
+        status, query_dl, reason = flow.status, flow.query_dl, flow.reason
+        if (
+            allow_direct_datalog_fallback
+            and status == "review_required"
+            and flow.allow_direct_datalog_fallback
+        ):
             status, query_dl, reason = _translate_direct_datalog_fallback(
                 store,
                 client,
