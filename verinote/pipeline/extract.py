@@ -15,6 +15,11 @@ from typing import Iterable
 from verinote.engine.terms import TermParseError
 from verinote.llm.base import ExtractedFact, LLMClient, LLMError
 from verinote.pipeline.chunk import chunk_text
+from verinote.pipeline.corroboration import (
+    canonical_relation,
+    CorroborationPolicyError,
+    store_relation_aliases,
+)
 from verinote.pipeline.normalize import normalize_for_extraction
 from verinote.store import Store
 from verinote.store.fact_input import structural_term
@@ -25,11 +30,12 @@ ORG_PERSON_ROLE_SCHEMA_HINT = (
     "Write role facts as organization subject, role predicate, person object when "
     "the source explicitly says a person holds that role for the organization. "
     "For presenter lines like `발표· 성명 대표 (원문: 성명대표)| 샘플조직`, emit "
-    "`샘플조직`, `대표`, `성명`; do not emit person-subject role facts. "
+    "`샘플조직`, `role`, `성명`; do not emit person-subject role facts. "
     "Normalize compact Korean role text such as "
     "`성명 대표 (원문: 성명대표)` or `대표 성명 (원문: 대표성명)` into "
-    "source-language relation labels like `대표`, `대표이사`, `CTO`, `발표자`, "
-    "or `소속`. Use only the organization in the same line, table row, bullet, or "
+    "canonical English relation labels like `role`, `representative`, "
+    "`presenter`, or `affiliation`. Use only the organization in the same line, "
+    "table row, bullet, or "
     "layout record as the person/role phrase. If another organization appears "
     "elsewhere in the chunk, do not connect it to the person. If the chunk contains "
     "a `원문:` marker, copy that original phrase into note. Do not invent "
@@ -79,7 +85,8 @@ def extract_source(
     facts = _extract_chunk_facts(
         client, source_text=analysis_text, schema_hint=schema_hint
     )
-    rows = _candidate_rows(facts, analysis_text)
+    aliases = _relation_aliases_or_error(store)
+    rows = _candidate_rows(facts, analysis_text, relation_aliases=aliases)
 
     source_id = store.add_source(source_path)
     for subject, relation, obj, f in rows:
@@ -219,7 +226,8 @@ def _extract_chunk(
     schema_hint: str = "",
 ) -> int:
     facts = _extract_chunk_facts(client, source_text=source_text, schema_hint=schema_hint)
-    rows = _candidate_rows(facts, source_text)
+    aliases = _relation_aliases_or_error(store)
+    rows = _candidate_rows(facts, source_text, relation_aliases=aliases)
     inserted = 0
     for subject, relation, obj, f in rows:
         if store.fact_exists_for_source(
@@ -275,20 +283,31 @@ def _focused_role_schema_hint(schema_hint: str) -> str:
     return f"{schema_hint}\n{ORG_PERSON_ROLE_SCHEMA_HINT}"
 
 
+def _relation_aliases_or_error(store: Store) -> dict[str, str]:
+    try:
+        return store_relation_aliases(store)
+    except CorroborationPolicyError as exc:
+        raise LLMError(str(exc)) from exc
+
+
 def _candidate_rows(
-    facts: list[ExtractedFact], source_text: str
+    facts: list[ExtractedFact],
+    source_text: str,
+    *,
+    relation_aliases: dict[str, str] | None = None,
 ) -> list[tuple[object, object, object, ExtractedFact]]:
     rows = []
+    aliases = relation_aliases or {}
     try:
         for f in facts:
-            f = _canonical_fact(f)
+            f = _canonical_fact(f, aliases)
             if f is None:
                 continue
             if _is_normalization_bridge(f):
                 continue
             if _has_unbacked_han_translation(f, source_text):
                 continue
-            if _has_unbacked_ascii_relation(f, source_text):
+            if _has_unbacked_ascii_relation(f, source_text, aliases):
                 continue
             if _has_unsupported_metric_subject(f, source_text):
                 continue
@@ -305,12 +324,18 @@ def _candidate_rows(
     return rows
 
 
-def _canonical_fact(f: ExtractedFact) -> ExtractedFact | None:
+def _canonical_fact(
+    f: ExtractedFact, relation_aliases: dict[str, str]
+) -> ExtractedFact | None:
     """Normalize shallow fact shapes and drop malformed S-P-O fragments."""
     if _is_bad_spo_shape(f):
         return None
     if f.relation_kind == "string" and f.relation.strip() in _KEY_VALUE_RELATIONS:
         return replace(f, relation="value")
+    if f.relation_kind == "string":
+        relation = canonical_relation(f.relation.strip(), relation_aliases)
+        if relation != f.relation:
+            return replace(f, relation=relation)
     return f
 
 
@@ -342,16 +367,28 @@ def _has_unbacked_han_translation(f: ExtractedFact, source_text: str) -> bool:
     )
 
 
-def _has_unbacked_ascii_relation(f: ExtractedFact, source_text: str) -> bool:
+def _has_unbacked_ascii_relation(
+    f: ExtractedFact, source_text: str, relation_aliases: dict[str, str]
+) -> bool:
     """Drop English/snake_case relation labels hallucinated from Korean sources."""
     if _HANGUL_RE.search(source_text) is None:
         return False
     relation = f.relation.strip()
-    if relation.casefold() in _STANDARD_ASCII_RELATIONS:
+    allowed_ascii = _policy_backed_ascii_relations(relation_aliases)
+    if relation.casefold() in allowed_ascii:
         return False
     if _ASCII_RELATION_RE.fullmatch(relation) is None:
         return False
     return _compact_text(relation) not in _compact_text(source_text)
+
+
+def _policy_backed_ascii_relations(relation_aliases: dict[str, str]) -> set[str]:
+    allowed = {item.casefold() for item in _STANDARD_ASCII_RELATIONS}
+    for canonical in relation_aliases.values():
+        relation = unicodedata.normalize("NFC", canonical).strip()
+        if _ASCII_RELATION_RE.fullmatch(relation):
+            allowed.add(relation.casefold())
+    return allowed
 
 
 def _has_unsupported_metric_subject(f: ExtractedFact, source_text: str) -> bool:

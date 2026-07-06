@@ -424,7 +424,9 @@ def test_extract_source_keeps_non_metric_korean_object_without_local_subject(
         == 1
     )
 
-    assert s.facts()[0]["object"] == "샘플기능"
+    fact = s.facts()[0]
+    assert fact["relation"] == "provides"
+    assert fact["object"] == "샘플기능"
 
 
 def test_extract_source_canonicalizes_generic_value_relation(tmp_path, fake_client):
@@ -480,6 +482,37 @@ def test_extract_source_allows_standard_value_relation_in_korean_source(
     )
 
     assert s.facts()[0]["relation"] == "value"
+
+
+def test_extract_source_allows_policy_backed_english_relation_in_korean_source(
+    tmp_path, fake_client
+):
+    s = _store(tmp_path)
+    run_id = s.add_run(provider="fake", model="m")
+    client = fake_client(
+        [
+            ExtractedFact(
+                "샘플조직",
+                "role",
+                "샘플인물",
+                0.9,
+                note="샘플조직 샘플인물",
+            )
+        ]
+    )
+
+    assert (
+        extract_source(
+            s,
+            client,
+            source_path="sources/x.txt",
+            source_text="샘플조직 샘플인물",
+            run_id=run_id,
+        )
+        == 1
+    )
+
+    assert s.facts()[0]["relation"] == "role"
 
 
 def test_extract_source_drops_sentence_ending_object(tmp_path, fake_client):
@@ -552,10 +585,11 @@ def test_extract_source_normalizes_and_runs_focused_role_pass(tmp_path):
     assert "성명 대표 (원문: 성명대표)" in client.calls[0][0]
     assert "Additional focused pass" in client.calls[1][1]
     assert "do not emit person-subject role facts" in client.calls[1][1]
+    assert "canonical English relation labels" in client.calls[1][1]
     assert "same line, table row, bullet, or layout record" in client.calls[1][1]
     fact = s.facts()[0]
     assert fact["subject"] == "샘플조직"
-    assert fact["relation"] == "대표"
+    assert fact["relation"] == "role"
     assert fact["object"] == "성명"
     assert fact["note"] == "원문: 성명대표"
 
@@ -752,10 +786,11 @@ def test_process_extraction_job_runs_focused_role_pass_with_original_note(tmp_pa
     assert "성명 대표 (원문: 성명대표)" in client.calls[0][0]
     assert "Additional focused pass" in client.calls[1][1]
     assert "do not emit person-subject role facts" in client.calls[1][1]
+    assert "canonical English relation labels" in client.calls[1][1]
     assert "same line, table row, bullet, or layout record" in client.calls[1][1]
     fact = s.facts()[0]
     assert fact["subject"] == "샘플조직"
-    assert fact["relation"] == "대표"
+    assert fact["relation"] == "role"
     assert fact["object"] == "성명"
     assert fact["note"] == "원문: 성명대표"
 
