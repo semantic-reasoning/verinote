@@ -9,6 +9,7 @@ from verinote.pipeline.query_candidate_eval import (
     evaluate_query_candidate_plan,
 )
 from verinote.pipeline.query_planner import QueryCandidate, QueryCandidatePlan
+from verinote.pipeline.query_planner import QueryCandidateDirection, QueryCandidateFamily
 from verinote.store import Store
 
 
@@ -18,9 +19,16 @@ def _store(tmp_path) -> Store:
     return store
 
 
-def _candidate(query_dl: str) -> QueryCandidate:
+def _candidate(
+    query_dl: str,
+    *,
+    family: QueryCandidateFamily = QueryCandidateFamily.MANUAL_DRAFT,
+    direction: QueryCandidateDirection | None = None,
+) -> QueryCandidate:
     return QueryCandidate(
         query_dl=query_dl,
+        family=family,
+        direction=direction,
         relation_display=None,
         relation_executable=None,
         subject_executable=None,
@@ -31,7 +39,9 @@ def _candidate(query_dl: str) -> QueryCandidate:
 def _lookup(qid: int, subject: str, relation: str) -> QueryCandidate:
     return _candidate(
         f'.decl answer_q{qid}(value: symbol)\n'
-        f'answer_q{qid}(O) :- relation("{subject}", "{relation}", O).'
+        f'answer_q{qid}(O) :- relation("{subject}", "{relation}", O).',
+        family=QueryCandidateFamily.DIRECT_OBJECT_LOOKUP,
+        direction=QueryCandidateDirection.SUBJECT_TO_OBJECT,
     )
 
 
@@ -278,6 +288,26 @@ def test_evaluate_query_candidate_plan_selects_first_same_answer_candidate(tmp_p
     assert evaluation.outcome == QueryCandidateSetOutcome.VALID
     assert evaluation.selected == first
     assert evaluation.answers == ("q1: Reviewer",)
+
+
+def test_evaluate_query_candidate_plan_preserves_candidate_metadata(tmp_path):
+    store = _store(tmp_path)
+    store.add_fact("Sample Person", "role", "Reviewer", status="confirmed")
+    candidate = _lookup(1, "Sample Person", "role")
+
+    evaluation = evaluate_query_candidate_plan(store, _plan(candidate))
+
+    assert evaluation.outcome == QueryCandidateSetOutcome.VALID
+    assert evaluation.evaluations[0].candidate is candidate
+    assert evaluation.evaluations[0].candidate.family == (
+        QueryCandidateFamily.DIRECT_OBJECT_LOOKUP
+    )
+    assert evaluation.evaluations[0].candidate.direction == (
+        QueryCandidateDirection.SUBJECT_TO_OBJECT
+    )
+    assert evaluation.selected is candidate
+    assert evaluation.selected.family == QueryCandidateFamily.DIRECT_OBJECT_LOOKUP
+    assert evaluation.selected.direction == QueryCandidateDirection.SUBJECT_TO_OBJECT
 
 
 def test_evaluate_query_candidate_plan_marks_conflicting_answer_sets_ambiguous(tmp_path):

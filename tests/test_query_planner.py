@@ -4,6 +4,8 @@ import unicodedata
 
 from verinote.pipeline.query_intent import IntentTarget, QueryIntent, QueryIntentKind
 from verinote.pipeline.query_planner import (
+    QueryCandidateDirection,
+    QueryCandidateFamily,
     QueryPlannerBounds,
     plan_query_candidates,
 )
@@ -136,6 +138,12 @@ def test_lookup_object_uses_observed_relation_and_subject_side():
         '.decl answer_q12(value: symbol)\n'
         'answer_q12(O) :- relation("Sample Person", "역할", O).'
     ]
+    assert [candidate.family for candidate in plan.candidates] == [
+        QueryCandidateFamily.DIRECT_OBJECT_LOOKUP
+    ]
+    assert [candidate.direction for candidate in plan.candidates] == [
+        QueryCandidateDirection.SUBJECT_TO_OBJECT
+    ]
     assert plan.truncated is False
 
 
@@ -180,6 +188,12 @@ def test_lookup_subject_uses_object_side_directionality():
         '.decl answer_q13(value: symbol)\n'
         'answer_q13(S) :- relation(S, "역할", "Reviewer").'
     ]
+    assert [candidate.family for candidate in plan.candidates] == [
+        QueryCandidateFamily.DIRECT_SUBJECT_LOOKUP
+    ]
+    assert [candidate.direction for candidate in plan.candidates] == [
+        QueryCandidateDirection.OBJECT_TO_SUBJECT
+    ]
 
 
 def test_lookup_relation_uses_intentional_variable_relation_only_for_relation_lookup():
@@ -208,6 +222,49 @@ def test_lookup_relation_uses_intentional_variable_relation_only_for_relation_lo
     assert [candidate.query_dl for candidate in plan.candidates] == [
         '.decl answer_q14(value: symbol)\n'
         'answer_q14(R) :- relation("Sample Person", R, "Sample Document").'
+    ]
+    assert [candidate.family for candidate in plan.candidates] == [
+        QueryCandidateFamily.DIRECT_RELATION_LOOKUP
+    ]
+    assert [candidate.direction for candidate in plan.candidates] == [
+        QueryCandidateDirection.SUBJECT_OBJECT_TO_RELATION
+    ]
+
+
+def test_lookup_relation_metadata_tracks_one_sided_direction():
+    sample_person = _entity("Sample Person", '"Sample Person"')
+    sample_document = _entity("Sample Document", '"Sample Document"')
+    snapshot = _snapshot(
+        _relation(
+            "authored",
+            '"authored"',
+            subjects=(sample_person,),
+            objects=(sample_document,),
+        )
+    )
+
+    subject_plan = plan_query_candidates(
+        QueryIntent(
+            kind=QueryIntentKind.LOOKUP_RELATION,
+            subject=IntentTarget("entity", "Sample Person"),
+        ),
+        snapshot,
+        qid=30,
+    )
+    object_plan = plan_query_candidates(
+        QueryIntent(
+            kind=QueryIntentKind.LOOKUP_RELATION,
+            object=IntentTarget("entity", "Sample Document"),
+        ),
+        snapshot,
+        qid=31,
+    )
+
+    assert [candidate.direction for candidate in subject_plan.candidates] == [
+        QueryCandidateDirection.SUBJECT_TO_RELATION
+    ]
+    assert [candidate.direction for candidate in object_plan.candidates] == [
+        QueryCandidateDirection.OBJECT_TO_RELATION
     ]
 
 
@@ -411,6 +468,48 @@ def test_lookup_object_uses_exact_entity_facts_when_subject_examples_are_bounded
     assert [candidate.query_dl for candidate in plan.candidates] == [
         '.decl answer_q24(value: symbol)\n'
         'answer_q24(O) :- relation("Needle Subject", "role", O).'
+    ]
+    assert [candidate.family for candidate in plan.candidates] == [
+        QueryCandidateFamily.EXACT_FACT_FALLBACK
+    ]
+    assert [candidate.direction for candidate in plan.candidates] == [
+        QueryCandidateDirection.SUBJECT_TO_OBJECT
+    ]
+
+
+def test_dedupe_keeps_pre_metadata_candidate_identity_for_same_query():
+    sample_subject = _entity("Sample Subject", '"Sample Subject"')
+    snapshot = _snapshot_with_exact(
+        _relation(
+            "role",
+            '"role"',
+            subjects=(sample_subject,),
+            objects=(_entity("Reviewer", '"Reviewer"'),),
+        ),
+        exact_facts=(
+            _fact(
+                _term("Sample Subject", '"Sample Subject"'),
+                _term("role", '"role"'),
+                _term("Reviewer", '"Reviewer"'),
+                matched_entity="Sample Subject",
+                matched_side="subject",
+            ),
+        ),
+    )
+    intent = QueryIntent(
+        kind=QueryIntentKind.LOOKUP_OBJECT,
+        subject=IntentTarget("entity", "Sample Subject"),
+        relation=IntentTarget("relation", "role"),
+    )
+
+    plan = plan_query_candidates(intent, snapshot, qid=25)
+
+    assert [candidate.query_dl for candidate in plan.candidates] == [
+        '.decl answer_q25(value: symbol)\n'
+        'answer_q25(O) :- relation("Sample Subject", "role", O).'
+    ]
+    assert [candidate.family for candidate in plan.candidates] == [
+        QueryCandidateFamily.DIRECT_OBJECT_LOOKUP
     ]
 
 

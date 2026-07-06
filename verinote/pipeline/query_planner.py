@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 import unicodedata
 
 from verinote.pipeline.corroboration import relation_label_matches
@@ -30,9 +31,29 @@ class QueryPlannerBounds:
             raise ValueError("max_candidates must be a non-negative integer")
 
 
+class QueryCandidateFamily(StrEnum):
+    DIRECT_OBJECT_LOOKUP = "direct_object_lookup"
+    DIRECT_SUBJECT_LOOKUP = "direct_subject_lookup"
+    DIRECT_RELATION_LOOKUP = "direct_relation_lookup"
+    SUBJECT_RELATION_DISCOVERY = "subject_relation_discovery"
+    OBJECT_RELATION_DISCOVERY = "object_relation_discovery"
+    EXACT_FACT_FALLBACK = "exact_fact_fallback"
+    MANUAL_DRAFT = "manual_draft"
+
+
+class QueryCandidateDirection(StrEnum):
+    SUBJECT_TO_OBJECT = "subject_to_object"
+    OBJECT_TO_SUBJECT = "object_to_subject"
+    SUBJECT_TO_RELATION = "subject_to_relation"
+    OBJECT_TO_RELATION = "object_to_relation"
+    SUBJECT_OBJECT_TO_RELATION = "subject_object_to_relation"
+
+
 @dataclass(frozen=True)
 class QueryCandidate:
     query_dl: str
+    family: QueryCandidateFamily
+    direction: QueryCandidateDirection | None
     relation_display: str | None
     relation_executable: str | None
     subject_executable: str | None
@@ -93,6 +114,8 @@ def _lookup_object_candidates(
             candidates.append(
                 QueryCandidate(
                     query_dl=query_dl,
+                    family=QueryCandidateFamily.DIRECT_OBJECT_LOOKUP,
+                    direction=QueryCandidateDirection.SUBJECT_TO_OBJECT,
                     relation_display=relation.relation.display,
                     relation_executable=relation.relation.executable,
                     subject_executable=subject.executable,
@@ -121,6 +144,8 @@ def _lookup_subject_candidates(
             candidates.append(
                 QueryCandidate(
                     query_dl=query_dl,
+                    family=QueryCandidateFamily.DIRECT_SUBJECT_LOOKUP,
+                    direction=QueryCandidateDirection.OBJECT_TO_SUBJECT,
                     relation_display=relation.relation.display,
                     relation_executable=relation.relation.executable,
                     subject_executable=None,
@@ -157,6 +182,8 @@ def _lookup_relation_candidates(
                 candidates.append(
                     QueryCandidate(
                         query_dl=_query_dl(qid, "R", body),
+                        family=QueryCandidateFamily.DIRECT_RELATION_LOOKUP,
+                        direction=_lookup_relation_direction(subject, obj),
                         relation_display=None,
                         relation_executable=None,
                         subject_executable=(
@@ -191,6 +218,8 @@ def _lookup_object_exact_fact_candidates(
                     "O",
                     f"relation({fact.subject.executable}, {fact.relation.executable}, O)",
                 ),
+                family=QueryCandidateFamily.EXACT_FACT_FALLBACK,
+                direction=QueryCandidateDirection.SUBJECT_TO_OBJECT,
                 relation_display=fact.relation.display,
                 relation_executable=fact.relation.executable,
                 subject_executable=fact.subject.executable,
@@ -220,6 +249,8 @@ def _lookup_subject_exact_fact_candidates(
                     "S",
                     f"relation(S, {fact.relation.executable}, {fact.object.executable})",
                 ),
+                family=QueryCandidateFamily.EXACT_FACT_FALLBACK,
+                direction=QueryCandidateDirection.OBJECT_TO_SUBJECT,
                 relation_display=fact.relation.display,
                 relation_executable=fact.relation.executable,
                 subject_executable=None,
@@ -255,6 +286,8 @@ def _lookup_relation_exact_fact_candidates(
         candidates.append(
             QueryCandidate(
                 query_dl=_query_dl(qid, "R", _lookup_relation_body(subject, obj)),
+                family=QueryCandidateFamily.EXACT_FACT_FALLBACK,
+                direction=_lookup_relation_direction(subject, obj),
                 relation_display=None,
                 relation_executable=None,
                 subject_executable=subject.executable if subject is not None else None,
@@ -262,6 +295,18 @@ def _lookup_relation_exact_fact_candidates(
             )
         )
     return candidates
+
+
+def _lookup_relation_direction(
+    subject: EntityRef | None, obj: EntityRef | None
+) -> QueryCandidateDirection:
+    if subject is not None and obj is not None:
+        return QueryCandidateDirection.SUBJECT_OBJECT_TO_RELATION
+    if subject is not None:
+        return QueryCandidateDirection.SUBJECT_TO_RELATION
+    if obj is not None:
+        return QueryCandidateDirection.OBJECT_TO_RELATION
+    raise ValueError("lookup_relation requires at least one endpoint")
 
 
 def _lookup_relation_body(subject: EntityRef | None, obj: EntityRef | None) -> str:
@@ -383,7 +428,17 @@ def _bounded_plan(
 
 
 def _dedupe_candidates(candidates: list[QueryCandidate]) -> tuple[QueryCandidate, ...]:
-    return tuple(dict.fromkeys(candidates))
+    deduped: dict[tuple[str, str | None, str | None, str | None, str | None], QueryCandidate] = {}
+    for candidate in candidates:
+        key = (
+            candidate.query_dl,
+            candidate.relation_display,
+            candidate.relation_executable,
+            candidate.subject_executable,
+            candidate.object_executable,
+        )
+        deduped.setdefault(key, candidate)
+    return tuple(deduped.values())
 
 
 def _nfc(value: str) -> str:
