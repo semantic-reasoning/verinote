@@ -100,6 +100,54 @@ def test_extract_source_stores_explicit_structural_terms(tmp_path, fake_client):
     )
 
 
+def test_extract_source_drops_typed_literals_in_subject_or_relation_slots(
+    tmp_path, fake_client
+):
+    s = _store(tmp_path)
+    client = fake_client(
+        [
+            ExtractedFact(
+                "샘플팀",
+                "number(8)",
+                "명",
+                0.9,
+                relation_kind="term",
+            ),
+            ExtractedFact(
+                "number(8)",
+                "인원",
+                "명",
+                0.9,
+                subject_kind="term",
+            ),
+            ExtractedFact("샘플팀", "number(8)", "샘플값", 0.9),
+            ExtractedFact("number(8)", "인원", "샘플값", 0.9),
+            ExtractedFact("샘플팀", "인원", "명", 0.9),
+            ExtractedFact(
+                "샘플팀",
+                "인원",
+                "number(8)",
+                0.9,
+                object_kind="term",
+                note="원문: 8명",
+            ),
+        ]
+    )
+
+    assert extract_source(
+        s,
+        client,
+        source_path="sources/x.txt",
+        source_text="샘플팀 인원 8명",
+    ) == 1
+
+    fact = s.facts()[0]
+    assert fact["subject"] == "샘플팀"
+    assert fact["relation"] == "인원"
+    assert fact["object"] == "number(8)"
+    assert fact["note"] == "원문: 8명"
+
+
 def test_extract_source_stores_mixed_string_and_structural_terms(tmp_path, fake_client):
     s = _store(tmp_path)
     run_id = s.add_run(provider="fake", model="m")
