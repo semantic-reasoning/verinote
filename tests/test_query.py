@@ -91,6 +91,61 @@ def test_korean_role_question_is_parsed_as_structured_intent():
     assert intent.relation_candidates == ("역할", "직책", "직위")
 
 
+def test_translate_korean_provide_question_bypasses_llm(tmp_path):
+    class FailingClient:
+        def extract_query_intent(self, *, question: str, schema_hint: str = ""):
+            raise AssertionError("deterministic provide questions must not call intent LLM")
+
+        def translate_query(self, *, question: str, qid: int, schema_hint: str = "") -> str:
+            raise AssertionError("deterministic provide questions must not call direct Datalog")
+
+    s = _store(tmp_path)
+    s.add_fact("샘플조직", "제공 요소", "샘플서비스", status="confirmed")
+    qid = s.add_question("샘플조직이 제공하는 것은?")
+
+    results = translate_questions(s, FailingClient(), root=tmp_path)
+
+    assert results == [
+        {
+            "id": qid,
+            "status": "translated",
+            "query_dl": s.questions()[0]["query_dl"],
+            "reason": "",
+        }
+    ]
+    query_dl = s.questions()[0]["query_dl"]
+    assert f'answer_q{qid}(O) :- relation("샘플조직", "제공 요소", O).' in query_dl
+    assert load_query(s) == query_dl + "\n"
+
+
+def test_translate_retries_translation_failed_questions(tmp_path, fake_client, intent_payload):
+    s = _store(tmp_path)
+    s.add_fact("Sample Subject", "is_a", "Synthetic Answer", status="confirmed")
+    qid = s.add_question("What is Sample Subject?")
+    s.set_question_query(qid, None, "translation_failed", "provider returned invalid schema")
+    client = fake_client(
+        intent=intent_payload(
+            "lookup_object", subject="Sample Subject", relation="is_a"
+        )
+    )
+    client.translate_query = lambda **kwargs: (_ for _ in ()).throw(
+        AssertionError("schema-aware retry must not call direct Datalog")
+    )
+
+    results = translate_questions(s, client, root=tmp_path)
+
+    assert results == [
+        {
+            "id": qid,
+            "status": "translated",
+            "query_dl": s.questions()[0]["query_dl"],
+            "reason": "",
+        }
+    ]
+    assert s.questions()[0]["status"] == "translated"
+    assert "provider returned invalid schema" not in s.questions()[0]["reason"]
+
+
 def test_load_query_expands_relation_aliases(tmp_path):
     s = _store(tmp_path)
     policy = tmp_path / "policy"

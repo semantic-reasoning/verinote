@@ -183,6 +183,7 @@ def test_deterministic_entity_relation_discovery_questions_are_generic():
     )
     direct_hint = deterministic_query_intent("What does Sample Entity provide?")
     korean = deterministic_query_intent("샘플엔티티는 어떤 관계인가?")
+    korean_direct_hint = deterministic_query_intent("샘플엔티티가 제공하는 것은?")
 
     assert english.kind == QueryIntentKind.DISCOVER_ENTITY_RELATIONS
     assert english.subject == IntentTarget("entity", "Sample Entity")
@@ -197,6 +198,17 @@ def test_deterministic_entity_relation_discovery_questions_are_generic():
     assert lower_direct_hint.relation == IntentTarget("relation", "provide")
     assert korean.kind == QueryIntentKind.DISCOVER_ENTITY_RELATIONS
     assert korean.subject == IntentTarget("entity", "샘플엔티티")
+    assert korean_direct_hint.kind == QueryIntentKind.DISCOVER_ENTITY_RELATIONS
+    assert korean_direct_hint.subject == IntentTarget("entity", "샘플엔티티")
+    assert korean_direct_hint.relation_candidates == (
+        "제공",
+        "제공기능",
+        "제공 기능",
+        "제공서비스",
+        "제공 서비스",
+        "제공요소",
+        "제공 요소",
+    )
 
 
 def test_deterministic_entity_relation_discovery_rejects_generic_what_does_shapes():

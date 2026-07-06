@@ -343,7 +343,36 @@ def test_query_no_pending_errors(tmp_path, monkeypatch, capsys):
     _env(monkeypatch, tmp_path)
     rc = cli.main(["query"])
     assert rc == 1
-    assert "no pending questions" in capsys.readouterr().err
+    assert "no pending or failed questions" in capsys.readouterr().err
+
+
+def test_query_retries_translation_failed_questions(
+    tmp_path, monkeypatch, capsys, fake_client, intent_payload
+):
+    _env(monkeypatch, tmp_path)
+    store = Store(tmp_path / "kb.sqlite")
+    store.init_schema()
+    store.add_fact("Sample Subject", "is_a", "Synthetic Answer", status="confirmed")
+    qid = store.add_question("What is Sample Subject?")
+    store.set_question_query(qid, None, "translation_failed", "provider returned invalid schema")
+    monkeypatch.setattr(
+        "verinote.llm.get_client",
+        lambda cfg: fake_client(
+            intent=intent_payload(
+                "lookup_object", subject="Sample Subject", relation="is_a"
+            )
+        ),
+    )
+
+    rc = cli.main(["query"])
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "q1: translated - Executable query is ready." in out
+    assert "translated 1 question(s)" in out
+    q = Store(tmp_path / "kb.sqlite").questions()[0]
+    assert q["status"] == "translated"
+    assert q["reason"] == ""
 
 
 def test_repair_validates_and_translates(
