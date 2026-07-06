@@ -251,15 +251,22 @@ def test_expand_query_relation_aliases_does_not_duplicate_existing_canonical_rul
     )
 
 
-def test_expand_query_relation_aliases_does_not_expand_canonical_back_to_raw():
+def test_expand_query_relation_aliases_expands_canonical_to_raw_aliases():
     query_dl = (
         ".decl answer_q1(value: symbol)\n"
-        'answer_q1(O) :- relation("Sample Person", "역할", O).\n'
+        'answer_q1(O) :- relation("Sample Organization", "provides", O).\n'
     )
 
-    expanded = expand_query_relation_aliases(query_dl, {"role": "역할"})
+    expanded = expand_query_relation_aliases(query_dl, {"제공 요소": "provides"})
 
-    assert expanded == query_dl
+    assert (
+        'answer_q1(O) :- relation("Sample Organization", "provides", O).'
+        in expanded
+    )
+    assert (
+        'answer_q1(O) :- relation("Sample Organization", "제공 요소", O).'
+        in expanded
+    )
 
 
 def test_expand_query_relation_aliases_caps_combinations():

@@ -22,7 +22,6 @@ from verinote.engine.terms import Atom, StringLit, render_term
 from verinote.llm.base import LLMClient, LLMError
 from verinote.pipeline.corroboration import (
     CorroborationPolicyError,
-    relation_canonical_variant,
     store_relation_aliases,
 )
 from verinote.pipeline.query_intent import (
@@ -392,19 +391,17 @@ def expand_query_relation_aliases(query_dl: str, aliases: dict[str, str]) -> str
             if raw is None:
                 alternatives.append([item])
                 continue
-            canonical = relation_canonical_variant(raw, aliases)
-            if canonical == unicodedata.normalize("NFC", raw):
+            variants = _query_relation_alias_variants(raw, aliases)
+            if len(variants) == 1:
                 alternatives.append([item])
                 continue
-            alternatives.append(
-                [
-                    item,
-                    AtomExpr(
-                        "relation",
-                        (item.args[0], StringLit(canonical), item.args[2]),
-                    ),
-                ]
+            choices = [item]
+            choices.extend(
+                AtomExpr("relation", (item.args[0], StringLit(variant), item.args[2]))
+                for variant in variants
+                if variant != unicodedata.normalize("NFC", raw)
             )
+            alternatives.append(choices)
             has_alias = True
         if not has_alias:
             continue
@@ -433,6 +430,24 @@ def _relation_name(term: object) -> str | None:
     if isinstance(term, Atom):
         return unicodedata.normalize("NFC", term.name)
     return None
+
+
+def _query_relation_alias_variants(relation: str, aliases: dict[str, str]) -> tuple[str, ...]:
+    normalized = unicodedata.normalize("NFC", relation)
+    normalized_aliases = {
+        unicodedata.normalize("NFC", raw): unicodedata.normalize("NFC", canonical)
+        for raw, canonical in aliases.items()
+    }
+    if normalized in normalized_aliases:
+        canonical = normalized_aliases[normalized]
+        return (normalized, canonical) if canonical != normalized else (normalized,)
+    variants = [normalized]
+    for raw, canonical in sorted(
+        normalized_aliases.items(), key=lambda item: (item[1], item[0])
+    ):
+        if canonical == normalized and raw not in variants:
+            variants.append(raw)
+    return tuple(variants)
 
 
 def _render_rule(rule) -> str:

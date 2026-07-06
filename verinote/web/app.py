@@ -52,6 +52,7 @@ from verinote.pipeline.report_trace import report_trace
 from verinote.pipeline.corroboration import (
     canonical_relation,
     CorroborationPolicyError,
+    merge_default_relation_aliases,
     normalize_typed_value,
     RELATION_ALIASES_RELPATH,
     relation_aliases,
@@ -118,14 +119,14 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         if not path.is_file():
             return DEFAULT_RELATION_ALIASES
         text = path.read_text(encoding="utf-8")
-        defaults = relation_aliases(DEFAULT_RELATION_ALIASES)
         try:
             existing = relation_aliases(text)
         except CorroborationPolicyError:
             return text
+        merged = merge_default_relation_aliases(existing)
         missing_defaults = {
             alias: canonical
-            for alias, canonical in defaults.items()
+            for alias, canonical in merged.items()
             if alias not in existing
         }
         if not missing_defaults:
