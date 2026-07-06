@@ -3,7 +3,7 @@ import builtins
 
 import verinote.engine.duckdb_backend as duckdb_backend
 from verinote.engine.terms import Compound, StringLit
-from verinote.pipeline.query import deterministic_query_dl, query_path
+from verinote.pipeline.query import query_path
 from verinote.pipeline.verify import policy_path, verify
 from verinote.store import Store
 from verinote.store.fact_input import structural_term
@@ -95,19 +95,23 @@ def test_verify_answers_query_through_relation_alias(tmp_path):
     assert rep.answers == ["q1: 샘플역할"]
 
 
-def test_verify_answers_korean_role_question_across_role_fact_shapes(tmp_path):
+def test_verify_answers_explicit_korean_role_query(tmp_path):
     s = _store(tmp_path)
     s.add_fact("샘플인물", "역할", "샘플역할", status="confirmed")
     s.add_fact("샘플인물", "대표", "샘플조직", status="confirmed")
     s.add_fact("샘플기관", "발표자", "샘플인물", status="confirmed")
     path = query_path(tmp_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(deterministic_query_dl("샘플인물의 역할은 무엇인가?", 1) + "\n", encoding="utf-8")
+    path.write_text(
+        '.decl answer_q1(value: symbol)\n'
+        'answer_q1(O) :- relation("샘플인물", "역할", O).\n',
+        encoding="utf-8",
+    )
 
     rep = verify(s)
 
     assert rep.ok is True
-    assert rep.answers == ["q1: 대표, 발표자, 샘플역할"]
+    assert rep.answers == ["q1: 샘플역할"]
 
 
 def test_verify_answers_query_through_multiple_relation_aliases(tmp_path):

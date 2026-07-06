@@ -38,6 +38,82 @@ def test_repair_accepts_engine_valid_planned_query(tmp_path, fake_client, intent
     assert f"answer_q{qid}" in (load_query(s) or "")
 
 
+def test_repair_accepts_relation_discovery_planned_query(
+    tmp_path, fake_client, intent_payload
+):
+    s = Store(tmp_path / "kb.sqlite")
+    s.init_schema()
+    s.add_fact("Sample Entity", "synthetic_relation", "Sample Value", status="confirmed")
+    qid = s.add_question("Synthetic relation discovery repair?")
+    s.set_question_query(
+        qid,
+        'review_required("Synthetic relation discovery repair?")',
+        "review_required",
+    )
+    client = fake_client(
+        intent=intent_payload(
+            "discover_entity_relations",
+            subject="Sample Entity",
+        )
+    )
+    client.translate_query = lambda **kwargs: (_ for _ in ()).throw(
+        AssertionError("repair must not call direct Datalog for planner-supported paths")
+    )
+
+    results = repair_questions(s, client, root=tmp_path)
+
+    assert results == [{"id": qid, "accepted": True, "reason": ""}]
+    question = s.questions()[0]
+    assert question["status"] == "translated"
+    assert (
+        f'answer_q{qid}("synthetic_relation") :- '
+        'relation("Sample Entity", "synthetic_relation", O).'
+    ) in question["query_dl"]
+    assert load_query(s) == question["query_dl"] + "\n"
+
+
+def test_repair_planner_review_required_does_not_call_direct_fallback(
+    tmp_path, fake_client, intent_payload
+):
+    s = Store(tmp_path / "kb.sqlite")
+    s.init_schema()
+    s.add_fact("Sample Entity", "source", "Sample Value", status="confirmed")
+    qid = s.add_question("Synthetic relation discovery repair?")
+    s.set_question_query(
+        qid,
+        'review_required("Synthetic relation discovery repair?")',
+        "review_required",
+    )
+    client = fake_client(
+        intent=intent_payload(
+            "discover_entity_relations",
+            subject="Sample Entity",
+        )
+    )
+    client.translate_query = lambda **kwargs: (_ for _ in ()).throw(
+        AssertionError("planner-supported repair must not call direct Datalog fallback")
+    )
+
+    results = repair_questions(
+        s,
+        client,
+        root=tmp_path,
+        allow_direct_datalog_fallback=True,
+    )
+
+    assert results == [
+        {
+            "id": qid,
+            "accepted": False,
+            "reason": "relation label requires review: source",
+        }
+    ]
+    question = s.questions()[0]
+    assert question["status"] == "review_required"
+    assert question["query_dl"] == 'review_required("relation label requires review: source")'
+    assert load_query(s) == ""
+
+
 def test_repair_fallback_accepts_duckdb_supported_compound_query(tmp_path, fake_client):
     s, qid = _store_with_review_required(tmp_path)
     s.add_fact(
