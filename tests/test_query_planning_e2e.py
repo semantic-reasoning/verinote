@@ -94,7 +94,10 @@ def test_translate_planner_persists_query_file_and_verify_answers(tmp_path):
     ) in question["query_dl"]
     assert '"role"' not in question["query_dl"]
     assert "has_role" not in question["query_dl"]
-    assert query_path(tmp_path).read_text(encoding="utf-8") == load_query(store)
+    written_query = query_path(tmp_path).read_text(encoding="utf-8")
+    loaded_query = load_query(store)
+    assert written_query in loaded_query
+    assert f'answer_q{qid}(O) :- relation("샘플인물", "role", O).' in loaded_query
     assert report.engine_available is True
     assert report.ok is True
     assert report.answers == ["q1: 샘플역할"]

@@ -176,12 +176,28 @@ def _relation_alias_token(text: str, *, line_no: int) -> str:
 
 
 def store_relation_aliases(store: Store) -> dict[str, str]:
-    aliases = relation_aliases(DEFAULT_RELATION_ALIASES)
     path = store.db_path.parent / RELATION_ALIASES_RELPATH
     if not path.is_file():
-        return aliases
-    aliases.update(relation_aliases(path.read_text(encoding="utf-8")))
-    return aliases
+        return relation_aliases(DEFAULT_RELATION_ALIASES)
+    user_aliases = relation_aliases(path.read_text(encoding="utf-8"))
+    return _merge_default_relation_aliases(user_aliases)
+
+
+def _merge_default_relation_aliases(user_aliases: dict[str, str]) -> dict[str, str]:
+    defaults = relation_aliases(DEFAULT_RELATION_ALIASES)
+    user_raw = {unicodedata.normalize("NFC", raw) for raw in user_aliases}
+    user_canonical = {
+        unicodedata.normalize("NFC", canonical)
+        for canonical in user_aliases.values()
+    }
+    merged = {
+        raw: canonical
+        for raw, canonical in defaults.items()
+        if unicodedata.normalize("NFC", raw) not in user_canonical
+        and unicodedata.normalize("NFC", canonical) not in user_raw
+    }
+    merged.update(user_aliases)
+    return merged
 
 
 def typed_relations(text: str) -> dict[str, TypedRelationSpec]:

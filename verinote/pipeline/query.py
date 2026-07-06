@@ -87,16 +87,19 @@ def query_schema_hint(snapshot: QuerySchemaSnapshot) -> str:
     if snapshot.relations:
         lines.append("Observed relations:")
     for relation in snapshot.relations:
-        labels = [relation.relation.display]
-        if relation.canonical_relation != relation.relation.display:
-            labels.append(relation.canonical_relation)
-        labels.extend(alias.alias for alias in relation.aliases)
-        labels.extend(alias.canonical for alias in relation.aliases)
+        aliases = []
+        labels = [relation.canonical_relation]
+        if relation.relation.display != relation.canonical_relation:
+            aliases.append(relation.relation.display)
+        aliases.extend(alias.alias for alias in relation.aliases)
         if relation.typed is not None:
-            labels.extend((relation.typed.relation, relation.typed.alias))
+            labels.append(relation.typed.relation)
+            aliases.append(relation.typed.alias)
         label_text = ", ".join(dict.fromkeys(labels))
+        alias_text = ", ".join(dict.fromkeys(aliases))
+        alias_suffix = f" (aliases: {alias_text})" if alias_text else ""
         lines.append(
-            f"- {label_text} "
+            f"- {label_text}{alias_suffix} "
             f"(subjects={relation.distinct_subject_count}, "
             f"objects={relation.distinct_object_count})"
         )

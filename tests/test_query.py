@@ -79,7 +79,9 @@ def test_translate_korean_role_question_bypasses_llm(tmp_path):
     assert f'answer_q{qid}(O) :- relation("샘플인물", "역할", O).' in query_dl
     assert "has_role" not in query_dl
     assert "person(" not in query_dl
-    assert load_query(s) == query_dl + "\n"
+    loaded_query = load_query(s)
+    assert f'answer_q{qid}(O) :- relation("샘플인물", "역할", O).' in loaded_query
+    assert f'answer_q{qid}(O) :- relation("샘플인물", "role", O).' in loaded_query
 
 
 def test_korean_role_question_is_parsed_as_structured_intent():
@@ -100,7 +102,7 @@ def test_translate_korean_provide_question_bypasses_llm(tmp_path):
             raise AssertionError("deterministic provide questions must not call direct Datalog")
 
     s = _store(tmp_path)
-    s.add_fact("샘플조직", "제공 요소", "샘플서비스", status="confirmed")
+    s.add_fact("샘플조직", "provides", "샘플서비스", status="confirmed")
     qid = s.add_question("샘플조직이 제공하는 것은?")
 
     results = translate_questions(s, FailingClient(), root=tmp_path)
@@ -114,10 +116,35 @@ def test_translate_korean_provide_question_bypasses_llm(tmp_path):
         }
     ]
     query_dl = s.questions()[0]["query_dl"]
+    assert f'answer_q{qid}(O) :- relation("샘플조직", "provides", O).' in query_dl
+    loaded_query = load_query(s)
+    assert f'answer_q{qid}(O) :- relation("샘플조직", "provides", O).' in loaded_query
+
+
+def test_canonical_query_answers_legacy_alias_relation_fact(
+    tmp_path, fake_client, intent_payload
+):
+    s = _store(tmp_path)
+    s.add_fact("샘플조직", "제공 요소", "샘플서비스", status="confirmed")
+    qid = s.add_question("What does the sample organization provide?")
+    client = fake_client(
+        intent=intent_payload(
+            "lookup_object",
+            subject="샘플조직",
+            relation="provides",
+        )
+    )
+    client.translate_query = lambda **kwargs: (_ for _ in ()).throw(
+        AssertionError("schema-aware alias query must not call direct Datalog")
+    )
+
+    results = translate_questions(s, client, root=tmp_path)
+
+    assert results[0]["status"] == "translated"
+    query_dl = s.questions()[0]["query_dl"]
     assert f'answer_q{qid}(O) :- relation("샘플조직", "제공 요소", O).' in query_dl
     loaded_query = load_query(s)
-    assert f'answer_q{qid}(O) :- relation("샘플조직", "제공 요소", O).' in loaded_query
-    assert f'answer_q{qid}(O) :- relation("샘플조직", "제공", O).' in loaded_query
+    assert f'answer_q{qid}(O) :- relation("샘플조직", "provides", O).' in loaded_query
 
 
 def test_translate_retries_translation_failed_questions(tmp_path, fake_client, intent_payload):
@@ -499,6 +526,20 @@ def test_query_schema_hint_is_bounded_schema_only(tmp_path):
 
     assert "Observed relations:" in hint
     assert "is_a" in hint
+    assert "Sample Subject" not in hint
+    assert "Synthetic Answer" not in hint
+
+
+def test_query_schema_hint_lists_canonical_relation_before_aliases(tmp_path):
+    from verinote.pipeline.query_schema import build_query_schema_snapshot
+
+    s = _store(tmp_path)
+    s.add_fact("Sample Subject", "제공 요소", "Synthetic Answer", status="confirmed")
+
+    hint = query_schema_hint(build_query_schema_snapshot(s))
+
+    assert "- provides (aliases:" in hint
+    assert "제공 요소" in hint
     assert "Sample Subject" not in hint
     assert "Synthetic Answer" not in hint
 
