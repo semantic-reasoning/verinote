@@ -43,6 +43,7 @@ from verinote.pipeline import (
     write_query_file,
 )
 from verinote.pipeline.question_outcome import question_outcome_view
+from verinote.pipeline.ask import ask_question
 from verinote.pipeline.acceptance import (
     accept_recommendations,
     accept_recommendations_for,
@@ -936,6 +937,38 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     @app.get("/questions", response_class=HTMLResponse)
     def questions_page(request: Request):
         return _questions(request)
+
+    def _ask(
+        request: Request,
+        *,
+        question: str = "",
+        result=None,
+        error: str | None = None,
+        status_code: int = 200,
+    ):
+        if app.state.store is None:
+            return _kb_select(request, error=error, status_code=status_code)
+        return templates.TemplateResponse(
+            request,
+            "ask.html",
+            {"question": question, "result": result, "error": error},
+            status_code=status_code,
+        )
+
+    @app.get("/ask", response_class=HTMLResponse)
+    def ask_page(request: Request):
+        return _ask(request)
+
+    @app.post("/ask", response_class=HTMLResponse)
+    def ask_submit(request: Request, question: str = Form(...)):
+        store = _active_store()
+        cfg = _active_cfg()
+        try:
+            client = get_client(app.state.cfg)
+        except LLMError as e:
+            return _ask(request, question=question, error=f"ask failed: {e}", status_code=502)
+        result = ask_question(store, client, root=cfg.root, question=question)
+        return _ask(request, question=question, result=result)
 
     @app.post("/questions", response_class=HTMLResponse)
     def add_question(request: Request, text: str = Form(...)):

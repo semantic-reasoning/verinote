@@ -74,3 +74,12 @@ class LLMClient(Protocol):
         Adapters raise `LLMError` for malformed or schema-invalid intent output.
         """
         ...
+
+    def answer_question(self, *, question: str, context: str) -> str:
+        """Answer a free-form question from caller-provided context only.
+
+        This is used by the read-only Ask workflow after deterministic engine
+        routing cannot produce an executable answer. Adapters return plain text
+        and raise `LLMError` for provider failures.
+        """
+        ...

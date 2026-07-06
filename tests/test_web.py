@@ -1559,6 +1559,88 @@ def test_add_question_persists(tmp_path):
     assert [q["text"] for q in c.app.state.store.questions()] == ["Where was Ada born?"]
 
 
+def test_ask_page_renders_and_is_linked(tmp_path):
+    c = _client(tmp_path)
+
+    home = c.get("/")
+    page = c.get("/ask")
+
+    assert home.status_code == 200
+    assert 'href="/ask"' in home.text
+    assert page.status_code == 200
+    assert "<h1>Ask</h1>" in page.text
+
+
+def test_ask_post_renders_verified_engine_answer_without_persisting(
+    tmp_path, monkeypatch
+):
+    class DeterministicOnly:
+        name = "deterministic-only"
+
+        def extract_query_intent(self, *, question: str, schema_hint: str = ""):
+            raise AssertionError("deterministic question must bypass LLM")
+
+        def translate_query(self, *, question: str, qid: int, schema_hint: str = ""):
+            raise AssertionError("Ask must not call direct Datalog fallback")
+
+        def answer_question(self, *, question: str, context: str):
+            raise AssertionError("verified engine answer must not call fallback")
+
+    monkeypatch.setattr(webapp, "get_client", lambda cfg: DeterministicOnly())
+    c = _client(tmp_path)
+    store = c.app.state.store
+    store.add_fact("샘플인물", "역할", "검토자", status="confirmed")
+
+    r = c.post("/ask", data={"question": "샘플인물의 역할은 무엇인가?"})
+
+    assert r.status_code == 200
+    assert "VERIFIED — engine" in r.text
+    assert "검토자" in r.text
+    assert store.questions() == []
+    assert not query_path(tmp_path).exists()
+
+
+def test_ask_post_renders_unverified_llm_fallback(tmp_path, monkeypatch):
+    class Fallback:
+        name = "fallback"
+
+        def extract_query_intent(self, *, question: str, schema_hint: str = ""):
+            return parse_query_intent(
+                {
+                    "kind": "unknown_or_unsupported",
+                    "subject": None,
+                    "relation": None,
+                    "object": None,
+                    "relation_candidates": None,
+                    "operator": None,
+                    "value_type": None,
+                    "value": None,
+                    "reason": "unsupported synthetic question",
+                }
+            )
+
+        def translate_query(self, *, question: str, qid: int, schema_hint: str = ""):
+            raise AssertionError("Ask fallback must not call direct Datalog")
+
+        def answer_question(self, *, question: str, context: str):
+            assert "sources/sample.txt" in context
+            return "Synthetic answer from excerpts."
+
+    monkeypatch.setattr(webapp, "get_client", lambda cfg: Fallback())
+    c = _client(tmp_path)
+    source = tmp_path / "sources" / "sample.txt"
+    source.parent.mkdir()
+    source.write_text("Sample Entity provides Sample Service.", encoding="utf-8")
+    c.app.state.store.add_source("sources/sample.txt")
+
+    r = c.post("/ask", data={"question": "Sample Entity overview"})
+
+    assert r.status_code == 200
+    assert "UNVERIFIED — source exploration" in r.text
+    assert "Synthetic answer from excerpts." in r.text
+    assert "sources/sample.txt" in r.text
+
+
 def test_delete_question_removes_query_file_entry(tmp_path):
     c = _client(tmp_path)
     store = c.app.state.store
