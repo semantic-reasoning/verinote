@@ -177,6 +177,7 @@ QUERY_INTENT_SCHEMA: dict[str, Any] = {
                 "lookup_object",
                 "lookup_subject",
                 "lookup_relation",
+                "discover_entity_relations",
                 "count",
                 "compare_typed_value",
                 "unknown_or_unsupported",
@@ -204,6 +205,10 @@ QUERY_INTENT_SCHEMA["required"] = list(QUERY_INTENT_SCHEMA["properties"])
 QUERY_INTENT_SYSTEM = (
     "Classify one natural-language question into a constrained query intent. "
     "Return only JSON matching the schema. Use null for fields that do not apply. "
+    "Use discover_entity_relations for broad entity-centric relationship questions "
+    "where the entity is known but the useful KB relation may need schema-backed "
+    "discovery; include an optional relation or relation_candidates only when the "
+    "question also gives a direct relation hint to try first. "
     "Do not emit Datalog, relation/3 rules, answer_q predicates, or execution plans."
 )
 

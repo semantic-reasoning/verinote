@@ -139,6 +139,20 @@ def test_lookup_object_uses_observed_relation_and_subject_side():
     assert plan.truncated is False
 
 
+def test_entity_relation_discovery_intent_is_recognized_but_not_planned_yet():
+    plan = plan_query_candidates(
+        QueryIntent(
+            kind=QueryIntentKind.DISCOVER_ENTITY_RELATIONS,
+            subject=IntentTarget("entity", "Sample Entity"),
+        ),
+        _snapshot(),
+        qid=9,
+    )
+
+    assert plan.candidates == ()
+    assert plan.reason == "entity relation discovery planning is not implemented yet"
+
+
 def test_lookup_subject_uses_object_side_directionality():
     snapshot = _snapshot(
         _relation(

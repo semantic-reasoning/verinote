@@ -16,6 +16,7 @@ class QueryIntentKind(StrEnum):
     LOOKUP_OBJECT = "lookup_object"
     LOOKUP_SUBJECT = "lookup_subject"
     LOOKUP_RELATION = "lookup_relation"
+    DISCOVER_ENTITY_RELATIONS = "discover_entity_relations"
     COUNT = "count"
     COMPARE_TYPED_VALUE = "compare_typed_value"
     UNKNOWN_OR_UNSUPPORTED = "unknown_or_unsupported"
@@ -94,6 +95,19 @@ class QueryIntent:
                 raise ValueError("lookup_relation requires subject or object")
             self._require_optional_lookup_endpoint("subject", self.subject)
             self._require_optional_lookup_endpoint("object", self.object)
+            self._forbid_compare_fields()
+            self._forbid_reason()
+        elif kind == QueryIntentKind.DISCOVER_ENTITY_RELATIONS:
+            if self.subject is None or self.object is not None:
+                raise ValueError(
+                    "discover_entity_relations requires subject and no object"
+                )
+            if self.relation is not None and self.relation_candidates:
+                raise ValueError(
+                    "discover_entity_relations accepts relation or relation_candidates, not both"
+                )
+            self._require_target_kind("subject", self.subject, {"entity"})
+            self._require_relation_field()
             self._forbid_compare_fields()
             self._forbid_reason()
         elif kind == QueryIntentKind.COUNT:
@@ -177,8 +191,29 @@ _ENGLISH_ROLE_TITLE_QUESTION = re.compile(
     r"(?:'s|\s+)?\s+(?P<label>role|title|position)\s*\??\s*$",
     re.IGNORECASE,
 )
+_ENGLISH_ENTITY_RELATION_DISCOVERY_QUESTION = re.compile(
+    r"^\s*(?i:how\s+is|how\s+was)\s+"
+    r"(?P<entity>[A-Z][^?]{0,80}?)\s+related\s*\??\s*$|"
+    r"^\s*(?i:which\s+relation\s+connects)\s+"
+    r"(?P<connected_entity>[A-Z][^?]{0,80}?)\s+to\s+other\s+facts\s*\??\s*$",
+)
+_ENGLISH_ENTITY_DIRECT_RELATION_DISCOVERY_QUESTION = re.compile(
+    r"^\s*(?i:what\s+does)\s+(?P<entity>[A-Z][^?]{0,80}?)\s+"
+    r"(?P<relation>(?i:provide|provides|offer|offers|connect|connects|relate|relates))\s*\?\s*$"
+)
+_KOREAN_ENTITY_RELATION_DISCOVERY_QUESTION = re.compile(
+    r'["“”\']?(?P<entity>[^"“”\'?？\n]{1,80}?)["“”\']?\s*'
+    r"(?:는|은|이|가)\s*어떤\s*관계(?:인가|입니까|야)?\s*\??\s*$"
+)
 KOREAN_ROLE_RELATION_CANDIDATES = ("역할", "직책", "직위")
 ENGLISH_ROLE_RELATION_CANDIDATES = ("role", "title", "position", "has_role")
+_GENERIC_ENTITY_ANCHORS = {
+    "anything",
+    "it",
+    "something",
+    "that",
+    "this",
+}
 
 
 def deterministic_query_intent(question: str) -> QueryIntent:
@@ -204,10 +239,43 @@ def deterministic_query_intent(question: str) -> QueryIntent:
                 relation_candidates=ENGLISH_ROLE_RELATION_CANDIDATES,
             )
 
+    match = _ENGLISH_ENTITY_RELATION_DISCOVERY_QUESTION.match(text)
+    if match:
+        entity = (match.group("entity") or match.group("connected_entity")).strip()
+        if entity and not _is_generic_entity_anchor(entity):
+            return QueryIntent(
+                kind=QueryIntentKind.DISCOVER_ENTITY_RELATIONS,
+                subject=IntentTarget("entity", entity),
+            )
+
+    match = _ENGLISH_ENTITY_DIRECT_RELATION_DISCOVERY_QUESTION.match(text)
+    if match:
+        entity = match.group("entity").strip()
+        relation = match.group("relation").strip()
+        if entity and relation and not _is_generic_entity_anchor(entity):
+            return QueryIntent(
+                kind=QueryIntentKind.DISCOVER_ENTITY_RELATIONS,
+                subject=IntentTarget("entity", entity),
+                relation=IntentTarget("relation", relation),
+            )
+
+    match = _KOREAN_ENTITY_RELATION_DISCOVERY_QUESTION.match(text)
+    if match:
+        entity = match.group("entity").strip()
+        if entity:
+            return QueryIntent(
+                kind=QueryIntentKind.DISCOVER_ENTITY_RELATIONS,
+                subject=IntentTarget("entity", entity),
+            )
+
     return QueryIntent(
         kind=QueryIntentKind.UNKNOWN_OR_UNSUPPORTED,
         reason="unsupported deterministic query shape",
     )
+
+
+def _is_generic_entity_anchor(value: str) -> bool:
+    return value.strip().casefold() in _GENERIC_ENTITY_ANCHORS
 
 
 QUERY_INTENT_FIELDS = (
