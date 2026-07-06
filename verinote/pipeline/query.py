@@ -223,6 +223,9 @@ def schema_aware_query_flow(
     if evaluation.outcome == QueryCandidateSetOutcome.AMBIGUOUS_CONFLICTING:
         reason = "multiple query candidates returned conflicting answers"
         return "ambiguous", f"ambiguous({_lit(reason)})", reason
+    if evaluation.outcome == QueryCandidateSetOutcome.REVIEW_REQUIRED:
+        reason = _short_reason(_evaluation_reason(evaluation))
+        return "review_required", f"review_required({_lit(reason)})", reason
     if evaluation.outcome == QueryCandidateSetOutcome.EMPTY:
         reason = _short_reason(plan.reason or "no query candidates matched the schema")
     elif evaluation.outcome == QueryCandidateSetOutcome.ENGINE_POLICY_ERROR:
@@ -277,6 +280,9 @@ def _translate_direct_datalog_fallback(
 
 
 def _evaluation_reason(evaluation) -> str:
+    for item in evaluation.evaluations:
+        if item.review_reason:
+            return item.review_reason
     for item in evaluation.evaluations:
         if item.validation_reason:
             return item.validation_reason

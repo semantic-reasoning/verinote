@@ -303,6 +303,102 @@ def test_planned_executable_without_rows_becomes_no_answer(
     assert load_query(s) == ""
 
 
+def test_quality_policy_review_required_outcome_is_persisted(
+    tmp_path, fake_client, intent_payload, monkeypatch
+):
+    from verinote.pipeline.query_candidate_eval import QueryCandidateEvaluation
+    from verinote.pipeline.query_candidate_eval import QueryCandidateOutcome
+    from verinote.pipeline.query_candidate_eval import QueryCandidateSetEvaluation
+    from verinote.pipeline.query_candidate_eval import QueryCandidateSetOutcome
+
+    s = _store(tmp_path)
+    s.add_fact("Sample Subject", "is_a", "Synthetic Answer", status="confirmed")
+    qid = s.add_question("What is Sample Subject?")
+    client = fake_client(
+        intent=intent_payload(
+            "lookup_object", subject="Sample Subject", relation="is_a"
+        )
+    )
+
+    def review_required(store, plan):
+        assert plan.candidates
+        return QueryCandidateSetEvaluation(
+            plan=plan,
+            outcome=QueryCandidateSetOutcome.REVIEW_REQUIRED,
+            evaluations=(
+                QueryCandidateEvaluation(
+                    candidate=plan.candidates[0],
+                    outcome=QueryCandidateOutcome.REVIEW_REQUIRED,
+                    review_reason="relation label requires review: source",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(
+        "verinote.pipeline.query.evaluate_query_candidate_plan", review_required
+    )
+
+    results = translate_questions(s, client, root=tmp_path)
+
+    assert results == [
+        {
+            "id": qid,
+            "status": "review_required",
+            "query_dl": 'review_required("relation label requires review: source")',
+            "reason": "relation label requires review: source",
+        }
+    ]
+    assert load_query(s) == ""
+
+
+def test_quality_policy_review_reason_wins_over_invalid_candidate_reason(
+    tmp_path, fake_client, intent_payload, monkeypatch
+):
+    from verinote.pipeline.query_candidate_eval import QueryCandidateEvaluation
+    from verinote.pipeline.query_candidate_eval import QueryCandidateOutcome
+    from verinote.pipeline.query_candidate_eval import QueryCandidateSetEvaluation
+    from verinote.pipeline.query_candidate_eval import QueryCandidateSetOutcome
+
+    s = _store(tmp_path)
+    s.add_fact("Sample Subject", "is_a", "Synthetic Answer", status="confirmed")
+    s.add_question("What is Sample Subject?")
+    client = fake_client(
+        intent=intent_payload(
+            "lookup_object", subject="Sample Subject", relation="is_a"
+        )
+    )
+
+    def review_required(store, plan):
+        assert plan.candidates
+        invalid = QueryCandidateEvaluation(
+            candidate=plan.candidates[0],
+            outcome=QueryCandidateOutcome.INVALID,
+            validation_reason="unsupported predicate: bogus",
+        )
+        denied = QueryCandidateEvaluation(
+            candidate=plan.candidates[0],
+            outcome=QueryCandidateOutcome.REVIEW_REQUIRED,
+            review_reason="relation label requires review: source",
+        )
+        return QueryCandidateSetEvaluation(
+            plan=plan,
+            outcome=QueryCandidateSetOutcome.REVIEW_REQUIRED,
+            evaluations=(invalid, denied),
+        )
+
+    monkeypatch.setattr(
+        "verinote.pipeline.query.evaluate_query_candidate_plan", review_required
+    )
+
+    results = translate_questions(s, client, root=tmp_path)
+
+    assert results[0]["status"] == "review_required"
+    assert results[0]["reason"] == "relation label requires review: source"
+    assert results[0]["query_dl"] == (
+        'review_required("relation label requires review: source")'
+    )
+
+
 def test_query_schema_hint_is_bounded_schema_only(tmp_path):
     from verinote.pipeline.query_schema import build_query_schema_snapshot
 
