@@ -12,16 +12,14 @@ from typing import Any
 from verinote.config import Config
 from verinote.llm.base import ExtractedFact, LLMError
 from verinote.llm.schema import (
-    EXTRACTION_SYSTEM,
     FACT_ARRAY_SCHEMA,
     QUERY_INTENT_SCHEMA,
-    QUERY_INTENT_SYSTEM,
     QUERY_SCHEMA,
     parse_facts,
     parse_query,
-    query_system,
 )
 from verinote.pipeline.query_intent import QueryIntent, parse_query_intent
+from verinote.prompts import render_prompt
 
 _MODEL_ALIASES = {
     "fable": "fable",
@@ -38,7 +36,9 @@ class ClaudeCliAdapter:
 
     def extract_facts(self, *, source_text: str, schema_hint: str = "") -> list[ExtractedFact]:
         prompt = _prompt(
-            system=EXTRACTION_SYSTEM + ("\n" + schema_hint if schema_hint else ""),
+            system=_with_schema_hint(
+                render_prompt(self.cfg.root, "extraction"), schema_hint
+            ),
             schema=FACT_ARRAY_SCHEMA,
             user=source_text,
         )
@@ -46,7 +46,10 @@ class ClaudeCliAdapter:
 
     def translate_query(self, *, question: str, qid: int, schema_hint: str = "") -> str:
         prompt = _prompt(
-            system=query_system(qid) + ("\n" + schema_hint if schema_hint else ""),
+            system=_with_schema_hint(
+                render_prompt(self.cfg.root, "query-translation", qid=qid),
+                schema_hint,
+            ),
             schema=QUERY_SCHEMA,
             user=question,
         )
@@ -54,7 +57,9 @@ class ClaudeCliAdapter:
 
     def extract_query_intent(self, *, question: str, schema_hint: str = "") -> QueryIntent:
         prompt = _prompt(
-            system=QUERY_INTENT_SYSTEM + ("\n" + schema_hint if schema_hint else ""),
+            system=_with_schema_hint(
+                render_prompt(self.cfg.root, "query-intent"), schema_hint
+            ),
             schema=QUERY_INTENT_SCHEMA,
             user=question,
         )
@@ -119,6 +124,10 @@ def _prompt(*, system: str, schema: dict[str, Any], user: str) -> _Prompt:
             f"{user}"
         ),
     )
+
+
+def _with_schema_hint(prompt: str, schema_hint: str) -> str:
+    return prompt + ("\n" + schema_hint if schema_hint else "")
 
 
 def _cli_model(model: str) -> str:

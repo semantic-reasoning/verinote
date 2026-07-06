@@ -44,11 +44,13 @@ packages = [
   "verinote.engine",
   "verinote.store",
   "verinote.pipeline",
+  "verinote.prompts",
   "verinote.web",
 ]
 
 [tool.setuptools.package-data]
 "verinote.store" = ["*.sql"]
+"verinote.prompts" = ["defaults/*.md"]
 "verinote.web" = ["templates/*.html", "templates/partials/*.html", "static/*"]
 
 [tool.pytest.ini_options]

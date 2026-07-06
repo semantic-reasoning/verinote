@@ -1,0 +1,87 @@
+# SPDX-License-Identifier: MPL-2.0
+from importlib import resources
+
+import pytest
+
+from verinote.prompts import (
+    PromptError,
+    default_prompt_text,
+    delete_prompt_override,
+    get_prompt,
+    list_prompts,
+    prompt_override_path,
+    render_prompt,
+    save_prompt_override,
+)
+
+
+def test_packaged_prompt_defaults_are_available():
+    names = {prompt.id for prompt in list_prompts()}
+
+    assert {
+        "extraction",
+        "ollama-extraction",
+        "query-translation",
+        "query-intent",
+        "focused-role-extraction",
+    } <= names
+    assert resources.files("verinote.prompts").joinpath(
+        "defaults", "extraction.md"
+    ).is_file()
+    assert "semantic subject-predicate-object statement" in default_prompt_text(
+        "extraction"
+    )
+
+
+def test_kb_prompt_override_wins(tmp_path):
+    save_prompt_override(tmp_path, "extraction", "Use only supplied synthetic text.")
+
+    prompt = get_prompt(tmp_path, "extraction")
+
+    assert prompt.source == "override"
+    assert prompt.text == "Use only supplied synthetic text."
+    assert prompt.default_text != prompt.text
+    assert prompt.override_path == tmp_path / "policy" / "prompts" / "extraction.md"
+
+
+def test_prompt_reset_falls_back_to_default(tmp_path):
+    save_prompt_override(tmp_path, "extraction", "Custom extraction prompt.")
+
+    delete_prompt_override(tmp_path, "extraction")
+
+    assert not prompt_override_path(tmp_path, "extraction").exists()
+    assert get_prompt(tmp_path, "extraction").source == "default"
+
+
+def test_prompt_save_rejects_empty_text(tmp_path):
+    with pytest.raises(PromptError):
+        save_prompt_override(tmp_path, "extraction", "   ")
+
+    assert not prompt_override_path(tmp_path, "extraction").exists()
+
+
+def test_prompt_save_rejects_missing_required_placeholder(tmp_path):
+    with pytest.raises(PromptError, match="\\{qid\\}"):
+        save_prompt_override(tmp_path, "query-translation", "Return answer_q1.")
+
+
+def test_prompt_render_replaces_only_declared_placeholders(tmp_path):
+    save_prompt_override(
+        tmp_path,
+        "query-translation",
+        "Return answer_q{qid}(V). Literal JSON braces stay visible: {\"facts\": []}.",
+    )
+
+    assert render_prompt(tmp_path, "query-translation", qid=7) == (
+        "Return answer_q7(V). Literal JSON braces stay visible: {\"facts\": []}."
+    )
+
+
+def test_prompt_render_requires_values_for_placeholders(tmp_path):
+    with pytest.raises(PromptError, match="missing prompt value"):
+        render_prompt(tmp_path, "query-translation")
+
+
+def test_unknown_prompt_id_is_rejected(tmp_path):
+    with pytest.raises(PromptError):
+        get_prompt(tmp_path, "../secret")

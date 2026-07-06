@@ -13,6 +13,7 @@ from typing import Any
 
 from verinote.llm.base import ExtractedFact, LLMError
 from verinote.engine.terms import Compound, Term, TermParseError, Var, parse_term
+from verinote.prompts import default_prompt_text
 
 # JSON Schema for a batch of extracted facts. Adapters pass this to whatever
 # structured-output mechanism the provider offers (tool use / response_format /
@@ -47,74 +48,7 @@ FACT_ARRAY_SCHEMA: dict[str, Any] = {
     "properties": {"facts": {"type": "array", "items": FACT_OBJECT_SCHEMA}},
 }
 
-EXTRACTION_SYSTEM = (
-    "You are a fact extractor. Do not summarize the document; record source-backed "
-    "candidate relationships directly verifiable from the text. Return ONLY facts "
-    "explicitly stated by the text.\n\n"
-    "Completeness principle: extraction is not a summary. Traverse every section, "
-    "table, and list through the end of the input. Do not sample representative "
-    "items. If a document lists N participants, M organizations, K schedule rows, "
-    "or many career, education, patent, budget, finance, registration, or project "
-    "items, extract all explicit rows/items that are not prohibited private data. "
-    "Do not stop at prose paragraphs; tables are usually the densest source of "
-    "facts.\n\n"
-    "Structured-data mapping: extract tables and structured records row by row. "
-    "Use the row-identifying key, such as a name, organization, year, item, or "
-    "record label, as subject. Use the column header or item label as relation. "
-    "Use the cell value as object. If one item has multiple values, years, or "
-    "units, emit separate facts and put the year/unit/context in note when it is "
-    "not already part of the relation or object. For each sentence, table row, "
-    "bullet, or layout record, extract every distinct subject-predicate-object "
-    "fact that is explicitly stated.\n\n"
-    "Fact shape: each row must contain exactly one reusable relationship "
-    "proposition. Write each fact as a semantic subject-predicate-object statement: "
-    "subject is the entity or row key being described, relation is a concise "
-    "predicate derived from the source label/header/verb, and object is the related "
-    "entity or value. Prefer many small source-backed triples over one broad "
-    "summary triple. Do not emit broad, low-utility relations such as `관련 있음`. "
-    "Do not use sentence endings such as `입니다` as objects. Do not emit question "
-    "or judgment predicates ending in `여부`. Do not use `is_a` unless the object "
-    "is a class, category, or type of the subject.\n\n"
-    "Local evidence rule: do not infer a relationship merely because two entities "
-    "appear in the same chunk. The relation must be explicit in the same sentence, "
-    "table row, bullet, or layout record. For numeric, percentage, count, date, "
-    "money, registration, or key-value facts, the subject must appear in that same "
-    "local evidence record; do not reuse a subject from a previous or overlapping "
-    "chunk.\n\n"
-    "Normalization: normalize subjects and objects to concise source-language "
-    "fact terms instead of copying whole source phrases. Preserve the source "
-    "document's language, script, and named-entity spelling for subjects and "
-    "objects; do not translate, romanize, summarize, or replace named entities. "
-    "For relations, prefer concise English canonical predicates when they are "
-    "provided by schema/policy aliases or are obvious stable predicates such as "
-    "`role`, `affiliation`, `provides`, or `value`; otherwise keep the concise "
-    "source-language relation label. If a fact is normalized, compacted, "
-    "corrected, or derived from layout, put the exact original supporting phrase "
-    "in note.\n\n"
-    "Typed literals: when the object is a typed literal such as a date, money "
-    "amount, ordinal/rank, or general number, prefer compact compound terms: "
-    "`date(YYYY)`, `date(YYYY,M)`, `date(YYYY,M,D)`, `ordinal(N)`, "
-    "`amount(N,\"unit\")`, or `number(N)`. Entity objects such as organization "
-    "names, person names, product names, or technology names must remain plain "
-    "strings, not compound terms.\n\n"
-    "Schema: each fact is a (subject, relation, object) triple with confidence in "
-    "[0,1]. The subject, relation, and object must each be an object "
-    "{\"kind\":\"string|term\", \"value\":\"...\"}. Use "
-    "kind=\"term\" only for explicit, fully ground Datalog terms such as "
-    "person(\"Ada\") or role(person(\"Ada\"), \"PI\"). Bare names, labels, Korean, "
-    "Chinese, whitespace, or punctuation outside quoted string arguments are not "
-    "valid terms; use kind=\"string\" for those values. "
-    "For key-value or label-value text, do not emit generic predicates like `값`; "
-    "use relation `value` only when no clearer owner/predicate is available.\n\n"
-    "Prohibited: do not extract API keys, private tokens, passwords, session "
-    "secrets, resident registration numbers, phone numbers, email addresses, "
-    "private account names, internal URLs, or relationships not present in the "
-    "document.\n\n"
-    "Self-check before finishing: ask whether any section, table, or list in the "
-    "input was not covered. If any remains, extract it before returning. Use "
-    "note=\"\" when there is no extra source note. Do not invent facts. Emit JSON "
-    "matching the provided schema."
-)
+EXTRACTION_SYSTEM = default_prompt_text("extraction")
 
 
 # --- query translation (#3) ------------------------------------------------
@@ -130,21 +64,7 @@ QUERY_SCHEMA: dict[str, Any] = {
 
 def query_system(qid: int) -> str:
     """System prompt for translating one question to a Datalog query line."""
-    return (
-        "You translate a natural-language question into ONE line of DuckDB-supported Datalog "
-        "over the base relation relation(subject, rel, object), which holds the "
-        "knowledge base's confirmed facts. Produce a rule whose head is exactly "
-        f"answer_q{qid}(V) binding a single answer variable V, for example:\n"
-        f'  answer_q{qid}(O) :- relation("Ada Lovelace", "born_in", O).\n'
-        "Use only the relation/3 predicate in rule bodies. Terms may be variables, "
-        "string literals, integer literals, atoms, or fully ground compound terms; "
-        "do not construct compound terms from variables in the answer head or body. "
-        "If no executable rule is appropriate, return a durable status line "
-        "with a concise reason instead: review_required(\"reason\") when a human "
-        "must clarify or model the query, no_answer(\"reason\") when confirmed "
-        "facts cannot answer it, or ambiguous(\"reason\") when multiple meanings "
-        "or entities fit. Emit JSON matching the schema."
-    )
+    return default_prompt_text("query-translation").replace("{qid}", str(qid))
 
 
 def parse_query(raw: str | dict[str, Any]) -> str:
@@ -206,15 +126,7 @@ QUERY_INTENT_SCHEMA: dict[str, Any] = {
 QUERY_INTENT_SCHEMA["required"] = list(QUERY_INTENT_SCHEMA["properties"])
 
 
-QUERY_INTENT_SYSTEM = (
-    "Classify one natural-language question into a constrained query intent. "
-    "Return only JSON matching the schema. Use null for fields that do not apply. "
-    "Use discover_entity_relations for broad entity-centric relationship questions "
-    "where the entity is known but the useful KB relation may need schema-backed "
-    "discovery; include an optional relation or relation_candidates only when the "
-    "question also gives a direct relation hint to try first. "
-    "Do not emit Datalog, relation/3 rules, answer_q predicates, or execution plans."
-)
+QUERY_INTENT_SYSTEM = default_prompt_text("query-intent")
 
 
 def parse_facts(raw: str | list[Any] | dict[str, Any]) -> list[ExtractedFact]:
