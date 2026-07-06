@@ -17,6 +17,11 @@ import unicodedata
 from typing import Any, Iterable, Mapping
 
 from verinote.engine import DEFAULT_POLICY
+from verinote.policy_defaults import (
+    DEFAULT_RELATION_ALIASES,
+    RELATION_ALIASES_RELPATH,
+    TYPED_RELATIONS_RELPATH,
+)
 from verinote.store import ENGINE_STATUSES, Store
 
 _FUNCTIONAL_RE = re.compile(r'functional\("((?:\\.|[^"\\])*)"\)\.')
@@ -55,9 +60,6 @@ _DEFAULT_AMOUNT_UNITS = {
     "억": 10**8,
     "조": 10**12,
 }
-RELATION_ALIASES_RELPATH = "policy/relation-aliases.md"
-TYPED_RELATIONS_RELPATH = "policy/typed-relations.md"
-
 
 class CorroborationPolicyError(ValueError):
     """Raised when optional corroboration policy files are malformed."""
@@ -174,10 +176,12 @@ def _relation_alias_token(text: str, *, line_no: int) -> str:
 
 
 def store_relation_aliases(store: Store) -> dict[str, str]:
+    aliases = relation_aliases(DEFAULT_RELATION_ALIASES)
     path = store.db_path.parent / RELATION_ALIASES_RELPATH
     if not path.is_file():
-        return {}
-    return relation_aliases(path.read_text(encoding="utf-8"))
+        return aliases
+    aliases.update(relation_aliases(path.read_text(encoding="utf-8")))
+    return aliases
 
 
 def typed_relations(text: str) -> dict[str, TypedRelationSpec]:

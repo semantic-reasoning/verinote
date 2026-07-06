@@ -115,7 +115,9 @@ def test_translate_korean_provide_question_bypasses_llm(tmp_path):
     ]
     query_dl = s.questions()[0]["query_dl"]
     assert f'answer_q{qid}(O) :- relation("샘플조직", "제공 요소", O).' in query_dl
-    assert load_query(s) == query_dl + "\n"
+    loaded_query = load_query(s)
+    assert f'answer_q{qid}(O) :- relation("샘플조직", "제공 요소", O).' in loaded_query
+    assert f'answer_q{qid}(O) :- relation("샘플조직", "제공", O).' in loaded_query
 
 
 def test_translate_retries_translation_failed_questions(tmp_path, fake_client, intent_payload):
@@ -149,7 +151,7 @@ def test_translate_retries_translation_failed_questions(tmp_path, fake_client, i
 def test_load_query_expands_relation_aliases(tmp_path):
     s = _store(tmp_path)
     policy = tmp_path / "policy"
-    policy.mkdir()
+    policy.mkdir(exist_ok=True)
     (policy / "relation-aliases.md").write_text("- `role` -> `역할`\n", encoding="utf-8")
     qid = s.add_question("Find the sample person's role")
     s.set_question_query(

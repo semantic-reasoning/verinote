@@ -200,15 +200,8 @@ def test_deterministic_entity_relation_discovery_questions_are_generic():
     assert korean.subject == IntentTarget("entity", "샘플엔티티")
     assert korean_direct_hint.kind == QueryIntentKind.DISCOVER_ENTITY_RELATIONS
     assert korean_direct_hint.subject == IntentTarget("entity", "샘플엔티티")
-    assert korean_direct_hint.relation_candidates == (
-        "제공",
-        "제공기능",
-        "제공 기능",
-        "제공서비스",
-        "제공 서비스",
-        "제공요소",
-        "제공 요소",
-    )
+    assert korean_direct_hint.relation == IntentTarget("relation", "제공")
+    assert korean_direct_hint.relation_candidates == ()
 
 
 def test_deterministic_entity_relation_discovery_rejects_generic_what_does_shapes():

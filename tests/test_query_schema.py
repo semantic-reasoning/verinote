@@ -91,10 +91,9 @@ def test_aliases_preserve_observed_nfd_relation_and_attach_canonical_metadata(tm
         "published_year",
         "published_year",
     ]
-    assert [(a.alias, a.canonical) for a in snapshot.relation_aliases] == [
-        ("게재연도", "published_year"),
-        ("발행년도", "published_year"),
-    ]
+    snapshot_aliases = [(a.alias, a.canonical) for a in snapshot.relation_aliases]
+    assert ("게재연도", "published_year") in snapshot_aliases
+    assert ("발행년도", "published_year") in snapshot_aliases
     assert [
         [(alias.alias, alias.canonical) for alias in relation.aliases]
         for relation in snapshot.relations
