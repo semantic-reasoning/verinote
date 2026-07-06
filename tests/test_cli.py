@@ -3,6 +3,7 @@ import verinote.cli as cli
 from verinote.engine import DEFAULT_POLICY
 from verinote.llm.base import ExtractedFact, LLMError
 from verinote.pipeline.ingest import register_converter
+from verinote.pipeline.query_intent import parse_query_intent
 from verinote.store import Store
 from verinote.store.fact_input import structural_term
 
@@ -11,6 +12,42 @@ def _env(monkeypatch, tmp_path):
     """Point a fresh KB at tmp_path; `cli.main` reads these via Config.load()."""
     monkeypatch.setenv("VERINOTE_ROOT", str(tmp_path))
     monkeypatch.setenv("VERINOTE_PROVIDER", "anthropic")
+
+
+def _target(kind: str, value: str | None) -> dict | None:
+    return None if value is None else {"kind": kind, "value": value}
+
+
+def _intent(kind: str, *, subject: str | None = None) -> dict:
+    return {
+        "kind": kind,
+        "subject": _target("entity", subject),
+        "relation": None,
+        "object": None,
+        "relation_candidates": [],
+        "operator": None,
+        "value_type": None,
+        "value": None,
+        "reason": None,
+    }
+
+
+class IntentOnlyClient:
+    name = "intent-only"
+
+    def __init__(self, intent):
+        self.intent = intent
+        self.intent_calls = 0
+        self.direct_datalog_calls = 0
+
+    def extract_query_intent(self, *, question: str, schema_hint: str = ""):
+        self.intent_calls += 1
+        raw = self.intent(question) if callable(self.intent) else self.intent
+        return parse_query_intent(raw)
+
+    def translate_query(self, *, question: str, qid: int, schema_hint: str = "") -> str:
+        self.direct_datalog_calls += 1
+        raise AssertionError("supported planner path must not call direct Datalog")
 
 
 def test_init_scaffolds_policy(tmp_path, monkeypatch, capsys):
@@ -143,6 +180,124 @@ def test_query_adds_and_translates(tmp_path, monkeypatch, capsys, fake_client, i
     assert "translated 1 question(s)" in out
     assert Store(tmp_path / "kb.sqlite").questions()[0]["status"] == "translated"
     assert (tmp_path / "facts" / "query.dl").is_file()
+
+
+def test_query_relation_discovery_uses_planner_and_writes_only_translated_rules(
+    tmp_path, monkeypatch, capsys
+):
+    _env(monkeypatch, tmp_path)
+    store = Store(tmp_path / "kb.sqlite")
+    store.init_schema()
+    store.add_fact(
+        "Synthetic CLI Entity",
+        "synthetic_cli_relation",
+        "Synthetic CLI Value",
+        status="confirmed",
+    )
+    store.close()
+    client = IntentOnlyClient(
+        _intent(
+            "discover_entity_relations",
+            subject="Synthetic CLI Entity",
+        )
+    )
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: client)
+
+    rc = cli.main(["query", "How is Synthetic CLI Entity related?"])
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "q1: translated - Executable query is ready." in out
+    assert "translated 1 question(s)" in out
+    assert client.direct_datalog_calls == 0
+    store = Store(tmp_path / "kb.sqlite")
+    assert store.questions()[0]["status"] == "translated"
+    query_dl = (tmp_path / "facts" / "query.dl").read_text(encoding="utf-8")
+    assert (
+        'answer_q1("synthetic_cli_relation") :- '
+        'relation("Synthetic CLI Entity", "synthetic_cli_relation", O).'
+    ) in query_dl
+    assert "review_required" not in query_dl
+    assert "ambiguous" not in query_dl
+    assert "no_answer" not in query_dl
+
+
+def test_query_relation_discovery_prints_public_lifecycle_outcomes(
+    tmp_path, monkeypatch, capsys
+):
+    from verinote.pipeline.query_candidate_eval import QueryCandidateSetEvaluation
+    from verinote.pipeline.query_candidate_eval import QueryCandidateSetOutcome
+
+    _env(monkeypatch, tmp_path)
+    store = Store(tmp_path / "kb.sqlite")
+    store.init_schema()
+    store.add_fact(
+        "Synthetic Review Entity", "source", "Synthetic Review Value", status="confirmed"
+    )
+    store.add_fact(
+        "Synthetic Ambiguous Entity",
+        "subject_relation",
+        "Synthetic Subject Value",
+        status="confirmed",
+    )
+    store.add_fact(
+        "Synthetic Object Source",
+        "object_relation",
+        "Synthetic Ambiguous Entity",
+        status="confirmed",
+    )
+    store.add_question("Review relation discovery?")
+    store.add_question("Ambiguous relation discovery?")
+    store.add_question("No answer relation discovery?")
+    store.close()
+
+    def intent_for(question: str):
+        if question.startswith("Review"):
+            return _intent(
+                "discover_entity_relations", subject="Synthetic Review Entity"
+            )
+        if question.startswith("Ambiguous"):
+            return _intent(
+                "discover_entity_relations", subject="Synthetic Ambiguous Entity"
+            )
+        return _intent("discover_entity_relations", subject="Synthetic Missing Entity")
+
+    client = IntentOnlyClient(intent_for)
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: client)
+    from verinote.pipeline.query import evaluate_query_candidate_plan as real_eval
+
+    def no_answer_for_empty_plan(store, plan):
+        if plan.reason == "no relation discovery candidates matched the schema":
+            return QueryCandidateSetEvaluation(
+                plan=plan,
+                outcome=QueryCandidateSetOutcome.NO_ANSWER,
+            )
+        return real_eval(store, plan)
+
+    monkeypatch.setattr(
+        "verinote.pipeline.query.evaluate_query_candidate_plan",
+        no_answer_for_empty_plan,
+    )
+
+    rc = cli.main(["query"])
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "q1: review_required - relation label requires review: source" in out
+    assert (
+        "q2: ambiguous - multiple query candidates returned conflicting answers"
+        in out
+    )
+    assert "q3: no_answer - no confirmed facts match" in out
+    assert client.direct_datalog_calls == 0
+    store = Store(tmp_path / "kb.sqlite")
+    assert [q["status"] for q in store.questions()] == [
+        "review_required",
+        "ambiguous",
+        "no_answer",
+    ]
+    query_dl = (tmp_path / "facts" / "query.dl").read_text(encoding="utf-8")
+    assert query_dl == ""
 
 
 def test_query_persists_translation_failure_reason(tmp_path, monkeypatch, capsys, fake_client):
