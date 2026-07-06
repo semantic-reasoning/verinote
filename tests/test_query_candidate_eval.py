@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 
 import verinote.pipeline.query_candidate_eval as query_candidate_eval
+import verinote.pipeline.query_quality_policy as query_quality_policy
 from verinote.engine import CheckReport
 from verinote.pipeline.query_candidate_eval import (
     QueryCandidateOutcome,
@@ -24,13 +25,15 @@ def _candidate(
     *,
     family: QueryCandidateFamily = QueryCandidateFamily.MANUAL_DRAFT,
     direction: QueryCandidateDirection | None = None,
+    relation_display: str | None = None,
+    relation_executable: str | None = None,
 ) -> QueryCandidate:
     return QueryCandidate(
         query_dl=query_dl,
         family=family,
         direction=direction,
-        relation_display=None,
-        relation_executable=None,
+        relation_display=relation_display,
+        relation_executable=relation_executable,
         subject_executable=None,
         object_executable=None,
     )
@@ -42,6 +45,21 @@ def _lookup(qid: int, subject: str, relation: str) -> QueryCandidate:
         f'answer_q{qid}(O) :- relation("{subject}", "{relation}", O).',
         family=QueryCandidateFamily.DIRECT_OBJECT_LOOKUP,
         direction=QueryCandidateDirection.SUBJECT_TO_OBJECT,
+    )
+
+
+def _relation_discovery(
+    qid: int, relation: str, *, display: str | None = None
+) -> QueryCandidate:
+    relation_display = display or relation
+    return _candidate(
+        f'.decl answer_q{qid}(value: symbol)\n'
+        f'answer_q{qid}("{relation}") :- '
+        f'relation("Sample Entity", "{relation}", "Sample Value").',
+        family=QueryCandidateFamily.SUBJECT_RELATION_DISCOVERY,
+        direction=QueryCandidateDirection.SUBJECT_TO_RELATION,
+        relation_display=relation_display,
+        relation_executable=f'"{relation}"',
     )
 
 
@@ -308,6 +326,133 @@ def test_evaluate_query_candidate_plan_preserves_candidate_metadata(tmp_path):
     assert evaluation.selected is candidate
     assert evaluation.selected.family == QueryCandidateFamily.DIRECT_OBJECT_LOOKUP
     assert evaluation.selected.direction == QueryCandidateDirection.SUBJECT_TO_OBJECT
+
+
+def test_relation_discovery_allowed_label_can_translate(tmp_path):
+    store = _store(tmp_path)
+    store.add_fact("Sample Entity", "synthetic_relation", "Sample Value", status="confirmed")
+    candidate = _relation_discovery(1, "synthetic_relation")
+
+    evaluation = evaluate_query_candidate_plan(store, _plan(candidate))
+
+    assert evaluation.outcome == QueryCandidateSetOutcome.VALID
+    assert evaluation.selected is candidate
+    assert evaluation.answers == ("q1: synthetic_relation",)
+
+
+def test_relation_discovery_denied_label_requires_review(tmp_path):
+    store = _store(tmp_path)
+    store.add_fact("Sample Entity", "source", "Sample Value", status="confirmed")
+    candidate = _relation_discovery(1, "source")
+
+    candidate_evaluation = evaluate_query_candidate(store, candidate)
+    plan_evaluation = evaluate_query_candidate_plan(store, _plan(candidate))
+
+    assert candidate_evaluation.outcome == QueryCandidateOutcome.REVIEW_REQUIRED
+    assert candidate_evaluation.answers == ()
+    assert candidate_evaluation.review_reason == "relation label requires review: source"
+    assert plan_evaluation.outcome == QueryCandidateSetOutcome.REVIEW_REQUIRED
+    assert plan_evaluation.outcome != QueryCandidateSetOutcome.NO_ANSWER
+    assert plan_evaluation.answers == ()
+
+
+def test_relation_discovery_denied_label_normalization_requires_review(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path)
+    nfd_source = "sourc" + "é"
+    nfc_source = "sourcé"
+    monkeypatch.setattr(
+        query_quality_policy,
+        "LOW_SIGNAL_RELATION_LABELS",
+        frozenset({nfc_source}),
+    )
+    store.add_fact("Sample Entity", nfc_source, "Sample Value", status="confirmed")
+    candidate = _relation_discovery(1, nfc_source, display=f"  {nfd_source.upper()}  ")
+
+    evaluation = evaluate_query_candidate_plan(store, _plan(candidate))
+
+    assert evaluation.outcome == QueryCandidateSetOutcome.REVIEW_REQUIRED
+    assert evaluation.evaluations[0].review_reason == (
+        f"relation label requires review: {nfc_source}"
+    )
+
+    store.add_fact("Sample Entity", "SOURCE", "Sample Value", status="confirmed")
+    monkeypatch.setattr(
+        query_quality_policy,
+        "LOW_SIGNAL_RELATION_LABELS",
+        frozenset({"source"}),
+    )
+    source_candidate = _relation_discovery(2, "SOURCE", display="  SOURCE  ")
+    source_evaluation = evaluate_query_candidate_plan(
+        store,
+        QueryCandidatePlan(qid=2, candidates=(source_candidate,)),
+    )
+
+    assert source_evaluation.outcome == QueryCandidateSetOutcome.REVIEW_REQUIRED
+    assert source_evaluation.evaluations[0].review_reason == (
+        "relation label requires review: source"
+    )
+
+
+def test_relation_discovery_mixed_denied_and_allowed_selects_allowed(tmp_path):
+    store = _store(tmp_path)
+    store.add_fact("Sample Entity", "source", "Sample Value", status="confirmed")
+    store.add_fact(
+        "Sample Entity", "synthetic_relation", "Sample Value", status="confirmed"
+    )
+    denied = _relation_discovery(1, "source")
+    allowed = _relation_discovery(1, "synthetic_relation")
+
+    evaluation = evaluate_query_candidate_plan(store, _plan(denied, allowed))
+
+    assert evaluation.outcome == QueryCandidateSetOutcome.VALID
+    assert evaluation.selected is allowed
+    assert evaluation.answers == ("q1: synthetic_relation",)
+
+
+def test_relation_discovery_missing_relation_label_requires_review(tmp_path):
+    store = _store(tmp_path)
+    store.add_fact("Sample Entity", "synthetic_relation", "Sample Value", status="confirmed")
+    candidate = _candidate(
+        '.decl answer_q1(value: symbol)\n'
+        'answer_q1("synthetic_relation") :- '
+        'relation("Sample Entity", "synthetic_relation", "Sample Value").',
+        family=QueryCandidateFamily.SUBJECT_RELATION_DISCOVERY,
+        direction=QueryCandidateDirection.SUBJECT_TO_RELATION,
+    )
+
+    evaluation = evaluate_query_candidate_plan(store, _plan(candidate))
+
+    assert evaluation.outcome == QueryCandidateSetOutcome.REVIEW_REQUIRED
+    assert evaluation.evaluations[0].review_reason == (
+        "relation discovery candidate lacks a relation label"
+    )
+
+
+def test_relation_quality_policy_does_not_block_direct_lookups(tmp_path):
+    store = _store(tmp_path)
+    store.add_fact("Sample Person", "source", "Sample Document", status="confirmed")
+    direct_object = _lookup(1, "Sample Person", "source")
+    direct_relation = _candidate(
+        '.decl answer_q2(value: symbol)\n'
+        'answer_q2(R) :- relation("Sample Person", R, "Sample Document").',
+        family=QueryCandidateFamily.DIRECT_RELATION_LOOKUP,
+        direction=QueryCandidateDirection.SUBJECT_OBJECT_TO_RELATION,
+        relation_display="source",
+        relation_executable='"source"',
+    )
+
+    object_evaluation = evaluate_query_candidate_plan(store, _plan(direct_object))
+    relation_evaluation = evaluate_query_candidate_plan(
+        store,
+        QueryCandidatePlan(qid=2, candidates=(direct_relation,)),
+    )
+
+    assert object_evaluation.outcome == QueryCandidateSetOutcome.VALID
+    assert object_evaluation.answers == ("q1: Sample Document",)
+    assert relation_evaluation.outcome == QueryCandidateSetOutcome.VALID
+    assert relation_evaluation.answers == ("q2: source",)
 
 
 def test_evaluate_query_candidate_plan_marks_conflicting_answer_sets_ambiguous(tmp_path):

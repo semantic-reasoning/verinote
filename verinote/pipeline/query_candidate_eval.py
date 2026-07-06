@@ -12,6 +12,10 @@ from verinote.engine.duckdb_backend import run_check_duckdb
 from verinote.pipeline.corroboration import CorroborationPolicyError, store_relation_aliases
 from verinote.pipeline.query import expand_query_relation_aliases
 from verinote.pipeline.query_planner import QueryCandidate, QueryCandidatePlan
+from verinote.pipeline.query_quality_policy import (
+    BROAD_RELATION_DISCOVERY_FAMILIES,
+    evaluate_relation_discovery_label,
+)
 
 RELATION_DECL = ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
 
@@ -20,6 +24,7 @@ class QueryCandidateOutcome(Enum):
     INVALID = "invalid"
     ENGINE_POLICY_ERROR = "engine_policy_error"
     NO_ANSWER = "no_answer"
+    REVIEW_REQUIRED = "review_required"
     VALID_WITH_ANSWERS = "valid_with_answers"
 
 
@@ -28,6 +33,7 @@ class QueryCandidateSetOutcome(Enum):
     INVALID = "invalid"
     ENGINE_POLICY_ERROR = "engine_policy_error"
     NO_ANSWER = "no_answer"
+    REVIEW_REQUIRED = "review_required"
     VALID = "valid"
     AMBIGUOUS_CONFLICTING = "ambiguous_conflicting"
 
@@ -38,6 +44,7 @@ class QueryCandidateEvaluation:
     outcome: QueryCandidateOutcome
     answers: tuple[str, ...] = ()
     validation_reason: str | None = None
+    review_reason: str | None = None
     report: CheckReport | None = None
 
 
@@ -103,6 +110,15 @@ def evaluate_query_candidate(
             outcome=QueryCandidateOutcome.NO_ANSWER,
             report=report,
         )
+    if candidate.family in BROAD_RELATION_DISCOVERY_FAMILIES:
+        decision = evaluate_relation_discovery_label(candidate.relation_display)
+        if not decision.allowed:
+            return QueryCandidateEvaluation(
+                candidate=candidate,
+                outcome=QueryCandidateOutcome.REVIEW_REQUIRED,
+                review_reason=decision.reason,
+                report=report,
+            )
     return QueryCandidateEvaluation(
         candidate=candidate,
         outcome=QueryCandidateOutcome.VALID_WITH_ANSWERS,
@@ -153,7 +169,18 @@ def evaluate_query_candidate_plan(store, plan: QueryCandidatePlan) -> QueryCandi
         for evaluation in evaluations
         if evaluation.outcome == QueryCandidateOutcome.VALID_WITH_ANSWERS
     )
+    review_required = tuple(
+        evaluation
+        for evaluation in evaluations
+        if evaluation.outcome == QueryCandidateOutcome.REVIEW_REQUIRED
+    )
     if not answering:
+        if review_required:
+            return QueryCandidateSetEvaluation(
+                plan=plan,
+                outcome=QueryCandidateSetOutcome.REVIEW_REQUIRED,
+                evaluations=evaluations,
+            )
         if all(
             evaluation.outcome == QueryCandidateOutcome.INVALID
             for evaluation in evaluations
