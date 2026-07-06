@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Ask · verinote{% endblock %}
+{% block content %}
+<h1>Ask</h1>
+<form class="ask-form" method="post" action="/ask">
+  <label>
+    Question
+    <textarea name="question" required>{{ question or "" }}</textarea>
+  </label>
+  <button class="btn" type="submit">Ask</button>
+</form>
+
+{% if error %}
+<div class="error">{{ error }}</div>
+{% endif %}
+
+{% if result %}
+<section class="ask-result ask-{{ result.route }}">
+  <h2>{{ result.label }}</h2>
+  <p class="muted">{{ result.reason }}</p>
+  {% if result.warning %}
+  <div class="warn">LLM fallback warning: {{ result.warning }}</div>
+  {% endif %}
+  <div class="answer-box">
+    <pre>{{ result.answer }}</pre>
+  </div>
+
+  {% if result.query_dl %}
+  <details>
+    <summary>Engine query</summary>
+    <pre class="report">{{ result.query_dl }}</pre>
+  </details>
+  {% endif %}
+
+  {% if result.grounding_facts %}
+  <h2>Verified grounding facts</h2>
+  <table>
+    <thead><tr><th>Subject</th><th>Relation</th><th>Object</th><th>Source</th></tr></thead>
+    <tbody>
+    {% for fact in result.grounding_facts %}
+      <tr>
+        <td>{{ fact.subject }}</td>
+        <td><code>{{ fact.relation }}</code></td>
+        <td>{{ fact.object }}</td>
+        <td class="src">{{ fact.source }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {% if result.excerpts %}
+  <h2>Source excerpts</h2>
+  {% for excerpt in result.excerpts %}
+  <article class="evidence">
+    <div class="src">{{ excerpt.path }}</div>
+    <pre>{{ excerpt.excerpt }}</pre>
+  </article>
+  {% endfor %}
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

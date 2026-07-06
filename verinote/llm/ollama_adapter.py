@@ -150,6 +150,34 @@ class OllamaAdapter:
 
         return parse_query_intent(body.get("message", {}).get("content", ""))
 
+    def answer_question(self, *, question: str, context: str) -> str:
+        payload = {
+            "model": self.cfg.model,
+            "stream": False,
+            "think": False,
+            "options": {"temperature": 0, "num_predict": 1200},
+            "messages": [
+                {"role": "system", "content": _render_prompt(self.cfg.root, "ask-fallback")},
+                {
+                    "role": "user",
+                    "content": f"Question:\n{question}\n\nContext:\n{context}",
+                },
+            ],
+        }
+        req = urllib.request.Request(
+            f"{self.base_url}/api/chat",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(  # noqa: S310 - local trusted endpoint
+                req, timeout=self.cfg.llm_timeout_seconds
+            ) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:  # noqa: BLE001 - normalise provider/transport errors
+            raise LLMError(f"ollama request failed: {exc}") from exc
+        return str(body.get("message", {}).get("content", "")).strip()
+
 
 def _with_schema_hint(prompt: str, schema_hint: str) -> str:
     return prompt + ("\n" + schema_hint if schema_hint else "")

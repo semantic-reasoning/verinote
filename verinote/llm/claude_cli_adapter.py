@@ -69,6 +69,13 @@ class ClaudeCliAdapter:
         )
         return parse_query_intent(self._run(prompt, schema=QUERY_INTENT_SCHEMA))
 
+    def answer_question(self, *, question: str, context: str) -> str:
+        prompt = _Prompt(
+            system=_render_prompt(self.cfg.root, "ask-fallback"),
+            user=f"Question:\n{question}\n\nContext:\n{context}",
+        )
+        return self._run_text(prompt)
+
     def _run(self, prompt: "_Prompt", *, schema: dict[str, Any]) -> str:
         schema_json = json.dumps(schema, ensure_ascii=False)
         cmd = [
@@ -79,6 +86,41 @@ class ClaudeCliAdapter:
             prompt.system,
             "--json-schema",
             schema_json,
+            "-p",
+            prompt.user,
+        ]
+        model = _cli_model(self.cfg.model)
+        if model:
+            cmd = ["claude", "--model", model, *cmd[1:]]
+        try:
+            with tempfile.TemporaryDirectory(prefix="verinote-claudecli-") as tmpdir:
+                proc = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    check=False,
+                    cwd=tmpdir,
+                    stdin=subprocess.DEVNULL,
+                    text=True,
+                    timeout=180,
+                )
+        except FileNotFoundError as exc:
+            raise LLMError("claude CLI not found; install Claude Code and ensure `claude` is on PATH") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise LLMError("claude CLI request timed out") from exc
+        except OSError as exc:
+            raise LLMError(f"claude CLI request failed: {exc}") from exc
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "").strip()
+            raise LLMError(f"claude CLI exited with {proc.returncode}: {detail}")
+        return proc.stdout.strip()
+
+    def _run_text(self, prompt: "_Prompt") -> str:
+        cmd = [
+            "claude",
+            "--safe-mode",
+            "--no-session-persistence",
+            "--system-prompt",
+            prompt.system,
             "-p",
             prompt.user,
         ]

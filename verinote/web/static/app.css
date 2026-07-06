@@ -100,6 +100,14 @@ tr.editing td { background: rgba(91, 157, 255, .06); }
 .settings .inline-setting { flex-direction: row; align-items: center; color: var(--fg); }
 .settings .inline-setting input { width: auto; }
 .settings .btn { align-self: flex-start; }
+.ask-form { display: flex; flex-direction: column; gap: .7rem; margin: 1.2rem 0; }
+.ask-form label { display: flex; flex-direction: column; gap: .3rem; color: var(--muted); }
+.ask-form textarea { min-height: 7rem; resize: vertical; background: var(--bg); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 6px; padding: .55rem .65rem; }
+.ask-form .btn { align-self: flex-start; }
+.ask-result { margin-top: 1.4rem; }
+.answer-box pre { margin: .6rem 0 1rem; white-space: pre-wrap; overflow: auto;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: .85rem; }
 .prompt-selector { display: flex; align-items: end; gap: .7rem; margin: 1rem 0; }
 .prompt-selector label { display: flex; flex-direction: column; gap: .3rem; color: var(--muted); }
 .prompt-selector select { background: var(--bg); color: var(--fg);

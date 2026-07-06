@@ -118,6 +118,33 @@ class OpenAIAdapter:
 
         return parse_query_intent(resp.choices[0].message.content or "")
 
+    def answer_question(self, *, question: str, context: str) -> str:
+        try:
+            from openai import OpenAI
+        except ImportError as exc:  # pragma: no cover - optional dep
+            raise LLMError("openai SDK not installed; `pip install verinote[openai]`") from exc
+
+        client = OpenAI(api_key=self.cfg.api_key, base_url=self.cfg.base_url)
+        try:
+            resp = client.chat.completions.create(
+                model=self.cfg.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": _render_prompt(self.cfg.root, "ask-fallback"),
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Question:\n{question}\n\nContext:\n{context}",
+                    },
+                ],
+                temperature=0,
+            )
+        except Exception as exc:  # noqa: BLE001 - normalise provider errors
+            raise LLMError(f"openai request failed: {exc}") from exc
+
+        return (resp.choices[0].message.content or "").strip()
+
 
 def _with_schema_hint(prompt: str, schema_hint: str) -> str:
     return prompt + ("\n" + schema_hint if schema_hint else "")

@@ -14,6 +14,7 @@ PromptId = Literal[
     "query-translation",
     "query-intent",
     "focused-role-extraction",
+    "ask-fallback",
     "extraction-limit-hint",
     "claude-json-wrapper",
 ]
@@ -69,6 +70,7 @@ _DEFINITIONS: tuple[PromptDefinition, ...] = (
         "Focused role extraction",
         "focused-role-extraction.md",
     ),
+    PromptDefinition("ask-fallback", "Ask fallback answer", "ask-fallback.md"),
     PromptDefinition(
         "extraction-limit-hint",
         "Extraction limit hint",

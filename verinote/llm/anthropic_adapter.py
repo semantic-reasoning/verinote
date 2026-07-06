@@ -116,6 +116,35 @@ class AnthropicAdapter:
                 return parse_query_intent(block.input)
         raise LLMError("anthropic response contained no tool_use block")
 
+    def answer_question(self, *, question: str, context: str) -> str:
+        try:
+            import anthropic
+        except ImportError as exc:  # pragma: no cover - optional dep
+            raise LLMError("anthropic SDK not installed; `pip install verinote[anthropic]`") from exc
+
+        client = anthropic.Anthropic(api_key=self.cfg.api_key, base_url=self.cfg.base_url)
+        try:
+            msg = client.messages.create(
+                model=self.cfg.model,
+                max_tokens=1200,
+                system=_render_prompt(self.cfg.root, "ask-fallback"),
+                messages=[
+                    {
+                        "role": "user",
+                        "content": f"Question:\n{question}\n\nContext:\n{context}",
+                    }
+                ],
+            )
+        except Exception as exc:  # noqa: BLE001 - normalise provider errors
+            raise LLMError(f"anthropic request failed: {exc}") from exc
+
+        parts = [
+            str(getattr(block, "text", "")).strip()
+            for block in msg.content
+            if getattr(block, "type", None) == "text"
+        ]
+        return "\n".join(part for part in parts if part).strip()
+
 
 def _with_schema_hint(prompt: str, schema_hint: str) -> str:
     return prompt + ("\n" + schema_hint if schema_hint else "")

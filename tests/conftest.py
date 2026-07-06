@@ -12,12 +12,21 @@ class FakeClient:
 
     name = "fake"
 
-    def __init__(self, facts=(), *, error: LLMError | None = None, query=None, intent=None):
+    def __init__(
+        self,
+        facts=(),
+        *,
+        error: LLMError | None = None,
+        query=None,
+        intent=None,
+        answer: str = "Synthetic fallback answer",
+    ):
         self._facts = list(facts)
         self._error = error
         # query: callable(question, qid) -> Datalog line; default answers an is_a.
         self._query = query
         self._intent = intent
+        self._answer = answer
         self.calls = 0
 
     def extract_facts(self, *, source_text: str, schema_hint: str = "") -> list[ExtractedFact]:
@@ -52,6 +61,12 @@ class FakeClient:
                 "reason": "not configured",
             }
         return parse_query_intent(raw)
+
+    def answer_question(self, *, question: str, context: str) -> str:
+        self.calls += 1
+        if self._error is not None:
+            raise self._error
+        return self._answer
 
 
 @pytest.fixture
