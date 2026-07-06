@@ -89,13 +89,126 @@ def plan_query_candidates(
         candidates = _lookup_relation_candidates(intent, snapshot, qid)
         reason = None
     elif intent.kind == QueryIntentKind.DISCOVER_ENTITY_RELATIONS:
-        candidates = ()
-        reason = "entity relation discovery planning is not implemented yet"
+        candidates = _discover_entity_relation_candidates(intent, snapshot, qid)
+        reason = None if candidates else "no relation discovery candidates matched the schema"
     else:
         candidates = ()
         reason = f"unsupported intent kind: {intent.kind.value}"
 
     return _bounded_plan(qid, candidates, bounds, reason=reason)
+
+
+def _discover_entity_relation_candidates(
+    intent: QueryIntent, snapshot: QuerySchemaSnapshot, qid: int
+) -> tuple[QueryCandidate, ...]:
+    if intent.subject is None:
+        return ()
+    candidates: list[QueryCandidate] = []
+    requested = _relation_requests(intent)
+    if requested:
+        direct_candidates = list(_lookup_object_candidates(intent, snapshot, qid))
+        if direct_candidates:
+            return tuple(direct_candidates)
+        candidates.extend(_discover_from_relation_examples(intent, snapshot, qid, requested))
+        candidates.extend(_discover_from_exact_facts(intent, snapshot, qid, requested))
+        return _dedupe_candidates(candidates)
+    candidates.extend(_discover_from_relation_examples(intent, snapshot, qid, requested))
+    candidates.extend(_discover_from_exact_facts(intent, snapshot, qid, requested))
+    return _dedupe_candidates(candidates)
+
+
+def _discover_from_relation_examples(
+    intent: QueryIntent,
+    snapshot: QuerySchemaSnapshot,
+    qid: int,
+    requested: tuple[str, ...],
+) -> list[QueryCandidate]:
+    if intent.subject is None:
+        return []
+    candidates: list[QueryCandidate] = []
+    for relation in snapshot.relations:
+        if requested and not _relation_matches_any(relation, requested):
+            continue
+        for subject in _matching_entities(relation.subjects, intent.subject.value):
+            candidates.append(
+                _subject_relation_discovery_candidate(qid, relation.relation, subject)
+            )
+        for obj in _matching_entities(relation.objects, intent.subject.value):
+            candidates.append(
+                _object_relation_discovery_candidate(qid, relation.relation, obj)
+            )
+    return candidates
+
+
+def _discover_from_exact_facts(
+    intent: QueryIntent,
+    snapshot: QuerySchemaSnapshot,
+    qid: int,
+    requested: tuple[str, ...],
+) -> list[QueryCandidate]:
+    if intent.subject is None:
+        return []
+    candidates: list[QueryCandidate] = []
+    for fact in snapshot.exact_entity_facts:
+        if requested and not _fact_relation_matches_any_requested(fact, requested, snapshot):
+            continue
+        if fact.matched_side in {"subject", "both"} and _entity_ref_matches(
+            fact.subject, intent.subject.value
+        ):
+            candidates.append(
+                _subject_relation_discovery_candidate(
+                    qid,
+                    fact.relation,
+                    _entity_from_term_ref(fact.subject),
+                )
+            )
+        if fact.matched_side in {"object", "both"} and _entity_ref_matches(
+            fact.object, intent.subject.value
+        ):
+            candidates.append(
+                _object_relation_discovery_candidate(
+                    qid,
+                    fact.relation,
+                    _entity_from_term_ref(fact.object),
+                )
+            )
+    return candidates
+
+
+def _subject_relation_discovery_candidate(
+    qid: int, relation: TermRef, subject: EntityRef
+) -> QueryCandidate:
+    return QueryCandidate(
+        query_dl=_query_dl(
+            qid,
+            _answer_label(relation),
+            f"relation({subject.executable}, {relation.executable}, O)",
+        ),
+        family=QueryCandidateFamily.SUBJECT_RELATION_DISCOVERY,
+        direction=QueryCandidateDirection.SUBJECT_TO_RELATION,
+        relation_display=relation.display,
+        relation_executable=relation.executable,
+        subject_executable=subject.executable,
+        object_executable=None,
+    )
+
+
+def _object_relation_discovery_candidate(
+    qid: int, relation: TermRef, obj: EntityRef
+) -> QueryCandidate:
+    return QueryCandidate(
+        query_dl=_query_dl(
+            qid,
+            _answer_label(relation),
+            f"relation(S, {relation.executable}, {obj.executable})",
+        ),
+        family=QueryCandidateFamily.OBJECT_RELATION_DISCOVERY,
+        direction=QueryCandidateDirection.OBJECT_TO_RELATION,
+        relation_display=relation.display,
+        relation_executable=relation.executable,
+        subject_executable=None,
+        object_executable=obj.executable,
+    )
 
 
 def _lookup_object_candidates(
@@ -388,6 +501,12 @@ def _fact_relation_matches_any(
     wanted = _relation_requests(intent)
     if not wanted:
         return False
+    return _fact_relation_matches_any_requested(fact, wanted, snapshot)
+
+
+def _fact_relation_matches_any_requested(
+    fact: SnapshotFact, wanted: tuple[str, ...], snapshot: QuerySchemaSnapshot
+) -> bool:
     aliases = {entry.alias: entry.canonical for entry in snapshot.relation_aliases}
     observed = (_nfc(fact.relation.display), _nfc(fact.relation.executable))
     return any(
@@ -409,6 +528,10 @@ def _entity_from_term_ref(ref: TermRef) -> EntityRef:
 
 def _query_dl(qid: int, head_value: str, body: str) -> str:
     return f".decl answer_q{qid}(value: symbol)\nanswer_q{qid}({head_value}) :- {body}."
+
+
+def _answer_label(relation: TermRef) -> str:
+    return relation.executable if relation.kind != "StringLit" else relation.executable
 
 
 def _bounded_plan(

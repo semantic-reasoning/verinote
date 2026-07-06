@@ -147,18 +147,225 @@ def test_lookup_object_uses_observed_relation_and_subject_side():
     assert plan.truncated is False
 
 
-def test_entity_relation_discovery_intent_is_recognized_but_not_planned_yet():
+def test_entity_relation_discovery_generates_subject_side_candidates():
     plan = plan_query_candidates(
         QueryIntent(
             kind=QueryIntentKind.DISCOVER_ENTITY_RELATIONS,
             subject=IntentTarget("entity", "Sample Entity"),
         ),
-        _snapshot(),
+        _snapshot(
+            _relation(
+                "provides",
+                '"provides"',
+                subjects=(_entity("Sample Entity", '"Sample Entity"'),),
+                objects=(_entity("Sample Value", '"Sample Value"'),),
+            )
+        ),
         qid=9,
     )
 
+    assert [candidate.query_dl for candidate in plan.candidates] == [
+        '.decl answer_q9(value: symbol)\n'
+        'answer_q9("provides") :- relation("Sample Entity", "provides", O).'
+    ]
+    assert [candidate.family for candidate in plan.candidates] == [
+        QueryCandidateFamily.SUBJECT_RELATION_DISCOVERY
+    ]
+    assert [candidate.direction for candidate in plan.candidates] == [
+        QueryCandidateDirection.SUBJECT_TO_RELATION
+    ]
+    assert plan.reason is None
+
+
+def test_entity_relation_discovery_generates_object_side_candidates_from_exact_facts():
+    snapshot = _snapshot_with_exact(
+        _relation(
+            "mentions",
+            '"mentions"',
+            subjects=(_entity("Other Entity", '"Other Entity"'),),
+            objects=(_entity("Other Value", '"Other Value"'),),
+        ),
+        exact_facts=(
+            _fact(
+                _term("Sample Source", '"Sample Source"'),
+                _term("mentions", '"mentions"'),
+                _term("Sample Entity", '"Sample Entity"'),
+                matched_entity="Sample Entity",
+                matched_side="object",
+            ),
+        ),
+    )
+
+    plan = plan_query_candidates(
+        QueryIntent(
+            kind=QueryIntentKind.DISCOVER_ENTITY_RELATIONS,
+            subject=IntentTarget("entity", "Sample Entity"),
+        ),
+        snapshot,
+        qid=10,
+    )
+
+    assert [candidate.query_dl for candidate in plan.candidates] == [
+        '.decl answer_q10(value: symbol)\n'
+        'answer_q10("mentions") :- relation(S, "mentions", "Sample Entity").'
+    ]
+    assert [candidate.family for candidate in plan.candidates] == [
+        QueryCandidateFamily.OBJECT_RELATION_DISCOVERY
+    ]
+    assert [candidate.direction for candidate in plan.candidates] == [
+        QueryCandidateDirection.OBJECT_TO_RELATION
+    ]
+
+
+def test_entity_relation_discovery_keeps_direct_lookup_before_discovery():
+    snapshot = _snapshot(
+        _relation(
+            "provides",
+            '"provides"',
+            subjects=(_entity("Sample Entity", '"Sample Entity"'),),
+            objects=(_entity("Sample Value", '"Sample Value"'),),
+        ),
+        _relation(
+            "owns",
+            '"owns"',
+            subjects=(_entity("Sample Entity", '"Sample Entity"'),),
+            objects=(_entity("Other Value", '"Other Value"'),),
+        ),
+    )
+
+    plan = plan_query_candidates(
+        QueryIntent(
+            kind=QueryIntentKind.DISCOVER_ENTITY_RELATIONS,
+            subject=IntentTarget("entity", "Sample Entity"),
+            relation=IntentTarget("relation", "provides"),
+        ),
+        snapshot,
+        qid=11,
+    )
+
+    assert [candidate.family for candidate in plan.candidates] == [
+        QueryCandidateFamily.DIRECT_OBJECT_LOOKUP
+    ]
+    assert [candidate.query_dl for candidate in plan.candidates] == [
+        '.decl answer_q11(value: symbol)\n'
+        'answer_q11(O) :- relation("Sample Entity", "provides", O).',
+    ]
+
+
+def test_entity_relation_discovery_uses_relation_hint_when_direct_lookup_missing():
+    snapshot = _snapshot_with_exact(
+        _relation(
+            "provides",
+            '"provides"',
+            subjects=(_entity("Displayed Entity", '"Displayed Entity"'),),
+            objects=(_entity("Displayed Value", '"Displayed Value"'),),
+        ),
+        exact_facts=(
+            _fact(
+                _term("Hidden Entity", '"Hidden Entity"'),
+                _term("provides", '"provides"'),
+                _term("Sample Value", '"Sample Value"'),
+                matched_entity="Hidden Entity",
+                matched_side="subject",
+            ),
+        ),
+    )
+
+    plan = plan_query_candidates(
+        QueryIntent(
+            kind=QueryIntentKind.DISCOVER_ENTITY_RELATIONS,
+            subject=IntentTarget("entity", "Hidden Entity"),
+            relation=IntentTarget("relation", "provides"),
+        ),
+        snapshot,
+        qid=35,
+    )
+
+    assert [candidate.family for candidate in plan.candidates] == [
+        QueryCandidateFamily.EXACT_FACT_FALLBACK
+    ]
+    assert [candidate.query_dl for candidate in plan.candidates] == [
+        '.decl answer_q35(value: symbol)\n'
+        'answer_q35(O) :- relation("Hidden Entity", "provides", O).',
+    ]
+
+
+def test_entity_relation_discovery_no_match_reason():
+    plan = plan_query_candidates(
+        QueryIntent(
+            kind=QueryIntentKind.DISCOVER_ENTITY_RELATIONS,
+            subject=IntentTarget("entity", "Missing Entity"),
+        ),
+        _snapshot(),
+        qid=32,
+    )
+
     assert plan.candidates == ()
-    assert plan.reason == "entity relation discovery planning is not implemented yet"
+    assert plan.reason == "no relation discovery candidates matched the schema"
+
+
+def test_entity_relation_discovery_uses_exact_facts_when_schema_examples_omit_anchor():
+    snapshot = _snapshot_with_exact(
+        _relation(
+            "supports",
+            '"supports"',
+            subjects=(_entity("Displayed Subject", '"Displayed Subject"'),),
+            objects=(_entity("Displayed Value", '"Displayed Value"'),),
+        ),
+        exact_facts=(
+            _fact(
+                _term("Hidden Subject", '"Hidden Subject"'),
+                _term("supports", '"supports"'),
+                _term("Sample Value", '"Sample Value"'),
+                matched_entity="Hidden Subject",
+                matched_side="subject",
+            ),
+        ),
+    )
+
+    plan = plan_query_candidates(
+        QueryIntent(
+            kind=QueryIntentKind.DISCOVER_ENTITY_RELATIONS,
+            subject=IntentTarget("entity", "Hidden Subject"),
+        ),
+        snapshot,
+        qid=33,
+    )
+
+    assert [candidate.query_dl for candidate in plan.candidates] == [
+        '.decl answer_q33(value: symbol)\n'
+        'answer_q33("supports") :- relation("Hidden Subject", "supports", O).'
+    ]
+
+
+def test_entity_relation_discovery_candidate_cap_truncates_deterministically():
+    snapshot = _snapshot(
+        *(
+            _relation(
+                relation,
+                f'"{relation}"',
+                subjects=(_entity("Sample Entity", '"Sample Entity"'),),
+                objects=(_entity(f"Value {relation}", f'"Value {relation}"'),),
+            )
+            for relation in ("alpha", "beta", "gamma")
+        )
+    )
+
+    plan = plan_query_candidates(
+        QueryIntent(
+            kind=QueryIntentKind.DISCOVER_ENTITY_RELATIONS,
+            subject=IntentTarget("entity", "Sample Entity"),
+        ),
+        snapshot,
+        qid=34,
+        bounds=QueryPlannerBounds(max_candidates=2),
+    )
+
+    assert plan.truncated is True
+    assert [candidate.relation_display for candidate in plan.candidates] == [
+        "alpha",
+        "beta",
+    ]
 
 
 def test_lookup_subject_uses_object_side_directionality():
