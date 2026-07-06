@@ -8,6 +8,7 @@ from verinote.config import Config
 from verinote.llm.base import LLMError
 from verinote.llm.claude_cli_adapter import ClaudeCliAdapter
 from verinote.llm.factory import get_client
+from verinote.prompts import save_prompt_override
 
 
 def _cfg(tmp_path, *, model: str = "") -> Config:
@@ -110,4 +111,32 @@ def test_claude_cli_nonzero_is_llm_error(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     with pytest.raises(LLMError, match="not logged in"):
+        ClaudeCliAdapter(_cfg(tmp_path)).extract_facts(source_text="x")
+
+
+def test_claude_cli_uses_kb_prompt_overrides(tmp_path, monkeypatch):
+    commands = []
+    save_prompt_override(tmp_path, "extraction", "Custom extraction instructions.")
+    save_prompt_override(tmp_path, "claude-json-wrapper", "Schema contract:\n{schema_json}")
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        return SimpleNamespace(returncode=0, stdout='{"facts":[]}', stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    ClaudeCliAdapter(_cfg(tmp_path)).extract_facts(source_text="x")
+
+    system = commands[0][commands[0].index("--system-prompt") + 1]
+    assert system.startswith("Custom extraction instructions.")
+    assert "Schema contract:" in system
+    assert '"facts"' in system
+
+
+def test_claude_cli_prompt_validation_error_is_llm_error(tmp_path):
+    path = tmp_path / "policy" / "prompts" / "claude-json-wrapper.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("Missing required placeholder.\n", encoding="utf-8")
+
+    with pytest.raises(LLMError, match="\\{schema_json\\}"):
         ClaudeCliAdapter(_cfg(tmp_path)).extract_facts(source_text="x")

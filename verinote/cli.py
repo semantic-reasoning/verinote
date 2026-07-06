@@ -133,6 +133,13 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
         process_extraction_job,
         sync_sources,
     )
+    from verinote.prompts import PromptError
+
+    def extraction_schema_hint() -> str:
+        try:
+            return cfg.extraction_schema_hint()
+        except PromptError as exc:
+            raise LLMError(str(exc)) from exc
 
     store = _store(cfg)
     try:
@@ -167,7 +174,7 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     store,
                     client,
                     job_id=job_id,
-                    schema_hint=cfg.extraction_schema_hint(),
+                    schema_hint=extraction_schema_hint(),
                 )
                 per_source.append((source.source_path, outcome.candidates))
                 total += outcome.candidates

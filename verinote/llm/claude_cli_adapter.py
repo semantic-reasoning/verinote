@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import re
 import subprocess
 import tempfile
@@ -19,7 +20,7 @@ from verinote.llm.schema import (
     parse_query,
 )
 from verinote.pipeline.query_intent import QueryIntent, parse_query_intent
-from verinote.prompts import render_prompt
+from verinote.prompts import PromptError, render_prompt
 
 _MODEL_ALIASES = {
     "fable": "fable",
@@ -37,31 +38,34 @@ class ClaudeCliAdapter:
     def extract_facts(self, *, source_text: str, schema_hint: str = "") -> list[ExtractedFact]:
         prompt = _prompt(
             system=_with_schema_hint(
-                render_prompt(self.cfg.root, "extraction"), schema_hint
+                _render_prompt(self.cfg.root, "extraction"), schema_hint
             ),
             schema=FACT_ARRAY_SCHEMA,
             user=source_text,
+            root=self.cfg.root,
         )
         return parse_facts(self._run(prompt, schema=FACT_ARRAY_SCHEMA))
 
     def translate_query(self, *, question: str, qid: int, schema_hint: str = "") -> str:
         prompt = _prompt(
             system=_with_schema_hint(
-                render_prompt(self.cfg.root, "query-translation", qid=qid),
+                _render_prompt(self.cfg.root, "query-translation", qid=qid),
                 schema_hint,
             ),
             schema=QUERY_SCHEMA,
             user=question,
+            root=self.cfg.root,
         )
         return parse_query(self._run(prompt, schema=QUERY_SCHEMA))
 
     def extract_query_intent(self, *, question: str, schema_hint: str = "") -> QueryIntent:
         prompt = _prompt(
             system=_with_schema_hint(
-                render_prompt(self.cfg.root, "query-intent"), schema_hint
+                _render_prompt(self.cfg.root, "query-intent"), schema_hint
             ),
             schema=QUERY_INTENT_SCHEMA,
             user=question,
+            root=self.cfg.root,
         )
         return parse_query_intent(self._run(prompt, schema=QUERY_INTENT_SCHEMA))
 
@@ -110,14 +114,12 @@ class _Prompt:
         self.user = user
 
 
-def _prompt(*, system: str, schema: dict[str, Any], user: str) -> _Prompt:
+def _prompt(*, system: str, schema: dict[str, Any], user: str, root: Path) -> _Prompt:
     schema_json = json.dumps(schema, ensure_ascii=False, indent=2)
     return _Prompt(
         system=(
             f"{system}\n\n"
-            "Return only a single JSON object. Do not wrap it in Markdown fences. "
-            "The JSON object must match this schema:\n"
-            f"{schema_json}"
+            f"{_render_prompt(root, 'claude-json-wrapper', schema_json=schema_json)}"
         ),
         user=(
             "Input:\n"
@@ -128,6 +130,13 @@ def _prompt(*, system: str, schema: dict[str, Any], user: str) -> _Prompt:
 
 def _with_schema_hint(prompt: str, schema_hint: str) -> str:
     return prompt + ("\n" + schema_hint if schema_hint else "")
+
+
+def _render_prompt(root, prompt_id: str, **values: object) -> str:
+    try:
+        return render_prompt(root, prompt_id, **values)
+    except PromptError as exc:
+        raise LLMError(str(exc)) from exc
 
 
 def _cli_model(model: str) -> str:

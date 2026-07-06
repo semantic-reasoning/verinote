@@ -28,7 +28,7 @@
   <form class="settings prompt-form" action="/prompts" method="post">
     <input type="hidden" name="prompt_id" value="{{ prompt.id }}">
     <label>Prompt text
-      <textarea name="prompt_text" rows="24" spellcheck="false">{{ prompt.text }}</textarea>
+      <textarea name="prompt_text" rows="24" spellcheck="false">{{ prompt_text }}</textarea>
     </label>
     <div class="prompt-actions">
       <button class="btn" type="submit">Save prompt</button>
