@@ -145,10 +145,16 @@ def classify_query_draft(store: Store, qid: int, query_dl: str) -> tuple[str, st
         QueryCandidateSetOutcome,
         evaluate_query_candidate_plan,
     )
-    from verinote.pipeline.query_planner import QueryCandidate, QueryCandidatePlan
+    from verinote.pipeline.query_planner import (
+        QueryCandidate,
+        QueryCandidateFamily,
+        QueryCandidatePlan,
+    )
 
     candidate = QueryCandidate(
         query_dl=query_dl,
+        family=QueryCandidateFamily.MANUAL_DRAFT,
+        direction=None,
         relation_display=None,
         relation_executable=None,
         subject_executable=None,
