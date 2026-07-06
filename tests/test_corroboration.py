@@ -40,19 +40,20 @@ def test_store_relation_aliases_include_default_policy(tmp_path):
 
     aliases = store_relation_aliases(s)
 
-    assert aliases["제공 요소"] == "제공"
+    assert aliases["제공 요소"] == "provides"
+    assert aliases["역할"] == "role"
 
 
 def test_store_relation_aliases_merge_user_policy_with_defaults(tmp_path):
     s = _store(tmp_path)
     policy = tmp_path / "policy"
     policy.mkdir()
-    (policy / "relation-aliases.md").write_text("- `role` -> `역할`\n", encoding="utf-8")
+    (policy / "relation-aliases.md").write_text("- `title` -> `role`\n", encoding="utf-8")
 
     aliases = store_relation_aliases(s)
 
-    assert aliases["role"] == "역할"
-    assert aliases["제공 요소"] == "제공"
+    assert aliases["title"] == "role"
+    assert aliases["제공 요소"] == "provides"
 
 
 def test_corroboration_counts_distinct_engine_sources_only():

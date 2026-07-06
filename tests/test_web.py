@@ -1892,20 +1892,20 @@ def test_settings_saves_relation_aliases(tmp_path):
     c = _client(tmp_path)
 
     initial_body = c.get("/settings").text
-    assert "- `제공 요소` -&gt; `제공`" in initial_body
+    assert "- `제공 요소` -&gt; `provides`" in initial_body
 
     r = c.post(
         "/settings/relation-aliases",
-        data={"relation_aliases_text": "- `role` -> `역할`"},
+        data={"relation_aliases_text": "- `title` -> `role`"},
         follow_redirects=False,
     )
 
     assert r.status_code == 303
     alias_path = tmp_path / "policy" / "relation-aliases.md"
-    assert alias_path.read_text(encoding="utf-8") == "- `role` -> `역할`\n"
+    assert alias_path.read_text(encoding="utf-8") == "- `title` -> `role`\n"
     body = c.get("/settings").text
-    assert "- `role` -&gt; `역할`" in body
-    assert "- `제공 요소` -&gt; `제공`" in body
+    assert "- `title` -&gt; `role`" in body
+    assert "- `제공 요소` -&gt; `provides`" in body
 
 
 def test_settings_saves_plain_relation_aliases(tmp_path):
