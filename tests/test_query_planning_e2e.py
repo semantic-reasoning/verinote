@@ -100,6 +100,98 @@ def test_translate_planner_persists_query_file_and_verify_answers(tmp_path):
     assert report.answers == ["q1: 샘플역할"]
 
 
+def test_translate_relation_discovery_persists_relation_answer(tmp_path):
+    store = _store(tmp_path)
+    store.add_fact(
+        "Sample Entity",
+        "synthetic_relation",
+        "Sample Value",
+        status="confirmed",
+    )
+    qid = store.add_question("How is Sample Entity related?")
+    client = IntentOnlyClient(
+        _intent(
+            "discover_entity_relations",
+            subject="Sample Entity",
+        )
+    )
+
+    results = translate_questions(store, client, root=tmp_path)
+    report = verify(store)
+
+    assert results[0]["status"] == "translated"
+    question = store.questions()[0]
+    assert question["status"] == "translated"
+    assert (
+        f'answer_q{qid}("synthetic_relation") :- '
+        'relation("Sample Entity", "synthetic_relation", O).'
+    ) in question["query_dl"]
+    assert report.ok is True
+    assert report.answers == ["q1: synthetic_relation"]
+
+
+def test_translate_relation_discovery_relation_hint_prefers_direct_lookup(tmp_path):
+    store = _store(tmp_path)
+    store.add_fact(
+        "Sample Entity",
+        "provides",
+        "Sample Value",
+        status="confirmed",
+    )
+    store.add_fact(
+        "Sample Entity",
+        "owns",
+        "Other Value",
+        status="confirmed",
+    )
+    qid = store.add_question("Synthetic relation hint coverage?")
+    client = IntentOnlyClient(
+        _intent(
+            "discover_entity_relations",
+            subject="Sample Entity",
+            relation="provides",
+        )
+    )
+
+    results = translate_questions(store, client, root=tmp_path)
+    report = verify(store)
+
+    assert results[0]["status"] == "translated"
+    question = store.questions()[0]
+    assert (
+        f'answer_q{qid}(O) :- relation("Sample Entity", "provides", O).'
+    ) in question["query_dl"]
+    assert "ambiguous" not in question["query_dl"]
+    assert report.ok is True
+    assert report.answers == ["q1: Sample Value"]
+
+
+def test_translate_relation_discovery_low_signal_relation_requires_review(tmp_path):
+    store = _store(tmp_path)
+    store.add_fact(
+        "Sample Entity",
+        "source",
+        "Sample Value",
+        status="confirmed",
+    )
+    store.add_question("How is Sample Entity related?")
+    client = IntentOnlyClient(
+        _intent(
+            "discover_entity_relations",
+            subject="Sample Entity",
+        )
+    )
+
+    results = translate_questions(store, client, root=tmp_path)
+
+    assert results[0]["status"] == "review_required"
+    assert results[0]["reason"] == "relation label requires review: source"
+    question = store.questions()[0]
+    assert question["status"] == "review_required"
+    assert question["query_dl"] == 'review_required("relation label requires review: source")'
+    assert load_query(store) == ""
+
+
 def test_cli_query_uses_planner_and_reports_stable_row_outcome(
     tmp_path, monkeypatch, capsys
 ):
