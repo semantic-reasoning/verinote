@@ -13,7 +13,7 @@ from verinote.llm.schema import (
     parse_query,
 )
 from verinote.pipeline.query_intent import QueryIntent, parse_query_intent
-from verinote.prompts import render_prompt
+from verinote.prompts import PromptError, render_prompt
 
 
 class OpenAIAdapter:
@@ -37,7 +37,7 @@ class OpenAIAdapter:
                     {
                         "role": "system",
                         "content": _with_schema_hint(
-                            render_prompt(self.cfg.root, "extraction"), schema_hint
+                            _render_prompt(self.cfg.root, "extraction"), schema_hint
                         ),
                     },
                     {"role": "user", "content": source_text},
@@ -66,7 +66,7 @@ class OpenAIAdapter:
                     {
                         "role": "system",
                         "content": _with_schema_hint(
-                            render_prompt(
+                            _render_prompt(
                                 self.cfg.root, "query-translation", qid=qid
                             ),
                             schema_hint,
@@ -98,7 +98,7 @@ class OpenAIAdapter:
                     {
                         "role": "system",
                         "content": _with_schema_hint(
-                            render_prompt(self.cfg.root, "query-intent"),
+                            _render_prompt(self.cfg.root, "query-intent"),
                             schema_hint,
                         ),
                     },
@@ -121,3 +121,10 @@ class OpenAIAdapter:
 
 def _with_schema_hint(prompt: str, schema_hint: str) -> str:
     return prompt + ("\n" + schema_hint if schema_hint else "")
+
+
+def _render_prompt(root, prompt_id: str, **values: object) -> str:
+    try:
+        return render_prompt(root, prompt_id, **values)
+    except PromptError as exc:
+        raise LLMError(str(exc)) from exc

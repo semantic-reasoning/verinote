@@ -2,8 +2,12 @@
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from verinote.config import Config
+from verinote.llm.base import LLMError
 from verinote.llm.ollama_adapter import OllamaAdapter
+from verinote.prompts import save_prompt_override
 
 
 def _cfg(tmp_path, *, timeout: float = 900.0) -> Config:
@@ -120,3 +124,34 @@ def test_ollama_extract_ignores_schema_mismatch_payload(tmp_path, monkeypatch):
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
     assert OllamaAdapter(_cfg(tmp_path)).extract_facts(source_text="Ada") == []
+
+
+def test_ollama_extract_uses_kb_prompt_override(tmp_path, monkeypatch):
+    calls = []
+    save_prompt_override(
+        tmp_path,
+        "ollama-extraction",
+        "Custom local extraction prompt capped at {max_facts} facts.",
+    )
+
+    def fake_urlopen(req, *, timeout):
+        calls.append(req)
+        return _Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    OllamaAdapter(_cfg(tmp_path)).extract_facts(source_text="Ada")
+
+    payload = json.loads(calls[0].data.decode("utf-8"))
+    assert payload["messages"][0]["content"].startswith(
+        "Custom local extraction prompt capped at 8 facts."
+    )
+
+
+def test_ollama_prompt_validation_error_is_llm_error(tmp_path):
+    path = tmp_path / "policy" / "prompts" / "ollama-extraction.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("Missing required placeholder.\n", encoding="utf-8")
+
+    with pytest.raises(LLMError, match="\\{max_facts\\}"):
+        OllamaAdapter(_cfg(tmp_path)).extract_facts(source_text="Ada")

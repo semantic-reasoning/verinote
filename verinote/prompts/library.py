@@ -14,6 +14,8 @@ PromptId = Literal[
     "query-translation",
     "query-intent",
     "focused-role-extraction",
+    "extraction-limit-hint",
+    "claude-json-wrapper",
 ]
 PromptSource = Literal["default", "override"]
 
@@ -66,6 +68,18 @@ _DEFINITIONS: tuple[PromptDefinition, ...] = (
         "focused-role-extraction",
         "Focused role extraction",
         "focused-role-extraction.md",
+    ),
+    PromptDefinition(
+        "extraction-limit-hint",
+        "Extraction limit hint",
+        "extraction-limit-hint.md",
+        ("max_facts",),
+    ),
+    PromptDefinition(
+        "claude-json-wrapper",
+        "Claude JSON wrapper",
+        "claude-json-wrapper.md",
+        ("schema_json",),
     ),
 )
 _BY_ID = {definition.id: definition for definition in _DEFINITIONS}

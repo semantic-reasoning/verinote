@@ -13,6 +13,7 @@ from verinote.prompts import (
     render_prompt,
     save_prompt_override,
 )
+from verinote.config import Config
 
 
 def test_packaged_prompt_defaults_are_available():
@@ -24,6 +25,8 @@ def test_packaged_prompt_defaults_are_available():
         "query-translation",
         "query-intent",
         "focused-role-extraction",
+        "extraction-limit-hint",
+        "claude-json-wrapper",
     } <= names
     assert resources.files("verinote.prompts").joinpath(
         "defaults", "extraction.md"
@@ -80,6 +83,42 @@ def test_prompt_render_replaces_only_declared_placeholders(tmp_path):
 def test_prompt_render_requires_values_for_placeholders(tmp_path):
     with pytest.raises(PromptError, match="missing prompt value"):
         render_prompt(tmp_path, "query-translation")
+
+
+def test_config_extraction_schema_hint_uses_prompt_default(tmp_path):
+    cfg = Config(
+        root=tmp_path,
+        db_path=tmp_path / "kb.sqlite",
+        provider="anthropic",
+        model="m",
+        api_key=None,
+        base_url=None,
+        extraction_max_facts_per_chunk=13,
+    )
+
+    assert cfg.extraction_schema_hint() == (
+        "Extract at most 13 facts from this chunk. Prefer the most explicit "
+        "source-backed facts when more facts are available."
+    )
+
+
+def test_config_extraction_schema_hint_uses_kb_override(tmp_path):
+    save_prompt_override(
+        tmp_path,
+        "extraction-limit-hint",
+        "Keep at most {max_facts} synthetic facts.",
+    )
+    cfg = Config(
+        root=tmp_path,
+        db_path=tmp_path / "kb.sqlite",
+        provider="anthropic",
+        model="m",
+        api_key=None,
+        base_url=None,
+        extraction_max_facts_per_chunk=4,
+    )
+
+    assert cfg.extraction_schema_hint() == "Keep at most 4 synthetic facts."
 
 
 def test_unknown_prompt_id_is_rejected(tmp_path):

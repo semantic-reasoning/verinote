@@ -1963,17 +1963,19 @@ def test_prompt_save_rejects_empty_text(tmp_path):
 
 def test_prompt_save_rejects_missing_required_placeholder(tmp_path):
     c = _client(tmp_path)
+    submitted = "Return a query for the supplied question."
 
     r = c.post(
         "/prompts",
         data={
             "prompt_id": "query-translation",
-            "prompt_text": "Return a query for the supplied question.",
+            "prompt_text": submitted,
         },
     )
 
     assert r.status_code == 400
     assert "{qid}" in r.text
+    assert submitted in r.text
     assert not (tmp_path / "policy" / "prompts" / "query-translation.md").exists()
 
 

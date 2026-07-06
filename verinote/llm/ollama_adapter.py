@@ -19,7 +19,7 @@ from verinote.llm.schema import (
     parse_query,
 )
 from verinote.pipeline.query_intent import QueryIntent, parse_query_intent
-from verinote.prompts import render_prompt
+from verinote.prompts import PromptError, render_prompt
 
 
 OLLAMA_FACT_ARRAY_SCHEMA = {
@@ -47,7 +47,7 @@ class OllamaAdapter:
 
     def extract_facts(self, *, source_text: str, schema_hint: str = "") -> list[ExtractedFact]:
         system = _with_schema_hint(
-            render_prompt(
+            _render_prompt(
                 self.cfg.root,
                 "ollama-extraction",
                 max_facts=self.cfg.extraction_max_facts_per_chunk,
@@ -92,7 +92,7 @@ class OllamaAdapter:
 
     def translate_query(self, *, question: str, qid: int, schema_hint: str = "") -> str:
         system = _with_schema_hint(
-            render_prompt(self.cfg.root, "query-translation", qid=qid), schema_hint
+            _render_prompt(self.cfg.root, "query-translation", qid=qid), schema_hint
         )
         payload = {
             "model": self.cfg.model,
@@ -122,7 +122,7 @@ class OllamaAdapter:
 
     def extract_query_intent(self, *, question: str, schema_hint: str = "") -> QueryIntent:
         system = _with_schema_hint(
-            render_prompt(self.cfg.root, "query-intent"), schema_hint
+            _render_prompt(self.cfg.root, "query-intent"), schema_hint
         )
         payload = {
             "model": self.cfg.model,
@@ -153,3 +153,10 @@ class OllamaAdapter:
 
 def _with_schema_hint(prompt: str, schema_hint: str) -> str:
     return prompt + ("\n" + schema_hint if schema_hint else "")
+
+
+def _render_prompt(root, prompt_id: str, **values: object) -> str:
+    try:
+        return render_prompt(root, prompt_id, **values)
+    except PromptError as exc:
+        raise LLMError(str(exc)) from exc

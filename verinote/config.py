@@ -21,6 +21,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from verinote.prompts import render_prompt
+
 SETTINGS_FILENAME = "config.json"
 APP_CONFIG_FILENAME = "app.json"
 APP_NAME = "verinote"
@@ -220,10 +222,10 @@ class Config:
     auto_accept_recommendations: bool = False
 
     def extraction_schema_hint(self) -> str:
-        return (
-            f"Extract at most {self.extraction_max_facts_per_chunk} facts from "
-            "this chunk. Prefer the most explicit source-backed facts when more "
-            "facts are available."
+        return render_prompt(
+            self.root,
+            "extraction-limit-hint",
+            max_facts=self.extraction_max_facts_per_chunk,
         )
 
     @classmethod

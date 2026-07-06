@@ -118,6 +118,12 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             store.set_question_query(q["id"], None, "translation_failed", reason)
         write_query_file(store, cfg.root)
 
+    def _extraction_schema_hint(cfg: Config) -> str:
+        try:
+            return cfg.extraction_schema_hint()
+        except PromptError as exc:
+            raise LLMError(str(exc)) from exc
+
     def _relation_aliases_path() -> Path:
         return _active_cfg().root / RELATION_ALIASES_RELPATH
 
@@ -150,6 +156,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         prompt_id: str = "extraction",
         message: str | None = None,
         error: str | None = None,
+        prompt_text: str | None = None,
         status_code: int = 200,
     ):
         cfg = app.state.cfg
@@ -165,6 +172,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                     "prompts": list_prompts(),
                     "prompt": None,
                     "selected_prompt": prompt_id,
+                    "prompt_text": prompt_text,
                     "message": message,
                     "error": str(exc),
                 },
@@ -177,6 +185,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 "prompts": list_prompts(),
                 "prompt": prompt,
                 "selected_prompt": prompt.id,
+                "prompt_text": prompt.text if prompt_text is None else prompt_text,
                 "message": message,
                 "error": error,
             },
@@ -613,7 +622,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                         worker_store,
                         client,
                         job_id=job_id,
-                        schema_hint=cfg.extraction_schema_hint(),
+                        schema_hint=_extraction_schema_hint(cfg),
                     )
                     if cfg.auto_accept_recommendations:
                         apply_auto_accept_recommendations(worker_store)
@@ -1027,6 +1036,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             return _prompts_page(
                 request,
                 prompt_id=prompt_id,
+                prompt_text=prompt_text,
                 error=str(exc),
                 status_code=400,
             )
