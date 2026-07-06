@@ -6,16 +6,14 @@ from __future__ import annotations
 from verinote.config import Config
 from verinote.llm.base import ExtractedFact, LLMError
 from verinote.llm.schema import (
-    EXTRACTION_SYSTEM,
     FACT_ARRAY_SCHEMA,
     QUERY_INTENT_SCHEMA,
-    QUERY_INTENT_SYSTEM,
     QUERY_SCHEMA,
     parse_facts,
     parse_query,
-    query_system,
 )
 from verinote.pipeline.query_intent import QueryIntent, parse_query_intent
+from verinote.prompts import render_prompt
 
 
 class AnthropicAdapter:
@@ -40,7 +38,9 @@ class AnthropicAdapter:
             msg = client.messages.create(
                 model=self.cfg.model,
                 max_tokens=4096,
-                system=EXTRACTION_SYSTEM + ("\n" + schema_hint if schema_hint else ""),
+                system=_with_schema_hint(
+                    render_prompt(self.cfg.root, "extraction"), schema_hint
+                ),
                 tools=[tool],
                 tool_choice={"type": "tool", "name": "emit_facts"},
                 messages=[{"role": "user", "content": source_text}],
@@ -69,7 +69,10 @@ class AnthropicAdapter:
             msg = client.messages.create(
                 model=self.cfg.model,
                 max_tokens=1024,
-                system=query_system(qid) + ("\n" + schema_hint if schema_hint else ""),
+                system=_with_schema_hint(
+                    render_prompt(self.cfg.root, "query-translation", qid=qid),
+                    schema_hint,
+                ),
                 tools=[tool],
                 tool_choice={"type": "tool", "name": "emit_query"},
                 messages=[{"role": "user", "content": question}],
@@ -98,7 +101,9 @@ class AnthropicAdapter:
             msg = client.messages.create(
                 model=self.cfg.model,
                 max_tokens=1024,
-                system=QUERY_INTENT_SYSTEM + ("\n" + schema_hint if schema_hint else ""),
+                system=_with_schema_hint(
+                    render_prompt(self.cfg.root, "query-intent"), schema_hint
+                ),
                 tools=[tool],
                 tool_choice={"type": "tool", "name": "emit_query_intent"},
                 messages=[{"role": "user", "content": question}],
@@ -110,3 +115,7 @@ class AnthropicAdapter:
             if getattr(block, "type", None) == "tool_use":
                 return parse_query_intent(block.input)
         raise LLMError("anthropic response contained no tool_use block")
+
+
+def _with_schema_hint(prompt: str, schema_hint: str) -> str:
+    return prompt + ("\n" + schema_hint if schema_hint else "")

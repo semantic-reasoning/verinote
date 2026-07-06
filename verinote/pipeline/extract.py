@@ -21,26 +21,10 @@ from verinote.pipeline.corroboration import (
     store_relation_aliases,
 )
 from verinote.pipeline.normalize import normalize_for_extraction
+from verinote.prompts import PromptError, render_prompt
 from verinote.store import Store
 from verinote.store.fact_input import structural_term
 
-
-ORG_PERSON_ROLE_SCHEMA_HINT = (
-    "Additional focused pass: extract only organization/person/role facts. "
-    "Write role facts as organization subject, role predicate, person object when "
-    "the source explicitly says a person holds that role for the organization. "
-    "For presenter lines like `발표· 성명 대표 (원문: 성명대표)| 샘플조직`, emit "
-    "`샘플조직`, `role`, `성명`; do not emit person-subject role facts. "
-    "Normalize compact Korean role text such as "
-    "`성명 대표 (원문: 성명대표)` or `대표 성명 (원문: 대표성명)` into "
-    "canonical English relation labels like `role`, `representative`, "
-    "`presenter`, or `affiliation`. Use only the organization in the same line, "
-    "table row, bullet, or "
-    "layout record as the person/role phrase. If another organization appears "
-    "elsewhere in the chunk, do not connect it to the person. If the chunk contains "
-    "a `원문:` marker, copy that original phrase into note. Do not invent "
-    "organization-person-role facts."
-)
 _NORMALIZATION_BRIDGE_RELATIONS = {
     "주체",
     "subject",
@@ -83,7 +67,10 @@ def extract_source(
     """
     analysis_text = normalize_for_extraction(source_text)
     facts = _extract_chunk_facts(
-        client, source_text=analysis_text, schema_hint=schema_hint
+        client,
+        source_text=analysis_text,
+        schema_hint=schema_hint,
+        root=store.db_path.parent,
     )
     aliases = _relation_aliases_or_error(store)
     rows = _candidate_rows(facts, analysis_text, relation_aliases=aliases)
@@ -225,7 +212,12 @@ def _extract_chunk(
     chunk_id: int | None = None,
     schema_hint: str = "",
 ) -> int:
-    facts = _extract_chunk_facts(client, source_text=source_text, schema_hint=schema_hint)
+    facts = _extract_chunk_facts(
+        client,
+        source_text=source_text,
+        schema_hint=schema_hint,
+        root=store.db_path.parent,
+    )
     aliases = _relation_aliases_or_error(store)
     rows = _candidate_rows(facts, source_text, relation_aliases=aliases)
     inserted = 0
@@ -260,16 +252,17 @@ def _extract_chunk(
 
 
 def _extract_chunk_facts(
-    client: LLMClient, *, source_text: str, schema_hint: str = ""
+    client: LLMClient, *, source_text: str, schema_hint: str = "", root=None
 ) -> list[ExtractedFact]:
     facts = client.extract_facts(source_text=source_text, schema_hint=schema_hint)
     if _ROLE_CUE_RE.search(source_text) is None:
         return facts
+    focused_schema_hint = _focused_role_schema_hint(schema_hint, root=root)
     try:
         facts.extend(
             client.extract_facts(
                 source_text=source_text,
-                schema_hint=_focused_role_schema_hint(schema_hint),
+                schema_hint=focused_schema_hint,
             )
         )
     except LLMError:
@@ -277,10 +270,16 @@ def _extract_chunk_facts(
     return facts
 
 
-def _focused_role_schema_hint(schema_hint: str) -> str:
+def _focused_role_schema_hint(schema_hint: str, *, root=None) -> str:
+    if root is None:
+        root = "."
+    try:
+        focused_role_prompt = render_prompt(root, "focused-role-extraction")
+    except PromptError as exc:
+        raise LLMError(str(exc)) from exc
     if not schema_hint:
-        return ORG_PERSON_ROLE_SCHEMA_HINT
-    return f"{schema_hint}\n{ORG_PERSON_ROLE_SCHEMA_HINT}"
+        return focused_role_prompt
+    return f"{schema_hint}\n{focused_role_prompt}"
 
 
 def _relation_aliases_or_error(store: Store) -> dict[str, str]:

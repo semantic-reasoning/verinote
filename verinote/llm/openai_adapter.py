@@ -6,16 +6,14 @@ from __future__ import annotations
 from verinote.config import Config
 from verinote.llm.base import ExtractedFact, LLMError
 from verinote.llm.schema import (
-    EXTRACTION_SYSTEM,
     FACT_ARRAY_SCHEMA,
     QUERY_INTENT_SCHEMA,
-    QUERY_INTENT_SYSTEM,
     QUERY_SCHEMA,
     parse_facts,
     parse_query,
-    query_system,
 )
 from verinote.pipeline.query_intent import QueryIntent, parse_query_intent
+from verinote.prompts import render_prompt
 
 
 class OpenAIAdapter:
@@ -36,7 +34,12 @@ class OpenAIAdapter:
             resp = client.chat.completions.create(
                 model=self.cfg.model,
                 messages=[
-                    {"role": "system", "content": EXTRACTION_SYSTEM + ("\n" + schema_hint if schema_hint else "")},
+                    {
+                        "role": "system",
+                        "content": _with_schema_hint(
+                            render_prompt(self.cfg.root, "extraction"), schema_hint
+                        ),
+                    },
                     {"role": "user", "content": source_text},
                 ],
                 response_format={
@@ -60,7 +63,15 @@ class OpenAIAdapter:
             resp = client.chat.completions.create(
                 model=self.cfg.model,
                 messages=[
-                    {"role": "system", "content": query_system(qid) + ("\n" + schema_hint if schema_hint else "")},
+                    {
+                        "role": "system",
+                        "content": _with_schema_hint(
+                            render_prompt(
+                                self.cfg.root, "query-translation", qid=qid
+                            ),
+                            schema_hint,
+                        ),
+                    },
                     {"role": "user", "content": question},
                 ],
                 response_format={
@@ -86,7 +97,10 @@ class OpenAIAdapter:
                 messages=[
                     {
                         "role": "system",
-                        "content": QUERY_INTENT_SYSTEM + ("\n" + schema_hint if schema_hint else ""),
+                        "content": _with_schema_hint(
+                            render_prompt(self.cfg.root, "query-intent"),
+                            schema_hint,
+                        ),
                     },
                     {"role": "user", "content": question},
                 ],
@@ -103,3 +117,7 @@ class OpenAIAdapter:
             raise LLMError(f"openai request failed: {exc}") from exc
 
         return parse_query_intent(resp.choices[0].message.content or "")
+
+
+def _with_schema_hint(prompt: str, schema_hint: str) -> str:
+    return prompt + ("\n" + schema_hint if schema_hint else "")
