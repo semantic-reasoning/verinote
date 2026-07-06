@@ -194,8 +194,44 @@ def evaluate_query_candidate_plan(store, plan: QueryCandidatePlan) -> QueryCandi
             evaluations=evaluations,
         )
 
-    answer_sets = {evaluation.answers for evaluation in answering}
-    selected = answering[0]
+    return _select_answering_candidate(plan, evaluations, answering)
+
+
+def _select_answering_candidate(
+    plan: QueryCandidatePlan,
+    evaluations: tuple[QueryCandidateEvaluation, ...],
+    answering: tuple[QueryCandidateEvaluation, ...],
+) -> QueryCandidateSetEvaluation:
+    direct_answering = tuple(
+        evaluation
+        for evaluation in answering
+        if evaluation.candidate.family not in BROAD_RELATION_DISCOVERY_FAMILIES
+    )
+    if direct_answering:
+        return _select_non_conflicting_candidate(plan, evaluations, direct_answering)
+
+    discovery_families = {
+        evaluation.candidate.family for evaluation in answering
+    }
+    if len(discovery_families) != 1:
+        selected = answering[0]
+        return QueryCandidateSetEvaluation(
+            plan=plan,
+            outcome=QueryCandidateSetOutcome.AMBIGUOUS_CONFLICTING,
+            evaluations=evaluations,
+            selected=selected.candidate,
+            answers=selected.answers,
+        )
+    return _select_non_conflicting_candidate(plan, evaluations, answering)
+
+
+def _select_non_conflicting_candidate(
+    plan: QueryCandidatePlan,
+    evaluations: tuple[QueryCandidateEvaluation, ...],
+    candidates: tuple[QueryCandidateEvaluation, ...],
+) -> QueryCandidateSetEvaluation:
+    selected = candidates[0]
+    answer_sets = {evaluation.answers for evaluation in candidates}
     if len(answer_sets) > 1:
         return QueryCandidateSetEvaluation(
             plan=plan,

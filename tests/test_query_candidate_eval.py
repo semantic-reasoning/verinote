@@ -63,6 +63,18 @@ def _relation_discovery(
     )
 
 
+def _object_relation_discovery(qid: int, relation: str) -> QueryCandidate:
+    return _candidate(
+        f'.decl answer_q{qid}(value: symbol)\n'
+        f'answer_q{qid}("{relation}") :- '
+        f'relation("Sample Source", "{relation}", "Sample Entity").',
+        family=QueryCandidateFamily.OBJECT_RELATION_DISCOVERY,
+        direction=QueryCandidateDirection.OBJECT_TO_RELATION,
+        relation_display=relation,
+        relation_executable=f'"{relation}"',
+    )
+
+
 def _plan(*candidates: QueryCandidate, qid: int = 1) -> QueryCandidatePlan:
     return QueryCandidatePlan(qid=qid, candidates=tuple(candidates))
 
@@ -409,6 +421,77 @@ def test_relation_discovery_mixed_denied_and_allowed_selects_allowed(tmp_path):
     assert evaluation.outcome == QueryCandidateSetOutcome.VALID
     assert evaluation.selected is allowed
     assert evaluation.answers == ("q1: synthetic_relation",)
+
+
+def test_relation_discovery_direct_answer_wins_over_discovery_answer(tmp_path):
+    store = _store(tmp_path)
+    store.add_fact("Sample Entity", "role", "Direct Value", status="confirmed")
+    store.add_fact(
+        "Sample Entity", "synthetic_relation", "Sample Value", status="confirmed"
+    )
+    direct = _lookup(1, "Sample Entity", "role")
+    discovery = _relation_discovery(1, "synthetic_relation")
+
+    evaluation = evaluate_query_candidate_plan(store, _plan(discovery, direct))
+
+    assert evaluation.outcome == QueryCandidateSetOutcome.VALID
+    assert evaluation.selected is direct
+    assert evaluation.answers == ("q1: Direct Value",)
+
+
+def test_relation_discovery_selects_single_answering_family_without_direct_answer(
+    tmp_path,
+):
+    store = _store(tmp_path)
+    store.add_fact(
+        "Sample Entity", "synthetic_relation", "Sample Value", status="confirmed"
+    )
+    no_answer_direct = _lookup(1, "Sample Entity", "missing_relation")
+    discovery = _relation_discovery(1, "synthetic_relation")
+
+    evaluation = evaluate_query_candidate_plan(
+        store,
+        _plan(no_answer_direct, discovery),
+    )
+
+    assert evaluation.outcome == QueryCandidateSetOutcome.VALID
+    assert evaluation.selected is discovery
+    assert evaluation.answers == ("q1: synthetic_relation",)
+
+
+def test_relation_discovery_subject_and_object_families_are_ambiguous(tmp_path):
+    store = _store(tmp_path)
+    store.add_fact(
+        "Sample Entity", "subject_relation", "Sample Value", status="confirmed"
+    )
+    store.add_fact(
+        "Sample Source", "object_relation", "Sample Entity", status="confirmed"
+    )
+    subject_discovery = _relation_discovery(1, "subject_relation")
+    object_discovery = _object_relation_discovery(1, "object_relation")
+
+    evaluation = evaluate_query_candidate_plan(
+        store,
+        _plan(subject_discovery, object_discovery),
+    )
+
+    assert evaluation.outcome == QueryCandidateSetOutcome.AMBIGUOUS_CONFLICTING
+    assert evaluation.selected is subject_discovery
+    assert evaluation.answers == ("q1: subject_relation",)
+
+
+def test_relation_discovery_same_family_conflicting_answers_are_ambiguous(tmp_path):
+    store = _store(tmp_path)
+    store.add_fact("Sample Entity", "first_relation", "Sample Value", status="confirmed")
+    store.add_fact("Sample Entity", "second_relation", "Sample Value", status="confirmed")
+    first = _relation_discovery(1, "first_relation")
+    second = _relation_discovery(1, "second_relation")
+
+    evaluation = evaluate_query_candidate_plan(store, _plan(first, second))
+
+    assert evaluation.outcome == QueryCandidateSetOutcome.AMBIGUOUS_CONFLICTING
+    assert evaluation.selected is first
+    assert evaluation.answers == ("q1: first_relation",)
 
 
 def test_relation_discovery_missing_relation_label_requires_review(tmp_path):
