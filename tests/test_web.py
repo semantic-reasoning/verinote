@@ -1886,6 +1886,123 @@ def test_settings_page_renders(tmp_path):
     assert 'name="extraction_max_facts_per_chunk"' in r.text
     assert 'name="auto_accept_recommendations"' in r.text
     assert 'name="relation_aliases_text"' in r.text
+    assert 'href="/prompts"' in r.text
+
+
+def test_prompts_page_renders_default_prompt(tmp_path):
+    c = _client(tmp_path)
+
+    r = c.get("/prompts")
+
+    assert r.status_code == 200
+    assert "Prompts" in r.text
+    assert "Extraction" in r.text
+    assert "semantic subject-predicate-object statement" in r.text
+    assert "API keys are not shown" in r.text
+
+
+def test_prompts_page_switches_prompt_key(tmp_path):
+    c = _client(tmp_path)
+
+    r = c.get("/prompts", params={"prompt": "query-intent"})
+
+    assert r.status_code == 200
+    assert "Query intent" in r.text
+    assert "Classify one natural-language question" in r.text
+    assert "semantic subject-predicate-object statement" not in r.text
+
+
+def test_prompt_save_writes_kb_policy_file(tmp_path):
+    c = _client(tmp_path)
+
+    r = c.post(
+        "/prompts",
+        data={
+            "prompt_id": "extraction",
+            "prompt_text": "Use only supplied synthetic text.",
+        },
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 303
+    assert r.headers["location"] == "/prompts?prompt=extraction"
+    path = tmp_path / "policy" / "prompts" / "extraction.md"
+    assert path.read_text(encoding="utf-8") == "Use only supplied synthetic text.\n"
+    assert "Use only supplied synthetic text." in c.get("/prompts").text
+
+
+def test_prompt_reset_deletes_override(tmp_path):
+    c = _client(tmp_path)
+    path = tmp_path / "policy" / "prompts" / "extraction.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("Custom prompt.\n", encoding="utf-8")
+
+    r = c.post(
+        "/prompts/reset",
+        data={"prompt_id": "extraction"},
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 303
+    assert not path.exists()
+    assert "semantic subject-predicate-object statement" in c.get("/prompts").text
+
+
+def test_prompt_save_rejects_empty_text(tmp_path):
+    c = _client(tmp_path)
+
+    r = c.post(
+        "/prompts",
+        data={"prompt_id": "extraction", "prompt_text": "   "},
+    )
+
+    assert r.status_code == 400
+    assert "prompt text is required" in r.text
+    assert not (tmp_path / "policy" / "prompts" / "extraction.md").exists()
+
+
+def test_prompt_save_rejects_missing_required_placeholder(tmp_path):
+    c = _client(tmp_path)
+
+    r = c.post(
+        "/prompts",
+        data={
+            "prompt_id": "query-translation",
+            "prompt_text": "Return a query for the supplied question.",
+        },
+    )
+
+    assert r.status_code == 400
+    assert "{qid}" in r.text
+    assert not (tmp_path / "policy" / "prompts" / "query-translation.md").exists()
+
+
+def test_prompt_routes_reject_unknown_key(tmp_path):
+    c = _client(tmp_path)
+
+    assert c.get("/prompts", params={"prompt": "../secret"}).status_code == 400
+    r = c.post(
+        "/prompts",
+        data={"prompt_id": "../secret", "prompt_text": "No."},
+    )
+    assert r.status_code == 400
+
+
+def test_prompt_editor_never_renders_api_key(tmp_path):
+    cfg = Config(
+        root=tmp_path,
+        db_path=tmp_path / "kb.sqlite",
+        provider="anthropic",
+        model="m",
+        api_key="supersecret",
+        base_url=None,
+    )
+    client = TestClient(create_app(cfg))
+
+    r = client.get("/prompts")
+
+    assert r.status_code == 200
+    assert "supersecret" not in r.text
 
 
 def test_settings_saves_relation_aliases(tmp_path):

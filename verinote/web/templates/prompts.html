@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Prompts — verinote{% endblock %}
+{% block content %}
+<h1>Prompts</h1>
+<p class="muted">Edit reusable system/task prompts for the active KB. Runtime source text, questions, provider payloads, and API keys are not shown here.</p>
+
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+{% if message %}<p class="ok-note" role="status">{{ message }}</p>{% endif %}
+
+<form class="prompt-selector" action="/prompts" method="get">
+  <label>Prompt
+    <select name="prompt" onchange="this.form.submit()">
+      {% for item in prompts %}
+      <option value="{{ item.id }}" {{ 'selected' if item.id == selected_prompt else '' }}>{{ item.title }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <noscript><button class="btn ghost" type="submit">Open</button></noscript>
+</form>
+
+{% if prompt %}
+<section class="prompt-editor">
+  <div class="prompt-meta">
+    <span class="badge">{{ "Customized" if prompt.source == "override" else "Default" }}</span>
+    <span><code>{{ prompt.id }}</code></span>
+    <span>{{ prompt.override_path }}</span>
+  </div>
+  <form class="settings prompt-form" action="/prompts" method="post">
+    <input type="hidden" name="prompt_id" value="{{ prompt.id }}">
+    <label>Prompt text
+      <textarea name="prompt_text" rows="24" spellcheck="false">{{ prompt.text }}</textarea>
+    </label>
+    <div class="prompt-actions">
+      <button class="btn" type="submit">Save prompt</button>
+      <a class="btn ghost" href="/settings">Back to settings</a>
+    </div>
+  </form>
+  <form class="prompt-reset" action="/prompts/reset" method="post">
+    <input type="hidden" name="prompt_id" value="{{ prompt.id }}">
+    <button class="btn ghost" type="submit">Reset to default</button>
+  </form>
+
+  {% if prompt.source == "override" %}
+  <details class="default-prompt">
+    <summary>Default prompt</summary>
+    <pre>{{ prompt.default_text }}</pre>
+  </details>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}
