@@ -270,8 +270,9 @@ def test_extraction_prompt_prioritizes_semantic_spo_facts():
     assert "relation is a concise predicate" in EXTRACTION_SYSTEM
     assert "object is the related entity or value" in EXTRACTION_SYSTEM
     assert "instead of copying whole source phrases" in EXTRACTION_SYSTEM
-    assert "named-entity spelling" in EXTRACTION_SYSTEM
-    assert "do not translate" in EXTRACTION_SYSTEM
+    assert "named-entity spelling for subjects and objects" in EXTRACTION_SYSTEM
+    assert "For relations, prefer concise English canonical predicates" in EXTRACTION_SYSTEM
+    assert "`role`, `affiliation`, `provides`, or `value`" in EXTRACTION_SYSTEM
     assert "exact original supporting phrase in note" in EXTRACTION_SYSTEM
     assert "merely because two entities appear in the same chunk" in EXTRACTION_SYSTEM
     assert "numeric, percentage, count, date, money" in EXTRACTION_SYSTEM
