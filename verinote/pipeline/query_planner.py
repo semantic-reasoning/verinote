@@ -67,6 +67,9 @@ def plan_query_candidates(
     elif intent.kind == QueryIntentKind.LOOKUP_RELATION:
         candidates = _lookup_relation_candidates(intent, snapshot, qid)
         reason = None
+    elif intent.kind == QueryIntentKind.DISCOVER_ENTITY_RELATIONS:
+        candidates = ()
+        reason = "entity relation discovery planning is not implemented yet"
     else:
         candidates = ()
         reason = f"unsupported intent kind: {intent.kind.value}"

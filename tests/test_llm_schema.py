@@ -35,6 +35,10 @@ def test_query_intent_schema_is_separate_from_datalog_query_schema():
     assert QUERY_INTENT_SCHEMA["required"] == list(QUERY_INTENT_SCHEMA["properties"])
     assert "datalog" not in QUERY_INTENT_SCHEMA["properties"]
     assert QUERY_INTENT_SCHEMA["additionalProperties"] is False
+    assert (
+        "discover_entity_relations"
+        in QUERY_INTENT_SCHEMA["properties"]["kind"]["enum"]
+    )
     for field in ("subject", "relation", "object"):
         schema = QUERY_INTENT_SCHEMA["properties"][field]
         assert schema["type"] == ["object", "null"]
@@ -118,6 +122,40 @@ def test_parse_query_intent_accepts_valid_compare_typed_value():
     assert intent.value == "10"
 
 
+def test_parse_query_intent_accepts_entity_relation_discovery():
+    broad = parse_query_intent(
+        _intent_payload(
+            kind="discover_entity_relations",
+            subject={"kind": "entity", "value": "Sample Entity"},
+            reason=None,
+        )
+    )
+    direct_first = parse_query_intent(
+        _intent_payload(
+            kind="discover_entity_relations",
+            subject={"kind": "entity", "value": "Sample Entity"},
+            relation={"kind": "relation", "value": "provides"},
+            reason=None,
+        )
+    )
+    candidate_first = parse_query_intent(
+        _intent_payload(
+            kind="discover_entity_relations",
+            subject={"kind": "entity", "value": "Sample Entity"},
+            relation_candidates=["provides", "connects"],
+            reason=None,
+        )
+    )
+
+    assert broad.kind == QueryIntentKind.DISCOVER_ENTITY_RELATIONS
+    assert broad.subject == IntentTarget("entity", "Sample Entity")
+    assert broad.relation_candidates == ()
+    assert direct_first.kind == QueryIntentKind.DISCOVER_ENTITY_RELATIONS
+    assert direct_first.relation == IntentTarget("relation", "provides")
+    assert candidate_first.kind == QueryIntentKind.DISCOVER_ENTITY_RELATIONS
+    assert candidate_first.relation_candidates == ("provides", "connects")
+
+
 def test_parse_query_intent_accepts_unsupported_with_reason():
     intent = parse_query_intent(
         _intent_payload(reason="requires planning")
@@ -174,6 +212,40 @@ def test_parse_query_intent_accepts_unsupported_with_reason():
             kind="lookup_relation",
             relation={"kind": "relation", "value": "역할"},
             subject={"kind": "entity", "value": "샘플인물"},
+            reason=None,
+        ),
+        _intent_payload(
+            kind="discover_entity_relations",
+            subject=None,
+            reason=None,
+        ),
+        _intent_payload(
+            kind="discover_entity_relations",
+            subject={"kind": "relation", "value": "provides"},
+            reason=None,
+        ),
+        _intent_payload(
+            kind="discover_entity_relations",
+            subject={"kind": "entity", "value": "Sample Entity"},
+            object={"kind": "entity", "value": "Sample Object"},
+            reason=None,
+        ),
+        _intent_payload(
+            kind="discover_entity_relations",
+            subject={"kind": "entity", "value": "Sample Entity"},
+            operator=">",
+            reason=None,
+        ),
+        _intent_payload(
+            kind="discover_entity_relations",
+            subject={"kind": "entity", "value": "Sample Entity"},
+            reason="unsupported",
+        ),
+        _intent_payload(
+            kind="discover_entity_relations",
+            subject={"kind": "entity", "value": "Sample Entity"},
+            relation={"kind": "relation", "value": "provides"},
+            relation_candidates=["offers"],
             reason=None,
         ),
         _intent_payload(
