@@ -180,10 +180,10 @@ def store_relation_aliases(store: Store) -> dict[str, str]:
     if not path.is_file():
         return relation_aliases(DEFAULT_RELATION_ALIASES)
     user_aliases = relation_aliases(path.read_text(encoding="utf-8"))
-    return _merge_default_relation_aliases(user_aliases)
+    return merge_default_relation_aliases(user_aliases)
 
 
-def _merge_default_relation_aliases(user_aliases: dict[str, str]) -> dict[str, str]:
+def merge_default_relation_aliases(user_aliases: dict[str, str]) -> dict[str, str]:
     defaults = relation_aliases(DEFAULT_RELATION_ALIASES)
     user_raw = {unicodedata.normalize("NFC", raw) for raw in user_aliases}
     user_canonical = {

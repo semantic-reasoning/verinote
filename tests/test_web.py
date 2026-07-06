@@ -1922,6 +1922,18 @@ def test_settings_saves_plain_relation_aliases(tmp_path):
     assert alias_path.read_text(encoding="utf-8") == "- role -> 역할\n"
 
 
+def test_settings_omits_conflicting_default_alias_direction(tmp_path):
+    policy = tmp_path / "policy"
+    policy.mkdir()
+    (policy / "relation-aliases.md").write_text("- `role` -> `역할`\n", encoding="utf-8")
+    c = _client(tmp_path)
+
+    body = c.get("/settings").text
+
+    assert "- `role` -&gt; `역할`" in body
+    assert "- `역할` -&gt; `role`" not in body
+
+
 def test_settings_rejects_invalid_relation_aliases(tmp_path):
     c = _client(tmp_path)
 
