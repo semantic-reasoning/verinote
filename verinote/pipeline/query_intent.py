@@ -205,8 +205,21 @@ _KOREAN_ENTITY_RELATION_DISCOVERY_QUESTION = re.compile(
     r'["“”\']?(?P<entity>[^"“”\'?？\n]{1,80}?)["“”\']?\s*'
     r"(?:는|은|이|가)\s*어떤\s*관계(?:인가|입니까|야)?\s*\??\s*$"
 )
+_KOREAN_ENTITY_DIRECT_RELATION_DISCOVERY_QUESTION = re.compile(
+    r'["“”\']?(?P<entity>[^"“”\'?？\n]{1,80}?)["“”\']?\s*'
+    r"(?:는|은|이|가)\s*(?P<relation>제공)하는\s*것(?:은|이|인가|입니까)?\s*\??\s*$"
+)
 KOREAN_ROLE_RELATION_CANDIDATES = ("역할", "직책", "직위")
 ENGLISH_ROLE_RELATION_CANDIDATES = ("role", "title", "position", "has_role")
+KOREAN_PROVIDE_RELATION_CANDIDATES = (
+    "제공",
+    "제공기능",
+    "제공 기능",
+    "제공서비스",
+    "제공 서비스",
+    "제공요소",
+    "제공 요소",
+)
 _GENERIC_ENTITY_ANCHORS = {
     "anything",
     "it",
@@ -257,6 +270,16 @@ def deterministic_query_intent(question: str) -> QueryIntent:
                 kind=QueryIntentKind.DISCOVER_ENTITY_RELATIONS,
                 subject=IntentTarget("entity", entity),
                 relation=IntentTarget("relation", relation),
+            )
+
+    match = _KOREAN_ENTITY_DIRECT_RELATION_DISCOVERY_QUESTION.match(text)
+    if match:
+        entity = match.group("entity").strip()
+        if entity:
+            return QueryIntent(
+                kind=QueryIntentKind.DISCOVER_ENTITY_RELATIONS,
+                subject=IntentTarget("entity", entity),
+                relation_candidates=KOREAN_PROVIDE_RELATION_CANDIDATES,
             )
 
     match = _KOREAN_ENTITY_RELATION_DISCOVERY_QUESTION.match(text)

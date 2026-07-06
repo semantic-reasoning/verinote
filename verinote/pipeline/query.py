@@ -299,12 +299,14 @@ def translate_questions(
     root: Path,
     allow_direct_datalog_fallback: bool = False,
 ) -> list[dict]:
-    """Translate every pending question, persist drafts, rewrite `query.dl`.
+    """Translate pending and previously failed questions, persist drafts, rewrite `query.dl`.
 
     Returns one dict per processed question: {id, status, query_dl, reason}.
     """
     results: list[dict] = []
-    for q in store.questions(pending_only=True):
+    for q in store.questions():
+        if q["status"] not in {"pending", "translation_failed"}:
+            continue
         flow = _schema_aware_query_flow_result(
             store,
             client,

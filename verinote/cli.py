@@ -214,9 +214,14 @@ def cmd_query(cfg: Config, args: argparse.Namespace) -> int:
     store = _store(cfg)
     if args.question:
         store.add_question(args.question)
-    pending = store.questions(pending_only=True)
-    if not pending:
-        print("no pending questions (add one: `verinote query \"...\"`)", file=sys.stderr)
+    translatable = [
+        q for q in store.questions() if q["status"] in {"pending", "translation_failed"}
+    ]
+    if not translatable:
+        print(
+            "no pending or failed questions (add one: `verinote query \"...\"`)",
+            file=sys.stderr,
+        )
         store.close()
         return 1
     try:
@@ -224,7 +229,7 @@ def cmd_query(cfg: Config, args: argparse.Namespace) -> int:
     except LLMError as e:
         reason = _short_error(e)
         results = []
-        for q in pending:
+        for q in translatable:
             store.set_question_query(q["id"], None, "translation_failed", reason)
             results.append(
                 {"id": q["id"], "status": "translation_failed", "reason": reason}
