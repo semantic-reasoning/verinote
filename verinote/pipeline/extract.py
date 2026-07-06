@@ -12,7 +12,7 @@ import re
 import unicodedata
 from typing import Iterable
 
-from verinote.engine.terms import TermParseError
+from verinote.engine.terms import Compound, TermParseError, parse_term
 from verinote.llm.base import ExtractedFact, LLMClient, LLMError
 from verinote.pipeline.chunk import chunk_text
 from verinote.pipeline.corroboration import (
@@ -37,6 +37,8 @@ _NORMALIZATION_BRIDGE_RELATIONS = {
 _KEY_VALUE_RELATIONS = {"값", "value", "has_value", "label_value"}
 _STANDARD_ASCII_RELATIONS = {"value"}
 _COPULA_OBJECTS = {"입니다", "이다", "임", "있습니다", "없습니다", "합니다"}
+_TYPED_LITERAL_FUNCTORS = {"amount", "date", "number", "ordinal"}
+_UNIT_ONLY_OBJECTS = {"%", "％", "건", "개", "곳", "명", "년", "원", "조", "억", "만"}
 _HANGUL_RE = re.compile(r"[\uac00-\ud7a3]")
 _HAN_RUN_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
 _ASCII_RELATION_RE = re.compile(r"^[A-Za-z0-9_ -]+$")
@@ -341,11 +343,25 @@ def _canonical_fact(
 def _is_bad_spo_shape(f: ExtractedFact) -> bool:
     relation = f.relation.strip()
     obj = f.object.strip()
+    if _slot_is_typed_literal(f.subject, f.subject_kind):
+        return True
+    if _slot_is_typed_literal(f.relation, f.relation_kind):
+        return True
     if f.object_kind == "string" and obj in _COPULA_OBJECTS:
+        return True
+    if f.object_kind == "string" and obj in _UNIT_ONLY_OBJECTS:
         return True
     if f.relation_kind == "string" and _compact_text(relation).endswith("여부"):
         return True
     return False
+
+
+def _slot_is_typed_literal(value: str, _kind: str) -> bool:
+    try:
+        term = parse_term(value)
+    except TermParseError:
+        return False
+    return isinstance(term, Compound) and term.functor in _TYPED_LITERAL_FUNCTORS
 
 
 def _is_normalization_bridge(f: ExtractedFact) -> bool:

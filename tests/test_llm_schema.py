@@ -266,13 +266,13 @@ def test_parse_query_intent_rejects_malformed_or_invalid_output(raw):
 
 def test_extraction_prompt_prioritizes_semantic_spo_facts():
     assert "semantic subject-predicate-object statement" in EXTRACTION_SYSTEM
-    assert "subject is the entity or row key being described" in EXTRACTION_SYSTEM
-    assert "relation is a concise predicate" in EXTRACTION_SYSTEM
-    assert "object is the related entity or value" in EXTRACTION_SYSTEM
+    assert "Subject is the entity, row key, or record owner" in EXTRACTION_SYSTEM
+    assert "Relation is a concise predicate" in EXTRACTION_SYSTEM
+    assert "Object is the related entity or value" in EXTRACTION_SYSTEM
     assert "instead of copying whole source phrases" in EXTRACTION_SYSTEM
     assert "named-entity spelling for subjects and objects" in EXTRACTION_SYSTEM
-    assert "For relations, prefer concise English canonical predicates" in EXTRACTION_SYSTEM
-    assert "`role`, `affiliation`, `provides`, or `value`" in EXTRACTION_SYSTEM
+    assert "prefer concise English canonical predicates" in EXTRACTION_SYSTEM
+    assert "such as `role`, `affiliation`, `provides`, or `value`" in EXTRACTION_SYSTEM
     assert "exact original supporting phrase in note" in EXTRACTION_SYSTEM
     assert "merely because two entities appear in the same chunk" in EXTRACTION_SYSTEM
     assert "numeric, percentage, count, date, money" in EXTRACTION_SYSTEM
@@ -285,21 +285,22 @@ def test_extraction_prompt_prioritizes_semantic_spo_facts():
 
 
 def test_extraction_prompt_biases_toward_explicit_fact_recall():
-    assert "extraction is not a summary" in EXTRACTION_SYSTEM
-    assert "Traverse every section, table, and list" in EXTRACTION_SYSTEM
+    assert "Extraction is not a summary" in EXTRACTION_SYSTEM
+    assert "Traverse every visible section, table, list" in EXTRACTION_SYSTEM
     assert "Do not sample representative items" in EXTRACTION_SYSTEM
     assert "many small source-backed triples" in EXTRACTION_SYSTEM
-    assert "For each sentence, table row, bullet, or layout record" in EXTRACTION_SYSTEM
-    assert "Self-check before finishing" in EXTRACTION_SYSTEM
+    assert "For each sentence, table row, bullet, list item, or layout record" in EXTRACTION_SYSTEM
+    assert "Self-check before returning" in EXTRACTION_SYSTEM
 
 
 def test_extraction_prompt_uses_factlog_table_mapping_rules():
-    assert "extract tables and structured records row by row" in EXTRACTION_SYSTEM
+    assert "Extract tables and structured records row by row" in EXTRACTION_SYSTEM
     assert "Use the row-identifying key" in EXTRACTION_SYSTEM
     assert "as subject" in EXTRACTION_SYSTEM
     assert "Use the column header or item label as relation" in EXTRACTION_SYSTEM
     assert "Use the cell value as object" in EXTRACTION_SYSTEM
     assert "emit separate facts" in EXTRACTION_SYSTEM
+    assert "Do not include CSV headers" in EXTRACTION_SYSTEM
 
 
 def test_extraction_prompt_prefers_typed_literal_terms():
@@ -307,6 +308,8 @@ def test_extraction_prompt_prefers_typed_literal_terms():
     assert "`ordinal(N)`" in EXTRACTION_SYSTEM
     assert "`amount(N,\"unit\")`" in EXTRACTION_SYSTEM
     assert "`number(N)`" in EXTRACTION_SYSTEM
+    assert "Typed literals are object values, never subjects or relations" in EXTRACTION_SYSTEM
+    assert "relation `number(8)` and object `명`" in EXTRACTION_SYSTEM
     assert "Entity objects" in EXTRACTION_SYSTEM
     assert "must remain plain strings" in EXTRACTION_SYSTEM
 
