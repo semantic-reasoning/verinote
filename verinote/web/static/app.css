@@ -94,11 +94,28 @@ th { color: var(--muted); font-weight: 600; font-size: .85rem; }
 tr.editing td { background: rgba(91, 157, 255, .06); }
 .settings { display: flex; flex-direction: column; gap: .8rem; max-width: 32rem; margin: 1.2rem 0; }
 .settings label { display: flex; flex-direction: column; gap: .3rem; color: var(--muted); }
-.settings select, .settings input { background: var(--bg); color: var(--fg);
+.settings select, .settings input, .settings textarea { background: var(--bg); color: var(--fg);
   border: 1px solid var(--line); border-radius: 6px; padding: .4rem .55rem; }
+.settings textarea { min-height: 10rem; resize: vertical; font: .9rem/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .settings .inline-setting { flex-direction: row; align-items: center; color: var(--fg); }
 .settings .inline-setting input { width: auto; }
 .settings .btn { align-self: flex-start; }
+.prompt-selector { display: flex; align-items: end; gap: .7rem; margin: 1rem 0; }
+.prompt-selector label { display: flex; flex-direction: column; gap: .3rem; color: var(--muted); }
+.prompt-selector select { background: var(--bg); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 6px; padding: .4rem .55rem; }
+.prompt-editor { margin-top: 1rem; }
+.prompt-meta { display: flex; gap: .55rem; align-items: center; flex-wrap: wrap;
+  color: var(--muted); font-size: .85rem; max-width: 100%; }
+.prompt-meta span:last-child { min-width: 0; max-width: 100%; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.prompt-form { max-width: 100%; }
+.prompt-form textarea { min-height: 28rem; }
+.prompt-actions { display: flex; gap: .55rem; flex-wrap: wrap; align-items: center; }
+.prompt-reset { margin-top: -.3rem; }
+.default-prompt { margin-top: 1rem; color: var(--muted); }
+.default-prompt pre { margin-top: .6rem; max-height: 24rem; overflow: auto; white-space: pre-wrap;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: .8rem; color: var(--fg); }
 .ok-note { background: rgba(63, 185, 80, .12); border: 1px solid var(--ok); color: var(--ok);
   border-radius: 8px; padding: .6rem .9rem; margin: 1rem 0; }
 

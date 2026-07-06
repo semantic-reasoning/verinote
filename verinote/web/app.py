@@ -62,6 +62,13 @@ from verinote.pipeline.corroboration import (
     store_typed_relations,
 )
 from verinote.pipeline.workbench import trust_workbench
+from verinote.prompts import (
+    PromptError,
+    delete_prompt_override,
+    get_prompt,
+    list_prompts,
+    save_prompt_override,
+)
 from verinote.engine.terms import StringLit, render_term
 from verinote.store import (
     DEFAULT_REVIEW_PAGE_SIZE,
@@ -136,6 +143,45 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             for alias, canonical in sorted(missing_defaults.items())
         )
         return f"{text.rstrip()}\n\n# Default aliases not yet saved in this KB\n{missing_text}\n"
+
+    def _prompts_page(
+        request: Request,
+        *,
+        prompt_id: str = "extraction",
+        message: str | None = None,
+        error: str | None = None,
+        status_code: int = 200,
+    ):
+        cfg = app.state.cfg
+        if cfg is None:
+            return _kb_select(request)
+        try:
+            prompt = get_prompt(cfg.root, prompt_id)
+        except PromptError as exc:
+            return templates.TemplateResponse(
+                request,
+                "prompts.html",
+                {
+                    "prompts": list_prompts(),
+                    "prompt": None,
+                    "selected_prompt": prompt_id,
+                    "message": message,
+                    "error": str(exc),
+                },
+                status_code=400,
+            )
+        return templates.TemplateResponse(
+            request,
+            "prompts.html",
+            {
+                "prompts": list_prompts(),
+                "prompt": prompt,
+                "selected_prompt": prompt.id,
+                "message": message,
+                "error": error,
+            },
+            status_code=status_code,
+        )
 
     def _open_root(root: Path) -> None:
         """Point this running app at a KB root, creating it if needed."""
@@ -963,6 +1009,42 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     @app.get("/settings", response_class=HTMLResponse)
     def settings_page(request: Request):
         return _settings(request)
+
+    @app.get("/prompts", response_class=HTMLResponse)
+    def prompts_page(request: Request, prompt: str = "extraction"):
+        return _prompts_page(request, prompt_id=prompt)
+
+    @app.post("/prompts", response_class=HTMLResponse)
+    def save_prompt_route(
+        request: Request,
+        prompt_id: str = Form(...),
+        prompt_text: str = Form(""),
+    ):
+        cfg = _active_cfg()
+        try:
+            save_prompt_override(cfg.root, prompt_id, prompt_text)
+        except PromptError as exc:
+            return _prompts_page(
+                request,
+                prompt_id=prompt_id,
+                error=str(exc),
+                status_code=400,
+            )
+        return RedirectResponse(f"/prompts?{urlencode({'prompt': prompt_id})}", status_code=303)
+
+    @app.post("/prompts/reset", response_class=HTMLResponse)
+    def reset_prompt_route(request: Request, prompt_id: str = Form(...)):
+        cfg = _active_cfg()
+        try:
+            delete_prompt_override(cfg.root, prompt_id)
+        except PromptError as exc:
+            return _prompts_page(
+                request,
+                prompt_id=prompt_id,
+                error=str(exc),
+                status_code=400,
+            )
+        return RedirectResponse(f"/prompts?{urlencode({'prompt': prompt_id})}", status_code=303)
 
     @app.post("/settings", response_class=HTMLResponse)
     def save_settings_route(
