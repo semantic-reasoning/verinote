@@ -42,6 +42,7 @@ def test_store_relation_aliases_include_default_policy(tmp_path):
 
     assert aliases["제공 요소"] == "provides"
     assert aliases["역할"] == "role"
+    assert aliases["목적"] == "purpose"
 
 
 def test_store_relation_aliases_merge_user_policy_with_defaults(tmp_path):

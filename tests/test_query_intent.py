@@ -6,6 +6,7 @@ import pytest
 from verinote.pipeline.query_intent import (
     ENGLISH_ROLE_RELATION_CANDIDATES,
     KOREAN_ROLE_RELATION_CANDIDATES,
+    PURPOSE_RELATION_CANDIDATES,
     IntentTarget,
     QueryIntent,
     QueryIntentKind,
@@ -174,6 +175,26 @@ def test_english_role_title_questions_use_english_candidates():
     assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
     assert intent.subject == IntentTarget("entity", "Sample Person")
     assert intent.relation_candidates == ENGLISH_ROLE_RELATION_CANDIDATES
+
+
+def test_generic_attribute_questions_become_lookup_object_intents():
+    korean = deterministic_query_intent("샘플프로젝트의 목적은?")
+    korean_explicit = deterministic_query_intent("샘플프로젝트의 목적은 무엇인가?")
+    english_possessive = deterministic_query_intent("What is Sample Project's purpose?")
+    english_of = deterministic_query_intent("What is the purpose of Sample Project?")
+
+    for intent in (korean, korean_explicit, english_possessive, english_of):
+        assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+        assert intent.relation_candidates == PURPOSE_RELATION_CANDIDATES
+    assert korean.subject == IntentTarget("entity", "샘플프로젝트")
+    assert english_possessive.subject == IntentTarget("entity", "Sample Project")
+    assert english_of.subject == IntentTarget("entity", "Sample Project")
+
+
+def test_generic_korean_attribute_requires_question_shape():
+    intent = deterministic_query_intent("샘플프로젝트의 목적")
+
+    assert intent.kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED
 
 
 def test_deterministic_entity_relation_discovery_questions_are_generic():

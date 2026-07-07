@@ -209,8 +209,23 @@ _KOREAN_ENTITY_DIRECT_RELATION_DISCOVERY_QUESTION = re.compile(
     r'["“”\']?(?P<entity>[^"“”\'?？\n]{1,80}?)["“”\']?\s*'
     r"(?:는|은|이|가)\s*(?P<relation>제공)하는\s*것(?:은|이|인가|입니까)?\s*\??\s*$"
 )
+_KOREAN_ATTRIBUTE_QUESTION = re.compile(
+    r'^\s*["“”\']?(?P<entity>[^"“”\'?？\n]{1,100}?)["“”\']?\s*'
+    r"(?:의|에\s*대한)\s*(?P<label>[^?？\n]{1,80})\s*[?？]?\s*$"
+)
+_ENGLISH_POSSESSIVE_ATTRIBUTE_QUESTION = re.compile(
+    r"^\s*(?i:what\s+is|what\s+was|find|show)\s+(?:the\s+)?"
+    r"(?P<entity>[A-Z][^?]{0,100}?)'s\s+"
+    r"(?P<label>[A-Za-z][A-Za-z0-9 _-]{0,40})\s*\??\s*$"
+)
+_ENGLISH_OF_ATTRIBUTE_QUESTION = re.compile(
+    r"^\s*(?i:what\s+is|what\s+was|find|show)\s+(?:the\s+)?"
+    r"(?P<label>[A-Za-z][A-Za-z0-9 _-]{0,40})\s+of\s+"
+    r"(?P<entity>[A-Z][^?]{0,100}?)\s*\??\s*$"
+)
 KOREAN_ROLE_RELATION_CANDIDATES = ("역할", "직책", "직위")
 ENGLISH_ROLE_RELATION_CANDIDATES = ("role", "title", "position", "has_role")
+PURPOSE_RELATION_CANDIDATES = ("목적", "목표", "purpose", "objective", "goal")
 _GENERIC_ENTITY_ANCHORS = {
     "anything",
     "it",
@@ -241,6 +256,40 @@ def deterministic_query_intent(question: str) -> QueryIntent:
                 kind=QueryIntentKind.LOOKUP_OBJECT,
                 subject=IntentTarget("entity", person),
                 relation_candidates=ENGLISH_ROLE_RELATION_CANDIDATES,
+            )
+
+    match = _KOREAN_ATTRIBUTE_QUESTION.match(text)
+    if match:
+        entity = match.group("entity").strip()
+        raw_label = match.group("label")
+        label = _clean_korean_attribute_label(raw_label)
+        if entity and label and _looks_like_korean_attribute_question(raw_label, text):
+            return QueryIntent(
+                kind=QueryIntentKind.LOOKUP_OBJECT,
+                subject=IntentTarget("entity", entity),
+                relation_candidates=_attribute_relation_candidates(label),
+            )
+
+    match = _ENGLISH_POSSESSIVE_ATTRIBUTE_QUESTION.match(text)
+    if match:
+        entity = match.group("entity").strip()
+        label = _clean_english_attribute_label(match.group("label"))
+        if entity and label and not _is_generic_entity_anchor(entity):
+            return QueryIntent(
+                kind=QueryIntentKind.LOOKUP_OBJECT,
+                subject=IntentTarget("entity", entity),
+                relation_candidates=_attribute_relation_candidates(label),
+            )
+
+    match = _ENGLISH_OF_ATTRIBUTE_QUESTION.match(text)
+    if match:
+        entity = match.group("entity").strip()
+        label = _clean_english_attribute_label(match.group("label"))
+        if entity and label and not _is_generic_entity_anchor(entity):
+            return QueryIntent(
+                kind=QueryIntentKind.LOOKUP_OBJECT,
+                subject=IntentTarget("entity", entity),
+                relation_candidates=_attribute_relation_candidates(label),
             )
 
     match = _ENGLISH_ENTITY_RELATION_DISCOVERY_QUESTION.match(text)
@@ -290,6 +339,43 @@ def deterministic_query_intent(question: str) -> QueryIntent:
 
 def _is_generic_entity_anchor(value: str) -> bool:
     return value.strip().casefold() in _GENERIC_ENTITY_ANCHORS
+
+
+def _clean_korean_attribute_label(value: str) -> str:
+    label = " ".join(value.strip().split())
+    label = re.sub(
+        r"\s*(?:무엇(?:인가|입니까)?|뭐(?:야|입니까)?|어떤\s*것(?:인가|입니까)?|인가|입니까)\s*$",
+        "",
+        label,
+    ).strip()
+    label = re.sub(r"(?:은|는|이|가)\s*$", "", label).strip()
+    return label
+
+
+def _looks_like_korean_attribute_question(raw_label: str, question: str) -> bool:
+    tail = raw_label.strip()
+    if question.rstrip().endswith(("?", "？")):
+        return True
+    return bool(
+        re.search(
+            r"(?:은|는|이|가|무엇(?:인가|입니까)?|뭐(?:야|입니까)?|"
+            r"어떤\s*것(?:인가|입니까)?|인가|입니까)\s*$",
+            tail,
+        )
+    )
+
+
+def _clean_english_attribute_label(value: str) -> str:
+    label = " ".join(value.strip().split())
+    return label.removeprefix("the ").strip()
+
+
+def _attribute_relation_candidates(label: str) -> tuple[str, ...]:
+    normalized = label.strip()
+    folded = normalized.casefold()
+    if folded in {"목적", "목표", "프로젝트 목적", "사업 목적", "purpose", "objective", "goal"}:
+        return PURPOSE_RELATION_CANDIDATES
+    return (normalized,)
 
 
 QUERY_INTENT_FIELDS = (

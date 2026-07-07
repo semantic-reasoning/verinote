@@ -121,6 +121,49 @@ def test_translate_korean_provide_question_bypasses_llm(tmp_path):
     assert f'answer_q{qid}(O) :- relation("샘플조직", "provides", O).' in loaded_query
 
 
+def test_translate_korean_purpose_question_bypasses_llm(tmp_path):
+    class FailingClient:
+        def extract_query_intent(self, *, question: str, schema_hint: str = ""):
+            raise AssertionError("deterministic purpose questions must not call intent LLM")
+
+        def translate_query(self, *, question: str, qid: int, schema_hint: str = "") -> str:
+            raise AssertionError("deterministic purpose questions must not call direct Datalog")
+
+    s = _store(tmp_path)
+    s.add_fact("샘플프로젝트", "purpose", "샘플목표", status="confirmed")
+    qid = s.add_question("샘플프로젝트의 목적은?")
+
+    results = translate_questions(s, FailingClient(), root=tmp_path)
+
+    assert results[0]["status"] == "translated"
+    query_dl = s.questions()[0]["query_dl"]
+    assert f'answer_q{qid}(O) :- relation("샘플프로젝트", "purpose", O).' in query_dl
+    assert "목적" not in query_dl
+    loaded_query = load_query(s)
+    assert f'answer_q{qid}(O) :- relation("샘플프로젝트", "purpose", O).' in loaded_query
+
+
+def test_canonical_purpose_question_answers_legacy_korean_relation_fact(tmp_path):
+    class FailingClient:
+        def extract_query_intent(self, *, question: str, schema_hint: str = ""):
+            raise AssertionError("deterministic purpose questions must not call intent LLM")
+
+        def translate_query(self, *, question: str, qid: int, schema_hint: str = "") -> str:
+            raise AssertionError("deterministic purpose questions must not call direct Datalog")
+
+    s = _store(tmp_path)
+    qid = s.add_question("What is Sample Project's purpose?")
+    s.add_fact("Sample Project", "목적", "Sample Goal", status="confirmed")
+
+    results = translate_questions(s, FailingClient(), root=tmp_path)
+
+    assert results[0]["status"] == "translated"
+    query_dl = s.questions()[0]["query_dl"]
+    assert f'answer_q{qid}(O) :- relation("Sample Project", "목적", O).' in query_dl
+    loaded_query = load_query(s)
+    assert f'answer_q{qid}(O) :- relation("Sample Project", "purpose", O).' in loaded_query
+
+
 def test_canonical_query_answers_legacy_alias_relation_fact(
     tmp_path, fake_client, intent_payload
 ):
