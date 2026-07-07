@@ -19,7 +19,7 @@
   <h2>{{ result.label }}</h2>
   <p class="muted">{{ result.reason }}</p>
   {% if result.warning %}
-  <div class="warn">LLM fallback warning: {{ result.warning }}</div>
+  <div class="warn">{{ result.warning }}</div>
   {% endif %}
   <div class="answer-box">
     <pre>{{ result.answer }}</pre>
@@ -33,16 +33,23 @@
   {% endif %}
 
   {% if result.grounding_facts %}
-  <h2>Verified grounding facts</h2>
+  <h2>{{ "Verified source facts" if result.route == "engine" else "Verified grounding facts" }}</h2>
   <table>
-    <thead><tr><th>Subject</th><th>Relation</th><th>Object</th><th>Source</th></tr></thead>
+    <thead>
+      <tr>
+        {% if result.route == "engine" %}<th>Answer</th>{% endif %}
+        <th>Subject</th><th>Relation</th><th>Object</th><th>Source</th><th>Evidence</th>
+      </tr>
+    </thead>
     <tbody>
     {% for fact in result.grounding_facts %}
       <tr>
+        {% if result.route == "engine" %}<td>{{ fact.answer }}</td>{% endif %}
         <td>{{ fact.subject }}</td>
         <td><code>{{ fact.relation }}</code></td>
         <td>{{ fact.object }}</td>
         <td class="src">{{ fact.source }}</td>
+        <td class="src">{{ fact.evidence }}</td>
       </tr>
     {% endfor %}
     </tbody>

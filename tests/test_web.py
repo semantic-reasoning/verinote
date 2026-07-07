@@ -1641,13 +1641,16 @@ def test_ask_post_renders_verified_engine_answer_without_persisting(
     monkeypatch.setattr(webapp, "get_client", lambda cfg: DeterministicOnly())
     c = _client(tmp_path)
     store = c.app.state.store
-    store.add_fact("샘플인물", "역할", "검토자", status="confirmed")
+    source_id = store.add_source("sources/sample.txt")
+    store.add_fact("샘플인물", "역할", "검토자", status="confirmed", source_id=source_id)
 
     r = c.post("/ask", data={"question": "샘플인물의 역할은 무엇인가?"})
 
     assert r.status_code == 200
     assert "VERIFIED — engine" in r.text
     assert "검토자" in r.text
+    assert "Verified source facts" in r.text
+    assert "sources/sample.txt" in r.text
     assert store.questions() == []
     assert not query_path(tmp_path).exists()
 

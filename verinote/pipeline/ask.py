@@ -15,6 +15,7 @@ from verinote.pipeline.corroboration import CorroborationPolicyError, store_rela
 from verinote.pipeline.query import expand_query_relation_aliases, schema_aware_query_flow
 from verinote.pipeline.query_candidate_eval import RELATION_DECL
 from verinote.pipeline.query_intent import QueryIntentKind, deterministic_query_intent
+from verinote.pipeline.report_trace import trace_query_answers
 from verinote.store import ENGINE_STATUSES, Store
 
 ASK_QID = 0
@@ -33,10 +34,12 @@ class AskExcerpt:
 
 @dataclass(frozen=True)
 class AskGroundingFact:
+    answer: str
     subject: str
     relation: str
     object: str
     source: str
+    evidence: str = ""
 
 
 @dataclass(frozen=True)
@@ -83,10 +86,11 @@ def ask_question(
         llm_error_status="review_required",
     )
     if status == "translated" and query_dl:
-        report = _run_engine_query(store, query_dl)
+        report, expanded_query = _run_engine_query(store, query_dl)
         if report.engine_available and report.ok and not report.errors:
             answers = tuple(dict.fromkeys(report.answers))
             if answers:
+                source_facts = tuple(_engine_source_facts(store, expanded_query))
                 return AskResult(
                     route="engine",
                     label="VERIFIED — engine",
@@ -96,6 +100,12 @@ def ask_question(
                     query_dl=query_dl,
                     engine_answers=answers,
                     reason="deterministic query matched confirmed/accepted facts",
+                    grounding_facts=source_facts,
+                    warning=(
+                        None
+                        if source_facts
+                        else "source trace unavailable for this verified query shape"
+                    ),
                 )
             return AskResult(
                 route="engine",
@@ -143,30 +153,61 @@ def ask_question(
     )
 
 
-def _run_engine_query(store: Store, query_dl: str) -> CheckReport:
+def _run_engine_query(store: Store, query_dl: str) -> tuple[CheckReport, str]:
     try:
         expanded = expand_query_relation_aliases(query_dl, store_relation_aliases(store))
-        return run_check_duckdb(
-            store.engine_fact_terms(),
-            policy_dl=RELATION_DECL,
-            query_dl=expanded,
+        return (
+            run_check_duckdb(
+                store.engine_fact_terms(),
+                policy_dl=RELATION_DECL,
+                query_dl=expanded,
+            ),
+            expanded,
         )
     except CorroborationPolicyError as exc:
-        return CheckReport(
-            ok=False,
-            errors=1,
-            warnings=0,
-            text=f"policy error: {exc}",
-            findings=[f"ERROR policy error: {exc}"],
+        return (
+            CheckReport(
+                ok=False,
+                errors=1,
+                warnings=0,
+                text=f"policy error: {exc}",
+                findings=[f"ERROR policy error: {exc}"],
+            ),
+            query_dl,
         )
     except Exception as exc:  # noqa: BLE001 - keep Ask from failing closed
-        return CheckReport(
-            ok=False,
-            errors=1,
-            warnings=0,
-            text=f"ask engine error: {exc}",
-            findings=[f"ERROR engine error: {exc}"],
+        return (
+            CheckReport(
+                ok=False,
+                errors=1,
+                warnings=0,
+                text=f"ask engine error: {exc}",
+                findings=[f"ERROR engine error: {exc}"],
+            ),
+            query_dl,
         )
+
+
+def _engine_source_facts(store: Store, query_dl: str) -> list[AskGroundingFact]:
+    facts: list[AskGroundingFact] = []
+    seen: set[tuple[str, int]] = set()
+    for answer in trace_query_answers(store, query_dl):
+        for fact in answer.facts:
+            key = (answer.value, fact.id)
+            if key in seen:
+                continue
+            seen.add(key)
+            facts.append(
+                AskGroundingFact(
+                    answer=answer.value,
+                    subject=fact.subject,
+                    relation=fact.relation,
+                    object=fact.object,
+                    source=fact.source,
+                    evidence=fact.evidence,
+                )
+            )
+    return facts
 
 
 def _fallback_answer(
@@ -248,6 +289,7 @@ def grounding_facts(
             continue
         rows.append(
             AskGroundingFact(
+                answer="",
                 subject=subject,
                 relation=relation,
                 object=obj,
