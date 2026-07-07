@@ -22,6 +22,10 @@ MAX_CONTEXT_CHARS = 12000
 MAX_EXCERPTS = 8
 MAX_GROUNDING_FACTS = 8
 _TOKEN = re.compile(r"[A-Za-z0-9_]{2,}|[가-힣一-龥ぁ-んァ-ン]{1,}")
+# The engine formats each answer as ``q<id>: value`` for the /report view. That
+# report prefix is never part of the answer itself, so strip it when it leaks
+# into an Ask answer body.
+_ANSWER_QID_PREFIX = re.compile(r"^q\d+:\s*")
 
 
 @dataclass(frozen=True)
@@ -95,7 +99,7 @@ def ask_question(
                     label="VERIFIED — engine",
                     question=question,
                     status=status,
-                    answer="\n".join(answers),
+                    answer=_render_engine_answer_body(answers, source_facts),
                     query_dl=query_dl,
                     engine_answers=answers,
                     reason="deterministic query matched confirmed/accepted facts",
@@ -195,6 +199,34 @@ def _engine_source_facts(store: Store, query_dl: str) -> list[AskGroundingFact]:
                 )
             )
     return facts
+
+
+def _render_engine_answer_body(
+    answers: tuple[str, ...],
+    source_facts: tuple[AskGroundingFact, ...],
+) -> str:
+    """Render a verified engine answer as factlog-style fact rows.
+
+    Each verified triple is restated as ``subject, relation, object`` with its
+    backing source(s) cited inline beneath (``    ← <source>``), mirroring
+    factlog's ``render_engine_answer`` — so the answer states *which fact* is
+    verified, not a bare object value. When the source trace is unavailable, fall
+    back to the raw engine answer values with the internal ``q<id>:`` report
+    prefix stripped (that prefix is a /report artifact, never part of the answer).
+    """
+    if source_facts:
+        sources_by_triple: dict[tuple[str, str, str], list[str]] = {}
+        for fact in source_facts:
+            triple = (fact.subject, fact.relation, fact.object)
+            sources = sources_by_triple.setdefault(triple, [])
+            if fact.source and fact.source not in sources:
+                sources.append(fact.source)
+        lines: list[str] = []
+        for (subject, relation, obj), sources in sources_by_triple.items():
+            lines.append(f"{subject}, {relation}, {obj}")
+            lines.extend(f"    ← {source}" for source in sources)
+        return "\n".join(lines)
+    return "\n".join(_ANSWER_QID_PREFIX.sub("", line) for line in answers)
 
 
 def _fallback_answer(
