@@ -97,6 +97,11 @@
         <form action="/sources/{{ s["id"] }}/reanalyze" method="post">
           <button class="btn ghost" type="submit">Re-analyze</button>
         </form>
+        {% if s["candidate_count"] or s["needs_review_count"] %}
+        <form action="/sources/{{ s["id"] }}/accept-all" method="post">
+          <button class="btn ghost" type="submit">Accept all</button>
+        </form>
+        {% endif %}
         <form action="/sources/{{ s["id"] }}/delete" method="post">
           <button class="danger" type="submit">Delete</button>
         </form>
