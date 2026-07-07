@@ -79,6 +79,27 @@ def test_ask_returns_verified_engine_answer_without_persisting(tmp_path):
     assert not query_path(tmp_path).exists()
 
 
+def test_ask_answers_generic_korean_attribute_question_from_engine(tmp_path):
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/sample-project.txt")
+    store.add_fact(
+        "샘플프로젝트",
+        "purpose",
+        "샘플목표",
+        status="confirmed",
+        source_id=source_id,
+    )
+
+    result = ask_question(
+        store, DeterministicOnlyClient(), root=tmp_path, question="샘플프로젝트의 목적은?"
+    )
+
+    assert result.route == "engine"
+    assert result.label == "VERIFIED — engine"
+    assert "샘플목표" in result.answer
+    assert result.grounding_facts[0].source == "sources/sample-project.txt"
+
+
 def test_ask_verified_negative_does_not_fallback_to_candidates(tmp_path):
     store = _store(tmp_path)
     store.add_fact("샘플인물", "is_a", "person", status="confirmed")

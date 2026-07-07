@@ -16,6 +16,12 @@ DEFAULT_RELATION_ALIASES = """# Relation aliases map alternate labels to the can
 - `제공 서비스` -> `provides`
 - `제공요소` -> `provides`
 - `제공 요소` -> `provides`
+- `목적` -> `purpose`
+- `목표` -> `purpose`
+- `프로젝트 목적` -> `purpose`
+- `사업 목적` -> `purpose`
+- `objective` -> `purpose`
+- `goal` -> `purpose`
 - `역할` -> `role`
 - `대표` -> `role`
 - `대표이사` -> `role`
