@@ -59,11 +59,18 @@ def report_trace(store: Store) -> ReportTrace:
     if not query:
         return ReportTrace(answers=(), excluded_candidate_count=candidates)
 
+    return ReportTrace(
+        answers=trace_query_answers(store, query),
+        excluded_candidate_count=candidates,
+    )
+
+
+def trace_query_answers(store: Store, query: str) -> tuple[AnswerTrace, ...]:
+    """Trace direct answer_q rules in one query back to engine-input facts."""
     try:
         program = parse_and_validate_program(_RELATION_DECL + query)
     except (DatalogParseError, DatalogValidationError):
-        return ReportTrace(answers=(), excluded_candidate_count=candidates)
-
+        return ()
     facts = store.engine_fact_terms()
     fact_rows = {int(row["id"]): store.get_fact(int(row["id"])) for row in facts}
     traces = []
@@ -94,10 +101,7 @@ def report_trace(store: Store) -> ReportTrace:
                     conflicted=any(fact.conflicted for fact in trace_facts),
                 )
             )
-    return ReportTrace(
-        answers=tuple(sorted(traces, key=lambda trace: (int(trace.qid), trace.value))),
-        excluded_candidate_count=candidates,
-    )
+    return tuple(sorted(traces, key=lambda trace: (int(trace.qid), trace.value)))
 
 
 def _answer_qid(predicate: str) -> str | None:

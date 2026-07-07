@@ -62,7 +62,8 @@ def _store(tmp_path) -> Store:
 
 def test_ask_returns_verified_engine_answer_without_persisting(tmp_path):
     store = _store(tmp_path)
-    store.add_fact("샘플인물", "역할", "검토자", status="confirmed")
+    source_id = store.add_source("sources/sample.txt")
+    store.add_fact("샘플인물", "역할", "검토자", status="confirmed", source_id=source_id)
 
     result = ask_question(
         store, DeterministicOnlyClient(), root=tmp_path, question="샘플인물의 역할은 무엇인가?"
@@ -71,6 +72,9 @@ def test_ask_returns_verified_engine_answer_without_persisting(tmp_path):
     assert result.route == "engine"
     assert result.label == "VERIFIED — engine"
     assert "검토자" in result.answer
+    assert result.grounding_facts
+    assert result.grounding_facts[0].answer == "검토자"
+    assert result.grounding_facts[0].source == "sources/sample.txt"
     assert store.questions() == []
     assert not query_path(tmp_path).exists()
 
