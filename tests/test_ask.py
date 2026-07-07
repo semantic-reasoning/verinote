@@ -79,6 +79,22 @@ def test_ask_returns_verified_engine_answer_without_persisting(tmp_path):
     assert not query_path(tmp_path).exists()
 
 
+def test_ask_engine_answer_restates_triple_with_inline_source(tmp_path):
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/sample.txt")
+    store.add_fact("샘플인물", "역할", "샘플역할", status="confirmed", source_id=source_id)
+
+    result = ask_question(
+        store, DeterministicOnlyClient(), root=tmp_path, question="샘플인물의 역할은 무엇인가?"
+    )
+
+    assert result.route == "engine"
+    # factlog-style: the answer restates the verified triple, not a bare object,
+    # and never leaks the internal q<id>: /report prefix.
+    assert result.answer == "샘플인물, 역할, 샘플역할\n    ← sources/sample.txt"
+    assert "q0:" not in result.answer
+
+
 def test_ask_answers_generic_korean_attribute_question_from_engine(tmp_path):
     store = _store(tmp_path)
     source_id = store.add_source("sources/sample-project.txt")
