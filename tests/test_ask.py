@@ -100,11 +100,21 @@ def test_ask_answers_generic_korean_attribute_question_from_engine(tmp_path):
     assert result.grounding_facts[0].source == "sources/sample-project.txt"
 
 
-def test_ask_verified_negative_does_not_fallback_to_candidates(tmp_path):
+def test_ask_verified_negative_only_for_explicit_no_answer_flow(tmp_path, monkeypatch):
+    import verinote.pipeline.ask as ask_module
+
     store = _store(tmp_path)
     store.add_fact("샘플인물", "is_a", "person", status="confirmed")
-    store.add_fact("다른샘플인물", "역할", "검토자", status="confirmed")
     store.add_fact("샘플인물", "역할", "후보역할", status="candidate")
+    monkeypatch.setattr(
+        ask_module,
+        "schema_aware_query_flow",
+        lambda *args, **kwargs: (
+            "no_answer",
+            'no_answer("no confirmed facts match")',
+            "no confirmed facts match",
+        ),
+    )
 
     result = ask_question(
         store, DeterministicOnlyClient(), root=tmp_path, question="샘플인물의 역할은 무엇인가?"
@@ -114,6 +124,19 @@ def test_ask_verified_negative_does_not_fallback_to_candidates(tmp_path):
     assert result.status == "no_answer"
     assert result.answer == "No confirmed facts match."
     assert "후보역할" not in result.answer
+
+
+def test_ask_does_not_verify_negative_when_relation_candidate_is_missing(tmp_path):
+    store = _store(tmp_path)
+    store.add_fact("샘플조직", "is_a", "조직", status="confirmed")
+    client = FallbackClient(answer="출처 탐색 결과를 확인해야 합니다.")
+
+    result = ask_question(store, client, root=tmp_path, question="샘플조직의 임직원 수는?")
+
+    assert result.route == "fallback"
+    assert result.label == "UNVERIFIED — source exploration"
+    assert result.status == "fallback"
+    assert "No confirmed facts match." not in result.answer
 
 
 def test_ask_fallback_uses_source_excerpts_and_grounding(tmp_path):
