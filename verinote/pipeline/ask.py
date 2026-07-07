@@ -14,7 +14,6 @@ from verinote.llm.base import LLMClient, LLMError
 from verinote.pipeline.corroboration import CorroborationPolicyError, store_relation_aliases
 from verinote.pipeline.query import expand_query_relation_aliases, schema_aware_query_flow
 from verinote.pipeline.query_candidate_eval import RELATION_DECL
-from verinote.pipeline.query_intent import QueryIntentKind, deterministic_query_intent
 from verinote.pipeline.report_trace import trace_query_answers
 from verinote.store import ENGINE_STATUSES, Store
 
@@ -130,18 +129,6 @@ def ask_question(
             query_dl=query_dl,
             engine_answers=(),
             reason=reason or "no confirmed facts match",
-        )
-
-    if status == "review_required" and _known_scope_without_candidate(store, question):
-        return AskResult(
-            route="engine",
-            label="VERIFIED — engine (negative)",
-            question=question,
-            status="no_answer",
-            answer="No confirmed facts match.",
-            query_dl='no_answer("no confirmed facts match")',
-            engine_answers=(),
-            reason="no confirmed facts match",
         )
 
     return _fallback_answer(
@@ -299,20 +286,6 @@ def grounding_facts(
         if len(rows) >= limit:
             break
     return rows
-
-
-def _known_scope_without_candidate(store: Store, question: str) -> bool:
-    """Classify deterministic known-entity misses as verified negative answers."""
-    intent = deterministic_query_intent(question)
-    if intent.kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED or intent.subject is None:
-        return False
-    subject = _fold(intent.subject.value)
-    if not subject:
-        return False
-    return any(
-        _fold(str(fact["subject"])) == subject or _fold(str(fact["object"])) == subject
-        for fact in store.facts(statuses=ENGINE_STATUSES)
-    )
 
 
 def _source_text_paths(store: Store, root: Path) -> list[tuple[str, Path]]:
