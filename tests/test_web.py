@@ -687,6 +687,58 @@ def test_sources_page_lists_sources(tmp_path):
     assert "extracted_text" in r.text
     assert f'title="{long_artifact_path}"' in r.text
     assert 'class="truncate"' in r.text
+    assert "Accept all" in r.text
+
+
+def test_sources_accept_all_promotes_review_facts_for_that_source(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    source_id = store.add_source("sources/sample.txt", kind="text")
+    other_source_id = store.add_source("sources/other.txt", kind="text")
+    candidate_id = store.add_fact(
+        "Sample Subject",
+        "uses",
+        "Sample Object",
+        status="candidate",
+        source_id=source_id,
+    )
+    needs_review_id = store.add_fact(
+        "Sample Subject",
+        "mentions",
+        "Sample Note",
+        status="needs_review",
+        source_id=source_id,
+    )
+    confirmed_id = store.add_fact(
+        "Already Confirmed",
+        "is_a",
+        "Sample",
+        status="confirmed",
+        source_id=source_id,
+    )
+    other_id = store.add_fact(
+        "Other Subject",
+        "uses",
+        "Other Object",
+        status="candidate",
+        source_id=other_source_id,
+    )
+
+    r = c.post(f"/sources/{source_id}/accept-all", follow_redirects=False)
+
+    assert r.status_code == 303
+    assert r.headers["location"] == "/sources"
+    assert store.get_fact(candidate_id)["status"] == "confirmed"
+    assert store.get_fact(needs_review_id)["status"] == "confirmed"
+    assert store.get_fact(confirmed_id)["status"] == "confirmed"
+    assert store.get_fact(other_id)["status"] == "candidate"
+    assert [event["action"] for event in store.fact_log(candidate_id)] == ["accepted"]
+    assert [event["action"] for event in store.fact_log(needs_review_id)] == ["accepted"]
+    assert store.fact_log(confirmed_id) == []
+    assert store.fact_log(other_id) == []
+
+    body = c.get("/sources").text
+    assert "0 candidate(s)" in body
 
 
 def test_sources_page_shows_trust_counts_and_evidence_snippets(tmp_path, monkeypatch):

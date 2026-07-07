@@ -935,6 +935,36 @@ class Store:
             self._log(fact_id, action, before, after, actor=actor, rule_name=rule_name)
             return after
 
+    def accept_review_facts_for_source(self, source_id: int) -> list[sqlite3.Row]:
+        """Promote all review-queue facts for one source to confirmed."""
+        with self._lock:
+            self._conn.execute("BEGIN")
+            try:
+                facts = list(
+                    self._conn.execute(
+                        "SELECT * FROM facts WHERE source_id = ? "
+                        "AND status IN ('candidate','needs_review') ORDER BY id",
+                        (source_id,),
+                    )
+                )
+                accepted: list[sqlite3.Row] = []
+                for before in facts:
+                    fact_id = int(before["id"])
+                    self._conn.execute(
+                        "UPDATE facts SET status = 'confirmed', updated_at = datetime('now') "
+                        "WHERE id = ?",
+                        (fact_id,),
+                    )
+                    after = self.get_fact(fact_id)
+                    self._log(fact_id, "accepted", before, after)
+                    if after is not None:
+                        accepted.append(after)
+                self._conn.execute("COMMIT")
+                return accepted
+            except Exception:
+                self._rollback_quietly()
+                raise
+
     def toggle_review(self, fact_id: int) -> sqlite3.Row | None:
         """needs_review/candidate -> confirmed, and confirmed -> needs_review."""
         row = self.get_fact(fact_id)

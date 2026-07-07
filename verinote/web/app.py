@@ -772,6 +772,11 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         _start_source_extraction(job_id, cfg)
         return RedirectResponse("/sources", status_code=303)
 
+    @app.post("/sources/{source_id}/accept-all", response_class=HTMLResponse)
+    def accept_all_source_facts(request: Request, source_id: int):
+        _active_store().accept_review_facts_for_source(source_id)
+        return RedirectResponse("/sources", status_code=303)
+
     @app.post("/sources/{source_id}/delete", response_class=HTMLResponse)
     def delete_source(request: Request, source_id: int):
         store = _active_store()
