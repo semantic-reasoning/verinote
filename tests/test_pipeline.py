@@ -477,6 +477,66 @@ def test_extract_source_keeps_non_metric_korean_object_without_local_subject(
     assert fact["object"] == "샘플기능"
 
 
+def test_extract_source_drops_reversed_role_designation(tmp_path, fake_client):
+    # ``org 역할 person`` is the reversed shape of ``person 역할 role``: it names a
+    # person as the OBJECT of a role designation even though that person holds a
+    # role themselves in the same batch. Drop it; keep the correct direction.
+    # (역할 canonicalizes to ``role`` under the default relation aliases.)
+    s = _store(tmp_path)
+    run_id = s.add_run(provider="fake", model="m")
+    client = fake_client(
+        [
+            ExtractedFact("샘플인물", "역할", "샘플직책", 0.9),
+            ExtractedFact("샘플조직", "역할", "샘플인물", 0.9),
+        ]
+    )
+
+    assert (
+        extract_source(
+            s,
+            client,
+            source_path="sources/x.txt",
+            source_text="샘플 문서 본문",
+            run_id=run_id,
+        )
+        == 1
+    )
+
+    facts = {
+        (str(f["subject"]), str(f["relation"]), str(f["object"])) for f in s.facts()
+    }
+    assert ("샘플인물", "role", "샘플직책") in facts
+    assert ("샘플조직", "role", "샘플인물") not in facts
+
+
+def test_extract_source_keeps_org_representative_role_fact(tmp_path, fake_client):
+    # ``org 대표 person`` (the org's representative) canonicalizes to the same
+    # ``org role person`` shape as a reversed designation, but the person here does
+    # NOT hold a role elsewhere in the batch, so it is a legitimate fact and must
+    # survive — an org-subject check alone would wrongly drop it.
+    s = _store(tmp_path)
+    run_id = s.add_run(provider="fake", model="m")
+    client = fake_client([ExtractedFact("샘플조직주식회사", "대표", "샘플인물", 0.9)])
+
+    assert (
+        extract_source(
+            s,
+            client,
+            source_path="sources/x.txt",
+            source_text="샘플 문서 본문",
+            run_id=run_id,
+        )
+        == 1
+    )
+
+    fact = s.facts()[0]
+    assert (fact["subject"], fact["relation"], fact["object"]) == (
+        "샘플조직주식회사",
+        "role",
+        "샘플인물",
+    )
+
+
 def test_extract_source_canonicalizes_generic_value_relation(tmp_path, fake_client):
     s = _store(tmp_path)
     run_id = s.add_run(provider="fake", model="m")
