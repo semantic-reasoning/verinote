@@ -50,6 +50,17 @@ _METRIC_OBJECT_RE = re.compile(
 )
 _RECORD_SPLIT_RE = re.compile(r"[\n\r]+|[。.!?;；]")
 _ROLE_CUE_RE = re.compile(r"원문:|대표|대표이사|CTO|CEO|CFO|담당자|발표자|총괄|소속")
+# Generic role-designation relations (``샘플인물 역할 샘플직책`` — the SUBJECT holds a
+# role, the OBJECT is the role/title). The default policy canonicalizes 역할/직책/
+# 직위/대표/대표이사 all to ``role``, so the raw labels and the canonical label are
+# both listed; matching is done on the canonicalized relation so an aliased KB and
+# a bare KB behave the same. Role-*named* relations (``샘플조직 샘플직책 샘플인물``, where
+# the title itself is the relation, not an alias of role) are a different, valid
+# shape and are deliberately NOT matched here.
+_ROLE_DESIGNATION_RELATIONS = {
+    "역할", "직책", "직위", "직함", "대표", "대표이사", "role", "title", "position"
+}
+_ROLE_DESIGNATION_RELATIONS_CF = {relation.casefold() for relation in _ROLE_DESIGNATION_RELATIONS}
 
 
 def extract_source(
@@ -299,12 +310,15 @@ def _candidate_rows(
 ) -> list[tuple[object, object, object, ExtractedFact]]:
     rows = []
     aliases = relation_aliases or {}
+    role_bearers = _role_bearer_subjects(facts, aliases)
     try:
         for f in facts:
             f = _canonical_fact(f, aliases)
             if f is None:
                 continue
             if _is_normalization_bridge(f):
+                continue
+            if _is_reversed_role_designation(f, role_bearers, aliases):
                 continue
             if _has_unbacked_han_translation(f, source_text):
                 continue
@@ -370,6 +384,57 @@ def _is_normalization_bridge(f: ExtractedFact) -> bool:
     if relation_kind != "string" or relation not in _NORMALIZATION_BRIDGE_RELATIONS:
         return False
     return f.subject_kind == "term" or f.object_kind == "term"
+
+
+def _norm_entity(value: str) -> str:
+    return unicodedata.normalize("NFC", value).strip()
+
+
+def _is_role_designation_relation(
+    relation: str, relation_kind: str, aliases: dict[str, str]
+) -> bool:
+    """True when ``relation`` canonicalizes to a generic role-designation label."""
+    if relation_kind != "string":
+        return False
+    canonical = canonical_relation(_norm_entity(relation), aliases)
+    return canonical.strip().casefold() in _ROLE_DESIGNATION_RELATIONS_CF
+
+
+def _role_bearer_subjects(
+    facts: list[ExtractedFact], aliases: dict[str, str]
+) -> set[str]:
+    """Entities extracted as the SUBJECT of a role designation in this batch.
+
+    Such an entity holds a role, so it is a person/role-bearer — it must not also
+    appear as the OBJECT of a role designation. This co-occurrence signal is what
+    distinguishes ``샘플조직 역할 샘플인물`` (reversed) from ``샘플인물 역할 샘플직책``
+    (correct); it depends on both facts landing in the same extraction batch.
+    """
+    return {
+        _norm_entity(f.subject)
+        for f in facts
+        if f.subject_kind == "string"
+        and _is_role_designation_relation(f.relation, f.relation_kind, aliases)
+    }
+
+
+def _is_reversed_role_designation(
+    f: ExtractedFact, role_bearers: set[str], aliases: dict[str, str]
+) -> bool:
+    """Drop a role designation whose direction is reversed (``org role person``).
+
+    The single, low-false-positive signal is that the OBJECT is itself a
+    role-bearer — it appears as the SUBJECT of a role designation in this batch, so
+    it is a person who holds a role and cannot also BE the role value of something
+    else. This is the only signal that stays correct once the policy collapses
+    대표/역할/직책 into one ``role`` relation: a plain org-subject check would also
+    drop the valid ``조직 대표 사람`` (org's representative), which shares the same
+    canonical shape. Role-*named* relations such as ``샘플조직 샘플직책 샘플인물`` are a
+    valid shape and are not matched here — only the generic role designations are.
+    """
+    if not _is_role_designation_relation(f.relation, f.relation_kind, aliases):
+        return False
+    return f.object_kind == "string" and _norm_entity(f.object) in role_bearers
 
 
 def _has_unbacked_han_translation(f: ExtractedFact, source_text: str) -> bool:
