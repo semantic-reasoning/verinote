@@ -7,6 +7,19 @@
 PRAGMA journal_mode = WAL;        -- concurrent readers + a single writer
 PRAGMA foreign_keys = ON;
 
+-- KB-level declarations. Small key/value facts the KB states about itself, so
+-- code never has to *infer* them. `policy.logic` records that this KB has a
+-- logic policy file (sha256 + timestamp + origin as evidence only — the .dl
+-- file owns the policy text), which is what lets a later disappearance of that
+-- file be reported as an error instead of a benign "no rules" default.
+-- init_schema() runs this script on every open, so CREATE TABLE IF NOT EXISTS
+-- is also the migration for existing KBs.
+CREATE TABLE IF NOT EXISTS kb_meta (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- A source document the facts are cited against. For binary uploads this is the
 -- original file, not the converted text used for extraction.
 CREATE TABLE IF NOT EXISTS sources (

@@ -4,6 +4,7 @@
 from verinote.store.db import (
     DEFAULT_REVIEW_PAGE_SIZE,
     ENGINE_STATUSES,
+    POLICY_MARKER_KEY,
     REVIEW_PAGE_SIZES,
     REVIEW_STATUSES,
     ReviewQueuePage,
@@ -12,6 +13,7 @@ from verinote.store.db import (
 
 __all__ = [
     "Store",
+    "POLICY_MARKER_KEY",
     "REVIEW_STATUSES",
     "ENGINE_STATUSES",
     "DEFAULT_REVIEW_PAGE_SIZE",

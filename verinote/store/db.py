@@ -10,6 +10,7 @@ for deterministic inference and attaches this same file read-only for analytics.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import datetime
 import json
 import sqlite3
 import threading
@@ -19,6 +20,8 @@ from typing import Any, Iterable
 
 # Status tiers (kept in code so the web/pipeline layers share one definition).
 REVIEW_STATUSES = frozenset({"candidate", "needs_review"})
+# kb_meta key under which a KB declares that it owns a logic policy file.
+POLICY_MARKER_KEY = "policy.logic"
 ENGINE_STATUSES = frozenset({"confirmed", "accepted"})
 MAX_EVIDENCE_SNIPPET_CHARS = 1000
 REVIEW_PAGE_SIZES = (25, 50, 100)
@@ -164,6 +167,57 @@ class Store:
 
     def __exit__(self, *exc: object) -> None:
         self.close()
+
+    # --- kb metadata -----------------------------------------------------
+    def get_meta(self, key: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT value FROM kb_meta WHERE key = ?", (key,)
+        ).fetchone()
+        return None if row is None else str(row["value"])
+
+    def set_meta(self, key: str, value: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO kb_meta(key, value) VALUES(?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
+                "updated_at = datetime('now')",
+                (key, value),
+            )
+
+    def delete_meta(self, key: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM kb_meta WHERE key = ?", (key,))
+
+    def policy_marker(self) -> dict[str, object] | None:
+        """The KB's declaration that it has a logic policy file, or None.
+
+        Presence of the row *is* the declaration; a payload we cannot parse is
+        still a declaration (returning None there would silently downgrade a
+        lost policy to a benign one).
+        """
+        raw = self.get_meta(POLICY_MARKER_KEY)
+        if raw is None:
+            return None
+        try:
+            marker = json.loads(raw)
+        except json.JSONDecodeError:
+            return {"sha256": "", "recorded_at": "", "origin": "unknown"}
+        if not isinstance(marker, dict):
+            return {"sha256": "", "recorded_at": "", "origin": "unknown"}
+        return marker
+
+    def record_policy_marker(self, sha256: str, *, origin: str) -> dict[str, object]:
+        """Record that this KB has a policy file. Hash is evidence, not a verdict."""
+        marker: dict[str, object] = {
+            "sha256": sha256,
+            "recorded_at": _utc_now(),
+            "origin": origin,
+        }
+        self.set_meta(POLICY_MARKER_KEY, json.dumps(marker, ensure_ascii=False))
+        return marker
+
+    def clear_policy_marker(self) -> None:
+        self.delete_meta(POLICY_MARKER_KEY)
 
     # --- sources ---------------------------------------------------------
     def add_source(self, path: str, kind: str = "text") -> int:
@@ -1438,6 +1492,15 @@ class Store:
             "WHERE id = ?",
             (status, done, failed, message, job_id),
         )
+
+
+def _utc_now() -> str:
+    return (
+        datetime.datetime.now(datetime.timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def _display_fact_value(value: object) -> str:
