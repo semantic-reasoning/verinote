@@ -42,6 +42,13 @@ from verinote.pipeline import (
     verify,
     write_query_file,
 )
+from verinote.pipeline.policy_state import (
+    PolicyMissingError,
+    PolicyStatus,
+    ensure_policy_marker,
+    resolve_policy,
+    write_default_policy,
+)
 from verinote.pipeline.question_outcome import question_outcome_view
 from verinote.pipeline.ask import ask_question
 from verinote.pipeline.acceptance import (
@@ -49,7 +56,7 @@ from verinote.pipeline.acceptance import (
     accept_recommendations_for,
     apply_auto_accept_recommendations,
 )
-from verinote.pipeline.report_trace import report_trace
+from verinote.pipeline.report_trace import ReportTrace, report_trace
 from verinote.pipeline.corroboration import (
     canonical_relation,
     CorroborationPolicyError,
@@ -93,6 +100,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     if cfg is not None:
         store = Store(cfg.db_path)
         store.init_schema()
+        ensure_policy_marker(store, cfg.root)
         app.state.store = store
 
     templates = Jinja2Templates(directory=str(_TEMPLATES))
@@ -201,13 +209,13 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         next_store = Store(next_cfg.db_path)
         next_store.init_schema()
 
-        from verinote.engine import DEFAULT_POLICY
-        from verinote.pipeline.verify import POLICY_RELPATH
-
-        policy_path = root / POLICY_RELPATH
-        if not policy_path.exists():
-            policy_path.parent.mkdir(parents=True, exist_ok=True)
-            policy_path.write_text(DEFAULT_POLICY, encoding="utf-8")
+        # Adopt an existing policy file, then scaffold a default one *only* for a
+        # KB that never recorded a policy. A KB whose recorded policy file is gone
+        # is opened as-is: re-writing the default here would hide the loss, so the
+        # KB stays open and /report surfaces the error instead.
+        ensure_policy_marker(next_store, root)
+        if resolve_policy(next_store).status is PolicyStatus.UNRECORDED_DEFAULT:
+            write_default_policy(next_store, root, origin="scaffold")
 
         save_active_root(root)
         old_store = app.state.store
@@ -1013,10 +1021,17 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     @app.get("/report", response_class=HTMLResponse)
     def report(request: Request):
         store = _active_store()
+        rep = verify(store)
+        try:
+            trace = report_trace(store)
+        except PolicyMissingError:
+            # The report itself already carries the policy_missing error; the
+            # trace needs the same (lost) policy, so it has nothing to say.
+            trace = ReportTrace(answers=(), excluded_candidate_count=0)
         return templates.TemplateResponse(
             request,
             "report.html",
-            {"rep": verify(store), "trace": report_trace(store)},
+            {"rep": rep, "trace": trace},
         )
 
     @app.get("/analytics", response_class=HTMLResponse)

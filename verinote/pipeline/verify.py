@@ -1,27 +1,56 @@
 # SPDX-License-Identifier: MPL-2.0
-"""Run the DuckDB-backed logic check against the KB policy."""
+"""Run the DuckDB-backed logic check against the KB policy.
+
+Policy resolution lives in `pipeline.policy_state`; this module only turns the
+three resolved states into a `CheckReport`. The one invariant worth stating: a
+report may never claim the KB is consistent without saying which policy produced
+that claim — a lost policy is an error, and an absent-and-never-recorded one is
+at minimum a warning.
+"""
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from verinote.engine import CheckReport
 from verinote.pipeline.corroboration import CorroborationPolicyError
+from verinote.pipeline.policy_state import (
+    POLICY_RELPATH,
+    POLICY_UNRECORDED_BANNER,
+    POLICY_UNRECORDED_FINDING,
+    PolicyMissingError,
+    PolicyState,
+    PolicyStatus,
+    policy_missing_message,
+    policy_path,
+    resolve_policy,
+)
 from verinote.store import Store
 
-# Per-KB policy location, relative to the KB root (the db file's directory).
-POLICY_RELPATH = Path("policy") / "logic-policy.dl"
-
-
-def policy_path(store: Store) -> Path:
-    return store.db_path.parent / POLICY_RELPATH
+__all__ = [
+    "POLICY_RELPATH",
+    "PolicyMissingError",
+    "PolicyState",
+    "PolicyStatus",
+    "load_policy",
+    "policy_path",
+    "resolve_policy",
+    "verify",
+]
 
 
 def load_policy(store: Store) -> str | None:
-    """Read the KB's policy file, or None to fall back to the shipped default."""
-    path = policy_path(store)
-    if path.is_file():
-        return path.read_text(encoding="utf-8")
+    """The KB's policy text, or None to use the shipped default.
+
+    Raises `PolicyMissingError` when the KB recorded a policy file that is now
+    gone: returning None there would silently substitute the shipped default for
+    rules a human wrote. Every policy consumer (verification and the
+    corroboration/acceptance gates alike) goes through here, so none of them can
+    quietly disagree about what this KB's rules are.
+    """
+    state = resolve_policy(store)
+    if state.status is PolicyStatus.MISSING_RECORDED:
+        raise PolicyMissingError(policy_missing_message(state))
+    if state.status is PolicyStatus.PRESENT:
+        return state.text
     return None
 
 
@@ -29,6 +58,17 @@ def verify(store: Store) -> CheckReport:
     """Run confirmed/accepted facts through the deterministic DuckDB check."""
     from verinote.pipeline.query import load_query
     from verinote.store.duckdb_fact_terms import DuckDBFactTermStoreError
+
+    state = resolve_policy(store)
+    if state.status is PolicyStatus.MISSING_RECORDED:
+        message = policy_missing_message(state)
+        return CheckReport(
+            ok=False,
+            errors=1,
+            warnings=0,
+            text=f"backend: DuckDB\n\npolicy error: {message}",
+            findings=[f"ERROR policy_missing: {message}"],
+        )
 
     try:
         rows = store.engine_fact_terms()
@@ -50,4 +90,18 @@ def verify(store: Store) -> CheckReport:
             text=f"backend: DuckDB\n\npolicy/error: {exc}",
             findings=[f"ERROR policy error: {exc}"],
         )
-    return store.inference_cache.run_check(rows, policy_dl=load_policy(store), query_dl=query_dl)
+
+    report = store.inference_cache.run_check(
+        rows, policy_dl=state.text, query_dl=query_dl
+    )
+    if state.status is PolicyStatus.UNRECORDED_DEFAULT:
+        return _with_unrecorded_policy_warning(report)
+    return report
+
+
+def _with_unrecorded_policy_warning(report: CheckReport) -> CheckReport:
+    """Annotate a default-policy run so it can never read as a clean bill of health."""
+    report.warnings += 1
+    report.findings = [POLICY_UNRECORDED_FINDING, *report.findings]
+    report.text = f"{POLICY_UNRECORDED_BANNER}\n\n{report.text}"
+    return report

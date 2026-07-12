@@ -41,37 +41,81 @@ class _SyncSummary:
 
 
 def _store(cfg: Config) -> Store:
+    from verinote.pipeline.policy_state import ensure_policy_marker
+
     store = Store(cfg.db_path)
     store.init_schema()
+    # Opening a KB is where an existing (pre-marker) policy file gets adopted, so
+    # KBs created before markers existed keep working — and any later loss of
+    # their policy file is loud rather than silently defaulted.
+    ensure_policy_marker(store, cfg.root)
     return store
 
 
-def _scaffold_policy(cfg: Config) -> Path | None:
-    """Write the default logic policy if the KB doesn't have one yet."""
-    from verinote.engine import DEFAULT_POLICY
-    from verinote.pipeline.verify import POLICY_RELPATH
+def _scaffold_policy(cfg: Config, store: Store) -> Path | None:
+    """Write the default logic policy only when the KB never had one.
 
-    path = cfg.root / POLICY_RELPATH
-    if path.exists():
+    A KB that recorded a policy whose file is now gone is *not* re-scaffolded:
+    rewriting the default there would overwrite the evidence of the loss with a
+    plausible-looking green KB. That recovery needs a human (`policy reset
+    --force`).
+    """
+    from verinote.pipeline.policy_state import (
+        PolicyMissingError,
+        PolicyStatus,
+        policy_missing_message,
+        resolve_policy,
+        write_default_policy,
+    )
+
+    state = resolve_policy(store)
+    if state.status is PolicyStatus.PRESENT:
         return None
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(DEFAULT_POLICY, encoding="utf-8")
-    return path
+    if state.status is PolicyStatus.MISSING_RECORDED:
+        raise PolicyMissingError(policy_missing_message(state))
+    return write_default_policy(store, cfg.root, origin="scaffold")
 
 
 def cmd_init(cfg: Config, args: argparse.Namespace) -> int:
+    from verinote.pipeline.policy_state import PolicyMissingError
+
     cfg.root.mkdir(parents=True, exist_ok=True)
     store = _store(cfg)
     if args.seed:
         _seed(store)
+    try:
+        policy = _scaffold_policy(cfg, store)
+    except PolicyMissingError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        store.close()
+        return 2
     store.close()
-    policy = _scaffold_policy(cfg)
     print(f"initialised KB at {cfg.root}")
     print(f"  db: {cfg.db_path}")
     if policy is not None:
         print(f"  policy: {policy}")
     if args.seed:
         print("  seeded demo facts (run `verinote status`)")
+    return 0
+
+
+def cmd_policy_reset(cfg: Config, args: argparse.Namespace) -> int:
+    """The only way a policy file is (re)created without one already existing."""
+    from verinote.pipeline.policy_state import write_default_policy
+
+    if not args.force:
+        print(
+            "refusing to reset the logic policy without --force: this overwrites "
+            "the KB's rules with the shipped default. Restore the policy file from "
+            "backup or version control if it was lost.",
+            file=sys.stderr,
+        )
+        return 2
+    cfg.root.mkdir(parents=True, exist_ok=True)
+    store = _store(cfg)
+    path = write_default_policy(store, cfg.root, origin="reset")
+    store.close()
+    print(f"policy reset to the shipped default: {path}")
     return 0
 
 
@@ -384,6 +428,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     status = sub.add_parser("status", help="summarise KB state")
     status.set_defaults(func=cmd_status)
+
+    policy = sub.add_parser("policy", help="manage this KB's logic policy file")
+    policy_sub = policy.add_subparsers(dest="policy_command", required=True)
+    policy_reset = policy_sub.add_parser(
+        "reset", help="re-create the default logic policy (explicit human gate)"
+    )
+    policy_reset.add_argument(
+        "--force",
+        action="store_true",
+        help="required — confirm replacing this KB's logic policy with the default",
+    )
+    policy_reset.set_defaults(func=cmd_policy_reset)
 
     ui = sub.add_parser("ui", help="launch the web app")
     ui.add_argument("--host", default="127.0.0.1")
