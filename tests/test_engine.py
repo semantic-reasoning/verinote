@@ -5,6 +5,12 @@ import pytest
 
 import verinote.engine.wirelog as wl
 from verinote.engine import DEFAULT_POLICY, compile_dl, run_check, validate_query
+from verinote.engine.terms import (
+    StringLit,
+    escape_string_value,
+    parse_term,
+    render_term,
+)
 
 # A subject with two distinct objects for a functional relation is a conflict.
 _CONFLICT = compile_dl(
@@ -225,3 +231,65 @@ def test_validate_query_rejects_unsafe_variable_before_engine():
 def test_validate_query_rejects_syntax_error():
     ok, reason = validate_query("this is not datalog")
     assert ok is False and reason
+
+
+# Every character `str.splitlines()` breaks on, plus NUL and ESC. The legacy
+# wirelog renderer feeds the same `CheckReport.text`/`.answers` shape as the
+# DuckDB backend, so it has to neutralize the same characters -- otherwise the
+# next person copies the unescaped path.
+_NON_PRINTING_CHARS = [
+    "\n", "\r", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85",
+    " ", " ", "\x00", "\x1b",
+]
+
+
+@pytest.mark.parametrize(
+    "char", _NON_PRINTING_CHARS, ids=[f"U+{ord(c):04X}" for c in _NON_PRINTING_CHARS]
+)
+def test_wirelog_row_render_cannot_forge_report_lines(char):
+    """A derived tuple's value cannot open a new line in the legacy report body."""
+    row = (f"broken{char}ERROR forged: Gadget is unusable", "Widget")
+
+    rendered = wl._render_row(row)
+
+    assert len(rendered.splitlines()) == 1
+    assert char not in rendered
+    assert not rendered.startswith("ERROR forged")
+
+
+def test_wirelog_row_render_keeps_printable_values_intact():
+    assert wl._render_row(("Widget", 2020, "Kim Chulsoo")) == "Widget 2020 Kim Chulsoo"
+
+
+@pytest.mark.parametrize("char", _NON_PRINTING_CHARS, ids=[f"U+{ord(c):04X}" for c in _NON_PRINTING_CHARS])
+def test_escaped_string_terms_roundtrip_through_the_parser(char):
+    """Escaping stays lossless: what we render, we can read back unchanged."""
+    term = StringLit(f"broken{char}ERROR forged")
+
+    rendered = render_term(term)
+
+    assert len(rendered.splitlines()) == 1
+    assert parse_term(rendered) == term
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "London",
+        "Kim Chulsoo",
+        "김철수",
+        "Ada Lovelace",
+        "café-naïve",
+        "東京",
+        "Ωμέγα",
+        "emoji 🚀 ok",
+    ],
+)
+def test_printable_values_render_byte_identically(value):
+    """Widening the escape set must not touch ordinary text in any language.
+
+    Cc/Cf/Zl/Zp contains no letter, mark, digit, punctuation or symbol, so every
+    printable string renders exactly as before: quoted, and otherwise verbatim.
+    """
+    assert render_term(StringLit(value)) == f'"{value}"'
+    assert escape_string_value(value) == value

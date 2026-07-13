@@ -29,6 +29,7 @@ from verinote.engine.datalog import (
     Program,
     parse_and_validate_program,
 )
+from verinote.engine.terms import escape_string_value
 
 # Datalog string literals: escape embedded quotes/backslashes.
 _ESCAPE = re.compile(r'(["\\])')
@@ -222,6 +223,18 @@ def _validate_query_contract(program: Program) -> None:
                 )
 
 
+def _render_row(row: Iterable[object]) -> str:
+    """Render one derived tuple into a report line body.
+
+    Values go through `escape_string_value` for the same reason the DuckDB
+    backend does it: an unescaped line break inside a value would let that value
+    forge extra `ERROR `/`WARN ` lines in the report body. Escaping has exactly
+    one owner (`verinote.engine.terms`), so this legacy path cannot drift away
+    from the production one.
+    """
+    return " ".join(escape_string_value(str(value)) for value in row)
+
+
 def run_check(
     dl_text: str, *, policy_dl: str | None = None, query_dl: str | None = None
 ) -> CheckReport:
@@ -263,12 +276,12 @@ def run_check(
         if mult <= 0:
             continue
         if name.startswith(_ERROR_PREFIX):
-            errors.append(f"{name[len(_ERROR_PREFIX) :]}: {' '.join(map(str, row))}")
+            errors.append(f"{name[len(_ERROR_PREFIX) :]}: {_render_row(row)}")
         elif name.startswith(_WARN_PREFIX):
-            warnings.append(f"{name[len(_WARN_PREFIX) :]}: {' '.join(map(str, row))}")
+            warnings.append(f"{name[len(_WARN_PREFIX) :]}: {_render_row(row)}")
         elif name.startswith(_ANSWER_PREFIX):
             qid = name[len(_ANSWER_PREFIX) :]
-            answers_by_q.setdefault(qid, []).append(" ".join(map(str, row)))
+            answers_by_q.setdefault(qid, []).append(_render_row(row))
 
     errors.sort()
     warnings.sort()
