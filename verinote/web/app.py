@@ -82,11 +82,13 @@ from verinote.prompts import (
 from verinote.engine.terms import StringLit, render_term
 from verinote.store import (
     DEFAULT_REVIEW_PAGE_SIZE,
-    ENGINE_STATUSES,
     REVIEW_PAGE_SIZES,
     ReviewQueuePage,
     Store,
 )
+# Imported as a module, not `from ... import ENGINE_STATUSES`: the tier must be
+# read at call time so the web layer cannot pin a stale copy of the constant.
+from verinote.store import db as store_db
 from verinote.store.fact_input import structural_term, term_input_kind
 
 _TEMPLATES = resources.files("verinote.web").joinpath("templates")
@@ -528,7 +530,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         typed = store_typed_relations(store)
         support_sources: dict[tuple[str, str, tuple[str, object]], set[str]] = {}
         for fact in facts:
-            if str(fact["status"]) not in ENGINE_STATUSES:
+            if str(fact["status"]) not in store_db.ENGINE_STATUSES:
                 continue
             source_path = str(fact["source_path"] or "").strip()
             if not source_path:
@@ -645,6 +647,12 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             {
                 "counts": counts,
                 "total": sum(counts.values()),
+                # Derived here, not summed in the template: the dashboard's
+                # "engine input" card must answer the same question as coverage
+                # and the Sources badge, from the same constant.
+                "engine_input": sum(
+                    counts.get(status, 0) for status in store_db.ENGINE_STATUSES
+                ),
                 "sources": store.sources(),
                 "coverage": coverage(store, root=cfg.root),
                 "corroboration": store_corroboration(store),

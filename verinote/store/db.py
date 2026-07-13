@@ -46,15 +46,23 @@ REVIEW_SORT_SQL = {
 }
 
 
-def _status_filter(statuses: frozenset[str]) -> tuple[str, tuple[str, ...]]:
+def _status_filter(statuses: Iterable[str]) -> tuple[str, tuple[str, ...]]:
     """Deterministic (placeholders, params) for a `status IN (...)` filter.
 
     Status values are bound as parameters, never spliced into SQL text, and
     `sorted()` fixes the parameter order a `frozenset` would otherwise leave
     unspecified. Callers must read the status constant at call time so the
     constant stays the single definition of the tier.
+
+    An empty tier is rejected loudly. SQLite answers `status IN ()` with zero
+    rows instead of an error, which would turn an empty constant into exactly
+    the silent wrong answer this filter exists to prevent: coverage would call
+    every source a gap, and `accept_review_facts_for_source` would promote
+    nothing while reporting success. A crash is cheaper.
     """
-    ordered = tuple(sorted(statuses))
+    ordered = tuple(sorted(frozenset(statuses)))
+    if not ordered:
+        raise ValueError("status filter must not be empty")
     return ",".join("?" * len(ordered)), ordered
 
 
@@ -915,10 +923,8 @@ class Store:
         )
         params: tuple[Any, ...] = ()
         if statuses is not None:
-            statuses = list(statuses)
-            placeholders = ",".join("?" * len(statuses))
+            placeholders, params = _status_filter(statuses)
             sql += f" WHERE f.status IN ({placeholders})"
-            params = tuple(statuses)
         sql += " ORDER BY f.id"
         return list(self._conn.execute(sql, params))
 

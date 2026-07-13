@@ -468,19 +468,85 @@ def test_sources_with_counts_engine_count_follows_engine_statuses(tmp_path, monk
     assert after["fact_count"] == 3
 
 
-def test_sources_with_counts_engine_count_matches_coverage(tmp_path):
-    """One definition, two consumers: the Sources page and the coverage report."""
+def test_sources_with_counts_engine_count_matches_coverage(tmp_path, monkeypatch):
+    """One definition, two consumers: the Sources page and the coverage report.
+
+    Checked under a mutated tier as well — agreement between two consumers that
+    both read the same hard-coded literal would be agreement on a wrong number.
+    """
     s = _store(tmp_path)
     sid = s.add_source("sources/a.txt")
     s.add_fact("A", "is_a", "B", status="confirmed", source_id=sid)
     s.add_fact("C", "is_a", "D", status="accepted", source_id=sid)
     s.add_fact("E", "is_a", "F", status="needs_review", source_id=sid)
+    s.add_fact("G", "is_a", "H", status="superseded", source_id=sid)
 
     row = s.sources_with_counts()[0]
     sc = coverage(s, root=tmp_path).sources[0]
-
-    assert row["engine_count"] == sc.engine_facts
+    assert row["engine_count"] == sc.engine_facts == 2
     assert row["fact_count"] == sc.total_facts
+
+    monkeypatch.setattr(db, "ENGINE_STATUSES", db.ENGINE_STATUSES | {"superseded"})
+
+    row = s.sources_with_counts()[0]
+    sc = coverage(s, root=tmp_path).sources[0]
+    assert row["engine_count"] == sc.engine_facts == 3
+    assert row["fact_count"] == sc.total_facts
+
+
+def test_status_filter_rejects_an_empty_tier(tmp_path):
+    """An empty tier must crash, not quietly answer zero.
+
+    SQLite returns zero rows for `status IN ()` rather than raising, so an empty
+    constant would silently make coverage call every source a gap and make
+    `accept_review_facts_for_source` promote nothing while reporting success.
+    """
+    s = _store(tmp_path)
+    s.add_fact("A", "is_a", "B", status="confirmed")
+
+    # Positive: a populated tier filters normally.
+    assert len(s.facts(statuses=ENGINE_STATUSES)) == 1
+    # None still means "no filter at all", not "an empty filter".
+    assert len(s.facts(statuses=None)) == 1
+
+    # Negative: an empty tier is refused rather than answered with zero rows.
+    with pytest.raises(ValueError, match="must not be empty"):
+        s.facts(statuses=frozenset())
+    with pytest.raises(ValueError, match="must not be empty"):
+        s.facts(statuses=[])
+
+
+def test_engine_reads_are_refused_when_the_engine_tier_is_empty(tmp_path, monkeypatch):
+    """The guard covers the real engine-input paths, not just the helper."""
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    s.add_fact("A", "is_a", "B", status="confirmed", source_id=sid)
+
+    monkeypatch.setattr(db, "ENGINE_STATUSES", frozenset())
+
+    with pytest.raises(ValueError, match="must not be empty"):
+        s.source_fact_counts()
+    with pytest.raises(ValueError, match="must not be empty"):
+        s.sources_with_counts()
+    with pytest.raises(ValueError, match="must not be empty"):
+        s.facts(statuses=db.ENGINE_STATUSES)
+
+
+def test_review_promotion_is_refused_when_the_review_tier_is_empty(tmp_path, monkeypatch):
+    """An empty review tier must not silently no-op the human gate."""
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    s.add_fact("A", "is_a", "B", status="needs_review", source_id=sid)
+
+    monkeypatch.setattr(db, "REVIEW_STATUSES", frozenset())
+
+    with pytest.raises(ValueError, match="must not be empty"):
+        s.accept_review_facts_for_source(sid)
+    with pytest.raises(ValueError, match="must not be empty"):
+        s.review_queue_page()
+
+    # The fact was not promoted behind our back.
+    assert s.get_fact(1)["status"] == "needs_review"
 
 
 def test_extraction_job_rejects_artifact_from_another_source(tmp_path):
