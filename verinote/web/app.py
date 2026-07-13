@@ -92,18 +92,24 @@ from verinote.store.fact_input import structural_term, term_input_kind
 _TEMPLATES = resources.files("verinote.web").joinpath("templates")
 _STATIC = resources.files("verinote.web").joinpath("static")
 
-# The only paths served while a KB's recorded policy file is missing: the report
-# (which explains the halt), the recovery/settings screens, KB switching, and
-# static assets. Everything else — including every write — fails closed, because
-# with the KB's rules unapplied neither a verdict nor a human accept is real.
-_POLICY_GUARD_ALLOWLIST = ("/report", "/settings", "/kb/select", "/static")
+# What is served while a KB's recorded policy file is missing. Default-deny, and
+# the allowlist is keyed by (method, path) rather than path alone: a page needed
+# to *diagnose* the halt is not licence to *write* under the same prefix. The
+# only writes allowed are the ones that leave this KB (switching root), because
+# every other write — facts, and policy files like relation-aliases.md — would be
+# a change made while this KB's rules are not being applied.
+_POLICY_GUARD_READ_PATHS = ("/report", "/settings", "/static")
+_POLICY_GUARD_WRITE_PATHS = ("/kb/select", "/settings/root")
 
 
-def _policy_guard_exempt(path: str) -> bool:
-    return any(
-        path == allowed or path.startswith(allowed + "/")
-        for allowed in _POLICY_GUARD_ALLOWLIST
-    )
+def _matches(path: str, allowed: tuple[str, ...]) -> bool:
+    return any(path == a or path.startswith(a + "/") for a in allowed)
+
+
+def _policy_guard_exempt(method: str, path: str) -> bool:
+    if method in {"GET", "HEAD", "OPTIONS"}:
+        return _matches(path, _POLICY_GUARD_READ_PATHS)
+    return path in _POLICY_GUARD_WRITE_PATHS
 
 
 def create_app(cfg: Config | None = None) -> FastAPI:
@@ -139,14 +145,22 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         the guard runs before the route does, and only the recovery paths pass.
         """
         store = app.state.store
-        if store is not None and not _policy_guard_exempt(request.url.path):
+        if store is not None and not _policy_guard_exempt(request.method, request.url.path):
             state = resolve_policy(store)
             if state.status is PolicyStatus.MISSING_RECORDED:
                 return _policy_halted(request, policy_missing_message(state))
         return await call_next(request)
 
     def _policy_missing_handler(request: Request, exc: Exception):
-        """Backstop: a route added outside the guard still gets the loud page."""
+        """Backstop for *display* only — it cannot prevent a write.
+
+        An exception handler runs after the route body has already run, so a
+        route that writes before it reads the policy would commit (SQLite
+        autocommits) and still render this page: "looks rejected, actually
+        written". Write blocking is the middleware's default-deny above; this
+        only guarantees that a route added outside the guard shows the loud page
+        instead of a stack trace.
+        """
         return _policy_halted(request, str(exc))
 
     app.add_exception_handler(PolicyMissingError, _policy_missing_handler)

@@ -26,7 +26,7 @@ from verinote.engine.duckdb_terms import (
     term_to_duckdb_value,
 )
 from verinote.engine.terms import Atom, Compound, NumberLit, StringLit, Term, Var, render_term
-from verinote.engine.wirelog import CheckReport, DEFAULT_POLICY
+from verinote.engine.wirelog import CheckReport, DEFAULT_POLICY, NO_FINDINGS_TEXT
 
 _ERROR_PREFIX = "error_"
 _WARN_PREFIX = "warn_"
@@ -390,11 +390,7 @@ def _collect_report(
     ]
     findings = [f"ERROR {e}" for e in errors] + [f"WARN {w}" for w in warnings]
     summary = f"errors: {len(errors)}  warnings: {len(warnings)}  facts: {len(facts)}"
-    body = (
-        "\n".join(findings)
-        if findings
-        else "no findings — knowledge base is consistent."
-    )
+    body = "\n".join(findings) if findings else NO_FINDINGS_TEXT
     if answers:
         body += "\n\n--- answers ---\n" + "\n".join(answers)
     debug = (

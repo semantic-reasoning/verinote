@@ -378,6 +378,28 @@ def _get_paths(app, client) -> list[str]:
     return paths
 
 
+def _mutating_paths(app, client) -> list[str]:
+    """Every POST/PUT/PATCH/DELETE route the app declares, with params filled in."""
+    values = {
+        "fact_id": client.fact_id,
+        "source_id": client.source_id,
+        "question_id": client.question_id,
+        "job_id": client.job_id,
+    }
+    paths = []
+    for route in app.routes:
+        methods = getattr(route, "methods", None) or set()
+        path = getattr(route, "path", "")
+        if not path or not methods & {"POST", "PUT", "PATCH", "DELETE"}:
+            continue
+        for name, value in values.items():
+            path = path.replace("{" + name + "}", str(value))
+        if "{" in path:
+            raise AssertionError(f"route param not covered by this test: {path}")
+        paths.append(path)
+    return paths
+
+
 def test_no_get_route_crashes_when_the_policy_is_lost(tmp_path, monkeypatch):
     """Enumerated so a newly added route is covered automatically."""
     client = _halted_client(tmp_path, monkeypatch)
@@ -414,6 +436,39 @@ def test_halted_kb_refuses_writes_and_leaves_facts_untouched(tmp_path, monkeypat
     # the guard runs before the route, so the autocommitted status change that
     # used to happen before the render blew up cannot happen at all
     assert store.get_fact(client.fact_id)["status"] == "candidate"
+
+
+def test_no_mutating_route_writes_when_the_policy_is_lost(tmp_path, monkeypatch):
+    """Enumerated like the GET test: default-deny stays locked as routes are added.
+
+    The only writes a halted KB accepts are the ones that leave it (switching the
+    active KB root). Everything else — facts *and* human-written policy files such
+    as relation-aliases.md — would be a change made while this KB's rules are not
+    being applied.
+    """
+    client = _halted_client(tmp_path, monkeypatch)
+    app = client.app
+    store = app.state.store
+    # writes that are allowed because they are how a human gets *out* of the halt
+    exempt = {"/kb/select", "/settings/root"}
+
+    paths = _mutating_paths(app, client)
+    assert f"/facts/{client.fact_id}/accept" in paths
+    assert "/settings/relation-aliases" in paths and "/settings" in paths
+
+    before = {int(f["id"]): f["status"] for f in store.facts()}
+    for path in paths:
+        if path in exempt:
+            continue
+        resp = client.post(path, data={"relation_aliases_text": "role -> ROLE"})
+        assert resp.status_code == 409, f"{path} accepted a write on a halted KB"
+        assert "policy reset --force" in resp.text, f"{path} hid the recovery route"
+
+    assert {int(f["id"]): f["status"] for f in store.facts()} == before
+    # no policy or settings file was written behind the halt
+    assert not (tmp_path / "policy" / "relation-aliases.md").exists()
+    assert not (tmp_path / "config.json").exists()
+    assert not client.policy_path.exists()
 
 
 def test_questions_page_exposes_a_lost_policy(tmp_path, monkeypatch):

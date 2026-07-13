@@ -10,10 +10,9 @@ at minimum a warning.
 
 from __future__ import annotations
 
-from verinote.engine import CheckReport
+from verinote.engine import NO_FINDINGS_TEXT, CheckReport
 from verinote.pipeline.corroboration import CorroborationPolicyError
 from verinote.pipeline.policy_state import (
-    ENGINE_NO_FINDINGS_TEXT,
     POLICY_RELPATH,
     POLICY_UNRECORDED_BANNER,
     POLICY_UNRECORDED_FINDING,
@@ -112,6 +111,6 @@ def _with_unrecorded_policy_warning(report: CheckReport) -> CheckReport:
     """
     report.warnings += 1
     report.findings = [POLICY_UNRECORDED_FINDING, *report.findings]
-    report.text = report.text.replace(ENGINE_NO_FINDINGS_TEXT, POLICY_UNRECORDED_NO_FINDINGS_TEXT)
+    report.text = report.text.replace(NO_FINDINGS_TEXT, POLICY_UNRECORDED_NO_FINDINGS_TEXT)
     report.text = f"{POLICY_UNRECORDED_BANNER}\n\n{report.text}"
     return report
