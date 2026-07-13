@@ -15,6 +15,7 @@ from verinote.pipeline.corroboration import (
     store_typed_relations,
     TypedRelationSpec,
 )
+from verinote.pipeline.policy_state import assert_writable
 from verinote.store import Store, is_engine_input, is_review_eligible, review_statuses
 
 RULE_NAME = "corroborated_no_conflict"
@@ -60,6 +61,22 @@ def accept_recommendations_for(
 
 
 def apply_auto_accept_recommendations(store: Store) -> list[AcceptRecommendation]:
+    """Promote every eligible candidate to `accepted` — never on a halted KB.
+
+    A halted KB already stops this today, but only by COINCIDENCE: `_engine` builds
+    its single-valued set from `store_functional_relations`, which calls
+    `load_policy`, which raises on a KB whose policy file is gone. The refusal is
+    therefore a side effect of what the recommendation engine happens to read — and
+    the day functional relations move into a table, or the policy gets cached, that
+    side effect evaporates while this remains a write entrypoint that stamps
+    `status='accepted'` on facts no rule was ever applied to.
+
+    So the refusal is made this function's OWN, asked of the same predicate every
+    other write entrypoint asks (#194), before a single row is read. The extraction
+    worker calls this the instant a job finishes, in the same `with Store(...)`, so
+    a policy deleted after the final chunk's write boundary lands exactly here.
+    """
+    assert_writable(store)
     applied = []
     for recommendation in accept_recommendations(store).values():
         if not recommendation.eligible:

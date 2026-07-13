@@ -4,7 +4,9 @@
 import pytest
 
 import verinote.cli as cli
+import verinote.pipeline.acceptance as acceptance
 from verinote.engine import DEFAULT_POLICY
+from verinote.pipeline.acceptance import AcceptRecommendation
 from verinote.pipeline.corroboration import store_functional_relations
 from verinote.pipeline.policy_state import (
     POLICY_CLI_LINE_MISSING_RECORDED,
@@ -919,15 +921,21 @@ def test_mid_job_halt_run_summary_reports_the_real_counts(tmp_path):
     assert [f["subject"] for f in facts] == ["alpha"]
     run_id = int(facts[0]["run_id"])
     summary = store.get_run(run_id)["summary"]
-    assert "halted after 1/2 chunk(s)" in summary
-    assert "1 candidate(s) written by this run" in summary
+    assert "job progress 1/2 chunk(s)" in summary
+    assert "this run wrote 1 candidate(s) from 1 chunk(s)" in summary
     assert "rolled back to pending" in summary
     assert "0 candidate" not in summary
     store.close()
 
 
 def test_resumed_job_summary_counts_only_this_run(tmp_path):
-    """`run_candidates` is what *this* run wrote — not the job's cumulative count."""
+    """`run_candidates`/`run_chunks` are what *this* run did — not the job's totals.
+
+    The second run processes exactly ONE chunk and writes ONE candidate, while the
+    job's progress stands at 2/3. Both numbers must appear, in separate clauses:
+    "halted after 2/3 chunk(s), 1 candidate(s) written by this run" reads as "this
+    run did two chunks and wrote one candidate", which is false.
+    """
     from verinote.pipeline.extract import process_extraction_job
 
     path, job_id = _halted_mid_job_kb(tmp_path, chunks=("alpha", "beta", "gamma"))
@@ -951,10 +959,84 @@ def test_resumed_job_summary_counts_only_this_run(tmp_path):
         row["summary"] for row in second._conn.execute("SELECT summary FROM runs ORDER BY id")
     ]
     second.close()
-    # the second run wrote one candidate, not two: the summary must not inherit
-    # the job's cumulative counter
-    assert "halted after 1/3 chunk(s), 1 candidate(s) written by this run" in summaries[0]
-    assert "halted after 2/3 chunk(s), 1 candidate(s) written by this run" in summaries[1]
+    # the second run wrote one candidate from one chunk, not two: the summary must
+    # neither inherit the job's cumulative counter nor let the job's progress be
+    # read as this run's work
+    assert "job progress 1/3 chunk(s)" in summaries[0]
+    assert "this run wrote 1 candidate(s) from 1 chunk(s)" in summaries[0]
+    assert "job progress 2/3 chunk(s)" in summaries[1]
+    assert "this run wrote 1 candidate(s) from 1 chunk(s)" in summaries[1]
+    # the job stands at 2/3 but this run did one chunk — the two counts must never
+    # be glued into a single clause that reads as one scope
+    assert "2/3 chunk(s), 1 candidate(s) written by this run" not in summaries[1]
+
+
+class _AlwaysEligibleEngine:
+    """A recommendation engine that reads no policy and accepts everything.
+
+    Stands in for the engine the real one is one refactor away from being: cache
+    the policy, or move functional relations into a table, and `_engine` stops
+    touching `load_policy` — the accident that refuses a halted KB today.
+    """
+
+    def recommend(self, row):
+        return AcceptRecommendation(
+            fact_id=int(row["id"]),
+            eligible=True,
+            reasons=(),
+            support_sources=("sources/a.txt", "sources/b.txt"),
+            support_fact_ids=(int(row["id"]),),
+            canonical_relation=str(row["relation"]),
+            typed_normalization="",
+        )
+
+
+def _auto_accept_kb(tmp_path):
+    store = _store(tmp_path)
+    path = _write_policy(tmp_path)
+    store.record_policy_marker(policy_sha256(path.read_text(encoding="utf-8")), origin="scaffold")
+    store.add_fact("X", "is_a", "Y", status="candidate")
+    return store, path
+
+
+def test_auto_accept_refuses_a_halted_kb_by_its_own_guard(tmp_path, monkeypatch):
+    """`apply_auto_accept_recommendations` must refuse a halted KB ITSELF (#194).
+
+    A halted KB stops auto-accept today only by coincidence: `_engine` builds its
+    single-valued set through `store_functional_relations` -> `load_policy`, which
+    raises. The refusal belongs to the write entrypoint, not to whatever the
+    recommendation engine happens to read on the way — so this test removes the
+    coincidence (an engine that reads no policy at all) and demands the refusal
+    survive. Without `assert_writable`, a KB whose rules are gone gets facts stamped
+    `accepted`: a review gate that no rule was ever applied to.
+    """
+    store, path = _auto_accept_kb(tmp_path)
+    monkeypatch.setattr(acceptance, "_engine", lambda store: _AlwaysEligibleEngine())
+    path.unlink()  # the KB recorded a policy and the file is gone: halted
+
+    with pytest.raises(PolicyMissingError):
+        acceptance.apply_auto_accept_recommendations(store)
+
+    assert [f["status"] for f in store.facts()] == ["candidate"]
+    events = [e["event_type"] for e in store.fact_events(int(store.facts()[0]["id"]))]
+    store.close()
+    assert "auto_accept_applied" not in events
+
+
+def test_auto_accept_still_accepts_on_a_healthy_kb(tmp_path, monkeypatch):
+    """The control: the guard refuses a *halted* KB, it does not disable auto-accept.
+
+    Without this, a stub engine that quietly recommended nothing would make the test
+    above pass for the wrong reason.
+    """
+    store, _ = _auto_accept_kb(tmp_path)
+    monkeypatch.setattr(acceptance, "_engine", lambda store: _AlwaysEligibleEngine())
+
+    applied = acceptance.apply_auto_accept_recommendations(store)
+
+    assert [r.fact_id for r in applied] == [int(store.facts()[0]["id"])]
+    assert [f["status"] for f in store.facts()] == ["accepted"]
+    store.close()
 
 
 def test_store_has_no_public_meta_delete(tmp_path):

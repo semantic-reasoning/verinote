@@ -123,9 +123,6 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     app = FastAPI(title="verinote")
     app.state.cfg = cfg
     app.state.store = None
-    # Which jobs the launcher actually revived. Observable on purpose: "the resume
-    # path did nothing" is otherwise only visible as the absence of a DB write.
-    app.state.resumed_job_ids = []
     if cfg is not None:
         store = Store(cfg.db_path)
         store.init_schema()
@@ -717,10 +714,18 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 # here as an ordinary exception; the generic handler below would
                 # "report" it by calling `fail_extraction_job` — a WRITE to the very
                 # KB the halt exists to protect, and one that buries the job in a
-                # `failed` state nothing resumes. `process_extraction_job` has
-                # already rolled the job back to `pending`, so the right move here
-                # is to touch the DB not at all and just say so. (#194)
-                logger.warning("extraction job %s halted, rolled back: %s", job_id, e)
+                # `failed` state nothing resumes. So this handler writes NOTHING and
+                # only logs. (#194)
+                #
+                # It catches halts from two places, and they leave the job in
+                # different states: `process_extraction_job` has already rolled a
+                # mid-job halt back to `pending`, while `apply_auto_accept_
+                # recommendations` halts *after* the job finished `done`, with no
+                # rollback at all. The message must therefore not assert a rollback
+                # — a log line claiming one for a `done` job would be the same class
+                # of falsehood this change removes. Whoever rewinds, rewinds; this
+                # handler reports.
+                logger.warning("extraction job %s halted (KB policy missing): %s", job_id, e)
             except LLMError as e:
                 with Store(cfg.db_path) as worker_store:
                     worker_store.init_schema()
@@ -767,7 +772,6 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         Same predicate as the middleware and the CLI dispatch: one judgement,
         three enforcement points.
         """
-        app.state.resumed_job_ids = []
         if app.state.store is None or app.state.cfg is None:
             return
         try:
@@ -777,7 +781,6 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             return
         for job in app.state.store.source_extraction_jobs():
             if job["status"] in {"pending", "running"}:
-                app.state.resumed_job_ids.append(int(job["id"]))
                 _start_source_extraction(int(job["id"]), app.state.cfg)
 
     @app.get("/", response_class=HTMLResponse)

@@ -728,7 +728,13 @@ def test_rollback_extraction_job_records_a_fact_event(tmp_path):
 
 
 def test_rollback_extraction_job_does_not_revive_a_canceled_job(tmp_path):
-    """A human cancelled it; a halt must not put it back in the queue."""
+    """A human cancelled it; a halt must not put it — or its chunks — back in the queue.
+
+    Guarding the job row alone is not enough. With the chunk UPDATE left ungated,
+    the in-flight chunk goes back to `pending` and `next_pending_chunk` starts
+    handing out chunks of a job that is `canceled` — the queue and the job row
+    disagreeing about the same job.
+    """
     s = _store(tmp_path)
     sid = s.add_source("sources/a.txt")
     job_id, _ = _job_with_mixed_chunks(s, sid)
@@ -743,6 +749,31 @@ def test_rollback_extraction_job_does_not_revive_a_canceled_job(tmp_path):
     job = s.get_extraction_job(job_id)
     assert job["status"] == "canceled"
     assert job["message"] == "canceled by user"
+    # the in-flight chunk stays `running`: it is not back in the queue
+    assert [row["status"] for row in s.source_chunks(job_id)] == ["done", "failed", "running"]
+    assert s.next_pending_chunk(job_id) is None
+
+
+def test_rollback_extraction_job_records_no_event_for_a_canceled_job(tmp_path):
+    """Nothing was rolled back, so claiming a rollback in the history is a lie.
+
+    `extraction_job_rolled_back` with before == after == `canceled` is exactly the
+    kind of KB self-misreport #194 exists to remove — written by the fix for it.
+    """
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    job_id, _ = _job_with_mixed_chunks(s, sid)
+    s._conn.execute(
+        "UPDATE extraction_jobs SET status = 'canceled' WHERE id = ?", (job_id,)
+    )
+
+    s.rollback_extraction_job(job_id, "halted")
+
+    events = [
+        row["event_type"]
+        for row in s._conn.execute("SELECT event_type FROM fact_events WHERE job_id = ?", (job_id,))
+    ]
+    assert "extraction_job_rolled_back" not in events
 
 
 def test_rollback_extraction_job_ignores_an_unknown_job(tmp_path):
