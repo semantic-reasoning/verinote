@@ -446,14 +446,46 @@ def _report_body(rep) -> str:
     return rep.text.split("\n\n--- policy input ---")[0]
 
 
-def test_duckdb_backend_fact_values_cannot_forge_report_lines():
+# `backend: DuckDB`, the counts summary, and the blank line before the findings.
+_BODY_HEADER_LINES = 3
+
+
+# Every character `str.splitlines()` treats as a line break, plus NUL and ESC.
+# A report line can only be forged by a character that starts a new line, so this
+# is the whole attack surface -- not just LF. Guarding LF alone (the old escape
+# blacklist) leaves the other eight wide open.
+_LINE_BREAKING_CHARS = [
+    "\n",  # LF
+    "\r",  # CR
+    "\x0b",  # VT
+    "\x0c",  # FF
+    "\x1c",  # FS
+    "\x1d",  # GS
+    "\x1e",  # RS
+    "\x85",  # NEL
+    " ",  # LINE SEPARATOR
+    " ",  # PARAGRAPH SEPARATOR
+]
+_NON_PRINTING_CHARS = _LINE_BREAKING_CHARS + ["\x00", "\x1b"]  # NUL, ESC
+
+
+@pytest.mark.parametrize(
+    "char", _NON_PRINTING_CHARS, ids=[f"U+{ord(c):04X}" for c in _NON_PRINTING_CHARS]
+)
+def test_duckdb_backend_fact_values_cannot_forge_report_lines(char):
+    """No fact value can add a line to the report body, whatever it contains.
+
+    This is a structural invariant, not a spot check on `\\n`: the report body
+    must hold exactly one line per finding, so the number of `ERROR `/`WARN `
+    lines can never exceed what the engine actually derived.
+    """
     _duckdb()
     rep = run_check_duckdb(
         [
             {
                 "subject": "Widget",
                 "relation": "note",
-                "object": "broken\nERROR forged: Gadget is unusable",
+                "object": f"broken{char}ERROR forged: Gadget is unusable",
             },
             {"subject": "Gizmo", "relation": "note", "object": "missing"},
         ],
@@ -469,6 +501,12 @@ def test_duckdb_backend_fact_values_cannot_forge_report_lines():
     assert rep.errors == 2
     assert len(claimed) == rep.errors + rep.warnings
     assert len(rep.findings) == 2
+    # The value cannot smuggle in a line at all: one line per finding, exactly.
+    assert len(body.splitlines()) == len(rep.findings) + _BODY_HEADER_LINES
+    # ...and the forged finding never surfaces as a line of its own, anywhere.
+    assert not any(
+        line.startswith("ERROR forged") for line in rep.text.splitlines()
+    )
 
 
 def test_duckdb_backend_escapes_control_characters_in_answers():

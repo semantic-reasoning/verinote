@@ -17,11 +17,25 @@ keeps numeric equality unambiguous until a later issue defines float semantics.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import TypeAlias
 
 _VAR_RE = re.compile(r"[A-Z][A-Za-z0-9_]*\Z")
 _ATOM_RE = re.compile(r"[a-z_][A-Za-z0-9_]*\Z")
+
+# Readable short forms for the control characters that appear in real text.
+# Everything else non-printing falls back to a numeric \uXXXX/\UXXXXXXXX escape.
+_SHORT_ESCAPES = {
+    "\\": "\\\\",
+    "\n": "\\n",
+    "\r": "\\r",
+    "\t": "\\t",
+}
+# Unicode general categories that never render as visible text: controls,
+# format characters, and line/paragraph separators. See `escape_string_value`.
+_ESCAPED_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
+_HEX_RE = re.compile(r"[0-9A-Fa-f]+\Z")
 
 
 class TermParseError(ValueError):
@@ -123,20 +137,43 @@ def canonical_term_key(term: Term) -> str:
 
 
 def escape_string_value(value: str) -> str:
-    """Escape backslashes and control characters inside a string value.
+    """Escape backslashes and every non-printing character in a string value.
 
     This is the single owner of the "how do we neutralize control characters in
     a string value" question. Quoted rendering (`render_term`) and unquoted
-    report rendering both build on it, so the two paths cannot drift apart. The
-    backslash escape has to come first: without it a literal backslash-n in the
-    value would be indistinguishable from a real newline after escaping.
+    report rendering both build on it, so the two paths cannot drift apart.
+
+    The rule is a whitelist, not a blacklist: anything whose Unicode general
+    category is a control (Cc), a format character (Cf), a line separator (Zl),
+    or a paragraph separator (Zp) is escaped. Enumerating "the dangerous
+    characters" does not work here, because `str.splitlines()` breaks on far
+    more than LF/CR -- VT, FF, FS, GS, RS, NEL, U+2028 and U+2029 all start a
+    new line, so a blacklist that stops at `\\n`/`\\r` still lets a fact value
+    forge a report line. Cc/Cf/Zl/Zp is a superset of everything `splitlines()`
+    splits on, and it also covers NUL, ESC, and the invisible bidi/tag
+    characters. Printable text of any language (`Ada`, `Kim`) has none of those
+    categories, so it renders unchanged.
+
+    Backslash is handled first: without escaping it, a literal backslash-n in
+    the value would be indistinguishable from a real newline after escaping.
     """
-    return (
-        value.replace("\\", "\\\\")
-        .replace("\n", "\\n")
-        .replace("\r", "\\r")
-        .replace("\t", "\\t")
-    )
+    out: list[str] = []
+    for ch in value:
+        short = _SHORT_ESCAPES.get(ch)
+        if short is not None:
+            out.append(short)
+        elif unicodedata.category(ch) in _ESCAPED_CATEGORIES:
+            out.append(_unicode_escape(ch))
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _unicode_escape(ch: str) -> str:
+    code = ord(ch)
+    if code <= 0xFFFF:
+        return f"\\u{code:04x}"
+    return f"\\U{code:08x}"
 
 
 def _render_string(value: str) -> str:
@@ -214,11 +251,26 @@ class _Parser:
                     chars.append("\r")
                 elif esc == "t":
                     chars.append("\t")
+                elif esc == "u":
+                    chars.append(self.parse_unicode_escape(4))
+                elif esc == "U":
+                    chars.append(self.parse_unicode_escape(8))
                 else:
                     raise self.error(f"unsupported escape \\{esc}")
             else:
                 chars.append(ch)
         raise self.error("unterminated string")
+
+    def parse_unicode_escape(self, width: int) -> str:
+        """Read the `width` hex digits of a \\uXXXX / \\UXXXXXXXX escape."""
+        digits = self.text[self.pos : self.pos + width]
+        if len(digits) < width or not _HEX_RE.fullmatch(digits):
+            raise self.error(f"expected {width} hex digits in unicode escape")
+        code = int(digits, 16)
+        if code > 0x10FFFF or 0xD800 <= code <= 0xDFFF:
+            raise self.error("unicode escape is not a valid code point")
+        self.pos += width
+        return chr(code)
 
     def parse_number(self) -> NumberLit:
         start = self.pos
