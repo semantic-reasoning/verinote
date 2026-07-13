@@ -15,7 +15,7 @@ from verinote.pipeline.corroboration import CorroborationPolicyError, store_rela
 from verinote.pipeline.query import expand_query_relation_aliases, schema_aware_query_flow
 from verinote.pipeline.query_candidate_eval import RELATION_DECL
 from verinote.pipeline.report_trace import trace_query_answers
-from verinote.store import ENGINE_STATUSES, Store
+from verinote.store import Store, engine_statuses
 
 ASK_QID = 0
 MAX_CONTEXT_CHARS = 12000
@@ -300,7 +300,7 @@ def grounding_facts(
 ) -> list[AskGroundingFact]:
     normalized_question = _fold(question)
     rows: list[AskGroundingFact] = []
-    for fact in store.facts(statuses=ENGINE_STATUSES):
+    for fact in store.facts(statuses=engine_statuses()):
         subject = str(fact["subject"])
         relation = str(fact["relation"])
         obj = str(fact["object"])

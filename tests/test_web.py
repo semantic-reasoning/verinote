@@ -730,6 +730,29 @@ def test_sources_page_lists_sources(tmp_path):
     assert "Accept all" in r.text
 
 
+def test_sources_page_labels_the_engine_count_by_what_it_means(tmp_path, monkeypatch):
+    """`engine_count` is the engine-input tier, not the `confirmed` status.
+
+    The badge used to read "N confirmed" while the number already counted
+    `accepted` too — and, since the tier is read at call time, it counts whatever
+    ENGINE_STATUSES says. Labelling it after one member status misreads the KB.
+    """
+    c = _client(tmp_path)
+    store = c.app.state.store
+    sid = store.add_source("sources/a.txt", kind="text")
+    store.add_fact("A", "is_a", "B", status="accepted", source_id=sid)
+    store.add_fact("C", "is_a", "D", status="superseded", source_id=sid)
+
+    body = c.get("/sources").text
+    assert "1 engine input" in body
+    assert "confirmed" not in body
+
+    monkeypatch.setattr(
+        store_db, "ENGINE_STATUSES", store_db.ENGINE_STATUSES | {"superseded"}
+    )
+    assert "2 engine input" in c.get("/sources").text
+
+
 def test_sources_accept_all_promotes_review_facts_for_that_source(tmp_path):
     c = _client(tmp_path)
     store = c.app.state.store

@@ -29,7 +29,7 @@ from verinote.pipeline.corroboration import (
     store_relation_aliases,
     store_typed_relations,
 )
-from verinote.store import ENGINE_STATUSES, Store
+from verinote.store import Store, engine_statuses
 
 
 @dataclass(frozen=True)
@@ -161,7 +161,9 @@ def build_query_schema_snapshot(
 
 
 def _engine_facts(store: Store) -> list[_Fact]:
-    display_rows = {int(row["id"]): row for row in store.facts(statuses=ENGINE_STATUSES)}
+    display_rows = {
+        int(row["id"]): row for row in store.facts(statuses=engine_statuses())
+    }
     term_rows = {int(row["id"]): row for row in store.engine_fact_terms()}
     facts: list[_Fact] = []
     for fact_id in sorted(display_rows):

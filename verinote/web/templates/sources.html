@@ -72,7 +72,9 @@
       <td class="conf">
         {{ s["candidate_count"] }} candidate(s)
         {% if s["needs_review_count"] %}<br>{{ s["needs_review_count"] }} needs review{% endif %}
-        {% if s["engine_count"] %}<br>{{ s["engine_count"] }} confirmed{% endif %}
+        {# Derived from ENGINE_STATUSES, which already includes `accepted`:
+           label it by what it means (the engine reads it), not by one status. #}
+        {% if s["engine_count"] %}<br>{{ s["engine_count"] }} engine input{% endif %}
         <div class="source-trust">
           <span class="badge trust-unsupported">{{ s["unsupported_count"] }} unsupported</span>
           <span class="badge trust-conflicted">{{ s["conflicted_count"] }} conflicted</span>

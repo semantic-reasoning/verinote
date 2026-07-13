@@ -15,7 +15,7 @@ from verinote.pipeline.corroboration import (
     store_typed_relations,
     TypedRelationSpec,
 )
-from verinote.store import ENGINE_STATUSES, REVIEW_STATUSES, Store
+from verinote.store import Store, is_engine_input, is_review_eligible, review_statuses
 
 RULE_NAME = "corroborated_no_conflict"
 
@@ -41,7 +41,7 @@ def accept_recommendation(store: Store, fact_id: int) -> AcceptRecommendation | 
 def accept_recommendations(store: Store) -> dict[int, AcceptRecommendation]:
     engine = _engine(store)
     recommendations = {}
-    for fact in store.facts(statuses=REVIEW_STATUSES):
+    for fact in store.facts(statuses=review_statuses()):
         recommendations[int(fact["id"])] = engine.recommend(fact)
     return recommendations
 
@@ -118,7 +118,7 @@ class _RecommendationEngine:
     def recommend(self, fact_row) -> AcceptRecommendation:
         target = _view_fact(fact_row, self.aliases, self.typed)
         reasons = []
-        if target.status not in REVIEW_STATUSES:
+        if not is_review_eligible(target.status):
             reasons.append("not_review_candidate")
         if not target.source:
             reasons.append("source_missing")
@@ -151,7 +151,7 @@ class _RecommendationEngine:
         return [
             fact
             for fact in self.facts
-            if fact.status in REVIEW_STATUSES | ENGINE_STATUSES
+            if (is_review_eligible(fact.status) or is_engine_input(fact.status))
             and fact.subject == target.subject
             and fact.canonical_relation == target.canonical_relation
             and fact.object_key == target.object_key
@@ -162,7 +162,7 @@ class _RecommendationEngine:
         if target.canonical_relation not in self.single_valued:
             return False
         for fact in self.facts:
-            if fact.status not in ENGINE_STATUSES:
+            if not is_engine_input(fact.status):
                 continue
             if fact.subject != target.subject:
                 continue
