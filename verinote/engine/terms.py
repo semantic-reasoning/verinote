@@ -122,14 +122,25 @@ def canonical_term_key(term: Term) -> str:
     raise TypeError(f"not a term: {term!r}")
 
 
-def _render_string(value: str) -> str:
-    escaped = (
+def escape_string_value(value: str) -> str:
+    """Escape backslashes and control characters inside a string value.
+
+    This is the single owner of the "how do we neutralize control characters in
+    a string value" question. Quoted rendering (`render_term`) and unquoted
+    report rendering both build on it, so the two paths cannot drift apart. The
+    backslash escape has to come first: without it a literal backslash-n in the
+    value would be indistinguishable from a real newline after escaping.
+    """
+    return (
         value.replace("\\", "\\\\")
-        .replace('"', '\\"')
         .replace("\n", "\\n")
         .replace("\r", "\\r")
         .replace("\t", "\\t")
     )
+
+
+def _render_string(value: str) -> str:
+    escaped = escape_string_value(value).replace('"', '\\"')
     return f'"{escaped}"'
 
 

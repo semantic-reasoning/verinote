@@ -428,3 +428,113 @@ def test_duckdb_backend_rejects_policy_relation_facts():
 
     assert rep.ok is False
     assert "relation facts must come from SQLite engine input" in rep.text
+
+
+_NOTE_POLICY = (
+    ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
+    ".decl error_note(subject: symbol, note: symbol)\n"
+    'error_note(S, N) :- relation(S, "note", N).\n'
+)
+_ANSWER_QUERY = (
+    ".decl answer_q1(value: symbol)\n"
+    'answer_q1(V) :- relation("Widget", "located_in", V).\n'
+)
+
+
+def _report_body(rep) -> str:
+    """The finding body, without the debug echo of the policy/query/fact input."""
+    return rep.text.split("\n\n--- policy input ---")[0]
+
+
+def test_duckdb_backend_fact_values_cannot_forge_report_lines():
+    _duckdb()
+    rep = run_check_duckdb(
+        [
+            {
+                "subject": "Widget",
+                "relation": "note",
+                "object": "broken\nERROR forged: Gadget is unusable",
+            },
+            {"subject": "Gizmo", "relation": "note", "object": "missing"},
+        ],
+        policy_dl=_NOTE_POLICY,
+    )
+
+    body = _report_body(rep)
+    claimed = [
+        line
+        for line in body.splitlines()
+        if line.startswith("ERROR ") or line.startswith("WARN ")
+    ]
+    assert rep.errors == 2
+    assert len(claimed) == rep.errors + rep.warnings
+    assert len(rep.findings) == 2
+
+
+def test_duckdb_backend_escapes_control_characters_in_answers():
+    _duckdb()
+    rep = run_check_duckdb(
+        [
+            {
+                "subject": "Widget",
+                "relation": "located_in",
+                "object": "alpha\nbeta\tgamma\rdelta",
+            }
+        ],
+        query_dl=_ANSWER_QUERY,
+    )
+
+    answer = rep.answers[0]
+    assert "\n" not in answer
+    assert "\t" not in answer
+    assert "\r" not in answer
+    assert answer == "q1: alpha\\nbeta\\tgamma\\rdelta"
+
+
+def test_duckdb_backend_escaping_is_lossless():
+    _duckdb()
+    rep = run_check_duckdb(
+        [{"subject": "Widget", "relation": "located_in", "object": "alpha\nbeta"}],
+        query_dl=_ANSWER_QUERY,
+    )
+
+    assert "alpha" in rep.answers[0]
+    assert "beta" in rep.answers[0]
+
+
+def test_duckdb_backend_keeps_literal_backslash_distinct_from_newline():
+    _duckdb()
+    literal = run_check_duckdb(
+        [{"subject": "Widget", "relation": "located_in", "object": "alpha\\nbeta"}],
+        query_dl=_ANSWER_QUERY,
+    )
+    newline = run_check_duckdb(
+        [{"subject": "Widget", "relation": "located_in", "object": "alpha\nbeta"}],
+        query_dl=_ANSWER_QUERY,
+    )
+
+    assert "\n" not in newline.answers[0]
+    assert literal.answers[0] == "q1: alpha\\\\nbeta"
+    assert newline.answers[0] == "q1: alpha\\nbeta"
+    assert literal.answers[0] != newline.answers[0]
+
+
+def test_duckdb_backend_keeps_non_ascii_values_intact():
+    _duckdb()
+    rep = run_check_duckdb(
+        [{"subject": "Widget", "relation": "located_in", "object": "제작소 Gizmo"}],
+        query_dl=_ANSWER_QUERY,
+    )
+
+    assert rep.answers == ["q1: 제작소 Gizmo"]
+
+
+def test_duckdb_backend_plain_string_answers_stay_unquoted():
+    _duckdb()
+    rep = run_check_duckdb(
+        [{"subject": "Widget", "relation": "located_in", "object": "Gadget Works"}],
+        query_dl=_ANSWER_QUERY,
+    )
+
+    assert rep.answers == ["q1: Gadget Works"]
+    assert '"' not in rep.answers[0]
