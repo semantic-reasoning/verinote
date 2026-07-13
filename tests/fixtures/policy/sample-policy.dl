@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: MPL-2.0
+// Hand-written sample KB policy, tracked on purpose.
+//
+// This file is a *source input*, not a generated artifact: it is the kind of
+// file a KB owner writes by hand at `<root>/policy/logic-policy.dl`. It is
+// loaded for real by `tests/test_verify.py::test_verify_loads_hand_written_
+// fixture_policy` and it is the regression lock in `tests/test_gitignore.py`:
+// a bare `*.dl` glob in .gitignore silently ignores files like this one, so a
+// deleted or never-committed policy degrades into `load_policy() -> None` and
+// the engine happily reports "consistent" against the shipped default policy.
+
+.decl relation(subject: symbol, rel: symbol, object: symbol)
+
+// Relations that may hold at most one object per subject.
+.decl functional(rel: symbol)
+functional("established_on").
+
+// A functional relation must not carry two distinct objects for one subject.
+.decl error_functional_conflict(subject: symbol, rel: symbol)
+error_functional_conflict(S, R) :-
+    relation(S, R, A), relation(S, R, B), functional(R), A != B.
+
+// Fixture-only rule: proves this policy (not the shipped default) was loaded.
+.decl warn_fixture_policy_loaded(subject: symbol)
+warn_fixture_policy_loaded(S) :- relation(S, "is_a", O).

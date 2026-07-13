@@ -8,13 +8,32 @@ dist/
 .venv/
 venv/
 
-# verinote local state (a KB's data is local, like a working dir)
-*.sqlite
-*.sqlite-wal
-*.sqlite-shm
-*.duckdb
+# verinote local state (a KB's data is local, like a working dir).
+#
+# The default KB lives here. It is USER DATA, not a repo artifact, so it is
+# never committed — and nothing in it is reproducible from this repo:
+#   data/kb.sqlite              every accept/reject decision + the audit log
+#   data/policy/*.dl            hand-written logic policy
+#   data/policy/relation-aliases.md, data/policy/typed-relations.md
+#                               hand-written policy inputs
+# Back these up yourself, or keep the KB outside the working tree entirely
+# (`verinote init <path>` / VERINOTE_ROOT). See README, "Your KB is not a repo
+# artifact". `git clean -fdx` deletes all of it.
 /data/
-*.dl
+
+# Generated engine artifacts, anchored to the KB layout.
+#
+# These are ANCHORED ON PURPOSE. Bare extension globs (`*.dl`, `*.sqlite`,
+# `*.duckdb`) match at any depth, so they silently ignored hand-written policy,
+# test fixtures and doc examples anywhere in the tree. That is not a cosmetic
+# miss: an uncommitted policy makes `load_policy()` return None, verinote falls
+# back to the shipped default policy, and the check still reports "consistent".
+# Match generated *paths*, never bare extensions. See tests/test_gitignore.py.
+**/facts/query.dl
+**/facts.duckdb
+**/kb.sqlite
+**/kb.sqlite-wal
+**/kb.sqlite-shm
 
 # tooling
 .pytest_cache/
