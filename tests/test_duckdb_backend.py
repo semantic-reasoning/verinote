@@ -5,7 +5,8 @@ import pytest
 
 import verinote.engine.duckdb_backend as duckdb_backend
 from verinote.engine.duckdb_backend import DuckDBInferenceCache, run_check_duckdb
-from verinote.engine.terms import Compound, StringLit
+from verinote.engine.duckdb_terms import term_to_duckdb_value
+from verinote.engine.terms import Atom, Compound, NumberLit, StringLit
 
 
 def _duckdb():
@@ -48,6 +49,77 @@ def test_duckdb_backend_default_policy_flags_functional_conflict():
     assert "backend: DuckDB" in rep.text
     assert "--- policy input ---" in rep.text
     assert "--- fact input ---" in rep.text
+
+
+def test_duckdb_backend_compares_equivalent_atom_string_and_number_terms():
+    _duckdb()
+    rep = run_check_duckdb(
+        [
+            {
+                "subject": "ada",
+                "relation": "born_on",
+                "object": "1815",
+            },
+            {
+                "subject": Atom("ada"),
+                "relation": Atom("born_on"),
+                "object": NumberLit(1900),
+            },
+        ]
+    )
+
+    assert rep.ok is False
+    assert rep.findings == ["ERROR functional_conflict: ada born_on"]
+
+
+def test_duckdb_backend_treats_equal_number_and_string_values_as_equal():
+    _duckdb()
+    rep = run_check_duckdb(
+        [
+            {"subject": "ada", "relation": "born_on", "object": "1815"},
+            {
+                "subject": Atom("ada"),
+                "relation": Atom("born_on"),
+                "object": NumberLit(1815),
+            },
+        ]
+    )
+
+    assert rep.ok is True
+    assert rep.errors == 0
+
+
+def test_duckdb_backend_keeps_compounds_distinct_from_same_display_string():
+    _duckdb()
+    compound = Compound("role", (Compound("person", (StringLit("Ada"),)), StringLit("PI")))
+    policy = (
+        ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
+        ".decl answer_q1(value: symbol)\n"
+        'answer_q1(S) :- relation(S, "has_role", role(person("Ada"), "PI")).\n'
+    )
+    rep = run_check_duckdb(
+        [
+            {
+                "subject": "structured",
+                "relation": "has_role",
+                "object": compound,
+            },
+            {
+                "subject": "display",
+                "relation": "has_role",
+                "object": 'role(person("Ada"), "PI")',
+            },
+            {
+                "subject": "json",
+                "relation": "has_role",
+                "object": term_to_duckdb_value(compound),
+            },
+        ],
+        policy_dl=policy,
+    )
+
+    assert rep.ok is True
+    assert rep.answers == ["q1: structured"]
 
 
 def test_duckdb_backend_consistent_kb_is_ok():
@@ -296,6 +368,24 @@ def test_duckdb_backend_rejects_recursive_rules(policy):
 
     assert rep.ok is False
     assert "recursive rules are not supported" in rep.text
+
+
+def test_duckdb_backend_rejects_reserved_comparison_column_collisions():
+    _duckdb()
+    for column in ("__cmp_value", "__CMP_value"):
+        policy = (
+            ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
+            f".decl warn_collision(value: symbol, {column}: symbol)\n"
+            'warn_collision(V, C) :- relation(V, "r", C).\n'
+        )
+
+        rep = run_check_duckdb(
+            [{"subject": "ada", "relation": "r", "object": "x"}],
+            policy_dl=policy,
+        )
+
+        assert rep.ok is False
+        assert "reserved comparison columns" in rep.text
 
 
 def test_duckdb_backend_string_values_are_parameterized():

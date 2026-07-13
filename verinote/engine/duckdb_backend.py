@@ -20,9 +20,8 @@ from verinote.engine.datalog import (
     parse_and_validate_program,
 )
 from verinote.engine.duckdb_terms import (
-    create_relation_table_sql,
-    create_decl_table_sql,
     duckdb_value_to_term,
+    term_compare_key,
     term_to_duckdb_value,
 )
 from verinote.engine.terms import (
@@ -42,6 +41,7 @@ _WARN_PREFIX = "warn_"
 _ANSWER_PREFIX = "answer_q"
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _ZERO_ARITY_COLUMN = "__present"
+_RELATION_COLUMNS = ("subject", "rel", "object")
 
 
 class DuckDBBackendError(ValueError):
@@ -52,6 +52,12 @@ class DuckDBBackendError(ValueError):
 class _RuleSql:
     sql: str
     params: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _Binding:
+    value_sql: str
+    compare_sql: str
 
 
 def run_check_duckdb(
@@ -118,7 +124,7 @@ class DuckDBInferenceCache:
             with self._lock:
                 if self._con is None:
                     self._con = duckdb.connect()
-                    self._con.execute(create_relation_table_sql())
+                    self._con.execute(_create_decl_table_sql(_relation_decl(program)))
                 con = self._con
                 self._reset_derived_tables()
                 fingerprint = _relation_fingerprint(fact_rows)
@@ -179,26 +185,36 @@ def _engine_error(message: str, *, engine_available: bool = True) -> CheckReport
 
 
 def _validate_relation_decl(program: Program) -> None:
+    _relation_decl(program)
+
+
+def _relation_decl(program: Program) -> Declaration:
     relation = next((decl for decl in program.declarations if decl.name == "relation"), None)
     if relation is None:
         raise DuckDBBackendError("program must declare relation/3")
     columns = tuple(column.name for column in relation.columns)
     if columns != ("subject", "rel", "object"):
         raise DuckDBBackendError("relation declaration must be relation(subject, rel, object)")
+    return relation
 
 
 def _load_relation_facts(con, facts: Iterable[Mapping[str, object]]) -> None:
     rows = {
-        (
-            term_to_duckdb_value(_coerce_fact_term(row["subject"])),
-            term_to_duckdb_value(_coerce_fact_term(row["relation"])),
-            term_to_duckdb_value(_coerce_fact_term(row["object"])),
+        tuple(
+            value
+            for term in (
+                _coerce_fact_term(row["subject"]),
+                _coerce_fact_term(row["relation"]),
+                _coerce_fact_term(row["object"]),
+            )
+            for value in _stored_term_values(term)
         )
         for row in facts
     }
     if rows:
         con.executemany(
-            'INSERT INTO "relation" ("subject", "rel", "object") VALUES (?, ?, ?)',
+            f'INSERT INTO "relation" ({_insert_columns(_RELATION_COLUMNS)}) '
+            "VALUES (?, ?, ?, ?, ?, ?)",
             sorted(rows),
         )
 
@@ -210,12 +226,12 @@ def _load_extensional_facts(
         if fact.atom.predicate == "relation":
             raise DuckDBBackendError("relation facts must come from SQLite engine input")
         decl = declarations[fact.atom.predicate]
-        columns = _insert_columns(decl)
-        placeholders = ", ".join("?" for _ in _insert_values(fact.atom.args))
-        params = [term_to_duckdb_value(arg) for arg in fact.atom.args]
+        params = _insert_values(fact.atom.args)
+        placeholders = ", ".join("?" for _ in params)
         con.execute(
-            f"INSERT INTO {_quote_ident(fact.atom.predicate)} ({columns}) VALUES ({placeholders})",
-            _insert_values(params),
+            f"INSERT INTO {_quote_ident(fact.atom.predicate)} "
+            f"({_insert_columns(decl)}) VALUES ({placeholders})",
+            params,
         )
 
 
@@ -276,7 +292,7 @@ def _compile_rule(rule: Rule, declarations: dict[str, Declaration]) -> _RuleSql:
     aliases: list[tuple[AtomExpr, str, Declaration]] = []
     where_sql: list[str] = []
     where_params: list[str] = []
-    bindings: dict[str, str] = {}
+    bindings: dict[str, _Binding] = {}
 
     for atom_index, item in enumerate(item for item in rule.body if isinstance(item, AtomExpr)):
         alias = f"a{atom_index}"
@@ -284,19 +300,20 @@ def _compile_rule(rule: Rule, declarations: dict[str, Declaration]) -> _RuleSql:
         aliases.append((item, alias, decl))
         for column, term in zip(decl.columns, item.args, strict=True):
             expr = f"{alias}.{_quote_ident(column.name)}"
+            compare_expr = f"{alias}.{_quote_ident(_compare_column(column.name))}"
             if isinstance(term, Var):
                 prior = bindings.get(term.name)
                 if prior is None:
-                    bindings[term.name] = expr
+                    bindings[term.name] = _Binding(expr, compare_expr)
                 else:
-                    where_sql.append(f"{expr} = {prior}")
+                    where_sql.append(f"{compare_expr} = {prior.compare_sql}")
             elif _has_vars(term):
                 raise DuckDBBackendError(
                     f"variable-bearing compound terms are not supported in body atom {item.predicate}"
                 )
             else:
-                where_sql.append(f"{expr} = ?")
-                where_params.append(term_to_duckdb_value(term))
+                where_sql.append(f"{compare_expr} = ?")
+                where_params.append(term_compare_key(term))
 
     for item in rule.body:
         if isinstance(item, Comparison):
@@ -309,16 +326,17 @@ def _compile_rule(rule: Rule, declarations: dict[str, Declaration]) -> _RuleSql:
     for term in rule.head.args:
         if isinstance(term, Var):
             try:
-                select_sql.append(bindings[term.name])
+                binding = bindings[term.name]
             except KeyError as exc:
                 raise DuckDBBackendError(f"unbound head variable: {term.name}") from exc
+            select_sql.extend([binding.value_sql, binding.compare_sql])
         elif _has_vars(term):
             raise DuckDBBackendError(
                 "variable-bearing compound terms are not supported in rule heads"
             )
         else:
-            select_sql.append("?")
-            select_params.append(term_to_duckdb_value(term))
+            select_sql.extend(["?", "?"])
+            select_params.extend(_stored_term_values(term))
     if not select_sql:
         select_sql.append("TRUE")
 
@@ -337,7 +355,7 @@ def _compile_rule(rule: Rule, declarations: dict[str, Declaration]) -> _RuleSql:
 
 
 def _compile_comparison(
-    comparison: Comparison, bindings: dict[str, str]
+    comparison: Comparison, bindings: dict[str, _Binding]
 ) -> tuple[str, list[str]]:
     left_sql, left_params = _term_sql(comparison.left, bindings)
     right_sql, right_params = _term_sql(comparison.right, bindings)
@@ -345,15 +363,15 @@ def _compile_comparison(
     return f"{left_sql} {op} {right_sql}", left_params + right_params
 
 
-def _term_sql(term: Term, bindings: dict[str, str]) -> tuple[str, list[str]]:
+def _term_sql(term: Term, bindings: dict[str, _Binding]) -> tuple[str, list[str]]:
     if isinstance(term, Var):
         try:
-            return bindings[term.name], []
+            return bindings[term.name].compare_sql, []
         except KeyError as exc:
             raise DuckDBBackendError(f"unbound comparison variable: {term.name}") from exc
     if _has_vars(term):
         raise DuckDBBackendError("variable-bearing compound comparisons are not supported")
-    return "?", [term_to_duckdb_value(term)]
+    return "?", [term_compare_key(term)]
 
 
 def _collect_report(
@@ -374,7 +392,10 @@ def _collect_report(
             or name.startswith(_ANSWER_PREFIX)
         ):
             continue
-        rows = con.execute(f"SELECT DISTINCT * FROM {_quote_ident(name)}").fetchall()
+        rows = con.execute(
+            f"SELECT DISTINCT {_select_columns(declarations[name])} "
+            f"FROM {_quote_ident(name)}"
+        ).fetchall()
         if not declarations[name].columns:
             rows = [() for _row in rows]
         rendered_rows = [_render_row(row) for row in rows]
@@ -467,20 +488,53 @@ def _quote_ident(identifier: str) -> str:
 
 def _create_decl_table_sql(decl: Declaration) -> str:
     if decl.columns:
-        return create_decl_table_sql(decl)
+        columns = ", ".join(
+            f"{_quote_ident(name)} VARCHAR NOT NULL"
+            for name in _expanded_columns(tuple(column.name for column in decl.columns))
+        )
+        return f"CREATE TABLE {_quote_ident(decl.name)} ({columns})"
     return (
         f"CREATE TABLE {_quote_ident(decl.name)} "
         f"({_quote_ident(_ZERO_ARITY_COLUMN)} BOOLEAN NOT NULL)"
     )
 
 
-def _insert_columns(decl: Declaration) -> str:
+def _insert_columns(decl_or_columns: Declaration | tuple[str, ...]) -> str:
+    columns = (
+        tuple(column.name for column in decl_or_columns.columns)
+        if isinstance(decl_or_columns, Declaration)
+        else decl_or_columns
+    )
+    if columns:
+        return ", ".join(_quote_ident(name) for name in _expanded_columns(columns))
+    return _quote_ident(_ZERO_ARITY_COLUMN)
+
+
+def _select_columns(decl: Declaration) -> str:
     if decl.columns:
         return ", ".join(_quote_ident(column.name) for column in decl.columns)
     return _quote_ident(_ZERO_ARITY_COLUMN)
 
 
-def _insert_values(values: list[str] | tuple[Term, ...]) -> list[str] | list[bool]:
+def _insert_values(values: tuple[Term, ...]) -> list[str] | list[bool]:
     if values:
-        return list(values)
+        return [value for term in values for value in _stored_term_values(term)]
     return [True]
+
+
+def _stored_term_values(term: Term) -> tuple[str, str]:
+    return term_to_duckdb_value(term), term_compare_key(term)
+
+
+def _compare_column(name: str) -> str:
+    return f"__cmp_{name}"
+
+
+def _expanded_columns(columns: tuple[str, ...]) -> tuple[str, ...]:
+    expanded = tuple(name for column in columns for name in (column, _compare_column(column)))
+    normalized = tuple(name.casefold() for name in expanded)
+    if len(set(normalized)) != len(normalized):
+        raise DuckDBBackendError(
+            "declaration column names collide with reserved comparison columns"
+        )
+    return expanded
