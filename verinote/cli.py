@@ -460,10 +460,18 @@ def _refuse_on_halted_kb(cfg: Config | None) -> int | None:
     judgement lives in `policy_state.assert_writable` alone. The db-file check is
     only "is there a KB at all" — with no database there can be no marker, hence
     nothing that could be halted, and `init` on a fresh root must still work.
+
+    An empty or corrupt `kb.sqlite` is the same category: it holds no marker, so
+    there is nothing here to halt. It must not be opened, because `init_schema()`
+    would *create* a schema in it — which would hand `seed` a KB the user never
+    scaffolded, and turn a corrupt file into a raw `sqlite3` traceback. Leave it
+    to the subcommand, which names the problem and exits non-zero.
     """
     from verinote.pipeline.policy_state import PolicyMissingError, assert_writable
 
     if cfg is None or not cfg.db_path.is_file():
+        return None
+    if _kb_schema_problem(cfg.db_path) is not None:
         return None
     store = Store(cfg.db_path)
     store.init_schema()
