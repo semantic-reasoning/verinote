@@ -9,18 +9,26 @@ import sys
 from pathlib import Path
 
 from verinote import __version__
-from verinote.config import Config
+from verinote.config import Config, local_root
 from verinote.pipeline.question_outcome import format_question_outcome
 from verinote.store import Store
+
+# Local commands own their KB location: they never inherit the KB the web UI
+# last selected, so `verinote init` cannot scribble into somebody else's data.
+_LOCAL_ROOT_COMMANDS = frozenset({"init", "seed"})
 
 _DEMO_FACTS = [
     # (subject, relation, object, status, confidence, source, note)
     # Obviously-fictional placeholder data: it only demonstrates the status
     # lifecycle and the (subject, relation, object) shape. Do NOT put real
     # organisations, people, or grant references here.
+    #
+    # No demo fact may carry an engine status (see `ENGINE_STATUSES`): demo data
+    # must not become engine input without a human passing it through review.
+    # `tests/test_cli.py` enforces that as an invariant.
     ("Example Org", "is_a", "participant", "needs_review", 0.95, "sources/example-grant.txt", "participant"),
-    ("Example Org", "established_on", "2020-01-01", "confirmed", 0.98, "sources/example-grant.txt", ""),
-    ("Demo Project", "has_participant", "Example Org", "confirmed", 0.92, "sources/example-grant.txt", ""),
+    ("Example Org", "established_on", "2020-01-01", "candidate", 0.98, "sources/example-grant.txt", ""),
+    ("Demo Project", "has_participant", "Example Org", "candidate", 0.92, "sources/example-grant.txt", ""),
     ("wirelog", "is_a", "deterministic logic engine", "candidate", 0.90, "sources/example-notes.txt", ""),
 ]
 
@@ -126,10 +134,17 @@ def _seed(store: Store) -> None:
 
 
 def cmd_seed(cfg: Config, args: argparse.Namespace) -> int:
+    if not cfg.db_path.is_file():
+        print(
+            f"no KB at {cfg.root}; run `verinote init` first (or name a root: "
+            f"`verinote seed <path>`)",
+            file=sys.stderr,
+        )
+        return 1
     store = _store(cfg)
     _seed(store)
     store.close()
-    print("seeded demo facts")
+    print(f"seeded demo facts into {cfg.root}")
     return 0
 
 
@@ -435,11 +450,27 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=f"verinote {__version__}")
     sub = p.add_subparsers(dest="command", required=True)
 
-    init = sub.add_parser("init", help="scaffold a local KB (SQLite) under VERINOTE_ROOT (./data)")
+    init = sub.add_parser(
+        "init",
+        help="scaffold a KB (SQLite) at ROOT (default: $VERINOTE_ROOT, else ./data in the current directory)",
+    )
+    init.add_argument(
+        "root",
+        nargs="?",
+        help="where to create the KB (default: $VERINOTE_ROOT, else ./data here)",
+    )
     init.add_argument("--seed", action="store_true", help="insert demo facts")
     init.set_defaults(func=cmd_init, halt_safe=False)
 
-    seed = sub.add_parser("seed", help="insert demo facts into the KB")
+    seed = sub.add_parser(
+        "seed",
+        help="insert demo facts into an existing KB at ROOT (default: $VERINOTE_ROOT, else ./data in the current directory)",
+    )
+    seed.add_argument(
+        "root",
+        nargs="?",
+        help="an existing KB root (default: $VERINOTE_ROOT, else ./data here)",
+    )
     seed.set_defaults(func=cmd_seed, halt_safe=False)
 
     sync = sub.add_parser("sync", help="extract candidate facts from sources via the LLM")
@@ -499,9 +530,17 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _config_for(args: argparse.Namespace) -> Config | None:
+    if args.command in {"ui", "serve"}:
+        return Config.load_for_ui()
+    if args.command in _LOCAL_ROOT_COMMANDS:
+        return Config.for_root(local_root(args.root))
+    return Config.load()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    cfg = Config.load_for_ui() if args.command in {"ui", "serve"} else Config.load()
+    cfg = _config_for(args)
     # The single CLI enforcement point for a halted KB. It sits here, before
     # dispatch, because every subcommand goes through this one line — a guard
     # sprinkled per-command is a guard the next command will forget.
