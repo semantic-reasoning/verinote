@@ -32,10 +32,11 @@
 </ul>
 {% endif %}
 <h2>Traceability</h2>
-{% if trace.excluded_candidate_count %}
-<p class="muted">{{ trace.excluded_candidate_count }} candidate/needs-review fact(s) were excluded from engine input.</p>
+{% if trace.excluded_review_count %}
+<p class="muted">{{ trace.excluded_review_count }} fact(s) awaiting review were excluded from engine input
+  ({% for status, count in trace.excluded_by_status %}{{ status }} {{ count }}{{ ", " if not loop.last }}{% endfor %}).</p>
 {% else %}
-<p class="muted">No candidate facts were included in engine input.</p>
+<p class="muted">No facts were held back from engine input pending review.</p>
 {% endif %}
 {% if trace.answers %}
 <table class="counts">

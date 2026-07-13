@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 from verinote.pipeline.query import query_path
 from verinote.pipeline.report_trace import report_trace
-from verinote.store import Store
+from verinote.store import Store, db as store_db
 
 
 def _store(tmp_path) -> Store:
@@ -41,7 +41,7 @@ def test_report_trace_links_direct_answers_to_engine_facts_and_evidence(tmp_path
 
     trace = report_trace(s)
 
-    assert trace.excluded_candidate_count == 1
+    assert trace.excluded_review_count == 1
     assert len(trace.answers) == 1
     answer = trace.answers[0]
     assert (answer.qid, answer.value, answer.conflicted) == ("1", "Sample City", False)
@@ -117,3 +117,55 @@ def test_report_trace_skips_non_direct_query_rules(tmp_path):
     trace = report_trace(s)
 
     assert trace.answers == ()
+
+
+def test_report_trace_breaks_the_excluded_count_down_by_status(tmp_path):
+    """The report must name what was held back: candidate and needs_review call
+    for different user action, so a bare total cannot stand in for both.
+    """
+    s = _store(tmp_path)
+    source_id = s.add_source("sources/sample.txt")
+    s.add_fact("Person", "born_in", "A", status="candidate", source_id=source_id)
+    s.add_fact("Person", "born_in", "B", status="candidate", source_id=source_id)
+    s.add_fact("Person", "born_in", "C", status="needs_review", source_id=source_id)
+
+    trace = report_trace(s)
+
+    assert trace.excluded_review_count == 3
+    assert trace.excluded_by_status == (("candidate", 2), ("needs_review", 1))
+
+
+def test_report_trace_omits_review_statuses_with_no_facts(tmp_path):
+    s = _store(tmp_path)
+    source_id = s.add_source("sources/sample.txt")
+    s.add_fact("Person", "born_in", "A", status="candidate", source_id=source_id)
+
+    assert report_trace(s).excluded_by_status == (("candidate", 1),)
+
+
+def test_report_trace_excluded_count_follows_review_statuses(tmp_path, monkeypatch):
+    """Widen REVIEW_STATUSES at its home and this consumer must follow.
+
+    Pinning today's number would be vacuous: both sides would be hardcoded and
+    would still agree. `superseded` is a real schema status belonging to neither
+    REVIEW_STATUSES nor ENGINE_STATUSES, so it serves as the mutation.
+    """
+    s = _store(tmp_path)
+    source_id = s.add_source("sources/sample.txt")
+    s.add_fact(
+        "Person", "born_in", "Draft City", status="candidate", source_id=source_id
+    )
+    s.add_fact(
+        "Person", "born_in", "Old City", status="superseded", source_id=source_id
+    )
+
+    assert report_trace(s).excluded_review_count == 1
+
+    monkeypatch.setattr(
+        store_db, "REVIEW_STATUSES", store_db.REVIEW_STATUSES | {"superseded"}
+    )
+
+    trace = report_trace(s)
+
+    assert trace.excluded_review_count == 2
+    assert trace.excluded_by_status == (("candidate", 1), ("superseded", 1))

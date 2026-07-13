@@ -17,7 +17,7 @@ from verinote.engine.terms import Compound, StringLit, Term, Var, render_term
 from verinote.pipeline.corroboration import CorroborationPolicyError
 from verinote.pipeline.query import load_query
 from verinote.pipeline.trust import fact_trust_summary
-from verinote.store import Store
+from verinote.store import Store, db as store_db
 
 _RELATION_DECL = ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
 _ANSWER_RE = re.compile(r"answer_q(?P<qid>[0-9]+)\Z")
@@ -45,23 +45,42 @@ class AnswerTrace:
 @dataclass(frozen=True)
 class ReportTrace:
     answers: tuple[AnswerTrace, ...]
-    excluded_candidate_count: int
+    excluded_review_count: int
+    # (status, count) for the review statuses actually present, so the report can
+    # name what was held back without spelling the vocabulary out a second time.
+    excluded_by_status: tuple[tuple[str, int], ...]
+
+
+def _excluded_by_status(store: Store) -> tuple[tuple[str, int], ...]:
+    counts = store.status_counts()
+    # Read REVIEW_STATUSES off store.db rather than from-importing it: widening it
+    # at its definition site then moves this count, which is what lets the mutation
+    # test prove the derivation instead of a coincidence between two hardcodings.
+    return tuple(
+        (status, count)
+        for status in sorted(store_db.REVIEW_STATUSES)
+        if (count := counts.get(status, 0))
+    )
 
 
 def report_trace(store: Store) -> ReportTrace:
-    candidates = store.status_counts().get("candidate", 0) + store.status_counts().get(
-        "needs_review", 0
-    )
+    by_status = _excluded_by_status(store)
+    excluded = sum(count for _, count in by_status)
     try:
         query = load_query(store)
     except CorroborationPolicyError:
-        return ReportTrace(answers=(), excluded_candidate_count=candidates)
+        query = None
     if not query:
-        return ReportTrace(answers=(), excluded_candidate_count=candidates)
+        return ReportTrace(
+            answers=(),
+            excluded_review_count=excluded,
+            excluded_by_status=by_status,
+        )
 
     return ReportTrace(
         answers=trace_query_answers(store, query),
-        excluded_candidate_count=candidates,
+        excluded_review_count=excluded,
+        excluded_by_status=by_status,
     )
 
 
