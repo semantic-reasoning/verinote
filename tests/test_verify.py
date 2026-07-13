@@ -3,7 +3,7 @@ import builtins
 from pathlib import Path
 
 import verinote.engine.duckdb_backend as duckdb_backend
-from verinote.engine.terms import Compound, StringLit
+from verinote.engine.terms import Atom, Compound, NumberLit, StringLit
 from verinote.pipeline.query import query_path
 from verinote.pipeline.verify import load_policy, policy_path, verify
 from verinote.store import Store
@@ -34,6 +34,17 @@ def test_verify_gates_on_contradiction_with_default_policy(tmp_path):
     rep = verify(s)
     assert rep.errors > 0 and rep.ok is False
     assert "backend: DuckDB" in rep.text
+
+
+def test_verify_gates_on_functional_conflict_across_term_kinds(tmp_path):
+    s = _store(tmp_path)
+    s.add_fact("Ada", "born_on", "1815", status="confirmed")
+    s.add_fact("Ada", Atom("born_on"), NumberLit(1900), status="confirmed")
+
+    rep = verify(s)
+
+    assert rep.ok is False
+    assert "ERROR functional_conflict: Ada born_on" in rep.findings
 
 
 def test_verify_consistent_kb_passes(tmp_path):

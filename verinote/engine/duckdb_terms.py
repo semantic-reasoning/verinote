@@ -57,6 +57,26 @@ def term_eq_sql(left_expr: str, right_expr: str) -> str:
     return f"{left_expr} = {right_expr}"
 
 
+def term_compare_key(term: Term) -> str:
+    """Return the human-surface comparison key used by the inference engine.
+
+    Storage remains type-tagged via `term_to_duckdb_value`; this key is only for
+    Datalog equality so equivalent UI/display values do not occupy separate
+    universes merely because one was entered as a structural term.
+    """
+    if isinstance(term, Atom):
+        return f"s:{term.name}"
+    if isinstance(term, StringLit):
+        return f"s:{term.value}"
+    if isinstance(term, NumberLit):
+        return f"s:{term.value}"
+    if isinstance(term, Compound):
+        return f"c:{term_to_duckdb_value(term)}"
+    if isinstance(term, Var):
+        return f"v:{term.name}"
+    raise TypeError(f"not a term: {term!r}")
+
+
 def create_term_table_sql(table_name: str, columns: tuple[str, ...]) -> str:
     """Return SQL for a table whose columns are logical terms stored as VARCHAR."""
     _validate_sql_identifier(table_name, "table")
