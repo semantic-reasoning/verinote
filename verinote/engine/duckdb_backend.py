@@ -25,7 +25,16 @@ from verinote.engine.duckdb_terms import (
     duckdb_value_to_term,
     term_to_duckdb_value,
 )
-from verinote.engine.terms import Atom, Compound, NumberLit, StringLit, Term, Var, render_term
+from verinote.engine.terms import (
+    Atom,
+    Compound,
+    NumberLit,
+    StringLit,
+    Term,
+    Var,
+    escape_string_value,
+    render_term,
+)
 from verinote.engine.wirelog import CheckReport, DEFAULT_POLICY, NO_FINDINGS_TEXT
 
 _ERROR_PREFIX = "error_"
@@ -431,8 +440,14 @@ def _render_row(row: tuple[object, ...]) -> str:
 
 
 def _render_output_term(term: Term) -> str:
+    """Render a value for a report line.
+
+    String values keep their bare (unquoted) surface, but control characters are
+    escaped: an unescaped newline in a fact value would otherwise let that value
+    forge extra `ERROR `/`WARN ` lines in the report body.
+    """
     if isinstance(term, StringLit):
-        return term.value
+        return escape_string_value(term.value)
     return render_term(term)
 
 
