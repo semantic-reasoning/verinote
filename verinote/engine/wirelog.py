@@ -120,6 +120,12 @@ def _parse_relation_facts(dl_text: str) -> list[tuple[str, str, str]]:
 
 _ANSWER_PREFIX = "answer_q"
 
+# The engine's "clean bill of health" body. Exported because it is a claim about
+# the policy that ran, so callers that ran a *different* policy than the KB's own
+# (see pipeline.policy_state) must be able to recognise and replace it rather
+# than re-declaring the sentence and drifting from it.
+NO_FINDINGS_TEXT = "no findings — knowledge base is consistent."
+
 
 @dataclass
 class CheckReport:
@@ -271,11 +277,7 @@ def run_check(
     ]
     findings = [f"ERROR {e}" for e in errors] + [f"WARN {w}" for w in warnings]
     summary = f"errors: {len(errors)}  warnings: {len(warnings)}  facts: {len(facts)}"
-    body = (
-        "\n".join(findings)
-        if findings
-        else "no findings — knowledge base is consistent."
-    )
+    body = "\n".join(findings) if findings else NO_FINDINGS_TEXT
     if answers:
         body += "\n\n--- answers ---\n" + "\n".join(answers)
     return CheckReport(

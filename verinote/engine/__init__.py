@@ -5,6 +5,7 @@ from verinote.engine.coverage import Coverage, SourceCoverage, coverage
 from verinote.engine.duckdb_backend import DuckDBInferenceCache, run_check_duckdb
 from verinote.engine.wirelog import (
     DEFAULT_POLICY,
+    NO_FINDINGS_TEXT,
     CheckReport,
     compile_dl,
     run_check,
@@ -19,6 +20,7 @@ __all__ = [
     "validate_query",
     "CheckReport",
     "DEFAULT_POLICY",
+    "NO_FINDINGS_TEXT",
     "coverage",
     "Coverage",
     "SourceCoverage",
