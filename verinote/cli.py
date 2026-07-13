@@ -153,9 +153,15 @@ def _kb_schema_problem(db_path: Path) -> str | None:
     A bare `is_file()` check passes for an empty or corrupt `kb.sqlite`, which
     would let `seed` silently create a schema (it must only fill an existing KB)
     or blow up with a raw `sqlite3` traceback.
+
+    The path is percent-encoded via `Path.as_uri()` before it goes into the
+    SQLite URI. Interpolating it raw truncates any root holding a `?` or `#` at
+    that character, which both misreports a healthy KB as schema-less *and*
+    drops `mode=ro`, so SQLite would create a stray file at the truncated path.
     """
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        uri = f"{db_path.resolve().as_uri()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
         try:
             row = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'facts'"

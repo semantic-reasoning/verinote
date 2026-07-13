@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: MPL-2.0
+import sys
 from pathlib import Path
 
 import pytest
@@ -768,3 +769,51 @@ def test_seed_rejects_a_corrupt_db_file_without_a_traceback(tmp_path, monkeypatc
     err = capsys.readouterr().err
     assert "is not a verinote KB" in err
     assert f"verinote init {root}" in err
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="Windows forbids `?` in paths")
+def test_kb_schema_probe_survives_a_uri_metacharacter_in_the_path(tmp_path):
+    """A `?` in the root must not truncate the SQLite URI we probe the schema with.
+
+    Interpolating the path raw into `file:{db}?mode=ro` cut the URI at the `?`,
+    which (a) misreported this healthy KB as having no `facts` table and (b) lost
+    `mode=ro`, so SQLite opened read-write and created a stray file at the
+    truncated path — writing outside the root the caller ever named.
+    """
+    parent = tmp_path / "parent"
+    root = parent / "weird?dir"
+    root.mkdir(parents=True)
+    store = Store(root / "kb.sqlite")
+    store.init_schema()
+    store.close()
+    before = sorted(p.name for p in parent.iterdir())
+
+    assert cli._kb_schema_problem(root / "kb.sqlite") is None  # (a) no false alarm
+
+    # (b) no stray file at the truncated path (`.../parent/weird`).
+    assert sorted(p.name for p in parent.iterdir()) == before == ["weird?dir"]
+
+
+def test_seed_accepts_a_kb_whose_path_holds_a_uri_metacharacter(tmp_path, monkeypatch, capsys):
+    """End-to-end twin of the probe test, through the command a user actually runs.
+
+    Uses `#` (a URI fragment marker, and legal on every platform) rather than `?`
+    so the assertion stays on the schema probe.
+    """
+    _isolated(monkeypatch, tmp_path)
+    parent = tmp_path / "parent"
+    root = parent / "weird#dir"
+    root.mkdir(parents=True)
+
+    assert cli.main(["init", str(root)]) == 0
+    capsys.readouterr()
+    before = sorted(p.name for p in parent.iterdir())
+
+    assert cli.main(["seed", str(root)]) == 0  # no false "is not a verinote KB"
+
+    assert "seeded demo facts" in capsys.readouterr().out
+    assert sorted(p.name for p in parent.iterdir()) == before == ["weird#dir"]
+
+    store = Store(root / "kb.sqlite")
+    assert len(store.facts()) == len(cli._DEMO_FACTS)
+    store.close()
