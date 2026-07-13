@@ -144,7 +144,7 @@ def parse_facts(raw: str | list[Any] | dict[str, Any]) -> list[ExtractedFact]:
             subject, subject_kind, subject_warning = _parse_fact_slot(item, "subject")
             relation, relation_kind, relation_warning = _parse_fact_slot(item, "relation")
             obj, object_kind, object_warning = _parse_fact_slot(item, "object")
-            note = str(item.get("note", "")).strip()
+            note = _parse_fact_note(item)
             warnings = [w for w in (subject_warning, relation_warning, object_warning) if w]
             if warnings:
                 note = "; ".join([part for part in (note, *warnings) if part])
@@ -153,7 +153,7 @@ def parse_facts(raw: str | list[Any] | dict[str, Any]) -> list[ExtractedFact]:
                     subject=subject,
                     relation=relation,
                     object=obj,
-                    confidence=float(item["confidence"]),
+                    confidence=_parse_fact_confidence(item["confidence"]),
                     note=note,
                     subject_kind=subject_kind,
                     relation_kind=relation_kind,
@@ -194,14 +194,51 @@ def _decode_first_json(raw: str) -> Any:
         return decoder.raw_decode(text[min(starts):])[0]
 
 
+def _parse_fact_note(item: dict[str, Any]) -> str:
+    """`note` is declared `{"type": "string"}`; a missing/null note means "no note"."""
+    raw = item.get("note")
+    if raw is None:
+        return ""
+    return _require_schema_string(raw, "note")
+
+
+def _parse_fact_confidence(raw: Any) -> float:
+    """`confidence` is declared `{"type": "number", "minimum": 0, "maximum": 1}`.
+
+    Numeric strings stay tolerated -- prompt-only providers emit `"0.9"` often
+    enough -- but booleans and out-of-range values are schema violations, not
+    facts to be scored. `float(True)` would otherwise land as confidence 1.0.
+    """
+    if isinstance(raw, bool):
+        raise TypeError("confidence must be a number, got bool")
+    value = float(raw)
+    if not 0.0 <= value <= 1.0:
+        raise ValueError(f"confidence must be between 0 and 1, got {value}")
+    return value
+
+
+def _require_schema_string(raw: Any, label: str) -> str:
+    """Enforce the `{"type": "string"}` the slot schema declares.
+
+    Coercing with `str()` instead would smuggle off-schema JSON (lists, objects,
+    null) into the review queue as plausible-looking text -- `["Widget", "Alpha"]`
+    would be stored as the literal `"['Widget', 'Alpha']"`, and `null` as `"None"`.
+    """
+    if not isinstance(raw, str):
+        raise TypeError(f"{label} must be a string, got {type(raw).__name__}")
+    return raw.strip()
+
+
 def _parse_fact_slot(item: dict[str, Any], field: str) -> tuple[str, str, str]:
     raw = item[field]
     if isinstance(raw, str):
+        # Prompt-only providers routinely emit a bare string for a plain slot;
+        # per the fact-storage boundary that is a StringLit, never a compound.
         value = raw.strip()
         kind = "string"
     elif isinstance(raw, dict):
-        kind = str(raw["kind"]).strip()
-        value = str(raw["value"]).strip()
+        kind = _require_schema_string(raw["kind"], f"{field}.kind")
+        value = _require_schema_string(raw["value"], f"{field}.value")
     else:
         raise TypeError(f"{field} must be a string or {{kind,value}} object")
     if kind not in {"string", "term"}:
