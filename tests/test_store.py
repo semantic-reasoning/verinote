@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-from verinote.engine import compile_dl
-from verinote.store import ENGINE_STATUSES, Store
+from verinote.engine import compile_dl, coverage
+from verinote.store import ENGINE_STATUSES, Store, db
 
 
 def _store(tmp_path) -> Store:
@@ -435,6 +435,52 @@ def test_sources_with_counts_includes_latest_analysis_summary(tmp_path):
     assert row["analysis_candidate_count"] == 3
     assert row["provider"] == "ollama"
     assert row["model"] == "qwen3.5:9b"
+
+
+def test_sources_with_counts_engine_count_follows_engine_statuses(tmp_path, monkeypatch):
+    """The Sources page's "N confirmed" must mean the same thing as coverage.
+
+    `engine_count` is derived from ENGINE_STATUSES, so widening the tier moves
+    the Sources page in lockstep with the coverage report. Re-hard-coding
+    `IN ('confirmed','accepted')` makes this fail.
+    """
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    s.add_fact("A", "is_a", "B", status="superseded", source_id=sid)
+    s.add_fact("C", "is_a", "D", status="superseded", source_id=sid)
+    s.add_fact("E", "is_a", "F", status="candidate", source_id=sid)
+    superseded_count = 2
+
+    before = s.sources_with_counts()[0]
+    assert before["engine_count"] == 0
+    # The per-status count columns are a different question and must not move.
+    assert before["candidate_count"] == 1
+    assert before["fact_count"] == 3
+
+    monkeypatch.setattr(db, "ENGINE_STATUSES", db.ENGINE_STATUSES | {"superseded"})
+
+    after = s.sources_with_counts()[0]
+    assert after["engine_count"] == superseded_count
+    assert after["engine_count"] == len(
+        [r for r in s.facts(statuses=db.ENGINE_STATUSES) if r["source_id"] == sid]
+    )
+    assert after["candidate_count"] == 1
+    assert after["fact_count"] == 3
+
+
+def test_sources_with_counts_engine_count_matches_coverage(tmp_path):
+    """One definition, two consumers: the Sources page and the coverage report."""
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    s.add_fact("A", "is_a", "B", status="confirmed", source_id=sid)
+    s.add_fact("C", "is_a", "D", status="accepted", source_id=sid)
+    s.add_fact("E", "is_a", "F", status="needs_review", source_id=sid)
+
+    row = s.sources_with_counts()[0]
+    sc = coverage(s, root=tmp_path).sources[0]
+
+    assert row["engine_count"] == sc.engine_facts
+    assert row["fact_count"] == sc.total_facts
 
 
 def test_extraction_job_rejects_artifact_from_another_source(tmp_path):

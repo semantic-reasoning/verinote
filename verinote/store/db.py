@@ -46,6 +46,18 @@ REVIEW_SORT_SQL = {
 }
 
 
+def _status_filter(statuses: frozenset[str]) -> tuple[str, tuple[str, ...]]:
+    """Deterministic (placeholders, params) for a `status IN (...)` filter.
+
+    Status values are bound as parameters, never spliced into SQL text, and
+    `sorted()` fixes the parameter order a `frozenset` would otherwise leave
+    unspecified. Callers must read the status constant at call time so the
+    constant stays the single definition of the tier.
+    """
+    ordered = tuple(sorted(statuses))
+    return ",".join("?" * len(ordered)), ordered
+
+
 def _load_schema() -> str:
     return resources.files("verinote.store").joinpath("schema.sql").read_text(encoding="utf-8")
 
@@ -252,7 +264,13 @@ class Store:
         ).fetchone()
 
     def sources_with_counts(self) -> list[sqlite3.Row]:
-        """Sources plus analysis and fact summaries for the Sources listing."""
+        """Sources plus analysis and fact summaries for the Sources listing.
+
+        `engine_count` is derived from `ENGINE_STATUSES` (read at call time), so
+        the Sources page and the coverage report can never disagree about what
+        the engine actually reads.
+        """
+        placeholders, params = _status_filter(ENGINE_STATUSES)
         return list(
             self._conn.execute(
                 "SELECT s.id, s.path, s.kind, s.added_at, "
@@ -263,7 +281,7 @@ class Store:
                 "(SELECT COUNT(*) FROM facts f WHERE f.source_id = s.id "
                 "AND f.status = 'needs_review') AS needs_review_count, "
                 "(SELECT COUNT(*) FROM facts f WHERE f.source_id = s.id "
-                "AND f.status IN ('confirmed','accepted')) AS engine_count, "
+                f"AND f.status IN ({placeholders})) AS engine_count, "
                 "j.id AS job_id, j.status AS analysis_status, "
                 "j.total_chunks, j.completed_chunks, j.failed_chunks, "
                 "j.candidate_count AS analysis_candidate_count, "
@@ -274,7 +292,8 @@ class Store:
                 "  SELECT MAX(j2.id) FROM extraction_jobs j2 "
                 "  WHERE j2.source_id = s.id"
                 ") "
-                "ORDER BY s.path"
+                "ORDER BY s.path",
+                params,
             )
         )
 
@@ -353,15 +372,21 @@ class Store:
         )
 
     def source_fact_counts(self) -> list[sqlite3.Row]:
-        """Per-source total vs engine-input (confirmed/accepted) fact counts."""
+        """Per-source total vs engine-input fact counts.
+
+        The engine tier is derived from `ENGINE_STATUSES` (read at call time) so
+        the coverage report counts exactly the facts the engine consumes.
+        """
+        placeholders, params = _status_filter(ENGINE_STATUSES)
         return list(
             self._conn.execute(
                 "SELECT s.id, s.path, s.kind, "
                 "COUNT(f.id) AS total, "
-                "COALESCE(SUM(CASE WHEN f.status IN ('confirmed','accepted') "
+                f"COALESCE(SUM(CASE WHEN f.status IN ({placeholders}) "
                 "THEN 1 ELSE 0 END), 0) AS engine "
                 "FROM sources s LEFT JOIN facts f ON f.source_id = s.id "
-                "GROUP BY s.id ORDER BY s.path"
+                "GROUP BY s.id ORDER BY s.path",
+                params,
             )
         )
 
@@ -902,8 +927,7 @@ class Store:
 
     def review_queue_ids(self, *, sort: object = DEFAULT_REVIEW_SORT) -> list[int]:
         sort = _review_sort(sort)
-        statuses = tuple(sorted(REVIEW_STATUSES))
-        placeholders = ",".join("?" * len(statuses))
+        placeholders, statuses = _status_filter(REVIEW_STATUSES)
         rows = self._conn.execute(
             "SELECT f.id FROM facts f "
             "LEFT JOIN sources s ON s.id = f.source_id "
@@ -939,8 +963,7 @@ class Store:
         page_size = _review_page_size(page_size)
         page = _positive_int(page, 1)
         sort = _review_sort(sort)
-        statuses = tuple(sorted(REVIEW_STATUSES))
-        placeholders = ",".join("?" * len(statuses))
+        placeholders, statuses = _status_filter(REVIEW_STATUSES)
         where = f"f.status IN ({placeholders})"
         total = int(
             self._conn.execute(
@@ -996,14 +1019,15 @@ class Store:
 
     def accept_review_facts_for_source(self, source_id: int) -> list[sqlite3.Row]:
         """Promote all review-queue facts for one source to confirmed."""
+        placeholders, statuses = _status_filter(REVIEW_STATUSES)
         with self._lock:
             self._conn.execute("BEGIN")
             try:
                 facts = list(
                     self._conn.execute(
                         "SELECT * FROM facts WHERE source_id = ? "
-                        "AND status IN ('candidate','needs_review') ORDER BY id",
-                        (source_id,),
+                        f"AND status IN ({placeholders}) ORDER BY id",
+                        (source_id, *statuses),
                     )
                 )
                 accepted: list[sqlite3.Row] = []
