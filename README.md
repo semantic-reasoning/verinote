@@ -69,11 +69,18 @@ tests, and one-off launches.
 VERINOTE_ROOT=/path/to/kb verinote ui
 ```
 
-You can also scaffold a KB explicitly:
+You can also scaffold a KB explicitly. `init` and `seed` are *local* commands:
+they never write to the saved active KB. They target the root you name, else
+`VERINOTE_ROOT`, else `./data` in the current directory.
 
 ```bash
-verinote init      # uses VERINOTE_ROOT, the saved active KB, or ./data
+verinote init                 # ./data here (or $VERINOTE_ROOT if set)
+verinote init /path/to/kb     # a named root
+verinote seed /path/to/kb     # demo facts into an existing KB
 ```
+
+Seeded demo facts land as `candidate`/`needs_review`, never as engine input —
+demo data has to pass through human review like anything else.
 
 DuckDB is a core dependency because it powers verification. The `analytics` extra is
 kept as a compatibility no-op; analytics uses the same DuckDB dependency. The

@@ -1,10 +1,15 @@
 # SPDX-License-Identifier: MPL-2.0
+from pathlib import Path
+
+import pytest
+
 import verinote.cli as cli
+from verinote import config
 from verinote.engine import DEFAULT_POLICY
 from verinote.llm.base import ExtractedFact, LLMError
 from verinote.pipeline.ingest import register_converter
 from verinote.pipeline.query_intent import parse_query_intent
-from verinote.store import Store
+from verinote.store import ENGINE_STATUSES, Store
 from verinote.store.fact_input import structural_term
 
 
@@ -541,3 +546,135 @@ def test_coverage_counts_structural_engine_fact_metadata(tmp_path, monkeypatch, 
     out = capsys.readouterr().out
     assert "sources/a.txt: 1/1 engine facts" in out
     assert "gap(s)" in out
+
+
+# --- local KB commands must not target the saved (global) active KB ----------
+
+
+def _isolated(monkeypatch, tmp_path):
+    """Neutralise every ambient KB pointer, then give the app config a fake HOME."""
+    monkeypatch.delenv("VERINOTE_ROOT", raising=False)
+    home = tmp_path / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    monkeypatch.setenv("APPDATA", str(home / "AppData"))
+    return home
+
+
+def _existing_kb(tmp_path) -> Path:
+    """A populated KB registered as the saved active root (as the web picker does)."""
+    root = tmp_path / "existing"
+    root.mkdir(parents=True, exist_ok=True)
+    store = Store(root / "kb.sqlite")
+    store.init_schema()
+    sid = store.add_source("sources/real.txt")
+    store.add_fact("Real Org", "is_a", "participant", status="confirmed", source_id=sid)
+    store.close()
+    config.save_active_root(root)
+    return root
+
+
+def test_init_seed_in_empty_dir_ignores_saved_active_kb(tmp_path, monkeypatch, capsys):
+    _isolated(monkeypatch, tmp_path)
+    existing = _existing_kb(tmp_path)
+    before = (existing / "kb.sqlite").read_bytes()
+
+    workdir = tmp_path / "empty"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    assert cli.main(["init", "--seed"]) == 0
+
+    new_db = workdir / "data" / "kb.sqlite"
+    assert new_db.is_file()
+    # The saved KB is untouched, byte for byte.
+    assert (existing / "kb.sqlite").read_bytes() == before
+    assert not (existing / "sources").exists()
+
+    out = capsys.readouterr().out
+    assert f"initialised KB at {workdir / 'data'}" in out
+    assert str(existing) not in out
+
+
+def test_init_uses_explicit_root_argument(tmp_path, monkeypatch, capsys):
+    _isolated(monkeypatch, tmp_path)
+    workdir = tmp_path / "cwd"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+    target = tmp_path / "named-kb"
+
+    assert cli.main(["init", str(target)]) == 0
+
+    assert (target / "kb.sqlite").is_file()
+    assert not (workdir / "data").exists()
+    assert f"initialised KB at {target}" in capsys.readouterr().out
+
+
+def test_init_still_honours_verinote_root(tmp_path, monkeypatch):
+    _isolated(monkeypatch, tmp_path)
+    _existing_kb(tmp_path)
+    env_root = tmp_path / "from-env"
+    monkeypatch.setenv("VERINOTE_ROOT", str(env_root))
+    workdir = tmp_path / "cwd"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    assert cli.main(["init"]) == 0
+
+    assert (env_root / "kb.sqlite").is_file()
+    assert not (workdir / "data").exists()
+
+
+def test_demo_facts_are_never_engine_input():
+    demo_statuses = {status for _, _, _, status, _, _, _ in cli._DEMO_FACTS}
+    assert demo_statuses & ENGINE_STATUSES == set()
+
+
+def test_seeded_kb_has_no_engine_facts(tmp_path, monkeypatch):
+    _isolated(monkeypatch, tmp_path)
+    root = tmp_path / "kb"
+
+    assert cli.main(["init", str(root), "--seed"]) == 0
+
+    store = Store(root / "kb.sqlite")
+    assert store.facts(statuses=ENGINE_STATUSES) == []
+    assert store.facts() != []  # the demo facts did land, just not as engine input
+    store.close()
+
+
+def test_seed_without_a_kb_fails_and_creates_nothing(tmp_path, monkeypatch, capsys):
+    _isolated(monkeypatch, tmp_path)
+    workdir = tmp_path / "empty"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    assert cli.main(["seed"]) == 1
+
+    assert not (workdir / "data").exists()
+    assert "run `verinote init` first" in capsys.readouterr().err
+
+
+def test_seed_targets_the_named_root(tmp_path, monkeypatch, capsys):
+    _isolated(monkeypatch, tmp_path)
+    existing = _existing_kb(tmp_path)
+    before = (existing / "kb.sqlite").read_bytes()
+    root = tmp_path / "kb"
+    assert cli.main(["init", str(root)]) == 0
+    capsys.readouterr()
+
+    assert cli.main(["seed", str(root)]) == 0
+
+    store = Store(root / "kb.sqlite")
+    assert len(store.facts()) == len(cli._DEMO_FACTS)
+    store.close()
+    assert (existing / "kb.sqlite").read_bytes() == before
+    assert f"seeded demo facts into {root}" in capsys.readouterr().out
+
+
+def test_init_help_does_not_promise_verinote_root_only(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["init", "--help"])
+    out = capsys.readouterr().out
+    assert "under VERINOTE_ROOT (./data)" not in out
+    assert "ROOT" in out

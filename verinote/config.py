@@ -60,6 +60,24 @@ def _root() -> Path:
     return root if root is not None else _default_root()
 
 
+def local_root(explicit: Path | str | None = None) -> Path:
+    """Resolve the KB root for *local* commands that must never target a saved KB.
+
+    Commands like `init` and `seed` act on a location the caller names, not on
+    whatever KB the web UI last selected. Precedence (highest first): the
+    explicit argument, `VERINOTE_ROOT`, then `./data` relative to the current
+    working directory. The saved app config (`active_root()`) is deliberately
+    **not** consulted — otherwise `verinote init` in an empty directory would
+    write into somebody else's KB.
+    """
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    env_root = os.environ.get("VERINOTE_ROOT")
+    if env_root:
+        return Path(env_root).expanduser().resolve()
+    return _default_root()
+
+
 def app_config_dir() -> Path:
     """Return the platform-native directory for verinote's app-level config."""
     if sys.platform == "win32":
