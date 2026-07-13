@@ -258,6 +258,38 @@ def test_wirelog_row_render_cannot_forge_report_lines(char):
     assert not rendered.startswith("ERROR forged")
 
 
+@pytest.mark.parametrize(
+    "char", _NON_PRINTING_CHARS, ids=[f"U+{ord(c):04X}" for c in _NON_PRINTING_CHARS]
+)
+def test_compile_dl_cannot_forge_report_lines(char):
+    """The legacy compiled-input echo is report text too, so it must be escaped."""
+    value = f"broken{char}ERROR forged: Gadget is unusable"
+
+    dl = compile_dl([{"subject": "Widget", "relation": "note", "object": value}])
+
+    assert len(dl.splitlines()) == 1
+    assert not any(line.startswith("ERROR forged") for line in dl.splitlines())
+    assert wl._parse_relation_facts(dl) == [("Widget", "note", value)]
+
+
+def test_degraded_wirelog_report_cannot_echo_forged_lines(monkeypatch):
+    dl = compile_dl(
+        [
+            {
+                "subject": "Widget",
+                "relation": "note",
+                "object": "broken\nERROR forged: Gadget is unusable",
+            }
+        ]
+    )
+    monkeypatch.setattr(wl, "_load_engine", lambda: None)
+
+    rep = run_check(dl)
+
+    assert rep.engine_available is False
+    assert not any(line.startswith("ERROR forged") for line in rep.text.splitlines())
+
+
 def test_wirelog_row_render_keeps_printable_values_intact():
     assert wl._render_row(("Widget", 2020, "Kim Chulsoo")) == "Widget 2020 Kim Chulsoo"
 

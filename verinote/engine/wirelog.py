@@ -31,9 +31,6 @@ from verinote.engine.datalog import (
 )
 from verinote.engine.terms import escape_string_value
 
-# Datalog string literals: escape embedded quotes/backslashes.
-_ESCAPE = re.compile(r'(["\\])')
-
 # Prefixes that mark a derived relation as a verinote finding.
 _ERROR_PREFIX = "error_"
 _WARN_PREFIX = "warn_"
@@ -65,7 +62,7 @@ error_functional_conflict(S, R) :-
 
 
 def _lit(value: str) -> str:
-    return '"' + _ESCAPE.sub(r"\\\1", value) + '"'
+    return '"' + escape_string_value(value).replace('"', '\\"') + '"'
 
 
 def compile_dl(facts: Iterable[Mapping[str, object]]) -> str:
@@ -85,8 +82,8 @@ def compile_dl(facts: Iterable[Mapping[str, object]]) -> str:
 def _parse_relation_facts(dl_text: str) -> list[tuple[str, str, str]]:
     """Recover (subject, rel, object) triples from `compile_dl` output.
 
-    Mirrors `_lit`'s escaping (``\\"`` -> ``"``, ``\\\\`` -> ``\\``) so the round
-    trip is exact, including embedded quotes.
+    Mirrors `_lit`'s escaping so the round trip is exact, including embedded
+    quotes, backslashes, short control escapes, and numeric Unicode escapes.
     """
     facts: list[tuple[str, str, str]] = []
     for line in dl_text.splitlines():
@@ -105,7 +102,39 @@ def _parse_relation_facts(dl_text: str) -> list[tuple[str, str, str]]:
             while i < n:
                 c = line[i]
                 if c == "\\" and i + 1 < n:
-                    buf.append(line[i + 1])
+                    esc = line[i + 1]
+                    if esc == '"':
+                        buf.append('"')
+                        i += 2
+                        continue
+                    if esc == "\\":
+                        buf.append("\\")
+                        i += 2
+                        continue
+                    if esc == "n":
+                        buf.append("\n")
+                        i += 2
+                        continue
+                    if esc == "r":
+                        buf.append("\r")
+                        i += 2
+                        continue
+                    if esc == "t":
+                        buf.append("\t")
+                        i += 2
+                        continue
+                    if esc in {"u", "U"}:
+                        width = 4 if esc == "u" else 8
+                        digits = line[i + 2 : i + 2 + width]
+                        if len(digits) == width and re.fullmatch(r"[0-9A-Fa-f]+", digits):
+                            code = int(digits, 16)
+                            if code <= 0x10FFFF and not 0xD800 <= code <= 0xDFFF:
+                                buf.append(chr(code))
+                                i += 2 + width
+                                continue
+                    # Preserve unsupported legacy escapes as the old parser did:
+                    # drop the escape marker and keep the escaped byte.
+                    buf.append(esc)
                     i += 2
                     continue
                 if c == '"':
