@@ -22,9 +22,14 @@ import pytest
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
+import conftest  # noqa: E402
+import env_sandbox  # noqa: E402
 from env_sandbox import (  # noqa: E402
+    MISSING,
     REAL_APP_CONFIG_DIR,
     REAL_APP_CONFIG_PATH,
+    Entry,
+    leak_report,
     restore,
     sandbox_home,
     session_home,
@@ -134,37 +139,132 @@ def test_module_scoped_config_load_stays_in_the_sandbox(module_scoped_config):
 
 
 def test_canary_restores_a_leaked_app_config_before_failing(tmp_path):
-    # The canary's teardown does not just detect a leak; it undoes it. Exercised
-    # here against a stand-in path — never the real one.
+    # The canary does not just detect a leak; it undoes it. Exercised here
+    # against a stand-in path — never the real one.
     path = tmp_path / "app.json"
     original = b'{"active_root": "/real/kb"}\n'
     path.write_bytes(original)
     before = snapshot(path)
 
     path.write_bytes(b'{"active_root": "/tmp/pytest-kb"}\n')  # the leak
-    restore(path, before)
+    message = leak_report(path, before)
 
     assert path.read_bytes() == original
+    assert message is not None
+    assert "modified" in message
+    assert "COULD NOT BE RESTORED" not in message
 
 
 def test_canary_restore_removes_a_config_the_run_created(tmp_path):
     path = tmp_path / "nested" / "app.json"
     before = snapshot(path)
 
-    assert before is None
+    assert before == MISSING
     path.parent.mkdir(parents=True)
     path.write_bytes(b"{}\n")  # the leak: a file that did not exist before
-    restore(path, before)
+    message = leak_report(path, before)
 
     assert not path.exists()
+    assert message is not None and "created" in message
+
+
+def test_canary_replaces_a_symlink_without_writing_through_it(tmp_path):
+    # The nastiest shape of the leak: the config is swapped for a symlink. Writing
+    # the original bytes *through* the path would corrupt the symlink's target and
+    # leave the symlink in place — so the real `app.json` would still be a link to
+    # somebody else's file when the run ends.
+    path = tmp_path / "app.json"
+    original = b'{"active_root": "/real/kb"}\n'
+    path.write_bytes(original)
+    before = snapshot(path)
+    victim = tmp_path / "victim.json"
+    victim.write_bytes(b"do not touch\n")
+
+    path.unlink()
+    path.symlink_to(victim)  # the leak
+    message = leak_report(path, before)
+
+    assert not path.is_symlink(), "the canary followed the symlink instead of replacing it"
+    assert path.read_bytes() == original
+    assert victim.read_bytes() == b"do not touch\n", "the canary wrote through the symlink"
+    assert message is not None
+
+
+def test_canary_removes_a_directory_left_where_the_config_was(tmp_path):
+    path = tmp_path / "app.json"
+    before = snapshot(path)
+
+    assert before == MISSING
+    (path / "nested").mkdir(parents=True)  # the leak: a directory at the config path
+    message = leak_report(path, before)
+
+    assert not path.exists()
+    assert message is not None
+
+
+def test_canary_refuses_to_destroy_what_it_cannot_reconstruct(tmp_path):
+    # If the *pre-run* entry was something we could not read (here: a directory),
+    # we never learned its contents. Removing it to "restore" would destroy the
+    # very thing the canary exists to protect, so it must refuse and say so.
+    path = tmp_path / "app.json"
+    path.mkdir()
+    (path / "keep.txt").write_text("precious", encoding="utf-8")
+    before = snapshot(path)
+
+    assert before.kind == "other"
+    restored = restore(path, before)
+
+    assert restored is False
+    assert (path / "keep.txt").read_text(encoding="utf-8") == "precious"
+
+
+def test_canary_reports_a_pre_run_entry_it_cannot_put_back(tmp_path):
+    # Same category, but now the leak *is* visible (the directory was replaced by
+    # a file): the canary must not claim it restored anything it could not.
+    path = tmp_path / "app.json"
+    path.mkdir()
+    before = snapshot(path)
+
+    assert before.kind == "other"
+    path.rmdir()
+    path.write_bytes(b"{}\n")  # the leak
+    message = leak_report(path, before)
+
+    assert message is not None and "COULD NOT BE RESTORED" in message
 
 
 def test_snapshot_never_raises_on_odd_paths(tmp_path):
-    # A directory where app.json should be, or a path under a file, must read as
-    # "nothing there" rather than exploding inside the session-scoped canary.
-    (tmp_path / "app.json").mkdir()
+    # A path under a file, or a missing parent, must read as "nothing there"
+    # rather than exploding inside the canary.
     (tmp_path / "file").write_text("x", encoding="utf-8")
 
-    assert snapshot(tmp_path / "app.json") is None
-    assert snapshot(tmp_path / "file" / "app.json") is None
-    assert snapshot(tmp_path / "missing" / "app.json") is None
+    assert snapshot(tmp_path / "file" / "app.json") == MISSING
+    assert snapshot(tmp_path / "missing" / "app.json") == MISSING
+
+
+def test_snapshot_distinguishes_a_symlink_from_the_file_it_points_at(tmp_path):
+    # Reading through the path would make these two indistinguishable, and a leak
+    # that swaps the config for a symlink would compare equal to no leak at all.
+    target = tmp_path / "target.json"
+    target.write_bytes(b"{}\n")
+    link = tmp_path / "link.json"
+    link.symlink_to(target)
+
+    assert snapshot(target).kind == "file"
+    assert snapshot(link).kind == "symlink"
+    assert snapshot(link) != snapshot(target)
+
+
+def test_the_real_config_baseline_is_captured_at_import_time():
+    # The baseline must be a module-level constant, not fixture state: a fixture's
+    # setup runs after collection and after every test module's import-time code,
+    # so a leak from there would be baked into the baseline and read as clean.
+    # Guard the *shape*, because that is what the bug was.
+    assert isinstance(env_sandbox.REAL_APP_CONFIG_BEFORE, Entry)
+    assert not hasattr(conftest, "real_app_config_is_untouched"), (
+        "the canary regressed to a session fixture; its baseline would be taken too late"
+    )
+    assert hasattr(conftest, "pytest_sessionfinish"), (
+        "the canary must run from a hook so it still fires when collection fails "
+        "or no test is selected"
+    )
