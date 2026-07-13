@@ -4,7 +4,7 @@ import json
 import pytest
 
 from verinote.engine import compile_dl, coverage
-from verinote.store import ENGINE_STATUSES, Store, db
+from verinote.store import Store, db, engine_statuses
 
 
 def _store(tmp_path) -> Store:
@@ -109,7 +109,7 @@ def test_compile_dl_only_projects_triples(tmp_path):
     # non-ASCII placeholder keeps UTF-8 round-trip coverage (not a real entity)
     s.add_fact("예시기관", "is_a", "참여기관", status="confirmed")
     s.add_fact("x", "y", "z", status="needs_review")  # must NOT appear
-    dl = compile_dl(s.facts(statuses=ENGINE_STATUSES))
+    dl = compile_dl(s.facts(statuses=engine_statuses()))
     assert 'relation("예시기관", "is_a", "참여기관").' in dl
     assert "needs_review" not in dl
     assert '"x"' not in dl
@@ -118,7 +118,7 @@ def test_compile_dl_only_projects_triples(tmp_path):
 def test_compile_dl_escapes_quotes(tmp_path):
     s = _store(tmp_path)
     s.add_fact('a"b', "r", "c", status="confirmed")
-    dl = compile_dl(s.facts(statuses=ENGINE_STATUSES))
+    dl = compile_dl(s.facts(statuses=engine_statuses()))
     assert r'relation("a\"b", "r", "c").' in dl
 
 
@@ -505,7 +505,7 @@ def test_status_filter_rejects_an_empty_tier(tmp_path):
     s.add_fact("A", "is_a", "B", status="confirmed")
 
     # Positive: a populated tier filters normally.
-    assert len(s.facts(statuses=ENGINE_STATUSES)) == 1
+    assert len(s.facts(statuses=engine_statuses())) == 1
     # None still means "no filter at all", not "an empty filter".
     assert len(s.facts(statuses=None)) == 1
 

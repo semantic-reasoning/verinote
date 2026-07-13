@@ -22,7 +22,7 @@ from verinote.policy_defaults import (
     RELATION_ALIASES_RELPATH,
     TYPED_RELATIONS_RELPATH,
 )
-from verinote.store import ENGINE_STATUSES, Store
+from verinote.store import Store, is_engine_input
 
 _FUNCTIONAL_RE = re.compile(r'functional\("((?:\\.|[^"\\])*)"\)\.')
 _TYPED_REL_RE = re.compile(
@@ -247,7 +247,7 @@ def corroboration(facts: Iterable[Mapping[str, object]]) -> list[FactSupport]:
     """Return distinct-source support for confirmed/accepted SPO triples."""
     sources: dict[tuple[str, str, str], set[str]] = {}
     for row in facts:
-        if str(_value(row, "status", "")) not in ENGINE_STATUSES:
+        if not is_engine_input(_value(row, "status", "")):
             continue
         source = _source_ref(row)
         if not source:
@@ -274,7 +274,7 @@ def single_valued_conflicts(
         tuple[str, str], dict[tuple[str, object], dict[str, set[str]]]
     ] = {}
     for row in facts:
-        if str(_value(row, "status", "")) not in ENGINE_STATUSES:
+        if not is_engine_input(_value(row, "status", "")):
             continue
         relation = _canonical_relation(str(row["relation"]), aliases)
         if relation not in canonical_single_valued:

@@ -14,7 +14,7 @@ from verinote.pipeline.corroboration import (
     store_typed_relations,
     TypedRelationSpec,
 )
-from verinote.store import ENGINE_STATUSES, REVIEW_STATUSES, Store
+from verinote.store import Store, is_engine_input, is_review_eligible
 
 
 @dataclass(frozen=True)
@@ -107,11 +107,11 @@ def trust_workbench(store: Store) -> TrustWorkbench:
         )
         key = (subject, canonical, object_key)
         sr_key = (subject, canonical)
-        if status in ENGINE_STATUSES:
+        if is_engine_input(status):
             engine.setdefault(key, []).append(fact)
             if canonical in single_valued:
                 by_subject_relation.setdefault(sr_key, {}).setdefault(object_key, []).append(fact)
-        elif status in REVIEW_STATUSES:
+        elif is_review_eligible(status):
             candidates.setdefault(key, []).append(fact)
             candidate_by_subject_relation.setdefault(sr_key, []).append(fact)
 

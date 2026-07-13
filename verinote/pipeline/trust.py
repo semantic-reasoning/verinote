@@ -17,7 +17,7 @@ from verinote.pipeline.corroboration import (
     store_typed_relations,
     TypedRelationSpec,
 )
-from verinote.store import ENGINE_STATUSES, REVIEW_STATUSES, Store
+from verinote.store import Store, engine_statuses, is_engine_input, is_review_eligible
 
 
 @dataclass(frozen=True)
@@ -172,8 +172,8 @@ def fact_trust_summary(store: Store, fact_id: int) -> FactTrustSummary | None:
         display=display,
         canonical_terms=_canonical_terms(store, fact_id),
         status=status,
-        review_eligible=status in REVIEW_STATUSES,
-        engine_input=status in ENGINE_STATUSES,
+        review_eligible=is_review_eligible(status),
+        engine_input=is_engine_input(status),
         confidence=float(fact["confidence"]),
         note=str(fact["note"]),
         source=_source_metadata(store, fact["source_id"]),
@@ -215,7 +215,7 @@ def _support_summary(
     relation = canonical_relation(display.relation, aliases)
     object_key = _object_key(relation, display.object, typed)
     sources: set[str] = set()
-    for row in store.facts(statuses=ENGINE_STATUSES):
+    for row in store.facts(statuses=engine_statuses()):
         if str(row["subject"]) != display.subject:
             continue
         row_relation = canonical_relation(str(row["relation"]), aliases)
@@ -369,7 +369,7 @@ def _trust_labels(
         labels.append("corroborated")
     if conflict is not None:
         labels.append("conflicted")
-    if status in ENGINE_STATUSES:
+    if is_engine_input(status):
         labels.append("reviewed")
     if status == "superseded":
         labels.append("superseded")
