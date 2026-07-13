@@ -1160,10 +1160,29 @@ def test_report_shows_query_trace_links_and_candidate_exclusion(tmp_path):
     body = unescape(c.get("/report").text)
 
     assert "Traceability" in body
-    assert "candidate/needs-review fact(s) were excluded from engine input" in body
+    # one needs_review fact from _client, one candidate above: both review statuses
+    # count, and the report must name which is which.
+    assert "2 fact(s) awaiting review were excluded from engine input" in body
+    assert "candidate 1, needs_review 1" in body
     assert f'href="/facts/{fact_id}/provenance"' in body
     assert "Sample Person was born in Sample City." in body
     assert "Draft City" not in body
+
+
+def test_report_traceability_renders_one_status_then_none(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+
+    # _client seeds a single needs_review fact: one status, so no separator.
+    body = unescape(c.get("/report").text)
+    assert "1 fact(s) awaiting review were excluded from engine input" in body
+    assert "(needs_review 1)" in body
+
+    store.set_status(c.fact_id, "confirmed")
+
+    body = unescape(c.get("/report").text)
+    assert "No facts were held back from engine input pending review." in body
+    assert "awaiting review" not in body
 
 
 def test_report_gates_on_contradiction(tmp_path):
