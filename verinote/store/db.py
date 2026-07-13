@@ -216,8 +216,10 @@ class Store:
         self.set_meta(POLICY_MARKER_KEY, json.dumps(marker, ensure_ascii=False))
         return marker
 
-    def clear_policy_marker(self) -> None:
-        self.delete_meta(POLICY_MARKER_KEY)
+    # Deliberately no `clear_policy_marker()`: dropping the marker is exactly the
+    # move that downgrades a lost policy back to a benign default, which is the
+    # bug this table exists to prevent. Recovery is restoring the file or running
+    # `verinote policy reset --force`, both of which re-record the marker.
 
     # --- sources ---------------------------------------------------------
     def add_source(self, path: str, kind: str = "text") -> int:

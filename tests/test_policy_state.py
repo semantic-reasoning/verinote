@@ -121,6 +121,9 @@ def test_unrecorded_policy_runs_default_with_a_warning(tmp_path):
     assert rep.warnings >= 1
     assert any("policy_unrecorded" in finding for finding in rep.findings)
     assert "shipped default" in rep.text
+    # a run of the default policy is not a statement about this KB's rules, so
+    # the engine's clean-bill sentence must not survive into the report
+    assert "consistent" not in rep.text
     assert resolve_policy(store).status is PolicyStatus.UNRECORDED_DEFAULT
     assert load_policy(store) is None
 
@@ -290,3 +293,176 @@ def test_store_functional_relations_raises_when_policy_is_lost(tmp_path):
 def test_store_functional_relations_uses_default_for_unrecorded_kb(tmp_path):
     store = _store(tmp_path)
     assert "established_on" in store_functional_relations(store)
+
+
+def test_auto_accept_is_fail_closed_when_the_policy_is_lost(tmp_path):
+    """A rule-driven promotion must not run while the rules are missing."""
+    from verinote.pipeline.acceptance import apply_auto_accept_recommendations
+
+    store = _store(tmp_path)
+    path = _write_policy(tmp_path)
+    store.record_policy_marker(policy_sha256(path.read_text(encoding="utf-8")), origin="scaffold")
+    source = store.add_source("sources/a.txt")
+    fact_id = store.add_fact(
+        "Ada", "is_a", "engineer", status="confirmed", confidence=0.99, source_id=source
+    )
+    path.unlink()
+
+    with pytest.raises(PolicyMissingError):
+        apply_auto_accept_recommendations(store)
+    assert store.get_fact(fact_id)["status"] == "confirmed"
+
+
+# --- web: a halted KB reports, it does not crash, and it does not accept writes ---
+
+
+def _halted_client(tmp_path, monkeypatch):
+    """A web client on a KB whose recorded policy file has been deleted."""
+    from fastapi.testclient import TestClient
+
+    from verinote.config import Config
+    from verinote.web.app import create_app
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+
+    cfg = Config(
+        root=tmp_path,
+        db_path=tmp_path / "kb.sqlite",
+        provider="anthropic",
+        model="m",
+        api_key=None,
+        base_url=None,
+    )
+    store = Store(cfg.db_path)
+    store.init_schema()
+    path = _write_policy(tmp_path)
+    store.record_policy_marker(policy_sha256(path.read_text(encoding="utf-8")), origin="scaffold")
+    source_id = store.add_source("sources/a.txt")
+    fact_id = store.add_fact(
+        "Ada", "is_a", "engineer", status="candidate", confidence=0.9, source_id=source_id
+    )
+    question_id = store.add_question("who is Ada?")
+    store.close()
+    path.unlink()
+
+    client = TestClient(create_app(cfg), raise_server_exceptions=False)
+    client.fact_id = fact_id
+    client.source_id = source_id
+    client.question_id = question_id
+    client.job_id = 1
+    client.policy_path = path
+    return client
+
+
+def _get_paths(app, client) -> list[str]:
+    """Every GET route the app declares, with path params filled in."""
+    values = {
+        "fact_id": client.fact_id,
+        "source_id": client.source_id,
+        "question_id": client.question_id,
+        "job_id": client.job_id,
+    }
+    paths = []
+    for route in app.routes:
+        methods = getattr(route, "methods", None) or set()
+        path = getattr(route, "path", "")
+        if "GET" not in methods or not path or path.startswith("/static"):
+            continue
+        for name, value in values.items():
+            path = path.replace("{" + name + "}", str(value))
+        if "{" in path:  # an unknown param: fail loudly rather than skip silently
+            raise AssertionError(f"route param not covered by this test: {path}")
+        paths.append(path)
+    return paths
+
+
+def test_no_get_route_crashes_when_the_policy_is_lost(tmp_path, monkeypatch):
+    """Enumerated so a newly added route is covered automatically."""
+    client = _halted_client(tmp_path, monkeypatch)
+    app = client.app
+    exempt = {"/report", "/settings"}
+
+    paths = _get_paths(app, client)
+    assert "/" in paths and "/review" in paths and "/workbench" in paths
+
+    for path in paths:
+        resp = client.get(path)
+        assert resp.status_code != 500, f"{path} crashed instead of reporting"
+        if path in exempt:
+            continue
+        assert resp.status_code == 409, f"{path} did not halt"
+        assert "policy reset --force" in resp.text, f"{path} hid the recovery route"
+
+    report = client.get("/report")
+    assert report.status_code == 200
+    assert "policy_missing" in report.text
+    # ("inconsistent — promotion stays gated" is the errors banner, not a claim
+    # that the KB checked out clean)
+    assert "knowledge base is consistent" not in report.text
+
+
+def test_halted_kb_refuses_writes_and_leaves_facts_untouched(tmp_path, monkeypatch):
+    client = _halted_client(tmp_path, monkeypatch)
+    store = client.app.state.store
+
+    resp = client.post(f"/facts/{client.fact_id}/accept")
+
+    assert resp.status_code == 409
+    assert "policy reset --force" in resp.text
+    # the guard runs before the route, so the autocommitted status change that
+    # used to happen before the render blew up cannot happen at all
+    assert store.get_fact(client.fact_id)["status"] == "candidate"
+
+
+def test_questions_page_exposes_a_lost_policy(tmp_path, monkeypatch):
+    client = _halted_client(tmp_path, monkeypatch)
+
+    resp = client.get("/questions")
+
+    assert resp.status_code == 409
+    assert "policy_missing" in resp.text or "is missing" in resp.text
+    assert "policy reset --force" in resp.text
+
+
+def test_restoring_the_policy_file_unblocks_the_kb(tmp_path, monkeypatch):
+    client = _halted_client(tmp_path, monkeypatch)
+    assert client.get("/review").status_code == 409
+
+    client.policy_path.parent.mkdir(parents=True, exist_ok=True)
+    client.policy_path.write_text(FUNCTIONAL_POLICY, encoding="utf-8")
+
+    assert client.get("/review").status_code == 200
+
+
+# --- the report of an unrecorded-policy KB never renders as OK ---
+
+
+def test_report_of_unrecorded_policy_kb_is_not_ok(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from verinote.config import Config
+    from verinote.web.app import create_app
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    cfg = Config(
+        root=tmp_path,
+        db_path=tmp_path / "kb.sqlite",
+        provider="anthropic",
+        model="m",
+        api_key=None,
+        base_url=None,
+    )
+    client = TestClient(create_app(cfg))
+    client.app.state.store.add_fact("Ada", "is_a", "engineer", status="confirmed")
+
+    resp = client.get("/report")
+
+    assert resp.status_code == 200
+    assert ">\n    OK\n  <" not in resp.text
+    assert "WARNINGS" in resp.text
+    assert "policy_unrecorded" in resp.text
+    assert "knowledge base is consistent" not in resp.text

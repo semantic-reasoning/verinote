@@ -6,8 +6,11 @@
 <p class="warn">DuckDB verification backend is not available.</p>
 {% endif %}
 <p>
-  <span class="badge {{ 'badge-confirmed' if rep.ok and rep.errors == 0 else 'badge-superseded' }}">
-    {{ 'OK' if rep.ok and rep.errors == 0 else 'ERRORS' }}
+  {# A warning means something about the check itself is unsound (e.g. no policy
+     file for this KB), so it cannot show as OK — an OK badge is a claim. #}
+  {% set is_ok = rep.ok and rep.errors == 0 and rep.warnings == 0 %}
+  <span class="badge {{ 'badge-confirmed' if is_ok else 'badge-superseded' }}">
+    {{ 'OK' if is_ok else ('ERRORS' if rep.errors else 'WARNINGS') }}
   </span>
   errors: {{ rep.errors }} · warnings: {{ rep.warnings }}
 </p>

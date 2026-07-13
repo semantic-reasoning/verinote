@@ -46,9 +46,11 @@ from verinote.pipeline.policy_state import (
     PolicyMissingError,
     PolicyStatus,
     ensure_policy_marker,
+    policy_missing_message,
     resolve_policy,
     write_default_policy,
 )
+from verinote.pipeline.query import load_query
 from verinote.pipeline.question_outcome import question_outcome_view
 from verinote.pipeline.ask import ask_question
 from verinote.pipeline.acceptance import (
@@ -90,6 +92,19 @@ from verinote.store.fact_input import structural_term, term_input_kind
 _TEMPLATES = resources.files("verinote.web").joinpath("templates")
 _STATIC = resources.files("verinote.web").joinpath("static")
 
+# The only paths served while a KB's recorded policy file is missing: the report
+# (which explains the halt), the recovery/settings screens, KB switching, and
+# static assets. Everything else — including every write — fails closed, because
+# with the KB's rules unapplied neither a verdict nor a human accept is real.
+_POLICY_GUARD_ALLOWLIST = ("/report", "/settings", "/kb/select", "/static")
+
+
+def _policy_guard_exempt(path: str) -> bool:
+    return any(
+        path == allowed or path.startswith(allowed + "/")
+        for allowed in _POLICY_GUARD_ALLOWLIST
+    )
+
 
 def create_app(cfg: Config | None = None) -> FastAPI:
     cfg = cfg if cfg is not None else Config.load_for_ui()
@@ -105,6 +120,36 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     templates = Jinja2Templates(directory=str(_TEMPLATES))
     app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
+
+    def _policy_halted(request: Request, message: str):
+        return templates.TemplateResponse(
+            request,
+            "policy_halted.html",
+            {"message": message},
+            status_code=409,
+        )
+
+    @app.middleware("http")
+    async def policy_halted_guard(request: Request, call_next):
+        """Fail closed while this KB's recorded logic policy is missing.
+
+        A halted KB must not be *written* to either: an accept/reject decision
+        taken while the KB's rules are not being applied is a fake review gate,
+        and SQLite autocommits the status change long before rendering fails. So
+        the guard runs before the route does, and only the recovery paths pass.
+        """
+        store = app.state.store
+        if store is not None and not _policy_guard_exempt(request.url.path):
+            state = resolve_policy(store)
+            if state.status is PolicyStatus.MISSING_RECORDED:
+                return _policy_halted(request, policy_missing_message(state))
+        return await call_next(request)
+
+    def _policy_missing_handler(request: Request, exc: Exception):
+        """Backstop: a route added outside the guard still gets the loud page."""
+        return _policy_halted(request, str(exc))
+
+    app.add_exception_handler(PolicyMissingError, _policy_missing_handler)
 
     def _active_store() -> Store:
         store = app.state.store
@@ -932,10 +977,14 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         rep = verify(store)
         page_error = error
         if page_error is None:
-            page_error = next(
-                (finding for finding in rep.findings if "policy error" in finding),
-                None,
-            )
+            # Ask the thing that owns the answer, never the report's prose: a
+            # finding string is human-readable output, not a state field. (The
+            # missing-policy state is handled by the guard, which never routes
+            # here.) The query policy's own error type is what surfaces below.
+            try:
+                load_query(store)
+            except CorroborationPolicyError as exc:
+                page_error = f"policy error: {exc}"
         return templates.TemplateResponse(
             request,
             "questions.html",
