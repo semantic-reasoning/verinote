@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: MPL-2.0
 import builtins
+import sys
 
 import pytest
 
 from verinote.engine.duckdb_terms import term_to_duckdb_value
 from verinote.engine.terms import Atom, Compound, NumberLit, StringLit
 from verinote.store.duckdb_fact_terms import (
+    FACT_TERMS_FILENAME,
     DuckDBFactTermStore,
     DuckDBFactTermStoreError,
     fact_terms_path,
@@ -215,3 +217,53 @@ def test_store_reports_missing_duckdb(monkeypatch):
 
     with pytest.raises(DuckDBFactTermStoreError, match="DuckDB is not installed"):
         DuckDBFactTermStore(None)
+
+
+# DuckDB's native storage splits a database path on '?' and reads the tail as
+# connection parameters, so a KB root containing one can never be opened: it used
+# to surface as `Cannot open file ".../weird.wal?dir/facts.duckdb"` -- a filename
+# nobody wrote -- after leaving a half-built facts.duckdb behind. The split
+# happens inside DuckDB, below any string we control, so we refuse the path up
+# front instead.
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="Windows forbids '?' in filenames")
+def test_store_refuses_a_kb_root_with_a_question_mark(tmp_path):
+    _duckdb()
+    root = tmp_path / "weird?dir"
+    root.mkdir()
+
+    with pytest.raises(DuckDBFactTermStoreError) as excinfo:
+        DuckDBFactTermStore.for_root(root)
+
+    message = str(excinfo.value)
+    assert "?" in message  # names the offending character
+    assert str(root) in message  # and the path it is in
+    assert "Move the KB" in message  # loud is not the same as a dead end: give a way out
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="Windows forbids '?' in filenames")
+def test_store_leaves_no_half_built_file_when_it_refuses_the_path(tmp_path):
+    _duckdb()
+    root = tmp_path / "weird?dir"
+    root.mkdir()
+    before = sorted(p.name for p in root.iterdir())
+
+    with pytest.raises(DuckDBFactTermStoreError):
+        DuckDBFactTermStore.for_root(root)
+
+    after = sorted(p.name for p in root.iterdir())
+    assert before == after == []
+    assert not (root / FACT_TERMS_FILENAME).exists()
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="Windows forbids these in filenames")
+@pytest.mark.parametrize("dirname", ["it's a kb", "semi;dir", "hash#dir"])
+def test_store_still_opens_under_other_awkward_path_chars(tmp_path, dirname):
+    # Only '?' is load-bearing for DuckDB's native storage. Do not over-reject.
+    _duckdb()
+    root = tmp_path / dirname
+    root.mkdir()
+
+    store = DuckDBFactTermStore.for_root(root)
+    store.put_fact_terms(1, "A", "is_a", "B")
+    assert store.get_fact_terms(1) is not None
+    store.close()
