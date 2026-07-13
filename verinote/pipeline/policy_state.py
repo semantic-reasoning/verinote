@@ -139,6 +139,25 @@ def policy_missing_message(state: PolicyState) -> str:
     )
 
 
+def assert_writable(store: "Store") -> PolicyState:
+    """Refuse to let a KB whose recorded policy file is gone be written to.
+
+    The single enforcement predicate: every write entrypoint (CLI dispatch, the
+    extraction worker's write boundary, the web guard) asks *this*, so the three
+    of them cannot disagree about what "halted" means. Enforcement points must
+    call it instead of re-deriving the state — `resolve_policy` is the only place
+    allowed to look at the file and the marker.
+
+    A halted KB still has to be *recoverable*, so this is deliberately not a
+    blanket lock on the DB: read-only diagnosis (`status`, `coverage`, the web
+    `/report` page) and `policy reset --force` do not go through here.
+    """
+    state = resolve_policy(store)
+    if state.status is PolicyStatus.MISSING_RECORDED:
+        raise PolicyMissingError(policy_missing_message(state))
+    return state
+
+
 def ensure_policy_marker(store: "Store", root: Path | None = None) -> PolicyState:
     """Record/refresh the policy marker when a KB is opened.
 
@@ -173,6 +192,12 @@ def write_default_policy(store: "Store", root: Path | None = None, *, origin: st
         raise ValueError(f"unknown policy marker origin: {origin}")
     path = (root / POLICY_RELPATH) if root is not None else policy_path(store)
     path.parent.mkdir(parents=True, exist_ok=True)
+    # ORDER IS LOAD-BEARING — file first, marker second. This is the function that
+    # un-halts a KB (`policy reset --force`), and it runs *on* a halted KB. Writing
+    # the file first flips `resolve_policy` to PRESENT before the marker write
+    # happens, so the DB write lands on a KB that is no longer halted. Reverse
+    # these two lines and the only recovery path starts tripping over the very
+    # halt it exists to clear.
     path.write_text(DEFAULT_POLICY, encoding="utf-8")
     store.record_policy_marker(policy_sha256(DEFAULT_POLICY), origin=origin)
     return path

@@ -521,3 +521,163 @@ def test_report_of_unrecorded_policy_kb_is_not_ok(tmp_path, monkeypatch):
     assert "WARNINGS" in resp.text
     assert "policy_unrecorded" in resp.text
     assert "knowledge base is consistent" not in resp.text
+
+
+# --- a halted KB takes no writes: CLI, worker, and the recovery paths that must
+# --- keep working (the contract this PR claimed but did not enforce)
+
+
+def _halted_cli_kb(tmp_path, monkeypatch):
+    """A CLI-visible KB whose scaffolded policy file has been deleted."""
+    _env(monkeypatch, tmp_path)
+    assert cli.main(["init"]) == 0
+    policy = tmp_path / POLICY_RELPATH
+    policy.unlink()
+    return policy
+
+
+def _kb_rows(tmp_path):
+    store = Store(tmp_path / "kb.sqlite")
+    store.init_schema()
+    try:
+        return (len(store.sources()), len(store.facts()), len(store.questions()))
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        pytest.param(["ingest", "<src>"], id="ingest"),
+        pytest.param(["seed"], id="seed"),
+        pytest.param(["query", "who is Ada?"], id="query"),
+        pytest.param(["sync", "<src>"], id="sync"),
+        pytest.param(["repair"], id="repair"),
+    ],
+)
+def test_cli_write_commands_refuse_on_halted_kb(tmp_path, monkeypatch, capsys, argv):
+    """Every write command halts — and writes *nothing* — while the policy is lost."""
+    policy = _halted_cli_kb(tmp_path, monkeypatch)
+    src = tmp_path / "input.txt"
+    src.write_text("Ada is_a engineer\n", encoding="utf-8")
+
+    rc = cli.main([a.replace("<src>", str(src)) for a in argv])
+
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "policy file" in err and "missing" in err
+    # nothing was written: no registered source file, no rows, no query file
+    assert not (tmp_path / "sources" / "input.txt").exists()
+    assert not (tmp_path / "facts" / "query.dl").exists()
+    assert _kb_rows(tmp_path) == (0, 0, 0)
+    assert not policy.exists()  # the evidence of the loss is intact
+
+
+def test_init_refuses_on_halted_kb(tmp_path, monkeypatch, capsys):
+    """`init` is not exempt: re-scaffolding would paper over the lost policy.
+
+    Rewriting the default policy here would turn a KB whose human-written rules
+    are gone into a plausible-looking green KB. Recovery is an explicit human act
+    (`policy reset --force`), so `init` stays a refused write — and `--seed` must
+    not slip demo rows into the halted KB on its way to the refusal either.
+    """
+    policy = _halted_cli_kb(tmp_path, monkeypatch)
+
+    assert cli.main(["init", "--seed"]) == 2
+
+    assert "policy file" in capsys.readouterr().err
+    assert not policy.exists()
+    assert _kb_rows(tmp_path) == (0, 0, 0)
+
+
+def test_status_and_coverage_survive_halt(tmp_path, monkeypatch, capsys):
+    """Read-only diagnosis keeps working — a halt you cannot inspect is a brick."""
+    _halted_cli_kb(tmp_path, monkeypatch)
+
+    assert cli.main(["status"]) == 0
+    assert cli.main(["coverage"]) == 0
+
+    out = capsys.readouterr().out
+    assert "KB:" in out
+    assert "coverage:" in out
+
+
+def test_policy_reset_force_recovers_halted_kb(tmp_path, monkeypatch, capsys):
+    """The recovery path runs *on* a halted KB, and really un-halts it."""
+    policy = _halted_cli_kb(tmp_path, monkeypatch)
+    src = tmp_path / "input.txt"
+    src.write_text("Ada is_a engineer\n", encoding="utf-8")
+    assert cli.main(["ingest", str(src)]) != 0  # halted before recovery
+
+    assert cli.main(["policy", "reset", "--force"]) == 0
+
+    assert policy.read_text(encoding="utf-8") == DEFAULT_POLICY
+    store = Store(tmp_path / "kb.sqlite")
+    store.init_schema()
+    marker = store.policy_marker()
+    store.close()
+    assert marker is not None and marker["origin"] == "reset"
+    # and the KB accepts writes again — recovery that leaves it halted is no recovery
+    capsys.readouterr()
+    assert cli.main(["ingest", str(src)]) == 0
+    assert (tmp_path / "sources" / "input.txt").is_file()
+
+
+class _PolicyDeletingClient:
+    """Deletes the KB's policy file just as the *second* chunk is extracted."""
+
+    name = "fake"
+
+    def __init__(self, policy_path):
+        self.policy_path = policy_path
+        self.calls = 0
+
+    def extract_facts(self, *, source_text: str, schema_hint: str = ""):
+        from verinote.llm.base import ExtractedFact
+
+        self.calls += 1
+        if self.calls == 2:
+            self.policy_path.unlink()
+        return [ExtractedFact(source_text, "is_a", "chunk", 0.9)]
+
+
+def test_extraction_worker_halts_when_policy_disappears_mid_job(tmp_path):
+    """A job started on a healthy KB must stop the moment the policy vanishes.
+
+    The CLI's start-of-command check cannot see this: the job was already running
+    (and the Store already open) when the file was deleted. Only a re-check at the
+    per-chunk write boundary keeps chunk 2 out of a KB with no rules.
+    """
+    from verinote.pipeline.extract import process_extraction_job
+
+    store = _store(tmp_path)
+    path = _write_policy(tmp_path)
+    store.record_policy_marker(policy_sha256(path.read_text(encoding="utf-8")), origin="scaffold")
+    source_id = store.add_source("sources/a.txt")
+    job_id = store.create_extraction_job(
+        source_id=source_id, provider="fake", model="m", total_chunks=2
+    )
+    store.add_source_chunks(job_id=job_id, source_id=source_id, chunks=["alpha", "beta"])
+
+    client = _PolicyDeletingClient(path)
+    with pytest.raises(PolicyMissingError):
+        process_extraction_job(store, client, job_id=job_id)
+
+    assert client.calls == 2  # the second chunk was extracted but never persisted
+    facts = store.facts()
+    assert [f["subject"] for f in facts] == ["alpha"]
+    snippets = [e["snippet"] for f in facts for e in store.fact_evidence(f["id"])]
+    assert "beta" not in snippets
+    store.close()
+
+
+def test_store_has_no_public_meta_delete(tmp_path):
+    """No public API may drop a policy marker — that is the silent-fallback bug."""
+    store = _store(tmp_path)
+    public = {name for name in dir(store) if not name.startswith("_")}
+    store.close()
+
+    assert "delete_meta" not in public
+    assert "set_meta" not in public
+    assert "get_meta" not in public
+    assert "clear_policy_marker" not in public

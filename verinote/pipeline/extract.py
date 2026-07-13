@@ -21,6 +21,7 @@ from verinote.pipeline.corroboration import (
     store_relation_aliases,
 )
 from verinote.pipeline.normalize import normalize_for_extraction
+from verinote.pipeline.policy_state import assert_writable
 from verinote.prompts import PromptError, render_prompt
 from verinote.store import Store
 from verinote.store.fact_input import structural_term
@@ -160,7 +161,15 @@ def process_extraction_job(
     job_id: int,
     schema_hint: str = "",
 ) -> ChunkedExtractionResult:
-    """Process pending chunks for one durable extraction job."""
+    """Process pending chunks for one durable extraction job.
+
+    Raises `PolicyMissingError` if this KB's recorded logic policy file is gone —
+    both at the start and, per chunk, at the write boundary in `_extract_chunk`.
+    A job is long-running (one LLM call per chunk) and the CLI's start-of-command
+    check cannot see a policy deleted *after* the job began, so the check has to
+    live next to the write itself.
+    """
+    assert_writable(store)
     job = store.get_extraction_job(job_id)
     if job is None:
         raise LLMError(f"missing extraction job: {job_id}")
@@ -231,6 +240,11 @@ def _extract_chunk(
         schema_hint=schema_hint,
         root=store.db_path.parent,
     )
+    # The write boundary. Re-checked for *every* chunk, after the LLM call and
+    # before the first insert: the policy file can vanish while a job is running
+    # (a job is many slow LLM calls), and a check done only at job start would let
+    # every chunk after the deletion land in a KB whose rules no longer exist.
+    assert_writable(store)
     aliases = _relation_aliases_or_error(store)
     rows = _candidate_rows(facts, source_text, relation_aliases=aliases)
     inserted = 0

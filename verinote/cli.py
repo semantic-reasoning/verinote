@@ -389,17 +389,58 @@ def cmd_ui(cfg: Config | None, args: argparse.Namespace) -> int:
     return 0
 
 
+def _refuse_on_halted_kb(cfg: Config | None) -> int | None:
+    """Exit code to return instead of running a write on a halted KB, or None.
+
+    Asked once, in `main`, for every subcommand that did not declare itself
+    `halt_safe`. The KB's policy state itself is *never* inferred here: that
+    judgement lives in `policy_state.assert_writable` alone. The db-file check is
+    only "is there a KB at all" — with no database there can be no marker, hence
+    nothing that could be halted, and `init` on a fresh root must still work.
+    """
+    from verinote.pipeline.policy_state import PolicyMissingError, assert_writable
+
+    if cfg is None or not cfg.db_path.is_file():
+        return None
+    store = Store(cfg.db_path)
+    store.init_schema()
+    try:
+        assert_writable(store)
+    except PolicyMissingError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        store.close()
+    return None
+
+
 def build_parser() -> argparse.ArgumentParser:
+    """Build the CLI.
+
+    Every subcommand declares `halt_safe`: may it run against a KB whose recorded
+    logic policy file is gone? `halt_safe=True` is for the paths that must survive
+    a halt — read-only diagnosis, and the recovery command itself — because a halt
+    the user cannot diagnose or undo is just a bricked KB. Everything that writes
+    declares False and is refused by `main`.
+
+    `init` is deliberately *not* exempt: re-scaffolding the default policy onto a
+    KB that recorded a policy would overwrite the evidence of the loss with a
+    plausible-looking green KB, which is the exact failure this whole mechanism
+    exists to prevent. Recovery is `policy reset --force` — an explicit human act.
+
+    Fail closed: `main` reads this flag with a default of False, so a new
+    subcommand that forgets to declare one is treated as a write and blocked.
+    """
     p = argparse.ArgumentParser(prog="verinote", description="Honest KB: LLM extracts, DuckDB verifies.")
     p.add_argument("--version", action="version", version=f"verinote {__version__}")
     sub = p.add_subparsers(dest="command", required=True)
 
     init = sub.add_parser("init", help="scaffold a local KB (SQLite) under VERINOTE_ROOT (./data)")
     init.add_argument("--seed", action="store_true", help="insert demo facts")
-    init.set_defaults(func=cmd_init)
+    init.set_defaults(func=cmd_init, halt_safe=False)
 
     seed = sub.add_parser("seed", help="insert demo facts into the KB")
-    seed.set_defaults(func=cmd_seed)
+    seed.set_defaults(func=cmd_seed, halt_safe=False)
 
     sync = sub.add_parser("sync", help="extract candidate facts from sources via the LLM")
     sync.add_argument(
@@ -407,27 +448,27 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         help="a source file; omit to sync every .txt/.md under <root>/sources/",
     )
-    sync.set_defaults(func=cmd_sync)
+    sync.set_defaults(func=cmd_sync, halt_safe=False)
 
     ingest = sub.add_parser("ingest", help="register a source file (converting docx/pdf to text)")
     ingest.add_argument("path", help="a .txt/.md file, or a .docx/.pdf to convert")
-    ingest.set_defaults(func=cmd_ingest)
+    ingest.set_defaults(func=cmd_ingest, halt_safe=False)
 
     query = sub.add_parser("query", help="translate pending NL questions to Datalog queries")
     query.add_argument("question", nargs="?", help="a question to add before translating")
-    query.set_defaults(func=cmd_query)
+    query.set_defaults(func=cmd_query, halt_safe=False)
 
     repair = sub.add_parser("repair", help="re-translate review_required questions (engine-gated)")
-    repair.set_defaults(func=cmd_repair)
+    repair.set_defaults(func=cmd_repair, halt_safe=False)
 
     coverage = sub.add_parser("coverage", help="report per-source engine-fact coverage")
     coverage.add_argument(
         "--strict", action="store_true", help="exit non-zero if any text source has no engine facts"
     )
-    coverage.set_defaults(func=cmd_coverage)
+    coverage.set_defaults(func=cmd_coverage, halt_safe=True)
 
     status = sub.add_parser("status", help="summarise KB state")
-    status.set_defaults(func=cmd_status)
+    status.set_defaults(func=cmd_status, halt_safe=True)
 
     policy = sub.add_parser("policy", help="manage this KB's logic policy file")
     policy_sub = policy.add_subparsers(dest="policy_command", required=True)
@@ -439,15 +480,21 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="required — confirm replacing this KB's logic policy with the default",
     )
-    policy_reset.set_defaults(func=cmd_policy_reset)
+    # The one command that must run *on* a halted KB: it is how a halt is cleared.
+    policy_reset.set_defaults(func=cmd_policy_reset, halt_safe=True)
 
     ui = sub.add_parser("ui", help="launch the web app")
     ui.add_argument("--host", default="127.0.0.1")
     ui.add_argument("--port", type=int, default=8731)
     ui.add_argument("--reload", action="store_true", help="auto-reload (dev)")
     ui.add_argument("--no-browser", action="store_true", help="do not open a browser")
-    ui.set_defaults(func=cmd_ui)
-    sub.add_parser("serve", help="alias for ui").set_defaults(func=cmd_ui, host="127.0.0.1", port=8731, reload=False, no_browser=True)
+    # Launchers, not writers: the web app has its own per-request halt guard, which
+    # blocks writes while still serving the /report page that explains the halt.
+    # Refusing to start the server would strand the user with no way to diagnose it.
+    ui.set_defaults(func=cmd_ui, halt_safe=True)
+    sub.add_parser("serve", help="alias for ui").set_defaults(
+        func=cmd_ui, halt_safe=True, host="127.0.0.1", port=8731, reload=False, no_browser=True
+    )
 
     return p
 
@@ -455,6 +502,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     cfg = Config.load_for_ui() if args.command in {"ui", "serve"} else Config.load()
+    # The single CLI enforcement point for a halted KB. It sits here, before
+    # dispatch, because every subcommand goes through this one line — a guard
+    # sprinkled per-command is a guard the next command will forget.
+    if not getattr(args, "halt_safe", False):
+        refusal = _refuse_on_halted_kb(cfg)
+        if refusal is not None:
+            return refusal
     return args.func(cfg, args)
 
 

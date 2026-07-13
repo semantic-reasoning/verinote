@@ -45,8 +45,8 @@ from verinote.pipeline import (
 from verinote.pipeline.policy_state import (
     PolicyMissingError,
     PolicyStatus,
+    assert_writable,
     ensure_policy_marker,
-    policy_missing_message,
     resolve_policy,
     write_default_policy,
 )
@@ -146,9 +146,12 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         """
         store = app.state.store
         if store is not None and not _policy_guard_exempt(request.method, request.url.path):
-            state = resolve_policy(store)
-            if state.status is PolicyStatus.MISSING_RECORDED:
-                return _policy_halted(request, policy_missing_message(state))
+            # Same predicate the CLI dispatch and the extraction worker use, so the
+            # three enforcement points cannot disagree about what "halted" means.
+            try:
+                assert_writable(store)
+            except PolicyMissingError as exc:
+                return _policy_halted(request, str(exc))
         return await call_next(request)
 
     def _policy_missing_handler(request: Request, exc: Exception):
