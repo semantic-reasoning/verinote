@@ -27,10 +27,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 TRACKED_POLICY_FIXTURE = "tests/fixtures/policy/sample-policy.dl"
 
 # Source inputs: hand-edited, irreplaceable, must stay committable.
+#
+# Only extensions that a plausible ignore rule could actually swallow are listed.
+# `.md` policy inputs are deliberately absent: no pattern in .gitignore has ever
+# threatened them, so asserting they stay un-ignored would pass even against the
+# pre-fix .gitignore — a decoration, not a regression lock.
 SOURCE_PATHS = [
     TRACKED_POLICY_FIXTURE,
-    "tests/fixtures/policy/relation-aliases.md",
-    "tests/fixtures/policy/typed-relations.md",
     "docs/examples/logic-policy.dl",
     "verinote/policy/logic-policy.dl",
     "some/other/kb/policy/logic-policy.dl",
@@ -39,12 +42,16 @@ SOURCE_PATHS = [
 ]
 
 # Generated engine artifacts: rebuilt from the KB, must stay ignored.
+# Both stores' sidecars are pinned: DuckDB leaves `.wal` behind on an unclean
+# shutdown and spills to `.tmp/`, mirroring SQLite's `-wal`/`-shm`.
 ARTIFACT_PATHS = [
     "data/facts/query.dl",
     "data/kb.sqlite",
     "data/facts.duckdb",
     "some/other/kb/facts/query.dl",
     "some/other/kb/facts.duckdb",
+    "some/other/kb/facts.duckdb.wal",
+    "some/other/kb/facts.duckdb.tmp/spill-0.tmp",
     "some/other/kb/kb.sqlite",
     "some/other/kb/kb.sqlite-wal",
     "some/other/kb/kb.sqlite-shm",
