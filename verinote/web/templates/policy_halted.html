@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Verification halted — verinote</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <main class="chooser">
+    <h1>Verification halted: this KB's logic policy is missing</h1>
+
+    {# The one message about a lost policy lives in policy_missing_message();
+       re-wording the recovery instructions here would be a second answer to the
+       same question. Recovery is a human decision — there is deliberately no
+       "re-create the policy" button on this page. #}
+    <p class="error" role="alert">{{ message }}</p>
+
+    <p class="muted">Reviewing, accepting and rejecting facts are blocked while the
+      KB's rules are not being applied: an approval given under rules that are not
+      running is not a real review gate. Restore the policy file (backup or version
+      control), or run <code>verinote policy reset --force</code> to explicitly
+      re-create the default policy. The KB unblocks itself as soon as the policy
+      file is back.</p>
+
+    <p><a href="/report">Open the report</a> · <a href="/settings">Settings</a></p>
+  </main>
+</body>
+</html>

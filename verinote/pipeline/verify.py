@@ -13,9 +13,11 @@ from __future__ import annotations
 from verinote.engine import CheckReport
 from verinote.pipeline.corroboration import CorroborationPolicyError
 from verinote.pipeline.policy_state import (
+    ENGINE_NO_FINDINGS_TEXT,
     POLICY_RELPATH,
     POLICY_UNRECORDED_BANNER,
     POLICY_UNRECORDED_FINDING,
+    POLICY_UNRECORDED_NO_FINDINGS_TEXT,
     PolicyMissingError,
     PolicyState,
     PolicyStatus,
@@ -100,8 +102,16 @@ def verify(store: Store) -> CheckReport:
 
 
 def _with_unrecorded_policy_warning(report: CheckReport) -> CheckReport:
-    """Annotate a default-policy run so it can never read as a clean bill of health."""
+    """Make a default-policy run unable to read as a clean bill of health.
+
+    A banner is not enough: the engine's "no findings — knowledge base is
+    consistent." sentence is a claim about *this KB's rules*, and no rules of
+    this KB were run. The sentence is replaced, not merely prefixed. `ok` and
+    `errors` are deliberately left alone — with no marker there is no evidence
+    that a policy was ever lost, and inventing an error would be inference.
+    """
     report.warnings += 1
     report.findings = [POLICY_UNRECORDED_FINDING, *report.findings]
+    report.text = report.text.replace(ENGINE_NO_FINDINGS_TEXT, POLICY_UNRECORDED_NO_FINDINGS_TEXT)
     report.text = f"{POLICY_UNRECORDED_BANNER}\n\n{report.text}"
     return report

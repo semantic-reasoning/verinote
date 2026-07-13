@@ -52,6 +52,14 @@ POLICY_ORIGINS = frozenset({"scaffold", "adopted", "reset"})
 POLICY_UNRECORDED_FINDING = (
     "WARNING policy_unrecorded: no KB policy file; running the shipped default"
 )
+# The engine's own "clean bill of health" sentence (engine/wirelog.py,
+# engine/duckdb_backend.py). It is a claim about the policy that ran, so when the
+# policy that ran is not this KB's, the sentence is replaced rather than framed.
+ENGINE_NO_FINDINGS_TEXT = "no findings — knowledge base is consistent."
+POLICY_UNRECORDED_NO_FINDINGS_TEXT = (
+    "no findings from the shipped default policy — this KB has no policy file of "
+    "its own, so this result says nothing about the KB's own rules."
+)
 POLICY_UNRECORDED_BANNER = (
     "WARNING policy_unrecorded: this KB has no policy file and never recorded one, "
     "so the shipped default policy was used. Findings below are the default's, not "
