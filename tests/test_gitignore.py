@@ -19,12 +19,17 @@ the "artifacts are ignored" half. Both halves together pin the actual split.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+GIT_ENV = os.environ | {
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_NOSYSTEM": "1",
+}
 
 # A real, tracked, hand-written policy. Under the old `*.dl` rule this file was
 # ignored and could not even be `git add`-ed without `-f`.
@@ -62,11 +67,21 @@ ARTIFACT_PATHS = [
 ]
 
 
-def _check_ignore(path: str) -> int:
+@pytest.fixture(scope="module")
+def gitignore_repo(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A throwaway repo whose only ignore input is this repository's .gitignore."""
+    repo = tmp_path_factory.mktemp("gitignore-repo")
+    subprocess.run(["git", "init", "-q"], cwd=repo, env=GIT_ENV, check=True)
+    (repo / ".gitignore").write_text((REPO_ROOT / ".gitignore").read_text(encoding="utf-8"))
+    return repo
+
+
+def _check_ignore(repo: Path, path: str) -> int:
     """Exit status of `git check-ignore -q <path>`: 0 ignored, 1 not ignored."""
     proc = subprocess.run(
         ["git", "check-ignore", "-q", "--no-index", path],
-        cwd=REPO_ROOT,
+        cwd=repo,
+        env=GIT_ENV,
         capture_output=True,
     )
     assert proc.returncode in (0, 1), (
@@ -76,8 +91,8 @@ def _check_ignore(path: str) -> int:
 
 
 @pytest.mark.parametrize("path", SOURCE_PATHS)
-def test_hand_written_sources_are_not_ignored(path: str) -> None:
-    assert _check_ignore(path) == 1, (
+def test_hand_written_sources_are_not_ignored(gitignore_repo: Path, path: str) -> None:
+    assert _check_ignore(gitignore_repo, path) == 1, (
         f"{path} is ignored by .gitignore; hand-written policy/fixtures must be "
         "committable. An ignored policy never reaches git, and nothing in this "
         "repo can regenerate it."
@@ -85,8 +100,10 @@ def test_hand_written_sources_are_not_ignored(path: str) -> None:
 
 
 @pytest.mark.parametrize("path", ARTIFACT_PATHS)
-def test_generated_kb_artifacts_stay_ignored(path: str) -> None:
-    assert _check_ignore(path) == 0, f"{path} is a generated artifact and must stay ignored"
+def test_generated_kb_artifacts_stay_ignored(gitignore_repo: Path, path: str) -> None:
+    assert _check_ignore(gitignore_repo, path) == 0, (
+        f"{path} is a generated artifact and must stay ignored"
+    )
 
 
 def test_sample_policy_fixture_is_actually_tracked() -> None:
