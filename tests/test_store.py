@@ -644,6 +644,115 @@ def test_reset_running_chunks_makes_job_resumable(tmp_path):
     assert s.get_extraction_job(job_id)["status"] == "pending"
 
 
+def _job_with_mixed_chunks(s, sid):
+    """A job caught mid-flight: one chunk done, one failed, one in flight."""
+    job_id = s.create_extraction_job(
+        source_id=sid, provider="fake", model="m", total_chunks=3
+    )
+    chunks = s.add_source_chunks(job_id=job_id, source_id=sid, chunks=["a", "b", "c"])
+    s.mark_extraction_job_running(job_id)
+    s.mark_chunk_running(chunks[0])
+    s.mark_chunk_done(chunks[0], candidates=2)
+    s.mark_chunk_running(chunks[1])
+    s.mark_chunk_failed(chunks[1], "provider down")
+    s.mark_chunk_running(chunks[2])
+    return job_id, chunks
+
+
+def test_rollback_extraction_job_requeues_only_the_in_flight_chunk(tmp_path):
+    """A halted job must be resumable: `running` is a state nothing ever resets (#194)."""
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    job_id, chunks = _job_with_mixed_chunks(s, sid)
+
+    s.rollback_extraction_job(job_id, "Halted: policy missing. Rolled back to pending.")
+
+    job = s.get_extraction_job(job_id)
+    assert job["status"] == "pending"
+    assert job["message"] == "Halted: policy missing. Rolled back to pending."
+    rows = s.source_chunks(job_id)
+    # done work is kept (its candidate facts are real), the failure keeps its
+    # error, and only the in-flight chunk goes back in the queue
+    assert [row["status"] for row in rows] == ["done", "failed", "pending"]
+    assert rows[1]["error"] == "provider down"
+    assert rows[2]["error"] == ""
+    assert s.next_pending_chunk(job_id)["id"] == chunks[2]
+
+
+def test_rollback_extraction_job_leaves_the_counters_true(tmp_path):
+    """Counters count `done`/`failed` chunks; a rollback changes neither."""
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    job_id, _ = _job_with_mixed_chunks(s, sid)
+    before = s.get_extraction_job(job_id)
+    counters = (
+        before["completed_chunks"],
+        before["failed_chunks"],
+        before["candidate_count"],
+        before["total_chunks"],
+    )
+
+    s.rollback_extraction_job(job_id, "halted")
+
+    after = s.get_extraction_job(job_id)
+    assert (
+        after["completed_chunks"],
+        after["failed_chunks"],
+        after["candidate_count"],
+        after["total_chunks"],
+    ) == counters == (1, 1, 2, 3)
+
+
+def test_rollback_extraction_job_records_a_fact_event(tmp_path):
+    """The rewind is part of the KB's history, not an invisible edit."""
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    job_id, _ = _job_with_mixed_chunks(s, sid)
+
+    s.rollback_extraction_job(job_id, "halted")
+
+    events = list(
+        s._conn.execute(
+            "SELECT event_type, actor, job_id, source_id, before_json, after_json "
+            "FROM fact_events WHERE event_type = 'extraction_job_rolled_back'"
+        )
+    )
+    assert len(events) == 1
+    event = events[0]
+    assert event["actor"] == "system"
+    assert event["job_id"] == job_id
+    assert event["source_id"] == sid
+    # the job carried a failed chunk, so it stood at 'failed' before the rewind
+    assert json.loads(event["before_json"])["status"] == "failed"
+    assert json.loads(event["after_json"])["status"] == "pending"
+
+
+def test_rollback_extraction_job_does_not_revive_a_canceled_job(tmp_path):
+    """A human cancelled it; a halt must not put it back in the queue."""
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    job_id, _ = _job_with_mixed_chunks(s, sid)
+    s._conn.execute(
+        "UPDATE extraction_jobs SET status = 'canceled', message = 'canceled by user' "
+        "WHERE id = ?",
+        (job_id,),
+    )
+
+    s.rollback_extraction_job(job_id, "halted")
+
+    job = s.get_extraction_job(job_id)
+    assert job["status"] == "canceled"
+    assert job["message"] == "canceled by user"
+
+
+def test_rollback_extraction_job_ignores_an_unknown_job(tmp_path):
+    s = _store(tmp_path)
+
+    s.rollback_extraction_job(9999, "halted")
+
+    assert list(s._conn.execute("SELECT id FROM fact_events")) == []
+
+
 def test_mark_chunk_running_returns_none_when_chunk_already_claimed(tmp_path):
     s = _store(tmp_path)
     sid = s.add_source("sources/a.txt")

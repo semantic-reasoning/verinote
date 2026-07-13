@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 import builtins
 import re
+import threading
 import time
 from html import unescape
 
@@ -11,8 +12,14 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import verinote.web.app as webapp  # noqa: E402
 from verinote.config import Config  # noqa: E402
+from verinote.engine import DEFAULT_POLICY  # noqa: E402
 from verinote.engine.terms import Atom, Compound, StringLit  # noqa: E402
 from verinote.llm.base import ExtractedFact, LLMError  # noqa: E402
+from verinote.pipeline.policy_state import (  # noqa: E402
+    POLICY_RELPATH,
+    PolicyMissingError,
+    policy_sha256,
+)
 from verinote.pipeline.query import query_path  # noqa: E402
 from verinote.pipeline.query_intent import parse_query_intent  # noqa: E402
 from verinote.store import Store  # noqa: E402
@@ -1114,6 +1121,157 @@ def test_create_app_resumes_pending_source_jobs(tmp_path, monkeypatch, fake_clie
         assert "Analysis complete: 1/1 chunk(s)" in c.get("/sources").text
 
     _wait_for(resumed)
+
+
+def _job_kb(tmp_path, *, with_policy: bool):
+    """A KB with one pending extraction job — optionally with a *recorded* policy."""
+    cfg = Config(
+        root=tmp_path,
+        db_path=tmp_path / "kb.sqlite",
+        provider="anthropic",
+        model="m",
+        api_key=None,
+        base_url=None,
+    )
+    policy = tmp_path / POLICY_RELPATH
+    with Store(cfg.db_path) as store:
+        store.init_schema()
+        sid = store.add_source("sources/a.txt")
+        job_id = store.create_extraction_job(
+            source_id=sid, provider="anthropic", model="m", total_chunks=1
+        )
+        store.add_source_chunks(job_id=job_id, source_id=sid, chunks=["some text"])
+        policy.parent.mkdir(parents=True, exist_ok=True)
+        policy.write_text(DEFAULT_POLICY, encoding="utf-8")
+        store.record_policy_marker(policy_sha256(DEFAULT_POLICY), origin="scaffold")
+    if not with_policy:
+        policy.unlink()  # the KB recorded a policy and the file is gone: halted
+    return cfg, job_id, policy
+
+
+def _job_row(cfg, job_id):
+    with Store(cfg.db_path) as store:
+        store.init_schema()
+        return dict(store.get_extraction_job(job_id))
+
+
+def _job_event_types(cfg, job_id):
+    with Store(cfg.db_path) as store:
+        store.init_schema()
+        return [
+            row["event_type"]
+            for row in store._conn.execute(
+                "SELECT event_type FROM fact_events WHERE job_id = ? ORDER BY id",
+                (job_id,),
+            )
+        ]
+
+
+def test_launching_the_ui_on_a_halted_kb_resumes_nothing(tmp_path, monkeypatch, fake_client):
+    """Zero HTTP requests, and still the launcher used to write to a halted KB (#194).
+
+    `_resume_source_extraction_jobs` runs inside `create_app()`, outside the
+    request middleware that guards every route — so the middleware's halt never
+    covered it. The worker it started raised, `except Exception` "helpfully"
+    marked the job `failed`, and a KB whose rules were gone took a write from a
+    process that had not served a single request.
+    """
+    cfg, job_id, _ = _job_kb(tmp_path, with_policy=False)
+    clients = []
+    monkeypatch.setattr(
+        webapp,
+        "get_client",
+        lambda cfg: clients.append(cfg) or fake_client([ExtractedFact("X", "is_a", "Y", 0.9)]),
+    )
+    before = _job_row(cfg, job_id)
+
+    app = create_app(cfg)
+
+    assert app.state.resumed_job_ids == []  # not one job revived
+    time.sleep(0.2)  # a worker thread, had one been started, would have written by now
+    assert clients == []  # no worker was started at all
+    assert _job_row(cfg, job_id) == before  # job untouched: still pending, same message
+    assert before["status"] == "pending"
+    assert _job_event_types(cfg, job_id) == []  # no started / failed / rolled_back
+
+
+def test_launching_the_ui_on_a_healthy_kb_still_resumes(tmp_path, monkeypatch, fake_client):
+    """The gate above refuses a *halted* KB, not every KB."""
+    cfg, job_id, _ = _job_kb(tmp_path, with_policy=True)
+    monkeypatch.setattr(
+        webapp,
+        "get_client",
+        lambda cfg: fake_client([ExtractedFact("X", "is_a", "Y", 0.9)]),
+    )
+
+    app = create_app(cfg)
+    c = TestClient(app)
+
+    assert app.state.resumed_job_ids == [job_id]
+
+    def resumed():
+        assert "is_a" in c.get("/review").text
+
+    _wait_for(resumed)
+
+
+def test_worker_halt_does_not_mark_the_job_failed(tmp_path, monkeypatch, fake_client):
+    """`except PolicyMissingError` must stay ABOVE `except Exception` in the worker.
+
+    Below it, the generic handler "reports" the halt by calling
+    `fail_extraction_job` — a write to the very KB the halt exists to protect, and
+    one that buries the job in a `failed` state nothing resumes.
+    `process_extraction_job` already rewound the job to `pending`; the right move
+    is to touch the DB not at all.
+    """
+    cfg, job_id, policy = _job_kb(tmp_path, with_policy=True)
+    monkeypatch.setattr(
+        webapp,
+        "get_client",
+        lambda cfg: fake_client([ExtractedFact("X", "is_a", "Y", 0.9)]),
+    )
+    called = threading.Event()
+
+    def halt(*args, **kwargs):
+        # the shape of a mid-job halt: the job has already been rolled back to
+        # `pending` by `process_extraction_job` before the error reaches the worker
+        policy.unlink()
+        called.set()
+        raise PolicyMissingError("policy file is missing; run `verinote policy reset --force`")
+
+    monkeypatch.setattr(webapp, "process_extraction_job", halt)
+
+    create_app(cfg)
+
+    assert called.wait(timeout=2.0)
+    time.sleep(0.2)  # let a (wrong) `fail_extraction_job` land, if the order regressed
+    job = _job_row(cfg, job_id)
+    assert job["status"] == "pending", "the halted job was buried in `failed` by a write"
+    assert "analysis failed" not in job["message"]
+    assert "extraction_job_failed" not in _job_event_types(cfg, job_id)
+
+
+def test_worker_still_fails_the_job_on_an_ordinary_error(tmp_path, monkeypatch, fake_client):
+    """The control for the test above: a non-halt crash *is* still reported."""
+    cfg, job_id, _ = _job_kb(tmp_path, with_policy=True)
+    monkeypatch.setattr(
+        webapp,
+        "get_client",
+        lambda cfg: fake_client([ExtractedFact("X", "is_a", "Y", 0.9)]),
+    )
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(webapp, "process_extraction_job", boom)
+
+    create_app(cfg)
+
+    def failed():
+        assert _job_row(cfg, job_id)["status"] == "failed"
+
+    _wait_for(failed)
+    assert "boom" in _job_row(cfg, job_id)["message"]
 
 
 def test_report_ok_for_consistent_kb(tmp_path):

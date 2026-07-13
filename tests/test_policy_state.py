@@ -7,9 +7,14 @@ import verinote.cli as cli
 from verinote.engine import DEFAULT_POLICY
 from verinote.pipeline.corroboration import store_functional_relations
 from verinote.pipeline.policy_state import (
+    POLICY_CLI_LINE_MISSING_RECORDED,
+    POLICY_CLI_LINE_PRESENT,
+    POLICY_CLI_LINE_UNRECORDED_DEFAULT,
     POLICY_RELPATH,
     PolicyMissingError,
+    PolicyState,
     PolicyStatus,
+    policy_cli_line,
     policy_sha256,
     resolve_policy,
 )
@@ -655,6 +660,21 @@ def test_policy_reset_force_recovers_halted_kb(tmp_path, monkeypatch, capsys):
     assert (tmp_path / "sources" / "input.txt").is_file()
 
 
+class _ChunkClient:
+    """One fact per chunk, subject = the chunk text. Never touches the policy."""
+
+    name = "fake"
+
+    def __init__(self):
+        self.calls = 0
+
+    def extract_facts(self, *, source_text: str, schema_hint: str = ""):
+        from verinote.llm.base import ExtractedFact
+
+        self.calls += 1
+        return [ExtractedFact(source_text, "is_a", "chunk", 0.9)]
+
+
 class _PolicyDeletingClient:
     """Deletes the KB's policy file just as the *second* chunk is extracted."""
 
@@ -701,6 +721,240 @@ def test_extraction_worker_halts_when_policy_disappears_mid_job(tmp_path):
     snippets = [e["snippet"] for f in facts for e in store.fact_evidence(f["id"])]
     assert "beta" not in snippets
     store.close()
+
+
+# --- #194: the three holes left in the halt --------------------------------
+# --- (a) the CLI's diagnostic surface never said the KB was halted ----------
+
+
+def test_policy_cli_line_covers_every_policy_status():
+    """Every `PolicyStatus` has a line; a new one without a line is a KeyError.
+
+    A blank/absent marker for an unknown state would be exactly the silent
+    fallback this module exists to kill, so the lookup is deliberately total.
+    """
+    from pathlib import Path
+
+    lines = {
+        status: policy_cli_line(PolicyState(status=status, path=Path("policy.dl")))
+        for status in PolicyStatus
+    }
+
+    assert set(lines) == set(PolicyStatus)  # no member left unlined
+    assert all(line.strip() for line in lines.values())
+    assert len(set(lines.values())) == len(PolicyStatus)  # states are distinguishable
+    assert lines[PolicyStatus.MISSING_RECORDED] == POLICY_CLI_LINE_MISSING_RECORDED
+    assert lines[PolicyStatus.PRESENT] == POLICY_CLI_LINE_PRESENT
+    assert lines[PolicyStatus.UNRECORDED_DEFAULT] == POLICY_CLI_LINE_UNRECORDED_DEFAULT
+    assert "HALTED" in POLICY_CLI_LINE_MISSING_RECORDED
+
+
+def test_status_says_the_kb_is_halted_on_stdout(tmp_path, monkeypatch, capsys):
+    """`status` on a halted KB used to read as perfectly healthy.
+
+    The marker goes to *stdout*, with the rest of the summary: `verinote status >
+    out.txt` and a CI health check read stdout, and a halt they cannot see is not
+    a halt. The loud recovery text still goes to stderr.
+    """
+    _halted_cli_kb(tmp_path, monkeypatch)
+
+    assert cli.main(["status"]) == 0  # diagnosis must still work *on* a halted KB
+
+    captured = capsys.readouterr()
+    assert POLICY_CLI_LINE_MISSING_RECORDED in captured.out
+    assert "policy reset --force" in captured.err
+    assert "version control" in captured.err
+
+
+def test_coverage_says_the_kb_is_halted_on_stdout(tmp_path, monkeypatch, capsys):
+    _halted_cli_kb(tmp_path, monkeypatch)
+
+    assert cli.main(["coverage"]) == 0  # plain coverage is a recovery path: rc=0
+
+    captured = capsys.readouterr()
+    assert POLICY_CLI_LINE_MISSING_RECORDED in captured.out
+    assert "coverage:" in captured.out
+    assert "policy reset --force" in captured.err
+
+
+def test_coverage_strict_fails_on_a_halted_kb(tmp_path, monkeypatch, capsys):
+    """`--strict` is a machine gate: a KB with no rules does not pass it."""
+    _halted_cli_kb(tmp_path, monkeypatch)
+
+    assert cli.main(["coverage", "--strict"]) == 1
+
+    captured = capsys.readouterr()
+    assert POLICY_CLI_LINE_MISSING_RECORDED in captured.out
+    assert "logic policy file is missing" in captured.err
+
+
+def test_coverage_strict_passes_on_a_healthy_kb(tmp_path, monkeypatch, capsys):
+    """The rc=1 above is the halt talking, not a coverage gap."""
+    _env(monkeypatch, tmp_path)
+    assert cli.main(["init"]) == 0
+
+    assert cli.main(["coverage", "--strict"]) == 0
+
+    assert POLICY_CLI_LINE_PRESENT in capsys.readouterr().out
+
+
+def test_status_of_unrecorded_kb_prints_the_default_line(tmp_path, monkeypatch, capsys):
+    """The benign state is reported as itself — not as "ok", and not as halted."""
+    _env(monkeypatch, tmp_path)
+    store = Store(tmp_path / "kb.sqlite")
+    store.init_schema()
+    store.close()
+
+    assert cli.main(["status"]) == 0
+
+    captured = capsys.readouterr()
+    assert POLICY_CLI_LINE_UNRECORDED_DEFAULT in captured.out
+    assert "HALTED" not in captured.out
+    assert captured.err == ""  # the benign state is not an error
+
+
+# --- (b) the worker: a mid-job halt must rewind the job, not strand it ------
+
+
+class _PolicyVanishingStore(Store):
+    """A Store whose policy file disappears just as the *second* chunk is dequeued.
+
+    This is the gap the per-chunk write boundary cannot see: the policy is gone
+    before chunk 2 is even claimed, and claiming a chunk (`status='running'`,
+    `attempts + 1`) is itself a write to a halted KB.
+    """
+
+    def __init__(self, db_path, policy_path):
+        super().__init__(db_path)
+        self.policy_path = policy_path
+        self.dequeues = 0
+        self.claims = []
+
+    def next_pending_chunk(self, job_id: int):
+        row = super().next_pending_chunk(job_id)
+        self.dequeues += 1
+        if row is not None and self.dequeues == 2:
+            self.policy_path.unlink()
+        return row
+
+    def mark_chunk_running(self, chunk_id: int):
+        self.claims.append(chunk_id)
+        return super().mark_chunk_running(chunk_id)
+
+
+def _halted_mid_job_kb(tmp_path, chunks=("alpha", "beta")):
+    store = _store(tmp_path)
+    path = _write_policy(tmp_path)
+    store.record_policy_marker(policy_sha256(path.read_text(encoding="utf-8")), origin="scaffold")
+    source_id = store.add_source("sources/a.txt")
+    job_id = store.create_extraction_job(
+        source_id=source_id, provider="fake", model="m", total_chunks=len(chunks)
+    )
+    store.add_source_chunks(job_id=job_id, source_id=source_id, chunks=list(chunks))
+    store.close()
+    return path, job_id
+
+
+def test_chunk_is_not_claimed_on_a_kb_that_went_halted(tmp_path):
+    """The gate sits *before* `mark_chunk_running` — claiming a chunk is a write."""
+    from verinote.pipeline.extract import process_extraction_job
+
+    path, job_id = _halted_mid_job_kb(tmp_path)
+    store = _PolicyVanishingStore(tmp_path / "kb.sqlite", path)
+    store.init_schema()
+    client = _ChunkClient()
+
+    with pytest.raises(PolicyMissingError):
+        process_extraction_job(store, client, job_id=job_id)
+
+    chunks = store.source_chunks(job_id)
+    assert [c["status"] for c in chunks] == ["done", "pending"]
+    # chunk 2 was never claimed: not marked running, no attempt burned, no LLM call
+    assert store.claims == [int(chunks[0]["id"])]
+    assert chunks[1]["attempts"] == 0
+    assert client.calls == 1
+    store.close()
+
+
+def test_mid_job_halt_rolls_the_job_back_to_pending(tmp_path):
+    """A `running` job with a `running` chunk is stranded forever — nothing resets it."""
+    from verinote.pipeline.extract import process_extraction_job
+
+    path, job_id = _halted_mid_job_kb(tmp_path)
+    store = _PolicyVanishingStore(tmp_path / "kb.sqlite", path)
+    store.init_schema()
+
+    with pytest.raises(PolicyMissingError):
+        process_extraction_job(store, _ChunkClient(), job_id=job_id)
+
+    job = store.get_extraction_job(job_id)
+    assert job["status"] == "pending"
+    assert "policy reset --force" in job["message"]
+    assert "1/2" in job["message"]
+    # the work that really happened is kept; the rest is back in the queue
+    assert job["completed_chunks"] == 1
+    assert job["failed_chunks"] == 0
+    assert job["candidate_count"] == 1
+    assert store.next_pending_chunk(job_id) is not None
+    store.close()
+
+
+def test_mid_job_halt_run_summary_reports_the_real_counts(tmp_path):
+    """A halt notice that claims "nothing was written" would be a fresh lie.
+
+    Chunk 1's candidate facts exist and carry this run's `run_id`; a summary
+    saying the run wrote nothing would make the provenance page contradict the
+    facts sitting in front of the user.
+    """
+    from verinote.pipeline.extract import process_extraction_job
+
+    path, job_id = _halted_mid_job_kb(tmp_path)
+    store = _PolicyVanishingStore(tmp_path / "kb.sqlite", path)
+    store.init_schema()
+
+    with pytest.raises(PolicyMissingError):
+        process_extraction_job(store, _ChunkClient(), job_id=job_id)
+
+    facts = store.facts()
+    assert [f["subject"] for f in facts] == ["alpha"]
+    run_id = int(facts[0]["run_id"])
+    summary = store.get_run(run_id)["summary"]
+    assert "halted after 1/2 chunk(s)" in summary
+    assert "1 candidate(s) written by this run" in summary
+    assert "rolled back to pending" in summary
+    assert "0 candidate" not in summary
+    store.close()
+
+
+def test_resumed_job_summary_counts_only_this_run(tmp_path):
+    """`run_candidates` is what *this* run wrote — not the job's cumulative count."""
+    from verinote.pipeline.extract import process_extraction_job
+
+    path, job_id = _halted_mid_job_kb(tmp_path, chunks=("alpha", "beta", "gamma"))
+    # first run: halts after chunk 1 (1 candidate written by that run)
+    first = _PolicyVanishingStore(tmp_path / "kb.sqlite", path)
+    first.init_schema()
+    with pytest.raises(PolicyMissingError):
+        process_extraction_job(first, _ChunkClient(), job_id=job_id)
+    first.close()
+
+    # policy restored, job resumed, and it halts again — this time after chunk 2
+    _write_policy(tmp_path)
+    second = _PolicyVanishingStore(tmp_path / "kb.sqlite", path)
+    second.init_schema()
+    with pytest.raises(PolicyMissingError):
+        process_extraction_job(second, _ChunkClient(), job_id=job_id)
+
+    job = second.get_extraction_job(job_id)
+    assert job["candidate_count"] == 2  # cumulative across both runs
+    summaries = [
+        row["summary"] for row in second._conn.execute("SELECT summary FROM runs ORDER BY id")
+    ]
+    second.close()
+    # the second run wrote one candidate, not two: the summary must not inherit
+    # the job's cumulative counter
+    assert "halted after 1/3 chunk(s), 1 candidate(s) written by this run" in summaries[0]
+    assert "halted after 2/3 chunk(s), 1 candidate(s) written by this run" in summaries[1]
 
 
 def test_store_has_no_public_meta_delete(tmp_path):
