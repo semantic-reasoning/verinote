@@ -6,9 +6,29 @@
 `active_root()` falls back to `./data` relative to the *current working
 directory*. A test that forgets to isolate either one can rewrite the
 developer's real `app.json` — repointing the active KB — or open the repo's own
-`data/kb.sqlite`. The autouse fixture below closes both holes structurally, so
-isolation is no longer something each test author has to remember.
+`data/kb.sqlite`. `Config.for_root()` also reads every `VERINOTE_*` variable
+env-first, so an ambient export in the developer's shell can change what a test
+sees.
+
+The sandbox is two-tier on purpose:
+
+* `pytest_configure` seals the environment at *session start*, before any
+  fixture (of any scope) or any collected module's import-time code runs.
+  A function-scoped `monkeypatch` cannot do this: pytest instantiates
+  higher-scoped fixtures first, so a `scope="module"`/`"session"` fixture that
+  called `Config.load()` would run *before* a function-scoped sandbox and reach
+  the real home.
+* The autouse fixture below then lays a fresh per-test home and CWD on top, so
+  tests cannot see each other's writes.
+
+Either tier alone leaves a hole; both together mean no test — whatever its
+fixture scopes — can reach the real config.
 """
+
+import os
+import shutil
+import tempfile
+from pathlib import Path
 
 import env_sandbox
 import pytest
@@ -16,23 +36,65 @@ import pytest
 from verinote.llm.base import ExtractedFact, LLMError
 from verinote.pipeline.query_intent import parse_query_intent
 
+HOME_VARS = ("HOME", "USERPROFILE", "XDG_CONFIG_HOME", "APPDATA", "LOCALAPPDATA")
+
+_session_patch: pytest.MonkeyPatch | None = None
+_session_tmp: str | None = None
+
+
+def _sandbox_env(patch: pytest.MonkeyPatch, home: Path, cwd: Path) -> None:
+    """Point the home-ish vars at `home`, drop every `VERINOTE_*`, chdir to `cwd`."""
+    for var in HOME_VARS:
+        patch.setenv(var, str(home))
+    for var in [name for name in os.environ if name.startswith("VERINOTE_")]:
+        patch.delenv(var, raising=False)
+    patch.chdir(cwd)
+
+
+def pytest_configure(config):
+    """Seal the environment before anything else in the session runs.
+
+    Runs after this conftest (and therefore `env_sandbox`) is imported, so the
+    *real* paths are still captured under the ambient environment — but before
+    collection, fixtures of any scope, and test-module import-time code.
+    """
+    global _session_patch, _session_tmp
+    _session_tmp = tempfile.mkdtemp(prefix="verinote-session-")
+    home = Path(_session_tmp) / "home"
+    cwd = Path(_session_tmp) / "cwd"
+    home.mkdir()
+    cwd.mkdir()
+    _session_patch = pytest.MonkeyPatch()
+    _sandbox_env(_session_patch, home, cwd)
+    env_sandbox.seal(home)
+
+
+def pytest_unconfigure(config):
+    global _session_patch, _session_tmp
+    env_sandbox.unseal()
+    if _session_patch is not None:
+        _session_patch.undo()
+        _session_patch = None
+    if _session_tmp is not None:
+        shutil.rmtree(_session_tmp, ignore_errors=True)
+        _session_tmp = None
+
 
 @pytest.fixture(autouse=True)
 def isolate_app_environment(monkeypatch, tmp_path_factory):
-    """Point every home-ish env var at a throwaway home, and CWD at a throwaway dir.
+    """Lay a throwaway per-test home and CWD over the session-wide seal.
 
     A dedicated temp dir (not `tmp_path`) is used for the fake home: many tests
     use `tmp_path` as a KB root and walk it, so planting a home inside it would
-    pollute them. `VERINOTE_ROOT` is dropped so an ambient export cannot leak in,
-    and the CWD is moved off the repo so `active_root()`'s `./data` fallback
-    cannot reach the repo's own KB. Tests that set these vars themselves still
-    win: this runs first, their `setenv` runs after.
+    pollute them. Every `VERINOTE_*` variable is dropped (`ROOT`, `PROVIDER`,
+    `MODEL`, `BASE_URL`, `API_KEY`, `LLM_TIMEOUT`, the `EXTRACTION_*` knobs and
+    `AUTO_ACCEPT_RECOMMENDATIONS` are all read env-first by `Config`), and the
+    CWD is moved off the repo so `active_root()`'s `./data` fallback cannot
+    reach the repo's own KB. Tests that set these vars themselves still win:
+    this runs first, their `setenv` runs after.
     """
     home = tmp_path_factory.mktemp("home")
-    for var in ("HOME", "USERPROFILE", "XDG_CONFIG_HOME", "APPDATA", "LOCALAPPDATA"):
-        monkeypatch.setenv(var, str(home))
-    monkeypatch.delenv("VERINOTE_ROOT", raising=False)
-    monkeypatch.chdir(tmp_path_factory.mktemp("cwd"))
+    _sandbox_env(monkeypatch, home, tmp_path_factory.mktemp("cwd"))
     env_sandbox.enter(home)
     try:
         yield home
@@ -42,15 +104,25 @@ def isolate_app_environment(monkeypatch, tmp_path_factory):
 
 @pytest.fixture(scope="session", autouse=True)
 def real_app_config_is_untouched():
-    """Fail the session if anything wrote to the developer's real app config."""
+    """Restore, then fail the session, if anything wrote the developer's real app config.
+
+    Detecting the leak is not enough: by teardown the user's `app.json` already
+    points at a pytest temp KB that is about to be deleted, so `verinote ui`
+    would open a KB that no longer exists. Put the bytes back first, then fail.
+    """
     path = env_sandbox.REAL_APP_CONFIG_PATH
     before = env_sandbox.snapshot(path)
     yield
     after = env_sandbox.snapshot(path)
-    if before is None:
-        assert after is None, f"the test run created the real app config at {path}"
-    else:
-        assert after == before, f"the test run modified the real app config at {path}"
+    if after == before:
+        return
+    env_sandbox.restore(path, before)
+    verb = "created" if before is None else "modified"
+    raise AssertionError(
+        f"the test run {verb} the real app config at {path}; "
+        "it has been restored to its pre-run state, but the leak is a bug — "
+        "a test escaped the environment sandbox"
+    )
 
 
 class FakeClient:

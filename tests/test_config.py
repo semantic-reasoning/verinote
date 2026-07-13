@@ -13,23 +13,6 @@ from verinote.config import (
 )
 
 
-def _clear_env(monkeypatch):
-    for var in (
-        "VERINOTE_PROVIDER",
-        "VERINOTE_MODEL",
-        "VERINOTE_BASE_URL",
-        "VERINOTE_API_KEY",
-        "VERINOTE_LLM_TIMEOUT",
-        "VERINOTE_EXTRACTION_CHUNK_CHARS",
-        "VERINOTE_EXTRACTION_CHUNK_OVERLAP_CHARS",
-        "VERINOTE_EXTRACTION_MAX_FACTS_PER_CHUNK",
-        "VERINOTE_AUTO_ACCEPT_RECOMMENDATIONS",
-        "VERINOTE_ROOT",
-        "XDG_CONFIG_HOME",
-    ):
-        monkeypatch.delenv(var, raising=False)
-
-
 def test_save_and_read_round_trip(tmp_path):
     save_settings(tmp_path, provider="ollama", model="llama3.1", base_url="http://x")
     assert read_settings(tmp_path) == {
@@ -39,22 +22,19 @@ def test_save_and_read_round_trip(tmp_path):
     }
 
 
-def test_for_root_uses_saved_settings(tmp_path, monkeypatch):
-    _clear_env(monkeypatch)
+def test_for_root_uses_saved_settings(tmp_path):
     save_settings(tmp_path, provider="openai", model="gpt-4o-mini")
     cfg = Config.for_root(tmp_path)
     assert (cfg.provider, cfg.model) == ("openai", "gpt-4o-mini")
 
 
 def test_env_overrides_saved_settings(tmp_path, monkeypatch):
-    _clear_env(monkeypatch)
     save_settings(tmp_path, provider="openai", model="gpt-4o")
     monkeypatch.setenv("VERINOTE_PROVIDER", "ollama")
     assert Config.for_root(tmp_path).provider == "ollama"
 
 
-def test_default_model_when_nothing_set(tmp_path, monkeypatch):
-    _clear_env(monkeypatch)
+def test_default_model_when_nothing_set(tmp_path):
     cfg = Config.for_root(tmp_path)  # no settings file, no env
     assert (cfg.provider, cfg.model) == ("anthropic", "claude-opus-4-8")
     assert cfg.llm_timeout_seconds == 600.0
@@ -65,13 +45,11 @@ def test_default_model_when_nothing_set(tmp_path, monkeypatch):
 
 
 def test_llm_timeout_env_override(tmp_path, monkeypatch):
-    _clear_env(monkeypatch)
     monkeypatch.setenv("VERINOTE_LLM_TIMEOUT", "900")
     assert Config.for_root(tmp_path).llm_timeout_seconds == 900.0
 
 
 def test_extraction_settings_round_trip_and_env_override(tmp_path, monkeypatch):
-    _clear_env(monkeypatch)
     save_settings(
         tmp_path,
         provider="ollama",
@@ -106,15 +84,13 @@ def test_claude_cli_provider_is_available():
     assert "ollama" in TESTABLE_PROVIDERS
 
 
-def test_legacy_claude_provider_normalizes_to_claudecli(tmp_path, monkeypatch):
-    _clear_env(monkeypatch)
+def test_legacy_claude_provider_normalizes_to_claudecli(tmp_path):
     save_settings(tmp_path, provider="claude", model="")
     assert read_settings(tmp_path)["provider"] == "claudecli"
     assert Config.for_root(tmp_path).provider == "claudecli"
 
 
 def test_api_key_only_from_env_never_persisted(tmp_path, monkeypatch):
-    _clear_env(monkeypatch)
     monkeypatch.setenv("VERINOTE_API_KEY", "supersecret")
     save_settings(tmp_path, provider="anthropic", model="m")
     cfg = Config.for_root(tmp_path)
@@ -123,13 +99,11 @@ def test_api_key_only_from_env_never_persisted(tmp_path, monkeypatch):
 
 
 def test_active_root_uses_env_first(tmp_path, monkeypatch):
-    _clear_env(monkeypatch)
     monkeypatch.setenv("VERINOTE_ROOT", str(tmp_path))
     assert active_root() == tmp_path.resolve()
 
 
 def test_active_root_uses_app_config_when_kb_exists(tmp_path, monkeypatch):
-    _clear_env(monkeypatch)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
@@ -157,7 +131,6 @@ def test_active_root_uses_app_config_when_kb_exists(tmp_path, monkeypatch):
 
 
 def test_ui_config_is_none_without_selected_kb(tmp_path, monkeypatch):
-    _clear_env(monkeypatch)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))

@@ -20,14 +20,49 @@ REAL_APP_CONFIG_DIR = app_config_dir()
 REAL_APP_CONFIG_PATH = REAL_APP_CONFIG_DIR / "app.json"
 
 _sandbox_home: Path | None = None
+_session_home: Path | None = None
 
 
 def snapshot(path: Path) -> bytes | None:
-    """Return the file's bytes, or None when it does not exist."""
+    """Return the file's bytes, or None when it is not a readable file.
+
+    The canary must never blow up on the way to its own assertion: an
+    unreadable path (`PermissionError`), a directory where the file should be
+    (`IsADirectoryError`), or a missing parent (`NotADirectoryError`) all mean
+    "no config bytes to compare", not "crash the session".
+    """
     try:
         return path.read_bytes()
-    except (FileNotFoundError, NotADirectoryError):
+    except (FileNotFoundError, NotADirectoryError, IsADirectoryError, PermissionError):
         return None
+
+
+def restore(path: Path, before: bytes | None) -> None:
+    """Put a leaked-into file back the way it was: rewrite the bytes, or remove it."""
+    if before is None:
+        path.unlink(missing_ok=True)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(before)
+
+
+def session_home() -> Path | None:
+    """The fake home sealed in at session start, or None if the seal is off.
+
+    This is the tier that covers module/session-scoped fixtures and test-module
+    import time, both of which run before any function-scoped `monkeypatch`.
+    """
+    return _session_home
+
+
+def seal(home: Path) -> None:
+    global _session_home
+    _session_home = home
+
+
+def unseal() -> None:
+    global _session_home
+    _session_home = None
 
 
 def sandbox_home() -> Path | None:
