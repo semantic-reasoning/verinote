@@ -169,13 +169,19 @@ class Store:
         self.close()
 
     # --- kb metadata -----------------------------------------------------
-    def get_meta(self, key: str) -> str | None:
+    # `kb_meta` has exactly one client — the policy marker below — and no generic
+    # read/write/delete API is exposed for it. That is deliberate. A public
+    # `delete_meta("policy.logic")` (or a plain `set_meta`) is `clear_policy_marker`
+    # under another name: it downgrades a *lost* policy back to a KB that "never had
+    # one", which silently restores the shipped-default fallback this table exists
+    # to prevent. Keep the accessors private and the intent stays enforceable.
+    def _get_meta(self, key: str) -> str | None:
         row = self._conn.execute(
             "SELECT value FROM kb_meta WHERE key = ?", (key,)
         ).fetchone()
         return None if row is None else str(row["value"])
 
-    def set_meta(self, key: str, value: str) -> None:
+    def _set_meta(self, key: str, value: str) -> None:
         with self._lock:
             self._conn.execute(
                 "INSERT INTO kb_meta(key, value) VALUES(?, ?) "
@@ -184,10 +190,6 @@ class Store:
                 (key, value),
             )
 
-    def delete_meta(self, key: str) -> None:
-        with self._lock:
-            self._conn.execute("DELETE FROM kb_meta WHERE key = ?", (key,))
-
     def policy_marker(self) -> dict[str, object] | None:
         """The KB's declaration that it has a logic policy file, or None.
 
@@ -195,7 +197,7 @@ class Store:
         still a declaration (returning None there would silently downgrade a
         lost policy to a benign one).
         """
-        raw = self.get_meta(POLICY_MARKER_KEY)
+        raw = self._get_meta(POLICY_MARKER_KEY)
         if raw is None:
             return None
         try:
@@ -213,13 +215,14 @@ class Store:
             "recorded_at": _utc_now(),
             "origin": origin,
         }
-        self.set_meta(POLICY_MARKER_KEY, json.dumps(marker, ensure_ascii=False))
+        self._set_meta(POLICY_MARKER_KEY, json.dumps(marker, ensure_ascii=False))
         return marker
 
-    # Deliberately no `clear_policy_marker()`: dropping the marker is exactly the
-    # move that downgrades a lost policy back to a benign default, which is the
-    # bug this table exists to prevent. Recovery is restoring the file or running
-    # `verinote policy reset --force`, both of which re-record the marker.
+    # Deliberately no `clear_policy_marker()` — and, per the note above, no public
+    # `delete_meta` that would be one. Dropping the marker downgrades a lost policy
+    # back to a benign default, which is the bug this table exists to prevent.
+    # Recovery is restoring the file or running `verinote policy reset --force`,
+    # both of which re-record the marker.
 
     # --- sources ---------------------------------------------------------
     def add_source(self, path: str, kind: str = "text") -> int:
