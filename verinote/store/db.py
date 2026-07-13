@@ -22,6 +22,8 @@ from typing import Any, Iterable
 REVIEW_STATUSES = frozenset({"candidate", "needs_review"})
 # kb_meta key under which a KB declares that it owns a logic policy file.
 POLICY_MARKER_KEY = "policy.logic"
+# kb_meta key declaring that fact logical terms are managed by facts.duckdb.
+FACT_TERMS_MARKER_KEY = "fact_terms.duckdb"
 ENGINE_STATUSES = frozenset({"confirmed", "accepted"})
 MAX_EVIDENCE_SNIPPET_CHARS = 1000
 REVIEW_PAGE_SIZES = (25, 50, 100)
@@ -135,6 +137,18 @@ def _review_sort(value: object) -> str:
     return sort if sort in REVIEW_SORT_SQL else DEFAULT_REVIEW_SORT
 
 
+def _missing_fact_terms_error(fact_ids: Iterable[int]) -> Exception:
+    from verinote.store.duckdb_fact_terms import DuckDBFactTermStoreError
+
+    ids = ", ".join(str(fact_id) for fact_id in fact_ids)
+    return DuckDBFactTermStoreError(
+        "missing DuckDB fact terms for fact id(s): "
+        f"{ids}. Restore facts.duckdb from backup or re-enter the affected "
+        "facts. Refusing to rebuild them from SQLite display text because "
+        "that would reinterpret structural terms as strings."
+    )
+
+
 class Store:
     """A connection to one KB's SQLite file."""
 
@@ -189,7 +203,8 @@ class Store:
         self.close()
 
     # --- kb metadata -----------------------------------------------------
-    # `kb_meta` has exactly one client — the policy marker below — and no generic
+    # `kb_meta` has explicit clients — the policy and fact-term markers below —
+    # and no generic
     # read/write/delete API is exposed for it. That is deliberate. A public
     # `delete_meta("policy.logic")` (or a plain `set_meta`) is `clear_policy_marker`
     # under another name: it downgrades a *lost* policy back to a KB that "never had
@@ -203,12 +218,15 @@ class Store:
 
     def _set_meta(self, key: str, value: str) -> None:
         with self._lock:
-            self._conn.execute(
-                "INSERT INTO kb_meta(key, value) VALUES(?, ?) "
-                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
-                "updated_at = datetime('now')",
-                (key, value),
-            )
+            self._set_meta_unlocked(key, value)
+
+    def _set_meta_unlocked(self, key: str, value: str) -> None:
+        self._conn.execute(
+            "INSERT INTO kb_meta(key, value) VALUES(?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
+            "updated_at = datetime('now')",
+            (key, value),
+        )
 
     def policy_marker(self) -> dict[str, object] | None:
         """The KB's declaration that it has a logic policy file, or None.
@@ -236,6 +254,37 @@ class Store:
             "origin": origin,
         }
         self._set_meta(POLICY_MARKER_KEY, json.dumps(marker, ensure_ascii=False))
+        return marker
+
+    def fact_terms_marker(self) -> dict[str, object] | None:
+        """The KB's declaration that DuckDB owns canonical fact terms, or None."""
+        raw = self._get_meta(FACT_TERMS_MARKER_KEY)
+        if raw is None:
+            return None
+        try:
+            marker = json.loads(raw)
+        except json.JSONDecodeError:
+            return {"version": 0, "recorded_at": "", "origin": "unknown"}
+        if not isinstance(marker, dict):
+            return {"version": 0, "recorded_at": "", "origin": "unknown"}
+        return marker
+
+    def _has_fact_terms_marker(self) -> bool:
+        return self._get_meta(FACT_TERMS_MARKER_KEY) is not None
+
+    def _record_fact_terms_marker(self, *, origin: str) -> dict[str, object]:
+        with self._lock:
+            return self._record_fact_terms_marker_unlocked(origin=origin)
+
+    def _record_fact_terms_marker_unlocked(self, *, origin: str) -> dict[str, object]:
+        marker: dict[str, object] = {
+            "version": 1,
+            "recorded_at": _utc_now(),
+            "origin": origin,
+        }
+        self._set_meta_unlocked(
+            FACT_TERMS_MARKER_KEY, json.dumps(marker, ensure_ascii=False)
+        )
         return marker
 
     # Deliberately no `clear_policy_marker()` — and, per the note above, no public
@@ -834,6 +883,7 @@ class Store:
                 )
                 fact_id = int(cur.fetchone()[0])
                 self.fact_terms.put_fact_terms(fact_id, subject, relation, obj)
+                self._record_fact_terms_marker_unlocked(origin="write")
                 self._add_fact_event(
                     fact_id=fact_id,
                     event_type="candidate_created",
@@ -868,16 +918,15 @@ class Store:
         terms = self.fact_terms.get_many_fact_terms(ids)
         missing = [fact_id for fact_id in ids if fact_id not in terms]
         if missing:
+            if self._has_fact_terms_marker():
+                raise _missing_fact_terms_error(missing)
             self.backfill_fact_terms()
             terms = self.fact_terms.get_many_fact_terms(ids)
             missing = [fact_id for fact_id in ids if fact_id not in terms]
         if missing:
-            from verinote.store.duckdb_fact_terms import DuckDBFactTermStoreError
-
-            raise DuckDBFactTermStoreError(
-                "missing DuckDB fact terms for engine fact id(s): "
-                + ", ".join(str(fact_id) for fact_id in missing)
-            )
+            raise _missing_fact_terms_error(missing)
+        if not self._has_fact_terms_marker():
+            self._record_fact_terms_marker(origin="existing_sidecar")
 
         return [
             {
@@ -890,7 +939,7 @@ class Store:
         ]
 
     def backfill_fact_terms(self) -> int:
-        """Backfill missing DuckDB term rows from SQLite text mirrors as StringLit."""
+        """Backfill legacy SQLite-only fact rows into DuckDB as StringLit terms."""
         with self._lock:
             rows = list(
                 self._conn.execute(
@@ -898,6 +947,9 @@ class Store:
                 )
             )
             existing = self.fact_terms.get_many_fact_terms(row["id"] for row in rows)
+            missing = [int(row["id"]) for row in rows if int(row["id"]) not in existing]
+            if missing and self._has_fact_terms_marker():
+                raise _missing_fact_terms_error(missing)
             written = 0
             for row in rows:
                 fact_id = int(row["id"])
@@ -907,6 +959,9 @@ class Store:
                     fact_id, row["subject"], row["relation"], row["object"]
                 )
                 written += 1
+            if rows:
+                origin = "legacy_backfill" if written else "existing_sidecar"
+                self._record_fact_terms_marker_unlocked(origin=origin)
             return written
 
     def get_fact(self, fact_id: int) -> sqlite3.Row | None:
@@ -1082,6 +1137,7 @@ class Store:
             try:
                 self.fact_terms.put_fact_terms(fact_id, subject, relation, obj)
                 terms_written = True
+                self._record_fact_terms_marker_unlocked(origin="write")
                 self._conn.execute(
                     "UPDATE facts SET subject = ?, relation = ?, object = ?, note = ?, "
                     "updated_at = datetime('now') WHERE id = ?",

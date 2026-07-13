@@ -10,7 +10,8 @@ from verinote.engine.terms import (
     Var,
 )
 from verinote.store import Store
-from verinote.store.duckdb_fact_terms import fact_terms_path
+from verinote.store.db import FACT_TERMS_MARKER_KEY
+from verinote.store.duckdb_fact_terms import DuckDBFactTermStoreError, fact_terms_path
 from verinote.store.fact_input import structural_term
 
 
@@ -182,7 +183,65 @@ def test_backfill_fact_terms_migrates_legacy_sqlite_text_as_stringlit(tmp_path):
         StringLit("is_a"),
         StringLit("person"),
     )
+    assert s._get_meta(FACT_TERMS_MARKER_KEY) is not None
     assert s.backfill_fact_terms() == 0
+
+
+def test_engine_fact_terms_rejects_missing_modern_sidecar_terms(tmp_path):
+    s = _store(tmp_path)
+    fid = s.add_fact(
+        Compound("person", (StringLit("Ada"),)),
+        Atom("is_a"),
+        StringLit("person"),
+        status="confirmed",
+    )
+    s.fact_terms.delete_fact_terms(fid)
+
+    with pytest.raises(DuckDBFactTermStoreError, match="Refusing to rebuild"):
+        s.engine_fact_terms()
+
+    assert s.get_fact_terms(fid) is None
+
+
+def test_engine_fact_terms_marks_complete_pre_marker_sidecar(tmp_path):
+    s = _store(tmp_path)
+    cur = s._conn.execute(
+        "INSERT INTO facts(subject, relation, object, status) VALUES(?,?,?,?) RETURNING id",
+        ('person("Ada")', "is_a", "person", "confirmed"),
+    )
+    fid = int(cur.fetchone()[0])
+    s.fact_terms.put_fact_terms(
+        fid,
+        Compound("person", (StringLit("Ada"),)),
+        Atom("is_a"),
+        StringLit("person"),
+    )
+    assert s._get_meta(FACT_TERMS_MARKER_KEY) is None
+
+    assert s.engine_fact_terms() == [
+        {
+            "id": fid,
+            "subject": Compound("person", (StringLit("Ada"),)),
+            "relation": Atom("is_a"),
+            "object": StringLit("person"),
+        }
+    ]
+    assert s._get_meta(FACT_TERMS_MARKER_KEY) is not None
+
+    s.fact_terms.delete_fact_terms(fid)
+    with pytest.raises(DuckDBFactTermStoreError, match="Refusing to rebuild"):
+        s.engine_fact_terms()
+
+
+def test_backfill_fact_terms_rejects_missing_terms_after_sidecar_marker(tmp_path):
+    s = _store(tmp_path)
+    fid = s.add_fact("Ada", "born_in", "London", status="confirmed")
+    s.fact_terms.delete_fact_terms(fid)
+
+    with pytest.raises(DuckDBFactTermStoreError, match="missing DuckDB fact terms"):
+        s.backfill_fact_terms()
+
+    assert s.get_fact_terms(fid) is None
 
 
 def test_backfill_fact_terms_does_not_overwrite_structural_terms(tmp_path):

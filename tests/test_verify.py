@@ -7,6 +7,7 @@ from verinote.engine.terms import Compound, StringLit
 from verinote.pipeline.query import query_path
 from verinote.pipeline.verify import load_policy, policy_path, verify
 from verinote.store import Store
+from verinote.store.duckdb_fact_terms import fact_terms_path
 from verinote.store.fact_input import structural_term
 
 # A hand-written policy tracked in the repo (see tests/test_gitignore.py), used
@@ -283,6 +284,46 @@ def test_verify_backfills_missing_duckdb_terms_for_legacy_engine_rows(tmp_path):
         StringLit("born_in"),
         StringLit("London"),
     )
+
+
+def test_verify_rejects_lost_sidecar_instead_of_backfilling_structural_terms(tmp_path):
+    s = _store(tmp_path)
+    s.add_fact(
+        Compound("org", (StringLit("demo"),)),
+        "ceo",
+        StringLit("Alice"),
+        status="confirmed",
+    )
+    s.add_fact(
+        Compound("org", (StringLit("demo"),)),
+        "ceo",
+        StringLit("Bob"),
+        status="confirmed",
+    )
+    path = policy_path(s)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
+        ".decl error_two_ceos(object: symbol)\n"
+        'error_two_ceos(O) :- relation(org("demo"), "ceo", O), '
+        'relation(org("demo"), "ceo", P), O != P.\n',
+        encoding="utf-8",
+    )
+    assert verify(s).ok is False
+    s.close()
+    fact_terms_path(tmp_path).unlink()
+
+    reopened = Store(tmp_path / "kb.sqlite")
+    try:
+        rep = verify(reopened)
+    finally:
+        reopened.close()
+
+    assert rep.ok is False
+    assert rep.errors == 1
+    assert "missing DuckDB fact terms" in rep.text
+    assert "Refusing to rebuild" in rep.text
+    assert "knowledge base is consistent" not in rep.text
 
 
 def test_verify_fails_closed_when_engine_fact_terms_remain_missing(tmp_path, monkeypatch):
