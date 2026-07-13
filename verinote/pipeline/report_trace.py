@@ -17,7 +17,7 @@ from verinote.engine.terms import Compound, StringLit, Term, Var, render_term
 from verinote.pipeline.corroboration import CorroborationPolicyError
 from verinote.pipeline.query import load_query
 from verinote.pipeline.trust import fact_trust_summary
-from verinote.store import Store, db as store_db
+from verinote.store import Store, review_statuses
 
 _RELATION_DECL = ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
 _ANSWER_RE = re.compile(r"answer_q(?P<qid>[0-9]+)\Z")
@@ -53,12 +53,14 @@ class ReportTrace:
 
 def _excluded_by_status(store: Store) -> tuple[tuple[str, int], ...]:
     counts = store.status_counts()
-    # Read REVIEW_STATUSES off store.db rather than from-importing it: widening it
-    # at its definition site then moves this count, which is what lets the mutation
-    # test prove the derivation instead of a coincidence between two hardcodings.
+    # Ask the tier accessor rather than binding the frozenset: widening the tier at
+    # its definition site then moves this count (which is what lets the mutation
+    # test prove a derivation rather than a coincidence between two hardcodings),
+    # and an empty tier raises here as it does for every other consumer instead of
+    # rendering a report that quietly claims nothing was held back.
     return tuple(
         (status, count)
-        for status in sorted(store_db.REVIEW_STATUSES)
+        for status in sorted(review_statuses())
         if (count := counts.get(status, 0))
     )
 

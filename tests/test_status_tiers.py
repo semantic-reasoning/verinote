@@ -29,6 +29,7 @@ from verinote.pipeline.corroboration import (
     store_single_valued_conflicts,
 )
 from verinote.pipeline.query_schema import build_query_schema_snapshot
+from verinote.pipeline.report_trace import report_trace
 from verinote.pipeline.trust import fact_trust_summary
 from verinote.pipeline.workbench import trust_workbench
 from verinote.store import Store, db
@@ -197,6 +198,10 @@ def test_acceptance_refuses_an_empty_review_tier(tmp_path, monkeypatch):
         accept_recommendation(store, fact_id)
     with pytest.raises(ValueError, match="must not be empty"):
         trust_workbench(store)
+    # The report is a consumer of the same tier: an empty one must not render as
+    # "nothing was held back" while every other consumer refuses to answer.
+    with pytest.raises(ValueError, match="must not be empty"):
+        report_trace(store)
 
     # The fact was not promoted behind our back.
     assert store.get_fact(fact_id)["status"] == "needs_review"
