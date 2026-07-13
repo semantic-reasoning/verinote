@@ -15,6 +15,7 @@ Every test below deliberately omits manual isolation and never requests the
 that deleting either turns these red.
 """
 
+import os
 from pathlib import Path
 
 import pytest
@@ -211,7 +212,7 @@ def test_canary_refuses_to_destroy_what_it_cannot_reconstruct(tmp_path):
     (path / "keep.txt").write_text("precious", encoding="utf-8")
     before = snapshot(path)
 
-    assert before.kind == "other"
+    assert before.kind == "directory"
     restored = restore(path, before)
 
     assert restored is False
@@ -225,12 +226,101 @@ def test_canary_reports_a_pre_run_entry_it_cannot_put_back(tmp_path):
     path.mkdir()
     before = snapshot(path)
 
-    assert before.kind == "other"
+    assert before.kind == "directory"
     path.rmdir()
     path.write_bytes(b"{}\n")  # the leak
     message = leak_report(path, before)
 
     assert message is not None and "COULD NOT BE RESTORED" in message
+
+
+def test_canary_reports_a_file_added_inside_a_pre_run_directory(tmp_path):
+    # The hole this closes: pre-run *and* post-run the path is a directory, so a
+    # kind-only comparison read `after == before` and the canary said nothing. A
+    # shallow listing fingerprint makes the unknown-to-unknown change visible.
+    path = tmp_path / "app.json"
+    path.mkdir()
+    (path / "keep.txt").write_text("precious", encoding="utf-8")
+    before = snapshot(path)
+
+    (path / "leaked.json").write_bytes(b"{}\n")  # the leak: written *inside* the directory
+    message = leak_report(path, before)
+
+    assert message is not None, "a write inside a pre-run directory went unreported"
+    assert "modified" in message
+    assert "COULD NOT BE RESTORED" in message and "directory" in message
+    # Reported, never repaired: detection must not buy itself a destructive restore.
+    assert (path / "keep.txt").read_text(encoding="utf-8") == "precious"
+    assert (path / "leaked.json").exists()
+
+
+def test_canary_reports_a_rewritten_file_inside_a_pre_run_directory(tmp_path):
+    path = tmp_path / "app.json"
+    path.mkdir()
+    child = path / "app.json"
+    child.write_bytes(b'{"active_root": "/real/kb"}\n')
+    before = snapshot(path)
+
+    child.write_bytes(b'{"active_root": "/tmp/pytest-kb"}\n')  # the leak
+    message = leak_report(path, before)
+
+    assert message is not None, "a rewrite inside a pre-run directory went unreported"
+    assert "COULD NOT BE RESTORED" in message
+
+
+def test_canary_reports_a_same_size_rewrite_inside_a_pre_run_directory(tmp_path):
+    # Same name, same size, same mode — only the timestamp moves. `os.utime` sets it
+    # explicitly instead of racing the clock, so this does not depend on the
+    # filesystem's mtime resolution.
+    path = tmp_path / "app.json"
+    path.mkdir()
+    child = path / "app.json"
+    child.write_bytes(b"aaaa")
+    before = snapshot(path)
+
+    child.write_bytes(b"bbbb")  # the leak: identical length
+    os.utime(child, (1_600_000_000, 1_600_000_000))
+
+    assert child.stat().st_size == 4
+    message = leak_report(path, before)
+
+    assert message is not None, "a same-size rewrite inside a pre-run directory went unreported"
+
+
+def test_snapshot_splits_the_unreconstructable_kinds(tmp_path):
+    # `other` used to cover all of these at once, which is what let unknown-to-unknown
+    # changes compare clean. Each now names itself and carries a fingerprint.
+    directory = tmp_path / "dir"
+    directory.mkdir()
+    fifo = tmp_path / "fifo"
+    os.mkfifo(fifo)
+
+    assert snapshot(directory).kind == "directory"
+    assert snapshot(directory).fingerprint is not None
+    assert snapshot(fifo).kind == "unknown"
+    assert snapshot(fifo).fingerprint is not None
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads straight through mode 0o000")
+def test_snapshot_marks_an_unreadable_file_and_refuses_to_restore_it(tmp_path):
+    path = tmp_path / "app.json"
+    path.write_bytes(b"secret\n")
+    path.chmod(0o000)
+
+    before = snapshot(path)
+
+    assert before.kind == "unreadable_file"
+    assert before.data is None and before.fingerprint is not None
+    # Unreadable is not reconstructable, so restore leaves it alone rather than
+    # deleting the user's file in the name of "restoring" it.
+    assert restore(path, before) is False
+    assert path.exists()
+
+
+def test_restorable_kinds_are_a_whitelist():
+    # A blacklist would hand every future kind straight to `_remove`. The canary
+    # deletes only what it can put back.
+    assert env_sandbox.RESTORABLE_KINDS == frozenset({"missing", "file", "symlink"})
 
 
 def test_snapshot_never_raises_on_odd_paths(tmp_path):
