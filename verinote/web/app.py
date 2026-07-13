@@ -1101,7 +1101,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         except PolicyMissingError:
             # The report itself already carries the policy_missing error; the
             # trace needs the same (lost) policy, so it has nothing to say.
-            trace = ReportTrace(answers=(), excluded_candidate_count=0)
+            trace = ReportTrace(
+                answers=(), excluded_review_count=0, excluded_by_status=()
+            )
         return templates.TemplateResponse(
             request,
             "report.html",

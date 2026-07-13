@@ -13,6 +13,7 @@ from verinote.pipeline.policy_state import (
     policy_sha256,
     resolve_policy,
 )
+from verinote.pipeline.query import query_path
 from verinote.pipeline.verify import load_policy, verify
 from verinote.store import Store
 
@@ -422,6 +423,37 @@ def test_no_get_route_crashes_when_the_policy_is_lost(tmp_path, monkeypatch):
     assert "policy_missing" in report.text
     # ("inconsistent — promotion stays gated" is the errors banner, not a claim
     # that the KB checked out clean)
+    assert "knowledge base is consistent" not in report.text
+
+
+def test_report_survives_a_lost_policy_when_the_kb_has_a_query(tmp_path, monkeypatch):
+    """The /report policy-missing fallback, on the KB shape that actually reaches it.
+
+    `_halted_client` has no query file, so `report_trace` returns before it ever
+    consults the policy — which left the fallback below unexecuted by any test.
+    It takes a halted KB that *has* a query (and engine facts to trace) to drive
+    the trust lookup that raises `PolicyMissingError` inside `report_trace`. That
+    hole is what let the fallback keep constructing `ReportTrace` with a field
+    that no longer exists.
+    """
+    client = _halted_client(tmp_path, monkeypatch)
+    store = client.app.state.store
+    source_id = store.add_source("sources/b.txt")
+    store.add_fact(
+        "Ada", "born_in", "London", status="confirmed", source_id=source_id
+    )
+    path = query_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        ".decl answer_q1(value: symbol)\n"
+        'answer_q1(O) :- relation("Ada", "born_in", O).\n',
+        encoding="utf-8",
+    )
+
+    report = client.get("/report")
+
+    assert report.status_code == 200, report.text
+    assert "policy_missing" in report.text
     assert "knowledge base is consistent" not in report.text
 
 
