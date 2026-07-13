@@ -67,6 +67,23 @@ POLICY_UNRECORDED_BANNER = (
 )
 
 
+# --- the CLI's diagnostic surface ------------------------------------------
+#
+# `status` and `coverage` are the only diagnosis a non-web user has, and a halt
+# they never mention is a halt discovered only by trying to write (#194). These
+# lines go to *stdout*, not stderr: `verinote status > out.txt` and CI health
+# checks read stdout, and a halt marker they cannot see is not a marker.
+#
+# Deliberately one short line per state, not a banner. The UNRECORDED_DEFAULT
+# case is the *normal* state of a brand-new KB; shouting at every `status` teaches
+# people to ignore the policy line, and then the HALTED line gets ignored with it.
+# The loud, actionable text for a real halt is `policy_missing_message`, which the
+# CLI prints to stderr *in addition* to the stdout marker.
+POLICY_CLI_LINE_PRESENT = "policy: ok (this KB's own rules are present)"
+POLICY_CLI_LINE_MISSING_RECORDED = "policy: HALTED (rules missing)"
+POLICY_CLI_LINE_UNRECORDED_DEFAULT = "policy: default (this KB records no rules of its own)"
+
+
 class PolicyMissingError(RuntimeError):
     """Raised when a KB recorded a logic policy but the policy file is gone."""
 
@@ -137,6 +154,23 @@ def policy_missing_message(state: PolicyState) -> str:
         "backup or version control, or (2) running `verinote policy reset --force` "
         "to explicitly re-create the default policy for this KB."
     )
+
+
+def policy_cli_line(state: PolicyState) -> str:
+    """The one-line stdout marker for a resolved policy state.
+
+    A new `PolicyStatus` must add its line to `_POLICY_CLI_LINES`; the KeyError
+    that follows otherwise is deliberate. A blank line silently standing in for an
+    unknown policy state is exactly the class of bug this module exists to kill.
+    """
+    return _POLICY_CLI_LINES[state.status]
+
+
+_POLICY_CLI_LINES = {
+    PolicyStatus.PRESENT: POLICY_CLI_LINE_PRESENT,
+    PolicyStatus.MISSING_RECORDED: POLICY_CLI_LINE_MISSING_RECORDED,
+    PolicyStatus.UNRECORDED_DEFAULT: POLICY_CLI_LINE_UNRECORDED_DEFAULT,
+}
 
 
 def assert_writable(store: "Store") -> PolicyState:

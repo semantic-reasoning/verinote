@@ -21,7 +21,7 @@ from verinote.pipeline.corroboration import (
     store_relation_aliases,
 )
 from verinote.pipeline.normalize import normalize_for_extraction
-from verinote.pipeline.policy_state import assert_writable
+from verinote.pipeline.policy_state import PolicyMissingError, assert_writable
 from verinote.prompts import PromptError, render_prompt
 from verinote.store import Store
 from verinote.store.fact_input import structural_term
@@ -164,10 +164,15 @@ def process_extraction_job(
     """Process pending chunks for one durable extraction job.
 
     Raises `PolicyMissingError` if this KB's recorded logic policy file is gone —
-    both at the start and, per chunk, at the write boundary in `_extract_chunk`.
-    A job is long-running (one LLM call per chunk) and the CLI's start-of-command
-    check cannot see a policy deleted *after* the job began, so the check has to
-    live next to the write itself.
+    at the start, before each chunk is claimed, and again at the write boundary in
+    `_extract_chunk`. A job is long-running (one LLM call per chunk) and the CLI's
+    start-of-command check cannot see a policy deleted *after* the job began, so
+    the check has to live next to the write itself.
+
+    On a mid-job halt the job is rolled back to `pending` (see
+    `_halt_extraction_job`) before the error propagates. Leaving it `running` would
+    strand the source forever: no code path resets a `running` job, so it could
+    neither finish nor be re-synced.
     """
     assert_writable(store)
     job = store.get_extraction_job(job_id)
@@ -182,29 +187,46 @@ def process_extraction_job(
     run_id = store.add_run(provider=job["provider"], model=job["model"])
 
     candidates = 0
-    while chunk := store.next_pending_chunk(job_id):
-        running = store.mark_chunk_running(int(chunk["id"]))
-        if running is None:
-            continue
-        try:
-            inserted = _extract_chunk(
-                store,
-                client,
-                source_id=int(source["id"]),
-                source_text=str(running["text"]),
-                run_id=run_id,
-                job_id=job_id,
-                artifact_id=(
-                    int(job["artifact_id"]) if job["artifact_id"] is not None else None
-                ),
-                chunk_id=int(running["id"]),
-                schema_hint=schema_hint,
-            )
-        except LLMError as exc:
-            store.mark_chunk_failed(int(running["id"]), str(exc))
-            continue
-        candidates += inserted
-        store.mark_chunk_done(int(running["id"]), candidates=inserted)
+    try:
+        while chunk := store.next_pending_chunk(job_id):
+            # Pre-claim gate. Claiming a chunk (`status='running'`, `attempts + 1`)
+            # is itself a write, so it must not happen on a halted KB — the check
+            # belongs *before* `mark_chunk_running`, not after it.
+            assert_writable(store)
+            running = store.mark_chunk_running(int(chunk["id"]))
+            if running is None:
+                continue
+            try:
+                inserted = _extract_chunk(
+                    store,
+                    client,
+                    source_id=int(source["id"]),
+                    source_text=str(running["text"]),
+                    run_id=run_id,
+                    job_id=job_id,
+                    artifact_id=(
+                        int(job["artifact_id"]) if job["artifact_id"] is not None else None
+                    ),
+                    chunk_id=int(running["id"]),
+                    schema_hint=schema_hint,
+                )
+            except LLMError as exc:
+                store.mark_chunk_failed(int(running["id"]), str(exc))
+                continue
+            candidates += inserted
+            store.mark_chunk_done(int(running["id"]), candidates=inserted)
+    except PolicyMissingError:
+        # The policy vanished mid-job — either before this chunk was claimed (the
+        # gate above) or between its LLM call and its first insert (the boundary in
+        # `_extract_chunk`). Rewind so the KB is recoverable, then let the error out.
+        _halt_extraction_job(
+            store,
+            job_id=job_id,
+            run_id=run_id,
+            source_path=str(source["path"]),
+            run_candidates=candidates,
+        )
+        raise
 
     store.finish_extraction_job(job_id)
     final = store.get_extraction_job(job_id)
@@ -219,6 +241,44 @@ def process_extraction_job(
         candidates=int(final["candidate_count"]),
         completed_chunks=int(final["completed_chunks"]),
         failed_chunks=int(final["failed_chunks"]),
+    )
+
+
+def _halt_extraction_job(
+    store: Store,
+    *,
+    job_id: int,
+    run_id: int,
+    source_path: str,
+    run_candidates: int,
+) -> None:
+    """Rewind a job whose KB went halted mid-flight, and record what really happened.
+
+    The summary must carry the REAL counts. It is tempting to write a constant here
+    ("halted; no candidate facts were written") — and it is a lie the moment any
+    chunk completed before the halt. Those candidate facts exist, they carry a
+    `run_id` pointing at *this* run, and the provenance page would then tell the
+    user that the run which produced the facts in front of them wrote nothing. A
+    change that exists to stop the KB lying about its state must not plant a new
+    lie, so every number below is read back from the KB rather than assumed.
+
+    `run_candidates` is what *this* run inserted (the job's own `candidate_count`
+    is cumulative across resumes, and would over-report for a resumed job).
+    """
+    job = store.get_extraction_job(job_id)
+    completed = int(job["completed_chunks"]) if job is not None else 0
+    total = int(job["total_chunks"]) if job is not None else 0
+    store.rollback_extraction_job(
+        job_id,
+        f"Halted: this KB's policy file is missing. Rolled back to pending at "
+        f"{completed}/{total} chunk(s). Restore the policy file (or run "
+        f"`verinote policy reset --force`), then re-run the analysis.",
+    )
+    store.set_run_summary(
+        run_id,
+        f"{source_path}: halted after {completed}/{total} chunk(s), "
+        f"{run_candidates} candidate(s) written by this run before this KB's policy "
+        f"file went missing; job rolled back to pending",
     )
 
 
