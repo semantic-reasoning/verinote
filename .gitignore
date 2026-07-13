@@ -11,11 +11,21 @@ venv/
 # verinote local state (a KB's data is local, like a working dir).
 #
 # The default KB lives here. It is USER DATA, not a repo artifact, so it is
-# never committed — and nothing in it is reproducible from this repo:
+# never committed — and the only file in it this repo can regenerate is
+# `facts/query.dl`:
 #   data/kb.sqlite              every accept/reject decision + the audit log
+#   data/facts.duckdb           the canonical fact terms. NOT rebuildable from
+#                               kb.sqlite: the SQLite columns are display mirrors,
+#                               so a lost sidecar re-types compounds as strings
+#                               (#156). Ignored because it is user data, not
+#                               because it is disposable.
+#   data/sources/, data/artifacts/
+#                               the ingested documents and their extracted text
 #   data/policy/*.dl            hand-written logic policy
 #   data/policy/relation-aliases.md, data/policy/typed-relations.md
 #                               hand-written policy inputs
+#   data/policy/prompts/, data/config.json
+#                               hand-written prompt overrides and settings
 # Back these up yourself, or keep the KB outside the working tree entirely
 # (`VERINOTE_ROOT=~/verinote-kb verinote init`). See README, "Your KB is not a
 # repo artifact". `git clean -fdx` deletes all of it.
