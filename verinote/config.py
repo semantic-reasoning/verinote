@@ -69,8 +69,14 @@ def local_root(explicit: Path | str | None = None) -> Path:
     working directory. The saved app config (`active_root()`) is deliberately
     **not** consulted — otherwise `verinote init` in an empty directory would
     write into somebody else's KB.
+
+    A blank explicit root raises `ValueError`: falling back would write the KB
+    somewhere the caller never named, which is exactly what these commands
+    promise not to do.
     """
-    if explicit:
+    if explicit is not None:
+        if isinstance(explicit, str) and not explicit.strip():
+            raise ValueError("KB root must be a path, not an empty string")
         return Path(explicit).expanduser().resolve()
     env_root = os.environ.get("VERINOTE_ROOT")
     if env_root:

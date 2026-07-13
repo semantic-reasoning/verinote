@@ -591,6 +591,9 @@ def test_init_seed_in_empty_dir_ignores_saved_active_kb(tmp_path, monkeypatch, c
     # The saved KB is untouched, byte for byte.
     assert (existing / "kb.sqlite").read_bytes() == before
     assert not (existing / "sources").exists()
+    # And `init` must not repoint the global active KB at what it just made:
+    # a local command may never mutate global state (that is the whole issue).
+    assert config.read_app_config()["active_root"] == str(existing)
 
     out = capsys.readouterr().out
     assert f"initialised KB at {workdir / 'data'}" in out
@@ -628,6 +631,9 @@ def test_init_still_honours_verinote_root(tmp_path, monkeypatch):
 
 def test_demo_facts_are_never_engine_input():
     demo_statuses = {status for _, _, _, status, _, _, _ in cli._DEMO_FACTS}
+    # Both sides must be non-empty, else the disjointness check below is vacuous.
+    assert demo_statuses
+    assert ENGINE_STATUSES
     assert demo_statuses & ENGINE_STATUSES == set()
 
 
@@ -678,3 +684,87 @@ def test_init_help_does_not_promise_verinote_root_only(capsys):
     out = capsys.readouterr().out
     assert "under VERINOTE_ROOT (./data)" not in out
     assert "ROOT" in out
+
+
+def test_init_tells_you_how_to_actually_use_the_kb_it_made(tmp_path, monkeypatch, capsys):
+    """The KB `init` creates is not the active one, so the hint must name it."""
+    _isolated(monkeypatch, tmp_path)
+    _existing_kb(tmp_path)  # a different KB is the saved active one
+    root = tmp_path / "fresh"
+
+    assert cli.main(["init", str(root), "--seed"]) == 0
+
+    out = capsys.readouterr().out
+    assert f"VERINOTE_ROOT={root} verinote status" in out
+    # It must not claim a bare `verinote status` would show this KB.
+    assert "(run `verinote status`)" not in out
+
+
+def test_init_rejects_a_root_that_is_an_existing_file(tmp_path, monkeypatch, capsys):
+    _isolated(monkeypatch, tmp_path)
+    target = tmp_path / "afile.txt"
+    target.write_text("not a KB\n", encoding="utf-8")
+
+    assert cli.main(["init", str(target)]) == 1
+
+    err = capsys.readouterr().err
+    assert "not a directory" in err
+    assert target.read_text(encoding="utf-8") == "not a KB\n"
+
+
+def test_init_rejects_an_empty_root_argument(tmp_path, monkeypatch, capsys):
+    """An empty ROOT must fail, not silently fall back to ./data."""
+    _isolated(monkeypatch, tmp_path)
+    workdir = tmp_path / "cwd"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    assert cli.main(["init", ""]) == 1
+
+    assert not (workdir / "data").exists()
+    assert "empty string" in capsys.readouterr().err
+
+
+def test_seed_rejects_an_empty_root_argument(tmp_path, monkeypatch, capsys):
+    _isolated(monkeypatch, tmp_path)
+    workdir = tmp_path / "cwd"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    assert cli.main(["seed", ""]) == 1
+
+    assert not (workdir / "data").exists()
+    assert "empty string" in capsys.readouterr().err
+
+
+def test_seed_rejects_an_empty_db_file_instead_of_creating_a_schema(
+    tmp_path, monkeypatch, capsys
+):
+    """`kb.sqlite` existing is not enough: seed only fills an *initialised* KB."""
+    _isolated(monkeypatch, tmp_path)
+    root = tmp_path / "broken"
+    root.mkdir()
+    db = root / "kb.sqlite"
+    db.write_bytes(b"")
+
+    assert cli.main(["seed", str(root)]) == 1
+
+    assert db.read_bytes() == b""  # no schema was created behind our back
+    err = capsys.readouterr().err
+    assert "is not a verinote KB" in err
+    assert f"verinote init {root}" in err  # recovery path
+
+
+def test_seed_rejects_a_corrupt_db_file_without_a_traceback(tmp_path, monkeypatch, capsys):
+    _isolated(monkeypatch, tmp_path)
+    root = tmp_path / "corrupt"
+    root.mkdir()
+    db = root / "kb.sqlite"
+    db.write_bytes(b"definitely not sqlite\n")
+
+    assert cli.main(["seed", str(root)]) == 1
+
+    assert db.read_bytes() == b"definitely not sqlite\n"
+    err = capsys.readouterr().err
+    assert "is not a verinote KB" in err
+    assert f"verinote init {root}" in err

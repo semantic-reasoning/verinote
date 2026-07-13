@@ -79,6 +79,14 @@ verinote init /path/to/kb     # a named root
 verinote seed /path/to/kb     # demo facts into an existing KB
 ```
 
+Creating a KB does not make it the active one. Every other command still reads
+the saved active KB, so to work with the KB you just created either point
+`VERINOTE_ROOT` at it or select it in the UI:
+
+```bash
+VERINOTE_ROOT=/path/to/kb verinote status
+```
+
 Seeded demo facts land as `candidate`/`needs_review`, never as engine input —
 demo data has to pass through human review like anything else.
 

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import sqlite3
 from dataclasses import dataclass
 import sys
 from pathlib import Path
@@ -87,6 +88,15 @@ def _scaffold_policy(cfg: Config, store: Store) -> Path | None:
 def cmd_init(cfg: Config, args: argparse.Namespace) -> int:
     from verinote.pipeline.policy_state import PolicyMissingError
 
+    # `mkdir(exist_ok=True)` still raises when a *file* sits at the root path,
+    # so name the problem instead of showing a traceback.
+    if cfg.root.exists() and not cfg.root.is_dir():
+        print(
+            f"cannot create a KB at {cfg.root}: it exists and is not a directory; "
+            f"name a different root (`verinote init <path>`)",
+            file=sys.stderr,
+        )
+        return 1
     cfg.root.mkdir(parents=True, exist_ok=True)
     store = _store(cfg)
     if args.seed:
@@ -103,7 +113,11 @@ def cmd_init(cfg: Config, args: argparse.Namespace) -> int:
     if policy is not None:
         print(f"  policy: {policy}")
     if args.seed:
-        print("  seeded demo facts (run `verinote status`)")
+        print("  seeded demo facts")
+    # Other commands read the KB the web UI last selected, not the one we just
+    # made, so point at this root explicitly rather than promise `verinote
+    # status` shows it (see issue #185).
+    print(f"  use this KB: VERINOTE_ROOT={cfg.root} verinote status")
     return 0
 
 
@@ -133,11 +147,39 @@ def _seed(store: Store) -> None:
         store.add_fact(subj, rel, obj, status=status, confidence=conf, source_id=sid, note=note)
 
 
+def _kb_schema_problem(db_path: Path) -> str | None:
+    """Say why `db_path` isn't a usable verinote KB, or None when it is one.
+
+    A bare `is_file()` check passes for an empty or corrupt `kb.sqlite`, which
+    would let `seed` silently create a schema (it must only fill an existing KB)
+    or blow up with a raw `sqlite3` traceback.
+    """
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            row = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'facts'"
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError:
+        return "not a readable SQLite database"
+    return None if row else "no `facts` table"
+
+
 def cmd_seed(cfg: Config, args: argparse.Namespace) -> int:
     if not cfg.db_path.is_file():
         print(
             f"no KB at {cfg.root}; run `verinote init` first (or name a root: "
             f"`verinote seed <path>`)",
+            file=sys.stderr,
+        )
+        return 1
+    problem = _kb_schema_problem(cfg.db_path)
+    if problem is not None:
+        print(
+            f"{cfg.db_path} is not a verinote KB ({problem}); move it aside and run "
+            f"`verinote init {cfg.root}` to scaffold one",
             file=sys.stderr,
         )
         return 1
@@ -540,7 +582,11 @@ def _config_for(args: argparse.Namespace) -> Config | None:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    cfg = _config_for(args)
+    try:
+        cfg = _config_for(args)
+    except ValueError as exc:  # e.g. a blank explicit KB root
+        print(str(exc), file=sys.stderr)
+        return 1
     # The single CLI enforcement point for a halted KB. It sits here, before
     # dispatch, because every subcommand goes through this one line — a guard
     # sprinkled per-command is a guard the next command will forget.
