@@ -96,21 +96,41 @@ kept as a compatibility no-op; analytics uses the same DuckDB dependency. The
 
 ## Your KB is not a repo artifact
 
-A KB holds **user data**, so verinote never commits it. Nothing in it can be
-regenerated from this repo — if you lose it, it is gone:
+A KB holds **user data**, so verinote never commits it. Treat the whole KB root
+as source: **the only file in it that can be rebuilt is `facts/query.dl`.**
+Everything else, if you lose it, is gone.
 
 | Path (KB root) | What it holds | Irreplaceable because |
 | --- | --- | --- |
 | `kb.sqlite` | facts, sources, questions | it records **every accept/reject decision and the full audit log** |
+| `facts.duckdb` | the canonical logical fact terms | see below — it is **not** rebuildable from `kb.sqlite` |
+| `sources/` | the documents you ingested, byte for byte | verinote never re-downloads them |
+| `artifacts/` | the extracted text of each source | `kb.sqlite` stores only its path and checksum, not the text |
 | `policy/logic-policy.dl` | your review rules | scaffolded by `init`, then hand-edited |
 | `policy/relation-aliases.md` | raw -> canonical relation names | hand-written |
 | `policy/typed-relations.md` | typed relation declarations | hand-written |
+| `policy/prompts/` | your prompt overrides | hand-written |
+| `config.json` | provider/model settings | hand-written |
 
-Only `facts/query.dl`, `facts.duckdb` (and its `.wal` / `.tmp/` sidecars) are
-rebuilt from `kb.sqlite`. `init` writes a starting `logic-policy.dl` for you, but
-every edit you make to it afterwards is yours alone and is not reproducible from
-this repo — which is why it must stay committable rather than be swept up by a
-blanket `*.dl` ignore rule.
+`init` writes a starting `logic-policy.dl` for you, but every edit you make to it
+afterwards is yours alone and is not reproducible from this repo — which is why
+it must stay committable rather than be swept up by a blanket `*.dl` ignore rule.
+
+**`facts.duckdb` is data, not a cache.** It owns the logical fact terms; the
+`facts.subject/relation/object` columns in `kb.sqlite` are display mirrors, and
+rendering a term into text is lossy. If the sidecar goes missing, the terms are
+*re-typed* from those mirrors rather than restored: a compound collapses into a
+string, and even a plain string gains the quotes it was rendered with.
+
+```text
+before:  Compound('person', (StringLit('Ada'),))   Atom('works_at')       StringLit('Acme')
+after:   StringLit('person("Ada")')                StringLit('works_at')  StringLit('"Acme"')
+```
+
+Rules that matched the structural terms stop firing, and the report still says
+the knowledge base is consistent. Silent re-typing on a lost sidecar is tracked
+in [#156](https://github.com/semantic-reasoning/verinote/issues/156) — until it
+is fixed, **back the sidecar up with the rest of the KB.**
 
 **Keep the KB outside this working tree.** The default root (`./data`) is a
 convenience for a first run, not a safe home:
@@ -124,21 +144,40 @@ VERINOTE_ROOT=~/verinote-kb verinote ui
 your shell profile keeps all of your data out of this working tree.
 
 **If you do keep a KB inside the repo tree** (any path other than `data/`, e.g.
-`./my-kb`), be aware that `policy/logic-policy.dl` is *not* ignored — it shows up
-as untracked and a stray `git add -A` will commit it. That is deliberate: the
-ignore rules match generated *paths*, never bare extensions, because a blanket
-`*.dl` rule is exactly what used to swallow hand-written policy. Keep the KB
-outside the tree, or do not blind-add.
+`./my-kb`), a stray `git add -A` will commit most of it. Only the generated
+artifacts are ignored; the sources are not, and that is deliberate — the ignore
+rules match generated *paths*, never bare extensions, because a blanket `*.dl`
+rule is exactly what used to swallow hand-written policy. What gets staged:
 
-**`git clean -fdx` deletes your KB**, and `-x` makes ignoring it irrelevant:
-`clean` removes *untracked* files whether or not they are ignored, and user data
-cannot be committed to fix that. Running it inside the working tree destroys the
-KB and its audit log with no undo. Moving the default root outside the working
-tree is tracked in
+```text
+my-kb/sources/confidential.pdf        <- the document you ingested, byte for byte
+my-kb/artifacts/sources/1/<sha>.txt   <- its extracted text
+my-kb/policy/logic-policy.dl          <- your review rules
+my-kb/config.json                     <- your provider/model settings
+```
+
+So the exposure is not one policy file — it is **the documents themselves**, which
+is exactly what [AGENTS.md](AGENTS.md) forbids committing. Keep the KB outside
+the tree, or do not blind-add.
+
+**`git clean -fdx` deletes your KB.** Ignoring it does not save it: `-x` removes
+ignored files too, and user data cannot be committed to fix that. (Without `-x`,
+ignoring *does* protect the generated artifacts — but not `sources/` or
+`policy/`, which are not ignored.) Running it inside the working tree destroys
+the KB and its audit log with no undo. Moving the default root outside the
+working tree is tracked in
 [#185](https://github.com/semantic-reasoning/verinote/issues/185).
 
-**Backups are your responsibility.** verinote takes none. Copy the KB root (it
-is a plain folder) or snapshot `kb.sqlite` plus `policy/` on your own schedule.
+**Backups are your responsibility.** verinote takes none. Copy **the whole KB
+root** — it is a plain folder — on your own schedule:
+
+```bash
+cp -a ~/verinote-kb ~/backups/verinote-kb-$(date +%F)
+```
+
+Do not snapshot only part of it. `kb.sqlite` alone is not a backup: without
+`facts.duckdb` the fact terms come back re-typed (see above), and without
+`sources/` and `artifacts/` the provenance behind every confirmed fact is gone.
 
 ## Fact Storage Boundary
 
