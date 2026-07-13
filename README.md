@@ -94,6 +94,38 @@ DuckDB is a core dependency because it powers verification. The `analytics` extr
 kept as a compatibility no-op; analytics uses the same DuckDB dependency. The
 `wirelog` extra installs the legacy `pyrewire` path for compatibility/debugging only.
 
+## Your KB is not a repo artifact
+
+A KB holds **user data**, so verinote never commits it. Nothing in it can be
+regenerated from this repo — if you lose it, it is gone:
+
+| Path (KB root) | What it holds | Irreplaceable because |
+| --- | --- | --- |
+| `kb.sqlite` | facts, sources, questions | it records **every accept/reject decision and the full audit log** |
+| `policy/logic-policy.dl` | your review rules | hand-written |
+| `policy/relation-aliases.md` | raw -> canonical relation names | hand-written |
+| `policy/typed-relations.md` | typed relation declarations | hand-written |
+
+Only `facts/query.dl` and `facts.duckdb` are rebuilt from `kb.sqlite`.
+
+**Keep the KB outside this working tree.** The default root (`./data`) is a
+convenience for a first run, not a safe home:
+
+```bash
+verinote init ~/verinote-kb          # scaffold a KB outside the repo
+VERINOTE_ROOT=~/verinote-kb verinote ui
+```
+
+**`git clean -fdx` deletes your KB**, and `-x` makes ignoring it irrelevant:
+`clean` removes *untracked* files whether or not they are ignored, and user data
+cannot be committed to fix that. Running it inside the working tree destroys the
+KB and its audit log with no undo. Moving the default root outside the working
+tree is tracked in
+[#185](https://github.com/semantic-reasoning/verinote/issues/185).
+
+**Backups are your responsibility.** verinote takes none. Copy the KB root (it
+is a plain folder) or snapshot `kb.sqlite` plus `policy/` on your own schedule.
+
 ## Fact Storage Boundary
 
 Each KB stores two coordinated files under the KB root:

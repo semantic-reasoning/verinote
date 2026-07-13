@@ -1,12 +1,19 @@
 # SPDX-License-Identifier: MPL-2.0
 import builtins
+from pathlib import Path
 
 import verinote.engine.duckdb_backend as duckdb_backend
 from verinote.engine.terms import Compound, StringLit
 from verinote.pipeline.query import query_path
-from verinote.pipeline.verify import policy_path, verify
+from verinote.pipeline.verify import load_policy, policy_path, verify
 from verinote.store import Store
 from verinote.store.fact_input import structural_term
+
+# A hand-written policy tracked in the repo (see tests/test_gitignore.py): a bare
+# `*.dl` ignore rule used to swallow files like this, and a policy that never
+# gets committed degrades into load_policy() -> None, i.e. a silent fall back to
+# the shipped default policy that still reports "consistent".
+SAMPLE_POLICY_FIXTURE = Path(__file__).parent / "fixtures" / "policy" / "sample-policy.dl"
 
 
 def _store(tmp_path) -> Store:
@@ -56,6 +63,27 @@ def test_verify_loads_kb_policy_file(tmp_path):
     rep = verify(s)
     assert rep.errors == 1
     assert "has_isa: Org company" in "\n".join(rep.findings)
+
+
+def test_verify_loads_hand_written_fixture_policy(tmp_path):
+    """The tracked sample policy is loaded for real, not just shipped alongside."""
+    s = _store(tmp_path)
+    s.add_fact("Org", "is_a", "company", status="confirmed")
+    s.add_fact("Org", "established_on", "2020", status="confirmed")
+    s.add_fact("Org", "established_on", "2021", status="confirmed")
+    p = policy_path(s)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(SAMPLE_POLICY_FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
+
+    rep = verify(s)
+
+    assert load_policy(s) == SAMPLE_POLICY_FIXTURE.read_text(encoding="utf-8")
+    assert rep.ok is False
+    assert rep.errors == 1
+    # `warn_fixture_policy_loaded` exists only in the fixture: the shipped default
+    # policy cannot produce it, so this pins that the KB's own policy was used.
+    assert "WARN fixture_policy_loaded: Org" in rep.findings
+    assert "ERROR functional_conflict: Org established_on" in rep.findings
 
 
 def test_verify_loads_query_file(tmp_path):
