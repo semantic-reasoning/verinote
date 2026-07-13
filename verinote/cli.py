@@ -418,11 +418,44 @@ def cmd_repair(cfg: Config, args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_policy_state(store: Store) -> bool:
+    """Print the KB's policy state on a diagnostic command. True when halted.
+
+    `status` and `coverage` are the whole diagnostic surface a non-web user has,
+    and before this they reported a halted KB as perfectly healthy — the only way
+    to discover a lost policy was to attempt a write and be refused (#194). That is
+    #155's own thesis ("a KB whose rules are gone must not look fine") surviving on
+    the CLI.
+
+    The marker goes to *stdout*, next to the rest of the summary: a banner on
+    stderr alone is invisible to `verinote status > out.txt` and to a CI health
+    check, which is exactly where a silent halt does its damage. The loud,
+    actionable recovery text still goes to stderr, where errors belong.
+
+    The judgement is `resolve_policy`'s alone — this function never looks at the
+    filesystem. One predicate, or the enforcement points drift apart.
+    """
+    from verinote.pipeline.policy_state import (
+        PolicyStatus,
+        policy_cli_line,
+        policy_missing_message,
+        resolve_policy,
+    )
+
+    state = resolve_policy(store)
+    print(policy_cli_line(state))
+    if state.status is PolicyStatus.MISSING_RECORDED:
+        print(f"error: {policy_missing_message(state)}", file=sys.stderr)
+        return True
+    return False
+
+
 def cmd_coverage(cfg: Config, args: argparse.Namespace) -> int:
     from verinote.engine import coverage
 
     store = _store(cfg)
     cov = coverage(store, root=cfg.root)
+    halted = _print_policy_state(store)
     store.close()
     for s in cov.sources:
         flags = []
@@ -436,6 +469,13 @@ def cmd_coverage(cfg: Config, args: argparse.Namespace) -> int:
         f"coverage: {len(cov.covered)} covered, {len(cov.gaps)} gap(s), "
         f"{len(cov.orphans)} orphan(s)"
     )
+    # `--strict` exists to be a machine-read gate. A KB whose rules have evaporated
+    # is not a KB that passes a gate, so the halt fails it just like a coverage gap
+    # does — otherwise automation greenlights a KB with no rules. Plain `coverage`
+    # stays rc=0: it is a recovery path, and a halt you cannot inspect is a brick.
+    if args.strict and halted:
+        print("strict: this KB's logic policy file is missing", file=sys.stderr)
+        return 1
     if args.strict and cov.gaps:
         print("strict: uncovered text source(s) present", file=sys.stderr)
         return 1
@@ -450,6 +490,10 @@ def cmd_status(cfg: Config, args: argparse.Namespace) -> int:
     print(f"facts:   {sum(counts.values())}")
     for s in ("candidate", "needs_review", "confirmed", "accepted", "superseded"):
         print(f"  {s:<13} {counts.get(s, 0)}")
+    # `status` stays rc=0 even when halted: it is one of the paths that must keep
+    # working *on* a halted KB, and a diagnosis command that fails is not a
+    # diagnosis. The stdout marker is what makes the halt impossible to miss.
+    _print_policy_state(store)
     store.close()
     return 0
 

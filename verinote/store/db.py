@@ -742,6 +742,52 @@ class Store:
                     after=_job_event_payload(after),
                 )
 
+    def rollback_extraction_job(self, job_id: int, message: str) -> None:
+        """Rewind an interrupted job to `pending` so it can be resumed later.
+
+        Used when this KB's logic policy file vanishes mid-job (#194). The job must
+        not be left `running` with a `running` chunk: nothing resets that state, so
+        the source becomes permanently stuck — it can neither finish nor be
+        re-synced. `failed` is no better, since the chunks that never ran are not
+        failures. `pending` is the only state from which "restore the policy file,
+        re-run the analysis" actually works.
+
+        Chunks already `done` stay `done` (their candidate facts are real, and
+        re-extracting them would just re-do work), and `failed` chunks keep their
+        error. Only the in-flight `running` chunk is returned to the queue, which is
+        safe: it was rolled back *before* any of its facts were written.
+
+        Counters are untouched on purpose — `completed_chunks`/`failed_chunks`/
+        `candidate_count` count `done`/`failed` chunks, and this method changes
+        neither, so they stay true.
+        """
+        with self._lock:
+            before = self.get_extraction_job(job_id)
+            if before is None:
+                return
+            self._conn.execute(
+                "UPDATE source_chunks SET status = 'pending', error = '', "
+                "updated_at = datetime('now') "
+                "WHERE job_id = ? AND status = 'running'",
+                (job_id,),
+            )
+            self._conn.execute(
+                "UPDATE extraction_jobs SET status = 'pending', message = ?, "
+                "updated_at = datetime('now') WHERE id = ? AND status != 'canceled'",
+                (message, job_id),
+            )
+            after = self.get_extraction_job(job_id)
+            if after is not None:
+                self._add_fact_event(
+                    fact_id=None,
+                    event_type="extraction_job_rolled_back",
+                    actor="system",
+                    source_id=int(after["source_id"]),
+                    job_id=job_id,
+                    before=_job_event_payload(before),
+                    after=_job_event_payload(after),
+                )
+
     def fact_exists_for_source(
         self, *, source_id: int, subject: object, relation: object, obj: object
     ) -> bool:
