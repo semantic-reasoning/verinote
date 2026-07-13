@@ -38,14 +38,66 @@ class Entry:
     Reading through the path (`read_bytes`) would follow a symlink and report the
     target's bytes, which makes a leak that replaces `app.json` with a symlink
     look identical to no leak at all.
+
+    The kinds we cannot reconstruct (`directory`, `unreadable_file`, `unknown`)
+    carry a `fingerprint` instead of contents. Without it they all collapsed into
+    one opaque value, so an unknown-to-unknown change — a test writing *inside* a
+    pre-run directory at the config path — compared equal to no change at all and
+    the canary stayed silent. The fingerprint is for *detection* only; restoring
+    these kinds is still refused (see `restore`).
     """
 
-    kind: str  # "missing" | "file" | "symlink" | "other"
+    kind: str  # "missing" | "file" | "symlink" | "directory" | "unreadable_file" | "unknown"
     data: bytes | None = None  # kind == "file"
     target: str | None = None  # kind == "symlink"
+    fingerprint: str | None = None  # the unreconstructable kinds
 
 
 MISSING = Entry("missing")
+
+# Only these can be put back. A whitelist, not a blacklist: a kind added later
+# is refused by default rather than silently handed to `_remove`.
+RESTORABLE_KINDS = frozenset({"missing", "file", "symlink"})
+
+
+def _stat_fingerprint(st: os.stat_result) -> str:
+    """The portable, quiet-by-construction part of `lstat`.
+
+    `st_mode` (type *and* permission bits), `st_size` and `st_mtime_ns` only.
+    None of them moves unless something actually changed the entry, so they cannot
+    make the canary cry wolf: reading a file does not touch mtime (atime does move
+    on a read, which is exactly why it is excluded), and low-resolution
+    filesystems can only make mtime miss a change, never invent one. `st_ino` /
+    `st_dev` are left out for the opposite reason — on some network filesystems
+    they are not stable across `stat` calls, which would turn every session into a
+    phantom leak.
+    """
+    return f"mode=0o{st.st_mode:o} size={st.st_size} mtime_ns={st.st_mtime_ns}"
+
+
+def _dir_fingerprint(path: Path, st: os.stat_result) -> str:
+    """A *shallow* listing of a directory: names plus each child's `lstat` digest.
+
+    No file contents are read and no symlink is followed — this runs against
+    whatever unknown thing sits at the user's real config path, so it must stay
+    cheap and incurious. Shallow by design: it catches the leak shapes that
+    matter (a child added, removed, resized, rewritten, or re-stamped) at bounded
+    cost, and does not walk an arbitrarily large user directory.
+    """
+    head = _stat_fingerprint(st)
+    try:
+        names = sorted(os.listdir(path))
+    except OSError:
+        return f"{head} listing=unreadable"
+    children = []
+    for name in names:
+        try:
+            cst = (path / name).lstat()
+        except OSError:
+            children.append(f"{name}:unreadable")
+        else:
+            children.append(f"{name}:0o{cst.st_mode:o}:{cst.st_size}:{cst.st_mtime_ns}")
+    return f"{head} listing=[{','.join(children)}]"
 
 
 def snapshot(path: Path) -> Entry:
@@ -63,13 +115,15 @@ def snapshot(path: Path) -> Entry:
         try:
             return Entry("symlink", target=os.readlink(path))
         except OSError:
-            return Entry("other")
+            return Entry("unknown", fingerprint=_stat_fingerprint(st))
     if stat.S_ISREG(st.st_mode):
         try:
             return Entry("file", data=path.read_bytes())
         except OSError:
-            return Entry("other")
-    return Entry("other")
+            return Entry("unreadable_file", fingerprint=_stat_fingerprint(st))
+    if stat.S_ISDIR(st.st_mode):
+        return Entry("directory", fingerprint=_dir_fingerprint(path, st))
+    return Entry("unknown", fingerprint=_stat_fingerprint(st))
 
 
 def _remove(path: Path) -> None:
@@ -106,11 +160,14 @@ def restore(path: Path, before: Entry) -> bool:
     follow a planted symlink and corrupt whatever it aims at while leaving the
     leak itself in place.
 
-    `other` (a directory, an unreadable file) is the one thing we cannot
-    reconstruct: we never learned its contents, so removing it would destroy what
-    we came to protect. Refuse instead, and let the caller report it.
+    A `directory`, an `unreadable_file` or an `unknown` entry is the one thing we
+    cannot reconstruct: we only ever learned a fingerprint of it, never its
+    contents, so removing it would destroy what we came to protect. Refuse
+    instead, and let the caller report it. Detecting such a change (which the
+    fingerprint now does) and *repairing* it are separate powers — the canary
+    gained the first without taking the second.
     """
-    if before.kind == "other":
+    if before.kind not in RESTORABLE_KINDS:
         return False
     _remove(path)
     if before.kind == "missing":
