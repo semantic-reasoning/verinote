@@ -26,9 +26,12 @@ venv/
 # These are ANCHORED ON PURPOSE. Bare extension globs (`*.dl`, `*.sqlite`,
 # `*.duckdb`) match at any depth, so they silently ignored hand-written policy,
 # test fixtures and doc examples anywhere in the tree. That is not a cosmetic
-# miss: an uncommitted policy makes `load_policy()` return None, verinote falls
-# back to the shipped default policy, and the check still reports "consistent".
-# Match generated *paths*, never bare extensions. See tests/test_gitignore.py.
+# miss: git refuses to add an ignored file without `-f`, so a hand-written policy
+# never enters history — and nothing in this repo can regenerate one. Lose the
+# working copy (`git clean -fdx`, a wiped disk) and those rules are gone for
+# good, whether verinote then shrugs and uses the shipped default policy or
+# refuses to run at all (#155 makes that fallback loud). Match generated *paths*,
+# never bare extensions. See tests/test_gitignore.py.
 #
 # Engine sidecars are listed explicitly for both stores: DuckDB leaves a `.wal`
 # behind on an unclean shutdown and spills to `.tmp/`, exactly as SQLite leaves

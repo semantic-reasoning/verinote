@@ -3,8 +3,12 @@
 
 `.gitignore` used to carry bare, unanchored globs (`*.dl`, `*.sqlite`,
 `*.duckdb`). Those match at *any* depth, so hand-written policy, test fixtures
-and doc examples were silently ignored — and a policy that never got committed
-falls back to the shipped default policy, which happily reports "consistent".
+and doc examples were silently ignored. An ignored file cannot be `git add`-ed
+without `-f`, so a KB owner's policy never entered history — and no part of this
+repo can regenerate a hand-written policy. The loss is permanent whether verinote
+then falls back to the shipped default policy or refuses to run outright (#155),
+which is why these tests pin the ignore rules rather than the engine's reaction
+to a policy that is already gone.
 
 These tests assert both directions with `git check-ignore`'s exit status
 (0 = ignored, 1 = not ignored). It is pattern-based, so it works for paths that
@@ -75,7 +79,8 @@ def _check_ignore(path: str) -> int:
 def test_hand_written_sources_are_not_ignored(path: str) -> None:
     assert _check_ignore(path) == 1, (
         f"{path} is ignored by .gitignore; hand-written policy/fixtures must be "
-        "committable. A missing policy silently falls back to the shipped default."
+        "committable. An ignored policy never reaches git, and nothing in this "
+        "repo can regenerate it."
     )
 
 

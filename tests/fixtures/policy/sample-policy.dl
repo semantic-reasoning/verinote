@@ -2,12 +2,17 @@
 // Hand-written sample KB policy, tracked on purpose.
 //
 // This file is a *source input*, not a generated artifact: it is the kind of
-// file a KB owner writes by hand at `<root>/policy/logic-policy.dl`. It is
-// loaded for real by `tests/test_verify.py::test_verify_loads_hand_written_
-// fixture_policy` and it is the regression lock in `tests/test_gitignore.py`:
-// a bare `*.dl` glob in .gitignore silently ignores files like this one, so a
-// deleted or never-committed policy degrades into `load_policy() -> None` and
-// the engine happily reports "consistent" against the shipped default policy.
+// file a KB owner writes by hand at `<root>/policy/logic-policy.dl`. Nothing in
+// verinote can regenerate it — the rules below exist only because a person typed
+// them, so the only copy that survives a lost disk is the one in git.
+//
+// That is why it must stay committable, and why it is the regression lock in
+// `tests/test_gitignore.py`: a bare `*.dl` glob in .gitignore swallows files
+// like this one, git then refuses to add them without `-f`, and a policy that
+// never reaches history is one `git clean -fdx` away from being gone for good.
+//
+// It is also loaded for real by
+// `tests/test_verify.py::test_verify_loads_hand_written_fixture_policy`.
 
 .decl relation(subject: symbol, rel: symbol, object: symbol)
 
