@@ -17,13 +17,13 @@
 {% if result %}
 <section class="ask-result ask-{{ result.route }}">
   <h2>{{ result.label }}</h2>
-  <p class="muted">{{ result.reason }}</p>
-  {% if result.warning %}
-  <div class="warn">{{ result.warning }}</div>
-  {% endif %}
   <div class="answer-box">
     <pre>{{ result.answer }}</pre>
   </div>
+  {% if result.warning %}
+  <div class="warn">{{ result.warning }}</div>
+  {% endif %}
+  <p class="muted">{{ result.reason }}</p>
 
   {% if result.query_dl %}
   <details>

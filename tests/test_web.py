@@ -1647,8 +1647,12 @@ def test_ask_post_renders_verified_engine_answer_without_persisting(
     r = c.post("/ask", data={"question": "샘플인물의 역할은 무엇인가?"})
 
     assert r.status_code == 200
-    assert "VERIFIED — engine" in r.text
-    assert "검토자" in r.text
+    body = unescape(r.text)
+    assert "VERIFIED — engine" in body
+    assert "검토자" in body
+    assert body.index("<pre>샘플인물, 역할, 검토자") < body.index(
+        "deterministic query matched confirmed/accepted facts"
+    )
     assert "Verified source facts" in r.text
     assert "sources/sample.txt" in r.text
     assert store.questions() == []
@@ -1691,9 +1695,13 @@ def test_ask_post_renders_unverified_llm_fallback(tmp_path, monkeypatch):
     r = c.post("/ask", data={"question": "Sample Entity overview"})
 
     assert r.status_code == 200
-    assert "UNVERIFIED — source exploration" in r.text
-    assert "Synthetic answer from excerpts." in r.text
-    assert "sources/sample.txt" in r.text
+    body = unescape(r.text)
+    assert "UNVERIFIED — source exploration" in body
+    assert "Synthetic answer from excerpts." in body
+    assert body.index("<pre>Synthetic answer from excerpts.</pre>") < body.index(
+        "unsupported synthetic question"
+    )
+    assert "sources/sample.txt" in body
 
 
 def test_delete_question_removes_query_file_entry(tmp_path):
