@@ -138,7 +138,6 @@ def parse_facts(raw: str | list[Any] | dict[str, Any]) -> list[ExtractedFact]:
         raise LLMError(f"extractor output did not match schema: {exc}") from exc
 
     facts: list[ExtractedFact] = []
-    errors = []
     for item in items:
         try:
             subject, subject_kind, subject_warning = _parse_fact_slot(item, "subject")
@@ -161,10 +160,14 @@ def parse_facts(raw: str | list[Any] | dict[str, Any]) -> list[ExtractedFact]:
                 )
             )
         except (KeyError, TypeError, ValueError, TermParseError) as exc:
-            errors.append(f"malformed fact object {item!r}: {exc}")
-            continue
-    if not facts and errors:
-        raise LLMError(errors[0])
+            # A single off-schema item fails the whole batch loudly: `base.py`
+            # promises `LLMError` on any schema violation "so the caller can
+            # retry deterministically", and `extract.py` only re-runs a chunk
+            # when it sees that error. Dropping the bad item while keeping the
+            # valid ones would report the chunk as a success with the violating
+            # fact silently gone -- exactly the smuggled-off-schema failure this
+            # parser exists to make loud (issue #168).
+            raise LLMError(f"malformed fact object {item!r}: {exc}") from exc
     return facts
 
 
