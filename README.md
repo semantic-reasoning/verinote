@@ -102,19 +102,33 @@ regenerated from this repo — if you lose it, it is gone:
 | Path (KB root) | What it holds | Irreplaceable because |
 | --- | --- | --- |
 | `kb.sqlite` | facts, sources, questions | it records **every accept/reject decision and the full audit log** |
-| `policy/logic-policy.dl` | your review rules | hand-written |
+| `policy/logic-policy.dl` | your review rules | scaffolded by `init`, then hand-edited |
 | `policy/relation-aliases.md` | raw -> canonical relation names | hand-written |
 | `policy/typed-relations.md` | typed relation declarations | hand-written |
 
-Only `facts/query.dl` and `facts.duckdb` are rebuilt from `kb.sqlite`.
+Only `facts/query.dl`, `facts.duckdb` (and its `.wal` / `.tmp/` sidecars) are
+rebuilt from `kb.sqlite`. `init` writes a starting `logic-policy.dl` for you, but
+every edit you make to it afterwards is yours alone and is not reproducible from
+this repo — which is why it must stay committable rather than be swept up by a
+blanket `*.dl` ignore rule.
 
 **Keep the KB outside this working tree.** The default root (`./data`) is a
 convenience for a first run, not a safe home:
 
 ```bash
-verinote init ~/verinote-kb          # scaffold a KB outside the repo
+VERINOTE_ROOT=~/verinote-kb verinote init   # scaffold a KB outside the repo
 VERINOTE_ROOT=~/verinote-kb verinote ui
 ```
+
+`VERINOTE_ROOT` selects the KB root for every command, so exporting it once in
+your shell profile keeps all of your data out of this working tree.
+
+**If you do keep a KB inside the repo tree** (any path other than `data/`, e.g.
+`./my-kb`), be aware that `policy/logic-policy.dl` is *not* ignored — it shows up
+as untracked and a stray `git add -A` will commit it. That is deliberate: the
+ignore rules match generated *paths*, never bare extensions, because a blanket
+`*.dl` rule is exactly what used to swallow hand-written policy. Keep the KB
+outside the tree, or do not blind-add.
 
 **`git clean -fdx` deletes your KB**, and `-x` makes ignoring it irrelevant:
 `clean` removes *untracked* files whether or not they are ignored, and user data

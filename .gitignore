@@ -17,8 +17,8 @@ venv/
 #   data/policy/relation-aliases.md, data/policy/typed-relations.md
 #                               hand-written policy inputs
 # Back these up yourself, or keep the KB outside the working tree entirely
-# (`verinote init <path>` / VERINOTE_ROOT). See README, "Your KB is not a repo
-# artifact". `git clean -fdx` deletes all of it.
+# (`VERINOTE_ROOT=~/verinote-kb verinote init`). See README, "Your KB is not a
+# repo artifact". `git clean -fdx` deletes all of it.
 /data/
 
 # Generated engine artifacts, anchored to the KB layout.
@@ -29,8 +29,15 @@ venv/
 # miss: an uncommitted policy makes `load_policy()` return None, verinote falls
 # back to the shipped default policy, and the check still reports "consistent".
 # Match generated *paths*, never bare extensions. See tests/test_gitignore.py.
+#
+# Engine sidecars are listed explicitly for both stores: DuckDB leaves a `.wal`
+# behind on an unclean shutdown and spills to `.tmp/`, exactly as SQLite leaves
+# `-wal`/`-shm`. Anchored paths do not glob these in for free, so omitting them
+# would leak a generated file into `git status`.
 **/facts/query.dl
 **/facts.duckdb
+**/facts.duckdb.wal
+**/facts.duckdb.tmp/
 **/kb.sqlite
 **/kb.sqlite-wal
 **/kb.sqlite-shm
