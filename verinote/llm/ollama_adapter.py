@@ -79,16 +79,7 @@ class OllamaAdapter:
         except Exception as exc:  # noqa: BLE001 - normalise provider/transport errors
             raise LLMError(f"ollama request failed: {exc}") from exc
 
-        try:
-            return parse_facts(body.get("message", {}).get("content", ""))
-        except LLMError as exc:
-            message = str(exc)
-            if (
-                "malformed fact object" in message
-                or "extractor output did not match schema" in message
-            ):
-                return []
-            raise
+        return parse_facts(body.get("message", {}).get("content", ""))
 
     def translate_query(self, *, question: str, qid: int, schema_hint: str = "") -> str:
         system = _with_schema_hint(

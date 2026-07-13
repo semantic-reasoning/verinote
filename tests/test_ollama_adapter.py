@@ -96,7 +96,7 @@ def test_ollama_extract_uses_configured_timeout(tmp_path, monkeypatch):
     assert facts[0].subject == "Ada"
 
 
-def test_ollama_extract_ignores_malformed_only_fact_payload(tmp_path, monkeypatch):
+def test_ollama_extract_raises_on_malformed_only_fact_payload(tmp_path, monkeypatch):
     def fake_urlopen(req, *, timeout):
         return _Response(
             json.dumps(
@@ -114,10 +114,11 @@ def test_ollama_extract_ignores_malformed_only_fact_payload(tmp_path, monkeypatc
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
-    assert OllamaAdapter(_cfg(tmp_path)).extract_facts(source_text="Ada") == []
+    with pytest.raises(LLMError, match="malformed fact object"):
+        OllamaAdapter(_cfg(tmp_path)).extract_facts(source_text="Ada")
 
 
-def test_ollama_extract_ignores_schema_mismatch_payload(tmp_path, monkeypatch):
+def test_ollama_extract_raises_on_schema_mismatch_payload(tmp_path, monkeypatch):
     def fake_urlopen(req, *, timeout):
         return _Response(
             json.dumps(
@@ -133,7 +134,37 @@ def test_ollama_extract_ignores_schema_mismatch_payload(tmp_path, monkeypatch):
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
-    assert OllamaAdapter(_cfg(tmp_path)).extract_facts(source_text="Ada") == []
+    with pytest.raises(LLMError, match="extractor output did not match schema"):
+        OllamaAdapter(_cfg(tmp_path)).extract_facts(source_text="Ada")
+
+
+def test_ollama_extract_raises_on_mixed_valid_and_malformed_payload(tmp_path, monkeypatch):
+    def fake_urlopen(req, *, timeout):
+        return _Response(
+            json.dumps(
+                [
+                    {
+                        "subject": "Ada",
+                        "relation": "is_a",
+                        "object": "mathematician",
+                        "confidence": 0.9,
+                        "note": "",
+                    },
+                    {
+                        "subject": [],
+                        "relation": "is_a",
+                        "object": "mathematician",
+                        "confidence": 0.9,
+                        "note": "",
+                    },
+                ]
+            )
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    with pytest.raises(LLMError, match="malformed fact object"):
+        OllamaAdapter(_cfg(tmp_path)).extract_facts(source_text="Ada")
 
 
 def test_ollama_extract_uses_kb_prompt_override(tmp_path, monkeypatch):
