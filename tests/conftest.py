@@ -102,27 +102,32 @@ def isolate_app_environment(monkeypatch, tmp_path_factory):
         env_sandbox.exit()
 
 
-@pytest.fixture(scope="session", autouse=True)
-def real_app_config_is_untouched():
+def pytest_sessionfinish(session, exitstatus):
     """Restore, then fail the session, if anything wrote the developer's real app config.
 
-    Detecting the leak is not enough: by teardown the user's `app.json` already
-    points at a pytest temp KB that is about to be deleted, so `verinote ui`
-    would open a KB that no longer exists. Put the bytes back first, then fail.
+    Detecting the leak is not enough: by now the user's `app.json` already points
+    at a pytest temp KB that is about to be deleted, so `verinote ui` would open a
+    KB that no longer exists. Put it back first, then fail.
+
+    A hook, not a session fixture, and it compares against a baseline taken when
+    `env_sandbox` was *imported*. A fixture is too late in both directions: its
+    setup runs after collection and after every test module's import-time code,
+    so a leak from there would be baked into the baseline and read as "clean";
+    and its teardown never runs at all when collection fails or when no test is
+    selected — exactly the runs where a stray import-time write goes unnoticed.
     """
-    path = env_sandbox.REAL_APP_CONFIG_PATH
-    before = env_sandbox.snapshot(path)
-    yield
-    after = env_sandbox.snapshot(path)
-    if after == before:
-        return
-    env_sandbox.restore(path, before)
-    verb = "created" if before is None else "modified"
-    raise AssertionError(
-        f"the test run {verb} the real app config at {path}; "
-        "it has been restored to its pre-run state, but the leak is a bug — "
-        "a test escaped the environment sandbox"
+    message = env_sandbox.leak_report(
+        env_sandbox.REAL_APP_CONFIG_PATH, env_sandbox.REAL_APP_CONFIG_BEFORE
     )
+    if message is None:
+        return
+    session.exitstatus = pytest.ExitCode.TESTS_FAILED
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is None:
+        print(message)
+        return
+    reporter.write_sep("=", "environment sandbox leak", red=True)
+    reporter.write_line(message)
 
 
 class FakeClient:
