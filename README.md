@@ -118,6 +118,17 @@ spelling. Relation aliases are used by extraction, query planning, trust views,
 and verification query expansion so older source-language facts can still answer
 canonical English questions.
 
+## Ask Output Order
+
+The Ask tab is evidence-first. Once a question is routed, verinote shows the
+answer block immediately under its route label (`VERIFIED — engine`,
+`VERIFIED — engine (negative)`, or `UNVERIFIED — source exploration`) before
+route reasons, query details, source tables, or excerpts.
+
+Treat that first block as the evidence. Any surrounding explanation must follow
+it and stay short; do not restate, translate, or summarize the block rows before
+the user has seen them.
+
 ## License
 
 Mozilla Public License 2.0 — see [LICENSE](LICENSE). MPL-2.0 is a file-level
