@@ -760,10 +760,20 @@ class Store:
         Counters are untouched on purpose — `completed_chunks`/`failed_chunks`/
         `candidate_count` count `done`/`failed` chunks, and this method changes
         neither, so they stay true.
+
+        A `canceled` job is left alone ENTIRELY — job row, chunks and history. A
+        human took it out of the queue, and reviving its in-flight chunk would put
+        it back in (`next_pending_chunk` would hand out a chunk of a canceled job),
+        while recording an `extraction_job_rolled_back` event for a job that was not
+        rolled back would write a fresh falsehood into the very history this change
+        exists to keep honest. Hence the early return rather than a `WHERE` clause
+        on the job UPDATE alone.
         """
         with self._lock:
             before = self.get_extraction_job(job_id)
             if before is None:
+                return
+            if before["status"] == "canceled":
                 return
             self._conn.execute(
                 "UPDATE source_chunks SET status = 'pending', error = '', "
@@ -773,7 +783,7 @@ class Store:
             )
             self._conn.execute(
                 "UPDATE extraction_jobs SET status = 'pending', message = ?, "
-                "updated_at = datetime('now') WHERE id = ? AND status != 'canceled'",
+                "updated_at = datetime('now') WHERE id = ?",
                 (message, job_id),
             )
             after = self.get_extraction_job(job_id)

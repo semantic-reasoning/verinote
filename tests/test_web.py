@@ -1185,9 +1185,8 @@ def test_launching_the_ui_on_a_halted_kb_resumes_nothing(tmp_path, monkeypatch, 
     )
     before = _job_row(cfg, job_id)
 
-    app = create_app(cfg)
+    create_app(cfg)
 
-    assert app.state.resumed_job_ids == []  # not one job revived
     time.sleep(0.2)  # a worker thread, had one been started, would have written by now
     assert clients == []  # no worker was started at all
     assert _job_row(cfg, job_id) == before  # job untouched: still pending, same message
@@ -1198,21 +1197,21 @@ def test_launching_the_ui_on_a_halted_kb_resumes_nothing(tmp_path, monkeypatch, 
 def test_launching_the_ui_on_a_healthy_kb_still_resumes(tmp_path, monkeypatch, fake_client):
     """The gate above refuses a *halted* KB, not every KB."""
     cfg, job_id, _ = _job_kb(tmp_path, with_policy=True)
+    clients = []
     monkeypatch.setattr(
         webapp,
         "get_client",
-        lambda cfg: fake_client([ExtractedFact("X", "is_a", "Y", 0.9)]),
+        lambda cfg: clients.append(cfg) or fake_client([ExtractedFact("X", "is_a", "Y", 0.9)]),
     )
 
-    app = create_app(cfg)
-    c = TestClient(app)
-
-    assert app.state.resumed_job_ids == [job_id]
+    c = TestClient(create_app(cfg))
 
     def resumed():
         assert "is_a" in c.get("/review").text
 
     _wait_for(resumed)
+    assert clients != []  # the worker really was started
+    assert _job_row(cfg, job_id)["status"] == "done"
 
 
 def test_worker_halt_does_not_mark_the_job_failed(tmp_path, monkeypatch, fake_client):
@@ -1272,6 +1271,130 @@ def test_worker_still_fails_the_job_on_an_ordinary_error(tmp_path, monkeypatch, 
 
     _wait_for(failed)
     assert "boom" in _job_row(cfg, job_id)["message"]
+
+
+def _auto_accept_kb(tmp_path):
+    """A KB one finished job away from auto-accepting a fact.
+
+    `sources/b.txt` already contributed `X is_a Y` from a `done` job, so the moment
+    the pending job on `sources/a.txt` extracts the same triple, both facts have two
+    distinct corroborating sources and become auto-accept eligible.
+    """
+    cfg = Config(
+        root=tmp_path,
+        db_path=tmp_path / "kb.sqlite",
+        provider="anthropic",
+        model="m",
+        api_key=None,
+        base_url=None,
+        auto_accept_recommendations=True,
+    )
+    policy = tmp_path / POLICY_RELPATH
+    with Store(cfg.db_path) as store:
+        store.init_schema()
+        corroborating = store.add_source("sources/b.txt")
+        done_job = store.create_extraction_job(
+            source_id=corroborating, provider="anthropic", model="m", total_chunks=1
+        )
+        chunk = store.add_source_chunks(
+            job_id=done_job, source_id=corroborating, chunks=["prior text"]
+        )[0]
+        store.mark_extraction_job_running(done_job)
+        store.mark_chunk_running(chunk)
+        store.mark_chunk_done(chunk, candidates=1)
+        store.finish_extraction_job(done_job)
+        store.add_fact(
+            "X", "is_a", "Y", status="candidate", source_id=corroborating, job_id=done_job
+        )
+
+        sid = store.add_source("sources/a.txt")
+        job_id = store.create_extraction_job(
+            source_id=sid, provider="anthropic", model="m", total_chunks=1
+        )
+        store.add_source_chunks(job_id=job_id, source_id=sid, chunks=["some text"])
+        policy.parent.mkdir(parents=True, exist_ok=True)
+        policy.write_text(DEFAULT_POLICY, encoding="utf-8")
+        store.record_policy_marker(policy_sha256(DEFAULT_POLICY), origin="scaffold")
+    return cfg, job_id, policy
+
+
+def _fact_statuses(cfg):
+    with Store(cfg.db_path) as store:
+        store.init_schema()
+        return sorted(str(fact["status"]) for fact in store.facts())
+
+
+def test_worker_does_not_auto_accept_on_a_kb_that_went_halted(
+    tmp_path, monkeypatch, fake_client
+):
+    """End-to-end: a policy lost after the last chunk must not still auto-accept (#194).
+
+    `apply_auto_accept_recommendations` fires in the same `with Store(...)` block the
+    instant `process_extraction_job` returns, so a policy deleted after the final
+    chunk's write boundary lands squarely on it — and `status='accepted'` on a KB
+    with no rules is a review gate no rule was ever applied to.
+
+    Scope, honestly: this path is double-guarded, so it does not pin
+    `apply_auto_accept_recommendations`'s own `assert_writable` — the engine's
+    `store_functional_relations` -> `load_policy` would also raise here.
+    `test_auto_accept_refuses_a_halted_kb_by_its_own_guard` is the test that pins the
+    guard; this one pins the worker's end-to-end behaviour: job `done`, nothing
+    accepted, no `auto_accept_applied` in the history.
+    """
+    cfg, job_id, policy = _auto_accept_kb(tmp_path)
+    monkeypatch.setattr(
+        webapp,
+        "get_client",
+        lambda cfg: fake_client([ExtractedFact("X", "is_a", "Y", 0.9)]),
+    )
+    real = webapp.process_extraction_job
+
+    def vanish_after_the_job(*args, **kwargs):
+        # the exact gap the guard covers: every chunk passed its write boundary, the
+        # job is `done`, and the policy disappears before auto-accept runs
+        result = real(*args, **kwargs)
+        policy.unlink()
+        return result
+
+    monkeypatch.setattr(webapp, "process_extraction_job", vanish_after_the_job)
+
+    create_app(cfg)
+
+    def job_finished():
+        assert _job_row(cfg, job_id)["status"] == "done"
+
+    _wait_for(job_finished)
+    time.sleep(0.2)  # let an unguarded auto-accept land, if the guard regressed
+    # both facts were auto-accept *eligible*; on a halted KB neither may be accepted
+    assert _fact_statuses(cfg) == ["candidate", "candidate"]
+    with Store(cfg.db_path) as store:
+        store.init_schema()
+        events = [
+            row["event_type"]
+            for row in store._conn.execute("SELECT event_type FROM fact_events")
+        ]
+    assert "auto_accept_applied" not in events
+
+
+def test_worker_still_auto_accepts_on_a_healthy_kb(tmp_path, monkeypatch, fake_client):
+    """The control: the guard refuses a *halted* KB, it does not disable auto-accept.
+
+    Without this, deleting the auto-accept call outright would pass the test above.
+    """
+    cfg, job_id, _ = _auto_accept_kb(tmp_path)  # policy left in place
+    monkeypatch.setattr(
+        webapp,
+        "get_client",
+        lambda cfg: fake_client([ExtractedFact("X", "is_a", "Y", 0.9)]),
+    )
+
+    create_app(cfg)
+
+    def auto_accepted():
+        assert _job_row(cfg, job_id)["status"] == "done"
+        assert _fact_statuses(cfg) == ["accepted", "accepted"]
+
+    _wait_for(auto_accepted)
 
 
 def test_report_ok_for_consistent_kb(tmp_path):

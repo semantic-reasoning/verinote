@@ -170,9 +170,14 @@ def process_extraction_job(
     the check has to live next to the write itself.
 
     On a mid-job halt the job is rolled back to `pending` (see
-    `_halt_extraction_job`) before the error propagates. Leaving it `running` would
-    strand the source forever: no code path resets a `running` job, so it could
-    neither finish nor be re-synced.
+    `_halt_extraction_job`) before the error propagates. Left `running`, the job row
+    would simply be false — the job is not running, nothing is processing it — and a
+    KB that lies about its own state is what this change exists to stop. It would
+    also make recovery depend on the web launcher: `_resume_source_extraction_jobs`
+    is the only thing that revives a `running` job (and only when someone next
+    starts the UI), while `reset_running_chunks` below rewinds the *chunks* of a job
+    already being processed, not a job nobody is processing. `pending` is the state
+    that says what is true and that every resume path already understands.
     """
     assert_writable(store)
     job = store.get_extraction_job(job_id)
@@ -187,6 +192,7 @@ def process_extraction_job(
     run_id = store.add_run(provider=job["provider"], model=job["model"])
 
     candidates = 0
+    run_chunks = 0
     try:
         while chunk := store.next_pending_chunk(job_id):
             # Pre-claim gate. Claiming a chunk (`status='running'`, `attempts + 1`)
@@ -215,6 +221,7 @@ def process_extraction_job(
                 continue
             candidates += inserted
             store.mark_chunk_done(int(running["id"]), candidates=inserted)
+            run_chunks += 1
     except PolicyMissingError:
         # The policy vanished mid-job — either before this chunk was claimed (the
         # gate above) or between its LLM call and its first insert (the boundary in
@@ -225,6 +232,7 @@ def process_extraction_job(
             run_id=run_id,
             source_path=str(source["path"]),
             run_candidates=candidates,
+            run_chunks=run_chunks,
         )
         raise
 
@@ -251,6 +259,7 @@ def _halt_extraction_job(
     run_id: int,
     source_path: str,
     run_candidates: int,
+    run_chunks: int,
 ) -> None:
     """Rewind a job whose KB went halted mid-flight, and record what really happened.
 
@@ -262,8 +271,13 @@ def _halt_extraction_job(
     change that exists to stop the KB lying about its state must not plant a new
     lie, so every number below is read back from the KB rather than assumed.
 
-    `run_candidates` is what *this* run inserted (the job's own `candidate_count`
-    is cumulative across resumes, and would over-report for a resumed job).
+    TWO DIFFERENT SCOPES, AND THEY MUST STAY GRAMMATICALLY APART. `completed`/
+    `total` are the *job's* progress, cumulative across every resume; `run_chunks`
+    and `run_candidates` are what *this* run did. Phrase them as one clause
+    ("halted after 2/3 chunk(s), 1 candidate(s) written by this run") and a resumed
+    job reads as "this run did 2 chunks and wrote 1 candidate" when this run may
+    have done exactly one chunk. A sentence that has to be cross-checked against the
+    job row to be understood is not a fix for a KB that misreports itself.
     """
     job = store.get_extraction_job(job_id)
     completed = int(job["completed_chunks"]) if job is not None else 0
@@ -276,9 +290,9 @@ def _halt_extraction_job(
     )
     store.set_run_summary(
         run_id,
-        f"{source_path}: halted after {completed}/{total} chunk(s), "
-        f"{run_candidates} candidate(s) written by this run before this KB's policy "
-        f"file went missing; job rolled back to pending",
+        f"{source_path}: halted because this KB's policy file went missing; "
+        f"job rolled back to pending at job progress {completed}/{total} chunk(s); "
+        f"this run wrote {run_candidates} candidate(s) from {run_chunks} chunk(s)",
     )
 
 
