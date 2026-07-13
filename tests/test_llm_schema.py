@@ -514,3 +514,89 @@ def test_parse_facts_skips_malformed_items_when_valid_facts_remain():
     assert [(fact.subject, fact.relation, fact.object) for fact in facts] == [
         ("Ada", "is_a", "mathematician")
     ]
+
+
+def _widget_fact(**overrides):
+    fact = {
+        "subject": "Widget",
+        "relation": "made_by",
+        "object": "Gadget",
+        "confidence": 0.9,
+        "note": "",
+    }
+    fact.update(overrides)
+    return fact
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        # The repros as filed: an off-schema JSON type in a bare slot.
+        {"subject": ["Widget", "Alpha"]},
+        {"object": {"city": "Gadgetville"}},
+        {"subject": None},
+        {"subject": "   "},
+        # The same off-schema types smuggled through the {kind,value} branch,
+        # which str() used to coerce into plausible-looking review-queue text.
+        {"subject": {"kind": "string", "value": ["Widget", "Alpha"]}},
+        {"subject": {"kind": "string", "value": None}},
+        {"subject": {"kind": "string", "value": "   "}},
+        {"object": {"kind": "string", "value": {"city": "Gadgetville"}}},
+        {"object": {"kind": "term", "value": {"functor": "maker"}}},
+        {"relation": {"kind": ["string"], "value": "made_by"}},
+        # `note` is declared {"type": "string"}.
+        {"note": ["off", "schema"]},
+        # `confidence` is declared {"type": "number", "minimum": 0, "maximum": 1}.
+        {"confidence": True},
+        {"confidence": 90},
+        {"confidence": -1},
+    ],
+)
+def test_parse_facts_rejects_off_schema_slot_types_instead_of_coercing(overrides):
+    """The declared schema types every slot as a string; str() coercion would let
+    lists/objects/null reach the review queue as text like "['Widget', 'Alpha']"."""
+    with pytest.raises(LLMError):
+        parse_facts({"facts": [_widget_fact(**overrides)]})
+
+
+def test_parse_facts_still_accepts_plain_string_slots():
+    fact = parse_facts({"facts": [_widget_fact()]})[0]
+
+    assert (fact.subject, fact.relation, fact.object) == ("Widget", "made_by", "Gadget")
+    assert fact.subject_kind == fact.relation_kind == fact.object_kind == "string"
+    assert fact.confidence == 0.9
+
+
+def test_parse_facts_still_accepts_explicit_ground_term_slots():
+    """Fact-storage boundary: a structural fact is only a term when the model says
+    so with {"kind": "term"}. Enforcing slot types must not break that path."""
+    fact = parse_facts(
+        {"facts": [_widget_fact(object={"kind": "term", "value": "maker(gadget)"})]}
+    )[0]
+
+    assert fact.object == "maker(gadget)"
+    assert fact.object_kind == "term"
+    assert fact.note == ""
+
+
+def test_parse_facts_keeps_plain_functor_text_as_a_string_literal():
+    """A bare "maker(gadget)" string is a StringLit, never reinterpreted as a compound."""
+    fact = parse_facts({"facts": [_widget_fact(object="maker(gadget)")]})[0]
+
+    assert fact.object == "maker(gadget)"
+    assert fact.object_kind == "string"
+
+
+@pytest.mark.parametrize("note", [None, "seen in the spec"])
+def test_parse_facts_accepts_missing_or_null_note(note):
+    payload = _widget_fact()
+    if note is None:
+        payload.pop("note")
+    else:
+        payload["note"] = note
+
+    assert parse_facts({"facts": [payload]})[0].note == (note or "")
+
+
+def test_parse_facts_tolerates_numeric_string_confidence_from_prompt_only_providers():
+    assert parse_facts({"facts": [_widget_fact(confidence="0.75")]})[0].confidence == 0.75
