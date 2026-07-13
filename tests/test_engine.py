@@ -7,6 +7,7 @@ import verinote.engine.wirelog as wl
 from verinote.engine import DEFAULT_POLICY, compile_dl, run_check, validate_query
 from verinote.engine.terms import (
     StringLit,
+    TermParseError,
     escape_string_value,
     parse_term,
     render_term,
@@ -288,8 +289,120 @@ def test_escaped_string_terms_roundtrip_through_the_parser(char):
 def test_printable_values_render_byte_identically(value):
     """Widening the escape set must not touch ordinary text in any language.
 
-    Cc/Cf/Zl/Zp contains no letter, mark, digit, punctuation or symbol, so every
+    Cc/Zl/Zp contains no letter, mark, digit, punctuation or symbol, so every
     printable string renders exactly as before: quoted, and otherwise verbatim.
     """
     assert render_term(StringLit(value)) == f'"{value}"'
     assert escape_string_value(value) == value
+
+
+# The escape set is justified by exactly one threat: a value that starts a new
+# line forges a report finding. So it has to cover every code point Python
+# treats as a line break -- and nothing else may be sacrificed for that.
+_SPLITTING_CODE_POINTS = frozenset(
+    {0x0A, 0x0B, 0x0C, 0x0D, 0x1C, 0x1D, 0x1E, 0x85, 0x2028, 0x2029}
+)
+
+
+def test_escape_set_covers_every_line_breaking_code_point():
+    """Exhaustive proof, not a spot check: scan the whole of Unicode.
+
+    If a future edit narrows the escape set past what `str.splitlines()` breaks
+    on, a fact value can forge a report line again. This pins the coverage over
+    all 0x110000 code points rather than the handful we happened to think of.
+    """
+    splitting = {
+        cp for cp in range(0x110000) if len(f"a{chr(cp)}b".splitlines()) > 1
+    }
+
+    assert splitting == _SPLITTING_CODE_POINTS
+
+    unescaped = sorted(cp for cp in splitting if escape_string_value(chr(cp)) == chr(cp))
+    assert unescaped == []
+    for cp in splitting:
+        assert len(escape_string_value(f"a{chr(cp)}b").splitlines()) == 1
+
+
+# Written as code points on purpose: these characters are invisible in a source
+# file. U+202A..U+202E are the embeddings/overrides, U+2066..U+2069 the isolates.
+_BIDI_CONTROLS = [chr(cp) for cp in list(range(0x202A, 0x202F)) + list(range(0x2066, 0x206A))]
+
+
+@pytest.mark.parametrize(
+    "char", _BIDI_CONTROLS, ids=[f"U+{ord(c):04X}" for c in _BIDI_CONTROLS]
+)
+def test_bidi_controls_are_escaped(char):
+    """Bidi overrides break no line, but they reverse what the reader sees.
+
+    A report is a trust artifact: a value must not be able to reorder the text
+    of the line it sits on into a claim the engine never derived.
+    """
+    value = f"safe{char}dangerous"
+
+    escaped = escape_string_value(value)
+
+    assert char not in escaped
+    assert escaped == f"safe\\u{ord(char):04x}dangerous"
+    assert parse_term(render_term(StringLit(value))) == StringLit(value)
+
+
+# Zero-width joiners are not decoration: they are required spelling in Persian
+# and Indic scripts and they hold emoji sequences together. Escaping them (as
+# a blanket Cf rule would) corrupts the source document's spelling, which the
+# subject/object rendering promises to preserve. Synthetic samples only.
+@pytest.mark.parametrize(
+    "value",
+    [
+        # ZWJ/ZWNJ/soft hyphen spelled as escapes: they are invisible in source.
+        pytest.param(
+            "\U0001f468\u200d\U0001f469\u200d\U0001f467", id="emoji-family-ZWJ"
+        ),
+        pytest.param("\U0001f9d1\u200d\U0001f4bb", id="emoji-technologist-ZWJ"),
+        pytest.param("می\u200cخواهم", id="persian-ZWNJ"),
+        pytest.param("क\u200dष", id="devanagari-ZWJ"),
+        pytest.param("क\u200cष", id="devanagari-ZWNJ"),
+        pytest.param("co\u00adop", id="soft-hyphen"),
+    ],
+)
+def test_meaningful_format_characters_survive_rendering(value):
+    """ZWJ/ZWNJ/soft hyphen render verbatim: they cannot forge a line."""
+    assert escape_string_value(value) == value
+    assert render_term(StringLit(value)) == f'"{value}"'
+    assert len(escape_string_value(value).splitlines()) <= 1
+    assert parse_term(render_term(StringLit(value))) == StringLit(value)
+
+
+# `\u`/`\U` escapes are new in the parser, and the reader is the only thing
+# standing between a malformed escape and a lone surrogate reaching UTF-8
+# encoding or a DB insert. Callers only catch TermParseError, so every one of
+# these has to fail as a parse error -- not as a bare ValueError from `chr()`.
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param(r'"\ud800"', id="lone-high-surrogate"),
+        pytest.param(r'"\udfff"', id="lone-low-surrogate"),
+        pytest.param(r'"\u12"', id="too-few-hex-digits"),
+        pytest.param(r'"\u"', id="no-hex-digits"),
+        pytest.param(r'"\uzzzz"', id="non-hex-digits"),
+        pytest.param(r'"\U00110000"', id="above-max-code-point"),
+        pytest.param(r'"\U0011FFFF"', id="far-above-max-code-point"),
+    ],
+)
+def test_parser_rejects_invalid_unicode_escapes(text):
+    with pytest.raises(TermParseError):
+        parse_term(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        pytest.param(r'"\u0041"', "A", id="bmp-escape"),
+        pytest.param(r'"\u0041FF"', "AFF", id="exactly-four-digits-consumed"),
+        pytest.param(r'"\U0001f600"', "\U0001f600", id="astral-escape"),
+        pytest.param(r'"\U0010FFFF"', "\U0010ffff", id="max-code-point"),
+        pytest.param(r'"\u200d"', "\u200d", id="zwj-escape-reads-back"),
+    ],
+)
+def test_parser_accepts_valid_unicode_escapes(text, expected):
+    """Rendering escapes only stays lossless if the reader accepts them back."""
+    assert parse_term(text) == StringLit(expected)

@@ -32,9 +32,26 @@ _SHORT_ESCAPES = {
     "\r": "\\r",
     "\t": "\\t",
 }
-# Unicode general categories that never render as visible text: controls,
-# format characters, and line/paragraph separators. See `escape_string_value`.
-_ESCAPED_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
+# Unicode general categories that cannot render as visible text and are exactly
+# what starts a new line: controls (Cc), line separators (Zl) and paragraph
+# separators (Zp). See `escape_string_value`.
+_ESCAPED_CATEGORIES = frozenset({"Cc", "Zl", "Zp"})
+# Explicit bidi controls (a subset of Cf). They do not break lines, but they
+# reorder the visual run around them, so a value can make a report line read as
+# something the engine never derived. Neutralized for the same reason.
+_ESCAPED_CODEPOINTS = frozenset(
+    {
+        0x202A,  # LEFT-TO-RIGHT EMBEDDING
+        0x202B,  # RIGHT-TO-LEFT EMBEDDING
+        0x202C,  # POP DIRECTIONAL FORMATTING
+        0x202D,  # LEFT-TO-RIGHT OVERRIDE
+        0x202E,  # RIGHT-TO-LEFT OVERRIDE
+        0x2066,  # LEFT-TO-RIGHT ISOLATE
+        0x2067,  # RIGHT-TO-LEFT ISOLATE
+        0x2068,  # FIRST STRONG ISOLATE
+        0x2069,  # POP DIRECTIONAL ISOLATE
+    }
+)
 _HEX_RE = re.compile(r"[0-9A-Fa-f]+\Z")
 
 
@@ -137,22 +154,33 @@ def canonical_term_key(term: Term) -> str:
 
 
 def escape_string_value(value: str) -> str:
-    """Escape backslashes and every non-printing character in a string value.
+    """Escape backslashes, line-breaking characters and bidi controls.
 
     This is the single owner of the "how do we neutralize control characters in
     a string value" question. Quoted rendering (`render_term`) and unquoted
     report rendering both build on it, so the two paths cannot drift apart.
 
-    The rule is a whitelist, not a blacklist: anything whose Unicode general
-    category is a control (Cc), a format character (Cf), a line separator (Zl),
-    or a paragraph separator (Zp) is escaped. Enumerating "the dangerous
+    The line-forging rule is a category whitelist, not a blacklist: anything
+    whose Unicode general category is a control (Cc), a line separator (Zl), or
+    a paragraph separator (Zp) is escaped. Enumerating "the dangerous
     characters" does not work here, because `str.splitlines()` breaks on far
     more than LF/CR -- VT, FF, FS, GS, RS, NEL, U+2028 and U+2029 all start a
     new line, so a blacklist that stops at `\\n`/`\\r` still lets a fact value
-    forge a report line. Cc/Cf/Zl/Zp is a superset of everything `splitlines()`
-    splits on, and it also covers NUL, ESC, and the invisible bidi/tag
-    characters. Printable text of any language (`Ada`, `Kim`) has none of those
-    categories, so it renders unchanged.
+    forge a report line. Cc/Zl/Zp is a superset of everything `splitlines()`
+    splits on (a full 0..0x10FFFF scan is pinned in the tests), and it also
+    covers NUL and ESC.
+
+    On top of that, the nine explicit bidi controls in `_ESCAPED_CODEPOINTS`
+    are escaped. They break no line, but they reverse the visual order of the
+    text around them, so a value could make a report line read as a claim the
+    engine never derived.
+
+    The escape set stops there, and deliberately does not take all of Cf: ZWJ
+    (U+200D), ZWNJ (U+200C) and soft hyphen carry meaning in ordinary text --
+    they join emoji sequences and are required spelling in Persian and Indic
+    scripts. Escaping them would corrupt the source document's spelling, which
+    the subject/object rendering promises to preserve, and they cannot forge a
+    line anyway.
 
     Backslash is handled first: without escaping it, a literal backslash-n in
     the value would be indistinguishable from a real newline after escaping.
@@ -162,7 +190,10 @@ def escape_string_value(value: str) -> str:
         short = _SHORT_ESCAPES.get(ch)
         if short is not None:
             out.append(short)
-        elif unicodedata.category(ch) in _ESCAPED_CATEGORIES:
+        elif (
+            unicodedata.category(ch) in _ESCAPED_CATEGORIES
+            or ord(ch) in _ESCAPED_CODEPOINTS
+        ):
             out.append(_unicode_escape(ch))
         else:
             out.append(ch)

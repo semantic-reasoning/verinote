@@ -529,6 +529,42 @@ def test_duckdb_backend_escapes_control_characters_in_answers():
     assert answer == "q1: alpha\\nbeta\\tgamma\\rdelta"
 
 
+def test_duckdb_backend_keeps_meaningful_joiners_in_answers():
+    """An answer must spell the source document's text, not a mangled copy.
+
+    ZWJ/ZWNJ are required spelling in Persian and Indic scripts and hold emoji
+    sequences together. They start no line, so escaping them would only corrupt
+    the answer a user reads back. Synthetic values only.
+    """
+    _duckdb()
+    value = "Ba\u200cnu \U0001f468\u200d\U0001f469\u200d\U0001f467"
+    rep = run_check_duckdb(
+        [{"subject": "Widget", "relation": "located_in", "object": value}],
+        query_dl=_ANSWER_QUERY,
+    )
+
+    assert rep.answers == [f"q1: {value}"]
+
+
+def test_duckdb_backend_neutralizes_bidi_overrides_in_answers():
+    """RLO forges no newline, but it reverses what the reader sees on the line."""
+    _duckdb()
+    rep = run_check_duckdb(
+        [
+            {
+                "subject": "Widget",
+                "relation": "located_in",
+                "object": "safe\u202edangerous",
+            }
+        ],
+        query_dl=_ANSWER_QUERY,
+    )
+
+    answer = rep.answers[0]
+    assert "\u202e" not in answer
+    assert answer == "q1: safe\\u202edangerous"
+
+
 def test_duckdb_backend_escaping_is_lossless():
     _duckdb()
     rep = run_check_duckdb(
