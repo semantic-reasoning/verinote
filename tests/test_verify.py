@@ -9,10 +9,13 @@ from verinote.pipeline.verify import load_policy, policy_path, verify
 from verinote.store import Store
 from verinote.store.fact_input import structural_term
 
-# A hand-written policy tracked in the repo (see tests/test_gitignore.py): a bare
-# `*.dl` ignore rule used to swallow files like this, and a policy that never
-# gets committed degrades into load_policy() -> None, i.e. a silent fall back to
-# the shipped default policy that still reports "consistent".
+# A hand-written policy tracked in the repo (see tests/test_gitignore.py), used
+# here exactly as verinote loads a KB's own `policy/logic-policy.dl`. Such a
+# policy is authored by hand and unreproducible — a bare `*.dl` ignore rule used
+# to swallow files like this, keeping them out of git, which is how a KB owner's
+# rules get lost for good. What verify() does when the policy is *absent* is a
+# separate question (see #155); this fixture pins the other half: a policy that
+# is present is really the one that runs.
 SAMPLE_POLICY_FIXTURE = Path(__file__).parent / "fixtures" / "policy" / "sample-policy.dl"
 
 
