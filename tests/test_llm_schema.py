@@ -489,14 +489,15 @@ def test_parse_facts_rejects_malformed_explicit_slots(slot):
         )
 
 
-def test_parse_facts_skips_malformed_items_when_valid_facts_remain():
+def test_parse_facts_accepts_batch_of_only_valid_facts():
+    """A batch with no schema violations is parsed in full -- nothing raises."""
     facts = parse_facts(
         {
             "facts": [
                 {
                     "subject": "Ada",
-                    "relation": "",
-                    "object": "mathematician",
+                    "relation": "wrote",
+                    "object": "notes",
                     "confidence": 0.9,
                     "note": "",
                 },
@@ -512,8 +513,66 @@ def test_parse_facts_skips_malformed_items_when_valid_facts_remain():
     )
 
     assert [(fact.subject, fact.relation, fact.object) for fact in facts] == [
-        ("Ada", "is_a", "mathematician")
+        ("Ada", "wrote", "notes"),
+        ("Ada", "is_a", "mathematician"),
     ]
+
+
+def test_parse_facts_raises_when_valid_and_malformed_are_mixed():
+    """A violation next to valid facts must fail the whole batch, not drop.
+
+    Dropping the off-schema item while returning the valid one would report the
+    chunk as a success with the violating fact silently gone. `base.py` promises
+    `LLMError` on any schema violation so the caller can retry deterministically
+    (issue #168), so the mixed batch raises rather than smuggling a partial
+    result past the retry path.
+    """
+    with pytest.raises(LLMError):
+        parse_facts(
+            {
+                "facts": [
+                    {
+                        "subject": "Ada",
+                        "relation": "is_a",
+                        "object": "mathematician",
+                        "confidence": 0.9,
+                        "note": "",
+                    },
+                    {
+                        "subject": "Ada",
+                        "relation": "",  # empty slot is a schema violation
+                        "object": "mathematician",
+                        "confidence": 0.9,
+                        "note": "",
+                    },
+                ]
+            }
+        )
+
+
+def test_parse_facts_raises_when_every_item_is_malformed():
+    """A batch of only violations also fails loudly."""
+    with pytest.raises(LLMError):
+        parse_facts(
+            {
+                "facts": [
+                    {
+                        "subject": "",
+                        "relation": "is_a",
+                        "object": "mathematician",
+                        "confidence": 0.9,
+                        "note": "",
+                    },
+                    {
+                        "subject": "Ada",
+                        "relation": "",
+                        "object": "mathematician",
+                        "confidence": 0.9,
+                        "note": "",
+                    },
+                ]
+            }
+        )
 
 
 def _widget_fact(**overrides):
