@@ -1,10 +1,56 @@
 # SPDX-License-Identifier: MPL-2.0
-"""Shared test fakes — a canned `LLMClient` so the pipeline is exercised offline."""
+"""Shared test fakes and the environment sandbox that keeps tests off the real home.
 
+`verinote.config.app_config_dir()` resolves through `HOME`/`USERPROFILE`/
+`XDG_CONFIG_HOME`/`APPDATA`/`LOCALAPPDATA` depending on the platform, and
+`active_root()` falls back to `./data` relative to the *current working
+directory*. A test that forgets to isolate either one can rewrite the
+developer's real `app.json` — repointing the active KB — or open the repo's own
+`data/kb.sqlite`. The autouse fixture below closes both holes structurally, so
+isolation is no longer something each test author has to remember.
+"""
+
+import env_sandbox
 import pytest
 
 from verinote.llm.base import ExtractedFact, LLMError
 from verinote.pipeline.query_intent import parse_query_intent
+
+
+@pytest.fixture(autouse=True)
+def isolate_app_environment(monkeypatch, tmp_path_factory):
+    """Point every home-ish env var at a throwaway home, and CWD at a throwaway dir.
+
+    A dedicated temp dir (not `tmp_path`) is used for the fake home: many tests
+    use `tmp_path` as a KB root and walk it, so planting a home inside it would
+    pollute them. `VERINOTE_ROOT` is dropped so an ambient export cannot leak in,
+    and the CWD is moved off the repo so `active_root()`'s `./data` fallback
+    cannot reach the repo's own KB. Tests that set these vars themselves still
+    win: this runs first, their `setenv` runs after.
+    """
+    home = tmp_path_factory.mktemp("home")
+    for var in ("HOME", "USERPROFILE", "XDG_CONFIG_HOME", "APPDATA", "LOCALAPPDATA"):
+        monkeypatch.setenv(var, str(home))
+    monkeypatch.delenv("VERINOTE_ROOT", raising=False)
+    monkeypatch.chdir(tmp_path_factory.mktemp("cwd"))
+    env_sandbox.enter(home)
+    try:
+        yield home
+    finally:
+        env_sandbox.exit()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def real_app_config_is_untouched():
+    """Fail the session if anything wrote to the developer's real app config."""
+    path = env_sandbox.REAL_APP_CONFIG_PATH
+    before = env_sandbox.snapshot(path)
+    yield
+    after = env_sandbox.snapshot(path)
+    if before is None:
+        assert after is None, f"the test run created the real app config at {path}"
+    else:
+        assert after == before, f"the test run modified the real app config at {path}"
 
 
 class FakeClient:
