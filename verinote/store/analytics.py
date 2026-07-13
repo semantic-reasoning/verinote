@@ -44,6 +44,19 @@ _CONFIDENCE_CASE = """
 """
 
 
+def _sql_literal(value: str) -> str:
+    """Quote a value as a SQL string literal.
+
+    `ATTACH` takes no prepared parameters, so the path has to reach DuckDB
+    inside the statement text. That makes the path *data* which must not be
+    read as *syntax*: a KB under a directory with an apostrophe in it (say
+    `/home/o'neill/kb`) would otherwise close the literal early and blow up the
+    parser. Doubling `'` is the SQL standard escape and the only lever we have
+    here.
+    """
+    return "'" + value.replace("'", "''") + "'"
+
+
 def compute(db_path: Path) -> Analytics:
     """ATTACH the SQLite KB read-only and return aggregate breakdowns.
 
@@ -56,7 +69,7 @@ def compute(db_path: Path) -> Analytics:
 
     con = duckdb.connect()
     try:
-        con.execute(f"ATTACH '{db_path}' AS kb (TYPE sqlite, READ_ONLY);")
+        con.execute(f"ATTACH {_sql_literal(str(db_path))} AS kb (TYPE sqlite, READ_ONLY);")
         by_status = con.execute(
             "SELECT status, COUNT(*) FROM kb.facts GROUP BY status ORDER BY COUNT(*) DESC, status"
         ).fetchall()

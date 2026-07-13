@@ -32,6 +32,7 @@ class DuckDBFactTermStore:
     def __init__(self, path: str | Path | None) -> None:
         self.path = Path(path).expanduser() if path is not None else None
         if self.path is not None:
+            _reject_unsupported_path(self.path)
             self.path.parent.mkdir(parents=True, exist_ok=True)
         self._con = _connect(self.path)
         self.init_schema()
@@ -133,6 +134,29 @@ class DuckDBFactTermStore:
 def fact_terms_path(root: str | Path) -> Path:
     """Return the default DuckDB fact-term store path for a KB root."""
     return Path(root).expanduser() / FACT_TERMS_FILENAME
+
+
+# DuckDB's native storage layer splits a database path on '?' and reads the tail
+# as connection parameters, so a KB root like `/data/weird?dir` sends it looking
+# for a file nobody named -- and it half-creates one on the way out. The split
+# happens inside DuckDB, below any string we hand it, so there is nothing for us
+# to quote or encode our way around: refuse the path instead of opening it.
+# This is a native-storage limit only. The SQLite ATTACH in `store.analytics`
+# handles '?' fine, so it stays unguarded.
+_UNSUPPORTED_PATH_CHARS = ("?",)
+
+
+def _reject_unsupported_path(path: Path) -> None:
+    """Fail before opening a store DuckDB cannot address, naming the way out."""
+    for char in _UNSUPPORTED_PATH_CHARS:
+        if char in str(path):
+            raise DuckDBFactTermStoreError(
+                f"cannot open the DuckDB fact-term store at {str(path)!r}: DuckDB reads "
+                f"everything after {char!r} in a database path as connection parameters, "
+                f"not as part of the filename, so this store can never be opened. "
+                f"Move the KB to a path with no {char!r} in it (rename the offending "
+                f"directory, or pass a different KB root) and retry."
+            )
 
 
 def _connect(path: Path | None):
