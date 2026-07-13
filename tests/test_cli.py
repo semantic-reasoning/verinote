@@ -10,7 +10,7 @@ from verinote.engine import DEFAULT_POLICY
 from verinote.llm.base import ExtractedFact, LLMError
 from verinote.pipeline.ingest import register_converter
 from verinote.pipeline.query_intent import parse_query_intent
-from verinote.store import ENGINE_STATUSES, Store
+from verinote.store import Store, engine_statuses
 from verinote.store.fact_input import structural_term
 
 
@@ -632,10 +632,13 @@ def test_init_still_honours_verinote_root(tmp_path, monkeypatch):
 
 def test_demo_facts_are_never_engine_input():
     demo_statuses = {status for _, _, _, status, _, _, _ in cli._DEMO_FACTS}
+    # Asked through the accessor, not a frozenset imported at module load: an
+    # import binds the tier at import time, which is the split #176 closed.
+    engine = engine_statuses()
     # Both sides must be non-empty, else the disjointness check below is vacuous.
     assert demo_statuses
-    assert ENGINE_STATUSES
-    assert demo_statuses & ENGINE_STATUSES == set()
+    assert engine
+    assert demo_statuses & engine == set()
 
 
 def test_seeded_kb_has_no_engine_facts(tmp_path, monkeypatch):
@@ -645,7 +648,7 @@ def test_seeded_kb_has_no_engine_facts(tmp_path, monkeypatch):
     assert cli.main(["init", str(root), "--seed"]) == 0
 
     store = Store(root / "kb.sqlite")
-    assert store.facts(statuses=ENGINE_STATUSES) == []
+    assert store.facts(statuses=engine_statuses()) == []
     assert store.facts() != []  # the demo facts did land, just not as engine input
     store.close()
 
@@ -769,6 +772,42 @@ def test_seed_rejects_a_corrupt_db_file_without_a_traceback(tmp_path, monkeypatc
     err = capsys.readouterr().err
     assert "is not a verinote KB" in err
     assert f"verinote init {root}" in err
+
+
+def test_init_refuses_a_corrupt_db_instead_of_raising(tmp_path, monkeypatch, capsys):
+    # The file may be a real KB with a damaged header — every review decision the
+    # user ever made — so `init` must not scaffold over it, and must not hand them
+    # a raw sqlite3 traceback either.
+    _isolated(monkeypatch, tmp_path)
+    root = tmp_path / "corrupt"
+    root.mkdir()
+    db = root / "kb.sqlite"
+    db.write_bytes(b"definitely not sqlite\n")
+
+    assert cli.main(["init", str(root)]) == 1
+
+    assert db.read_bytes() == b"definitely not sqlite\n"
+    assert not (root / "policy").exists(), "init scaffolded onto an unreadable KB"
+    err = capsys.readouterr().err
+    assert cli.KB_UNREADABLE in err
+    assert "restore it from backup" in err
+
+
+def test_init_still_scaffolds_a_database_that_merely_has_no_schema(tmp_path, monkeypatch):
+    # The other half of the same check: an empty `kb.sqlite` *is* a readable
+    # database with no schema, and putting a schema into it is exactly `init`'s
+    # job. Collapsing the two states into "unusable" would break the fresh-KB path.
+    _isolated(monkeypatch, tmp_path)
+    root = tmp_path / "empty"
+    root.mkdir()
+    (root / "kb.sqlite").touch()
+
+    assert cli.main(["init", str(root)]) == 0
+
+    store = Store(root / "kb.sqlite")
+    assert store.facts() == []
+    store.close()
+    assert (root / "policy" / "logic-policy.dl").is_file()
 
 
 @pytest.mark.skipif(sys.platform.startswith("win"), reason="Windows forbids `?` in paths")

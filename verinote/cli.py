@@ -97,6 +97,20 @@ def cmd_init(cfg: Config, args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
+    # A `kb.sqlite` that SQLite cannot read is not an empty slot to scaffold into:
+    # `init_schema()` would raise a raw `sqlite3.DatabaseError` at the user. It may
+    # also be a real KB with a damaged header — every review decision they ever
+    # made — so overwriting it is not ours to choose. Refuse, and say what to do.
+    # A readable database with no schema is the opposite case: filling it in is
+    # exactly what `init` is for, so that one is left to proceed.
+    if cfg.db_path.is_file() and _kb_schema_problem(cfg.db_path) == KB_UNREADABLE:
+        print(
+            f"cannot initialise {cfg.root}: {cfg.db_path} exists and is {KB_UNREADABLE}. "
+            "If it is a damaged KB, restore it from backup; if it is not a KB at all, "
+            "move it aside and run this again.",
+            file=sys.stderr,
+        )
+        return 1
     cfg.root.mkdir(parents=True, exist_ok=True)
     store = _store(cfg)
     if args.seed:
@@ -147,6 +161,14 @@ def _seed(store: Store) -> None:
         store.add_fact(subj, rel, obj, status=status, confidence=conf, source_id=sid, note=note)
 
 
+# The two ways an existing `kb.sqlite` can fail to be a usable KB. They are not
+# interchangeable: `init`'s whole job is to put a schema into a database that has
+# none, so only the *unreadable* one may stop it. `seed` must refuse both — it
+# fills an existing KB and never creates one.
+KB_UNREADABLE = "not a readable SQLite database"
+KB_NO_SCHEMA = "no `facts` table"
+
+
 def _kb_schema_problem(db_path: Path) -> str | None:
     """Say why `db_path` isn't a usable verinote KB, or None when it is one.
 
@@ -169,8 +191,8 @@ def _kb_schema_problem(db_path: Path) -> str | None:
         finally:
             conn.close()
     except sqlite3.DatabaseError:
-        return "not a readable SQLite database"
-    return None if row else "no `facts` table"
+        return KB_UNREADABLE
+    return None if row else KB_NO_SCHEMA
 
 
 def cmd_seed(cfg: Config, args: argparse.Namespace) -> int:
