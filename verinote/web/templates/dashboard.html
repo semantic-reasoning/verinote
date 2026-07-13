@@ -8,7 +8,7 @@
   <div class="card"><div class="num">{{ sources|length }}</div><div class="lbl">sources</div></div>
   <div class="card"><div class="num">{{ total }}</div><div class="lbl">facts</div></div>
   <div class="card"><div class="num">{{ counts.get('needs_review', 0) + counts.get('candidate', 0) }}</div><div class="lbl">needs review</div></div>
-  <div class="card ok"><div class="num">{{ counts.get('confirmed', 0) + counts.get('accepted', 0) }}</div><div class="lbl">engine input</div></div>
+  <div class="card ok"><div class="num">{{ engine_input }}</div><div class="lbl">engine input</div></div>
 </section>
 
 <h2>Action queues</h2>

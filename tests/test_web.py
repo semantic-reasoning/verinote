@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
 import builtins
+import re
 import time
 from html import unescape
 
@@ -15,6 +16,7 @@ from verinote.llm.base import ExtractedFact, LLMError  # noqa: E402
 from verinote.pipeline.query import query_path  # noqa: E402
 from verinote.pipeline.query_intent import parse_query_intent  # noqa: E402
 from verinote.store import Store  # noqa: E402
+from verinote.store import db as store_db  # noqa: E402
 from verinote.store.fact_input import structural_term  # noqa: E402
 from verinote.web import create_app  # noqa: E402
 
@@ -111,6 +113,44 @@ def test_dashboard_shows_factlog_borrowed_source_signals(tmp_path):
     assert "2020" in body
     assert "2021" in body
     assert "(1 source)" in body
+
+
+def _engine_input_card(body: str) -> int:
+    """Read the number the dashboard's "engine input" card actually renders."""
+    match = re.search(
+        r'<div class="num">(\d+)</div><div class="lbl">engine input</div>', body
+    )
+    assert match is not None, "engine input card not found in dashboard"
+    return int(match.group(1))
+
+
+def test_dashboard_engine_input_card_follows_engine_statuses(tmp_path, monkeypatch):
+    """The dashboard's headline card must answer from ENGINE_STATUSES too.
+
+    It used to sum `confirmed + accepted` in the template — a third answer to
+    "what is engine input". Widening the tier must move this card in lockstep
+    with coverage and the Sources badge, or the top of the UI asserts a number
+    the engine disagrees with.
+    """
+    c = _client(tmp_path)  # seeds one needs_review fact
+    store = c.app.state.store
+    sid = store.add_source("sources/a.md")
+    store.add_fact("A", "is_a", "B", status="confirmed", source_id=sid)
+    store.add_fact("C", "is_a", "D", status="accepted", source_id=sid)
+    store.add_fact("E", "is_a", "F", status="superseded", source_id=sid)
+
+    assert _engine_input_card(c.get("/").text) == 2
+
+    monkeypatch.setattr(
+        store_db, "ENGINE_STATUSES", store_db.ENGINE_STATUSES | {"superseded"}
+    )
+
+    body = c.get("/").text
+    assert _engine_input_card(body) == 3
+    # ...and it still agrees with what the engine would actually read.
+    assert _engine_input_card(body) == len(
+        store.facts(statuses=store_db.ENGINE_STATUSES)
+    )
 
 
 def test_dashboard_shows_action_queue_counts_and_links(tmp_path):

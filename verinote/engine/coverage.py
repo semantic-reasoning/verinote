@@ -22,7 +22,7 @@ from verinote.store import Store
 class SourceCoverage:
     path: str
     kind: str
-    engine_facts: int  # confirmed/accepted facts citing this source
+    engine_facts: int  # facts in ENGINE_STATUSES citing this source
     total_facts: int
     is_gap: bool  # zero engine-input facts
     is_orphan: bool  # backing file missing under the KB root
