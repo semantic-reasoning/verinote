@@ -1,7 +1,10 @@
 {% extends "base.html" %}
 {% block title %}Analytics — verinote{% endblock %}
-{% macro breakdown(title, rows, label) %}
+{% macro breakdown(title, rows, label, caption=None) %}
 <h2>{{ title }}</h2>
+{# The caption sits above the numbers on purpose: a reader who meets the buckets
+   first has already decided what they mean. #}
+{% if caption %}<p class="muted">{{ caption }}</p>{% endif %}
 {% if rows %}
 <table class="counts">
   <thead><tr><th>{{ label }}</th><th>facts</th></tr></thead>
@@ -27,6 +30,11 @@
 {{ breakdown("By status", a.by_status, "status") }}
 {{ breakdown("By relation", a.by_relation, "relation") }}
 {{ breakdown("By source", a.by_source, "source") }}
-{{ breakdown("Confidence distribution", a.by_confidence, "bucket") }}
+{% set confidence_caption %}
+  LLM self-reported confidence. verinote never uses it to decide what is true —
+  trust comes from corroboration across distinct sources and from your review
+  decisions. A knowledge base full of high-confidence facts is not a verified one.
+{% endset %}
+{{ breakdown("Confidence distribution", a.by_confidence, "bucket", confidence_caption) }}
 {% endif %}
 {% endblock %}
