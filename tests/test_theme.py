@@ -21,7 +21,9 @@ pin three separate things:
    and scrollbars).
 3. **Rule bodies actually reference the tokens.** `.btn:hover` must go through
    `--btn-hover-filter`; the three banner rules must go through their `*-bg`
-   tokens and stay structurally identical.
+   tokens, and must agree on their box metrics *by value* -- asserting merely
+   that each declares a `padding` would let one banner drift to a different
+   shape while the test still read as "identical".
 
 Note on parsing: the light palette is a `@media` block whose *preamble* contains
 the text `prefers-color-scheme: light`. Matching `color-scheme:\\s*light` against
@@ -63,8 +65,14 @@ COLOR_LITERAL_PATTERNS = {
 }
 # `transparent` and `currentColor` carry no palette of their own, so they are palette-safe.
 
-# Banner rules that must stay structurally identical: selector -> token stem.
+# The status banners: selector -> the token stem each one pulls its colours from.
 BANNERS = {".error": "danger", ".ok-note": "ok", ".warn": "warn"}
+# Properties the banners must agree on *by value* -- they are one component in three colours.
+BANNER_BOX_METRICS = ("border-radius", "padding", "margin")
+
+# Inline elements that must never carry a banner class (it has padding/margin of its own).
+# Not an exhaustive HTML inline-element list: see the guard's docstring.
+INLINE_TAGS = ("span", "code", "em", "strong", "a", "small", "b", "i", "label")
 
 
 def _block_at(css: str, start: int) -> tuple[int, int]:
@@ -137,6 +145,21 @@ def _rules(css: str) -> dict[str, str]:
         selector = " ".join(match.group(1).split())
         rules[selector] = match.group(2)
     return rules
+
+
+def _declarations(body: str) -> dict[str, str]:
+    """Map `property -> value` for one rule body, with whitespace collapsed.
+
+    Comparing values (not just "is the property mentioned") is the whole point: a banner
+    can declare `padding` and still be the wrong shape. A repeated property keeps its
+    last value, which is what the cascade does too.
+    """
+    declarations: dict[str, str] = {}
+    for chunk in body.split(";"):
+        prop, sep, value = chunk.partition(":")
+        if sep:
+            declarations[" ".join(prop.split())] = " ".join(value.split())
+    return declarations
 
 
 def test_rule_bodies_are_not_empty_after_cutting_palettes() -> None:
@@ -230,30 +253,55 @@ def test_button_filters_reference_their_tokens() -> None:
 
 
 @pytest.mark.parametrize("selector", sorted(BANNERS))
-def test_banner_rules_are_structurally_identical(selector: str) -> None:
-    """.error / .ok-note / .warn are the three status banners and must look alike.
+def test_banner_rules_reference_their_status_token(selector: str) -> None:
+    """Each status banner takes tint, outline and text colour from its own token stem.
 
-    They differ only in which token stem they pull from. Anything less (e.g. .warn
-    reduced to a bare `color:`) makes a warning read as weak inline text.
+    Anything less (e.g. .warn reduced to a bare `color:`) makes a warning read as weak
+    inline text. This test pins *which tokens* a banner dereferences; the shared box
+    metrics are pinned by test_banner_box_metrics_are_identical below.
     """
     stem = BANNERS[selector]
+    body = _rules(_rule_bodies(_read_css())).get(selector)
+    assert body, f"app.css no longer has a `{selector}` rule"
+    declarations = _declarations(body)
+
+    assert declarations.get("background") == f"var(--{stem}-bg)", (
+        f"{selector} must take its tint from var(--{stem}-bg), got: {declarations!r}"
+    )
+    assert declarations.get("border") == f"1px solid var(--{stem})", (
+        f"{selector} must be outlined with var(--{stem}), got: {declarations!r}"
+    )
+    assert declarations.get("color") == f"var(--{stem})", (
+        f"{selector} must take its text colour from var(--{stem}), got: {declarations!r}"
+    )
+
+
+@pytest.mark.parametrize("prop", BANNER_BOX_METRICS)
+def test_banner_box_metrics_are_identical(prop: str) -> None:
+    """The three banners must agree on their *values*, not merely declare the property.
+
+    Asserting only `"padding:" in body` would let .warn drift to `padding: 3rem` while
+    .error stayed at `.6rem .9rem` -- three status banners in three different shapes,
+    with a test still named "identical". The colour tokens legitimately differ per
+    banner, so only the box metrics are compared: collapse them to a set, demand one
+    value.
+    """
     rules = _rules(_rule_bodies(_read_css()))
 
-    body = rules.get(selector)
-    assert body, f"app.css no longer has a `{selector}` rule"
-    normalized = " ".join(body.split())
+    values: dict[str, str] = {}
+    for selector in BANNERS:
+        body = rules.get(selector)
+        assert body, f"app.css no longer has a `{selector}` rule"
+        declarations = _declarations(body)
+        assert prop in declarations, (
+            f"{selector} declares no `{prop}`; the three banners must share box metrics"
+        )
+        values[selector] = declarations[prop]
 
-    assert f"background: var(--{stem}-bg)" in normalized, (
-        f"{selector} must take its tint from var(--{stem}-bg), got: {normalized!r}"
+    assert len(set(values.values())) == 1, (
+        f"the status banners disagree on `{prop}`: {values}. "
+        "They are the same component in three colours and must share their box metrics."
     )
-    assert f"border: 1px solid var(--{stem})" in normalized, (
-        f"{selector} must be outlined with var(--{stem}), got: {normalized!r}"
-    )
-    assert f"color: var(--{stem})" in normalized, (
-        f"{selector} must take its text colour from var(--{stem}), got: {normalized!r}"
-    )
-    for prop in ("border-radius", "padding", "margin"):
-        assert f"{prop}:" in normalized, f"{selector} is missing `{prop}` -- banners must match"
 
 
 def test_warn_has_an_inline_variant_and_no_tag_qualified_banner() -> None:
@@ -276,16 +324,30 @@ def test_warn_has_an_inline_variant_and_no_tag_qualified_banner() -> None:
         )
 
 
-def test_templates_use_the_warn_banner_only_on_block_elements() -> None:
-    """The banner class carries padding/margin, so it must not land on an inline <span>."""
+def test_templates_do_not_put_the_warn_banner_on_an_inline_element() -> None:
+    """Best-effort lint: the `.warn` banner (padding/margin) landing on an inline tag.
+
+    Deliberately *not* a general HTML parse. It catches an opening tag from INLINE_TAGS
+    whose `class` attribute sits on the same line (either quote style) and contains the
+    bare `warn` class -- the shape all three current `.warn` call sites take. It would
+    miss a `class=` split across lines, or an inline tag outside the list. Those are
+    accepted blind spots, not oversights: `.warn` has exactly three call sites repo-wide,
+    and a full HTML parser here would be more machinery than the risk warrants. The name
+    and this docstring are scoped to what it actually checks.
+    """
+    tags = "|".join(INLINE_TAGS)
+    # `(?<![\w-])warn(?![\w-])` so `class="warn-inline"` is not mistaken for the banner.
+    pattern = re.compile(
+        rf"""<(?:{tags})\b[^>]*\bclass\s*=\s*["'][^"']*(?<![\w-])warn(?![\w-])""",
+        re.IGNORECASE,
+    )
     offenders = []
     for path in sorted(TEMPLATES.rglob("*.html")):
         for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            # `(?![\w-])` so that `class="warn-inline"` is not mistaken for the banner class.
-            if re.search(r"<span[^>]*\bclass=\"[^\"]*(?<![\w-])warn(?![\w-])", line):
+            if pattern.search(line):
                 offenders.append(f"{path.name}:{lineno}: {line.strip()}")
     assert not offenders, (
-        f"the .warn banner class is applied to an inline <span>: {offenders}. "
+        f"the .warn banner class is applied to an inline element: {offenders}. "
         "Use .warn-inline there."
     )
 
