@@ -16,6 +16,7 @@ that deleting either turns these red.
 """
 
 import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -40,6 +41,17 @@ from verinote.config import Config, active_root, app_config_dir, app_config_path
 from verinote.web import create_app  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# `os.geteuid` and `os.mkfifo` do not exist on Windows, and a marker's condition is
+# evaluated at *import* time — calling them unguarded breaks collection on a
+# platform `verinote.config` explicitly supports.
+NEEDS_FIFOS = pytest.mark.skipif(
+    not hasattr(os, "mkfifo"), reason="this platform has no FIFOs to snapshot"
+)
+NOT_ROOT = pytest.mark.skipif(
+    getattr(os, "geteuid", lambda: 1)() == 0,
+    reason="root reads and traverses straight through mode 0o000",
+)
 
 
 @pytest.fixture(scope="module")
@@ -287,6 +299,104 @@ def test_canary_reports_a_same_size_rewrite_inside_a_pre_run_directory(tmp_path)
     assert message is not None, "a same-size rewrite inside a pre-run directory went unreported"
 
 
+def test_canary_reports_a_rewrite_two_levels_inside_a_pre_run_directory(tmp_path):
+    # A shallow listing (direct children only) missed this: rewriting a file inside
+    # a *sub*directory moves no ancestor's mtime, so `app.json/sub/app.json` — the
+    # exact shape of a leaked KB config — compared clean. The fingerprint reaches
+    # `_DIR_MAX_DEPTH` levels down for that reason.
+    path = tmp_path / "app.json"
+    (path / "sub").mkdir(parents=True)
+    child = path / "sub" / "app.json"
+    child.write_bytes(b'{"active_root": "/real/kb"}\n')
+    before = snapshot(path)
+
+    child.write_bytes(b'{"active_root": "/tmp/pytest-kb"}\n')  # the leak
+    message = leak_report(path, before)
+
+    assert message is not None, "a rewrite one level down in a pre-run directory went unreported"
+    assert "COULD NOT BE RESTORED" in message
+
+
+def test_canary_reports_a_same_size_rewrite_two_levels_inside_a_pre_run_directory(tmp_path):
+    path = tmp_path / "app.json"
+    (path / "sub").mkdir(parents=True)
+    child = path / "sub" / "x.json"
+    child.write_bytes(b"aaaa")
+    before = snapshot(path)
+
+    child.write_bytes(b"bbbb")  # the leak: identical length, only the timestamp moves
+    os.utime(child, (1_600_000_000, 1_600_000_000))
+
+    assert leak_report(path, before) is not None
+
+
+def test_canary_reports_a_size_only_change_to_a_child_of_a_pre_run_directory(tmp_path):
+    # Only `st_size` moves: same name, same mode, mtime pinned back by hand. Without
+    # the size component in the listing digest this is invisible.
+    path = tmp_path / "app.json"
+    path.mkdir()
+    child = path / "app.json"
+    child.write_bytes(b"aaaa")
+    dir_st = path.stat()
+    child_st = child.stat()
+    before = snapshot(path)
+
+    child.write_bytes(b"aaaaaaaa")  # the leak: bigger, otherwise identical
+    os.utime(child, ns=(child_st.st_atime_ns, child_st.st_mtime_ns))
+    os.utime(path, ns=(dir_st.st_atime_ns, dir_st.st_mtime_ns))
+
+    assert child.stat().st_mtime_ns == child_st.st_mtime_ns
+    assert leak_report(path, before) is not None, "a size-only child change went unreported"
+
+
+def test_the_directory_fingerprint_stops_at_a_documented_depth(tmp_path):
+    # The honest edge of the bounded walk: a rewrite at depth 3 is *not* detected,
+    # because no entry at depth ≤ 2 moves. Pinned so the docstring cannot drift from
+    # the implementation and so widening the bound is a deliberate, visible change.
+    path = tmp_path / "app.json"
+    deep = path / "a" / "b"
+    deep.mkdir(parents=True)
+    child = deep / "c.json"
+    child.write_bytes(b"aaaa")
+    before = snapshot(path)
+
+    child.write_bytes(b"bbbb")  # a depth-3 rewrite
+
+    assert env_sandbox._DIR_MAX_DEPTH == 2
+    assert leak_report(path, before) is None, (
+        "the depth bound moved; update `_dir_fingerprint`'s docstring and this test together"
+    )
+
+
+def test_the_directory_listing_cannot_be_forged_by_a_child_name(tmp_path):
+    # Separator forgery, the #174 bug in miniature. The old digest joined children
+    # into one string with `,` and `:`, so a *single* child named
+    # `a:0o100644:0:<mtime>,b` rendered byte-for-byte identically to *two* children
+    # named `a` and `b` — different directories, same digest. The listing is a
+    # structured tuple now, so the punctuation in a name is just punctuation.
+    #
+    # Asserted on the listing, not on the whole fingerprint: the fingerprint's head
+    # carries the directory's own stat, which differs between any two directories
+    # anyway and would make this pass without proving anything.
+    stamp_ns = 1_600_000_000_000_000_000
+    one = tmp_path / "one"
+    one.mkdir()
+    forged = one / f"a:0o100644:0:{stamp_ns},b"
+    forged.write_bytes(b"")
+    two = tmp_path / "two"
+    two.mkdir()
+    (two / "a").write_bytes(b"")
+    (two / "b").write_bytes(b"")
+    for child in (forged, two / "a", two / "b"):
+        child.chmod(0o644)
+        os.utime(child, ns=(stamp_ns, stamp_ns))
+
+    assert env_sandbox._listing(one, 1) != env_sandbox._listing(two, 1), (
+        "a child name forged the listing of a different directory"
+    )
+
+
+@NEEDS_FIFOS
 def test_snapshot_splits_the_unreconstructable_kinds(tmp_path):
     # `other` used to cover all of these at once, which is what let unknown-to-unknown
     # changes compare clean. Each now names itself and carries a fingerprint.
@@ -301,7 +411,7 @@ def test_snapshot_splits_the_unreconstructable_kinds(tmp_path):
     assert snapshot(fifo).fingerprint is not None
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root reads straight through mode 0o000")
+@NOT_ROOT
 def test_snapshot_marks_an_unreadable_file_and_refuses_to_restore_it(tmp_path):
     path = tmp_path / "app.json"
     path.write_bytes(b"secret\n")
@@ -317,10 +427,143 @@ def test_snapshot_marks_an_unreadable_file_and_refuses_to_restore_it(tmp_path):
     assert path.exists()
 
 
-def test_restorable_kinds_are_a_whitelist():
-    # A blacklist would hand every future kind straight to `_remove`. The canary
-    # deletes only what it can put back.
-    assert env_sandbox.RESTORABLE_KINDS == frozenset({"missing", "file", "symlink"})
+@NOT_ROOT
+def test_a_pre_run_file_behind_an_unreadable_parent_is_never_deleted(tmp_path):
+    # The blocker this closes. `lstat` failing with EACCES means "we could not
+    # look", not "there is nothing here" — but it used to fold into `MISSING`,
+    # which *is* restorable, and restoring `missing` means `_remove(path)`. So a
+    # config dir that happened to be unsearchable at import time, and searchable
+    # again by session end, got the user's real `app.json` deleted while the canary
+    # said it had been "restored to its pre-run state".
+    parent = tmp_path / "verinote"
+    parent.mkdir()
+    path = parent / "app.json"
+    original = b'{"active_root": "/real/kb"}\n'
+    path.write_bytes(original)
+    parent.chmod(0o000)  # the pre-run state: present, but not even lstat-able
+
+    try:
+        before = snapshot(path)
+
+        assert before.kind == "unknown", "an entry we failed to read must not read as `missing`"
+        assert before.fingerprint == "lstat_failed:13"
+        assert restore(path, before) is False, "an unread entry reached the destructive path"
+
+        parent.chmod(0o700)  # the permission comes back mid-run; the file was there all along
+        message = leak_report(path, before)
+    finally:
+        parent.chmod(0o700)
+
+    assert path.read_bytes() == original, "the canary deleted the real config it could not read"
+    assert message is not None and "COULD NOT BE RESTORED" in message
+
+
+@NOT_ROOT
+def test_a_pre_run_directory_behind_an_unreadable_parent_is_never_removed(tmp_path):
+    # Same fault, worse blast radius: the old `_remove` would `rmtree` it.
+    parent = tmp_path / "verinote"
+    parent.mkdir()
+    path = parent / "app.json"
+    path.mkdir()
+    (path / "keep.txt").write_text("precious", encoding="utf-8")
+    parent.chmod(0o000)
+
+    try:
+        before = snapshot(path)
+        parent.chmod(0o700)
+        message = leak_report(path, before)
+    finally:
+        parent.chmod(0o700)
+
+    assert before.kind == "unknown"
+    assert (path / "keep.txt").read_text(encoding="utf-8") == "precious", "the canary rmtree'd it"
+    assert message is not None and "COULD NOT BE RESTORED" in message
+
+
+@NOT_ROOT
+def test_canary_reports_a_size_only_rewrite_of_a_pre_run_unreadable_file(tmp_path):
+    # Write-only mode: `snapshot` cannot read the bytes, so the fingerprint is all
+    # the canary has. Only `st_size` moves here — mode and mtime are pinned — so
+    # dropping `st_size` from the fingerprint makes this leak invisible.
+    path = tmp_path / "app.json"
+    path.write_bytes(b"aaaa")
+    path.chmod(0o200)
+    before = snapshot(path)
+    st = path.lstat()
+
+    assert before.kind == "unreadable_file"
+
+    path.write_bytes(b"aaaaaaaa")  # the leak
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+
+    assert path.lstat().st_mode == st.st_mode
+    assert path.lstat().st_mtime_ns == st.st_mtime_ns
+    message = leak_report(path, before)
+
+    assert message is not None, "a size-only rewrite of an unreadable pre-run file went unreported"
+    assert "COULD NOT BE RESTORED" in message
+    assert path.lstat().st_size == 8, "an unreadable file must not be repaired, only reported"
+
+
+@NEEDS_FIFOS
+def test_canary_reports_a_chmod_of_a_pre_run_unknown_entry(tmp_path):
+    # Only `st_mode` moves: a FIFO's size stays 0 and `chmod` does not touch mtime
+    # (it moves ctime, which the fingerprint deliberately ignores). Dropping
+    # `st_mode` makes this leak invisible.
+    fifo = tmp_path / "app.json"
+    os.mkfifo(fifo, 0o600)
+    before = snapshot(fifo)
+    st = fifo.lstat()
+
+    assert before.kind == "unknown"
+
+    fifo.chmod(0o644)  # the leak
+    os.utime(fifo, ns=(st.st_atime_ns, st.st_mtime_ns))
+
+    assert fifo.lstat().st_size == st.st_size
+    assert fifo.lstat().st_mtime_ns == st.st_mtime_ns
+    message = leak_report(fifo, before)
+
+    assert message is not None, "a chmod of a pre-run unknown entry went unreported"
+    assert "COULD NOT BE RESTORED" in message
+
+
+def test_canary_reports_a_chmod_of_the_real_config_and_restores_its_mode(tmp_path):
+    # Widening the real `app.json` to 0o777 is a leak even though every byte is
+    # unchanged — and `restore` must not itself re-permission the file: `mkstemp`
+    # creates at 0o600, so writing the bytes back without a `chmod` silently
+    # narrowed whatever the user had.
+    path = tmp_path / "app.json"
+    original = b'{"active_root": "/real/kb"}\n'
+    path.write_bytes(original)
+    path.chmod(0o640)
+    before = snapshot(path)
+    st = path.stat()
+
+    assert before.kind == "file" and before.fingerprint is not None
+
+    path.chmod(0o777)  # the leak: same bytes, wider permissions
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+    message = leak_report(path, before)
+
+    assert message is not None, "a chmod of the real config went unreported"
+    assert "COULD NOT BE RESTORED" not in message
+    assert path.read_bytes() == original
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640, "restore left the leaked permissions in place"
+
+
+@pytest.mark.parametrize("kind", ["directory", "unreadable_file", "unknown"])
+def test_restore_refuses_every_kind_it_could_not_read(tmp_path, kind):
+    # The whitelist stated as behaviour rather than restated as a constant: a kind
+    # outside it is refused *and* the path is left exactly as it was, which is the
+    # property that matters (`restore` of a restorable kind starts with `_remove`).
+    path = tmp_path / "app.json"
+    path.write_bytes(b"precious\n")
+    before = Entry(kind, fingerprint="anything")
+
+    assert kind not in env_sandbox.RESTORABLE_KINDS
+    assert restore(path, before) is False
+    assert path.read_bytes() == b"precious\n", "restore destroyed what it could not reconstruct"
 
 
 def test_snapshot_never_raises_on_odd_paths(tmp_path):
