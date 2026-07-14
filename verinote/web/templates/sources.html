@@ -47,7 +47,7 @@
             <span class="error-inline">{{ s["failed_chunks"] }} failed</span>
           {% endif %}
           {% if s["pending_chunks"] %}
-            <span class="warn">{{ s["pending_chunks"] }} pending</span>
+            <span class="warn-inline">{{ s["pending_chunks"] }} pending</span>
           {% endif %}
           <div class="src">
             {{ s["provider"] or '—' }} / <code>{{ s["model"] or '—' }}</code>

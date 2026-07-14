@@ -8,6 +8,7 @@
   --warn-bg: rgba(210, 153, 34, .12);
   --danger-bg: rgba(240, 82, 109, .12);
   --btn-hover-filter: brightness(1.08);
+  --btn-active-filter: brightness(.95);
 }
 @media (prefers-color-scheme: light) {
   :root {
@@ -20,6 +21,9 @@
     --warn-bg: rgba(154, 103, 0, .10);
     --danger-bg: rgba(207, 34, 46, .08);
     --btn-hover-filter: brightness(.95);
+    /* Must differ from the light hover filter, or clicking a hovered button would
+       show no brightness feedback at all -- only the translateY nudge. */
+    --btn-active-filter: brightness(.90);
   }
 }
 * { box-sizing: border-box; }
@@ -152,19 +156,19 @@ tr.editing td { background: var(--editing-bg); }
   font-weight: 600; cursor: pointer; transition: transform .08s ease, filter .08s ease, opacity .08s ease; }
 .btn.ghost { background: transparent; color: var(--accent); border: 1px solid var(--line); }
 .btn:hover:not(:disabled) { filter: var(--btn-hover-filter); }
-.btn:active:not(:disabled) { transform: translateY(1px); filter: brightness(.95); }
+.btn:active:not(:disabled) { transform: translateY(1px); filter: var(--btn-active-filter); }
 .btn:disabled, .btn[aria-disabled="true"] { color: var(--muted); opacity: .55; cursor: not-allowed; }
 .connection-test { display: flex; align-items: center; gap: .8rem; margin: 1rem 0 .6rem; }
 .htmx-indicator { display: none; }
 .htmx-request .htmx-indicator,
 .htmx-request.htmx-indicator { display: inline; }
 .empty { background: var(--panel); border: 1px dashed var(--line); border-radius: 10px; padding: 2rem; text-align: center; color: var(--muted); }
-/* `.warn` is used inline (<span class="warn">N pending</span> in sources.html) as well as
-   block (<p>/<div> in report.html, ask.html), so the bare class stays text-only and the
-   banner treatment is scoped to the block elements. */
-.warn { color: var(--warn); }
-p.warn, div.warn { background: var(--warn-bg); border: 1px solid var(--warn);
+/* Banner + `-inline` variant, matching the .error / .error-inline convention. Tag-qualified
+   selectors (p.warn, div.warn) were rejected: the banner would vanish silently if markup
+   changed <div> to <section>, which is exactly the "warning must not look weak" regression. */
+.warn { background: var(--warn-bg); border: 1px solid var(--warn); color: var(--warn);
   border-radius: 8px; padding: .6rem .9rem; margin: 1rem 0; }
+.warn-inline { color: var(--warn); }
 .error { background: var(--danger-bg); border: 1px solid var(--danger);
   color: var(--danger); border-radius: 8px; padding: .6rem .9rem; margin: 1rem 0; }
 .upload { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
