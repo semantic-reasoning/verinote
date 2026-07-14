@@ -45,8 +45,11 @@ def test_query_intent_prompt_states_the_reason_contract():
     """
     text = default_prompt_text("query-intent")
 
-    assert "reason" in text
-    assert "unknown_or_unsupported" in text
+    # Assert the two halves of the contract, not merely that the words appear:
+    # a prompt inverted to "always fill reason" would still contain "reason" and
+    # "unknown_or_unsupported", and this pin has to catch that.
+    assert "fill it only when kind is unknown_or_unsupported" in text
+    assert "For every other kind, leave reason null" in text
 
 
 def test_kb_prompt_override_wins(tmp_path):

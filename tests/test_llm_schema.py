@@ -232,6 +232,51 @@ def test_parse_query_intent_accepts_advisory_reason_on_every_kind(kind, fields):
     assert intent.reason == "classified from the question wording"
 
 
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_parse_query_intent_treats_a_blank_nullable_string_as_null(blank):
+    """A blank `reason` means "no reason", exactly like an omitted key.
+
+    `claude_cli_adapter` renders the schema into the prompt rather than
+    constraining decoding, so `minLength: 1` is never enforced -- and the schema
+    demands the `reason` key while the prompt says to leave it null. A model
+    splitting that difference with `""` is routine, and rejecting it would kill a
+    correctly classified question for the very reason issue #237 did.
+    """
+    intent = parse_query_intent(
+        _intent_payload(
+            kind="lookup_object",
+            subject={"kind": "entity", "value": "샘플인물"},
+            relation={"kind": "relation", "value": "역할"},
+            reason=blank,
+        )
+    )
+
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.reason is None
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_parse_query_intent_still_rejects_unknown_with_a_blank_reason(blank):
+    """Normalizing blank to null must not let a reasonless unknown through."""
+    with pytest.raises(LLMError):
+        parse_query_intent(_intent_payload(kind="unknown_or_unsupported", reason=blank))
+
+
+def test_parse_query_intent_still_rejects_compare_with_a_blanked_out_field():
+    """A blank comparison field is an absent one, and compare_typed_value needs it."""
+    with pytest.raises(LLMError):
+        parse_query_intent(
+            _intent_payload(
+                kind="compare_typed_value",
+                subject={"kind": "entity", "value": "샘플항목"},
+                relation={"kind": "relation", "value": "수량"},
+                operator="",
+                value_type="number",
+                value="10",
+            )
+        )
+
+
 def test_parse_query_intent_treats_a_missing_nullable_key_as_null():
     """Prompt-only providers render the schema as text and drop null keys.
 
