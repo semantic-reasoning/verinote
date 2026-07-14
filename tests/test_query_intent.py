@@ -131,22 +131,18 @@ def test_intent_rejects_swapped_target_kinds_and_bad_value_type():
             subject=IntentTarget("entity", "Sample Entity"),
             object=IntentTarget("entity", "Sample Object"),
         )
-    with pytest.raises(ValueError, match="does not accept comparison fields"):
-        QueryIntent(
-            kind=QueryIntentKind.DISCOVER_ENTITY_RELATIONS,
-            subject=IntentTarget("entity", "Sample Entity"),
-            operator=">",
-        )
-    # A reason alongside a valid classification is advisory, not a violation
-    # (#237); only the comparison fields above are a real misclassification.
-    assert (
-        QueryIntent(
-            kind=QueryIntentKind.DISCOVER_ENTITY_RELATIONS,
-            subject=IntentTarget("entity", "Sample Entity"),
-            reason="the entity is named but the relation is open",
-        ).reason
-        == "the entity is named but the relation is open"
+    # A reason or a stray comparison field alongside a valid classification is
+    # advisory, not a violation (#237). Nothing outside this module reads
+    # operator/value_type/value, so tolerating them cannot change the query;
+    # a bad *value* (value_type="duration" above) is still rejected.
+    advisory = QueryIntent(
+        kind=QueryIntentKind.DISCOVER_ENTITY_RELATIONS,
+        subject=IntentTarget("entity", "Sample Entity"),
+        operator=">",
+        reason="the entity is named but the relation is open",
     )
+    assert advisory.operator == ">"
+    assert advisory.reason == "the entity is named but the relation is open"
     with pytest.raises(ValueError, match="relation or relation_candidates"):
         QueryIntent(
             kind=QueryIntentKind.DISCOVER_ENTITY_RELATIONS,

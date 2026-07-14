@@ -297,6 +297,58 @@ def test_parse_query_intent_treats_a_missing_nullable_key_as_null():
     assert intent.reason is None
 
 
+@pytest.mark.parametrize(
+    ("kind", "fields"),
+    [entry for entry in _REASON_TOLERANT_INTENTS if entry[0] != "compare_typed_value"],
+    ids=[kind for kind, _ in _REASON_TOLERANT_INTENTS if kind != "compare_typed_value"],
+)
+def test_parse_query_intent_accepts_advisory_comparison_fields_on_every_kind(kind, fields):
+    """A stray comparison field is advisory too, for the same reasons `reason` is.
+
+    `operator` is a required, enum-constrained property of QUERY_INTENT_SCHEMA
+    whose enum admits `"="`, so a model answering "Who is the CEO of Acme?" with
+    `lookup_object` + `operator: "="` is emitting perfectly schema-legal output.
+    Nothing outside this module reads operator/value_type/value, and the planner
+    has no `compare_typed_value` branch at all, so rejecting them threw away a
+    correctly classified intent over fields no one consumes -- the same failure
+    as issue #237, one field over.
+    """
+    intent = parse_query_intent(
+        _intent_payload(
+            kind=kind, operator="=", value_type="date", value="CEO", **fields
+        )
+    )
+
+    assert intent.kind == QueryIntentKind(kind)
+    assert intent.operator == "="
+
+
+def test_parse_query_intent_still_requires_comparison_fields_for_compare():
+    """Relaxing other kinds must not make compare_typed_value's own fields optional."""
+    with pytest.raises(LLMError):
+        parse_query_intent(
+            _intent_payload(
+                kind="compare_typed_value",
+                subject={"kind": "entity", "value": "샘플항목"},
+                relation={"kind": "relation", "value": "수량"},
+                value_type="number",
+                value="10",
+            )
+        )
+
+
+def test_parse_query_intent_still_rejects_unknown_carrying_comparison_fields():
+    """`unknown_or_unsupported` still accepts nothing but kind and reason."""
+    with pytest.raises(LLMError):
+        parse_query_intent(
+            _intent_payload(
+                kind="unknown_or_unsupported",
+                operator="=",
+                reason="requires planning",
+            )
+        )
+
+
 def test_parse_query_intent_still_requires_a_reason_for_unknown():
     with pytest.raises(LLMError):
         parse_query_intent(_intent_payload(kind="unknown_or_unsupported", reason=None))
@@ -376,12 +428,6 @@ def test_parse_query_intent_still_rejects_unknown_carrying_query_fields():
             kind="discover_entity_relations",
             subject={"kind": "entity", "value": "Sample Entity"},
             object={"kind": "entity", "value": "Sample Object"},
-            reason=None,
-        ),
-        _intent_payload(
-            kind="discover_entity_relations",
-            subject={"kind": "entity", "value": "Sample Entity"},
-            operator=">",
             reason=None,
         ),
         _intent_payload(
