@@ -36,6 +36,19 @@ def test_packaged_prompt_defaults_are_available():
     )
 
 
+def test_query_intent_prompt_states_the_reason_contract():
+    """The prompt is the only place the reason contract can be stated up front.
+
+    The schema must keep `reason` required (OpenAI strict mode) and the parser
+    now tolerates it on any kind, so if the prompt stops telling the model when
+    to fill `reason`, nothing else pins the contract down (issue #237).
+    """
+    text = default_prompt_text("query-intent")
+
+    assert "reason" in text
+    assert "unknown_or_unsupported" in text
+
+
 def test_kb_prompt_override_wins(tmp_path):
     save_prompt_override(tmp_path, "extraction", "Use only supplied synthetic text.")
 

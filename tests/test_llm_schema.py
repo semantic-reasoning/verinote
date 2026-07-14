@@ -32,6 +32,12 @@ def test_fact_schema_requires_every_property_for_strict_outputs():
 
 
 def test_query_intent_schema_is_separate_from_datalog_query_schema():
+    # Every property stays in `required`, `reason` included. OpenAI structured
+    # outputs run this schema with `strict: True` (openai_adapter.py), which
+    # forbids both optional properties and per-kind conditional requirements.
+    # Dropping `reason` from `required` to express "only unknown_or_unsupported
+    # needs a reason" would silently break that adapter; the reason contract is
+    # carried by the prompt and the intent validator instead (issue #237).
     assert QUERY_INTENT_SCHEMA["required"] == list(QUERY_INTENT_SCHEMA["properties"])
     assert "datalog" not in QUERY_INTENT_SCHEMA["properties"]
     assert QUERY_INTENT_SCHEMA["additionalProperties"] is False
@@ -165,6 +171,103 @@ def test_parse_query_intent_accepts_unsupported_with_reason():
     assert intent.reason == "requires planning"
 
 
+_REASON_TOLERANT_INTENTS = [
+    (
+        "lookup_object",
+        {
+            "subject": {"kind": "entity", "value": "샘플인물"},
+            "relation": {"kind": "relation", "value": "역할"},
+        },
+    ),
+    (
+        "lookup_subject",
+        {
+            "relation": {"kind": "relation", "value": "역할"},
+            "object": {"kind": "entity", "value": "샘플직책"},
+        },
+    ),
+    (
+        "lookup_relation",
+        {"subject": {"kind": "entity", "value": "샘플인물"}},
+    ),
+    (
+        "discover_entity_relations",
+        {"subject": {"kind": "entity", "value": "Sample Entity"}},
+    ),
+    (
+        "count",
+        {"subject": {"kind": "entity", "value": "샘플인물"}},
+    ),
+    (
+        "compare_typed_value",
+        {
+            "subject": {"kind": "entity", "value": "샘플항목"},
+            "relation": {"kind": "relation", "value": "수량"},
+            "operator": ">",
+            "value_type": "number",
+            "value": "10",
+        },
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("kind", "fields"),
+    _REASON_TOLERANT_INTENTS,
+    ids=[kind for kind, _ in _REASON_TOLERANT_INTENTS],
+)
+def test_parse_query_intent_accepts_advisory_reason_on_every_kind(kind, fields):
+    """A reason on a well-formed non-unknown intent is advisory, not a violation.
+
+    The schema requires every property, so a provider that fills `reason` while
+    classifying correctly used to have its whole answer rejected as off-schema
+    (issue #237). Only `unknown_or_unsupported` reads `reason`, so tolerating it
+    elsewhere cannot change the resulting query.
+    """
+    intent = parse_query_intent(
+        _intent_payload(kind=kind, reason="classified from the question wording", **fields)
+    )
+
+    assert intent.kind == QueryIntentKind(kind)
+    assert intent.reason == "classified from the question wording"
+
+
+def test_parse_query_intent_treats_a_missing_nullable_key_as_null():
+    """Prompt-only providers render the schema as text and drop null keys.
+
+    `claude_cli` only renders the schema into the prompt, so an omitted key is
+    routine; the schema already declares null legal for every nullable field, so
+    "absent" and "null" have to mean the same thing. `kind` stays required.
+    """
+    intent = parse_query_intent(
+        {
+            "kind": "lookup_object",
+            "subject": {"kind": "entity", "value": "샘플인물"},
+            "relation": {"kind": "relation", "value": "역할"},
+        }
+    )
+
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.subject == IntentTarget("entity", "샘플인물")
+    assert intent.reason is None
+
+
+def test_parse_query_intent_still_requires_a_reason_for_unknown():
+    with pytest.raises(LLMError):
+        parse_query_intent(_intent_payload(kind="unknown_or_unsupported", reason=None))
+
+
+def test_parse_query_intent_still_rejects_unknown_carrying_query_fields():
+    with pytest.raises(LLMError):
+        parse_query_intent(
+            _intent_payload(
+                kind="unknown_or_unsupported",
+                subject={"kind": "entity", "value": "샘플인물"},
+                reason="requires planning",
+            )
+        )
+
+
 @pytest.mark.parametrize(
     "raw",
     [
@@ -235,11 +338,6 @@ def test_parse_query_intent_accepts_unsupported_with_reason():
             subject={"kind": "entity", "value": "Sample Entity"},
             operator=">",
             reason=None,
-        ),
-        _intent_payload(
-            kind="discover_entity_relations",
-            subject={"kind": "entity", "value": "Sample Entity"},
-            reason="unsupported",
         ),
         _intent_payload(
             kind="discover_entity_relations",

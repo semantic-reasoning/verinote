@@ -54,6 +54,38 @@ def test_translate_persists_query_and_writes_file(tmp_path, fake_client, intent_
     assert f"answer_q{qid}" in load_query(s)
 
 
+def test_translate_survives_a_reason_on_a_well_classified_intent(
+    tmp_path, fake_client, intent_payload
+):
+    """A correctly classified intent that also carries a reason must translate.
+
+    Issue #237: providers routinely fill `reason` (the schema requires the key)
+    while classifying the question correctly. The intent validator used to treat
+    that as an off-schema answer, so every such question failed translation even
+    though the subject and relation were right there.
+    """
+    s = _store(tmp_path)
+    s.add_fact("Sample Subject", "is_a", "Synthetic Answer", status="confirmed")
+    qid = s.add_question("What is Sample Subject?")
+    client = fake_client(
+        intent=intent_payload(
+            "lookup_object",
+            subject="Sample Subject",
+            relation="is_a",
+            reason="the question names the subject and the relation",
+        )
+    )
+
+    results = translate_questions(s, client, root=tmp_path)
+
+    assert results[0]["id"] == qid
+    assert results[0]["status"] == "translated"
+    assert (
+        f'answer_q{qid}(O) :- relation("Sample Subject", "is_a", O).'
+        in s.questions()[0]["query_dl"]
+    )
+
+
 def test_translate_korean_role_question_bypasses_llm(tmp_path):
     class FailingClient:
         def extract_query_intent(self, *, question: str, schema_hint: str = ""):
