@@ -51,16 +51,26 @@
     {% endif %}
   </td>
   <td class="actions">
+    {# A rejected fact was put out of the KB by a human decision. None of the
+       fact actions mean anything on it, and two of them (toggle, accept) would
+       silently undo that decision in one click -- so the row that comes back
+       from a reject offers no way back. Reinstating a rejected fact, if it is
+       ever wanted, has to be its own explicit and audited action. The trust
+       dossier stays reachable: a rejected fact is still evidence. #}
     <a class="btn ghost" href="/facts/{{ f['id'] }}/provenance" title="inspect trust dossier">Inspect</a>
-    <button hx-post="/facts/{{ f['id'] }}/toggle"
-            hx-target="#fact-{{ f['id'] }}" hx-swap="outerHTML"
-            title="needs_review ⇄ confirmed">⇄ toggle</button>
-    <button hx-post="/facts/{{ f['id'] }}/accept"
-            hx-target="#fact-{{ f['id'] }}" hx-swap="outerHTML">✓ accept</button>
-    <button hx-post="/facts/{{ f['id'] }}/reject"
-            hx-target="#fact-{{ f['id'] }}" hx-swap="outerHTML"
-            class="danger">✗ reject</button>
-    <button hx-get="/facts/{{ f['id'] }}/edit"
-            hx-target="#fact-{{ f['id'] }}" hx-swap="outerHTML">✎ edit</button>
+    {% if f['status'] == 'superseded' %}
+      <span class="muted">rejected — no further action</span>
+    {% else %}
+      <button hx-post="/facts/{{ f['id'] }}/toggle"
+              hx-target="#fact-{{ f['id'] }}" hx-swap="outerHTML"
+              title="needs_review ⇄ confirmed">⇄ toggle</button>
+      <button hx-post="/facts/{{ f['id'] }}/accept"
+              hx-target="#fact-{{ f['id'] }}" hx-swap="outerHTML">✓ accept</button>
+      <button hx-post="/facts/{{ f['id'] }}/reject"
+              hx-target="#fact-{{ f['id'] }}" hx-swap="outerHTML"
+              class="danger">✗ reject</button>
+      <button hx-get="/facts/{{ f['id'] }}/edit"
+              hx-target="#fact-{{ f['id'] }}" hx-swap="outerHTML">✎ edit</button>
+    {% endif %}
   </td>
 </tr>
