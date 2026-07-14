@@ -10,6 +10,12 @@ then falls back to the shipped default policy or refuses to run outright (#155),
 which is why these tests pin the ignore rules rather than the engine's reaction
 to a policy that is already gone.
 
+The same split now covers agent tooling state (#214). This repo is developed from
+linked worktrees under `.claude/worktrees/`, which `git add -A` stages as gitlinks
+no clone can resolve — so they must be ignored, while `.claude/agents/`,
+`.claude/skills/` and a shared `.claude/settings.json` must not be. A blanket
+`.claude/` would take both, which is the `*.dl` mistake one directory over.
+
 These tests assert both directions with `git check-ignore`'s exit status
 (0 = ignored, 1 = not ignored). It is pattern-based, so it works for paths that
 do not exist on disk. Asserting only one direction would be vacuous: emptying
@@ -66,6 +72,32 @@ ARTIFACT_PATHS = [
     "some/other/kb/kb.sqlite-shm",
 ]
 
+# Agent tooling state: local, per-session, must stay ignored.
+#
+# The worktree entry is the sharp one. `.claude/worktrees/<issue>` is a linked git
+# worktree, so `git add -A` stages it as a gitlink rather than as files — a commit
+# that no clone can resolve. git only *warns* about that; the add succeeds.
+AGENT_STATE_PATHS = [
+    ".claude/worktrees/issue-1/verinote/cli.py",
+    ".claude/worktrees/issue-1/README.md",
+    ".claude/settings.local.json",
+    ".omc/project-memory.json",
+    ".omc/state/sessions/abc/mission-state.json",
+    ".omc/sessions/abc.json",
+]
+
+# Shared agent config: committable, and threatened by the obvious over-broad fix.
+#
+# These are the reason the rules above are anchored. A bare `.claude/` would ignore
+# every one of them — the same failure as the old `*.dl` glob, one directory over.
+# This half is not decoration: it fails the moment someone "simplifies" the three
+# anchored rules into one.
+AGENT_SHARED_PATHS = [
+    ".claude/agents/dev-reviewer.md",
+    ".claude/skills/run/SKILL.md",
+    ".claude/settings.json",
+]
+
 
 @pytest.fixture(scope="module")
 def gitignore_repo(tmp_path_factory: pytest.TempPathFactory) -> Path:
@@ -103,6 +135,37 @@ def test_hand_written_sources_are_not_ignored(gitignore_repo: Path, path: str) -
 def test_generated_kb_artifacts_stay_ignored(gitignore_repo: Path, path: str) -> None:
     assert _check_ignore(gitignore_repo, path) == 0, (
         f"{path} is a generated artifact and must stay ignored"
+    )
+
+
+@pytest.mark.parametrize("path", AGENT_STATE_PATHS)
+def test_agent_tooling_state_stays_ignored(gitignore_repo: Path, path: str) -> None:
+    assert _check_ignore(gitignore_repo, path) == 0, (
+        f"{path} is agent tooling state and must stay ignored. A linked worktree "
+        "under .claude/worktrees/ is staged by `git add -A` as an embedded git "
+        "repository — a gitlink no clone can resolve."
+    )
+
+
+@pytest.mark.parametrize("path", AGENT_SHARED_PATHS)
+def test_shared_agent_config_is_not_ignored(gitignore_repo: Path, path: str) -> None:
+    assert _check_ignore(gitignore_repo, path) == 1, (
+        f"{path} is shared, hand-written project config and must stay committable. "
+        "Ignoring `.claude/` wholesale swallows it — the same mistake the bare "
+        "`*.dl` glob made with hand-written policy."
+    )
+
+
+def test_no_agent_state_is_tracked() -> None:
+    """Non-vacuity guard: the ignore rules match what is actually in the tree."""
+    proc = subprocess.run(
+        ["git", "ls-files", ".omc/", ".claude/worktrees/", ".claude/settings.local.json"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        check=True,
+    )
+    assert proc.stdout.decode().strip() == "", (
+        "agent tooling state is tracked by git; it must never enter history"
     )
 
 

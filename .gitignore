@@ -55,6 +55,24 @@ venv/
 **/kb.sqlite-wal
 **/kb.sqlite-shm
 
+# Agent tooling state, anchored to the repo root.
+#
+# This repo is developed from linked git worktrees under `.claude/worktrees/`.
+# Each one is a git repository, so `git add -A` at the root does not stage their
+# contents — it stages the worktrees themselves as gitlinks (`warning: adding
+# embedded git repository`, and it is only a warning: the add succeeds). The
+# resulting commit carries four pointers that no clone can resolve. `.omc/` is
+# session telemetry: local paths and counters, worthless in history.
+#
+# ANCHORED, not blanket, for the same reason as the block above: a bare
+# `.claude/` would swallow `.claude/agents/`, `.claude/skills/` and a shared
+# `.claude/settings.json` — committable project config, the exact class of file
+# the old `*.dl` rule used to eat. `settings.local.json` is the personal half of
+# that directory and is named for it. See tests/test_gitignore.py.
+/.omc/
+/.claude/worktrees/
+/.claude/settings.local.json
+
 # tooling
 .pytest_cache/
 .ruff_cache/
