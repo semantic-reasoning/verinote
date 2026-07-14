@@ -15,9 +15,11 @@ Every test below deliberately omits manual isolation and never requests the
 that deleting either turns these red.
 """
 
+import errno
 import os
 import stat
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -51,6 +53,10 @@ NEEDS_FIFOS = pytest.mark.skipif(
 NOT_ROOT = pytest.mark.skipif(
     getattr(os, "geteuid", lambda: 1)() == 0,
     reason="root reads and traverses straight through mode 0o000",
+)
+NEEDS_LUTIMES = pytest.mark.skipif(
+    os.utime not in os.supports_follow_symlinks,
+    reason="this platform cannot stamp a symlink without following it",
 )
 
 
@@ -586,6 +592,278 @@ def test_snapshot_distinguishes_a_symlink_from_the_file_it_points_at(tmp_path):
     assert snapshot(target).kind == "file"
     assert snapshot(link).kind == "symlink"
     assert snapshot(link) != snapshot(target)
+
+
+def test_restore_puts_the_bytes_back_on_a_platform_with_no_fchmod(tmp_path, monkeypatch):
+    # `os.fchmod` is Unix-only; Windows — which `verinote.config` explicitly supports —
+    # has no such attribute. Calling it unguarded raised `AttributeError` *after*
+    # `restore` had already deleted the file it was restoring, so the user's real
+    # `app.json` was removed, never rewritten, and `pytest_sessionfinish` died on the
+    # way to saying so. The mode is incidental; the bytes are the point.
+    monkeypatch.delattr(os, "fchmod", raising=False)
+    path = tmp_path / "app.json"
+    original = b'{"active_root": "/real/kb"}\n'
+    path.write_bytes(original)
+    path.chmod(0o640)
+    before = snapshot(path)
+
+    path.write_bytes(b'{"active_root": "/tmp/pytest-kb"}\n')  # the leak
+    message = leak_report(path, before)
+
+    assert path.exists(), "restore deleted the config and could not put it back"
+    assert path.read_bytes() == original
+    assert message is not None and "COULD NOT BE RESTORED" not in message
+    # `os.chmod` is the fallback where there is no fd-based one, so the mode survives too.
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+
+
+def test_a_chmod_that_fails_does_not_abort_an_otherwise_complete_restore(tmp_path, monkeypatch):
+    # The other half of the same lesson: a chmod can fail on its own terms (EPERM),
+    # and a restore that put every byte back must not be undone by it.
+    def unpermitted(*args, **kwargs):
+        raise OSError(errno.EPERM, "not permitted")
+
+    monkeypatch.setattr(os, "fchmod", unpermitted)
+    monkeypatch.setattr(os, "chmod", unpermitted)
+    path = tmp_path / "app.json"
+    original = b'{"active_root": "/real/kb"}\n'
+    path.write_bytes(original)
+    before = snapshot(path)
+
+    path.write_bytes(b"leaked\n")
+
+    assert restore(path, before) is True
+    assert path.read_bytes() == original
+
+
+def test_a_failure_on_the_way_to_the_replace_leaves_the_config_on_disk(tmp_path, monkeypatch):
+    # The structural fix, stated as behaviour. `restore` used to `_remove(path)` and
+    # *then* write, so every failure in the gap — ENOSPC, EACCES on a read-only
+    # parent, a raising chmod — lost the file for good. The replacement is staged
+    # beside the path and `os.replace`d onto it now, so a failure anywhere in here
+    # leaves the path holding something rather than nothing.
+    path = tmp_path / "app.json"
+    path.write_bytes(b'{"active_root": "/real/kb"}\n')
+    before = snapshot(path)
+    leaked = b'{"active_root": "/tmp/pytest-kb"}\n'
+    path.write_bytes(leaked)
+
+    def no_space(*args, **kwargs):
+        raise OSError(errno.ENOSPC, "no space left on device")
+
+    monkeypatch.setattr(os, "replace", no_space)
+
+    with pytest.raises(OSError):
+        restore(path, before)
+
+    assert path.exists(), "a failed restore deleted the config it was restoring"
+    assert path.read_bytes() == leaked, "the path must hold the old entry until it holds the new"
+    assert [p.name for p in tmp_path.iterdir()] == ["app.json"], "the staged temp file leaked"
+
+
+def test_leak_report_hands_the_bytes_back_when_the_restore_blows_up(tmp_path, monkeypatch):
+    # And when the restore cannot complete, the canary must not die holding the only
+    # copy of the file: it reports, and it parks the pre-run bytes where a human can
+    # get at them.
+    path = tmp_path / "app.json"
+    original = b'{"active_root": "/real/kb"}\n'
+    path.write_bytes(original)
+    before = snapshot(path)
+    path.write_bytes(b"leaked\n")
+
+    def no_space(*args, **kwargs):
+        raise OSError(errno.ENOSPC, "no space left on device")
+
+    monkeypatch.setattr(os, "replace", no_space)
+    message = leak_report(path, before)  # must not raise
+
+    assert message is not None and "COULD NOT BE RESTORED" in message
+    assert "no space left on device" in message, "the report must say what actually failed"
+    parked = Path(message.split("parked in ")[1].split()[0])
+    try:
+        assert parked.read_bytes() == original, "the parked bytes are not the pre-run bytes"
+    finally:
+        parked.unlink(missing_ok=True)
+
+
+def test_the_session_hook_survives_a_canary_that_raises(monkeypatch, capsys):
+    # `pytest_sessionfinish` called `leak_report` bare, so anything it raised became an
+    # INTERNALERROR — the traceback replaced the one message telling the user their real
+    # config needed looking at. Fail the run loudly instead of taking the session down.
+    def broken(*args, **kwargs):
+        raise AttributeError("module 'os' has no attribute 'fchmod'")
+
+    monkeypatch.setattr(env_sandbox, "leak_report", broken)
+    session = SimpleNamespace(
+        config=SimpleNamespace(pluginmanager=SimpleNamespace(get_plugin=lambda name: None)),
+        exitstatus=0,
+    )
+
+    conftest.pytest_sessionfinish(session, 0)  # must not raise
+
+    assert session.exitstatus == pytest.ExitCode.TESTS_FAILED
+    assert "repair it by hand" in capsys.readouterr().out
+
+
+@NOT_ROOT
+def test_canary_reports_an_mtime_only_rewrite_of_a_pre_run_unreadable_file(tmp_path):
+    # Write-only mode, so the bytes were never read and the fingerprint is all the
+    # canary has. Same size, same mode: only `st_mtime_ns` moves. Drop it from
+    # `_stat_fingerprint` and this rewrite of the user's real config is invisible.
+    path = tmp_path / "app.json"
+    path.write_bytes(b"aaaa")
+    path.chmod(0o200)
+    before = snapshot(path)
+    st = path.lstat()
+
+    assert before.kind == "unreadable_file"
+
+    path.write_bytes(b"bbbb")  # the leak: identical length
+    os.utime(path, (1_600_000_000, 1_600_000_000))
+
+    assert path.lstat().st_size == st.st_size
+    assert path.lstat().st_mode == st.st_mode
+    assert path.lstat().st_mtime_ns != st.st_mtime_ns
+    message = leak_report(path, before)
+
+    assert message is not None, "an mtime-only rewrite of an unreadable pre-run file was silent"
+    assert "COULD NOT BE RESTORED" in message
+
+
+def test_canary_reports_a_chmod_of_a_child_of_a_pre_run_directory(tmp_path):
+    # Only the *child's* `st_mode` moves: a chmod touches ctime, not mtime, and it
+    # changes no size and no name, so the parent directory looks untouched. The
+    # child's mode is in the listing digest for exactly this.
+    path = tmp_path / "app.json"
+    path.mkdir()
+    child = path / "app.json"
+    child.write_bytes(b'{"active_root": "/real/kb"}\n')
+    child.chmod(0o600)
+    dir_st = path.stat()
+    child_st = child.stat()
+    before = snapshot(path)
+
+    child.chmod(0o777)  # the leak: same bytes, world-writable now
+    os.utime(child, ns=(child_st.st_atime_ns, child_st.st_mtime_ns))
+    os.utime(path, ns=(dir_st.st_atime_ns, dir_st.st_mtime_ns))
+
+    assert child.stat().st_size == child_st.st_size
+    assert child.stat().st_mtime_ns == child_st.st_mtime_ns
+    assert path.stat().st_mtime_ns == dir_st.st_mtime_ns
+
+    assert leak_report(path, before) is not None, "a chmod of a child went unreported"
+
+
+def test_canary_reports_a_chmod_of_a_pre_run_directory_itself(tmp_path):
+    # Not the children — the directory. Its listing is unchanged (it is empty), its
+    # size and mtime are pinned, so the only thing that moves is its own `st_mode`.
+    # That is why the directory's own `lstat` is in the fingerprint's payload
+    # alongside the listing.
+    path = tmp_path / "app.json"
+    path.mkdir(mode=0o755)
+    before = snapshot(path)
+    st = path.lstat()
+
+    assert before.kind == "directory"
+
+    path.chmod(0o700)  # the leak
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+
+    assert path.lstat().st_mtime_ns == st.st_mtime_ns
+    assert env_sandbox._listing(path, 1) == ()
+    message = leak_report(path, before)
+
+    assert message is not None, "a chmod of the pre-run directory itself went unreported"
+    assert "COULD NOT BE RESTORED" in message
+
+
+@NEEDS_LUTIMES
+def test_canary_reports_a_symlink_re_created_with_the_same_target(tmp_path):
+    # A symlink carries a fingerprint too, not just its target string. Without it, a
+    # symlink swapped for a *different* symlink to the same place compares equal to no
+    # change at all — and the point of the fingerprint is that a kind-preserving change
+    # is still a change.
+    target = tmp_path / "target.json"
+    target.write_bytes(b"{}\n")
+    path = tmp_path / "app.json"
+    path.symlink_to(target)
+    before = snapshot(path)
+    st = os.lstat(path)
+
+    assert before.kind == "symlink" and before.fingerprint is not None
+
+    path.unlink()
+    path.symlink_to(target)  # the leak: same target, a different link
+    os.utime(path, (1_600_000_000, 1_600_000_000), follow_symlinks=False)
+
+    after = snapshot(path)
+
+    assert after.target == before.target, "the targets must match, or this proves nothing"
+    assert after.fingerprint != before.fingerprint
+    assert os.lstat(path).st_mtime_ns != st.st_mtime_ns
+    message = leak_report(path, before)
+
+    assert message is not None, "only the symlink's fingerprint could have caught this"
+    assert path.is_symlink() and os.readlink(path) == str(target)
+
+
+@NOT_ROOT
+def test_the_listing_records_why_it_could_not_read_a_directory(tmp_path):
+    # A directory that cannot be listed is not an empty directory, and the two must not
+    # digest the same. The errno says which one it is.
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    locked.chmod(0o000)
+
+    try:
+        listing = env_sandbox._listing(locked, 1)
+    finally:
+        locked.chmod(0o700)
+
+    assert listing == (("<listing-failed>", errno.EACCES),)
+    assert listing != env_sandbox._listing(empty, 1)
+
+
+def test_the_directory_fingerprint_sees_a_child_past_its_memory_bound(tmp_path):
+    # The width hole. The listing used to keep the first `_DIR_MAX_ENTRIES` names and
+    # then append only a *count*, so an in-place edit of the 300th child of a 300-child
+    # directory moved nothing the digest could see: the child is not in the tuple, the
+    # count does not change, and editing a file moves no parent's mtime. Every child is
+    # digested now — the ones past the bound into a rolling hash — so the bound costs
+    # memory, not sight.
+    path = tmp_path / "app.json"
+    path.mkdir()
+    for index in range(env_sandbox._DIR_MAX_ENTRIES + 4):
+        (path / f"{index:04d}.json").write_bytes(b"aaaa")
+    child = path / f"{env_sandbox._DIR_MAX_ENTRIES + 3:04d}.json"
+    before = snapshot(path)
+
+    assert sorted(os.listdir(path)).index(child.name) >= env_sandbox._DIR_MAX_ENTRIES, (
+        "the child must sort past the bound, or this tests the wrong half of the listing"
+    )
+
+    child.write_bytes(b"bbbb")  # the leak: same size, deep in the tail of a wide directory
+    os.utime(child, (1_600_000_000, 1_600_000_000))
+
+    assert leak_report(path, before) is not None, "an edit past the width bound went unreported"
+
+
+def test_the_directory_listing_keeps_a_bounded_tuple(tmp_path):
+    # The bound is real, it just buys memory rather than blindness: however wide the
+    # directory, the listing holds at most `_DIR_MAX_ENTRIES` entries plus the one
+    # overflow digest that stands in for all the rest.
+    path = tmp_path / "wide"
+    path.mkdir()
+    for index in range(env_sandbox._DIR_MAX_ENTRIES + 30):
+        (path / f"{index:04d}.json").write_bytes(b"")
+
+    listing = env_sandbox._listing(path, 1)
+
+    assert len(listing) == env_sandbox._DIR_MAX_ENTRIES + 1
+    assert listing[-1][0] == "<overflow>"
+    assert listing[-1][1] == 30, "the overflow must account for every child past the bound"
 
 
 def test_the_real_config_baseline_is_captured_at_import_time():
