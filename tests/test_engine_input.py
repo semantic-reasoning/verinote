@@ -123,17 +123,24 @@ def test_raw_label_queries_still_answer_and_report_the_source_label(tmp_path):
     assert [fact.relation for fact in trace.answers[0].facts] == ["설립"]
 
 
-def test_no_pipeline_module_reads_engine_fact_terms_directly():
+def test_nothing_outside_the_normalizer_reads_engine_fact_terms():
     """Drift guard: one normalization point, or the aliases silently stop applying.
 
-    A new `store.engine_fact_terms()` call anywhere else in the pipeline is a
-    second, un-normalized engine input path — exactly the bug this fixes.
+    A `store.engine_fact_terms()` call anywhere else — a CLI command, a report,
+    a new pipeline stage — is a second, un-normalized engine input path, which is
+    exactly the bug this fixes. So the whole package is scanned, not `pipeline/`:
+    the accessor's definition in `store/db.py` and its one caller are the only
+    places it may appear.
     """
-    pipeline_dir = Path(__file__).resolve().parents[1] / "verinote" / "pipeline"
+    package = Path(__file__).resolve().parents[1] / "verinote"
+    allowed = {
+        package / "pipeline" / "engine_input.py",
+        package / "store" / "db.py",
+    }
     offenders = sorted(
-        path.name
-        for path in pipeline_dir.glob("*.py")
-        if path.name != "engine_input.py"
+        str(path.relative_to(package))
+        for path in package.rglob("*.py")
+        if path not in allowed
         and "engine_fact_terms(" in path.read_text(encoding="utf-8")
     )
 
@@ -160,6 +167,54 @@ def test_both_engine_backends_see_the_canonical_relation(tmp_path):
 
     assert duck.errors == 1
     assert wire.errors == 1
+
+
+def test_default_aliases_do_not_merge_relations_into_a_false_conflict(tmp_path):
+    """Aliasing distinct relations together manufactures conflicts that do not exist.
+
+    Once the engine reads facts through the aliases, an alias is a claim that two
+    labels are the same relation — so a wrong alias is no longer harmless. Holding
+    the title PI and representing Acme is not a contradiction, and the default
+    table must not turn it into one by sending `역할` and `대표` to the same
+    functional `role`.
+    """
+    s = _store(tmp_path)
+    _write_policy(s, _FUNCTIONAL_POLICY.format(relation="role"))
+    s.add_fact("김철수", "역할", "PI", status="accepted")
+    s.add_fact("김철수", "대표", "Acme", status="accepted")
+
+    rep = verify(s)
+
+    assert rep.errors == 0
+    assert rep.ok is True
+
+
+def test_findings_name_the_conflicting_facts_in_the_source_s_own_words(tmp_path):
+    """A report about `established_on` is unreadable to a KB that only said `설립`."""
+    s = _store(tmp_path)
+    _write_policy(s, _FUNCTIONAL_POLICY.format(relation="established_on"))
+    first = s.add_fact("회사", "설립", "2020", status="accepted")
+    second = s.add_fact("회사", "founded", "2021", status="accepted")
+
+    rep = verify(s)
+
+    assert rep.findings == [
+        f"ERROR functional_conflict: 회사 established_on "
+        f"(설립 #{first}=2020, founded #{second}=2021)"
+    ]
+    assert rep.findings[0] in rep.text
+
+
+def test_findings_for_unaliased_relations_are_left_alone(tmp_path):
+    """Only a renamed relation needs its source labels restored."""
+    s = _store(tmp_path)
+    _write_policy(s, _FUNCTIONAL_POLICY.format(relation="established_on"))
+    s.add_fact("회사", "established_on", "2020", status="accepted")
+    s.add_fact("회사", "established_on", "2021", status="accepted")
+
+    rep = verify(s)
+
+    assert rep.findings == ["ERROR functional_conflict: 회사 established_on"]
 
 
 def _text(term: object) -> str:

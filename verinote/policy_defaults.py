@@ -9,6 +9,16 @@ DEFAULT_RELATION_ALIASES = """# Relation aliases map alternate labels to the can
 #
 # These defaults keep common Korean labels configurable while new extraction
 # and query planning can use stable English canonical relation labels.
+#
+# An alias says two labels are the SAME relation, and the logic engine reads
+# facts through this table, so aliasing labels that merely sound related merges
+# relations that are not. That is how a false conflict is manufactured: with
+# `대표` -> `role`, "김철수 역할 PI" and "김철수 대표 Acme" become two values of
+# one functional `role` and the KB is reported inconsistent — though holding a
+# title and representing a company is no contradiction. The test: both labels
+# must take the same kind of object. `역할`/`직책`/`직위` take a title, so they
+# are `role`; `대표` takes an organization and `대표이사` takes a person, so
+# they are neither — they stay raw until the policy defines a canonical for them.
 - `제공` -> `provides`
 - `제공기능` -> `provides`
 - `제공 기능` -> `provides`
@@ -23,8 +33,6 @@ DEFAULT_RELATION_ALIASES = """# Relation aliases map alternate labels to the can
 - `objective` -> `purpose`
 - `goal` -> `purpose`
 - `역할` -> `role`
-- `대표` -> `role`
-- `대표이사` -> `role`
 - `직책` -> `role`
 - `직위` -> `role`
 - `소속` -> `affiliation`
@@ -46,8 +54,12 @@ DEFAULT_RELATION_ALIASES = """# Relation aliases map alternate labels to the can
 - `출생` -> `born_on`
 - `출생일` -> `born_on`
 - `생년월일` -> `born_on`
+- `born` -> `born_on`
+- `birth_date` -> `born_on`
 - `date_of_birth` -> `born_on`
 - `사망` -> `died_on`
 - `사망일` -> `died_on`
+- `died` -> `died_on`
+- `death_date` -> `died_on`
 - `date_of_death` -> `died_on`
 """

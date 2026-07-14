@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from verinote.engine import NO_FINDINGS_TEXT, CheckReport
 from verinote.pipeline.corroboration import CorroborationPolicyError
-from verinote.pipeline.engine_input import engine_relation_rows
+from verinote.pipeline.engine_input import annotate_source_labels, engine_relation_rows
 from verinote.pipeline.policy_state import (
     POLICY_RELPATH,
     POLICY_UNRECORDED_BANNER,
@@ -101,8 +101,9 @@ def verify(store: Store) -> CheckReport:
             findings=[f"ERROR policy error: {exc}"],
         )
 
-    report = store.inference_cache.run_check(
-        rows, policy_dl=state.text, query_dl=query_dl
+    report = annotate_source_labels(
+        store.inference_cache.run_check(rows, policy_dl=state.text, query_dl=query_dl),
+        rows,
     )
     if state.status is PolicyStatus.UNRECORDED_DEFAULT:
         return _with_unrecorded_policy_warning(report)
