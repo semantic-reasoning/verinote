@@ -37,19 +37,25 @@ def test_packaged_prompt_defaults_are_available():
 
 
 def test_query_intent_prompt_states_the_reason_contract():
-    """The prompt is the only place the reason contract can be stated up front.
+    """The prompt is the only place the field contracts can be stated up front.
 
-    The schema must keep `reason` required (OpenAI strict mode) and the parser
-    now tolerates it on any kind, so if the prompt stops telling the model when
-    to fill `reason`, nothing else pins the contract down (issue #237).
+    The schema must keep every property required (OpenAI strict mode) and the
+    parser now tolerates advisory fields on any kind, so if the prompt stops
+    saying when to fill `reason` and the comparison fields, nothing else pins
+    those contracts down (issue #237).
     """
     text = default_prompt_text("query-intent")
 
-    # Assert the two halves of the contract, not merely that the words appear:
-    # a prompt inverted to "always fill reason" would still contain "reason" and
+    # Assert the halves of each contract, not merely that the words appear: a
+    # prompt inverted to "always fill reason" would still contain "reason" and
     # "unknown_or_unsupported", and this pin has to catch that.
     assert "fill it only when kind is unknown_or_unsupported" in text
     assert "For every other kind, leave reason null" in text
+    # The comparison fields need the contract to the same depth. "Use null for
+    # fields that do not apply" was the vague line that let a model put an
+    # operator on a lookup_object and kill the question.
+    assert "Fill operator, value_type, and value only when kind is compare_typed_value" in text
+    assert "leave all three null" in text
 
 
 def test_kb_prompt_override_wins(tmp_path):
