@@ -342,11 +342,26 @@ def relation_canonical_variant(relation: str, aliases: Mapping[str, str]) -> str
     """Return the alias canonical label for ``relation`` when policy defines one."""
     if not aliases:
         return relation
-    normalized = unicodedata.normalize("NFC", relation)
-    normalized_aliases = {
+    return canonical_relation_from_normalized(
+        relation, normalized_relation_aliases(aliases)
+    )
+
+
+def normalized_relation_aliases(aliases: Mapping[str, str]) -> dict[str, str]:
+    """NFC-normalize an alias table once, for callers that map many labels."""
+    return {
         unicodedata.normalize("NFC", raw): unicodedata.normalize("NFC", canonical)
         for raw, canonical in aliases.items()
     }
+
+
+def canonical_relation_from_normalized(
+    relation: str, normalized_aliases: Mapping[str, str]
+) -> str:
+    """Canonicalize one label against an already NFC-normalized alias table."""
+    if not normalized_aliases:
+        return relation
+    normalized = unicodedata.normalize("NFC", relation)
     if normalized in normalized_aliases:
         return normalized_aliases[normalized]
     if normalized in set(normalized_aliases.values()):

@@ -510,10 +510,12 @@ def test_extract_source_drops_reversed_role_designation(tmp_path, fake_client):
 
 
 def test_extract_source_keeps_org_representative_role_fact(tmp_path, fake_client):
-    # ``org 대표 person`` (the org's representative) canonicalizes to the same
-    # ``org role person`` shape as a reversed designation, but the person here does
-    # NOT hold a role elsewhere in the batch, so it is a legitimate fact and must
-    # survive — an org-subject check alone would wrongly drop it.
+    # ``org 대표 person`` (the org's representative) has the same shape as a
+    # reversed role designation, but the person here does NOT hold a role
+    # elsewhere in the batch, so it is a legitimate fact and must survive — an
+    # org-subject check alone would wrongly drop it. It keeps the label 대표: its
+    # object is a person, not a title, so it is not the `role` relation and is
+    # not aliased to it (#238).
     s = _store(tmp_path)
     run_id = s.add_run(provider="fake", model="m")
     client = fake_client([ExtractedFact("샘플조직주식회사", "대표", "샘플인물", 0.9)])
@@ -532,7 +534,7 @@ def test_extract_source_keeps_org_representative_role_fact(tmp_path, fake_client
     fact = s.facts()[0]
     assert (fact["subject"], fact["relation"], fact["object"]) == (
         "샘플조직주식회사",
-        "role",
+        "대표",
         "샘플인물",
     )
 
@@ -697,7 +699,9 @@ def test_extract_source_normalizes_and_runs_focused_role_pass(tmp_path):
     assert "same line, table row, bullet, or layout record" in client.calls[1][1]
     fact = s.facts()[0]
     assert fact["subject"] == "샘플조직"
-    assert fact["relation"] == "role"
+    # 대표 keeps its own label: its object is a person, not a title, so it is not
+    # the `role` relation and the defaults no longer alias it to one (#238).
+    assert fact["relation"] == "대표"
     assert fact["object"] == "성명"
     assert fact["note"] == "원문: 성명대표"
 
@@ -898,7 +902,9 @@ def test_process_extraction_job_runs_focused_role_pass_with_original_note(tmp_pa
     assert "same line, table row, bullet, or layout record" in client.calls[1][1]
     fact = s.facts()[0]
     assert fact["subject"] == "샘플조직"
-    assert fact["relation"] == "role"
+    # 대표 keeps its own label: its object is a person, not a title, so it is not
+    # the `role` relation and the defaults no longer alias it to one (#238).
+    assert fact["relation"] == "대표"
     assert fact["object"] == "성명"
     assert fact["note"] == "원문: 성명대표"
 

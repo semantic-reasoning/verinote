@@ -52,11 +52,12 @@ _METRIC_OBJECT_RE = re.compile(
 _RECORD_SPLIT_RE = re.compile(r"[\n\r]+|[。.!?;；]")
 _ROLE_CUE_RE = re.compile(r"원문:|대표|대표이사|CTO|CEO|CFO|담당자|발표자|총괄|소속")
 # Generic role-designation relations (``샘플인물 역할 샘플직책`` — the SUBJECT holds a
-# role, the OBJECT is the role/title). The default policy canonicalizes 역할/직책/
-# 직위/대표/대표이사 all to ``role``, so the raw labels and the canonical label are
-# both listed; matching is done on the canonicalized relation so an aliased KB and
-# a bare KB behave the same. Role-*named* relations (``샘플조직 샘플직책 샘플인물``, where
-# the title itself is the relation, not an alias of role) are a different, valid
+# role, the OBJECT is the role/title). The default policy aliases 역할/직책/직위 to
+# ``role`` but deliberately leaves 대표/대표이사 alone (their object is an org or a
+# person, not a title — see policy_defaults), so both the aliased and the raw
+# labels are listed here; matching is done on the canonicalized relation so an
+# aliased KB and a bare KB behave the same. Role-*named* relations (``샘플조직
+# 샘플직책 샘플인물``, where the title itself is the relation) are a different, valid
 # shape and are deliberately NOT matched here.
 _ROLE_DESIGNATION_RELATIONS = {
     "역할", "직책", "직위", "직함", "대표", "대표이사", "role", "title", "position"

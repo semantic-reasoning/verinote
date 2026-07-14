@@ -139,16 +139,6 @@ def test_verify_answers_query_through_relation_alias(tmp_path):
 
 
 def test_verify_answers_explicit_korean_role_query(tmp_path):
-    """Asking in a raw label sees every fact that label's canonical covers (#238).
-
-    The default aliases map both `역할` and `대표` to `role`, so under this KB's
-    own policy the two facts state the same relation and both answer the
-    question. Asking canonically (`"role"`) already returned both — alias
-    expansion appends a rule per raw label — so before the engine read facts
-    through the aliases, the same question got different answers depending on
-    which spelling it was asked in. Unrelated relations (`발표자`) still do not
-    answer.
-    """
     s = _store(tmp_path)
     s.add_fact("샘플인물", "역할", "샘플역할", status="confirmed")
     s.add_fact("샘플인물", "대표", "샘플조직", status="confirmed")
@@ -164,7 +154,7 @@ def test_verify_answers_explicit_korean_role_query(tmp_path):
     rep = verify(s)
 
     assert rep.ok is True
-    assert rep.answers == ["q1: 샘플역할, 샘플조직"]
+    assert rep.answers == ["q1: 샘플역할"]
 
 
 def test_verify_answers_query_through_multiple_relation_aliases(tmp_path):
