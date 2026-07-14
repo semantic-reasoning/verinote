@@ -1686,6 +1686,34 @@ def test_analytics_page_renders(tmp_path):
         assert "DuckDB isn't installed" in r.text
 
 
+def test_confidence_chart_is_captioned_as_not_a_trust_signal(tmp_path):
+    """The confidence buckets are the LLM's opinion of itself, and the page says so.
+
+    Rendered *above* the numbers: a reader who meets the buckets first has already
+    decided what they mean, and "lots of 0.9s" reads as "this KB is trustworthy" —
+    the exact inference verinote exists to refuse.
+    """
+    from verinote.store.analytics import duckdb_available
+
+    if not duckdb_available():
+        pytest.skip("analytics page is disabled without DuckDB")
+
+    c = _client(tmp_path)
+    c.app.state.store.add_fact("A", "is_a", "B", status="confirmed", confidence=0.95)
+    body = c.get("/analytics").text
+
+    disclaimer = "verinote never uses it to decide what is true"
+    assert disclaimer in body
+    # Only the confidence table carries it; the deterministic breakdowns do not.
+    assert body.count(disclaimer) == 1
+    # heading, then the disclaimer, then the buckets — in that order.
+    assert (
+        body.index("Confidence distribution")
+        < body.index(disclaimer)
+        < body.index("0.9–1.0")
+    )
+
+
 def test_add_question_persists(tmp_path):
     c = _client(tmp_path)
     r = c.post("/questions", data={"text": "Where was Ada born?"}, follow_redirects=False)
