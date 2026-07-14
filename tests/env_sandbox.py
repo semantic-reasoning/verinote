@@ -91,6 +91,14 @@ _DIR_MAX_DEPTH = 2
 # parent's mtime. A detection bound that nobody can see is how a canary lies.
 _DIR_MAX_ENTRIES = 256
 
+# Where `_park` writes the rescue copy, resolved at *import* time — i.e. under the
+# ambient environment, for the same reason as `REAL_APP_CONFIG_DIR`. `gettempdir()`
+# consults `TMPDIR`/`TMP`/`TEMP` and, on Windows, falls back to `expanduser("~")`;
+# the sandbox patches `USERPROFILE` to a temp home that `pytest_unconfigure` then
+# `rmtree`s. Resolving this lazily inside `_park` could therefore drop the last copy
+# of the user's config into a directory the sandbox is about to delete.
+_RESCUE_DIR = tempfile.gettempdir()
+
 
 def _stat_fingerprint(st: os.stat_result) -> str:
     """The portable, quiet-by-construction part of `lstat`.
@@ -276,16 +284,18 @@ def _stage(path: Path, build: Callable[[int, str], None]) -> None:
     """Build the replacement under a private name, then `os.replace` it onto `path`.
 
     The whole point of the ordering. `os.replace` overwrites a file or a symlink
-    atomically and in place, so `path` holds the old entry right up until it holds
-    the new one — there is no instant at which it holds neither. The previous
-    version removed `path` first and wrote second, which turned *any* failure in
-    between — `mkstemp` hitting EACCES on a read-only parent, ENOSPC, a chmod
-    raising, `os.replace` itself failing — into the permanent loss of the user's
-    real `app.json`. Nothing is deleted here on the way to a write.
+    atomically and in place, so `path` holds whatever squatted there right up until
+    it holds the restored entry — this function deletes nothing on the way to a
+    write. The previous version removed `path` first and wrote second, which turned
+    *any* failure in between — `mkstemp` hitting EACCES on a read-only parent,
+    ENOSPC, a chmod raising, `os.replace` itself failing — into the permanent loss
+    of the user's real `app.json`.
 
-    A raise still means the restore failed, but it now means it failed with the
-    entry it was restoring still on disk. `build` is handed the `mkstemp` fd and
-    owns it: it closes it, on every path out.
+    A raise still means the restore failed, but it means it failed with the entry
+    that was on disk still on disk. (The one case where that entry is no longer the
+    user's own is a directory the run created, which `restore` had to clear first —
+    see `_clear_the_way`.) `build` is handed the `mkstemp` fd and owns it: it closes
+    it, on every path out.
     """
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".env-sandbox-")
     try:
@@ -316,13 +326,22 @@ def _clear_the_way(path: Path) -> None:
     The one delete `os.replace` cannot spare us: it refuses to overwrite a
     directory. And it is never the user's own entry — this only runs when the
     pre-run kind was `file` or `symlink`, i.e. when we hold the bytes to put back,
-    so a directory here now is something the run itself created.
+    so a directory here *now* is something the run itself created.
+
+    `lstat`, never `stat`: a symlink pointing at one of the user's directories is
+    not a directory to us. `os.replace` overwrites such a link in place, so there is
+    nothing here to clear — and following it would aim the only `rmtree` left in this
+    module at a directory nobody asked us to touch. (`shutil` happens to refuse an
+    `rmtree` of a symlink on its own; this does not lean on that. Two locks, because
+    the cost of this one being wrong is somebody else's tree.)
     """
     try:
         st = path.lstat()
     except OSError:
         return
-    if stat.S_ISDIR(st.st_mode):  # `lstat`, so a symlink *to* a directory is not one
+    if stat.S_ISLNK(st.st_mode):
+        return
+    if stat.S_ISDIR(st.st_mode):
         shutil.rmtree(path, ignore_errors=True)
 
 
@@ -335,13 +354,24 @@ def restore(path: Path, before: Entry) -> bool:
     writing through the path would follow a planted symlink, corrupt whatever it
     aims at, and leave the leak itself in place.
 
-    Restoring a `file` or a `symlink` deletes nothing. `os.replace` overwrites the
-    leak — file or symlink alike — in one atomic step, so a failure anywhere in
-    here leaves the path holding *something*, never nothing. The single exception
-    is a directory sitting where the file belongs, which `os.replace` cannot
-    overwrite (`_clear_the_way`), and which by construction is the run's own litter
-    and not the user's entry. Restoring `missing` is the one kind whose restoration
-    *is* a delete — and `missing` means an errno proved there was nothing here.
+    As long as a `file` or a `symlink` is still sitting at the path, restoring one
+    deletes nothing: `os.replace` overwrites the leak — file or symlink alike — in
+    one atomic step, so the path holds the leaked entry right up until it holds the
+    restored one.
+
+    The exception, stated plainly because a canary must not lie about itself: a
+    *directory* the run dropped where the file belongs cannot be overwritten by
+    `os.replace`, so `_clear_the_way` removes it *before* `_stage` writes. In that
+    one branch there is a window — and if `_stage` then fails (ENOSPC, EACCES), the
+    path is left empty rather than holding something. What the user's bytes rest on
+    there is not this ordering but `_park`, which writes them out of memory to a
+    rescue file before `leak_report` says a word. Do not remove that net on the
+    strength of this function; this branch is exactly why it exists, and
+    `test_a_failed_restore_over_a_leaked_directory_parks_the_bytes_it_could_not_write`
+    pins it.
+
+    Restoring `missing` is the one kind whose restoration *is* a delete — and
+    `missing` means an errno proved there was nothing here.
 
     A `directory`, an `unreadable_file` or an `unknown` entry is the one thing we
     cannot reconstruct: we only ever learned a fingerprint of it (or, for a failed
@@ -385,11 +415,14 @@ def _park(path: Path, before: Entry) -> str:
     wrong, the bytes we read at import time are still in memory here, so they get
     written somewhere outside the config directory (which may be exactly what is
     broken) before we say a word.
+
+    Into `_RESCUE_DIR`, pinned at import: see there for why asking for the temp
+    directory *now* could hand the rescue copy to the sandbox's own teardown.
     """
     if before.data is None:
         return "its pre-run contents were never readable, so there is nothing to hand back"
     try:
-        fd, name = tempfile.mkstemp(prefix="verinote-app-json-rescue-")
+        fd, name = tempfile.mkstemp(dir=_RESCUE_DIR, prefix="verinote-app-json-rescue-")
         with os.fdopen(fd, "wb") as handle:
             handle.write(before.data)
     except OSError as exc:
@@ -404,6 +437,15 @@ def leak_report(path: Path, before: Entry) -> str | None:
     INTERNALERROR that takes the whole session down — and it is called at the one
     moment the user's real config may be mid-repair, so "the canary died" and "the
     canary died holding your file" must not be the same event.
+
+    `BaseException`, not `Exception`, and that width is the whole point rather than
+    sloppiness. A Ctrl-C landing inside `_stage` — after `_clear_the_way` removed a
+    leaked directory, before `os.replace` put the file back — propagates out of
+    `restore` (`_stage` re-raises it by design, having cleaned up its temp file). An
+    `except Exception` here lets it straight through `_park`, so the interrupt exits
+    the session with the path empty and the only copy of the user's config in a stack
+    frame nobody will ever read. The interrupt is honoured by the run failing; it is
+    not honoured by taking the file with it.
     """
     after = snapshot(path)
     if after == before:
@@ -412,7 +454,7 @@ def leak_report(path: Path, before: Entry) -> str | None:
     try:
         restored = restore(path, before)
         why = f"it was a {before.kind} before the run"
-    except Exception as exc:  # noqa: BLE001 - a failed restore must still be *reported*
+    except BaseException as exc:  # noqa: BLE001 - a failed restore must still be *reported*
         restored = False
         why = f"restoring it raised {exc!r}"
     tail = (

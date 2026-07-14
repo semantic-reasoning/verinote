@@ -17,7 +17,9 @@ that deleting either turns these red.
 
 import errno
 import os
+import shutil
 import stat
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -864,6 +866,201 @@ def test_the_directory_listing_keeps_a_bounded_tuple(tmp_path):
     assert len(listing) == env_sandbox._DIR_MAX_ENTRIES + 1
     assert listing[-1][0] == "<overflow>"
     assert listing[-1][1] == 30, "the overflow must account for every child past the bound"
+
+
+def test_canary_clears_a_directory_the_run_dropped_over_a_pre_run_file(tmp_path):
+    # The only `rmtree` left in the module, and until now the only path through it
+    # that nothing covered: the pre-run entry was a *file* we read byte for byte, and
+    # the run replaced it with a directory. `os.replace` cannot overwrite a directory,
+    # so `_clear_the_way` has to remove it first — and it is safe to, precisely
+    # because a directory here is the run's own litter and the user's bytes are in
+    # hand. Make `_clear_the_way` a no-op and the restore below cannot happen.
+    path = tmp_path / "app.json"
+    original = b'{"active_root": "/real/kb"}\n'
+    path.write_bytes(original)
+    path.chmod(0o640)
+    before = snapshot(path)
+
+    assert before.kind == "file"
+
+    path.unlink()
+    (path / "nested").mkdir(parents=True)  # the leak: a non-empty directory in its place
+    (path / "nested" / "junk.json").write_bytes(b"{}\n")
+    message = leak_report(path, before)
+
+    assert path.is_file(), "the directory was left squatting where the config belongs"
+    assert path.read_bytes() == original
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+    assert message is not None and "COULD NOT BE RESTORED" not in message
+
+
+def test_canary_never_rmtrees_the_directory_a_leaked_symlink_points_at(tmp_path, monkeypatch):
+    # The same branch, with the leak shaped to weaponise it: the run swapped the
+    # config for a symlink *into one of the user's directories*. `_clear_the_way`
+    # looks with `lstat`, so it sees a symlink, not a directory, and clears nothing —
+    # `os.replace` overwrites the link itself.
+    #
+    # Asserted on the call, not only on the survivors, and deliberately: with a `stat`
+    # there, `rmtree` would be handed the symlink, and the user's tree would survive
+    # only because `shutil` happens to refuse that with `ignore_errors=True` swallowing
+    # the complaint. That is somebody else's invariant. What this module promises is
+    # that it never *aims* its one `rmtree` at a link.
+    victim = tmp_path / "kb"
+    victim.mkdir()
+    (victim / "precious.sqlite").write_bytes(b"do not touch\n")
+    path = tmp_path / "app.json"
+    original = b'{"active_root": "/real/kb"}\n'
+    path.write_bytes(original)
+    before = snapshot(path)
+
+    aimed_at = []
+    real_rmtree = shutil.rmtree
+    monkeypatch.setattr(
+        env_sandbox.shutil,
+        "rmtree",
+        lambda target, **kwargs: (aimed_at.append(Path(target)), real_rmtree(target, **kwargs))[1],
+    )
+
+    path.unlink()
+    path.symlink_to(victim)  # the leak: a link at the config path, pointing into the user's KB
+    message = leak_report(path, before)
+
+    assert aimed_at == [], f"the canary aimed rmtree at a symlink: {aimed_at}"
+    assert (victim / "precious.sqlite").read_bytes() == b"do not touch\n"
+    assert not path.is_symlink()
+    assert path.read_bytes() == original
+    assert message is not None and "COULD NOT BE RESTORED" not in message
+
+
+def test_a_failed_restore_over_a_leaked_directory_parks_the_bytes_it_could_not_write(
+    tmp_path, monkeypatch
+):
+    # The honest edge of `restore`, pinned so nobody can read its docstring as a
+    # promise it does not make. Clearing a leaked directory *is* a delete before a
+    # write, so a `_stage` that fails here leaves the path empty — and the only thing
+    # standing between that and a lost config is `_park`. Delete the park and this
+    # test says so.
+    path = tmp_path / "app.json"
+    original = b'{"active_root": "/real/kb"}\n'
+    path.write_bytes(original)
+    before = snapshot(path)
+
+    path.unlink()
+    path.mkdir()  # the leak: a directory, so `_clear_the_way` must remove it first
+    (path / "junk.json").write_bytes(b"{}\n")
+
+    real_mkstemp = tempfile.mkstemp
+
+    def no_space_in_the_config_dir(*args, **kwargs):
+        # Only the *staging* mkstemp fails (it writes beside the config); the rescue
+        # copy's own mkstemp must still work, or this would prove nothing about `_park`.
+        if kwargs.get("dir") == str(tmp_path):
+            raise OSError(errno.ENOSPC, "no space left on device")
+        return real_mkstemp(*args, **kwargs)
+
+    monkeypatch.setattr(env_sandbox.tempfile, "mkstemp", no_space_in_the_config_dir)
+    message = leak_report(path, before)  # must not raise
+
+    assert message is not None and "COULD NOT BE RESTORED" in message
+    assert not path.exists(), (
+        "if this now holds something, `restore` grew a stronger guarantee — say so in "
+        "its docstring, and keep the park anyway"
+    )
+    parked = Path(message.split("parked in ")[1].split()[0])
+    try:
+        assert parked.read_bytes() == original, "the canary lost the only copy of the config"
+    finally:
+        parked.unlink(missing_ok=True)
+
+
+def test_leak_report_parks_the_bytes_when_the_restore_is_interrupted(tmp_path, monkeypatch):
+    # Ctrl-C is not an `Exception`. It landed in the one window where the path is
+    # already empty (a leaked directory cleared, the file not yet replaced), sailed
+    # through an `except Exception` rescue net, and took the user's only copy of
+    # `app.json` with it — `pytest_sessionfinish` printed "check that file by hand"
+    # about a file that no longer existed and bytes nobody held.
+    path = tmp_path / "app.json"
+    original = b'{"active_root": "/real/kb"}\n'
+    path.write_bytes(original)
+    before = snapshot(path)
+
+    path.unlink()
+    path.mkdir()  # the leak
+
+    def interrupted(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(env_sandbox.os, "replace", interrupted)
+
+    # Caught explicitly rather than left to propagate: a `KeyboardInterrupt` out of
+    # here does not *fail* a pytest run, it *ends* one — the session stops, this test
+    # never reports, and the regression reads as an absence rather than a red.
+    try:
+        message = leak_report(path, before)
+    except BaseException as exc:  # noqa: BLE001 - the escape *is* the bug under test
+        pytest.fail(f"leak_report let {exc!r} escape, so `_park` never ran and the bytes are gone")
+
+    assert message is not None and "COULD NOT BE RESTORED" in message
+    parked = Path(message.split("parked in ")[1].split()[0])
+    try:
+        assert parked.read_bytes() == original, "the canary died holding the only copy"
+    finally:
+        parked.unlink(missing_ok=True)
+
+
+def test_the_directory_listing_does_not_depend_on_the_order_the_filesystem_returns(
+    tmp_path, monkeypatch
+):
+    # `os.listdir` gives no ordering guarantee; the digest must. Without the `sorted`,
+    # the same untouched directory fingerprints differently from one call to the next
+    # — and every difference the canary sees is a leak it reports and then tries to
+    # *restore*, which is how a phantom leak turns into a real write. The overflow
+    # split makes it worse: which children land in the tuple and which fold into the
+    # rolling hash would depend on readdir order too.
+    path = tmp_path / "app.json"
+    path.mkdir()
+    for index in range(env_sandbox._DIR_MAX_ENTRIES + 4):
+        (path / f"{index:04d}.json").write_bytes(b"aaaa")
+
+    ordered = env_sandbox._listing(path, 1)
+
+    real_listdir = os.listdir
+    monkeypatch.setattr(env_sandbox.os, "listdir", lambda p: sorted(real_listdir(p), reverse=True))
+    names = os.listdir(path)
+
+    assert names != sorted(names), "the readdir order is not being shuffled; this proves nothing"
+    assert env_sandbox._listing(path, 1) == ordered, (
+        "the listing follows readdir order; an untouched directory would fingerprint "
+        "differently on every call and the canary would 'restore' a leak nobody made"
+    )
+
+
+def test_the_rescue_copy_is_parked_outside_anything_the_sandbox_will_delete(tmp_path, monkeypatch):
+    # `_park` is the last line of defence, so it must not write into a directory the
+    # sandbox itself is about to `rmtree`. `tempfile.gettempdir()` falls back to the
+    # home directory on Windows when `TMP`/`TEMP` are unset — and the sandbox patches
+    # the home to a temp one and deletes it in `pytest_unconfigure`. Resolving the
+    # rescue directory at *import* time (ambient environment) is what keeps the bytes
+    # out of reach of that, exactly as for `REAL_APP_CONFIG_DIR`.
+    ambient = tempfile.gettempdir()
+    doomed = tmp_path / "sandbox-home-that-gets-rmtreed"
+    doomed.mkdir()
+    monkeypatch.setattr(env_sandbox.tempfile, "gettempdir", lambda: str(doomed))
+
+    assert env_sandbox._RESCUE_DIR == ambient, "the rescue dir is not the one pinned at import"
+
+    parked = Path(
+        env_sandbox._park(tmp_path / "app.json", Entry("file", data=b"THE-ONLY-COPY")).split(
+            "parked in "
+        )[1].split()[0]
+    )
+
+    try:
+        assert parked.read_bytes() == b"THE-ONLY-COPY"
+        assert doomed not in parked.parents, "the rescue copy landed in the sandbox's own temp home"
+        assert str(parked.parent) == env_sandbox._RESCUE_DIR
+    finally:
+        parked.unlink(missing_ok=True)
 
 
 def test_the_real_config_baseline_is_captured_at_import_time():
