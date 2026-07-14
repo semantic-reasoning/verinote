@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from verinote.engine import NO_FINDINGS_TEXT, CheckReport
 from verinote.pipeline.corroboration import CorroborationPolicyError
+from verinote.pipeline.engine_input import engine_relation_rows
 from verinote.pipeline.policy_state import (
     POLICY_RELPATH,
     POLICY_UNRECORDED_BANNER,
@@ -72,7 +73,7 @@ def verify(store: Store) -> CheckReport:
         )
 
     try:
-        rows = store.engine_fact_terms()
+        rows = engine_relation_rows(store)
     except DuckDBFactTermStoreError as exc:
         return CheckReport(
             ok=False,
@@ -80,6 +81,14 @@ def verify(store: Store) -> CheckReport:
             warnings=0,
             text=f"backend: DuckDB\n\npolicy/engine error: {exc}",
             findings=[f"ERROR engine error: {exc}"],
+        )
+    except CorroborationPolicyError as exc:
+        return CheckReport(
+            ok=False,
+            errors=1,
+            warnings=0,
+            text=f"backend: DuckDB\n\npolicy/error: {exc}",
+            findings=[f"ERROR policy error: {exc}"],
         )
     try:
         query_dl = load_query(store)

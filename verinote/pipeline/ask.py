@@ -12,6 +12,7 @@ from verinote.engine import CheckReport
 from verinote.engine.duckdb_backend import run_check_duckdb
 from verinote.llm.base import LLMClient, LLMError
 from verinote.pipeline.corroboration import CorroborationPolicyError, store_relation_aliases
+from verinote.pipeline.engine_input import engine_relation_rows
 from verinote.pipeline.query import expand_query_relation_aliases, schema_aware_query_flow
 from verinote.pipeline.query_candidate_eval import RELATION_DECL
 from verinote.pipeline.report_trace import trace_query_answers
@@ -159,7 +160,7 @@ def _run_engine_query(store: Store, query_dl: str) -> tuple[CheckReport, str]:
         expanded = expand_query_relation_aliases(query_dl, store_relation_aliases(store))
         return (
             run_check_duckdb(
-                store.engine_fact_terms(),
+                engine_relation_rows(store),
                 policy_dl=RELATION_DECL,
                 query_dl=expanded,
             ),
