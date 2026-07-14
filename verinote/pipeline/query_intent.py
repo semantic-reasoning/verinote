@@ -72,14 +72,18 @@ class QueryIntent:
             "relation_candidates",
             tuple(_clean_required_string(item, "relation candidate") for item in self.relation_candidates),
         )
-        if self.operator is not None:
-            object.__setattr__(self, "operator", _clean_required_string(self.operator, "operator"))
-        if self.value_type is not None:
-            object.__setattr__(self, "value_type", _clean_required_string(self.value_type, "value_type"))
-        if self.value is not None:
-            object.__setattr__(self, "value", _clean_required_string(self.value, "value"))
-        if self.reason is not None:
-            object.__setattr__(self, "reason", _clean_required_string(self.reason, "reason"))
+        # A blank nullable string is an absent one. The schema declares all four
+        # fields nullable but still lists them in `required` (OpenAI strict mode),
+        # and prompt-only providers do not enforce `minLength: 1`, so a model told
+        # to "leave reason null" routinely emits "" instead. Treating that as a
+        # hard error would kill a correctly classified intent -- the same failure
+        # as #237. Normalising to None keeps the checks below honest: a blank
+        # reason still fails `unknown_or_unsupported`, and a blank operator still
+        # fails `compare_typed_value`, because both are now simply missing.
+        for field_name in ("operator", "value_type", "value", "reason"):
+            current = getattr(self, field_name)
+            if current is not None:
+                object.__setattr__(self, field_name, _clean_optional_string(current, field_name))
         self._validate_combination()
 
     def _validate_combination(self) -> None:
@@ -473,9 +477,20 @@ def _parse_optional_string(data: dict[str, Any], field_name: str) -> str | None:
         return None
     if not isinstance(value, str):
         raise TypeError(f"{field_name} must be a string or null")
-    if not value.strip():
-        raise ValueError(f"{field_name} must be a non-empty string")
-    return value.strip()
+    return _clean_optional_string(value, field_name)
+
+
+def _clean_optional_string(value: str, field_name: str) -> str | None:
+    """Trim a nullable string field, mapping blank to None.
+
+    Blank is how a prompt-only provider spells null in a key the schema forces it
+    to emit, so it means "absent" rather than "invalid". A wrong *value* is still
+    a violation -- `value_type="duration"` is rejected downstream; only emptiness
+    is normalised here.
+    """
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string")
+    return value.strip() or None
 
 
 def _clean_required_string(value: str, field_name: str) -> str:
