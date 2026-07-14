@@ -1,6 +1,26 @@
 :root {
+  color-scheme: dark;
   --bg: #0f1115; --panel: #171a21; --line: #262b36; --fg: #e6e9ef;
   --muted: #8b93a5; --accent: #5b9dff; --ok: #3fb950; --warn: #d29922; --danger: #f0526d;
+  --on-accent: #06101f;
+  --editing-bg: rgba(91, 157, 255, .06);
+  --ok-bg: rgba(63, 185, 80, .12);
+  --warn-bg: rgba(210, 153, 34, .12);
+  --danger-bg: rgba(240, 82, 109, .12);
+  --btn-hover-filter: brightness(1.08);
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --bg: #f6f8fa; --panel: #ffffff; --line: #d0d7de; --fg: #1f2328;
+    --muted: #59636e; --accent: #0969da; --ok: #1a7f37; --warn: #9a6700; --danger: #cf222e;
+    --on-accent: #ffffff;
+    --editing-bg: rgba(9, 105, 218, .06);
+    --ok-bg: rgba(26, 127, 55, .10);
+    --warn-bg: rgba(154, 103, 0, .10);
+    --danger-bg: rgba(207, 34, 46, .08);
+    --btn-hover-filter: brightness(.95);
+  }
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--fg);
@@ -60,7 +80,7 @@ th { color: var(--muted); font-weight: 600; font-size: .85rem; }
   color: var(--muted); font-size: .85rem; }
 .review-toolbar select { background: var(--bg); color: var(--fg);
   border: 1px solid var(--line); border-radius: 6px; padding: .35rem .5rem; }
-.review-toolbar button { background: var(--accent); color: #06101f; border: 0;
+.review-toolbar button { background: var(--accent); color: var(--on-accent); border: 0;
   border-radius: 6px; padding: .4rem .75rem; cursor: pointer; font-weight: 600; }
 .review-status { color: var(--muted); margin: .65rem 0; }
 .review-status .muted { margin-left: .5rem; }
@@ -88,10 +108,10 @@ th { color: var(--muted); font-weight: 600; font-size: .85rem; }
 .amend { display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; }
 .amend input { background: var(--bg); color: var(--fg); border: 1px solid var(--line);
   border-radius: 6px; padding: .3rem .5rem; }
-.amend button { background: var(--accent); color: #06101f; border: 0; border-radius: 6px;
+.amend button { background: var(--accent); color: var(--on-accent); border: 0; border-radius: 6px;
   padding: .3rem .7rem; cursor: pointer; font-weight: 600; }
 .amend button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); }
-tr.editing td { background: rgba(91, 157, 255, .06); }
+tr.editing td { background: var(--editing-bg); }
 .settings { display: flex; flex-direction: column; gap: .8rem; max-width: 32rem; margin: 1.2rem 0; }
 .settings label { display: flex; flex-direction: column; gap: .3rem; color: var(--muted); }
 .settings select, .settings input, .settings textarea { background: var(--bg); color: var(--fg);
@@ -124,14 +144,14 @@ tr.editing td { background: rgba(91, 157, 255, .06); }
 .default-prompt { margin-top: 1rem; color: var(--muted); }
 .default-prompt pre { margin-top: .6rem; max-height: 24rem; overflow: auto; white-space: pre-wrap;
   background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: .8rem; color: var(--fg); }
-.ok-note { background: rgba(63, 185, 80, .12); border: 1px solid var(--ok); color: var(--ok);
+.ok-note { background: var(--ok-bg); border: 1px solid var(--ok); color: var(--ok);
   border-radius: 8px; padding: .6rem .9rem; margin: 1rem 0; }
 
-.btn { display: inline-block; background: var(--accent); color: #06101f; text-decoration: none;
+.btn { display: inline-block; background: var(--accent); color: var(--on-accent); text-decoration: none;
   padding: .5rem .9rem; border: 1px solid transparent; border-radius: 7px;
   font-weight: 600; cursor: pointer; transition: transform .08s ease, filter .08s ease, opacity .08s ease; }
 .btn.ghost { background: transparent; color: var(--accent); border: 1px solid var(--line); }
-.btn:hover:not(:disabled) { filter: brightness(1.08); }
+.btn:hover:not(:disabled) { filter: var(--btn-hover-filter); }
 .btn:active:not(:disabled) { transform: translateY(1px); filter: brightness(.95); }
 .btn:disabled, .btn[aria-disabled="true"] { color: var(--muted); opacity: .55; cursor: not-allowed; }
 .connection-test { display: flex; align-items: center; gap: .8rem; margin: 1rem 0 .6rem; }
@@ -139,8 +159,13 @@ tr.editing td { background: rgba(91, 157, 255, .06); }
 .htmx-request .htmx-indicator,
 .htmx-request.htmx-indicator { display: inline; }
 .empty { background: var(--panel); border: 1px dashed var(--line); border-radius: 10px; padding: 2rem; text-align: center; color: var(--muted); }
+/* `.warn` is used inline (<span class="warn">N pending</span> in sources.html) as well as
+   block (<p>/<div> in report.html, ask.html), so the bare class stays text-only and the
+   banner treatment is scoped to the block elements. */
 .warn { color: var(--warn); }
-.error { background: rgba(240, 82, 109, .12); border: 1px solid var(--danger);
+p.warn, div.warn { background: var(--warn-bg); border: 1px solid var(--warn);
+  border-radius: 8px; padding: .6rem .9rem; margin: 1rem 0; }
+.error { background: var(--danger-bg); border: 1px solid var(--danger);
   color: var(--danger); border-radius: 8px; padding: .6rem .9rem; margin: 1rem 0; }
 .upload { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
   background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
