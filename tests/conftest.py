@@ -115,10 +115,22 @@ def pytest_sessionfinish(session, exitstatus):
     so a leak from there would be baked into the baseline and read as "clean";
     and its teardown never runs at all when collection fails or when no test is
     selected — exactly the runs where a stray import-time write goes unnoticed.
+
+    The canary is wrapped because it runs at the exact moment the user's real config
+    may be mid-repair: an exception here is a pytest INTERNALERROR, and a canary that
+    dies silently while holding somebody's `app.json` is worse than no canary. If it
+    breaks, say so and fail the run — never let the traceback be the only trace.
     """
-    message = env_sandbox.leak_report(
-        env_sandbox.REAL_APP_CONFIG_PATH, env_sandbox.REAL_APP_CONFIG_BEFORE
-    )
+    try:
+        message = env_sandbox.leak_report(
+            env_sandbox.REAL_APP_CONFIG_PATH, env_sandbox.REAL_APP_CONFIG_BEFORE
+        )
+    except BaseException as exc:  # noqa: BLE001 - the canary must not take the session with it
+        message = (
+            f"the environment-sandbox canary itself failed ({exc!r}) while checking "
+            f"{env_sandbox.REAL_APP_CONFIG_PATH}. Check that file by hand — repair it by hand "
+            "if the run damaged it."
+        )
     if message is None:
         return
     session.exitstatus = pytest.ExitCode.TESTS_FAILED
