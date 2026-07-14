@@ -123,6 +123,12 @@ QUERY_INTENT_SCHEMA: dict[str, Any] = {
         "reason": {"type": ["string", "null"], "minLength": 1},
     },
 }
+# Every property is required, `reason` included. OpenAI structured outputs run
+# this schema with `strict: True` (`openai_adapter.py`), and strict mode demands
+# that `required` list every property -- it supports neither optional properties
+# nor per-kind conditional requirements. So "only unknown_or_unsupported needs a
+# reason" cannot be expressed here; the prompt states that contract and
+# `query_intent.py` enforces it. Do not narrow `required` to express it (#237).
 QUERY_INTENT_SCHEMA["required"] = list(QUERY_INTENT_SCHEMA["properties"])
 
 

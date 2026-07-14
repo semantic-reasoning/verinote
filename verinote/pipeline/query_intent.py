@@ -39,7 +39,18 @@ class IntentTarget:
 
 @dataclass(frozen=True)
 class QueryIntent:
-    """Internal structured representation of a natural-language question."""
+    """Internal structured representation of a natural-language question.
+
+    `reason` is advisory everywhere except `unknown_or_unsupported`, which
+    requires it and accepts nothing else. QUERY_INTENT_SCHEMA has to list every
+    property as required (OpenAI strict mode forbids conditional requirements),
+    so providers fill `reason` alongside a correct classification as a matter of
+    course. Rejecting those answers threw away a perfectly good intent over a
+    field only the unknown branch ever reads (`query.py`), which is why every
+    question failed translation in issue #237. The query-semantics fields
+    (operator/value_type/value) are a different matter and stay forbidden where
+    they do not belong: an operator on a `lookup_object` is a real misclassification.
+    """
 
     kind: QueryIntentKind
     subject: IntentTarget | None = None
@@ -80,14 +91,12 @@ class QueryIntent:
             self._require_target_kind("subject", self.subject, {"entity"})
             self._require_relation_field()
             self._forbid_compare_fields()
-            self._forbid_reason()
         elif kind == QueryIntentKind.LOOKUP_SUBJECT:
             if self.subject is not None or not has_relation or self.object is None:
                 raise ValueError("lookup_subject requires relation and object, and no subject")
             self._require_relation_field()
             self._require_target_kind("object", self.object, {"entity", "value", "typed_value"})
             self._forbid_compare_fields()
-            self._forbid_reason()
         elif kind == QueryIntentKind.LOOKUP_RELATION:
             if self.relation is not None or self.relation_candidates:
                 raise ValueError("lookup_relation does not accept a relation")
@@ -96,7 +105,6 @@ class QueryIntent:
             self._require_optional_lookup_endpoint("subject", self.subject)
             self._require_optional_lookup_endpoint("object", self.object)
             self._forbid_compare_fields()
-            self._forbid_reason()
         elif kind == QueryIntentKind.DISCOVER_ENTITY_RELATIONS:
             if self.subject is None or self.object is not None:
                 raise ValueError(
@@ -109,7 +117,6 @@ class QueryIntent:
             self._require_target_kind("subject", self.subject, {"entity"})
             self._require_relation_field()
             self._forbid_compare_fields()
-            self._forbid_reason()
         elif kind == QueryIntentKind.COUNT:
             if self.subject is None and self.object is None and not has_relation:
                 raise ValueError("count requires at least one target or relation")
@@ -118,7 +125,6 @@ class QueryIntent:
                 self._require_target_kind("relation", self.relation, {"relation"})
             self._require_optional_lookup_endpoint("object", self.object)
             self._forbid_compare_fields()
-            self._forbid_reason()
         elif kind == QueryIntentKind.COMPARE_TYPED_VALUE:
             if (
                 self.subject is None
@@ -138,7 +144,6 @@ class QueryIntent:
                 raise ValueError("compare_typed_value value_type is invalid")
             if self.object is not None:
                 self._require_target_kind("object", self.object, {"typed_value", "value"})
-            self._forbid_reason()
         elif kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED:
             if not self.reason:
                 raise ValueError("unknown_or_unsupported requires a reason")
@@ -158,10 +163,6 @@ class QueryIntent:
     def _forbid_compare_fields(self) -> None:
         if self.operator is not None or self.value_type is not None or self.value is not None:
             raise ValueError(f"{self.kind.value} does not accept comparison fields")
-
-    def _forbid_reason(self) -> None:
-        if self.reason is not None:
-            raise ValueError(f"{self.kind.value} does not accept reason")
 
     def _require_relation_field(self) -> None:
         if self.relation is not None:
@@ -410,9 +411,12 @@ def _parse_query_intent_object(data: Any) -> QueryIntent:
     extra = set(data) - allowed
     if extra:
         raise ValueError(f"unexpected fields: {', '.join(sorted(extra))}")
-    missing = allowed - set(data)
-    if missing:
-        raise KeyError(", ".join(sorted(missing)))
+    # Only `kind` is load-bearing. Every other field is declared nullable in
+    # QUERY_INTENT_SCHEMA, so an omitted key and an explicit null say the same
+    # thing -- and prompt-only providers (claude_cli renders the schema as text
+    # rather than constraining decoding) drop null keys routinely.
+    if "kind" not in data:
+        raise KeyError("kind")
     raw_kind = data["kind"]
     if not isinstance(raw_kind, str):
         raise TypeError("kind must be a string")
@@ -434,7 +438,7 @@ def _parse_query_intent_object(data: Any) -> QueryIntent:
 
 
 def _parse_intent_target(data: dict[str, Any], field_name: str) -> IntentTarget | None:
-    raw = data[field_name]
+    raw = data.get(field_name)
     if raw is None:
         return None
     if not isinstance(raw, dict):
@@ -453,7 +457,7 @@ def _parse_intent_target(data: dict[str, Any], field_name: str) -> IntentTarget 
 
 
 def _parse_relation_candidates(data: dict[str, Any]) -> tuple[str, ...]:
-    raw = data["relation_candidates"]
+    raw = data.get("relation_candidates")
     if raw is None:
         return ()
     if not isinstance(raw, list):
@@ -464,7 +468,7 @@ def _parse_relation_candidates(data: dict[str, Any]) -> tuple[str, ...]:
 
 
 def _parse_optional_string(data: dict[str, Any], field_name: str) -> str | None:
-    value = data[field_name]
+    value = data.get(field_name)
     if value is None:
         return None
     if not isinstance(value, str):

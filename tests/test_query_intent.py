@@ -137,12 +137,16 @@ def test_intent_rejects_swapped_target_kinds_and_bad_value_type():
             subject=IntentTarget("entity", "Sample Entity"),
             operator=">",
         )
-    with pytest.raises(ValueError, match="does not accept reason"):
+    # A reason alongside a valid classification is advisory, not a violation
+    # (#237); only the comparison fields above are a real misclassification.
+    assert (
         QueryIntent(
             kind=QueryIntentKind.DISCOVER_ENTITY_RELATIONS,
             subject=IntentTarget("entity", "Sample Entity"),
-            reason="unsupported",
-        )
+            reason="the entity is named but the relation is open",
+        ).reason
+        == "the entity is named but the relation is open"
+    )
     with pytest.raises(ValueError, match="relation or relation_candidates"):
         QueryIntent(
             kind=QueryIntentKind.DISCOVER_ENTITY_RELATIONS,
