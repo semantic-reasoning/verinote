@@ -10,6 +10,7 @@ from typing import Mapping
 from verinote.engine import CheckReport, validate_query
 from verinote.engine.duckdb_backend import run_check_duckdb
 from verinote.pipeline.corroboration import CorroborationPolicyError, store_relation_aliases
+from verinote.pipeline.engine_input import engine_relation_rows
 from verinote.pipeline.query import expand_query_relation_aliases
 from verinote.pipeline.query_planner import QueryCandidate, QueryCandidatePlan
 from verinote.pipeline.query_quality_policy import (
@@ -82,7 +83,7 @@ def evaluate_query_candidate(
     try:
         query_dl = expand_query_relation_aliases(candidate.query_dl, dict(aliases or {}))
         report = run_check_duckdb(
-            store.engine_fact_terms(),
+            engine_relation_rows(store),
             policy_dl=RELATION_DECL,
             query_dl=query_dl,
         )

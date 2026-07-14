@@ -23,6 +23,7 @@ from verinote.engine.terms import (
     terms_equal,
 )
 from verinote.pipeline.corroboration import CorroborationPolicyError
+from verinote.pipeline.engine_input import engine_relation_rows
 from verinote.pipeline.query import load_query
 from verinote.pipeline.trust import fact_trust_summary
 from verinote.store import Store, review_statuses
@@ -115,7 +116,7 @@ def trace_query_answers(store: Store, query: str) -> tuple[AnswerTrace, ...]:
         program = parse_and_validate_program(_RELATION_DECL + query)
     except (DatalogParseError, DatalogValidationError):
         return ()
-    facts = store.engine_fact_terms()
+    facts = engine_relation_rows(store)
     fact_rows = {int(row["id"]): store.get_fact(int(row["id"])) for row in facts}
     traces = []
     seen: set[tuple[str, str, tuple[int, ...]]] = set()

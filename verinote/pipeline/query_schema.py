@@ -29,6 +29,7 @@ from verinote.pipeline.corroboration import (
     store_relation_aliases,
     store_typed_relations,
 )
+from verinote.pipeline.engine_input import engine_relation_rows
 from verinote.store import Store, engine_statuses
 
 
@@ -164,7 +165,7 @@ def _engine_facts(store: Store) -> list[_Fact]:
     display_rows = {
         int(row["id"]): row for row in store.facts(statuses=engine_statuses())
     }
-    term_rows = {int(row["id"]): row for row in store.engine_fact_terms()}
+    term_rows = {int(row["id"]): row for row in engine_relation_rows(store)}
     facts: list[_Fact] = []
     for fact_id in sorted(display_rows):
         row = display_rows[fact_id]
@@ -173,7 +174,12 @@ def _engine_facts(store: Store) -> list[_Fact]:
             _Fact(
                 fact_id=fact_id,
                 subject=_term_ref(row["subject"], term_row["subject"]),
-                relation=_term_ref(row["relation"], term_row["relation"]),
+                # The stored relation label, not the alias canonical the engine
+                # is fed: a planner reading this snapshot should write a query in
+                # the KB's own words, and `expand_query_relation_aliases` adds
+                # the canonical rule for it. The alias table is reported
+                # separately, so the canonical is not hidden from the planner.
+                relation=_term_ref(row["relation"], term_row["relation_raw"]),
                 object=_term_ref(row["object"], term_row["object"]),
                 status=str(row["status"]),
             )
