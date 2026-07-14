@@ -41,15 +41,24 @@ class IntentTarget:
 class QueryIntent:
     """Internal structured representation of a natural-language question.
 
-    `reason` is advisory everywhere except `unknown_or_unsupported`, which
-    requires it and accepts nothing else. QUERY_INTENT_SCHEMA has to list every
-    property as required (OpenAI strict mode forbids conditional requirements),
-    so providers fill `reason` alongside a correct classification as a matter of
-    course. Rejecting those answers threw away a perfectly good intent over a
-    field only the unknown branch ever reads (`query.py`), which is why every
-    question failed translation in issue #237. The query-semantics fields
-    (operator/value_type/value) are a different matter and stay forbidden where
-    they do not belong: an operator on a `lookup_object` is a real misclassification.
+    `reason` and the comparison fields (operator/value_type/value) are advisory:
+    any kind may carry them, and only the kind that consumes one requires it.
+    `unknown_or_unsupported` requires `reason` and accepts nothing else;
+    `compare_typed_value` requires all three comparison fields and validates
+    their values.
+
+    QUERY_INTENT_SCHEMA must list every property as required -- OpenAI strict
+    mode forbids conditional requirements -- and its `operator` enum admits "=".
+    So a model that answers "Who is the CEO of Acme?" with `lookup_object` +
+    `operator: "="`, or that fills in a `reason` for a question it classified
+    correctly, is emitting schema-legal output. Rejecting it discarded a correct
+    intent over fields nothing outside this module reads (the planner does not
+    even branch on `compare_typed_value`), and that is what failed every
+    translation in issue #237.
+
+    Still rejected: a wrong *value* (`value_type="duration"`) and a wrong *shape*
+    (a `lookup_object` with no subject). Those change what the query means; a
+    field nobody reads does not.
     """
 
     kind: QueryIntentKind
@@ -94,13 +103,11 @@ class QueryIntent:
                 raise ValueError("lookup_object requires subject and relation, and no object")
             self._require_target_kind("subject", self.subject, {"entity"})
             self._require_relation_field()
-            self._forbid_compare_fields()
         elif kind == QueryIntentKind.LOOKUP_SUBJECT:
             if self.subject is not None or not has_relation or self.object is None:
                 raise ValueError("lookup_subject requires relation and object, and no subject")
             self._require_relation_field()
             self._require_target_kind("object", self.object, {"entity", "value", "typed_value"})
-            self._forbid_compare_fields()
         elif kind == QueryIntentKind.LOOKUP_RELATION:
             if self.relation is not None or self.relation_candidates:
                 raise ValueError("lookup_relation does not accept a relation")
@@ -108,7 +115,6 @@ class QueryIntent:
                 raise ValueError("lookup_relation requires subject or object")
             self._require_optional_lookup_endpoint("subject", self.subject)
             self._require_optional_lookup_endpoint("object", self.object)
-            self._forbid_compare_fields()
         elif kind == QueryIntentKind.DISCOVER_ENTITY_RELATIONS:
             if self.subject is None or self.object is not None:
                 raise ValueError(
@@ -120,7 +126,6 @@ class QueryIntent:
                 )
             self._require_target_kind("subject", self.subject, {"entity"})
             self._require_relation_field()
-            self._forbid_compare_fields()
         elif kind == QueryIntentKind.COUNT:
             if self.subject is None and self.object is None and not has_relation:
                 raise ValueError("count requires at least one target or relation")
@@ -128,7 +133,6 @@ class QueryIntent:
             if self.relation is not None:
                 self._require_target_kind("relation", self.relation, {"relation"})
             self._require_optional_lookup_endpoint("object", self.object)
-            self._forbid_compare_fields()
         elif kind == QueryIntentKind.COMPARE_TYPED_VALUE:
             if (
                 self.subject is None
@@ -163,10 +167,6 @@ class QueryIntent:
                 )
             ) or self.relation_candidates:
                 raise ValueError("unknown_or_unsupported accepts only kind and reason")
-
-    def _forbid_compare_fields(self) -> None:
-        if self.operator is not None or self.value_type is not None or self.value is not None:
-            raise ValueError(f"{self.kind.value} does not accept comparison fields")
 
     def _require_relation_field(self) -> None:
         if self.relation is not None:
