@@ -128,13 +128,13 @@ Three rules keep it safe:
 What each file holds, why the DuckDB sidecar is data rather than a cache, and the
 exact failure modes are in [docs/operations.md](docs/operations.md).
 
-## Contributing & roadmap
+## Contributing
 
-Issues and feedback are welcome — the v1 vertical slice above is the current
-roadmap, and open questions are tracked in the
-[issue tracker](https://github.com/semantic-reasoning/verinote/issues). If you
-try verinote on a real document set, we would especially like to hear where
-extraction or verification surprised you.
+- **Try it.** Point verinote at a real document set and walk it through the
+  [Quickstart](#quickstart).
+- **Tell us where it surprised you.** Open an issue on the
+  [issue tracker](https://github.com/semantic-reasoning/verinote/issues) —
+  especially where extraction or verification did something you did not expect.
 
 ## License
 
