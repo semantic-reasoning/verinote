@@ -65,19 +65,22 @@ CLI scaffolding (`verinote init`, `verinote seed`), the active-KB config file
 locations, and `VERINOTE_ROOT` precedence rules are covered in
 [docs/configuration.md](docs/configuration.md).
 
-## How is this different from RAG?
+## How is this different from RAG or a wiki?
 
-RAG retrieves text and hopes the model reads it correctly — the answer is still a
-generation. In verinote, an answer marked `VERIFIED` is not a generation: it is
-the output of a deterministic Datalog query over facts that passed the review
-gate, each with recorded provenance. The LLM's judgment is confined to proposing
-candidates; it never gets to decide what is true.
+Both retrieval-augmented generation and a wiki hand you text; verinote hands you a
+judgment about that text — and tells you who made it.
 
-Compared to a wiki (with or without LLM plugins), the difference is the review
-lifecycle and the audit log: every accept/reject decision is recorded, stale
-facts are retired via `superseded` rather than silently overwritten, and
-source-language facts still answer canonical English questions through relation
-aliases.
+| Axis | RAG | Wiki (± LLM plugins) | verinote |
+|---|---|---|---|
+| The answer is | generated — the model reads retrieved text and writes a reply | whatever a human last wrote (a plugin summarizes on top) | a deterministic engine result (`VERIFIED`) or explicitly unverified excerpts (`UNVERIFIED`) |
+| What decides truth | the model | the last editor | a deterministic Datalog engine over facts you approved |
+| Provenance | retrieval cites chunks, but the answer text isn't bound to them | manual links that drift as pages are edited | every fact carries recorded provenance; a verified answer echoes the fact and its sources |
+| Stale facts | no lifecycle — an old chunk retrieves the same | silently overwritten or left contradictory | retired via `superseded`; single-valued conflicts are flagged, not overwritten |
+| Runs | usually a hosted vector DB / API | a hosted service | a local single-user web app with swappable LLM adapters |
+
+Source-language facts still answer canonical questions through relation aliases;
+that mapping and the rest of the query path are in
+[docs/architecture.md](docs/architecture.md).
 
 ## Design (locked)
 
