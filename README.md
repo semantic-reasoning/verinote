@@ -25,20 +25,22 @@ free-text wiki drifts: facts go stale, contradict each other, and lose the link 
 whatever document justified them — and once you bolt an LLM on top, it happily
 summarizes the drift with full confidence.
 
-verinote keeps the knowledge base honest by splitting the work three ways:
+Three things set verinote apart:
 
-1. **The LLM only proposes.** It extracts candidate facts, each tied to a source
-   document (provider-agnostic: Anthropic, Claude CLI, OpenAI, or local Ollama).
-2. **The engine only verifies.** Confirmed facts load into DuckDB, where Datalog
-   policy and query rules check them deterministically. Because every fact is
-   re-checked by the engine, swapping to a cheaper or local model never
-   compromises correctness.
-3. **You decide.** A fact sits in the review tier (`candidate` or `needs_review`)
-   until you promote it to an engine status (`confirmed` or `accepted`);
-   `superseded` retires it. Not even seeded demo facts skip the queue. One
-   opt-in rule can promote corroborated, conflict-free facts for you — it is off
-   by default, and turning it on is you delegating the gate, not removing it
+1. **A human holds the gate.** Nothing becomes engine input until a person
+   promotes it from the review tier (`candidate`/`needs_review`) to an engine
+   status (`confirmed`/`accepted`) — and not even seeded demo facts skip the
+   queue. One opt-in rule can promote corroborated, conflict-free facts for you,
+   but turning it on is you delegating the gate, not removing it
    ([auto-accept](docs/configuration.md#auto-accept)).
+2. **`VERIFIED` is a deterministic proof, not a generation.** The label means a
+   deterministic Datalog query derived the answer from facts you approved; the
+   model never gets to decide what is true. When the engine cannot answer,
+   verinote says so with `UNVERIFIED — source exploration` rather than faking it.
+3. **Local-first and vendor-neutral by design.** verinote is a local single-user
+   web app with swappable LLM adapters (Anthropic, Claude CLI, OpenAI, or local
+   Ollama). There is no cloud service and no lock-in — that is a design
+   principle, not a missing feature.
 
 When you ask a question, the answer arrives labeled with how much you can trust
 it: **`VERIFIED — engine`** when the Datalog engine proved it from facts you
