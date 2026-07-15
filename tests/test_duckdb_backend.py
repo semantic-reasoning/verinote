@@ -702,3 +702,106 @@ def test_duckdb_backend_plain_string_answers_stay_unquoted():
 
     assert rep.answers == ["q1: Gadget Works"]
     assert '"' not in rep.answers[0]
+
+
+_DUP_POLICY = (
+    ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
+    ".decl error_dup(subject: symbol, object: symbol)\n"
+    'error_dup(S, O) :- relation(S, "flag", O).\n'
+)
+_ROLE_QUERY = (
+    ".decl answer_q1(value: symbol)\n"
+    'answer_q1(O) :- relation("Subj", "role", O).\n'
+)
+
+
+def _c(functor, *args):
+    return Compound(functor, tuple(args))
+
+
+def test_duckdb_backend_counts_distinct_tuples_that_render_alike():
+    """Two policy violations that happen to render the same must stay two.
+
+    ``("A B", "flag", "C")`` and ``("A", "flag", "B C")`` are different tuples,
+    but the old rendered-string dedupe collapsed them into a single "1 error"
+    (issue #167). The count is what the user trusts, so it must reflect tuples.
+    """
+    _duckdb()
+    rep = run_check_duckdb(
+        [
+            {"subject": "A B", "relation": "flag", "object": "C"},
+            {"subject": "A", "relation": "flag", "object": "B C"},
+        ],
+        policy_dl=_DUP_POLICY,
+    )
+
+    assert rep.ok is False
+    assert rep.errors == 2
+    assert len(rep.findings) == 2
+
+
+def test_duckdb_backend_finding_columns_cannot_forge_each_other():
+    """A space in one column may not blur into the column boundary.
+
+    Without escaping, ``("A B", "C")`` and ``("A", "B C")`` both render
+    ``A B C`` and become indistinguishable. Multi-column findings must render so
+    the two tuples read differently.
+    """
+    _duckdb()
+    rep = run_check_duckdb(
+        [
+            {"subject": "A B", "relation": "flag", "object": "C"},
+            {"subject": "A", "relation": "flag", "object": "B C"},
+        ],
+        policy_dl=_DUP_POLICY,
+    )
+
+    assert sorted(rep.findings) == ["ERROR dup: A B\\ C", "ERROR dup: A\\ B C"]
+    assert len(set(rep.findings)) == 2
+
+
+def test_duckdb_backend_answer_comma_cannot_forge_two_answers():
+    """One value containing a comma must not read as two answers.
+
+    ``Analytical Engine, Ltd`` is a single answer; joined answers use ``, `` as
+    the separator, so the value's own comma is escaped to stay distinguishable
+    from a two-answer list (issue #167).
+    """
+    _duckdb()
+    query = (
+        ".decl answer_q1(value: symbol)\n"
+        'answer_q1(O) :- relation("Ada", "worked_at", O).\n'
+    )
+    rep = run_check_duckdb(
+        [{"subject": "Ada", "relation": "worked_at", "object": "Analytical Engine, Ltd"}],
+        query_dl=query,
+    )
+
+    assert rep.answers == ["q1: Analytical Engine\\, Ltd"]
+    # It must not read as the two-answer list ``Analytical Engine`` + ``Ltd``.
+    assert rep.answers != ["q1: Analytical Engine, Ltd"]
+
+
+def test_duckdb_backend_answers_keep_distinct_tuples_that_render_alike():
+    """Two different answer tuples that used to render alike must both survive.
+
+    A compound ``pair(a, b)`` and the *string* ``"pair(a, b)"`` are different
+    answers: one is a structured term, one is a text value that merely looks like
+    it. Under the old renderer both printed ``pair(a, b)`` and ``set()`` on that
+    text dropped one answer entirely. Deduping on the tuple keeps both, and the
+    string's surface comma is escaped so the two are no longer even confusable
+    (issue #167).
+    """
+    _duckdb()
+    rep = run_check_duckdb(
+        [
+            {"subject": "Subj", "relation": "role", "object": _c("pair", Atom("a"), Atom("b"))},
+            {"subject": "Subj", "relation": "role", "object": "pair(a, b)"},
+        ],
+        query_dl=_ROLE_QUERY,
+    )
+
+    # Compound comma stays bare; the string's comma is escaped. Two answers, not
+    # one. Reverting the fix (set() on rendered text) collapses these to a single
+    # "q1: pair(a, b)".
+    assert rep.answers == ["q1: pair(a, b), pair(a\\, b)"]

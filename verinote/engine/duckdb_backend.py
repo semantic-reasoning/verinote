@@ -422,24 +422,29 @@ def _collect_report(
         ).fetchall()
         if not declarations[name].columns:
             rows = [() for _row in rows]
-        rendered_rows = [_render_row(row) for row in rows]
+        rows = _dedupe_rows_by_compare_key(rows)
         if name.startswith(_ERROR_PREFIX):
-            errors.extend(
-                f"{name[len(_ERROR_PREFIX) :]}: {row}" for row in rendered_rows
-            )
+            label = name[len(_ERROR_PREFIX) :]
+            errors.extend(f"{label}: {_render_finding_row(row)}" for row in rows)
         elif name.startswith(_WARN_PREFIX):
-            warnings.extend(
-                f"{name[len(_WARN_PREFIX) :]}: {row}" for row in rendered_rows
-            )
+            label = name[len(_WARN_PREFIX) :]
+            warnings.extend(f"{label}: {_render_finding_row(row)}" for row in rows)
         elif name.startswith(_ANSWER_PREFIX):
-            if rendered_rows:
+            if rows:
                 qid = name[len(_ANSWER_PREFIX) :]
-                answers_by_q.setdefault(qid, []).extend(rendered_rows)
+                answers_by_q.setdefault(qid, []).extend(
+                    _render_answer_row(row) for row in rows
+                )
 
-    errors = sorted(set(errors))
-    warnings = sorted(set(warnings))
+    # Rows are deduped by their compare-key tuple (see
+    # `_dedupe_rows_by_compare_key`), so each survivor is a semantically distinct
+    # tuple. We must NOT dedupe again on the rendered string: two different
+    # tuples can render alike, and collapsing them here would hide real
+    # violations (issue #167). Sort only, never set().
+    errors = sorted(errors)
+    warnings = sorted(warnings)
     answers = [
-        f"q{qid}: {', '.join(sorted(set(vals)))}"
+        f"q{qid}: {', '.join(sorted(vals))}"
         for qid, vals in sorted(answers_by_q.items())
     ]
     findings = [f"ERROR {e}" for e in errors] + [f"WARN {w}" for w in warnings]
@@ -480,8 +485,71 @@ def _render_fact_input(facts: list[Mapping[str, object]]) -> str:
     return "\n".join(sorted(set(lines)))
 
 
-def _render_row(row: tuple[object, ...]) -> str:
-    return " ".join(_render_output_term(duckdb_value_to_term(value)) for value in row)
+def _dedupe_rows_by_compare_key(
+    rows: list[tuple[object, ...]],
+) -> list[tuple[object, ...]]:
+    """Drop rows that are the same tuple under the engine's equality.
+
+    ``SELECT DISTINCT`` only removes rows that are identical in their *typed
+    storage* (the JSON term encoding), so ``Atom("ada")`` and ``StringLit("ada")``
+    survive as two rows even though the engine treats them as equal
+    (`term_compare_key` maps both to ``s:ada``). Deduping on the compare-key
+    tuple collapses those representation twins into one finding/answer, while
+    still keeping genuinely different tuples such as ``("A B", "C")`` and
+    ``("A", "B C")`` apart -- which is the whole point of issue #167. Order is
+    preserved so the later sort is stable and deterministic.
+    """
+    seen: set[tuple[str, ...]] = set()
+    deduped: list[tuple[object, ...]] = []
+    for row in rows:
+        key = tuple(term_compare_key(duckdb_value_to_term(value)) for value in row)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(row)
+    return deduped
+
+
+def _render_finding_row(row: tuple[object, ...]) -> str:
+    """Render one finding tuple so its columns cannot be forged into each other.
+
+    Columns are joined by a bare space. A single-column row is rendered
+    verbatim (its own spaces are kept), because there is no neighbouring column
+    for a space to blur into. But once a row has two or more columns, a bare
+    space inside a value would be indistinguishable from the column separator --
+    ``("A B", "C")`` and ``("A", "B C")`` would both read ``A B C`` and collapse
+    into one finding (issue #167). So for multi-column rows we escape the spaces
+    *inside* each rendered value as ``\\ `` and keep the column separator bare.
+    Backslash is already escaped by :func:`escape_string_value`, so ``\\ ``
+    round-trips back to an in-value space with no ambiguity.
+    """
+    values = [_render_output_term(duckdb_value_to_term(value)) for value in row]
+    if len(values) <= 1:
+        return " ".join(values)
+    return " ".join(value.replace(" ", "\\ ") for value in values)
+
+
+def _render_answer_row(row: tuple[object, ...]) -> str:
+    return " ".join(_render_answer_value(duckdb_value_to_term(value)) for value in row)
+
+
+def _render_answer_value(term: Term) -> str:
+    """Render one answer value so a comma inside it cannot forge two answers.
+
+    Multiple answers for a question are joined with ``, ``. A ``StringLit`` whose
+    surface text already contains a comma (e.g. ``Analytical Engine, Ltd``) would
+    then be indistinguishable from two separate answers (issue #167), so we
+    escape those surface commas as ``\\,``. Backslash is escaped first by
+    :func:`escape_string_value`, so ``\\,`` round-trips unambiguously.
+
+    A ``Compound`` is rendered by :func:`render_term`. Its ``, `` separators are
+    structural, not surface text, and callers (and tests such as
+    ``role(person("Ada"), "PI")``) depend on that rendering staying intact, so we
+    must not touch a compound's commas.
+    """
+    if isinstance(term, StringLit):
+        return escape_string_value(term.value).replace(",", "\\,")
+    return render_term(term)
 
 
 def _render_output_term(term: Term) -> str:
