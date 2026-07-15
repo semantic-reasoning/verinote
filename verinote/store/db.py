@@ -1226,6 +1226,56 @@ class Store:
             return row
         return self.set_status(fact_id, new_status, action="toggled")
 
+    def accept_fact(self, fact_id: int) -> sqlite3.Row | None:
+        """Promote a review-queue fact to confirmed (a human's accept).
+
+        Only review-tier rows (candidate/needs_review) move. A row that is
+        already confirmed/accepted needs no write, and a superseded row stays
+        superseded: a human's rejection is terminal, so accept must never revive
+        it. Non-moving calls return the current row without touching the audit
+        log, and the read and the write share `self._lock` so the decision can't
+        race a concurrent status change.
+        """
+        with self._lock:
+            before = self.get_fact(fact_id)
+            if before is None:
+                return None
+            if before["status"] not in REVIEW_STATUSES:
+                return before
+            self._conn.execute(
+                "UPDATE facts SET status = 'confirmed', updated_at = datetime('now') "
+                "WHERE id = ?",
+                (fact_id,),
+            )
+            after = self.get_fact(fact_id)
+            self._log(fact_id, "accepted", before, after)
+            return after
+
+    def reject_fact(self, fact_id: int) -> sqlite3.Row | None:
+        """Supersede a fact (a human's reject); the terminal review decision.
+
+        Any non-superseded status moves to superseded. A superseded row is left
+        untouched and unlogged so repeat rejects don't pile duplicate audit rows.
+        There is deliberately no transition out of superseded here — this route
+        is the one that puts a fact into the terminal state, never the one that
+        takes it out. Read and write share `self._lock` for the same reason
+        accept does.
+        """
+        with self._lock:
+            before = self.get_fact(fact_id)
+            if before is None:
+                return None
+            if before["status"] == "superseded":
+                return before
+            self._conn.execute(
+                "UPDATE facts SET status = 'superseded', updated_at = datetime('now') "
+                "WHERE id = ?",
+                (fact_id,),
+            )
+            after = self.get_fact(fact_id)
+            self._log(fact_id, "rejected", before, after)
+            return after
+
     def amend_fact(
         self,
         fact_id: int,

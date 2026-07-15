@@ -53,3 +53,55 @@ def test_toggle_still_flips_review_and_engine_tiers(tmp_path):
 
     assert s.toggle_review(review_id)["status"] == "confirmed"
     assert s.toggle_review(engine_id)["status"] == "needs_review"
+
+
+# --- #232: accept/reject are transition-aware, not blind writes -----------
+
+
+def test_reject_then_accept_keeps_a_fact_superseded(tmp_path):
+    s = _store(tmp_path)
+    fact_id = s.add_fact("Report", "author", "Kim", status="needs_review")
+
+    assert s.reject_fact(fact_id)["status"] == "superseded"
+    # The whole point of the gate: accept must not resurrect a rejection.
+    reaccepted = s.accept_fact(fact_id)
+    assert reaccepted["status"] == "superseded"
+    assert s.get_fact(fact_id)["status"] == "superseded"
+    # One rejection logged, and no `accepted` row from the refused accept.
+    actions = _actions(s, fact_id)
+    assert actions.count("rejected") == 1
+    assert "accepted" not in actions
+
+
+def test_reaccepting_a_confirmed_fact_is_a_silent_noop(tmp_path):
+    s = _store(tmp_path)
+    fact_id = s.add_fact("Report", "author", "Kim", status="confirmed")
+    log_before = _actions(s, fact_id)
+
+    row = s.accept_fact(fact_id)
+
+    assert row["status"] == "confirmed"
+    # No write, no audit growth — accept only moves review-tier rows.
+    assert _actions(s, fact_id) == log_before
+
+
+def test_accept_promotes_a_review_fact(tmp_path):
+    # Regression guard: the transition checks must not block the real accept.
+    s = _store(tmp_path)
+    candidate = s.add_fact("Report", "author", "Kim", status="candidate")
+    needs = s.add_fact("Report", "author", "Lee", status="needs_review")
+
+    assert s.accept_fact(candidate)["status"] == "confirmed"
+    assert s.accept_fact(needs)["status"] == "confirmed"
+    assert _actions(s, candidate) == ["accepted"]
+
+
+def test_double_reject_logs_once(tmp_path):
+    s = _store(tmp_path)
+    fact_id = s.add_fact("Report", "author", "Kim", status="needs_review")
+
+    s.reject_fact(fact_id)
+    s.reject_fact(fact_id)
+
+    # A repeat reject on an already-superseded fact writes no duplicate audit row.
+    assert _actions(s, fact_id).count("rejected") == 1
