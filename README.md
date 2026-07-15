@@ -76,7 +76,7 @@ judgment about that text — and tells you who made it.
 | What decides truth | the model | the last editor | a deterministic Datalog engine over facts you approved |
 | Provenance | retrieval cites chunks, but the answer text isn't bound to them | manual links that drift as pages are edited | every extracted fact is created with an evidence anchor, and missing evidence is itself flagged (`evidence_missing`); a verified answer echoes the fact and the sources that back it |
 | Stale facts | no lifecycle — an old chunk retrieves the same | silently overwritten or left contradictory | retired via `superseded`; single-valued conflicts are flagged, not overwritten |
-| Runs | usually a hosted vector DB / API | a hosted service | a local single-user web app with swappable LLM adapters |
+| Runs | usually a hosted vector DB / API | typically a shared page, self-hosted or hosted | a local single-user web app with swappable LLM adapters |
 
 Source-language facts still answer canonical questions through relation aliases;
 that mapping and the rest of the query path are in
