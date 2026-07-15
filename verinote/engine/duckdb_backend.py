@@ -129,6 +129,10 @@ class DuckDBInferenceCache:
                 self._reset_derived_tables()
                 fingerprint = _relation_fingerprint(fact_rows)
                 if fingerprint != self._relation_fingerprint:
+                    # Invalidate before mutating: if the reload fails partway,
+                    # the stale fingerprint must not let a later run with the
+                    # same facts skip reloading a now-empty/corrupt relation.
+                    self._relation_fingerprint = None
                     con.execute('DELETE FROM "relation"')
                     _load_relation_facts(con, fact_rows)
                     self._relation_fingerprint = fingerprint
