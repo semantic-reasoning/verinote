@@ -43,7 +43,14 @@ class ExtractedFact:
 
 @runtime_checkable
 class LLMClient(Protocol):
-    """Every provider adapter implements this; callers depend only on it."""
+    """Every provider adapter implements this; callers depend only on it.
+
+    Timeout contract: every adapter MUST apply ``cfg.llm_timeout_seconds`` to
+    each outbound call it makes -- the remote HTTP request for the cloud/local
+    SDK adapters, or the subprocess run for the CLI adapter -- so no method can
+    block indefinitely on a stuck provider. A bounded wait is part of the
+    contract, not a per-adapter option.
+    """
 
     name: str
 

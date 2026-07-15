@@ -101,7 +101,7 @@ class ClaudeCliAdapter:
                     cwd=tmpdir,
                     stdin=subprocess.DEVNULL,
                     text=True,
-                    timeout=180,
+                    timeout=self.cfg.llm_timeout_seconds,
                 )
         except FileNotFoundError as exc:
             raise LLMError("claude CLI not found; install Claude Code and ensure `claude` is on PATH") from exc
@@ -136,7 +136,7 @@ class ClaudeCliAdapter:
                     cwd=tmpdir,
                     stdin=subprocess.DEVNULL,
                     text=True,
-                    timeout=180,
+                    timeout=self.cfg.llm_timeout_seconds,
                 )
         except FileNotFoundError as exc:
             raise LLMError("claude CLI not found; install Claude Code and ensure `claude` is on PATH") from exc
