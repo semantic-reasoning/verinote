@@ -13,7 +13,7 @@ stale, and lose the source that justified them — and who has to *trust* an ans
 not just read one. It runs as a local web app for a single user, on your own
 machine.
 
-verinote is an honest knowledge base that runs as a local web app. An LLM extracts
+verinote is an honest knowledge base. An LLM extracts
 source-backed candidate facts from your documents; a DuckDB-backed Datalog engine
 verifies them deterministically; and by default nothing becomes engine input until
 a human approves it.
@@ -74,7 +74,7 @@ judgment about that text — and tells you who made it.
 |---|---|---|---|
 | The answer is | generated — the model reads retrieved text and writes a reply | whatever a human last wrote (a plugin summarizes on top) | a deterministic engine result (`VERIFIED`) or explicitly unverified excerpts (`UNVERIFIED`) |
 | What decides truth | the model | the last editor | a deterministic Datalog engine over facts you approved |
-| Provenance | retrieval cites chunks, but the answer text isn't bound to them | manual links that drift as pages are edited | every fact carries recorded provenance; a verified answer echoes the fact and its sources |
+| Provenance | retrieval cites chunks, but the answer text isn't bound to them | manual links that drift as pages are edited | every extracted fact is created with an evidence anchor, and missing evidence is itself flagged (`evidence_missing`); a verified answer echoes the fact and the sources that back it |
 | Stale facts | no lifecycle — an old chunk retrieves the same | silently overwritten or left contradictory | retired via `superseded`; single-valued conflicts are flagged, not overwritten |
 | Runs | usually a hosted vector DB / API | a hosted service | a local single-user web app with swappable LLM adapters |
 
