@@ -958,11 +958,11 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.post("/facts/{fact_id}/accept", response_class=HTMLResponse)
     def accept(request: Request, fact_id: int):
-        return _row(request, _active_store().set_status(fact_id, "confirmed", action="accepted"))
+        return _row(request, _active_store().accept_fact(fact_id))
 
     @app.post("/facts/{fact_id}/reject", response_class=HTMLResponse)
     def reject(request: Request, fact_id: int):
-        return _row(request, _active_store().set_status(fact_id, "superseded", action="rejected"))
+        return _row(request, _active_store().reject_fact(fact_id))
 
     @app.get("/facts/{fact_id}/edit", response_class=HTMLResponse)
     def edit_fact(request: Request, fact_id: int):
