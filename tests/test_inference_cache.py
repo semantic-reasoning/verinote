@@ -46,7 +46,7 @@ def test_cache_reloads_after_a_failed_reload(monkeypatch):
         monkeypatch.setattr(duckdb_backend, "_load_relation_facts", raising_load)
         failed = cache.run_check(_OTHER_FACTS)
         assert failed.ok is False
-        assert failed.findings == [f"ERROR engine error: {boom}"]
+        assert failed.findings == [f"ERROR internal engine error: {boom}"]
 
         # 3) Undo the injection and re-run the SAME conflict facts on the SAME
         #    cache instance. The reload must run again (the base relation was
