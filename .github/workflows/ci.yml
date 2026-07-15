@@ -36,5 +36,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: pyproject.toml
-      - run: pip install -e ".[test]"
+      # Include the wirelog extra so pyrewire is present and the DuckDB/wirelog
+      # parity tests in tests/test_engine.py actually run instead of being
+      # importorskip'd — without it CI green-lights code it never executes.
+      - run: pip install -e ".[test,wirelog]"
       - run: pytest -q
