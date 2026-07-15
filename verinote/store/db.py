@@ -1207,11 +1207,23 @@ class Store:
                 raise
 
     def toggle_review(self, fact_id: int) -> sqlite3.Row | None:
-        """needs_review/candidate -> confirmed, and confirmed -> needs_review."""
+        """Flip a fact between the engine and review tiers.
+
+        Engine rows (confirmed/accepted) drop back to needs_review; review-queue
+        rows (candidate/needs_review) promote to confirmed. A superseded fact is
+        a human's terminal rejection, so a toggle leaves it untouched and
+        unlogged rather than reviving it to confirmed.
+        """
         row = self.get_fact(fact_id)
         if row is None:
             return None
-        new_status = "needs_review" if row["status"] in ENGINE_STATUSES else "confirmed"
+        status = row["status"]
+        if status in ENGINE_STATUSES:
+            new_status = "needs_review"
+        elif status in REVIEW_STATUSES:
+            new_status = "confirmed"
+        else:  # superseded (or any terminal status): no revival path
+            return row
         return self.set_status(fact_id, new_status, action="toggled")
 
     def amend_fact(
