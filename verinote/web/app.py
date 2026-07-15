@@ -328,15 +328,37 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         recommendation = recommendations.get(int(fact["id"])) if fact else None
         return {"f": view, "trust": trust, "recommendation": recommendation}
 
-    def _maybe_apply_auto_accept() -> None:
+    def _maybe_apply_auto_accept() -> list:
         if _active_cfg().auto_accept_recommendations:
-            apply_auto_accept_recommendations(_active_store())
+            return apply_auto_accept_recommendations(_active_store())
+        return []
 
     def _row(request: Request, fact):
         # Starlette's current API is TemplateResponse(request, name, context).
         return templates.TemplateResponse(
             request, "partials/fact_row.html", _fact_row_context(fact)
         )
+
+    def _row_after_decision(request: Request, fact, acted_fact_id: int | None):
+        """Render the acted row, running auto-accept for the corroboration it
+        may have unblocked.
+
+        A human decision changes the corroboration landscape, so re-run the
+        recommender here just as the extraction worker does. When it promotes
+        *other* facts, a single-row HTMX swap can't reveal them, so ask the
+        client for a full refresh; when nothing (or only the acted fact) moved,
+        the row swap is enough. The acted row is re-read afterwards so it
+        reflects an auto-accept that landed on the fact itself.
+        """
+        applied = _maybe_apply_auto_accept()
+        if acted_fact_id is not None:
+            refreshed = _active_store().get_fact(acted_fact_id)
+            if refreshed is not None:
+                fact = refreshed
+        response = _row(request, fact)
+        if any(rec.fact_id != acted_fact_id for rec in applied):
+            response.headers["HX-Refresh"] = "true"
+        return response
 
     def _fact_edit_context(fact, *, error: str | None = None):
         kinds = {"subject": "string", "relation": "string", "object": "string"}
@@ -890,6 +912,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     @app.post("/sources/{source_id}/accept-all", response_class=HTMLResponse)
     def accept_all_source_facts(request: Request, source_id: int):
         _active_store().accept_review_facts_for_source(source_id)
+        # Bulk-confirming a source can corroborate facts elsewhere; the redirect
+        # reloads the page so no HX-Refresh header is needed here.
+        _maybe_apply_auto_accept()
         return RedirectResponse("/sources", status_code=303)
 
     @app.post("/sources/{source_id}/delete", response_class=HTMLResponse)
@@ -954,15 +979,18 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.post("/facts/{fact_id}/toggle", response_class=HTMLResponse)
     def toggle(request: Request, fact_id: int):
-        return _row(request, _active_store().toggle_review(fact_id))
+        return _row_after_decision(request, _active_store().toggle_review(fact_id), fact_id)
 
     @app.post("/facts/{fact_id}/accept", response_class=HTMLResponse)
     def accept(request: Request, fact_id: int):
-        return _row(request, _active_store().accept_fact(fact_id))
+        return _row_after_decision(request, _active_store().accept_fact(fact_id), fact_id)
 
     @app.post("/facts/{fact_id}/reject", response_class=HTMLResponse)
     def reject(request: Request, fact_id: int):
-        return _row(request, _active_store().reject_fact(fact_id))
+        # Reject runs auto-accept too: removing a fact's support (or freeing a
+        # single-valued slot it conflicted on) also reshapes corroboration, so
+        # keeping the trigger here matches the other decision routes.
+        return _row_after_decision(request, _active_store().reject_fact(fact_id), fact_id)
 
     @app.get("/facts/{fact_id}/edit", response_class=HTMLResponse)
     def edit_fact(request: Request, fact_id: int):
@@ -1007,7 +1035,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             obj=object_value,
             note=note,
         )
-        return _row(request, amended)
+        return _row_after_decision(request, amended, fact_id)
 
     @app.get("/facts/{fact_id}/provenance", response_class=HTMLResponse)
     def provenance(request: Request, fact_id: int):
