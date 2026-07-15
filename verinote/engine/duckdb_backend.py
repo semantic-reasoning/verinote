@@ -510,27 +510,39 @@ def _dedupe_rows_by_compare_key(
     return deduped
 
 
-def _render_finding_row(row: tuple[object, ...]) -> str:
-    """Render one finding tuple so its columns cannot be forged into each other.
+def _join_row_columns(values: list[str]) -> str:
+    """Join already-rendered column values so no column can forge another.
 
-    Columns are joined by a bare space. A single-column row is rendered
-    verbatim (its own spaces are kept), because there is no neighbouring column
-    for a space to blur into. But once a row has two or more columns, a bare
-    space inside a value would be indistinguishable from the column separator --
+    Columns are joined by a bare space. A single-column row is emitted verbatim
+    (its own spaces are kept), because with no neighbouring column a space cannot
+    blur into a boundary. But once a row has two or more columns, a bare space
+    inside a value would be indistinguishable from the column separator --
     ``("A B", "C")`` and ``("A", "B C")`` would both read ``A B C`` and collapse
-    into one finding (issue #167). So for multi-column rows we escape the spaces
+    into one row (issue #167). So for multi-column rows we escape the spaces
     *inside* each rendered value as ``\\ `` and keep the column separator bare.
     Backslash is already escaped by :func:`escape_string_value`, so ``\\ ``
     round-trips back to an in-value space with no ambiguity.
+
+    Both findings and answers share this rule so a multi-column answer is guarded
+    exactly like a multi-column finding.
     """
-    values = [_render_output_term(duckdb_value_to_term(value)) for value in row]
     if len(values) <= 1:
         return " ".join(values)
     return " ".join(value.replace(" ", "\\ ") for value in values)
 
 
+def _render_finding_row(row: tuple[object, ...]) -> str:
+    """Render one finding tuple so its columns cannot be forged into each other."""
+    return _join_row_columns(
+        [_render_output_term(duckdb_value_to_term(value)) for value in row]
+    )
+
+
 def _render_answer_row(row: tuple[object, ...]) -> str:
-    return " ".join(_render_answer_value(duckdb_value_to_term(value)) for value in row)
+    """Render one answer tuple, guarding column boundaries like a finding row."""
+    return _join_row_columns(
+        [_render_answer_value(duckdb_value_to_term(value)) for value in row]
+    )
 
 
 def _render_answer_value(term: Term) -> str:

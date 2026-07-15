@@ -805,3 +805,54 @@ def test_duckdb_backend_answers_keep_distinct_tuples_that_render_alike():
     # one. Reverting the fix (set() on rendered text) collapses these to a single
     # "q1: pair(a, b)".
     assert rep.answers == ["q1: pair(a, b), pair(a\\, b)"]
+
+
+_PAIR_QUERY = (
+    ".decl answer_q1(left: symbol, right: symbol)\n"
+    'answer_q1(S, O) :- relation(S, "pair", O).\n'
+)
+
+
+def test_duckdb_backend_multi_column_answer_columns_cannot_forge_each_other():
+    """A multi-column answer must guard its column boundary like a finding.
+
+    Answers join columns with a bare space too, so without escaping
+    ``("A B", "C")`` and ``("A", "B C")`` both read ``A B C`` and become
+    indistinguishable inside the ``, ``-joined answer list (issue #167).
+    Reverting the multi-column space escape collapses both rows to ``A B C``.
+    """
+    _duckdb()
+    rep = run_check_duckdb(
+        [
+            {"subject": "A B", "relation": "pair", "object": "C"},
+            {"subject": "A", "relation": "pair", "object": "B C"},
+        ],
+        query_dl=_PAIR_QUERY,
+    )
+
+    assert rep.answers == ["q1: A B\\ C, A\\ B C"]
+    # The two tuples must not read alike (the pre-fix bug produced 'A B C, A B C').
+    assert rep.answers != ["q1: A B C, A B C"]
+
+
+def test_duckdb_backend_collapses_representation_twins_into_one_finding():
+    """Same value, different storage encoding, is one violation -- not two.
+
+    ``Atom("x")`` and ``StringLit("x")`` are stored as different JSON terms, so
+    ``SELECT DISTINCT`` keeps both, but the engine treats them as equal
+    (``term_compare_key`` maps both to ``s:x``). The report must dedupe on that
+    compare-key tuple, so this pair collapses into a single finding. Reverting
+    ``_dedupe_rows_by_compare_key`` yields two identical findings instead.
+    """
+    _duckdb()
+    rep = run_check_duckdb(
+        [
+            {"subject": Atom("x"), "relation": "flag", "object": "y"},
+            {"subject": "x", "relation": "flag", "object": "y"},
+        ],
+        policy_dl=_DUP_POLICY,
+    )
+
+    assert rep.ok is False
+    assert rep.errors == 1
+    assert rep.findings == ["ERROR dup: x y"]
