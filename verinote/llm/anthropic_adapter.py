@@ -22,13 +22,24 @@ class AnthropicAdapter:
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
 
-    def extract_facts(self, *, source_text: str, schema_hint: str = "") -> list[ExtractedFact]:
+    def _client(self):
+        """Build a client that honours the configured request timeout.
+
+        Every method routes through here so the timeout (and any future
+        client-wide setting) is applied at exactly one site.
+        """
         try:
             import anthropic
         except ImportError as exc:  # pragma: no cover - optional dep
             raise LLMError("anthropic SDK not installed; `pip install verinote[anthropic]`") from exc
+        return anthropic.Anthropic(
+            api_key=self.cfg.api_key,
+            base_url=self.cfg.base_url,
+            timeout=self.cfg.llm_timeout_seconds,
+        )
 
-        client = anthropic.Anthropic(api_key=self.cfg.api_key, base_url=self.cfg.base_url)
+    def extract_facts(self, *, source_text: str, schema_hint: str = "") -> list[ExtractedFact]:
+        client = self._client()
         tool = {
             "name": "emit_facts",
             "description": "Return the extracted facts.",
@@ -54,12 +65,7 @@ class AnthropicAdapter:
         raise LLMError("anthropic response contained no tool_use block")
 
     def translate_query(self, *, question: str, qid: int, schema_hint: str = "") -> str:
-        try:
-            import anthropic
-        except ImportError as exc:  # pragma: no cover - optional dep
-            raise LLMError("anthropic SDK not installed; `pip install verinote[anthropic]`") from exc
-
-        client = anthropic.Anthropic(api_key=self.cfg.api_key, base_url=self.cfg.base_url)
+        client = self._client()
         tool = {
             "name": "emit_query",
             "description": "Return the Datalog query line.",
@@ -86,12 +92,7 @@ class AnthropicAdapter:
         raise LLMError("anthropic response contained no tool_use block")
 
     def extract_query_intent(self, *, question: str, schema_hint: str = "") -> QueryIntent:
-        try:
-            import anthropic
-        except ImportError as exc:  # pragma: no cover - optional dep
-            raise LLMError("anthropic SDK not installed; `pip install verinote[anthropic]`") from exc
-
-        client = anthropic.Anthropic(api_key=self.cfg.api_key, base_url=self.cfg.base_url)
+        client = self._client()
         tool = {
             "name": "emit_query_intent",
             "description": "Return the structured query intent.",
@@ -117,12 +118,7 @@ class AnthropicAdapter:
         raise LLMError("anthropic response contained no tool_use block")
 
     def answer_question(self, *, question: str, context: str) -> str:
-        try:
-            import anthropic
-        except ImportError as exc:  # pragma: no cover - optional dep
-            raise LLMError("anthropic SDK not installed; `pip install verinote[anthropic]`") from exc
-
-        client = anthropic.Anthropic(api_key=self.cfg.api_key, base_url=self.cfg.base_url)
+        client = self._client()
         try:
             msg = client.messages.create(
                 model=self.cfg.model,
