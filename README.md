@@ -6,6 +6,13 @@
 
 **Ask your documents a question. Get an answer a deterministic engine has verified — with the source to prove it.**
 
+<!-- TODO: demo.gif — Ask tab showing "VERIFIED — engine" (#212) -->
+
+For anyone whose notes, docs, and meeting minutes pile up until facts drift, go
+stale, and lose the source that justified them — and who has to *trust* an answer,
+not just read one. It runs as a local web app for a single user, on your own
+machine.
+
 verinote is an honest knowledge base that runs as a local web app. An LLM extracts
 source-backed candidate facts from your documents; a DuckDB-backed Datalog engine
 verifies them deterministically; and by default nothing becomes engine input until
