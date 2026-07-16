@@ -204,7 +204,9 @@ def test_repair_rejects_unsupported_intent(tmp_path, fake_client, intent_payload
     client = fake_client(
         intent=intent_payload("unknown_or_unsupported", reason="still unsupported")
     )
-    results = repair_questions(s, client, root=tmp_path)
+    results = repair_questions(
+        s, client, root=tmp_path, allow_direct_datalog_fallback=False
+    )
 
     assert results == [{"id": qid, "accepted": False, "reason": "still unsupported"}]
     q = s.questions()[0]
