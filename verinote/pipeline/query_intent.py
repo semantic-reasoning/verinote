@@ -10,6 +10,23 @@ import re
 from typing import Any
 
 from verinote.llm.base import LLMError
+from verinote.llm.schema import QUERY_INTENT_SCHEMA
+
+
+def _schema_domain(field_name: str) -> frozenset[str]:
+    """The non-null values QUERY_INTENT_SCHEMA's enum admits for one field."""
+    enum = QUERY_INTENT_SCHEMA["properties"][field_name]["enum"]
+    return frozenset(value for value in enum if value is not None)
+
+
+# Read off the schema rather than restated here: the schema is the contract every
+# adapter hands the provider, so a second hand-maintained copy of these enums can
+# only drift out of it -- and either half of that drift is a bug (rejecting
+# on-schema output, or accepting output no strict-mode provider could send).
+QUERY_INTENT_COMPARISON_DOMAINS: dict[str, frozenset[str]] = {
+    "operator": _schema_domain("operator"),
+    "value_type": _schema_domain("value_type"),
+}
 
 
 class QueryIntentKind(StrEnum):
@@ -44,8 +61,10 @@ class QueryIntent:
     `reason` and the comparison fields (operator/value_type/value) are advisory:
     any kind may carry them, and only the kind that consumes one requires it.
     `unknown_or_unsupported` requires `reason` and accepts nothing else;
-    `compare_typed_value` requires all three comparison fields and validates
-    their values.
+    `compare_typed_value` requires all three comparison fields. Advisory means
+    "ignored", never "unchecked" -- a non-null operator or value_type is held to
+    QUERY_INTENT_SCHEMA's enum on every kind (`_validate_schema_domains`), so the
+    validator never accepts what the schema forbids.
 
     QUERY_INTENT_SCHEMA must list every property as required -- OpenAI strict
     mode forbids conditional requirements -- and its `operator` enum admits "=".
@@ -56,9 +75,9 @@ class QueryIntent:
     even branch on `compare_typed_value`), and that is what failed every
     translation in issue #237.
 
-    Still rejected: a wrong *value* (`value_type="duration"`) and a wrong *shape*
-    (a `lookup_object` with no subject). Those change what the query means; a
-    field nobody reads does not.
+    Still rejected: an off-schema *value* (`value_type="duration"`, on any kind)
+    and a wrong *shape* (a `lookup_object` with no subject). Those are outside the
+    contract the provider was handed; a schema-legal field nobody reads is not.
     """
 
     kind: QueryIntentKind
@@ -93,7 +112,23 @@ class QueryIntent:
             current = getattr(self, field_name)
             if current is not None:
                 object.__setattr__(self, field_name, _clean_optional_string(current, field_name))
+        self._validate_schema_domains()
         self._validate_combination()
+
+    def _validate_schema_domains(self) -> None:
+        """Hold every non-null field to the schema's enum, on every kind.
+
+        Tolerating a stray comparison field means ignoring it, not exempting it
+        from the contract: `operator: "="` on a lookup_object is schema-legal and
+        harmless, while `operator: "contains"` is off-schema everywhere. Checking
+        only inside the compare_typed_value branch would leave the validator
+        accepting, on the other six kinds, output QUERY_INTENT_SCHEMA forbids.
+        """
+        for field_name, allowed in QUERY_INTENT_COMPARISON_DOMAINS.items():
+            current = getattr(self, field_name)
+            if current is not None and current not in allowed:
+                allowed_text = ", ".join(sorted(allowed))
+                raise ValueError(f"{field_name} must be one of {allowed_text}, got {current!r}")
 
     def _validate_combination(self) -> None:
         kind = self.kind
@@ -146,10 +181,9 @@ class QueryIntent:
                 )
             self._require_target_kind("subject", self.subject, {"entity"})
             self._require_relation_field()
-            if self.operator not in {"=", "!=", "<", "<=", ">", ">="}:
-                raise ValueError("compare_typed_value operator is invalid")
-            if self.value_type not in {"date", "number", "amount", "ordinal"}:
-                raise ValueError("compare_typed_value value_type is invalid")
+            # operator/value_type values are checked in _validate_schema_domains,
+            # which applies to every kind; this branch only adds that compare
+            # cannot do without them.
             if self.object is not None:
                 self._require_target_kind("object", self.object, {"typed_value", "value"})
         elif kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED:
@@ -485,8 +519,8 @@ def _clean_optional_string(value: str, field_name: str) -> str | None:
 
     Blank is how a prompt-only provider spells null in a key the schema forces it
     to emit, so it means "absent" rather than "invalid". A wrong *value* is still
-    a violation -- `value_type="duration"` is rejected downstream; only emptiness
-    is normalised here.
+    a violation -- `value_type="duration"` is rejected against the schema enum in
+    `_validate_schema_domains`; only emptiness is normalised here.
     """
     if not isinstance(value, str):
         raise ValueError(f"{field_name} must be a string")

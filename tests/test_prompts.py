@@ -58,6 +58,26 @@ def test_query_intent_prompt_states_the_reason_contract():
     assert "leave all three null" in text
 
 
+def test_query_intent_prompt_does_not_steer_threshold_questions_to_compare_typed_value():
+    """The prompt must not ask for an intent `query_planner.py` cannot plan.
+
+    `plan_query_candidates` has no `compare_typed_value` branch: it falls through
+    to "unsupported intent kind" and the question lands in review_required. A
+    prompt that told the model to answer threshold questions with
+    compare_typed_value therefore made following the prompt *deterministically*
+    fail. Until planner support lands, the prompt routes those to
+    unknown_or_unsupported, which at least carries a reason a human can read.
+    """
+    text = default_prompt_text("query-intent")
+
+    assert "worth more than 10 million" not in text
+    assert "compare a typed value against a threshold" not in text
+    assert (
+        "Do not classify a question as compare_typed_value: threshold comparisons "
+        "cannot be planned yet" in text
+    )
+
+
 def test_kb_prompt_override_wins(tmp_path):
     save_prompt_override(tmp_path, "extraction", "Use only supplied synthetic text.")
 

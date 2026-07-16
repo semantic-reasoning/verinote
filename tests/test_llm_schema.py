@@ -8,7 +8,12 @@ from verinote.llm.schema import (
     QUERY_INTENT_SCHEMA,
     parse_facts,
 )
-from verinote.pipeline.query_intent import IntentTarget, QueryIntentKind, parse_query_intent
+from verinote.pipeline.query_intent import (
+    QUERY_INTENT_COMPARISON_DOMAINS,
+    IntentTarget,
+    QueryIntentKind,
+    parse_query_intent,
+)
 
 
 def _intent_payload(**overrides):
@@ -321,6 +326,50 @@ def test_parse_query_intent_accepts_advisory_comparison_fields_on_every_kind(kin
 
     assert intent.kind == QueryIntentKind(kind)
     assert intent.operator == "="
+
+
+@pytest.mark.parametrize(
+    ("kind", "fields"),
+    [entry for entry in _REASON_TOLERANT_INTENTS if entry[0] != "compare_typed_value"],
+    ids=[kind for kind, _ in _REASON_TOLERANT_INTENTS if kind != "compare_typed_value"],
+)
+@pytest.mark.parametrize(
+    "invalid", [{"operator": "contains"}, {"value_type": "duration"}]
+)
+def test_parse_query_intent_rejects_off_schema_comparison_fields_on_every_kind(
+    kind, fields, invalid
+):
+    """Advisory does not mean unvalidated: a non-null value must still be on-schema.
+
+    Ignoring a *schema-legal* stray `operator: "="` is the #237 fix. Ignoring
+    `operator: "contains"` would be something else -- QUERY_INTENT_SCHEMA's enum
+    forbids it, so the validator would be accepting output the contract every
+    adapter is handed calls invalid, and a strict-mode provider could never send
+    it in the first place. The validator boundary must not sit wider than the
+    schema's.
+    """
+    payload = _intent_payload(kind=kind, **fields)
+    payload.update(invalid)
+
+    with pytest.raises(LLMError):
+        parse_query_intent(payload)
+
+
+def test_query_intent_comparison_domains_are_taken_from_the_schema():
+    """The accepted values are read off QUERY_INTENT_SCHEMA, not restated.
+
+    Two hand-maintained copies of an enum drift, and the drift is invisible until
+    a provider is rejected for on-schema output (or accepted for off-schema
+    output). Widening the schema enum must widen the validator with it.
+    """
+    assert QUERY_INTENT_COMPARISON_DOMAINS["operator"] == frozenset(
+        value for value in QUERY_INTENT_SCHEMA["properties"]["operator"]["enum"] if value is not None
+    )
+    assert QUERY_INTENT_COMPARISON_DOMAINS["value_type"] == frozenset(
+        value
+        for value in QUERY_INTENT_SCHEMA["properties"]["value_type"]["enum"]
+        if value is not None
+    )
 
 
 def test_parse_query_intent_still_requires_comparison_fields_for_compare():
