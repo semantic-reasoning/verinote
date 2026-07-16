@@ -69,7 +69,7 @@ def test_plain_extraction_and_structural_fact_report_end_to_end(
     assert extracted is not None
 
     review_body = unescape(client.get("/review").text)
-    assert 'class="subj term-string" aria-label=""person(\\"Ada\\")" (string)">"person(\\"Ada\\")"' in review_body
+    assert 'class="subj term-string">"person(\\"Ada\\")"' in review_body
     assert client.post(f"/facts/{extracted['id']}/accept").status_code == 200
 
     structural = store.add_fact(
@@ -79,7 +79,7 @@ def test_plain_extraction_and_structural_fact_report_end_to_end(
         status="needs_review",
     )
     structural_review = unescape(client.get("/review").text)
-    assert 'class="subj term-term" aria-label="person("Ada") (term)">person("Ada")' in structural_review
+    assert 'class="subj term-term">person("Ada")' in structural_review
     assert client.post(f"/facts/{structural}/accept").status_code == 200
     path = query_path(tmp_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -145,7 +145,7 @@ def test_explicit_structural_extraction_answers_compound_query(
     assert extracted is not None
 
     review_body = unescape(client.get("/review").text)
-    assert 'class="subj term-term" aria-label="person("Ada") (term)">person("Ada")' in review_body
+    assert 'class="subj term-term">person("Ada")' in review_body
     assert client.post(f"/facts/{extracted['id']}/accept").status_code == 200
 
     path = query_path(tmp_path)

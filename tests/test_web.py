@@ -372,9 +372,9 @@ def test_review_renders_structural_terms_from_duckdb_and_distinguishes_strings(t
 
     body = unescape(c.get("/review").text)
 
-    assert 'class="subj term-string" aria-label=""person(\\"Ada\\")" (string)">"person(\\"Ada\\")"' in body
-    assert 'class="subj term-term" aria-label="person("Ada") (term)">person("Ada")' in body
-    assert 'class="obj term-term" aria-label="role(person("Ada"), "PI") (term)">role(person("Ada"), "PI")' in body
+    assert 'class="subj term-string">"person(\\"Ada\\")"' in body
+    assert 'class="subj term-term">person("Ada")' in body
+    assert 'class="obj term-term">role(person("Ada"), "PI")' in body
 
 
 def test_review_rows_show_trust_signals_evidence_and_inspect_link(tmp_path):
@@ -1782,7 +1782,7 @@ def test_amend_endpoint_saves_term_looking_text_as_stringlit_in_string_mode(tmp_
         StringLit("has_role"),
         StringLit('role(person("Ada"), "PI")'),
     )
-    assert 'class="subj term-string" aria-label=""person(\\"Ada\\")" (string)">"person(\\"Ada\\")"' in unescape(r.text)
+    assert 'class="subj term-string">"person(\\"Ada\\")"' in unescape(r.text)
 
 
 def test_amend_endpoint_rejects_invalid_structural_terms_without_writing(tmp_path):
@@ -1956,9 +1956,9 @@ def test_provenance_renders_structural_terms_from_duckdb(tmp_path):
 
     body = unescape(c.get(f"/facts/{fid}/provenance").text)
 
-    assert 'class="subj term-term" aria-label="person("Ada") (term)">person("Ada")' in body
-    assert 'class="rel term-term" aria-label="has_role (term)">has_role' in body
-    assert 'class="obj term-term" aria-label="role(person("Ada"), "PI") (term)">role(person("Ada"), "PI")' in body
+    assert 'class="subj term-term">person("Ada")' in body
+    assert 'class="rel term-term">has_role' in body
+    assert 'class="obj term-term">role(person("Ada"), "PI")' in body
     assert "sources/x.txt" in body
 
 

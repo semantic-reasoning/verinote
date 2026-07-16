@@ -2,9 +2,14 @@
 <tr id="fact-{{ f['id'] }}" class="fact status-{{ f['status'] }}">
   <td class="triple">
     <div>
-      <span class="subj term-{{ f['subject_kind'] }}" aria-label="{{ f['subject_display'] }} ({{ f['subject_kind'] }})">{{ f['subject_display'] }}</span>
-      <span class="rel term-{{ f['relation_kind'] }}" aria-label="{{ f['relation_display'] }} ({{ f['relation_kind'] }})">{{ f['relation_display'] }}</span>
-      <span class="obj term-{{ f['object_kind'] }}" aria-label="{{ f['object_display'] }} ({{ f['object_kind'] }})">{{ f['object_display'] }}</span>
+      {# The kind rides in a visually-hidden text node, not an aria-label: these spans
+         are role=generic, which is name-prohibited, so a label on them may be ignored
+         and the kind never announced (#278). The separator is an &nbsp; inside the
+         hidden span -- an ordinary leading space there would collapse away, and a
+         space in the visible text would widen the .term-term chip. #}
+      <span class="subj term-{{ f['subject_kind'] }}">{{ f['subject_display'] }}<span class="visually-hidden">&nbsp;({{ f['subject_kind'] }})</span></span>
+      <span class="rel term-{{ f['relation_kind'] }}">{{ f['relation_display'] }}<span class="visually-hidden">&nbsp;({{ f['relation_kind'] }})</span></span>
+      <span class="obj term-{{ f['object_kind'] }}">{{ f['object_display'] }}<span class="visually-hidden">&nbsp;({{ f['object_kind'] }})</span></span>
     </div>
     <div class="row-meta">
       <span class="badge badge-{{ f['status'] }}">{{ f['status'] }}</span>
