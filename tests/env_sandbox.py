@@ -233,6 +233,47 @@ def _fingerprint_mode(fingerprint: str | None) -> int | None:
     return None
 
 
+def _fingerprint_mtime_ns(fingerprint: str | None) -> int | None:
+    """The `st_mtime_ns` recorded in a `_stat_fingerprint`, or None if unavailable."""
+    if fingerprint is None:
+        return None
+    for field in fingerprint.split():
+        if field.startswith("mtime_ns="):
+            try:
+                return int(field[len("mtime_ns=") :])
+            except ValueError:
+                return None
+    return None
+
+
+def _restore_mtime(path: Path, before: Entry, *, follow_symlinks: bool) -> None:
+    """Stamp `path`'s mtime back to the pre-run value. Best-effort, never fatal.
+
+    `Entry.fingerprint` carries `st_mtime_ns`, so `snapshot(path) == before` — the
+    exact comparison the canary makes — stays false after a restore that put the
+    bytes and mode back but left the mtime at "now" (the moment `os.replace` created
+    the staged file). Restoring it makes `leak_report`'s "restored to its pre-run
+    state" literally true rather than an over-claim. `atime` is deliberately *not* in
+    the fingerprint (a read moves it), so it is stamped to the same value: its exact
+    value cannot make the comparison equal or differ.
+
+    Like the mode, this is the incidental half of a restore — a `utime` that fails on
+    its own terms must not undo a restore that already wrote every byte. The one
+    platform that cannot stamp a symlink without following it is skipped rather than
+    made to move the target's mtime; there the pre-run-state claim narrows to bytes
+    and mode for a symlink, and nothing else.
+    """
+    mtime_ns = _fingerprint_mtime_ns(before.fingerprint)
+    if mtime_ns is None:
+        return
+    if not follow_symlinks and os.utime not in os.supports_follow_symlinks:
+        return
+    try:
+        os.utime(path, ns=(mtime_ns, mtime_ns), follow_symlinks=follow_symlinks)
+    except OSError:
+        pass
+
+
 def _remove(path: Path) -> None:
     """Delete whatever is at `path` — file, symlink, or directory — following nothing.
 
@@ -370,8 +411,18 @@ def restore(path: Path, before: Entry) -> bool:
     `test_a_failed_restore_over_a_leaked_directory_parks_the_bytes_it_could_not_write`
     pins it.
 
+    A restored `file` or `symlink` is stamped back to its pre-run `st_mtime_ns`
+    (`_restore_mtime`), because that is part of the very fingerprint the canary
+    compares: without it `snapshot(path) == before` is false the instant after a
+    successful restore, and "restored to its pre-run state" becomes a claim the
+    canary itself would flag. The bytes and the mode are put back first; the mtime
+    is the incidental last step and never fails the restore.
+
     Restoring `missing` is the one kind whose restoration *is* a delete — and
-    `missing` means an errno proved there was nothing here.
+    `missing` means an errno proved there was nothing here. `_remove` cannot raise,
+    so the delete is re-checked (`snapshot(path) == MISSING`) rather than assumed:
+    an unreadable parent can make it a no-op, and a leak reported as removed but
+    still on disk is exactly the lie the canary exists not to tell.
 
     A `directory`, an `unreadable_file` or an `unknown` entry is the one thing we
     cannot reconstruct: we only ever learned a fingerprint of it (or, for a failed
@@ -384,17 +435,25 @@ def restore(path: Path, before: Entry) -> bool:
         return False
     if before.kind == "missing":
         _remove(path)
-        return True
+        # `_remove` swallows its own failures — an unreadable parent, a vanished
+        # mount — so it never raises on the way to a restore. But that means a
+        # delete that did nothing (lstat blocked by a parent gone 0o000 mid-run)
+        # looks exactly like one that worked, and `missing` is the one kind whose
+        # restore *is* a delete. Re-check that the path is provably gone rather than
+        # reporting a pre-run state we never reached and leaving the leak on disk.
+        return snapshot(path) == MISSING
     path.parent.mkdir(parents=True, exist_ok=True)
     _clear_the_way(path)
     if before.kind == "symlink":
         assert before.target is not None
         target = before.target
         _stage(path, lambda fd, tmp: _write_symlink(fd, tmp, target))
+        _restore_mtime(path, before, follow_symlinks=False)
         return True
     assert before.data is not None
     data, mode = before.data, _fingerprint_mode(before.fingerprint)
     _stage(path, lambda fd, tmp: _write_file(fd, tmp, data, mode))
+    _restore_mtime(path, before, follow_symlinks=True)
     return True
 
 
