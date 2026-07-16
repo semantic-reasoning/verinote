@@ -1051,6 +1051,10 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             obj=object_value,
             note=note,
         )
+        # The rule may act on the amended fact itself, unlike a toggle demotion.
+        # An amend decides the fact's content, not its tier: correcting a term so
+        # it finally matches a second source's wording *is* corroboration
+        # arriving, and promoting on it is the recommender working as intended.
         return _row_after_decision(request, amended, fact_id)
 
     @app.get("/facts/{fact_id}/provenance", response_class=HTMLResponse)
