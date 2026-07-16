@@ -724,6 +724,34 @@ def test_legacy_sync_halts_mid_batch_when_policy_disappears(tmp_path):
     store.close()
 
 
+def test_sync_gives_a_clean_halt_diagnosis_instead_of_a_traceback(tmp_path, monkeypatch, capsys):
+    """A policy lost mid-`sync` exits with the halt message, not a raw traceback.
+
+    `sync` clears its start-of-command halt check, then the policy vanishes while
+    the batch runs (here, as the second source is extracted). The legacy
+    `sync_sources` gate raises `PolicyMissingError`; `cmd_sync` must catch it, print
+    the actionable recovery text, and exit rc=2 like every other halted-write
+    refusal — not leak a `RuntimeError` traceback the way it used to (#246).
+    """
+    _env(monkeypatch, tmp_path)
+    assert cli.main(["init"]) == 0
+    policy = tmp_path / POLICY_RELPATH
+    sources_dir = tmp_path / "sources"
+    sources_dir.mkdir(exist_ok=True)
+    (sources_dir / "a.txt").write_text("alpha", encoding="utf-8")
+    (sources_dir / "b.txt").write_text("beta", encoding="utf-8")
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: _PolicyDeletingClient(policy))
+
+    rc = cli.main(["sync"])
+
+    assert rc == 2  # the same code the start-of-command refusal uses
+    err = capsys.readouterr().err
+    assert "policy file" in err and "missing" in err
+    assert "policy reset --force" in err  # the recovery route is named
+    assert "Traceback" not in err  # a clean diagnosis, not a leaked stack trace
+    assert not policy.exists()  # the evidence of the loss is intact
+
+
 # --- #194: the three holes left in the halt --------------------------------
 # --- (a) the CLI's diagnostic surface never said the KB was halted ----------
 
