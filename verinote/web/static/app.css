@@ -7,6 +7,7 @@
   --ok-bg: rgba(63, 185, 80, .12);
   --warn-bg: rgba(210, 153, 34, .12);
   --danger-bg: rgba(240, 82, 109, .12);
+  --term-bg: rgba(139, 147, 165, .12);
   --btn-hover-filter: brightness(1.08);
   --btn-active-filter: brightness(.95);
 }
@@ -20,6 +21,7 @@
     --ok-bg: rgba(26, 127, 55, .10);
     --warn-bg: rgba(154, 103, 0, .10);
     --danger-bg: rgba(207, 34, 46, .08);
+    --term-bg: rgba(89, 99, 110, .10);
     --btn-hover-filter: brightness(.95);
     /* Must differ from the light hover filter, or clicking a hovered button would
        show no brightness feedback at all -- only the translateY nudge. */
@@ -53,6 +55,21 @@ th { color: var(--muted); font-weight: 600; font-size: .85rem; }
 .facts .triple .rel { color: var(--accent); margin: 0 .35rem; }
 .conf { font-variant-numeric: tabular-nums; color: var(--muted); }
 .src { color: var(--muted); font-size: .85rem; }
+
+/* Term-kind tagging on the triple spans (#222). fact_row.html and provenance.html
+   emit `.term-term` for a structural Datalog term and `.term-string` for a string
+   literal (the only two values term_input_kind returns). Unscoped on purpose: the
+   provenance page's <p class="triple"> lives outside .facts, so a `.facts`-scoped
+   rule would leave those spans untagged. A structural term reads as a monospace chip
+   with a faint `t` label; a string literal stays plain prose so the two never blur. */
+.term-term { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--term-bg); border-radius: 5px; padding: .02rem .32rem; }
+/* `/ ""` is the pseudo-element alt-text: the "t" is a decorative kind marker, so it
+   is given an empty accessible name and stays out of the VoiceOver/NVDA reading of
+   the term value (this issue is about not hiding a verdict, not adding stray letters). */
+.term-term::before { content: "t" / ""; color: var(--muted); font-size: .72em;
+  margin-right: .28rem; vertical-align: .08em; }
+.term-string { font-style: italic; color: var(--fg); }
 
 .badge { padding: .1rem .5rem; border-radius: 999px; font-size: .78rem; border: 1px solid var(--line); }
 .badge-candidate { color: var(--muted); }
