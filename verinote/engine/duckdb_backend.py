@@ -129,6 +129,10 @@ class DuckDBInferenceCache:
                 self._reset_derived_tables()
                 fingerprint = _relation_fingerprint(fact_rows)
                 if fingerprint != self._relation_fingerprint:
+                    # Invalidate before mutating: if the reload fails partway,
+                    # the stale fingerprint must not let a later run with the
+                    # same facts skip reloading a now-empty/corrupt relation.
+                    self._relation_fingerprint = None
                     con.execute('DELETE FROM "relation"')
                     _load_relation_facts(con, fact_rows)
                     self._relation_fingerprint = fingerprint
@@ -150,8 +154,10 @@ class DuckDBInferenceCache:
                     policy_dl=policy,
                     query_dl=query_dl,
                 )
-        except Exception as exc:
+        except DuckDBBackendError as exc:
             return _engine_error(str(exc))
+        except Exception as exc:
+            return _internal_engine_error(exc)
 
     def _reset_derived_tables(self) -> None:
         assert self._con is not None
@@ -181,6 +187,24 @@ def _engine_error(message: str, *, engine_available: bool = True) -> CheckReport
         text=f"backend: DuckDB\n\npolicy/engine error: {message}",
         findings=[f"ERROR engine error: {message}"],
         engine_available=engine_available,
+    )
+
+
+def _internal_engine_error(exc: Exception) -> CheckReport:
+    """Fail-closed report for a backend failure that is not a policy fault.
+
+    A `DuckDBBackendError` means the policy/query could not be compiled and is
+    surfaced via `_engine_error`. Any other exception is an internal engine
+    failure, so its message must not read as if the user's policy were at fault.
+    """
+    message = f"internal engine error: {exc}"
+    return CheckReport(
+        ok=False,
+        errors=1,
+        warnings=0,
+        text=f"backend: DuckDB\n\n{message}",
+        findings=[f"ERROR {message}"],
+        engine_available=True,
     )
 
 

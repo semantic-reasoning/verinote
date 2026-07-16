@@ -11,7 +11,7 @@ from verinote.llm.factory import get_client
 from verinote.prompts import save_prompt_override
 
 
-def _cfg(tmp_path, *, model: str = "") -> Config:
+def _cfg(tmp_path, *, model: str = "", llm_timeout_seconds: float = 600.0) -> Config:
     return Config(
         root=tmp_path,
         db_path=tmp_path / "kb.sqlite",
@@ -19,6 +19,7 @@ def _cfg(tmp_path, *, model: str = "") -> Config:
         model=model,
         api_key=None,
         base_url=None,
+        llm_timeout_seconds=llm_timeout_seconds,
     )
 
 
@@ -131,6 +132,31 @@ def test_claude_cli_uses_kb_prompt_overrides(tmp_path, monkeypatch):
     assert system.startswith("Custom extraction instructions.")
     assert "Schema contract:" in system
     assert '"facts"' in system
+
+
+# extract_facts drives the schema-constrained `_run` site; answer_question
+# drives the separate `_run_text` site. Both hardcoded timeout=180 before, so
+# each subprocess call site needs its own guard. 1234.0 differs from both the
+# 600.0 default and the old 180 hardcode.
+@pytest.mark.parametrize(
+    "invoke",
+    [
+        lambda a: a.extract_facts(source_text="x"),
+        lambda a: a.answer_question(question="q", context="c"),
+    ],
+)
+def test_claude_cli_applies_configured_timeout(tmp_path, monkeypatch, invoke):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(returncode=0, stdout='{"facts":[]}', stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    invoke(ClaudeCliAdapter(_cfg(tmp_path, llm_timeout_seconds=1234.0)))
+
+    assert calls[0]["timeout"] == 1234.0
 
 
 def test_claude_cli_prompt_validation_error_is_llm_error(tmp_path):

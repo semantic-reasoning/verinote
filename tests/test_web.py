@@ -1208,9 +1208,40 @@ def test_launching_the_ui_on_a_healthy_kb_still_resumes(tmp_path, monkeypatch, f
 
     def resumed():
         assert "is_a" in c.get("/review").text
+        assert _job_row(cfg, job_id)["status"] == "done"
 
     _wait_for(resumed)
     assert clients != []  # the worker really was started
+
+
+def test_resume_polls_to_done_not_just_to_fact_visibility(tmp_path, monkeypatch, fake_client):
+    """Widen the fact-visible -> job-done gap; the resume guard must still reach `done`.
+
+    Facts land in /review inside `_extract_chunk`; the job flips to `done` a step
+    later in `mark_chunk_done`. Delay that flip and a guard that stopped at fact
+    visibility would read `running`. This pins the guard to the real finish signal.
+    """
+    cfg, job_id, _ = _job_kb(tmp_path, with_policy=True)
+    monkeypatch.setattr(
+        webapp,
+        "get_client",
+        lambda cfg: fake_client([ExtractedFact("X", "is_a", "Y", 0.9)]),
+    )
+    real_mark = Store.mark_chunk_done
+
+    def slow_mark(self, chunk_id, *, candidates=0):
+        time.sleep(0.3)
+        return real_mark(self, chunk_id, candidates=candidates)
+
+    monkeypatch.setattr(Store, "mark_chunk_done", slow_mark)
+
+    c = TestClient(create_app(cfg))
+
+    def resumed():
+        assert "is_a" in c.get("/review").text
+        assert _job_row(cfg, job_id)["status"] == "done"
+
+    _wait_for(resumed, timeout=3.0)  # > the injected 0.3s delay
     assert _job_row(cfg, job_id)["status"] == "done"
 
 

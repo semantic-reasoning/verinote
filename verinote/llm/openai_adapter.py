@@ -22,14 +22,25 @@ class OpenAIAdapter:
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
 
-    def extract_facts(self, *, source_text: str, schema_hint: str = "") -> list[ExtractedFact]:
+    def _client(self):
+        """Build a client that honours the configured request timeout.
+
+        Every method routes through here so the timeout (and any future
+        client-wide setting) is applied at exactly one site. The base_url
+        also makes this work against any OpenAI-compatible endpoint.
+        """
         try:
             from openai import OpenAI
         except ImportError as exc:  # pragma: no cover - optional dep
             raise LLMError("openai SDK not installed; `pip install verinote[openai]`") from exc
+        return OpenAI(
+            api_key=self.cfg.api_key,
+            base_url=self.cfg.base_url,
+            timeout=self.cfg.llm_timeout_seconds,
+        )
 
-        # base_url makes this work against any OpenAI-compatible endpoint too.
-        client = OpenAI(api_key=self.cfg.api_key, base_url=self.cfg.base_url)
+    def extract_facts(self, *, source_text: str, schema_hint: str = "") -> list[ExtractedFact]:
+        client = self._client()
         try:
             resp = client.chat.completions.create(
                 model=self.cfg.model,
@@ -53,12 +64,7 @@ class OpenAIAdapter:
         return parse_facts(resp.choices[0].message.content or "")
 
     def translate_query(self, *, question: str, qid: int, schema_hint: str = "") -> str:
-        try:
-            from openai import OpenAI
-        except ImportError as exc:  # pragma: no cover - optional dep
-            raise LLMError("openai SDK not installed; `pip install verinote[openai]`") from exc
-
-        client = OpenAI(api_key=self.cfg.api_key, base_url=self.cfg.base_url)
+        client = self._client()
         try:
             resp = client.chat.completions.create(
                 model=self.cfg.model,
@@ -85,12 +91,7 @@ class OpenAIAdapter:
         return parse_query(resp.choices[0].message.content or "")
 
     def extract_query_intent(self, *, question: str, schema_hint: str = "") -> QueryIntent:
-        try:
-            from openai import OpenAI
-        except ImportError as exc:  # pragma: no cover - optional dep
-            raise LLMError("openai SDK not installed; `pip install verinote[openai]`") from exc
-
-        client = OpenAI(api_key=self.cfg.api_key, base_url=self.cfg.base_url)
+        client = self._client()
         try:
             resp = client.chat.completions.create(
                 model=self.cfg.model,
@@ -119,12 +120,7 @@ class OpenAIAdapter:
         return parse_query_intent(resp.choices[0].message.content or "")
 
     def answer_question(self, *, question: str, context: str) -> str:
-        try:
-            from openai import OpenAI
-        except ImportError as exc:  # pragma: no cover - optional dep
-            raise LLMError("openai SDK not installed; `pip install verinote[openai]`") from exc
-
-        client = OpenAI(api_key=self.cfg.api_key, base_url=self.cfg.base_url)
+        client = self._client()
         try:
             resp = client.chat.completions.create(
                 model=self.cfg.model,
