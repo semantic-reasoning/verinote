@@ -1,0 +1,9 @@
+{
+  "provider": "claudecli",
+  "model": "sonnet",
+  "prompt_id": "query-intent",
+  "captured_at": "2026-07-16",
+  "input": "Who is the CEO of Acme Robotics?",
+  "raw_response": "{\"kind\":\"lookup_object\",\"subject\":{\"kind\":\"entity\",\"value\":\"Acme Robotics\"},\"relation\":{\"kind\":\"relation\",\"value\":\"CEO\"},\"object\":null,\"relation_candidates\":[\"CEO\",\"chief executive officer\",\"leadership\"],\"operator\":null,\"value_type\":null,\"value\":null,\"reason\":\"The question asks for the object value (person) filling the CEO relation for the entity Acme Robotics.\"}",
+  "parse_error": "query intent output did not match schema: lookup_object does not accept reason"
+}

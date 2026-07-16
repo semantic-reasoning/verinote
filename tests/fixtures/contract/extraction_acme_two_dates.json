@@ -1,0 +1,9 @@
+{
+  "provider": "claudecli",
+  "model": "sonnet",
+  "prompt_id": "extraction",
+  "captured_at": "2026-07-16",
+  "input": "Acme Robotics is a company. Acme Robotics was founded in 2020 according to its incorporation filing. A later press release states that Acme Robotics was established in 2021.",
+  "raw_response": "{\"facts\":[{\"subject\":{\"kind\":\"string\",\"value\":\"Acme Robotics\"},\"relation\":{\"kind\":\"string\",\"value\":\"is_a\"},\"object\":{\"kind\":\"string\",\"value\":\"company\"},\"confidence\":1,\"note\":\"Acme Robotics is a company.\"},{\"subject\":{\"kind\":\"string\",\"value\":\"Acme Robotics\"},\"relation\":{\"kind\":\"string\",\"value\":\"founded\"},\"object\":{\"kind\":\"term\",\"value\":\"date(2020)\"},\"confidence\":0.9,\"note\":\"Acme Robotics was founded in 2020 according to its incorporation filing.\"},{\"subject\":{\"kind\":\"string\",\"value\":\"incorporation filing\"},\"relation\":{\"kind\":\"string\",\"value\":\"states_founding_year\"},\"object\":{\"kind\":\"term\",\"value\":\"date(2020)\"},\"confidence\":0.9,\"note\":\"founded in 2020 according to its incorporation filing\"},{\"subject\":{\"kind\":\"string\",\"value\":\"Acme Robotics\"},\"relation\":{\"kind\":\"string\",\"value\":\"established\"},\"object\":{\"kind\":\"term\",\"value\":\"date(2021)\"},\"confidence\":0.85,\"note\":\"A later press release states that Acme Robotics was established in 2021.\"},{\"subject\":{\"kind\":\"string\",\"value\":\"press release\"},\"relation\":{\"kind\":\"string\",\"value\":\"states_establishment_year\"},\"object\":{\"kind\":\"term\",\"value\":\"date(2021)\"},\"confidence\":0.85,\"note\":\"A later press release states that Acme Robotics was established in 2021.\"}]}",
+  "parse_error": null
+}
