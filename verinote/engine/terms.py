@@ -134,6 +134,25 @@ def render_term(term: Term) -> str:
     raise TypeError(f"not a term: {term!r}")
 
 
+def bare_label(term: Term) -> str:
+    """The unquoted, unescaped surface of a term: the value a source wrote.
+
+    This is the identity a report line is *about* — `StringLit("Org 2")` is the
+    label `Org 2`, not `"Org 2"`. It is deliberately not `render_term` (which
+    quotes and escapes for concrete syntax) and not the report rendering (which
+    escapes control characters so a value cannot forge a line): both of those
+    are for display, while this is for comparison, so escaping would make a
+    label stop equalling the KB's own copy of it.
+    """
+    if isinstance(term, StringLit):
+        return term.value
+    if isinstance(term, Atom):
+        return term.name
+    if isinstance(term, NumberLit):
+        return str(term.value)
+    return render_term(term)
+
+
 def canonical_term_key(term: Term) -> str:
     """Return a stable, type-tagged structural key for equality/storage work."""
     if isinstance(term, Var):

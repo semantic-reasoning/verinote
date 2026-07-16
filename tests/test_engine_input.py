@@ -14,10 +14,16 @@ from pathlib import Path
 
 import pytest
 
-from verinote.engine import DEFAULT_POLICY, compile_dl, run_check
+from verinote.engine import (
+    DEFAULT_POLICY,
+    CheckReport,
+    FindingRow,
+    compile_dl,
+    run_check,
+)
 from verinote.engine.duckdb_backend import run_check_duckdb
 from verinote.engine.terms import StringLit
-from verinote.pipeline.engine_input import engine_relation_rows
+from verinote.pipeline.engine_input import annotate_source_labels, engine_relation_rows
 from verinote.pipeline.query import query_path
 from verinote.pipeline.report_trace import report_trace
 from verinote.pipeline.verify import policy_path, verify
@@ -225,6 +231,92 @@ def test_findings_name_the_conflicting_facts_in_the_source_s_own_words(tmp_path)
         f"(설립 #{first}=2020, founded #{second}=2021)"
     ]
     assert rep.findings[0] in rep.text
+
+
+def test_findings_do_not_borrow_an_overlapping_subject_s_facts(tmp_path):
+    """A note must name the facts of *its* subject, not of every subject it contains.
+
+    `Org` is a substring of `Org 2`, so matching a finding line by containment
+    lets the `Org 2` conflict claim `Org`'s fact ids and values. Detection is
+    unaffected — this is the report lying about which facts collided, which is
+    the whole point of the note.
+    """
+    s = _store(tmp_path)
+    _write_policy(s, _FUNCTIONAL_POLICY.format(relation="established_on"))
+    one = s.add_fact("Org", "설립", "2020", status="accepted")
+    two = s.add_fact("Org", "founded", "2021", status="accepted")
+    three = s.add_fact("Org 2", "설립", "2030", status="accepted")
+    four = s.add_fact("Org 2", "founded", "2031", status="accepted")
+
+    rep = verify(s)
+
+    assert sorted(rep.findings) == sorted(
+        [
+            f"ERROR functional_conflict: Org established_on "
+            f"(설립 #{one}=2020, founded #{two}=2021)",
+            f"ERROR functional_conflict: Org 2 established_on "
+            f"(설립 #{three}=2030, founded #{four}=2031)",
+        ]
+    )
+
+
+def test_findings_do_not_borrow_an_overlapping_relation_s_facts(tmp_path):
+    """The same hole on the relation axis: `on` is a substring of `established_on`."""
+    s = _store(tmp_path)
+    _write_aliases(s, "- `설립` -> `established_on`\n- `켜짐` -> `on`\n")
+    _write_policy(
+        s,
+        ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
+        ".decl functional(rel: symbol)\n"
+        'functional("established_on").\n'
+        'functional("on").\n'
+        ".decl error_functional_conflict(subject: symbol, rel: symbol)\n"
+        "error_functional_conflict(S, R) :-\n"
+        "    relation(S, R, A), relation(S, R, B), functional(R), A != B.\n",
+    )
+    one = s.add_fact("Org", "설립", "2020", status="accepted")
+    two = s.add_fact("Org", "설립", "2021", status="accepted")
+    s.add_fact("Org", "켜짐", "yes", status="accepted")
+    s.add_fact("Org", "켜짐", "no", status="accepted")
+
+    rep = verify(s)
+
+    established = [f for f in rep.findings if "established_on" in f]
+    assert established == [
+        f"ERROR functional_conflict: Org established_on "
+        f"(설립 #{one}=2020, 설립 #{two}=2021)"
+    ]
+
+
+def test_a_finding_two_rows_rendered_alike_gets_no_note(tmp_path):
+    """When a line is genuinely ambiguous, say nothing rather than guess.
+
+    Values are joined bare, so subject `Org 2` + relation `x` and subject `Org`
+    + relation `2 x` render to the identical line. It is one finding with no one
+    row behind it; naming either row's facts would be a coin flip presented as
+    provenance.
+    """
+    s = _store(tmp_path)
+    s.add_fact("Org 2", "설립", "2020", status="accepted")
+    rows = engine_relation_rows(s)
+    line = "ERROR functional_conflict: Org 2 established_on"
+    report = CheckReport(
+        ok=False,
+        errors=1,
+        warnings=0,
+        text=line,
+        findings=[line],
+        # Both render to `line`. The first would match the `Org 2` fact above, so
+        # resolving the tie by arrival order would produce a note here.
+        finding_rows=[
+            FindingRow(line, ("Org 2", "established_on")),
+            FindingRow(line, ("Org", "2 established_on")),
+        ],
+    )
+
+    annotate_source_labels(report, rows)
+
+    assert report.findings == [line]
 
 
 def test_findings_for_unaliased_relations_are_left_alone(tmp_path):

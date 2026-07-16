@@ -21,7 +21,9 @@ Renaming a relation for the engine would otherwise make the report unreadable: a
 KB that only ever wrote `설립` would be told that its `established_on` is in
 conflict, in words nobody used, with no way to tell which facts collided. So
 every row carries the source's label under `relation_raw`, and
-`annotate_source_labels` puts those words back into the findings.
+`annotate_source_labels` puts those words back into the findings — matched to
+each finding's own structured row (`CheckReport.finding_rows`), since a finding
+line renders its values bare and cannot be parsed back into fields.
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ from __future__ import annotations
 from typing import Iterable, Mapping
 
 from verinote.engine import CheckReport
-from verinote.engine.terms import Atom, NumberLit, StringLit, render_term
+from verinote.engine.terms import Atom, StringLit, bare_label
 from verinote.pipeline.corroboration import (
     canonical_relation_from_normalized,
     normalized_relation_aliases,
@@ -111,9 +113,10 @@ def annotate_source_labels(
     if not renamed or not report.findings:
         return report
 
+    values_by_finding = _finding_values(report)
     annotated: list[str] = []
     for finding in report.findings:
-        note = _source_note(finding, renamed)
+        note = _source_note(values_by_finding.get(finding), renamed)
         if not note:
             annotated.append(finding)
             continue
@@ -124,17 +127,46 @@ def annotate_source_labels(
     return report
 
 
-def _source_note(finding: str, renamed: list[Mapping[str, object]]) -> str:
+def _finding_values(report: CheckReport) -> dict[str, tuple[str, ...]]:
+    """Map each finding line to the derived row behind it, when it has exactly one.
+
+    A line whose text two different rows produced is left out: it is one finding
+    about two rows, so no single row is *the* answer for it, and a note would
+    have to guess.
+    """
+    values: dict[str, tuple[str, ...]] = {}
+    ambiguous: set[str] = set()
+    for row in report.finding_rows:
+        if row.text in values and values[row.text] != row.values:
+            ambiguous.add(row.text)
+        values.setdefault(row.text, row.values)
+    return {text: vals for text, vals in values.items() if text not in ambiguous}
+
+
+def _source_note(
+    values: tuple[str, ...] | None, renamed: list[Mapping[str, object]]
+) -> str:
     """Render the aliased facts a finding is about, or '' when it is about none.
 
-    Subjects and relations can contain spaces, so a finding line is matched by
-    containment rather than by token. This only decides what a report *says*, so
-    an over-eager match adds a fact to a note; it can never add or hide a finding.
+    Matching is exact, against the finding's own row values -- never against its
+    text. The text joins values bare, so `Org 2 established_on` contains the
+    label `Org`, and a containment match hands `Org 2`'s conflict the fact ids
+    and values of `Org`'s: the report then misattributes provenance, which is
+    the one thing the note exists to get right. A finding with no row behind it
+    (`values` is None) gets no note.
+
+    A row's fields are compared as a set, not by position, because the position
+    of a subject or a relation is a property of the policy's rule, which is the
+    user's to write. Exactness is what this guarantees: a fact is named only if
+    the finding really is about that subject and that relation.
     """
+    if values is None:
+        return ""
+    fields = set(values)
     facts = [
         row
         for row in renamed
-        if _label(row["relation"]) in finding and _label(row["subject"]) in finding
+        if _label(row["relation"]) in fields and _label(row["subject"]) in fields
     ]
     if not facts:
         return ""
@@ -146,14 +178,8 @@ def _source_note(finding: str, renamed: list[Mapping[str, object]]) -> str:
 
 
 def _label(term: object) -> str:
-    """The bare surface of a term, the way report lines render values."""
-    if isinstance(term, StringLit):
-        return term.value
-    if isinstance(term, Atom):
-        return term.name
-    if isinstance(term, NumberLit):
-        return str(term.value)
-    return render_term(term)  # type: ignore[arg-type]
+    """The bare surface of a term, the way the engines record finding values."""
+    return bare_label(term)  # type: ignore[arg-type]
 
 
 def _replace_line(text: str, old: str, new: str) -> str:

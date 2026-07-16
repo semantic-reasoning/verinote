@@ -222,6 +222,26 @@ def dead_rule_warnings(policy_dl: str, present_relations: Iterable[str]) -> list
 NO_FINDINGS_TEXT = "no findings — knowledge base is consistent."
 
 
+@dataclass(frozen=True)
+class FindingRow:
+    """The derived tuple behind one finding line, before it became prose.
+
+    A finding line renders its values bare and space-joined, so the line cannot
+    be parsed back into fields: `Org 2 established_on` is equally "subject `Org
+    2`, relation `established_on`" and "subject `Org`, relation `2
+    established_on`". Anything that needs to know *which* subject or relation a
+    finding is about must read `values` and compare exactly; matching against
+    `text` is a guess that goes wrong precisely when labels overlap.
+
+    `values` holds the labels as the KB stores them (see `bare_label`), while
+    `text` is the escaped, display-side line — the two differ for any value
+    carrying a control character.
+    """
+
+    text: str
+    values: tuple[str, ...]
+
+
 @dataclass
 class CheckReport:
     ok: bool
@@ -231,6 +251,10 @@ class CheckReport:
     findings: list[str] = field(default_factory=list)
     answers: list[str] = field(default_factory=list)
     engine_available: bool = True
+    #: One entry per derived finding, carrying that finding's structured row.
+    #: Empty on reports no engine derived (a degraded run, a policy error): they
+    #: have findings but no tuple behind them.
+    finding_rows: list[FindingRow] = field(default_factory=list)
 
 
 def _load_engine():
@@ -321,6 +345,15 @@ def _validate_query_contract(program: Program) -> None:
                 )
 
 
+def _row_values(row: Iterable[object]) -> tuple[str, ...]:
+    """The derived tuple's values as labels, unescaped, for exact comparison.
+
+    pyrewire hands back symbols already, so this is `str` — the escaping in
+    `_render_row` is display-side and must not reach here (see `FindingRow`).
+    """
+    return tuple(str(value) for value in row)
+
+
 def _render_row(row: Iterable[object]) -> str:
     """Render one derived tuple into a report line body.
 
@@ -382,16 +415,20 @@ def run_check(
             findings=[f"engine error: {exc}"],
         )
 
-    errors: list[str] = []
-    warnings: list[str] = []
+    errors: list[tuple[str, tuple[str, ...]]] = []
+    warnings: list[tuple[str, tuple[str, ...]]] = []
     answers_by_q: dict[str, list[str]] = {}
     for name, row, mult in deltas:
         if mult <= 0:
             continue
         if name.startswith(_ERROR_PREFIX):
-            errors.append(f"{name[len(_ERROR_PREFIX) :]}: {_render_row(row)}")
+            errors.append(
+                (f"{name[len(_ERROR_PREFIX) :]}: {_render_row(row)}", _row_values(row))
+            )
         elif name.startswith(_WARN_PREFIX):
-            warnings.append(f"{name[len(_WARN_PREFIX) :]}: {_render_row(row)}")
+            warnings.append(
+                (f"{name[len(_WARN_PREFIX) :]}: {_render_row(row)}", _row_values(row))
+            )
         elif name.startswith(_ANSWER_PREFIX):
             qid = name[len(_ANSWER_PREFIX) :]
             answers_by_q.setdefault(qid, []).append(_render_row(row))
@@ -402,7 +439,12 @@ def run_check(
     answers = [
         f"q{qid}: {', '.join(sorted(vals))}" for qid, vals in sorted(answers_by_q.items())
     ]
-    findings = [f"ERROR {e}" for e in errors] + [f"WARN {w}" for w in warnings]
+    findings = [f"ERROR {e}" for e, _values in errors] + [
+        f"WARN {w}" for w, _values in warnings
+    ]
+    finding_rows = [FindingRow(f"ERROR {e}", values) for e, values in errors] + [
+        FindingRow(f"WARN {w}", values) for w, values in warnings
+    ]
     summary = f"errors: {len(errors)}  warnings: {len(warnings)}  facts: {len(facts)}"
     body = "\n".join(findings) if findings else NO_FINDINGS_TEXT
     if answers:
@@ -414,4 +456,5 @@ def run_check(
         answers=answers,
         text=f"{summary}\n\n{body}\n\n--- engine input ---\n{dl_text}",
         findings=findings,
+        finding_rows=finding_rows,
     )
