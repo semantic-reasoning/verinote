@@ -7,6 +7,7 @@ from verinote.config import (
     TESTABLE_PROVIDERS,
     active_root,
     app_config_path,
+    read_app_config,
     read_settings,
     save_active_root,
     save_settings,
@@ -137,3 +138,121 @@ def test_ui_config_is_none_without_selected_kb(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
     assert Config.load_for_ui() is None
+
+
+def _write_settings_raw(root, text):
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "config.json").write_text(text, encoding="utf-8")
+
+
+def test_read_settings_missing_file_is_silent(tmp_path, capsys):
+    assert read_settings(tmp_path) == {}
+    assert capsys.readouterr().err == ""
+
+
+def test_read_settings_broken_json_warns_with_path(tmp_path, capsys):
+    _write_settings_raw(tmp_path, "{bad")
+    assert read_settings(tmp_path) == {}
+    err = capsys.readouterr().err
+    assert str(tmp_path / "config.json") in err
+    assert "not valid JSON" in err
+    assert "provider and model" in err
+
+
+def test_read_settings_invalid_utf8_warns(tmp_path, capsys):
+    (tmp_path / "config.json").write_bytes(b"\xff\xfe\x00bad")
+    assert read_settings(tmp_path) == {}
+    err = capsys.readouterr().err
+    assert str(tmp_path / "config.json") in err
+    assert "could not decode" in err
+
+
+def test_read_settings_non_dict_json_warns(tmp_path, capsys):
+    _write_settings_raw(tmp_path, "[]")
+    assert read_settings(tmp_path) == {}
+    err = capsys.readouterr().err
+    assert str(tmp_path / "config.json") in err
+    assert "not a JSON object" in err
+
+
+def test_read_settings_oserror_warns(tmp_path, monkeypatch, capsys):
+    from pathlib import Path
+
+    (tmp_path / "config.json").write_text("{}", encoding="utf-8")
+
+    def _boom(self, *args, **kwargs):
+        raise OSError("boom")
+
+    monkeypatch.setattr(Path, "read_text", _boom)
+    assert read_settings(tmp_path) == {}
+    err = capsys.readouterr().err
+    assert "could not read" in err
+    assert str(tmp_path / "config.json") in err
+
+
+def test_read_app_config_missing_file_is_silent(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    assert read_app_config() == {}
+    assert capsys.readouterr().err == ""
+
+
+def test_read_app_config_broken_json_warns(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    path = app_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{bad", encoding="utf-8")
+    assert read_app_config() == {}
+    err = capsys.readouterr().err
+    assert str(path) in err
+    assert "not valid JSON" in err
+    assert "active KB" in err
+
+
+def test_read_app_config_invalid_utf8_warns(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    path = app_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\xff\xfe\x00bad")
+    assert read_app_config() == {}
+    err = capsys.readouterr().err
+    assert str(path) in err
+    assert "could not decode" in err
+
+
+def test_read_app_config_non_dict_json_warns(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    path = app_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("[]", encoding="utf-8")
+    assert read_app_config() == {}
+    err = capsys.readouterr().err
+    assert str(path) in err
+    assert "not a JSON object" in err
+
+
+def test_read_app_config_oserror_warns(tmp_path, monkeypatch, capsys):
+    from pathlib import Path
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    path = app_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{}", encoding="utf-8")
+
+    def _boom(self, *args, **kwargs):
+        raise OSError("boom")
+
+    monkeypatch.setattr(Path, "read_text", _boom)
+    assert read_app_config() == {}
+    err = capsys.readouterr().err
+    assert "could not read" in err
+    assert str(path) in err
