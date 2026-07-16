@@ -38,9 +38,12 @@ Three things set verinote apart:
    model never gets to decide what is true. When the engine cannot answer,
    verinote says so with `UNVERIFIED — source exploration` rather than faking it.
 3. **Local-first and vendor-neutral by design.** verinote is a local single-user
-   web app with swappable LLM adapters (Anthropic, Claude CLI, OpenAI, or local
-   Ollama). There is no cloud service and no lock-in — that is a design
-   principle, not a missing feature.
+   web app: your KB is a folder on your own machine, and there is no
+   verinote-hosted service to sign up for. The LLM adapters are swappable, and
+   which one you pick decides what leaves your machine — the Anthropic, OpenAI,
+   and Claude CLI adapters send document text and your questions to that
+   provider, while local Ollama keeps them on your own hardware. No lock-in
+   either way; that is a design principle, not a missing feature.
 
 When you ask a question, the answer arrives labeled with how much you can trust
 it: **`VERIFIED — engine`** when the Datalog engine proved it from facts you
@@ -70,13 +73,18 @@ locations, and `VERINOTE_ROOT` precedence rules are covered in
 Both retrieval-augmented generation and a wiki hand you text; verinote hands you a
 judgment about that text — and tells you who made it.
 
-| Axis | RAG | Wiki (± LLM plugins) | verinote |
+The comparison below is against the *common pattern*: a hosted RAG chat over
+retrieved chunks, and a free-text wiki. Self-hosted RAG closes the deployment
+gap, and citation-bound RAG closes part of the provenance gap — these axes
+describe where the usual defaults leave you, not a claim about every system.
+
+| Axis | RAG chat over chunks (typical) | Wiki (± LLM plugins) | verinote |
 |---|---|---|---|
 | The answer is | generated — the model reads retrieved text and writes a reply | whatever a human last wrote (a plugin summarizes on top) | a deterministic engine result (`VERIFIED`) or explicitly unverified excerpts (`UNVERIFIED`) |
-| What decides truth | the model | the last editor | a deterministic Datalog engine over facts you approved |
-| Provenance | retrieval cites chunks, but the answer text isn't bound to them | manual links that drift as pages are edited | every extracted fact is created with an evidence anchor, and missing evidence is itself flagged (`evidence_missing`); a verified answer echoes the fact and the sources that back it |
-| Stale facts | no lifecycle — an old chunk retrieves the same | silently overwritten or left contradictory | retired via `superseded`; single-valued conflicts are flagged, not overwritten |
-| Runs | usually a hosted vector DB / API | typically a shared page, self-hosted or hosted | a local single-user web app with swappable LLM adapters |
+| What decides truth | the model, unless the system is built to bind answers to citations | the last editor | a deterministic Datalog engine over facts you approved |
+| Provenance | retrieval cites chunks; without enforced citation binding, the answer text isn't tied to them | manual links that drift as pages are edited | every extracted fact is created with an evidence anchor, and missing evidence is itself flagged (`evidence_missing`); a verified answer echoes the fact and the sources that back it |
+| Stale facts | usually no lifecycle — an old chunk keeps retrieving until someone edits the corpus | silently overwritten or left contradictory | retired via `superseded`; single-valued conflicts are flagged, not overwritten |
+| Runs | commonly a hosted vector DB / API, though self-hosted stacks exist | typically a shared page, self-hosted or hosted | a local single-user web app with swappable LLM adapters |
 
 Source-language facts still answer canonical questions through relation aliases;
 that mapping and the rest of the query path are in
@@ -130,11 +138,16 @@ exact failure modes are in [docs/operations.md](docs/operations.md).
 
 ## Contributing
 
-- **Try it.** Point verinote at a real document set and walk it through the
-  [Quickstart](#quickstart).
+- **Try it.** Point verinote at your own document set and walk it through the
+  [Quickstart](#quickstart). Those documents stay in your KB folder; nothing
+  about them belongs in this repository.
 - **Tell us where it surprised you.** Open an issue on the
   [issue tracker](https://github.com/semantic-reasoning/verinote/issues) —
   especially where extraction or verification did something you did not expect.
+  **Keep real data out of it:** do not put real customer, company, person,
+  document, or source data in an issue, a PR, or the docs. If showing the bug
+  needs real input, reduce it to a synthetic minimal reproduction first. See
+  [Data Privacy](AGENTS.md#data-privacy).
 
 ## License
 
