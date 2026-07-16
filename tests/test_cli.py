@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: MPL-2.0
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -918,3 +919,74 @@ def test_coverage_rejects_a_corrupt_db_file_without_a_traceback(
 
     assert db.read_bytes() == b"not sqlite"  # file left untouched, no traceback
     assert "is not a verinote KB" in capsys.readouterr().err
+
+
+def _alien_facts_db(root: Path) -> Path:
+    """A readable SQLite file holding a `facts` table that is not verinote's.
+
+    The shape a half-finished script or an unrelated project leaves behind: the
+    table name matches, so a name-only probe calls it a KB, but none of the
+    columns the KB is made of are there.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    db = root / "kb.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE facts (id INTEGER PRIMARY KEY)")
+    conn.commit()
+    conn.close()
+    return db
+
+
+@pytest.mark.parametrize("command", ["status", "coverage"])
+def test_read_only_commands_refuse_a_foreign_facts_table_without_touching_it(
+    command, tmp_path, monkeypatch, capsys
+):
+    """A `facts` table alone is not a KB, and the file is not ours to migrate.
+
+    Probing for the *name* `facts` let this file through as healthy. `_store()`
+    then ran `init_schema()` on it, which failed on the mismatched table with a
+    raw `sqlite3.OperationalError` — but only after `CREATE TABLE IF NOT EXISTS`
+    had already added six tables to a file the user asked us to *read*. A
+    diagnosis that half-migrates whatever it is pointed at is worse than one that
+    refuses: the write is the damage, and the traceback merely reports it.
+    """
+    _isolated(monkeypatch, tmp_path)
+    root = tmp_path / "alien"
+    db = _alien_facts_db(root)
+    before = db.read_bytes()
+    monkeypatch.setenv("VERINOTE_ROOT", str(root))
+
+    assert cli.main([command]) == 1
+
+    assert db.read_bytes() == before  # not one byte of a file we were asked to read
+    assert sorted(p.name for p in root.iterdir()) == ["kb.sqlite"]  # no -wal, no policy
+    err = capsys.readouterr().err
+    assert "is not a verinote KB" in err
+    assert "Traceback" not in err
+
+
+def test_read_only_commands_still_accept_a_kb_predating_the_job_id_column(
+    tmp_path, monkeypatch, capsys
+):
+    """The other edge of the same check: it must not reject KBs migration exists to fix.
+
+    `facts.job_id` is added by `_ensure_schema_migrations()`, so a KB written
+    before that column existed is *valid* and self-heals on open. Demanding the
+    current schema's full column set here would refuse those KBs outright — which
+    is why the guard asks only for the columns every verinote KB has ever had.
+    """
+    _isolated(monkeypatch, tmp_path)
+    root = tmp_path / "legacy"
+    root.mkdir()
+    store = Store(root / "kb.sqlite")
+    store.init_schema()
+    store.close()
+    conn = sqlite3.connect(root / "kb.sqlite")
+    conn.execute("ALTER TABLE facts DROP COLUMN job_id")
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("VERINOTE_ROOT", str(root))
+
+    assert cli.main(["status"]) == 0
+
+    assert "KB:" in capsys.readouterr().out
