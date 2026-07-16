@@ -14,7 +14,7 @@
   :root {
     color-scheme: light;
     --bg: #f6f8fa; --panel: #ffffff; --line: #d0d7de; --fg: #1f2328;
-    --muted: #59636e; --accent: #0969da; --ok: #1a7f37; --warn: #9a6700; --danger: #cf222e;
+    --muted: #59636e; --accent: #0969da; --ok: #116329; --warn: #7d4e00; --danger: #a40e26;
     --on-accent: #ffffff;
     --editing-bg: rgba(9, 105, 218, .06);
     --ok-bg: rgba(26, 127, 55, .10);
