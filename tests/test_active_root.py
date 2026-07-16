@@ -87,14 +87,39 @@ def test_save_active_root_writes_when_target_differs(tmp_path, monkeypatch):
     _isolate(tmp_path, monkeypatch)
     kb_a = _make_kb(tmp_path, "kb_a")
     kb_b = _make_kb(tmp_path, "kb_b")
-
-    save_active_root(kb_a)
-    path = app_config_path()
-    os.utime(path, ns=(_SENTINEL_NS, _SENTINEL_NS))
+    path = _seed_app_config(kb_a)
 
     save_active_root(kb_b)
 
     assert read_app_config()["active_root"] == str(kb_b.resolve())
+    assert path.stat().st_mtime_ns != _SENTINEL_NS
+
+
+def test_save_active_root_keeps_unknown_keys_when_switching(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    kb_a = _make_kb(tmp_path, "kb_a")
+    kb_b = _make_kb(tmp_path, "kb_b")
+    _seed_app_config(kb_a)
+
+    save_active_root(kb_b)
+
+    # Switching KBs must not drop settings this version does not know about.
+    assert read_app_config()["extra"] == "keep"
+
+
+def test_save_active_root_writes_when_saved_value_is_empty(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    kb = _make_kb(tmp_path, "kb")
+    monkeypatch.chdir(kb)
+    path = _seed_app_config("")
+
+    # An empty saved value selects nothing, so it can never match a real KB --
+    # even the cwd, which is what an empty path would normalize to.
+    assert active_root() is None
+
+    save_active_root(kb)
+
+    assert read_app_config()["active_root"] == str(kb.resolve())
     assert path.stat().st_mtime_ns != _SENTINEL_NS
 
 

@@ -151,6 +151,18 @@ def _normalize_root(value: Path | str) -> Path:
     return Path(str(value)).expanduser().resolve()
 
 
+def _saved_root(config: dict) -> Path | None:
+    """Read the saved root the one way the app interprets it, or None.
+
+    An absent or empty value selects nothing. Reading it here keeps the reader
+    and the writer from disagreeing about what a stored value means.
+    """
+    saved = config.get("active_root")
+    if not saved:
+        return None
+    return _normalize_root(str(saved))
+
+
 def save_active_root(root: Path) -> None:
     """Persist the active KB root outside any individual KB.
 
@@ -161,14 +173,12 @@ def save_active_root(root: Path) -> None:
     holding a symlink or a relative path to the target counts as unchanged.
     """
     resolved = _normalize_root(root)
-    target = str(resolved)
     existing = read_app_config()
-    saved = existing.get("active_root")
-    if saved is not None and _normalize_root(str(saved)) == resolved:
+    if _saved_root(existing) == resolved:
         return
     path = app_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {**existing, "active_root": target}
+    payload = {**existing, "active_root": str(resolved)}
     path.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
@@ -180,11 +190,9 @@ def active_root() -> Path | None:
     if env_root:
         return Path(env_root).expanduser().resolve()
 
-    saved = read_app_config().get("active_root")
-    if saved:
-        root = _normalize_root(str(saved))
-        if (root / "kb.sqlite").is_file():
-            return root
+    saved = _saved_root(read_app_config())
+    if saved is not None and (saved / "kb.sqlite").is_file():
+        return saved
 
     default = _default_root()
     if (default / "kb.sqlite").is_file():
