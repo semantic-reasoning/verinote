@@ -161,12 +161,21 @@ def _seed(store: Store) -> None:
         store.add_fact(subj, rel, obj, status=status, confidence=conf, source_id=sid, note=note)
 
 
-# The two ways an existing `kb.sqlite` can fail to be a usable KB. They are not
+# The three ways an existing `kb.sqlite` can fail to be a usable KB. They are not
 # interchangeable: `init`'s whole job is to put a schema into a database that has
-# none, so only the *unreadable* one may stop it. `seed` must refuse both — it
-# fills an existing KB and never creates one.
+# none, so only the *unreadable* one may stop it. `seed` must refuse all three —
+# it fills an existing KB and never creates one.
 KB_UNREADABLE = "not a readable SQLite database"
 KB_NO_SCHEMA = "no `facts` table"
+KB_ALIEN_FACTS = "its `facts` table is not verinote's"
+
+# What a `facts` table must have for the file to be a verinote KB at all. This is
+# deliberately *not* the current schema's column set: `_ensure_schema_migrations()`
+# adds columns (`job_id`) to KBs written before they existed, so requiring today's
+# full set would refuse the very KBs migration exists to repair. These four are the
+# fact itself — every verinote KB has always had them, and no migration adds them —
+# so the check stays put as the schema grows around it.
+_KB_FACTS_IDENTITY_COLUMNS = frozenset({"subject", "relation", "object", "status"})
 
 
 def _kb_schema_problem(db_path: Path) -> str | None:
@@ -176,6 +185,12 @@ def _kb_schema_problem(db_path: Path) -> str | None:
     would let `seed` silently create a schema (it must only fill an existing KB)
     or blow up with a raw `sqlite3` traceback.
 
+    Matching the table *name* alone is not enough either. `init_schema()` is
+    `CREATE TABLE IF NOT EXISTS`, so it skips a `facts` table it did not write and
+    then fails on the mismatch — after having added the rest of the schema to a
+    file the caller only meant to read. Checking the columns keeps that write from
+    ever starting.
+
     The path is percent-encoded via `Path.as_uri()` before it goes into the
     SQLite URI. Interpolating it raw truncates any root holding a `?` or `#` at
     that character, which both misreports a healthy KB as schema-less *and*
@@ -184,15 +199,21 @@ def _kb_schema_problem(db_path: Path) -> str | None:
     try:
         uri = f"{db_path.resolve().as_uri()}?mode=ro"
         conn = sqlite3.connect(uri, uri=True)
+        conn.row_factory = sqlite3.Row
         try:
             row = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'facts'"
             ).fetchone()
+            if not row:
+                return KB_NO_SCHEMA
+            columns = {c["name"] for c in conn.execute("PRAGMA table_info(facts)")}
         finally:
             conn.close()
     except sqlite3.DatabaseError:
         return KB_UNREADABLE
-    return None if row else KB_NO_SCHEMA
+    if not _KB_FACTS_IDENTITY_COLUMNS <= columns:
+        return KB_ALIEN_FACTS
+    return None
 
 
 def _require_existing_kb(cfg: Config) -> int | None:
