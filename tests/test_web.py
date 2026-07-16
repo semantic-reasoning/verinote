@@ -1208,10 +1208,10 @@ def test_launching_the_ui_on_a_healthy_kb_still_resumes(tmp_path, monkeypatch, f
 
     def resumed():
         assert "is_a" in c.get("/review").text
+        assert _job_row(cfg, job_id)["status"] == "done"
 
     _wait_for(resumed)
     assert clients != []  # the worker really was started
-    assert _job_row(cfg, job_id)["status"] == "done"
 
 
 def test_worker_halt_does_not_mark_the_job_failed(tmp_path, monkeypatch, fake_client):
