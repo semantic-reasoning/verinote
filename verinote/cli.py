@@ -262,6 +262,7 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
         process_extraction_job,
         sync_sources,
     )
+    from verinote.pipeline.policy_state import PolicyMissingError
     from verinote.prompts import PromptError
 
     def extraction_schema_hint() -> str:
@@ -312,6 +313,15 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
         else:
             pairs = [(source.source_path, source.text) for source in sources]
             result = sync_sources(store, client, pairs, provider=cfg.provider, model=cfg.model)
+    except PolicyMissingError as exc:
+        # The policy vanished after the command's preflight — mid-job (the worker's
+        # write boundary re-raises this after rolling the job back to `pending`) or
+        # mid-batch (a later source in `sync_sources` hits the write gate). Either
+        # way, report the clean halt diagnosis instead of a traceback, and exit with
+        # the same rc=2 the start-of-command refusal (`_refuse_on_halted_kb`) uses.
+        print(f"error: {exc}", file=sys.stderr)
+        store.close()
+        return 2
     except LLMError as e:
         print(f"extraction failed: {e}", file=sys.stderr)
         store.close()
