@@ -162,6 +162,126 @@ def _declarations(body: str) -> dict[str, str]:
     return declarations
 
 
+# --- WCAG contrast (#218) --------------------------------------------------
+#
+# The banners paint status *text* over a translucent status *tint*, and the tint
+# is composited over --bg. So the effective contrast is not text-vs-tint-colour;
+# it is text-vs-(tint alpha-composited over --bg). The light palette shipped tints
+# and text at ratios of 4.03-4.44:1 -- under the 4.5:1 WCAG AA floor for the 15px
+# body text these banners carry. These checks resolve every colour (through var()
+# and rgba()), composite the alpha, and pin all three banners over 4.5:1 in *both*
+# palettes so neither can regress.
+
+WCAG_AA_NORMAL = 4.5
+
+# banner selector -> (tint token, text token), both resolved within one palette.
+BANNER_CONTRAST = {selector: (f"--{stem}-bg", f"--{stem}") for selector, stem in BANNERS.items()}
+
+TOKEN_DECL = re.compile(r"(--[A-Za-z0-9_-]+)\s*:\s*([^;{}]+?)\s*;")
+RGBA_CALL = re.compile(r"rgba?\(([^)]*)\)")
+COLOR_MIX = re.compile(r"color-mix\(\s*in\s+srgb\s*,(.*)\)\s*$", re.IGNORECASE | re.DOTALL)
+
+
+def _palette_tokens(block: str) -> dict[str, str]:
+    """Map `--token -> value` for one palette block, ignoring selectors and preambles.
+
+    Regex-scoped to `--name: value;` so the `@media (prefers-color-scheme: light)`
+    preamble and the `:root {` selector text contribute no entries.
+    """
+    return {m.group(1): m.group(2).strip() for m in TOKEN_DECL.finditer(block)}
+
+
+def _hex_rgb(value: str) -> tuple[float, float, float]:
+    h = value.lstrip("#")
+    if len(h) == 3:
+        h = "".join(c * 2 for c in h)
+    return tuple(float(int(h[i : i + 2], 16)) for i in (0, 2, 4))  # type: ignore[return-value]
+
+
+def _resolve_rgba(value: str, tokens: dict[str, str]) -> tuple[float, float, float, float]:
+    """Resolve a CSS colour to (r, g, b, alpha), following var(), rgba() and color-mix()."""
+    value = value.strip()
+    if value.startswith("var("):
+        name = value[value.index("(") + 1 : value.index(")")].strip()
+        assert name in tokens, f"var({name}) has no definition in this palette"
+        return _resolve_rgba(tokens[name], tokens)
+    if value.startswith("#"):
+        return (*_hex_rgb(value), 1.0)
+    mix = COLOR_MIX.match(value)
+    if mix:
+        return _resolve_color_mix(mix.group(1), tokens)
+    call = RGBA_CALL.match(value)
+    if call:
+        parts = [p.strip() for p in call.group(1).split(",")]
+        assert len(parts) in (3, 4), f"unparseable rgb()/rgba(): {value!r}"
+        r, g, b = (float(p) for p in parts[:3])
+        alpha = float(parts[3]) if len(parts) == 4 else 1.0
+        return (r, g, b, alpha)
+    raise AssertionError(f"cannot resolve colour {value!r}; extend _resolve_rgba for it")
+
+
+def _resolve_color_mix(args: str, tokens: dict[str, str]) -> tuple[float, float, float, float]:
+    """Resolve `color-mix(in srgb, C1 [p1%], C2 [p2%])` to (r, g, b, alpha).
+
+    Not exercised by the shipped stylesheet (the tints are rgba()); it exists so a
+    future tint expressed as color-mix is composited correctly rather than crashing.
+    """
+    halves = [h.strip() for h in args.split(",")]
+    assert len(halves) == 2, f"color-mix must name two colours: {args!r}"
+    colors: list[tuple[float, float, float, float]] = []
+    weights: list[float | None] = []
+    for half in halves:
+        pct = re.search(r"([0-9.]+)%\s*$", half)
+        weights.append(float(pct.group(1)) / 100 if pct else None)
+        colors.append(_resolve_rgba(half[: pct.start()].strip() if pct else half, tokens))
+    w0, w1 = weights
+    if w0 is None and w1 is None:
+        w0 = w1 = 0.5
+    elif w0 is None:
+        w0 = 1 - w1  # type: ignore[operator]
+    elif w1 is None:
+        w1 = 1 - w0
+    total = w0 + w1
+    w0, w1 = w0 / total, w1 / total
+    return tuple(colors[0][i] * w0 + colors[1][i] * w1 for i in range(4))  # type: ignore[return-value]
+
+
+def _composite(fg: tuple[float, float, float, float], bg: tuple[float, float, float]) -> tuple[float, float, float]:
+    """Alpha-composite `fg` (with alpha) over an opaque `bg`."""
+    a = fg[3]
+    return tuple(fg[i] * a + bg[i] * (1 - a) for i in range(3))  # type: ignore[return-value]
+
+
+def _relative_luminance(rgb: tuple[float, float, float]) -> float:
+    """WCAG 2.x relative luminance from 8-bit sRGB channels."""
+    chan = []
+    for c in rgb:
+        c /= 255.0
+        chan.append(c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4)
+    r, g, b = chan
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _contrast_ratio(fg: tuple[float, float, float], bg: tuple[float, float, float]) -> float:
+    lo, hi = sorted((_relative_luminance(fg), _relative_luminance(bg)))
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def _banner_contrast(palette_block: str, selector: str) -> tuple[float, tuple[float, float, float]]:
+    """Effective (text, composited-background) contrast for one banner in one palette."""
+    tokens = _palette_tokens(palette_block)
+    tint_token, text_token = BANNER_CONTRAST[selector]
+    base = _resolve_rgba(tokens["--bg"], tokens)[:3]
+    banner_bg = _composite(_resolve_rgba(tokens[tint_token], tokens), base)
+    text = _composite(_resolve_rgba(tokens[text_token], tokens), banner_bg)
+    return _contrast_ratio(text, banner_bg), banner_bg
+
+
+def _palette_blocks() -> dict[str, str]:
+    css = _read_css()
+    return {"dark": _dark_root_block(css), "light": _light_media_block(css)}
+
+
 def test_rule_bodies_are_not_empty_after_cutting_palettes() -> None:
     """Sanity guard: the cut must not swallow the stylesheet.
 
@@ -371,3 +491,36 @@ def test_stylesheet_cache_busters_agree() -> None:
     assert distinct.pop().startswith("?v="), (
         f"app.css is linked without a ?v= cache-buster: {queries}"
     )
+
+
+@pytest.mark.parametrize("palette", sorted(_palette_blocks()))
+@pytest.mark.parametrize("selector", sorted(BANNER_CONTRAST))
+def test_banner_text_meets_wcag_aa_contrast(palette: str, selector: str) -> None:
+    """Each banner's status text must clear 4.5:1 over its *composited* tint, per palette.
+
+    Contrast is computed against the tint alpha-composited over --bg, not the tint
+    colour named in the token -- that is the distinction the light palette failed
+    (text-vs-token read ~7:1 while text-vs-composited read 4.03-4.44:1).
+    """
+    ratio, bg = _banner_contrast(_palette_blocks()[palette], selector)
+    assert ratio >= WCAG_AA_NORMAL, (
+        f"{selector} in the {palette} palette: status text on its composited tint "
+        f"{tuple(round(c) for c in bg)} is {ratio:.3f}:1, under the WCAG AA {WCAG_AA_NORMAL}:1 "
+        "floor for 15px body text. Darken the text token or thin the tint."
+    )
+
+
+@pytest.mark.parametrize("palette", sorted(_palette_blocks()))
+def test_banner_tints_are_translucent_so_the_composite_matters(palette: str) -> None:
+    """Guard against a vacuous contrast test: the tints must actually carry alpha < 1.
+
+    If a tint were opaque, `_banner_contrast` would reduce to text-vs-token and the
+    whole point (compositing over --bg) would go untested while still passing.
+    """
+    tokens = _palette_tokens(_palette_blocks()[palette])
+    for selector, (tint_token, _text_token) in BANNER_CONTRAST.items():
+        alpha = _resolve_rgba(tokens[tint_token], tokens)[3]
+        assert alpha < 1.0, (
+            f"{selector}'s tint {tint_token} in the {palette} palette is opaque "
+            f"(alpha {alpha}); the contrast test would never exercise compositing."
+        )
