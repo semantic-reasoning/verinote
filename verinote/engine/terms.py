@@ -200,6 +200,32 @@ def escape_string_value(value: str) -> str:
     return "".join(out)
 
 
+def render_answer_value(term: Term) -> str:
+    """Render one answer value so a comma inside it cannot forge two answers.
+
+    This is the single owner of "how does one answer value reach a reader", so
+    the two places /report shows the same answer cannot drift apart. The engine
+    backend renders the "Query answers" line and `pipeline.report_trace` renders
+    the "Traceability" section; when each escaped in its own way the one answer
+    `Analytical Engine, Ltd` appeared escaped in one section and ambiguous in the
+    other (issue #167).
+
+    Multiple answers for a question are joined with `, `. A `StringLit` whose
+    surface text already contains a comma would then be indistinguishable from
+    two separate answers, so those surface commas are escaped as `\\,`.
+    Backslash is escaped first by `escape_string_value`, so `\\,` round-trips
+    unambiguously.
+
+    A `Compound` is rendered by `render_term`. Its `, ` separators are
+    structural, not surface text, and callers (and tests such as
+    `role(person("Ada"), "PI")`) depend on that rendering staying intact, so a
+    compound's commas are left alone.
+    """
+    if isinstance(term, StringLit):
+        return escape_string_value(term.value).replace(",", "\\,")
+    return render_term(term)
+
+
 def _unicode_escape(ch: str) -> str:
     code = ord(ch)
     if code <= 0xFFFF:
