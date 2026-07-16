@@ -143,10 +143,19 @@ def read_app_config() -> dict:
 
 
 def save_active_root(root: Path) -> None:
-    """Persist the active KB root outside any individual KB."""
+    """Persist the active KB root outside any individual KB.
+
+    Reselecting the KB that is already active is a no-op: rewriting the same
+    value would churn the machine-wide `app.json` (mtime, and any other
+    process watching it) for no change. Only an actual switch touches the file.
+    """
+    target = str(Path(root).expanduser().resolve())
+    existing = read_app_config()
+    if existing.get("active_root") == target:
+        return
     path = app_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"active_root": str(Path(root).expanduser().resolve())}
+    payload = {**existing, "active_root": target}
     path.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
