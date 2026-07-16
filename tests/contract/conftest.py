@@ -25,9 +25,10 @@ Two gates share it:
   the default suite, so they skip on the same unset gate.
 
 :func:`pytest_sessionfinish` closes the harness's worst failure mode: asking for
-contract tests and getting a green run that exercised nothing. Whenever ``-m``
-explicitly selects the ``contract`` marker and not one selected test executes,
-the session fails. The default suite passes no ``-m``, so it is untouched and
+contract tests and getting a green run that exercised nothing. Whenever a run
+asks for these guards — by naming the ``contract`` marker *or* a path in this
+directory (see :func:`arms_skip_guard`) — and not one selected test executes,
+the session fails. The default suite asks for neither, so it is untouched and
 the guards keep self-skipping there.
 
 Contract tests build their own :class:`~verinote.config.Config` directly rather
@@ -39,6 +40,7 @@ from __future__ import annotations
 
 import os
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -122,28 +124,72 @@ def _assert_provider_available(provider: str, cfg: Config) -> None:
 
 # --- "selected but never ran" session guard -------------------------------
 #
-# Tracked across the session and consulted in `pytest_sessionfinish`. Counting
-# happens only when `-m` names the contract marker, so a default `pytest tests`
-# run (no mark expression) never trips it.
+# Tracked across the session and consulted in `pytest_sessionfinish`.
 
-_selected_contract_items = 0
+CONTRACT_DIR = Path(__file__).resolve().parent
+
+_selected_contract_nodeids: set[str] = set()
 _executed_contract_ids: set[str] = set()
 
 
-def _explicitly_selects_contract(config: pytest.Config) -> bool:
-    markexpr = getattr(config.option, "markexpr", "") or ""
-    return "contract" in markexpr
+def _points_inside_contract_dir(arg: str, invocation_dir: Path) -> bool:
+    """Is this pytest positional argument a path in (or at) `tests/contract`?"""
+    path = Path(str(arg).split("::")[0])
+    if not path.is_absolute():
+        path = invocation_dir / path
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return False
+    return resolved == CONTRACT_DIR or CONTRACT_DIR in resolved.parents
 
 
+def arms_skip_guard(markexpr: str, args: list[str], invocation_dir: Path) -> bool:
+    """Did this invocation ask for the contract tests specifically?
+
+    Two spellings mean "I want the contract guards": naming the marker, and
+    naming a path in this directory. Both must arm the skipped-run guard —
+    `pytest tests/contract` is the spelling a developer reaches for first, and
+    left unarmed it reports "18 passed, 7 skipped" and exits 0 while not one
+    guard ran, which is the false green this harness exists to prevent.
+
+    A run that merely *collects* this directory on its way through the tree must
+    not arm: `pytest` (which `testpaths` expands to `tests`) and `pytest tests`
+    both pass `tests`, a parent of this directory, not a path inside it. So the
+    default suite keeps its self-skipping guards and stays green.
+
+    Kept a pure function of the three inputs so the arming boundary can be pinned
+    directly, without a pytest session per case.
+    """
+    if "contract" in (markexpr or ""):
+        return True
+    return any(_points_inside_contract_dir(arg, invocation_dir) for arg in args)
+
+
+@pytest.hookimpl(trylast=True)
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    global _selected_contract_items
-    if not _explicitly_selects_contract(config):
+    """Count the contract tests this run actually intends to execute.
+
+    `trylast` matters: it puts this after the mark plugin's deselection, so
+    `items` holds what survived `-m`. Running earlier would count guards that
+    `-m "not contract"` is about to deselect and then fail the session because
+    they never ran — a false red, the mirror of the bug this guard fixes.
+    """
+    markexpr = getattr(config.option, "markexpr", "") or ""
+    if not arms_skip_guard(markexpr, list(config.args), Path(config.invocation_params.dir)):
         return
-    _selected_contract_items = sum(1 for item in items if item.get_closest_marker("contract"))
+    _selected_contract_nodeids.update(
+        item.nodeid for item in items if item.get_closest_marker("contract")
+    )
 
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     """Remember every contract test that got past the gate.
+
+    Membership is by collected node id, not `report.keywords`: this directory is
+    a package *named* `contract`, so every test under it — the meta guards and
+    the ungated controls included — carries `contract` as a keyword. Keying on
+    that would let any passing neighbour stand in for a guard that never ran.
 
     Only the call phase counts as "ran": a skipped test still reports a *passing*
     teardown, so accepting any non-skipped phase would call every skip an
@@ -151,7 +197,7 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     a fixture that fails the gate on an unreachable provider (issue #234) is the
     harness working, not a silent no-op.
     """
-    if "contract" not in report.keywords:
+    if report.nodeid not in _selected_contract_nodeids:
         return
     if report.failed or (report.when == "call" and report.outcome != "skipped"):
         _executed_contract_ids.add(report.nodeid)
@@ -163,14 +209,20 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     Without this, `pytest -m contract` with the gate unset reports "N skipped"
     and exits 0 — the harness's worst outcome, a green run that guarded nothing.
     An already-failing session keeps its own status.
+
+    `--collect-only` is exempt: not running tests is what it was asked to do, so
+    failing it would be the mirror image of the bug above — a red run that had
+    nothing to report.
     """
-    if not _selected_contract_items or _executed_contract_ids:
+    if session.config.option.collectonly:
+        return
+    if not _selected_contract_nodeids or _executed_contract_ids:
         return
     if exitstatus != 0:
         return
     message = (
-        f"{_selected_contract_items} contract test(s) were selected but every one skipped: "
-        f"no guard executed. {GATE_HINT}"
+        f"{len(_selected_contract_nodeids)} contract test(s) were selected but every one "
+        f"skipped: no guard executed. {GATE_HINT}"
     )
     reporter = session.config.pluginmanager.get_plugin("terminalreporter")
     if reporter is not None:

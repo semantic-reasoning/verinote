@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from .conftest import API_KEY_VAR, BASE_URL_VAR, GATE_VAR, MODEL_VAR, _config_for
+from .conftest import API_KEY_VAR, BASE_URL_VAR, GATE_VAR, MODEL_VAR, _config_for, arms_skip_guard
 
 CONTRACT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = CONTRACT_DIR.parent.parent
@@ -42,9 +42,11 @@ CONTRACT_MODULES = (
     "test_sync_rc_contract.py",
 )
 # A module whose contract tests are *all* gated, so an ungated run executes none
-# of them. `test_a_run_that_never_asked_for_contract_tests_stays_green` needs
-# that property to mean anything; see its docstring.
+# of them.
 GATE_ONLY_MODULE = "test_sync_rc_contract.py"
+# A module holding both a contract guard and an ungated control, so a run that
+# deselects the guards still has something to execute.
+MIXED_MODULE = "test_query_intent_contract.py"
 
 
 def test_contract_marker_is_registered(pytestconfig):
@@ -130,33 +132,82 @@ def test_all_skipped_contract_selection_fails_the_session():
     )
 
 
-def test_a_run_that_never_asked_for_contract_tests_stays_green():
-    """The default suite spelling must be untouched: guards self-skip, exit 0.
+def test_targeting_the_contract_directory_fails_when_no_guard_runs():
+    """`pytest tests/contract` with no gate must not be a green no-op either.
 
-    Pins the other side of the session guard — it keys off an explicit
-    `-m contract`, so collecting a contract module with no mark expression (what
-    `pytest tests` does) must still pass with every guard skipped.
+    The marker is not the only way to ask for these guards: naming the directory
+    is the spelling a developer reaches for first. Left unarmed it reports
+    "18 passed, 7 skipped" and exits 0 — the passing meta tests make it look
+    especially green — while not one guard ran.
 
-    `GATE_ONLY_MODULE` is the subject because *all* its contract tests are gated,
-    so an ungated run executes none of them: exactly the state a wrongly-scoped
-    guard would turn red. A module holding a contract-marked test that runs
-    without a gate could not detect that. The skip count is asserted against the
-    module's own guards to keep that true if the module ever gains a test — and
-    this file is not the subject, since re-running it from inside itself would
-    recurse.
+    This module is deselected in the child run: it is what spawns the child, so
+    running it there would recurse. The directory stays the positional argument,
+    which is what arms the guard. (`--deselect`, not `--ignore`: the latter is
+    silently a no-op for a module inside a package like this one.)
     """
-    module = _load_module(CONTRACT_DIR / GATE_ONLY_MODULE)
-    guards = _contract_test_names(module)
-    result = _nested_pytest(f"tests/contract/{GATE_ONLY_MODULE}", "-rs")
-    assert result.stdout.count("SKIPPED") == len(guards), (
-        f"{GATE_ONLY_MODULE} no longer skips all {len(guards)} of its guards on an "
-        "ungated run, so this test can no longer detect a wrongly-scoped session "
-        f"guard; point it at a gate-only module.\n{result.stdout}\n{result.stderr}"
+    result = _nested_pytest("tests/contract", f"--deselect=tests/contract/{Path(__file__).name}")
+    assert result.returncode != 0, (
+        "`pytest tests/contract` with the gate unset exited 0 while every guard "
+        f"skipped — a false green.\n{result.stdout}\n{result.stderr}"
     )
+    assert "no guard executed" in result.stdout, (
+        f"the session failed without saying why:\n{result.stdout}\n{result.stderr}"
+    )
+
+
+def test_deselecting_the_guards_is_not_a_failure():
+    """`-m "not contract"` deselects the guards; that is not "they never ran".
+
+    The count must be taken after deselection, or a run that deliberately
+    excludes the guards fails because the guards it excluded did not execute.
+
+    `MIXED_MODULE` holds both a contract guard and an ungated control, so this
+    child run has something left to execute after the guards are deselected —
+    a module of guards only would exit 5 (nothing collected) and prove nothing.
+    """
+    result = _nested_pytest(f"tests/contract/{MIXED_MODULE}", "-m", "not contract")
     assert result.returncode == 0, (
-        "a run with no `-m contract` was turned red by the skipped-run guard; "
-        f"the default suite would break.\n{result.stdout}\n{result.stderr}"
+        "a run that deselected the contract tests was failed for not running "
+        f"them.\n{result.stdout}\n{result.stderr}"
     )
+
+
+def test_collect_only_is_not_failed_by_the_skip_guard():
+    """Collecting is not running, so an empty run is the correct outcome.
+
+    Failing `--collect-only` would be the mirror of the bug this guard fixes: a
+    red run that had nothing to report.
+    """
+    result = _nested_pytest("-m", "contract", "--collect-only")
+    assert result.returncode == 0, (
+        "`--collect-only` was failed by the skipped-run guard; it never intended "
+        f"to run anything.\n{result.stdout}\n{result.stderr}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("markexpr", "args", "arms", "why"),
+    [
+        ("contract", ["tests"], True, "the marker is named"),
+        ("not contract", ["tests"], True, "conservative: mark expr mentions it; selection count decides"),
+        ("", ["tests/contract"], True, "the directory is named"),
+        ("", [str(CONTRACT_DIR)], True, "the directory is named absolutely"),
+        ("", [f"tests/contract/{GATE_ONLY_MODULE}"], True, "a module inside it is named"),
+        ("", [f"tests/contract/{GATE_ONLY_MODULE}::test_x"], True, "a single test inside it is named"),
+        ("", ["tests"], False, "the default suite: a parent, not a path inside"),
+        ("", [], False, "bare pytest before testpaths expands"),
+        ("", ["tests/test_config.py"], False, "an unrelated module"),
+        ("", ["tests/contract_notes"], False, "a sibling whose name merely starts the same"),
+    ],
+)
+def test_skip_guard_arming_boundary(markexpr, args, arms, why):
+    """Pin exactly which invocations arm the skipped-run guard.
+
+    The default-suite rows are the load-bearing ones: `pytest` and `pytest tests`
+    both pass `tests`, a *parent* of this directory. If either armed, every
+    default run would go red on the self-skipping guards.
+    """
+    assert arms_skip_guard(markexpr, args, REPO_ROOT) is arms, why
 
 
 def test_gate_variables_survive_the_root_sandbox_strip():
