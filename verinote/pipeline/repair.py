@@ -28,7 +28,7 @@ def repair_questions(
     client: LLMClient,
     *,
     root: Path,
-    allow_direct_datalog_fallback: bool = False,
+    allow_direct_datalog_fallback: bool = True,
 ) -> list[dict]:
     """Attempt to repair every `review_required` question. Returns per-question
     results: {id, accepted, reason}. Only engine-validated proposals are applied.
