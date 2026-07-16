@@ -40,10 +40,14 @@ Three things set verinote apart:
 3. **Local-first and vendor-neutral by design.** verinote is a local single-user
    web app: your KB is a folder on your own machine, and there is no
    verinote-hosted service to sign up for. The LLM adapters are swappable, and
-   which one you pick decides what leaves your machine — the Anthropic, OpenAI,
-   and Claude CLI adapters send document text and your questions to that
-   provider, while local Ollama keeps them on your own hardware. No lock-in
-   either way; that is a design principle, not a missing feature.
+   which adapter *and endpoint* you configure decides what leaves your machine:
+   document text and your questions go to whatever endpoint that adapter is
+   pointed at. By default that is Anthropic's or OpenAI's API for those
+   adapters, and a server on your own machine for Ollama — but `VERINOTE_BASE_URL`
+   redirects any of the three, in either direction. The Claude CLI adapter is the
+   exception: it shells out to the `claude` binary, which always talks to
+   Anthropic. No lock-in either way; that is a design principle, not a missing
+   feature.
 
 When you ask a question, the answer arrives labeled with how much you can trust
 it: **`VERIFIED — engine`** when the Datalog engine proved it from facts you
@@ -81,7 +85,7 @@ describe where the usual defaults leave you, not a claim about every system.
 | Axis | RAG chat over chunks (typical) | Wiki (± LLM plugins) | verinote |
 |---|---|---|---|
 | The answer is | generated — the model reads retrieved text and writes a reply | whatever a human last wrote (a plugin summarizes on top) | a deterministic engine result (`VERIFIED`) or explicitly unverified excerpts (`UNVERIFIED`) |
-| What decides truth | the model, unless the system is built to bind answers to citations | the last editor | a deterministic Datalog engine over facts you approved |
+| What decides truth | the model — citation binding can hold it to retrieved text, but the model still writes the claim | the last editor | a deterministic Datalog engine over facts you approved |
 | Provenance | retrieval cites chunks; without enforced citation binding, the answer text isn't tied to them | manual links that drift as pages are edited | every extracted fact is created with an evidence anchor, and missing evidence is itself flagged (`evidence_missing`); a verified answer echoes the fact and the sources that back it |
 | Stale facts | usually no lifecycle — an old chunk keeps retrieving until someone edits the corpus | silently overwritten or left contradictory | retired via `superseded`; single-valued conflicts are flagged, not overwritten |
 | Runs | commonly a hosted vector DB / API, though self-hosted stacks exist | typically a shared page, self-hosted or hosted | a local single-user web app with swappable LLM adapters |
