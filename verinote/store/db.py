@@ -1254,20 +1254,30 @@ class Store:
         already confirmed/accepted needs no write, and a superseded row stays
         superseded: a human's rejection is terminal, so accept must never revive
         it. Non-moving calls return the current row without touching the audit
-        log, and the read and the write share `self._lock` so the decision can't
-        race a concurrent status change.
+        log.
+
+        The tier check before the write only settles the race for callers
+        sharing this instance's lock; a reject arriving on another connection to
+        the same KB lands in the window between the two. So, as in
+        `toggle_review` and `auto_accept_fact`, the write is conditional on the
+        status this call actually observed, and a lost race writes nothing.
         """
         with self._lock:
             before = self.get_fact(fact_id)
             if before is None:
                 return None
-            if before["status"] not in REVIEW_STATUSES:
+            observed = before["status"]
+            if observed not in REVIEW_STATUSES:
                 return before
-            self._conn.execute(
+            cursor = self._conn.execute(
                 "UPDATE facts SET status = 'confirmed', updated_at = datetime('now') "
-                "WHERE id = ?",
-                (fact_id,),
+                "WHERE id = ? AND status = ?",
+                (fact_id, observed),
             )
+            if cursor.rowcount == 0:
+                # Someone moved the fact between the read and the write; their
+                # decision stands, and this stale accept writes nothing.
+                return self.get_fact(fact_id)
             after = self.get_fact(fact_id)
             self._log(fact_id, "accepted", before, after)
             return after
