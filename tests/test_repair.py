@@ -289,6 +289,23 @@ def test_repair_persists_ambiguous_lifecycle_outcome(
     assert "ambiguous" not in (load_query(s) or "")
 
 
+def test_repair_default_runs_direct_datalog_fallback(
+    tmp_path, fake_client, intent_payload
+):
+    s, qid = _store_with_review_required(tmp_path)
+    s.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
+    client = fake_client(
+        intent=intent_payload("unknown_or_unsupported", reason="planner cannot map"),
+        query=lambda q, i: f'answer_q{i}(O) :- relation("Sample Person", "born_in", O).',
+    )
+    # No flag passed: exercises the production default wiring.
+    results = repair_questions(s, client, root=tmp_path)
+
+    assert results == [{"id": qid, "accepted": True, "reason": ""}]
+    assert s.questions()[0]["status"] == "translated"
+    assert f"answer_q{qid}" in (load_query(s) or "")
+
+
 def test_repair_persists_llm_error_reason(tmp_path, fake_client):
     s, qid = _store_with_review_required(tmp_path)
     original_query = s.questions()[0]["query_dl"]
