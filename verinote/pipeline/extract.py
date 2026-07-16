@@ -86,6 +86,14 @@ def extract_source(
         schema_hint=schema_hint,
         root=store.db_path.parent,
     )
+    # The write boundary, mirroring `_extract_chunk`'s per-chunk gate. The CLI's
+    # start-of-command check cannot see a policy deleted *after* the command began,
+    # and `sync_sources` loops one LLM call per source — so a policy that vanishes
+    # mid-batch must stop the *next* source's inserts. Placed after the LLM call and
+    # before the first DB write, this keeps every source extracted from a halt point
+    # out of a KB whose rules no longer exist, while sources written before the halt
+    # stay (the run row is left for inspection, as with `LLMError`).
+    assert_writable(store)
     aliases = _relation_aliases_or_error(store)
     rows = _candidate_rows(facts, analysis_text, relation_aliases=aliases)
 

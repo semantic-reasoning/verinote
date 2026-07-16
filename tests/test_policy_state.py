@@ -725,6 +725,37 @@ def test_extraction_worker_halts_when_policy_disappears_mid_job(tmp_path):
     store.close()
 
 
+def test_legacy_sync_halts_mid_batch_when_policy_disappears(tmp_path):
+    """The unregistered-source `sync_sources` path has the same write boundary.
+
+    `sync_sources` loops one LLM call per source under one run row; the CLI's
+    start-of-command check cannot see a policy deleted *after* the batch began. A
+    source reached *after* the loss must be refused at the write boundary in
+    `extract_source`, while sources written *before* it stay — the partial run row
+    is left for inspection, exactly as an `LLMError` mid-batch would leave it.
+    """
+    from verinote.pipeline.extract import sync_sources
+
+    store = _store(tmp_path)
+    path = _write_policy(tmp_path)
+    store.record_policy_marker(policy_sha256(path.read_text(encoding="utf-8")), origin="scaffold")
+
+    client = _PolicyDeletingClient(path)  # deletes the policy as source #2 is extracted
+    sources = [
+        ("sources/a.txt", "alpha"),
+        ("sources/b.txt", "beta"),
+        ("sources/c.txt", "gamma"),
+    ]
+    with pytest.raises(PolicyMissingError):
+        sync_sources(store, client, sources, provider="fake", model="m")
+
+    assert client.calls == 2  # source #2 was extracted but never persisted; #3 unreached
+    # only the source written before the halt survives
+    assert [s["path"] for s in store.sources()] == ["sources/a.txt"]
+    assert [f["subject"] for f in store.facts()] == ["alpha"]
+    store.close()
+
+
 # --- #194: the three holes left in the halt --------------------------------
 # --- (a) the CLI's diagnostic surface never said the KB was halted ----------
 
