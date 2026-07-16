@@ -9,64 +9,54 @@ or that the deterministic suite would otherwise paper over:
 | `test_query_intent_contract.py` | #237 | A role question the deterministic parser hands off must yield a valid intent through the live provider and the production parse boundary. |
 | `test_extraction_contract.py` | #238 | A founding-date fact the extractor produces must normalise into the policy's *functional* relation vocabulary, so a two-date contradiction is catchable. |
 | `test_sync_rc_contract.py` | #239 | `verinote sync` must not report success when every extraction chunk fails. |
-| `test_contract_meta.py` | — | Meta guards on the harness itself (marker registered, fixtures carry provenance, every module has a guard). Runs in the default suite. |
+| `test_contract_meta.py` | — | Meta guards on the harness itself (marker registered, fixtures carry provenance, every module has a guard, the skipped-run guard bites). Runs in the default suite. |
 
 ## Running
 
 The guards are **opt-in**. They self-skip unless you name a provider, so the
 default `pytest tests` stays green (only the meta tests and the deterministic
-positive controls run there):
+positive controls run there). Any invocation path works:
 
 ```bash
-# opt-in run — must target tests/contract (see "Why target tests/contract")
-VERINOTE_CONTRACT_PROVIDER=claudecli tests/contract/run.sh
-# or directly:
-VERINOTE_CONTRACT_PROVIDER=claudecli python -m pytest tests/contract -m contract -rs
+VN_CONTRACT_PROVIDER=claudecli tests/contract/run.sh
+# or, equivalently:
+VN_CONTRACT_PROVIDER=claudecli python -m pytest tests/contract -m contract -rs
+VN_CONTRACT_PROVIDER=claudecli python -m pytest -m contract -rs
 ```
 
-`run.sh` additionally **fails** if every collected contract test skipped — a
-fully-skipped opt-in run is a silent no-op, not a pass.
+Two rules keep a green run from meaning nothing:
 
-A gate that is *set* but points at an unreachable provider (e.g. the `claude`
-binary is missing) makes the tests **fail, not skip** (issue #234): a provider
-you asked to exercise but that cannot run is a real gap in coverage.
-
-### Why target `tests/contract`
-
-The root `tests/conftest.py` strips every `VERINOTE_*` variable at session start.
-`tests/contract/conftest.py` snapshots `VERINOTE_CONTRACT_PROVIDER` at import
-time to beat that strip — which works when this directory is on pytest's direct
-invocation path (`pytest tests/contract ...`). Discovering the whole tree from a
-parent (`pytest tests`) loads this conftest only mid-collection, after the strip,
-so the gate reads as unset and the guards skip. Always opt in by targeting
-`tests/contract`.
-
-This is a limitation of capturing the gate from a subdirectory conftest, not a
-design choice: the root strip cannot be seen from here in time. Revisit if the
-root `tests/conftest.py` sandbox is reworked to preserve `VERINOTE_CONTRACT_*`
-(or to snapshot the gate itself), at which point the gate could be honored from
-any invocation path and this caveat dropped.
+* **Selected but all skipped ⇒ the session fails.** Whenever `-m` names the
+  `contract` marker and not one selected test executes, `pytest_sessionfinish`
+  in `conftest.py` turns the run red. A fully-skipped opt-in run is a silent
+  no-op, not a pass. The default suite passes no `-m`, so it is unaffected.
+* **A set gate pointing at an unreachable provider ⇒ fail, not skip** (issue
+  #234). A provider you asked to exercise but that cannot run is a real gap.
 
 ## Providers
 
-`VERINOTE_CONTRACT_PROVIDER` selects the adapter. Optional companions:
+`VN_CONTRACT_PROVIDER` selects the adapter. Optional companions:
 
 | Variable | Used by | Default |
 |----------|---------|---------|
-| `VERINOTE_CONTRACT_PROVIDER` | gate + client | (unset ⇒ skip) |
-| `VERINOTE_CONTRACT_MODEL` | ollama / openai / anthropic | provider default |
-| `VERINOTE_CONTRACT_BASE_URL` | ollama | `http://localhost:11434` |
-| `VERINOTE_CONTRACT_API_KEY` | openai / anthropic | (unset ⇒ fail) |
+| `VN_CONTRACT_PROVIDER` | gate + client | (unset ⇒ skip) |
+| `VN_CONTRACT_MODEL` | all providers | provider default |
+| `VN_CONTRACT_BASE_URL` | ollama | `http://localhost:11434` |
+| `VN_CONTRACT_API_KEY` | openai / anthropic | (unset ⇒ fail) |
 
-These use a `VERINOTE_CONTRACT_*` namespace (not `VERINOTE_*`) precisely so the
-root sandbox does not strip them.
+The `VN_` prefix is load-bearing. The root `tests/conftest.py` sandbox drops
+every `VERINOTE_*` variable at session start so an ambient export cannot change
+what a test sees. A gate under that prefix would be erased before any fixture
+could read it — which is why these live outside it and are simply read at
+fixture time, from any invocation path, with no snapshot and no ordering race
+(issue #272).
 
 ```bash
-VERINOTE_CONTRACT_PROVIDER=ollama VERINOTE_CONTRACT_MODEL=qwen3:8b \
+VN_CONTRACT_PROVIDER=ollama VN_CONTRACT_MODEL=qwen3:8b \
     python -m pytest tests/contract -m contract -rs
 
-VERINOTE_CONTRACT_PROVIDER=openai VERINOTE_CONTRACT_MODEL=gpt-4o \
-    VERINOTE_CONTRACT_API_KEY=sk-... python -m pytest tests/contract -m contract -rs
+VN_CONTRACT_PROVIDER=openai VN_CONTRACT_MODEL=gpt-4o \
+    VN_CONTRACT_API_KEY=sk-... python -m pytest tests/contract -m contract -rs
 ```
 
 ## Replay fixtures
@@ -80,11 +70,11 @@ provider — while still gated opt-in so the default suite stays green.
 Recapture (needs a live provider) with:
 
 ```bash
-VERINOTE_CONTRACT_PROVIDER=claudecli PYTHONPATH=$PWD \
+VN_CONTRACT_PROVIDER=claudecli PYTHONPATH=$PWD \
     python tests/contract/capture.py
 ```
 
 `capture.py` currently drives `claudecli`. To capture from another provider,
 point its config at that adapter in `_live_config()` and supply the matching
-`VERINOTE_CONTRACT_*` credentials; the `#239` fixture is provider-free and is
+`VN_CONTRACT_*` credentials; the `#239` fixture is provider-free and is
 regenerated from the real pipeline on every run.

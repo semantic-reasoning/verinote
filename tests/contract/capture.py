@@ -3,7 +3,7 @@
 
 Run against a live provider, e.g. the local Claude Code CLI::
 
-    VERINOTE_CONTRACT_PROVIDER=claudecli PYTHONPATH=$PWD \
+    VN_CONTRACT_PROVIDER=claudecli PYTHONPATH=$PWD \
         .venv/bin/python tests/contract/capture.py
 
 For #237 and #238 this records the provider's *pre-parse* raw response — the
@@ -51,10 +51,10 @@ EXTRACTION_SOURCE = (
 
 
 def _live_config() -> Config:
-    provider = os.environ.get("VERINOTE_CONTRACT_PROVIDER")
+    provider = os.environ.get("VN_CONTRACT_PROVIDER")
     if provider not in (None, "claudecli"):
         raise SystemExit(
-            f"capture.py currently drives claudecli; got VERINOTE_CONTRACT_PROVIDER={provider!r}. "
+            f"capture.py currently drives claudecli; got VN_CONTRACT_PROVIDER={provider!r}. "
             "See README.md for other providers."
         )
     root = Path(tempfile.mkdtemp(prefix="verinote-capture-"))
