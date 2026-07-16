@@ -992,6 +992,28 @@ def test_read_only_commands_still_accept_a_kb_predating_the_job_id_column(
     assert "KB:" in capsys.readouterr().out
 
 
+def _alien_sources_db(root: Path) -> Path:
+    """A verinote `facts` table beside somebody else's `sources` table.
+
+    Passes the `facts` probe, then fails deeper in on `SELECT ... ORDER BY path`.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    db = root / "kb.sqlite"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE facts (
+            id INTEGER PRIMARY KEY, subject TEXT, relation TEXT,
+            object TEXT, status TEXT
+        );
+        CREATE TABLE sources (nonsense TEXT);
+        """
+    )
+    conn.commit()
+    conn.close()
+    return db
+
+
 @pytest.mark.parametrize("command", ["status", "coverage"])
 def test_read_only_commands_diagnose_an_alien_table_past_the_facts_probe(
     command, tmp_path, monkeypatch, capsys
@@ -1015,19 +1037,7 @@ def test_read_only_commands_diagnose_an_alien_table_past_the_facts_probe(
     """
     _isolated(monkeypatch, tmp_path)
     root = tmp_path / "alien-sources"
-    root.mkdir()
-    conn = sqlite3.connect(root / "kb.sqlite")
-    conn.executescript(
-        """
-        CREATE TABLE facts (
-            id INTEGER PRIMARY KEY, subject TEXT, relation TEXT,
-            object TEXT, status TEXT
-        );
-        CREATE TABLE sources (nonsense TEXT);
-        """
-    )
-    conn.commit()
-    conn.close()
+    _alien_sources_db(root)
     monkeypatch.setenv("VERINOTE_ROOT", str(root))
 
     assert cli.main([command]) == 1
@@ -1035,4 +1045,49 @@ def test_read_only_commands_diagnose_an_alien_table_past_the_facts_probe(
     out = capsys.readouterr()
     assert "Traceback" not in out.err
     assert "cannot read the KB" in out.err
-    assert "may already have been modified" in out.err  # the write is not hidden
+    # The message may not pin the blame on the KB: a `DatabaseError` here is just
+    # as likely to be verinote's own SQL bug, and telling *that* user to restore a
+    # healthy KB from backup is worse advice than the traceback this replaced.
+    assert "or a bug in verinote" in out.err
+    # So the one check the code cannot make is handed to the user, and the restore
+    # advice waits behind it rather than being an unconditional imperative.
+    assert "opens with another verinote version" in out.err
+    assert "do not restore anything" in out.err
+
+
+def test_the_two_refusal_paths_do_not_borrow_each_others_diagnosis(
+    tmp_path, monkeypatch, capsys
+):
+    """The probe refusal and the wrap diagnosis describe different worlds.
+
+    The probe refuses *before* anything opens the KB read-write, so that file is
+    provably untouched. The wrap only ever fires after `_store()` has already
+    written. Leaking the wrap's "restore from backup" into the probe's path would
+    tell a user to recover a file nothing has touched; leaking the probe's flat
+    "not a verinote KB" into the wrap's path would state a cause we cannot know.
+    """
+    _isolated(monkeypatch, tmp_path)
+    probe_root = tmp_path / "probe"
+    probe_db = _alien_facts_db(probe_root)
+    before = probe_db.read_bytes()
+    monkeypatch.setenv("VERINOTE_ROOT", str(probe_root))
+
+    assert cli.main(["status"]) == 1
+
+    probe_err = capsys.readouterr().err
+    assert probe_db.read_bytes() == before  # nothing to restore, and we say nothing
+    assert "is not a verinote KB" in probe_err
+    assert "backup" not in probe_err
+    assert "bug in verinote" not in probe_err
+
+    wrap_root = tmp_path / "wrap"
+    _alien_sources_db(wrap_root)
+    monkeypatch.setenv("VERINOTE_ROOT", str(wrap_root))
+
+    assert cli.main(["status"]) == 1
+
+    wrap_err = capsys.readouterr().err
+    assert "cannot read the KB" in wrap_err
+    assert "is not a verinote KB" not in wrap_err
+
+

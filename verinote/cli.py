@@ -512,12 +512,22 @@ def _unusable_kb(cfg: Config, exc: sqlite3.DatabaseError) -> int:
     even a healthy `status` writes — and until it lands, saying so is the honest
     move. A user who is told the file is untouched, when it is not, cannot make
     the one decision that matters here: whether to restore from backup.
+
+    The message must not blame the KB, though, because we cannot see from here
+    whether it earned the blame: a `DatabaseError` this deep is just as easily
+    verinote's own SQL bug, and then the KB is healthy and "restore from backup"
+    is worse counsel than the traceback this replaced — a traceback at least
+    points at *us*. We cannot make that call in code, but the user can (does this
+    KB open with another build?), so the restore advice waits behind that check
+    instead of leading with it.
     """
     print(
-        f"cannot read the KB at {cfg.root}: {exc}. It is a readable SQLite "
-        f"database but not one this version of verinote can read. The file may "
-        f"already have been modified by the attempt — if it is a real KB, restore "
-        f"it from backup rather than trusting what is there now.",
+        f"cannot read the KB at {cfg.root}: {exc}. This is either a KB this "
+        f"version of verinote cannot read, or a bug in verinote — we cannot tell "
+        f"which from here. If this KB opens with another verinote version, it is "
+        f"ours: please report it, and do not restore anything. Otherwise the file "
+        f"may already have been modified by the attempt, and a backup is worth "
+        f"more than what is there now.",
         file=sys.stderr,
     )
     return 1
