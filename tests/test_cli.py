@@ -990,3 +990,49 @@ def test_read_only_commands_still_accept_a_kb_predating_the_job_id_column(
     assert cli.main(["status"]) == 0
 
     assert "KB:" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("command", ["status", "coverage"])
+def test_read_only_commands_diagnose_an_alien_table_past_the_facts_probe(
+    command, tmp_path, monkeypatch, capsys
+):
+    """The probe checks `facts`; the KB is made of more tables than that.
+
+    A file whose `facts` table is verinote's but whose `sources` table is
+    somebody else's gets past the probe and blows up deeper in
+    (`no such column: path`). Tightening the probe to every table's columns
+    would be the schema-drift trap the probe is shaped to avoid, so instead the
+    read-only commands own their contract at the boundary: a diagnosis reports,
+    it does not traceback.
+
+    LIMITATION, on purpose: this closes the traceback, *not* the write. By the
+    time the error surfaces, `_store()` has already run `init_schema()` and the
+    file has grown. Only refusing to open the KB read-write would fix that, and
+    that is issue #291 — `_store()` writes unconditionally, so today even a
+    healthy `status` writes. This test deliberately asserts nothing about the
+    file's bytes: pinning today's damage would be a test of the bug, and it must
+    not go red when #291 stops the write.
+    """
+    _isolated(monkeypatch, tmp_path)
+    root = tmp_path / "alien-sources"
+    root.mkdir()
+    conn = sqlite3.connect(root / "kb.sqlite")
+    conn.executescript(
+        """
+        CREATE TABLE facts (
+            id INTEGER PRIMARY KEY, subject TEXT, relation TEXT,
+            object TEXT, status TEXT
+        );
+        CREATE TABLE sources (nonsense TEXT);
+        """
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("VERINOTE_ROOT", str(root))
+
+    assert cli.main([command]) == 1
+
+    out = capsys.readouterr()
+    assert "Traceback" not in out.err
+    assert "cannot read the KB" in out.err
+    assert "may already have been modified" in out.err  # the write is not hidden

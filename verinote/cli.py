@@ -497,12 +497,45 @@ def _print_policy_state(store: Store) -> bool:
     return False
 
 
-def cmd_coverage(cfg: Config, args: argparse.Namespace) -> int:
-    from verinote.engine import coverage
+def _unusable_kb(cfg: Config, exc: sqlite3.DatabaseError) -> int:
+    """Turn a SQLite error escaping a read-only command into a diagnosis.
 
+    `_require_existing_kb()` can only vouch for the `facts` table; the KB is made
+    of more tables than that, and checking every one of them against the current
+    schema is the drift trap that check is deliberately shaped to avoid. So a
+    file can still get past it and fail deeper in. Whatever it is, a command whose
+    whole job is to *report* on a KB must not answer with a traceback.
+
+    This closes the traceback, not the write: `_store()` has already run
+    `init_schema()` by the time most of these surface, so the file may have grown.
+    Issue #291 tracks the root of that — `_store()` writes unconditionally, so
+    even a healthy `status` writes — and until it lands, saying so is the honest
+    move. A user who is told the file is untouched, when it is not, cannot make
+    the one decision that matters here: whether to restore from backup.
+    """
+    print(
+        f"cannot read the KB at {cfg.root}: {exc}. It is a readable SQLite "
+        f"database but not one this version of verinote can read. The file may "
+        f"already have been modified by the attempt — if it is a real KB, restore "
+        f"it from backup rather than trusting what is there now.",
+        file=sys.stderr,
+    )
+    return 1
+
+
+def cmd_coverage(cfg: Config, args: argparse.Namespace) -> int:
     refusal = _require_existing_kb(cfg)
     if refusal is not None:
         return refusal
+    try:
+        return _coverage(cfg, args)
+    except sqlite3.DatabaseError as exc:
+        return _unusable_kb(cfg, exc)
+
+
+def _coverage(cfg: Config, args: argparse.Namespace) -> int:
+    from verinote.engine import coverage
+
     store = _store(cfg)
     cov = coverage(store, root=cfg.root)
     halted = _print_policy_state(store)
@@ -536,6 +569,13 @@ def cmd_status(cfg: Config, args: argparse.Namespace) -> int:
     refusal = _require_existing_kb(cfg)
     if refusal is not None:
         return refusal
+    try:
+        return _status(cfg)
+    except sqlite3.DatabaseError as exc:
+        return _unusable_kb(cfg, exc)
+
+
+def _status(cfg: Config) -> int:
     store = _store(cfg)
     counts = store.status_counts()
     print(f"KB: {cfg.root}")
