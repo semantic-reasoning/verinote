@@ -71,6 +71,20 @@ th { color: var(--muted); font-weight: 600; font-size: .85rem; }
   margin-right: .28rem; vertical-align: .08em; }
 .term-string { font-style: italic; color: var(--fg); }
 
+/* Screen-reader-only text (#278). The triple slots are plain <span>s, whose implicit
+   ARIA role is `generic` -- a name-prohibited role, so an `aria-label` on one may be
+   ignored outright and the term/string kind would never be announced. A real text
+   node always is, so the kind is written into the markup and hidden here instead.
+
+   Hidden from eyes only, deliberately: `display: none` and `visibility: hidden` also
+   prune the node from the accessibility tree, which would silently undo the whole
+   point. The clipped 1px box keeps the text rendered -- and therefore announced --
+   while taking no space. `position: absolute` keeps it out of flow so it cannot
+   nudge the .term-term chip; `white-space: nowrap` stops the text from wrapping into
+   a tall column inside that 1px box. */
+.visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px;
+  padding: 0; border: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
 .badge { padding: .1rem .5rem; border-radius: 999px; font-size: .78rem; border: 1px solid var(--line); }
 .badge-candidate { color: var(--muted); }
 .badge-needs_review { color: var(--warn); border-color: var(--warn); }

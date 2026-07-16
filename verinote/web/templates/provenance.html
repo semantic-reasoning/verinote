@@ -48,9 +48,12 @@
 <section class="trust-block">
   <h2>Fact identity</h2>
   <p class="triple">
-    <span class="subj term-{{ f['subject_kind'] }}" aria-label="{{ f['subject_display'] }} ({{ f['subject_kind'] }})">{{ f["subject_display"] }}</span>
-    <span class="rel term-{{ f['relation_kind'] }}" aria-label="{{ f['relation_display'] }} ({{ f['relation_kind'] }})">{{ f["relation_display"] }}</span>
-    <span class="obj term-{{ f['object_kind'] }}" aria-label="{{ f['object_display'] }} ({{ f['object_kind'] }})">{{ f["object_display"] }}</span>
+    {# Same visually-hidden kind text as the review row, and for the same reason:
+       these spans are role=generic, so an aria-label on them is name-prohibited and
+       may never be announced (#278). #}
+    <span class="subj term-{{ f['subject_kind'] }}">{{ f["subject_display"] }}<span class="visually-hidden">&nbsp;({{ f['subject_kind'] }})</span></span>
+    <span class="rel term-{{ f['relation_kind'] }}">{{ f["relation_display"] }}<span class="visually-hidden">&nbsp;({{ f['relation_kind'] }})</span></span>
+    <span class="obj term-{{ f['object_kind'] }}">{{ f["object_display"] }}<span class="visually-hidden">&nbsp;({{ f['object_kind'] }})</span></span>
     <span class="badge badge-{{ f['status'] }}">{{ f["status"] }}</span>
   </p>
   {% if trust.canonical_terms %}
