@@ -3,15 +3,17 @@
 
 These tests exist to catch failures that *only* show up against a real LLM
 provider (issues #237/#238) or that the deterministic suite would otherwise
-paper over (issue #239). The root `tests/conftest.py` autouse sandbox strips
-every ``VERINOTE_*`` variable before any test runs, so the opt-in signal cannot
-be read from the environment at test time. It is snapshotted at *this module's
-import time* (see ``_contract_provider`` below) — the earliest point available,
-before the sandbox's ``pytest_configure`` seals the environment on the direct
-opt-in path — with ``pytest_configure`` here as a fallback. Both are exposed
-through :func:`contract_provider`.
+paper over (issue #239).
 
-Two gates share that snapshot:
+The gate lives in a ``VN_CONTRACT_*`` namespace, deliberately *outside* the
+``VERINOTE_*`` prefix. The root ``tests/conftest.py`` sandbox drops every
+``VERINOTE_*`` variable at session start so an ambient export cannot change what
+a test sees; a gate under that prefix would be erased before any fixture could
+read it. Naming it out of the sandbox's way means the gate and its companion
+settings are simply readable at fixture time, from any invocation path, with no
+snapshot and no ordering race (issue #272).
+
+Two gates share it:
 
 * :func:`require_live_provider` gates the tests that actually call the provider.
   When the gate is unset it *skips* (opt-in). When the gate is set but the
@@ -22,9 +24,15 @@ Two gates share that snapshot:
   sync exit-code guard). They need no live provider but must still stay out of
   the default suite, so they skip on the same unset gate.
 
+:func:`pytest_sessionfinish` closes the harness's worst failure mode: asking for
+contract tests and getting a green run that exercised nothing. Whenever ``-m``
+explicitly selects the ``contract`` marker and not one selected test executes,
+the session fails. The default suite passes no ``-m``, so it is untouched and
+the guards keep self-skipping there.
+
 Contract tests build their own :class:`~verinote.config.Config` directly rather
 than through the environment, mirroring ``tests/test_ollama_adapter.py``'s
-``_cfg`` helper, so the stripped environment does not starve them of a provider.
+``_cfg`` helper, so the sandboxed environment does not starve them of a provider.
 """
 
 from __future__ import annotations
@@ -38,50 +46,27 @@ from verinote.config import Config
 from verinote.llm import get_client
 from verinote.llm.base import LLMClient
 
-GATE_VAR = "VERINOTE_CONTRACT_PROVIDER"
+GATE_VAR = "VN_CONTRACT_PROVIDER"
+MODEL_VAR = "VN_CONTRACT_MODEL"
+BASE_URL_VAR = "VN_CONTRACT_BASE_URL"
+API_KEY_VAR = "VN_CONTRACT_API_KEY"
 GATE_HINT = f"set {GATE_VAR}=claudecli|ollama|... to run (issue #241)"
-
-# Snapshot of the opt-in gate, taken as early as possible so the root sandbox's
-# ``VERINOTE_*`` strip cannot erase it before a test reads it.
-#
-# The strip lives in the root ``tests/conftest.py``'s ``pytest_configure`` and
-# deletes the variable from ``os.environ`` for the whole session. Capturing it
-# here at *conftest import time* wins the race: when this file is on the direct
-# invocation path (``pytest tests/contract ...`` — the documented opt-in run, and
-# what this repo's #241 validation uses), pytest imports every conftest at
-# startup *before* any ``pytest_configure`` fires, so the gate is still present.
-# ``pytest_configure`` below is a fallback for the same reason (it runs before
-# collection when this conftest is loaded early). Neither can see the gate if the
-# suite is discovered from a parent directory that loads this conftest only
-# mid-collection, after the strip — hence opt-in runs must target ``tests/contract``.
-_contract_provider: str | None = os.environ.get(GATE_VAR)
-
-
-def pytest_configure(config: pytest.Config) -> None:
-    """Fallback capture of the opt-in gate, in case import ran before this file.
-
-    Import-time capture above is the primary path; this only fills the snapshot
-    if it is still unset and the ambient variable survives to configure time.
-    """
-    global _contract_provider
-    if _contract_provider is None:
-        _contract_provider = os.environ.get(GATE_VAR)
 
 
 def contract_provider() -> str | None:
     """The opt-in provider id the run was launched with, or ``None`` if unset."""
-    return _contract_provider
+    return os.environ.get(GATE_VAR) or None
 
 
 def _config_for(provider: str, root) -> Config:
-    """Build a Config for `provider` without reading the (stripped) environment."""
+    """Build a Config for `provider` from the ``VN_CONTRACT_*`` settings."""
     root.mkdir(parents=True, exist_ok=True)
     if provider == "claudecli":
         return Config(
             root=root,
             db_path=root / "kb.sqlite",
             provider="claudecli",
-            model="sonnet",
+            model=os.environ.get(MODEL_VAR) or "sonnet",
             api_key=None,
             base_url=None,
             llm_timeout_seconds=180.0,
@@ -91,9 +76,9 @@ def _config_for(provider: str, root) -> Config:
             root=root,
             db_path=root / "kb.sqlite",
             provider="ollama",
-            model=os.environ.get("VERINOTE_CONTRACT_MODEL", "llama3.1"),
+            model=os.environ.get(MODEL_VAR) or "llama3.1",
             api_key=None,
-            base_url=os.environ.get("VERINOTE_CONTRACT_BASE_URL", "http://localhost:11434"),
+            base_url=os.environ.get(BASE_URL_VAR) or "http://localhost:11434",
             llm_timeout_seconds=180.0,
         )
     if provider in ("anthropic", "openai"):
@@ -101,9 +86,9 @@ def _config_for(provider: str, root) -> Config:
             root=root,
             db_path=root / "kb.sqlite",
             provider=provider,
-            model=os.environ.get("VERINOTE_CONTRACT_MODEL", "")
+            model=os.environ.get(MODEL_VAR)
             or ("claude-opus-4-8" if provider == "anthropic" else "gpt-4o"),
-            api_key=os.environ.get("VERINOTE_CONTRACT_API_KEY"),
+            api_key=os.environ.get(API_KEY_VAR) or None,
             base_url=None,
             llm_timeout_seconds=180.0,
         )
@@ -128,11 +113,70 @@ def _assert_provider_available(provider: str, cfg: Config) -> None:
         if not cfg.api_key:
             pytest.fail(
                 f"{GATE_VAR}={provider} but no API key was provided; "
-                "set VERINOTE_CONTRACT_API_KEY (a set gate must fail, not skip — issue #234)"
+                f"set {API_KEY_VAR} (a set gate must fail, not skip — issue #234)"
             )
         return
     # ollama and any other reachable-over-network provider: leave reachability to
     # the first live call, which raises LLMError the guards already assert on.
+
+
+# --- "selected but never ran" session guard -------------------------------
+#
+# Tracked across the session and consulted in `pytest_sessionfinish`. Counting
+# happens only when `-m` names the contract marker, so a default `pytest tests`
+# run (no mark expression) never trips it.
+
+_selected_contract_items = 0
+_executed_contract_ids: set[str] = set()
+
+
+def _explicitly_selects_contract(config: pytest.Config) -> bool:
+    markexpr = getattr(config.option, "markexpr", "") or ""
+    return "contract" in markexpr
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    global _selected_contract_items
+    if not _explicitly_selects_contract(config):
+        return
+    _selected_contract_items = sum(1 for item in items if item.get_closest_marker("contract"))
+
+
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    """Remember every contract test that got past the gate.
+
+    Only the call phase counts as "ran": a skipped test still reports a *passing*
+    teardown, so accepting any non-skipped phase would call every skip an
+    execution and defeat the guard below. A setup/teardown *failure* counts too —
+    a fixture that fails the gate on an unreachable provider (issue #234) is the
+    harness working, not a silent no-op.
+    """
+    if "contract" not in report.keywords:
+        return
+    if report.failed or (report.when == "call" and report.outcome != "skipped"):
+        _executed_contract_ids.add(report.nodeid)
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Fail a run that asked for contract tests and executed none of them.
+
+    Without this, `pytest -m contract` with the gate unset reports "N skipped"
+    and exits 0 — the harness's worst outcome, a green run that guarded nothing.
+    An already-failing session keeps its own status.
+    """
+    if not _selected_contract_items or _executed_contract_ids:
+        return
+    if exitstatus != 0:
+        return
+    message = (
+        f"{_selected_contract_items} contract test(s) were selected but every one skipped: "
+        f"no guard executed. {GATE_HINT}"
+    )
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is not None:
+        reporter.write_sep("=", "contract gate", red=True, bold=True)
+        reporter.write_line(message)
+    session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
 @pytest.fixture
