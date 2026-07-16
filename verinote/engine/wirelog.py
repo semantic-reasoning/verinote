@@ -326,9 +326,21 @@ def _render_row(row: Iterable[object]) -> str:
 
     Values go through `escape_string_value` for the same reason the DuckDB
     backend does it: an unescaped line break inside a value would let that value
-    forge extra `ERROR `/`WARN ` lines in the report body. Escaping has exactly
-    one owner (`verinote.engine.terms`), so this legacy path cannot drift away
-    from the production one.
+    forge extra `ERROR `/`WARN ` lines in the report body. *Control-character*
+    escaping has exactly one owner (`verinote.engine.terms`), so on that question
+    this legacy path cannot drift away from the production one.
+
+    The shared ownership stops there, and answers on this path really do drift.
+    The production answer path escapes a value's surface commas via
+    `terms.render_answer_value`, so one value cannot forge two answers across the
+    `, ` join that `run_check` uses below (#167); this path does not, so a legacy
+    answer `q1: A, B` stays ambiguous between one value and two.
+
+    Sharing that renderer is not a swap: it takes a `Term`, while pyrewire hands
+    this path bare values that are `str()`-ed here, so sharing would mean
+    asserting that every legacy value is a string literal. That is a rendering
+    change on a path CI cannot execute at all (pyrewire is absent there, #234),
+    so it is left alone deliberately rather than changed blind.
     """
     return " ".join(escape_string_value(str(value)) for value in row)
 
