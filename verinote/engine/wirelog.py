@@ -29,7 +29,7 @@ from verinote.engine.datalog import (
     Program,
     parse_and_validate_program,
 )
-from verinote.engine.terms import escape_string_value
+from verinote.engine.terms import StringLit, TermParseError, escape_string_value
 
 # Prefixes that mark a derived relation as a verinote finding.
 _ERROR_PREFIX = "error_"
@@ -148,6 +148,58 @@ def _parse_relation_facts(dl_text: str) -> list[tuple[str, str, str]]:
     return facts
 
 
+def dead_rule_warnings(policy_dl: str, present_relations: Iterable[str]) -> list[str]:
+    """Warn about relation names a policy pins to string literals that no fact uses.
+
+    A policy reaches the fact vocabulary through columns named ``rel`` — the
+    ``relation(subject, rel, object)`` base relation, plus helper decls such as
+    ``functional(rel)``. When such a column carries a string literal that names a
+    relation, and no compiled engine fact uses that relation, the rule depending
+    on it can never fire: a dead rule. These are non-blocking notes, never a gate.
+
+    An empty fact set (no engine input at all) yields ``[]`` so a genuinely empty
+    knowledge base is never flagged. A malformed policy yields ``[]`` too — the
+    parse failure is already surfaced as an engine error, so dead-rule detection
+    must not invent a second failure mode. Only ``policy_dl`` is inspected; a
+    caller's query text is a user question, never a dead rule.
+    """
+    present = set(present_relations)
+    if not present:
+        return []
+    try:
+        program = parse_and_validate_program(policy_dl)
+    except (DatalogParseError, DatalogValidationError, TermParseError):
+        return []
+
+    columns_by_pred = {
+        decl.name: [col.name for col in decl.columns] for decl in program.declarations
+    }
+    referenced: set[tuple[str, str]] = set()
+
+    def scan(atom: AtomExpr) -> None:
+        columns = columns_by_pred.get(atom.predicate)
+        if columns is None:
+            return
+        for index, arg in enumerate(atom.args):
+            if index < len(columns) and columns[index] == "rel" and isinstance(arg, StringLit):
+                referenced.add((atom.predicate, arg.value))
+
+    for fact in program.facts:
+        scan(fact.atom)
+    for rule in program.rules:
+        scan(rule.head)
+        for item in rule.body:
+            if isinstance(item, AtomExpr):
+                scan(item)
+
+    return sorted(
+        f'dead_rule: policy declares {predicate}("{escape_string_value(value)}") '
+        "but no engine fact uses that relation"
+        for predicate, value in referenced
+        if value not in present
+    )
+
+
 _ANSWER_PREFIX = "answer_q"
 
 # The engine's "clean bill of health" body. Exported because it is a claim about
@@ -180,17 +232,21 @@ def _load_engine():
     return pyrewire
 
 
-def _degraded_report(dl_text: str) -> CheckReport:
+def _degraded_report(dl_text: str, warnings: list[str] | None = None) -> CheckReport:
+    warnings = warnings or []
+    findings = [f"WARN {w}" for w in warnings]
     n = dl_text.count("relation(")
+    body = ("\n".join(findings) + "\n\n") if findings else ""
     return CheckReport(
         ok=True,
         errors=0,
-        warnings=0,
+        warnings=len(warnings),
         engine_available=False,
+        findings=findings,
         text=(
             "legacy wirelog compatibility engine (pyrewire) not installed — "
             "showing compiled input only.\n"
-            f"compiled facts: {n}\n\n{dl_text}"
+            f"compiled facts: {n}\n\n{body}{dl_text}"
         ),
     )
 
@@ -276,13 +332,16 @@ def run_check(
     pyrewire is absent we still return a legacy compatibility report flagged
     `engine_available=False`.
     """
+    policy = policy_dl if policy_dl is not None else DEFAULT_POLICY
+    facts = _parse_relation_facts(dl_text)
+    present = {rel for _, rel, _ in facts}
+    dead = dead_rule_warnings(policy, present)
+
     pyrewire = _load_engine()
     if pyrewire is None:
-        return _degraded_report(dl_text)
+        return _degraded_report(dl_text, dead)
 
-    policy = policy_dl if policy_dl is not None else DEFAULT_POLICY
     program = policy + ("\n" + query_dl if query_dl else "")
-    facts = _parse_relation_facts(dl_text)
 
     try:
         with pyrewire.EasySession(program) as session:
@@ -312,6 +371,7 @@ def run_check(
             qid = name[len(_ANSWER_PREFIX) :]
             answers_by_q.setdefault(qid, []).append(_render_row(row))
 
+    warnings.extend(dead)
     errors.sort()
     warnings.sort()
     answers = [

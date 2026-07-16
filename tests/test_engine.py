@@ -55,7 +55,9 @@ def test_run_check_consistent_is_ok():
     rep = run_check(_CONSISTENT)
     assert rep.errors == 0
     assert rep.ok is True
-    assert rep.findings == []
+    # A consistent KB gates clean: no ERROR findings. (Non-blocking dead_rule
+    # WARN notes for the default policy's unused functional relations may appear.)
+    assert not any(line.startswith("ERROR") for line in rep.findings)
 
 
 def test_run_check_empty_kb_is_ok():
