@@ -112,16 +112,29 @@ def read_app_config() -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _normalize_root(value: Path | str) -> Path:
+    """Resolve a root the one way the app interprets it.
+
+    Both the reader and the writer must normalize identically; if they drift,
+    a saved symlink or relative path stops matching the root it resolves to.
+    """
+    return Path(str(value)).expanduser().resolve()
+
+
 def save_active_root(root: Path) -> None:
     """Persist the active KB root outside any individual KB.
 
     Reselecting the KB that is already active is a no-op: rewriting the same
     value would churn the machine-wide `app.json` (mtime, and any other
     process watching it) for no change. Only an actual switch touches the file.
+    The saved value is compared as `active_root()` resolves it, so a config
+    holding a symlink or a relative path to the target counts as unchanged.
     """
-    target = str(Path(root).expanduser().resolve())
+    resolved = _normalize_root(root)
+    target = str(resolved)
     existing = read_app_config()
-    if existing.get("active_root") == target:
+    saved = existing.get("active_root")
+    if saved is not None and _normalize_root(str(saved)) == resolved:
         return
     path = app_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -139,7 +152,7 @@ def active_root() -> Path | None:
 
     saved = read_app_config().get("active_root")
     if saved:
-        root = Path(str(saved)).expanduser().resolve()
+        root = _normalize_root(str(saved))
         if (root / "kb.sqlite").is_file():
             return root
 
