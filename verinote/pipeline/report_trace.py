@@ -13,7 +13,7 @@ from verinote.engine.datalog import (
     DatalogValidationError,
     parse_and_validate_program,
 )
-from verinote.engine.terms import Compound, StringLit, Term, Var, render_term
+from verinote.engine.terms import Compound, Term, Var, render_answer_value
 from verinote.pipeline.corroboration import CorroborationPolicyError
 from verinote.pipeline.query import load_query
 from verinote.pipeline.trust import fact_trust_summary
@@ -162,7 +162,7 @@ def _match_relation_atom(
         value = _head_value(head_args[0], bindings)
         if value is None:
             continue
-        matches.setdefault(_render_answer_value(value), set()).add(int(fact["id"]))
+        matches.setdefault(render_answer_value(value), set()).add(int(fact["id"]))
     return matches
 
 
@@ -205,12 +205,6 @@ def _trace_fact(
         evidence=evidence,
         conflicted=conflicted,
     )
-
-
-def _render_answer_value(term: Term) -> str:
-    if isinstance(term, StringLit):
-        return term.value
-    return render_term(term)
 
 
 def _has_vars(term: Term) -> bool:

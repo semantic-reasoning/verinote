@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 from verinote.pipeline.query import query_path
 from verinote.pipeline.report_trace import report_trace
+from verinote.pipeline.verify import verify
 from verinote.store import Store, db as store_db
 
 
@@ -48,6 +49,48 @@ def test_report_trace_links_direct_answers_to_engine_facts_and_evidence(tmp_path
     assert [fact.id for fact in answer.facts] == [fact_id]
     assert answer.facts[0].source == "sources/sample.txt"
     assert answer.facts[0].evidence == "Sample Person was born in Sample City."
+
+
+def test_report_answer_and_trace_render_a_comma_value_the_same_way(tmp_path):
+    """/report shows one answer twice; both renderings must agree.
+
+    "Query answers" (`rep.answers`, rendered by the engine backend) and
+    "Traceability" (`trace.answers`, rendered by report_trace) are two views of
+    the same derived answer on the same page. The backend escapes a surface
+    comma as `\\,` so a value cannot forge two answers across the `, ` join
+    (issue #167); if the trace renders the same value its own way, the page
+    shows `Analytical Engine\\, Ltd` in one section and the ambiguous
+    `Analytical Engine, Ltd` in the other, and the ambiguity this PR removed is
+    simply reintroduced one section lower.
+    """
+    s = _store(tmp_path)
+    source_id = s.add_source("sources/org.txt")
+    s.add_fact(
+        "Ada",
+        "works_at",
+        "Analytical Engine, Ltd",
+        status="confirmed",
+        source_id=source_id,
+    )
+    query_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    query_path(tmp_path).write_text(
+        ".decl answer_q1(value: symbol)\n"
+        'answer_q1(O) :- relation("Ada", "works_at", O).\n',
+        encoding="utf-8",
+    )
+
+    rep = verify(s)
+    trace = report_trace(s)
+
+    # The escaped comma is what keeps this one answer from reading as two.
+    assert rep.answers == ["q1: Analytical Engine\\, Ltd"]
+    assert [(a.qid, a.value) for a in trace.answers] == [
+        ("1", "Analytical Engine\\, Ltd")
+    ]
+    # ...and the two sections agree: the answer line is exactly the traced
+    # values joined the way the backend joins them, so a renderer change that
+    # reaches only one of the two sections fails here.
+    assert rep.answers == ["q1: " + ", ".join(a.value for a in trace.answers)]
 
 
 def test_report_trace_ignores_invalid_relation_alias_policy(tmp_path):

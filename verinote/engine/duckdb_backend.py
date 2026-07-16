@@ -32,6 +32,7 @@ from verinote.engine.terms import (
     Term,
     Var,
     escape_string_value,
+    render_answer_value,
     render_term,
 )
 from verinote.engine.wirelog import CheckReport, DEFAULT_POLICY, NO_FINDINGS_TEXT
@@ -541,27 +542,8 @@ def _render_finding_row(row: tuple[object, ...]) -> str:
 def _render_answer_row(row: tuple[object, ...]) -> str:
     """Render one answer tuple, guarding column boundaries like a finding row."""
     return _join_row_columns(
-        [_render_answer_value(duckdb_value_to_term(value)) for value in row]
+        [render_answer_value(duckdb_value_to_term(value)) for value in row]
     )
-
-
-def _render_answer_value(term: Term) -> str:
-    """Render one answer value so a comma inside it cannot forge two answers.
-
-    Multiple answers for a question are joined with ``, ``. A ``StringLit`` whose
-    surface text already contains a comma (e.g. ``Analytical Engine, Ltd``) would
-    then be indistinguishable from two separate answers (issue #167), so we
-    escape those surface commas as ``\\,``. Backslash is escaped first by
-    :func:`escape_string_value`, so ``\\,`` round-trips unambiguously.
-
-    A ``Compound`` is rendered by :func:`render_term`. Its ``, `` separators are
-    structural, not surface text, and callers (and tests such as
-    ``role(person("Ada"), "PI")``) depend on that rendering staying intact, so we
-    must not touch a compound's commas.
-    """
-    if isinstance(term, StringLit):
-        return escape_string_value(term.value).replace(",", "\\,")
-    return render_term(term)
 
 
 def _render_output_term(term: Term) -> str:
