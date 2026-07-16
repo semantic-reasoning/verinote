@@ -1213,18 +1213,39 @@ class Store:
         rows (candidate/needs_review) promote to confirmed. A superseded fact is
         a human's terminal rejection, so a toggle leaves it untouched and
         unlogged rather than reviving it to confirmed.
+
+        The target status is derived from a status this transition then *writes
+        conditionally on*, so a toggle can only ever commit the flip it actually
+        read. Holding `self._lock` is not enough on its own: the lock serialises
+        writers sharing this instance, but a KB is one SQLite file that several
+        connections open, and a reject arriving from any of them must win over a
+        toggle target computed before it landed. When the row has moved
+        underneath, the current row is returned unchanged and nothing is logged
+        — the toggle simply didn't happen.
         """
-        row = self.get_fact(fact_id)
-        if row is None:
-            return None
-        status = row["status"]
-        if status in ENGINE_STATUSES:
-            new_status = "needs_review"
-        elif status in REVIEW_STATUSES:
-            new_status = "confirmed"
-        else:  # superseded (or any terminal status): no revival path
-            return row
-        return self.set_status(fact_id, new_status, action="toggled")
+        with self._lock:
+            before = self.get_fact(fact_id)
+            if before is None:
+                return None
+            observed = before["status"]
+            if observed in ENGINE_STATUSES:
+                new_status = "needs_review"
+            elif observed in REVIEW_STATUSES:
+                new_status = "confirmed"
+            else:  # superseded (or any terminal status): no revival path
+                return before
+            cursor = self._conn.execute(
+                "UPDATE facts SET status = ?, updated_at = datetime('now') "
+                "WHERE id = ? AND status = ?",
+                (new_status, fact_id, observed),
+            )
+            if cursor.rowcount == 0:
+                # Someone moved the fact between the read and the write; their
+                # decision stands, and this stale toggle writes nothing.
+                return self.get_fact(fact_id)
+            after = self.get_fact(fact_id)
+            self._log(fact_id, "toggled", before, after)
+            return after
 
     def accept_fact(self, fact_id: int) -> sqlite3.Row | None:
         """Promote a review-queue fact to confirmed (a human's accept).
@@ -1274,6 +1295,39 @@ class Store:
             )
             after = self.get_fact(fact_id)
             self._log(fact_id, "rejected", before, after)
+            return after
+
+    def auto_accept_fact(self, fact_id: int, *, rule_name: str) -> sqlite3.Row | None:
+        """Promote a review-queue fact to `accepted` (a rule's decision).
+
+        The caller recommends from a snapshot, so by the time this write runs a
+        human may have rejected the fact — and a rule must never take a fact out
+        of `superseded`. The status condition lives in the UPDATE itself rather
+        than in a check before it, because the competing decision can arrive on
+        another connection to the same KB, where this instance's lock has no say.
+
+        Returns None when the fact has left the review tier, so the caller can
+        tell a promotion it made from one it declined and skip the audit event
+        for a write that never happened.
+        """
+        with self._lock:
+            before = self.get_fact(fact_id)
+            if before is None:
+                return None
+            observed = before["status"]
+            if observed not in REVIEW_STATUSES:
+                return None
+            cursor = self._conn.execute(
+                "UPDATE facts SET status = 'accepted', updated_at = datetime('now') "
+                "WHERE id = ? AND status = ?",
+                (fact_id, observed),
+            )
+            if cursor.rowcount == 0:
+                return None
+            after = self.get_fact(fact_id)
+            self._log(
+                fact_id, "auto_accepted", before, after, actor="rule", rule_name=rule_name
+            )
             return after
 
     def amend_fact(
