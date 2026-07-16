@@ -86,6 +86,7 @@ from verinote.store import (
     REVIEW_PAGE_SIZES,
     ReviewQueuePage,
     Store,
+    review_statuses,
 )
 # Imported as a module, not `from ... import ENGINE_STATUSES`: the tier must be
 # read at call time so the web layer cannot pin a stale copy of the constant.
@@ -328,9 +329,11 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         recommendation = recommendations.get(int(fact["id"])) if fact else None
         return {"f": view, "trust": trust, "recommendation": recommendation}
 
-    def _maybe_apply_auto_accept() -> list:
+    def _maybe_apply_auto_accept(exclude_fact_ids: tuple[int, ...] = ()) -> list:
         if _active_cfg().auto_accept_recommendations:
-            return apply_auto_accept_recommendations(_active_store())
+            return apply_auto_accept_recommendations(
+                _active_store(), exclude_fact_ids=exclude_fact_ids
+            )
         return []
 
     def _row(request: Request, fact):
@@ -339,7 +342,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             request, "partials/fact_row.html", _fact_row_context(fact)
         )
 
-    def _row_after_decision(request: Request, fact, acted_fact_id: int | None):
+    def _row_after_decision(
+        request: Request, fact, acted_fact_id: int | None, *, rule_may_act: bool = True
+    ):
         """Render the acted row, running auto-accept for the corroboration it
         may have unblocked.
 
@@ -349,8 +354,13 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         client for a full refresh; when nothing (or only the acted fact) moved,
         the row swap is enough. The acted row is re-read afterwards so it
         reflects an auto-accept that landed on the fact itself.
+
+        `rule_may_act=False` bars the rule from the acted fact while still
+        letting it promote everything else — for the one decision that parks a
+        fact back in the tier auto-accept harvests from (see `toggle`).
         """
-        applied = _maybe_apply_auto_accept()
+        excluded = () if rule_may_act or acted_fact_id is None else (acted_fact_id,)
+        applied = _maybe_apply_auto_accept(excluded)
         if acted_fact_id is not None:
             refreshed = _active_store().get_fact(acted_fact_id)
             if refreshed is not None:
@@ -979,7 +989,13 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.post("/facts/{fact_id}/toggle", response_class=HTMLResponse)
     def toggle(request: Request, fact_id: int):
-        return _row_after_decision(request, _active_store().toggle_review(fact_id), fact_id)
+        toggled = _active_store().toggle_review(fact_id)
+        # A demotion parks the fact in exactly the tier auto-accept promotes
+        # from, so an unrestricted pass would undo the user's click inside their
+        # own request. The demotion is the decision; the rule may act on the
+        # siblings it unblocks, but not on this fact.
+        demoted = toggled is not None and toggled["status"] in review_statuses()
+        return _row_after_decision(request, toggled, fact_id, rule_may_act=not demoted)
 
     @app.post("/facts/{fact_id}/accept", response_class=HTMLResponse)
     def accept(request: Request, fact_id: int):

@@ -60,8 +60,16 @@ def accept_recommendations_for(
     return recommendations
 
 
-def apply_auto_accept_recommendations(store: Store) -> list[AcceptRecommendation]:
+def apply_auto_accept_recommendations(
+    store: Store, *, exclude_fact_ids: Iterable[int] = ()
+) -> list[AcceptRecommendation]:
     """Promote every eligible candidate to `accepted` — never on a halted KB.
+
+    `exclude_fact_ids` holds facts a human has just decided on in this same
+    request. The rule still runs for everything else, because that decision may
+    have unblocked siblings; it just doesn't get to re-decide the fact the human
+    aimed at. Without this, demoting a corroborated fact to the review tier hands
+    it straight back to the rule that promotes corroborated review-tier facts.
 
     A halted KB already stops this today, but only by COINCIDENCE: `_engine` builds
     its single-valued set from `store_functional_relations`, which calls
@@ -77,17 +85,16 @@ def apply_auto_accept_recommendations(store: Store) -> list[AcceptRecommendation
     a policy deleted after the final chunk's write boundary lands exactly here.
     """
     assert_writable(store)
+    excluded = {int(fact_id) for fact_id in exclude_fact_ids}
     applied = []
     for recommendation in accept_recommendations(store).values():
-        if not recommendation.eligible:
+        if not recommendation.eligible or recommendation.fact_id in excluded:
             continue
-        store.set_status(
-            recommendation.fact_id,
-            "accepted",
-            action="auto_accepted",
-            actor="rule",
-            rule_name=RULE_NAME,
-        )
+        # Eligibility came off a snapshot; `auto_accept_fact` re-checks the tier
+        # at the write and returns None if a human decided first. Their decision
+        # wins, and the audit event below is skipped along with the write.
+        if store.auto_accept_fact(recommendation.fact_id, rule_name=RULE_NAME) is None:
+            continue
         store.add_fact_event(
             fact_id=recommendation.fact_id,
             event_type="auto_accept_applied",
