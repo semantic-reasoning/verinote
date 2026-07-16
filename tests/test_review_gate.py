@@ -334,6 +334,43 @@ def test_accept_cannot_overwrite_a_reject_that_lands_mid_transition(tmp_path):
     assert "accepted" not in _actions(rejecting, fact_id)
 
 
+def test_auto_accept_cannot_overwrite_a_reject_that_lands_mid_transition(tmp_path):
+    """The rule's own version of the cross-connection race.
+
+    The pass-level test below hands `auto_accept_fact` a fact that is already
+    superseded by the time it is called, so the tier pre-check alone turns it
+    away and the conditional write never has to do anything. This test opens the
+    window the pre-check cannot see: the reject lands *after* the tier read, on
+    another connection, where `self._lock` has no say. Only the status condition
+    on the UPDATE stops the rule overwriting a human's rejection here.
+    """
+    db = tmp_path / "kb.sqlite"
+    accepting = _store_at(db)
+    rejecting = _store_at(db)
+    fact_id = accepting.add_fact("Report", "author", "Kim", status="needs_review")
+
+    real_get_fact = accepting.get_fact
+    interleaved = []
+
+    def reject_once_after_the_read(target_id: int):
+        row = real_get_fact(target_id)
+        if not interleaved:
+            interleaved.append(True)
+            # The other connection's human presses reject in this window.
+            rejecting.reject_fact(fact_id)
+        return row
+
+    accepting.get_fact = reject_once_after_the_read
+    row = accepting.auto_accept_fact(fact_id, rule_name="corroborated_no_conflict")
+
+    assert interleaved, "the reject never landed — the test proves nothing"
+    # The rejection is terminal: no rule may take a fact out of superseded.
+    assert rejecting.get_fact(fact_id)["status"] == "superseded"
+    # None is how the caller learns to skip both `applied` and the audit event.
+    assert row is None
+    assert "auto_accepted" not in _actions(rejecting, fact_id)
+
+
 def test_auto_accept_cannot_overwrite_a_reject_that_lands_after_the_snapshot(tmp_path):
     """Auto-accept recommends from a snapshot; a human can reject in the gap
     between that snapshot and the write. The write must re-check, not assume."""
