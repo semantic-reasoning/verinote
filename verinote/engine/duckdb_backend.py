@@ -31,11 +31,17 @@ from verinote.engine.terms import (
     StringLit,
     Term,
     Var,
+    bare_label,
     escape_string_value,
     render_answer_value,
     render_term,
 )
-from verinote.engine.wirelog import CheckReport, DEFAULT_POLICY, NO_FINDINGS_TEXT
+from verinote.engine.wirelog import (
+    CheckReport,
+    DEFAULT_POLICY,
+    NO_FINDINGS_TEXT,
+    FindingRow,
+)
 
 _ERROR_PREFIX = "error_"
 _WARN_PREFIX = "warn_"
@@ -407,8 +413,11 @@ def _collect_report(
     policy_dl: str,
     query_dl: str | None,
 ) -> CheckReport:
-    errors: list[str] = []
-    warnings: list[str] = []
+    # Keyed by rendered line: findings have always been deduplicated by the text
+    # they show, and two distinct rows can render to one line. The value is that
+    # line's row, or None once it is ambiguous -- see `_record_finding`.
+    errors: dict[str, tuple[str, ...] | None] = {}
+    warnings: dict[str, tuple[str, ...] | None] = {}
     answers_by_q: dict[str, list[str]] = {}
     for name in sorted(declarations):
         if not (
@@ -424,12 +433,13 @@ def _collect_report(
         if not declarations[name].columns:
             rows = [() for _row in rows]
         rows = _dedupe_rows_by_compare_key(rows)
+        rendered_rows = [_render_finding_row(row) for row in rows]
         if name.startswith(_ERROR_PREFIX):
-            label = name[len(_ERROR_PREFIX) :]
-            errors.extend(f"{label}: {_render_finding_row(row)}" for row in rows)
+            for row, rendered in zip(rows, rendered_rows):
+                _record_finding(errors, f"{name[len(_ERROR_PREFIX) :]}: {rendered}", row)
         elif name.startswith(_WARN_PREFIX):
-            label = name[len(_WARN_PREFIX) :]
-            warnings.extend(f"{label}: {_render_finding_row(row)}" for row in rows)
+            for row, rendered in zip(rows, rendered_rows):
+                _record_finding(warnings, f"{name[len(_WARN_PREFIX) :]}: {rendered}", row)
         elif name.startswith(_ANSWER_PREFIX):
             if rows:
                 qid = name[len(_ANSWER_PREFIX) :]
@@ -437,18 +447,22 @@ def _collect_report(
                     _render_answer_row(row) for row in rows
                 )
 
-    # Rows are deduped by their compare-key tuple (see
-    # `_dedupe_rows_by_compare_key`), so each survivor is a semantically distinct
-    # tuple. We must NOT dedupe again on the rendered string: two different
-    # tuples can render alike, and collapsing them here would hide real
-    # violations (issue #167). Sort only, never set().
-    errors = sorted(errors)
-    warnings = sorted(warnings)
     answers = [
         f"q{qid}: {', '.join(sorted(vals))}"
         for qid, vals in sorted(answers_by_q.items())
     ]
-    findings = [f"ERROR {e}" for e in errors] + [f"WARN {w}" for w in warnings]
+    findings = [f"ERROR {e}" for e in sorted(errors)] + [
+        f"WARN {w}" for w in sorted(warnings)
+    ]
+    finding_rows = [
+        FindingRow(f"ERROR {e}", values)
+        for e, values in sorted(errors.items())
+        if values is not None
+    ] + [
+        FindingRow(f"WARN {w}", values)
+        for w, values in sorted(warnings.items())
+        if values is not None
+    ]
     summary = f"errors: {len(errors)}  warnings: {len(warnings)}  facts: {len(facts)}"
     body = "\n".join(findings) if findings else NO_FINDINGS_TEXT
     if answers:
@@ -467,7 +481,33 @@ def _collect_report(
         answers=answers,
         text=f"backend: DuckDB\n{summary}\n\n{body}{debug}",
         findings=findings,
+        finding_rows=finding_rows,
     )
+
+
+def _record_finding(
+    bucket: dict[str, tuple[str, ...] | None],
+    text: str,
+    row: tuple[object, ...],
+) -> None:
+    """Record one finding line and the row behind it, keeping the line unique.
+
+    Rendering is lossy (values are joined bare), so two different rows can
+    produce the same line. That line is one finding, as it always was, but it no
+    longer has *a* row — so it is marked ambiguous with None rather than being
+    given whichever row arrived first. A caller that cannot tell which row a
+    line means must say nothing about it.
+    """
+    values = _row_values(row)
+    if text in bucket and bucket[text] != values:
+        bucket[text] = None
+        return
+    bucket.setdefault(text, values)
+
+
+def _row_values(row: tuple[object, ...]) -> tuple[str, ...]:
+    """The row's values as labels, unescaped, for exact comparison."""
+    return tuple(bare_label(duckdb_value_to_term(value)) for value in row)
 
 
 def _render_fact_input(facts: list[Mapping[str, object]]) -> str:
