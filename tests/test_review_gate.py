@@ -422,3 +422,71 @@ def test_auto_accept_still_promotes_an_eligible_fact(tmp_path):
     assert [rec.fact_id for rec in applied] == [acted]
     assert store.get_fact(acted)["status"] == "accepted"
     assert "auto_accepted" in _actions(store, acted)
+
+
+# --- the other two routes that hand facts to the rule ---------------------
+
+
+def test_amend_lets_the_rule_promote_the_amended_fact(tmp_path):
+    """An amend decides the fact's content, not its tier, so the rule may act on
+    the amended fact itself — the opposite of a toggle demotion.
+
+    This is that distinction as a worked example: the fact's object is a typo
+    that keeps it from matching the second source. Correcting it *is*
+    corroboration arriving, so promoting on it is the recommender working, not a
+    decision being undone.
+    """
+    client, store = _auto_accept_client(tmp_path)
+    source_a = store.add_source("sources/a.txt")
+    source_b = store.add_source("sources/b.txt")
+    job_a = _done_job(store, source_a)
+    job_b = _done_job(store, source_b)
+    acted = store.add_fact(
+        "Report", "author", "Kimm",  # the typo: no support while it stands
+        status="needs_review", source_id=source_a, job_id=job_a,
+    )
+    store.add_fact(
+        "Report", "author", "Kim",
+        status="confirmed", source_id=source_b, job_id=job_b,
+    )
+    # Nothing is eligible yet: the typo means the two sources disagree.
+    assert store.get_fact(acted)["status"] == "needs_review"
+
+    resp = client.post(
+        f"/facts/{acted}/amend",
+        data={"subject": "Report", "relation": "author", "object": "Kim"},
+    )
+
+    assert resp.status_code == 200
+    assert store.get_fact(acted)["object"] == "Kim"
+    # The correction brought the second source's support with it.
+    assert store.get_fact(acted)["status"] == "accepted"
+    assert "auto_accepted" in _actions(store, acted)
+
+
+def test_accept_all_promotes_a_corroborated_fact_in_another_source(tmp_path):
+    """Bulk-confirming one source is a decision too, and it corroborates facts
+    outside that source — so it hands them to the rule like the single-fact
+    routes do."""
+    client, store = _auto_accept_client(tmp_path)
+    source_a = store.add_source("sources/a.txt")
+    source_b = store.add_source("sources/b.txt")
+    job_a = _done_job(store, source_a)
+    job_b = _done_job(store, source_b)
+    bulk = store.add_fact(
+        "Report", "author", "Kim",
+        status="needs_review", source_id=source_a, job_id=job_a,
+    )
+    elsewhere = store.add_fact(
+        "Report", "author", "Kim",
+        status="needs_review", source_id=source_b, job_id=job_b,
+    )
+
+    resp = client.post(f"/sources/{source_a}/accept-all")
+
+    assert resp.status_code == 200  # 303 followed to /sources
+    assert store.get_fact(bulk)["status"] == "confirmed"
+    # The fact in the *other* source was corroborated by the bulk accept, and
+    # the route runs the rule so it doesn't sit in the queue until the next job.
+    assert store.get_fact(elsewhere)["status"] == "accepted"
+    assert "auto_accepted" in _actions(store, elsewhere)
