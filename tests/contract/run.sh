@@ -6,9 +6,10 @@
 #   VN_CONTRACT_PROVIDER=claudecli tests/contract/run.sh
 #
 # The "every contract test skipped" guard lives in tests/contract/conftest.py's
-# pytest_sessionfinish, not here, so it holds for *any* run that selects the
-# contract marker — including `python -m pytest -m contract` from the repo root.
-# This script only fixes the working directory and the standard flags.
+# pytest_sessionfinish, not here, so it holds for any run that asks for these
+# guards — `python -m pytest -m contract` or `python -m pytest tests/contract`
+# from the repo root alike. This script only fixes the working directory and the
+# standard flags.
 #
 # Exit codes are pytest's own; a fully-skipped opt-in run exits non-zero via that
 # session guard.
