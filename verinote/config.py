@@ -101,15 +101,45 @@ def app_config_path() -> Path:
     return app_config_dir() / APP_CONFIG_FILENAME
 
 
+def _warn_bad_config(path: Path, error: Exception | None, consequence: str) -> None:
+    """Warn on stderr that a config file is unreadable and is being ignored.
+
+    Absence is silent (a missing file is normal); this is only for a file that
+    exists but cannot be used, so a silent fallback to defaults does not hide a
+    real corruption from the user. `error` is the raised exception, or None for
+    a well-formed JSON value that simply is not an object.
+    """
+    if isinstance(error, OSError):
+        reason = f"could not read {path}: {error}"
+    elif isinstance(error, UnicodeDecodeError):
+        reason = f"could not decode {path} as UTF-8; ignoring it"
+    elif isinstance(error, json.JSONDecodeError):
+        reason = f"{path} is not valid JSON; ignoring it"
+    else:
+        reason = f"{path} is not a JSON object; ignoring it"
+    print(f"warning: {reason}; {consequence}", file=sys.stderr)
+
+
 def read_app_config() -> dict:
     path = app_config_path()
     if not path.is_file():
         return {}
+    consequence = "the saved active KB will be ignored"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except OSError as err:
+        _warn_bad_config(path, err, consequence)
         return {}
-    return data if isinstance(data, dict) else {}
+    except UnicodeDecodeError as err:
+        _warn_bad_config(path, err, consequence)
+        return {}
+    except json.JSONDecodeError as err:
+        _warn_bad_config(path, err, consequence)
+        return {}
+    if not isinstance(data, dict):
+        _warn_bad_config(path, None, consequence)
+        return {}
+    return data
 
 
 def save_active_root(root: Path) -> None:
@@ -149,11 +179,22 @@ def read_settings(root: Path) -> dict:
     path = _settings_path(root)
     if not path.is_file():
         return {}
+    consequence = "provider and model will fall back to defaults"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except OSError as err:
+        _warn_bad_config(path, err, consequence)
         return {}
-    return data if isinstance(data, dict) else {}
+    except UnicodeDecodeError as err:
+        _warn_bad_config(path, err, consequence)
+        return {}
+    except json.JSONDecodeError as err:
+        _warn_bad_config(path, err, consequence)
+        return {}
+    if not isinstance(data, dict):
+        _warn_bad_config(path, None, consequence)
+        return {}
+    return data
 
 
 def save_settings(
