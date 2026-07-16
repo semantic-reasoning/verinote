@@ -298,6 +298,42 @@ def test_toggle_cannot_overwrite_a_reject_that_lands_mid_transition(tmp_path):
     assert "toggled" not in _actions(rejecting, fact_id)
 
 
+def test_accept_cannot_overwrite_a_reject_that_lands_mid_transition(tmp_path):
+    """The same window `toggle_review` had, in `accept_fact`.
+
+    Checking the tier before the write only settles the race for callers sharing
+    this instance's lock. A reject arriving on another connection to the same KB
+    lands between that check and the write, and a blind write would then take a
+    fact back out of `superseded` — the one thing the review gate promises can't
+    happen.
+    """
+    db = tmp_path / "kb.sqlite"
+    accepting = _store_at(db)
+    rejecting = _store_at(db)
+    fact_id = accepting.add_fact("Report", "author", "Kim", status="needs_review")
+
+    real_get_fact = accepting.get_fact
+    interleaved = []
+
+    def reject_once_after_the_read(target_id: int):
+        row = real_get_fact(target_id)
+        if not interleaved:
+            interleaved.append(True)
+            # The other connection's human presses reject in this window.
+            rejecting.reject_fact(fact_id)
+        return row
+
+    accepting.get_fact = reject_once_after_the_read
+    row = accepting.accept_fact(fact_id)
+
+    assert interleaved, "the reject never landed — the test proves nothing"
+    # The rejection is terminal: the stale accept loses.
+    assert rejecting.get_fact(fact_id)["status"] == "superseded"
+    assert row["status"] == "superseded"
+    # And the losing accept logged no `accepted` row for a write it never made.
+    assert "accepted" not in _actions(rejecting, fact_id)
+
+
 def test_auto_accept_cannot_overwrite_a_reject_that_lands_after_the_snapshot(tmp_path):
     """Auto-accept recommends from a snapshot; a human can reject in the gap
     between that snapshot and the write. The write must re-check, not assume."""
