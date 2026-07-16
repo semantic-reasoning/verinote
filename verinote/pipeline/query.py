@@ -37,6 +37,8 @@ from verinote.store import Store
 
 # Query draft, relative to the KB root (the db file's directory).
 QUERY_RELPATH = Path("facts") / "query.dl"
+# Must match the DuckDB backend's answer-predicate prefix.
+ANSWER_PREFIX = "answer_q"
 MAX_ALIAS_EXPANDED_RULES_PER_RULE = 64
 _ESCAPE = re.compile(r'(["\\])')
 _STATUS_LINE = re.compile(
@@ -107,6 +109,27 @@ def query_schema_hint(snapshot: QuerySchemaSnapshot) -> str:
     return "\n".join(lines)
 
 
+def _foreign_answer_predicate(qid: int, query_dl: str) -> str | None:
+    """Return the first answer predicate in `query_dl` that does not answer `qid`.
+
+    The dry-run only reports *that* a draft produced answers, not *which* question
+    they answer, so a draft declaring `answer_q999` would otherwise be accepted as
+    a repair for q1 while leaving q1 unanswered.
+    """
+    expected = f"{ANSWER_PREFIX}{qid}"
+    try:
+        program = parse_program(query_dl)
+    except DatalogParseError:
+        return None
+    names = [decl.name for decl in program.declarations]
+    names.extend(fact.atom.predicate for fact in program.facts)
+    names.extend(rule.head.predicate for rule in program.rules)
+    for name in names:
+        if name.startswith(ANSWER_PREFIX) and name != expected:
+            return name
+    return None
+
+
 def classify_query_draft(store: Store, qid: int, query_dl: str) -> tuple[str, str, str]:
     """Validate and dry-run one query draft before it can be persisted.
 
@@ -121,6 +144,13 @@ def classify_query_draft(store: Store, qid: int, query_dl: str) -> tuple[str, st
         QueryCandidateFamily,
         QueryCandidatePlan,
     )
+
+    foreign = _foreign_answer_predicate(qid, query_dl)
+    if foreign is not None:
+        reason = _short_reason(
+            f"invalid query: answer predicate must be {ANSWER_PREFIX}{qid}, got {foreign}"
+        )
+        return "review_required", f"review_required({_lit(reason)})", reason
 
     candidate = QueryCandidate(
         query_dl=query_dl,

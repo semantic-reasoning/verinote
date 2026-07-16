@@ -306,6 +306,75 @@ def test_repair_default_runs_direct_datalog_fallback(
     assert f"answer_q{qid}" in (load_query(s) or "")
 
 
+def test_repair_rejects_fallback_answering_a_different_question(
+    tmp_path, fake_client, intent_payload
+):
+    """A snippet that answers some other question must not repair this one."""
+    s, qid = _store_with_review_required(tmp_path)
+    s.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
+    client = fake_client(
+        intent=intent_payload("unknown_or_unsupported", reason="planner cannot map"),
+        query=lambda q, i: (
+            ".decl answer_q999(value: symbol)\n"
+            'answer_q999(O) :- relation("Sample Person", "born_in", O).'
+        ),
+    )
+    results = repair_questions(s, client, root=tmp_path)
+
+    assert results == [
+        {
+            "id": qid,
+            "accepted": False,
+            "reason": f"invalid query: answer predicate must be answer_q{qid}, "
+            "got answer_q999",
+        }
+    ]
+    q = s.questions()[0]
+    assert q["status"] == "review_required"
+    assert "answer_q999" not in (load_query(s) or "")
+
+
+def test_repair_rejects_fallback_answering_extra_questions(
+    tmp_path, fake_client, intent_payload
+):
+    """Answering this question does not license answering others in the same snippet."""
+    s, qid = _store_with_review_required(tmp_path)
+    s.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
+    client = fake_client(
+        intent=intent_payload("unknown_or_unsupported", reason="planner cannot map"),
+        query=lambda q, i: (
+            f'answer_q{i}(O) :- relation("Sample Person", "born_in", O).\n'
+            ".decl answer_q999(value: symbol)\n"
+            'answer_q999(O) :- relation("Sample Person", "born_in", O).'
+        ),
+    )
+    results = repair_questions(s, client, root=tmp_path)
+
+    assert results == [
+        {
+            "id": qid,
+            "accepted": False,
+            "reason": f"invalid query: answer predicate must be answer_q{qid}, "
+            "got answer_q999",
+        }
+    ]
+    assert s.questions()[0]["status"] == "review_required"
+    assert "answer_q999" not in (load_query(s) or "")
+
+
+def test_repair_llm_error_costs_two_provider_calls(tmp_path, fake_client):
+    """A provider outage costs two calls: intent extraction, then the fallback.
+
+    Pinned so the default-on fallback's cost during an outage or rate-limit is a
+    deliberate choice rather than an accident.
+    """
+    s, qid = _store_with_review_required(tmp_path)
+    client = fake_client(error=LLMError("provider unavailable"))
+    repair_questions(s, client, root=tmp_path)
+
+    assert client.calls == 2
+
+
 def test_repair_persists_llm_error_reason(tmp_path, fake_client):
     s, qid = _store_with_review_required(tmp_path)
     original_query = s.questions()[0]["query_dl"]

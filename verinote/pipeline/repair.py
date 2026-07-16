@@ -32,6 +32,11 @@ def repair_questions(
 ) -> list[dict]:
     """Attempt to repair every `review_required` question. Returns per-question
     results: {id, accepted, reason}. Only engine-validated proposals are applied.
+
+    With `allow_direct_datalog_fallback` (the default), a question the planner
+    cannot map costs two provider calls: intent extraction, then the direct
+    Datalog fallback. That includes the case where intent extraction *failed* —
+    during a provider outage or rate limit, each question is tried twice.
     """
     results: list[dict] = []
     for q in store.questions():
