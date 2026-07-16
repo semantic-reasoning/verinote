@@ -856,3 +856,65 @@ def test_seed_accepts_a_kb_whose_path_holds_a_uri_metacharacter(tmp_path, monkey
     store = Store(root / "kb.sqlite")
     assert len(store.facts()) == len(cli._DEMO_FACTS)
     store.close()
+
+
+def test_status_on_absent_kb_refuses_and_creates_nothing(tmp_path, monkeypatch, capsys):
+    """A read-only diagnosis must not scaffold a fresh KB at a mistyped path."""
+    _isolated(monkeypatch, tmp_path)
+    workdir = tmp_path / "empty"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    assert cli.main(["status"]) == 1
+
+    assert not (workdir / "data").exists()  # no KB was created behind our back
+    err = capsys.readouterr().err
+    assert "no KB" in err
+    assert str(workdir / "data") in err
+
+
+def test_coverage_on_absent_kb_refuses_and_creates_nothing(tmp_path, monkeypatch, capsys):
+    _isolated(monkeypatch, tmp_path)
+    workdir = tmp_path / "empty"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    assert cli.main(["coverage"]) == 1
+
+    assert not (workdir / "data").exists()
+    err = capsys.readouterr().err
+    assert "no KB" in err
+    assert str(workdir / "data") in err
+
+
+def test_status_rejects_an_empty_db_file_instead_of_creating_a_schema(
+    tmp_path, monkeypatch, capsys
+):
+    """`kb.sqlite` existing is not enough: status reads an *initialised* KB."""
+    _isolated(monkeypatch, tmp_path)
+    root = tmp_path / "broken"
+    root.mkdir()
+    db = root / "kb.sqlite"
+    db.write_bytes(b"")
+    monkeypatch.setenv("VERINOTE_ROOT", str(root))
+
+    assert cli.main(["status"]) == 1
+
+    assert db.read_bytes() == b""  # no schema was created behind our back
+    assert "is not a verinote KB" in capsys.readouterr().err
+
+
+def test_coverage_rejects_a_corrupt_db_file_without_a_traceback(
+    tmp_path, monkeypatch, capsys
+):
+    _isolated(monkeypatch, tmp_path)
+    root = tmp_path / "corrupt"
+    root.mkdir()
+    db = root / "kb.sqlite"
+    db.write_bytes(b"not sqlite")
+    monkeypatch.setenv("VERINOTE_ROOT", str(root))
+
+    assert cli.main(["coverage"]) == 1
+
+    assert db.read_bytes() == b"not sqlite"  # file left untouched, no traceback
+    assert "is not a verinote KB" in capsys.readouterr().err
