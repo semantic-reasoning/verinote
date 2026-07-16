@@ -1,0 +1,10 @@
+{
+  "provider": "always-fails",
+  "model": "none",
+  "prompt_id": "sync-extraction",
+  "captured_at": "2026-07-16",
+  "input": "Acme Robotics is a company. Acme Robotics was founded in 2020 according to its incorporation filing. A later press release states that Acme Robotics was established in 2021.",
+  "completed_chunks": 0,
+  "failed_chunks": 5,
+  "failure_reason": "provider refused chunk: synthetic outage for #239 capture"
+}
