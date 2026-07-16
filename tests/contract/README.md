@@ -29,11 +29,16 @@ Two rules keep a green run from meaning nothing:
 * **Asked for but all skipped ⇒ the session fails.** If a run asks for these
   guards and not one of them executes, `pytest_sessionfinish` in `conftest.py`
   turns it red. A fully-skipped opt-in run is a silent no-op, not a pass.
-  Asking means either spelling: `-m contract`, **or** naming a path in this
-  directory (`pytest tests/contract`). The default suite asks for neither —
+  Asking means any of the spellings pytest offers: `-m contract`, `-k contract`,
+  or naming a path in this directory (`pytest tests/contract`, including
+  `--pyargs tests.contract`). The default suite asks in none of those ways —
   `pytest` and `pytest tests` both target `tests`, a parent of this directory —
-  so it is unaffected and the guards keep self-skipping there. `--collect-only`
-  is exempt, since not running tests is what it was asked to do.
+  so it is unaffected and the guards keep self-skipping there.
+
+  Asking is not the same as failing: a run that *excludes* the guards on purpose
+  (`pytest tests/contract -k meta`, `-m "not contract"`, `--deselect`) is silent,
+  because the count is taken after deselection. `--collect-only` is exempt too,
+  since not running tests is what it was asked to do.
 * **A set gate pointing at an unreachable provider ⇒ fail, not skip** (issue
   #234). A provider you asked to exercise but that cannot run is a real gap.
 

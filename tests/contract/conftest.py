@@ -26,10 +26,10 @@ Two gates share it:
 
 :func:`pytest_sessionfinish` closes the harness's worst failure mode: asking for
 contract tests and getting a green run that exercised nothing. Whenever a run
-asks for these guards — by naming the ``contract`` marker *or* a path in this
-directory (see :func:`arms_skip_guard`) — and not one selected test executes,
-the session fails. The default suite asks for neither, so it is untouched and
-the guards keep self-skipping there.
+asks for these guards — by naming the ``contract`` marker, a path in this
+directory, or the ``contract`` keyword (see :func:`arms_skip_guard`) — and not
+one selected test executes, the session fails. The default suite asks in none of
+those ways, so it is untouched and the guards keep self-skipping there.
 
 Contract tests build their own :class:`~verinote.config.Config` directly rather
 than through the environment, mirroring ``tests/test_ollama_adapter.py``'s
@@ -133,35 +133,59 @@ _executed_contract_ids: set[str] = set()
 
 
 def _points_inside_contract_dir(arg: str, invocation_dir: Path) -> bool:
-    """Is this pytest positional argument a path in (or at) `tests/contract`?"""
-    path = Path(str(arg).split("::")[0])
-    if not path.is_absolute():
-        path = invocation_dir / path
-    try:
-        resolved = path.resolve()
-    except OSError:
-        return False
-    return resolved == CONTRACT_DIR or CONTRACT_DIR in resolved.parents
+    """Is this pytest positional argument a path in (or at) `tests/contract`?
+
+    Both spellings of an argument are considered: a filesystem path, and the
+    dotted module name `--pyargs` takes (`tests.contract`), which is otherwise
+    resolved as the literal directory `./tests.contract` and never matches.
+    """
+    head = str(arg).split("::")[0]
+    candidates = [head]
+    if "/" not in head and os.sep not in head and "." in head:
+        candidates.append(head.replace(".", os.sep))
+    for candidate in candidates:
+        path = Path(candidate)
+        if not path.is_absolute():
+            path = invocation_dir / path
+        try:
+            resolved = path.resolve()
+        except OSError:
+            continue
+        if resolved == CONTRACT_DIR or CONTRACT_DIR in resolved.parents:
+            return True
+    return False
 
 
-def arms_skip_guard(markexpr: str, args: list[str], invocation_dir: Path) -> bool:
+def arms_skip_guard(markexpr: str, keyword: str, args: list[str], invocation_dir: Path) -> bool:
     """Did this invocation ask for the contract tests specifically?
 
-    Two spellings mean "I want the contract guards": naming the marker, and
-    naming a path in this directory. Both must arm the skipped-run guard —
-    `pytest tests/contract` is the spelling a developer reaches for first, and
-    left unarmed it reports "18 passed, 7 skipped" and exits 0 while not one
-    guard ran, which is the false green this harness exists to prevent.
+    Three spellings mean "I want the contract guards", and each must arm the
+    skipped-run guard: naming the marker (`-m contract`), naming a path in this
+    directory (`pytest tests/contract`), and naming it by keyword
+    (`pytest -k contract`). Miss any one and it reports "N passed, 7 skipped",
+    exits 0, and guards nothing — the false green this harness exists to prevent.
+
+    `-k contract` selects everything here for the same reason the guard once
+    mis-counted `report.keywords`: this directory is a package *named* contract,
+    so the keyword matches all of it. Every input pytest can express that
+    intention with therefore has to be an argument to this function; a spelling
+    it cannot see is a spelling it cannot guard.
 
     A run that merely *collects* this directory on its way through the tree must
     not arm: `pytest` (which `testpaths` expands to `tests`) and `pytest tests`
     both pass `tests`, a parent of this directory, not a path inside it. So the
     default suite keeps its self-skipping guards and stays green.
 
-    Kept a pure function of the three inputs so the arming boundary can be pinned
+    Arming is not the same as failing. A run that arms but then deselects every
+    guard (`pytest tests/contract -k meta`) is silent, because the count is taken
+    after deselection: excluding the guards on purpose is not "they never ran".
+
+    Kept a pure function of its inputs so the arming boundary can be pinned
     directly, without a pytest session per case.
     """
     if "contract" in (markexpr or ""):
+        return True
+    if "contract" in (keyword or ""):
         return True
     return any(_points_inside_contract_dir(arg, invocation_dir) for arg in args)
 
@@ -176,7 +200,8 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     they never ran — a false red, the mirror of the bug this guard fixes.
     """
     markexpr = getattr(config.option, "markexpr", "") or ""
-    if not arms_skip_guard(markexpr, list(config.args), Path(config.invocation_params.dir)):
+    keyword = getattr(config.option, "keyword", "") or ""
+    if not arms_skip_guard(markexpr, keyword, list(config.args), Path(config.invocation_params.dir)):
         return
     _selected_contract_nodeids.update(
         item.nodeid for item in items if item.get_closest_marker("contract")

@@ -47,6 +47,8 @@ GATE_ONLY_MODULE = "test_sync_rc_contract.py"
 # A module holding both a contract guard and an ungated control, so a run that
 # deselects the guards still has something to execute.
 MIXED_MODULE = "test_query_intent_contract.py"
+# A keyword matching exactly one ungated control in this directory and no guard.
+CONTROL_ONLY_KEYWORD = "deterministic_parser"
 
 
 def test_contract_marker_is_registered(pytestconfig):
@@ -155,6 +157,45 @@ def test_targeting_the_contract_directory_fails_when_no_guard_runs():
     )
 
 
+def test_selecting_the_guards_by_keyword_fails_when_none_run():
+    """`-k contract` with no gate must not be a green no-op either.
+
+    This directory is a package named `contract`, so `-k contract` selects
+    everything under it and the guards skip inside an otherwise-passing run.
+    This module is deselected in the child to avoid recursing into itself.
+    """
+    result = _nested_pytest("-k", "contract", f"--deselect=tests/contract/{Path(__file__).name}")
+    assert result.returncode != 0, (
+        "`pytest -k contract` with the gate unset exited 0 while every guard "
+        f"skipped — a false green.\n{result.stdout}\n{result.stderr}"
+    )
+    assert "no guard executed" in result.stdout, (
+        f"the session failed without saying why:\n{result.stdout}\n{result.stderr}"
+    )
+
+
+def test_filtering_the_guards_out_by_keyword_is_not_a_failure():
+    """`-k` that excludes the guards is not "they never ran".
+
+    The mirror of the test above, and the boundary it must not cross: arming is
+    not failing. The run targets this directory (so the guard *is* armed) but
+    the keyword leaves zero guards selected — silence is the only correct
+    outcome.
+
+    `CONTROL_ONLY_KEYWORD` matches a single ungated control. The obvious `-k meta`
+    would select this module, which spawns the child, and recurse.
+    """
+    result = _nested_pytest("tests/contract", "-k", CONTROL_ONLY_KEYWORD)
+    assert result.returncode == 0, (
+        "a run that filtered the contract tests out by keyword was failed for "
+        f"not running them.\n{result.stdout}\n{result.stderr}"
+    )
+    assert "1 passed" in result.stdout, (
+        f"{CONTROL_ONLY_KEYWORD!r} no longer selects exactly the one control this "
+        f"test needs.\n{result.stdout}\n{result.stderr}"
+    )
+
+
 def test_deselecting_the_guards_is_not_a_failure():
     """`-m "not contract"` deselects the guards; that is not "they never ran".
 
@@ -186,28 +227,39 @@ def test_collect_only_is_not_failed_by_the_skip_guard():
 
 
 @pytest.mark.parametrize(
-    ("markexpr", "args", "arms", "why"),
+    ("markexpr", "keyword", "args", "arms", "why"),
     [
-        ("contract", ["tests"], True, "the marker is named"),
-        ("not contract", ["tests"], True, "conservative: mark expr mentions it; selection count decides"),
-        ("", ["tests/contract"], True, "the directory is named"),
-        ("", [str(CONTRACT_DIR)], True, "the directory is named absolutely"),
-        ("", [f"tests/contract/{GATE_ONLY_MODULE}"], True, "a module inside it is named"),
-        ("", [f"tests/contract/{GATE_ONLY_MODULE}::test_x"], True, "a single test inside it is named"),
-        ("", ["tests"], False, "the default suite: a parent, not a path inside"),
-        ("", [], False, "bare pytest before testpaths expands"),
-        ("", ["tests/test_config.py"], False, "an unrelated module"),
-        ("", ["tests/contract_notes"], False, "a sibling whose name merely starts the same"),
+        ("contract", "", ["tests"], True, "the marker is named"),
+        ("not contract", "", ["tests"], True, "conservative: mark expr mentions it; selection count decides"),
+        ("", "contract", ["tests"], True, "the keyword is named"),
+        ("", "contract", [], True, "the keyword is named, bare pytest"),
+        ("", "not contract", ["tests"], True, "conservative: keyword mentions it; selection count decides"),
+        ("", "", ["tests/contract"], True, "the directory is named"),
+        ("", "", [str(CONTRACT_DIR)], True, "the directory is named absolutely"),
+        ("", "", [f"tests/contract/{GATE_ONLY_MODULE}"], True, "a module inside it is named"),
+        ("", "", [f"tests/contract/{GATE_ONLY_MODULE}::test_x"], True, "a single test inside it is named"),
+        ("", "", ["tests.contract"], True, "--pyargs names it as a dotted module"),
+        ("", "", [f"tests.contract.{GATE_ONLY_MODULE.removesuffix('.py')}"], True, "--pyargs names a module inside"),
+        ("", "", ["tests"], False, "the default suite: a parent, not a path inside"),
+        ("", "", [], False, "bare pytest before testpaths expands"),
+        ("", "meta", ["tests"], False, "an unrelated keyword"),
+        ("", "", ["tests/test_config.py"], False, "an unrelated module"),
+        ("", "", ["tests/contract_notes"], False, "a sibling whose name merely starts the same"),
+        ("", "", ["tests.test_config"], False, "an unrelated dotted module"),
     ],
 )
-def test_skip_guard_arming_boundary(markexpr, args, arms, why):
+def test_skip_guard_arming_boundary(markexpr, keyword, args, arms, why):
     """Pin exactly which invocations arm the skipped-run guard.
+
+    Every input pytest can express "I want the contract guards" with has to be an
+    argument here: a spelling the function cannot see is a spelling it cannot
+    guard. `-k` was the third false green found precisely because it was missing.
 
     The default-suite rows are the load-bearing ones: `pytest` and `pytest tests`
     both pass `tests`, a *parent* of this directory. If either armed, every
     default run would go red on the self-skipping guards.
     """
-    assert arms_skip_guard(markexpr, args, REPO_ROOT) is arms, why
+    assert arms_skip_guard(markexpr, keyword, args, REPO_ROOT) is arms, why
 
 
 def test_gate_variables_survive_the_root_sandbox_strip():
