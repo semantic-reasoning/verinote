@@ -195,6 +195,22 @@ def _kb_schema_problem(db_path: Path) -> str | None:
     return None if row else KB_NO_SCHEMA
 
 
+def _require_existing_kb(cfg: Config) -> int | None:
+    """Refuse a read-only diagnosis when no usable KB is there, rather than
+    scaffolding one. `_store()` calls `init_schema()`, so without this a mistyped
+    root becomes a fresh empty KB that then reports as a healthy `0 facts` one —
+    the same reason `seed` guards its own path before opening the store.
+    """
+    if not cfg.db_path.is_file():
+        print(f"no KB at {cfg.root}", file=sys.stderr)
+        return 1
+    problem = _kb_schema_problem(cfg.db_path)
+    if problem is not None:
+        print(f"{cfg.db_path} is not a verinote KB ({problem})", file=sys.stderr)
+        return 1
+    return None
+
+
 def cmd_seed(cfg: Config, args: argparse.Namespace) -> int:
     if not cfg.db_path.is_file():
         print(
@@ -463,6 +479,9 @@ def _print_policy_state(store: Store) -> bool:
 def cmd_coverage(cfg: Config, args: argparse.Namespace) -> int:
     from verinote.engine import coverage
 
+    refusal = _require_existing_kb(cfg)
+    if refusal is not None:
+        return refusal
     store = _store(cfg)
     cov = coverage(store, root=cfg.root)
     halted = _print_policy_state(store)
@@ -493,6 +512,9 @@ def cmd_coverage(cfg: Config, args: argparse.Namespace) -> int:
 
 
 def cmd_status(cfg: Config, args: argparse.Namespace) -> int:
+    refusal = _require_existing_kb(cfg)
+    if refusal is not None:
+        return refusal
     store = _store(cfg)
     counts = store.status_counts()
     print(f"KB: {cfg.root}")
