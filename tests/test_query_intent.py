@@ -143,6 +143,30 @@ def test_intent_rejects_swapped_target_kinds_and_bad_value_type():
     )
     assert advisory.operator == ">"
     assert advisory.reason == "the entity is named but the relation is open"
+
+
+def test_intent_rejects_off_schema_comparison_values_on_any_kind():
+    """A stray comparison field is ignored only while it stays on-schema.
+
+    `operator: "="` on a lookup_object is schema-legal, so tolerating it is the
+    #237 fix. `operator: "contains"` is not in QUERY_INTENT_SCHEMA's enum at all,
+    so accepting it would put the validator's boundary outside the schema's --
+    admitting output no strict-mode provider could even produce.
+    """
+    with pytest.raises(ValueError, match="operator"):
+        QueryIntent(
+            kind=QueryIntentKind.LOOKUP_OBJECT,
+            subject=IntentTarget("entity", "샘플인물"),
+            relation=IntentTarget("relation", "역할"),
+            operator="contains",
+        )
+    with pytest.raises(ValueError, match="value_type"):
+        QueryIntent(
+            kind=QueryIntentKind.LOOKUP_OBJECT,
+            subject=IntentTarget("entity", "샘플인물"),
+            relation=IntentTarget("relation", "역할"),
+            value_type="duration",
+        )
     with pytest.raises(ValueError, match="relation or relation_candidates"):
         QueryIntent(
             kind=QueryIntentKind.DISCOVER_ENTITY_RELATIONS,
