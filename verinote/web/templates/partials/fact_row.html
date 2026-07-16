@@ -2,9 +2,9 @@
 <tr id="fact-{{ f['id'] }}" class="fact status-{{ f['status'] }}">
   <td class="triple">
     <div>
-      <span class="subj term-{{ f['subject_kind'] }}" title="{{ f['subject_kind'] }}">{{ f['subject_display'] }}</span>
-      <span class="rel term-{{ f['relation_kind'] }}" title="{{ f['relation_kind'] }}">{{ f['relation_display'] }}</span>
-      <span class="obj term-{{ f['object_kind'] }}" title="{{ f['object_kind'] }}">{{ f['object_display'] }}</span>
+      <span class="subj term-{{ f['subject_kind'] }}" aria-label="{{ f['subject_display'] }} ({{ f['subject_kind'] }})">{{ f['subject_display'] }}</span>
+      <span class="rel term-{{ f['relation_kind'] }}" aria-label="{{ f['relation_display'] }} ({{ f['relation_kind'] }})">{{ f['relation_display'] }}</span>
+      <span class="obj term-{{ f['object_kind'] }}" aria-label="{{ f['object_display'] }} ({{ f['object_kind'] }})">{{ f['object_display'] }}</span>
     </div>
     <div class="row-meta">
       <span class="badge badge-{{ f['status'] }}">{{ f['status'] }}</span>
