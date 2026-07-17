@@ -281,6 +281,31 @@ def test_both_templates_carry_the_visually_hidden_kind_text() -> None:
         )
 
 
+def _rules(css: str) -> list[tuple[str, str, int]]:
+    """Every rule in the sheet as ``(selector, body, nesting_depth)``.
+
+    Depth 0 is the top level; a rule inside ``@media`` and friends sits deeper.
+    Written as a brace scanner rather than a regex because a regex can only find *a*
+    rule, and what matters here is finding *all* of them plus where each one sits.
+    """
+    rules: list[tuple[str, str, int]] = []
+    stack: list[tuple[str, int, int]] = []
+    depth = 0
+    start = 0
+    for i, ch in enumerate(css):
+        if ch == "{":
+            stack.append((" ".join(css[start:i].split()), depth, i + 1))
+            depth += 1
+            start = i + 1
+        elif ch == "}":
+            depth -= 1
+            if stack:
+                selector, rule_depth, body_start = stack.pop()
+                rules.append((selector, css[body_start:i], rule_depth))
+            start = i + 1
+    return rules
+
+
 def test_visually_hidden_helper_keeps_the_text_in_the_accessibility_tree() -> None:
     """The helper must hide from eyes only -- not from assistive tech.
 
@@ -288,14 +313,31 @@ def test_visually_hidden_helper_keeps_the_text_in_the_accessibility_tree() -> No
     ``visibility: hidden`` prune the node from the accessibility tree as well, so a
     helper written that way would render this whole PR a no-op while every markup
     assertion above still passed. Pin the clip-based idiom instead.
+
+    Checked across the *whole* sheet, not just the first matching rule. CSS cascades:
+    a later rule of equal specificity wins, so reading one rule and stopping would
+    wave through a `display: none` appended at the bottom of app.css -- precisely the
+    failure this test exists to catch -- and app.css grows by appending. Sitting at
+    the top level matters for the same reason: tucked inside `@media print` the helper
+    would not apply on screen at all.
     """
     css = re.sub(r"/\*.*?\*/", "", CSS_PATH.read_text(encoding="utf-8"), flags=re.DOTALL)
 
-    match = re.search(rf"(?m)^\s*\.{HIDDEN_CLASS}\s*\{{([^{{}}]*)\}}", css)
-    assert match, f"app.css defines no unscoped `.{HIDDEN_CLASS}` rule"
+    matching = [rule for rule in _rules(css) if rule[0] == f".{HIDDEN_CLASS}"]
+    assert len(matching) == 1, (
+        f"app.css has {len(matching)} `.{HIDDEN_CLASS}` rules; expected exactly 1. "
+        "Zero means the helper is gone. Two or more means the cascade decides, and a "
+        "later one silently overrides the hiding this test checks below."
+    )
+    _, body, depth = matching[0]
+    assert depth == 0, (
+        f"the `.{HIDDEN_CLASS}` rule is nested {depth} level(s) deep (inside an "
+        "at-rule such as @media); it would not apply on screen and the kind text "
+        "would be painted onto the page"
+    )
 
     declarations = {}
-    for chunk in match.group(1).split(";"):
+    for chunk in body.split(";"):
         prop, sep, value = chunk.partition(":")
         if sep:
             declarations[" ".join(prop.split())] = " ".join(value.split())
