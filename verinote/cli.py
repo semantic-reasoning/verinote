@@ -161,13 +161,14 @@ def _seed(store: Store) -> None:
         store.add_fact(subj, rel, obj, status=status, confidence=conf, source_id=sid, note=note)
 
 
-# The three ways an existing `kb.sqlite` can fail to be a usable KB. They are not
+# The four ways an existing `kb.sqlite` can fail to be a usable KB. They are not
 # interchangeable: `init`'s whole job is to put a schema into a database that has
-# none, so only the *unreadable* one may stop it. `seed` must refuse all three —
+# none, so only the *unreadable* one may stop it. `seed` must refuse all four —
 # it fills an existing KB and never creates one.
 KB_UNREADABLE = "not a readable SQLite database"
 KB_NO_SCHEMA = "no `facts` table"
 KB_ALIEN_FACTS = "its `facts` table is not verinote's"
+KB_PARTIAL_SCHEMA = "it has a `facts` table but is missing the rest of a KB"
 
 # What a `facts` table must have for the file to be a verinote KB at all. This is
 # deliberately *not* the current schema's column set: `_ensure_schema_migrations()`
@@ -176,6 +177,20 @@ KB_ALIEN_FACTS = "its `facts` table is not verinote's"
 # fact itself — every verinote KB has always had them, and no migration adds them —
 # so the check stays put as the schema grows around it.
 _KB_FACTS_IDENTITY_COLUMNS = frozenset({"subject", "relation", "object", "status"})
+
+# The tables that make the file a KB rather than a `facts` table someone left in a
+# database. Same principle as the columns above, one level up, and chosen the same
+# way: these four are every table `schema.sql` has had since the initial commit, so
+# no KB verinote has ever written can lack them.
+#
+# This is deliberately *not* derived from today's `schema.sql`. `init_schema()` runs
+# that script on every open, which makes `CREATE TABLE IF NOT EXISTS` the migration
+# that adds new tables to old KBs — `kb_meta`, `fact_evidence`, `fact_events`,
+# `source_artifacts`, `extraction_jobs`, `source_chunks` and `questions` all arrived
+# that way. Deriving the set would therefore refuse exactly the KBs that migration
+# exists to repair. The intersection over the schema's history is the part that has
+# never been a migration's job, and only that part can be demanded up front.
+_KB_CORE_TABLES = frozenset({"facts", "review_log", "runs", "sources"})
 
 
 def _kb_schema_problem(db_path: Path) -> str | None:
@@ -191,6 +206,12 @@ def _kb_schema_problem(db_path: Path) -> str | None:
     file the caller only meant to read. Checking the columns keeps that write from
     ever starting.
 
+    The columns alone are not enough either, and for the mirror-image reason. A
+    file holding nothing but a verinote-shaped `facts` table does not fail the
+    mismatch: `IF NOT EXISTS` *completes* it into a real schema, and the read-only
+    command then reports rc=0 on a KB it just wrote itself. Requiring the core
+    tables refuses that file while it is still only a `facts` table.
+
     The path is percent-encoded via `Path.as_uri()` before it goes into the
     SQLite URI. Interpolating it raw truncates any root holding a `?` or `#` at
     that character, which both misreports a healthy KB as schema-less *and*
@@ -201,18 +222,25 @@ def _kb_schema_problem(db_path: Path) -> str | None:
         conn = sqlite3.connect(uri, uri=True)
         conn.row_factory = sqlite3.Row
         try:
-            row = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'facts'"
-            ).fetchone()
-            if not row:
+            tables = {
+                r["name"]
+                for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+            }
+            if "facts" not in tables:
                 return KB_NO_SCHEMA
             columns = {c["name"] for c in conn.execute("PRAGMA table_info(facts)")}
         finally:
             conn.close()
     except sqlite3.DatabaseError:
         return KB_UNREADABLE
+    # `facts` is asked about first, and separately: "this is not verinote's `facts`"
+    # is a sharper answer than "tables are missing" for a file that is somebody
+    # else's, and it stays the answer it was before the core-table check existed.
     if not _KB_FACTS_IDENTITY_COLUMNS <= columns:
         return KB_ALIEN_FACTS
+    missing = _KB_CORE_TABLES - tables
+    if missing:
+        return f"{KB_PARTIAL_SCHEMA} (no {', '.join('`' + t + '`' for t in sorted(missing))})"
     return None
 
 
