@@ -13,9 +13,12 @@ the visible ``person("Ada")``, losing the kind. These tests therefore both forbi
 that pattern and check the announced text.
 
 What "announced" means here, honestly: there is no accessible-name library in this
-project's dependencies (``lxml`` is installed transitively but is not in the ``test``
-extra, so leaning on it would pass locally and vanish in CI). So instead of a full
-accname computation, ``_TripleSlots`` parses the real DOM and concatenates the
+project's dependencies. (``lxml`` is importable -- the ``test`` extra pulls
+python-docx, which requires it -- but it is an *undeclared transitive* dep: nothing
+here asks for lxml, so the day python-docx drops or swaps it these tests break for a
+reason that has nothing to do with them. That, not any CI gap, is why stdlib is used
+below.) So instead of a full accname computation, ``_TripleSlots`` parses the real DOM
+and concatenates the
 descendant *text nodes* of each slot -- which is exactly what an AT reads out for a
 name-prohibited ``generic`` span in browse mode. It is an approximation in one
 respect: the parser knows nothing about CSS, so it cannot tell that the kind text is
@@ -309,9 +312,20 @@ def test_visually_hidden_helper_keeps_the_text_in_the_accessibility_tree() -> No
     assert declarations.get("position") == "absolute", (
         ".visually-hidden must be taken out of flow, or it shifts the triple layout"
     )
-    assert "clip-path" in declarations, (
-        ".visually-hidden must clip the text away rather than unrender it"
-    )
     assert declarations.get("overflow") == "hidden", (
         ".visually-hidden needs overflow:hidden or the text spills out of its 1px box"
+    )
+    # Values, not just presence. Asserting `"clip-path" in declarations` would wave
+    # through `clip-path: inset(0)`, which clips away nothing, and a box with no size
+    # cap, which leaves the kind text painted over the page: hidden from nobody, while
+    # every markup assertion above still passes. The three below are what actually make
+    # the text unpaintable.
+    assert (declarations.get("width"), declarations.get("height")) == ("1px", "1px"), (
+        ".visually-hidden must collapse to a 1px box; without a size cap the kind text "
+        f"renders on top of the page (got width={declarations.get('width')!r}, "
+        f"height={declarations.get('height')!r})"
+    )
+    assert declarations.get("clip-path") == "inset(50%)", (
+        ".visually-hidden must clip the text away with inset(50%); e.g. inset(0) clips "
+        f"nothing and leaves the kind visible (got {declarations.get('clip-path')!r})"
     )
