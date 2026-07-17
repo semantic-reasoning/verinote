@@ -71,11 +71,14 @@ def test_toggle_leaves_superseded_untouched_and_unlogged(tmp_path):
     )
     log_before = _actions(s, fact_id)
 
-    row = s.toggle_review(fact_id)
+    decision = s.toggle_review(fact_id)
 
     # The rejected fact stays rejected — no revival to confirmed.
-    assert row is not None
-    assert row["status"] == "superseded"
+    assert decision.fact is not None
+    assert decision.fact["status"] == "superseded"
+    # And the store says so: no transition happened, so a caller owes it no
+    # follow-on effects.
+    assert decision.changed is False
     assert s.get_fact(fact_id)["status"] == "superseded"
     # No audit noise: the no-op toggle writes no `toggled` row.
     assert _actions(s, fact_id) == log_before
@@ -91,8 +94,11 @@ def test_toggle_still_flips_review_and_engine_tiers(tmp_path):
     review_id = s.add_fact("Report", "author", "Kim", status="needs_review")
     engine_id = s.add_fact("Report", "author", "Lee", status="confirmed")
 
-    assert s.toggle_review(review_id)["status"] == "confirmed"
-    assert s.toggle_review(engine_id)["status"] == "needs_review"
+    for fact_id, expected in ((review_id, "confirmed"), (engine_id, "needs_review")):
+        decision = s.toggle_review(fact_id)
+        assert decision.fact["status"] == expected
+        # A real flip is reported as one.
+        assert decision.changed is True
 
 
 # --- #232: accept/reject are transition-aware, not blind writes -----------
@@ -102,10 +108,13 @@ def test_reject_then_accept_keeps_a_fact_superseded(tmp_path):
     s = _store(tmp_path)
     fact_id = s.add_fact("Report", "author", "Kim", status="needs_review")
 
-    assert s.reject_fact(fact_id)["status"] == "superseded"
+    rejected = s.reject_fact(fact_id)
+    assert rejected.fact["status"] == "superseded"
+    assert rejected.changed is True
     # The whole point of the gate: accept must not resurrect a rejection.
     reaccepted = s.accept_fact(fact_id)
-    assert reaccepted["status"] == "superseded"
+    assert reaccepted.fact["status"] == "superseded"
+    assert reaccepted.changed is False
     assert s.get_fact(fact_id)["status"] == "superseded"
     # One rejection logged, and no `accepted` row from the refused accept.
     actions = _actions(s, fact_id)
@@ -118,10 +127,13 @@ def test_reaccepting_a_confirmed_fact_is_a_silent_noop(tmp_path):
     fact_id = s.add_fact("Report", "author", "Kim", status="confirmed")
     log_before = _actions(s, fact_id)
 
-    row = s.accept_fact(fact_id)
+    decision = s.accept_fact(fact_id)
 
-    assert row["status"] == "confirmed"
-    # No write, no audit growth — accept only moves review-tier rows.
+    assert decision.fact["status"] == "confirmed"
+    # No write, no audit growth — accept only moves review-tier rows. The
+    # `changed=False` is what lets a caller tell this apart from a real accept
+    # that happens to land on the same status.
+    assert decision.changed is False
     assert _actions(s, fact_id) == log_before
 
 
@@ -131,8 +143,10 @@ def test_accept_promotes_a_review_fact(tmp_path):
     candidate = s.add_fact("Report", "author", "Kim", status="candidate")
     needs = s.add_fact("Report", "author", "Lee", status="needs_review")
 
-    assert s.accept_fact(candidate)["status"] == "confirmed"
-    assert s.accept_fact(needs)["status"] == "confirmed"
+    for fact_id in (candidate, needs):
+        decision = s.accept_fact(fact_id)
+        assert decision.fact["status"] == "confirmed"
+        assert decision.changed is True
     assert _actions(s, candidate) == ["accepted"]
 
 
@@ -288,12 +302,14 @@ def test_toggle_cannot_overwrite_a_reject_that_lands_mid_transition(tmp_path):
         return row
 
     toggling.get_fact = reject_once_after_the_read
-    row = toggling.toggle_review(fact_id)
+    decision = toggling.toggle_review(fact_id)
 
     assert interleaved, "the reject never landed — the test proves nothing"
     # The rejection is terminal: the stale toggle target loses.
     assert rejecting.get_fact(fact_id)["status"] == "superseded"
-    assert row["status"] == "superseded"
+    assert decision.fact["status"] == "superseded"
+    # The loser reports its loss, so the route above it skips the follow-on pass.
+    assert decision.changed is False
     # And the losing toggle logged no `toggled` row for a write it never made.
     assert "toggled" not in _actions(rejecting, fact_id)
 
@@ -324,12 +340,14 @@ def test_accept_cannot_overwrite_a_reject_that_lands_mid_transition(tmp_path):
         return row
 
     accepting.get_fact = reject_once_after_the_read
-    row = accepting.accept_fact(fact_id)
+    decision = accepting.accept_fact(fact_id)
 
     assert interleaved, "the reject never landed — the test proves nothing"
     # The rejection is terminal: the stale accept loses.
     assert rejecting.get_fact(fact_id)["status"] == "superseded"
-    assert row["status"] == "superseded"
+    assert decision.fact["status"] == "superseded"
+    # The loser reports its loss, so the route above it skips the follow-on pass.
+    assert decision.changed is False
     # And the losing accept logged no `accepted` row for a write it never made.
     assert "accepted" not in _actions(rejecting, fact_id)
 
@@ -490,3 +508,109 @@ def test_accept_all_promotes_a_corroborated_fact_in_another_source(tmp_path):
     # the route runs the rule so it doesn't sit in the queue until the next job.
     assert store.get_fact(elsewhere)["status"] == "accepted"
     assert "auto_accepted" in _actions(store, elsewhere)
+
+
+# --- #263 review 2: a no-op / replayed POST is not a review decision ---------
+
+
+def _eligible_pair(store: Store):
+    """One confirmed fact and one review-tier fact stating the same triple from
+    two analysed sources: the review-tier one is already auto-accept eligible.
+
+    It is the tripwire for these tests — if a route runs the rule at all, this
+    fact moves to `accepted`.
+    """
+    source_a = store.add_source("sources/a.txt")
+    source_b = store.add_source("sources/b.txt")
+    job_a = _done_job(store, source_a)
+    job_b = _done_job(store, source_b)
+    store.add_fact(
+        "Report", "author", "Kim",
+        status="confirmed", source_id=source_a, job_id=job_a,
+    )
+    eligible = store.add_fact(
+        "Report", "author", "Kim",
+        status="needs_review", source_id=source_b, job_id=job_b,
+    )
+    return eligible
+
+
+def _auto_accept_events(store: Store, fact_id: int) -> list:
+    return [
+        e for e in store.fact_events(fact_id) if e["event_type"] == "auto_accept_applied"
+    ]
+
+
+def _assert_untouched(store: Store, eligible: int, resp) -> None:
+    assert store.get_fact(eligible)["status"] == "needs_review"
+    assert "auto_accepted" not in _actions(store, eligible)
+    assert not _auto_accept_events(store, eligible)
+    assert "HX-Refresh" not in resp.headers
+
+
+def test_replayed_accept_does_not_run_auto_accept(tmp_path):
+    # A second /accept on an already-confirmed fact writes nothing: the human
+    # made no new decision in this request, so nothing may be promoted off it.
+    client, store = _auto_accept_client(tmp_path)
+    eligible = _eligible_pair(store)
+    target = store.add_fact("Ledger", "owner", "Park", status="confirmed")
+
+    resp = client.post(f"/facts/{target}/accept")
+
+    assert resp.status_code == 200
+    assert store.get_fact(target)["status"] == "confirmed"
+    _assert_untouched(store, eligible, resp)
+
+
+def test_accept_on_a_superseded_fact_does_not_run_auto_accept(tmp_path):
+    # Accept refuses to revive a rejection, so it is a no-op here too.
+    client, store = _auto_accept_client(tmp_path)
+    eligible = _eligible_pair(store)
+    target = store.add_fact("Ledger", "owner", "Park", status="superseded")
+
+    resp = client.post(f"/facts/{target}/accept")
+
+    assert resp.status_code == 200
+    assert store.get_fact(target)["status"] == "superseded"
+    _assert_untouched(store, eligible, resp)
+
+
+def test_replayed_reject_does_not_run_auto_accept(tmp_path):
+    # Reject is terminal and idempotent; the replay decides nothing.
+    client, store = _auto_accept_client(tmp_path)
+    eligible = _eligible_pair(store)
+    target = store.add_fact("Ledger", "owner", "Park", status="superseded")
+
+    resp = client.post(f"/facts/{target}/reject")
+
+    assert resp.status_code == 200
+    assert store.get_fact(target)["status"] == "superseded"
+    _assert_untouched(store, eligible, resp)
+
+
+def test_toggle_on_a_superseded_fact_does_not_run_auto_accept(tmp_path):
+    # A toggle that hits the no-revival guard writes nothing either.
+    client, store = _auto_accept_client(tmp_path)
+    eligible = _eligible_pair(store)
+    target = store.add_fact("Ledger", "owner", "Park", status="superseded")
+
+    resp = client.post(f"/facts/{target}/toggle")
+
+    assert resp.status_code == 200
+    assert store.get_fact(target)["status"] == "superseded"
+    _assert_untouched(store, eligible, resp)
+
+
+def test_reject_that_really_transitions_still_runs_auto_accept(tmp_path):
+    # Over-fix guard: only no-ops are filtered. A reject that actually moves a
+    # fact is a decision, and the rule still runs for the siblings it unblocks.
+    client, store = _auto_accept_client(tmp_path)
+    eligible = _eligible_pair(store)
+    target = store.add_fact("Ledger", "owner", "Park", status="needs_review")
+
+    resp = client.post(f"/facts/{target}/reject")
+
+    assert resp.status_code == 200
+    assert store.get_fact(target)["status"] == "superseded"
+    assert store.get_fact(eligible)["status"] == "accepted"
+    assert resp.headers.get("HX-Refresh") == "true"

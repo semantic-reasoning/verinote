@@ -3,6 +3,7 @@
 
 from verinote.store.db import (
     DEFAULT_REVIEW_PAGE_SIZE,
+    FactDecision,
     POLICY_MARKER_KEY,
     REVIEW_PAGE_SIZES,
     ReviewQueuePage,
@@ -21,6 +22,7 @@ from verinote.store.tiers import (
 # accessors above instead — they resolve `db.ENGINE_STATUSES` at call time.
 __all__ = [
     "Store",
+    "FactDecision",
     "POLICY_MARKER_KEY",
     "engine_statuses",
     "review_statuses",
