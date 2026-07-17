@@ -33,6 +33,11 @@ def repair_questions(
     """Attempt to repair every `review_required` question. Returns per-question
     results: {id, accepted, reason}. Only engine-validated proposals are applied.
 
+    The model can propose but never retire the review flag: a question leaves
+    `review_required` only when the engine validates a query that answers *that*
+    question. A model declaring `no_answer`/`ambiguous` is recorded as a reason
+    and the question stays flagged, so a later run can still repair it.
+
     With `allow_direct_datalog_fallback` (the default), a question the planner
     cannot map costs two provider calls: intent extraction, then the direct
     Datalog fallback. That includes the case where intent extraction *failed* —

@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: MPL-2.0
 import builtins
 
+import pytest
+
 from verinote.engine.terms import Compound, StringLit
 from verinote.llm.base import LLMError
 from verinote.pipeline.query import load_query
@@ -334,6 +336,53 @@ def test_repair_rejects_fallback_answering_a_different_question(
     assert "answer_q999" not in (load_query(s) or "")
 
 
+@pytest.mark.parametrize(
+    "name, snippet",
+    [
+        # One case per place a foreign answer predicate can appear, each isolated
+        # so it exercises a single arm of the guard.
+        (
+            "declaration",
+            ".decl answer_q999(value: symbol)\n"
+            'answer_q{qid}(O) :- relation("Sample Person", "born_in", O).',
+        ),
+        (
+            "rule head",
+            'answer_q{qid}(O) :- relation("Sample Person", "born_in", O).\n'
+            'answer_q999(O) :- relation("Sample Person", "born_in", O).',
+        ),
+        (
+            "fact",
+            'answer_q{qid}(O) :- relation("Sample Person", "born_in", O).\n'
+            'answer_q999("Sample Place").',
+        ),
+    ],
+)
+def test_repair_rejects_a_foreign_answer_predicate_anywhere(
+    tmp_path, fake_client, intent_payload, name, snippet
+):
+    """Each spot a foreign answer predicate can hide is rejected on its own."""
+    s, qid = _store_with_review_required(tmp_path)
+    s.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
+    client = fake_client(
+        intent=intent_payload("unknown_or_unsupported", reason="planner cannot map"),
+        query=lambda q, i: snippet.format(qid=i),
+    )
+    results = repair_questions(s, client, root=tmp_path)
+
+    # The guard's own reason, not a downstream `unknown predicate` rejection.
+    assert results == [
+        {
+            "id": qid,
+            "accepted": False,
+            "reason": f"invalid query: answer predicate must be answer_q{qid}, "
+            "got answer_q999",
+        }
+    ]
+    assert s.questions()[0]["status"] == "review_required"
+    assert "answer_q999" not in (load_query(s) or "")
+
+
 def test_repair_rejects_fallback_answering_extra_questions(
     tmp_path, fake_client, intent_payload
 ):
@@ -360,6 +409,62 @@ def test_repair_rejects_fallback_answering_extra_questions(
     ]
     assert s.questions()[0]["status"] == "review_required"
     assert "answer_q999" not in (load_query(s) or "")
+
+
+@pytest.mark.parametrize(
+    "declared, claim",
+    [
+        ('no_answer("nothing in the KB")', "nothing in the KB"),
+        ('ambiguous("two readings")', "two readings"),
+    ],
+)
+def test_repair_does_not_let_the_model_retire_a_review_flag(
+    tmp_path, fake_client, intent_payload, declared, claim
+):
+    """The model saying `no_answer`/`ambiguous` must not retire the review flag.
+
+    These statuses are durable and no command re-picks them, so promoting an
+    unvalidated model claim would close the question for good.
+    """
+    s, qid = _store_with_review_required(tmp_path)
+    client = fake_client(
+        intent=intent_payload("unknown_or_unsupported", reason="planner cannot map"),
+        query=lambda q, i: declared,
+    )
+    results = repair_questions(s, client, root=tmp_path)
+
+    assert results == [{"id": qid, "accepted": False, "reason": results[0]["reason"]}]
+    q = s.questions()[0]
+    assert q["status"] == "review_required"
+    # The claim is recorded, attributed to the model rather than to the engine.
+    assert claim in q["reason"]
+    assert "unvalidated model claim" in q["reason"]
+    assert declared not in (load_query(s) or "")
+
+
+def test_repair_model_no_answer_claim_stays_repairable(
+    tmp_path, fake_client, intent_payload
+):
+    """A rejected model claim must leave the question repairable on a later run."""
+    s, qid = _store_with_review_required(tmp_path)
+    s.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
+    giving_up = fake_client(
+        intent=intent_payload("unknown_or_unsupported", reason="planner cannot map"),
+        query=lambda q, i: 'no_answer("nothing in the KB")',
+    )
+    repair_questions(s, giving_up, root=tmp_path)
+    assert s.questions()[0]["status"] == "review_required"
+
+    # A later run with a model that produces a real query still repairs it.
+    working = fake_client(
+        intent=intent_payload("unknown_or_unsupported", reason="planner cannot map"),
+        query=lambda q, i: f'answer_q{i}(O) :- relation("Sample Person", "born_in", O).',
+    )
+    results = repair_questions(s, working, root=tmp_path)
+
+    assert results == [{"id": qid, "accepted": True, "reason": ""}]
+    assert s.questions()[0]["status"] == "translated"
+    assert f"answer_q{qid}" in (load_query(s) or "")
 
 
 def test_repair_llm_error_costs_two_provider_calls(tmp_path, fake_client):
