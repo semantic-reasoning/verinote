@@ -389,9 +389,16 @@ def _validate_query_contract(program: Program) -> None:
                 )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, order=True)
 class _Derived:
-    """One derived tuple with the identity of the rule that derived it."""
+    """One derived tuple with the identity of the rule that derived it.
+
+    Ordered because `run_check` sorts each level's tuples, and ordering by
+    `text` first keeps the report's lines in the order they used to be in when
+    a level was a plain list of rendered strings. The remaining fields only
+    break ties, so two tuples rendering to the same line still order
+    deterministically rather than by the engine's delta order.
+    """
 
     text: str
     values: tuple[str, ...]
