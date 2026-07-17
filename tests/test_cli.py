@@ -995,7 +995,13 @@ def test_read_only_commands_still_accept_a_kb_predating_the_job_id_column(
 def _alien_sources_db(root: Path) -> Path:
     """A verinote `facts` table beside somebody else's `sources` table.
 
-    Passes the `facts` probe, then fails deeper in on `SELECT ... ORDER BY path`.
+    Passes the probe, then fails deeper in on `SELECT ... ORDER BY path`.
+
+    The core tables are all present and only `sources`' *columns* are alien, which
+    is what keeps this file past the probe: the probe asks which tables are there,
+    not what every column of each one looks like — checking that would be the
+    schema-drift trap it is shaped to avoid. So this file is exactly the case the
+    probe cannot catch by construction, which is why the wrap has to.
     """
     root.mkdir(parents=True, exist_ok=True)
     db = root / "kb.sqlite"
@@ -1007,6 +1013,8 @@ def _alien_sources_db(root: Path) -> Path:
             object TEXT, status TEXT
         );
         CREATE TABLE sources (nonsense TEXT);
+        CREATE TABLE runs (id INTEGER PRIMARY KEY);
+        CREATE TABLE review_log (id INTEGER PRIMARY KEY);
         """
     )
     conn.commit()
@@ -1091,3 +1099,106 @@ def test_the_two_refusal_paths_do_not_borrow_each_others_diagnosis(
     assert "is not a verinote KB" not in wrap_err
 
 
+def _partial_schema_db(root: Path) -> Path:
+    """A verinote-shaped `facts` table and nothing else — not a KB.
+
+    Every column the identity probe asks for is here, so a facts-only probe
+    calls this a KB. But no verinote KB has ever consisted of `facts` alone:
+    `sources`, `runs` and `review_log` have been in `schema.sql` since the
+    initial commit, so a file missing them was never written by verinote.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    db = root / "kb.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE facts (id INTEGER PRIMARY KEY, subject TEXT, "
+        "relation TEXT, object TEXT, status TEXT)"
+    )
+    conn.commit()
+    conn.close()
+    return db
+
+
+def test_read_only_commands_still_accept_a_kb_predating_the_later_tables(
+    tmp_path, monkeypatch, capsys
+):
+    """The other edge of the core-table check, and the one that bounds its reach.
+
+    `schema.sql` grew from four tables to eleven, and `init_schema()` runs it on
+    every open — so `CREATE TABLE IF NOT EXISTS` is how `kb_meta`, `fact_events`
+    and the rest reach KBs written before they existed. Demanding the *current*
+    table set here would refuse those KBs outright, which is why the check asks
+    only for the four tables the schema has had since its initial commit.
+
+    So this is a KB from before any of the later tables existed: it must still
+    open and self-heal, exactly as the missing-column case above does. The
+    sibling test proves a `facts` table alone is refused; this one proves the
+    refusal stops there and does not reach real KBs.
+    """
+    _isolated(monkeypatch, tmp_path)
+    root = tmp_path / "ancient"
+    root.mkdir()
+    conn = sqlite3.connect(root / "kb.sqlite")
+    conn.executescript(
+        """
+        CREATE TABLE sources (
+            id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE,
+            added_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE runs (
+            id INTEGER PRIMARY KEY, started_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE facts (
+            id INTEGER PRIMARY KEY, subject TEXT NOT NULL, relation TEXT NOT NULL,
+            object TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'candidate'
+        );
+        CREATE TABLE review_log (
+            id INTEGER PRIMARY KEY, fact_id INTEGER NOT NULL,
+            action TEXT NOT NULL, at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("VERINOTE_ROOT", str(root))
+
+    assert cli.main(["status"]) == 0
+
+    assert "KB:" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("command", ["status", "coverage"])
+def test_read_only_commands_refuse_a_partial_schema_instead_of_completing_it(
+    command, tmp_path, monkeypatch, capsys
+):
+    """A file with only `facts` must not be finished into a KB and reported healthy.
+
+    The identity probe reads the `facts` columns, which this file has, so it used
+    to get through — and then `_store()` ran `init_schema()`, whose
+    `CREATE TABLE IF NOT EXISTS` *completed* the rest of the schema. The command
+    then found a coherent (empty) KB and reported rc=0. That is the worst of both
+    outcomes this PR exists to prevent: a read-only diagnosis wrote to the file,
+    and then vouched for what it had just written.
+    """
+    _isolated(monkeypatch, tmp_path)
+    root = tmp_path / "partial"
+    db = _partial_schema_db(root)
+    before = db.read_bytes()
+    before_mtime = db.stat().st_mtime_ns
+    monkeypatch.setenv("VERINOTE_ROOT", str(root))
+
+    assert cli.main([command]) == 1
+
+    err = capsys.readouterr().err
+    assert "Traceback" not in err
+    assert "is not a verinote KB" in err
+    # The probe refuses before anything opens the file read-write, so the bytes
+    # *and* the mtime are the evidence that nothing ran `init_schema()` here.
+    assert db.read_bytes() == before
+    assert db.stat().st_mtime_ns == before_mtime
+    # The tables `init_schema()` would have added are the tell: if any of these
+    # exist, the read-only command wrote the schema it then reported on.
+    conn = sqlite3.connect(db)
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    conn.close()
+    assert tables == {"facts"}
