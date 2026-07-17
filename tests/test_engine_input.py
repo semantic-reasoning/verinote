@@ -22,6 +22,10 @@ from verinote.engine import (
     run_check,
 )
 from verinote.engine.duckdb_backend import run_check_duckdb
+from verinote.engine.policy_vocabulary import (
+    FUNCTIONAL_CONFLICT_COLUMNS,
+    FUNCTIONAL_CONFLICT_RULE,
+)
 from verinote.engine.terms import StringLit
 from verinote.pipeline.engine_input import annotate_source_labels, engine_relation_rows
 from verinote.pipeline.query import query_path
@@ -38,6 +42,12 @@ functional("{relation}").
 error_functional_conflict(S, R) :-
     relation(S, R, A), relation(S, R, B), functional(R), A != B.
 """
+
+
+# The rule identity an engine puts on a row it derived from verinote's own
+# functional-conflict declaration — what a hand-built `FindingRow` needs to be
+# the thing the annotator is willing to read.
+_CONFLICT_SHAPE = (FUNCTIONAL_CONFLICT_RULE, FUNCTIONAL_CONFLICT_COLUMNS)
 
 
 def _store(tmp_path) -> Store:
@@ -306,17 +316,66 @@ def test_a_finding_two_rows_rendered_alike_gets_no_note(tmp_path):
         warnings=0,
         text=line,
         findings=[line],
-        # Both render to `line`. The first would match the `Org 2` fact above, so
-        # resolving the tie by arrival order would produce a note here.
+        # Both render to `line`, and both are verinote's own functional-conflict
+        # shape, so the tie is the only thing standing between this line and a
+        # note: the first row would match the `Org 2` fact above, so resolving
+        # the tie by arrival order would produce one.
         finding_rows=[
-            FindingRow(line, ("Org 2", "established_on")),
-            FindingRow(line, ("Org", "2 established_on")),
+            FindingRow(line, ("Org 2", "established_on"), *_CONFLICT_SHAPE),
+            FindingRow(line, ("Org", "2 established_on"), *_CONFLICT_SHAPE),
         ],
     )
 
     annotate_source_labels(report, rows)
 
     assert report.findings == [line]
+
+
+def test_a_finding_from_a_rule_verinote_does_not_own_gets_no_note(tmp_path):
+    """A note may only read columns whose meaning verinote declared itself.
+
+    `error_mentions(S, O) :- relation(S, "mentions", O)` is a rule a user can
+    write (#159), and its row is `(subject, object)` — no relation column at all.
+    Here the object *is* the label `established_on`, so treating the row's values
+    as an unordered bag finds "subject Org, relation established_on" and hands
+    this finding the facts of an unrelated `설립` row. The finding is about
+    `#2 Org mentions established_on`; nothing in it came from `#1`.
+    """
+    s = _store(tmp_path)
+    _write_policy(
+        s,
+        ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
+        ".decl error_mentions(subject: symbol, object: symbol)\n"
+        'error_mentions(S, O) :- relation(S, "mentions", O).\n',
+    )
+    s.add_fact("Org", "설립", "2020", status="accepted")
+    s.add_fact("Org", "mentions", "established_on", status="accepted")
+
+    rep = verify(s)
+
+    assert rep.findings == ["ERROR mentions: Org established_on"]
+
+
+def test_a_note_names_only_the_facts_of_the_conflict_s_own_subject(tmp_path):
+    """A fact is named for its position in the row, not for being somewhere in it.
+
+    A subject may be spelled like a relation: the KB below holds a `role`
+    *subject* alongside the `role` conflict of subject `A`. Comparing the row's
+    values as a bag makes `role/역할=Unrelated` match on the relation label while
+    its subject matches on the subject label — and an unrelated fact is named as
+    provenance for a conflict it is not part of.
+    """
+    s = _store(tmp_path)
+    _write_policy(s, _FUNCTIONAL_POLICY.format(relation="role"))
+    one = s.add_fact("A", "역할", "PI", status="accepted")
+    two = s.add_fact("A", "역할", "Reviewer", status="accepted")
+    s.add_fact("role", "역할", "Unrelated", status="accepted")
+
+    rep = verify(s)
+
+    assert rep.findings == [
+        f"ERROR functional_conflict: A role (역할 #{one}=PI, 역할 #{two}=Reviewer)"
+    ]
 
 
 def test_findings_for_unaliased_relations_are_left_alone(tmp_path):

@@ -416,8 +416,8 @@ def _collect_report(
     # Keyed by rendered line: findings have always been deduplicated by the text
     # they show, and two distinct rows can render to one line. The value is that
     # line's row, or None once it is ambiguous -- see `_record_finding`.
-    errors: dict[str, tuple[str, ...] | None] = {}
-    warnings: dict[str, tuple[str, ...] | None] = {}
+    errors: dict[str, _Derived | None] = {}
+    warnings: dict[str, _Derived | None] = {}
     answers_by_q: dict[str, list[str]] = {}
     for name in sorted(declarations):
         if not (
@@ -434,12 +434,25 @@ def _collect_report(
             rows = [() for _row in rows]
         rows = _dedupe_rows_by_compare_key(rows)
         rendered_rows = [_render_finding_row(row) for row in rows]
+        columns = tuple(column.name for column in declarations[name].columns)
         if name.startswith(_ERROR_PREFIX):
             for row, rendered in zip(rows, rendered_rows):
-                _record_finding(errors, f"{name[len(_ERROR_PREFIX) :]}: {rendered}", row)
+                _record_finding(
+                    errors,
+                    f"{name[len(_ERROR_PREFIX) :]}: {rendered}",
+                    row,
+                    name,
+                    columns,
+                )
         elif name.startswith(_WARN_PREFIX):
             for row, rendered in zip(rows, rendered_rows):
-                _record_finding(warnings, f"{name[len(_WARN_PREFIX) :]}: {rendered}", row)
+                _record_finding(
+                    warnings,
+                    f"{name[len(_WARN_PREFIX) :]}: {rendered}",
+                    row,
+                    name,
+                    columns,
+                )
         elif name.startswith(_ANSWER_PREFIX):
             if rows:
                 qid = name[len(_ANSWER_PREFIX) :]
@@ -455,13 +468,13 @@ def _collect_report(
         f"WARN {w}" for w in sorted(warnings)
     ]
     finding_rows = [
-        FindingRow(f"ERROR {e}", values)
-        for e, values in sorted(errors.items())
-        if values is not None
+        derived.finding_row(f"ERROR {e}")
+        for e, derived in sorted(errors.items())
+        if derived is not None
     ] + [
-        FindingRow(f"WARN {w}", values)
-        for w, values in sorted(warnings.items())
-        if values is not None
+        derived.finding_row(f"WARN {w}")
+        for w, derived in sorted(warnings.items())
+        if derived is not None
     ]
     summary = f"errors: {len(errors)}  warnings: {len(warnings)}  facts: {len(facts)}"
     body = "\n".join(findings) if findings else NO_FINDINGS_TEXT
@@ -485,10 +498,24 @@ def _collect_report(
     )
 
 
+@dataclass(frozen=True)
+class _Derived:
+    """One derived tuple with the identity of the rule that derived it."""
+
+    values: tuple[str, ...]
+    rule: str
+    columns: tuple[str, ...]
+
+    def finding_row(self, text: str) -> FindingRow:
+        return FindingRow(text, self.values, self.rule, self.columns)
+
+
 def _record_finding(
-    bucket: dict[str, tuple[str, ...] | None],
+    bucket: dict[str, _Derived | None],
     text: str,
     row: tuple[object, ...],
+    rule: str,
+    columns: tuple[str, ...],
 ) -> None:
     """Record one finding line and the row behind it, keeping the line unique.
 
@@ -498,11 +525,11 @@ def _record_finding(
     given whichever row arrived first. A caller that cannot tell which row a
     line means must say nothing about it.
     """
-    values = _row_values(row)
-    if text in bucket and bucket[text] != values:
+    derived = _Derived(_row_values(row), rule, columns)
+    if text in bucket and bucket[text] != derived:
         bucket[text] = None
         return
-    bucket.setdefault(text, values)
+    bucket.setdefault(text, derived)
 
 
 def _row_values(row: tuple[object, ...]) -> tuple[str, ...]:
