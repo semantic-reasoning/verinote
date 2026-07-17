@@ -301,12 +301,20 @@ def _translate_direct_datalog_fallback(
 
     outcome = _non_executable_outcome(line)
     if outcome is not None:
-        status, reason = outcome
-        return status, line, reason
+        declared, claim = outcome
+        if declared == "review_required":
+            return "review_required", line, claim
+        # The model may raise the review flag but not retire it. `no_answer` and
+        # `ambiguous` are durable and no command re-picks them, so promoting a
+        # claim the engine never checked would close the question for good.
+        # The schema-aware path's `no_answer`/`ambiguous` are unaffected: those
+        # come from the engine finding no rows, not from the model's say-so.
+        reason = _short_reason(f"unvalidated model claim: {declared}: {claim}")
+        return "review_required", f"review_required({_lit(reason)})", reason
     if _is_review_required(line):
         reason = _short_reason(line.removeprefix("review_required"))
         return "review_required", line, reason
-    proposal = f".decl answer_q{qid}(value: symbol)\n{line}"
+    proposal = f".decl {ANSWER_PREFIX}{qid}(value: symbol)\n{line}"
     return classify_query_draft(store, qid, proposal)
 
 
