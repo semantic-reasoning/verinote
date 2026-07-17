@@ -222,11 +222,20 @@ def _schema_aware_query_flow_result(
             if llm_error_status == "translation_failed":
                 return _QueryFlowResult("translation_failed", None, reason)
             reason = _short_reason(f"llm error: {exc}")
+            # No fallback here. The direct-Datalog fallback answers "planning
+            # reports it cannot support this question"; an LLMError reports
+            # nothing at all about the question, only that the provider did not
+            # answer. Treating unknown as unsupported would send a second
+            # request to the provider that just failed — during an outage or
+            # rate limit that doubles the failed calls per question, and it
+            # would be the wrong call even if it were free. `LLMError` carries
+            # no outage/rate-limit taxonomy to narrow this on (it is a bare
+            # RuntimeError subclass with no subclasses or codes), so the
+            # provider-failed path declines the fallback wholesale.
             return _QueryFlowResult(
                 "review_required",
                 f"review_required({_lit(reason)})",
                 reason,
-                allow_direct_datalog_fallback=True,
             )
 
     if intent.kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED:
