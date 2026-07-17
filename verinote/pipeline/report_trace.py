@@ -13,7 +13,13 @@ from verinote.engine.datalog import (
     DatalogValidationError,
     parse_and_validate_program,
 )
-from verinote.engine.terms import Compound, Term, Var, render_answer_value
+from verinote.engine.terms import (
+    Compound,
+    Term,
+    Var,
+    render_answer_value,
+    render_display_value,
+)
 from verinote.pipeline.corroboration import CorroborationPolicyError
 from verinote.pipeline.query import load_query
 from verinote.pipeline.trust import fact_trust_summary
@@ -36,8 +42,23 @@ class TraceFact:
 
 @dataclass(frozen=True)
 class AnswerTrace:
+    """One traced answer, in the two forms its two readers need.
+
+    `value` is the answer as /report writes it -- the same rendering the engine
+    backend uses for the "Query answers" line, so the "Traceability" section
+    below it shows that answer the same way and the two can be matched to each
+    other (issue #167). It is the answer's identity here: grouping and dedupe
+    key on it.
+
+    `display_value` is the same answer standing on its own, without the escape
+    that only the report's `, ` join needs. Ask puts one answer in one table
+    cell with no join, so it reads this one; showing `value` there printed a
+    backslash the `object` cell beside it did not have.
+    """
+
     qid: str
     value: str
+    display_value: str
     facts: tuple[TraceFact, ...]
     conflicted: bool
 
@@ -104,7 +125,7 @@ def trace_query_answers(store: Store, query: str) -> tuple[AnswerTrace, ...]:
         if relation_atom is None:
             continue
         matches = _match_relation_atom(relation_atom, facts, rule.head.args)
-        for value, fact_ids in sorted(matches.items()):
+        for value, (display_value, fact_ids) in sorted(matches.items()):
             key = (qid, value, tuple(sorted(fact_ids)))
             if key in seen:
                 continue
@@ -118,6 +139,7 @@ def trace_query_answers(store: Store, query: str) -> tuple[AnswerTrace, ...]:
                 AnswerTrace(
                     qid=qid,
                     value=value,
+                    display_value=display_value,
                     facts=trace_facts,
                     conflicted=any(fact.conflicted for fact in trace_facts),
                 )
@@ -147,10 +169,18 @@ def _match_relation_atom(
     atom: AtomExpr,
     facts: list[dict[str, object]],
     head_args: tuple[Term, ...],
-) -> dict[str, set[int]]:
+) -> dict[str, tuple[str, set[int]]]:
+    """Group matching facts by answer value.
+
+    Keyed on `render_answer_value` -- the report's rendering -- because that is
+    the answer's identity on /report, and two terms the engine calls one answer
+    (`Atom("x")` and `StringLit("x")`) must land in one group rather than two
+    rows naming the same value. The display form rides along per group; it is a
+    function of the same term, so every member of a group agrees on it.
+    """
     if len(head_args) != 1:
         return {}
-    matches: dict[str, set[int]] = {}
+    matches: dict[str, tuple[str, set[int]]] = {}
     for fact in facts:
         bindings: dict[str, Term] = {}
         if not _match_term(atom.args[0], fact["subject"], bindings):
@@ -162,7 +192,10 @@ def _match_relation_atom(
         value = _head_value(head_args[0], bindings)
         if value is None:
             continue
-        matches.setdefault(render_answer_value(value), set()).add(int(fact["id"]))
+        group = matches.setdefault(
+            render_answer_value(value), (render_display_value(value), set())
+        )
+        group[1].add(int(fact["id"]))
     return matches
 
 

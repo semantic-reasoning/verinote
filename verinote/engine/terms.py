@@ -200,15 +200,40 @@ def escape_string_value(value: str) -> str:
     return "".join(out)
 
 
+def render_display_value(term: Term) -> str:
+    """Render one value the way a reader should see it standing on its own.
+
+    This is `render_term` with the quotes taken off a `StringLit`: a value shown
+    in its own right (an Ask grounding cell) is text the source said, not
+    Datalog syntax the reader must un-quote. Control characters still go through
+    `escape_string_value`, because a value able to start a new line can forge a
+    line wherever it is shown.
+
+    What it deliberately does *not* do is escape surface commas. That escape
+    belongs to `render_answer_value` below and exists only to defend the `, `
+    join between answers. Where there is no join there is nothing to defend, and
+    the backslash would be a character the reader's source never contained --
+    which is what made an Ask Answer cell disagree with the `object` column
+    printed beside it (issue #167).
+    """
+    if isinstance(term, StringLit):
+        return escape_string_value(term.value)
+    return render_term(term)
+
+
 def render_answer_value(term: Term) -> str:
     """Render one answer value so a comma inside it cannot forge two answers.
 
-    This is the single owner of "how does one answer value reach a reader", so
-    the two places /report shows the same answer cannot drift apart. The engine
-    backend renders the "Query answers" line and `pipeline.report_trace` renders
-    the "Traceability" section; when each escaped in its own way the one answer
-    `Analytical Engine, Ltd` appeared escaped in one section and ambiguous in the
-    other (issue #167).
+    This is the single owner of "how does one answer reach a reader *through the
+    `, ` join*", so the two places /report shows the same answer cannot drift
+    apart. The engine backend renders the "Query answers" line and
+    `pipeline.report_trace` renders the "Traceability" section; when each escaped
+    in its own way the one answer `Analytical Engine, Ltd` appeared escaped in
+    one section and ambiguous in the other (issue #167).
+
+    Use `render_display_value` instead wherever a value is shown alone rather
+    than joined; this function's escape is a property of the join, not of the
+    value.
 
     Multiple answers for a question are joined with `, `. A `StringLit` whose
     surface text already contains a comma would then be indistinguishable from
@@ -222,7 +247,7 @@ def render_answer_value(term: Term) -> str:
     compound's commas are left alone.
     """
     if isinstance(term, StringLit):
-        return escape_string_value(term.value).replace(",", "\\,")
+        return render_display_value(term).replace(",", "\\,")
     return render_term(term)
 
 

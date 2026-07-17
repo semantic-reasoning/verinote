@@ -228,3 +228,31 @@ def test_search_source_excerpts_reads_latest_text_artifact(tmp_path):
     excerpts = search_source_excerpts(store, root=tmp_path, question="샘플항목")
 
     assert [item.path for item in excerpts] == [f"artifacts/sources/{sid}/text.txt"]
+
+
+def test_ask_grounding_table_shows_a_comma_answer_in_its_source_form(tmp_path):
+    """Ask's Answer cell is one value, not a comma-delimited list.
+
+    `/report` joins a question's answers with `, `, so the answer renderer
+    escapes a value's own surface comma as `\\,` (issue #167) -- otherwise one
+    answer `검토자, 팀장` reads as two. Ask reuses `trace_query_answers()` for
+    grounding (`AskGroundingFact.answer`, rendered as a single table cell in
+    `web/templates/ask.html`), and there is no join to defend against: the cell
+    holds exactly one value. Carrying the report's escape into it puts a
+    backslash on screen that is in neither the source text nor the `object`
+    column beside it, so the same fact contradicts itself across one row.
+    """
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/sample.txt")
+    store.add_fact("샘플인물", "역할", "검토자, 팀장", status="confirmed", source_id=source_id)
+
+    result = ask_question(
+        store, DeterministicOnlyClient(), root=tmp_path, question="샘플인물의 역할은 무엇인가?"
+    )
+
+    assert result.route == "engine"
+    fact = result.grounding_facts[0]
+    # The Answer cell and the Object cell beside it are the same value, and it
+    # is the source's value: no report-join escape reaches this screen.
+    assert fact.answer == "검토자, 팀장"
+    assert fact.object == "검토자, 팀장"
