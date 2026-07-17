@@ -442,6 +442,32 @@ def test_repair_does_not_let_the_model_retire_a_review_flag(
     assert declared not in (load_query(s) or "")
 
 
+@pytest.mark.parametrize(
+    "declared, claim",
+    [
+        ('review_required("model says so")', "model says so"),
+        # Malformed variants reach a second branch that also sets the reason.
+        ("review_required model says so", "model says so"),
+    ],
+)
+def test_repair_attributes_a_model_declared_review_flag(
+    tmp_path, fake_client, intent_payload, declared, claim
+):
+    """Keeping the flag at the model's request is fine; silently adopting its
+    words as the reason is not — the engine never checked them."""
+    s, qid = _store_with_review_required(tmp_path)
+    client = fake_client(
+        intent=intent_payload("unknown_or_unsupported", reason="planner cannot map"),
+        query=lambda q, i: declared,
+    )
+    results = repair_questions(s, client, root=tmp_path)
+
+    assert results[0]["accepted"] is False
+    q = s.questions()[0]
+    assert q["status"] == "review_required"
+    assert q["reason"] == f"unvalidated model claim: review_required: {claim}"
+
+
 def test_repair_model_no_answer_claim_stays_repairable(
     tmp_path, fake_client, intent_payload
 ):
