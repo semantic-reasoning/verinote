@@ -17,10 +17,10 @@ def test_toggle_promotes_and_reverts(tmp_path):
     s = _store(tmp_path)
     fid = s.add_fact("A", "is_a", "B", status="needs_review", confidence=0.9)
 
-    row = s.toggle_review(fid)
+    row = s.toggle_review(fid).fact
     assert row["status"] == "confirmed"
 
-    row = s.toggle_review(fid)
+    row = s.toggle_review(fid).fact
     assert row["status"] == "needs_review"
 
 

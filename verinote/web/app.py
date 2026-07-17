@@ -343,7 +343,12 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         )
 
     def _row_after_decision(
-        request: Request, fact, acted_fact_id: int | None, *, rule_may_act: bool = True
+        request: Request,
+        fact,
+        acted_fact_id: int | None,
+        *,
+        rule_may_act: bool = True,
+        decided: bool = True,
     ):
         """Render the acted row, running auto-accept for the corroboration it
         may have unblocked.
@@ -355,12 +360,20 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         the row swap is enough. The acted row is re-read afterwards so it
         reflects an auto-accept that landed on the fact itself.
 
+        `decided=False` means the POST changed nothing — a replayed accept on an
+        already-confirmed fact, a toggle a reject beat to the row. The follow-on
+        pass is owed to a *transition*, not to a request arriving: with no new
+        human decision there is no newly unblocked corroboration, and running the
+        rule anyway would promote siblings and stamp `auto_accepted` audit events
+        off a click the user may have made hours ago (or never made — HTMX and
+        browsers both retry). Such a request only re-renders the row.
+
         `rule_may_act=False` bars the rule from the acted fact while still
         letting it promote everything else — for the one decision that parks a
         fact back in the tier auto-accept harvests from (see `toggle`).
         """
         excluded = () if rule_may_act or acted_fact_id is None else (acted_fact_id,)
-        applied = _maybe_apply_auto_accept(excluded)
+        applied = _maybe_apply_auto_accept(excluded) if decided else []
         if acted_fact_id is not None:
             refreshed = _active_store().get_fact(acted_fact_id)
             if refreshed is not None:
@@ -994,19 +1007,35 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         # from, so an unrestricted pass would undo the user's click inside their
         # own request. The demotion is the decision; the rule may act on the
         # siblings it unblocks, but not on this fact.
-        demoted = toggled is not None and toggled["status"] in review_statuses()
-        return _row_after_decision(request, toggled, fact_id, rule_may_act=not demoted)
+        demoted = (
+            toggled.changed
+            and toggled.fact is not None
+            and toggled.fact["status"] in review_statuses()
+        )
+        return _row_after_decision(
+            request,
+            toggled.fact,
+            fact_id,
+            rule_may_act=not demoted,
+            decided=toggled.changed,
+        )
 
     @app.post("/facts/{fact_id}/accept", response_class=HTMLResponse)
     def accept(request: Request, fact_id: int):
-        return _row_after_decision(request, _active_store().accept_fact(fact_id), fact_id)
+        accepted = _active_store().accept_fact(fact_id)
+        return _row_after_decision(
+            request, accepted.fact, fact_id, decided=accepted.changed
+        )
 
     @app.post("/facts/{fact_id}/reject", response_class=HTMLResponse)
     def reject(request: Request, fact_id: int):
         # Reject runs auto-accept too: removing a fact's support (or freeing a
         # single-valued slot it conflicted on) also reshapes corroboration, so
         # keeping the trigger here matches the other decision routes.
-        return _row_after_decision(request, _active_store().reject_fact(fact_id), fact_id)
+        rejected = _active_store().reject_fact(fact_id)
+        return _row_after_decision(
+            request, rejected.fact, fact_id, decided=rejected.changed
+        )
 
     @app.get("/facts/{fact_id}/edit", response_class=HTMLResponse)
     def edit_fact(request: Request, fact_id: int):

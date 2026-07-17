@@ -26,6 +26,32 @@ POLICY_MARKER_KEY = "policy.logic"
 FACT_TERMS_MARKER_KEY = "fact_terms.duckdb"
 ENGINE_STATUSES = frozenset({"confirmed", "accepted"})
 MAX_EVIDENCE_SNIPPET_CHARS = 1000
+
+
+@dataclass(frozen=True)
+class FactDecision:
+    """The outcome of a review decision: the fact's row, and whether it moved.
+
+    `changed` is False for the two ways a decision writes nothing — the fact was
+    already in the status being asked for (a replayed or no-op POST), or a
+    competing decision won the race and this one's conditional UPDATE matched no
+    row. Either way `fact` is the fact's *current* row, not the hoped-for one.
+
+    Callers need this told to them rather than inferred, because a decision's
+    follow-on effects (auto-accept, audit events) are owed to a state transition,
+    not to the arrival of a request. Only the store can answer: it is what holds
+    the lock across the read and the conditional write, so the transition is
+    reported from inside the window where the race is settled. A caller trying to
+    work it out by reading the status before and after would be reintroducing the
+    unsynchronised read this class exists alongside the fix for.
+    """
+
+    fact: sqlite3.Row | None
+    changed: bool
+
+    @classmethod
+    def unchanged(cls, fact: sqlite3.Row | None) -> "FactDecision":
+        return cls(fact=fact, changed=False)
 REVIEW_PAGE_SIZES = (25, 50, 100)
 DEFAULT_REVIEW_PAGE_SIZE = 50
 DEFAULT_REVIEW_SORT = "newest"
@@ -1206,7 +1232,7 @@ class Store:
                 self._rollback_quietly()
                 raise
 
-    def toggle_review(self, fact_id: int) -> sqlite3.Row | None:
+    def toggle_review(self, fact_id: int) -> FactDecision:
         """Flip a fact between the engine and review tiers.
 
         Engine rows (confirmed/accepted) drop back to needs_review; review-queue
@@ -1221,19 +1247,19 @@ class Store:
         connections open, and a reject arriving from any of them must win over a
         toggle target computed before it landed. When the row has moved
         underneath, the current row is returned unchanged and nothing is logged
-        — the toggle simply didn't happen.
+        — the toggle simply didn't happen, which the `FactDecision` says.
         """
         with self._lock:
             before = self.get_fact(fact_id)
             if before is None:
-                return None
+                return FactDecision.unchanged(None)
             observed = before["status"]
             if observed in ENGINE_STATUSES:
                 new_status = "needs_review"
             elif observed in REVIEW_STATUSES:
                 new_status = "confirmed"
             else:  # superseded (or any terminal status): no revival path
-                return before
+                return FactDecision.unchanged(before)
             cursor = self._conn.execute(
                 "UPDATE facts SET status = ?, updated_at = datetime('now') "
                 "WHERE id = ? AND status = ?",
@@ -1242,19 +1268,19 @@ class Store:
             if cursor.rowcount == 0:
                 # Someone moved the fact between the read and the write; their
                 # decision stands, and this stale toggle writes nothing.
-                return self.get_fact(fact_id)
+                return FactDecision.unchanged(self.get_fact(fact_id))
             after = self.get_fact(fact_id)
             self._log(fact_id, "toggled", before, after)
-            return after
+            return FactDecision(fact=after, changed=True)
 
-    def accept_fact(self, fact_id: int) -> sqlite3.Row | None:
+    def accept_fact(self, fact_id: int) -> FactDecision:
         """Promote a review-queue fact to confirmed (a human's accept).
 
         Only review-tier rows (candidate/needs_review) move. A row that is
         already confirmed/accepted needs no write, and a superseded row stays
         superseded: a human's rejection is terminal, so accept must never revive
-        it. Non-moving calls return the current row without touching the audit
-        log.
+        it. Non-moving calls return the current row with `changed=False` and
+        without touching the audit log.
 
         The tier check before the write only settles the race for callers
         sharing this instance's lock; a reject arriving on another connection to
@@ -1265,10 +1291,10 @@ class Store:
         with self._lock:
             before = self.get_fact(fact_id)
             if before is None:
-                return None
+                return FactDecision.unchanged(None)
             observed = before["status"]
             if observed not in REVIEW_STATUSES:
-                return before
+                return FactDecision.unchanged(before)
             cursor = self._conn.execute(
                 "UPDATE facts SET status = 'confirmed', updated_at = datetime('now') "
                 "WHERE id = ? AND status = ?",
@@ -1277,12 +1303,12 @@ class Store:
             if cursor.rowcount == 0:
                 # Someone moved the fact between the read and the write; their
                 # decision stands, and this stale accept writes nothing.
-                return self.get_fact(fact_id)
+                return FactDecision.unchanged(self.get_fact(fact_id))
             after = self.get_fact(fact_id)
             self._log(fact_id, "accepted", before, after)
-            return after
+            return FactDecision(fact=after, changed=True)
 
-    def reject_fact(self, fact_id: int) -> sqlite3.Row | None:
+    def reject_fact(self, fact_id: int) -> FactDecision:
         """Supersede a fact (a human's reject); the terminal review decision.
 
         Any non-superseded status moves to superseded. A superseded row is left
@@ -1295,9 +1321,9 @@ class Store:
         with self._lock:
             before = self.get_fact(fact_id)
             if before is None:
-                return None
+                return FactDecision.unchanged(None)
             if before["status"] == "superseded":
-                return before
+                return FactDecision.unchanged(before)
             self._conn.execute(
                 "UPDATE facts SET status = 'superseded', updated_at = datetime('now') "
                 "WHERE id = ?",
@@ -1305,7 +1331,7 @@ class Store:
             )
             after = self.get_fact(fact_id)
             self._log(fact_id, "rejected", before, after)
-            return after
+            return FactDecision(fact=after, changed=True)
 
     def auto_accept_fact(self, fact_id: int, *, rule_name: str) -> sqlite3.Row | None:
         """Promote a review-queue fact to `accepted` (a rule's decision).
