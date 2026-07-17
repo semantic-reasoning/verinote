@@ -17,7 +17,32 @@ import re
 from typing import Any
 
 from verinote.engine.datalog import Declaration
-from verinote.engine.terms import Atom, Compound, NumberLit, StringLit, Term, Var
+from verinote.engine.terms import (
+    Atom,
+    Compound,
+    NumberLit,
+    StringLit,
+    Term,
+    Var,
+    term_compare_key,
+)
+
+# Re-exported for the backend, which reads storage encoding and equality from
+# one place. `term_compare_key` itself belongs to `engine.terms`: it is the term
+# language's equality, not this module's storage encoding, and non-DuckDB
+# callers (`pipeline.report_trace`) must be able to ask what the engine calls
+# equal without importing a storage backend.
+__all__ = [
+    "DUCKDB_TERM_SQL_TYPE",
+    "DuckDBTermError",
+    "create_decl_table_sql",
+    "create_relation_table_sql",
+    "create_term_table_sql",
+    "duckdb_value_to_term",
+    "term_compare_key",
+    "term_eq_sql",
+    "term_to_duckdb_value",
+]
 
 DUCKDB_TERM_SQL_TYPE = "VARCHAR"
 
@@ -55,26 +80,6 @@ def duckdb_value_to_term(value: object) -> Term:
 def term_eq_sql(left_expr: str, right_expr: str) -> str:
     """Return SQL comparing two physical DuckDB term expressions."""
     return f"{left_expr} = {right_expr}"
-
-
-def term_compare_key(term: Term) -> str:
-    """Return the human-surface comparison key used by the inference engine.
-
-    Storage remains type-tagged via `term_to_duckdb_value`; this key is only for
-    Datalog equality so equivalent UI/display values do not occupy separate
-    universes merely because one was entered as a structural term.
-    """
-    if isinstance(term, Atom):
-        return f"s:{term.name}"
-    if isinstance(term, StringLit):
-        return f"s:{term.value}"
-    if isinstance(term, NumberLit):
-        return f"s:{term.value}"
-    if isinstance(term, Compound):
-        return f"c:{term_to_duckdb_value(term)}"
-    if isinstance(term, Var):
-        return f"v:{term.name}"
-    raise TypeError(f"not a term: {term!r}")
 
 
 def create_term_table_sql(table_name: str, columns: tuple[str, ...]) -> str:

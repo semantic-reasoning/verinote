@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: MPL-2.0
+from verinote.engine.terms import Atom
 from verinote.pipeline.query import query_path
 from verinote.pipeline.report_trace import report_trace
 from verinote.pipeline.verify import verify
@@ -212,3 +213,75 @@ def test_report_trace_excluded_count_follows_review_statuses(tmp_path, monkeypat
 
     assert trace.excluded_review_count == 2
     assert trace.excluded_by_status == (("candidate", 1), ("superseded", 1))
+
+
+def test_report_trace_matches_engine_equal_representation_twins(tmp_path):
+    """Trace matching must use the engine's equality, not dataclass equality.
+
+    The DuckDB backend compares body constants and variable joins on
+    `term_compare_key`, so `Atom("x")` and `StringLit("x")` are one value to the
+    engine (both map to `s:x`). `report_trace` matched query terms against fact
+    terms with dataclass `==`, which separates the two. The result was an answer
+    on `/report` with an empty Traceability row: the engine derived it, but the
+    trace could name no fact behind it -- exactly the provenance the report
+    exists to show.
+    """
+    s = _store(tmp_path)
+    source_id = s.add_source("sources/twins.txt")
+    fact_id = s.add_fact(
+        Atom("x"),
+        "role",
+        "Chief",
+        status="confirmed",
+        source_id=source_id,
+    )
+    query_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    query_path(tmp_path).write_text(
+        ".decl answer_q1(value: symbol)\n"
+        'answer_q1(O) :- relation("x", "role", O).\n',
+        encoding="utf-8",
+    )
+
+    rep = verify(s)
+    trace = report_trace(s)
+
+    # The engine answers, because `"x"` and the stored `x` are one value to it.
+    assert rep.answers == ["q1: Chief"]
+    # ...so the trace must name the fact behind that answer.
+    assert [(a.qid, a.value) for a in trace.answers] == [("1", "Chief")]
+    assert [fact.id for fact in trace.answers[0].facts] == [fact_id]
+
+
+def test_report_trace_joins_a_repeated_variable_on_engine_equality(tmp_path):
+    """A repeated query variable must join the way the engine joins it.
+
+    The DuckDB backend joins a repeated variable on the compare-key column
+    (`__cmp_<column> = __cmp_<column>`), so a fact whose subject is `Atom("ada")`
+    and whose object is `StringLit("ada")` satisfies `relation(S, _, S)`. Trace
+    matching bound `S` to the subject term and compared the object with
+    dataclass `==`, so the twins never joined and the answer lost its
+    provenance.
+    """
+    s = _store(tmp_path)
+    source_id = s.add_source("sources/twins.txt")
+    fact_id = s.add_fact(
+        Atom("ada"),
+        "same_as",
+        "ada",
+        status="confirmed",
+        source_id=source_id,
+    )
+    query_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    query_path(tmp_path).write_text(
+        ".decl answer_q1(value: symbol)\n"
+        'answer_q1(S) :- relation(S, "same_as", S).\n',
+        encoding="utf-8",
+    )
+
+    rep = verify(s)
+    trace = report_trace(s)
+
+    assert rep.answers == ["q1: ada"]
+    assert [(a.qid, a.value, tuple(f.id for f in a.facts)) for a in trace.answers] == [
+        ("1", "ada", (fact_id,))
+    ]

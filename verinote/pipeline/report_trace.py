@@ -19,6 +19,7 @@ from verinote.engine.terms import (
     Var,
     render_answer_value,
     render_display_value,
+    terms_equal,
 )
 from verinote.pipeline.corroboration import CorroborationPolicyError
 from verinote.pipeline.query import load_query
@@ -200,6 +201,17 @@ def _match_relation_atom(
 
 
 def _match_term(pattern: Term, value: object, bindings: dict[str, Term]) -> bool:
+    """Match one query term against one fact term, the way the engine matches.
+
+    Equality is `terms_equal` (the engine's compare-key), not dataclass `==`.
+    The DuckDB backend compiles a body constant to `__cmp_<col> = ?` bound with
+    `term_compare_key`, and a repeated variable to `__cmp_a = __cmp_b`, so
+    `Atom("x")` and `StringLit("x")` are one value to it -- and to the legacy
+    wirelog path too, which renders both to `"x"` before pyrewire sees them.
+    Dataclass `==` splits that pair, so the trace found no fact behind an answer
+    the engine had just derived, and /report showed provenance-less answers
+    (issue #167).
+    """
     if not isinstance(value, Term):
         return False
     if isinstance(pattern, Var):
@@ -207,8 +219,8 @@ def _match_term(pattern: Term, value: object, bindings: dict[str, Term]) -> bool
         if bound is None:
             bindings[pattern.name] = value
             return True
-        return bound == value
-    return pattern == value
+        return terms_equal(bound, value)
+    return terms_equal(pattern, value)
 
 
 def _head_value(term: Term, bindings: dict[str, Term]) -> Term | None:

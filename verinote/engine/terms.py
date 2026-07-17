@@ -153,6 +153,46 @@ def canonical_term_key(term: Term) -> str:
     raise TypeError(f"not a term: {term!r}")
 
 
+def term_compare_key(term: Term) -> str:
+    """Return the equality key the inference engine compares terms on.
+
+    This is the single owner of "when are two terms one value?", and every
+    consumer must ask it rather than reach for dataclass `==`. The engine's
+    equality is *human-surface* equality for leaves: `Atom("x")`, `StringLit("x")`
+    and `NumberLit(5)`/`StringLit("5")` are one value, so an entry that happened
+    to be stored as a structural term does not occupy a universe of its own.
+    Storage stays type-tagged and lossless (`term_to_duckdb_value`); this key is
+    only for equality.
+
+    It lives here, beside the term model, rather than in `duckdb_terms` where it
+    started: it is the semantics of the term language itself, not of one
+    backend's storage. `pipeline.report_trace` needs the same rule to match a
+    query against a fact -- and a pipeline module importing a backend's storage
+    encoder to learn what equality means is a layering inversion, the same one
+    that moved `bare_label` here.
+
+    Compounds compare structurally, on `canonical_term_key`: `f(Atom("x"))` and
+    `f(StringLit("x"))` stay distinct, which is the pre-existing behaviour and is
+    preserved here deliberately -- only the leaf twins collapse.
+    """
+    if isinstance(term, Atom):
+        return f"s:{term.name}"
+    if isinstance(term, StringLit):
+        return f"s:{term.value}"
+    if isinstance(term, NumberLit):
+        return f"s:{term.value}"
+    if isinstance(term, Compound):
+        return f"c:{canonical_term_key(term)}"
+    if isinstance(term, Var):
+        return f"v:{term.name}"
+    raise TypeError(f"not a term: {term!r}")
+
+
+def terms_equal(left: Term, right: Term) -> bool:
+    """Return whether the engine treats two terms as the same value."""
+    return term_compare_key(left) == term_compare_key(right)
+
+
 def escape_string_value(value: str) -> str:
     """Escape backslashes, line-breaking characters and bidi controls.
 
