@@ -601,6 +601,23 @@ def test_toggle_on_a_superseded_fact_does_not_run_auto_accept(tmp_path):
     _assert_untouched(store, eligible, resp)
 
 
+def test_accept_all_on_a_source_with_nothing_to_confirm_does_not_run_auto_accept(
+    tmp_path,
+):
+    # The bulk route carries the same contract: no fact was confirmed, so no
+    # decision was made and the rule has nothing new to act on.
+    client, store = _auto_accept_client(tmp_path)
+    eligible = _eligible_pair(store)
+    empty_source = store.add_source("sources/empty.txt")
+
+    resp = client.post(f"/sources/{empty_source}/accept-all")
+
+    assert resp.status_code == 200  # 303 followed to /sources
+    assert store.get_fact(eligible)["status"] == "needs_review"
+    assert "auto_accepted" not in _actions(store, eligible)
+    assert not _auto_accept_events(store, eligible)
+
+
 def test_reject_that_really_transitions_still_runs_auto_accept(tmp_path):
     # Over-fix guard: only no-ops are filtered. A reject that actually moves a
     # fact is a decision, and the rule still runs for the siblings it unblocks.

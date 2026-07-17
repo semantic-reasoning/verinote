@@ -934,10 +934,14 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.post("/sources/{source_id}/accept-all", response_class=HTMLResponse)
     def accept_all_source_facts(request: Request, source_id: int):
-        _active_store().accept_review_facts_for_source(source_id)
+        accepted = _active_store().accept_review_facts_for_source(source_id)
         # Bulk-confirming a source can corroborate facts elsewhere; the redirect
-        # reloads the page so no HX-Refresh header is needed here.
-        _maybe_apply_auto_accept()
+        # reloads the page so no HX-Refresh header is needed here. `accepted` is
+        # the same transition test the single-fact routes apply: a source with
+        # nothing left in the review tier confirms nothing, so the POST decided
+        # nothing and the rule stays out of it.
+        if accepted:
+            _maybe_apply_auto_accept()
         return RedirectResponse("/sources", status_code=303)
 
     @app.post("/sources/{source_id}/delete", response_class=HTMLResponse)
