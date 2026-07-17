@@ -29,6 +29,10 @@ from verinote.engine.datalog import (
     Program,
     parse_and_validate_program,
 )
+from verinote.engine.policy_vocabulary import (
+    FUNCTIONAL_CONFLICT_DECL,
+    FUNCTIONAL_CONFLICT_RULE,
+)
 from verinote.engine.terms import StringLit, TermParseError, escape_string_value
 
 # Prefixes that mark a derived relation as a verinote finding.
@@ -38,7 +42,7 @@ _ANSWER_PREFIX = "answer_q"
 
 # Shipped default policy. `verinote init` scaffolds a copy to
 # `<root>/policy/logic-policy.dl`; edit that copy per-KB.
-DEFAULT_POLICY = """\
+DEFAULT_POLICY = f"""\
 // verinote logic policy (wirelog Datalog).
 //
 // verinote compiles confirmed/accepted facts to
@@ -56,8 +60,8 @@ functional("born_on").
 functional("died_on").
 
 // A functional relation must not carry two distinct objects for one subject.
-.decl error_functional_conflict(subject: symbol, rel: symbol)
-error_functional_conflict(S, R) :-
+{FUNCTIONAL_CONFLICT_DECL}
+{FUNCTIONAL_CONFLICT_RULE}(S, R) :-
     relation(S, R, A), relation(S, R, B), functional(R), A != B.
 """
 
@@ -236,10 +240,23 @@ class FindingRow:
     `values` holds the labels as the KB stores them (see `bare_label`), while
     `text` is the escaped, display-side line — the two differ for any value
     carrying a control character.
+
+    `rule` and `columns` say which derived predicate produced the row and how
+    that predicate declared its columns. Values alone are anonymous: knowing
+    that `values[1]` is a relation label and not an object requires knowing the
+    rule, and only verinote's own rules have a shape verinote knows (see
+    `policy_vocabulary`). Both are carried from where the engine already has
+    them — the rule name is never recovered by parsing `text`, which is the
+    guess this class exists to prevent.
     """
 
     text: str
     values: tuple[str, ...]
+    #: The derived predicate's name, e.g. `error_functional_conflict`.
+    rule: str = ""
+    #: Its declared column names, in order; empty when the policy's declaration
+    #: could not be read, which means "shape unknown", not "no columns".
+    columns: tuple[str, ...] = ()
 
 
 @dataclass
@@ -345,6 +362,38 @@ def _validate_query_contract(program: Program) -> None:
                 )
 
 
+@dataclass(frozen=True)
+class _Derived:
+    """One derived tuple with the identity of the rule that derived it."""
+
+    text: str
+    values: tuple[str, ...]
+    rule: str
+    columns: tuple[str, ...]
+
+    def finding_row(self, level: str) -> FindingRow:
+        return FindingRow(f"{level} {self.text}", self.values, self.rule, self.columns)
+
+
+def _declared_columns(source: str) -> dict[str, tuple[str, ...]]:
+    """The column names each predicate in `source` declares, by predicate name.
+
+    pyrewire is the engine on this path and its dialect is its own, so a policy
+    it accepts may be one our parser does not. That is not an error here: a
+    declaration we cannot read simply leaves the rule's shape unknown, and a
+    reader of an unknown shape must not guess. Findings and the review gate come
+    from pyrewire either way and are unaffected.
+    """
+    try:
+        program = parse_and_validate_program(source)
+    except (DatalogParseError, DatalogValidationError):
+        return {}
+    return {
+        decl.name: tuple(column.name for column in decl.columns)
+        for decl in program.declarations
+    }
+
+
 def _row_values(row: Iterable[object]) -> tuple[str, ...]:
     """The derived tuple's values as labels, unescaped, for exact comparison.
 
@@ -415,44 +464,61 @@ def run_check(
             findings=[f"engine error: {exc}"],
         )
 
-    errors: list[tuple[str, tuple[str, ...]]] = []
-    warnings: list[tuple[str, tuple[str, ...]]] = []
+    columns_by_rule = _declared_columns(program)
+    errors: list[_Derived] = []
+    warnings: list[_Derived] = []
     answers_by_q: dict[str, list[str]] = {}
     for name, row, mult in deltas:
         if mult <= 0:
             continue
         if name.startswith(_ERROR_PREFIX):
             errors.append(
-                (f"{name[len(_ERROR_PREFIX) :]}: {_render_row(row)}", _row_values(row))
+                _Derived(
+                    f"{name[len(_ERROR_PREFIX) :]}: {_render_row(row)}",
+                    _row_values(row),
+                    name,
+                    columns_by_rule.get(name, ()),
+                )
             )
         elif name.startswith(_WARN_PREFIX):
             warnings.append(
-                (f"{name[len(_WARN_PREFIX) :]}: {_render_row(row)}", _row_values(row))
+                _Derived(
+                    f"{name[len(_WARN_PREFIX) :]}: {_render_row(row)}",
+                    _row_values(row),
+                    name,
+                    columns_by_rule.get(name, ()),
+                )
             )
         elif name.startswith(_ANSWER_PREFIX):
             qid = name[len(_ANSWER_PREFIX) :]
             answers_by_q.setdefault(qid, []).append(_render_row(row))
 
-    warnings.extend(dead)
     errors.sort()
     warnings.sort()
     answers = [
         f"q{qid}: {', '.join(sorted(vals))}" for qid, vals in sorted(answers_by_q.items())
     ]
-    findings = [f"ERROR {e}" for e, _values in errors] + [
-        f"WARN {w}" for w, _values in warnings
+    # A dead-rule note is a statement about the *policy*, not a derived tuple:
+    # nothing fired, so there is no row behind it and it gets no `FindingRow`.
+    # `_source_note` already omits a note for a finding with no row, which is
+    # exactly right here — there are no facts to name for a rule that never fired.
+    warning_lines = sorted([row.text for row in warnings] + dead)
+    findings = [f"ERROR {row.text}" for row in errors] + [
+        f"WARN {line}" for line in warning_lines
     ]
-    finding_rows = [FindingRow(f"ERROR {e}", values) for e, values in errors] + [
-        FindingRow(f"WARN {w}", values) for w, values in warnings
+    finding_rows = [row.finding_row("ERROR") for row in errors] + [
+        row.finding_row("WARN") for row in warnings
     ]
-    summary = f"errors: {len(errors)}  warnings: {len(warnings)}  facts: {len(facts)}"
+    summary = (
+        f"errors: {len(errors)}  warnings: {len(warning_lines)}  facts: {len(facts)}"
+    )
     body = "\n".join(findings) if findings else NO_FINDINGS_TEXT
     if answers:
         body += "\n\n--- answers ---\n" + "\n".join(answers)
     return CheckReport(
         ok=not errors,
         errors=len(errors),
-        warnings=len(warnings),
+        warnings=len(warning_lines),
         answers=answers,
         text=f"{summary}\n\n{body}\n\n--- engine input ---\n{dl_text}",
         findings=findings,

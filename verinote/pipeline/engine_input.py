@@ -24,13 +24,20 @@ every row carries the source's label under `relation_raw`, and
 `annotate_source_labels` puts those words back into the findings — matched to
 each finding's own structured row (`CheckReport.finding_rows`), since a finding
 line renders its values bare and cannot be parsed back into fields.
+
+That match is only possible where the finding's shape is known, which is the
+rules verinote declares itself (`engine.policy_vocabulary`). The rest of a
+policy is the user's, its columns mean what its author meant, and those findings
+keep the words the engine wrote. The report loses a convenience there; what it
+does not do is name the wrong facts.
 """
 
 from __future__ import annotations
 
 from typing import Iterable, Mapping
 
-from verinote.engine import CheckReport
+from verinote.engine import CheckReport, FindingRow
+from verinote.engine.policy_vocabulary import functional_conflict_target
 from verinote.engine.terms import Atom, StringLit, bare_label
 from verinote.pipeline.corroboration import (
     canonical_relation_from_normalized,
@@ -113,10 +120,10 @@ def annotate_source_labels(
     if not renamed or not report.findings:
         return report
 
-    values_by_finding = _finding_values(report)
+    rows_by_finding = _finding_rows(report)
     annotated: list[str] = []
     for finding in report.findings:
-        note = _source_note(values_by_finding.get(finding), renamed)
+        note = _source_note(rows_by_finding.get(finding), renamed)
         if not note:
             annotated.append(finding)
             continue
@@ -127,52 +134,65 @@ def annotate_source_labels(
     return report
 
 
-def _finding_values(report: CheckReport) -> dict[str, tuple[str, ...]]:
+def _finding_rows(report: CheckReport) -> dict[str, FindingRow]:
     """Map each finding line to the derived row behind it, when it has exactly one.
 
     A line whose text two different rows produced is left out: it is one finding
     about two rows, so no single row is *the* answer for it, and a note would
     have to guess.
     """
-    values: dict[str, tuple[str, ...]] = {}
+    rows: dict[str, FindingRow] = {}
     ambiguous: set[str] = set()
     for row in report.finding_rows:
-        if row.text in values and values[row.text] != row.values:
+        if row.text in rows and rows[row.text].values != row.values:
             ambiguous.add(row.text)
-        values.setdefault(row.text, row.values)
-    return {text: vals for text, vals in values.items() if text not in ambiguous}
+        rows.setdefault(row.text, row)
+    return {text: row for text, row in rows.items() if text not in ambiguous}
 
 
-def _source_note(
-    values: tuple[str, ...] | None, renamed: list[Mapping[str, object]]
-) -> str:
+def _source_note(row: FindingRow | None, renamed: list[Mapping[str, object]]) -> str:
     """Render the aliased facts a finding is about, or '' when it is about none.
 
-    Matching is exact, against the finding's own row values -- never against its
-    text. The text joins values bare, so `Org 2 established_on` contains the
-    label `Org`, and a containment match hands `Org 2`'s conflict the fact ids
-    and values of `Org`'s: the report then misattributes provenance, which is
-    the one thing the note exists to get right. A finding with no row behind it
-    (`values` is None) gets no note.
+    Two things have to be *known*, not guessed, before a fact may be named.
 
-    A row's fields are compared as a set, not by position, because the position
-    of a subject or a relation is a property of the policy's rule, which is the
-    user's to write. Exactness is what this guarantees: a fact is named only if
-    the finding really is about that subject and that relation.
+    First, which column is the subject and which is the relation.
+    `functional_conflict_target` answers that only for the rule verinote
+    declares itself, and answers None for every other rule — including a rule of
+    the user's that reuses the name with a shape of its own. A policy is the
+    user's to write (#159), so in general there is no such thing as "the
+    relation column" of a finding: `error_mentions(S, O) :- relation(S,
+    "mentions", O)` derives a row whose *object* may itself be a relation label,
+    and reading it as one attaches the facts of a `설립` row to a finding that
+    has nothing to do with them. No note is strictly better than a wrong one:
+    the note exists only to make provenance readable, so a note that
+    misattributes provenance is worse than the bare line the engine wrote.
+
+    Second, which facts. The match is exact and positional, against the
+    finding's own row values, never against its text. The text joins values
+    bare, so `Org 2 established_on` contains the label `Org` and a containment
+    match hands `Org 2`'s conflict the fact ids of `Org`'s. Position matters for
+    the same reason: comparing the values as an unordered bag lets a fact match
+    on the wrong axis, and a KB holding a subject named `role` would see
+    `role/역할=Unrelated` named as provenance for subject `A`'s `role` conflict.
+
+    A finding with no row behind it (`row` is None) gets no note.
     """
-    if values is None:
+    if row is None:
         return ""
-    fields = set(values)
+    target = functional_conflict_target(row.rule, row.columns, row.values)
+    if target is None:
+        return ""
+    subject, relation = target
     facts = [
-        row
-        for row in renamed
-        if _label(row["relation"]) in fields and _label(row["subject"]) in fields
+        fact
+        for fact in renamed
+        if _label(fact["subject"]) == subject and _label(fact["relation"]) == relation
     ]
     if not facts:
         return ""
     parts = [
-        f"{_label(row['relation_raw'])} #{row['id']}={_label(row['object'])}"
-        for row in sorted(facts, key=lambda row: int(row["id"]))
+        f"{_label(fact['relation_raw'])} #{fact['id']}={_label(fact['object'])}"
+        for fact in sorted(facts, key=lambda fact: int(fact["id"]))
     ]
     return "(" + ", ".join(parts) + ")"
 
