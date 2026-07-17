@@ -17,6 +17,8 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -28,6 +30,11 @@ from .conftest import API_KEY_VAR, BASE_URL_VAR, GATE_VAR, MODEL_VAR, _config_fo
 CONTRACT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = CONTRACT_DIR.parent.parent
 FIXTURES_DIR = CONTRACT_DIR.parent / "fixtures" / "contract"
+RUN_SH = CONTRACT_DIR / "run.sh"
+# The wrapper needs a shell and `dirname`; everything else it uses is a builtin.
+# Located via the ambient PATH here, then re-exposed on the *controlled* PATH the
+# wrapper actually runs with, so locating them is not the thing under test.
+WRAPPER_TOOLS = ("bash", "dirname")
 PROVENANCE_KEYS = ("provider", "model", "captured_at")
 # Each replay guard depends on a specific fixture; naming them (instead of
 # globbing for "at least one") makes deleting any single one turn this red.
@@ -324,3 +331,142 @@ def test_companion_settings_map_onto_the_config(monkeypatch, tmp_path, provider,
         monkeypatch.setenv(var, value)
     cfg = _config_for(provider, tmp_path / "kb")
     assert getattr(cfg, field) == expected
+
+
+# --- the documented wrapper actually reaches pytest -----------------------
+#
+# The guards above spawn pytest with `sys.executable`, which is exactly why they
+# could not catch issue #273: they bypass `run.sh` entirely, so the wrapper could
+# be broken while every one of them stayed green. These run the wrapper itself.
+
+
+def _shim_dir(tmp_path: Path, interpreters: tuple[str, ...]) -> Path:
+    """A PATH directory exposing *only* `interpreters` as Python, plus the shell.
+
+    The whole point is to not depend on the ambient PATH. This machine happens to
+    have `python3` and no `python`, but a machine that has both (CI included)
+    would let a wrapper defaulting to `python` pass vacuously — the bug would
+    survive precisely where it is not reproducible. Pinning PATH to this
+    directory means each case holds everywhere.
+
+    Each shim is a real executable that forwards to the interpreter running this
+    test, so a wrapper that finds it gets a Python with pytest installed.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    for tool in WRAPPER_TOOLS:
+        real = shutil.which(tool)
+        if real is None:
+            pytest.skip(f"{tool} is not available; the wrapper cannot run on this platform")
+        (bin_dir / tool).symlink_to(real)
+    for name in interpreters:
+        shim = bin_dir / name
+        shim.write_text(f'#!{shutil.which("bash")}\nexec "{sys.executable}" "$@"\n', encoding="utf-8")
+        shim.chmod(shim.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return bin_dir
+
+
+def _run_wrapper(
+    tmp_path: Path,
+    *args: str,
+    interpreters: tuple[str, ...],
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess:
+    """Execute `run.sh` for real, with PATH pinned to `interpreters` only.
+
+    Invoked as the script itself (not `bash run.sh`) so the shebang is exercised
+    the way a user's shell would exercise it. The gate is left unset on purpose:
+    a set gate would call a live provider, and this test is about the wrapper, not
+    about any model. Unset means the guards skip and the session guard in
+    conftest fails the run — which is the evidence that pytest was reached.
+    """
+    bin_dir = _shim_dir(tmp_path, interpreters)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("VN_CONTRACT_")}
+    env.pop("PYTHON", None)
+    env["PATH"] = str(bin_dir)
+    env["PYTHONPATH"] = str(REPO_ROOT)
+    env.update(extra_env or {})
+    return subprocess.run(
+        [str(RUN_SH), *args, "-p", "no:cacheprovider"],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _assert_reached_pytest(result: subprocess.CompletedProcess, how: str) -> None:
+    """Assert the wrapper got as far as running pytest.
+
+    Deliberately *not* `exit 0`: with the gate unset every guard skips and the
+    session guard fails the run on purpose, so zero would be wrong. The signal is
+    that pytest ran and spoke — the guard's own message — and that the shell never
+    failed to find an interpreter (127 / "not found"), which is how issue #273
+    presented.
+    """
+    assert result.returncode != 127, (
+        f"the wrapper never reached pytest ({how}); the shell could not exec its "
+        f"interpreter.\n{result.stdout}\n{result.stderr}"
+    )
+    assert "not found" not in result.stderr, (
+        f"the wrapper failed to resolve a command ({how}).\n{result.stdout}\n{result.stderr}"
+    )
+    assert "no guard executed" in result.stdout, (
+        f"the wrapper did not reach pytest ({how}): the contract session guard "
+        f"never spoke.\n{result.stdout}\n{result.stderr}"
+    )
+
+
+def test_wrapper_reaches_pytest_when_only_python3_exists(tmp_path):
+    """The README's own command must work where `python` is not a binary.
+
+    This is issue #273 as reported: modern distributions (and this machine) ship
+    `python3` only, so a wrapper defaulting to `python` dies at
+    `exec: python: not found` — exit 127, before pytest, on the very command the
+    README tells people to run.
+    """
+    result = _run_wrapper(tmp_path, "-q", interpreters=("python3",))
+    _assert_reached_pytest(result, "python3-only PATH")
+
+
+def test_wrapper_reaches_pytest_when_only_python_exists(tmp_path):
+    """...and must keep working where `python` is the only spelling.
+
+    The mirror of the case above, and the reason the fix cannot simply be
+    s/python/python3/: virtualenvs and older images expose `python` alone. A
+    wrapper that hard-codes either name is broken on half the world.
+    """
+    result = _run_wrapper(tmp_path, "-q", interpreters=("python",))
+    _assert_reached_pytest(result, "python-only PATH")
+
+
+def test_wrapper_honours_an_explicit_python_override(tmp_path):
+    """`PYTHON=... run.sh` must still win over whatever discovery finds.
+
+    PATH here holds *no* interpreter at all, so the run can only reach pytest via
+    the override — if it were ignored, discovery would have nothing to fall back
+    on and this would go red rather than pass by luck.
+    """
+    result = _run_wrapper(
+        tmp_path, "-q", interpreters=(), extra_env={"PYTHON": sys.executable}
+    )
+    _assert_reached_pytest(result, "explicit PYTHON override")
+
+
+def test_wrapper_fails_loudly_when_no_interpreter_exists(tmp_path):
+    """No Python anywhere is a diagnosis, not a stray shell error.
+
+    The boundary of the discovery fix: when it genuinely cannot find an
+    interpreter the wrapper must say so and exit non-zero, rather than emit
+    bash's own `command not found` and leave the user guessing which name it
+    wanted.
+    """
+    result = _run_wrapper(tmp_path, "-q", interpreters=())
+    assert result.returncode != 0, (
+        f"the wrapper found no interpreter yet exited 0.\n{result.stdout}\n{result.stderr}"
+    )
+    combined = result.stdout + result.stderr
+    assert "PYTHON" in combined, (
+        "the wrapper gave no hint that PYTHON can point it at an interpreter.\n"
+        f"{result.stdout}\n{result.stderr}"
+    )
