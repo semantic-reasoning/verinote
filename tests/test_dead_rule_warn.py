@@ -46,6 +46,44 @@ def test_rule_body_string_literal_relation_is_detected():
     ]
 
 
+def test_finding_head_payload_is_not_a_dependency():
+    # A finding head's literal is the payload the rule *emits*, not a relation it
+    # reads. This rule fires whenever an is_a fact exists, so flagging it is a
+    # false positive. Reporting relation findings as (subject, rel) is a natural
+    # shape for a custom policy, so this must stay clean.
+    policy = (
+        ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
+        ".decl error_required(subject: symbol, rel: symbol)\n"
+        'error_required(S, "required_relation") :- relation(S, "is_a", "thing").\n'
+    )
+    assert dead_rule_warnings(policy, {"is_a"}) == []
+
+
+def test_derived_head_payload_is_not_a_dependency():
+    # Same for a non-finding intermediate: a rule head is output either way.
+    policy = (
+        ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
+        ".decl tagged(subject: symbol, rel: symbol)\n"
+        ".decl error_x(subject: symbol)\n"
+        'tagged(S, "audited") :- relation(S, "is_a", "thing").\n'
+        "error_x(S) :- tagged(S, _).\n"
+    )
+    assert dead_rule_warnings(policy, {"is_a"}) == []
+
+
+def test_dead_body_relation_still_detected_alongside_a_live_finding_head():
+    # The head payload is ignored, but the body's unused relation is still dead.
+    policy = (
+        ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
+        ".decl error_required(subject: symbol, rel: symbol)\n"
+        'error_required(S, "required_relation") :- relation(S, "must_have", O).\n'
+    )
+    assert dead_rule_warnings(policy, {"is_a"}) == [
+        'dead_rule: policy declares relation("must_have") '
+        "but no engine fact uses that relation"
+    ]
+
+
 def test_malformed_policy_does_not_crash():
     assert dead_rule_warnings("this is not valid datalog !!!", {"is_a"}) == []
 

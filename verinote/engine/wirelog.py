@@ -34,6 +34,7 @@ from verinote.engine.terms import StringLit, TermParseError, escape_string_value
 # Prefixes that mark a derived relation as a verinote finding.
 _ERROR_PREFIX = "error_"
 _WARN_PREFIX = "warn_"
+_ANSWER_PREFIX = "answer_q"
 
 # Shipped default policy. `verinote init` scaffolds a copy to
 # `<root>/policy/logic-policy.dl`; edit that copy per-KB.
@@ -148,6 +149,11 @@ def _parse_relation_facts(dl_text: str) -> list[tuple[str, str, str]]:
     return facts
 
 
+def _is_finding_or_query(predicate: str) -> bool:
+    """True for predicates verinote reads back as output rather than dependency."""
+    return predicate.startswith((_ERROR_PREFIX, _WARN_PREFIX, _ANSWER_PREFIX))
+
+
 def dead_rule_warnings(policy_dl: str, present_relations: Iterable[str]) -> list[str]:
     """Warn about relation names a policy pins to string literals that no fact uses.
 
@@ -156,6 +162,13 @@ def dead_rule_warnings(policy_dl: str, present_relations: Iterable[str]) -> list
     ``functional(rel)``. When such a column carries a string literal that names a
     relation, and no compiled engine fact uses that relation, the rule depending
     on it can never fire: a dead rule. These are non-blocking notes, never a gate.
+
+    Only positions that actually *read* the fact vocabulary count: rule bodies and
+    the policy's own extensional facts. A rule head is output, not a dependency —
+    a literal there is a payload the rule emits, so counting it would flag rules
+    that fire perfectly well (a finding reported as ``error_x(S, "some_label")``
+    is the obvious shape). Derived predicates are skipped wherever they appear,
+    since they resolve through other rules rather than through engine facts.
 
     An empty fact set (no engine input at all) yields ``[]`` so a genuinely empty
     knowledge base is never flagged. A malformed policy yields ``[]`` too — the
@@ -174,9 +187,12 @@ def dead_rule_warnings(policy_dl: str, present_relations: Iterable[str]) -> list
     columns_by_pred = {
         decl.name: [col.name for col in decl.columns] for decl in program.declarations
     }
+    derived = {rule.head.predicate for rule in program.rules}
     referenced: set[tuple[str, str]] = set()
 
     def scan(atom: AtomExpr) -> None:
+        if atom.predicate in derived or _is_finding_or_query(atom.predicate):
+            return
         columns = columns_by_pred.get(atom.predicate)
         if columns is None:
             return
@@ -187,7 +203,6 @@ def dead_rule_warnings(policy_dl: str, present_relations: Iterable[str]) -> list
     for fact in program.facts:
         scan(fact.atom)
     for rule in program.rules:
-        scan(rule.head)
         for item in rule.body:
             if isinstance(item, AtomExpr):
                 scan(item)
@@ -199,8 +214,6 @@ def dead_rule_warnings(policy_dl: str, present_relations: Iterable[str]) -> list
         if value not in present
     )
 
-
-_ANSWER_PREFIX = "answer_q"
 
 # The engine's "clean bill of health" body. Exported because it is a claim about
 # the policy that ran, so callers that ran a *different* policy than the KB's own
