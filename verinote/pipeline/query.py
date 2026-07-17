@@ -300,20 +300,19 @@ def _translate_direct_datalog_fallback(
         return "review_required", f"review_required({_lit(reason)})", reason
 
     outcome = _non_executable_outcome(line)
+    if outcome is None and _is_review_required(line):
+        outcome = ("review_required", _short_reason(line.removeprefix("review_required")))
     if outcome is not None:
         declared, claim = outcome
-        if declared == "review_required":
-            return "review_required", line, claim
-        # The model may raise the review flag but not retire it. `no_answer` and
-        # `ambiguous` are durable and no command re-picks them, so promoting a
-        # claim the engine never checked would close the question for good.
-        # The schema-aware path's `no_answer`/`ambiguous` are unaffected: those
-        # come from the engine finding no rows, not from the model's say-so.
+        # The model may raise the review flag but never retire it: `no_answer`
+        # and `ambiguous` are durable and no command re-picks them, so promoting
+        # a claim the engine never checked would close the question for good.
+        # Every such claim stays `review_required` and is attributed, so a reason
+        # the engine never checked cannot read as the engine's own verdict. Only
+        # engine-derived `no_answer`/`ambiguous` (the candidate dry-run finding
+        # no rows) keep those statuses.
         reason = _short_reason(f"unvalidated model claim: {declared}: {claim}")
         return "review_required", f"review_required({_lit(reason)})", reason
-    if _is_review_required(line):
-        reason = _short_reason(line.removeprefix("review_required"))
-        return "review_required", line, reason
     proposal = f".decl {ANSWER_PREFIX}{qid}(value: symbol)\n{line}"
     return classify_query_draft(store, qid, proposal)
 
