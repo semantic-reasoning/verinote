@@ -9,6 +9,7 @@ from verinote.llm.schema import (
     parse_facts,
 )
 from verinote.pipeline.query_intent import (
+    QUERY_INTENT_BLANK_NULLABLE_FIELDS,
     QUERY_INTENT_COMPARISON_DOMAINS,
     IntentTarget,
     QueryIntentKind,
@@ -258,6 +259,69 @@ def test_parse_query_intent_treats_a_blank_nullable_string_as_null(blank):
 
     assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
     assert intent.reason is None
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_parse_query_intent_still_treats_a_blank_value_as_null(blank):
+    """`value` has no enum, only `minLength: 1`, so blank still means absent.
+
+    The schema pins no domain for `value`, so `""` carries no meaning a strict
+    provider could not have expressed as null -- the same situation as `reason`.
+    Only the enum fields lose the blank-to-null reading.
+    """
+    intent = parse_query_intent(
+        _intent_payload(
+            kind="lookup_object",
+            subject={"kind": "entity", "value": "Acme"},
+            relation={"kind": "relation", "value": "CEO"},
+            value=blank,
+            reason=None,
+        )
+    )
+
+    assert intent.value is None
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+@pytest.mark.parametrize("field", ["operator", "value_type"])
+def test_parse_query_intent_rejects_a_blank_enum_field_on_a_non_compare_intent(field, blank):
+    """Blank is not null for a field the schema constrains with an enum.
+
+    `reason` and `value` are plain nullable strings, so a blank one is just how a
+    prompt-only provider spells the null the schema forces it to emit. `operator`
+    and `value_type` are different: their enums list every admissible non-null
+    value, and `""` is not among them. Normalising blank to null there would let
+    an off-schema value through on the six kinds that ignore these fields, which
+    puts the validator's boundary outside QUERY_INTENT_SCHEMA's -- exactly what
+    `test_parse_query_intent_rejects_off_schema_comparison_fields_on_every_kind`
+    forbids for `"contains"`.
+    """
+    with pytest.raises(LLMError):
+        parse_query_intent(
+            _intent_payload(
+                kind="lookup_object",
+                subject={"kind": "entity", "value": "Acme"},
+                relation={"kind": "relation", "value": "CEO"},
+                reason=None,
+                **{field: blank},
+            )
+        )
+
+
+def test_query_intent_blank_nullable_fields_are_the_schema_fields_without_an_enum():
+    """Which fields treat blank as null is read off the schema, not listed by hand.
+
+    The rule is "a field whose schema pins a domain does not get to spell null as
+    blank". Deriving the set from QUERY_INTENT_SCHEMA keeps that rule true if the
+    schema later adds an enum to a field (or drops one), instead of leaving a
+    hand-written name list to drift out of the contract adapters are handed.
+    """
+    assert QUERY_INTENT_BLANK_NULLABLE_FIELDS == frozenset(
+        name
+        for name in ("operator", "value_type", "value", "reason")
+        if "enum" not in QUERY_INTENT_SCHEMA["properties"][name]
+    )
+    assert QUERY_INTENT_BLANK_NULLABLE_FIELDS == frozenset({"value", "reason"})
 
 
 @pytest.mark.parametrize("blank", ["", "   "])
