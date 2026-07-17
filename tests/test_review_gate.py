@@ -389,6 +389,76 @@ def test_auto_accept_cannot_overwrite_a_reject_that_lands_mid_transition(tmp_pat
     assert "auto_accepted" not in _actions(rejecting, fact_id)
 
 
+def test_reject_cannot_overwrite_a_reject_that_lands_mid_transition(tmp_path):
+    """The same window again, in `reject_fact` — the one write of the four that
+    still landed unconditionally.
+
+    Reject's own pre-check ("is it already superseded?") is a read, so a reject
+    arriving on another connection lands after it just as it does for accept and
+    toggle. The second write agrees about the *status*, so no state is corrupted
+    here — but it still reports `changed=True` for a transition it did not make,
+    which is exactly the claim the route turns into an auto-accept pass, and it
+    files a second `rejected` row for one human decision.
+    """
+    db = tmp_path / "kb.sqlite"
+    rejecting = _store_at(db)
+    other = _store_at(db)
+    fact_id = rejecting.add_fact("Report", "author", "Kim", status="needs_review")
+
+    real_get_fact = rejecting.get_fact
+    interleaved = []
+
+    def reject_once_after_the_read(target_id: int):
+        row = real_get_fact(target_id)
+        if not interleaved:
+            interleaved.append(True)
+            # The other connection's human presses reject in this window.
+            other.reject_fact(fact_id)
+        return row
+
+    rejecting.get_fact = reject_once_after_the_read
+    decision = rejecting.reject_fact(fact_id)
+
+    assert interleaved, "the reject never landed — the test proves nothing"
+    assert other.get_fact(fact_id)["status"] == "superseded"
+    assert decision.fact["status"] == "superseded"
+    # The loser reports its loss, so the route above it skips the follow-on pass.
+    assert decision.changed is False
+    # One human decision, one audit row — the loser wrote nothing to log.
+    assert _actions(other, fact_id).count("rejected") == 1
+
+
+def test_a_reject_that_loses_the_race_does_not_run_auto_accept(tmp_path):
+    """The route-level consequence: the losing reject decided nothing, so the
+    rule must not act on a transition that already belonged to someone else."""
+    client, store = _auto_accept_client(tmp_path)
+    eligible = _eligible_pair(store)
+    target = store.add_fact("Ledger", "owner", "Park", status="needs_review")
+    other = _store_at(tmp_path / "kb.sqlite")
+
+    real_get_fact = store.get_fact
+    interleaved = []
+
+    def reject_once_after_the_read(target_id: int):
+        row = real_get_fact(target_id)
+        if not interleaved and target_id == target:
+            interleaved.append(True)
+            other.reject_fact(target)
+        return row
+
+    store.get_fact = reject_once_after_the_read
+    try:
+        resp = client.post(f"/facts/{target}/reject")
+    finally:
+        store.get_fact = real_get_fact
+
+    assert interleaved, "the reject never landed — the test proves nothing"
+    assert resp.status_code == 200
+    assert store.get_fact(target)["status"] == "superseded"
+    assert _actions(store, target).count("rejected") == 1
+    _assert_untouched(store, eligible, resp)
+
+
 def test_auto_accept_cannot_overwrite_a_reject_that_lands_after_the_snapshot(tmp_path):
     """Auto-accept recommends from a snapshot; a human can reject in the gap
     between that snapshot and the write. The write must re-check, not assume."""
