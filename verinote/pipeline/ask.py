@@ -200,7 +200,13 @@ def _engine_source_facts(store: Store, query_dl: str) -> list[AskGroundingFact]:
             seen.add(key)
             facts.append(
                 AskGroundingFact(
-                    answer=answer.value,
+                    # `display_value`, not `value`: ask.html renders this as a
+                    # single table cell, not as an entry in the report's
+                    # `, `-joined answer line, so the join's comma escape has
+                    # nothing to defend here and would only contradict the
+                    # `object` cell printed beside it (issue #167). `seen` still
+                    # keys on `value`, the answer's identity.
+                    answer=answer.display_value,
                     subject=fact.subject,
                     relation=fact.relation,
                     object=fact.object,
