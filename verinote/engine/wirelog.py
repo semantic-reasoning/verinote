@@ -33,7 +33,7 @@ from verinote.engine.policy_vocabulary import (
     FUNCTIONAL_CONFLICT_DECL,
     FUNCTIONAL_CONFLICT_RULE,
 )
-from verinote.engine.terms import StringLit, TermParseError, escape_string_value
+from verinote.engine.terms import StringLit, escape_string_value
 
 # Prefixes that mark a derived relation as a verinote finding.
 _ERROR_PREFIX = "error_"
@@ -158,6 +158,36 @@ def _is_finding_or_query(predicate: str) -> bool:
     return predicate.startswith((_ERROR_PREFIX, _WARN_PREFIX, _ANSWER_PREFIX))
 
 
+def _read_policy(source: str) -> Program | None:
+    """`source` as a program, or None when our parser cannot read it.
+
+    pyrewire is the engine on this path and its dialect is its own, so a policy
+    it accepts may be one our parser does not. Every reader of a parsed policy
+    here is advisory — the shape a finding may be annotated from, the relation
+    names a rule pins itself to — and none of them is a gate: findings and the
+    review gate come from the engine either way. So a policy we cannot read is
+    not an error, it just leaves those readers with nothing to say, and a reader
+    with nothing to say must stay silent rather than guess. A genuinely
+    malformed policy is surfaced as an engine error by the engine itself, so
+    raising here would report the same fault twice.
+
+    This is the one place that decides what "unreadable" means, so the readers
+    cannot drift into disagreeing about which policies they are willing to read.
+    """
+    try:
+        return parse_and_validate_program(source)
+    except (DatalogParseError, DatalogValidationError):
+        return None
+
+
+def _declared_columns(program: Program) -> dict[str, tuple[str, ...]]:
+    """The column names each predicate in `program` declares, by predicate name."""
+    return {
+        decl.name: tuple(column.name for column in decl.columns)
+        for decl in program.declarations
+    }
+
+
 def dead_rule_warnings(policy_dl: str, present_relations: Iterable[str]) -> list[str]:
     """Warn about relation names a policy pins to string literals that no fact uses.
 
@@ -183,14 +213,11 @@ def dead_rule_warnings(policy_dl: str, present_relations: Iterable[str]) -> list
     present = set(present_relations)
     if not present:
         return []
-    try:
-        program = parse_and_validate_program(policy_dl)
-    except (DatalogParseError, DatalogValidationError, TermParseError):
+    program = _read_policy(policy_dl)
+    if program is None:
         return []
 
-    columns_by_pred = {
-        decl.name: [col.name for col in decl.columns] for decl in program.declarations
-    }
+    columns_by_pred = _declared_columns(program)
     derived = {rule.head.predicate for rule in program.rules}
     referenced: set[tuple[str, str]] = set()
 
@@ -375,25 +402,6 @@ class _Derived:
         return FindingRow(f"{level} {self.text}", self.values, self.rule, self.columns)
 
 
-def _declared_columns(source: str) -> dict[str, tuple[str, ...]]:
-    """The column names each predicate in `source` declares, by predicate name.
-
-    pyrewire is the engine on this path and its dialect is its own, so a policy
-    it accepts may be one our parser does not. That is not an error here: a
-    declaration we cannot read simply leaves the rule's shape unknown, and a
-    reader of an unknown shape must not guess. Findings and the review gate come
-    from pyrewire either way and are unaffected.
-    """
-    try:
-        program = parse_and_validate_program(source)
-    except (DatalogParseError, DatalogValidationError):
-        return {}
-    return {
-        decl.name: tuple(column.name for column in decl.columns)
-        for decl in program.declarations
-    }
-
-
 def _row_values(row: Iterable[object]) -> tuple[str, ...]:
     """The derived tuple's values as labels, unescaped, for exact comparison.
 
@@ -464,7 +472,10 @@ def run_check(
             findings=[f"engine error: {exc}"],
         )
 
-    columns_by_rule = _declared_columns(program)
+    # The shape a finding may be read positionally by, from the same text the
+    # engine ran (policy plus any query rules), or nothing when we cannot read it.
+    parsed = _read_policy(program)
+    columns_by_rule = _declared_columns(parsed) if parsed is not None else {}
     errors: list[_Derived] = []
     warnings: list[_Derived] = []
     answers_by_q: dict[str, list[str]] = {}
