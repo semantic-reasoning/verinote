@@ -1315,20 +1315,33 @@ class Store:
         untouched and unlogged so repeat rejects don't pile duplicate audit rows.
         There is deliberately no transition out of superseded here — this route
         is the one that puts a fact into the terminal state, never the one that
-        takes it out. Read and write share `self._lock` for the same reason
-        accept does.
+        takes it out.
+
+        That "already superseded?" check is a read, so it settles the race only
+        for callers sharing this instance's lock; a reject arriving on another
+        connection to the same KB lands in the window after it. Two rejects agree
+        about the status, so no state is corrupted — but the loser would still
+        claim `changed=True` for a transition it did not make, and the route
+        above turns that claim into an auto-accept pass. So, as in the three
+        writes around it, the UPDATE is conditional on the status this call
+        observed, and a lost race writes nothing and logs nothing.
         """
         with self._lock:
             before = self.get_fact(fact_id)
             if before is None:
                 return FactDecision.unchanged(None)
-            if before["status"] == "superseded":
+            observed = before["status"]
+            if observed == "superseded":
                 return FactDecision.unchanged(before)
-            self._conn.execute(
+            cursor = self._conn.execute(
                 "UPDATE facts SET status = 'superseded', updated_at = datetime('now') "
-                "WHERE id = ?",
-                (fact_id,),
+                "WHERE id = ? AND status = ?",
+                (fact_id, observed),
             )
+            if cursor.rowcount == 0:
+                # Someone moved the fact between the read and the write; their
+                # decision stands, and this stale reject writes nothing.
+                return FactDecision.unchanged(self.get_fact(fact_id))
             after = self.get_fact(fact_id)
             self._log(fact_id, "rejected", before, after)
             return FactDecision(fact=after, changed=True)
