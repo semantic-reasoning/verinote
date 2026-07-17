@@ -39,9 +39,11 @@ def repair_questions(
     and the question stays flagged, so a later run can still repair it.
 
     With `allow_direct_datalog_fallback` (the default), a question the planner
-    cannot map costs two provider calls: intent extraction, then the direct
-    Datalog fallback. That includes the case where intent extraction *failed* —
-    during a provider outage or rate limit, each question is tried twice.
+    reports it cannot support costs two provider calls: intent extraction, then
+    the direct Datalog fallback. A question whose intent extraction *failed*
+    costs one: a provider that errors has not reported the question unsupported,
+    so the fallback does not retry it and an outage or rate limit stays at one
+    failed call per question.
     """
     results: list[dict] = []
     for q in store.questions():

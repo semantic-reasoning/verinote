@@ -493,17 +493,40 @@ def test_repair_model_no_answer_claim_stays_repairable(
     assert f"answer_q{qid}" in (load_query(s) or "")
 
 
-def test_repair_llm_error_costs_two_provider_calls(tmp_path, fake_client):
-    """A provider outage costs two calls: intent extraction, then the fallback.
+def test_repair_llm_error_costs_one_provider_call(tmp_path, fake_client):
+    """A provider outage costs one call: the fallback must not retry the outage.
 
-    Pinned so the default-on fallback's cost during an outage or rate-limit is a
-    deliberate choice rather than an accident.
+    The direct-Datalog fallback exists for questions planning reports it cannot
+    *support*. An `LLMError` says nothing about support — it says the provider
+    never answered — so a second call to that same provider is both wrong and
+    twice the cost per question during an outage or rate limit.
     """
     s, qid = _store_with_review_required(tmp_path)
     client = fake_client(error=LLMError("provider unavailable"))
     repair_questions(s, client, root=tmp_path)
 
+    assert client.calls == 1
+
+
+def test_repair_unsupported_intent_still_reaches_fallback(
+    tmp_path, fake_client, intent_payload
+):
+    """Refusing the fallback on `LLMError` must not disarm the supported path.
+
+    An intent extraction that *succeeds* with `unknown_or_unsupported` is the
+    fallback's reason to exist, so it still costs the second call.
+    """
+    s, qid = _store_with_review_required(tmp_path)
+    s.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
+    client = fake_client(
+        intent=intent_payload("unknown_or_unsupported", reason="planner cannot map"),
+        query=lambda q, i: f'answer_q{i}(O) :- relation("Sample Person", "born_in", O).',
+    )
+    results = repair_questions(s, client, root=tmp_path)
+
     assert client.calls == 2
+    assert results == [{"id": qid, "accepted": True, "reason": ""}]
+    assert s.questions()[0]["status"] == "translated"
 
 
 def test_repair_persists_llm_error_reason(tmp_path, fake_client):
