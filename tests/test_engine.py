@@ -440,3 +440,64 @@ def test_parser_rejects_invalid_unicode_escapes(text):
 def test_parser_accepts_valid_unicode_escapes(text, expected):
     """Rendering escapes only stays lossless if the reader accepts them back."""
     assert parse_term(text) == StringLit(expected)
+
+
+# Two subjects, each with a functional conflict: the smallest input that makes
+# `run_check` sort more than one derived tuple at the same level.
+_TWO_CONFLICTS = compile_dl(
+    [
+        {"subject": "Org A", "relation": "established_on", "object": "2020"},
+        {"subject": "Org A", "relation": "established_on", "object": "2021"},
+        {"subject": "Org B", "relation": "established_on", "object": "1999"},
+        {"subject": "Org B", "relation": "established_on", "object": "2000"},
+    ]
+)
+
+
+def test_run_check_orders_two_findings_of_the_same_level():
+    """Two findings must sort, and sort by the line the report shows.
+
+    `run_check` sorts its derived tuples, so a report carrying two of them at the
+    same level compares `_Derived` against `_Derived`. A KB with two conflicting
+    subjects is an ordinary KB, not a corner case, and every test that reached
+    this sort before happened to derive at most one tuple per level.
+    """
+    _require_pyrewire()
+    rep = run_check(_TWO_CONFLICTS)
+
+    assert rep.errors == 2
+    errors = [f for f in rep.findings if f.startswith("ERROR ")]
+    assert errors == [
+        "ERROR functional_conflict: Org A established_on",
+        "ERROR functional_conflict: Org B established_on",
+    ]
+    # Each error still carries its own row, in the same order as the lines.
+    assert [row.text for row in rep.finding_rows] == errors
+    assert [row.values for row in rep.finding_rows] == [
+        ("Org A", "established_on"),
+        ("Org B", "established_on"),
+    ]
+
+
+def test_run_check_annotator_row_survives_a_dead_rule_warning():
+    """A dead-rule note is a finding with no row behind it, and must stay one.
+
+    `dead_rule_warnings` reports a rule that never fired, so there is no derived
+    tuple to attach to it. The report still has to carry the rows of the findings
+    that *did* fire, and the dead-rule line must not acquire one.
+    """
+    _require_pyrewire()
+    policy = DEFAULT_POLICY + '\nfunctional("never_used_relation").\n'
+    rep = run_check(_CONFLICT, policy_dl=policy)
+
+    dead = [f for f in rep.findings if "dead_rule:" in f]
+    # DEFAULT_POLICY calls several date relations functional, so a KB using only
+    # one of them already reports dead rules: this combination is the ordinary
+    # case, not a corner one.
+    assert any("never_used_relation" in f for f in dead)
+    assert rep.warnings == len(dead)
+    # The dead-rule lines are reported, but no row claims to be behind them.
+    assert not {row.text for row in rep.finding_rows} & set(dead)
+    # The real conflict still carries its row for the annotator to read.
+    assert rep.errors == 1
+    assert [row.values for row in rep.finding_rows] == [("Org", "established_on")]
