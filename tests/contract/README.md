@@ -20,8 +20,16 @@ positive controls run there). Any invocation path works:
 ```bash
 VN_CONTRACT_PROVIDER=claudecli tests/contract/run.sh
 # or, equivalently:
-VN_CONTRACT_PROVIDER=claudecli python -m pytest tests/contract -m contract -rs
-VN_CONTRACT_PROVIDER=claudecli python -m pytest -m contract -rs
+VN_CONTRACT_PROVIDER=claudecli python3 -m pytest tests/contract -m contract -rs
+VN_CONTRACT_PROVIDER=claudecli python3 -m pytest -m contract -rs
+```
+
+`run.sh` picks `python3`, then `python`. Point it at a specific interpreter with
+`PYTHON` when the one it would find is not the one holding pytest and verinote's
+dependencies — a checkout whose virtualenv lives elsewhere, for instance:
+
+```bash
+PYTHON=/path/to/.venv/bin/python VN_CONTRACT_PROVIDER=claudecli tests/contract/run.sh
 ```
 
 Two rules keep a green run from meaning nothing:
