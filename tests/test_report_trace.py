@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MPL-2.0
-from verinote.engine.terms import Atom
+from verinote.engine.terms import Atom, Compound, StringLit
 from verinote.pipeline.query import query_path
 from verinote.pipeline.report_trace import report_trace
 from verinote.pipeline.verify import verify
@@ -284,4 +284,79 @@ def test_report_trace_joins_a_repeated_variable_on_engine_equality(tmp_path):
     assert rep.answers == ["q1: ada"]
     assert [(a.qid, a.value, tuple(f.id for f in a.facts)) for a in trace.answers] == [
         ("1", "ada", (fact_id,))
+    ]
+
+
+def test_report_trace_keeps_render_alike_structural_answers_separate(tmp_path):
+    """Trace identity must not collapse distinct answers that render alike.
+
+    `Compound("f", (Atom("x"),))` and `StringLit("f(x)")` both display as
+    `f(x)`, but the engine compare key keeps them distinct because compound
+    identity is structural. Grouping trace matches by rendered text merged their
+    provenance into one row even though the report answers preserve two tuples.
+    """
+    s = _store(tmp_path)
+    source_id = s.add_source("sources/render-alike.txt")
+    compound_fact = s.add_fact(
+        "s",
+        "r",
+        Compound("f", (Atom("x"),)),
+        status="confirmed",
+        source_id=source_id,
+    )
+    string_fact = s.add_fact(
+        "s",
+        "r",
+        StringLit("f(x)"),
+        status="confirmed",
+        source_id=source_id,
+    )
+    query_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    query_path(tmp_path).write_text(
+        ".decl answer_q1(value: symbol)\n"
+        'answer_q1(O) :- relation("s", "r", O).\n',
+        encoding="utf-8",
+    )
+
+    rep = verify(s)
+    trace = report_trace(s)
+
+    assert rep.answers == ["q1: f(x), f(x)"]
+    assert [(a.qid, a.value, [fact.id for fact in a.facts]) for a in trace.answers] == [
+        ("1", "f(x)", [compound_fact]),
+        ("1", "f(x)", [string_fact]),
+    ]
+
+
+def test_report_trace_dedupes_render_alike_heads_by_engine_identity(tmp_path):
+    """Trace row dedupe must preserve distinct head values with the same facts.
+
+    A constant compound head and a constant string head can render the same
+    `f(x)` while depending on the same body fact. Deduping traced rows by the
+    rendered answer and fact ids alone would hide one of the engine answers.
+    """
+    s = _store(tmp_path)
+    source_id = s.add_source("sources/render-alike-heads.txt")
+    fact_id = s.add_fact(
+        "s",
+        "r",
+        "anchor",
+        status="confirmed",
+        source_id=source_id,
+    )
+    query_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    query_path(tmp_path).write_text(
+        ".decl answer_q1(value: symbol)\n"
+        'answer_q1(f(x)) :- relation("s", "r", "anchor").\n'
+        'answer_q1("f(x)") :- relation("s", "r", "anchor").\n',
+        encoding="utf-8",
+    )
+
+    rep = verify(s)
+    trace = report_trace(s)
+
+    assert rep.answers == ["q1: f(x), f(x)"]
+    assert [(a.qid, a.value, [fact.id for fact in a.facts]) for a in trace.answers] == [
+        ("1", "f(x)", [fact_id]),
+        ("1", "f(x)", [fact_id]),
     ]

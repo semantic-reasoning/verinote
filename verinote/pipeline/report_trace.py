@@ -19,6 +19,7 @@ from verinote.engine.terms import (
     Var,
     render_answer_value,
     render_display_value,
+    term_compare_key,
     terms_equal,
 )
 from verinote.pipeline.corroboration import CorroborationPolicyError
@@ -47,9 +48,9 @@ class AnswerTrace:
 
     `value` is the answer as /report writes it -- the same rendering the engine
     backend uses for the "Query answers" line, so the "Traceability" section
-    below it shows that answer the same way and the two can be matched to each
-    other (issue #167). It is the answer's identity here: grouping and dedupe
-    key on it.
+    below it shows that answer the same way. It is a rendered value, not the
+    trace identity: grouping and dedupe key on the engine compare key before
+    this dataclass is created, because distinct answers can render alike.
 
     `display_value` is the same answer standing on its own, without the escape
     that only the report's `, ` join needs. Ask puts one answer in one table
@@ -126,8 +127,8 @@ def trace_query_answers(store: Store, query: str) -> tuple[AnswerTrace, ...]:
         if relation_atom is None:
             continue
         matches = _match_relation_atom(relation_atom, facts, rule.head.args)
-        for value, (display_value, fact_ids) in sorted(matches.items()):
-            key = (qid, value, tuple(sorted(fact_ids)))
+        for identity, (value, display_value, fact_ids) in sorted(matches.items()):
+            key = (qid, identity, tuple(sorted(fact_ids)))
             if key in seen:
                 continue
             seen.add(key)
@@ -170,18 +171,18 @@ def _match_relation_atom(
     atom: AtomExpr,
     facts: list[dict[str, object]],
     head_args: tuple[Term, ...],
-) -> dict[str, tuple[str, set[int]]]:
+) -> dict[str, tuple[str, str, set[int]]]:
     """Group matching facts by answer value.
 
-    Keyed on `render_answer_value` -- the report's rendering -- because that is
-    the answer's identity on /report, and two terms the engine calls one answer
-    (`Atom("x")` and `StringLit("x")`) must land in one group rather than two
-    rows naming the same value. The display form rides along per group; it is a
-    function of the same term, so every member of a group agrees on it.
+    Keyed on `term_compare_key`, not on either display rendering. Two terms the
+    engine calls one answer (`Atom("x")` and `StringLit("x")`) must land in one
+    group rather than two rows naming the same value, while structurally distinct
+    answers that render alike (`f(x)` as a compound versus a string) must keep
+    separate provenance rows. The renderings ride along as payload, not identity.
     """
     if len(head_args) != 1:
         return {}
-    matches: dict[str, tuple[str, set[int]]] = {}
+    matches: dict[str, tuple[str, str, set[int]]] = {}
     for fact in facts:
         bindings: dict[str, Term] = {}
         if not _match_term(atom.args[0], fact["subject"], bindings):
@@ -194,9 +195,10 @@ def _match_relation_atom(
         if value is None:
             continue
         group = matches.setdefault(
-            render_answer_value(value), (render_display_value(value), set())
+            term_compare_key(value),
+            (render_answer_value(value), render_display_value(value), set()),
         )
-        group[1].add(int(fact["id"]))
+        group[2].add(int(fact["id"]))
     return matches
 
 
