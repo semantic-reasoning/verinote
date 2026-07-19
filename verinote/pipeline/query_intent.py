@@ -13,44 +13,82 @@ from verinote.llm.base import LLMError
 from verinote.llm.schema import QUERY_INTENT_SCHEMA
 
 
-def _schema_domain(field_name: str) -> frozenset[str] | None:
-    """The non-null values QUERY_INTENT_SCHEMA's enum admits for one field.
+# Every derivation below takes its schema as an argument rather than reading
+# QUERY_INTENT_SCHEMA directly. That is what makes the derivation testable: fed a
+# synthetic schema carrying a property the module has never heard of, a real
+# derivation answers with that property and a hand-written name list cannot. The
+# module constants are these functions applied to the real contract.
+def _nullable_string_fields(schema: dict[str, Any]) -> tuple[str, ...]:
+    """The schema's nullable string properties, in schema order.
+
+    A property qualifies when its declared type is exactly `["string", "null"]`.
+    Testing `"null" in type` instead would sweep in `relation_candidates`
+    (`["array", "null"]`) and the target properties (`["object", "null"]`), whose
+    values are not strings and must not be trimmed or blank-normalised as if they
+    were. Each qualifying property is also listed in `required` (OpenAI strict
+    mode), so any of them can legitimately arrive as null.
+    """
+    return tuple(
+        field_name
+        for field_name, spec in schema["properties"].items()
+        if isinstance(spec.get("type"), list) and set(spec["type"]) == {"string", "null"}
+    )
+
+
+def _schema_domain(schema: dict[str, Any], field_name: str) -> frozenset[str] | None:
+    """The non-null values the schema's enum admits for one field.
 
     None when the schema pins no domain: `value` and `reason` carry `minLength: 1`
     and no enum, so every non-blank string is on-schema for them.
     """
-    enum = QUERY_INTENT_SCHEMA["properties"][field_name].get("enum")
+    enum = schema["properties"][field_name].get("enum")
     if enum is None:
         return None
     return frozenset(value for value in enum if value is not None)
 
 
-# The schema's nullable string properties. Each is typed `["string", "null"]` and
-# each is still listed in `required` (OpenAI strict mode), so any of them can
-# legitimately arrive as null.
-_NULLABLE_STRING_FIELDS = ("operator", "value_type", "value", "reason")
+def _comparison_domains(schema: dict[str, Any]) -> dict[str, frozenset[str]]:
+    """Every nullable string property the schema constrains to an enum.
 
-# Read off the schema rather than restated here: the schema is the contract every
-# adapter hands the provider, so a second hand-maintained copy of these enums can
-# only drift out of it -- and either half of that drift is a bug (rejecting
-# on-schema output, or accepting output no strict-mode provider could send).
-QUERY_INTENT_COMPARISON_DOMAINS: dict[str, frozenset[str]] = {
-    field_name: domain
-    for field_name in _NULLABLE_STRING_FIELDS
-    if (domain := _schema_domain(field_name)) is not None
-}
+    Read off the schema rather than restated here: the schema is the contract
+    every adapter hands the provider, so a second hand-maintained copy of these
+    enums can only drift out of it -- and either half of that drift is a bug
+    (rejecting on-schema output, or accepting output no strict-mode provider
+    could send).
+    """
+    return {
+        field_name: domain
+        for field_name in _nullable_string_fields(schema)
+        if (domain := _schema_domain(schema, field_name)) is not None
+    }
 
-# Blank means null only where the schema pins no domain. A prompt-only provider
-# spells the null it is forced to emit as "", so `reason: ""` has to read as
-# absent (issue #237) -- but "" is in no enum, so on an enum-constrained field it
-# is an off-schema *value*, not an absent one, and `_validate_schema_domains`
-# must get to see it. Derived from the schema so the rule cannot drift out of the
-# contract: give `value` an enum tomorrow and it stops taking blank as null here,
-# with no name list to remember to update.
-QUERY_INTENT_BLANK_NULLABLE_FIELDS: frozenset[str] = frozenset(
-    field_name
-    for field_name in _NULLABLE_STRING_FIELDS
-    if _schema_domain(field_name) is None
+
+def _blank_nullable_fields(schema: dict[str, Any]) -> frozenset[str]:
+    """The nullable string properties on which blank reads as null.
+
+    Blank means null only where the schema pins no domain. A prompt-only provider
+    spells the null it is forced to emit as "", so `reason: ""` has to read as
+    absent (issue #237) -- but "" is in no enum, so on an enum-constrained field
+    it is an off-schema *value*, not an absent one, and `_validate_schema_domains`
+    must get to see it. Add an enum to `value` tomorrow and it stops taking blank
+    as null here; add a whole new nullable string property and it starts,
+    with no name list to remember to update either way.
+    """
+    return frozenset(
+        field_name
+        for field_name in _nullable_string_fields(schema)
+        if _schema_domain(schema, field_name) is None
+    )
+
+
+_NULLABLE_STRING_FIELDS = _nullable_string_fields(QUERY_INTENT_SCHEMA)
+
+QUERY_INTENT_COMPARISON_DOMAINS: dict[str, frozenset[str]] = _comparison_domains(
+    QUERY_INTENT_SCHEMA
+)
+
+QUERY_INTENT_BLANK_NULLABLE_FIELDS: frozenset[str] = _blank_nullable_fields(
+    QUERY_INTENT_SCHEMA
 )
 
 
@@ -125,14 +163,16 @@ class QueryIntent:
             tuple(_clean_required_string(item, "relation candidate") for item in self.relation_candidates),
         )
         # A blank nullable string is an absent one -- but only where the schema
-        # pins no domain for the field. All four are nullable yet still listed in
-        # `required` (OpenAI strict mode), and prompt-only providers do not
-        # enforce `minLength: 1`, so a model told to "leave reason null" routinely
-        # emits "" instead; treating that as a hard error would kill a correctly
-        # classified intent, the same failure as #237. On `operator`/`value_type`
-        # the schema's enum settles it the other way: "" is not in the enum, so it
-        # is an off-schema value that `_validate_schema_domains` must reject
-        # rather than an absent one to normalise away.
+        # pins no domain for the field. Every schema property typed
+        # `["string", "null"]` is normalised here, and each is still listed in
+        # `required` (OpenAI strict mode); prompt-only providers do not enforce
+        # `minLength: 1`, so a model told to "leave reason null" routinely emits
+        # "" instead, and treating that as a hard error would kill a correctly
+        # classified intent, the same failure as #237. On the enum-constrained
+        # ones (`operator`/`value_type` today) the schema settles it the other
+        # way: "" is in no enum, so it is an off-schema value that
+        # `_validate_schema_domains` must reject rather than an absent one to
+        # normalise away.
         for field_name in _NULLABLE_STRING_FIELDS:
             current = getattr(self, field_name)
             if current is not None:
@@ -536,12 +576,14 @@ def _clean_optional_string(value: str, field_name: str) -> str | None:
     """Trim a nullable string field, mapping blank to None off the enum fields.
 
     Blank is how a prompt-only provider spells null in a key the schema forces it
-    to emit, so on a field the schema leaves open (`value`, `reason`) it means
-    "absent" rather than "invalid". Where the schema pins an enum it means neither:
-    "" is not one of the admitted values, so it is returned as-is for
+    to emit, so on a field the schema leaves open (`value` and `reason` today) it
+    means "absent" rather than "invalid". Where the schema pins an enum it means
+    neither: "" is not one of the admitted values, so it is returned as-is for
     `_validate_schema_domains` to reject, the same as `operator="contains"`. A
     wrong *value* was always a violation; the enum fields simply have no spelling
-    of null other than null.
+    of null other than null. Which side a field falls on comes from
+    `_blank_nullable_fields`, so the split follows the schema rather than a list
+    kept here.
     """
     if not isinstance(value, str):
         raise ValueError(f"{field_name} must be a string")

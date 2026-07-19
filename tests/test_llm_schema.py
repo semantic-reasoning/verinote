@@ -1,4 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
+import copy
+import dataclasses
+
 import pytest
 
 from verinote.llm import LLMError
@@ -12,9 +15,27 @@ from verinote.pipeline.query_intent import (
     QUERY_INTENT_BLANK_NULLABLE_FIELDS,
     QUERY_INTENT_COMPARISON_DOMAINS,
     IntentTarget,
+    QueryIntent,
     QueryIntentKind,
+    _blank_nullable_fields,
+    _comparison_domains,
+    _nullable_string_fields,
     parse_query_intent,
 )
+
+
+def _synthetic_intent_schema():
+    """QUERY_INTENT_SCHEMA plus two nullable string properties it has never had.
+
+    A hand-written name list and a schema derivation agree on today's contract, so
+    only a schema the module has never seen tells them apart: the derivation
+    answers with `unit` and `note`, the list cannot.
+    """
+    schema = copy.deepcopy(QUERY_INTENT_SCHEMA)
+    schema["properties"]["unit"] = {"type": ["string", "null"], "enum": ["kg", "m", None]}
+    schema["properties"]["note"] = {"type": ["string", "null"], "minLength": 1}
+    schema["required"] = list(schema["properties"])
+    return schema
 
 
 def _intent_payload(**overrides):
@@ -316,10 +337,79 @@ def test_query_intent_blank_nullable_fields_are_the_schema_fields_without_an_enu
     """
     assert QUERY_INTENT_BLANK_NULLABLE_FIELDS == frozenset(
         name
-        for name in ("operator", "value_type", "value", "reason")
+        for name in _nullable_string_fields(QUERY_INTENT_SCHEMA)
         if "enum" not in QUERY_INTENT_SCHEMA["properties"][name]
     )
     assert QUERY_INTENT_BLANK_NULLABLE_FIELDS == frozenset({"value", "reason"})
+
+
+def test_nullable_string_fields_follow_a_schema_it_has_never_seen():
+    """A property added to the schema alone must show up without a code change.
+
+    That is the whole of issue #298: the module used to carry
+    `("operator", "value_type", "value", "reason")` by hand, so a nullable string
+    property added to QUERY_INTENT_SCHEMA was silently exempt from trimming,
+    blank-to-null normalisation, and enum checking until somebody remembered to
+    retype its name here.
+    """
+    synthetic = _synthetic_intent_schema()
+
+    derived = _nullable_string_fields(synthetic)
+
+    assert "unit" in derived
+    assert "note" in derived
+
+
+def test_nullable_string_fields_exclude_the_other_nullable_types():
+    """Nullable is not enough -- the value has to be a string.
+
+    `relation_candidates` is `["array", "null"]` and the target properties are
+    `["object", "null"]`; a predicate written as `"null" in type` would pull all
+    four in and hand them to `_clean_optional_string`, which trims strings. `kind`
+    is a bare `"string"` and is not nullable at all.
+    """
+    derived = _nullable_string_fields(_synthetic_intent_schema())
+
+    assert "relation_candidates" not in derived
+    assert "subject" not in derived
+    assert "relation" not in derived
+    assert "object" not in derived
+    assert "kind" not in derived
+
+
+def test_comparison_domains_follow_a_schema_it_has_never_seen():
+    """A new enum-constrained property is validated against its enum, not ignored."""
+    domains = _comparison_domains(_synthetic_intent_schema())
+
+    assert domains["unit"] == frozenset({"kg", "m"})
+
+
+def test_blank_nullable_fields_split_a_new_property_by_its_enum():
+    """The blank-is-null special case follows the enum, on properties and all.
+
+    An enum-constrained property has no spelling of null other than null, so "" on
+    it is an off-schema value for `_validate_schema_domains` to reject. A nullable
+    string the schema leaves open keeps the #237 tolerance.
+    """
+    blank_nullable = _blank_nullable_fields(_synthetic_intent_schema())
+
+    assert "unit" not in blank_nullable
+    assert "note" in blank_nullable
+
+
+def test_derived_nullable_string_fields_all_exist_on_the_query_intent_dataclass():
+    """`__post_init__` getattr's every derived name, so a stray one is AttributeError.
+
+    Deliberately a red test rather than a `hasattr` skip in the loop: skipping the
+    names the dataclass lacks would let a nullable string property added to
+    QUERY_INTENT_SCHEMA through parsing unnormalised and unvalidated, which is the
+    exact hole #298 closes -- it would just move from "the hand list forgot it" to
+    "the loop stepped over it". Adding a property to the schema is meant to force
+    adding the field here; failing loudly is how that gets said.
+    """
+    dataclass_field_names = {f.name for f in dataclasses.fields(QueryIntent)}
+
+    assert set(_nullable_string_fields(QUERY_INTENT_SCHEMA)) <= dataclass_field_names
 
 
 @pytest.mark.parametrize("blank", ["", "   "])
