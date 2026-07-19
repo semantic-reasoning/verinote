@@ -1026,22 +1026,13 @@ def _alien_sources_db(root: Path) -> Path:
 def test_read_only_commands_diagnose_an_alien_table_past_the_facts_probe(
     command, tmp_path, monkeypatch, capsys
 ):
-    """The probe checks `facts`; the KB is made of more tables than that.
+    """The probe now rejects alien core-table columns before opening read-write.
 
-    A file whose `facts` table is verinote's but whose `sources` table is
-    somebody else's gets past the probe and blows up deeper in
-    (`no such column: path`). Tightening the probe to every table's columns
-    would be the schema-drift trap the probe is shaped to avoid, so instead the
-    read-only commands own their contract at the boundary: a diagnosis reports,
-    it does not traceback.
-
-    LIMITATION, on purpose: this closes the traceback, *not* the write. By the
-    time the error surfaces, `_store()` has already run `init_schema()` and the
-    file has grown. Only refusing to open the KB read-write would fix that, and
-    that is issue #291 — `_store()` writes unconditionally, so today even a
-    healthy `status` writes. This test deliberately asserts nothing about the
-    file's bytes: pinning today's damage would be a test of the bug, and it must
-    not go red when #291 stops the write.
+    PR #274 originally let this file reach `_store().init_schema()`, then wrapped
+    the later SQL error. Issue #291 moves the boundary earlier: `sources` is one
+    of the oldest KB tables, and its `id`/`path` columns are part of the
+    historical read contract, so a table without them is refused without touching
+    the file.
     """
     _isolated(monkeypatch, tmp_path)
     root = tmp_path / "alien-sources"
@@ -1052,15 +1043,182 @@ def test_read_only_commands_diagnose_an_alien_table_past_the_facts_probe(
 
     out = capsys.readouterr()
     assert "Traceback" not in out.err
+    assert "is not a verinote KB" in out.err
+
+
+def _table_names(db: Path) -> set[str]:
+    conn = sqlite3.connect(db)
+    try:
+        return {
+            r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+    finally:
+        conn.close()
+
+
+def _root_file_names(root: Path) -> list[str]:
+    return sorted(p.name for p in root.iterdir())
+
+
+@pytest.mark.parametrize("command", ["status", "coverage"])
+def test_read_only_diagnostics_leave_a_current_kb_untouched(
+    command, tmp_path, monkeypatch, capsys
+):
+    _isolated(monkeypatch, tmp_path)
+    root = tmp_path / "healthy"
+    root.mkdir()
+    store = Store(root / "kb.sqlite")
+    store.init_schema()
+    source_id = store.add_source("sources/sample.txt")
+    store.add_fact("A", "r", "B", status="confirmed", source_id=source_id)
+    store.close()
+    db = root / "kb.sqlite"
+    before = db.read_bytes()
+    before_mtime = db.stat().st_mtime_ns
+    before_files = _root_file_names(root)
+    monkeypatch.setenv("VERINOTE_ROOT", str(root))
+
+    assert cli.main([command]) == 0
+
+    assert "policy:" in capsys.readouterr().out
+    assert db.read_bytes() == before
+    assert db.stat().st_mtime_ns == before_mtime
+    assert _root_file_names(root) == before_files
+
+
+def test_status_reads_a_live_wal_kb_without_false_schema_refusal(
+    tmp_path, monkeypatch, capsys
+):
+    _isolated(monkeypatch, tmp_path)
+    root = tmp_path / "live-wal"
+    root.mkdir()
+    db = root / "kb.sqlite"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        PRAGMA journal_mode = WAL;
+        CREATE TABLE facts (
+            id INTEGER PRIMARY KEY, subject TEXT, relation TEXT,
+            object TEXT, status TEXT
+        );
+        CREATE TABLE sources (id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE);
+        CREATE TABLE runs (id INTEGER PRIMARY KEY);
+        CREATE TABLE review_log (id INTEGER PRIMARY KEY);
+        INSERT INTO sources(id, path) VALUES (1, 'sources/sample.txt');
+        INSERT INTO facts(id, subject, relation, object, status)
+            VALUES (1, 'A', 'r', 'B', 'confirmed');
+        """
+    )
+    conn.commit()
+    assert (root / "kb.sqlite-wal").exists()
+    monkeypatch.setenv("VERINOTE_ROOT", str(root))
+
+    try:
+        assert cli.main(["status"]) == 0
+    finally:
+        conn.close()
+
+    out = capsys.readouterr()
+    assert "facts:   1" in out.out
+    assert "is not a verinote KB" not in out.err
+
+
+def test_status_does_not_adopt_a_pre_marker_policy_file_read_only(
+    tmp_path, monkeypatch, capsys
+):
+    _isolated(monkeypatch, tmp_path)
+    root = tmp_path / "pre-marker-policy"
+    root.mkdir()
+    store = Store(root / "kb.sqlite")
+    store.init_schema()
+    store.close()
+    policy = root / "policy" / "logic-policy.dl"
+    policy.parent.mkdir()
+    policy.write_text("// synthetic policy\n", encoding="utf-8")
+    db = root / "kb.sqlite"
+    before = db.read_bytes()
+    before_mtime = db.stat().st_mtime_ns
+    monkeypatch.setenv("VERINOTE_ROOT", str(root))
+
+    assert cli.main(["status"]) == 0
+
+    assert "policy: ok" in capsys.readouterr().out
+    assert db.read_bytes() == before
+    assert db.stat().st_mtime_ns == before_mtime
+    conn = sqlite3.connect(db)
+    marker = conn.execute(
+        "SELECT value FROM kb_meta WHERE key = 'policy.logic'"
+    ).fetchone()
+    conn.close()
+    assert marker is None
+
+
+@pytest.mark.parametrize("command", ["status", "coverage"])
+def test_read_only_commands_do_not_modify_an_alien_sources_table(
+    command, tmp_path, monkeypatch, capsys
+):
+    """Even deeper malformed tables must not be half-migrated by diagnostics."""
+    _isolated(monkeypatch, tmp_path)
+    root = tmp_path / "alien-sources-readonly"
+    db = _alien_sources_db(root)
+    before = db.read_bytes()
+    before_mtime = db.stat().st_mtime_ns
+    before_tables = _table_names(db)
+    monkeypatch.setenv("VERINOTE_ROOT", str(root))
+
+    assert cli.main([command]) == 1
+
+    out = capsys.readouterr()
+    assert "Traceback" not in out.err
+    assert "is not a verinote KB" in out.err
+    assert db.read_bytes() == before
+    assert db.stat().st_mtime_ns == before_mtime
+    assert _table_names(db) == before_tables
+    assert sorted(p.name for p in root.iterdir()) == ["kb.sqlite"]
+
+
+def _sources_with_null_path_db(root: Path) -> Path:
+    """A malformed DB that passes shape checks but has invalid source data."""
+    root.mkdir(parents=True, exist_ok=True)
+    db = root / "kb.sqlite"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE facts (
+            id INTEGER PRIMARY KEY, subject TEXT, relation TEXT,
+            object TEXT, status TEXT, source_id INTEGER
+        );
+        CREATE TABLE sources (id INTEGER PRIMARY KEY, path TEXT, kind TEXT);
+        CREATE TABLE runs (id INTEGER PRIMARY KEY);
+        CREATE TABLE review_log (id INTEGER PRIMARY KEY);
+        INSERT INTO sources(id, path, kind) VALUES (1, NULL, 'text');
+        """
+    )
+    conn.commit()
+    conn.close()
+    return db
+
+
+def test_coverage_refuses_null_source_path_without_traceback_or_write(
+    tmp_path, monkeypatch, capsys
+):
+    _isolated(monkeypatch, tmp_path)
+    root = tmp_path / "null-source-path"
+    db = _sources_with_null_path_db(root)
+    before = db.read_bytes()
+    before_mtime = db.stat().st_mtime_ns
+    before_tables = _table_names(db)
+    monkeypatch.setenv("VERINOTE_ROOT", str(root))
+
+    assert cli.main(["coverage"]) == 1
+
+    out = capsys.readouterr()
+    assert "Traceback" not in out.err
     assert "cannot read the KB" in out.err
-    # The message may not pin the blame on the KB: a `DatabaseError` here is just
-    # as likely to be verinote's own SQL bug, and telling *that* user to restore a
-    # healthy KB from backup is worse advice than the traceback this replaced.
-    assert "or a bug in verinote" in out.err
-    # So the one check the code cannot make is handed to the user, and the restore
-    # advice waits behind it rather than being an unconditional imperative.
-    assert "opens with another verinote version" in out.err
-    assert "do not restore anything" in out.err
+    assert "unsupported operand" not in out.err
+    assert db.read_bytes() == before
+    assert db.stat().st_mtime_ns == before_mtime
+    assert _table_names(db) == before_tables
 
 
 def test_the_two_refusal_paths_do_not_borrow_each_others_diagnosis(
@@ -1089,10 +1247,10 @@ def test_the_two_refusal_paths_do_not_borrow_each_others_diagnosis(
     assert "bug in verinote" not in probe_err
 
     wrap_root = tmp_path / "wrap"
-    _alien_sources_db(wrap_root)
+    _sources_with_null_path_db(wrap_root)
     monkeypatch.setenv("VERINOTE_ROOT", str(wrap_root))
 
-    assert cli.main(["status"]) == 1
+    assert cli.main(["coverage"]) == 1
 
     wrap_err = capsys.readouterr().err
     assert "cannot read the KB" in wrap_err
