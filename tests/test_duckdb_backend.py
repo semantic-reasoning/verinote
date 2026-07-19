@@ -740,6 +740,34 @@ def test_duckdb_backend_counts_distinct_tuples_that_render_alike():
     assert len(rep.findings) == 2
 
 
+def test_duckdb_backend_counts_distinct_finding_tuples_that_render_alike():
+    """Finding rows must not collapse on their rendered text.
+
+    A compound ``f(x)`` and the string ``"f(x)"`` are distinct engine values,
+    but both render as ``f(x)`` in a finding. The report count and structured
+    finding rows must preserve both tuples; the source-label annotator can treat
+    the duplicate text as ambiguous if it needs a one-line-to-one-row map.
+    """
+    _duckdb()
+    rep = run_check_duckdb(
+        [
+            {
+                "subject": "Subj",
+                "relation": "flag",
+                "object": _c("f", Atom("x")),
+            },
+            {"subject": "Subj", "relation": "flag", "object": "f(x)"},
+        ],
+        policy_dl=_DUP_POLICY,
+    )
+
+    assert rep.ok is False
+    assert rep.errors == 2
+    assert rep.findings == ["ERROR dup: Subj f(x)", "ERROR dup: Subj f(x)"]
+    assert [row.text for row in rep.finding_rows] == rep.findings
+    assert len({row.identity for row in rep.finding_rows}) == 2
+
+
 def test_duckdb_backend_finding_columns_cannot_forge_each_other():
     """A space in one column may not blur into the column boundary.
 

@@ -316,6 +316,51 @@ def test_source_label_annotator_mixed_conflict_does_not_borrow_neighbors():
     ]
 
 
+def test_source_label_annotator_treats_same_value_different_identity_as_ambiguous():
+    line = "ERROR functional_conflict: Org f(x)"
+    report = CheckReport(
+        ok=False,
+        errors=2,
+        warnings=0,
+        text=f"{line}\n{line}",
+        findings=[line, line],
+        finding_rows=[
+            FindingRow(
+                line,
+                ("Org", "f(x)"),
+                *_CONFLICT_SHAPE,
+                ("s:Org", "c:f(A:x)"),
+            ),
+            FindingRow(
+                line,
+                ("Org", "f(x)"),
+                *_CONFLICT_SHAPE,
+                ("s:Org", "s:f(x)"),
+            ),
+        ],
+    )
+    rows = [
+        {
+            "id": 1,
+            "subject": StringLit("Org"),
+            "relation": StringLit("f(x)"),
+            "relation_raw": StringLit("raw_compound"),
+            "object": StringLit("2020"),
+        },
+        {
+            "id": 2,
+            "subject": StringLit("Org"),
+            "relation": StringLit("f(x)"),
+            "relation_raw": StringLit("raw_string"),
+            "object": StringLit("2021"),
+        },
+    ]
+
+    annotate_source_labels(report, rows)
+
+    assert report.findings == [line, line]
+
+
 def test_findings_do_not_borrow_an_overlapping_subject_s_facts(tmp_path):
     """A note must name the facts of *its* subject, not of every subject it contains.
 

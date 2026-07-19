@@ -265,8 +265,9 @@ class FindingRow:
     `text` is a guess that goes wrong precisely when labels overlap.
 
     `values` holds the labels as the KB stores them (see `bare_label`), while
-    `text` is the escaped, display-side line — the two differ for any value
-    carrying a control character.
+    `identity` holds the engine comparison keys for the same tuple when an
+    engine can provide them. The two differ when distinct structural terms share
+    one bare surface, such as compound `f(x)` and string `"f(x)"`.
 
     `rule` and `columns` say which derived predicate produced the row and how
     that predicate declared its columns. Values alone are anonymous: knowing
@@ -284,6 +285,9 @@ class FindingRow:
     #: Its declared column names, in order; empty when the policy's declaration
     #: could not be read, which means "shape unknown", not "no columns".
     columns: tuple[str, ...] = ()
+    #: Engine comparison identity for the derived tuple. Empty means callers
+    #: should fall back to `values`; the legacy wirelog path has only strings.
+    identity: tuple[str, ...] = ()
 
 
 @dataclass
@@ -406,7 +410,13 @@ class _Derived:
     columns: tuple[str, ...]
 
     def finding_row(self, level: str) -> FindingRow:
-        return FindingRow(f"{level} {self.text}", self.values, self.rule, self.columns)
+        return FindingRow(
+            f"{level} {self.text}",
+            self.values,
+            self.rule,
+            self.columns,
+            self.values,
+        )
 
 
 def _row_values(row: Iterable[object]) -> tuple[str, ...]:
