@@ -5,6 +5,11 @@ import pytest
 
 import verinote.engine.wirelog as wl
 from verinote.engine import DEFAULT_POLICY, compile_dl, run_check, validate_query
+from verinote.engine.policy_vocabulary import (
+    FUNCTIONAL_CONFLICT_COLUMNS,
+    FUNCTIONAL_CONFLICT_RULE,
+    functional_conflict_target,
+)
 from verinote.engine.terms import (
     StringLit,
     TermParseError,
@@ -501,3 +506,32 @@ def test_run_check_annotator_row_survives_a_dead_rule_warning():
     # The real conflict still carries its row for the annotator to read.
     assert rep.errors == 1
     assert [row.values for row in rep.finding_rows] == [("Org", "established_on")]
+
+
+def test_wirelog_finding_row_carries_a_shape_the_annotator_can_read():
+    """Values alone are anonymous: the row must say which rule and columns they are.
+
+    `functional_conflict_target` refuses to read a row positionally unless the
+    row names verinote's own rule *and* the columns verinote declared — that
+    refusal is what stops a note being attached to a user rule whose second
+    column is not a relation. So `rule` and `columns` are not decoration on the
+    way to `values`; drop either and the annotator correctly goes silent, and
+    every finding loses its provenance while the report still looks right.
+
+    The reader here is the real consumer, not a literal: if the declared shape
+    ever changes, the policy, `policy_vocabulary` and this test move together.
+    """
+    _require_pyrewire()
+    rep = run_check(_CONFLICT)
+
+    errors = [row for row in rep.finding_rows if row.text.startswith("ERROR ")]
+    assert len(errors) == 1
+    row = errors[0]
+    # The load-bearing assertion: the consumer can name the subject and relation.
+    assert functional_conflict_target(row.rule, row.columns, row.values) == (
+        "Org",
+        "established_on",
+    )
+    # Reported per axis too, so a break says which of the two went missing.
+    assert row.rule == FUNCTIONAL_CONFLICT_RULE
+    assert row.columns == FUNCTIONAL_CONFLICT_COLUMNS
