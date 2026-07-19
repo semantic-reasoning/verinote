@@ -1387,14 +1387,24 @@ class Store:
         relation: object,
         obj: object,
         note: str = "",
-    ) -> sqlite3.Row | None:
-        """Correct a fact's (subject, relation, object, note); audit as `amended`."""
+    ) -> FactDecision:
+        """Correct a fact's (subject, relation, object, note); audit as `amended`.
+
+        An amend is a decision only when it changes stored content. A missing
+        target or an exact replay writes nothing, logs nothing, and returns
+        `changed=False` so callers do not run follow-on effects for a request
+        that made no decision.
+        """
         with self._lock:
             from verinote.store.duckdb_fact_terms import fact_term_token
 
             before = self.get_fact(fact_id)
             if before is None:
-                return None
+                return FactDecision.unchanged(None)
+            previous_terms = self.fact_terms.get_fact_terms(fact_id)
+            requested_terms = _stored_fact_terms(subject, relation, obj)
+            if previous_terms == requested_terms and before["note"] == note:
+                return FactDecision.unchanged(before)
             token = fact_term_token(subject, relation, obj)
             self._conn.execute("BEGIN")
             try:
@@ -1420,7 +1430,7 @@ class Store:
             self.fact_terms.put_fact_terms(
                 fact_id, subject, relation, obj, term_token=token
             )
-            return after
+            return FactDecision(fact=after, changed=True)
 
     # --- questions -------------------------------------------------------
     def add_question(self, text: str) -> int:
@@ -1865,6 +1875,12 @@ def _display_fact_value(value: object) -> str:
     if isinstance(value, (Atom, Compound, NumberLit, StringLit, Var)):
         return render_term(value)
     return str(value)
+
+
+def _stored_fact_terms(subject: object, relation: object, obj: object):
+    from verinote.store.duckdb_fact_terms import _coerce_term
+
+    return (_coerce_term(subject), _coerce_term(relation), _coerce_term(obj))
 
 
 def _json_payload(value: dict[str, object] | sqlite3.Row | None) -> str | None:

@@ -125,7 +125,11 @@ def test_compile_dl_escapes_quotes(tmp_path):
 def test_amend_fact_persists_and_audits(tmp_path):
     s = _store(tmp_path)
     fid = s.add_fact("A", "is_a", "B", status="needs_review", note="orig")
-    after = s.amend_fact(fid, subject="A2", relation="became", obj="C", note="fixed")
+    decision = s.amend_fact(
+        fid, subject="A2", relation="became", obj="C", note="fixed"
+    )
+    after = decision.fact
+    assert decision.changed is True
     assert (after["subject"], after["relation"], after["object"], after["note"]) == (
         "A2",
         "became",
@@ -137,7 +141,24 @@ def test_amend_fact_persists_and_audits(tmp_path):
 
 def test_amend_missing_fact_returns_none(tmp_path):
     s = _store(tmp_path)
-    assert s.amend_fact(999, subject="x", relation="y", obj="z") is None
+    decision = s.amend_fact(999, subject="x", relation="y", obj="z")
+
+    assert decision.fact is None
+    assert decision.changed is False
+
+
+def test_replayed_amend_writes_no_audit_event(tmp_path):
+    s = _store(tmp_path)
+    fid = s.add_fact("A", "is_a", "B", status="needs_review", note="orig")
+    before = dict(s.get_fact(fid))
+
+    decision = s.amend_fact(fid, subject="A", relation="is_a", obj="B", note="orig")
+
+    assert decision.fact is not None
+    assert decision.changed is False
+    assert dict(decision.fact) == before
+    assert dict(s.get_fact(fid)) == before
+    assert s.fact_log(fid) == []
 
 
 def test_delete_source_removes_source_facts_and_terms(tmp_path):
