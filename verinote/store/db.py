@@ -1351,27 +1351,6 @@ class Store:
         rows = self._conn.execute("SELECT status, COUNT(*) c FROM facts GROUP BY status")
         return {r["status"]: r["c"] for r in rows}
 
-    def set_status(
-        self,
-        fact_id: int,
-        status: str,
-        *,
-        action: str = "set_status",
-        actor: str = "human",
-        rule_name: str = "",
-    ) -> sqlite3.Row | None:
-        with self._lock:
-            before = self.get_fact(fact_id)
-            if before is None:
-                return None
-            self._conn.execute(
-                "UPDATE facts SET status = ?, updated_at = datetime('now') WHERE id = ?",
-                (status, fact_id),
-            )
-            after = self.get_fact(fact_id)
-            self._log(fact_id, action, before, after, actor=actor, rule_name=rule_name)
-            return after
-
     def accept_review_facts_for_source(self, source_id: int) -> list[sqlite3.Row]:
         """Promote all review-queue facts for one source to confirmed."""
         placeholders, statuses = _status_filter(REVIEW_STATUSES)
