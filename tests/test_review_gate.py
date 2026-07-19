@@ -846,7 +846,12 @@ FACT_TRANSITION_METHODS = frozenset(
     }
 )
 
-_STATUS_WRITE = re.compile(r"UPDATE\s+facts\s+SET[^\"']*status", re.IGNORECASE)
+# The assignment list of every `UPDATE facts SET ... WHERE`. Matching the whole
+# SET clause rather than stopping at the first quote is what makes column order
+# irrelevant: `datetime('now')` sits between `SET` and `status` the moment
+# someone writes `updated_at` first, and a quote-sensitive pattern would read
+# that as "no status write" and wave the row straight past both guards.
+_STATUS_WRITE = re.compile(r"UPDATE\s+facts\s+SET(.*?)WHERE", re.IGNORECASE)
 
 
 def _public_methods(cls) -> frozenset[str]:
@@ -857,11 +862,14 @@ def _public_methods(cls) -> frozenset[str]:
     )
 
 
+def _writes_status(method) -> bool:
+    source = " ".join(inspect.getsource(method).split())
+    return any("status" in clause for clause in _STATUS_WRITE.findall(source))
+
+
 def _status_writers(cls) -> frozenset[str]:
     return frozenset(
-        name
-        for name in _public_methods(cls)
-        if _STATUS_WRITE.search(" ".join(inspect.getsource(getattr(cls, name)).split()))
+        name for name in _public_methods(cls) if _writes_status(getattr(cls, name))
     )
 
 
