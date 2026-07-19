@@ -1119,6 +1119,26 @@ def _partial_schema_db(root: Path) -> Path:
     return db
 
 
+def _core_tables_with_idless_facts_db(root: Path) -> Path:
+    """Core table names are not enough when `facts` lacks its row identity."""
+    root.mkdir(parents=True, exist_ok=True)
+    db = root / "kb.sqlite"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE facts (
+            subject TEXT, relation TEXT, object TEXT, status TEXT
+        );
+        CREATE TABLE sources (id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE);
+        CREATE TABLE runs (id INTEGER PRIMARY KEY);
+        CREATE TABLE review_log (id INTEGER PRIMARY KEY);
+        """
+    )
+    conn.commit()
+    conn.close()
+    return db
+
+
 def test_read_only_commands_still_accept_a_kb_predating_the_later_tables(
     tmp_path, monkeypatch, capsys
 ):
@@ -1202,3 +1222,33 @@ def test_read_only_commands_refuse_a_partial_schema_instead_of_completing_it(
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     conn.close()
     assert tables == {"facts"}
+
+
+@pytest.mark.parametrize("command", ["status", "coverage"])
+def test_read_only_commands_refuse_core_tables_when_facts_lacks_id(
+    command, tmp_path, monkeypatch, capsys
+):
+    """`facts.id` is part of the oldest KB identity, not a migratable column.
+
+    Without this guard, a file with verinote-looking core table names but no
+    `facts.id` reaches `_store().init_schema()`, gains later migration tables,
+    and then fails deeper in a command that was supposed to read only.
+    """
+    _isolated(monkeypatch, tmp_path)
+    root = tmp_path / "idless-facts"
+    db = _core_tables_with_idless_facts_db(root)
+    before = db.read_bytes()
+    before_mtime = db.stat().st_mtime_ns
+    monkeypatch.setenv("VERINOTE_ROOT", str(root))
+
+    assert cli.main([command]) == 1
+
+    err = capsys.readouterr().err
+    assert "Traceback" not in err
+    assert "is not a verinote KB" in err
+    assert db.read_bytes() == before
+    assert db.stat().st_mtime_ns == before_mtime
+    conn = sqlite3.connect(db)
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    conn.close()
+    assert tables == {"facts", "review_log", "runs", "sources"}
