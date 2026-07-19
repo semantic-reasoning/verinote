@@ -152,6 +152,9 @@ exact failure modes are in [docs/operations.md](docs/operations.md).
   document, or source data in an issue, a PR, or the docs. If showing the bug
   needs real input, reduce it to a synthetic minimal reproduction first. See
   [Data Privacy](AGENTS.md#data-privacy).
+- **Updating the vendored htmx.** verinote self-hosts htmx, so no bot watches it
+  for security releases. The manual update procedure and the cadence for checking
+  are in [docs/vendored-assets.md](docs/vendored-assets.md).
 
 ## License
 
