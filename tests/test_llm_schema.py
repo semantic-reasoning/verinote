@@ -11,6 +11,7 @@ from verinote.llm.schema import (
     QUERY_INTENT_SCHEMA,
     parse_facts,
 )
+from verinote.pipeline import query_intent
 from verinote.pipeline.query_intent import (
     QUERY_INTENT_BLANK_NULLABLE_FIELDS,
     QUERY_INTENT_COMPARISON_DOMAINS,
@@ -398,20 +399,38 @@ def test_blank_nullable_fields_split_a_new_property_by_its_enum():
     assert "note" in blank_nullable
 
 
-def test_parser_allow_list_follows_a_schema_it_has_never_seen():
-    """The accepted keys track the schema's properties, name list or no name list.
+@pytest.mark.parametrize("unit", ["", "   ", "lb", "kg"])
+def test_a_schema_property_the_parser_never_reads_is_not_silently_dropped(monkeypatch, unit):
+    """Widening the allow-list without wiring the parser must fail, not discard.
 
-    Without this, deriving the nullable string fields is not enough to make
-    "add an enum-constrained nullable property and it becomes blank-rejecting"
-    true: `_parse_query_intent_object` would refuse the new key as an unexpected
-    field before any of that ran. Asserting the constant equals
-    `tuple(QUERY_INTENT_SCHEMA["properties"])` would prove nothing -- today's hand
-    list satisfies that too.
+    Deriving the allow-list alone moved the failure rather than fixing it: the new
+    key stopped being refused as unexpected and started being accepted and thrown
+    away, because the QueryIntent construction names its kwargs by hand. Blank and
+    off-enum values then came back as None instead of being rejected -- the intent
+    was quietly wrong rather than loudly refused, which is worse than the
+    "unexpected fields" error it replaced.
+
+    Asserting `"unit" in _intent_field_names(synthetic)` does not project any of
+    this: it restates the derivation instead of exercising what the derivation was
+    for. This drives the real parser, so it goes red both if the allow-list stops
+    following the schema and if the parser stops checking that it reads what it
+    admits.
     """
-    allowed = _intent_field_names(_synthetic_intent_schema())
+    synthetic = _synthetic_intent_schema()
+    monkeypatch.setattr(
+        query_intent, "QUERY_INTENT_FIELDS", _intent_field_names(synthetic)
+    )
+    payload = _intent_payload()
+    payload["unit"] = unit
 
-    assert "unit" in allowed
-    assert "note" in allowed
+    with pytest.raises(RuntimeError) as excinfo:
+        parse_query_intent(payload)
+
+    assert "unit" in str(excinfo.value)
+    # Not laundered into LLMError: no provider output can trigger this, so
+    # reporting it as a schema mismatch would blame the provider for a local
+    # wiring bug. `parse_query_intent` converts KeyError/TypeError/ValueError.
+    assert not isinstance(excinfo.value, LLMError)
 
 
 def test_derived_nullable_string_fields_all_exist_on_the_query_intent_dataclass():

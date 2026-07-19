@@ -476,19 +476,45 @@ def _attribute_relation_candidates(label: str) -> tuple[str, ...]:
 
 
 def _intent_field_names(schema: dict[str, Any]) -> tuple[str, ...]:
-    """The property names the parser will accept, in schema order.
+    """The property names the parser will accept as keys, in schema order.
 
     `_parse_query_intent_object` rejects any key outside this allow-list, so a
     hand-written copy of it turns a property added to the schema into an
     "unexpected fields" error -- the provider is told to emit the key and then
-    refused for emitting it. Deriving it means a new property reaches the
-    normalisation and enum checks that `_nullable_string_fields` already picks it
-    up for, instead of being stopped one step earlier.
+    refused for emitting it.
+
+    Widening the allow-list is only half of accepting a property, though: the
+    constructor call below names its kwargs by hand, so a key admitted here and
+    not read there would be taken from the provider and dropped on the floor.
+    `_unconsumed_intent_fields` is what stops that half-wiring from being silent.
     """
     return tuple(schema["properties"])
 
 
 QUERY_INTENT_FIELDS = _intent_field_names(QUERY_INTENT_SCHEMA)
+
+# The names `_parse_query_intent_object` actually reads out of the payload. This
+# list cannot be derived -- it mirrors the hand-written kwargs of the QueryIntent
+# construction below, which is the thing being checked -- but it does not have to
+# be trusted: `_unconsumed_intent_fields` holds it against the schema.
+_PARSED_INTENT_FIELDS = frozenset(
+    {
+        "kind",
+        "subject",
+        "relation",
+        "object",
+        "relation_candidates",
+        "operator",
+        "value_type",
+        "value",
+        "reason",
+    }
+)
+
+
+def _unconsumed_intent_fields(field_names: tuple[str, ...]) -> frozenset[str]:
+    """Allow-listed names the parser would accept as keys but never read."""
+    return frozenset(field_names) - _PARSED_INTENT_FIELDS
 
 
 def parse_query_intent(raw: str | dict[str, Any]) -> QueryIntent:
@@ -504,6 +530,22 @@ def parse_query_intent(raw: str | dict[str, Any]) -> QueryIntent:
 
 
 def _parse_query_intent_object(data: Any) -> QueryIntent:
+    unconsumed = _unconsumed_intent_fields(QUERY_INTENT_FIELDS)
+    if unconsumed:
+        # Deliberately not one of the exceptions `parse_query_intent` converts to
+        # LLMError. Nothing a provider can send causes this -- the allow-list is
+        # derived from a module constant -- so it is a half-finished schema
+        # change, and reporting it as "output did not match schema" would pin a
+        # local wiring bug on the provider and send the reader hunting the wrong
+        # thing. Failing here rather than skipping the name is the same call made
+        # for the dataclass in `__post_init__`: a property the parser accepts but
+        # never reads is taken from the provider and silently discarded, which is
+        # the hole of #298 moved one step along rather than closed.
+        raise RuntimeError(
+            "query intent schema has properties the parser never reads: "
+            f"{', '.join(sorted(unconsumed))}; add them to the QueryIntent "
+            "construction in _parse_query_intent_object"
+        )
     if not isinstance(data, dict):
         raise TypeError("query intent output must be an object")
     allowed = set(QUERY_INTENT_FIELDS)
