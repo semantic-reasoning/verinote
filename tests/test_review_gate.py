@@ -1,9 +1,15 @@
 # SPDX-License-Identifier: MPL-2.0
-"""Review-gate transition guards (#231, #232, #257).
+"""Review-gate transition guards (#231, #232, #257, #292).
 
 These tests pin the rule that a human's rejection is terminal: neither a toggle
 nor an accept may revive a `superseded` fact, and the status-changing web routes
 apply auto-accept so a decision on one fact reveals promotions of its siblings.
+
+The #292 guards then sweep that rule across every public route that writes
+`facts.status`, deriving the route list from Store's own source so a status
+write inlined in a new public method cannot skip the sweep. That derivation
+reads one method body at a time, so it covers inlined writes only: a write
+factored into a private helper stays out of its view.
 """
 
 import inspect
@@ -830,12 +836,16 @@ def test_auto_retract_skips_when_the_fact_leaves_accepted_mid_transition(tmp_pat
 
 # --- #292: superseded stays superseded, whichever public route you take ---
 
-# Every public Store method that writes `facts.status`. Membership is not a
-# matter of taste: the scan below reads Store's own source and fails if a status
-# writer lands outside this set, so a new blind write cannot join the class by
-# being left off a list. `amend_fact` is absent because it rewrites content and
-# never touches status; `add_fact(status=...)` is absent because it picks a
-# fact's *starting* status rather than moving an existing one.
+# Every public Store method whose own body writes `facts.status`. Membership is
+# not a matter of taste: the scan below reads each method's source and fails if
+# a status writer lands outside this set, so an inline blind write cannot join
+# the class by being left off a list. Its reach stops at the function boundary
+# — a write moved into a private helper and called from a public method is not
+# seen, which is a plain refactor rather than an attack, so treat this as a
+# guard against inlined writes and not as proof that none exist elsewhere.
+# `amend_fact` is absent because it rewrites content and never touches status;
+# `add_fact(status=...)` is absent because it picks a fact's *starting* status
+# rather than moving an existing one.
 FACT_TRANSITION_METHODS = frozenset(
     {
         "accept_fact",
@@ -911,11 +921,16 @@ def test_scan_ignores_a_write_that_leaves_status_alone():
 
 
 def test_every_status_writer_is_a_swept_transition():
-    # The one that matters: a new method writing facts.status is red until it
-    # joins the sweep below, so an unguarded write cannot land quietly. This
-    # also subsumes the structural check on `set_status` (#292) — reintroducing
-    # it, or anything shaped like it, shows up here as an unswept writer.
-    assert _status_writers(Store) <= FACT_TRANSITION_METHODS
+    # A public method that writes facts.status in its own body is red until it
+    # joins the sweep below, which is what stops an inlined unguarded write from
+    # landing quietly. It also subsumes the structural check on `set_status`
+    # (#292): reintroducing it, or anything shaped like it, shows up here as an
+    # unswept writer.
+    #
+    # Equality, not containment, because a subset assert is happy with the empty
+    # set — if the pattern or the SQL shape drifts so that detection finds
+    # nothing at all, that must be a failure and not a silent pass.
+    assert _status_writers(Store) == FACT_TRANSITION_METHODS
 
 
 def test_no_public_transition_revives_a_superseded_fact(tmp_path):
