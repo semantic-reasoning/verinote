@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
+import sqlite3
+
 import pytest
 
 from verinote.engine.terms import (
@@ -187,6 +189,38 @@ def test_backfill_fact_terms_migrates_legacy_sqlite_text_as_stringlit(tmp_path):
     assert s.backfill_fact_terms() == 0
 
 
+def test_store_migrates_existing_facts_table_to_add_term_token(tmp_path):
+    conn = sqlite3.connect(tmp_path / "kb.sqlite")
+    conn.execute(
+        """
+        CREATE TABLE facts (
+            id INTEGER PRIMARY KEY,
+            subject TEXT NOT NULL,
+            relation TEXT NOT NULL,
+            object TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'candidate',
+            confidence REAL NOT NULL DEFAULT 0.0,
+            source_id INTEGER,
+            run_id INTEGER,
+            job_id INTEGER,
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.close()
+
+    reopened = _store(tmp_path)
+    try:
+        columns = {
+            row["name"] for row in reopened._conn.execute("PRAGMA table_info(facts)")
+        }
+        assert "term_token" in columns
+    finally:
+        reopened.close()
+
+
 def test_engine_fact_terms_rejects_missing_modern_sidecar_terms(tmp_path):
     s = _store(tmp_path)
     fid = s.add_fact(
@@ -201,6 +235,30 @@ def test_engine_fact_terms_rejects_missing_modern_sidecar_terms(tmp_path):
         s.engine_fact_terms()
 
     assert s.get_fact_terms(fid) is None
+
+
+def test_engine_fact_terms_rejects_stale_modern_sidecar_terms(tmp_path):
+    s = _store(tmp_path)
+    fid = s.add_fact("Ada", "born_in", "Paris", status="confirmed")
+
+    # Simulate an interrupted amend after SQLite committed its new display/token
+    # but before facts.duckdb received the matching logical terms.
+    s._conn.execute(
+        "UPDATE facts SET object = ?, term_token = ? WHERE id = ?",
+        ("London", "0" * 64, fid),
+    )
+
+    with pytest.raises(DuckDBFactTermStoreError, match="stale DuckDB fact terms"):
+        s.engine_fact_terms()
+
+
+def test_engine_fact_terms_rejects_missing_modern_sidecar_token(tmp_path):
+    s = _store(tmp_path)
+    fid = s.add_fact("Ada", "born_in", "Paris", status="confirmed")
+    s.fact_terms._execute("UPDATE fact_terms SET term_token = NULL WHERE fact_id = ?", [fid])
+
+    with pytest.raises(DuckDBFactTermStoreError, match="stale DuckDB fact terms"):
+        s.engine_fact_terms()
 
 
 def test_engine_fact_terms_marks_complete_pre_marker_sidecar(tmp_path):
@@ -277,7 +335,9 @@ def test_status_changes_do_not_mutate_duckdb_terms(tmp_path):
     assert s.get_fact_terms(fid) == before
 
 
-def test_add_fact_duckdb_failure_rolls_back_sqlite_insert(tmp_path, monkeypatch):
+def test_add_fact_duckdb_failure_commits_sqlite_but_blocks_engine(
+    tmp_path, monkeypatch
+):
     s = _store(tmp_path)
 
     def fail(*args, **kwargs):
@@ -286,14 +346,20 @@ def test_add_fact_duckdb_failure_rolls_back_sqlite_insert(tmp_path, monkeypatch)
     monkeypatch.setattr(s.fact_terms, "put_fact_terms", fail)
 
     with pytest.raises(RuntimeError, match="sidecar down"):
-        s.add_fact("A", "r", "B")
+        s.add_fact("A", "r", "B", status="confirmed")
 
-    assert s.facts() == []
+    rows = s.facts()
+    assert len(rows) == 1
+    assert rows[0]["term_token"]
+    with pytest.raises(DuckDBFactTermStoreError, match="missing DuckDB fact terms"):
+        s.engine_fact_terms()
 
 
-def test_amend_fact_duckdb_failure_leaves_sqlite_and_audit_unchanged(tmp_path, monkeypatch):
+def test_amend_fact_duckdb_failure_commits_sqlite_but_blocks_engine(
+    tmp_path, monkeypatch
+):
     s = _store(tmp_path)
-    fid = s.add_fact("A", "r", "B", status="needs_review", note="orig")
+    fid = s.add_fact("A", "r", "B", status="confirmed", note="orig")
     before_terms = s.get_fact_terms(fid)
 
     def fail(*args, **kwargs):
@@ -306,13 +372,15 @@ def test_amend_fact_duckdb_failure_leaves_sqlite_and_audit_unchanged(tmp_path, m
 
     row = s.get_fact(fid)
     assert (row["subject"], row["relation"], row["object"], row["note"]) == (
-        "A",
-        "r",
-        "B",
-        "orig",
+        "A2",
+        "r2",
+        "B2",
+        "changed",
     )
-    assert s.fact_log(fid) == []
+    assert [event["action"] for event in s.fact_log(fid)] == ["amended"]
     assert s.get_fact_terms(fid) == before_terms
+    with pytest.raises(DuckDBFactTermStoreError, match="stale DuckDB fact terms"):
+        s.engine_fact_terms()
 
 
 def test_amend_fact_rejects_direct_nonground_terms_and_restores_state(tmp_path):

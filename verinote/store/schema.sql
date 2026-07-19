@@ -107,6 +107,7 @@ CREATE TABLE IF NOT EXISTS facts (
     run_id     INTEGER REFERENCES runs(id) ON DELETE SET NULL,
     job_id     INTEGER REFERENCES extraction_jobs(id) ON DELETE SET NULL,
     note       TEXT NOT NULL DEFAULT '',
+    term_token TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

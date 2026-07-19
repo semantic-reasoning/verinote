@@ -352,6 +352,21 @@ def test_verify_fails_closed_when_engine_fact_terms_remain_missing(tmp_path, mon
     assert "missing DuckDB fact terms" in rep.text
 
 
+def test_verify_fails_closed_when_duckdb_fact_terms_are_stale(tmp_path):
+    s = _store(tmp_path)
+    fid = s.add_fact("Ada", "born_in", "London", status="confirmed")
+    s._conn.execute(
+        "UPDATE facts SET object = ?, term_token = ? WHERE id = ?",
+        ("Paris", "0" * 64, fid),
+    )
+
+    rep = verify(s)
+
+    assert rep.ok is False
+    assert rep.errors == 1
+    assert "stale DuckDB fact terms" in rep.text
+
+
 def test_verify_reports_missing_duckdb_as_blocking(tmp_path, monkeypatch):
     real_import = builtins.__import__
 
@@ -454,7 +469,7 @@ def test_verify_cache_refreshes_after_engine_fact_amendment(tmp_path):
     assert verify(s).ok is True
 
 
-def test_verify_cache_refreshes_after_duckdb_term_payload_change(tmp_path):
+def test_verify_cache_refreshes_after_approved_fact_term_change(tmp_path):
     s = _store(tmp_path)
     fid = s.add_fact("Ada", "born_in", "London", status="confirmed")
     path = query_path(tmp_path)
@@ -465,7 +480,7 @@ def test_verify_cache_refreshes_after_duckdb_term_payload_change(tmp_path):
     )
 
     assert verify(s).answers == ["q1: London"]
-    s.fact_terms.put_fact_terms(fid, "Ada", "born_in", "Paris")
+    s.amend_fact(fid, subject="Ada", relation="born_in", obj="Paris")
 
     assert verify(s).answers == ["q1: Paris"]
 

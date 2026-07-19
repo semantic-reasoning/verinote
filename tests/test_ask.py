@@ -116,6 +116,33 @@ def test_ask_answers_generic_korean_attribute_question_from_engine(tmp_path):
     assert result.grounding_facts[0].source == "sources/sample-project.txt"
 
 
+def test_ask_does_not_call_stale_fact_terms_verified(tmp_path):
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/sample-project.txt")
+    fid = store.add_fact(
+        "샘플프로젝트",
+        "purpose",
+        "샘플목표",
+        status="confirmed",
+        source_id=source_id,
+    )
+    store._conn.execute(
+        "UPDATE facts SET object = ?, term_token = ? WHERE id = ?",
+        ("표시목표", "0" * 64, fid),
+    )
+
+    result = ask_question(
+        store,
+        FallbackClient(answer="UNVERIFIED fallback"),
+        root=tmp_path,
+        question="샘플프로젝트의 목적은?",
+    )
+
+    assert result.label != "VERIFIED — engine"
+    assert result.route == "fallback"
+    assert "stale DuckDB fact terms" in result.reason
+
+
 def test_ask_verified_negative_only_for_explicit_no_answer_flow(tmp_path, monkeypatch):
     import verinote.pipeline.ask as ask_module
 
