@@ -61,8 +61,8 @@ $ curl -sSL https://api.github.com/repos/bigskysoftware/htmx/releases/latest \
   "tag_name": "v4.0.0-beta5",
 ```
 
-List the tags and choose the newest stable release on the line verinote is on
-(2.x today):
+List the tags and choose the newest stable release on the major line verinote is
+already on — read that line off the `# Source:` comment quoted above:
 
 ```sh
 curl -sSL "https://api.github.com/repos/bigskysoftware/htmx/releases?per_page=30" \
@@ -97,8 +97,14 @@ curl -sSL https://unpkg.com/htmx.org@<VER>/dist/htmx.min.js | shasum -a 256
 On Linux use `sha256sum` in place of `shasum -a 256` — same digest, different
 tool name.
 
-If they disagree, **stop and investigate** — do not pick one. (For 2.0.3 the
-GitHub release asset, unpkg, and jsDelivr are byte-identical.)
+If they disagree, **stop and investigate** — do not pick one. Step 1 has already
+overwritten the real file, so put the tree back before you walk away:
+
+```sh
+git checkout -- verinote/web/static/htmx.min.js
+```
+
+(For 2.0.3 the GitHub release asset, unpkg, and jsDelivr are byte-identical.)
 
 **3. Update the pin.** Edit `tests/test_base_template_assets.py`: set
 `HTMX_SHA256` to the digest you just verified, and update the version and URL in
@@ -120,8 +126,14 @@ rather than pasting the reported digest in.
 
 **5. Check it by hand.** The tests prove the bytes are pinned and the file is
 served; they do not prove htmx still works. Cut off network access, clear the
-browser cache, run `verinote ui`, and accept something in the review queue. A
-major-version jump can break htmx attributes that no test covers.
+browser cache, run `verinote ui`, and accept something in the review queue. If it
+misbehaves, revert both halves of the change — `git checkout -- verinote/web/static/htmx.min.js`
+and the pin you edited in step 3 — rather than leaving a half-updated tree.
+
+A major-version jump can break htmx attributes that no test covers. Crossing one
+is not the asset swap this page describes: read the upstream migration guide and
+treat it as a code change reaching every template that carries `hx-` attributes,
+with its own issue and review.
 
 **6. Commit the bytes and the pin as one commit.** Splitting them leaves a commit
 where the vendored file and `HTMX_SHA256` disagree, so the tree is red at that
