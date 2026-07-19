@@ -114,16 +114,15 @@ def annotate_source_labels(
     and its value. Findings for relations the aliases did not rename are left
     exactly as the engine wrote them.
     """
-    renamed = [
-        row for row in rows if _label(row["relation_raw"]) != _label(row["relation"])
-    ]
+    relation_rows = list(rows)
+    renamed = [row for row in relation_rows if _relation_was_renamed(row)]
     if not renamed or not report.findings:
         return report
 
     rows_by_finding = _finding_rows(report)
     annotated: list[str] = []
     for finding in report.findings:
-        note = _source_note(rows_by_finding.get(finding), renamed)
+        note = _source_note(rows_by_finding.get(finding), relation_rows)
         if not note:
             annotated.append(finding)
             continue
@@ -150,7 +149,7 @@ def _finding_rows(report: CheckReport) -> dict[str, FindingRow]:
     return {text: row for text, row in rows.items() if text not in ambiguous}
 
 
-def _source_note(row: FindingRow | None, renamed: list[Mapping[str, object]]) -> str:
+def _source_note(row: FindingRow | None, rows: list[Mapping[str, object]]) -> str:
     """Render the aliased facts a finding is about, or '' when it is about none.
 
     Two things have to be *known*, not guessed, before a fact may be named.
@@ -185,16 +184,20 @@ def _source_note(row: FindingRow | None, renamed: list[Mapping[str, object]]) ->
     subject, relation = target
     facts = [
         fact
-        for fact in renamed
+        for fact in rows
         if _label(fact["subject"]) == subject and _label(fact["relation"]) == relation
     ]
-    if not facts:
+    if not facts or not any(_relation_was_renamed(fact) for fact in facts):
         return ""
     parts = [
         f"{_label(fact['relation_raw'])} #{fact['id']}={_label(fact['object'])}"
         for fact in sorted(facts, key=lambda fact: int(fact["id"]))
     ]
     return "(" + ", ".join(parts) + ")"
+
+
+def _relation_was_renamed(row: Mapping[str, object]) -> bool:
+    return _label(row["relation_raw"]) != _label(row["relation"])
 
 
 def _label(term: object) -> str:

@@ -243,6 +243,79 @@ def test_findings_name_the_conflicting_facts_in_the_source_s_own_words(tmp_path)
     assert rep.findings[0] in rep.text
 
 
+def test_findings_name_canonical_and_aliased_facts_in_a_mixed_conflict(tmp_path):
+    """A source note must include every fact that participates in the conflict.
+
+    The note exists because at least one source label was renamed, but the
+    conflict can be mixed: one fact may already use the canonical relation while
+    another uses an alias. Limiting the note to renamed rows hides part of the
+    conflict and makes the displayed provenance incomplete.
+    """
+    s = _store(tmp_path)
+    _write_policy(s, _FUNCTIONAL_POLICY.format(relation="established_on"))
+    canonical = s.add_fact("Org", "established_on", "2020", status="accepted")
+    aliased = s.add_fact("Org", "설립", "2021", status="accepted")
+
+    rep = verify(s)
+
+    assert rep.findings == [
+        f"ERROR functional_conflict: Org established_on "
+        f"(established_on #{canonical}=2020, 설립 #{aliased}=2021)"
+    ]
+    assert rep.findings[0] in rep.text
+
+
+def test_source_label_annotator_mixed_conflict_does_not_borrow_neighbors():
+    line = "ERROR functional_conflict: Org established_on"
+    report = CheckReport(
+        ok=False,
+        errors=1,
+        warnings=0,
+        text=line,
+        findings=[line],
+        finding_rows=[
+            FindingRow(line, ("Org", "established_on"), *_CONFLICT_SHAPE),
+        ],
+    )
+    rows = [
+        {
+            "id": 1,
+            "subject": StringLit("Org"),
+            "relation": StringLit("established_on"),
+            "relation_raw": StringLit("established_on"),
+            "object": StringLit("2020"),
+        },
+        {
+            "id": 2,
+            "subject": StringLit("Org"),
+            "relation": StringLit("established_on"),
+            "relation_raw": StringLit("설립"),
+            "object": StringLit("2021"),
+        },
+        {
+            "id": 3,
+            "subject": StringLit("Other"),
+            "relation": StringLit("established_on"),
+            "relation_raw": StringLit("founded"),
+            "object": StringLit("2030"),
+        },
+        {
+            "id": 4,
+            "subject": StringLit("Canonical"),
+            "relation": StringLit("established_on"),
+            "relation_raw": StringLit("established_on"),
+            "object": StringLit("2040"),
+        },
+    ]
+
+    annotate_source_labels(report, rows)
+
+    assert report.findings == [
+        "ERROR functional_conflict: Org established_on "
+        "(established_on #1=2020, 설립 #2=2021)"
+    ]
+
+
 def test_findings_do_not_borrow_an_overlapping_subject_s_facts(tmp_path):
     """A note must name the facts of *its* subject, not of every subject it contains.
 
@@ -264,7 +337,7 @@ def test_findings_do_not_borrow_an_overlapping_subject_s_facts(tmp_path):
         [
             f"ERROR functional_conflict: Org established_on "
             f"(설립 #{one}=2020, founded #{two}=2021)",
-            f"ERROR functional_conflict: Org 2 established_on "
+            f"ERROR functional_conflict: Org\\ 2 established_on "
             f"(설립 #{three}=2030, founded #{four}=2031)",
         ]
     )
