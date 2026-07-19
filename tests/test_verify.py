@@ -444,12 +444,12 @@ def test_verify_cache_refreshes_after_status_promotion_and_demotion(tmp_path):
     conflict = s.add_fact("Org", "established_on", "2021", status="needs_review")
 
     assert verify(s).ok is True
-    s.set_status(conflict, "confirmed")
+    s.accept_fact(conflict)
     rep = verify(s)
     assert rep.ok is False
     assert "functional_conflict" in "\n".join(rep.findings)
 
-    s.set_status(conflict, "superseded")
+    s.reject_fact(conflict)
     assert verify(s).ok is True
 
 

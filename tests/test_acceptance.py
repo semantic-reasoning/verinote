@@ -258,7 +258,7 @@ def test_accept_recommendation_rejects_previous_rejection(tmp_path):
         source_id=source_id,
         job_id=job_id,
     )
-    s.set_status(fact_id, "superseded", action="rejected")
+    s.reject_fact(fact_id)
 
     recommendation = accept_recommendation(s, fact_id)
 

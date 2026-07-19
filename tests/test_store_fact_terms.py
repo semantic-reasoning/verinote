@@ -357,7 +357,7 @@ def test_status_changes_do_not_mutate_duckdb_terms(tmp_path):
     before = s.get_fact_terms(fid)
 
     s.toggle_review(fid)
-    s.set_status(fid, "superseded")
+    s.reject_fact(fid)
 
     assert s.get_fact_terms(fid) == before
 
