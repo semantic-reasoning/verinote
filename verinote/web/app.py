@@ -1088,7 +1088,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         # An amend decides the fact's content, not its tier: correcting a term so
         # it finally matches a second source's wording *is* corroboration
         # arriving, and promoting on it is the recommender working as intended.
-        return _row_after_decision(request, amended, fact_id)
+        return _row_after_decision(
+            request, amended.fact, fact_id, decided=amended.changed
+        )
 
     @app.get("/facts/{fact_id}/provenance", response_class=HTMLResponse)
     def provenance(request: Request, fact_id: int):

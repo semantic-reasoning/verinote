@@ -671,6 +671,47 @@ def test_toggle_on_a_superseded_fact_does_not_run_auto_accept(tmp_path):
     _assert_untouched(store, eligible, resp)
 
 
+def test_missing_amend_target_does_not_run_auto_accept(tmp_path):
+    # A stale inline-edit POST for a fact that no longer exists writes nothing,
+    # so it must not become an excuse to promote unrelated eligible facts.
+    client, store = _auto_accept_client(tmp_path)
+    eligible = _eligible_pair(store)
+
+    resp = client.post(
+        "/facts/999999/amend",
+        data={"subject": "Ledger", "relation": "owner", "object": "Park"},
+    )
+
+    assert resp.status_code == 200
+    _assert_untouched(store, eligible, resp)
+
+
+def test_replayed_amend_does_not_run_auto_accept(tmp_path):
+    # Reposting the same content is not a new human decision. It must not log an
+    # amendment, rewrite timestamps, or run the auto-accept pass.
+    client, store = _auto_accept_client(tmp_path)
+    eligible = _eligible_pair(store)
+    target = store.add_fact(
+        "Ledger", "owner", "Park", status="needs_review", note="unchanged"
+    )
+    before = dict(store.get_fact(target))
+
+    resp = client.post(
+        f"/facts/{target}/amend",
+        data={
+            "subject": "Ledger",
+            "relation": "owner",
+            "object": "Park",
+            "note": "unchanged",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert dict(store.get_fact(target)) == before
+    assert "amended" not in _actions(store, target)
+    _assert_untouched(store, eligible, resp)
+
+
 def test_accept_all_on_a_source_with_nothing_to_confirm_does_not_run_auto_accept(
     tmp_path,
 ):

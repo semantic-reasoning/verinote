@@ -131,14 +131,16 @@ def test_amend_fact_updates_sqlite_duckdb_terms_and_audit(tmp_path):
     s = _store(tmp_path)
     fid = s.add_fact("A", "r", "B", status="needs_review")
 
-    after = s.amend_fact(
+    decision = s.amend_fact(
         fid,
         subject=Compound("person", (StringLit("Ada"),)),
         relation=Atom("born_year"),
         obj=NumberLit(1815),
         note="fixed",
     )
+    after = decision.fact
 
+    assert decision.changed is True
     assert (after["subject"], after["relation"], after["object"], after["note"]) == (
         'person("Ada")',
         "born_year",
@@ -169,6 +171,31 @@ def test_amend_fact_keeps_term_syntax_strings_as_stringlit(tmp_path):
         StringLit("born_in"),
         StringLit('city("London")'),
     )
+
+
+def test_replayed_structural_amend_writes_no_audit_event(tmp_path):
+    s = _store(tmp_path)
+    fid = s.add_fact(
+        Compound("person", (StringLit("Ada"),)),
+        Atom("born_year"),
+        NumberLit(1815),
+        note="verified",
+    )
+    before = dict(s.get_fact(fid))
+    before_terms = s.get_fact_terms(fid)
+
+    decision = s.amend_fact(
+        fid,
+        subject=Compound("person", (StringLit("Ada"),)),
+        relation=Atom("born_year"),
+        obj=NumberLit(1815),
+        note="verified",
+    )
+
+    assert decision.changed is False
+    assert dict(decision.fact) == before
+    assert s.get_fact_terms(fid) == before_terms
+    assert s.fact_log(fid) == []
 
 
 def test_backfill_fact_terms_migrates_legacy_sqlite_text_as_stringlit(tmp_path):
