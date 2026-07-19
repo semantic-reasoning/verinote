@@ -335,9 +335,7 @@ def test_status_changes_do_not_mutate_duckdb_terms(tmp_path):
     assert s.get_fact_terms(fid) == before
 
 
-def test_add_fact_duckdb_failure_commits_sqlite_but_blocks_engine(
-    tmp_path, monkeypatch
-):
+def test_add_fact_duckdb_failure_rolls_back_sqlite_insert(tmp_path, monkeypatch):
     s = _store(tmp_path)
 
     def fail(*args, **kwargs):
@@ -348,11 +346,7 @@ def test_add_fact_duckdb_failure_commits_sqlite_but_blocks_engine(
     with pytest.raises(RuntimeError, match="sidecar down"):
         s.add_fact("A", "r", "B", status="confirmed")
 
-    rows = s.facts()
-    assert len(rows) == 1
-    assert rows[0]["term_token"]
-    with pytest.raises(DuckDBFactTermStoreError, match="missing DuckDB fact terms"):
-        s.engine_fact_terms()
+    assert s.facts() == []
 
 
 def test_amend_fact_duckdb_failure_commits_sqlite_but_blocks_engine(

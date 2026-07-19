@@ -931,6 +931,7 @@ class Store:
         with self._lock:
             from verinote.store.duckdb_fact_terms import fact_term_token
 
+            fact_id: int | None = None
             token = fact_term_token(subject, relation, obj)
             self._conn.execute("BEGIN")
             try:
@@ -953,6 +954,9 @@ class Store:
                     ),
                 )
                 fact_id = int(cur.fetchone()[0])
+                self.fact_terms.put_fact_terms(
+                    fact_id, subject, relation, obj, term_token=token
+                )
                 self._record_fact_terms_marker_unlocked(origin="write")
                 self._add_fact_event(
                     fact_id=fact_id,
@@ -969,15 +973,15 @@ class Store:
                 self._conn.execute("COMMIT")
             except BaseException:
                 self._conn.execute("ROLLBACK")
+                if fact_id is not None:
+                    self._delete_fact_terms_quietly(fact_id)
                 raise
-            self.fact_terms.put_fact_terms(
-                fact_id, subject, relation, obj, term_token=token
-            )
             return fact_id
 
     def get_fact_terms(self, fact_id: int):
         """Return structural DuckDB terms for a fact metadata row."""
-        return self.fact_terms.get_fact_terms(fact_id)
+        with self._lock:
+            return self.fact_terms.get_fact_terms(fact_id)
 
     def engine_fact_terms(self) -> list[dict[str, object]]:
         """Return confirmed/accepted facts using DuckDB terms as logical values."""
@@ -1053,54 +1057,58 @@ class Store:
             return written
 
     def get_fact(self, fact_id: int) -> sqlite3.Row | None:
-        return self._conn.execute(
-            "SELECT f.*, s.path AS source_path FROM facts f "
-            "LEFT JOIN sources s ON s.id = f.source_id WHERE f.id = ?",
-            (fact_id,),
-        ).fetchone()
+        with self._lock:
+            return self._conn.execute(
+                "SELECT f.*, s.path AS source_path FROM facts f "
+                "LEFT JOIN sources s ON s.id = f.source_id WHERE f.id = ?",
+                (fact_id,),
+            ).fetchone()
 
     def facts(self, *, statuses: Iterable[str] | None = None) -> list[sqlite3.Row]:
-        sql = (
-            "SELECT f.*, s.path AS source_path FROM facts f "
-            "LEFT JOIN sources s ON s.id = f.source_id"
-        )
-        params: tuple[Any, ...] = ()
-        if statuses is not None:
-            placeholders, params = _status_filter(statuses)
-            sql += f" WHERE f.status IN ({placeholders})"
-        sql += " ORDER BY f.id"
-        return list(self._conn.execute(sql, params))
+        with self._lock:
+            sql = (
+                "SELECT f.*, s.path AS source_path FROM facts f "
+                "LEFT JOIN sources s ON s.id = f.source_id"
+            )
+            params: tuple[Any, ...] = ()
+            if statuses is not None:
+                placeholders, params = _status_filter(statuses)
+                sql += f" WHERE f.status IN ({placeholders})"
+            sql += " ORDER BY f.id"
+            return list(self._conn.execute(sql, params))
 
     def review_queue(self) -> list[sqlite3.Row]:
         return self.facts(statuses=REVIEW_STATUSES)
 
     def review_queue_ids(self, *, sort: object = DEFAULT_REVIEW_SORT) -> list[int]:
-        sort = _review_sort(sort)
-        placeholders, statuses = _status_filter(REVIEW_STATUSES)
-        rows = self._conn.execute(
-            "SELECT f.id FROM facts f "
-            "LEFT JOIN sources s ON s.id = f.source_id "
-            f"WHERE f.status IN ({placeholders}) "
-            f"ORDER BY {REVIEW_SORT_SQL[sort]}",
-            statuses,
-        )
-        return [int(row["id"]) for row in rows]
+        with self._lock:
+            sort = _review_sort(sort)
+            placeholders, statuses = _status_filter(REVIEW_STATUSES)
+            rows = self._conn.execute(
+                "SELECT f.id FROM facts f "
+                "LEFT JOIN sources s ON s.id = f.source_id "
+                f"WHERE f.status IN ({placeholders}) "
+                f"ORDER BY {REVIEW_SORT_SQL[sort]}",
+                statuses,
+            )
+            return [int(row["id"]) for row in rows]
 
     def facts_by_ids(self, fact_ids: Iterable[int]) -> list[sqlite3.Row]:
-        ids = [int(fact_id) for fact_id in fact_ids]
-        if not ids:
-            return []
-        placeholders = ",".join("?" * len(ids))
-        rows = list(
-            self._conn.execute(
-                "SELECT f.*, s.path AS source_path FROM facts f "
-                "LEFT JOIN sources s ON s.id = f.source_id "
-                f"WHERE f.id IN ({placeholders})",
-                tuple(ids),
+        with self._lock:
+            ids = [int(fact_id) for fact_id in fact_ids]
+            if not ids:
+                return []
+            placeholders = ",".join("?" * len(ids))
+            rows = list(
+                self._conn.execute(
+                    "SELECT f.*, s.path AS source_path FROM facts f "
+                    "LEFT JOIN sources s ON s.id = f.source_id "
+                    f"WHERE f.id IN ({placeholders})",
+                    tuple(ids),
+                )
             )
-        )
-        by_id = {int(row["id"]): row for row in rows}
-        return [by_id[fact_id] for fact_id in ids if fact_id in by_id]
+            by_id = {int(row["id"]): row for row in rows}
+            return [by_id[fact_id] for fact_id in ids if fact_id in by_id]
 
     def review_queue_page(
         self,
@@ -1109,37 +1117,38 @@ class Store:
         page_size: object = DEFAULT_REVIEW_PAGE_SIZE,
         sort: object = DEFAULT_REVIEW_SORT,
     ) -> ReviewQueuePage:
-        page_size = _review_page_size(page_size)
-        page = _positive_int(page, 1)
-        sort = _review_sort(sort)
-        placeholders, statuses = _status_filter(REVIEW_STATUSES)
-        where = f"f.status IN ({placeholders})"
-        total = int(
-            self._conn.execute(
-                f"SELECT COUNT(*) AS c FROM facts f WHERE {where}",
-                statuses,
-            ).fetchone()["c"]
-        )
-        page_count = max(1, (total + page_size - 1) // page_size)
-        page = min(page, page_count)
-        offset = (page - 1) * page_size
-        rows = list(
-            self._conn.execute(
-                "SELECT f.*, s.path AS source_path FROM facts f "
-                "LEFT JOIN sources s ON s.id = f.source_id "
-                f"WHERE {where} "
-                f"ORDER BY {REVIEW_SORT_SQL[sort]} "
-                "LIMIT ? OFFSET ?",
-                (*statuses, page_size, offset),
+        with self._lock:
+            page_size = _review_page_size(page_size)
+            page = _positive_int(page, 1)
+            sort = _review_sort(sort)
+            placeholders, statuses = _status_filter(REVIEW_STATUSES)
+            where = f"f.status IN ({placeholders})"
+            total = int(
+                self._conn.execute(
+                    f"SELECT COUNT(*) AS c FROM facts f WHERE {where}",
+                    statuses,
+                ).fetchone()["c"]
             )
-        )
-        return ReviewQueuePage.from_rows(
-            rows=rows,
-            total=total,
-            page=page,
-            page_size=page_size,
-            sort=sort,
-        )
+            page_count = max(1, (total + page_size - 1) // page_size)
+            page = min(page, page_count)
+            offset = (page - 1) * page_size
+            rows = list(
+                self._conn.execute(
+                    "SELECT f.*, s.path AS source_path FROM facts f "
+                    "LEFT JOIN sources s ON s.id = f.source_id "
+                    f"WHERE {where} "
+                    f"ORDER BY {REVIEW_SORT_SQL[sort]} "
+                    "LIMIT ? OFFSET ?",
+                    (*statuses, page_size, offset),
+                )
+            )
+            return ReviewQueuePage.from_rows(
+                rows=rows,
+                total=total,
+                page=page,
+                page_size=page_size,
+                sort=sort,
+            )
 
     def status_counts(self) -> dict[str, int]:
         rows = self._conn.execute("SELECT status, COUNT(*) c FROM facts GROUP BY status")
