@@ -863,7 +863,13 @@ def _public_methods(cls) -> frozenset[str]:
 
 
 def _writes_status(method) -> bool:
-    source = " ".join(inspect.getsource(method).split())
+    try:
+        source = " ".join(inspect.getsource(method).split())
+    except OSError as exc:  # dynamically built method: nothing to read
+        raise AssertionError(
+            f"cannot scan {method.__qualname__} for status writes: define it in a "
+            "source file so this guard can read it"
+        ) from exc
     return any("status" in clause for clause in _STATUS_WRITE.findall(source))
 
 
@@ -871,6 +877,37 @@ def _status_writers(cls) -> frozenset[str]:
     return frozenset(
         name for name in _public_methods(cls) if _writes_status(getattr(cls, name))
     )
+
+
+# Two specimens for the scanner, deliberately not wired into Store. They exist
+# so the detection rule itself is under test rather than only its result on
+# today's five writers, which all happen to name `status` first.
+def _status_written_after_updated_at(self, fact_id: int, status: str) -> None:
+    self._conn.execute(
+        "UPDATE facts SET updated_at = datetime('now'), status = ? WHERE id = ?",
+        (status, fact_id),
+    )
+
+
+def _no_status_written(self, fact_id: int, note: str) -> None:
+    self._conn.execute(
+        "UPDATE facts SET note = ?, updated_at = datetime('now') WHERE id = ?",
+        (note, fact_id),
+    )
+
+
+def test_scan_sees_a_status_write_whichever_column_comes_first():
+    # A blind write is free to assign `status` last, and `datetime('now')` then
+    # sits in front of it. A quote-sensitive pattern stops at that apostrophe,
+    # calls the specimen clean, and lets it past both guards — so the scan must
+    # read the whole SET clause, and this is what says so.
+    assert _writes_status(_status_written_after_updated_at)
+
+
+def test_scan_ignores_a_write_that_leaves_status_alone():
+    # Keeps the guard above honest: detection has to discriminate, not just
+    # answer yes to every UPDATE on facts.
+    assert not _writes_status(_no_status_written)
 
 
 def test_every_status_writer_is_a_swept_transition():
