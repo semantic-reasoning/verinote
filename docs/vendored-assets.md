@@ -29,18 +29,54 @@ in two adjacent lines at the top of `tests/test_base_template_assets.py`:
 HTMX_SHA256 = "491955cd1810747d7d7b9ccb936400afb760e06d25d53e4572b64b6563b2784e"
 ```
 
-The comment is the only record of *which* htmx version is vendored — grep the
-repository for a version number and you will find nothing else. The constant is
-enforced by `test_vendored_htmx_bytes_match_the_pinned_hash`, which fails on any
-byte change to the vendored file.
+That comment is the only record of *which* htmx version is currently vendored,
+and the constant is enforced by `test_vendored_htmx_bytes_match_the_pinned_hash`,
+which fails on any byte change to the vendored file.
 
 **Update both lines together.** Bumping the hash without the comment leaves the
 repository with no record of what it is running.
 
+**Those two lines are the whole edit.** The same file mentions `2.0.3` once more,
+in its module docstring:
+
+```python
+base.html used to pull htmx from `https://unpkg.com/htmx.org@2.0.3` with no
+integrity attribute: ...
+```
+
+That is a historical record of what #219 fixed, not a pin. **Leave it alone.**
+Rewriting it to a newer version would assert that base.html once loaded a version
+it never loaded, which destroys the explanation of why these guards exist.
+
+## Choosing the version — do not trust `/releases/latest`
+
+Pick the version before you fetch anything, and pick it by reading tag names.
+
+htmx marks its prereleases with `prerelease: false`, so GitHub treats them as
+stable. As of 2026-07-20 the "latest release" API returns a 4.x beta:
+
+```sh
+$ curl -sSL https://api.github.com/repos/bigskysoftware/htmx/releases/latest \
+    | grep tag_name
+  "tag_name": "v4.0.0-beta5",
+```
+
+List the tags and choose the newest stable release on the line verinote is on
+(2.x today):
+
+```sh
+curl -sSL "https://api.github.com/repos/bigskysoftware/htmx/releases?per_page=30" \
+  | grep tag_name
+```
+
+**Never let `/releases/latest`, or any tool built on it, choose the version for
+you** — it will hand you a prerelease, and the steps below will vendor it without
+complaint.
+
 ## Updating
 
-Replace `<VER>` with the target version throughout (for example `2.0.9`). Run
-these from the repository root.
+Replace `<VER>` with the version you chose above (for example `2.0.9`). Run these
+from the repository root.
 
 **1. Fetch the release artefact.** Prefer the official GitHub release asset over
 a CDN mirror:
@@ -58,6 +94,9 @@ shasum -a 256 verinote/web/static/htmx.min.js
 curl -sSL https://unpkg.com/htmx.org@<VER>/dist/htmx.min.js | shasum -a 256
 ```
 
+On Linux use `sha256sum` in place of `shasum -a 256` — same digest, different
+tool name.
+
 If they disagree, **stop and investigate** — do not pick one. (For 2.0.3 the
 GitHub release asset, unpkg, and jsDelivr are byte-identical.)
 
@@ -72,6 +111,10 @@ pytest -q tests/test_base_template_assets.py
 pytest -q
 ruff check .
 ```
+
+If the hash test fails, it prints the digest it actually found — compare it with
+the one you verified in step 2. A mismatch means the pin and the bytes came from
+different fetches, so redo step 1 rather than pasting the reported digest in.
 
 **5. Check it by hand.** The tests prove the bytes are pinned and the file is
 served; they do not prove htmx still works. Cut off network access, clear the
@@ -92,17 +135,3 @@ revision and `git bisect` gets a false failure.
   security fix is the one reason to update out of band.
 - **Check manually once a quarter.** Notifications get muted and filtered; the
   quarterly pass is what catches a release you never saw.
-
-### Do not trust `/releases/latest`
-
-htmx marks its prereleases with `prerelease: false`, so GitHub treats them as
-stable. As of 2026-07-20 the API returns:
-
-```sh
-$ curl -sSL https://api.github.com/repos/bigskysoftware/htmx/releases/latest \
-    | grep tag_name
-  "tag_name": "v4.0.0-beta5",
-```
-
-**Read the tag names yourself and pick the newest 2.x stable release** — do not
-let `/releases/latest`, or any tool built on it, choose the version.
