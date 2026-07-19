@@ -88,7 +88,21 @@ th { color: var(--muted); font-weight: 600; font-size: .85rem; }
 .badge { padding: .1rem .5rem; border-radius: 999px; font-size: .78rem; border: 1px solid var(--line); }
 .badge-candidate { color: var(--muted); }
 .badge-needs_review { color: var(--warn); border-color: var(--warn); }
-.badge-confirmed, .badge-accepted { color: var(--ok); border-color: var(--ok); }
+/* Who let the fact through matters as much as that it got through (#221).
+   `confirmed` is a person's call (accept_fact, actor defaults to the user);
+   `accepted` is a rule's (auto_accept_fact, actor="rule") -- and both enter the
+   engine at the same tier, so the reviewer has to be able to tell them apart.
+   Both keep the ok tone because both are passes; only the rule-made one is
+   marked, by a gear and a dashed border. Two non-colour channels on purpose: a
+   glyph font renders differently per platform, and the border shape survives
+   greyscale the way .badge-superseded's line-through does. */
+.badge-confirmed { color: var(--ok); border-color: var(--ok); }
+.badge-accepted { color: var(--ok); border-color: var(--ok); border-style: dashed; }
+/* `/ ""` is the pseudo-element alt-text: the gear is a decorative actor marker, so
+   it gets an empty accessible name and stays out of the VoiceOver/NVDA reading --
+   the badge text already says "accepted", so the glyph is a purely visual channel. */
+.badge-accepted::before { content: "⚙" / ""; color: var(--muted); font-size: .72em;
+  margin-right: .28rem; vertical-align: .08em; }
 .badge-superseded { color: var(--danger); border-color: var(--danger); text-decoration: line-through; }
 .badge-question-pending { color: var(--muted); }
 .badge-question-translated { color: var(--ok); border-color: var(--ok); }
