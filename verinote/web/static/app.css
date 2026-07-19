@@ -36,6 +36,10 @@ header { display: flex; align-items: center; gap: 1.5rem;
 .brand { font-weight: 700; letter-spacing: .02em; color: var(--fg); text-decoration: none; }
 nav a { color: var(--muted); text-decoration: none; margin-right: 1rem; }
 nav a:hover { color: var(--fg); }
+/* The current page (#225). Colour alone would not carry it -- #226 -- so the
+   weight and the underline mark it on a non-colour channel too. */
+nav a[aria-current="page"] { color: var(--fg); font-weight: 600;
+  border-bottom: 2px solid var(--accent); padding-bottom: .2rem; }
 main { max-width: 1000px; margin: 0 auto; padding: 1.6rem 1.4rem; }
 main.chooser { max-width: 560px; padding-top: 12vh; }
 h1 { font-size: 1.4rem; } h2 { font-size: 1.05rem; margin-top: 1.8rem; }
