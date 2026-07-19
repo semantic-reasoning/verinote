@@ -1,10 +1,13 @@
 # SPDX-License-Identifier: MPL-2.0
 import copy
 import dataclasses
+import importlib.util
+import sys
 
 import pytest
 
 from verinote.llm import LLMError
+from verinote.llm import schema as llm_schema
 from verinote.llm.schema import (
     EXTRACTION_SYSTEM,
     FACT_OBJECT_SCHEMA,
@@ -20,7 +23,6 @@ from verinote.pipeline.query_intent import (
     QueryIntentKind,
     _blank_nullable_fields,
     _comparison_domains,
-    _intent_field_names,
     _nullable_string_fields,
     parse_query_intent,
 )
@@ -399,38 +401,64 @@ def test_blank_nullable_fields_split_a_new_property_by_its_enum():
     assert "note" in blank_nullable
 
 
-@pytest.mark.parametrize("unit", ["", "   ", "lb", "kg"])
-def test_a_schema_property_the_parser_never_reads_is_not_silently_dropped(monkeypatch, unit):
+def _build_query_intent_module(monkeypatch, schema):
+    """Run a fresh, isolated copy of query_intent.py against `schema`.
+
+    A separate module object rather than `importlib.reload`: a reload that raises
+    part-way leaves the real module half-rebuilt, and even a successful one swaps
+    the identity of `QueryIntent`/`IntentTarget` out from under every test that
+    imported them, so dataclass equality starts failing elsewhere in the session.
+    """
+    monkeypatch.setattr(llm_schema, "QUERY_INTENT_SCHEMA", schema)
+    name = "query_intent_under_test"
+    spec = importlib.util.spec_from_file_location(name, query_intent.__file__)
+    module = importlib.util.module_from_spec(spec)
+    # `dataclasses` resolves a field's annotations through
+    # `sys.modules[cls.__module__]`, so the copy has to be registered while it
+    # executes or building QueryIntent dies on an unrelated AttributeError.
+    monkeypatch.setitem(sys.modules, name, module)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_a_schema_property_the_parser_never_reads_is_refused_at_import(monkeypatch):
     """Widening the allow-list without wiring the parser must fail, not discard.
 
-    Deriving the allow-list alone moved the failure rather than fixing it: the new
-    key stopped being refused as unexpected and started being accepted and thrown
-    away, because the QueryIntent construction names its kwargs by hand. Blank and
-    off-enum values then came back as None instead of being rejected -- the intent
-    was quietly wrong rather than loudly refused, which is worse than the
-    "unexpected fields" error it replaced.
+    Deriving the allow-list alone moved the failure rather than closing it: the
+    new key stopped being refused as an unexpected field and started being
+    accepted and thrown away, because the QueryIntent construction names its
+    kwargs by hand. A blank or off-enum value then came back as None instead of
+    being rejected -- quietly wrong rather than loudly refused, which is worse
+    than the error it replaced.
 
-    Asserting `"unit" in _intent_field_names(synthetic)` does not project any of
-    this: it restates the derivation instead of exercising what the derivation was
-    for. This drives the real parser, so it goes red both if the allow-list stops
-    following the schema and if the parser stops checking that it reads what it
-    admits.
+    Asserting `"unit" in _intent_field_names(synthetic)` did not project any of
+    that; it restated the derivation instead of exercising what the derivation was
+    for, which is how the drop stayed green. This builds the module against a
+    schema it has never seen and so fails both if the allow-list stops following
+    the schema and if the check that the parser reads what it admits goes away.
     """
-    synthetic = _synthetic_intent_schema()
-    monkeypatch.setattr(
-        query_intent, "QUERY_INTENT_FIELDS", _intent_field_names(synthetic)
-    )
-    payload = _intent_payload()
-    payload["unit"] = unit
-
     with pytest.raises(RuntimeError) as excinfo:
-        parse_query_intent(payload)
+        _build_query_intent_module(monkeypatch, _synthetic_intent_schema())
 
-    assert "unit" in str(excinfo.value)
-    # Not laundered into LLMError: no provider output can trigger this, so
-    # reporting it as a schema mismatch would blame the provider for a local
-    # wiring bug. `parse_query_intent` converts KeyError/TypeError/ValueError.
+    message = str(excinfo.value)
+    assert "unit" in message
+    assert "note" in message
+    # Not laundered into LLMError: no provider output can reach this, so calling
+    # it a schema mismatch would blame the provider for a local wiring bug.
+    # `parse_query_intent` converts KeyError/TypeError/ValueError; this is raised
+    # at import, outside that path entirely.
     assert not isinstance(excinfo.value, LLMError)
+
+
+def test_the_import_check_passes_on_the_schema_the_parser_does_read(monkeypatch):
+    """The guard has to be satisfiable, or its red is worth nothing.
+
+    Without this, a check hard-wired to raise would pass the test above while
+    making the package unimportable.
+    """
+    module = _build_query_intent_module(monkeypatch, copy.deepcopy(QUERY_INTENT_SCHEMA))
+
+    assert module.QUERY_INTENT_FIELDS == tuple(QUERY_INTENT_SCHEMA["properties"])
 
 
 def test_derived_nullable_string_fields_all_exist_on_the_query_intent_dataclass():
