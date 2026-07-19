@@ -413,11 +413,8 @@ def _collect_report(
     policy_dl: str,
     query_dl: str | None,
 ) -> CheckReport:
-    # Keyed by rendered line: findings have always been deduplicated by the text
-    # they show, and two distinct rows can render to one line. The value is that
-    # line's row, or None once it is ambiguous -- see `_record_finding`.
-    errors: dict[str, _Derived | None] = {}
-    warnings: dict[str, _Derived | None] = {}
+    errors: list[_Derived] = []
+    warnings: list[_Derived] = []
     answers_by_q: dict[str, list[str]] = {}
     for name in sorted(declarations):
         if not (
@@ -464,17 +461,15 @@ def _collect_report(
         f"q{qid}: {', '.join(sorted(vals))}"
         for qid, vals in sorted(answers_by_q.items())
     ]
-    findings = [f"ERROR {e}" for e in sorted(errors)] + [
-        f"WARN {w}" for w in sorted(warnings)
-    ]
+    rendered_errors = sorted(f"ERROR {derived.text}" for derived in errors)
+    rendered_warnings = sorted(f"WARN {derived.text}" for derived in warnings)
+    findings = rendered_errors + rendered_warnings
     finding_rows = [
-        derived.finding_row(f"ERROR {e}")
-        for e, derived in sorted(errors.items())
-        if derived is not None
+        derived.finding_row(f"ERROR {derived.text}")
+        for derived in sorted(errors)
     ] + [
-        derived.finding_row(f"WARN {w}")
-        for w, derived in sorted(warnings.items())
-        if derived is not None
+        derived.finding_row(f"WARN {derived.text}")
+        for derived in sorted(warnings)
     ]
     summary = f"errors: {len(errors)}  warnings: {len(warnings)}  facts: {len(facts)}"
     body = "\n".join(findings) if findings else NO_FINDINGS_TEXT
@@ -498,43 +493,45 @@ def _collect_report(
     )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, order=True)
 class _Derived:
     """One derived tuple with the identity of the rule that derived it."""
 
+    text: str
     values: tuple[str, ...]
     rule: str
     columns: tuple[str, ...]
+    identity: tuple[str, ...]
 
     def finding_row(self, text: str) -> FindingRow:
-        return FindingRow(text, self.values, self.rule, self.columns)
+        return FindingRow(text, self.values, self.rule, self.columns, self.identity)
 
 
 def _record_finding(
-    bucket: dict[str, _Derived | None],
+    bucket: list[_Derived],
     text: str,
     row: tuple[object, ...],
     rule: str,
     columns: tuple[str, ...],
 ) -> None:
-    """Record one finding line and the row behind it, keeping the line unique.
+    """Record one finding row after engine-equality dedupe.
 
-    Rendering is lossy (values are joined bare), so two different rows can
-    produce the same line. That line is one finding, as it always was, but it no
-    longer has *a* row — so it is marked ambiguous with None rather than being
-    given whichever row arrived first. A caller that cannot tell which row a
-    line means must say nothing about it.
+    Rendering is lossy: two engine-distinct rows can produce the same line. The
+    report count and findings list still have to preserve both rows; consumers
+    that need a single row for a rendered line can treat duplicate text as
+    ambiguous when they build their own text-to-row map.
     """
-    derived = _Derived(_row_values(row), rule, columns)
-    if text in bucket and bucket[text] != derived:
-        bucket[text] = None
-        return
-    bucket.setdefault(text, derived)
+    bucket.append(_Derived(text, _row_values(row), rule, columns, _row_identity(row)))
 
 
 def _row_values(row: tuple[object, ...]) -> tuple[str, ...]:
     """The row's values as labels, unescaped, for exact comparison."""
     return tuple(bare_label(duckdb_value_to_term(value)) for value in row)
+
+
+def _row_identity(row: tuple[object, ...]) -> tuple[str, ...]:
+    """The row's values as engine comparison keys, before lossy rendering."""
+    return tuple(term_compare_key(duckdb_value_to_term(value)) for value in row)
 
 
 def _render_fact_input(facts: list[Mapping[str, object]]) -> str:

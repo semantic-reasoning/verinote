@@ -143,10 +143,14 @@ def _finding_rows(report: CheckReport) -> dict[str, FindingRow]:
     rows: dict[str, FindingRow] = {}
     ambiguous: set[str] = set()
     for row in report.finding_rows:
-        if row.text in rows and rows[row.text].values != row.values:
+        if row.text in rows and _finding_identity(rows[row.text]) != _finding_identity(row):
             ambiguous.add(row.text)
         rows.setdefault(row.text, row)
     return {text: row for text, row in rows.items() if text not in ambiguous}
+
+
+def _finding_identity(row: FindingRow) -> tuple[str, ...]:
+    return row.identity or row.values
 
 
 def _source_note(row: FindingRow | None, rows: list[Mapping[str, object]]) -> str:
