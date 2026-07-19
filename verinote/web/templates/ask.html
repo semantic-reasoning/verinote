@@ -15,8 +15,9 @@
 {% endif %}
 
 {% if result %}
-<section class="ask-result ask-{{ result.route }}">
-  <h2>{{ result.label }}</h2>
+{% set verdict = "unverified" if result.route == "fallback" else ("verified-negative" if result.status == "no_answer" else "verified") %}
+<section class="ask-result ask-verdict-{{ verdict }}">
+  <h2 class="ask-verdict">{{ result.label }}</h2>
   <div class="answer-box">
     <pre>{{ result.answer }}</pre>
   </div>
