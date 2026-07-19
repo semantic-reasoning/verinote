@@ -14,6 +14,7 @@ non-zero, while a run that never asked must stay green.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import os
@@ -25,7 +26,16 @@ from pathlib import Path
 
 import pytest
 
-from .conftest import API_KEY_VAR, BASE_URL_VAR, GATE_VAR, MODEL_VAR, _config_for, arms_skip_guard
+from . import conftest as contract_conftest
+from .conftest import (
+    API_KEY_VAR,
+    BASE_URL_VAR,
+    GATE_VAR,
+    MODEL_VAR,
+    _client_for_provider,
+    _config_for,
+    arms_skip_guard,
+)
 
 CONTRACT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = CONTRACT_DIR.parent.parent
@@ -283,28 +293,55 @@ def test_gate_variables_survive_the_root_sandbox_strip():
         )
 
 
-def test_documented_api_key_reaches_the_provider_config():
+def test_documented_api_key_reaches_the_provider_config(monkeypatch, tmp_path):
     """The documented openai invocation must actually deliver the key.
 
-    Runs the README's own openai spelling with a synthetic key. Authentication is
-    expected to fail (or the SDK to be absent) — what must *not* happen is the
-    harness reporting the key as missing, which is what a stripped variable looks
-    like. Also asserts the run was not simply skipped, so a stripped *gate*
-    cannot make this pass vacuously.
+    This is a wiring assertion, not a live-provider contract. The default meta
+    suite must never depend on the OpenAI SDK or network just to prove the
+    documented environment spelling reaches Config, so `get_client` is replaced
+    before the provider adapter boundary.
     """
-    result = _nested_pytest(
-        f"tests/contract/{CONTRACT_MODULES[0]}",
-        "-m",
-        "contract",
-        gate_env={"VN_CONTRACT_PROVIDER": "openai", "VN_CONTRACT_API_KEY": "synthetic-key"},
-    )
-    assert "no API key was provided" not in result.stdout, (
-        "VN_CONTRACT_API_KEY did not reach the provider config; the documented "
-        f"openai run cannot work.\n{result.stdout}\n{result.stderr}"
-    )
-    assert "no guard executed" not in result.stdout, (
-        f"the gate itself did not survive to the fixture.\n{result.stdout}\n{result.stderr}"
-    )
+    monkeypatch.setenv(GATE_VAR, "openai")
+    monkeypatch.setenv(API_KEY_VAR, "synthetic-key")
+    captured = {}
+
+    def fake_get_client(cfg):
+        captured["cfg"] = cfg
+        return object()
+
+    monkeypatch.setattr(contract_conftest, "get_client", fake_get_client)
+
+    provider = contract_conftest.contract_provider()
+    assert provider == "openai"
+
+    client = _client_for_provider(provider, tmp_path / "kb")
+
+    assert client is not None
+    assert captured["cfg"].provider == "openai"
+    assert captured["cfg"].api_key == "synthetic-key"
+
+
+def test_meta_nested_pytest_never_opts_into_a_live_provider():
+    """Default-suite meta tests must not spawn opted-in live contract runs."""
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    live_gate_calls = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not isinstance(node.func, ast.Name) or node.func.id != "_nested_pytest":
+            continue
+        for keyword in node.keywords:
+            if keyword.arg != "gate_env" or not isinstance(keyword.value, ast.Dict):
+                continue
+            keys = []
+            for key in keyword.value.keys:
+                if isinstance(key, ast.Constant):
+                    keys.append(key.value)
+                elif isinstance(key, ast.Name):
+                    keys.append(globals().get(key.id))
+            if GATE_VAR in keys:
+                live_gate_calls.append(node.lineno)
+    assert live_gate_calls == []
 
 
 @pytest.mark.parametrize(
@@ -321,9 +358,10 @@ def test_documented_api_key_reaches_the_provider_config():
 def test_companion_settings_map_onto_the_config(monkeypatch, tmp_path, provider, gate_env, field, expected):
     """Every companion variable the README documents must land on the Config.
 
-    Complements the subprocess guard above: that one proves the variables survive
-    the sandbox, this one proves each is wired to the field it claims, including
-    the documented defaults.
+    Complements the adapter-boundary guard above: that one proves the documented
+    OpenAI key reaches the Config without a live call, this one proves each
+    companion variable is wired to the field it claims, including the documented
+    defaults.
     """
     for var in (MODEL_VAR, BASE_URL_VAR, API_KEY_VAR):
         monkeypatch.delenv(var, raising=False)

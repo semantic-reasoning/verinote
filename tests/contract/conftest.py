@@ -122,6 +122,13 @@ def _assert_provider_available(provider: str, cfg: Config) -> None:
     # the first live call, which raises LLMError the guards already assert on.
 
 
+def _client_for_provider(provider: str, root) -> LLMClient:
+    """Build the requested live provider client after applying contract gates."""
+    cfg = _config_for(provider, root)
+    _assert_provider_available(provider, cfg)
+    return get_client(cfg)
+
+
 # --- "selected but never ran" session guard -------------------------------
 #
 # Tracked across the session and consulted in `pytest_sessionfinish`.
@@ -271,9 +278,7 @@ def contract_client(tmp_path) -> LLMClient:
     provider = contract_provider()
     if not provider:
         pytest.skip(GATE_HINT)
-    cfg = _config_for(provider, tmp_path / "kb")
-    _assert_provider_available(provider, cfg)
-    return get_client(cfg)
+    return _client_for_provider(provider, tmp_path / "kb")
 
 
 @pytest.fixture
