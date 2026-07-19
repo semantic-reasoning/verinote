@@ -14,13 +14,16 @@ These tests pin the distinction the way #226 demands it be pinned:
    set rather than "a rule exists" -- two rules with identical bodies would still be
    the bug.
 2. **The difference is not colour alone.** Colour properties are stripped before the
-   comparison, so "fix" the bug by re-tinting one badge and this stays red. #226 is
-   about verdicts that depend on colour alone; this is the guard that stops #221's
-   fix from reopening it.
+   comparison -- including the shorthands that smuggle a colour in beside geometry, so
+   `border: 1px solid <hue>` cannot pass itself off as a non-colour channel. "Fix" the
+   bug by re-tinting one badge and this stays red. #226 is about verdicts that depend
+   on colour alone; this is the guard that stops #221's fix from reopening it.
 3. **Both stay in the ok tone**, which is what the issue asked for -- the actor is
    the difference, not the verdict.
-4. **The glyph carries empty alt text**, so it never leaks into a screen reader's
-   reading of the badge (the badge text already says "accepted").
+4. **The glyph is drawn and carries empty alt text.** Empty alt keeps it out of a
+   screen reader's reading of the badge (which already says "accepted"); checking that
+   the drawn half is non-empty stops `content: "" / ""` -- a declaration that satisfies
+   every other assertion while painting nothing -- from passing as a fix.
 5. **`.badge-confirmed` carries no glyph.** That class doubles as a generic ok chip
    ("covered" on the dashboard, "OK" in the report), so an approval mark there would
    land on text that is not an accept decision at all.
@@ -36,9 +39,12 @@ WEB = Path(__file__).resolve().parents[1] / "verinote" / "web"
 CSS_PATH = WEB / "static" / "app.css"
 TEMPLATES = WEB / "templates"
 
-# Properties that carry colour and nothing else. Stripped before the "are they really
-# different" comparison so a colour-only distinction cannot satisfy it.
-COLOUR_PROPERTIES = ("color", "border-color", "background")
+# Shorthands that can carry a colour alongside other values. Stripped whole, because a
+# colour-only edit hides inside them: `border: 1px solid var(--muted)` changes nothing
+# but the hue, yet reads as a non-colour declaration if compared verbatim. Stripping
+# more than strictly necessary only makes the guard stricter -- a real non-colour
+# channel has to survive as a longhand (`border-style`) to count.
+COLOUR_SHORTHANDS = frozenset({"border", "outline", "box-shadow", "text-shadow"})
 
 
 def _read_css() -> str:
@@ -69,12 +75,39 @@ def _declarations(selector: str, css: str) -> dict[str, str]:
     return {}
 
 
+def _carries_colour(prop: str) -> bool:
+    """True for any property whose value can encode a colour.
+
+    Covers the longhands (`color`, `border-color`, `border-top-color`, `background*`)
+    and the shorthands that bundle a colour with geometry. Deliberately *not* a
+    `startswith("border")` test: `border-style` is the non-colour channel this whole
+    guard exists to protect, so folding it in would gut the comparison.
+    """
+    return (
+        prop == "color"
+        or prop.endswith("-color")
+        or prop.startswith("background")
+        or prop in COLOUR_SHORTHANDS
+    )
+
+
 def _without_colour(declarations: dict[str, str]) -> dict[str, str]:
     return {
-        prop: value
-        for prop, value in declarations.items()
-        if not prop.startswith(COLOUR_PROPERTIES)
+        prop: value for prop, value in declarations.items() if not _carries_colour(prop)
     }
+
+
+def _glyph_of(declarations: dict[str, str]) -> str:
+    """The drawn part of a `content` declaration, with the `/ alt-text` half removed.
+
+    `content: "" / ""` is a *blank* pseudo-element: the declaration exists and the raw
+    string is truthy, but nothing is painted. Splitting the alt text off and unquoting
+    what remains is what separates "a content property is present" from "a glyph is
+    actually drawn" -- the distinction a no-op mutant slips through.
+    """
+    content = declarations.get("content", "")
+    drawn = content.split("/")[0].strip() if "/" in content else content.strip()
+    return drawn.strip("\"'").strip()
 
 
 def test_confirmed_and_accepted_are_not_the_same_rule() -> None:
@@ -97,17 +130,17 @@ def test_the_difference_is_not_colour_alone() -> None:
     """Re-tinting one badge is not a fix -- #226 rejects verdicts that ride on colour.
 
     Strip the colour properties from both rules; something must still separate them,
-    either a non-colour declaration or the `::before` glyph. Greyscale printouts and
-    colour-blind readers get the distinction either way.
+    either a non-colour declaration or a `::before` glyph that actually draws something.
+    Greyscale printouts and colour-blind readers get the distinction either way.
     """
     css = _read_css()
     confirmed = _without_colour(_declarations(".badge-confirmed", css))
     accepted = _without_colour(_declarations(".badge-accepted", css))
-    glyph = _declarations(".badge-accepted::before", css)
+    glyph = _glyph_of(_declarations(".badge-accepted::before", css))
 
-    assert confirmed != accepted or "content" in glyph, (
+    assert confirmed != accepted or glyph, (
         "with colour removed, .badge-confirmed and .badge-accepted are indistinguishable "
-        f"({confirmed}) and .badge-accepted::before sets no content -- the actor would be "
+        f"({confirmed}) and .badge-accepted::before draws no glyph -- the actor would be "
         "readable by hue alone, which is exactly what #226 says must not happen"
     )
 
@@ -137,11 +170,19 @@ def test_accepted_glyph_has_empty_alt_text() -> None:
     `content: "..." / ""` gives the pseudo-element an empty accessible name, following
     `.term-term::before` (#222). Without the empty alt, screen readers would read a
     stray gear character into the middle of the status.
+
+    The drawn half is checked separately from the alt half, because `content: "" / ""`
+    satisfies both "the property is set" and "the alt text is empty" while painting
+    nothing at all -- the badges would be pixel-identical with every test still green.
     """
     css = _read_css()
     content = _declarations(".badge-accepted::before", css).get("content")
 
     assert content, ".badge-accepted::before sets no content; the actor glyph is gone"
+    assert _glyph_of({"content": content}), (
+        f".badge-accepted::before content is {content!r}, which draws nothing; an empty "
+        "glyph leaves the rule-accepted badge visually identical to the confirmed one"
+    )
     assert re.search(r'/\s*""\s*$', content), (
         f".badge-accepted::before content is {content!r}, with no `/ \"\"` alt text; "
         "the decorative glyph would be announced as part of the status"
