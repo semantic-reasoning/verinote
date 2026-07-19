@@ -112,9 +112,11 @@ pytest -q
 ruff check .
 ```
 
-If the hash test fails, it prints the digest it actually found — compare it with
-the one you verified in step 2. A mismatch means the pin and the bytes came from
-different fetches, so redo step 1 rather than pasting the reported digest in.
+If the hash test fails, it prints the digest of the file on disk — compare that
+with the one you verified in step 2. **If they match**, the vendored file is fine
+and the constant you pasted in step 3 is wrong; fix the constant. **If they
+differ**, the pin and the bytes came from different fetches, so redo step 1
+rather than pasting the reported digest in.
 
 **5. Check it by hand.** The tests prove the bytes are pinned and the file is
 served; they do not prove htmx still works. Cut off network access, clear the
