@@ -475,17 +475,20 @@ def _attribute_relation_candidates(label: str) -> tuple[str, ...]:
     return (normalized,)
 
 
-QUERY_INTENT_FIELDS = (
-    "kind",
-    "subject",
-    "relation",
-    "object",
-    "relation_candidates",
-    "operator",
-    "value_type",
-    "value",
-    "reason",
-)
+def _intent_field_names(schema: dict[str, Any]) -> tuple[str, ...]:
+    """The property names the parser will accept, in schema order.
+
+    `_parse_query_intent_object` rejects any key outside this allow-list, so a
+    hand-written copy of it turns a property added to the schema into an
+    "unexpected fields" error -- the provider is told to emit the key and then
+    refused for emitting it. Deriving it means a new property reaches the
+    normalisation and enum checks that `_nullable_string_fields` already picks it
+    up for, instead of being stopped one step earlier.
+    """
+    return tuple(schema["properties"])
+
+
+QUERY_INTENT_FIELDS = _intent_field_names(QUERY_INTENT_SCHEMA)
 
 
 def parse_query_intent(raw: str | dict[str, Any]) -> QueryIntent:

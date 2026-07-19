@@ -19,6 +19,7 @@ from verinote.pipeline.query_intent import (
     QueryIntentKind,
     _blank_nullable_fields,
     _comparison_domains,
+    _intent_field_names,
     _nullable_string_fields,
     parse_query_intent,
 )
@@ -395,6 +396,22 @@ def test_blank_nullable_fields_split_a_new_property_by_its_enum():
 
     assert "unit" not in blank_nullable
     assert "note" in blank_nullable
+
+
+def test_parser_allow_list_follows_a_schema_it_has_never_seen():
+    """The accepted keys track the schema's properties, name list or no name list.
+
+    Without this, deriving the nullable string fields is not enough to make
+    "add an enum-constrained nullable property and it becomes blank-rejecting"
+    true: `_parse_query_intent_object` would refuse the new key as an unexpected
+    field before any of that ran. Asserting the constant equals
+    `tuple(QUERY_INTENT_SCHEMA["properties"])` would prove nothing -- today's hand
+    list satisfies that too.
+    """
+    allowed = _intent_field_names(_synthetic_intent_schema())
+
+    assert "unit" in allowed
+    assert "note" in allowed
 
 
 def test_derived_nullable_string_fields_all_exist_on_the_query_intent_dataclass():
