@@ -59,7 +59,6 @@ class QueryIntentKind(StrEnum):
     LOOKUP_SUBJECT = "lookup_subject"
     LOOKUP_RELATION = "lookup_relation"
     DISCOVER_ENTITY_RELATIONS = "discover_entity_relations"
-    COUNT = "count"
     COMPARE_TYPED_VALUE = "compare_typed_value"
     UNKNOWN_OR_UNSUPPORTED = "unknown_or_unsupported"
 
@@ -187,13 +186,6 @@ class QueryIntent:
                 )
             self._require_target_kind("subject", self.subject, {"entity"})
             self._require_relation_field()
-        elif kind == QueryIntentKind.COUNT:
-            if self.subject is None and self.object is None and not has_relation:
-                raise ValueError("count requires at least one target or relation")
-            self._require_optional_lookup_endpoint("subject", self.subject)
-            if self.relation is not None:
-                self._require_target_kind("relation", self.relation, {"relation"})
-            self._require_optional_lookup_endpoint("object", self.object)
         elif kind == QueryIntentKind.COMPARE_TYPED_VALUE:
             if (
                 self.subject is None

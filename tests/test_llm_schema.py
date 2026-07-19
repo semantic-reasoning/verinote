@@ -51,6 +51,7 @@ def test_query_intent_schema_is_separate_from_datalog_query_schema():
         "discover_entity_relations"
         in QUERY_INTENT_SCHEMA["properties"]["kind"]["enum"]
     )
+    assert "count" not in QUERY_INTENT_SCHEMA["properties"]["kind"]["enum"]
     for field in ("subject", "relation", "object"):
         schema = QUERY_INTENT_SCHEMA["properties"][field]
         assert schema["type"] == ["object", "null"]
@@ -80,7 +81,7 @@ def test_parse_query_intent_accepts_valid_lookup_object():
     assert intent.relation_candidates == ("역할", "직책", "직위")
 
 
-def test_parse_query_intent_accepts_valid_lookup_subject_lookup_relation_and_count():
+def test_parse_query_intent_accepts_valid_lookup_subject_and_lookup_relation():
     assert (
         parse_query_intent(
             _intent_payload(
@@ -103,16 +104,17 @@ def test_parse_query_intent_accepts_valid_lookup_subject_lookup_relation_and_cou
         ).kind
         == QueryIntentKind.LOOKUP_RELATION
     )
-    assert (
+
+
+def test_parse_query_intent_rejects_count_until_planner_support_exists():
+    with pytest.raises(LLMError, match="unknown query intent kind: count"):
         parse_query_intent(
             _intent_payload(
                 kind="count",
                 relation={"kind": "relation", "value": "참여"},
                 reason=None,
             )
-        ).kind
-        == QueryIntentKind.COUNT
-    )
+        )
 
 
 def test_parse_query_intent_accepts_valid_compare_typed_value():
@@ -199,10 +201,6 @@ _REASON_TOLERANT_INTENTS = [
     (
         "discover_entity_relations",
         {"subject": {"kind": "entity", "value": "Sample Entity"}},
-    ),
-    (
-        "count",
-        {"subject": {"kind": "entity", "value": "샘플인물"}},
     ),
     (
         "compare_typed_value",
