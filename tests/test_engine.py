@@ -514,16 +514,22 @@ def test_wirelog_finding_row_carries_a_shape_the_annotator_can_read():
     `functional_conflict_target` refuses to read a row positionally unless the
     row names verinote's own rule *and* the columns verinote declared — that
     refusal is what stops a note being attached to a user rule whose second
-    column is not a relation. So `rule` and `columns` are not decoration on the
-    way to `values`; drop either and the annotator correctly goes silent, and
-    every finding loses its provenance while the report still looks right.
+    column is not a relation. So this asserts that the row the wirelog engine
+    produced carries both, by handing them to that reader and requiring it to
+    name the subject and relation rather than decline.
 
     The reader here is the real consumer, not a literal: if the declared shape
     ever changes, the policy, `policy_vocabulary` and this test move together.
+    What the caller *does* with a declined row — go silent and leave a finding
+    without provenance — is a separate contract, pinned end to end in
+    `test_wirelog_finding_shape.py`.
     """
     _require_pyrewire()
     rep = run_check(_CONFLICT)
 
+    # The level prefix picks the error rows; the count pins this to the one
+    # conflict. The dead-rule WARN notes this policy also emits are not what the
+    # prefix removes -- they derive no tuple, so they never reach `finding_rows`.
     errors = [row for row in rep.finding_rows if row.text.startswith("ERROR ")]
     assert len(errors) == 1
     row = errors[0]
