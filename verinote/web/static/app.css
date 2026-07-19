@@ -175,6 +175,49 @@ tr.editing td { background: var(--editing-bg); }
   border: 1px solid var(--line); border-radius: 6px; padding: .55rem .65rem; }
 .ask-form .btn { align-self: flex-start; }
 .ask-result { margin-top: 1.4rem; }
+
+/* Ask verdict distinction (#220). The section used to key off `ask-{{ result.route }}`,
+   but `route` is only ever `engine` or `fallback` -- so the two engine verdicts, a real
+   answer and "no confirmed facts match", carried the same class (and neither class had a
+   rule anywhere, so all three answers rendered identically). The template now folds
+   (route, status) into three tone keys instead.
+
+   Three independent channels carry the verdict, so no single one is load-bearing: the
+   glyph, the border *style*, and the colour. The border style is what keeps this readable
+   in greyscale and under any colour-vision deficiency -- solid, double and dashed stay
+   distinct with the hue removed (leaning on colour alone is what reopened #226).
+
+   The glyph takes the `/ ""` alt-text of the .term-term convention above: the label text
+   already spells out the verdict, so announcing "check mark" ahead of "VERIFIED" is noise.
+   The <h2> is kept (rather than demoted to a <p>) because it has sibling <h2>s inside the
+   same section, and it is the only path by which the verdict reaches a screen reader.
+
+   Everything stays scoped under `.ask-verdict*` so a shared verdict component (#226) can
+   absorb it later. Colour never rides inside a border shorthand here: the shape and the
+   hue are separate declarations so each channel can be reasoned about on its own. */
+.ask-verdict { display: flex; align-items: center; gap: .45rem; font-size: 1rem;
+  margin: 0 0 .3rem; padding: .5rem .75rem; border-radius: 8px;
+  border-left-width: 5px; border-left-style: solid; border-left-color: var(--line); }
+.ask-verdict::before { font-size: 1.05em; }
+.ask-verdict-verified .ask-verdict { border-left-style: solid;
+  border-left-color: var(--ok); background: var(--ok-bg); color: var(--ok); }
+.ask-verdict-verified .ask-verdict::before { content: "✓" / ""; }
+.ask-verdict-verified-negative .ask-verdict { border-left-style: double;
+  border-left-color: var(--ok); background: var(--ok-bg); color: var(--ok); }
+.ask-verdict-verified-negative .ask-verdict::before { content: "∅" / ""; }
+.ask-verdict-unverified .ask-verdict { border-left-style: dashed;
+  border-left-color: var(--warn); background: var(--warn-bg); color: var(--warn); }
+.ask-verdict-unverified .ask-verdict::before { content: "⚠" / ""; }
+
+/* The answer itself carried a verdict-blind grey rule (.answer-box pre below). Tone it,
+   so the verdict is still legible once the label has scrolled off. */
+.ask-verdict-verified .answer-box pre { border-left-width: 3px;
+  border-left-style: solid; border-left-color: var(--ok); }
+.ask-verdict-verified-negative .answer-box pre { border-left-width: 3px;
+  border-left-style: double; border-left-color: var(--ok); }
+.ask-verdict-unverified .answer-box pre { border-left-width: 3px;
+  border-left-style: dashed; border-left-color: var(--warn); }
+
 .answer-box pre { margin: .6rem 0 1rem; white-space: pre-wrap; overflow: auto;
   background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: .85rem; }
 .prompt-selector { display: flex; align-items: end; gap: .7rem; margin: 1rem 0; }
