@@ -7,6 +7,8 @@ only the structural term payloads for fact triples, keyed by SQLite `facts.id`.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+import hashlib
 from pathlib import Path
 from typing import Iterable
 
@@ -24,6 +26,15 @@ _TERM_COLUMNS = ("subject", "rel", "object")
 
 class DuckDBFactTermStoreError(ValueError):
     """Raised when the DuckDB fact-term store cannot complete an operation."""
+
+
+@dataclass(frozen=True)
+class FactTermRecord:
+    """Stored logical terms plus the coherence token recorded beside them."""
+
+    terms: tuple[Term, Term, Term]
+    term_token: str | None
+    content_token: str
 
 
 class DuckDBFactTermStore:
@@ -50,10 +61,17 @@ class DuckDBFactTermStore:
                 fact_id BIGINT PRIMARY KEY,
                 subject VARCHAR NOT NULL,
                 rel VARCHAR NOT NULL,
-                object VARCHAR NOT NULL
+                object VARCHAR NOT NULL,
+                term_token VARCHAR
             )
             """
         )
+        columns = {
+            row[1]
+            for row in self._execute("PRAGMA table_info('fact_terms')").fetchall()
+        }
+        if "term_token" not in columns:
+            self._execute("ALTER TABLE fact_terms ADD COLUMN term_token VARCHAR")
 
     def close(self) -> None:
         """Close the owned DuckDB connection. Safe to call more than once."""
@@ -67,24 +85,26 @@ class DuckDBFactTermStore:
         subject: object,
         relation: object,
         obj: object,
+        *,
+        term_token: str | None = None,
     ) -> None:
         """Upsert one structural fact triple for a SQLite fact id."""
         fid = _validate_fact_id(fact_id)
-        values = (
-            term_to_duckdb_value(_coerce_term(subject)),
-            term_to_duckdb_value(_coerce_term(relation)),
-            term_to_duckdb_value(_coerce_term(obj)),
-        )
+        values = _duckdb_term_values(subject, relation, obj)
+        token = term_token or fact_term_token_from_values(values)
+        if token != fact_term_token_from_values(values):
+            raise DuckDBFactTermStoreError("fact term token does not match term payload")
         self._execute(
             """
-            INSERT INTO fact_terms (fact_id, subject, rel, object)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO fact_terms (fact_id, subject, rel, object, term_token)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(fact_id) DO UPDATE SET
                 subject = excluded.subject,
                 rel = excluded.rel,
-                object = excluded.object
+                object = excluded.object,
+                term_token = excluded.term_token
             """,
-            [fid, *values],
+            [fid, *values, token],
         )
 
     def get_fact_terms(self, fact_id: int) -> tuple[Term, Term, Term] | None:
@@ -96,6 +116,17 @@ class DuckDBFactTermStore:
         if row is None:
             return None
         return _decode_row(fid, row)
+
+    def get_fact_term_record(self, fact_id: int) -> FactTermRecord | None:
+        """Return one stored fact triple with its coherence token."""
+        fid = _validate_fact_id(fact_id)
+        row = self._execute(
+            "SELECT subject, rel, object, term_token FROM fact_terms WHERE fact_id = ?",
+            [fid],
+        ).fetchone()
+        if row is None:
+            return None
+        return _decode_record(fid, row)
 
     def get_many_fact_terms(
         self, fact_ids: Iterable[int]
@@ -114,6 +145,21 @@ class DuckDBFactTermStore:
             int(row[0]): _decode_row(int(row[0]), (row[1], row[2], row[3]))
             for row in rows
         }
+
+    def get_many_fact_term_records(
+        self, fact_ids: Iterable[int]
+    ) -> dict[int, FactTermRecord]:
+        """Return stored triples and coherence tokens for found fact ids."""
+        ids = sorted({_validate_fact_id(fact_id) for fact_id in fact_ids})
+        if not ids:
+            return {}
+        placeholders = ", ".join("?" for _ in ids)
+        rows = self._execute(
+            "SELECT fact_id, subject, rel, object, term_token "
+            f"FROM fact_terms WHERE fact_id IN ({placeholders}) ORDER BY fact_id",
+            ids,
+        ).fetchall()
+        return {int(row[0]): _decode_record(int(row[0]), row[1:]) for row in rows}
 
     def delete_fact_terms(self, fact_id: int) -> None:
         """Delete a fact term row. Missing ids are ignored."""
@@ -134,6 +180,17 @@ class DuckDBFactTermStore:
 def fact_terms_path(root: str | Path) -> Path:
     """Return the default DuckDB fact-term store path for a KB root."""
     return Path(root).expanduser() / FACT_TERMS_FILENAME
+
+
+def fact_term_token(subject: object, relation: object, obj: object) -> str:
+    """Return the deterministic coherence token for one logical fact triple."""
+    return fact_term_token_from_values(_duckdb_term_values(subject, relation, obj))
+
+
+def fact_term_token_from_values(values: tuple[str, str, str]) -> str:
+    """Return the deterministic coherence token for encoded DuckDB term values."""
+    payload = "\x1f".join(values).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 # DuckDB's native storage layer splits a database path on '?' and reads the tail
@@ -193,6 +250,14 @@ def _coerce_term(value: object) -> Term:
     return StringLit(str(value))
 
 
+def _duckdb_term_values(subject: object, relation: object, obj: object) -> tuple[str, str, str]:
+    return (
+        term_to_duckdb_value(_coerce_term(subject)),
+        term_to_duckdb_value(_coerce_term(relation)),
+        term_to_duckdb_value(_coerce_term(obj)),
+    )
+
+
 def _decode_row(fact_id: int, row: tuple[object, object, object]) -> tuple[Term, Term, Term]:
     decoded: list[Term] = []
     for column, value in zip(_TERM_COLUMNS, row, strict=True):
@@ -203,3 +268,18 @@ def _decode_row(fact_id: int, row: tuple[object, object, object]) -> tuple[Term,
                 f"malformed DuckDB term for fact_id={fact_id} column={column}: {exc}"
             ) from exc
     return (decoded[0], decoded[1], decoded[2])
+
+
+def _decode_record(fact_id: int, row: tuple[object, object, object, object]) -> FactTermRecord:
+    terms = _decode_row(fact_id, (row[0], row[1], row[2]))
+    values = tuple(str(value) for value in row[:3])
+    stored_token = row[3]
+    if stored_token is not None and not isinstance(stored_token, str):
+        raise DuckDBFactTermStoreError(
+            f"malformed DuckDB term token for fact_id={fact_id}: {stored_token!r}"
+        )
+    return FactTermRecord(
+        terms=terms,
+        term_token=stored_token,
+        content_token=fact_term_token_from_values(values),
+    )

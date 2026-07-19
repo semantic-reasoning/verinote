@@ -10,6 +10,7 @@ from verinote.store.duckdb_fact_terms import (
     FACT_TERMS_FILENAME,
     DuckDBFactTermStore,
     DuckDBFactTermStoreError,
+    fact_term_token,
     fact_terms_path,
 )
 
@@ -101,6 +102,34 @@ def test_store_upsert_latest_terms_win():
         store.close()
 
 
+def test_store_records_content_token_without_changing_tuple_api():
+    _duckdb()
+    store = DuckDBFactTermStore(None)
+    try:
+        triple = (Compound("person", (StringLit("Ada"),)), Atom("r"), NumberLit(1))
+        store.put_fact_terms(1, *triple)
+
+        assert store.get_fact_terms(1) == triple
+        record = store.get_fact_term_record(1)
+        assert record is not None
+        assert record.terms == triple
+        assert record.term_token == fact_term_token(*triple)
+        assert record.content_token == fact_term_token(*triple)
+    finally:
+        store.close()
+
+
+def test_store_rejects_a_supplied_token_that_does_not_match_payload():
+    _duckdb()
+    store = DuckDBFactTermStore(None)
+    try:
+        with pytest.raises(DuckDBFactTermStoreError, match="token does not match"):
+            store.put_fact_terms(1, "A", "r", "B", term_token="0" * 64)
+        assert store.get_fact_terms(1) is None
+    finally:
+        store.close()
+
+
 def test_store_delete_existing_and_missing_terms():
     _duckdb()
     store = DuckDBFactTermStore(None)
@@ -164,6 +193,43 @@ def test_store_schema_initialization_is_idempotent(tmp_path):
         second.close()
 
 
+def test_store_migrates_existing_fact_terms_table_to_add_token(tmp_path):
+    duckdb = _duckdb()
+    path = fact_terms_path(tmp_path)
+    con = duckdb.connect(str(path))
+    con.execute(
+        """
+        CREATE TABLE fact_terms (
+            fact_id BIGINT PRIMARY KEY,
+            subject VARCHAR NOT NULL,
+            rel VARCHAR NOT NULL,
+            object VARCHAR NOT NULL
+        )
+        """
+    )
+    con.execute(
+        "INSERT INTO fact_terms VALUES (?, ?, ?, ?)",
+        [
+            1,
+            term_to_duckdb_value(StringLit("A")),
+            term_to_duckdb_value(StringLit("r")),
+            term_to_duckdb_value(StringLit("B")),
+        ],
+    )
+    con.close()
+
+    store = DuckDBFactTermStore(path)
+    try:
+        record = store.get_fact_term_record(1)
+        assert record is not None
+        assert record.terms == (StringLit("A"), StringLit("r"), StringLit("B"))
+        assert record.term_token is None
+        store.put_fact_terms(1, "A", "r", "B")
+        assert store.get_fact_term_record(1).term_token == fact_term_token("A", "r", "B")
+    finally:
+        store.close()
+
+
 @pytest.mark.parametrize("fact_id", [0, -1, True, "1"])
 def test_store_rejects_invalid_fact_ids(fact_id):
     _duckdb()
@@ -190,7 +256,7 @@ def test_store_reports_malformed_payload_with_fact_and_column_context():
     store = DuckDBFactTermStore(None)
     try:
         store._execute(
-            "INSERT INTO fact_terms VALUES (?, ?, ?, ?)",
+            "INSERT INTO fact_terms (fact_id, subject, rel, object) VALUES (?, ?, ?, ?)",
             [
                 1,
                 '{"t":"atom","v":"Bad"}',

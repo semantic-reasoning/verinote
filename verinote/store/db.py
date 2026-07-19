@@ -149,6 +149,18 @@ def _missing_fact_terms_error(fact_ids: Iterable[int]) -> Exception:
     )
 
 
+def _stale_fact_terms_error(fact_ids: Iterable[int]) -> Exception:
+    from verinote.store.duckdb_fact_terms import DuckDBFactTermStoreError
+
+    ids = ", ".join(str(fact_id) for fact_id in fact_ids)
+    return DuckDBFactTermStoreError(
+        "stale DuckDB fact terms for fact id(s): "
+        f"{ids}. SQLite display metadata and facts.duckdb no longer describe "
+        "the same approved fact. Refusing to use engine input until the affected "
+        "facts are re-entered."
+    )
+
+
 class Store:
     """A connection to one KB's SQLite file."""
 
@@ -160,7 +172,7 @@ class Store:
         self._conn = sqlite3.connect(self.db_path, isolation_level=None, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON;")
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._inference_cache: Any = None
         self._fact_terms: Any = None
 
@@ -917,14 +929,16 @@ class Store:
         note: str = "",
     ) -> int:
         with self._lock:
-            fact_id: int | None = None
+            from verinote.store.duckdb_fact_terms import fact_term_token
+
+            token = fact_term_token(subject, relation, obj)
             self._conn.execute("BEGIN")
             try:
                 cur = self._conn.execute(
                     "INSERT INTO facts("
                     "subject, relation, object, status, confidence, source_id, "
-                    "run_id, job_id, note"
-                    ") VALUES(?,?,?,?,?,?,?,?,?) RETURNING id",
+                    "run_id, job_id, note, term_token"
+                    ") VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id",
                     (
                         _display_fact_value(subject),
                         _display_fact_value(relation),
@@ -935,10 +949,10 @@ class Store:
                         run_id,
                         job_id,
                         note,
+                        token,
                     ),
                 )
                 fact_id = int(cur.fetchone()[0])
-                self.fact_terms.put_fact_terms(fact_id, subject, relation, obj)
                 self._record_fact_terms_marker_unlocked(origin="write")
                 self._add_fact_event(
                     fact_id=fact_id,
@@ -953,12 +967,13 @@ class Store:
                     },
                 )
                 self._conn.execute("COMMIT")
-                return fact_id
-            except Exception:
-                self._rollback_quietly()
-                if fact_id is not None:
-                    self._delete_fact_terms_quietly(fact_id)
+            except BaseException:
+                self._conn.execute("ROLLBACK")
                 raise
+            self.fact_terms.put_fact_terms(
+                fact_id, subject, relation, obj, term_token=token
+            )
+            return fact_id
 
     def get_fact_terms(self, fact_id: int):
         """Return structural DuckDB terms for a fact metadata row."""
@@ -966,33 +981,50 @@ class Store:
 
     def engine_fact_terms(self) -> list[dict[str, object]]:
         """Return confirmed/accepted facts using DuckDB terms as logical values."""
-        rows = self.facts(statuses=ENGINE_STATUSES)
-        ids = [int(row["id"]) for row in rows]
-        if not ids:
-            return []
+        with self._lock:
+            rows = self.facts(statuses=ENGINE_STATUSES)
+            ids = [int(row["id"]) for row in rows]
+            if not ids:
+                return []
 
-        terms = self.fact_terms.get_many_fact_terms(ids)
-        missing = [fact_id for fact_id in ids if fact_id not in terms]
-        if missing:
-            if self._has_fact_terms_marker():
+            records = self.fact_terms.get_many_fact_term_records(ids)
+            missing = [fact_id for fact_id in ids if fact_id not in records]
+            if missing:
+                if self._has_fact_terms_marker():
+                    raise _missing_fact_terms_error(missing)
+                self.backfill_fact_terms()
+                records = self.fact_terms.get_many_fact_term_records(ids)
+                missing = [fact_id for fact_id in ids if fact_id not in records]
+            if missing:
                 raise _missing_fact_terms_error(missing)
-            self.backfill_fact_terms()
-            terms = self.fact_terms.get_many_fact_terms(ids)
-            missing = [fact_id for fact_id in ids if fact_id not in terms]
-        if missing:
-            raise _missing_fact_terms_error(missing)
-        if not self._has_fact_terms_marker():
-            self._record_fact_terms_marker(origin="existing_sidecar")
+            if not self._has_fact_terms_marker():
+                self._record_fact_terms_marker(origin="existing_sidecar")
 
-        return [
-            {
-                "id": fact_id,
-                "subject": terms[fact_id][0],
-                "relation": terms[fact_id][1],
-                "object": terms[fact_id][2],
-            }
-            for fact_id in ids
-        ]
+            stale = []
+            for row in rows:
+                fact_id = int(row["id"])
+                sqlite_token = row["term_token"]
+                if sqlite_token is None:
+                    continue
+                record = records[fact_id]
+                if (
+                    record.term_token is None
+                    or record.term_token != sqlite_token
+                    or record.content_token != sqlite_token
+                ):
+                    stale.append(fact_id)
+            if stale:
+                raise _stale_fact_terms_error(stale)
+
+            return [
+                {
+                    "id": fact_id,
+                    "subject": records[fact_id].terms[0],
+                    "relation": records[fact_id].terms[1],
+                    "object": records[fact_id].terms[2],
+                }
+                for fact_id in ids
+            ]
 
     def backfill_fact_terms(self) -> int:
         """Backfill legacy SQLite-only fact rows into DuckDB as StringLit terms."""
@@ -1184,36 +1216,37 @@ class Store:
     ) -> sqlite3.Row | None:
         """Correct a fact's (subject, relation, object, note); audit as `amended`."""
         with self._lock:
+            from verinote.store.duckdb_fact_terms import fact_term_token
+
             before = self.get_fact(fact_id)
             if before is None:
                 return None
-            previous_terms = self.fact_terms.get_fact_terms(fact_id)
-            terms_written = False
+            token = fact_term_token(subject, relation, obj)
             self._conn.execute("BEGIN")
             try:
-                self.fact_terms.put_fact_terms(fact_id, subject, relation, obj)
-                terms_written = True
-                self._record_fact_terms_marker_unlocked(origin="write")
                 self._conn.execute(
-                    "UPDATE facts SET subject = ?, relation = ?, object = ?, note = ?, "
+                    "UPDATE facts SET subject = ?, relation = ?, object = ?, note = ?, term_token = ?, "
                     "updated_at = datetime('now') WHERE id = ?",
                     (
                         _display_fact_value(subject),
                         _display_fact_value(relation),
                         _display_fact_value(obj),
                         note,
+                        token,
                         fact_id,
                     ),
                 )
                 after = self.get_fact(fact_id)
                 self._log(fact_id, "amended", before, after)
+                self._record_fact_terms_marker_unlocked(origin="write")
                 self._conn.execute("COMMIT")
-                return after
-            except Exception:
-                self._rollback_quietly()
-                if terms_written:
-                    self._restore_fact_terms_quietly(fact_id, previous_terms)
+            except BaseException:
+                self._conn.execute("ROLLBACK")
                 raise
+            self.fact_terms.put_fact_terms(
+                fact_id, subject, relation, obj, term_token=token
+            )
+            return after
 
     # --- questions -------------------------------------------------------
     def add_question(self, text: str) -> int:
@@ -1479,6 +1512,8 @@ class Store:
                 "ALTER TABLE facts ADD COLUMN job_id INTEGER "
                 "REFERENCES extraction_jobs(id) ON DELETE SET NULL"
             )
+        if "term_token" not in fact_columns:
+            self._conn.execute("ALTER TABLE facts ADD COLUMN term_token TEXT")
         self._conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS fact_evidence (

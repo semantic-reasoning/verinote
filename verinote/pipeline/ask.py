@@ -16,6 +16,7 @@ from verinote.pipeline.query import expand_query_relation_aliases, schema_aware_
 from verinote.pipeline.query_candidate_eval import RELATION_DECL
 from verinote.pipeline.report_trace import trace_query_answers
 from verinote.store import Store, engine_statuses
+from verinote.store.duckdb_fact_terms import DuckDBFactTermStoreError
 
 ASK_QID = 0
 MAX_CONTEXT_CHARS = 12000
@@ -81,13 +82,22 @@ def ask_question(
             reason="empty question",
         )
 
-    status, query_dl, reason = schema_aware_query_flow(
-        store,
-        client,
-        qid=ASK_QID,
-        question=question,
-        llm_error_status="review_required",
-    )
+    try:
+        status, query_dl, reason = schema_aware_query_flow(
+            store,
+            client,
+            qid=ASK_QID,
+            question=question,
+            llm_error_status="review_required",
+        )
+    except DuckDBFactTermStoreError as exc:
+        return _fallback_answer(
+            store,
+            client,
+            root=root,
+            question=question,
+            reason=f"engine fact-term error: {_short_reason(exc)}",
+        )
     if status == "translated" and query_dl:
         report, expanded_query = _run_engine_query(store, query_dl)
         if report.engine_available and report.ok and not report.errors:
