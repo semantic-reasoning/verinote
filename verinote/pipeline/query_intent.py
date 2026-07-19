@@ -495,8 +495,10 @@ QUERY_INTENT_FIELDS = _intent_field_names(QUERY_INTENT_SCHEMA)
 
 # The names `_parse_query_intent_object` actually reads out of the payload. This
 # list cannot be derived -- it mirrors the hand-written kwargs of the QueryIntent
-# construction below, which is the thing being checked -- but it does not have to
-# be trusted: `_unconsumed_intent_fields` holds it against the schema.
+# construction below -- and it does have to be trusted: it is held against the
+# schema, not against the kwargs below, so adding a name here without wiring the
+# kwarg re-opens the silent drop the import check exists to prevent. Deriving the
+# construction itself is what would remove the need to trust it.
 _PARSED_INTENT_FIELDS = frozenset(
     {
         "kind",
@@ -513,7 +515,11 @@ _PARSED_INTENT_FIELDS = frozenset(
 
 
 def _unconsumed_intent_fields(field_names: tuple[str, ...]) -> frozenset[str]:
-    """Allow-listed names the parser would accept as keys but never read."""
+    """Allow-listed names `_PARSED_INTENT_FIELDS` does not claim the parser reads.
+
+    "Does not claim" rather than "does not read": the comparison is against that
+    list, not against the construction it mirrors.
+    """
     return frozenset(field_names) - _PARSED_INTENT_FIELDS
 
 
