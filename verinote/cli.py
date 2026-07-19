@@ -173,10 +173,13 @@ KB_PARTIAL_SCHEMA = "it has a `facts` table but is missing the rest of a KB"
 # What a `facts` table must have for the file to be a verinote KB at all. This is
 # deliberately *not* the current schema's column set: `_ensure_schema_migrations()`
 # adds columns (`job_id`) to KBs written before they existed, so requiring today's
-# full set would refuse the very KBs migration exists to repair. These four are the
-# fact itself — every verinote KB has always had them, and no migration adds them —
+# full set would refuse the very KBs migration exists to repair. These columns
+# are the fact identity and payload — every verinote KB has always had them, and
+# no migration adds them —
 # so the check stays put as the schema grows around it.
-_KB_FACTS_IDENTITY_COLUMNS = frozenset({"subject", "relation", "object", "status"})
+_KB_FACTS_IDENTITY_COLUMNS = frozenset(
+    {"id", "subject", "relation", "object", "status"}
+)
 
 # The tables that make the file a KB rather than a `facts` table someone left in a
 # database. Same principle as the columns above, one level up, and chosen the same
