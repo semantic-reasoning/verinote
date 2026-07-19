@@ -823,3 +823,137 @@ def test_auto_retract_skips_when_the_fact_leaves_accepted_mid_transition(tmp_pat
     assert row is None
     assert other.get_fact(fact_id)["status"] == "superseded"
     assert "auto_retracted" not in _actions(other, fact_id)
+
+
+# --- #292: superseded stays superseded, whichever public route you take ---
+
+# Store's public surface, split by whether a call can move an existing fact's
+# status. The transition half is swept below; the rest is frozen so a new
+# public method cannot land without someone deciding which half it belongs to.
+# `add_fact(status=...)` sits on the non-transition side on purpose: it is the
+# insertion seam that picks a fact's *starting* status, not a route out of one.
+FACT_TRANSITION_METHODS = frozenset(
+    {
+        "accept_fact",
+        "accept_review_facts_for_source",
+        "amend_fact",
+        "auto_accept_fact",
+        "reject_fact",
+        "toggle_review",
+    }
+)
+
+NON_TRANSITION_METHODS = frozenset(
+    {
+        "add_fact",
+        "add_fact_event",
+        "add_fact_evidence",
+        "add_question",
+        "add_run",
+        "add_source",
+        "add_source_artifact",
+        "add_source_chunks",
+        "backfill_fact_terms",
+        "clear_source_analysis",
+        "close",
+        "count_facts_with_events",
+        "create_extraction_job",
+        "delete_question",
+        "delete_source",
+        "engine_fact_terms",
+        "fact_events",
+        "fact_evidence",
+        "fact_exists_for_source",
+        "fact_log",
+        "fact_terms_marker",
+        "facts",
+        "facts_by_ids",
+        "fail_extraction_job",
+        "finish_extraction_job",
+        "get_extraction_job",
+        "get_extraction_job_detail",
+        "get_fact",
+        "get_fact_terms",
+        "get_run",
+        "get_source",
+        "get_source_artifact",
+        "get_source_by_path",
+        "get_source_chunk",
+        "init_schema",
+        "latest_source_text_artifact",
+        "mark_chunk_done",
+        "mark_chunk_failed",
+        "mark_chunk_running",
+        "mark_extraction_job_running",
+        "next_pending_chunk",
+        "policy_marker",
+        "questions",
+        "record_policy_marker",
+        "reset_running_chunks",
+        "retry_failed_chunks",
+        "review_queue",
+        "review_queue_ids",
+        "review_queue_page",
+        "rollback_extraction_job",
+        "set_question_query",
+        "set_run_summary",
+        "source_artifacts",
+        "source_chunks",
+        "source_evidence_snippets",
+        "source_extraction_jobs",
+        "source_fact_counts",
+        "source_text_inputs",
+        "sources",
+        "sources_with_counts",
+        "status_counts",
+    }
+)
+
+
+def _public_methods(cls) -> frozenset[str]:
+    return frozenset(
+        name
+        for name in dir(cls)
+        if not name.startswith("_") and callable(getattr(cls, name))
+    )
+
+
+def test_store_has_no_unguarded_status_write():
+    # `set_status` (#292) wrote any status onto any fact with no tier check, so
+    # it walked straight past every guard the sweep below relies on.
+    assert not hasattr(Store, "set_status")
+
+
+def test_every_public_store_method_is_classified_as_transition_or_not():
+    # A new public method landing unclassified turns this red before anyone can
+    # rely on it: decide whether it moves a fact's status, then file it. If it
+    # does move status, it also owes the sweep below a call.
+    assert _public_methods(Store) == FACT_TRANSITION_METHODS | NON_TRANSITION_METHODS
+
+
+def test_no_public_transition_revives_a_superseded_fact(tmp_path):
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/rejected.txt")
+    fact_id = store.add_fact(
+        "Ledger", "owner", "Park", status="needs_review", source_id=source_id
+    )
+    store.reject_fact(fact_id)
+    assert store.get_fact(fact_id)["status"] == "superseded"
+
+    routes = {
+        "accept_fact": lambda: store.accept_fact(fact_id),
+        "accept_review_facts_for_source": lambda: store.accept_review_facts_for_source(
+            source_id
+        ),
+        "amend_fact": lambda: store.amend_fact(
+            fact_id, subject="Ledger", relation="owner", obj="Kim"
+        ),
+        "auto_accept_fact": lambda: store.auto_accept_fact(fact_id, rule_name="r"),
+        "reject_fact": lambda: store.reject_fact(fact_id),
+        "toggle_review": lambda: store.toggle_review(fact_id),
+    }
+    assert set(routes) == FACT_TRANSITION_METHODS
+
+    for name, call in routes.items():
+        call()
+        assert store.get_fact(fact_id)["status"] == "superseded", name
