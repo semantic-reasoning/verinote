@@ -8,9 +8,12 @@
 
 <section class="trust-block">
   <h2>Trust summary</h2>
-  <div class="trust-labels" aria-label="trust signals">
+  {# role=list, not a bare div: a div is role=generic, which is name-prohibited, so
+     the aria-label below would have been free to go unannounced (#294). list does
+     permit an author name -- and it owns listitems, hence the role on each badge. #}
+  <div class="trust-labels" role="list" aria-label="trust signals">
     {% for label in trust.trust_labels %}
-      <span class="badge trust-{{ label }}">{{ label|replace("_", " ") }}</span>
+      <span class="badge trust-{{ label }}" role="listitem">{{ label|replace("_", " ") }}</span>
     {% endfor %}
   </div>
   <table class="counts">
