@@ -86,6 +86,17 @@ def test_query_intent_prompt_does_not_steer_threshold_questions_to_compare_typed
     assert "only when kind is compare_typed_value" not in text
 
 
+def test_query_intent_prompt_does_not_steer_aggregate_questions_to_count():
+    """The prompt must not ask for another intent the planner cannot plan."""
+    text = default_prompt_text("query-intent")
+
+    assert (
+        "Do not classify a question as count: aggregate counts cannot be planned yet"
+        in text
+    )
+    assert "reason saying the question needs an aggregate count" in text
+
+
 def test_kb_prompt_override_wins(tmp_path):
     save_prompt_override(tmp_path, "extraction", "Use only supplied synthetic text.")
 

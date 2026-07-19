@@ -102,7 +102,6 @@ QUERY_INTENT_SCHEMA: dict[str, Any] = {
                 "lookup_subject",
                 "lookup_relation",
                 "discover_entity_relations",
-                "count",
                 "compare_typed_value",
                 "unknown_or_unsupported",
             ],

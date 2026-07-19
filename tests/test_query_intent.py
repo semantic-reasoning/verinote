@@ -28,7 +28,7 @@ def test_lookup_object_intent_is_frozen_and_typed():
         intent.relation_candidates = ("role",)
 
 
-def test_valid_lookup_subject_lookup_relation_count_and_compare_intents():
+def test_valid_lookup_subject_lookup_relation_and_compare_intents():
     assert QueryIntent(
         kind=QueryIntentKind.LOOKUP_SUBJECT,
         relation=IntentTarget("relation", "역할"),
@@ -39,10 +39,6 @@ def test_valid_lookup_subject_lookup_relation_count_and_compare_intents():
         subject=IntentTarget("entity", "샘플인물"),
         object=IntentTarget("entity", "샘플문서"),
     ).kind == QueryIntentKind.LOOKUP_RELATION
-    assert QueryIntent(
-        kind=QueryIntentKind.COUNT,
-        relation=IntentTarget("relation", "참여"),
-    ).kind == QueryIntentKind.COUNT
     assert QueryIntent(
         kind=QueryIntentKind.COMPARE_TYPED_VALUE,
         subject=IntentTarget("entity", "샘플항목"),
