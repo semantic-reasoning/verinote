@@ -43,6 +43,11 @@ NAMING_ROLES = {"list", "group", "region"}
 # Tags whose implicit role is ``generic``. Naming them requires an explicit role.
 GENERIC_TAGS = {"div", "span"}
 
+# Roles that prohibit an author-provided name. Declaring one of these *explicitly* is
+# no better than leaving the element generic -- the label is still free to be dropped
+# -- so "has a role attribute" is not on its own enough to clear the pin below.
+NAME_PROHIBITED_ROLES = {"generic", "presentation", "none", "paragraph"}
+
 NAME_ATTRS = ("aria-label", "aria-labelledby")
 
 # HTML void elements never get an end tag, so they must not enter the open-tag stack.
@@ -58,8 +63,9 @@ class _Markup(HTMLParser):
     ``group`` is the attributes of the ``.trust-labels`` element, ``children`` the
     attributes of each *direct* child element of it (nested descendants do not count
     -- required owned elements are about the immediate children). ``named_generics``
-    collects every ``div``/``span`` that carries an accessible name without declaring
-    a role, which is exactly the name-prohibited pattern.
+    collects every ``div``/``span`` that carries an accessible name while its role
+    prohibits one -- whether it left the role implicit or spelled out a
+    name-prohibited role such as ``presentation``.
     """
 
     def __init__(self) -> None:
@@ -87,7 +93,8 @@ class _Markup(HTMLParser):
 
     def _record(self, tag: str, attrs) -> None:
         attributes = {k: (v or "") for k, v in attrs}
-        if tag in GENERIC_TAGS and "role" not in attributes:
+        role = attributes.get("role", "").strip().lower()
+        if tag in GENERIC_TAGS and (not role or role in NAME_PROHIBITED_ROLES):
             if any(a in attributes for a in NAME_ATTRS):
                 self.named_generics.append((tag, attributes))
         if self._group_depth is not None and len(self._stack) == self._group_depth:
@@ -155,38 +162,52 @@ def test_trust_label_group_carries_a_name_on_a_role_that_permits_one(tmp_path) -
     )
 
 
-def test_trust_label_group_owns_listitems(tmp_path) -> None:
-    """A ``list`` has required owned elements; half the pattern is not the pattern.
+def test_trust_label_group_and_its_children_agree_on_being_a_list(tmp_path) -> None:
+    """Container and children must be a list together, or neither.
 
-    ``role="list"`` whose children are role=generic spans is malformed: the container
-    announces a list and then owns nothing, so the count and position an AT reports
-    are wrong.
+    Asserted in both directions, with no skip. Skipping when the container is not a
+    ``list`` would leave a real hole: switch the role to ``region`` and keep the
+    ``role="listitem"`` badges and you get **orphan listitems** -- items owned by no
+    list, which is malformed ARIA and makes an AT misreport their count and position.
+    That mutant passes guard 1 (``region`` permits a name), so a skip here means
+    nothing catches it. A skip also reads as a green tick in the summary line, which
+    is the property PR #273 set out to keep.
     """
     parsed = _parse(_provenance(tmp_path))
     assert parsed.group is not None, f"provenance renders no .{GROUP_CLASS} element"
-    if parsed.group.get("role") != "list":
-        pytest.skip("group does not use role=list; owned-element rule does not apply")
-
     assert parsed.children, (
-        f".{GROUP_CLASS} is role=list but rendered no child elements; this fixture "
-        "adds a source precisely so at least one trust label exists"
+        f".{GROUP_CLASS} rendered no child elements; this fixture adds a source "
+        "precisely so at least one trust label exists"
     )
-    bad = [c for c in parsed.children if c.get("role") != "listitem"]
-    assert not bad, (
-        f".{GROUP_CLASS} is role=list but owns non-listitem children: {bad}. "
-        "role=list requires its direct children to be role=listitem."
-    )
+
+    listitems = [c for c in parsed.children if c.get("role") == "listitem"]
+    if parsed.group.get("role") == "list":
+        others = [c for c in parsed.children if c.get("role") != "listitem"]
+        assert not others, (
+            f".{GROUP_CLASS} is role=list but owns non-listitem children: {others}. "
+            "role=list requires its direct children to be role=listitem."
+        )
+    else:
+        assert not listitems, (
+            f".{GROUP_CLASS} is role={parsed.group.get('role') or 'generic'} but owns "
+            f"role=listitem children: {listitems}. A listitem outside a list is "
+            "orphaned -- an AT reports its position and count against nothing."
+        )
 
 
 @pytest.mark.parametrize("page", ["review", "provenance"])
 def test_no_generic_element_carries_an_author_name(tmp_path, page) -> None:
-    """Generalises the #284 span pin: no name on anything still role=generic.
+    """Generalises the #284 span pin: no name on a role that prohibits one.
 
-    Stated as "a div/span with no ``role``" rather than "any ``div[aria-label]``" on
-    purpose. The fix above is a div with an aria-label -- a legitimate one, because it
-    declares ``role="list"`` and so is no longer generic. Banning the attribute
-    wholesale would fail on the fix itself; banning it *while generic* is the actual
-    rule, and it makes this class of defect structurally unable to come back.
+    Stated as "a div/span whose role prohibits a name" rather than "any
+    ``div[aria-label]``" on purpose. The fix above is a div with an aria-label -- a
+    legitimate one, because it declares ``role="list"``. Banning the attribute
+    wholesale would fail on the fix itself; banning it *where the role forbids it* is
+    the actual rule, and it makes this class of defect structurally unable to return.
+
+    Note it is not enough to ask whether a ``role`` attribute is merely *present*:
+    ``<div role="presentation" aria-label="...">`` has one and is still name-prohibited.
+    The role's value has to be checked against ``NAME_PROHIBITED_ROLES``.
 
     ``<nav>``, ``<input>`` and ``<select>`` elsewhere in these templates are untouched:
     their implicit roles permit a name, and they are not generic tags to begin with.
@@ -201,7 +222,8 @@ def test_no_generic_element_carries_an_author_name(tmp_path, page) -> None:
 
     named = _parse(markup).named_generics
     assert named == [], (
-        f"{page} names a role=generic element: {named}. A div/span with no explicit "
-        "role is role=generic, which is name-prohibited -- either give it a role that "
-        "permits a name, or put the text in a visually-hidden text node."
+        f"{page} names an element whose role prohibits a name: {named}. A div/span "
+        f"with no role is generic, and {sorted(NAME_PROHIBITED_ROLES)} are "
+        "name-prohibited too -- either give it a role that permits a name, or put the "
+        "text in a visually-hidden text node."
     )
