@@ -10,17 +10,26 @@
 <body>
   <header>
     <a class="brand" href="/">verinote</a>
+    {% set nav_links = [
+      ("/", "Dashboard"),
+      ("/sources", "Sources"),
+      ("/review", "Review"),
+      ("/workbench", "Workbench"),
+      ("/ask", "Ask"),
+      ("/questions", "Questions"),
+      ("/report", "Report"),
+      ("/analytics", "Analytics"),
+      ("/prompts", "Prompts"),
+      ("/settings", "Settings"),
+    ] %}
+    {# `/` matches exactly; a prefix match there would light Dashboard up on every
+       page. Sub-paths (`/sources/…`) keep their section link current. Pages under
+       no nav entry (e.g. a fact's provenance) leave every link inactive. #}
+    {% set path = request.url.path %}
     <nav>
-      <a href="/">Dashboard</a>
-      <a href="/sources">Sources</a>
-      <a href="/review">Review</a>
-      <a href="/workbench">Workbench</a>
-      <a href="/ask">Ask</a>
-      <a href="/questions">Questions</a>
-      <a href="/report">Report</a>
-      <a href="/analytics">Analytics</a>
-      <a href="/prompts">Prompts</a>
-      <a href="/settings">Settings</a>
+      {% for href, label in nav_links %}
+      <a href="{{ href }}"{% if path == href or (href != "/" and path.startswith(href ~ "/")) %} aria-current="page"{% endif %}>{{ label }}</a>
+      {% endfor %}
     </nav>
   </header>
   <main>
