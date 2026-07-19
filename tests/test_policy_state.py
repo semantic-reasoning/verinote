@@ -165,10 +165,10 @@ def test_init_records_a_scaffold_marker(tmp_path, monkeypatch):
     store.close()
 
 
-# --- 4. backwards compatibility: a pre-marker KB adopts its policy on open ---
+# --- 4. backwards compatibility: a pre-marker KB adopts its policy on write open ---
 
 
-def test_existing_policy_file_is_adopted_on_open(tmp_path, monkeypatch):
+def test_existing_policy_file_is_adopted_on_write_open(tmp_path, monkeypatch, capsys):
     _env(monkeypatch, tmp_path)
     path = _write_policy(tmp_path)
     store = Store(tmp_path / "kb.sqlite")
@@ -176,7 +176,8 @@ def test_existing_policy_file_is_adopted_on_open(tmp_path, monkeypatch):
     assert store.policy_marker() is None  # pre-#155 KB
     store.close()
 
-    assert cli.main(["status"]) == 0
+    assert cli.main(["seed"]) == 0
+    capsys.readouterr()
 
     store = Store(tmp_path / "kb.sqlite")
     store.init_schema()

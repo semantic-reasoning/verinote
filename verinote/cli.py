@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sqlite3
 from dataclasses import dataclass
 import sys
@@ -12,7 +13,7 @@ from pathlib import Path
 from verinote import __version__
 from verinote.config import Config, local_root
 from verinote.pipeline.question_outcome import format_question_outcome
-from verinote.store import Store
+from verinote.store import Store, engine_statuses
 
 # Local commands own their KB location: they never inherit the KB the web UI
 # last selected, so `verinote init` cannot scribble into somebody else's data.
@@ -194,6 +195,20 @@ _KB_FACTS_IDENTITY_COLUMNS = frozenset(
 # exists to repair. The intersection over the schema's history is the part that has
 # never been a migration's job, and only that part can be demanded up front.
 _KB_CORE_TABLES = frozenset({"facts", "review_log", "runs", "sources"})
+_KB_CORE_TABLE_COLUMNS = {
+    "sources": frozenset({"id", "path"}),
+    "runs": frozenset({"id"}),
+    "review_log": frozenset({"id"}),
+}
+
+
+def _sqlite_read_only_uri(db_path: Path) -> str:
+    base = db_path.resolve().as_uri()
+    if db_path.with_name(db_path.name + "-wal").exists() or db_path.with_name(
+        db_path.name + "-shm"
+    ).exists():
+        return f"{base}?mode=ro"
+    return f"{base}?mode=ro&immutable=1"
 
 
 def _kb_schema_problem(db_path: Path) -> str | None:
@@ -221,7 +236,7 @@ def _kb_schema_problem(db_path: Path) -> str | None:
     drops `mode=ro`, so SQLite would create a stray file at the truncated path.
     """
     try:
-        uri = f"{db_path.resolve().as_uri()}?mode=ro"
+        uri = _sqlite_read_only_uri(db_path)
         conn = sqlite3.connect(uri, uri=True)
         conn.row_factory = sqlite3.Row
         try:
@@ -232,6 +247,13 @@ def _kb_schema_problem(db_path: Path) -> str | None:
             if "facts" not in tables:
                 return KB_NO_SCHEMA
             columns = {c["name"] for c in conn.execute("PRAGMA table_info(facts)")}
+            table_columns = {
+                table: {
+                    c["name"] for c in conn.execute(f"PRAGMA table_info({table})")
+                }
+                for table in _KB_CORE_TABLE_COLUMNS
+                if table in tables
+            }
         finally:
             conn.close()
     except sqlite3.DatabaseError:
@@ -244,6 +266,9 @@ def _kb_schema_problem(db_path: Path) -> str | None:
     missing = _KB_CORE_TABLES - tables
     if missing:
         return f"{KB_PARTIAL_SCHEMA} (no {', '.join('`' + t + '`' for t in sorted(missing))})"
+    for table, required in _KB_CORE_TABLE_COLUMNS.items():
+        if not required <= table_columns[table]:
+            return f"{KB_PARTIAL_SCHEMA} (`{table}` is not verinote's)"
     return None
 
 
@@ -261,6 +286,92 @@ def _require_existing_kb(cfg: Config) -> int | None:
         print(f"{cfg.db_path} is not a verinote KB ({problem})", file=sys.stderr)
         return 1
     return None
+
+
+def _read_only_conn(cfg: Config) -> sqlite3.Connection:
+    uri = _sqlite_read_only_uri(cfg.db_path)
+    conn = sqlite3.connect(uri, uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _read_only_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _status_counts_ro(conn: sqlite3.Connection) -> dict[str, int]:
+    rows = conn.execute("SELECT status, COUNT(*) c FROM facts GROUP BY status")
+    return {row["status"]: row["c"] for row in rows}
+
+
+def _sources_count_ro(conn: sqlite3.Connection) -> int:
+    return int(conn.execute("SELECT COUNT(*) c FROM sources").fetchone()["c"])
+
+
+def _source_fact_counts_ro(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    facts_columns = _read_only_columns(conn, "facts")
+    sources_columns = _read_only_columns(conn, "sources")
+    kind_expr = "s.kind" if "kind" in sources_columns else "'text'"
+    if "source_id" not in facts_columns:
+        return list(
+            conn.execute(
+                "SELECT s.id, s.path, "
+                f"{kind_expr} AS kind, "
+                "0 AS total, 0 AS engine "
+                "FROM sources s ORDER BY s.path"
+            )
+        )
+    placeholders = ",".join("?" for _ in engine_statuses())
+    return list(
+        conn.execute(
+            "SELECT s.id, s.path, "
+            f"{kind_expr} AS kind, "
+            "COUNT(f.id) AS total, "
+            f"COALESCE(SUM(CASE WHEN f.status IN ({placeholders}) "
+            "THEN 1 ELSE 0 END), 0) AS engine "
+            "FROM sources s LEFT JOIN facts f ON f.source_id = s.id "
+            "GROUP BY s.id ORDER BY s.path",
+            tuple(engine_statuses()),
+        )
+    )
+
+
+def _policy_marker_ro(conn: sqlite3.Connection) -> dict[str, object] | None:
+    tables = {
+        row["name"]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    if "kb_meta" not in tables:
+        return None
+    raw = conn.execute(
+        "SELECT value FROM kb_meta WHERE key = 'policy.logic'"
+    ).fetchone()
+    if raw is None:
+        return None
+    try:
+        marker = json.loads(raw["value"])
+    except json.JSONDecodeError:
+        return {"sha256": "", "recorded_at": "", "origin": "unknown"}
+    if not isinstance(marker, dict):
+        return {"sha256": "", "recorded_at": "", "origin": "unknown"}
+    return marker
+
+
+def _policy_state_ro(conn: sqlite3.Connection, cfg: Config):
+    from verinote.pipeline.policy_state import POLICY_RELPATH, PolicyState, PolicyStatus
+
+    path = cfg.root / POLICY_RELPATH
+    marker = _policy_marker_ro(conn)
+    if path.is_file():
+        return PolicyState(
+            status=PolicyStatus.PRESENT,
+            path=path,
+            text=path.read_text(encoding="utf-8"),
+            marker=marker,
+        )
+    if marker is not None:
+        return PolicyState(status=PolicyStatus.MISSING_RECORDED, path=path, marker=marker)
+    return PolicyState(status=PolicyStatus.UNRECORDED_DEFAULT, path=path)
 
 
 def cmd_seed(cfg: Config, args: argparse.Namespace) -> int:
@@ -528,7 +639,22 @@ def _print_policy_state(store: Store) -> bool:
     return False
 
 
-def _unusable_kb(cfg: Config, exc: sqlite3.DatabaseError) -> int:
+def _print_policy_state_ro(conn: sqlite3.Connection, cfg: Config) -> bool:
+    from verinote.pipeline.policy_state import (
+        PolicyStatus,
+        policy_cli_line,
+        policy_missing_message,
+    )
+
+    state = _policy_state_ro(conn, cfg)
+    print(policy_cli_line(state))
+    if state.status is PolicyStatus.MISSING_RECORDED:
+        print(f"error: {policy_missing_message(state)}", file=sys.stderr)
+        return True
+    return False
+
+
+def _unusable_kb(cfg: Config, exc: Exception) -> int:
     """Turn a SQLite error escaping a read-only command into a diagnosis.
 
     `_require_existing_kb()` can only vouch for the `facts` table; the KB is made
@@ -536,13 +662,6 @@ def _unusable_kb(cfg: Config, exc: sqlite3.DatabaseError) -> int:
     schema is the drift trap that check is deliberately shaped to avoid. So a
     file can still get past it and fail deeper in. Whatever it is, a command whose
     whole job is to *report* on a KB must not answer with a traceback.
-
-    This closes the traceback, not the write: `_store()` has already run
-    `init_schema()` by the time most of these surface, so the file may have grown.
-    Issue #291 tracks the root of that — `_store()` writes unconditionally, so
-    even a healthy `status` writes — and until it lands, saying so is the honest
-    move. A user who is told the file is untouched, when it is not, cannot make
-    the one decision that matters here: whether to restore from backup.
 
     The message must not blame the KB, though, because we cannot see from here
     whether it earned the blame: a `DatabaseError` this deep is just as easily
@@ -556,9 +675,8 @@ def _unusable_kb(cfg: Config, exc: sqlite3.DatabaseError) -> int:
         f"cannot read the KB at {cfg.root}: {exc}. This is either a KB this "
         f"version of verinote cannot read, or a bug in verinote — we cannot tell "
         f"which from here. If this KB opens with another verinote version, it is "
-        f"ours: please report it, and do not restore anything. Otherwise the file "
-        f"may already have been modified by the attempt, and a backup is worth "
-        f"more than what is there now.",
+        f"ours: please report it. Otherwise, inspect the KB with a known-good "
+        f"version before trusting this one.",
         file=sys.stderr,
     )
     return 1
@@ -570,17 +688,35 @@ def cmd_coverage(cfg: Config, args: argparse.Namespace) -> int:
         return refusal
     try:
         return _coverage(cfg, args)
-    except sqlite3.DatabaseError as exc:
+    except (sqlite3.DatabaseError, TypeError, ValueError) as exc:
         return _unusable_kb(cfg, exc)
 
 
 def _coverage(cfg: Config, args: argparse.Namespace) -> int:
-    from verinote.engine import coverage
+    from verinote.engine.coverage import Coverage, SourceCoverage
 
-    store = _store(cfg)
-    cov = coverage(store, root=cfg.root)
-    halted = _print_policy_state(store)
-    store.close()
+    conn = _read_only_conn(cfg)
+    try:
+        sources = []
+        for row in _source_fact_counts_ro(conn):
+            path = row["path"]
+            if not isinstance(path, str) or not path:
+                raise ValueError("invalid source path in KB")
+            engine = int(row["engine"])
+            sources.append(
+                SourceCoverage(
+                    path=path,
+                    kind=str(row["kind"]),
+                    engine_facts=engine,
+                    total_facts=int(row["total"]),
+                    is_gap=engine == 0,
+                    is_orphan=not (cfg.root / path).exists(),
+                )
+            )
+        cov = Coverage(sources=sources)
+        halted = _print_policy_state_ro(conn, cfg)
+    finally:
+        conn.close()
     for s in cov.sources:
         flags = []
         if s.is_gap:
@@ -612,23 +748,26 @@ def cmd_status(cfg: Config, args: argparse.Namespace) -> int:
         return refusal
     try:
         return _status(cfg)
-    except sqlite3.DatabaseError as exc:
+    except (sqlite3.DatabaseError, TypeError, ValueError) as exc:
         return _unusable_kb(cfg, exc)
 
 
 def _status(cfg: Config) -> int:
-    store = _store(cfg)
-    counts = store.status_counts()
-    print(f"KB: {cfg.root}")
-    print(f"sources: {len(store.sources())}")
-    print(f"facts:   {sum(counts.values())}")
-    for s in ("candidate", "needs_review", "confirmed", "accepted", "superseded"):
-        print(f"  {s:<13} {counts.get(s, 0)}")
-    # `status` stays rc=0 even when halted: it is one of the paths that must keep
-    # working *on* a halted KB, and a diagnosis command that fails is not a
-    # diagnosis. The stdout marker is what makes the halt impossible to miss.
-    _print_policy_state(store)
-    store.close()
+    conn = _read_only_conn(cfg)
+    try:
+        counts = _status_counts_ro(conn)
+        sources_count = _sources_count_ro(conn)
+        print(f"KB: {cfg.root}")
+        print(f"sources: {sources_count}")
+        print(f"facts:   {sum(counts.values())}")
+        for s in ("candidate", "needs_review", "confirmed", "accepted", "superseded"):
+            print(f"  {s:<13} {counts.get(s, 0)}")
+        # `status` stays rc=0 even when halted: it is one of the paths that must keep
+        # working *on* a halted KB, and a diagnosis command that fails is not a
+        # diagnosis. The stdout marker is what makes the halt impossible to miss.
+        _print_policy_state_ro(conn, cfg)
+    finally:
+        conn.close()
     return 0
 
 
