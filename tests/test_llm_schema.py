@@ -609,6 +609,8 @@ def test_extraction_prompt_prefers_typed_literal_terms():
     assert "`amount(N,\"unit\")`" in EXTRACTION_SYSTEM
     assert "`number(N)`" in EXTRACTION_SYSTEM
     assert "Typed literals are object values, never subjects or relations" in EXTRACTION_SYSTEM
+    assert 'Emit these typed literal objects with object.kind="term"' in EXTRACTION_SYSTEM
+    assert 'do not emit compound-looking text as object.kind="string"' in EXTRACTION_SYSTEM
     assert "relation `number(8)` and object `명`" in EXTRACTION_SYSTEM
     assert "Entity objects" in EXTRACTION_SYSTEM
     assert "must remain plain strings" in EXTRACTION_SYSTEM
