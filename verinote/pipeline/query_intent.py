@@ -517,6 +517,25 @@ def _unconsumed_intent_fields(field_names: tuple[str, ...]) -> frozenset[str]:
     return frozenset(field_names) - _PARSED_INTENT_FIELDS
 
 
+# Checked once, at import, rather than per parse. Both halves of the comparison
+# are module constants, so a mismatch is a half-finished schema change and cannot
+# be provoked by anything a provider sends -- which is also why it must not be
+# raised from inside the parse path, where `parse_query_intent` converts
+# KeyError/TypeError/ValueError into LLMError and would report a local wiring bug
+# as "the provider violated the schema", sending the reader after the wrong
+# thing. Failing here rather than skipping the name is the call `__post_init__`
+# makes for the dataclass: a property the parser admits but never reads is taken
+# from the provider and silently discarded, which is the hole of #298 moved one
+# step along rather than closed.
+_UNREAD_INTENT_FIELDS = _unconsumed_intent_fields(QUERY_INTENT_FIELDS)
+if _UNREAD_INTENT_FIELDS:
+    raise RuntimeError(
+        "query intent schema has properties the parser never reads: "
+        f"{', '.join(sorted(_UNREAD_INTENT_FIELDS))}; add them to the QueryIntent "
+        "construction in _parse_query_intent_object"
+    )
+
+
 def parse_query_intent(raw: str | dict[str, Any]) -> QueryIntent:
     """Parse constrained JSON provider output into an internal query intent."""
     try:
@@ -530,22 +549,6 @@ def parse_query_intent(raw: str | dict[str, Any]) -> QueryIntent:
 
 
 def _parse_query_intent_object(data: Any) -> QueryIntent:
-    unconsumed = _unconsumed_intent_fields(QUERY_INTENT_FIELDS)
-    if unconsumed:
-        # Deliberately not one of the exceptions `parse_query_intent` converts to
-        # LLMError. Nothing a provider can send causes this -- the allow-list is
-        # derived from a module constant -- so it is a half-finished schema
-        # change, and reporting it as "output did not match schema" would pin a
-        # local wiring bug on the provider and send the reader hunting the wrong
-        # thing. Failing here rather than skipping the name is the same call made
-        # for the dataclass in `__post_init__`: a property the parser accepts but
-        # never reads is taken from the provider and silently discarded, which is
-        # the hole of #298 moved one step along rather than closed.
-        raise RuntimeError(
-            "query intent schema has properties the parser never reads: "
-            f"{', '.join(sorted(unconsumed))}; add them to the QueryIntent "
-            "construction in _parse_query_intent_object"
-        )
     if not isinstance(data, dict):
         raise TypeError("query intent output must be an object")
     allowed = set(QUERY_INTENT_FIELDS)
