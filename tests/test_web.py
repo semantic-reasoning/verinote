@@ -1490,7 +1490,7 @@ def test_report_traceability_renders_one_status_then_none(tmp_path):
     assert "1 fact(s) awaiting review were excluded from engine input" in body
     assert "(needs_review 1)" in body
 
-    store.set_status(c.fact_id, "confirmed")
+    store.accept_fact(c.fact_id)
 
     body = unescape(c.get("/report").text)
     assert "No facts were held back from engine input pending review." in body
@@ -1894,7 +1894,7 @@ def test_provenance_renders_trust_dossier_sections(tmp_path):
         "Sample Report",
         "published_year",
         "2024",
-        status="confirmed",
+        status="needs_review",
         confidence=0.99,
         source_id=source_id,
         run_id=run_id,
@@ -1909,7 +1909,7 @@ def test_provenance_renders_trust_dossier_sections(tmp_path):
         chunk_id=chunk_id,
         snippet="Sample Report was published in 2024.",
     )
-    store.set_status(fact_id, "accepted", action="accepted")
+    store.accept_fact(fact_id)
     other_source = store.add_source("sources/sample-conflict.txt")
     store.add_fact(
         "Sample Report",
