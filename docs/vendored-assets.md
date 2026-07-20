@@ -22,22 +22,28 @@ obligation beyond the source comment described below.
 ## Where the version and the hash live
 
 **There is no manifest, no checksum file, and no SRI attribute.** Both facts live
-in two adjacent lines at the top of `tests/test_base_template_assets.py`:
+near the top of `tests/test_base_template_assets.py`:
 
 ```python
-# Source: htmx 2.0.3, https://unpkg.com/htmx.org@2.0.3/dist/htmx.min.js (0BSD).
-HTMX_SHA256 = "491955cd1810747d7d7b9ccb936400afb760e06d25d53e4572b64b6563b2784e"
+# Source: htmx 2.0.9, https://unpkg.com/htmx.org@2.0.9/dist/htmx.min.js (0BSD).
+# Not 2.0.10, though that is the newer 2.x: neither v2.0.10 nor v2.0.8 has a GitHub
+# Release, so the two-source byte comparison this vendoring procedure requires cannot be
+# run against them at all. 2.0.10's two changes are inert here anyway -- it restores
+# TypeScript definitions (we vendor only the minified bytes) and wraps a settle lookup in
+# CSS.escape() (ids are `INTEGER PRIMARY KEY`, so those selectors are always CSS-safe).
+HTMX_SHA256 = "57d9191515339922bd1356d7b2d80b1ee3b29f1b3a2c65a078bb8b2e8fd9ae5f"
 ```
 
 That comment is the only record of *which* htmx version is currently vendored,
 and the constant is enforced by `test_vendored_htmx_bytes_match_the_pinned_hash`,
 which fails on any byte change to the vendored file.
 
-**Update both lines together.** Bumping the hash without the comment leaves the
-repository with no record of what it is running.
+**Update the source comment and hash together.** Bumping the hash without the
+version comment leaves the repository with no record of what it is running. If a
+short note explains why a newer release on the same major line was skipped, keep
+that note adjacent to the source comment and update it with the pin.
 
-**Those two lines are the whole edit.** The same file mentions `2.0.3` once more,
-in its module docstring:
+The same file mentions `2.0.3` once more, in its module docstring:
 
 ```python
 base.html used to pull htmx from `https://unpkg.com/htmx.org@2.0.3` with no
@@ -104,11 +110,13 @@ overwritten the real file, so put the tree back before you walk away:
 git checkout -- verinote/web/static/htmx.min.js
 ```
 
-(For 2.0.3 the GitHub release asset, unpkg, and jsDelivr are byte-identical.)
+(For the current 2.0.9 pin, the GitHub release asset, unpkg, and jsDelivr are
+byte-identical.)
 
 **3. Update the pin.** Edit `tests/test_base_template_assets.py`: set
-`HTMX_SHA256` to the digest you just verified, and update the version and URL in
-the `# Source:` comment above it.
+`HTMX_SHA256` to the digest you just verified, update the version and URL in the
+`# Source:` comment above it, and update any adjacent note that explains the
+chosen version.
 
 **4. Verify.**
 
