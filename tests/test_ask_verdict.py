@@ -115,17 +115,23 @@ def _tones_in(selector: str) -> set[str]:
 
 
 def _tone_declarations(tone: str) -> set[tuple[str, str]]:
-    """Every declaration that applies *only* to `tone`, tagged by its selector suffix.
+    """Every declaration that applies to `tone`, tagged by its selector suffix.
 
     The suffix keeps `::before { content }` from colliding with the label rule's own
     declarations, and keeps the answer-box rule separate from the banner rule.
+
+    Grouped selectors are split on the comma first, so a rule two verdicts *share*
+    contributes the same (scope, property, value) to both. Matching the whole grouped
+    selector instead would hand each tone a different suffix for identical declarations,
+    and guard 3 would then read a shared rule as a difference.
     """
     declarations: set[tuple[str, str]] = set()
     for selector, body in _rules():
-        if _tones_in(selector) != {tone}:
-            continue
-        scope = selector.split(f"ask-verdict-{tone}", 1)[1].strip()
-        declarations |= {(f"{scope}|{prop}", value) for prop, value in _declarations(body)}
+        for part in (p.strip() for p in selector.split(",")):
+            if _tones_in(part) != {tone}:
+                continue
+            scope = part.split(f"ask-verdict-{tone}", 1)[1].strip()
+            declarations |= {(f"{scope}|{prop}", value) for prop, value in _declarations(body)}
     assert declarations, f"app.css styles nothing for the {tone!r} verdict"
     return declarations
 
