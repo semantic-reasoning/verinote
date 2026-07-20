@@ -11,7 +11,7 @@ chain, while the numeric and boolean settings drop straight to the built-in
 default without consulting the saved file. The API key is **only** ever read
 from the environment — it is never persisted to or read from the settings file,
 and it skips this normalisation entirely, so a blank `VERINOTE_API_KEY` reaches
-the provider as `""` for it to reject.
+the provider as-is for it to reject.
 
 The active KB root is stored in a platform-native app config file when the web
 UI selects one: Windows uses `%APPDATA%`, macOS uses `~/Library/Application
@@ -275,8 +275,9 @@ def _pick(env: str, saved: str | None, default: str | None) -> str | None:
     a URL that no endpoint answers.
     """
     for candidate in (os.environ.get(env), saved):
-        # A hand-edited config.json can hold a non-string here; leave those
-        # alone rather than crashing on `.strip()`.
+        # A hand-edited config.json can hold a non-string here. Passing those
+        # through untouched is what this function has always done; normalising
+        # them is a separate question from the blank-value one.
         if isinstance(candidate, str):
             candidate = candidate.strip()
         if candidate:

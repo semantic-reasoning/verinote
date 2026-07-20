@@ -97,6 +97,29 @@ def test_empty_provider_env_falls_back_instead_of_failing(tmp_path, monkeypatch)
     assert Config.for_root(tmp_path).provider == "ollama"
 
 
+def test_whitespace_only_provider_env_falls_back(tmp_path, monkeypatch):
+    # The normalisation is not base_url-only: narrowing it to that one setting
+    # would leave a blank provider reaching normalize_provider as "   ".
+    monkeypatch.setenv("VERINOTE_PROVIDER", "   ")
+    assert Config.for_root(tmp_path).provider == "anthropic"
+
+    save_settings(tmp_path, provider="ollama", model="llama3.1")
+    assert Config.for_root(tmp_path).provider == "ollama"
+
+
+def test_padded_provider_env_is_trimmed(tmp_path, monkeypatch):
+    # normalize_provider strips dashes and underscores but not whitespace, so
+    # an untrimmed "  ollama  " reaches dispatch as an unknown provider.
+    monkeypatch.setenv("VERINOTE_PROVIDER", "  ollama  ")
+    assert Config.for_root(tmp_path).provider == "ollama"
+
+
+def test_padded_model_env_is_trimmed(tmp_path, monkeypatch):
+    monkeypatch.setenv("VERINOTE_PROVIDER", "openai")
+    monkeypatch.setenv("VERINOTE_MODEL", "  gpt-4o  ")
+    assert Config.for_root(tmp_path).model == "gpt-4o"
+
+
 def test_empty_model_env_falls_back_to_provider_default(tmp_path, monkeypatch):
     monkeypatch.setenv("VERINOTE_PROVIDER", "openai")
     monkeypatch.setenv("VERINOTE_MODEL", "")
