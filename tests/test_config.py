@@ -257,7 +257,7 @@ def test_read_settings_broken_json_warns_with_path(tmp_path, capsys):
     err = capsys.readouterr().err
     assert str(tmp_path / "config.json") in err
     assert "not valid JSON" in err
-    assert "provider and model" in err
+    assert "saved runtime settings" in err
 
 
 def test_read_settings_invalid_utf8_warns(tmp_path, capsys):

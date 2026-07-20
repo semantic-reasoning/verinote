@@ -4,14 +4,16 @@
 Resolved so nothing about the active provider is hard-coded — this is the
 anti-lock-in seam. Precedence (highest first): environment variable, then the
 saved non-secret settings file (`<root>/config.json`, written by the Settings
-UI), then a built-in default. A blank (empty or whitespace-only) value counts
-as unset, so `VERINOTE_BASE_URL=` means the same thing to every provider. Where
-it lands differs by setting: the provider, model, and base URL walk the full
-chain, while the numeric and boolean settings drop straight to the built-in
-default without consulting the saved file. The API key is **only** ever read
-from the environment — it is never persisted to or read from the settings file,
-and it skips this normalisation entirely, so a blank `VERINOTE_API_KEY` reaches
-the provider as-is for it to reject.
+UI), then a built-in default. A blank (empty or whitespace-only) provider,
+model, or base URL value counts as unset and falls through the chain, so
+`VERINOTE_BASE_URL=` means the same thing to every provider. Numeric and boolean
+settings use the environment value when present, otherwise the saved file, then
+the default; if the selected value is blank or an invalid number, numeric
+parsers fall back to the default, while the boolean parser treats recognised
+truthy strings as true and everything else as false. The API key is **only**
+ever read from the environment — it is never persisted to or read from the
+settings file, and it skips this normalisation entirely, so a blank
+`VERINOTE_API_KEY` reaches the provider as-is for it to reject.
 
 The active KB root is stored in a platform-native app config file when the web
 UI selects one: Windows uses `%APPDATA%`, macOS uses `~/Library/Application
@@ -211,11 +213,11 @@ def _settings_path(root: Path) -> Path:
 
 
 def read_settings(root: Path) -> dict:
-    """Read non-secret settings (provider/model/base_url), or {} if absent/bad."""
+    """Read saved non-secret runtime settings, or {} if absent/bad."""
     path = _settings_path(root)
     if not path.is_file():
         return {}
-    consequence = "provider and model will fall back to defaults"
+    consequence = "saved runtime settings will fall back to defaults"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except OSError as err:
