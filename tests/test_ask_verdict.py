@@ -30,6 +30,7 @@ overlay rather than the app, so a stub `base.html` keeps this off the real one.
 from __future__ import annotations
 
 import re
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -93,6 +94,27 @@ ZERO_LENGTH = re.compile(r"^0[a-z%]*$")
 # The painted half of `content: "x" / "alt"`; the half after the slash is the accessible
 # name and is never rendered, so it cannot stand in for a glyph.
 DRAWN_CONTENT = re.compile(r'^"([^"]*)"')
+
+# CSS writes non-ASCII as `\200b`, optionally followed by one whitespace terminator. The
+# stylesheet is read as text, so the escape has to be resolved before the glyph can be
+# judged -- otherwise `\200b` reads as five printable characters instead of one invisible
+# one, and a zero-width glyph passes for a drawn one.
+CSS_ESCAPE = re.compile(r"\\([0-9a-fA-F]{1,6})\s?")
+
+# Unicode categories that occupy the line without marking it: spaces and separators (Zs,
+# Zl, Zp) and the control/format characters (Cc, Cf) that include the zero-width family.
+INVISIBLE_CATEGORIES = frozenset({"Zs", "Zl", "Zp", "Cc", "Cf"})
+
+# The properties that put a *mark* on the page, as against ones that only move a mark
+# around. The verdict has to ride on one of these: `margin-left` and `letter-spacing` do
+# change rendering in general, but restating the value the base rule already sets changes
+# nothing, and a guard comparing whole declaration sets cannot tell the two apart. Asking
+# instead which *signal* differs makes the comparison immune to any declaration bolted on
+# beside it, inert or not -- which is the point, since enumerating inert values has no end.
+SIGNAL_PROPERTY = re.compile(
+    r"^((border|outline)(-[a-z]+)*-(style|width)|box-shadow|content|background-image"
+    r"|text-decoration(-[a-z]+)?|font-weight|font-style|text-transform)$"
+)
 
 
 def _result(route: str, status: str, label: str) -> AskResult:
@@ -183,15 +205,21 @@ def _without_colour(declarations: set[tuple[str, str]]) -> set[tuple[str, str]]:
 def _drawn(prop: str, value: str) -> str | None:
     """The value's drawn form, or None if this declaration paints nothing.
 
-    Deliberately a value test, not a property allow-list. An allow-list would reject a
-    legitimate channel nobody thought of (an underline, a shadow, a weight), which would
-    push the next person to satisfy the test rather than the reader. This only rejects
-    values that are inert *whatever* the property: a border style that paints no line, a
-    zero length, an empty glyph, and the CSS-wide defaults.
+    What it actually rejects, and nothing beyond it:
 
-    Known limit: it reads declarations, not a rendered box. A property that draws in
-    isolation but is neutralised by its context -- `border-right-style` where no
-    right-hand width is set -- still counts here. Closing that needs a real layout engine.
+    - the CSS-wide keywords in INERT_VALUES, on any property;
+    - a border/outline *style* that is not one of the painting keywords;
+    - a zero length **on a border/outline width only** -- `margin-left: 0` is not judged
+      here, because whether it changes anything depends on what the base rule already
+      set, which this cannot see;
+    - a `content` whose painted half is empty or made entirely of invisible characters.
+
+    Two limits worth naming. It reads declarations, not a rendered box, so a property
+    neutralised by its context -- `border-right-style` where no right-hand width is set --
+    still counts. And it cannot resolve the cascade, so a declaration that merely restates
+    an inherited value reads as a change. The second is why the trust boundary compares
+    signal channels rather than declaration sets: that comparison does not depend on
+    spotting inert declarations at all.
     """
     base = prop.split("|")[-1]
     if value in INERT_VALUES:
@@ -202,9 +230,19 @@ def _drawn(prop: str, value: str) -> str | None:
         return None if ZERO_LENGTH.match(value) else value
     if base == "content":
         match = DRAWN_CONTENT.match(value)
-        # The glyph is whatever precedes the `/ "alt"`; an empty one renders nothing.
-        return match.group(1) if match and match.group(1) else None
+        if not match:
+            return None
+        # The glyph is whatever precedes the `/ "alt"`. Resolve CSS escapes first, then
+        # require at least one character that marks the page: a space or a zero-width
+        # joiner occupies the slot and renders nothing, which is a lost glyph, not a glyph.
+        glyph = CSS_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), match.group(1))
+        return glyph if _paints(glyph) else None
     return value
+
+
+def _paints(text: str) -> bool:
+    """Whether the text puts at least one visible mark on the page."""
+    return any(unicodedata.category(char) not in INVISIBLE_CATEGORIES for char in text)
 
 
 def _visual(declarations: set[tuple[str, str]]) -> set[tuple[str, str]]:
@@ -334,6 +372,13 @@ def test_each_verdict_carries_a_distinct_border_style() -> None:
         "the shared `.ask-verdict` rule paints no border width, so none of the three "
         "styles below renders however distinct they read"
     )
+    for tone in TONES:
+        override = dict(_tone_declarations(tone)).get(".ask-verdict|border-left-width")
+        assert override is None or _drawn("border-left-width", override), (
+            f"`.ask-verdict-{tone} .ask-verdict` overrides the skeleton width with "
+            f"{override!r}, so that one banner paints nothing while its style still reads "
+            "as distinct -- the skeleton check above only sees the shared rule"
+        )
     for tone, style in styles.items():
         assert style, (
             f"`.ask-verdict-{tone} .ask-verdict` has no border style that paints "
@@ -396,9 +441,20 @@ def test_ask_pipeline_labels_are_the_set_the_ui_styles() -> None:
         assert hooks == {tone}, f"{case[2]!r} ({case[1]}) rendered {sorted(hooks)}, wanted {tone!r}"
 
 
-def _answer_body(tone: str) -> set[tuple[str, str]]:
-    """The tone's answer-box declarations, colour stripped and reduced to what draws."""
-    return {d for d in _visual(_tone_declarations(tone)) if "answer-box" in d[0]}
+def _answer_body(tone: str) -> frozenset[tuple[str, str]]:
+    """The signal channels the tone puts on the answer body, as drawn values.
+
+    Restricted to SIGNAL_PROPERTY rather than every surviving declaration. Comparing
+    whole sets meant any extra declaration read as a difference, so a rule could claim a
+    distinction it did not render by restating a value the base rule already set
+    (`margin-left: 0`, `letter-spacing: 0`). Reading the channels instead makes this
+    immune to whatever else is bolted on: only a change to a mark counts.
+    """
+    return frozenset(
+        (prop, value)
+        for prop, value in _visual(_tone_declarations(tone))
+        if prop.split("|")[0] == ".answer-box pre" and SIGNAL_PROPERTY.match(prop.split("|")[-1])
+    )
 
 
 @pytest.mark.parametrize("tone", TONES)
