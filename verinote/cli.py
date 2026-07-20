@@ -47,10 +47,16 @@ class _SourceInput:
 class _SourceSyncOutcome:
     """One source's result from a single sync invocation.
 
-    Counts are this-run counts: `cmd_sync` creates a fresh extraction job per
-    invocation, so `completed_chunks`/`failed_chunks` describe only what this run
-    did, never a source's historical jobs. `message` is the job's own bounded
-    status line, carried only when this run had a failed chunk.
+    Counts are this-run counts: `completed_chunks`/`failed_chunks` describe only
+    what this run did, never a source's historical jobs. `candidates` is
+    likewise this run's own contribution (`run_candidates`, not a resumed job's
+    cumulative total) — crediting a resumed source with candidates an earlier,
+    interrupted run already extracted would report work this run did not do
+    (#240). `job_total_candidates` carries the job's cumulative count, set only
+    when this run resumed a prior job, so the per-source line can still say the
+    honest whole-job number without conflating it with this run's own count.
+    `message` is the job's own bounded status line, carried only when this run
+    had a failed chunk.
     """
 
     source_path: str
@@ -58,6 +64,7 @@ class _SourceSyncOutcome:
     completed_chunks: int
     failed_chunks: int
     message: str = ""
+    job_total_candidates: int | None = None
 
 
 @dataclass(frozen=True)
@@ -488,6 +495,7 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
     from verinote.llm import LLMError, get_client
     from verinote.pipeline import (
         create_chunked_extraction_job,
+        plan_source_extraction,
         process_extraction_job,
         sync_sources,
     )
@@ -538,10 +546,11 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
         registered = [source for source in sources if source.source_id is not None]
         if registered:
             per_source = []
+            lines = []
             total = 0
             run_id = 0
             for source in registered:
-                job_id = create_chunked_extraction_job(
+                plan = plan_source_extraction(
                     store,
                     source_id=source.source_id,
                     artifact_id=source.artifact_id,
@@ -551,6 +560,26 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     chunk_chars=cfg.extraction_chunk_chars,
                     chunk_overlap_chars=cfg.extraction_chunk_overlap_chars,
                 )
+                if plan.busy_job_id is not None:
+                    print(
+                        f"skipping {source.source_path}: extraction job "
+                        f"#{plan.busy_job_id} is already running (another process "
+                        f"owns its chunks)",
+                        file=sys.stderr,
+                    )
+                    continue
+                job_id = plan.resume_job_id
+                if job_id is None:
+                    job_id = create_chunked_extraction_job(
+                        store,
+                        source_id=source.source_id,
+                        artifact_id=source.artifact_id,
+                        source_text=source.text,
+                        provider=cfg.provider,
+                        model=cfg.model,
+                        chunk_chars=cfg.extraction_chunk_chars,
+                        chunk_overlap_chars=cfg.extraction_chunk_overlap_chars,
+                    )
                 outcome = process_extraction_job(
                     store,
                     client,
@@ -566,16 +595,29 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     if outcome.failed_chunks
                     else ""
                 )
+                # `outcome.candidates` is the job's running total, which for a
+                # resumed job counts candidates an earlier, interrupted run
+                # already extracted — using it here would credit this sync with
+                # work it did not do (#240), and would also violate the
+                # this-run-only invariant #239's failed/incomplete decision below
+                # relies on. `run_candidates` is always this invocation's own
+                # contribution; the job total is still worth saying for a resumed
+                # source, so it rides along in `job_total_candidates` instead.
                 per_source.append(
                     _SourceSyncOutcome(
                         source_path=source.source_path,
-                        candidates=outcome.candidates,
+                        candidates=outcome.run_candidates,
                         completed_chunks=outcome.completed_chunks,
                         failed_chunks=outcome.failed_chunks,
                         message=message,
+                        job_total_candidates=(
+                            outcome.candidates
+                            if plan.resume_job_id is not None
+                            else None
+                        ),
                     )
                 )
-                total += outcome.candidates
+                total += outcome.run_candidates
                 run_id = job_id
             result = _SyncSummary(per_source=per_source, total=total, run_id=run_id)
         else:
@@ -605,7 +647,13 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
         store.close()
         return 1
     for outcome in result.per_source:
-        print(f"  {outcome.source_path}: {outcome.candidates} candidate(s)")
+        if outcome.job_total_candidates is not None:
+            print(
+                f"  {outcome.source_path}: {outcome.candidates} candidate(s) this "
+                f"run (resumed: {outcome.job_total_candidates} candidate(s) in total)"
+            )
+        else:
+            print(f"  {outcome.source_path}: {outcome.candidates} candidate(s)")
     failed = result.failed_sources
     if failed:
         # Successes stayed visible on stdout above; the failures and the shape of
