@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from verinote.config import Config
+from verinote.config import Config, save_settings
 from verinote.llm.base import LLMError
 from verinote.llm.ollama_adapter import OllamaAdapter
 from verinote.prompts import save_prompt_override
@@ -196,3 +196,55 @@ def test_ollama_prompt_validation_error_is_llm_error(tmp_path):
 
     with pytest.raises(LLMError, match="\\{max_facts\\}"):
         OllamaAdapter(_cfg(tmp_path)).extract_facts(source_text="Ada")
+
+
+def _record_request_url(monkeypatch) -> list:
+    """Capture the URL actually requested, not the adapter's attribute."""
+    urls = []
+
+    def fake_urlopen(req, *, timeout):
+        urls.append(req.full_url)
+        return _Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    return urls
+
+
+def test_empty_base_url_env_still_requests_localhost(tmp_path, monkeypatch):
+    urls = _record_request_url(monkeypatch)
+    monkeypatch.setenv("VERINOTE_PROVIDER", "ollama")
+    monkeypatch.setenv("VERINOTE_BASE_URL", "")
+
+    OllamaAdapter(Config.for_root(tmp_path)).extract_facts(source_text="Ada")
+
+    assert urls == ["http://localhost:11434/api/chat"]
+
+
+def test_custom_base_url_env_reaches_the_request_url(tmp_path, monkeypatch):
+    urls = _record_request_url(monkeypatch)
+    monkeypatch.setenv("VERINOTE_PROVIDER", "ollama")
+    monkeypatch.setenv("VERINOTE_BASE_URL", "https://llm.internal/v1")
+
+    OllamaAdapter(Config.for_root(tmp_path)).extract_facts(source_text="Ada")
+
+    assert urls == ["https://llm.internal/v1/api/chat"]
+
+
+def test_trailing_slash_is_still_stripped(tmp_path, monkeypatch):
+    urls = _record_request_url(monkeypatch)
+    monkeypatch.setenv("VERINOTE_PROVIDER", "ollama")
+    monkeypatch.setenv("VERINOTE_BASE_URL", "https://llm.internal/")
+
+    OllamaAdapter(Config.for_root(tmp_path)).extract_facts(source_text="Ada")
+
+    assert urls == ["https://llm.internal/api/chat"]
+
+
+def test_settings_file_base_url_reaches_the_request_url(tmp_path, monkeypatch):
+    urls = _record_request_url(monkeypatch)
+    monkeypatch.delenv("VERINOTE_BASE_URL", raising=False)
+    save_settings(tmp_path, provider="ollama", model="qwen3:8b", base_url="https://llm.internal/v1")
+
+    OllamaAdapter(Config.for_root(tmp_path)).extract_facts(source_text="Ada")
+
+    assert urls == ["https://llm.internal/v1/api/chat"]
