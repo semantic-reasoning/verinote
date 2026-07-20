@@ -144,6 +144,15 @@ def _without_colour(declarations: set[tuple[str, str]]) -> set[tuple[str, str]]:
     }
 
 
+def _banner_declaration(tone: str, prop: str) -> str | None:
+    """One declaration off the tone's banner rule (`.ask-verdict-<tone> .ask-verdict`).
+
+    Scoped to the banner on purpose: the answer body has its own rules, and a channel
+    that survives there is no consolation if the banner has lost it.
+    """
+    return dict(_tone_declarations(tone)).get(f".ask-verdict|{prop}")
+
+
 def _glyphs() -> dict[str, str]:
     glyphs = {}
     for selector, body in _rules():
@@ -209,6 +218,25 @@ def test_verdict_rules_differ_beyond_colour() -> None:
     assert len(set(stripped.values())) == len(TONES), (
         "two verdicts are identical once the colour is removed: "
         f"{ {k: sorted(v) for k, v in stripped.items()} }"
+    )
+
+
+def test_each_verdict_carries_a_distinct_border_style() -> None:
+    """Guard 4a: the banner's shape channel, asserted on its own.
+
+    Guard 3 only demands that *something* non-colour differ, so it stays green when the
+    three banners collapse to one border style and the glyphs alone carry the load. That
+    is a real loss: the design promises three channels, and unifying `border-left-style`
+    quietly drops it to two -- one line, no test. This is the symmetric partner of the
+    glyph guard below, so that killing either channel goes red on its own.
+    """
+    styles = {tone: _banner_declaration(tone, "border-left-style") for tone in TONES}
+
+    for tone, style in styles.items():
+        assert style, f"`.ask-verdict-{tone} .ask-verdict` declares no border-left-style"
+    assert len(set(styles.values())) == len(TONES), (
+        f"the verdict banners share a border style ({styles}); the shape channel is the "
+        "one that survives greyscale, so collapsing it leaves only the glyph and colour"
     )
 
 
