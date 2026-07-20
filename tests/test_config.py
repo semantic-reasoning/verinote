@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: MPL-2.0
 import sys
 
+import pytest
+
 from verinote.config import (
     Config,
     PROVIDERS,
@@ -33,6 +35,61 @@ def test_env_overrides_saved_settings(tmp_path, monkeypatch):
     save_settings(tmp_path, provider="openai", model="gpt-4o")
     monkeypatch.setenv("VERINOTE_PROVIDER", "ollama")
     assert Config.for_root(tmp_path).provider == "ollama"
+
+
+def test_empty_base_url_env_reads_as_unset(tmp_path, monkeypatch):
+    monkeypatch.setenv("VERINOTE_BASE_URL", "")
+    assert Config.for_root(tmp_path).base_url is None
+
+
+def test_empty_base_url_env_falls_back_to_saved_settings(tmp_path, monkeypatch):
+    # The point of the normalisation: an empty env var is *unset*, so the next
+    # source in the precedence chain wins. Nulling it out would pass the test
+    # above and still be wrong here.
+    save_settings(tmp_path, provider="openai", model="gpt-4o", base_url="http://saved:1234")
+    monkeypatch.setenv("VERINOTE_BASE_URL", "")
+    assert Config.for_root(tmp_path).base_url == "http://saved:1234"
+
+
+def test_whitespace_only_base_url_env_reads_as_unset(tmp_path, monkeypatch):
+    monkeypatch.setenv("VERINOTE_BASE_URL", "   ")
+    assert Config.for_root(tmp_path).base_url is None
+
+
+@pytest.mark.parametrize("provider", sorted(PROVIDERS))
+def test_empty_base_url_is_unset_for_every_provider(tmp_path, monkeypatch, provider):
+    # The whole point of #293: one empty value, one meaning, whatever the
+    # provider. claudecli never reads base_url at all, so this config-layer
+    # assertion is the only meaningful guard for it.
+    save_settings(tmp_path, provider=provider, model="m")
+    monkeypatch.setenv("VERINOTE_BASE_URL", "")
+    assert Config.for_root(tmp_path).base_url is None
+
+
+def test_empty_provider_env_falls_back_instead_of_failing(tmp_path, monkeypatch):
+    # Behaviour change: this used to reach the factory as "" and blow up with
+    # `unknown VERINOTE_PROVIDER=''`.
+    monkeypatch.setenv("VERINOTE_PROVIDER", "")
+    assert Config.for_root(tmp_path).provider == "anthropic"
+
+    save_settings(tmp_path, provider="ollama", model="llama3.1")
+    assert Config.for_root(tmp_path).provider == "ollama"
+
+
+def test_empty_model_env_falls_back_to_provider_default(tmp_path, monkeypatch):
+    monkeypatch.setenv("VERINOTE_PROVIDER", "openai")
+    monkeypatch.setenv("VERINOTE_MODEL", "")
+    assert Config.for_root(tmp_path).model == "gpt-4o"
+
+
+def test_custom_base_url_env_survives_normalisation(tmp_path, monkeypatch):
+    monkeypatch.setenv("VERINOTE_BASE_URL", "https://llm.internal/v1")
+    assert Config.for_root(tmp_path).base_url == "https://llm.internal/v1"
+
+
+def test_custom_base_url_from_settings_file_survives_normalisation(tmp_path):
+    save_settings(tmp_path, provider="openai", model="gpt-4o", base_url="https://llm.internal/v1")
+    assert Config.for_root(tmp_path).base_url == "https://llm.internal/v1"
 
 
 def test_default_model_when_nothing_set(tmp_path):

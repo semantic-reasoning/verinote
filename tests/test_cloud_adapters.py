@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from verinote.config import Config
+from verinote.config import Config, save_settings
 from verinote.llm.anthropic_adapter import AnthropicAdapter
 from verinote.llm.base import LLMError
 from verinote.llm.openai_adapter import OpenAIAdapter
@@ -213,3 +213,81 @@ def test_anthropic_adapter_prompt_validation_error_is_llm_error(tmp_path, monkey
         AnthropicAdapter(_cfg(tmp_path, provider="anthropic")).translate_query(
             question="Who?", qid=3
         )
+
+
+def _record_openai_client(monkeypatch) -> dict:
+    recorded: dict = {}
+
+    class _Completions:
+        def create(self, **kwargs):
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content='{"facts":[]}'))]
+            )
+
+    def _factory(**kwargs):
+        recorded.update(kwargs)
+        return SimpleNamespace(chat=SimpleNamespace(completions=_Completions()))
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=_factory))
+    return recorded
+
+
+def _record_anthropic_client(monkeypatch) -> dict:
+    recorded: dict = {}
+
+    class _Messages:
+        def create(self, **kwargs):
+            return SimpleNamespace(content=[SimpleNamespace(type="tool_use", input={"facts": []})])
+
+    def _factory(**kwargs):
+        recorded.update(kwargs)
+        return SimpleNamespace(messages=_Messages())
+
+    monkeypatch.setitem(sys.modules, "anthropic", SimpleNamespace(Anthropic=_factory))
+    return recorded
+
+
+_CLOUD_ADAPTERS = {
+    "openai": (_record_openai_client, OpenAIAdapter),
+    "anthropic": (_record_anthropic_client, AnthropicAdapter),
+}
+
+
+@pytest.mark.parametrize("provider", sorted(_CLOUD_ADAPTERS))
+def test_empty_base_url_env_reaches_cloud_client_as_none(tmp_path, monkeypatch, provider):
+    # `is None`, not falsy: an empty string is falsy too, so a truthiness check
+    # here would pass against the very bug this guards.
+    record, adapter_cls = _CLOUD_ADAPTERS[provider]
+    recorded = record(monkeypatch)
+    monkeypatch.setenv("VERINOTE_PROVIDER", provider)
+    monkeypatch.setenv("VERINOTE_BASE_URL", "")
+
+    adapter_cls(Config.for_root(tmp_path)).extract_facts(source_text="x")
+
+    assert recorded["base_url"] is None
+
+
+@pytest.mark.parametrize("provider", sorted(_CLOUD_ADAPTERS))
+def test_custom_base_url_reaches_cloud_client_verbatim(tmp_path, monkeypatch, provider):
+    record, adapter_cls = _CLOUD_ADAPTERS[provider]
+    recorded = record(monkeypatch)
+    monkeypatch.setenv("VERINOTE_PROVIDER", provider)
+    monkeypatch.setenv("VERINOTE_BASE_URL", "https://llm.internal/v1")
+
+    adapter_cls(Config.for_root(tmp_path)).extract_facts(source_text="x")
+
+    assert recorded["base_url"] == "https://llm.internal/v1"
+
+
+@pytest.mark.parametrize("provider", sorted(_CLOUD_ADAPTERS))
+def test_settings_file_base_url_reaches_cloud_client(tmp_path, monkeypatch, provider):
+    # No env at all: a self-hosted endpoint configured through the Settings UI
+    # must still reach the SDK.
+    record, adapter_cls = _CLOUD_ADAPTERS[provider]
+    recorded = record(monkeypatch)
+    monkeypatch.delenv("VERINOTE_BASE_URL", raising=False)
+    save_settings(tmp_path, provider=provider, model="m", base_url="https://llm.internal/v1")
+
+    adapter_cls(Config.for_root(tmp_path)).extract_facts(source_text="x")
+
+    assert recorded["base_url"] == "https://llm.internal/v1"
