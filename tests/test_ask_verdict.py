@@ -65,7 +65,13 @@ RULE = re.compile(r"(?P<selector>[^{}]+)\{(?P<body>[^{}]*)\}")
 # A declaration is "colour" if its property names a colour or its value reaches for a
 # palette token. Stripping these is the greyscale simulation guard 3 runs.
 COLOUR_PROPERTY = re.compile(r"^(color|background|border(-[a-z]+)*-color|outline-color)$")
-COLOUR_TOKEN = re.compile(r"--(ok|warn|danger|accent|line|muted|panel|fg|bg|term)")
+# A palette reference *inside* a value. Only the reference is removed, not the whole
+# declaration: a `box-shadow`'s offsets are a shape channel even though its colour is not,
+# and dropping the declaration wholesale would reject a shadow-only design as
+# "colour alone" when its geometry is what carries the distinction.
+COLOUR_VAR = re.compile(
+    r"var\(\s*--(?:ok|warn|danger|accent|line|muted|panel|fg|bg|term)[a-z-]*\s*\)"
+)
 
 # Below here the tests stop trusting that a declaration *exists* and start asking whether
 # it draws. Counting declarations lets a rule fake a difference with something inert:
@@ -158,11 +164,20 @@ def _tone_declarations(tone: str) -> set[tuple[str, str]]:
 
 
 def _without_colour(declarations: set[tuple[str, str]]) -> set[tuple[str, str]]:
-    return {
-        (prop, value)
-        for prop, value in declarations
-        if not COLOUR_PROPERTY.match(prop.split("|")[-1]) and not COLOUR_TOKEN.search(value)
-    }
+    """The greyscale simulation: colour properties dropped, colour references erased.
+
+    Erasing the reference rather than the declaration keeps whatever shape the value
+    still carries. `box-shadow: inset 3px 0 0 0 var(--warn)` becomes `inset 3px 0 0 0`,
+    which is a real channel; only a value that was *nothing but* colour disappears.
+    """
+    kept = set()
+    for prop, value in declarations:
+        if COLOUR_PROPERTY.match(prop.split("|")[-1]):
+            continue
+        stripped = " ".join(COLOUR_VAR.sub(" ", value).split())
+        if stripped:
+            kept.add((prop, stripped))
+    return kept
 
 
 def _drawn(prop: str, value: str) -> str | None:
