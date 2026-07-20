@@ -66,6 +66,27 @@ def test_empty_base_url_is_unset_for_every_provider(tmp_path, monkeypatch, provi
     assert Config.for_root(tmp_path).base_url is None
 
 
+def test_whitespace_only_saved_base_url_reads_as_unset(tmp_path, monkeypatch):
+    # The Settings UI is the other door into the same bug: normalising only the
+    # env source leaves a blank saved value reaching the SDK verbatim.
+    monkeypatch.delenv("VERINOTE_BASE_URL", raising=False)
+    save_settings(tmp_path, provider="openai", model="m", base_url="   ")
+    assert Config.for_root(tmp_path).base_url is None
+
+
+def test_padded_base_url_env_is_trimmed(tmp_path, monkeypatch):
+    # Judging on the trimmed text but returning the raw one would yield a URL
+    # with embedded spaces that no endpoint answers.
+    monkeypatch.setenv("VERINOTE_BASE_URL", "  https://llm.internal/v1  ")
+    assert Config.for_root(tmp_path).base_url == "https://llm.internal/v1"
+
+
+def test_padded_saved_base_url_is_trimmed(tmp_path, monkeypatch):
+    monkeypatch.delenv("VERINOTE_BASE_URL", raising=False)
+    save_settings(tmp_path, provider="openai", model="m", base_url="  https://llm.internal/v1  ")
+    assert Config.for_root(tmp_path).base_url == "https://llm.internal/v1"
+
+
 def test_empty_provider_env_falls_back_instead_of_failing(tmp_path, monkeypatch):
     # Behaviour change: this used to reach the factory as "" and blow up with
     # `unknown VERINOTE_PROVIDER=''`.
