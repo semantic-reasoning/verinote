@@ -72,10 +72,13 @@ def test_wirelog_answers_order_across_the_hundreds_boundary():
 # from reaching the answer collectors. Ordering it must not cost the report its
 # `ok` (duckdb turns the exception into an internal engine error, which flips the
 # review gate) nor raise out of wirelog, which collects outside any try.
-_NON_NUMERIC_POLICY = (
-    _RELATION_DECL + ".decl answer_qfoo(value: symbol)\n"
-    'answer_qfoo(O) :- relation("Ada", "born_in", O).\n'
-)
+#
+# `12abc` is here for the anchor: a qid that *starts* numeric is the only shape an
+# unanchored `[0-9]+` match still calls numeric, and `int("12abc")` then raises.
+# All-alphabetic qids like `foo` never reach that branch, so they cannot cover it.
+_NON_NUMERIC_QIDS = ["foo", "12abc"]
+_NON_NUMERIC_POLICY = _RELATION_DECL + _query_for(_NON_NUMERIC_QIDS)
+_NON_NUMERIC_ANSWERS = ["q12abc: London", "qfoo: London"]
 
 
 def test_duckdb_keeps_a_non_numeric_answer_predicate_clean():
@@ -83,7 +86,7 @@ def test_duckdb_keeps_a_non_numeric_answer_predicate_clean():
     rep = run_check_duckdb(_FACTS, policy_dl=_NON_NUMERIC_POLICY)
 
     assert rep.ok is True
-    assert rep.answers == ["qfoo: London"]
+    assert rep.answers == _NON_NUMERIC_ANSWERS
 
 
 def test_wirelog_keeps_a_non_numeric_answer_predicate_clean():
@@ -91,18 +94,13 @@ def test_wirelog_keeps_a_non_numeric_answer_predicate_clean():
     rep = _wirelog_check(policy_dl=_NON_NUMERIC_POLICY)
 
     assert rep.ok is True
-    assert rep.answers == ["qfoo: London"]
+    assert rep.answers == _NON_NUMERIC_ANSWERS
 
 
-_MIXED_POLICY = (
-    _RELATION_DECL
-    + _query_for(range(1, 13))
-    + ".decl answer_qfoo(value: symbol)\n"
-    'answer_qfoo(O) :- relation("Ada", "born_in", O).\n'
-    ".decl answer_qbar(value: symbol)\n"
-    'answer_qbar(O) :- relation("Ada", "born_in", O).\n'
+_MIXED_POLICY = _RELATION_DECL + _query_for(
+    list(range(1, 13)) + ["foo", "bar", "12abc"]
 )
-_MIXED_ORDER = [f"q{n}" for n in range(1, 13)] + ["qbar", "qfoo"]
+_MIXED_ORDER = [f"q{n}" for n in range(1, 13)] + ["q12abc", "qbar", "qfoo"]
 
 
 def test_duckdb_sorts_numeric_answers_before_non_numeric_ones():
