@@ -29,8 +29,8 @@ BASE_TEMPLATE = WEB / "templates" / "base.html"
 VENDORED_HTMX = WEB / "static" / "htmx.min.js"
 
 # SHA256 of the vendored file, pinned so a tampered or version-swapped htmx fails.
-# Source: htmx 2.0.3, https://unpkg.com/htmx.org@2.0.3/dist/htmx.min.js (0BSD).
-HTMX_SHA256 = "491955cd1810747d7d7b9ccb936400afb760e06d25d53e4572b64b6563b2784e"
+# Source: htmx 2.0.9, https://unpkg.com/htmx.org@2.0.9/dist/htmx.min.js (0BSD).
+HTMX_SHA256 = "57d9191515339922bd1356d7b2d80b1ee3b29f1b3a2c65a078bb8b2e8fd9ae5f"
 
 # `src="..."` / `href="..."` whose value starts with an absolute http(s) origin,
 # either quote style. Protocol-relative `//cdn...` is caught too via the optional scheme.
