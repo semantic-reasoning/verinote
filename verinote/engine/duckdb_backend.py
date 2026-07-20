@@ -41,6 +41,7 @@ from verinote.engine.wirelog import (
     DEFAULT_POLICY,
     NO_FINDINGS_TEXT,
     FindingRow,
+    answer_bucket_sort_key,
 )
 
 _ERROR_PREFIX = "error_"
@@ -459,7 +460,9 @@ def _collect_report(
 
     answers = [
         f"q{qid}: {', '.join(sorted(vals))}"
-        for qid, vals in sorted(answers_by_q.items())
+        for qid, vals in sorted(
+            answers_by_q.items(), key=lambda item: answer_bucket_sort_key(item[0])
+        )
     ]
     rendered_errors = sorted(f"ERROR {derived.text}" for derived in errors)
     rendered_warnings = sorted(f"WARN {derived.text}" for derived in warnings)
