@@ -30,6 +30,47 @@ HREF = re.compile(r'href="([^"]*)"')
 ARIA_CURRENT = re.compile(r'aria-current\s*=\s*"page"')
 
 
+CURRENT_SELECTOR = r'nav\s+a\[aria-current\s*=\s*"page"\]'
+BASE_SELECTOR = r"nav\s+a"
+# Properties that cannot mark the link on their own: colour ones fail #226, and
+# spacing only makes room for a marker (padding under a `border-bottom: 0` draws
+# nothing at all).
+UNMARKING_PROPERTIES = frozenset({
+    "color", "background", "background-color", "border-color",
+    "padding", "padding-top", "padding-bottom", "padding-left", "padding-right",
+    "margin", "margin-top", "margin-bottom", "margin-left", "margin-right",
+})
+LENGTH = re.compile(r"(?<![\w.])(\d*\.?\d+)(?:px|rem|em|%)?(?![\w.])")
+
+
+def _rule_body(selector: str) -> str | None:
+    """The declarations of the rule whose selector list is exactly `selector`."""
+    css = CSS_PATH.read_text(encoding="utf-8")
+    match = re.search(rf"(?:^|\}}|\n)\s*{selector}\s*\{{([^}}]*)\}}", css)
+    return match.group(1) if match else None
+
+
+def _declarations(body: str) -> dict[str, str]:
+    decls = {}
+    for chunk in body.split(";"):
+        prop, sep, value = chunk.partition(":")
+        if sep:
+            decls[prop.strip().lower()] = " ".join(value.split())
+    return decls
+
+
+def _is_visible(prop: str, value: str) -> bool:
+    """Whether the declaration actually renders differently from the nav default."""
+    if prop == "font-weight":
+        return value == "bold" or (value.isdigit() and int(value) > 400)
+    if prop.startswith(("border", "outline")) or prop == "box-shadow":
+        # `border-bottom: 0` and `0px solid var(--accent)` both draw nothing.
+        return any(float(n) > 0 for n in LENGTH.findall(value)) if LENGTH.search(value) else False
+    if prop.startswith("text-decoration"):
+        return value not in {"none", "initial"}
+    return value not in {"normal", "none", "initial", "inherit", "unset", "auto"}
+
+
 def _client(tmp_path) -> TestClient:
     cfg = Config(
         root=tmp_path, db_path=tmp_path / "kb.sqlite",
@@ -78,6 +119,19 @@ def test_dashboard_is_not_current_on_other_pages(tmp_path) -> None:
     assert "/" not in _current(client.get("/sources").text)
 
 
+def test_subpath_keeps_its_section_current(tmp_path) -> None:
+    """`/sources/…` is still the Sources section, so the parent link stays current.
+
+    A missing source makes the handler re-render the sources page in place rather
+    than redirect, which is what leaves the request on the sub-path.
+    """
+    client = _client(tmp_path)
+    response = client.post("/sources/999/reanalyze")
+    assert response.status_code == 404
+    assert response.url.path == "/sources/999/reanalyze", "the handler redirected away"
+    assert _current(response.text) == ["/sources"]
+
+
 def test_page_outside_the_nav_marks_nothing(tmp_path) -> None:
     """A fact's provenance page extends base.html but has no nav entry of its own."""
     client = _client(tmp_path)
@@ -88,7 +142,30 @@ def test_page_outside_the_nav_marks_nothing(tmp_path) -> None:
 
 def test_stylesheet_styles_the_current_link() -> None:
     """Without a rule, the attribute is invisible to anyone not using a screen reader."""
-    css = CSS_PATH.read_text(encoding="utf-8")
-    assert re.search(r'nav\s+a\[aria-current\s*=\s*"page"\]', css), (
+    assert _rule_body(CURRENT_SELECTOR) is not None, (
         "app.css has no rule selecting the current nav link"
+    )
+
+
+def test_current_link_is_marked_off_a_non_colour_channel() -> None:
+    """#226 has verdicts leaning on colour alone; the nav must not repeat it.
+
+    A rule that merely *exists* is no guard -- declarations restating the `nav a`
+    defaults (`font-weight: 400; border-bottom: 0`) render pixel-identically. So
+    this checks the rule moves some non-colour channel off its baseline value.
+    """
+    body = _rule_body(CURRENT_SELECTOR)
+    assert body is not None, "app.css has no rule selecting the current nav link"
+    baseline = _declarations(_rule_body(BASE_SELECTOR) or "")
+
+    channels = [
+        prop
+        for prop, value in _declarations(body).items()
+        if prop not in UNMARKING_PROPERTIES
+        and baseline.get(prop) != value
+        and _is_visible(prop, value)
+    ]
+    assert channels, (
+        "the current nav link is distinguished by colour alone: "
+        f"{_declarations(body)} leaves every non-colour channel at its `nav a` value"
     )
