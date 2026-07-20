@@ -210,11 +210,16 @@ tr.editing td { background: var(--editing-bg); }
 .ask-verdict-unverified .ask-verdict::before { content: "⚠" / ""; }
 
 /* The answer itself carried a verdict-blind grey rule (.answer-box pre below). Tone it,
-   so the verdict is still legible once the label has scrolled off. */
-.ask-verdict-verified .answer-box pre { border-left-width: 3px;
-  border-left-style: solid; border-left-color: var(--ok); }
+   so the verdict is still legible once the label has scrolled off.
+
+   The two engine verdicts share this rule on purpose. The question the answer body
+   answers is "can I trust this" (ok vs warn); telling positive from negative is the
+   banner's job, and the banner already does it with the ∅ glyph and a double border.
+   Splitting them here would mean a `double` at 3px, which renders 1/1/1 and reads as
+   a plain solid -- an invisible distinction that the tests would nonetheless lock in. */
+.ask-verdict-verified .answer-box pre,
 .ask-verdict-verified-negative .answer-box pre { border-left-width: 3px;
-  border-left-style: double; border-left-color: var(--ok); }
+  border-left-style: solid; border-left-color: var(--ok); }
 .ask-verdict-unverified .answer-box pre { border-left-width: 3px;
   border-left-style: dashed; border-left-color: var(--warn); }
 
