@@ -217,9 +217,19 @@ def _drawn(prop: str, value: str) -> str | None:
     Two limits worth naming. It reads declarations, not a rendered box, so a property
     neutralised by its context -- `border-right-style` where no right-hand width is set --
     still counts. And it cannot resolve the cascade, so a declaration that merely restates
-    an inherited value reads as a change. The second is why the trust boundary compares
-    signal channels rather than declaration sets: that comparison does not depend on
-    spotting inert declarations at all.
+    an inherited value reads as a change. Nor are values normalised: `3.0px` and `3px`
+    compute identically but compare as two.
+
+    The trust boundary compares signal channels rather than declaration sets to blunt the
+    second limit, and the scope of that is worth being exact about, because it is easy to
+    claim too much. It removes the dependence entirely for *non-signal* properties: no
+    `margin-left: 0` or `letter-spacing: 0` can manufacture a difference, whatever its
+    value, because the guard never looks. It does not remove it for the signal properties
+    themselves, where a context-inert value still reads as a change -- `font-weight: 400`
+    on a <pre> that already inherits 400 is the plain case. So the remaining preimage is
+    "a signal property carrying a value that happens to be inert here", which is finite
+    and enumerable, rather than "any CSS property at all". Reaching it also takes two
+    steps: the verdict's own channel has to be collapsed first, and that alone is red.
     """
     base = prop.split("|")[-1]
     if value in INERT_VALUES:
