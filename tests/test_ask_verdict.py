@@ -226,7 +226,15 @@ def test_each_verdict_carries_a_distinct_glyph() -> None:
 
 
 def test_ask_pipeline_labels_are_the_set_the_ui_styles() -> None:
-    """Guard 5: a new label upstream cannot inherit another verdict's rendering."""
+    """Guard 5: a new label upstream cannot inherit another verdict's rendering.
+
+    Caveat for whoever adds the fourth verdict (`UNVERIFIED — engine unavailable`):
+    this reads `label="..."` literals out of the source. All five construction sites in
+    ask_question pass a literal today, so the sweep is complete -- but a label assembled
+    from an f-string or handed in through a variable would slip past it silently, and
+    this guard would keep passing while the new verdict rendered as one of the other
+    three. Add it as a literal, or replace the regex with an AST walk.
+    """
     labels = set(re.findall(r'label="([^"]+)"', ASK_PY.read_text(encoding="utf-8")))
     covered = {label for _, _, label in (*CASES.values(), EMPTY_QUESTION)}
 
@@ -243,6 +251,11 @@ def test_ask_pipeline_labels_are_the_set_the_ui_styles() -> None:
         assert hooks == {tone}, f"{case[2]!r} ({case[1]}) rendered {sorted(hooks)}, wanted {tone!r}"
 
 
+def _answer_body(tone: str) -> set[tuple[str, str]]:
+    """The tone's answer-box declarations, colour stripped."""
+    return {d for d in _without_colour(_tone_declarations(tone)) if "answer-box" in d[0]}
+
+
 @pytest.mark.parametrize("tone", TONES)
 def test_the_answer_body_is_toned_too(tone: str) -> None:
     """The answer block used to carry a verdict-blind grey rule regardless of verdict."""
@@ -251,4 +264,27 @@ def test_the_answer_body_is_toned_too(tone: str) -> None:
     assert any("answer-box" in scope for scope in scopes), (
         f"the {tone!r} verdict tones its label but not its answer body; the verdict "
         "disappears as soon as the label scrolls off"
+    )
+
+
+def test_the_answer_body_separates_verified_from_unverified() -> None:
+    """The answer body must hold the trust boundary on its own, without colour.
+
+    "The answer body is toned" is too weak a claim: the three tones can all point at
+    one shared rule and still satisfy it, at which case an LLM-written fallback answer
+    renders in exactly the engine's tone. Guard 3 does not catch that either -- a rule
+    all three share cancels out of its comparison, leaving the banner to carry the
+    difference. So the trust boundary is asserted here directly.
+
+    The two engine verdicts are *meant* to share this rule, so no difference is demanded
+    between them; telling positive from negative is the banner's job.
+    """
+    assert _answer_body("verified"), "no answer-box rule reaches the verified verdict"
+    assert _answer_body("verified") == _answer_body("verified-negative"), (
+        "the two engine verdicts are meant to share the answer body; the banner "
+        "tells positive from negative"
+    )
+    assert _answer_body("verified") != _answer_body("unverified"), (
+        "an unverified answer body renders like a verified one once the colour is "
+        "stripped -- the LLM's excerpt-built answer wears the engine's tone"
     )
