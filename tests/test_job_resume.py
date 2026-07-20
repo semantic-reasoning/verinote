@@ -23,7 +23,7 @@ import pytest
 
 import verinote.cli as cli
 from verinote.engine import DEFAULT_POLICY
-from verinote.llm.base import ExtractedFact
+from verinote.llm.base import ExtractedFact, LLMError
 from verinote.pipeline import create_chunked_extraction_job
 from verinote.pipeline.policy_state import POLICY_RELPATH
 from verinote.store import Store
@@ -54,10 +54,17 @@ class _RecordingClient:
 
     name = "fake"
 
-    def __init__(self, *, delete_policy_on_call: int | None = None, policy_path=None):
+    def __init__(
+        self,
+        *,
+        delete_policy_on_call: int | None = None,
+        policy_path=None,
+        fail_on_call: int | None = None,
+    ):
         self.seen: list[str] = []
         self._delete_on = delete_policy_on_call
         self._policy_path = policy_path
+        self._fail_on = fail_on_call
 
     @property
     def markers(self) -> list[str]:
@@ -65,6 +72,8 @@ class _RecordingClient:
 
     def extract_facts(self, *, source_text: str, schema_hint: str = ""):
         self.seen.append(source_text)
+        if self._fail_on is not None and len(self.seen) == self._fail_on:
+            raise LLMError("provider down")  # transient: the chunk goes `failed`
         if self._delete_on is not None and len(self.seen) == self._delete_on:
             self._policy_path.unlink()
         return [ExtractedFact(source_text.split()[0], "seen_in", "source", 0.9)]
@@ -179,6 +188,49 @@ def test_sync_resumes_rolled_back_job_without_redoing_done_chunks(
     assert "sync complete: 5 candidate(s)" in out
 
 
+# --- the chunk a resume can never reach -------------------------------------
+
+
+def test_sync_retries_a_chunk_that_failed_before_the_halt(tmp_path, monkeypatch):
+    """A `failed` chunk must not be stranded by resuming (regression, review).
+
+    `reset_running_chunks` rewinds only `running`; `next_pending_chunk` claims
+    only `pending`. A chunk left `failed` by a transient provider error is
+    NEITHER, so a resumed job walks straight past it and calls the source done.
+    Its text never reaches the LLM again and the facts it would have produced are
+    lost silently — `sync` exits 0 and the job reads `done`.
+
+    Before this branch, re-syncing rebuilt the job from scratch and the failed
+    chunk went out again. Resuming removed that recovery path, so the resume
+    predicate has to decline any job carrying a failed chunk and let the old
+    full-re-extraction behaviour stand.
+    """
+    _ingest(tmp_path, monkeypatch)
+    policy = tmp_path / POLICY_RELPATH
+    # `alpha` lands, `bravo` hits a transient provider error, `charlie` halts.
+    first = _RecordingClient(
+        fail_on_call=2, delete_policy_on_call=3, policy_path=policy
+    )
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: first)
+    assert cli.main(["sync"]) == 2
+    stalled = _jobs(tmp_path)[0]
+    assert stalled["status"] == "pending"
+    assert int(stalled["completed_chunks"]) == 1
+    assert int(stalled["failed_chunks"]) == 1  # `bravo`, and nothing will retry it
+    policy.write_text(DEFAULT_POLICY, encoding="utf-8")
+
+    second = _RecordingClient()
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: second)
+    assert cli.main(["sync"]) == 0
+
+    # THE ASSERTION: the failed chunk was tried again. Which route delivers it —
+    # a fresh job or a retry inside the old one — is not this test's business.
+    assert "bravo" in second.markers
+    store = _store(tmp_path)
+    assert {f["subject"] for f in store.facts()} == set(MARKERS)
+    store.close()
+
+
 # --- B, C: the reverse — a job that no longer describes the work is replaced --
 
 
@@ -262,6 +314,97 @@ def test_sync_starts_a_new_job_when_the_artifact_changed_but_the_text_did_not(
     newest = next(job for job in jobs if int(job["id"]) == max(int(j["id"]) for j in jobs))
     assert int(newest["artifact_id"]) == new_artifact_id
     assert client.markers == list(MARKERS)  # nothing carried over from the old job
+
+
+def test_sync_re_extracts_a_source_whose_job_already_finished(tmp_path, monkeypatch):
+    """`pending` is the only resumable status — a `done` job is a decided outcome.
+
+    Sole guard for the status condition. One job, everything else matching, so
+    nothing else can reject it: drop the status check and `sync` resumes a job
+    with no pending chunks, finds nothing to do, and quietly becomes a no-op for
+    a source the user just asked to re-sync.
+    """
+    _ingest(tmp_path, monkeypatch)
+    first = _RecordingClient()
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: first)
+    assert cli.main(["sync"]) == 0
+    finished = _jobs(tmp_path)[0]
+    assert finished["status"] == "done"
+    assert int(finished["failed_chunks"]) == 0
+
+    second = _RecordingClient()
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: second)
+    assert cli.main(["sync"]) == 0
+
+    assert second.markers == list(MARKERS)  # re-syncing still re-extracts
+    job_ids = [int(job["id"]) for job in _jobs(tmp_path)]
+    assert len(job_ids) == 2
+    assert max(job_ids) != int(finished["id"])
+
+
+def test_sync_ignores_an_older_resumable_job_under_a_newer_one(tmp_path, monkeypatch):
+    """Sole guard for "newest job only" on the planning side.
+
+    The source carries an abandoned, perfectly resumable `pending` job *and* a
+    newer finished one. Only the newest job describes the source's current
+    analysis; reach past it to the older row and `sync` resumes work that a later
+    job already superseded, skipping the chunk that job had finished.
+    """
+    _ingest(tmp_path, monkeypatch)
+    policy = tmp_path / POLICY_RELPATH
+    stalled = _RecordingClient(delete_policy_on_call=2, policy_path=policy)
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: stalled)
+    assert cli.main(["sync"]) == 2  # job #1: `alpha` done, rolled back to pending
+    policy.write_text(DEFAULT_POLICY, encoding="utf-8")
+    store = _store(tmp_path)
+    source_id = int(store.sources()[0]["id"])
+    newer_job_id = create_chunked_extraction_job(
+        store,
+        source_id=source_id,
+        artifact_id=int(store.latest_source_text_artifact(source_id)["id"]),
+        source_text=_body(),
+        provider="anthropic",
+        model="m",
+        chunk_chars=60,
+        chunk_overlap_chars=0,
+    )
+    store.finish_extraction_job(newer_job_id)
+    store.close()
+
+    client = _RecordingClient()
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: client)
+    assert cli.main(["sync"]) == 0
+
+    # The newest job is `done`, so this is a fresh extraction — not a resume of
+    # the stale job, which would have skipped `alpha`.
+    assert client.markers == list(MARKERS)
+    job_ids = [int(job["id"]) for job in _jobs(tmp_path)]
+    assert len(job_ids) == 3
+    assert max(job_ids) > newer_job_id
+
+
+def test_sync_starts_a_new_job_when_the_provider_changed(tmp_path, monkeypatch):
+    """Sole guard for the PROVIDER half of the provider/model condition.
+
+    The model name is unchanged, so a check that compares only the model waves
+    this through. Model names are not globally unique — the same string is served
+    by more than one provider — and a job resumed across that switch keeps a
+    `provider` column describing work the other provider did.
+    """
+    old_job_id = _halted_job(tmp_path, monkeypatch)
+    monkeypatch.setenv("VERINOTE_PROVIDER", "openai")  # same model name, new provider
+    client = _RecordingClient()
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: client)
+
+    assert cli.main(["sync"]) == 0
+
+    jobs = _jobs(tmp_path)
+    job_ids = [int(job["id"]) for job in jobs]
+    assert len(job_ids) == 2
+    assert old_job_id != max(job_ids)
+    assert client.markers == list(MARKERS)  # nothing carried over
+    newest = next(job for job in jobs if int(job["id"]) == max(job_ids))
+    assert newest["provider"] == "openai" and newest["model"] == "m"
 
 
 def test_sync_starts_a_new_job_when_the_model_changed(tmp_path, monkeypatch):
