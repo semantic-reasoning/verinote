@@ -32,9 +32,10 @@ VENDORED_HTMX = WEB / "static" / "htmx.min.js"
 # Source: htmx 2.0.9, https://unpkg.com/htmx.org@2.0.9/dist/htmx.min.js (0BSD).
 # Not 2.0.10, though that is the newer 2.x: neither v2.0.10 nor v2.0.8 has a GitHub
 # Release, so the two-source byte comparison this vendoring procedure requires cannot be
-# run against them at all. 2.0.10's two changes are inert here anyway -- it restores
-# TypeScript definitions (we vendor only the minified bytes) and wraps a settle lookup in
-# CSS.escape() (ids are `INTEGER PRIMARY KEY`, so those selectors are always CSS-safe).
+# run against them at all. 2.0.10's release-note items are inert here anyway -- it
+# restores TypeScript definitions (we vendor only the minified bytes) and wraps a settle
+# lookup in CSS.escape() (ids are `INTEGER PRIMARY KEY`, so those selectors are always
+# CSS-safe).
 HTMX_SHA256 = "57d9191515339922bd1356d7b2d80b1ee3b29f1b3a2c65a078bb8b2e8fd9ae5f"
 
 # `src="..."` / `href="..."` whose value starts with an absolute http(s) origin,
