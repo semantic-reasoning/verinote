@@ -67,6 +67,27 @@ RULE = re.compile(r"(?P<selector>[^{}]+)\{(?P<body>[^{}]*)\}")
 COLOUR_PROPERTY = re.compile(r"^(color|background|border(-[a-z]+)*-color|outline-color)$")
 COLOUR_TOKEN = re.compile(r"--(ok|warn|danger|accent|line|muted|panel|fg|bg|term)")
 
+# Below here the tests stop trusting that a declaration *exists* and start asking whether
+# it draws. Counting declarations lets a rule fake a difference with something inert:
+# `font-style: normal` is the inherited default on a <pre>, and `border-style: hidden`
+# paints no line, yet both read as "this tone declares something the others do not".
+BORDER_STYLE = re.compile(r"^(border|outline)(-[a-z]+)*-style$")
+BORDER_WIDTH = re.compile(r"^(border|outline)(-[a-z]+)*-width$")
+
+# The border/outline keywords that actually paint. `none` and `hidden` are the two that
+# do not, which is what let solid/hidden/none pass as three distinct channels.
+DRAWN_BORDER_STYLES = frozenset(
+    {"solid", "dashed", "dotted", "double", "groove", "ridge", "inset", "outset"}
+)
+
+# Values that leave a property drawing nothing, whatever the property is.
+INERT_VALUES = frozenset({"none", "normal", "hidden", "auto", "initial", "unset", "revert"})
+
+ZERO_LENGTH = re.compile(r"^0[a-z%]*$")
+# The painted half of `content: "x" / "alt"`; the half after the slash is the accessible
+# name and is never rendered, so it cannot stand in for a glyph.
+DRAWN_CONTENT = re.compile(r'^"([^"]*)"')
+
 
 def _result(route: str, status: str, label: str) -> AskResult:
     return AskResult(
@@ -144,13 +165,53 @@ def _without_colour(declarations: set[tuple[str, str]]) -> set[tuple[str, str]]:
     }
 
 
-def _banner_declaration(tone: str, prop: str) -> str | None:
-    """One declaration off the tone's banner rule (`.ask-verdict-<tone> .ask-verdict`).
+def _drawn(prop: str, value: str) -> str | None:
+    """The value's drawn form, or None if this declaration paints nothing.
 
-    Scoped to the banner on purpose: the answer body has its own rules, and a channel
-    that survives there is no consolation if the banner has lost it.
+    Deliberately a value test, not a property allow-list. An allow-list would reject a
+    legitimate channel nobody thought of (an underline, a shadow, a weight), which would
+    push the next person to satisfy the test rather than the reader. This only rejects
+    values that are inert *whatever* the property: a border style that paints no line, a
+    zero length, an empty glyph, and the CSS-wide defaults.
+
+    Known limit: it reads declarations, not a rendered box. A property that draws in
+    isolation but is neutralised by its context -- `border-right-style` where no
+    right-hand width is set -- still counts here. Closing that needs a real layout engine.
     """
-    return dict(_tone_declarations(tone)).get(f".ask-verdict|{prop}")
+    base = prop.split("|")[-1]
+    if value in INERT_VALUES:
+        return None
+    if BORDER_STYLE.match(base):
+        return value if value in DRAWN_BORDER_STYLES else None
+    if BORDER_WIDTH.match(base):
+        return None if ZERO_LENGTH.match(value) else value
+    if base == "content":
+        match = DRAWN_CONTENT.match(value)
+        # The glyph is whatever precedes the `/ "alt"`; an empty one renders nothing.
+        return match.group(1) if match and match.group(1) else None
+    return value
+
+
+def _visual(declarations: set[tuple[str, str]]) -> set[tuple[str, str]]:
+    """Colour stripped, then everything that draws nothing dropped.
+
+    Values are normalised to their drawn form, so two tones cannot look different merely
+    because their alt text differs.
+    """
+    drawn = ((prop, _drawn(prop, value)) for prop, value in _without_colour(declarations))
+    return {(prop, value) for prop, value in drawn if value is not None}
+
+
+def _banner_declaration(tone: str, prop: str) -> str | None:
+    """The drawn value of one declaration off the tone's banner rule.
+
+    Scoped to `.ask-verdict-<tone> .ask-verdict` on purpose: the answer body has its own
+    rules, and a channel that survives there is no consolation if the banner has lost it.
+    Returns None when the declaration is absent *or* inert, so a caller asserting on the
+    value cannot be satisfied by a keyword that paints nothing.
+    """
+    value = dict(_tone_declarations(tone)).get(f".ask-verdict|{prop}")
+    return None if value is None else _drawn(prop, value)
 
 
 def _glyphs() -> dict[str, str]:
@@ -207,8 +268,13 @@ def test_every_ask_result_verdict_has_a_css_rule() -> None:
 
 
 def test_verdict_rules_differ_beyond_colour() -> None:
-    """Guard 3: strip every colour declaration; the three must still differ (#226)."""
-    stripped = {tone: frozenset(_without_colour(_tone_declarations(tone))) for tone in TONES}
+    """Guard 3: strip the colour and everything inert; the three must still differ (#226).
+
+    Comparing raw declarations here would let a tone manufacture a difference out of a
+    no-op -- `font-style: normal` changes nothing on a <pre> but reads as a declaration
+    the others lack -- so the comparison runs on drawn values only.
+    """
+    stripped = {tone: frozenset(_visual(_tone_declarations(tone))) for tone in TONES}
 
     for tone in TONES:
         assert stripped[tone], (
@@ -229,11 +295,17 @@ def test_each_verdict_carries_a_distinct_border_style() -> None:
     is a real loss: the design promises three channels, and unifying `border-left-style`
     quietly drops it to two -- one line, no test. This is the symmetric partner of the
     glyph guard below, so that killing either channel goes red on its own.
+
+    The values are checked for being *drawn*, not merely present: `solid`/`hidden`/`none`
+    is three strings but two renderings, since neither `hidden` nor `none` paints a line.
     """
     styles = {tone: _banner_declaration(tone, "border-left-style") for tone in TONES}
 
     for tone, style in styles.items():
-        assert style, f"`.ask-verdict-{tone} .ask-verdict` declares no border-left-style"
+        assert style, (
+            f"`.ask-verdict-{tone} .ask-verdict` has no border style that paints "
+            f"(got {style!r}); `none` and `hidden` draw nothing"
+        )
     assert len(set(styles.values())) == len(TONES), (
         f"the verdict banners share a border style ({styles}); the shape channel is the "
         "one that survives greyscale, so collapsing it leaves only the glyph and colour"
@@ -241,11 +313,23 @@ def test_each_verdict_carries_a_distinct_border_style() -> None:
 
 
 def test_each_verdict_carries_a_distinct_glyph() -> None:
-    """Guard 4: three glyphs, each with the `/ ""` alt text of the .term-term rule."""
+    """Guard 4: three glyphs that are actually drawn, each announced as nothing.
+
+    Distinctness is compared on the painted half of `content` alone. Comparing the whole
+    declaration would count `"" / "a"` and `"" / "b"` as two glyphs when both render
+    empty, and would let a tone lose its glyph while the guard stayed green.
+    """
     glyphs = _glyphs()
 
     assert set(glyphs) == set(TONES), f"glyphs found for {sorted(glyphs)}, expected {list(TONES)}"
-    assert len(set(glyphs.values())) == len(TONES), f"the verdicts share a glyph ({glyphs})"
+    drawn = {tone: _drawn("content", content) for tone, content in glyphs.items()}
+
+    for tone, glyph in drawn.items():
+        assert glyph, (
+            f"the {tone} verdict draws no glyph (content {glyphs[tone]!r}); the painted "
+            "half is empty, so only the alt text is left and nothing reaches the eye"
+        )
+    assert len(set(drawn.values())) == len(TONES), f"the verdicts share a glyph ({drawn})"
     for tone, content in glyphs.items():
         assert content.endswith('/ ""'), (
             f"the {tone} glyph has no `/ \"\"` alt text ({content!r}); it would be announced "
@@ -280,8 +364,8 @@ def test_ask_pipeline_labels_are_the_set_the_ui_styles() -> None:
 
 
 def _answer_body(tone: str) -> set[tuple[str, str]]:
-    """The tone's answer-box declarations, colour stripped."""
-    return {d for d in _without_colour(_tone_declarations(tone)) if "answer-box" in d[0]}
+    """The tone's answer-box declarations, colour stripped and reduced to what draws."""
+    return {d for d in _visual(_tone_declarations(tone)) if "answer-box" in d[0]}
 
 
 @pytest.mark.parametrize("tone", TONES)
