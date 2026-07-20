@@ -214,6 +214,20 @@ def _banner_declaration(tone: str, prop: str) -> str | None:
     return None if value is None else _drawn(prop, value)
 
 
+def _skeleton_declaration(prop: str) -> str | None:
+    """The drawn value of one declaration off the shared `.ask-verdict` banner skeleton.
+
+    The tone rules set only `border-left-style`; the width they paint at lives here, and
+    it is not tone-scoped, so `_tone_declarations` never sees it. Zeroing it here would
+    erase all three borders while the per-tone styles still read as three distinct values.
+    """
+    for selector, body in _rules():
+        if any(part.strip() == ".ask-verdict" for part in selector.split(",")):
+            value = dict(_declarations(body)).get(prop)
+            return None if value is None else _drawn(prop, value)
+    return None
+
+
 def _glyphs() -> dict[str, str]:
     glyphs = {}
     for selector, body in _rules():
@@ -301,6 +315,10 @@ def test_each_verdict_carries_a_distinct_border_style() -> None:
     """
     styles = {tone: _banner_declaration(tone, "border-left-style") for tone in TONES}
 
+    assert _skeleton_declaration("border-left-width"), (
+        "the shared `.ask-verdict` rule paints no border width, so none of the three "
+        "styles below renders however distinct they read"
+    )
     for tone, style in styles.items():
         assert style, (
             f"`.ask-verdict-{tone} .ask-verdict` has no border style that paints "
