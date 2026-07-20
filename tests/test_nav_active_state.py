@@ -41,6 +41,11 @@ UNMARKING_PROPERTIES = frozenset({
     "margin", "margin-top", "margin-bottom", "margin-left", "margin-right",
 })
 LENGTH = re.compile(r"(?<![\w.])(\d*\.?\d+)(?:px|rem|em|%)?(?![\w.])")
+# A border draws nothing without a style: the used width of `none`/`hidden` is 0,
+# and a bare `border-bottom-width` never gets one.
+BORDER_STYLE = re.compile(
+    r"(?<![\w-])(?:solid|dashed|dotted|double|groove|ridge|inset|outset)(?![\w-])"
+)
 
 
 def _rule_body(selector: str) -> str | None:
@@ -59,13 +64,25 @@ def _declarations(body: str) -> dict[str, str]:
     return decls
 
 
+def _has_positive_length(value: str) -> bool:
+    return any(float(n) > 0 for n in LENGTH.findall(value))
+
+
 def _is_visible(prop: str, value: str) -> bool:
     """Whether the declaration actually renders differently from the nav default."""
+    if prop.endswith("-color"):
+        # Recolouring a channel is not marking it: `text-decoration-color` under
+        # the base `text-decoration: none` tints a line that is never drawn.
+        return False
     if prop == "font-weight":
         return value == "bold" or (value.isdigit() and int(value) > 400)
-    if prop.startswith(("border", "outline")) or prop == "box-shadow":
-        # `border-bottom: 0` and `0px solid var(--accent)` both draw nothing.
-        return any(float(n) > 0 for n in LENGTH.findall(value)) if LENGTH.search(value) else False
+    if prop == "box-shadow":
+        # The one box channel with no style keyword to require.
+        return _has_positive_length(value)
+    if prop.startswith(("border", "outline")):
+        # `border-bottom: 0`, `2px none var(--accent)` and a bare
+        # `border-bottom-width: 2px` all draw nothing.
+        return _has_positive_length(value) and bool(BORDER_STYLE.search(value))
     if prop.startswith("text-decoration"):
         return value not in {"none", "initial"}
     return value not in {"normal", "none", "initial", "inherit", "unset", "auto"}
