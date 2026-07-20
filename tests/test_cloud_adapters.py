@@ -291,3 +291,27 @@ def test_settings_file_base_url_reaches_cloud_client(tmp_path, monkeypatch, prov
     adapter_cls(Config.for_root(tmp_path)).extract_facts(source_text="x")
 
     assert recorded["base_url"] == "https://llm.internal/v1"
+
+
+@pytest.mark.parametrize("provider", sorted(_CLOUD_ADAPTERS))
+def test_whitespace_only_saved_base_url_reaches_cloud_client_as_none(tmp_path, monkeypatch, provider):
+    record, adapter_cls = _CLOUD_ADAPTERS[provider]
+    recorded = record(monkeypatch)
+    monkeypatch.delenv("VERINOTE_BASE_URL", raising=False)
+    save_settings(tmp_path, provider=provider, model="m", base_url="   ")
+
+    adapter_cls(Config.for_root(tmp_path)).extract_facts(source_text="x")
+
+    assert recorded["base_url"] is None
+
+
+@pytest.mark.parametrize("provider", sorted(_CLOUD_ADAPTERS))
+def test_padded_base_url_reaches_cloud_client_trimmed(tmp_path, monkeypatch, provider):
+    record, adapter_cls = _CLOUD_ADAPTERS[provider]
+    recorded = record(monkeypatch)
+    monkeypatch.setenv("VERINOTE_PROVIDER", provider)
+    monkeypatch.setenv("VERINOTE_BASE_URL", "  https://llm.internal/v1  ")
+
+    adapter_cls(Config.for_root(tmp_path)).extract_facts(source_text="x")
+
+    assert recorded["base_url"] == "https://llm.internal/v1"

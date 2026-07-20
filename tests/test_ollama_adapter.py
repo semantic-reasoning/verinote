@@ -248,3 +248,24 @@ def test_settings_file_base_url_reaches_the_request_url(tmp_path, monkeypatch):
     OllamaAdapter(Config.for_root(tmp_path)).extract_facts(source_text="Ada")
 
     assert urls == ["https://llm.internal/v1/api/chat"]
+
+
+def test_whitespace_only_saved_base_url_still_requests_localhost(tmp_path, monkeypatch):
+    # Without normalising the saved source too, this requests '   /api/chat'.
+    urls = _record_request_url(monkeypatch)
+    monkeypatch.delenv("VERINOTE_BASE_URL", raising=False)
+    save_settings(tmp_path, provider="ollama", model="qwen3:8b", base_url="   ")
+
+    OllamaAdapter(Config.for_root(tmp_path)).extract_facts(source_text="Ada")
+
+    assert urls == ["http://localhost:11434/api/chat"]
+
+
+def test_padded_base_url_env_does_not_break_the_request_url(tmp_path, monkeypatch):
+    urls = _record_request_url(monkeypatch)
+    monkeypatch.setenv("VERINOTE_PROVIDER", "ollama")
+    monkeypatch.setenv("VERINOTE_BASE_URL", "  https://llm.internal/v1  ")
+
+    OllamaAdapter(Config.for_root(tmp_path)).extract_facts(source_text="Ada")
+
+    assert urls == ["https://llm.internal/v1/api/chat"]

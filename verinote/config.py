@@ -4,11 +4,14 @@
 Resolved so nothing about the active provider is hard-coded — this is the
 anti-lock-in seam. Precedence (highest first): environment variable, then the
 saved non-secret settings file (`<root>/config.json`, written by the Settings
-UI), then a built-in default. An environment variable set to an empty (or
-whitespace-only) value counts as unset and falls through to the next source, so
-`VERINOTE_BASE_URL=` means the same thing to every provider. The API key is
-**only** ever read from the environment — it is never persisted to or read from
-the settings file.
+UI), then a built-in default. A blank (empty or whitespace-only) value counts
+as unset, so `VERINOTE_BASE_URL=` means the same thing to every provider. Where
+it lands differs by setting: the provider, model, and base URL walk the full
+chain, while the numeric and boolean settings drop straight to the built-in
+default without consulting the saved file. The API key is **only** ever read
+from the environment — it is never persisted to or read from the settings file,
+and it skips this normalisation entirely, so a blank `VERINOTE_API_KEY` reaches
+the provider as `""` for it to reject.
 
 The active KB root is stored in a platform-native app config file when the web
 UI selects one: Windows uses `%APPDATA%`, macOS uses `~/Library/Application
@@ -264,16 +267,20 @@ def save_settings(
 def _pick(env: str, saved: str | None, default: str | None) -> str | None:
     """Resolve one setting: environment, then the saved file, then the default.
 
-    An empty or whitespace-only environment value means *unset*, so it falls
-    through to the saved value rather than being passed on as `""`. That is
-    what the rest of this module already does, and it is what `export VAR=` in
-    a CI or Docker env file means. A value that is set is returned verbatim.
+    A blank (empty or whitespace-only) value means *unset* from either source,
+    so it falls through rather than being passed on as `""`. That is what the
+    rest of this module already does, and it is what `export VAR=` in a CI or
+    Docker env file means. A value that is used is trimmed: judging on the
+    trimmed text but returning the raw one would let `" https://x "` through as
+    a URL that no endpoint answers.
     """
-    value = os.environ.get(env)
-    if value is not None and value.strip():
-        return value
-    if saved:
-        return saved
+    for candidate in (os.environ.get(env), saved):
+        # A hand-edited config.json can hold a non-string here; leave those
+        # alone rather than crashing on `.strip()`.
+        if isinstance(candidate, str):
+            candidate = candidate.strip()
+        if candidate:
+            return candidate
     return default
 
 
