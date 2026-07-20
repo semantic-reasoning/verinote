@@ -39,6 +39,20 @@ from verinote.engine.terms import StringLit, escape_string_value
 _ERROR_PREFIX = "error_"
 _WARN_PREFIX = "warn_"
 _ANSWER_PREFIX = "answer_q"
+# A qid is the question's INTEGER primary key rendered as text, so it has to sort
+# by number: plain string order puts q10 ahead of q2. `[0-9]+` matches what
+# `_ANSWER_DECL` accepts — `str.isdigit()` would let through digits like "²" that
+# `int()` then rejects. A policy is user-authored, so a non-numeric
+# `answer_q*` relation does reach here; park those after the numbered ones
+# instead of raising.
+_NUMERIC_QID = re.compile(r"[0-9]+\Z")
+
+
+def answer_bucket_sort_key(qid: str) -> tuple[int, int, str]:
+    """Order answer buckets by question number, not by how the digits sort."""
+    if _NUMERIC_QID.fullmatch(qid):
+        return (0, int(qid), qid)
+    return (1, 0, qid)
 
 # Shipped default policy. `verinote init` scaffolds a copy to
 # `<root>/policy/logic-policy.dl`; edit that copy per-KB.
@@ -524,7 +538,10 @@ def run_check(
     errors.sort()
     warnings.sort()
     answers = [
-        f"q{qid}: {', '.join(sorted(vals))}" for qid, vals in sorted(answers_by_q.items())
+        f"q{qid}: {', '.join(sorted(vals))}"
+        for qid, vals in sorted(
+            answers_by_q.items(), key=lambda item: answer_bucket_sort_key(item[0])
+        )
     ]
     # A dead-rule note is a statement about the *policy*, not a derived tuple:
     # nothing fired, so there is no row behind it and it gets no `FindingRow`.
