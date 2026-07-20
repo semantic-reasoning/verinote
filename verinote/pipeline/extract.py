@@ -231,7 +231,16 @@ def plan_source_extraction(
       changed chunk size, overlap, or normalisation rule, any of which would make
       the finished chunks cover different text than the pending ones assume;
     * its provider and model match the ones this run would use. Resume across a
-      model change and the job row ends up mis-describing its own output.
+      model change and the job row ends up mis-describing its own output;
+    * NO CHUNK OF IT HAS FAILED. `reset_running_chunks` rewinds only `running`
+      and `next_pending_chunk` claims only `pending`, so a `failed` chunk is
+      invisible to both: a resume walks past it, reports `done`, and exits 0
+      while the text of that chunk never reaches the LLM again. Rebuilding the
+      job re-sends it, which is what re-syncing did before resuming existed —
+      so declining here preserves that recovery rather than inventing one. (A
+      narrower fix, retrying just the failed chunks via `retry_failed_chunks`,
+      would save the finished work too; that is a behaviour change and belongs
+      in its own issue.)
 
     A `running` job is neither resumed nor replaced. It may belong to a live UI
     worker, and resuming would have `reset_running_chunks` yank that worker's
@@ -248,6 +257,8 @@ def plan_source_extraction(
     if job["status"] == "running":
         return ExtractionJobPlan(busy_job_id=latest_id)
     if job["status"] != "pending":
+        return ExtractionJobPlan()
+    if int(job["failed_chunks"]) > 0:
         return ExtractionJobPlan()
     job_artifact_id = None if job["artifact_id"] is None else int(job["artifact_id"])
     if job_artifact_id != artifact_id:
