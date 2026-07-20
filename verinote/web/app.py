@@ -35,6 +35,8 @@ from verinote.pipeline import (
     fact_trust_summary,
     IngestError,
     ingest_bytes,
+    is_live_extraction_job,
+    latest_source_job_ids,
     process_extraction_job,
     store_source,
     supported_suffixes,
@@ -722,7 +724,11 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             return _kb_select(request, error=error, status_code=status_code)
         store = _active_store()
         jobs = store.source_extraction_jobs()
-        has_running_jobs = any(job["status"] in {"pending", "running"} for job in jobs)
+        latest_job_ids = latest_source_job_ids(jobs)
+        # A superseded `pending` row is dead work, and counting it here is what
+        # leaves the page polling every 2s forever and claiming an analysis is in
+        # flight when nothing is processing it.
+        has_running_jobs = any(is_live_extraction_job(job, latest_job_ids) for job in jobs)
         return templates.TemplateResponse(
             request,
             "sources.html",
@@ -824,8 +830,10 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         except PolicyMissingError as exc:
             logger.warning("not resuming extraction jobs: %s", exc)
             return
-        for job in app.state.store.source_extraction_jobs():
-            if job["status"] in {"pending", "running"}:
+        jobs = app.state.store.source_extraction_jobs()
+        latest_job_ids = latest_source_job_ids(jobs)
+        for job in jobs:
+            if is_live_extraction_job(job, latest_job_ids):
                 _start_source_extraction(int(job["id"]), app.state.cfg)
 
     @app.get("/", response_class=HTMLResponse)
@@ -891,10 +899,15 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         source = store.get_source(source_id)
         if source is None:
             return _sources(request, error="source not found", status_code=404)
+        jobs = store.source_extraction_jobs()
+        latest_job_ids = latest_source_job_ids(jobs)
+        # Only a LIVE job blocks re-analysis. A superseded `pending` row is not an
+        # analysis in progress, and treating it as one wedges this button shut for
+        # the one source whose analysis most needs redoing.
         if any(
             int(job["source_id"]) == source_id
-            and job["status"] in {"pending", "running"}
-            for job in store.source_extraction_jobs()
+            and is_live_extraction_job(job, latest_job_ids)
+            for job in jobs
         ):
             return _sources(
                 request,

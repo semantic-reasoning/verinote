@@ -130,6 +130,141 @@ def extract_source(
     return inserted
 
 
+def _chunks_for(
+    source_text: str,
+    *,
+    chunk_chars: int | None = None,
+    chunk_overlap_chars: int | None = None,
+) -> list[str]:
+    """The chunks this config would split `source_text` into, right now.
+
+    Shared by job creation and `plan_source_extraction` so the resume check
+    compares a job's persisted chunks against text produced the *same* way. Two
+    call sites chunking "the same" text with hand-copied kwargs is how a resume
+    predicate silently starts approving jobs whose chunk boundaries have moved.
+    """
+    kwargs = {}
+    if chunk_chars is not None:
+        kwargs["max_chars"] = chunk_chars
+    if chunk_overlap_chars is not None:
+        kwargs["overlap_chars"] = chunk_overlap_chars
+    return chunk_text(normalize_for_extraction(source_text), **kwargs)
+
+
+def latest_source_job_ids(jobs: Iterable) -> dict[int, int]:
+    """Newest extraction job id per source, derived from the job rows themselves.
+
+    "This job has been superseded" is not a state worth storing — it is exactly
+    "a newer job exists for the same source", and a stored copy can drift out of
+    step with the rows it summarises while a derived one cannot. `sources_with_
+    counts` already reads a source's current analysis through the same `MAX(id)`
+    lens; this is that judgement, in Python, for callers that already hold the
+    rows.
+    """
+    latest: dict[int, int] = {}
+    for job in jobs:
+        source_id = int(job["source_id"])
+        job_id = int(job["id"])
+        if job_id > latest.get(source_id, 0):
+            latest[source_id] = job_id
+    return latest
+
+
+def is_live_extraction_job(job, latest_job_ids: dict[int, int]) -> bool:
+    """True when `job` is unfinished AND still its source's newest job.
+
+    An unfinished job that has been superseded is dead work: a `pending` row
+    nothing will ever process, left behind by a re-analysis that replaced it.
+    Treating it as live makes the UI poll forever, keeps the Sources page saying
+    "analysing", blocks the re-analyse button with a 409, and — worst — lets the
+    launcher start a second extraction over a source another job already
+    finished. One predicate so all four answers agree.
+    """
+    if job["status"] not in {"pending", "running"}:
+        return False
+    return int(job["id"]) == latest_job_ids.get(int(job["source_id"]))
+
+
+@dataclass(frozen=True)
+class ExtractionJobPlan:
+    """What a sync pass should do about one source's newest extraction job.
+
+    At most one field is set. `resume_job_id` picks a rolled-back job back up;
+    `busy_job_id` says another process owns it and this pass must keep its hands
+    off; neither means start a fresh job.
+    """
+
+    resume_job_id: int | None = None
+    busy_job_id: int | None = None
+
+
+def plan_source_extraction(
+    store: Store,
+    *,
+    source_id: int,
+    artifact_id: int | None,
+    source_text: str,
+    provider: str | None,
+    model: str | None,
+    chunk_chars: int | None = None,
+    chunk_overlap_chars: int | None = None,
+) -> ExtractionJobPlan:
+    """Decide whether a source's newest job can be resumed, must wait, or is stale.
+
+    A job rolled back to `pending` (see `_halt_extraction_job`) still holds every
+    chunk it finished, and the machinery to carry on already works —
+    `next_pending_chunk` skips `done` chunks, `reset_running_chunks` reclaims
+    in-flight ones, `candidate_count` accumulates. What was missing was anyone
+    asking for it, so every sync started from chunk zero and paid for the same
+    LLM calls twice.
+
+    Resuming is only honest when the job still describes the work in front of us,
+    so all of the following must hold:
+
+    * the job is `pending` — `done`/`failed`/`canceled` are decided outcomes;
+    * it is the source's newest job — an older one has been superseded;
+    * its artifact is the artifact we are about to extract. Artifacts are
+      content-addressed (`UNIQUE(source_id, kind, checksum)`), so a changed body
+      is a different `artifact_id`;
+    * its persisted chunks are exactly what this config would produce now. This
+      one carries most of the weight: it re-checks the body *and* catches a
+      changed chunk size, overlap, or normalisation rule, any of which would make
+      the finished chunks cover different text than the pending ones assume;
+    * its provider and model match the ones this run would use. Resume across a
+      model change and the job row ends up mis-describing its own output.
+
+    A `running` job is neither resumed nor replaced. It may belong to a live UI
+    worker, and resuming would have `reset_running_chunks` yank that worker's
+    in-flight chunk back into the queue — the same chunk sent to the LLM twice.
+    """
+    jobs = store.source_extraction_jobs()
+    latest_job_ids = latest_source_job_ids(jobs)
+    latest_id = latest_job_ids.get(source_id)
+    if latest_id is None:
+        return ExtractionJobPlan()
+    job = store.get_extraction_job(latest_id)
+    if job is None:
+        return ExtractionJobPlan()
+    if job["status"] == "running":
+        return ExtractionJobPlan(busy_job_id=latest_id)
+    if job["status"] != "pending":
+        return ExtractionJobPlan()
+    job_artifact_id = None if job["artifact_id"] is None else int(job["artifact_id"])
+    if job_artifact_id != artifact_id:
+        return ExtractionJobPlan()
+    if (job["provider"], job["model"]) != (provider, model):
+        return ExtractionJobPlan()
+    persisted = [str(row["text"]) for row in store.source_chunks(latest_id)]
+    current = _chunks_for(
+        source_text,
+        chunk_chars=chunk_chars,
+        chunk_overlap_chars=chunk_overlap_chars,
+    )
+    if persisted != current:
+        return ExtractionJobPlan()
+    return ExtractionJobPlan(resume_job_id=latest_id)
+
+
 def create_chunked_extraction_job(
     store: Store,
     *,
@@ -142,13 +277,11 @@ def create_chunked_extraction_job(
     chunk_overlap_chars: int | None = None,
 ) -> int:
     """Create a durable extraction job and its source chunks."""
-    kwargs = {}
-    if chunk_chars is not None:
-        kwargs["max_chars"] = chunk_chars
-    if chunk_overlap_chars is not None:
-        kwargs["overlap_chars"] = chunk_overlap_chars
-    analysis_text = normalize_for_extraction(source_text)
-    chunks = chunk_text(analysis_text, **kwargs)
+    chunks = _chunks_for(
+        source_text,
+        chunk_chars=chunk_chars,
+        chunk_overlap_chars=chunk_overlap_chars,
+    )
     job_id = store.create_extraction_job(
         source_id=source_id,
         artifact_id=artifact_id,
@@ -165,12 +298,22 @@ def create_chunked_extraction_job(
 
 @dataclass(frozen=True)
 class ChunkedExtractionResult:
-    """Outcome of processing one persisted extraction job."""
+    """Outcome of processing one persisted extraction job.
+
+    TWO SCOPES, KEPT APART — the same separation `_halt_extraction_job` insists on
+    for its summary. `candidates`/`completed_chunks`/`failed_chunks` are the
+    *job's* totals, cumulative across every resume; `run_candidates`/`run_chunks`
+    are what *this* call did. Once a job can be resumed the two diverge, and a
+    caller that prints the job total as "this run extracted N candidates" is
+    reporting work it did not do.
+    """
 
     job_id: int
     candidates: int = 0
     completed_chunks: int = 0
     failed_chunks: int = 0
+    run_candidates: int = 0
+    run_chunks: int = 0
 
 
 def process_extraction_job(
@@ -268,6 +411,8 @@ def process_extraction_job(
         candidates=int(final["candidate_count"]),
         completed_chunks=int(final["completed_chunks"]),
         failed_chunks=int(final["failed_chunks"]),
+        run_candidates=candidates,
+        run_chunks=run_chunks,
     )
 
 
