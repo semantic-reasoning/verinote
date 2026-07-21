@@ -993,6 +993,95 @@ def test_process_extraction_job_dedupes_chunk_facts_by_source(tmp_path, fake_cli
     assert len(s.facts()) == 1
 
 
+def _extract_one_chunk_at_artifact(s, client, *, source_id, artifact_id, chunk):
+    """Run a fresh one-chunk chunked job over `chunk` at `artifact_id`."""
+    job_id = s.create_extraction_job(
+        source_id=source_id,
+        artifact_id=artifact_id,
+        provider="fake",
+        model="m",
+        total_chunks=1,
+    )
+    s.add_source_chunks(job_id=job_id, source_id=source_id, chunks=[chunk])
+    return process_extraction_job(s, client, job_id=job_id)
+
+
+def test_process_extraction_job_reanchors_a_reobserved_fact_at_the_new_artifact(
+    tmp_path, fake_client
+):
+    # #329 Part A: a clean re-extraction re-hits an existing confirmed fact.
+    # reconcile_fact inserts nothing on the hit, so the only way the run leaves a
+    # trace at the new artifact is note_fact_reobserved anchoring fresh evidence
+    # there -- and it must do so without disturbing the human's confirm.
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    artifact_one = s.add_source_artifact(
+        source_id=sid, kind="original_text", path="sources/a-v1.txt", checksum="v1"
+    )
+    fact = ExtractedFact("alpha", "seen_in", "source", 0.9)
+
+    first = _extract_one_chunk_at_artifact(
+        s, fake_client([fact]), source_id=sid, artifact_id=artifact_one, chunk="alpha"
+    )
+    assert first.candidates == 1
+    [row] = s.facts()
+    s.toggle_review(row["id"])  # a human confirms it -- the #329 trust tier
+    assert s.get_fact(row["id"])["status"] == "confirmed"
+
+    artifact_two = s.add_source_artifact(
+        source_id=sid, kind="original_text", path="sources/a-v2.txt", checksum="v2"
+    )
+    second = _extract_one_chunk_at_artifact(
+        s, fake_client([fact]), source_id=sid, artifact_id=artifact_two, chunk="alpha"
+    )
+
+    assert second.candidates == 0  # a dedupe hit, nothing created
+    assert len(s.facts()) == 1
+    # Re-anchoring evidence never touches the fact's status.
+    assert s.get_fact(row["id"])["status"] == "confirmed"
+    evidence = s.fact_evidence(row["id"])
+    assert {e["artifact_id"] for e in evidence} == {artifact_one, artifact_two}
+
+
+def test_process_extraction_job_does_not_reanchor_a_superseded_fact(
+    tmp_path, fake_client
+):
+    # A superseded (human-rejected) fact is never re-anchored: reconcile_fact
+    # records its suppression event and the hit branch leaves evidence untouched,
+    # so the new artifact gets no anchor (mirrors reextraction_suppressed --
+    # event only, no evidence).
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    artifact_one = s.add_source_artifact(
+        source_id=sid, kind="original_text", path="sources/a-v1.txt", checksum="v1"
+    )
+    fact = ExtractedFact("alpha", "seen_in", "source", 0.9)
+
+    _extract_one_chunk_at_artifact(
+        s, fake_client([fact]), source_id=sid, artifact_id=artifact_one, chunk="alpha"
+    )
+    [row] = s.facts()
+    s.reject_fact(row["id"])
+    assert s.get_fact(row["id"])["status"] == "superseded"
+
+    artifact_two = s.add_source_artifact(
+        source_id=sid, kind="original_text", path="sources/a-v2.txt", checksum="v2"
+    )
+    second = _extract_one_chunk_at_artifact(
+        s, fake_client([fact]), source_id=sid, artifact_id=artifact_two, chunk="alpha"
+    )
+
+    assert second.candidates == 0
+    evidence = s.fact_evidence(row["id"])
+    assert {e["artifact_id"] for e in evidence} == {artifact_one}  # no anchor at v2
+    events = [
+        e
+        for e in s.fact_events(row["id"])
+        if e["event_type"] == "reextraction_suppressed"
+    ]
+    assert len(events) == 1
+
+
 def test_extract_source_does_not_resurrect_a_rejected_fact(tmp_path, fake_client):
     # The headline #160 regression: a human rejects an extracted fact, then the
     # same source is synced again. The rejection is terminal, so the re-sync must

@@ -573,6 +573,19 @@ def _extract_chunk(
             note=f.note,
         )
         if not result.created:
+            # A non-superseded dedupe hit re-anchors the existing fact at this
+            # run's artifact so a later staleness check can tell a fact this run
+            # re-observed from one an edit silently dropped; a superseded hit is
+            # left to reconcile_fact's suppression event, never re-anchored.
+            if result.matched_status != "superseded" and artifact_id is not None:
+                store.note_fact_reobserved(
+                    fact_id=result.fact_id,
+                    source_id=source_id,
+                    artifact_id=artifact_id,
+                    job_id=job_id,
+                    chunk_id=chunk_id,
+                    snippet=source_text,
+                )
             continue
         store.add_fact_evidence(
             fact_id=result.fact_id,

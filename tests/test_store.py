@@ -380,6 +380,62 @@ def test_fact_evidence_rejects_mismatched_chunk_source(tmp_path):
         )
 
 
+def test_note_fact_reobserved_is_idempotent_per_artifact(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    artifact_id = s.add_source_artifact(
+        source_id=sid, kind="original_text", path="sources/a.txt"
+    )
+    fact_id = s.add_fact("A", "is_a", "B", source_id=sid)
+
+    assert (
+        s.note_fact_reobserved(
+            fact_id=fact_id, source_id=sid, artifact_id=artifact_id, snippet="A is a B"
+        )
+        is True
+    )
+    # A second re-observation of the same (fact, artifact) pair anchors nothing.
+    assert (
+        s.note_fact_reobserved(
+            fact_id=fact_id, source_id=sid, artifact_id=artifact_id, snippet="A is a B"
+        )
+        is False
+    )
+
+    evidence = s.fact_evidence(fact_id)
+    assert len(evidence) == 1
+    assert evidence[0]["artifact_id"] == artifact_id
+
+
+def test_note_fact_reobserved_anchors_each_distinct_artifact(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    artifact_one = s.add_source_artifact(
+        source_id=sid, kind="original_text", path="sources/a-v1.txt", checksum="v1"
+    )
+    artifact_two = s.add_source_artifact(
+        source_id=sid, kind="original_text", path="sources/a-v2.txt", checksum="v2"
+    )
+    fact_id = s.add_fact("A", "is_a", "B", source_id=sid)
+
+    assert (
+        s.note_fact_reobserved(
+            fact_id=fact_id, source_id=sid, artifact_id=artifact_one
+        )
+        is True
+    )
+    assert (
+        s.note_fact_reobserved(
+            fact_id=fact_id, source_id=sid, artifact_id=artifact_two
+        )
+        is True
+    )
+
+    evidence = s.fact_evidence(fact_id)
+    assert len(evidence) == 2
+    assert {e["artifact_id"] for e in evidence} == {artifact_one, artifact_two}
+
+
 def test_source_artifacts_are_upserted_and_listed_with_counts(tmp_path):
     s = _store(tmp_path)
     sid = s.add_source("sources/report.pdf", kind="binary")
