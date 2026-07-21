@@ -1110,8 +1110,25 @@ class Store:
         slip an anchor of the same pair between the check and the write. Returns
         True only when a new anchor was written, False when the pair already had
         one.
+
+        Independently of anchor novelty, every call clears a `stale=1` flag back
+        to 0 without touching `status`: a re-observation is itself proof the source
+        still carries the fact, so it regains witness-eligibility even on the
+        early-return path where no new anchor is written. That path is load-bearing,
+        not incidental — a fact demoted as stale whose content later returns at an
+        artifact it was already anchored to (content-addressed, so the same
+        artifact_id recurs) finds its anchor present and would otherwise stay
+        `stale=1` forever. Status is left alone so a human's `needs_review` stays
+        theirs to resolve.
         """
         with self._lock:
+            # Clear staleness on EVERY re-observation, before the anchor branch, so
+            # the restore is decoupled from whether a new row is written (see
+            # docstring). The guarded WHERE keeps the common non-stale case a no-op.
+            self._conn.execute(
+                "UPDATE facts SET stale = 0 WHERE id = ? AND stale = 1",
+                (fact_id,),
+            )
             existing = self._conn.execute(
                 "SELECT 1 FROM fact_evidence "
                 "WHERE fact_id = ? AND artifact_id = ? LIMIT 1",
@@ -2081,6 +2098,10 @@ class Store:
             )
         if "term_token" not in fact_columns:
             self._conn.execute("ALTER TABLE facts ADD COLUMN term_token TEXT")
+        if "stale" not in fact_columns:
+            self._conn.execute(
+                "ALTER TABLE facts ADD COLUMN stale INTEGER NOT NULL DEFAULT 0"
+            )
         # Created here rather than in schema.sql: that script runs before the
         # ALTER above, so on a legacy DB the term_token column this index needs
         # does not exist yet. By this point it always does.

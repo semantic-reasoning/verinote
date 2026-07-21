@@ -108,6 +108,7 @@ CREATE TABLE IF NOT EXISTS facts (
     job_id     INTEGER REFERENCES extraction_jobs(id) ON DELETE SET NULL,
     note       TEXT NOT NULL DEFAULT '',
     term_token TEXT,
+    stale      INTEGER NOT NULL DEFAULT 0,  -- 1 = source text no longer supports this fact (witness-ineligible pending review; #329)
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

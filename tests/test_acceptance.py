@@ -716,3 +716,119 @@ def test_only_auto_accept_fact_writes_the_accepted_status():
     assert path.name == "db.py"
     preceding_defs = [line for line in lines[:lineno] if line.lstrip().startswith("def ")]
     assert preceding_defs[-1].strip().startswith("def auto_accept_fact(")
+
+
+# --- #329: stale facts are witness-ineligible until their source supports them --
+
+
+def _mark_stale(store, fact_id):
+    """Demote a fact exactly as Unit 3's sweep eventually will: needs_review + stale."""
+    store._conn.execute(
+        "UPDATE facts SET status = 'needs_review', stale = 1 WHERE id = ?", (fact_id,)
+    )
+
+
+def test_stale_fact_is_never_re_promoted_even_with_other_live_witnesses(tmp_path):
+    # #329 Gap 1: a stale fact must not re-promote ITSELF however many live
+    # witnesses its value keeps. It is excluded from its own support set, yet two
+    # other distinct sources remain -- so only recommend()'s own stale guard blocks
+    # it; the _supporting_facts exclusion alone would leak here.
+    _write_policy(tmp_path)
+    s = _store(tmp_path)
+    stale_fact = _corroborated_candidate(
+        s,
+        "Report",
+        "published_year",
+        "2024",
+        ["sources/a.txt", "sources/b.txt", "sources/c.txt"],
+    )
+    _mark_stale(s, stale_fact)
+
+    recommendation = accept_recommendation(s, stale_fact)
+
+    assert recommendation is not None
+    assert recommendation.eligible is False
+    assert "stale_citation" in recommendation.reasons
+    # Two other live, distinct-source witnesses remain: the block is the stale
+    # guard's doing, not a shortage of corroboration.
+    assert len(recommendation.support_sources) == 2
+
+    apply_auto_accept_recommendations(s)
+    assert s.get_fact(stale_fact)["status"] == "needs_review"
+    assert stale_fact not in [f["id"] for f in s.facts(statuses=engine_statuses())]
+
+
+def test_a_stale_witness_does_not_corroborate_another_fact(tmp_path):
+    # #329: a live candidate whose value is witnessed only by {stale A, itself}
+    # loses its corroboration once A is excluded, dropping to a lone source.
+    _write_policy(tmp_path)
+    s = _store(tmp_path)
+    stale_fact = _corroborated_candidate(
+        s, "Report", "published_year", "2024", ["sources/a.txt", "sources/b.txt"]
+    )
+    live_fact = next(f["id"] for f in s.facts() if f["id"] != stale_fact)
+    _mark_stale(s, stale_fact)
+
+    recommendation = accept_recommendation(s, live_fact)
+
+    assert recommendation is not None
+    assert recommendation.eligible is False
+    assert "insufficient_distinct_source_support" in recommendation.reasons
+    # Only the live fact's own source is left standing.
+    assert recommendation.support_sources == ("sources/b.txt",)
+
+
+def test_a_stale_witness_lapses_a_dependent_accepted_facts_basis(tmp_path):
+    # #329 x #264, an intentional cascade (NOT a regression): two corroborated
+    # candidates auto-accept; one is then demoted stale, so the survivor's live
+    # distinct-source count drops below two and #264's existing machinery retracts
+    # it to needs_review.
+    _write_policy(tmp_path)
+    s = _store(tmp_path)
+    survivor = _corroborated_candidate(
+        s, "Report", "published_year", "2024", ["sources/a.txt", "sources/b.txt"]
+    )
+    apply_auto_accept_recommendations(s)
+    accepted = _accepted_ids(s)
+    assert len(accepted) == 2 and survivor in accepted
+    other = next(fact_id for fact_id in accepted if fact_id != survivor)
+
+    _mark_stale(s, other)
+    applied = apply_auto_accept_recommendations(s)
+
+    assert applied == []
+    assert s.get_fact(survivor)["status"] == "needs_review"
+    events = [
+        e for e in s.fact_events(survivor) if e["event_type"] == "auto_accept_retracted"
+    ]
+    assert len(events) == 1
+    assert json.loads(events[0]["after_json"])["reasons"] == [
+        "insufficient_distinct_source_support"
+    ]
+
+
+def test_a_stale_bit_is_inert_once_a_fact_leaves_needs_review(tmp_path):
+    # The guards key on needs_review specifically, so a human confirm leaves any
+    # lingering stale=1 bit inert: the confirmed fact still corroborates normally
+    # and supplies the second distinct witness a candidate needs.
+    _write_policy(tmp_path)
+    s = _store(tmp_path)
+    source_a = s.add_source("sources/a.txt")
+    source_b = s.add_source("sources/b.txt")
+    job_a = _done_job(s, source_a)
+    job_b = _done_job(s, source_b)
+    confirmed_stale = s.add_fact(
+        "Report", "published_year", "2024",
+        status="confirmed", source_id=source_a, job_id=job_a,
+    )
+    s._conn.execute("UPDATE facts SET stale = 1 WHERE id = ?", (confirmed_stale,))
+    candidate = s.add_fact(
+        "Report", "published_year", "2024",
+        status="candidate", source_id=source_b, job_id=job_b,
+    )
+
+    recommendation = accept_recommendation(s, candidate)
+
+    assert recommendation is not None
+    assert recommendation.eligible is True
+    assert recommendation.support_sources == ("sources/a.txt", "sources/b.txt")
