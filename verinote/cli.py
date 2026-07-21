@@ -429,6 +429,17 @@ def _rel_to_root(root: Path, p: Path) -> str:
         return str(p)
 
 
+def _source_dir_files(cfg: Config) -> list[Path]:
+    """Loose source files under `<root>/sources` — the unregistered-input path.
+
+    Shared with `cmd_sync`'s no-op guard so the guard and the resolver can never
+    disagree about what counts as a syncable file. `Path.glob` yields nothing for
+    a missing directory, so this is safe on an empty or absent root.
+    """
+    sources_dir = cfg.root / "sources"
+    return sorted(sources_dir.glob("*.txt")) + sorted(sources_dir.glob("*.md"))
+
+
 def _resolve_sources(cfg: Config, store: Store, path: str | None) -> list[_SourceInput]:
     """Resolve a file path or registered text artifacts to extraction inputs."""
     if path:
@@ -449,11 +460,9 @@ def _resolve_sources(cfg: Config, store: Store, path: str | None) -> list[_Sourc
     if inputs:
         return inputs
 
-    sources_dir = cfg.root / "sources"
-    files = sorted(sources_dir.glob("*.txt")) + sorted(sources_dir.glob("*.md"))
     return [
         _SourceInput(_rel_to_root(cfg.root, f), f.read_text(encoding="utf-8"))
-        for f in files
+        for f in _source_dir_files(cfg)
     ]
 
 
@@ -472,6 +481,28 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
             return cfg.extraction_schema_hint()
         except PromptError as exc:
             raise LLMError(str(exc)) from exc
+
+    # No path, no KB, and no source files: there is nothing to sync, so refuse
+    # before `_store()` — `Store()` mkdirs the parent and connects in its
+    # constructor, so a no-op run otherwise leaves a stray `data/` and an empty
+    # kb.sqlite behind (#275). Deferring `init_schema` alone would not help.
+    #
+    # This asks sync's own question, not "is there a KB?": a user with no KB but
+    # files under `sources/` proceeds and scaffolds exactly as before, which is
+    # why the source-file check is part of the condition rather than a call to
+    # `_require_existing_kb` — whose "no KB at {root}" would be a false
+    # diagnosis here. The message below is unchanged from today; the only
+    # difference is that nothing is left behind.
+    #
+    # The glob is the COMPLETE verdict, not a partial restatement of
+    # `_resolve_sources`: registered artifacts live in the KB, so with no KB
+    # there can be none and the resolver would fall through to this same shared
+    # helper. When a KB does exist this cannot fire, so the existing
+    # open-resolve-refuse path is untouched (opening an existing KB creates
+    # nothing).
+    if not args.path and not cfg.db_path.is_file() and not _source_dir_files(cfg):
+        print(f"no sources to sync (looked under {cfg.root / 'sources'})", file=sys.stderr)
+        return 1
 
     store = _store(cfg)
     try:
@@ -615,6 +646,15 @@ def cmd_query(cfg: Config, args: argparse.Namespace) -> int:
     from verinote.llm import LLMError, get_client
     from verinote.pipeline import translate_questions, write_query_file
 
+    # With no question there is nothing to add, so a missing KB means there is
+    # nothing to do at all — refuse before `_store()` scaffolds one (#275). With
+    # a question, `add_question` below is real work and scaffolding is the point,
+    # so `verinote query "..."` in a fresh directory still creates its KB.
+    if not args.question:
+        refusal = _require_existing_kb(cfg)
+        if refusal is not None:
+            return refusal
+
     store = _store(cfg)
     if args.question:
         store.add_question(args.question)
@@ -679,6 +719,12 @@ def _short_error(exc: BaseException) -> str:
 def cmd_repair(cfg: Config, args: argparse.Namespace) -> int:
     from verinote.llm import LLMError, get_client
     from verinote.pipeline import repair_questions
+
+    # `repair` takes no arguments, so it can never have work to do without an
+    # existing KB — refuse before `_store()` scaffolds one (#275).
+    refusal = _require_existing_kb(cfg)
+    if refusal is not None:
+        return refusal
 
     store = _store(cfg)
     pending = [q for q in store.questions() if q["status"] == "review_required"]
