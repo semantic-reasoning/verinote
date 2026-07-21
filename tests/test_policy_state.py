@@ -1037,7 +1037,13 @@ class _AlwaysEligibleEngine:
     Stands in for the engine the real one is one refactor away from being: cache
     the policy, or move functional relations into a table, and `_engine` stops
     touching `load_policy` — the accident that refuses a halted KB today.
+
+    `facts` is the snapshot the reconciler's retraction pass walks. Empty here:
+    this stub reads nothing, so it offers no accepted fact to retract, and the
+    pass iterates nothing rather than needing any further stub member.
     """
+
+    facts = ()
 
     def recommend(self, row):
         return AcceptRecommendation(

@@ -1,11 +1,15 @@
 # SPDX-License-Identifier: MPL-2.0
+import json
+import pathlib
+import re
+
 from verinote.pipeline.acceptance import (
     accept_recommendation,
     apply_auto_accept_recommendations,
     RULE_NAME,
 )
 from verinote.pipeline.corroboration import store_single_valued_conflicts
-from verinote.store import Store
+from verinote.store import Store, engine_statuses
 
 
 def _store(tmp_path) -> Store:
@@ -438,3 +442,277 @@ def test_rejecting_one_rival_unblocks_auto_accept_of_the_other(tmp_path):
     assert s.get_fact(survivor)["status"] == "accepted"
     assert s.get_fact(loser)["status"] == "superseded"
     assert store_single_valued_conflicts(s) == []
+
+
+# --- #264: retract rule-accepted facts whose corroboration basis lapsed ----
+
+
+def _accepted_ids(store):
+    return [f["id"] for f in store.facts(statuses=["accepted"])]
+
+
+def test_apply_retracts_a_rule_accepted_fact_after_its_basis_lapses(tmp_path):
+    # #264 headline: two same-triple corroborated candidates auto-accept; a human
+    # rejects one source's row; the value now has a single source and must return
+    # to review (out of the engine tier), with an auditable retraction event.
+    _write_policy(tmp_path)
+    s = _store(tmp_path)
+    survivor = _corroborated_candidate(
+        s, "Report", "published_year", "2024", ["sources/a.txt", "sources/b.txt"]
+    )
+    apply_auto_accept_recommendations(s)
+    accepted = _accepted_ids(s)
+    assert len(accepted) == 2 and survivor in accepted
+
+    other = next(fact_id for fact_id in accepted if fact_id != survivor)
+    s.reject_fact(other)
+
+    applied = apply_auto_accept_recommendations(s)
+
+    assert applied == []
+    assert s.get_fact(survivor)["status"] == "needs_review"
+    assert survivor not in [f["id"] for f in s.facts(statuses=engine_statuses())]
+    events = [
+        e for e in s.fact_events(survivor) if e["event_type"] == "auto_accept_retracted"
+    ]
+    assert len(events) == 1
+    assert events[0]["actor"] == "rule"
+    assert events[0]["rule_name"] == RULE_NAME
+    payload = json.loads(events[0]["after_json"])
+    assert payload["reasons"] == ["insufficient_distinct_source_support"]
+    assert payload["remaining_support_sources"] == ["sources/a.txt"]
+    assert payload["remaining_support_fact_ids"] == [survivor]
+    assert payload["canonical_relation"] == "published_year"
+
+
+def test_repeated_apply_passes_do_not_rethrash_a_retracted_fact(tmp_path):
+    # Idempotence: retraction and promotion share the one `< 2` threshold, so a
+    # retracted fact is neither re-promoted (its support is still short, so
+    # recommend() marks insufficient_distinct_source_support) nor re-retracted
+    # (its snapshot status is needs_review, not accepted) — however many passes
+    # run. This pins the commit's anti-oscillation claim in both directions.
+    _write_policy(tmp_path)
+    s = _store(tmp_path)
+    survivor = _corroborated_candidate(
+        s, "Report", "published_year", "2024", ["sources/a.txt", "sources/b.txt"]
+    )
+    apply_auto_accept_recommendations(s)
+    other = next(fact_id for fact_id in _accepted_ids(s) if fact_id != survivor)
+    s.reject_fact(other)
+    apply_auto_accept_recommendations(s)
+    assert s.get_fact(survivor)["status"] == "needs_review"
+
+    assert apply_auto_accept_recommendations(s) == []
+    assert apply_auto_accept_recommendations(s) == []
+
+    assert s.get_fact(survivor)["status"] == "needs_review"
+    assert (
+        len(
+            [
+                e
+                for e in s.fact_events(survivor)
+                if e["event_type"] == "auto_accept_retracted"
+            ]
+        )
+        == 1
+    )
+
+
+def test_apply_does_not_retract_a_human_confirmed_fact(tmp_path):
+    # A confirmed fact is a human ratification; a lapsed basis never retracts it.
+    _write_policy(tmp_path)
+    s = _store(tmp_path)
+    source_id = s.add_source("sources/a.txt")
+    job_id = _done_job(s, source_id)
+    fact_id = s.add_fact(
+        "Report", "published_year", "2024",
+        status="confirmed", source_id=source_id, job_id=job_id,
+    )
+
+    apply_auto_accept_recommendations(s)
+
+    assert s.get_fact(fact_id)["status"] == "confirmed"
+    assert [
+        e for e in s.fact_events(fact_id) if e["event_type"] == "auto_accept_retracted"
+    ] == []
+
+
+def test_apply_leaves_a_still_corroborated_accepted_fact_untouched(tmp_path):
+    _write_policy(tmp_path)
+    s = _store(tmp_path)
+    _corroborated_candidate(
+        s, "Report", "published_year", "2024", ["sources/a.txt", "sources/b.txt"]
+    )
+    apply_auto_accept_recommendations(s)
+
+    applied = apply_auto_accept_recommendations(s)
+
+    assert applied == []
+    accepted = s.facts(statuses=["accepted"])
+    assert len(accepted) == 2
+    for fact in accepted:
+        assert [
+            e for e in s.fact_events(fact["id"])
+            if e["event_type"] == "auto_accept_retracted"
+        ] == []
+
+
+def test_apply_does_not_retract_when_a_same_triple_reextraction_is_still_running(tmp_path):
+    # No oscillation: the count is job-independent, so a fresh same-triple
+    # candidate whose job is still RUNNING never triggers retraction. A job-based
+    # trigger would flag the accepted value as incomplete and yank it mid-analysis.
+    _write_policy(tmp_path)
+    s = _store(tmp_path)
+    accepted = _corroborated_candidate(
+        s, "Report", "published_year", "2024", ["sources/a.txt", "sources/b.txt"]
+    )
+    apply_auto_accept_recommendations(s)
+
+    source_c = s.add_source("sources/c.txt")
+    running_job = s.create_extraction_job(
+        source_id=source_c, provider="fake", model="m", total_chunks=1
+    )
+    chunk_id = s.add_source_chunks(
+        job_id=running_job, source_id=source_c, chunks=["body"]
+    )[0]
+    s.mark_extraction_job_running(running_job)
+    s.mark_chunk_running(chunk_id)
+    s.add_fact(
+        "Report", "published_year", "2024",
+        status="candidate", source_id=source_c, job_id=running_job,
+    )
+
+    apply_auto_accept_recommendations(s)
+
+    assert s.get_fact(accepted)["status"] == "accepted"
+    assert [
+        e for e in s.fact_events(accepted) if e["event_type"] == "auto_accept_retracted"
+    ] == []
+
+
+def test_apply_does_not_retract_an_accepted_fact_over_a_rival_candidate(tmp_path):
+    # Retraction is basis-only, never conflict-based: a new weakly-sourced rival
+    # candidate is withheld from promotion (#287) but must not yank the accepted
+    # value, whose own two sources still stand.
+    _write_policy(tmp_path)
+    s = _store(tmp_path)
+    accepted = _corroborated_candidate(
+        s, "Report", "published_year", "2024", ["sources/a.txt", "sources/b.txt"]
+    )
+    apply_auto_accept_recommendations(s)
+    _corroborated_candidate(s, "Report", "published_year", "2025", ["sources/c.txt"])
+
+    applied = apply_auto_accept_recommendations(s)
+
+    assert applied == []
+    assert s.get_fact(accepted)["status"] == "accepted"
+    accepted_rows = s.facts(statuses=["accepted"])
+    assert {f["object"] for f in accepted_rows} == {"2024"}
+    for fact in accepted_rows:
+        assert [
+            e for e in s.fact_events(fact["id"])
+            if e["event_type"] == "auto_accept_retracted"
+        ] == []
+
+
+def test_apply_does_not_retract_an_excluded_fact(tmp_path):
+    _write_policy(tmp_path)
+    s = _store(tmp_path)
+    survivor = _corroborated_candidate(
+        s, "Report", "published_year", "2024", ["sources/a.txt", "sources/b.txt"]
+    )
+    apply_auto_accept_recommendations(s)
+    other = next(fact_id for fact_id in _accepted_ids(s) if fact_id != survivor)
+    s.reject_fact(other)
+
+    apply_auto_accept_recommendations(s, exclude_fact_ids=[survivor])
+
+    assert s.get_fact(survivor)["status"] == "accepted"
+    assert [
+        e for e in s.fact_events(survivor) if e["event_type"] == "auto_accept_retracted"
+    ] == []
+
+
+def test_apply_retract_and_rival_promotion_do_not_race_in_one_pass(tmp_path):
+    # One-snapshot determinism: X is retracted (basis lapsed) but its review-tier
+    # rival Y is NOT promoted in the same pass — the snapshot still shows X
+    # accepted, so Y stays blocked (#287); Y's promotion is deferred to the next
+    # cascade.
+    _write_policy(tmp_path)
+    s = _store(tmp_path)
+    source_x = s.add_source("sources/x.txt")
+    job_x = _done_job(s, source_x)
+    x = s.add_fact(
+        "Report", "published_year", "2024",
+        status="accepted", source_id=source_x, job_id=job_x,
+    )
+    y = _corroborated_candidate(
+        s, "Report", "published_year", "2025", ["sources/y1.txt", "sources/y2.txt"]
+    )
+
+    applied = apply_auto_accept_recommendations(s)
+
+    assert [recommendation.fact_id for recommendation in applied] == []
+    assert s.get_fact(x)["status"] == "needs_review"
+    assert s.get_fact(y)["status"] == "candidate"
+
+
+def test_apply_retracts_an_accepted_fact_amended_to_a_new_value(tmp_path):
+    # Amend-of-accepted: changing the object moves the fact off the triple its
+    # corroborators support, so its basis lapses and the next pass retracts it.
+    _write_policy(tmp_path)
+    s = _store(tmp_path)
+    _corroborated_candidate(
+        s, "Report", "published_year", "2024",
+        ["sources/a.txt", "sources/b.txt", "sources/c.txt"],
+    )
+    apply_auto_accept_recommendations(s)
+    accepted = s.facts(statuses=["accepted"])
+    assert len(accepted) == 3
+    amended = accepted[0]["id"]
+    s.amend_fact(amended, subject="Report", relation="published_year", obj="2099")
+    assert s.get_fact(amended)["status"] == "accepted"
+
+    apply_auto_accept_recommendations(s)
+
+    assert s.get_fact(amended)["status"] == "needs_review"
+    assert [
+        e for e in s.fact_events(amended) if e["event_type"] == "auto_accept_retracted"
+    ] != []
+    survivors = s.facts(statuses=["accepted"])
+    assert len(survivors) == 2
+    assert {f["object"] for f in survivors} == {"2024"}
+
+
+def test_only_auto_accept_fact_writes_the_accepted_status():
+    """STATIC SOURCE CHECK, not a proof (invariant guard until #292).
+
+    auto_retract_fact relies on `accepted` meaning "rule-promoted, not
+    human-ratified", which holds only while exactly one production path writes
+    that status — auto_accept_fact — and no set_status call passes it.
+
+    This greps the source for the realistic regression: a literal
+    `SET status = 'accepted'` added elsewhere, or a literal
+    `set_status(..., 'accepted')`. It CANNOT see an indirect write such as
+    `set_status(fact_id, some_var)` where the variable happens to hold
+    "accepted", because that is invisible to a text scan. Retiring set_status —
+    which is what would make the invariant structural rather than conventional —
+    is #292's scope. Do not read a pass here as a guarantee.
+    """
+    verinote_root = pathlib.Path(__file__).resolve().parent.parent / "verinote"
+    writes = []
+    set_status_accepted = re.compile(r"set_status\([^)]*accepted")
+    for path in sorted(verinote_root.rglob("*.py")):
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for lineno, line in enumerate(lines, 1):
+            if "SET status = 'accepted'" in line:
+                writes.append((path, lineno, lines))
+        assert not set_status_accepted.search("\n".join(lines)), (
+            f"{path} calls set_status with 'accepted'"
+        )
+
+    assert len(writes) == 1, f"unexpected accepted-status writes: {[w[:2] for w in writes]}"
+    path, lineno, lines = writes[0]
+    assert path.name == "db.py"
+    preceding_defs = [line for line in lines[:lineno] if line.lstrip().startswith("def ")]
+    assert preceding_defs[-1].strip().startswith("def auto_accept_fact(")

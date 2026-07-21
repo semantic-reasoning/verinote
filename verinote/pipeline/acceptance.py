@@ -63,13 +63,29 @@ def accept_recommendations_for(
 def apply_auto_accept_recommendations(
     store: Store, *, exclude_fact_ids: Iterable[int] = ()
 ) -> list[AcceptRecommendation]:
-    """Promote every eligible candidate to `accepted` — never on a halted KB.
+    """The rule's reconciler: one policy snapshot, two guarded writes — never on a halted KB.
+
+    Promotes every eligible review-tier candidate to `accepted` AND retracts every
+    rule-accepted fact whose corroboration basis has lapsed (fewer than two
+    distinct source witnesses) back to `needs_review`. Both directions belong to
+    the rule alone: `auto_accept_fact` only touches review-tier rows and
+    `auto_retract_fact` only touches `accepted` — the rule's own tier — so a
+    human's `confirmed`/`superseded` is structurally unreachable from here.
+
+    Both passes are judged off snapshots taken before any write in this call (and
+    so identical — nothing writes between them), which makes the outcome
+    order-independent: the two guarded writes touch disjoint rows (review-tier vs
+    `accepted`), and a fact retracted in this pass is still `accepted` in the
+    snapshot, so a review-tier rival of a retracted value stays blocked by it
+    (#287) and its promotion is deferred to the next cascade rather than racing
+    this one.
 
     `exclude_fact_ids` holds facts a human has just decided on in this same
     request. The rule still runs for everything else, because that decision may
     have unblocked siblings; it just doesn't get to re-decide the fact the human
-    aimed at. Without this, demoting a corroborated fact to the review tier hands
-    it straight back to the rule that promotes corroborated review-tier facts.
+    aimed at, in either direction. Without this, demoting a corroborated fact to
+    the review tier hands it straight back to the rule that promotes corroborated
+    review-tier facts.
 
     A halted KB already stops this today, but only by COINCIDENCE: `_engine` builds
     its single-valued set from `store_functional_relations`, which calls
@@ -86,6 +102,19 @@ def apply_auto_accept_recommendations(
     """
     assert_writable(store)
     excluded = {int(fact_id) for fact_id in exclude_fact_ids}
+    # Retraction is judged off a snapshot taken before any promotion write, so
+    # both passes see the same pre-write state. That is what makes the pass
+    # order-independent: a fact retracted below is still `accepted` in this
+    # snapshot, so a review-tier rival stays blocked by it (#287) and its
+    # promotion defers to the next cascade rather than racing this one.
+    #
+    # Promotion keeps flowing through the module-level `accept_recommendations`
+    # (its own read-only pre-write snapshot, identical because nothing writes
+    # between the two reads) rather than reusing this engine directly. That is
+    # deliberate: it is the seam the cross-connection race guard is exercised
+    # through, where a reject can be injected between the snapshot and the write.
+    retraction_engine = _engine(store)
+
     applied = []
     for recommendation in accept_recommendations(store).values():
         if not recommendation.eligible or recommendation.fact_id in excluded:
@@ -108,6 +137,34 @@ def apply_auto_accept_recommendations(
             },
         )
         applied.append(recommendation)
+
+    # Retraction walks the snapshot taken above — before any write of this pass —
+    # so the statuses it reads are the ones promotion was judged against.
+    for view in retraction_engine.facts:
+        if view.status != "accepted" or view.id in excluded:
+            continue
+        if not retraction_engine.basis_lapsed(view):
+            continue
+        # `auto_retract_fact` only touches `accepted`, so a human decision that
+        # landed after the snapshot wins the guarded UPDATE (returns None) and
+        # the audit event is skipped with it.
+        if store.auto_retract_fact(view.id, rule_name=RULE_NAME) is None:
+            continue
+        remaining = retraction_engine._supporting_facts(view)
+        store.add_fact_event(
+            fact_id=view.id,
+            event_type="auto_accept_retracted",
+            actor="rule",
+            rule_name=RULE_NAME,
+            after={
+                "reasons": ["insufficient_distinct_source_support"],
+                "remaining_support_sources": sorted(
+                    {fact.source for fact in remaining if fact.source}
+                ),
+                "remaining_support_fact_ids": sorted(fact.id for fact in remaining),
+                "canonical_relation": view.canonical_relation,
+            },
+        )
     return applied
 
 
@@ -181,6 +238,24 @@ class _RecommendationEngine:
             and fact.object_key == target.object_key
             and fact.source
         ]
+
+    def basis_lapsed(self, target: _FactView) -> bool:
+        """True when a rule-accepted fact no longer has 2+ distinct source witnesses.
+
+        The exact complement of promotion's `insufficient_distinct_source_support`
+        threshold, and deliberately COUNT-ONLY: no `_job_done` gate, no
+        `source_missing` gate. Those job-based signals flap while a source is being
+        re-extracted — a fresh same-triple candidate with a still-RUNNING job joins
+        the support set the instant it lands — so gating retraction on them would
+        yank a healthy accepted fact mid-analysis. The distinct-source count is
+        job-independent and monotone under transient extraction: it falls only when
+        support is DURABLY lost (a reject→superseded, an amend-away, a deleted
+        source), which is exactly when a rule-accepted value should return to
+        review. Mirroring promotion's threshold exactly also forecloses thrash — a
+        fact retracted here fails the same `< 2` test if re-evaluated for promotion,
+        so it cannot oscillate.
+        """
+        return len({fact.source for fact in self._supporting_facts(target) if fact.source}) < 2
 
     def _has_single_valued_conflict(self, target: _FactView) -> bool:
         """True when another fact witnesses a rival value on a functional relation.
