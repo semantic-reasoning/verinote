@@ -44,10 +44,31 @@ class _SourceInput:
 
 
 @dataclass(frozen=True)
+class _SourceSyncOutcome:
+    """One source's result from a single sync invocation.
+
+    Counts are this-run counts: `cmd_sync` creates a fresh extraction job per
+    invocation, so `completed_chunks`/`failed_chunks` describe only what this run
+    did, never a source's historical jobs. `message` is the job's own bounded
+    status line, carried only when this run had a failed chunk.
+    """
+
+    source_path: str
+    candidates: int
+    completed_chunks: int
+    failed_chunks: int
+    message: str = ""
+
+
+@dataclass(frozen=True)
 class _SyncSummary:
-    per_source: list[tuple[str, int]]
+    per_source: list[_SourceSyncOutcome]
     total: int
     run_id: int
+
+    @property
+    def failed_sources(self) -> list[_SourceSyncOutcome]:
+        return [outcome for outcome in self.per_source if outcome.failed_chunks > 0]
 
 
 def _store(cfg: Config) -> Store:
@@ -487,13 +508,40 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     job_id=job_id,
                     schema_hint=extraction_schema_hint(),
                 )
-                per_source.append((source.source_path, outcome.candidates))
+                # The job message is already the bounded honest failure line
+                # ("Analysis failed: N chunk(s) failed, D/T complete: <error>");
+                # carry it verbatim rather than re-deriving it, and only when this
+                # run failed a chunk. Full per-chunk detail lives on the web UI.
+                message = (
+                    store.get_extraction_job(job_id)["message"]
+                    if outcome.failed_chunks
+                    else ""
+                )
+                per_source.append(
+                    _SourceSyncOutcome(
+                        source_path=source.source_path,
+                        candidates=outcome.candidates,
+                        completed_chunks=outcome.completed_chunks,
+                        failed_chunks=outcome.failed_chunks,
+                        message=message,
+                    )
+                )
                 total += outcome.candidates
                 run_id = job_id
             result = _SyncSummary(per_source=per_source, total=total, run_id=run_id)
         else:
+            # The legacy path has no chunk concept: any failure there raises
+            # LLMError and exits rc 1 below, so every outcome reaching here is a
+            # success with zero completed/failed chunks.
             pairs = [(source.source_path, source.text) for source in sources]
-            result = sync_sources(store, client, pairs, provider=cfg.provider, model=cfg.model)
+            legacy = sync_sources(store, client, pairs, provider=cfg.provider, model=cfg.model)
+            result = _SyncSummary(
+                per_source=[
+                    _SourceSyncOutcome(path, n, 0, 0) for path, n in legacy.per_source
+                ],
+                total=legacy.total,
+                run_id=legacy.run_id,
+            )
     except PolicyMissingError as exc:
         # The policy vanished after the command's preflight — mid-job (the worker's
         # write boundary re-raises this after rolling the job back to `pending`) or
@@ -507,8 +555,37 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
         print(f"extraction failed: {e}", file=sys.stderr)
         store.close()
         return 1
-    for src, n in result.per_source:
-        print(f"  {src}: {n} candidate(s)")
+    for outcome in result.per_source:
+        print(f"  {outcome.source_path}: {outcome.candidates} candidate(s)")
+    failed = result.failed_sources
+    if failed:
+        # Successes stayed visible on stdout above; the failures and the shape of
+        # the run go to stderr, and the run exits rc 1 (a hard failure) — the
+        # "sync complete" line below is the ONLY path that says success, so a
+        # "0 candidate(s)" reader can never mistake a broken run for a clean one.
+        for outcome in failed:
+            print(outcome.message, file=sys.stderr)
+        # "sync failed" is reserved for a run that produced nothing at all: the
+        # whole run's total is zero AND every failed source completed no chunk. A
+        # mixed run (some source succeeded with real candidates while another
+        # totally failed) is NOT a total failure — it takes the "incomplete"
+        # branch below, whose reassurance covers the candidates already on stdout.
+        if result.total == 0 and all(
+            outcome.completed_chunks == 0 for outcome in failed
+        ):
+            print(
+                f"sync failed: {len(failed)} source(s) extracted nothing — every "
+                "chunk failed; see the message(s) above and `verinote ui` for detail",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"sync incomplete: {len(failed)} source(s) had failed chunk(s); the "
+                "candidate(s) printed above are real and reviewable at `verinote ui`",
+                file=sys.stderr,
+            )
+        store.close()
+        return 1
     print(
         f"sync complete: {result.total} candidate(s) from {len(result.per_source)} "
         f"source(s) (run #{result.run_id}) — review at `verinote ui`"
