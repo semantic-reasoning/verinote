@@ -828,6 +828,106 @@ class Store:
             self._refresh_extraction_job(job_id)
             return int(cur.rowcount)
 
+    def claim_extraction_job_for_retry(
+        self, job_id: int, *, max_attempts: int | None
+    ) -> bool:
+        """Atomically claim a `pending`/`failed` job for a retry pass.
+
+        The `pending|failed`->`running` CAS IS the ownership handshake, exactly as
+        `claim_pending_extraction_job`: only the caller whose UPDATE matches
+        (rowcount == 1) owns the job and may reset its chunks; every racing caller
+        — a concurrent `verinote sync` auto-retry, the web retry button — gets
+        rowcount == 0 and backs off, writing nothing. Claim and reset happen
+        together under the lock, so the manual button and the auto-retry can share
+        a job_id without colliding: whoever wins the CAS owns it (#323).
+
+        `max_attempts=None` resets ALL failed chunks (human override via the web
+        button — nothing stays stranded); an int resets only chunks still under the
+        cap (`attempts < max_attempts`), leaving exhausted chunks failed so planning
+        can surface the job as given up. Raw SQL, never `_refresh_extraction_job`:
+        that helper recomputes the job from its chunks and would flip our just-set
+        `running` straight back out.
+        """
+        with self._lock:
+            before = self.get_extraction_job(job_id)
+            if before is None:
+                return False
+            cur = self._conn.execute(
+                "UPDATE extraction_jobs SET status = 'running', "
+                "message = 'Analyzing chunks...', updated_at = datetime('now') "
+                "WHERE id = ? AND status IN ('pending', 'failed')",
+                (job_id,),
+            )
+            if cur.rowcount == 0:
+                return False
+            if max_attempts is None:
+                where = "job_id = ? AND status = 'failed'"
+                params: tuple[object, ...] = (job_id,)
+            else:
+                where = "job_id = ? AND status = 'failed' AND attempts < ?"
+                params = (job_id, max_attempts)
+            failed_chunks = list(
+                self._conn.execute(
+                    f"SELECT * FROM source_chunks WHERE {where}", params
+                )
+            )
+            self._conn.execute(
+                "UPDATE source_chunks SET status = 'pending', error = '', "
+                f"updated_at = datetime('now') WHERE {where}",
+                params,
+            )
+            # Reclaim any stray `running` chunk a crashed run left behind, exactly
+            # as `claim_pending_extraction_job` does — raw update, no event, no
+            # refresh; a claimed job has no legitimate `running` chunk here.
+            self._conn.execute(
+                "UPDATE source_chunks SET status = 'pending', error = '', "
+                "updated_at = datetime('now') WHERE job_id = ? AND status = 'running'",
+                (job_id,),
+            )
+            for chunk in failed_chunks:
+                pending = self.get_source_chunk(int(chunk["id"]))
+                self._add_fact_event(
+                    fact_id=None,
+                    event_type="chunk_retried",
+                    actor="system",
+                    source_id=int(chunk["source_id"]),
+                    job_id=job_id,
+                    chunk_id=int(chunk["id"]),
+                    before=_chunk_event_payload(chunk),
+                    after=_chunk_event_payload(pending) if pending is not None else None,
+                )
+            after = self.get_extraction_job(job_id)
+            if after is not None:
+                self._add_fact_event(
+                    fact_id=None,
+                    event_type="extraction_job_started",
+                    actor="system",
+                    source_id=int(after["source_id"]),
+                    job_id=job_id,
+                    before=_job_event_payload(before),
+                    after=_job_event_payload(after),
+                )
+            return True
+
+    def failed_chunk_attempt_status(
+        self, job_id: int, *, max_attempts: int
+    ) -> tuple[int, int]:
+        """Return `(failed_count, exhausted_count)` for a job's failed chunks.
+
+        `failed_count` is every chunk currently `failed`; `exhausted_count` is how
+        many of those have `attempts >= max_attempts` (no retry budget left). Used
+        by planning to decide retry-vs-give-up without mutating anything.
+        """
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS failed, "
+            "COALESCE(SUM(CASE WHEN attempts >= ? THEN 1 ELSE 0 END), 0) AS exhausted "
+            "FROM source_chunks WHERE job_id = ? AND status = 'failed'",
+            (max_attempts, job_id),
+        ).fetchone()
+        if row is None:
+            return (0, 0)
+        return (int(row["failed"]), int(row["exhausted"]))
+
     def finish_extraction_job(self, job_id: int) -> None:
         with self._lock:
             before = self.get_extraction_job(job_id)

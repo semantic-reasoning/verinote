@@ -759,6 +759,93 @@ def test_claim_pending_extraction_job_reclaims_a_stray_running_chunk(tmp_path):
     assert s.next_pending_chunk(job_id)["id"] == chunk_ids[0]
 
 
+def test_claim_extraction_job_for_retry_is_exclusive_across_connections(tmp_path):
+    """The retry claim CASes `failed`->`running` like the pending claim: exactly one
+    of two racing connections wins, and the loser resets nothing (#323)."""
+    db_path = tmp_path / "kb.sqlite"
+    store_a = Store(db_path)
+    store_a.init_schema()
+    sid = store_a.add_source("sources/a.txt")
+    job_id = store_a.create_extraction_job(
+        source_id=sid, provider="fake", model="m", total_chunks=1
+    )
+    chunk_id = store_a.add_source_chunks(job_id=job_id, source_id=sid, chunks=["a"])[0]
+    store_a.mark_extraction_job_running(job_id)
+    store_a.mark_chunk_running(chunk_id)
+    store_a.mark_chunk_failed(chunk_id, "provider down")  # job + chunk now 'failed'
+    store_b = Store(db_path)  # a second process's connection to the same KB file
+
+    assert store_a.claim_extraction_job_for_retry(job_id, max_attempts=None) is True
+    assert store_b.claim_extraction_job_for_retry(job_id, max_attempts=None) is False
+
+    assert store_a.get_extraction_job(job_id)["status"] == "running"  # the winner owns it
+    chunk = store_a.get_source_chunk(chunk_id)
+    assert chunk["status"] == "pending"  # reset by the winner
+    assert chunk["attempts"] == 1  # the loser did not touch it
+    retried = list(
+        store_a._conn.execute(
+            "SELECT id FROM fact_events WHERE event_type = 'chunk_retried'"
+        )
+    )
+    assert len(retried) == 1  # only the winner recorded a retry; the loser wrote nothing
+    store_a.close()
+    store_b.close()
+
+
+def test_claim_extraction_job_for_retry_respects_the_attempts_cap(tmp_path):
+    """A capped auto-retry leaves a chunk at/over the cap `failed`; `max_attempts=None`
+    (the human override) resets it regardless (#323)."""
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    job_id = s.create_extraction_job(
+        source_id=sid, provider="fake", model="m", total_chunks=1
+    )
+    chunk_id = s.add_source_chunks(job_id=job_id, source_id=sid, chunks=["a"])[0]
+    s.mark_extraction_job_running(job_id)
+    s.mark_chunk_running(chunk_id)
+    s.mark_chunk_failed(chunk_id, "boom")
+    # Force the chunk to the cap without disturbing its `failed` status.
+    s._conn.execute("UPDATE source_chunks SET attempts = 2 WHERE id = ?", (chunk_id,))
+
+    # attempts (2) is NOT < cap (2): the claim still takes ownership but resets nothing.
+    assert s.claim_extraction_job_for_retry(job_id, max_attempts=2) is True
+    assert s.get_source_chunk(chunk_id)["status"] == "failed"  # exhausted, left alone
+
+    # The human-override path resets even an exhausted chunk.
+    s._conn.execute(
+        "UPDATE extraction_jobs SET status = 'failed' WHERE id = ?", (job_id,)
+    )
+    assert s.claim_extraction_job_for_retry(job_id, max_attempts=None) is True
+    assert s.get_source_chunk(chunk_id)["status"] == "pending"  # reset regardless of cap
+
+
+def test_failed_chunk_attempt_status_counts_failed_and_exhausted(tmp_path):
+    """`failed_chunk_attempt_status` reports (failed, exhausted) so planning can decide
+    retry-vs-give-up without mutating anything (#323)."""
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    job_id = s.create_extraction_job(
+        source_id=sid, provider="fake", model="m", total_chunks=3
+    )
+    chunk_ids = s.add_source_chunks(job_id=job_id, source_id=sid, chunks=["a", "b", "c"])
+
+    assert s.failed_chunk_attempt_status(job_id, max_attempts=2) == (0, 0)  # none failed
+
+    # One failed but still under the cap: counted as failed, not exhausted.
+    s._conn.execute(
+        "UPDATE source_chunks SET status = 'failed', attempts = 1 WHERE id = ?",
+        (chunk_ids[0],),
+    )
+    assert s.failed_chunk_attempt_status(job_id, max_attempts=2) == (1, 0)
+
+    # A second failed at the cap (attempts >= max) counts toward exhausted too.
+    s._conn.execute(
+        "UPDATE source_chunks SET status = 'failed', attempts = 2 WHERE id = ?",
+        (chunk_ids[1],),
+    )
+    assert s.failed_chunk_attempt_status(job_id, max_attempts=2) == (2, 1)
+
+
 def _job_with_mixed_chunks(s, sid):
     """A job caught mid-flight: one chunk done, one failed, one in flight."""
     job_id = s.create_extraction_job(
