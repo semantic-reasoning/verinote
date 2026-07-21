@@ -229,6 +229,11 @@ class Store:
         self._conn = sqlite3.connect(self.db_path, isolation_level=None, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON;")
+        # Two processes' guarded UPDATEs can land at the same instant (e.g. a sync
+        # and the UI startup worker both claiming one job). Without a busy timeout
+        # the loser raises `database is locked` immediately; with it, it waits
+        # briefly and then cleanly loses the CAS (`rowcount == 0`) instead.
+        self._conn.execute("PRAGMA busy_timeout = 5000")
         self._lock = threading.RLock()
         self._inference_cache: Any = None
         self._fact_terms: Any = None
@@ -693,6 +698,54 @@ class Store:
                     before=_job_event_payload(job),
                     after=_job_event_payload(after),
                 )
+
+    def claim_pending_extraction_job(self, job_id: int) -> bool:
+        """Atomically take ownership of a `pending` job for processing.
+
+        The `pending`->`running` flip IS the ownership handshake: exactly one
+        concurrent caller's UPDATE matches `status='pending'` (rowcount == 1) and
+        owns the job; every other caller — a second `verinote sync`, another UI
+        worker, a startup resume that arrives a moment later and sees `running` —
+        gets rowcount == 0 and MUST back off without touching the chunks, because
+        the owner may have one in flight and resetting it re-sends it to the LLM (#240).
+
+        Mirrors the fact-write CAS (`accept_fact`, `toggle_review`): conditional on
+        the exact status observed, a lost race writes nothing. Only `pending` is
+        claimable. A job a crashed worker left `running` is made claimable again by
+        rolling it back to `pending` first (see `_resume_source_extraction_jobs`),
+        never by adopting a `running` row here — that is what keeps the claim exclusive.
+        """
+        with self._lock:
+            before = self.get_extraction_job(job_id)
+            if before is None:
+                return False
+            cur = self._conn.execute(
+                "UPDATE extraction_jobs SET status = 'running', "
+                "message = 'Analyzing chunks...', updated_at = datetime('now') "
+                "WHERE id = ? AND status = 'pending'",
+                (job_id,),
+            )
+            if cur.rowcount == 0:
+                return False
+            # Now that we exclusively own it, reclaim any chunk a prior crashed run
+            # left `running`. RAW update, NOT `reset_running_chunks`: that helper ends
+            # in `_refresh_extraction_job`, which would recompute the job from its
+            # chunks and flip our just-set `running` back to `pending`. A claimed
+            # `pending` job has no `running` chunk in any real path, so this is a
+            # defensive no-op that preserves the invariant without disturbing status.
+            self._conn.execute(
+                "UPDATE source_chunks SET status = 'pending', error = '', "
+                "updated_at = datetime('now') WHERE job_id = ? AND status = 'running'",
+                (job_id,),
+            )
+            after = self.get_extraction_job(job_id)
+            if after is not None:
+                self._add_fact_event(
+                    fact_id=None, event_type="extraction_job_started", actor="system",
+                    source_id=int(after["source_id"]), job_id=job_id,
+                    before=_job_event_payload(before), after=_job_event_payload(after),
+                )
+            return True
 
     def mark_chunk_running(self, chunk_id: int) -> sqlite3.Row | None:
         with self._lock:

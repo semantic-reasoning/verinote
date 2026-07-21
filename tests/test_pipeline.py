@@ -6,6 +6,7 @@ import pytest
 from verinote.llm.base import ExtractedFact, LLMError
 from verinote.pipeline import (
     create_chunked_extraction_job,
+    ExtractionJobBusyError,
     extract_source,
     process_extraction_job,
     sync_sources,
@@ -877,6 +878,33 @@ def test_process_extraction_job_extracts_chunks_and_tracks_progress(tmp_path):
     assert [e["chunk_index"] for e in evidence] == [0, 1]
     assert {e["job_id"] for e in evidence} == {job_id}
     assert [e["snippet"] for e in evidence] == ["alpha", "beta"]
+
+
+def test_process_extraction_job_backs_off_when_already_claimed(tmp_path):
+    """A job another worker already owns raises `ExtractionJobBusyError` and is left
+    entirely alone — its in-flight chunk is not reset back to the queue (#240)."""
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    job_id = s.create_extraction_job(
+        source_id=sid, provider="fake", model="m", total_chunks=2
+    )
+    chunk_ids = s.add_source_chunks(
+        job_id=job_id, source_id=sid, chunks=["alpha", "beta"]
+    )
+    # The existing owner: the job is `running` with a chunk in flight.
+    s.mark_extraction_job_running(job_id)
+    s.mark_chunk_running(chunk_ids[0])
+    runs_before = s._conn.execute("SELECT COUNT(*) AS n FROM runs").fetchone()["n"]
+    client = _ChunkAwareClient()
+
+    with pytest.raises(ExtractionJobBusyError):
+        process_extraction_job(s, client, job_id=job_id)
+
+    assert s.source_chunks(job_id)[0]["status"] == "running"  # owner's chunk untouched
+    assert client.calls == 0  # the LLM was never reached
+    assert len(s.facts()) == 0  # no candidate facts written
+    runs_after = s._conn.execute("SELECT COUNT(*) AS n FROM runs").fetchone()["n"]
+    assert runs_after == runs_before  # no new run row opened
 
 
 def test_process_extraction_job_runs_focused_role_pass_with_original_note(tmp_path):

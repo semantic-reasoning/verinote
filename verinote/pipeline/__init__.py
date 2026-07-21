@@ -7,6 +7,7 @@ review gate sits between extract and compile and is driven from the web UI.
 
 from verinote.pipeline.extract import (
     ChunkedExtractionResult,
+    ExtractionJobBusyError,
     ExtractionJobPlan,
     SyncResult,
     create_chunked_extraction_job,
@@ -39,6 +40,7 @@ __all__ = [
     "sync_sources",
     "SyncResult",
     "ChunkedExtractionResult",
+    "ExtractionJobBusyError",
     "ExtractionJobPlan",
     "verify",
     "ingest_bytes",

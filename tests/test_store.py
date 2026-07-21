@@ -666,6 +666,99 @@ def test_reset_running_chunks_makes_job_resumable(tmp_path):
     assert s.get_extraction_job(job_id)["status"] == "pending"
 
 
+def test_claim_pending_extraction_job_is_exclusive_across_connections(tmp_path):
+    """The `pending`->`running` flip is the ownership handshake: exactly one wins (#240)."""
+    db_path = tmp_path / "kb.sqlite"
+    store_a = Store(db_path)
+    store_a.init_schema()
+    sid = store_a.add_source("sources/a.txt")
+    job_id = store_a.create_extraction_job(
+        source_id=sid, provider="fake", model="m", total_chunks=1
+    )
+    store_a.add_source_chunks(job_id=job_id, source_id=sid, chunks=["a"])
+    store_b = Store(db_path)  # a second process's connection to the same KB file
+
+    assert store_a.claim_pending_extraction_job(job_id) is True
+    assert store_b.claim_pending_extraction_job(job_id) is False
+
+    assert store_a.get_extraction_job(job_id)["status"] == "running"
+    started = list(
+        store_a._conn.execute(
+            "SELECT id FROM fact_events WHERE event_type = 'extraction_job_started'"
+        )
+    )
+    assert len(started) == 1  # only the winner recorded a claim
+    store_a.close()
+    store_b.close()
+
+
+def test_claim_pending_extraction_job_rejects_non_pending(tmp_path):
+    """Only `pending` is claimable; a decided or in-flight job is left untouched (#240)."""
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+
+    def _fresh_job(status_setup) -> int:
+        job_id = s.create_extraction_job(
+            source_id=sid, provider="fake", model="m", total_chunks=1
+        )
+        s.add_source_chunks(job_id=job_id, source_id=sid, chunks=["a"])
+        status_setup(job_id)
+        return job_id
+
+    def _started_count(job_id: int) -> int:
+        return len(
+            list(
+                s._conn.execute(
+                    "SELECT id FROM fact_events "
+                    "WHERE event_type = 'extraction_job_started' AND job_id = ?",
+                    (job_id,),
+                )
+            )
+        )
+
+    cases = {
+        "running": lambda jid: s.mark_extraction_job_running(jid),
+        "done": lambda jid: s.finish_extraction_job(jid),
+        "failed": lambda jid: s.fail_extraction_job(jid, "boom"),
+        "canceled": lambda jid: s._conn.execute(
+            "UPDATE extraction_jobs SET status = 'canceled' WHERE id = ?", (jid,)
+        ),
+    }
+    for status, setup in cases.items():
+        job_id = _fresh_job(setup)
+        before_started = _started_count(job_id)
+
+        assert s.claim_pending_extraction_job(job_id) is False, status
+
+        assert s.get_extraction_job(job_id)["status"] == status
+        assert _started_count(job_id) == before_started  # no new claim recorded
+
+
+def test_claim_pending_extraction_job_reclaims_a_stray_running_chunk(tmp_path):
+    """A claim reclaims a stray `running` chunk WITHOUT flipping the job back out of
+    `running` — the reason the claim uses a raw update, not `reset_running_chunks` (#240)."""
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    job_id = s.create_extraction_job(
+        source_id=sid, provider="fake", model="m", total_chunks=2
+    )
+    chunk_ids = s.add_source_chunks(job_id=job_id, source_id=sid, chunks=["a", "b"])
+    # A crash can leave the job `pending` (see rollback) with a chunk still
+    # `running`; force exactly that shape without disturbing the job status.
+    s._conn.execute(
+        "UPDATE source_chunks SET status = 'running' WHERE id = ?", (chunk_ids[0],)
+    )
+    assert s.get_extraction_job(job_id)["status"] == "pending"
+
+    assert s.claim_pending_extraction_job(job_id) is True
+
+    # `reset_running_chunks` would have `_refresh_extraction_job` recompute the job
+    # from its (now zero) running chunks and flip it straight back to `pending`.
+    assert s.get_extraction_job(job_id)["status"] == "running"
+    assert s.source_chunks(job_id)[0]["status"] == "pending"  # stray chunk reclaimed
+    assert s.next_pending_chunk(job_id)["id"] == chunk_ids[0]
+
+
 def _job_with_mixed_chunks(s, sid):
     """A job caught mid-flight: one chunk done, one failed, one in flight."""
     job_id = s.create_extraction_job(

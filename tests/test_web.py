@@ -15,6 +15,7 @@ from verinote.config import Config  # noqa: E402
 from verinote.engine import DEFAULT_POLICY  # noqa: E402
 from verinote.engine.terms import Atom, Compound, StringLit  # noqa: E402
 from verinote.llm.base import ExtractedFact, LLMError  # noqa: E402
+from verinote.pipeline import ExtractionJobBusyError  # noqa: E402
 from verinote.pipeline.policy_state import (  # noqa: E402
     POLICY_RELPATH,
     PolicyMissingError,
@@ -1121,6 +1122,9 @@ def test_create_app_resumes_pending_source_jobs(tmp_path, monkeypatch, fake_clie
         assert "Analysis complete: 1/1 chunk(s)" in c.get("/sources").text
 
     _wait_for(resumed)
+    # a `pending` job is resumed directly; only a genuinely-`running` one is rolled
+    # back first, so no rollback event should appear for a pending resume (#242).
+    assert "extraction_job_rolled_back" not in _job_event_types(cfg, job_id)
 
 
 def _job_kb(tmp_path, *, with_policy: bool):
@@ -1302,6 +1306,74 @@ def test_worker_still_fails_the_job_on_an_ordinary_error(tmp_path, monkeypatch, 
 
     _wait_for(failed)
     assert "boom" in _job_row(cfg, job_id)["message"]
+
+
+def test_worker_busy_does_not_mark_the_job_failed(tmp_path, monkeypatch, fake_client):
+    """A job another worker owns must not be buried in `failed` by this worker (#240).
+
+    `except ExtractionJobBusyError` must sit ABOVE `except Exception`: below it, the
+    generic handler calls `fail_extraction_job` — a write that corrupts a job this
+    process does not own. The right move is to touch the DB not at all.
+    """
+    cfg, job_id, _ = _job_kb(tmp_path, with_policy=True)
+    monkeypatch.setattr(
+        webapp,
+        "get_client",
+        lambda cfg: fake_client([ExtractedFact("X", "is_a", "Y", 0.9)]),
+    )
+    called = threading.Event()
+
+    def busy(*args, **kwargs):
+        called.set()
+        raise ExtractionJobBusyError(job_id)
+
+    monkeypatch.setattr(webapp, "process_extraction_job", busy)
+
+    create_app(cfg)
+
+    assert called.wait(timeout=2.0)
+    time.sleep(0.2)  # let a (wrong) `fail_extraction_job` land, if the branch were missing
+    job = _job_row(cfg, job_id)
+    assert job["status"] == "pending", "a job owned by another worker was buried in `failed`"
+    assert "analysis failed" not in job["message"]
+    assert "extraction failed" not in job["message"]
+    assert "extraction_job_failed" not in _job_event_types(cfg, job_id)
+
+
+def test_startup_revives_a_job_left_running_by_a_crash(tmp_path, monkeypatch, fake_client):
+    """A job a crash left `running` (with a `running` chunk) is revived to `done` (#242).
+
+    This is the ONE path that seeds a `running` job at startup — every other resume
+    test seeds `pending`. DB state cannot tell this zombie from a live owner, so the
+    resume loop rolls it back to `pending` first, which is what lets the new claim
+    take it and actually re-process the stranded chunk (rather than walk past it).
+    """
+    cfg, job_id, _ = _job_kb(tmp_path, with_policy=True)  # a pending job + recorded policy
+    with Store(cfg.db_path) as store:
+        store.init_schema()
+        store.mark_extraction_job_running(job_id)
+        chunk_id = store.source_chunks(job_id)[0]["id"]
+        store.mark_chunk_running(chunk_id)
+    assert _job_row(cfg, job_id)["status"] == "running"
+    monkeypatch.setattr(
+        webapp,
+        "get_client",
+        lambda cfg: fake_client([ExtractedFact("X", "is_a", "Y", 0.9)]),
+    )
+
+    c = TestClient(create_app(cfg))
+
+    def revived():
+        assert "is_a" in c.get("/review").text
+        assert _job_row(cfg, job_id)["status"] == "done"
+
+    _wait_for(revived)
+    # the stranded chunk was actually processed, not skipped, and the revival went
+    # through a rollback (only a genuinely-`running` job is rolled back first).
+    with Store(cfg.db_path) as store:
+        store.init_schema()
+        assert store.source_chunks(job_id)[0]["status"] == "done"
+    assert "extraction_job_rolled_back" in _job_event_types(cfg, job_id)
 
 
 def _auto_accept_kb(tmp_path):
