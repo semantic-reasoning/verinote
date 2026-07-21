@@ -24,7 +24,11 @@ import pytest
 import verinote.cli as cli
 from verinote.engine import DEFAULT_POLICY
 from verinote.llm.base import ExtractedFact, LLMError
-from verinote.pipeline import create_chunked_extraction_job
+from verinote.pipeline import (
+    MAX_CHUNK_ATTEMPTS,
+    create_chunked_extraction_job,
+    plan_source_extraction,
+)
 from verinote.pipeline.policy_state import POLICY_RELPATH
 from verinote.store import Store
 
@@ -129,6 +133,14 @@ def _jobs(tmp_path) -> list:
     store = _store(tmp_path)
     try:
         return list(store.source_extraction_jobs())
+    finally:
+        store.close()
+
+
+def _run_count(tmp_path) -> int:
+    store = _store(tmp_path)
+    try:
+        return int(store._conn.execute("SELECT COUNT(*) AS n FROM runs").fetchone()["n"])
     finally:
         store.close()
 
@@ -602,3 +614,117 @@ def test_reanalyze_is_not_blocked_by_a_superseded_pending_job(tmp_path, monkeypa
     jobs = _jobs(tmp_path)
     assert [job["status"] for job in jobs] == ["pending"]
     assert recorder.started == [f"verinote-source-extract-{int(jobs[0]['id'])}"]
+
+
+# --- H: a failed job is retried while it has budget, then given up on (#323) --
+
+
+def _failed_retryable_job(tmp_path, *, source_text="alpha beta gamma", attempts=1):
+    """A KB whose newest job is `failed` with one failed chunk at `attempts`.
+
+    Everything else the planner compares — artifact (`None`), provider, model,
+    chunk text — matches what `_plan` hands it below, so only the failed chunk's
+    attempt count decides retry-vs-give-up.
+    """
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/a.txt")
+    job_id = create_chunked_extraction_job(
+        store,
+        source_id=source_id,
+        artifact_id=None,
+        source_text=source_text,
+        provider="fake",
+        model="m",
+    )
+    chunk_id = int(store.source_chunks(job_id)[0]["id"])
+    store.mark_extraction_job_running(job_id)
+    store.mark_chunk_running(chunk_id)
+    store.mark_chunk_failed(chunk_id, "provider down")  # job + chunk -> failed
+    store._conn.execute(
+        "UPDATE source_chunks SET attempts = ? WHERE id = ?", (attempts, chunk_id)
+    )
+    return store, source_id, job_id
+
+
+def _plan(store, source_id, *, source_text="alpha beta gamma"):
+    return plan_source_extraction(
+        store,
+        source_id=source_id,
+        artifact_id=None,
+        source_text=source_text,
+        provider="fake",
+        model="m",
+    )
+
+
+def test_plan_retries_a_failed_job_that_still_has_budget(tmp_path):
+    store, source_id, job_id = _failed_retryable_job(tmp_path, attempts=1)
+    plan = _plan(store, source_id)
+    store.close()
+    assert plan.retry_job_id == job_id
+    assert plan.exhausted_job_id is None
+
+
+def test_plan_gives_up_on_a_failed_job_whose_chunk_exhausted_its_attempts(tmp_path):
+    """THE anti-spurious-run gate: a failed job whose only chunk has spent its whole
+    budget surfaces as `exhausted`, never `retry`. If it reached `retry` instead,
+    `cmd_sync` would claim it, reset nothing, and burn an empty run every sync —
+    the loop #323 exists to break, just moved one layer down.
+    """
+    store, source_id, job_id = _failed_retryable_job(
+        tmp_path, attempts=MAX_CHUNK_ATTEMPTS
+    )
+    plan = _plan(store, source_id)
+    store.close()
+    assert plan.exhausted_job_id == job_id
+    assert plan.retry_job_id is None
+
+
+def test_plan_rebuilds_a_failed_job_whose_source_changed_instead_of_retrying(tmp_path):
+    """Staleness gates the retry branch, not just resume. A failed-with-retryable-
+    chunk job whose source text no longer matches is rebuilt fresh — retrying it
+    would re-send content a human may have just fixed between sync attempts (#323).
+    """
+    store, source_id, _ = _failed_retryable_job(tmp_path, attempts=1)
+    plan = _plan(store, source_id, source_text="a completely different body now")
+    store.close()
+    # A fresh plan: nothing to continue, so cmd_sync builds a new job.
+    assert plan.retry_job_id is None
+    assert plan.exhausted_job_id is None
+    assert plan.resume_job_id is None
+
+
+def test_sync_gives_up_on_a_permanently_failing_chunk(tmp_path, monkeypatch, capsys):
+    """End to end: a chunk that fails every attempt is retried in place until its
+    budget is spent, then surfaced as a give-up — and the give-up sync opens no run
+    and builds no new job, the empty-run loop #323 exists to break.
+    """
+    _ingest(tmp_path, monkeypatch, body=_body(("alpha",)))
+
+    class _AlwaysFailingClient:
+        name = "fake"
+
+        def extract_facts(self, *, source_text: str, schema_hint: str = ""):
+            raise LLMError("provider down")
+
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: _AlwaysFailingClient())
+
+    # Each sync spends one attempt on the single chunk and reuses the one job; none
+    # rebuilds it. After MAX_CHUNK_ATTEMPTS syncs the chunk has no budget left.
+    for _ in range(MAX_CHUNK_ATTEMPTS):
+        assert cli.main(["sync"]) == 1
+    jobs = _jobs(tmp_path)
+    assert len(jobs) == 1  # retried in place across every sync, never rebuilt
+    job_id = int(jobs[0]["id"])
+    assert int(jobs[0]["failed_chunks"]) == 1
+
+    runs_before = _run_count(tmp_path)
+    capsys.readouterr()  # drop the failing syncs' output
+
+    # The give-up sync: the planner surfaces the job as exhausted, so cmd_sync skips
+    # it before any claim — no worker runs, no run row opens, no fresh job appears.
+    assert cli.main(["sync"]) == 1
+    err = capsys.readouterr().err
+    assert "giving up on sources/doc.txt" in err
+    assert _run_count(tmp_path) == runs_before  # no spurious empty run
+    assert [int(job["id"]) for job in _jobs(tmp_path)] == [job_id]

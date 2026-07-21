@@ -199,16 +199,30 @@ def is_live_extraction_job(job, latest_job_ids: dict[int, int]) -> bool:
     return int(job["id"]) == latest_job_ids.get(int(job["source_id"]))
 
 
+# The total attempt budget for a single chunk before its job gives up. `attempts`
+# counts every `mark_chunk_running` — the initial pass plus each auto-retry — so a
+# chunk with `attempts >= MAX_CHUNK_ATTEMPTS` has spent the whole budget and its
+# job is surfaced as exhausted rather than retried forever (#323). The web retry
+# button is a human override and ignores this cap (`max_attempts=None`).
+MAX_CHUNK_ATTEMPTS = 3
+
+
 @dataclass(frozen=True)
 class ExtractionJobPlan:
     """What a sync pass should do about one source's newest extraction job.
 
-    At most one field is set. `resume_job_id` picks a rolled-back job back up;
-    `busy_job_id` says another process owns it and this pass must keep its hands
-    off; neither means start a fresh job.
+    At most one field is set. `resume_job_id` picks a rolled-back `pending` job
+    back up where it left off; `retry_job_id` re-runs a `failed` job that still has
+    retry budget, resetting its failed chunks through the atomic claim;
+    `exhausted_job_id` names a `failed` job that has given up — a chunk has failed
+    every attempt, so the pass skips it instead of spinning the same dead chunk
+    every sync (#323); `busy_job_id` says another process owns it and this pass must
+    keep its hands off. No field set means start a fresh job.
     """
 
     resume_job_id: int | None = None
+    retry_job_id: int | None = None
+    exhausted_job_id: int | None = None
     busy_job_id: int | None = None
 
 
@@ -222,8 +236,9 @@ def plan_source_extraction(
     model: str | None,
     chunk_chars: int | None = None,
     chunk_overlap_chars: int | None = None,
+    max_chunk_attempts: int = MAX_CHUNK_ATTEMPTS,
 ) -> ExtractionJobPlan:
-    """Decide whether a source's newest job can be resumed, must wait, or is stale.
+    """Decide whether a source's newest job resumes, retries, gives up, or is stale.
 
     A job rolled back to `pending` (see `_halt_extraction_job`) still holds every
     chunk it finished, and the machinery to carry on already works —
@@ -232,10 +247,11 @@ def plan_source_extraction(
     asking for it, so every sync started from chunk zero and paid for the same
     LLM calls twice.
 
-    Resuming is only honest when the job still describes the work in front of us,
-    so all of the following must hold:
+    Resuming or retrying is only honest when the job still describes the work in
+    front of us, so all of the following must hold:
 
-    * the job is `pending` — `done`/`failed`/`canceled` are decided outcomes;
+    * the job is `pending` or `failed` — `done`/`canceled` are decided outcomes,
+      and a `running` job may belong to a live worker (see below);
     * it is the source's newest job — an older one has been superseded;
     * its artifact is the artifact we are about to extract. Artifacts are
       content-addressed (`UNIQUE(source_id, kind, checksum)`), so a changed body
@@ -245,16 +261,25 @@ def plan_source_extraction(
       changed chunk size, overlap, or normalisation rule, any of which would make
       the finished chunks cover different text than the pending ones assume;
     * its provider and model match the ones this run would use. Resume across a
-      model change and the job row ends up mis-describing its own output;
-    * NO CHUNK OF IT HAS FAILED. `reset_running_chunks` rewinds only `running`
-      and `next_pending_chunk` claims only `pending`, so a `failed` chunk is
-      invisible to both: a resume walks past it, reports `done`, and exits 0
-      while the text of that chunk never reaches the LLM again. Rebuilding the
-      job re-sends it, which is what re-syncing did before resuming existed —
-      so declining here preserves that recovery rather than inventing one. (A
-      narrower fix, retrying just the failed chunks via `retry_failed_chunks`,
-      would save the finished work too; that is a behaviour change and belongs
-      in its own issue.)
+      model change and the job row ends up mis-describing its own output.
+
+    These staleness gates guard the retry branch too, not just resume: a human can
+    fix the source text, chunk config, or model between one sync and the next, and
+    re-running a `failed` job against content it no longer describes is exactly as
+    wrong as resuming a `pending` one — either way the job is stale and rebuilt
+    fresh, which is why the gates run before the failed-chunk handling below.
+
+    A `failed` job that is NOT stale is decided by its failed chunks. A failed
+    chunk is invisible to resume (`reset_running_chunks` rewinds only `running`,
+    `next_pending_chunk` claims only `pending`), so the job is re-run through the
+    atomic retry claim, which resets the failed chunks under the same lock that
+    takes ownership. But the moment ANY failed chunk has spent its whole attempt
+    budget (`attempts >= max_chunk_attempts`) the job has given up: it is surfaced
+    as `exhausted` so the pass SKIPS it. Checking exhaustion BEFORE offering a
+    retry is the anti-spurious-run gate — retrying an all-exhausted job would claim
+    it, reset nothing, and burn an empty run every sync, which is exactly the loop
+    #323 exists to break. The web retry button stays the human escape hatch: it
+    resets every failed chunk regardless of attempt count.
 
     A `running` job is neither resumed nor replaced. It may belong to a live UI
     worker, and resuming would have `reset_running_chunks` yank that worker's
@@ -270,9 +295,7 @@ def plan_source_extraction(
         return ExtractionJobPlan()
     if job["status"] == "running":
         return ExtractionJobPlan(busy_job_id=latest_id)
-    if job["status"] != "pending":
-        return ExtractionJobPlan()
-    if int(job["failed_chunks"]) > 0:
+    if job["status"] not in {"pending", "failed"}:
         return ExtractionJobPlan()
     job_artifact_id = None if job["artifact_id"] is None else int(job["artifact_id"])
     if job_artifact_id != artifact_id:
@@ -286,6 +309,17 @@ def plan_source_extraction(
         chunk_overlap_chars=chunk_overlap_chars,
     )
     if persisted != current:
+        return ExtractionJobPlan()
+    if int(job["failed_chunks"]) > 0:
+        _failed, exhausted = store.failed_chunk_attempt_status(
+            latest_id, max_attempts=max_chunk_attempts
+        )
+        if exhausted > 0:
+            return ExtractionJobPlan(exhausted_job_id=latest_id)
+        return ExtractionJobPlan(retry_job_id=latest_id)
+    if job["status"] != "pending":
+        # `failed` with no chunk currently failed is an edge state (e.g. a human
+        # reset them out of band) — nothing to resume or retry, so rebuild fresh.
         return ExtractionJobPlan()
     return ExtractionJobPlan(resume_job_id=latest_id)
 
@@ -347,6 +381,8 @@ def process_extraction_job(
     *,
     job_id: int,
     schema_hint: str = "",
+    retry: bool = False,
+    retry_max_attempts: int | None = None,
 ) -> ChunkedExtractionResult:
     """Process pending chunks for one durable extraction job.
 
@@ -374,12 +410,20 @@ def process_extraction_job(
     if source is None:
         raise LLMError(f"missing source for extraction job: {job_id}")
 
-    if not store.claim_pending_extraction_job(job_id):
+    claimed = (
+        store.claim_extraction_job_for_retry(job_id, max_attempts=retry_max_attempts)
+        if retry
+        else store.claim_pending_extraction_job(job_id)
+    )
+    if not claimed:
         # Another worker owns this job (a concurrent `verinote sync`, a second UI
         # worker, or the startup resume loop). It may have a chunk in flight, so
         # we must NOT reset its chunks — backing off is the whole point (#240). A
         # `running` job reaches here only via the resume loop, which rolls a
-        # crashed job back to `pending` first, so this claim then succeeds.
+        # crashed job back to `pending` first, so this claim then succeeds. In
+        # retry mode the same CAS resets the failed chunks and takes ownership in
+        # one locked step, so a racer that loses it here likewise wrote nothing —
+        # the manual button and an auto-retry can share a job_id safely (#323).
         raise ExtractionJobBusyError(job_id)
     run_id = store.add_run(provider=job["provider"], model=job["model"])
 

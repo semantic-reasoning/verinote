@@ -1066,6 +1066,18 @@ def test_retry_failed_source_chunks(tmp_path, monkeypatch, fake_client):
             return fake_client(error=state["error"])
         return fake_client([ExtractedFact("X", "is_a", "Y", 0.9)])
 
+    # Record how every worker is dispatched, so we can prove the retry button drives
+    # the atomic claim in human-override retry mode rather than a standalone reset.
+    real_process = webapp.process_extraction_job
+    dispatched = []
+
+    def recording_process(*args, retry=False, retry_max_attempts=None, **kwargs):
+        dispatched.append({"retry": retry, "retry_max_attempts": retry_max_attempts})
+        return real_process(
+            *args, retry=retry, retry_max_attempts=retry_max_attempts, **kwargs
+        )
+
+    monkeypatch.setattr(webapp, "process_extraction_job", recording_process)
     monkeypatch.setattr(webapp, "get_client", client_factory)
     c = _client(tmp_path)
     upload = c.post(
@@ -1091,6 +1103,15 @@ def test_retry_failed_source_chunks(tmp_path, monkeypatch, fake_client):
         assert "Analysis complete: 1/1 chunk(s)" in c.get("/sources").text
 
     _wait_for(retried)
+
+    # The button started the worker through the atomic claim in retry mode with the
+    # uncapped human override (`retry_max_attempts=None`) — the upload's own worker
+    # ran in the ordinary non-retry mode — and there is no standalone reset function
+    # left in the store for the handler to have called instead.
+    assert [call for call in dispatched if call["retry"]] == [
+        {"retry": True, "retry_max_attempts": None}
+    ]
+    assert not hasattr(Store, "retry_failed_chunks")
 
 
 def test_create_app_resumes_pending_source_jobs(tmp_path, monkeypatch, fake_client):

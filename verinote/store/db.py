@@ -799,35 +799,6 @@ class Store:
             )
             self._refresh_extraction_job(int(chunk["job_id"]))
 
-    def retry_failed_chunks(self, job_id: int) -> int:
-        with self._lock:
-            failed_chunks = list(
-                self._conn.execute(
-                    "SELECT * FROM source_chunks WHERE job_id = ? AND status = 'failed'",
-                    (job_id,),
-                )
-            )
-            cur = self._conn.execute(
-                "UPDATE source_chunks SET status = 'pending', error = '', "
-                "updated_at = datetime('now') "
-                "WHERE job_id = ? AND status = 'failed'",
-                (job_id,),
-            )
-            for chunk in failed_chunks:
-                pending = self.get_source_chunk(int(chunk["id"]))
-                self._add_fact_event(
-                    fact_id=None,
-                    event_type="chunk_retried",
-                    actor="system",
-                    source_id=int(chunk["source_id"]),
-                    job_id=job_id,
-                    chunk_id=int(chunk["id"]),
-                    before=_chunk_event_payload(chunk),
-                    after=_chunk_event_payload(pending) if pending is not None else None,
-                )
-            self._refresh_extraction_job(job_id)
-            return int(cur.rowcount)
-
     def claim_extraction_job_for_retry(
         self, job_id: int, *, max_attempts: int | None
     ) -> bool:
@@ -924,8 +895,6 @@ class Store:
             "FROM source_chunks WHERE job_id = ? AND status = 'failed'",
             (max_attempts, job_id),
         ).fetchone()
-        if row is None:
-            return (0, 0)
         return (int(row["failed"]), int(row["exhausted"]))
 
     def finish_extraction_job(self, job_id: int) -> None:
