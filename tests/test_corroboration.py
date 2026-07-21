@@ -132,6 +132,25 @@ def test_store_corroboration_uses_joined_source_paths(tmp_path):
     ]
 
 
+def test_corroboration_merges_different_raw_aliases_for_one_relation(tmp_path):
+    # #252: facts are now stored with the raw label each source used, so two
+    # sources that said "설립" and "founded" for the same established_on relation
+    # must still count as one cross-source corroboration, not two. The grouping key
+    # canonicalizes the relation, mirroring `single_valued_conflicts`; before the
+    # fix this happened to work only because storage was already canonical.
+    s = _store(tmp_path)
+    a = s.add_source("sources/a.md")
+    b = s.add_source("sources/b.md")
+    s.add_fact("회사", "설립", "2020", status="confirmed", source_id=a)
+    s.add_fact("회사", "founded", "2020", status="confirmed", source_id=b)
+
+    support = store_corroboration(s)
+
+    assert [(x.subject, x.relation, x.object, x.source_count) for x in support] == [
+        ("회사", "established_on", "2020", 2)
+    ]
+
+
 def test_single_valued_conflicts_include_per_value_source_support():
     rows = [
         {

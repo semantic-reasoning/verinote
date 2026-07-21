@@ -243,8 +243,18 @@ def store_typed_relations(store: Store) -> dict[str, TypedRelationSpec]:
     return typed_relations(path.read_text(encoding="utf-8"))
 
 
-def corroboration(facts: Iterable[Mapping[str, object]]) -> list[FactSupport]:
-    """Return distinct-source support for confirmed/accepted SPO triples."""
+def corroboration(
+    facts: Iterable[Mapping[str, object]],
+    aliases: dict[str, str] | None = None,
+) -> list[FactSupport]:
+    """Return distinct-source support for confirmed/accepted SPO triples.
+
+    The grouping key canonicalizes the relation, like `single_valued_conflicts`,
+    so two sources that used different raw aliases for the same relation ("설립"
+    and "founded") still merge into one corroborated group now that facts are
+    stored with their raw labels (#252).
+    """
+    aliases = aliases or {}
     sources: dict[tuple[str, str, str], set[str]] = {}
     for row in facts:
         if not is_engine_input(_value(row, "status", "")):
@@ -252,7 +262,8 @@ def corroboration(facts: Iterable[Mapping[str, object]]) -> list[FactSupport]:
         source = _source_ref(row)
         if not source:
             continue
-        key = (str(row["subject"]), str(row["relation"]), str(row["object"]))
+        relation = _canonical_relation(str(row["relation"]), aliases)
+        key = (str(row["subject"]), relation, str(row["object"]))
         sources.setdefault(key, set()).add(source)
     return [
         FactSupport(subject=s, relation=r, object=o, sources=tuple(sorted(srcs)))
@@ -312,7 +323,7 @@ def single_valued_conflicts(
 
 
 def store_corroboration(store: Store) -> list[FactSupport]:
-    return corroboration(store.facts())
+    return corroboration(store.facts(), store_relation_aliases(store))
 
 
 def store_single_valued_conflicts(store: Store) -> list[SingleValuedConflict]:
