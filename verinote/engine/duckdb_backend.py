@@ -42,6 +42,7 @@ from verinote.engine.wirelog import (
     NO_FINDINGS_TEXT,
     FindingRow,
     answer_bucket_sort_key,
+    dead_rule_warnings,
 )
 
 _ERROR_PREFIX = "error_"
@@ -464,8 +465,17 @@ def _collect_report(
             answers_by_q.items(), key=lambda item: answer_bucket_sort_key(item[0])
         )
     ]
+    present_relations = {
+        bare_label(_coerce_fact_term(row["relation"])) for row in facts
+    }
+    dead = dead_rule_warnings(policy_dl, present_relations)
+
     rendered_errors = sorted(f"ERROR {derived.text}" for derived in errors)
-    rendered_warnings = sorted(f"WARN {derived.text}" for derived in warnings)
+    # A dead-rule note describes the policy, not a derived tuple: it merges into
+    # the warning lines and the count, but gets no `FindingRow` (nothing fired
+    # behind it), mirroring the legacy wirelog path.
+    warning_lines = sorted([derived.text for derived in warnings] + dead)
+    rendered_warnings = [f"WARN {line}" for line in warning_lines]
     findings = rendered_errors + rendered_warnings
     finding_rows = [
         derived.finding_row(f"ERROR {derived.text}")
@@ -474,7 +484,8 @@ def _collect_report(
         derived.finding_row(f"WARN {derived.text}")
         for derived in sorted(warnings)
     ]
-    summary = f"errors: {len(errors)}  warnings: {len(warnings)}  facts: {len(facts)}"
+    warning_count = len(warning_lines)
+    summary = f"errors: {len(errors)}  warnings: {warning_count}  facts: {len(facts)}"
     body = "\n".join(findings) if findings else NO_FINDINGS_TEXT
     if answers:
         body += "\n\n--- answers ---\n" + "\n".join(answers)
@@ -488,7 +499,7 @@ def _collect_report(
     return CheckReport(
         ok=not errors,
         errors=len(errors),
-        warnings=len(warnings),
+        warnings=warning_count,
         answers=answers,
         text=f"backend: DuckDB\n{summary}\n\n{body}{debug}",
         findings=findings,

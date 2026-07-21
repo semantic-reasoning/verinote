@@ -8,7 +8,11 @@ without the optional pyrewire engine installed.
 import pytest
 
 from verinote.engine import DEFAULT_POLICY, compile_dl, run_check
+from verinote.engine.duckdb_backend import run_check_duckdb
 from verinote.engine.wirelog import dead_rule_warnings
+from verinote.pipeline.query_candidate_eval import RELATION_DECL
+from verinote.pipeline.verify import policy_path, verify
+from verinote.store import Store
 
 
 def test_default_policy_flags_unused_functional_relations():
@@ -112,3 +116,140 @@ def test_run_check_surfaces_dead_rule_as_nonblocking_finding():
     assert rep.errors == 0
     assert rep.warnings >= 1
     assert any("WARN dead_rule" in f for f in rep.findings)
+
+
+# --- Production path (DuckDB) -------------------------------------------------
+# The tests above exercise the pure helper; these exercise the wiring #286 adds
+# to `duckdb_backend._collect_report`, the path every real report goes through.
+
+
+def _store(tmp_path) -> Store:
+    s = Store(tmp_path / "kb.sqlite")
+    s.init_schema()
+    return s
+
+
+def test_duckdb_production_path_surfaces_dead_rule_with_consistent_count():
+    """The production report path now emits the dead-rule WARN #245 could not.
+
+    This is the regression the issue asks for, and unlike the pyrewire-gated
+    legacy test above it actually runs in CI. It also pins the three-locations
+    count invariant: the `warnings: N` baked into the report body must match the
+    `warnings` field exactly, or the merge updated the WARN line but not the
+    count.
+    """
+    pytest.importorskip("duckdb")
+    rep = run_check_duckdb(
+        [
+            {"subject": "Org", "relation": "established_on", "object": "2020"},
+            {"subject": "Org", "relation": "is_a", "object": "company"},
+        ]
+    )
+
+    assert rep.ok is True
+    assert rep.errors == 0
+    assert rep.warnings >= 1
+    assert any("WARN dead_rule" in f for f in rep.findings)
+    assert f"warnings: {rep.warnings}  facts:" in rep.text
+
+
+def test_verify_end_to_end_surfaces_dead_rule_for_recorded_policy(tmp_path):
+    """The issue's headline acceptance criterion, through the real `verify()`."""
+    pytest.importorskip("duckdb")
+    s = _store(tmp_path)
+    s.add_fact("Org", "is_a", "company", status="confirmed")
+    path = policy_path(s)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
+        ".decl functional(rel: symbol)\n"
+        'functional("acquired_on").\n'
+        ".decl error_functional_conflict(subject: symbol, rel: symbol)\n"
+        "error_functional_conflict(S, R) :- "
+        "relation(S, R, A), relation(S, R, B), functional(R), A != B.\n",
+        encoding="utf-8",
+    )
+
+    rep = verify(s)
+
+    assert rep.ok is True
+    assert rep.errors == 0
+    assert rep.warnings == 1
+    assert any('dead_rule: policy declares functional("acquired_on")' in f for f in rep.findings)
+    s.close()
+
+
+def test_verify_aliased_fact_reads_canonical_relation_not_raw(tmp_path):
+    """The canonical-field guard: an aliased fact must not read as a dead rule.
+
+    "설립" is a shipped alias of `established_on`, canonicalized at read time. The
+    dead-rule check reads each fact's canonical `relation`, so
+    `functional("established_on")` is seen as alive. Had it read `relation_raw`
+    (still "설립"), established_on would be falsely flagged dead — this test fails
+    in exactly that case. born_on/died_on stay genuinely unused, proving the
+    detector ran rather than silently doing nothing.
+    """
+    pytest.importorskip("duckdb")
+    s = _store(tmp_path)
+    s.add_fact("Org", "설립", "2020", status="confirmed")
+
+    rep = verify(s)
+
+    assert rep.ok is True
+    assert rep.errors == 0
+    assert not any('functional("established_on")' in f for f in rep.findings)
+    assert any('dead_rule: policy declares functional("born_on")' in f for f in rep.findings)
+    s.close()
+
+
+def test_duckdb_zero_input_is_never_flagged_as_dead():
+    """An empty KB is no engine input, not a dead policy — the guard holds here."""
+    pytest.importorskip("duckdb")
+    rep = run_check_duckdb([], policy_dl=DEFAULT_POLICY)
+
+    assert rep.ok is True
+    assert not any("dead_rule" in f for f in rep.findings)
+
+
+def test_duckdb_rule_less_relation_decl_emits_no_dead_rule():
+    """`ask`/`query_candidate_eval` pass RELATION_DECL: it must stay inert.
+
+    A bare `relation/3` decl references no relation literal, so dead-rule
+    detection is empty by construction — the query paths never start emitting
+    this note even over real facts.
+    """
+    pytest.importorskip("duckdb")
+    rep = run_check_duckdb(
+        [
+            {"subject": "Org", "relation": "established_on", "object": "2020"},
+            {"subject": "Org", "relation": "is_a", "object": "company"},
+        ],
+        policy_dl=RELATION_DECL,
+    )
+
+    assert rep.ok is True
+    assert not any("dead_rule" in f for f in rep.findings)
+
+
+def test_duckdb_conflict_and_dead_rule_coexist_without_suppression():
+    """A blocking ERROR and a non-blocking dead-rule WARN must both survive.
+
+    This is the only shape that can catch a false-*suppression* merge bug: every
+    other production-path test has `errors == 0`, so none of them could prove a
+    dead-rule note fails to accidentally clear a real gate. established_on is used
+    (its conflict is real and blocks); born_on/died_on are unused (dead notes).
+    """
+    pytest.importorskip("duckdb")
+    rep = run_check_duckdb(
+        [
+            {"subject": "Org", "relation": "established_on", "object": "2020"},
+            {"subject": "Org", "relation": "established_on", "object": "2021"},
+            {"subject": "Org", "relation": "is_a", "object": "company"},
+        ]
+    )
+
+    assert rep.ok is False
+    assert rep.errors >= 1
+    assert rep.warnings >= 1
+    assert "ERROR functional_conflict: Org established_on" in rep.findings
+    assert any(f.startswith("WARN dead_rule:") for f in rep.findings)
