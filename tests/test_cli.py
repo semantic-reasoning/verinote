@@ -441,9 +441,11 @@ def test_query_persists_translation_failure_reason(tmp_path, monkeypatch, capsys
 
     rc = cli.main(["query", "What is the sample answer?"])
 
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "q1: translation_failed - provider unavailable" in out
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "q1: translation_failed - provider unavailable" in captured.out
+    assert "translated 0 question(s), 1 failed" in captured.out
+    assert "provider unavailable" in captured.err
     s = Store(tmp_path / "kb.sqlite")
     q = s.questions()[0]
     assert q["status"] == "translation_failed"
@@ -461,14 +463,51 @@ def test_query_persists_get_client_failure_reason(tmp_path, monkeypatch, capsys)
 
     rc = cli.main(["query", "What is the sample answer?"])
 
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "q1: translation_failed - missing provider credentials" in out
+    # Every question is marked translation_failed on a get_client failure, so the
+    # run is a total failure: rc 1, with the reason surfaced and the count split.
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "q1: translation_failed - missing provider credentials" in captured.out
+    assert "translated 0 question(s), 1 failed" in captured.out
+    assert "missing provider credentials" in captured.err
     s = Store(tmp_path / "kb.sqlite")
     q = s.questions()[0]
     assert q["status"] == "translation_failed"
     assert q["reason"] == "missing provider credentials"
     assert (tmp_path / "facts" / "query.dl").read_text(encoding="utf-8") == ""
+
+
+def test_query_mixed_outcomes_exits_nonzero_with_split(
+    tmp_path, monkeypatch, capsys, fake_client, intent_payload
+):
+    # One question translates, one fails: rc 1 (any failure), and the summary
+    # splits the counts so the translated one is not hidden and the failure is
+    # not hidden behind it.
+    _env(monkeypatch, tmp_path)
+    store = Store(tmp_path / "kb.sqlite")
+    store.init_schema()
+    store.add_fact("Sample Subject", "is_a", "Synthetic Answer", status="confirmed")
+    store.add_question("What is Sample Subject?")
+    store.add_question("Please fail this question?")
+    store.close()
+
+    def intent_for(question):
+        if "fail" in question:
+            raise LLMError("provider rejected this question")
+        return intent_payload("lookup_object", subject="Sample Subject", relation="is_a")
+
+    monkeypatch.setattr(
+        "verinote.llm.get_client", lambda cfg: fake_client(intent=intent_for)
+    )
+
+    rc = cli.main(["query"])
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "q1: translated" in captured.out
+    assert "q2: translation_failed" in captured.out
+    assert "translated 1 question(s), 1 failed" in captured.out
+    assert "provider rejected this question" in captured.err
 
 
 def test_query_no_pending_errors(tmp_path, monkeypatch, capsys):

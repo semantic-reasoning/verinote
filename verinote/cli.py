@@ -643,8 +643,31 @@ def cmd_query(cfg: Config, args: argparse.Namespace) -> int:
         results = translate_questions(store, client, root=cfg.root)
     for r in results:
         print(f"  {format_question_outcome(r)}")
-    print(f"translated {len(results)} question(s) -> {cfg.root / 'facts' / 'query.dl'}")
+    translated = sum(1 for r in results if r["status"] == "translated")
+    failures = [r for r in results if r["status"] == "translation_failed"]
+    # review_required/no_answer/ambiguous are durable review verdicts, not
+    # failures (#296): a question legitimately ending there is not a broken run.
+    # They count as neither translated nor failed — but surface their number, so
+    # a run made only of them does not read as a silent "translated 0" success.
+    for_review = sum(
+        1 for r in results if r["status"] in {"review_required", "no_answer", "ambiguous"}
+    )
+    # "translated {n} question(s)" is preserved verbatim as the prefix (callers
+    # and tests read it); n is the count that genuinely translated, not the total.
+    summary = f"translated {translated} question(s)"
+    if failures:
+        summary += f", {len(failures)} failed"
+    if for_review:
+        summary += f", {for_review} for review"
+    summary += f" -> {cfg.root / 'facts' / 'query.dl'}"
+    print(summary)
     print("run the check to see answers (`verinote ui` → Report)")
+    if failures:
+        # Any translation_failed is a hard failure (#243): exit rc 1 and put the
+        # first failure's bounded reason on stderr so a non-web user sees why.
+        print(failures[0]["reason"], file=sys.stderr)
+        store.close()
+        return 1
     store.close()
     return 0
 
