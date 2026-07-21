@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
 import json
+import sqlite3
 
 import pytest
 
@@ -434,6 +435,112 @@ def test_note_fact_reobserved_anchors_each_distinct_artifact(tmp_path):
     evidence = s.fact_evidence(fact_id)
     assert len(evidence) == 2
     assert {e["artifact_id"] for e in evidence} == {artifact_one, artifact_two}
+
+
+def _fact_columns(store) -> set[str]:
+    return {row["name"] for row in store._conn.execute("PRAGMA table_info(facts)")}
+
+
+def test_fresh_facts_table_has_the_stale_column(tmp_path):
+    # #329: a fresh DB built straight from schema.sql carries the staleness flag.
+    s = _store(tmp_path)
+    assert "stale" in _fact_columns(s)
+
+
+def test_migration_adds_the_stale_column_to_a_legacy_facts_table(tmp_path):
+    # A pre-#329 KB predates the column; reopening must migrate it in so a fresh
+    # and a migrated DB expose the same `facts` schema. Mirrors the term_token
+    # legacy-migration guard, and the column here (unlike term_token) is NOT NULL,
+    # so every backfilled row must land a concrete 0 rather than NULL.
+    conn = sqlite3.connect(tmp_path / "kb.sqlite")
+    conn.execute(
+        """
+        CREATE TABLE facts (
+            id INTEGER PRIMARY KEY,
+            subject TEXT NOT NULL,
+            relation TEXT NOT NULL,
+            object TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'candidate',
+            confidence REAL NOT NULL DEFAULT 0.0,
+            source_id INTEGER,
+            run_id INTEGER,
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute("INSERT INTO facts(subject, relation, object) VALUES('A', 'is_a', 'B')")
+    conn.commit()
+    conn.close()
+
+    reopened = _store(tmp_path)
+    try:
+        assert "stale" in _fact_columns(reopened)
+        row = reopened._conn.execute("SELECT stale FROM facts").fetchone()
+        assert row["stale"] == 0
+    finally:
+        reopened.close()
+
+
+def test_note_fact_reobserved_clears_stale_on_the_existing_anchor_path(tmp_path):
+    # The drop-then-revert regression: a fact demoted stale=1 whose content returns
+    # at an artifact it was ALREADY anchored to. The anchor exists, so the method
+    # early-returns False with no new row -- yet it must still clear the stale bit,
+    # and must leave the human's needs_review status untouched.
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    artifact_id = s.add_source_artifact(
+        source_id=sid, kind="original_text", path="sources/a.txt"
+    )
+    fact_id = s.add_fact("A", "is_a", "B", source_id=sid)
+    assert (
+        s.note_fact_reobserved(fact_id=fact_id, source_id=sid, artifact_id=artifact_id)
+        is True
+    )
+    # Simulate Unit 3's future sweep demoting the citation as stale.
+    s._conn.execute(
+        "UPDATE facts SET status = 'needs_review', stale = 1 WHERE id = ?", (fact_id,)
+    )
+
+    reobserved = s.note_fact_reobserved(
+        fact_id=fact_id, source_id=sid, artifact_id=artifact_id
+    )
+
+    assert reobserved is False  # anchor already present -- no new row
+    assert len(s.fact_evidence(fact_id)) == 1
+    assert s.get_fact(fact_id)["stale"] == 0  # cleared despite the early return
+    assert s.get_fact(fact_id)["status"] == "needs_review"  # status left to the human
+
+
+def test_note_fact_reobserved_clears_stale_on_the_new_anchor_path(tmp_path):
+    # A stale fact re-observed at a genuinely NEW artifact both anchors fresh
+    # evidence and clears the stale bit.
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    artifact_one = s.add_source_artifact(
+        source_id=sid, kind="original_text", path="sources/a-v1.txt", checksum="v1"
+    )
+    artifact_two = s.add_source_artifact(
+        source_id=sid, kind="original_text", path="sources/a-v2.txt", checksum="v2"
+    )
+    fact_id = s.add_fact("A", "is_a", "B", source_id=sid)
+    assert (
+        s.note_fact_reobserved(fact_id=fact_id, source_id=sid, artifact_id=artifact_one)
+        is True
+    )
+    s._conn.execute(
+        "UPDATE facts SET status = 'needs_review', stale = 1 WHERE id = ?", (fact_id,)
+    )
+
+    reobserved = s.note_fact_reobserved(
+        fact_id=fact_id, source_id=sid, artifact_id=artifact_two
+    )
+
+    assert reobserved is True  # a new anchor at the new artifact
+    assert len(s.fact_evidence(fact_id)) == 2
+    assert s.get_fact(fact_id)["stale"] == 0
+    assert s.get_fact(fact_id)["status"] == "needs_review"
 
 
 def test_source_artifacts_are_upserted_and_listed_with_counts(tmp_path):

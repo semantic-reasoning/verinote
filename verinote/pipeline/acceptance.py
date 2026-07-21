@@ -175,6 +175,7 @@ class _FactView:
     relation: str
     object: str
     status: str
+    stale: bool
     source: str
     job_id: int | None
     canonical_relation: str
@@ -217,6 +218,12 @@ class _RecommendationEngine:
                 reasons.append("source_analysis_incomplete")
         if self._has_single_valued_conflict(target):
             reasons.append("single_valued_conflict")
+        # A fact the staleness sweep demoted must never re-promote ITSELF, even
+        # when its value keeps other live witnesses -- the _supporting_facts
+        # exclusion alone leaks here, because excluding the stale fact from its own
+        # support set still leaves >=2 other distinct sources (#329 Gap 1).
+        if target.stale and target.status == "needs_review":
+            reasons.append("stale_citation")
 
         return AcceptRecommendation(
             fact_id=target.id,
@@ -233,6 +240,12 @@ class _RecommendationEngine:
             fact
             for fact in self.facts
             if (is_review_eligible(fact.status) or is_engine_input(fact.status))
+            # A fact the staleness sweep demoted (its source text no longer
+            # supports it) stays review-eligible by status but must not corroborate
+            # any value while it awaits a human -- #329. Conditioning on
+            # needs_review keeps the flag inert the moment a human confirms or
+            # rejects, so no explicit clear is owed on those transitions.
+            and not (fact.stale and fact.status == "needs_review")
             and fact.subject == target.subject
             and fact.canonical_relation == target.canonical_relation
             and fact.object_key == target.object_key
@@ -323,6 +336,7 @@ def _view_fact(
         relation=relation,
         object=str(row["object"]),
         status=str(row["status"]),
+        stale=bool(row["stale"]),
         source=str(row["source_path"] or "").strip(),
         job_id=int(row["job_id"]) if row["job_id"] is not None else None,
         canonical_relation=canonical,
