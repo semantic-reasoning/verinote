@@ -332,8 +332,11 @@ def _extract_chunk(
     rows = _candidate_rows(facts, source_text, relation_aliases=aliases)
     inserted = 0
     for subject, relation, obj, f in rows:
-        if store.fact_exists_for_source(
-            source_id=source_id, subject=subject, relation=relation, obj=obj
+        if (
+            store.existing_fact_for_source(
+                source_id=source_id, subject=subject, relation=relation, obj=obj
+            )
+            is not None
         ):
             continue
         fact_id = store.add_fact(
