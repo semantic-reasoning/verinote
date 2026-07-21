@@ -159,7 +159,9 @@ def cmd_policy_reset(cfg: Config, args: argparse.Namespace) -> int:
 def _seed(store: Store) -> None:
     for subj, rel, obj, status, conf, src, note in _DEMO_FACTS:
         sid = store.add_source(src)
-        store.add_fact(subj, rel, obj, status=status, confidence=conf, source_id=sid, note=note)
+        store.reconcile_fact(
+            subj, rel, obj, status=status, confidence=conf, source_id=sid, note=note
+        )
 
 
 # The four ways an existing `kb.sqlite` can fail to be a usable KB. They are not

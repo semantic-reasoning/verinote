@@ -961,3 +961,94 @@ def test_process_extraction_job_dedupes_chunk_facts_by_source(tmp_path, fake_cli
 
     assert result.candidates == 1
     assert len(s.facts()) == 1
+
+
+def test_extract_source_does_not_resurrect_a_rejected_fact(tmp_path, fake_client):
+    # The headline #160 regression: a human rejects an extracted fact, then the
+    # same source is synced again. The rejection is terminal, so the re-sync must
+    # not bring the fact back as a fresh candidate.
+    s = _store(tmp_path)
+    facts = [ExtractedFact("A", "is_a", "B", 0.9, "n")]
+
+    run_one = s.add_run(provider="fake", model="m")
+    assert (
+        extract_source(
+            s,
+            fake_client(facts),
+            source_path="sources/x.txt",
+            source_text="...",
+            run_id=run_one,
+        )
+        == 1
+    )
+    [fact] = s.facts()
+    s.reject_fact(fact["id"])
+    assert s.get_fact(fact["id"])["status"] == "superseded"
+
+    run_two = s.add_run(provider="fake", model="m")
+    assert (
+        extract_source(
+            s,
+            fake_client(facts),
+            source_path="sources/x.txt",
+            source_text="...",
+            run_id=run_two,
+        )
+        == 0
+    )
+
+    rows = s.facts()
+    assert len(rows) == 1
+    assert rows[0]["id"] == fact["id"]
+    assert rows[0]["status"] == "superseded"
+
+
+def test_extract_source_reruns_add_no_duplicate_row_or_evidence(tmp_path, fake_client):
+    s = _store(tmp_path)
+    facts = [ExtractedFact("A", "is_a", "B", 0.9, "n")]
+
+    assert (
+        extract_source(
+            s, fake_client(facts), source_path="sources/x.txt", source_text="..."
+        )
+        == 1
+    )
+    evidence_before = s._conn.execute("SELECT COUNT(*) FROM fact_evidence").fetchone()[0]
+
+    assert (
+        extract_source(
+            s, fake_client(facts), source_path="sources/x.txt", source_text="..."
+        )
+        == 0
+    )
+
+    assert len(s.facts()) == 1
+    # A dedupe hit attaches no fresh evidence -- pins the no-evidence-on-hit rule.
+    assert (
+        s._conn.execute("SELECT COUNT(*) FROM fact_evidence").fetchone()[0]
+        == evidence_before
+    )
+
+
+def test_extract_source_rerun_still_inserts_a_genuinely_new_fact(tmp_path, fake_client):
+    s = _store(tmp_path)
+    first = [ExtractedFact("A", "is_a", "B", 0.9, "n")]
+    assert (
+        extract_source(
+            s, fake_client(first), source_path="sources/x.txt", source_text="..."
+        )
+        == 1
+    )
+
+    second = [
+        ExtractedFact("A", "is_a", "B", 0.9, "n"),
+        ExtractedFact("C", "is_a", "D", 0.8),
+    ]
+    assert (
+        extract_source(
+            s, fake_client(second), source_path="sources/x.txt", source_text="..."
+        )
+        == 1
+    )
+
+    assert {(f["subject"], f["object"]) for f in s.facts()} == {("A", "B"), ("C", "D")}
