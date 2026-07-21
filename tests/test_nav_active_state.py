@@ -28,9 +28,16 @@ NAV_ANCHOR = re.compile(r"<a\b([^>]*)>", re.S)
 HREF = re.compile(r'href="([^"]*)"')
 # Any spelling of the attribute counts as a claim of "this is the current page".
 ARIA_CURRENT = re.compile(r'aria-current\s*=\s*"page"')
+HEADER_BLOCK = re.compile(r"<header\b[^>]*>(.*?)</header>", re.S)
+FILTERS_NAV = re.compile(r'<nav\b[^>]*class="filters"[^>]*>(.*?)</nav>', re.S)
 
 
-CURRENT_SELECTOR = r'nav\s+a\[aria-current\s*=\s*"page"\]'
+# The active-page rule is scoped to the header nav (#225): review.html reuses
+# aria-current="page" on its own filter badges, so the marker alone cannot select
+# the rule -- the `header` ancestor is what keeps it off those badges.
+CURRENT_SELECTOR = r'header\s+nav\s+a\[aria-current\s*=\s*"page"\]'
+# The pre-scoping selector, which matched a current link in *any* nav.
+UNSCOPED_CURRENT_SELECTOR = r'nav\s+a\[aria-current\s*=\s*"page"\]'
 BASE_SELECTOR = r"nav\s+a"
 # Properties that cannot mark the link on their own: colour ones fail #226, and
 # spacing only makes room for a marker (padding under a `border-bottom: 0` draws
@@ -185,4 +192,42 @@ def test_current_link_is_marked_off_a_non_colour_channel() -> None:
     assert channels, (
         "the current nav link is distinguished by colour alone: "
         f"{_declarations(body)} leaves every non-colour channel at its `nav a` value"
+    )
+
+
+def test_active_style_is_scoped_to_the_header_nav(tmp_path) -> None:
+    """The header's active-page style must not bleed onto review.html's filters (#225).
+
+    review.html marks its active review filter with the same `aria-current="page"`
+    the header nav uses, but that <nav class="filters"> renders in <main>, outside
+    the <header>. An unscoped `nav a[aria-current="page"]` rule would therefore
+    paint the header-only weight/underline/padding onto the filter badge too, and
+    -- outspecifying plain `.badge` -- distort its pill. Scoping the rule under
+    `header` is what keeps the two navs apart, so this locks that scope in.
+    """
+    client = _client(tmp_path)
+    html = client.get("/review").text
+
+    # The overlap that makes a bleed possible is real: the header nav marks a
+    # current link, and so does the filters nav -- which sits outside the header.
+    header = HEADER_BLOCK.search(html)
+    assert header, "the review page renders no <header>"
+    assert ARIA_CURRENT.search(header.group(1)), "the header nav marks no current link"
+
+    filters = FILTERS_NAV.search(html)
+    assert filters, 'the review page renders no <nav class="filters">'
+    assert ARIA_CURRENT.search(filters.group(1)), (
+        'the active review filter should carry aria-current="page"'
+    )
+    assert filters.start() >= header.end(), "the filters nav is not outside the <header>"
+
+    # So the guard lives in the CSS: the active-page rule is scoped to the header
+    # nav, and no unscoped `nav a[aria-current]` rule survives to reach .filters.
+    assert _rule_body(CURRENT_SELECTOR) is not None, (
+        'app.css has no `header nav a[aria-current="page"]` rule -- the active-page '
+        "style is not scoped to the header nav"
+    )
+    assert _rule_body(UNSCOPED_CURRENT_SELECTOR) is None, (
+        'an unscoped `nav a[aria-current="page"]` rule also styles the active review '
+        "filter badge, not just the header nav"
     )

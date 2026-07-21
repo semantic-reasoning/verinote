@@ -37,8 +37,12 @@ header { display: flex; align-items: center; gap: 1.5rem;
 nav a { color: var(--muted); text-decoration: none; margin-right: 1rem; }
 nav a:hover { color: var(--fg); }
 /* The current page (#225). Colour alone would not carry it -- #226 -- so the
-   weight and the underline mark it on a non-colour channel too. */
-nav a[aria-current="page"] { color: var(--fg); font-weight: 600;
+   weight and the underline mark it on a non-colour channel too. Scoped to the
+   header nav: review.html's <nav class="filters"> marks its own active badge
+   with the same aria-current="page", and an unscoped `nav a[...]` would paint
+   this header-only weight/border/padding onto that badge -- outspecifying its
+   `.badge` pill -- so the rule must not reach any nav outside the header. */
+header nav a[aria-current="page"] { color: var(--fg); font-weight: 600;
   border-bottom: 2px solid var(--accent); padding-bottom: .2rem; }
 main { max-width: 1000px; margin: 0 auto; padding: 1.6rem 1.4rem; }
 main.chooser { max-width: 560px; padding-top: 12vh; }
