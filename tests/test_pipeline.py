@@ -11,8 +11,10 @@ from verinote.pipeline import (
     process_extraction_job,
     sync_sources,
 )
+from verinote.pipeline.extract import _canonical_fact
 from verinote.pipeline.query import query_path
 from verinote.pipeline.verify import verify
+from verinote.policy_defaults import RELATION_ALIASES_RELPATH
 from verinote.store import Store
 from verinote.engine.terms import Atom, Compound, StringLit
 
@@ -33,6 +35,12 @@ def _store(tmp_path) -> Store:
     s = Store(tmp_path / "kb.sqlite")
     s.init_schema()
     return s
+
+
+def _write_relation_aliases(root, body: str) -> None:
+    path = root / RELATION_ALIASES_RELPATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
 
 
 def test_extract_source_persists_candidates_with_linkage(tmp_path, fake_client):
@@ -490,7 +498,9 @@ def test_extract_source_keeps_non_metric_korean_object_without_local_subject(
     )
 
     fact = s.facts()[0]
-    assert fact["relation"] == "provides"
+    # Stored with its raw label now that write-time aliasing is gone (#252);
+    # ``제공기능`` canonicalizes to ``provides`` only at read time.
+    assert fact["relation"] == "제공기능"
     assert fact["object"] == "샘플기능"
 
 
@@ -498,7 +508,8 @@ def test_extract_source_drops_reversed_role_designation(tmp_path, fake_client):
     # ``org 역할 person`` is the reversed shape of ``person 역할 role``: it names a
     # person as the OBJECT of a role designation even though that person holds a
     # role themselves in the same batch. Drop it; keep the correct direction.
-    # (역할 canonicalizes to ``role`` under the default relation aliases.)
+    # The filter still canonicalizes 역할 -> ``role`` to make the drop decision,
+    # but the kept fact is now stored with its raw ``역할`` label (#252).
     s = _store(tmp_path)
     run_id = s.add_run(provider="fake", model="m")
     client = fake_client(
@@ -522,8 +533,8 @@ def test_extract_source_drops_reversed_role_designation(tmp_path, fake_client):
     facts = {
         (str(f["subject"]), str(f["relation"]), str(f["object"])) for f in s.facts()
     }
-    assert ("샘플인물", "role", "샘플직책") in facts
-    assert ("샘플조직", "role", "샘플인물") not in facts
+    assert ("샘플인물", "역할", "샘플직책") in facts
+    assert ("샘플조직", "역할", "샘플인물") not in facts
 
 
 def test_extract_source_keeps_org_representative_role_fact(tmp_path, fake_client):
@@ -554,6 +565,112 @@ def test_extract_source_keeps_org_representative_role_fact(tmp_path, fake_client
         "대표",
         "샘플인물",
     )
+
+
+def test_extract_source_stores_raw_alias_labels(tmp_path, fake_client):
+    # #252: an aliased relation is stored with the label the source used, never
+    # overwritten by its canonical form — canonicalization is a read-time concern.
+    # `설립` and `founded` both alias to `established_on`, but storage keeps the raw
+    # words. `founded` (an ASCII alias KEY absent from the Korean source) also
+    # exercises the ascii-legitimacy filter: it must canonicalize its own decision
+    # so a real aliased fact is kept, not dropped as an unbacked hallucination.
+    s = _store(tmp_path)
+    run_id = s.add_run(provider="fake", model="m")
+    client = fake_client(
+        [
+            ExtractedFact("샘플회사", "설립", "2020", 0.9),
+            ExtractedFact("샘플회사", "founded", "2021", 0.9),
+        ]
+    )
+
+    n = extract_source(
+        s,
+        client,
+        source_path="sources/x.txt",
+        source_text="샘플회사는 2020년에 설립되었고 2021년 기록도 있다",
+        run_id=run_id,
+    )
+
+    assert n == 2
+    stored = {(f["subject"], f["relation"], f["object"]) for f in s.facts()}
+    assert stored == {
+        ("샘플회사", "설립", "2020"),
+        ("샘플회사", "founded", "2021"),
+    }
+
+
+def test_extract_source_keeps_aliased_ascii_relation_but_drops_hallucination(
+    tmp_path, fake_client
+):
+    # The ascii-legitimacy filter must separate an aliased key it should keep from
+    # a genuine hallucination it should drop (#252): `founded` aliases to a
+    # policy-backed relation and is kept raw, while `invented_by` is not an alias
+    # and is absent from the source, so it is still dropped. Proves the filter was
+    # made alias-aware, not simply disabled.
+    s = _store(tmp_path)
+    run_id = s.add_run(provider="fake", model="m")
+    client = fake_client(
+        [
+            ExtractedFact("샘플회사", "founded", "2020", 0.9),
+            ExtractedFact("샘플회사", "invented_by", "누군가", 0.9),
+        ]
+    )
+
+    n = extract_source(
+        s,
+        client,
+        source_path="sources/x.txt",
+        source_text="샘플회사에 관한 국문 기록이다",
+        run_id=run_id,
+    )
+
+    assert n == 1
+    assert [(f["subject"], f["relation"], f["object"]) for f in s.facts()] == [
+        ("샘플회사", "founded", "2020")
+    ]
+
+
+def test_extract_source_keeps_aliased_hanja_relation(tmp_path, fake_client):
+    # A user-defined CJK/Hanja alias key (`設立` -> `established_on`) against a
+    # Hangul-only source must be kept and stored raw (#252). Before the fix the
+    # han-translation filter saw the raw `設立` — a CJK run absent from a Hangul
+    # source — and dropped it as a hallucinated translation; it must canonicalize
+    # the relation for that check so a legitimate aliased fact survives.
+    s = _store(tmp_path)
+    _write_relation_aliases(tmp_path, "- `設立` -> `established_on`\n")
+    run_id = s.add_run(provider="fake", model="m")
+    client = fake_client([ExtractedFact("샘플회사", "設立", "2020", 0.9)])
+
+    n = extract_source(
+        s,
+        client,
+        source_path="sources/x.txt",
+        source_text="샘플회사에 관한 국문 기록이다",
+        run_id=run_id,
+    )
+
+    assert n == 1
+    fact = s.facts()[0]
+    assert (fact["subject"], fact["relation"], fact["object"]) == (
+        "샘플회사",
+        "設立",
+        "2020",
+    )
+
+
+def test_canonical_fact_keeps_raw_relation_and_shape_normalization():
+    # #252 storage boundary: `_canonical_fact` no longer applies KB aliases, so an
+    # aliased relation is returned unchanged (raw). The two shape normalizations it
+    # is still responsible for stay intact: `_is_bad_spo_shape` drops a malformed
+    # fragment, and the hardcoded `값`/`value` family collapses to `value`.
+    aliased = ExtractedFact("샘플회사", "설립", "2020", 0.9)
+    assert _canonical_fact(aliased) is aliased
+
+    value_key = ExtractedFact("문서번호", "값", "A-001", 0.9)
+    assert _canonical_fact(value_key).relation == "value"
+
+    malformed = ExtractedFact("샘플", "판단 여부", "예", 0.9)
+    assert _canonical_fact(malformed) is None
 
 
 def test_extract_source_canonicalizes_generic_value_relation(tmp_path, fake_client):

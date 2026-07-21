@@ -26,11 +26,14 @@ from verinote.engine.policy_vocabulary import (
     FUNCTIONAL_CONFLICT_COLUMNS,
     FUNCTIONAL_CONFLICT_RULE,
 )
-from verinote.engine.terms import StringLit
+from verinote.engine.terms import StringLit, bare_label
+from verinote.llm.base import ExtractedFact
+from verinote.pipeline import extract_source
 from verinote.pipeline.engine_input import annotate_source_labels, engine_relation_rows
 from verinote.pipeline.query import query_path
 from verinote.pipeline.report_trace import report_trace
 from verinote.pipeline.verify import policy_path, verify
+from verinote.pipeline.workbench import trust_workbench
 from verinote.policy_defaults import RELATION_ALIASES_RELPATH
 from verinote.store import Store
 
@@ -241,6 +244,103 @@ def test_findings_name_the_conflicting_facts_in_the_source_s_own_words(tmp_path)
         f"(설립 #{first}=2020, founded #{second}=2021)"
     ]
     assert rep.findings[0] in rep.text
+
+
+def test_raw_alias_labels_survive_extraction_and_drive_read_time(tmp_path, fake_client):
+    """#252 end-to-end: extraction stores raw labels; read time canonicalizes them.
+
+    The regression this closes shipped precisely because #250's tests injected raw
+    labels with `add_fact`, bypassing extraction (the #241 mock gap). This drives
+    the real extractor: a source using both `설립` and `founded` for the functional
+    `established_on` relation must (1) be stored with those raw labels, (2) expose
+    them under `relation_raw` while the engine sees the canonical relation, (3)
+    surface the alias on the review badge, and (4) still be caught as one
+    functional conflict, named in the source's own words.
+    """
+    s = _store(tmp_path)
+    _write_policy(s, _FUNCTIONAL_POLICY.format(relation="established_on"))
+    client = fake_client(
+        [
+            ExtractedFact("회사", "설립", "2020", 0.9),
+            ExtractedFact("회사", "founded", "2021", 0.9),
+        ]
+    )
+
+    extract_source(
+        s,
+        client,
+        source_path="sources/x.txt",
+        source_text="회사는 2020년에 설립되었고 2021년 기록도 있다",
+    )
+
+    # (1) stored with the raw labels, not canonicalized to established_on.
+    stored = {(f["subject"], f["relation"], f["object"]) for f in s.facts()}
+    assert stored == {("회사", "설립", "2020"), ("회사", "founded", "2021")}
+
+    for fact in s.facts():
+        s.accept_fact(int(fact["id"]))
+
+    # (2) the engine sees the canonical relation; the raw label is preserved.
+    rows = engine_relation_rows(s)
+    assert {bare_label(row["relation"]) for row in rows} == {"established_on"}
+    assert {bare_label(row["relation_raw"]) for row in rows} == {"설립", "founded"}
+
+    # (3) the review badge fires — dead before the fix, when relation == canonical.
+    wb = trust_workbench(s)
+    badges = {
+        fact.relation_alias
+        for group in wb.conflicts
+        for value in group.values
+        for fact in value.facts
+    }
+    assert badges == {"설립 -> established_on", "founded -> established_on"}
+
+    # (4) one functional conflict, named in the source's own words.
+    rep = verify(s)
+    assert rep.errors == 1
+    conflict_findings = [f for f in rep.findings if "functional_conflict" in f]
+    assert len(conflict_findings) == 1
+    finding = conflict_findings[0]
+    assert "established_on" in finding
+    assert "설립" in finding and "founded" in finding
+
+
+def test_within_source_alias_variants_store_twice_without_false_conflict(
+    tmp_path, fake_client
+):
+    """#252 tradeoff: raw storage dedups per raw label, not per canonical relation.
+
+    Within one source the model may emit both `설립` and `founded` for the same
+    claim; they no longer merge at write time, so two candidate rows are stored.
+    This is an accepted, deliberate cost, not a bug: at read time both canonicalize
+    to `established_on` with the same value, so it is a redundant review candidate
+    and never a false conflict.
+    """
+    s = _store(tmp_path)
+    _write_policy(s, _FUNCTIONAL_POLICY.format(relation="established_on"))
+    client = fake_client(
+        [
+            ExtractedFact("회사", "설립", "2020", 0.9),
+            ExtractedFact("회사", "founded", "2020", 0.9),
+        ]
+    )
+
+    extract_source(
+        s,
+        client,
+        source_path="sources/x.txt",
+        source_text="회사는 2020년에 설립되었다",
+    )
+
+    stored = {(f["subject"], f["relation"], f["object"]) for f in s.facts()}
+    assert stored == {("회사", "설립", "2020"), ("회사", "founded", "2020")}
+
+    for fact in s.facts():
+        s.accept_fact(int(fact["id"]))
+
+    rep = verify(s)
+    assert rep.errors == 0
+    assert rep.ok is True
 
 
 def test_findings_name_canonical_and_aliased_facts_in_a_mixed_conflict(tmp_path):

@@ -650,14 +650,14 @@ def _candidate_rows(
     role_bearers = _role_bearer_subjects(facts, aliases)
     try:
         for f in facts:
-            f = _canonical_fact(f, aliases)
+            f = _canonical_fact(f)
             if f is None:
                 continue
-            if _is_normalization_bridge(f):
+            if _is_normalization_bridge(f, aliases):
                 continue
             if _is_reversed_role_designation(f, role_bearers, aliases):
                 continue
-            if _has_unbacked_han_translation(f, source_text):
+            if _has_unbacked_han_translation(f, source_text, aliases):
                 continue
             if _has_unbacked_ascii_relation(f, source_text, aliases):
                 continue
@@ -676,18 +676,22 @@ def _candidate_rows(
     return rows
 
 
-def _canonical_fact(
-    f: ExtractedFact, relation_aliases: dict[str, str]
-) -> ExtractedFact | None:
-    """Normalize shallow fact shapes and drop malformed S-P-O fragments."""
+def _canonical_fact(f: ExtractedFact) -> ExtractedFact | None:
+    """Normalize shallow fact shapes and drop malformed S-P-O fragments.
+
+    Relation aliases are applied at read time only (`engine_input`), never here:
+    overwriting the source's own label at write time destroys it irrecoverably
+    and defeats the `relation_raw` preservation, UI alias badge, and alias-file
+    re-decisions that read-time normalization exists to provide (#252). Each
+    later legitimacy filter canonicalizes the relation for its own decision, so
+    dropping the write-time merge keeps their behavior identical while storage
+    keeps the raw label. The `값`->`value` rewrite below is a separate, hardcoded
+    shape normalization with no read-time handler, so it stays.
+    """
     if _is_bad_spo_shape(f):
         return None
     if f.relation_kind == "string" and f.relation.strip() in _KEY_VALUE_RELATIONS:
         return replace(f, relation="value")
-    if f.relation_kind == "string":
-        relation = canonical_relation(f.relation.strip(), relation_aliases)
-        if relation != f.relation:
-            return replace(f, relation=relation)
     return f
 
 
@@ -715,10 +719,15 @@ def _slot_is_typed_literal(value: str, _kind: str) -> bool:
     return isinstance(term, Compound) and term.functor in _TYPED_LITERAL_FUNCTORS
 
 
-def _is_normalization_bridge(f: ExtractedFact) -> bool:
-    relation = f.relation.strip().lower()
-    relation_kind = f.relation_kind
-    if relation_kind != "string" or relation not in _NORMALIZATION_BRIDGE_RELATIONS:
+def _is_normalization_bridge(
+    f: ExtractedFact, relation_aliases: dict[str, str]
+) -> bool:
+    if f.relation_kind != "string":
+        return False
+    # Canonicalize first so an alias key still matches the bridge set (#252): the
+    # relation is now stored raw, so this filter no longer receives it canonical.
+    relation = canonical_relation(f.relation.strip(), relation_aliases).lower()
+    if relation not in _NORMALIZATION_BRIDGE_RELATIONS:
         return False
     return f.subject_kind == "term" or f.object_kind == "term"
 
@@ -774,13 +783,20 @@ def _is_reversed_role_designation(
     return f.object_kind == "string" and _norm_entity(f.object) in role_bearers
 
 
-def _has_unbacked_han_translation(f: ExtractedFact, source_text: str) -> bool:
-    """Drop likely Chinese/Hanja translations hallucinated from Korean sources."""
+def _has_unbacked_han_translation(
+    f: ExtractedFact, source_text: str, relation_aliases: dict[str, str]
+) -> bool:
+    """Drop likely Chinese/Hanja translations hallucinated from Korean sources.
+
+    Only the relation is canonicalized before the check (#252): subject and
+    object are never aliased, so they must be tested on their raw source labels.
+    """
     if _HANGUL_RE.search(source_text) is None:
         return False
+    relation = canonical_relation(f.relation.strip(), relation_aliases)
     return any(
         _has_han_run_not_in_source(value, source_text)
-        for value in (f.subject, f.relation, f.object)
+        for value in (f.subject, relation, f.object)
     )
 
 
@@ -790,7 +806,10 @@ def _has_unbacked_ascii_relation(
     """Drop English/snake_case relation labels hallucinated from Korean sources."""
     if _HANGUL_RE.search(source_text) is None:
         return False
-    relation = f.relation.strip()
+    # Canonicalize first so an aliased ASCII key (e.g. `founded`) is checked as
+    # its policy-backed canonical, not dropped as unbacked (#252): the relation is
+    # now stored raw, so this filter no longer receives it already canonical.
+    relation = canonical_relation(f.relation.strip(), relation_aliases)
     allowed_ascii = _policy_backed_ascii_relations(relation_aliases)
     if relation.casefold() in allowed_ascii:
         return False
