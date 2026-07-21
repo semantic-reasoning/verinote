@@ -74,11 +74,17 @@ def extract_source(
     schema_hint: str = "",
     run_id: int | None = None,
 ) -> int:
-    """Run extraction for one source; insert candidates. Returns count inserted.
+    """Run extraction for one source; reconcile candidates. Returns count inserted.
 
     Newly extracted facts land as `candidate` — they only become engine input
     after passing the human review gate (see the web review queue). Each fact
     cites its `source` and (when given) the `run` that produced it.
+
+    Re-extraction reconciles rather than blind-inserting: a triple already stored
+    for this source (in any status, a human's rejection included) is left as it
+    is, so a re-sync never resurrects a rejected fact (#160). The returned count
+    is the rows actually inserted, not the number extracted — the run summary
+    must not claim candidates for triples that were suppressed.
     """
     analysis_text = normalize_for_extraction(source_text)
     facts = _extract_chunk_facts(
@@ -99,8 +105,9 @@ def extract_source(
     rows = _candidate_rows(facts, analysis_text, relation_aliases=aliases)
 
     source_id = store.add_source(source_path)
+    inserted = 0
     for subject, relation, obj, f in rows:
-        fact_id = store.add_fact(
+        result = store.reconcile_fact(
             subject,
             relation,
             obj,
@@ -110,14 +117,17 @@ def extract_source(
             run_id=run_id,
             note=f.note,
         )
+        if not result.created:
+            continue
         store.add_fact_evidence(
-            fact_id=fact_id,
+            fact_id=result.fact_id,
             source_id=source_id,
             evidence_kind="chunk",
             locator="source",
             snippet=analysis_text,
         )
-    return len(rows)
+        inserted += 1
+    return inserted
 
 
 def create_chunked_extraction_job(
@@ -332,14 +342,7 @@ def _extract_chunk(
     rows = _candidate_rows(facts, source_text, relation_aliases=aliases)
     inserted = 0
     for subject, relation, obj, f in rows:
-        if (
-            store.existing_fact_for_source(
-                source_id=source_id, subject=subject, relation=relation, obj=obj
-            )
-            is not None
-        ):
-            continue
-        fact_id = store.add_fact(
+        result = store.reconcile_fact(
             subject,
             relation,
             obj,
@@ -350,8 +353,10 @@ def _extract_chunk(
             job_id=job_id,
             note=f.note,
         )
+        if not result.created:
+            continue
         store.add_fact_evidence(
-            fact_id=fact_id,
+            fact_id=result.fact_id,
             source_id=source_id,
             artifact_id=artifact_id,
             job_id=job_id,

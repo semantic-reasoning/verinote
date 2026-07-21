@@ -68,6 +68,21 @@ class ExistingFact:
     status: str
 
 
+@dataclass(frozen=True)
+class FactReconcileResult:
+    """The outcome of reconciling one (source, triple) against what is stored.
+
+    `created` is the only field a caller needs to decide whether to attach
+    evidence or count an insert; `matched_status` carries the pre-existing row's
+    status on a dedupe hit so a caller (or a later audit) can tell a suppressed
+    duplicate of a live candidate apart from one that re-hit a rejected fact.
+    """
+
+    fact_id: int  # existing row on a hit, or the newly created row
+    created: bool  # True only when a new row was inserted
+    matched_status: str | None  # status of the pre-existing row on a dedupe hit
+
+
 REVIEW_PAGE_SIZES = (25, 50, 100)
 DEFAULT_REVIEW_PAGE_SIZE = 50
 DEFAULT_REVIEW_SORT = "newest"
@@ -1044,6 +1059,64 @@ class Store:
                     self._delete_fact_terms_quietly(fact_id)
                 raise
             return fact_id
+
+    def reconcile_fact(
+        self,
+        subject: object,
+        relation: object,
+        obj: object,
+        *,
+        status: str = "candidate",
+        confidence: float = 0.0,
+        source_id: int | None = None,
+        run_id: int | None = None,
+        job_id: int | None = None,
+        note: str = "",
+    ) -> FactReconcileResult:
+        """The one place a (source, triple) is reconciled before it is inserted.
+
+        Every fact insert that cites a source goes through here: chunked
+        extraction, `extract_source`, and the demo seed used to each decide for
+        themselves whether the triple was already present, and two of the three
+        did not decide at all — they blind-inserted. That is how a fact a human
+        had rejected came back, on the next sync, as a fresh candidate (#160). A
+        prior row for this (source, triple) — in *any* status, superseded
+        included — is a match: we return it and insert nothing, so a terminal
+        rejection is never resurrected.
+
+        The lookup and the insert both run under `self._lock` (re-entrant, so
+        `add_fact` re-acquiring it below is safe), which is what makes the
+        decision atomic against other callers sharing this lock: no second caller
+        can slip an insert of the same triple between our miss and our write.
+
+        Precondition: callers pass a concrete `source_id`. A NULL `source_id`
+        never matches an existing row and so always falls through to insert —
+        the safe direction (a new row, never a wrongly-suppressed one), but not a
+        dedupe. Source-scoping is deliberate: the same triple from a different
+        source is a distinct citation and must insert.
+        """
+        with self._lock:
+            existing = self.existing_fact_for_source(
+                source_id=source_id, subject=subject, relation=relation, obj=obj
+            )
+            if existing is not None:
+                return FactReconcileResult(
+                    fact_id=existing.fact_id,
+                    created=False,
+                    matched_status=existing.status,
+                )
+            fact_id = self.add_fact(
+                subject,
+                relation,
+                obj,
+                status=status,
+                confidence=confidence,
+                source_id=source_id,
+                run_id=run_id,
+                job_id=job_id,
+                note=note,
+            )
+            return FactReconcileResult(fact_id=fact_id, created=True, matched_status=None)
 
     def get_fact_terms(self, fact_id: int):
         """Return structural DuckDB terms for a fact metadata row."""

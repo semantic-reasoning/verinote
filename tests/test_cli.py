@@ -683,6 +683,19 @@ def test_seed_targets_the_named_root(tmp_path, monkeypatch, capsys):
     assert f"seeded demo facts into {root}" in capsys.readouterr().out
 
 
+def test_seed_run_twice_does_not_double_demo_facts(tmp_path):
+    # Seed routes through reconcile_fact, so a second seed over the same demo
+    # (source, triple) pairs re-hits the existing rows instead of duplicating them.
+    store = Store(tmp_path / "kb.sqlite")
+    store.init_schema()
+
+    cli._seed(store)
+    cli._seed(store)
+
+    assert len(store.facts()) == len(cli._DEMO_FACTS)
+    store.close()
+
+
 def test_init_help_does_not_promise_verinote_root_only(capsys):
     with pytest.raises(SystemExit):
         cli.main(["init", "--help"])
