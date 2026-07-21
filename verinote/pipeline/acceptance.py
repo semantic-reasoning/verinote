@@ -183,10 +183,41 @@ class _RecommendationEngine:
         ]
 
     def _has_single_valued_conflict(self, target: _FactView) -> bool:
+        """True when another fact witnesses a rival value on a functional relation.
+
+        A rival is admitted by EXACTLY the filter `_supporting_facts` uses to
+        admit a witness FOR the value: review-eligible or engine-tier, and
+        source-backed. The symmetry is the point (#287). Scanning only the engine
+        tier here let a fact corroborate a value while being unable to speak
+        against a contradicting one, so two mutually-contradictory corroborated
+        candidates never saw each other and BOTH auto-promoted — leaving the KB
+        failing its own functional_conflict policy with no human in the loop.
+
+        With the filters aligned, any contested value is withheld: neither rival
+        is eligible, in either evaluation order, so nothing promotes. Withholding
+        all of them is the rule's charter, not timidity — promoting either would
+        silently adjudicate an evidential conflict, and "oldest id wins" was
+        rejected precisely because a deterministic rule must not pick a truth. The
+        `fact.id == target.id` guard keeps a fact from counting as its own rival.
+
+        The deadlock is a human's to break, and the path is already wired:
+        rejecting the wrong value supersedes it (it then witnesses on neither
+        tier), which unblocks the survivor on the next `_maybe_apply_auto_accept`
+        cascade that every review decision triggers. Residual limitation, out of
+        scope here: a second DB connection could still race this snapshot — the
+        write-time re-check in `auto_accept_fact` re-reads only the engine tier,
+        so two candidates promoted concurrently on separate connections are not
+        caught by it. Closing that needs write-time atomicity, not this filter.
+        """
         if target.canonical_relation not in self.single_valued:
             return False
         for fact in self.facts:
-            if not is_engine_input(fact.status):
+            if fact.id == target.id:
+                continue
+            if not (
+                (is_review_eligible(fact.status) or is_engine_input(fact.status))
+                and fact.source
+            ):
                 continue
             if fact.subject != target.subject:
                 continue
