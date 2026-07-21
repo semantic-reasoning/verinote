@@ -147,12 +147,25 @@ def trace_query_answers(store: Store, query: str) -> tuple[AnswerTrace, ...]:
                     conflicted=any(fact.conflicted for fact in trace_facts),
                 )
             )
-    return tuple(sorted(traces, key=lambda trace: (int(trace.qid), trace.value)))
+    return tuple(
+        sorted(traces, key=lambda trace: (*_qid_sort_key(trace.qid), trace.value))
+    )
 
 
 def _answer_qid(predicate: str) -> str | None:
     match = _ANSWER_RE.fullmatch(predicate)
     return match.group("qid") if match else None
+
+
+def _qid_sort_key(qid: str) -> tuple[int, int]:
+    # `_ANSWER_RE` guarantees all-digits but not that `int()` accepts them: past
+    # `sys.get_int_max_str_digits()` (4300 by default) it raises ValueError. Mirror
+    # `answer_bucket_sort_key`: park a pathologically long qid in a trailing bucket
+    # so it sorts after every parseable one instead of 500ing /report mid-sort.
+    try:
+        return (0, int(qid))
+    except ValueError:
+        return (1, 0)
 
 
 def _direct_relation_atom(body: tuple[AtomExpr | Comparison, ...]) -> AtomExpr | None:
