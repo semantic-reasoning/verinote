@@ -51,7 +51,14 @@ _NUMERIC_QID = re.compile(r"[0-9]+\Z")
 def answer_bucket_sort_key(qid: str) -> tuple[int, int, str]:
     """Order answer buckets by question number, not by how the digits sort."""
     if _NUMERIC_QID.fullmatch(qid):
-        return (0, int(qid), qid)
+        # All-digits does not guarantee `int()` succeeds: past
+        # `sys.get_int_max_str_digits()` (4300 by default) it raises ValueError.
+        # A qid is user-authored, so park a pathologically long number in the
+        # trailing bucket alongside malformed qids rather than crash the sort.
+        try:
+            return (0, int(qid), qid)
+        except ValueError:
+            pass
     return (1, 0, qid)
 
 # Shipped default policy. `verinote init` scaffolds a copy to
