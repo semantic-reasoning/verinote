@@ -1081,6 +1081,56 @@ class Store:
             )
             return int(cur.fetchone()[0])
 
+    def note_fact_reobserved(
+        self,
+        *,
+        fact_id: int,
+        source_id: int,
+        artifact_id: int,
+        job_id: int | None = None,
+        chunk_id: int | None = None,
+        snippet: str = "",
+    ) -> bool:
+        """Anchor an already-stored fact's citation at the artifact a re-extraction
+        run just re-observed it in.
+
+        A dedupe hit inserts nothing (`reconcile_fact`), so absent this the only
+        evidence tying a fact to a run is the fresh-insert anchor from whichever
+        run first extracted it — leaving a fact a later edit genuinely dropped and
+        one merely re-observed indistinguishable. Writing an anchor at the current
+        artifact repairs the citation surface directly (provenance reads
+        `fact_evidence`), not just "we saw it again".
+
+        Idempotent per (fact_id, artifact_id): chunk overlap re-hits a
+        boundary-straddling triple within one run and every re-sync re-hits every
+        surviving triple, so a naive insert would pile up duplicate anchors. There
+        is no `UNIQUE(fact_id, artifact_id)` on `fact_evidence` to lean on, so the
+        existence check and the insert both run under `self._lock` (re-entrant, so
+        `add_fact_evidence` re-acquiring it is safe) — no concurrent caller can
+        slip an anchor of the same pair between the check and the write. Returns
+        True only when a new anchor was written, False when the pair already had
+        one.
+        """
+        with self._lock:
+            existing = self._conn.execute(
+                "SELECT 1 FROM fact_evidence "
+                "WHERE fact_id = ? AND artifact_id = ? LIMIT 1",
+                (fact_id, artifact_id),
+            ).fetchone()
+            if existing is not None:
+                return False
+            self.add_fact_evidence(
+                fact_id=fact_id,
+                source_id=source_id,
+                artifact_id=artifact_id,
+                job_id=job_id,
+                chunk_id=chunk_id,
+                evidence_kind="chunk",
+                locator="chunk",
+                snippet=snippet,
+            )
+            return True
+
     def fact_evidence(self, fact_id: int) -> list[sqlite3.Row]:
         """Evidence anchors for one fact, oldest first."""
         return list(
