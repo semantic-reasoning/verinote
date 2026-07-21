@@ -758,7 +758,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 with Store(cfg.db_path) as worker_store:
                     worker_store.init_schema()
                     client = get_client(cfg)
-                    process_extraction_job(
+                    result = process_extraction_job(
                         worker_store,
                         client,
                         job_id=job_id,
@@ -766,8 +766,48 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                         retry=retry,
                         retry_max_attempts=retry_max_attempts,
                     )
+                    # A clean run judges staleness: a confirmed/accepted citation
+                    # whose source text changed under it returns to review (#329).
+                    # The sweep is a SIBLING of `process_extraction_job`, not folded
+                    # inside it, for separation of concerns: extraction stays a pure
+                    # primitive, while the sweep's return value (the demoted fact
+                    # ids) is needed HERE to thread into `exclude_fact_ids` below.
+                    # Sibling placement does not by itself avoid the outer `except
+                    # Exception -> fail_extraction_job` — this call still sits in the
+                    # same try — so the local guard below is what actually keeps a
+                    # sweep error from retroactively flipping an already-`done` job
+                    # to `failed`. `assert_writable` runs first (and OUTSIDE that
+                    # guard) so a policy that vanished post-completion routes to the
+                    # PolicyMissingError handler instead of demoting facts against a
+                    # halted KB (#194) — the store layer trusts its caller for this,
+                    # exactly as `process_extraction_job` and auto-accept do.
+                    demoted_ids: tuple[int, ...] = ()
+                    if result.failed_chunks == 0:
+                        assert_writable(worker_store)
+                        try:
+                            demoted_ids = tuple(
+                                int(row["id"])
+                                for row in worker_store.surface_stale_engine_facts(job_id)
+                            )
+                        except Exception:  # noqa: BLE001 - a sweep error must not fail a done job
+                            # The sweep does no LLM/network I/O, so a raise here is a
+                            # rare sqlite/WAL-lock-class error. Contain it: the
+                            # extraction genuinely succeeded, so leave the job `done`
+                            # and take no demotions this pass rather than letting the
+                            # outer handler bury a completed run as `failed`.
+                            logger.warning(
+                                "stale-citation sweep failed for job %s; leaving it done",
+                                job_id,
+                                exc_info=True,
+                            )
                     if cfg.auto_accept_recommendations:
-                        apply_auto_accept_recommendations(worker_store)
+                        # Exclude just-demoted facts so THIS request's auto-accept
+                        # pass can't demote-then-immediately-re-promote them. Part
+                        # C's `stale` flag is what blocks re-promotion on later
+                        # syncs; this only ever covered the same-pass case.
+                        apply_auto_accept_recommendations(
+                            worker_store, exclude_fact_ids=demoted_ids
+                        )
             except PolicyMissingError as e:
                 # ORDER IS LOAD-BEARING — this must stay ABOVE `except Exception`.
                 # The worker runs outside the request middleware, so a halt surfaces
@@ -777,11 +817,12 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 # `failed` state nothing resumes. So this handler writes NOTHING and
                 # only logs. (#194)
                 #
-                # It catches halts from two places, and they leave the job in
+                # It catches halts from three places, and they leave the job in
                 # different states: `process_extraction_job` has already rolled a
-                # mid-job halt back to `pending`, while `apply_auto_accept_
-                # recommendations` halts *after* the job finished `done`, with no
-                # rollback at all. The message must therefore not assert a rollback
+                # mid-job halt back to `pending`, while the pre-sweep
+                # `assert_writable` and `apply_auto_accept_recommendations` both halt
+                # *after* the job finished `done`, with no rollback at all. The
+                # message must therefore not assert a rollback
                 # — a log line claiming one for a `done` job would be the same class
                 # of falsehood this change removes. Whoever rewinds, rewinds; this
                 # handler reports.

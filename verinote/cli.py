@@ -66,6 +66,7 @@ class _SourceSyncOutcome:
     message: str = ""
     job_total_candidates: int | None = None
     resumed_job_id: int | None = None
+    stale_surfaced: int = 0
 
 
 @dataclass(frozen=True)
@@ -517,7 +518,7 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
         process_extraction_job,
         sync_sources,
     )
-    from verinote.pipeline.policy_state import PolicyMissingError
+    from verinote.pipeline.policy_state import assert_writable, PolicyMissingError
     from verinote.prompts import PromptError
 
     def extraction_schema_hint() -> str:
@@ -645,6 +646,22 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     if outcome.failed_chunks
                     else ""
                 )
+                # A clean run is the only one allowed to judge staleness: a source
+                # whose text changed under a confirmed/accepted citation returns
+                # that citation to review (#329). The store method re-verifies the
+                # clean-run gate authoritatively; this `failed_chunks == 0` is only
+                # the fast path, and a partial run must never sweep. The sweep is a
+                # SIBLING of `process_extraction_job` (separation of concerns:
+                # extraction stays a pure primitive, while the demoted count is
+                # needed here for the per-source line); unlike the web worker, this
+                # try has no `fail_extraction_job` path, so no local guard is owed.
+                # `assert_writable` first so a policy lost post-completion routes to
+                # the PolicyMissingError handler below rather than demoting facts
+                # against a halted KB (#194) — the store trusts its caller for this.
+                stale_surfaced = 0
+                if outcome.failed_chunks == 0:
+                    assert_writable(store)
+                    stale_surfaced = len(store.surface_stale_engine_facts(job_id))
                 # `outcome.candidates` is the job's running total, which for a
                 # continued (resumed OR retried) job counts candidates an earlier,
                 # interrupted run already extracted — using it here would credit
@@ -667,6 +684,7 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                             else None
                         ),
                         resumed_job_id=continued_job_id,
+                        stale_surfaced=stale_surfaced,
                     )
                 )
                 total += outcome.run_candidates
@@ -709,6 +727,11 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
             )
         else:
             print(f"  {outcome.source_path}: {outcome.candidates} candidate(s)")
+        if outcome.stale_surfaced:
+            print(
+                f"  {outcome.source_path}: {outcome.stale_surfaced} confirmed "
+                f"fact(s) returned to review — source text no longer supports them"
+            )
     for source in result.blocked:
         # The give-up signal #323 adds: a job whose chunk has exhausted its retries
         # will never make progress on its own, so name it on stderr and point at

@@ -2874,3 +2874,164 @@ def test_test_connection_surfaces_llm_error(tmp_path, monkeypatch, fake_client):
     r = c.post("/settings/test")
     assert r.status_code == 502
     assert "connection failed: no key" in r.text
+
+
+def test_worker_demotes_a_stale_fact_and_does_not_re_promote_it_same_request(
+    tmp_path, monkeypatch, fake_client
+):
+    # #329 web path: overwriting a source's text (a new artifact + a fresh job) runs
+    # the sweep as a sibling of extraction, returning the now-unsupported confirmed
+    # citation to review. The stale flag plus exclude_fact_ids keep the SAME
+    # request's auto-accept pass from immediately re-promoting it, even though two
+    # other sources still corroborate the value.
+    cfg = Config(
+        root=tmp_path,
+        db_path=tmp_path / "kb.sqlite",
+        provider="anthropic",
+        model="m",
+        api_key=None,
+        base_url=None,
+        auto_accept_recommendations=True,
+    )
+    policy = tmp_path / POLICY_RELPATH
+    with Store(cfg.db_path) as store:
+        store.init_schema()
+        src_a = store.add_source("sources/a.txt")
+        old = store.add_source_artifact(
+            source_id=src_a, kind="original_text", path="sources/a-v1.txt", checksum="a1"
+        )
+        new = store.add_source_artifact(
+            source_id=src_a, kind="original_text", path="sources/a-v2.txt", checksum="a2"
+        )
+        old_job = store.create_extraction_job(
+            source_id=src_a, artifact_id=old, provider="anthropic", model="m", total_chunks=1
+        )
+        oc = store.add_source_chunks(
+            job_id=old_job, source_id=src_a, chunks=["London body"]
+        )[0]
+        store.mark_extraction_job_running(old_job)
+        store.mark_chunk_running(oc)
+        store.mark_chunk_done(oc, candidates=1)
+        store.finish_extraction_job(old_job)
+        london_a = store.add_fact(
+            "Ada", "born_in", "London",
+            status="confirmed", source_id=src_a, job_id=old_job,
+        )
+        store.add_fact_evidence(
+            fact_id=london_a, source_id=src_a, artifact_id=old, snippet="London"
+        )
+        # Two other sources corroborate the value, so it WOULD be auto-accept
+        # eligible were it not stale + excluded this pass.
+        for path in ("sources/b.txt", "sources/c.txt"):
+            witness = store.add_source(path)
+            wj = store.create_extraction_job(
+                source_id=witness, provider="anthropic", model="m", total_chunks=1
+            )
+            wc = store.add_source_chunks(job_id=wj, source_id=witness, chunks=["x"])[0]
+            store.mark_extraction_job_running(wj)
+            store.mark_chunk_running(wc)
+            store.mark_chunk_done(wc, candidates=1)
+            store.finish_extraction_job(wj)
+            store.add_fact(
+                "Ada", "born_in", "London",
+                status="confirmed", source_id=witness, job_id=wj,
+            )
+        # The overwrite: a pending job at the NEW artifact whose text says Paris.
+        new_job = store.create_extraction_job(
+            source_id=src_a, artifact_id=new, provider="anthropic", model="m", total_chunks=1
+        )
+        store.add_source_chunks(
+            job_id=new_job, source_id=src_a, chunks=["Ada was born in Paris."]
+        )
+        policy.parent.mkdir(parents=True, exist_ok=True)
+        policy.write_text(DEFAULT_POLICY, encoding="utf-8")
+        store.record_policy_marker(policy_sha256(DEFAULT_POLICY), origin="scaffold")
+
+    monkeypatch.setattr(
+        webapp,
+        "get_client",
+        lambda cfg: fake_client([ExtractedFact("Ada", "born_in", "Paris", 0.9)]),
+    )
+
+    create_app(cfg)  # resumes the pending job -> _start_source_extraction
+
+    def swept():
+        assert _job_row(cfg, new_job)["status"] == "done"
+        with Store(cfg.db_path) as store:
+            store.init_schema()
+            london = next(
+                f for f in store.facts()
+                if f["object"] == "London" and f["source_id"] == src_a
+            )
+            assert london["status"] == "needs_review" and london["stale"] == 1
+
+    _wait_for(swept)
+    time.sleep(0.2)  # let an unguarded re-promotion land, if the wiring regressed
+    with Store(cfg.db_path) as store:
+        store.init_schema()
+        london = next(
+            f for f in store.facts()
+            if f["object"] == "London" and f["source_id"] == src_a
+        )
+        assert london["status"] == "needs_review"  # demoted, not re-promoted
+        assert london["stale"] == 1
+        paris = next(f for f in store.facts() if f["object"] == "Paris")
+        assert paris["status"] == "candidate"
+
+
+def test_worker_leaves_a_done_job_done_when_the_stale_sweep_raises(
+    tmp_path, monkeypatch, fake_client
+):
+    # #329 exception-safety: the sweep is a sibling call inside the worker's
+    # try/except, so WITHOUT the local guard a sweep error would reach the outer
+    # `except Exception -> fail_extraction_job` and retroactively flip a completed
+    # extraction to `failed` (the "KB lies about its own run state" class #194/#239
+    # closed). The local guard must keep an already-`done` job `done`.
+    cfg = Config(
+        root=tmp_path,
+        db_path=tmp_path / "kb.sqlite",
+        provider="anthropic",
+        model="m",
+        api_key=None,
+        base_url=None,
+    )
+    policy = tmp_path / POLICY_RELPATH
+    with Store(cfg.db_path) as store:
+        store.init_schema()
+        sid = store.add_source("sources/a.txt")
+        art = store.add_source_artifact(
+            source_id=sid, kind="original_text", path="sources/a.txt", checksum="v1"
+        )
+        job_id = store.create_extraction_job(
+            source_id=sid, artifact_id=art, provider="anthropic", model="m", total_chunks=1
+        )
+        store.add_source_chunks(job_id=job_id, source_id=sid, chunks=["some text"])
+        policy.parent.mkdir(parents=True, exist_ok=True)
+        policy.write_text(DEFAULT_POLICY, encoding="utf-8")
+        store.record_policy_marker(policy_sha256(DEFAULT_POLICY), origin="scaffold")
+
+    monkeypatch.setattr(
+        webapp,
+        "get_client",
+        lambda cfg: fake_client([ExtractedFact("A", "is_a", "B", 0.9)]),
+    )
+
+    def boom(self, job_id):
+        raise RuntimeError("sweep exploded")
+
+    monkeypatch.setattr(store_db.Store, "surface_stale_engine_facts", boom)
+
+    create_app(cfg)  # resumes the pending job -> _start_source_extraction
+
+    def job_finished():
+        assert _job_row(cfg, job_id)["status"] == "done"
+
+    _wait_for(job_finished)
+    time.sleep(0.2)  # let a late fail_extraction_job land, if the guard regressed
+    row = _job_row(cfg, job_id)
+    assert row["status"] == "done"  # the sweep error did NOT flip it to failed
+    assert row["failed_chunks"] == 0
+    # extraction genuinely completed; only the (now contained) sweep failed.
+    with Store(cfg.db_path) as store:
+        store.init_schema()
+        assert any(f["subject"] == "A" for f in store.facts())
