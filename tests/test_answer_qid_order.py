@@ -9,7 +9,7 @@ the very bug this file locks.
 import pytest
 
 from verinote.engine.duckdb_backend import run_check_duckdb
-from verinote.engine.wirelog import compile_dl, run_check
+from verinote.engine.wirelog import answer_bucket_sort_key, compile_dl, run_check
 
 _FACTS = [{"subject": "Ada", "relation": "born_in", "object": "London"}]
 _RELATION_DECL = ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
@@ -115,3 +115,22 @@ def test_wirelog_sorts_numeric_answers_before_non_numeric_ones():
     rep = _wirelog_check(policy_dl=_MIXED_POLICY)
 
     assert _qids_in_order(rep) == _MIXED_ORDER
+
+
+# `answer_bucket_sort_key` calls `int(qid)` for every all-digit qid, but `int()`
+# refuses a string longer than `sys.get_int_max_str_digits()` (4300 by default)
+# and raises ValueError. A qid is user-authored, so an `answer_q<thousands of
+# digits>` predicate reaches the sort: it has to land in the trailing bucket like
+# any malformed qid, not blow up the whole answer ordering. 5000 clears 4300.
+_OVERLONG_NUMERIC_QID = "1" * 5000
+
+
+def test_overlong_numeric_qid_sorts_last_instead_of_raising():
+    key = answer_bucket_sort_key(_OVERLONG_NUMERIC_QID)
+
+    assert key[0] == answer_bucket_sort_key("12abc")[0]
+    assert key[0] > answer_bucket_sort_key("9999")[0]
+
+
+def test_answer_bucket_sort_key_orders_small_numbers_numerically():
+    assert answer_bucket_sort_key("2")[1] < answer_bucket_sort_key("10")[1]
