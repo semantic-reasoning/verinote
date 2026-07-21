@@ -511,8 +511,13 @@ def test_query_mixed_outcomes_exits_nonzero_with_split(
 
 
 def test_query_no_pending_errors(tmp_path, monkeypatch, capsys):
+    # A real KB with nothing pending keeps the existing diagnosis; only the
+    # no-KB path routes through the #275 refusal.
     _env(monkeypatch, tmp_path)
+    Store(tmp_path / "kb.sqlite").init_schema()
+
     rc = cli.main(["query"])
+
     assert rc == 1
     assert "no pending or failed questions" in capsys.readouterr().err
 
@@ -675,8 +680,12 @@ def test_query_prints_ambiguous_outcome(tmp_path, monkeypatch, capsys):
 
 
 def test_repair_no_review_required_errors(tmp_path, monkeypatch, capsys):
+    # As above: the existing message belongs to the KB-exists path.
     _env(monkeypatch, tmp_path)
+    Store(tmp_path / "kb.sqlite").init_schema()
+
     rc = cli.main(["repair"])
+
     assert rc == 1
     assert "no review_required questions" in capsys.readouterr().err
 
@@ -1587,3 +1596,146 @@ def test_read_only_commands_refuse_core_tables_when_facts_lacks_id(
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     conn.close()
     assert tables == {"facts", "review_log", "runs", "sources"}
+
+
+# --- #275: decide there is nothing to do before scaffolding a KB -----------
+
+
+def test_query_with_no_argument_creates_no_kb(tmp_path, monkeypatch, capsys):
+    """No question and no KB means no work — and so no scaffolding (#275)."""
+    _isolated(monkeypatch, tmp_path)
+    workdir = tmp_path / "empty"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    assert cli.main(["query"]) == 1
+
+    assert not (workdir / "data").exists()
+    assert not (workdir / "data" / "kb.sqlite").exists()
+    assert "no KB" in capsys.readouterr().err
+
+
+def test_repair_creates_no_kb_when_there_is_none(tmp_path, monkeypatch, capsys):
+    # `repair` takes no arguments, so a missing KB is always a no-op.
+    _isolated(monkeypatch, tmp_path)
+    workdir = tmp_path / "empty"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    assert cli.main(["repair"]) == 1
+
+    assert not (workdir / "data").exists()
+    assert "no KB" in capsys.readouterr().err
+
+
+def test_sync_with_nothing_to_sync_creates_no_kb(tmp_path, monkeypatch, capsys):
+    # No path, no KB, no source files. Sync keeps its OWN diagnosis here — the
+    # user's problem is that there is nothing to sync, not that a KB is missing.
+    _isolated(monkeypatch, tmp_path)
+    workdir = tmp_path / "empty"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    assert cli.main(["sync"]) == 1
+
+    assert not (workdir / "data").exists()
+    assert not (workdir / "data" / "kb.sqlite").exists()
+    err = capsys.readouterr().err
+    assert "no sources to sync" in err
+    assert "no KB" not in err
+
+
+def test_sync_scaffolds_when_source_files_exist_without_a_kb(tmp_path, monkeypatch):
+    # The workflow the guard must not break: drop files under sources/ and sync.
+    # There IS work to do, so scaffolding the KB is legitimate.
+    _isolated(monkeypatch, tmp_path)
+    workdir = tmp_path / "work"
+    sources = workdir / "data" / "sources"
+    sources.mkdir(parents=True)
+    (sources / "x.txt").write_text("body", encoding="utf-8")
+    monkeypatch.chdir(workdir)
+    monkeypatch.setattr(
+        "verinote.llm.get_client",
+        lambda cfg: (_ for _ in ()).throw(LLMError("provider down")),
+    )
+
+    cli.main(["sync"])
+
+    # It got past the guard and opened the KB — that is what is being pinned.
+    assert (workdir / "data" / "kb.sqlite").is_file()
+
+
+def test_sync_with_a_path_argument_still_scaffolds(tmp_path, monkeypatch):
+    # An explicit path is work by itself, so the guard must not fire on it.
+    _isolated(monkeypatch, tmp_path)
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+    note = workdir / "note.txt"
+    note.write_text("body", encoding="utf-8")
+    monkeypatch.setattr(
+        "verinote.llm.get_client",
+        lambda cfg: (_ for _ in ()).throw(LLMError("provider down")),
+    )
+
+    cli.main(["sync", str(note)])
+
+    assert (workdir / "data" / "kb.sqlite").is_file()
+
+
+def test_sync_on_an_existing_kb_with_no_sources_keeps_its_message(
+    tmp_path, monkeypatch, capsys
+):
+    # With a KB present the guard cannot fire, so the existing
+    # open-resolve-refuse path runs and its message is unchanged.
+    _env(monkeypatch, tmp_path)
+    Store(tmp_path / "kb.sqlite").init_schema()
+    (tmp_path / "sources").mkdir()
+
+    assert cli.main(["sync"]) == 1
+
+    assert "no sources to sync" in capsys.readouterr().err
+
+
+def test_query_with_a_question_still_creates_a_kb(tmp_path, monkeypatch):
+    # A question is real work, so scaffolding is the point. rc is 1 here per the
+    # #243 contract (the translation fails); the KB creation is what matters.
+    _isolated(monkeypatch, tmp_path)
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+    monkeypatch.setattr(
+        "verinote.llm.get_client",
+        lambda cfg: (_ for _ in ()).throw(LLMError("provider down")),
+    )
+
+    cli.main(["query", "What is X?"])
+
+    db_path = workdir / "data" / "kb.sqlite"
+    assert db_path.is_file()
+    store = Store(db_path)
+    assert [q["text"] for q in store.questions()] == ["What is X?"]
+    store.close()
+
+
+def test_query_with_a_saved_active_kb_elsewhere_creates_nothing_in_cwd(
+    tmp_path, monkeypatch, capsys
+):
+    """The guard judges the RESOLVED cfg.db_path, not the directory you stand in.
+
+    #185 adjacency: with no VERINOTE_ROOT and a saved active KB pointing
+    elsewhere, `verinote query` must work against that KB and leave the cwd
+    untouched — never scaffolding a stray `./data` beside the user.
+    """
+    _isolated(monkeypatch, tmp_path)
+    existing = _existing_kb(tmp_path)
+    workdir = tmp_path / "elsewhere"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    assert cli.main(["query"]) == 1
+
+    assert not (workdir / "data").exists()
+    # It reached the real (saved) KB rather than refusing it.
+    assert "no pending or failed questions" in capsys.readouterr().err
+    assert (existing / "kb.sqlite").is_file()
