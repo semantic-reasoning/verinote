@@ -4,6 +4,7 @@ import json
 import pytest
 
 from verinote.engine import compile_dl, coverage
+from verinote.engine.terms import Compound, NumberLit
 from verinote.store import Store, db, engine_statuses
 
 
@@ -1014,3 +1015,73 @@ def test_question_schema_migration_preserves_legacy_rows_and_adds_reason(tmp_pat
     row = s.questions()[0]
     assert row["status"] == "translation_failed"
     assert row["reason"] == "provider unavailable"
+
+
+def test_existing_fact_for_source_distinguishes_string_from_compound(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/sample.txt")
+    s.add_fact("A", "at", "point(1, 2)", source_id=sid)
+
+    assert (
+        s.existing_fact_for_source(
+            source_id=sid,
+            subject="A",
+            relation="at",
+            obj=Compound("point", (NumberLit(1), NumberLit(2))),
+        )
+        is None
+    )
+
+
+def test_existing_fact_for_source_distinguishes_string_from_number(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/sample.txt")
+    s.add_fact("A", "count", "36", source_id=sid)
+
+    assert (
+        s.existing_fact_for_source(
+            source_id=sid, subject="A", relation="count", obj=NumberLit(36)
+        )
+        is None
+    )
+
+
+def test_existing_fact_for_source_matches_identical_structural_triple(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/sample.txt")
+    fact_id = s.add_fact(
+        "A", "count", NumberLit(36), source_id=sid, status="needs_review"
+    )
+
+    existing = s.existing_fact_for_source(
+        source_id=sid, subject="A", relation="count", obj=NumberLit(36)
+    )
+    assert existing == db.ExistingFact(fact_id=fact_id, status="needs_review")
+
+
+def test_existing_fact_for_source_falls_back_for_legacy_null_token(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/sample.txt")
+    fact_id = s.add_fact("A", "count", NumberLit(36), source_id=sid)
+    # A row written before the term_token column carries NULL there.
+    s._conn.execute("UPDATE facts SET term_token = NULL WHERE id = ?", (fact_id,))
+
+    existing = s.existing_fact_for_source(
+        source_id=sid, subject="A", relation="count", obj=NumberLit(36)
+    )
+    assert existing is not None
+    assert existing.fact_id == fact_id
+
+
+def test_existing_fact_for_source_is_scoped_to_the_source(tmp_path):
+    s = _store(tmp_path)
+    source_a = s.add_source("sources/a.txt")
+    source_b = s.add_source("sources/b.txt")
+    s.add_fact("A", "count", NumberLit(36), source_id=source_a)
+
+    assert (
+        s.existing_fact_for_source(
+            source_id=source_b, subject="A", relation="count", obj=NumberLit(36)
+        )
+        is None
+    )

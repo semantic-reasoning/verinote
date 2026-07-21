@@ -115,6 +115,9 @@ CREATE TABLE IF NOT EXISTS facts (
 CREATE INDEX IF NOT EXISTS idx_facts_status ON facts(status);
 CREATE INDEX IF NOT EXISTS idx_facts_review_status_id ON facts(status, id);
 CREATE INDEX IF NOT EXISTS idx_facts_triple ON facts(subject, relation, object);
+-- idx_facts_source_term_token is created in Store._ensure_schema_migrations,
+-- not here: on a legacy DB this script runs before term_token is added, so an
+-- index over that column here would fail on the very DBs that most need it.
 
 -- Source-backed evidence anchors for extracted facts. Chunk-level anchors are
 -- available for every chunked extraction; exact spans/table cells can be added

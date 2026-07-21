@@ -52,6 +52,22 @@ class FactDecision:
     @classmethod
     def unchanged(cls, fact: sqlite3.Row | None) -> "FactDecision":
         return cls(fact=fact, changed=False)
+
+
+@dataclass(frozen=True)
+class ExistingFact:
+    """A fact already stored under a source, identified for the extract dedupe.
+
+    Carries `status` alongside `fact_id` because the caller needs to know not
+    just that a match exists but what state it is in: a superseded prior fact
+    must still count as a match so extraction never re-inserts (and thereby
+    resurrects) it, and later units act on that status.
+    """
+
+    fact_id: int
+    status: str
+
+
 REVIEW_PAGE_SIZES = (25, 50, 100)
 DEFAULT_REVIEW_PAGE_SIZE = 50
 DEFAULT_REVIEW_SORT = "newest"
@@ -836,20 +852,45 @@ class Store:
                     after=_job_event_payload(after),
                 )
 
-    def fact_exists_for_source(
+    def existing_fact_for_source(
         self, *, source_id: int, subject: object, relation: object, obj: object
-    ) -> bool:
+    ) -> ExistingFact | None:
+        """Return a prior fact for this (source, triple), or None to insert.
+
+        Keyed on `term_token` -- the structural identity of the triple -- so
+        terms that merely *render* alike no longer collapse: a stored string
+        "36" and `NumberLit(36)`, or "point(1, 2)" and its `Compound`, have
+        distinct tokens and so are correctly treated as distinct facts. The
+        rendered-string key this replaces silently dropped such genuinely new
+        facts. The key is source-scoped on purpose: the same triple cited by a
+        different source is a different citation and must insert.
+
+        Legacy rows written before the token column carry NULL there; their
+        structural interpretation is unrecoverable, so for them we fall back to
+        the exact pre-token rendered-triple match. This preserves the old
+        behaviour precisely where it is all we have -- a superseded legacy fact
+        still matches and is never resurrected.
+        """
+        from verinote.store.duckdb_fact_terms import fact_term_token
+
         row = self._conn.execute(
-            "SELECT 1 FROM facts WHERE source_id = ? AND subject = ? "
-            "AND relation = ? AND object = ? LIMIT 1",
+            "SELECT id, status FROM facts "
+            "WHERE source_id = ? "
+            "AND ((term_token IS NOT NULL AND term_token = ?) "
+            "OR (term_token IS NULL AND subject = ? AND relation = ? "
+            "AND object = ?)) "
+            "ORDER BY id LIMIT 1",
             (
                 source_id,
+                fact_term_token(subject, relation, obj),
                 _display_fact_value(subject),
                 _display_fact_value(relation),
                 _display_fact_value(obj),
             ),
         ).fetchone()
-        return row is not None
+        if row is None:
+            return None
+        return ExistingFact(fact_id=int(row["id"]), status=str(row["status"]))
 
     # --- fact evidence ---------------------------------------------------
     def add_fact_evidence(
@@ -1698,6 +1739,13 @@ class Store:
             )
         if "term_token" not in fact_columns:
             self._conn.execute("ALTER TABLE facts ADD COLUMN term_token TEXT")
+        # Created here rather than in schema.sql: that script runs before the
+        # ALTER above, so on a legacy DB the term_token column this index needs
+        # does not exist yet. By this point it always does.
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_facts_source_term_token "
+            "ON facts(source_id, term_token)"
+        )
         self._conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS fact_evidence (
