@@ -26,6 +26,20 @@ from verinote.prompts import PromptError, render_prompt
 from verinote.store import Store
 from verinote.store.fact_input import structural_term
 
+
+class ExtractionJobBusyError(Exception):
+    """Another worker owns this extraction job; the caller must back off.
+
+    Deliberately NOT an `LLMError` or `PolicyMissingError`: the web worker turns
+    those into `fail_extraction_job`, a write that would corrupt a job another
+    worker legitimately owns. This says "someone else has it — touch nothing."
+    """
+
+    def __init__(self, job_id: int):
+        super().__init__(f"extraction job {job_id} is already owned by another worker")
+        self.job_id = job_id
+
+
 _NORMALIZATION_BRIDGE_RELATIONS = {
     "주체",
     "subject",
@@ -348,9 +362,9 @@ def process_extraction_job(
     KB that lies about its own state is what this change exists to stop. It would
     also make recovery depend on the web launcher: `_resume_source_extraction_jobs`
     is the only thing that revives a `running` job (and only when someone next
-    starts the UI), while `reset_running_chunks` below rewinds the *chunks* of a job
-    already being processed, not a job nobody is processing. `pending` is the state
-    that says what is true and that every resume path already understands.
+    starts the UI, by first rolling it back to `pending` so the ownership claim
+    below can take it). `pending` is the state that says what is true and that
+    every resume path already understands.
     """
     assert_writable(store)
     job = store.get_extraction_job(job_id)
@@ -360,8 +374,13 @@ def process_extraction_job(
     if source is None:
         raise LLMError(f"missing source for extraction job: {job_id}")
 
-    store.reset_running_chunks(job_id)
-    store.mark_extraction_job_running(job_id)
+    if not store.claim_pending_extraction_job(job_id):
+        # Another worker owns this job (a concurrent `verinote sync`, a second UI
+        # worker, or the startup resume loop). It may have a chunk in flight, so
+        # we must NOT reset its chunks — backing off is the whole point (#240). A
+        # `running` job reaches here only via the resume loop, which rolls a
+        # crashed job back to `pending` first, so this claim then succeeds.
+        raise ExtractionJobBusyError(job_id)
     run_id = store.add_run(provider=job["provider"], model=job["model"])
 
     candidates = 0

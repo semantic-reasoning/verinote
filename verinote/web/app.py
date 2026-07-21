@@ -32,6 +32,7 @@ from verinote.llm import LLMError, get_client
 from verinote.policy_defaults import DEFAULT_RELATION_ALIASES
 from verinote.pipeline import (
     create_chunked_extraction_job,
+    ExtractionJobBusyError,
     fact_trust_summary,
     IngestError,
     ingest_bytes,
@@ -777,6 +778,15 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 # of falsehood this change removes. Whoever rewinds, rewinds; this
                 # handler reports.
                 logger.warning("extraction job %s halted (KB policy missing): %s", job_id, e)
+            except ExtractionJobBusyError:
+                # Another worker owns this job (a concurrent sync, a second UI
+                # worker, or another startup resume). It may have a chunk in
+                # flight; ANY write here — including `fail_extraction_job` — would
+                # corrupt a job we do not own. Log and leave it entirely. (#240)
+                logger.info(
+                    "extraction job %s already owned by another worker; not started here",
+                    job_id,
+                )
             except LLMError as e:
                 with Store(cfg.db_path) as worker_store:
                     worker_store.init_schema()
@@ -822,6 +832,16 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
         Same predicate as the middleware and the CLI dispatch: one judgement,
         three enforcement points.
+
+        A job left `running` by a crash is rolled back to `pending` before it is
+        restarted, because `process_extraction_job` now claims only a `pending`
+        job (#240). SCOPE BOUNDARY (#242): DB state alone cannot tell a crashed
+        zombie from a job a DIFFERENT live process genuinely owns — SQLite has no
+        row-level liveness signal — so in that rare case this rollback still
+        resets that live job's in-flight chunk (exactly as today's unconditional
+        resume already does; not a regression introduced here). Closing it needs a
+        liveness lease (owner token + heartbeat, or a staleness threshold on
+        `updated_at`) and is filed as a follow-up, not solved here.
         """
         if app.state.store is None or app.state.cfg is None:
             return
@@ -833,8 +853,13 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         jobs = app.state.store.source_extraction_jobs()
         latest_job_ids = latest_source_job_ids(jobs)
         for job in jobs:
-            if is_live_extraction_job(job, latest_job_ids):
-                _start_source_extraction(int(job["id"]), app.state.cfg)
+            if not is_live_extraction_job(job, latest_job_ids):
+                continue
+            if job["status"] == "running":
+                app.state.store.rollback_extraction_job(
+                    int(job["id"]), "Resuming analysis interrupted by a restart."
+                )
+            _start_source_extraction(int(job["id"]), app.state.cfg)
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard(request: Request):

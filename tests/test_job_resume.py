@@ -188,6 +188,43 @@ def test_sync_resumes_rolled_back_job_without_redoing_done_chunks(
     assert "sync complete: 5 candidate(s)" in out
 
 
+def test_sync_reports_a_resumed_run_that_fails_everything_as_failed_not_incomplete(
+    tmp_path, monkeypatch, capsys
+):
+    """A resumed job's OWN history must not soften this run's own total failure.
+
+    `_halted_job` leaves a job with one chunk done and zero failed (a clean
+    halt, not a chunk failure) — eligible for resume. If THIS run then fails
+    every remaining chunk, the job's cumulative `completed_chunks` is still 1
+    (from before), but this run completed none and produced nothing: the
+    "sync failed" / "sync incomplete" choice must be judged on what THIS run
+    did, not smoothed over by a resumed job's earlier, unrelated success.
+    """
+    job_id = _halted_job(tmp_path, monkeypatch)
+
+    class _AlwaysFailingClient:
+        name = "fake"
+
+        def extract_facts(self, *, source_text: str, schema_hint: str = ""):
+            raise LLMError("provider down")
+
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: _AlwaysFailingClient())
+
+    assert cli.main(["sync"]) == 1
+
+    jobs = _jobs(tmp_path)
+    assert [int(job["id"]) for job in jobs] == [job_id]  # still resumed, not replaced
+    assert int(jobs[0]["completed_chunks"]) == 1  # unchanged: this run finished none
+
+    out, err = capsys.readouterr()
+    # This run's own contribution is honestly zero, not the job's stale total.
+    assert "0 candidate(s) this run" in out
+    assert f"resumed job #{job_id}: 1 candidate(s) in total" in out
+    # The judged-on-this-run-alone outcome: every chunk THIS run touched failed.
+    assert "sync failed" in err
+    assert "sync incomplete" not in err
+
+
 # --- the chunk a resume can never reach -------------------------------------
 
 
@@ -459,6 +496,27 @@ def test_sync_leaves_a_running_job_alone(tmp_path, monkeypatch, capsys):
     store.close()
     err = capsys.readouterr().err
     assert f"extraction job #{job_id} is already running" in err
+
+
+def test_sync_skips_a_job_claimed_between_plan_and_process(tmp_path, monkeypatch, capsys):
+    """Plan sees `pending`; another worker wins the claim first; sync skips cleanly (#240).
+
+    The plan-time `busy_job_id` branch only catches a job already `running` when the
+    plan is drawn. A job still `pending` at plan time can be claimed by a competing
+    worker in the window before `process_extraction_job` runs; the raised
+    `ExtractionJobBusyError` must be the same skip, never a crash or a failure.
+    """
+    job_id = _halted_job(tmp_path, monkeypatch)
+    monkeypatch.setattr(Store, "claim_pending_extraction_job", lambda self, jid: False)
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: _RefusingClient())
+
+    assert cli.main(["sync"]) == 0  # skipped cleanly: no crash, no non-zero exit
+
+    err = capsys.readouterr().err
+    assert f"extraction job #{job_id} is already running" in err
+    jobs = _jobs(tmp_path)
+    assert [int(job["id"]) for job in jobs] == [job_id]  # no replacement job created
+    assert jobs[0]["status"] == "pending"  # left untouched for its real owner
 
 
 # --- D, F, G: the superseded job is dead, and all three readers agree --------

@@ -65,6 +65,7 @@ class _SourceSyncOutcome:
     failed_chunks: int
     message: str = ""
     job_total_candidates: int | None = None
+    resumed_job_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -495,6 +496,7 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
     from verinote.llm import LLMError, get_client
     from verinote.pipeline import (
         create_chunked_extraction_job,
+        ExtractionJobBusyError,
         plan_source_extraction,
         process_extraction_job,
         sync_sources,
@@ -546,7 +548,6 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
         registered = [source for source in sources if source.source_id is not None]
         if registered:
             per_source = []
-            lines = []
             total = 0
             run_id = 0
             for source in registered:
@@ -580,12 +581,24 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                         chunk_chars=cfg.extraction_chunk_chars,
                         chunk_overlap_chars=cfg.extraction_chunk_overlap_chars,
                     )
-                outcome = process_extraction_job(
-                    store,
-                    client,
-                    job_id=job_id,
-                    schema_hint=extraction_schema_hint(),
-                )
+                try:
+                    outcome = process_extraction_job(
+                        store,
+                        client,
+                        job_id=job_id,
+                        schema_hint=extraction_schema_hint(),
+                    )
+                except ExtractionJobBusyError:
+                    # Job was `pending` at plan time but another worker claimed it
+                    # first. Same outcome as a plan-time `busy_job_id`: skip, never
+                    # a failure. (#240)
+                    print(
+                        f"skipping {source.source_path}: extraction job "
+                        f"#{job_id} is already running (another process "
+                        f"owns its chunks)",
+                        file=sys.stderr,
+                    )
+                    continue
                 # The job message is already the bounded honest failure line
                 # ("Analysis failed: N chunk(s) failed, D/T complete: <error>");
                 # carry it verbatim rather than re-deriving it, and only when this
@@ -607,7 +620,7 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     _SourceSyncOutcome(
                         source_path=source.source_path,
                         candidates=outcome.run_candidates,
-                        completed_chunks=outcome.completed_chunks,
+                        completed_chunks=outcome.run_chunks,
                         failed_chunks=outcome.failed_chunks,
                         message=message,
                         job_total_candidates=(
@@ -615,6 +628,7 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                             if plan.resume_job_id is not None
                             else None
                         ),
+                        resumed_job_id=plan.resume_job_id,
                     )
                 )
                 total += outcome.run_candidates
@@ -649,8 +663,9 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
     for outcome in result.per_source:
         if outcome.job_total_candidates is not None:
             print(
-                f"  {outcome.source_path}: {outcome.candidates} candidate(s) this "
-                f"run (resumed: {outcome.job_total_candidates} candidate(s) in total)"
+                f"  {outcome.source_path}: {outcome.candidates} "
+                f"candidate(s) this run (resumed job #{outcome.resumed_job_id}: "
+                f"{outcome.job_total_candidates} candidate(s) in total)"
             )
         else:
             print(f"  {outcome.source_path}: {outcome.candidates} candidate(s)")
