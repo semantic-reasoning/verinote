@@ -1103,3 +1103,122 @@ def test_reconcile_fact_never_resurrects_a_legacy_superseded_row(tmp_path):
         fact_id=fact_id, created=False, matched_status="superseded"
     )
     assert len(s.facts()) == before
+
+
+def _suppression_events(store, fact_id):
+    return [
+        event
+        for event in store.fact_events(fact_id)
+        if event["event_type"] == "reextraction_suppressed"
+    ]
+
+
+def test_reconcile_fact_records_suppression_event_on_superseded_hit(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/sample.txt")
+    run_id = s.add_run(provider="fake", model="m")
+    fact_id = s.add_fact("A", "count", NumberLit(36), source_id=sid)
+    s.reject_fact(fact_id)
+    before = len(s.facts())
+
+    result = s.reconcile_fact(
+        "A", "count", NumberLit(36), source_id=sid, run_id=run_id
+    )
+
+    assert result.created is False
+    assert result.matched_status == "superseded"
+    assert s.get_fact(fact_id)["status"] == "superseded"
+    assert len(s.facts()) == before
+
+    events = _suppression_events(s, fact_id)
+    assert len(events) == 1
+    assert events[0]["actor"] == "system"
+    assert events[0]["source_id"] == sid
+    assert json.loads(events[0]["after_json"]) == {
+        "status": "superseded",
+        "run_id": run_id,
+    }
+
+
+def test_reconcile_fact_emits_one_suppression_event_per_run(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/sample.txt")
+    fact_id = s.add_fact("A", "count", NumberLit(36), source_id=sid)
+    s.reject_fact(fact_id)
+
+    run_one = s.add_run(provider="fake", model="m")
+    # Two hits in one run mimic chunk overlap re-extracting a boundary triple.
+    s.reconcile_fact("A", "count", NumberLit(36), source_id=sid, run_id=run_one)
+    s.reconcile_fact("A", "count", NumberLit(36), source_id=sid, run_id=run_one)
+    assert len(_suppression_events(s, fact_id)) == 1
+
+    run_two = s.add_run(provider="fake", model="m")
+    s.reconcile_fact("A", "count", NumberLit(36), source_id=sid, run_id=run_two)
+
+    events = _suppression_events(s, fact_id)
+    assert len(events) == 2
+    assert [json.loads(e["after_json"])["run_id"] for e in events] == [run_one, run_two]
+
+
+def test_reconcile_fact_seed_path_emits_suppression_event_each_time(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/sample.txt")
+    fact_id = s.add_fact("A", "count", NumberLit(36), source_id=sid)
+    s.reject_fact(fact_id)
+
+    # run_id=None is the seed path: a re-seed is human-initiated and each is signal.
+    s.reconcile_fact("A", "count", NumberLit(36), source_id=sid)
+    s.reconcile_fact("A", "count", NumberLit(36), source_id=sid)
+
+    events = _suppression_events(s, fact_id)
+    assert len(events) == 2
+    assert {json.loads(e["after_json"])["run_id"] for e in events} == {None}
+
+
+def test_reconcile_fact_records_no_suppression_event_on_live_hit(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/sample.txt")
+    run_id = s.add_run(provider="fake", model="m")
+    fact_id = s.add_fact("A", "count", NumberLit(36), source_id=sid, status="confirmed")
+
+    result = s.reconcile_fact(
+        "A", "count", NumberLit(36), source_id=sid, run_id=run_id
+    )
+
+    assert result.matched_status == "confirmed"
+    assert _suppression_events(s, fact_id) == []
+
+
+def test_reconcile_fact_created_path_records_only_candidate_created(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/sample.txt")
+    run_id = s.add_run(provider="fake", model="m")
+
+    result = s.reconcile_fact(
+        "A", "count", NumberLit(36), source_id=sid, run_id=run_id
+    )
+
+    assert result.created is True
+    assert [e["event_type"] for e in s.fact_events(result.fact_id)] == [
+        "candidate_created"
+    ]
+
+
+def test_reconcile_fact_prefers_live_row_over_superseded_duplicate(tmp_path):
+    # A pre-fix source can hold both a live and a superseded row for one triple.
+    # Reconcile must return the live row and suppress nothing.
+    s = _store(tmp_path)
+    sid = s.add_source("sources/sample.txt")
+    run_id = s.add_run(provider="fake", model="m")
+    rejected = s.add_fact("A", "count", NumberLit(36), source_id=sid)
+    s.reject_fact(rejected)
+    live = s.add_fact("A", "count", NumberLit(36), source_id=sid, status="needs_review")
+
+    result = s.reconcile_fact(
+        "A", "count", NumberLit(36), source_id=sid, run_id=run_id
+    )
+
+    assert result.fact_id == live
+    assert result.matched_status == "needs_review"
+    assert _suppression_events(s, rejected) == []
+    assert _suppression_events(s, live) == []
