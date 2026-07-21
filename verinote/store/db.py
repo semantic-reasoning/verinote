@@ -1352,7 +1352,20 @@ class Store:
         return {r["status"]: r["c"] for r in rows}
 
     def accept_review_facts_for_source(self, source_id: int) -> list[sqlite3.Row]:
-        """Promote all review-queue facts for one source to confirmed."""
+        """Promote every review-queue fact for one source to confirmed (a bulk accept).
+
+        Only review-tier rows move, and each moves on a write conditional on the
+        status it was read at, so a row whose observed status no longer holds is
+        skipped — left unwritten, unlogged, and out of the returned list — rather
+        than overwritten. Unlike `accept_fact` and the three writes around it,
+        this batch holds its read and every write in one explicit transaction, so
+        a genuine cross-connection reject mid-batch does not slip past a row's
+        guard: it trips a WAL snapshot conflict on the next write and the
+        except/rollback aborts the whole batch. The per-row guard is therefore
+        defence-in-depth keeping this writer's contract shape identical to the
+        other four's, reachable only when a row's observed status has shifted
+        within this same transaction.
+        """
         placeholders, statuses = _status_filter(REVIEW_STATUSES)
         with self._lock:
             self._conn.execute("BEGIN")
@@ -1367,11 +1380,16 @@ class Store:
                 accepted: list[sqlite3.Row] = []
                 for before in facts:
                     fact_id = int(before["id"])
-                    self._conn.execute(
+                    cursor = self._conn.execute(
                         "UPDATE facts SET status = 'confirmed', updated_at = datetime('now') "
-                        "WHERE id = ?",
-                        (fact_id,),
+                        "WHERE id = ? AND status = ?",
+                        (fact_id, before["status"]),
                     )
+                    if cursor.rowcount == 0:
+                        # Someone moved this fact between the SELECT and here;
+                        # their decision stands, and this stale accept writes and
+                        # logs nothing.
+                        continue
                     after = self.get_fact(fact_id)
                     self._log(fact_id, "accepted", before, after)
                     if after is not None:

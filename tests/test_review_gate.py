@@ -851,6 +851,7 @@ FACT_TRANSITION_METHODS = frozenset(
         "accept_fact",
         "accept_review_facts_for_source",
         "auto_accept_fact",
+        "auto_retract_fact",
         "reject_fact",
         "toggle_review",
     }
@@ -949,6 +950,7 @@ def test_no_public_transition_revives_a_superseded_fact(tmp_path):
             source_id
         ),
         "auto_accept_fact": lambda: store.auto_accept_fact(fact_id, rule_name="r"),
+        "auto_retract_fact": lambda: store.auto_retract_fact(fact_id, rule_name="r"),
         "reject_fact": lambda: store.reject_fact(fact_id),
         "toggle_review": lambda: store.toggle_review(fact_id),
     }
@@ -960,3 +962,91 @@ def test_no_public_transition_revives_a_superseded_fact(tmp_path):
         # claim the decision in the audit log either.
         assert store.get_fact(fact_id)["status"] == "superseded", name
         assert _actions(store, fact_id) == log_before, name
+
+
+# --- #292: the bulk-accept path guards each promotion on the observed status --
+
+
+class _SupersedeBeforeUpdate:
+    """A Store connection that supersedes one fact the first time the batch is
+    about to promote it — on that same connection, inside the batch's own
+    transaction, so the row moves without the snapshot conflict a second
+    connection to a WAL KB would raise.
+
+    `accept_review_facts_for_source` reads the review tier once under an explicit
+    transaction, then promotes each row on its own. A live reject from another
+    connection cannot be landed in the window between that read and a given row's
+    UPDATE: the open read transaction turns the racing writer's commit into
+    `database is locked`, which aborts the whole batch rather than slipping a
+    stale row past it. So the lost race is reproduced at the one seam a test can
+    drive deterministically — a row whose status has already moved by the time it
+    is written — by mutating it exactly where a real reject would have, and the
+    guard is then observed to skip it rather than overwrite it.
+    """
+
+    def __init__(self, real, target_id: int) -> None:
+        self._real = real
+        self._target = target_id
+        self.fired = False
+
+    def execute(self, *args):
+        sql = args[0]
+        params = args[1] if len(args) > 1 else ()
+        if (
+            not self.fired
+            and sql.lstrip()[:12].upper() == "UPDATE FACTS"
+            and params
+            and params[0] == self._target
+        ):
+            self.fired = True
+            self._real.execute(
+                "UPDATE facts SET status = 'superseded', updated_at = datetime('now') "
+                "WHERE id = ?",
+                (self._target,),
+            )
+        return self._real.execute(*args)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def test_bulk_accept_skips_a_row_moved_after_it_was_read(tmp_path):
+    """Each bulk promotion is conditional on the status its row was read at.
+
+    If a fact is rejected in the window between the batch's SELECT and its own
+    UPDATE, promoting it unconditionally would drag a superseded row back to
+    confirmed over a human's terminal decision the batch never saw. The write
+    therefore carries the observed status as a guard, and a row that has moved is
+    skipped — left superseded, kept out of the returned list, and given no
+    `accepted` audit row — while its siblings in the same batch still confirm.
+    """
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/batch.txt")
+    moved = store.add_fact(
+        "Ledger", "owner", "Park", status="needs_review", source_id=source_id
+    )
+    kept = store.add_fact(
+        "Ledger", "auditor", "Cho", status="needs_review", source_id=source_id
+    )
+    moved_log_before = _actions(store, moved)
+
+    real_conn = store._conn
+    interceptor = _SupersedeBeforeUpdate(real_conn, moved)
+    store._conn = interceptor
+    try:
+        accepted = store.accept_review_facts_for_source(source_id)
+    finally:
+        store._conn = real_conn
+
+    # A vacuous pass would hide a broken guard: the seam must actually have fired.
+    assert interceptor.fired, "the moved row's UPDATE was never intercepted"
+
+    accepted_ids = {row["id"] for row in accepted}
+    # The moved row is skipped: not revived, not returned, not logged as accepted.
+    assert moved not in accepted_ids
+    assert store.get_fact(moved)["status"] == "superseded"
+    assert _actions(store, moved) == moved_log_before
+    # Its sibling in the same batch is unaffected and still promotes.
+    assert kept in accepted_ids
+    assert store.get_fact(kept)["status"] == "confirmed"
+    assert "accepted" in _actions(store, kept)
