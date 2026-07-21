@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
+import json
+
 import pytest
 
 from verinote.llm.base import ExtractedFact, LLMError
@@ -1052,3 +1054,40 @@ def test_extract_source_rerun_still_inserts_a_genuinely_new_fact(tmp_path, fake_
     )
 
     assert {(f["subject"], f["object"]) for f in s.facts()} == {("A", "B"), ("C", "D")}
+
+
+def test_sync_records_suppression_event_when_reextracting_rejected_fact(
+    tmp_path, fake_client
+):
+    # End-to-end #160: sync, reject, sync again. The re-sync creates no candidate
+    # and records a reextraction_suppressed event on the original rejected fact.
+    s = _store(tmp_path)
+    facts = [ExtractedFact("A", "is_a", "B", 0.9, "n")]
+
+    sync_sources(
+        s,
+        fake_client(facts),
+        [("sources/x.txt", "...")],
+        provider="fake",
+        model="m",
+    )
+    [fact] = s.facts()
+    s.reject_fact(fact["id"])
+
+    result = sync_sources(
+        s,
+        fake_client(facts),
+        [("sources/x.txt", "...")],
+        provider="fake",
+        model="m",
+    )
+
+    assert result.total == 0
+    assert len(s.facts()) == 1
+    events = [
+        event
+        for event in s.fact_events(fact["id"])
+        if event["event_type"] == "reextraction_suppressed"
+    ]
+    assert len(events) == 1
+    assert json.loads(events[0]["after_json"])["run_id"] == result.run_id

@@ -885,6 +885,13 @@ class Store:
         the exact pre-token rendered-triple match. This preserves the old
         behaviour precisely where it is all we have -- a superseded legacy fact
         still matches and is never resurrected.
+
+        When pre-fix structural duplicates coexist for one source, a live row
+        wins over a superseded one (`status = 'superseded'` sorts last -- SQLite
+        orders false before true). This matters to `reconcile_fact`'s suppression
+        signal: it must report `superseded` only when a human's rejection is the
+        SOLE standing record of the triple. If any live row exists, the triple is
+        already in the review queue or the engine and nothing is being suppressed.
         """
         from verinote.store.duckdb_fact_terms import fact_term_token
 
@@ -894,7 +901,7 @@ class Store:
             "AND ((term_token IS NOT NULL AND term_token = ?) "
             "OR (term_token IS NULL AND subject = ? AND relation = ? "
             "AND object = ?)) "
-            "ORDER BY id LIMIT 1",
+            "ORDER BY (status = 'superseded'), id LIMIT 1",
             (
                 source_id,
                 fact_term_token(subject, relation, obj),
@@ -1094,12 +1101,33 @@ class Store:
         the safe direction (a new row, never a wrongly-suppressed one), but not a
         dedupe. Source-scoping is deliberate: the same triple from a different
         source is a distinct citation and must insert.
+
+        On a hit the matched row is left exactly as it stands: `note` and
+        `confidence` are deliberately NOT refreshed from the new extraction.
+        Refreshing them would clobber the human's review state and, worse, would
+        write to rejected facts — the very thing #160 is about.
+
+        When the hit is a superseded row (a human's rejection is the sole
+        standing record — see `existing_fact_for_source`'s ordering), a
+        `reextraction_suppressed` fact event is recorded so the suppression is
+        auditable. It is de-duplicated per `run_id`: chunk overlap re-extracts
+        boundary-straddling triples within one run, so without the guard every
+        such re-hit — and every fact on every re-sync — would emit again. A
+        seed has no run (`run_id` is None); a re-seed is a rare, human-initiated
+        act, so each occurrence is itself signal and is emitted unconditionally.
         """
         with self._lock:
             existing = self.existing_fact_for_source(
                 source_id=source_id, subject=subject, relation=relation, obj=obj
             )
             if existing is not None:
+                if existing.status == "superseded":
+                    self._record_reextraction_suppressed(
+                        fact_id=existing.fact_id,
+                        source_id=source_id,
+                        run_id=run_id,
+                        job_id=job_id,
+                    )
                 return FactReconcileResult(
                     fact_id=existing.fact_id,
                     created=False,
@@ -1117,6 +1145,35 @@ class Store:
                 note=note,
             )
             return FactReconcileResult(fact_id=fact_id, created=True, matched_status=None)
+
+    def _record_reextraction_suppressed(
+        self, *, fact_id: int, source_id: int | None, run_id: int | None, job_id: int | None
+    ) -> None:
+        """Log that re-extraction re-hit this superseded fact and inserted nothing.
+
+        Caller holds `self._lock` and has already established the fact is
+        superseded. When `run_id` is set the event is emitted at most once per
+        (fact_id, run_id): the `after_json` payload carries the run, so an
+        existing row for this run means overlap/re-sync has already recorded it.
+        A None `run_id` (the seed path) is emitted every time by design.
+        """
+        if run_id is not None:
+            already = self._conn.execute(
+                "SELECT 1 FROM fact_events "
+                "WHERE fact_id = ? AND event_type = 'reextraction_suppressed' "
+                "AND json_extract(after_json, '$.run_id') = ? LIMIT 1",
+                (fact_id, run_id),
+            ).fetchone()
+            if already is not None:
+                return
+        self._add_fact_event(
+            fact_id=fact_id,
+            event_type="reextraction_suppressed",
+            actor="system",
+            source_id=source_id,
+            job_id=job_id,
+            after={"status": "superseded", "run_id": run_id},
+        )
 
     def get_fact_terms(self, fact_id: int):
         """Return structural DuckDB terms for a fact metadata row."""
