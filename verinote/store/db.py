@@ -1550,6 +1550,49 @@ class Store:
             )
             return after
 
+    def auto_retract_fact(self, fact_id: int, *, rule_name: str) -> sqlite3.Row | None:
+        """Demote a rule-accepted fact back to `needs_review` (the rule's reversal).
+
+        The mirror of `auto_accept_fact`. `status='accepted'` is written by that
+        method alone — human promotions always land `confirmed` — so `accepted`
+        means "rule-promoted and not since human-ratified", and it is the ONLY
+        status this transition can act on. `confirmed` (a human ratified it),
+        `superseded` (a human's terminal rejection), and the review-tier statuses
+        are all structurally unreachable here: a rule must never overrule human
+        judgment, and there is nothing for the rule to retract in a row it did not
+        promote.
+
+        The landing is `needs_review`, not another status, for a specific reason:
+        the fact leaves the engine tier (its corroboration basis lapsed, so it
+        must stop feeding inference) and re-enters the human review queue, where a
+        later re-promotion is possible if the basis returns — exactly the
+        engine→needs_review demotion `toggle_review` already performs. `candidate`
+        would misrepresent a once-reviewed fact as un-reviewed fresh extraction;
+        `superseded` would forge a human rejection the rule has no standing to make.
+
+        As in `auto_accept_fact`, the status condition lives IN the UPDATE: a
+        human's competing decision can arrive on another connection where this
+        instance's lock has no say, so a rowcount of 0 means the fact already left
+        `accepted` and we return None, letting the caller skip the audit for a
+        write that never happened.
+        """
+        with self._lock:
+            before = self.get_fact(fact_id)
+            if before is None or before["status"] != "accepted":
+                return None
+            cursor = self._conn.execute(
+                "UPDATE facts SET status = 'needs_review', updated_at = datetime('now') "
+                "WHERE id = ? AND status = 'accepted'",
+                (fact_id,),
+            )
+            if cursor.rowcount == 0:
+                return None
+            after = self.get_fact(fact_id)
+            self._log(
+                fact_id, "auto_retracted", before, after, actor="rule", rule_name=rule_name
+            )
+            return after
+
     def amend_fact(
         self,
         fact_id: int,

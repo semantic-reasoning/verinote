@@ -742,3 +742,84 @@ def test_reject_that_really_transitions_still_runs_auto_accept(tmp_path):
     assert store.get_fact(target)["status"] == "superseded"
     assert store.get_fact(eligible)["status"] == "accepted"
     assert resp.headers.get("HX-Refresh") == "true"
+
+
+# --- #264: guarded auto-retract of rule-accepted facts --------------------
+
+
+def test_auto_retract_demotes_a_rule_accepted_fact(tmp_path):
+    s = _store(tmp_path)
+    source_id = s.add_source("sources/a.txt")
+    fact_id = s.add_fact(
+        "Report", "author", "Kim", status="accepted", source_id=source_id
+    )
+
+    after = s.auto_retract_fact(fact_id, rule_name="corroborated_no_conflict")
+
+    # Leaves the engine tier, back into the human review queue.
+    assert after is not None
+    assert after["status"] == "needs_review"
+    assert s.get_fact(fact_id)["status"] == "needs_review"
+    # Dual audit write: a review_log action and a rule-actor fact_event.
+    assert "auto_retracted" in _actions(s, fact_id)
+    events = [e for e in s.fact_events(fact_id) if e["event_type"] == "auto_retracted"]
+    assert len(events) == 1
+    assert events[0]["actor"] == "rule"
+    assert events[0]["rule_name"] == "corroborated_no_conflict"
+
+
+def test_auto_retract_refuses_a_confirmed_fact(tmp_path):
+    # A human ratification (confirmed) outranks the rule — untouchable.
+    s = _store(tmp_path)
+    fact_id = s.add_fact("Report", "author", "Kim", status="confirmed")
+
+    assert s.auto_retract_fact(fact_id, rule_name="corroborated_no_conflict") is None
+    assert s.get_fact(fact_id)["status"] == "confirmed"
+    assert "auto_retracted" not in _actions(s, fact_id)
+
+
+@pytest.mark.parametrize("status", ["superseded", "candidate", "needs_review"])
+def test_auto_retract_refuses_non_accepted_statuses(tmp_path, status):
+    s = _store(tmp_path)
+    fact_id = s.add_fact("Report", "author", "Kim", status=status)
+
+    assert s.auto_retract_fact(fact_id, rule_name="corroborated_no_conflict") is None
+    assert s.get_fact(fact_id)["status"] == status
+    assert "auto_retracted" not in _actions(s, fact_id)
+
+
+def test_auto_retract_missing_fact_returns_none(tmp_path):
+    s = _store(tmp_path)
+    assert s.auto_retract_fact(9999, rule_name="corroborated_no_conflict") is None
+
+
+def test_auto_retract_skips_when_the_fact_leaves_accepted_mid_transition(tmp_path):
+    """The cross-connection race, mirroring the auto_accept version.
+
+    The competing decision lands on another connection *after* the tier read,
+    where this instance's lock has no say — only the status condition on the
+    UPDATE stops the rule demoting a row that has already moved on.
+    """
+    db = tmp_path / "kb.sqlite"
+    retracting = _store_at(db)
+    other = _store_at(db)
+    fact_id = retracting.add_fact("Report", "author", "Kim", status="accepted")
+
+    real_get_fact = retracting.get_fact
+    interleaved = []
+
+    def move_once_after_the_read(target_id: int):
+        row = real_get_fact(target_id)
+        if not interleaved:
+            interleaved.append(True)
+            # Another connection supersedes the fact inside the window.
+            other.reject_fact(fact_id)
+        return row
+
+    retracting.get_fact = move_once_after_the_read
+    row = retracting.auto_retract_fact(fact_id, rule_name="corroborated_no_conflict")
+
+    assert interleaved, "the competing decision never landed — the test proves nothing"
+    assert row is None
+    assert other.get_fact(fact_id)["status"] == "superseded"
+    assert "auto_retracted" not in _actions(other, fact_id)
