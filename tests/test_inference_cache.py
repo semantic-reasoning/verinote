@@ -22,6 +22,24 @@ _CONFLICT_FACTS = [
 _OTHER_FACTS = [{"subject": "Org", "relation": "is_a", "object": "company"}]
 
 
+def _warn_dead_functional(relation: str) -> str:
+    """The report line for a `functional("rel")` decl no engine fact satisfies."""
+    return (
+        f'WARN dead_rule: policy declares functional("{relation}") '
+        "but no engine fact uses that relation"
+    )
+
+
+# The conflict facts use only established_on, so the default policy's other two
+# functional decls (born_on/died_on) are unused dead rules that surface as
+# non-blocking WARNs beside the real conflict (issue #286).
+_CONFLICT_FINDINGS = [
+    "ERROR functional_conflict: Org established_on",
+    _warn_dead_functional("born_on"),
+    _warn_dead_functional("died_on"),
+]
+
+
 def _duckdb():
     return pytest.importorskip("duckdb")
 
@@ -33,7 +51,7 @@ def test_cache_reloads_after_a_failed_reload(monkeypatch):
         # 1) Load the conflict facts cleanly: the conflict is detected.
         first = cache.run_check(_CONFLICT_FACTS)
         assert first.ok is False
-        assert first.findings == ["ERROR functional_conflict: Org established_on"]
+        assert first.findings == _CONFLICT_FINDINGS
 
         # 2) Inject a one-shot failure into the reload triggered by different
         #    facts. The DELETE clears the base relation, then the load raises,
@@ -54,6 +72,6 @@ def test_cache_reloads_after_a_failed_reload(monkeypatch):
         monkeypatch.undo()
         again = cache.run_check(_CONFLICT_FACTS)
         assert again.ok is False
-        assert again.findings == ["ERROR functional_conflict: Org established_on"]
+        assert again.findings == _CONFLICT_FINDINGS
     finally:
         cache.close()

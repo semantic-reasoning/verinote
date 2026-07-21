@@ -13,6 +13,14 @@ def _duckdb():
     return pytest.importorskip("duckdb")
 
 
+def _warn_dead_functional(relation: str) -> str:
+    """The report line for a `functional("rel")` decl no engine fact satisfies."""
+    return (
+        f'WARN dead_rule: policy declares functional("{relation}") '
+        "but no engine fact uses that relation"
+    )
+
+
 def test_duckdb_backend_missing_duckdb_is_blocking(monkeypatch):
     real_import = builtins.__import__
 
@@ -44,8 +52,15 @@ def test_duckdb_backend_default_policy_flags_functional_conflict():
     assert rep.engine_available is True
     assert rep.ok is False
     assert rep.errors == 1
-    assert rep.warnings == 0
-    assert rep.findings == ["ERROR functional_conflict: Org established_on"]
+    # established_on IS used (so it is live), but the default policy also declares
+    # born_on/died_on functional and no fact uses them: dead rules that surface as
+    # non-blocking WARNs beside the real conflict (issue #286).
+    assert rep.warnings == 2
+    assert rep.findings == [
+        "ERROR functional_conflict: Org established_on",
+        _warn_dead_functional("born_on"),
+        _warn_dead_functional("died_on"),
+    ]
     assert "backend: DuckDB" in rep.text
     assert "--- policy input ---" in rep.text
     assert "--- fact input ---" in rep.text
@@ -69,7 +84,14 @@ def test_duckdb_backend_compares_equivalent_atom_string_and_number_terms():
     )
 
     assert rep.ok is False
-    assert rep.findings == ["ERROR functional_conflict: ada born_on"]
+    # born_on is used (the conflict is real and collapses to one ERROR); the
+    # default policy's other functional decls, established_on/died_on, are unused
+    # dead rules and surface as non-blocking WARNs (issue #286).
+    assert rep.findings == [
+        "ERROR functional_conflict: ada born_on",
+        _warn_dead_functional("died_on"),
+        _warn_dead_functional("established_on"),
+    ]
 
 
 def test_duckdb_backend_treats_equal_number_and_string_values_as_equal():
@@ -131,11 +153,18 @@ def test_duckdb_backend_consistent_kb_is_ok():
         ]
     )
 
+    # No functional conflict, so the gate stays open — but the shipped default
+    # policy declares born_on/died_on functional and no fact uses them, so a
+    # consistent KB now surfaces its own unused declarations as WARNs rather than
+    # reading as a clean bill of health (issue #286).
     assert rep.ok is True
     assert rep.errors == 0
-    assert rep.warnings == 0
-    assert rep.findings == []
-    assert "no findings" in rep.text
+    assert rep.warnings == 2
+    assert rep.findings == [
+        _warn_dead_functional("born_on"),
+        _warn_dead_functional("died_on"),
+    ]
+    assert "no findings" not in rep.text
 
 
 def test_duckdb_backend_warn_is_non_blocking():
