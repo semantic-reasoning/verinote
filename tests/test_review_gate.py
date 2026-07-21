@@ -853,6 +853,7 @@ FACT_TRANSITION_METHODS = frozenset(
         "auto_accept_fact",
         "auto_retract_fact",
         "reject_fact",
+        "surface_stale_engine_facts",
         "toggle_review",
     }
 )
@@ -944,6 +945,20 @@ def test_no_public_transition_revives_a_superseded_fact(tmp_path):
     assert store.get_fact(fact_id)["status"] == "superseded"
     log_before = _actions(store, fact_id)
 
+    # surface_stale_engine_facts sweeps a source over its latest completed job, so
+    # give this source one whose current artifact even anchors the superseded fact:
+    # superseded is not engine-tier, so the sweep must skip it rather than revive it.
+    artifact_id = store.add_source_artifact(
+        source_id=source_id, kind="original_text", path="sources/rejected.txt", checksum="r1"
+    )
+    store.add_fact_evidence(
+        fact_id=fact_id, source_id=source_id, artifact_id=artifact_id, snippet="x"
+    )
+    stale_job = store.create_extraction_job(
+        source_id=source_id, artifact_id=artifact_id, provider="fake", model="m", total_chunks=1
+    )
+    store.finish_extraction_job(stale_job)
+
     routes = {
         "accept_fact": lambda: store.accept_fact(fact_id),
         "accept_review_facts_for_source": lambda: store.accept_review_facts_for_source(
@@ -952,6 +967,7 @@ def test_no_public_transition_revives_a_superseded_fact(tmp_path):
         "auto_accept_fact": lambda: store.auto_accept_fact(fact_id, rule_name="r"),
         "auto_retract_fact": lambda: store.auto_retract_fact(fact_id, rule_name="r"),
         "reject_fact": lambda: store.reject_fact(fact_id),
+        "surface_stale_engine_facts": lambda: store.surface_stale_engine_facts(stale_job),
         "toggle_review": lambda: store.toggle_review(fact_id),
     }
     assert set(routes) == FACT_TRANSITION_METHODS

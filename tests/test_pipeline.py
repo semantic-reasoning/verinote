@@ -11,8 +11,22 @@ from verinote.pipeline import (
     process_extraction_job,
     sync_sources,
 )
+from verinote.pipeline.query import query_path
+from verinote.pipeline.verify import verify
 from verinote.store import Store
 from verinote.engine.terms import Atom, Compound, StringLit
+
+
+_BORN_IN_QUERY = (
+    ".decl answer_q1(value: symbol)\n"
+    'answer_q1(O) :- relation("Ada", "born_in", O).\n'
+)
+
+
+def _write_born_in_query(root):
+    path = query_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_BORN_IN_QUERY, encoding="utf-8")
 
 
 def _store(tmp_path) -> Store:
@@ -1208,3 +1222,167 @@ def test_sync_records_suppression_event_when_reextracting_rejected_fact(
     ]
     assert len(events) == 1
     assert json.loads(events[0]["after_json"])["run_id"] == result.run_id
+
+
+# --- #329 Part B: the staleness sweep, end to end ----------------------------
+
+
+def test_stale_confirmed_fact_is_demoted_after_the_source_text_changes(
+    tmp_path, fake_client
+):
+    # THE primary repro: confirm "Ada born_in London" -> edit the source to Paris
+    # -> a clean re-extraction -> the sweep returns London to review (stale=1) and
+    # the engine stops verifying it, while Paris sits as a fresh candidate.
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    art_london = s.add_source_artifact(
+        source_id=sid, kind="original_text", path="sources/a-v1.txt", checksum="v1"
+    )
+    _extract_one_chunk_at_artifact(
+        s,
+        fake_client([ExtractedFact("Ada", "born_in", "London", 0.9)]),
+        source_id=sid,
+        artifact_id=art_london,
+        chunk="Ada was born in London.",
+    )
+    [fact] = s.facts()
+    s.toggle_review(fact["id"])  # a human confirms it
+    assert s.get_fact(fact["id"])["status"] == "confirmed"
+    _write_born_in_query(tmp_path)
+    assert verify(s).answers == ["q1: London"]
+
+    art_paris = s.add_source_artifact(
+        source_id=sid, kind="original_text", path="sources/a-v2.txt", checksum="v2"
+    )
+    outcome = _extract_one_chunk_at_artifact(
+        s,
+        fake_client([ExtractedFact("Ada", "born_in", "Paris", 0.9)]),
+        source_id=sid,
+        artifact_id=art_paris,
+        chunk="Ada was born in Paris.",
+    )
+
+    demoted = s.surface_stale_engine_facts(outcome.job_id)
+
+    assert [d["object"] for d in demoted] == ["London"]
+    london = next(f for f in s.facts() if f["object"] == "London")
+    paris = next(f for f in s.facts() if f["object"] == "Paris")
+    assert london["status"] == "needs_review" and london["stale"] == 1
+    assert paris["status"] == "candidate"
+    # The engine no longer returns London, and Paris is not yet engine-tier.
+    assert verify(s).answers == []
+
+
+def test_unchanged_source_resync_demotes_nothing(tmp_path, fake_client):
+    # The load-bearing anti-thrash regression: re-syncing an UNCHANGED source (the
+    # ordinary case) re-observes its confirmed fact at the same content-addressed
+    # artifact, so the sweep finds current evidence and demotes nothing. Without
+    # this the whole design would oscillate under normal operation.
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    art = s.add_source_artifact(
+        source_id=sid, kind="original_text", path="sources/a.txt", checksum="v1"
+    )
+    london = ExtractedFact("Ada", "born_in", "London", 0.9)
+    _extract_one_chunk_at_artifact(
+        s, fake_client([london]), source_id=sid, artifact_id=art, chunk="London body."
+    )
+    [fact] = s.facts()
+    s.toggle_review(fact["id"])
+    assert s.get_fact(fact["id"])["status"] == "confirmed"
+
+    outcome = _extract_one_chunk_at_artifact(
+        s, fake_client([london]), source_id=sid, artifact_id=art, chunk="London body."
+    )
+    demoted = s.surface_stale_engine_facts(outcome.job_id)
+
+    assert demoted == []
+    assert s.get_fact(fact["id"])["status"] == "confirmed"
+    assert s.get_fact(fact["id"])["stale"] == 0
+
+
+def test_a_run_with_a_failed_chunk_demotes_nothing(tmp_path, fake_client):
+    # Criterion 2 from the issue: a run with ANY failed chunk finishes 'failed' and
+    # is self-gated out of staleness judgment entirely -- a partially-failed run
+    # must never sweep away a confirmed fact just because it did not re-see it.
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    art_old = s.add_source_artifact(
+        source_id=sid, kind="original_text", path="sources/a-v1.txt", checksum="v1"
+    )
+    _extract_one_chunk_at_artifact(
+        s,
+        fake_client([ExtractedFact("alpha", "seen_in", "source", 0.9)]),
+        source_id=sid,
+        artifact_id=art_old,
+        chunk="alpha",
+    )
+    [fact] = s.facts()
+    s.toggle_review(fact["id"])
+    assert s.get_fact(fact["id"])["status"] == "confirmed"
+
+    art_new = s.add_source_artifact(
+        source_id=sid, kind="original_text", path="sources/a-v2.txt", checksum="v2"
+    )
+    job_id = s.create_extraction_job(
+        source_id=sid, artifact_id=art_new, provider="fake", model="m", total_chunks=1
+    )
+    s.add_source_chunks(job_id=job_id, source_id=sid, chunks=["bad"])
+    result = process_extraction_job(s, _ChunkAwareClient(), job_id=job_id)
+    assert result.failed_chunks == 1
+    assert s.get_extraction_job(job_id)["status"] == "failed"
+
+    assert s.surface_stale_engine_facts(job_id) == []
+    assert s.get_fact(fact["id"])["status"] == "confirmed"
+    assert s.get_fact(fact["id"])["stale"] == 0
+
+
+def test_multi_source_demotes_only_the_edited_source_and_a_witness_still_answers(
+    tmp_path, fake_client
+):
+    # Same triple confirmed from source A and B; A's text is edited away. Only A's
+    # citation is demoted (facts are source-scoped), B's is untouched, and the
+    # engine still answers because B remains a live witness.
+    s = _store(tmp_path)
+    london = ExtractedFact("Ada", "born_in", "London", 0.9)
+    src_a = s.add_source("sources/a.txt")
+    a_old = s.add_source_artifact(
+        source_id=src_a, kind="original_text", path="sources/a-v1.txt", checksum="a1"
+    )
+    _extract_one_chunk_at_artifact(
+        s, fake_client([london]), source_id=src_a, artifact_id=a_old, chunk="A: London."
+    )
+    a_fact = s.facts()[0]
+    s.toggle_review(a_fact["id"])
+
+    src_b = s.add_source("sources/b.txt")
+    b_art = s.add_source_artifact(
+        source_id=src_b, kind="original_text", path="sources/b.txt", checksum="b1"
+    )
+    _extract_one_chunk_at_artifact(
+        s, fake_client([london]), source_id=src_b, artifact_id=b_art, chunk="B: London."
+    )
+    b_fact = next(f for f in s.facts() if f["source_id"] == src_b)
+    s.toggle_review(b_fact["id"])
+
+    _write_born_in_query(tmp_path)
+    assert verify(s).answers == ["q1: London"]
+
+    a_new = s.add_source_artifact(
+        source_id=src_a, kind="original_text", path="sources/a-v2.txt", checksum="a2"
+    )
+    outcome = _extract_one_chunk_at_artifact(
+        s,
+        fake_client([ExtractedFact("Ada", "born_in", "Paris", 0.9)]),
+        source_id=src_a,
+        artifact_id=a_new,
+        chunk="A: Paris.",
+    )
+
+    demoted = s.surface_stale_engine_facts(outcome.job_id)
+
+    assert [d["id"] for d in demoted] == [a_fact["id"]]
+    assert s.get_fact(a_fact["id"])["status"] == "needs_review"
+    assert s.get_fact(b_fact["id"])["status"] == "confirmed"  # the witness is untouched
+    # The engine still answers London -- through B, the live witness.
+    assert verify(s).answers == ["q1: London"]

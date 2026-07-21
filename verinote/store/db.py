@@ -1779,6 +1779,139 @@ class Store:
             )
             return after
 
+    def surface_stale_engine_facts(self, job_id: int) -> list[sqlite3.Row]:
+        """Demote engine-tier facts a source's current artifact no longer supports.
+
+        The retirement path for a `confirmed`/`accepted` citation whose source
+        text changed under it (#329). Re-extraction inserts the new text's facts
+        as fresh candidates but leaves the old engine-tier fact feeding inference,
+        so the KB keeps citing a source for content it no longer contains. This
+        returns each such fact to `needs_review` (a re-review, the same landing
+        `toggle_review` uses — never `superseded`, which would forge a human
+        rejection) and flags it `stale = 1` so it stops witnessing corroboration
+        until a human or a later re-observation resolves it.
+
+        Self-gating — this does NOT trust its caller. It reads the job row itself
+        and returns `[]` unless EVERY guard holds:
+          * the job exists;
+          * `job.artifact_id IS NOT NULL` — with no current artifact there is no
+            baseline to judge "evidence at the current artifact" against;
+          * `job.status == 'done'` — the authoritative clean-run signal.
+            `fail_extraction_job` sets `status='failed'` WITHOUT touching
+            `failed_chunks`, so a job failed through an exception handler can carry
+            a stale `failed_chunks == 0`; `status == 'done'` is what `_refresh_
+            extraction_job(final=True)` only ever lands when nothing failed, so it
+            is the real gate and the counter check below is a cheap extra belt;
+          * `failed_chunks == 0` — the belt;
+          * `job_id` is the LATEST job for its source — an older `done` job ran
+            over an older, now-superseded artifact, so its re-observations are
+            themselves stale; a source whose newest job failed is simply not
+            judged until a clean run on its current artifact lands;
+          * at least one `fact_evidence` row anchors `job.artifact_id` for this
+            source — the empty/whiff guard. An artifact edited to empty (or a
+            transient converter yielding "") finishes `done, total=0` cleanly;
+            sweeping on pure absence would flag every engine-tier fact of the
+            source. Requiring a real anchor (a fresh insert OR a Part-A
+            re-observation) at the current artifact subsumes the empty-artifact
+            case, a total LLM whiff, and the real edit — and a source edited to
+            genuinely zero facts is deliberately never swept (safety over
+            liveness: keep a human's decision rather than destroy it on an
+            ambiguous empty signal).
+
+        Per-fact eligibility, within a source that passed the gates:
+        `status IN ENGINE_STATUSES` AND at least one `fact_evidence` row with a
+        non-NULL `artifact_id` (legacy/non-chunked facts write NULL-artifact
+        evidence and have no artifact baseline, so they are never swept) AND NO
+        `fact_evidence` row at `job.artifact_id` specifically — that absence is
+        the staleness signal.
+
+        Demotion is one guarded UPDATE per fact — `status='needs_review',
+        stale=1` together, conditional on the status observed at read time (the
+        `auto_retract_fact`/`accept_review_facts_for_source` idiom). A concurrent
+        human accept/reject/supersede landing on another connection wins cleanly:
+        the guard's rowcount is 0 and nothing is written, so `stale` is never
+        stamped on a fact that did not actually transition — the invariant both
+        witness guards (`recommend`, `_supporting_facts`) depend on. `superseded`
+        is structurally excluded (never in `ENGINE_STATUSES`). Each real demotion
+        emits a `stale_citation_surfaced` fact_event keyed to THIS sweep's job
+        (its own vocabulary, distinct from #264's retraction events), and the
+        demoted rows are returned so a same-request auto-accept pass can exclude
+        them.
+        """
+        with self._lock:
+            job = self.get_extraction_job(job_id)
+            if job is None:
+                return []
+            artifact_id = job["artifact_id"]
+            if artifact_id is None:
+                return []
+            if job["status"] != "done" or int(job["failed_chunks"]) != 0:
+                return []
+            source_id = int(job["source_id"])
+            latest = self._conn.execute(
+                "SELECT MAX(id) AS max_id FROM extraction_jobs WHERE source_id = ?",
+                (source_id,),
+            ).fetchone()
+            if latest is None or latest["max_id"] is None:
+                return []
+            if int(latest["max_id"]) != job_id:
+                return []
+            anchored = self._conn.execute(
+                "SELECT 1 FROM fact_evidence "
+                "WHERE source_id = ? AND artifact_id = ? LIMIT 1",
+                (source_id, artifact_id),
+            ).fetchone()
+            if anchored is None:
+                return []
+            placeholders, statuses = _status_filter(ENGINE_STATUSES)
+            eligible = list(
+                self._conn.execute(
+                    "SELECT f.id FROM facts f "
+                    f"WHERE f.source_id = ? AND f.status IN ({placeholders}) "
+                    "AND EXISTS (SELECT 1 FROM fact_evidence e "
+                    "WHERE e.fact_id = f.id AND e.artifact_id IS NOT NULL) "
+                    "AND NOT EXISTS (SELECT 1 FROM fact_evidence e "
+                    "WHERE e.fact_id = f.id AND e.artifact_id = ?) "
+                    "ORDER BY f.id",
+                    (source_id, *statuses, artifact_id),
+                )
+            )
+            demoted: list[sqlite3.Row] = []
+            for row in eligible:
+                fact_id_i = int(row["id"])
+                before = self.get_fact(fact_id_i)
+                if before is None:
+                    continue
+                observed = before["status"]
+                if observed not in ENGINE_STATUSES:
+                    # A human accept keeps it engine-tier (still eligible), but a
+                    # reject/supersede lands it outside the tier between the
+                    # snapshot and here; their decision stands and we skip it.
+                    continue
+                cursor = self._conn.execute(
+                    "UPDATE facts SET status = 'needs_review', stale = 1, "
+                    "updated_at = datetime('now') WHERE id = ? AND status = ?",
+                    (fact_id_i, observed),
+                )
+                if cursor.rowcount == 0:
+                    # The row moved on another connection between the read and the
+                    # write; the guard refuses, so stale is never stamped on a
+                    # fact that did not transition.
+                    continue
+                after = self.get_fact(fact_id_i)
+                self._add_fact_event(
+                    fact_id=fact_id_i,
+                    event_type="stale_citation_surfaced",
+                    actor="system",
+                    source_id=source_id,
+                    job_id=job_id,
+                    before=before,
+                    after=after,
+                )
+                if after is not None:
+                    demoted.append(after)
+            return demoted
+
     def amend_fact(
         self,
         fact_id: int,
