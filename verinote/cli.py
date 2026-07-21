@@ -125,14 +125,32 @@ def cmd_init(cfg: Config, args: argparse.Namespace) -> int:
     # made — so overwriting it is not ours to choose. Refuse, and say what to do.
     # A readable database with no schema is the opposite case: filling it in is
     # exactly what `init` is for, so that one is left to proceed.
-    if cfg.db_path.is_file() and _kb_schema_problem(cfg.db_path) == KB_UNREADABLE:
-        print(
-            f"cannot initialise {cfg.root}: {cfg.db_path} exists and is {KB_UNREADABLE}. "
-            "If it is a damaged KB, restore it from backup; if it is not a KB at all, "
-            "move it aside and run this again.",
-            file=sys.stderr,
-        )
-        return 1
+    if cfg.db_path.is_file():
+        problem = _kb_schema_problem(cfg.db_path)
+        if problem == KB_UNREADABLE:
+            print(
+                f"cannot initialise {cfg.root}: {cfg.db_path} exists and is {KB_UNREADABLE}. "
+                "If it is a damaged KB, restore it from backup; if it is not a KB at all, "
+                "move it aside and run this again.",
+                file=sys.stderr,
+            )
+            return 1
+        # A foreign `facts` table or a partial/foreign core schema is not ours to
+        # scaffold into either (#290). `init_schema()` is CREATE TABLE IF NOT
+        # EXISTS, so it skips the foreign table and then fails on the mismatch —
+        # but `executescript` under `isolation_level=None` autocommits each
+        # statement, so by the time it raises it has already written the rest of
+        # verinote's tables into the user's database, with nothing to roll them
+        # back. Refusing here keeps that mutation from ever starting. Only
+        # KB_NO_SCHEMA (a readable db with no `facts` table — init's whole
+        # purpose) and a healthy KB (None — an idempotent re-init) may proceed.
+        if problem is not None and problem != KB_NO_SCHEMA:
+            print(
+                f"cannot initialise {cfg.root}: {cfg.db_path} is not a verinote KB "
+                f"({problem}); move it aside and run this again.",
+                file=sys.stderr,
+            )
+            return 1
     cfg.root.mkdir(parents=True, exist_ok=True)
     store = _store(cfg)
     if args.seed:

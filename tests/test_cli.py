@@ -997,6 +997,94 @@ def test_init_still_scaffolds_a_database_that_merely_has_no_schema(tmp_path, mon
     assert (root / "policy" / "logic-policy.dl").is_file()
 
 
+def _tables(db_path) -> set[str]:
+    conn = sqlite3.connect(db_path)
+    try:
+        return {
+            r[0]
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+    finally:
+        conn.close()
+
+
+def test_init_refuses_a_foreign_facts_table(tmp_path, monkeypatch, capsys):
+    # A `facts` table that is not verinote's must stop init BEFORE any write: the
+    # load-bearing assertion is that the foreign file is left byte-for-byte as it
+    # was, because `executescript` autocommits per statement and would otherwise
+    # scatter verinote's tables into it before crashing on the mismatch (#290).
+    _isolated(monkeypatch, tmp_path)
+    root = tmp_path / "foreign"
+    root.mkdir()
+    db = root / "kb.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE facts(a, b)")
+    conn.commit()
+    conn.close()
+
+    assert cli.main(["init", str(root)]) == 1
+
+    err = capsys.readouterr().err
+    assert "is not a verinote KB" in err
+    assert cli.KB_ALIEN_FACTS in err
+    assert "Traceback" not in err
+    assert _tables(db) == {"facts"}  # nothing verinote added
+    assert not (root / "policy").exists()
+
+
+def test_init_refuses_a_partial_schema(tmp_path, monkeypatch, capsys):
+    # A verinote-shaped `facts` alone is a partial schema, not an empty slot:
+    # `IF NOT EXISTS` would complete it while writing over the user's file.
+    _isolated(monkeypatch, tmp_path)
+    root = tmp_path / "partial"
+    root.mkdir()
+    db = root / "kb.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE facts(id INTEGER PRIMARY KEY, subject, relation, object, status)"
+    )
+    conn.commit()
+    conn.close()
+
+    assert cli.main(["init", str(root)]) == 1
+
+    err = capsys.readouterr().err
+    assert "is not a verinote KB" in err
+    assert cli.KB_PARTIAL_SCHEMA in err
+    assert _tables(db) == {"facts"}
+
+
+def test_init_seed_on_a_foreign_facts_table_writes_nothing(tmp_path, monkeypatch, capsys):
+    # `--seed` must not reach `_seed`: the refusal returns before the store is
+    # ever opened, so no demo facts land in the foreign database.
+    _isolated(monkeypatch, tmp_path)
+    root = tmp_path / "foreign"
+    root.mkdir()
+    db = root / "kb.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE facts(a, b)")
+    conn.commit()
+    conn.close()
+
+    assert cli.main(["init", str(root), "--seed"]) == 1
+
+    assert "is not a verinote KB" in capsys.readouterr().err
+    assert _tables(db) == {"facts"}
+    assert list(sqlite3.connect(db).execute("SELECT * FROM facts")) == []
+
+
+def test_init_twice_is_idempotent(tmp_path, monkeypatch, capsys):
+    # A healthy, already-initialised KB re-init'd is a no-op re-init, not a refusal.
+    _isolated(monkeypatch, tmp_path)
+    root = tmp_path / "kb"
+
+    assert cli.main(["init", str(root)]) == 0
+    capsys.readouterr()
+
+    assert cli.main(["init", str(root)]) == 0
+    assert "is not a verinote KB" not in capsys.readouterr().err
+
+
 @pytest.mark.skipif(sys.platform.startswith("win"), reason="Windows forbids `?` in paths")
 def test_kb_schema_probe_survives_a_uri_metacharacter_in_the_path(tmp_path):
     """A `?` in the root must not truncate the SQLite URI we probe the schema with.
