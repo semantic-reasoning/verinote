@@ -646,7 +646,7 @@ def test_extraction_job_tracks_chunk_progress_and_retry(tmp_path):
     assert job["candidate_count"] == 2
     assert "1 chunk(s) failed" in job["message"]
 
-    assert s.retry_failed_chunks(job_id) == 1
+    assert s.claim_extraction_job_for_retry(job_id, max_attempts=None) is True
     assert s.source_chunks(job_id)[1]["status"] == "pending"
 
 
@@ -844,6 +844,94 @@ def test_failed_chunk_attempt_status_counts_failed_and_exhausted(tmp_path):
         (chunk_ids[1],),
     )
     assert s.failed_chunk_attempt_status(job_id, max_attempts=2) == (2, 1)
+
+
+def test_claim_extraction_job_for_retry_refuses_a_canceled_job(tmp_path):
+    """The CAS admits only `pending`/`failed`, so a canceled job is left entirely
+    alone: no reset, no ownership, no audit event — the planner's done/canceled
+    gate is the primary guard, this is the store's own defense-in-depth (#323)."""
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    job_id = s.create_extraction_job(
+        source_id=sid, provider="fake", model="m", total_chunks=1
+    )
+    chunk_id = s.add_source_chunks(job_id=job_id, source_id=sid, chunks=["a"])[0]
+    s.mark_extraction_job_running(job_id)
+    s.mark_chunk_running(chunk_id)
+    s.mark_chunk_failed(chunk_id, "provider down")  # job + chunk 'failed'
+    s._conn.execute(
+        "UPDATE extraction_jobs SET status = 'canceled' WHERE id = ?", (job_id,)
+    )
+    events_before = s._conn.execute("SELECT COUNT(*) AS n FROM fact_events").fetchone()["n"]
+
+    assert s.claim_extraction_job_for_retry(job_id, max_attempts=None) is False
+
+    assert s.get_extraction_job(job_id)["status"] == "canceled"  # untouched
+    assert s.get_source_chunk(chunk_id)["status"] == "failed"  # not reset
+    events_after = s._conn.execute("SELECT COUNT(*) AS n FROM fact_events").fetchone()["n"]
+    assert events_after == events_before  # no chunk_retried / extraction_job_started
+
+
+def test_claim_extraction_job_for_retry_resets_only_under_cap_chunks_in_a_mixed_job(
+    tmp_path,
+):
+    """A job carrying a MIX of under-cap and exhausted failed chunks resets — and
+    audits — only the ones still under the cap; the exhausted one stays `failed`
+    with no `chunk_retried` event (#323)."""
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    job_id = s.create_extraction_job(
+        source_id=sid, provider="fake", model="m", total_chunks=2
+    )
+    chunk_ids = s.add_source_chunks(job_id=job_id, source_id=sid, chunks=["a", "b"])
+    s.mark_extraction_job_running(job_id)
+    for chunk_id in chunk_ids:
+        s.mark_chunk_running(chunk_id)
+        s.mark_chunk_failed(chunk_id, "boom")
+    s._conn.execute(
+        "UPDATE source_chunks SET attempts = 1 WHERE id = ?", (chunk_ids[0],)
+    )  # under the cap
+    s._conn.execute(
+        "UPDATE source_chunks SET attempts = 3 WHERE id = ?", (chunk_ids[1],)
+    )  # at the cap
+
+    assert s.claim_extraction_job_for_retry(job_id, max_attempts=3) is True
+
+    assert s.get_source_chunk(chunk_ids[0])["status"] == "pending"  # reset
+    assert s.get_source_chunk(chunk_ids[1])["status"] == "failed"  # exhausted, left alone
+    retried = list(
+        s._conn.execute(
+            "SELECT chunk_id FROM fact_events WHERE event_type = 'chunk_retried'"
+        )
+    )
+    assert [row["chunk_id"] for row in retried] == [chunk_ids[0]]  # only the reset chunk
+
+
+def test_claim_extraction_job_for_retry_reclaims_a_stray_running_chunk_on_a_failed_job(
+    tmp_path,
+):
+    """A non-LLMError crash mid-chunk can leave a stray `running` chunk on a job the
+    web worker then marks `failed` — a state the pending-claim path never sees. The
+    retry claim reclaims it to `pending` under the same lock that takes ownership."""
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    job_id = s.create_extraction_job(
+        source_id=sid, provider="fake", model="m", total_chunks=1
+    )
+    chunk_id = s.add_source_chunks(job_id=job_id, source_id=sid, chunks=["a"])[0]
+    s.mark_extraction_job_running(job_id)
+    s.mark_chunk_running(chunk_id)  # 'running', attempts = 1
+    # The job fails while its chunk is still in flight (a crash the worker's
+    # `except Exception` reported), leaving a stray `running` chunk on a `failed` job.
+    s._conn.execute(
+        "UPDATE extraction_jobs SET status = 'failed' WHERE id = ?", (job_id,)
+    )
+    assert s.get_source_chunk(chunk_id)["status"] == "running"
+
+    assert s.claim_extraction_job_for_retry(job_id, max_attempts=3) is True
+
+    assert s.get_extraction_job(job_id)["status"] == "running"  # claimed
+    assert s.get_source_chunk(chunk_id)["status"] == "pending"  # stray reclaimed
 
 
 def _job_with_mixed_chunks(s, sid):
@@ -1107,7 +1195,7 @@ def test_extraction_job_records_lifecycle_events(tmp_path):
     s.mark_extraction_job_running(failed_job)
     s.mark_chunk_running(failed_chunk)
     s.mark_chunk_failed(failed_chunk, "provider down")
-    s.retry_failed_chunks(failed_job)
+    s.claim_extraction_job_for_retry(failed_job, max_attempts=None)
     s.fail_extraction_job(failed_job, "analysis failed")
 
     done_job = s.create_extraction_job(
@@ -1134,12 +1222,13 @@ def test_extraction_job_records_lifecycle_events(tmp_path):
     )
     event_types = [event["event_type"] for event in events]
     assert event_types == [
-        "extraction_job_started",
-        "chunk_failed",
-        "chunk_retried",
-        "extraction_job_failed",
-        "extraction_job_started",
-        "extraction_job_completed",
+        "extraction_job_started",  # mark_extraction_job_running(failed_job)
+        "chunk_failed",  # mark_chunk_failed
+        "chunk_retried",  # claim_extraction_job_for_retry resets the failed chunk
+        "extraction_job_started",  # ...and takes ownership in the same locked step
+        "extraction_job_failed",  # fail_extraction_job
+        "extraction_job_started",  # mark_extraction_job_running(done_job)
+        "extraction_job_completed",  # finish_extraction_job
     ]
     assert {event["actor"] for event in events} == {"system"}
     failed_event = [event for event in events if event["event_type"] == "chunk_failed"][0]

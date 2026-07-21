@@ -746,7 +746,13 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             status_code=status_code,
         )
 
-    def _start_source_extraction(job_id: int, cfg: Config) -> None:
+    def _start_source_extraction(
+        job_id: int,
+        cfg: Config,
+        *,
+        retry: bool = False,
+        retry_max_attempts: int | None = None,
+    ) -> None:
         def run() -> None:
             try:
                 with Store(cfg.db_path) as worker_store:
@@ -757,6 +763,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                         client,
                         job_id=job_id,
                         schema_hint=_extraction_schema_hint(cfg),
+                        retry=retry,
+                        retry_max_attempts=retry_max_attempts,
                     )
                     if cfg.auto_accept_recommendations:
                         apply_auto_accept_recommendations(worker_store)
@@ -911,10 +919,16 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.post("/sources/jobs/{job_id}/retry", response_class=HTMLResponse)
     def retry_source_job(request: Request, job_id: int):
-        store = _active_store()
-        retried = store.retry_failed_chunks(job_id)
-        if retried:
-            _start_source_extraction(job_id, _active_cfg())
+        # The atomic claim-for-retry inside the worker resets the failed chunks AND
+        # takes ownership in one locked step, so a concurrent `verinote sync`
+        # auto-retry on the same job_id cannot collide: whoever wins the CAS owns
+        # it and the loser backs off via ExtractionJobBusyError (handled in the
+        # worker above). `retry_max_attempts=None` makes this a human override that
+        # resets EVERY failed chunk regardless of attempt count, unlike the capped
+        # auto-retry — the escape hatch for a job the sync loop has given up on (#323).
+        _start_source_extraction(
+            job_id, _active_cfg(), retry=True, retry_max_attempts=None
+        )
         return RedirectResponse("/sources", status_code=303)
 
     @app.post("/sources/{source_id}/reanalyze", response_class=HTMLResponse)

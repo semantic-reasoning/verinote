@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import sys
 from pathlib import Path
 
@@ -69,10 +69,25 @@ class _SourceSyncOutcome:
 
 
 @dataclass(frozen=True)
+class _BlockedSource:
+    """A source whose newest job has given up and cannot auto-retry.
+
+    A `failed` job with a chunk that has spent its whole attempt budget is not
+    processed this run — reprocessing would spin the same dead chunk every sync
+    forever with no progress (#323). It is surfaced as a hard failure so the
+    operator sees the give-up signal instead of a silently green run.
+    """
+
+    source_path: str
+    job_id: int
+
+
+@dataclass(frozen=True)
 class _SyncSummary:
     per_source: list[_SourceSyncOutcome]
     total: int
     run_id: int
+    blocked: list[_BlockedSource] = field(default_factory=list)
 
     @property
     def failed_sources(self) -> list[_SourceSyncOutcome]:
@@ -497,6 +512,7 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
     from verinote.pipeline import (
         create_chunked_extraction_job,
         ExtractionJobBusyError,
+        MAX_CHUNK_ATTEMPTS,
         plan_source_extraction,
         process_extraction_job,
         sync_sources,
@@ -548,6 +564,7 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
         registered = [source for source in sources if source.source_id is not None]
         if registered:
             per_source = []
+            blocked: list[_BlockedSource] = []
             total = 0
             run_id = 0
             for source in registered:
@@ -569,7 +586,25 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                         file=sys.stderr,
                     )
                     continue
-                job_id = plan.resume_job_id
+                if plan.exhausted_job_id is not None:
+                    # A chunk has failed every attempt. Processing the job again
+                    # would reset nothing and burn an empty run each sync, so skip
+                    # it here and surface the give-up below — this skip BEFORE any
+                    # claim is the anti-spurious-run gate #323 exists for.
+                    blocked.append(
+                        _BlockedSource(
+                            source_path=source.source_path,
+                            job_id=plan.exhausted_job_id,
+                        )
+                    )
+                    continue
+                # A resume picks a rolled-back job back up; a retry re-runs a failed
+                # job through the atomic claim, which resets its failed chunks under
+                # the same lock that takes ownership. Both continue an existing job;
+                # neither means build a fresh one.
+                continued_job_id = plan.resume_job_id or plan.retry_job_id
+                retry = plan.retry_job_id is not None
+                job_id = continued_job_id
                 if job_id is None:
                     job_id = create_chunked_extraction_job(
                         store,
@@ -587,6 +622,8 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                         client,
                         job_id=job_id,
                         schema_hint=extraction_schema_hint(),
+                        retry=retry,
+                        retry_max_attempts=MAX_CHUNK_ATTEMPTS if retry else None,
                     )
                 except ExtractionJobBusyError:
                     # Job was `pending` at plan time but another worker claimed it
@@ -609,13 +646,14 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     else ""
                 )
                 # `outcome.candidates` is the job's running total, which for a
-                # resumed job counts candidates an earlier, interrupted run
-                # already extracted — using it here would credit this sync with
-                # work it did not do (#240), and would also violate the
-                # this-run-only invariant #239's failed/incomplete decision below
-                # relies on. `run_candidates` is always this invocation's own
-                # contribution; the job total is still worth saying for a resumed
-                # source, so it rides along in `job_total_candidates` instead.
+                # continued (resumed OR retried) job counts candidates an earlier,
+                # interrupted run already extracted — using it here would credit
+                # this sync with work it did not do (#240/#323), and would also
+                # violate the this-run-only invariant #239's failed/incomplete
+                # decision below relies on. `run_candidates` is always this
+                # invocation's own contribution; the job total is still worth
+                # saying for a continued source, so it rides along in
+                # `job_total_candidates` instead.
                 per_source.append(
                     _SourceSyncOutcome(
                         source_path=source.source_path,
@@ -625,15 +663,17 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                         message=message,
                         job_total_candidates=(
                             outcome.candidates
-                            if plan.resume_job_id is not None
+                            if continued_job_id is not None
                             else None
                         ),
-                        resumed_job_id=plan.resume_job_id,
+                        resumed_job_id=continued_job_id,
                     )
                 )
                 total += outcome.run_candidates
                 run_id = job_id
-            result = _SyncSummary(per_source=per_source, total=total, run_id=run_id)
+            result = _SyncSummary(
+                per_source=per_source, total=total, run_id=run_id, blocked=blocked
+            )
         else:
             # The legacy path has no chunk concept: any failure there raises
             # LLMError and exits rc 1 below, so every outcome reaching here is a
@@ -669,6 +709,16 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
             )
         else:
             print(f"  {outcome.source_path}: {outcome.candidates} candidate(s)")
+    for source in result.blocked:
+        # The give-up signal #323 adds: a job whose chunk has exhausted its retries
+        # will never make progress on its own, so name it on stderr and point at
+        # the two ways out rather than silently skipping it every run.
+        print(
+            f"giving up on {source.source_path}: extraction job #{source.job_id} "
+            f"has a chunk that failed every retry attempt — reanalyse the source or "
+            f"retry it in `verinote ui`",
+            file=sys.stderr,
+        )
     failed = result.failed_sources
     if failed:
         # Successes stayed visible on stdout above; the failures and the shape of
@@ -694,6 +744,28 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
             print(
                 f"sync incomplete: {len(failed)} source(s) had failed chunk(s); the "
                 "candidate(s) printed above are real and reviewable at `verinote ui`",
+                file=sys.stderr,
+            )
+        store.close()
+        return 1
+    if result.blocked:
+        # No source failed a chunk THIS run, but at least one has permanently given
+        # up (its give-up line already printed above). That is not a clean run:
+        # judge it like the failed branch — a run that still produced candidates is
+        # "incomplete" (real reviewable work exists), one that produced nothing is a
+        # failure — and exit non-zero so the give-up is never read as success.
+        if result.total == 0:
+            print(
+                f"sync failed: {len(result.blocked)} source(s) gave up after "
+                "exhausting chunk retries; see the message(s) above and "
+                "`verinote ui` for detail",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"sync incomplete: {len(result.blocked)} source(s) gave up after "
+                "exhausting chunk retries; the candidate(s) printed above are real "
+                "and reviewable at `verinote ui`",
                 file=sys.stderr,
             )
         store.close()
