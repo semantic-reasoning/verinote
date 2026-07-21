@@ -543,6 +543,232 @@ def test_note_fact_reobserved_clears_stale_on_the_new_anchor_path(tmp_path):
     assert s.get_fact(fact_id)["status"] == "needs_review"
 
 
+# --- surface_stale_engine_facts (#329 Part B) --------------------------------
+
+
+def _stale_parts(store):
+    """A confirmed engine-tier fact anchored ONLY at an old artifact (the stale
+    citation), a survivor confirmed fact anchored at the NEW artifact (satisfies
+    the empty/whiff guard and must never be swept), and the two artifact ids."""
+    sid = store.add_source("sources/a.txt")
+    old = store.add_source_artifact(
+        source_id=sid, kind="original_text", path="sources/a-v1.txt", checksum="v1"
+    )
+    new = store.add_source_artifact(
+        source_id=sid, kind="original_text", path="sources/a-v2.txt", checksum="v2"
+    )
+    stale = store.add_fact("Ada", "born_in", "London", status="confirmed", source_id=sid)
+    store.add_fact_evidence(fact_id=stale, source_id=sid, artifact_id=old, snippet="London")
+    survivor = store.add_fact("Ada", "lived_in", "Paris", status="confirmed", source_id=sid)
+    store.add_fact_evidence(
+        fact_id=survivor, source_id=sid, artifact_id=new, snippet="Paris"
+    )
+    return sid, old, new, stale, survivor
+
+
+def _done_job_at(store, *, source_id, artifact_id):
+    """A completed, clean job over `artifact_id` — `finish` forces status='done'
+    with failed_chunks=0, the authoritative clean-run signal the sweep gates on."""
+    job_id = store.create_extraction_job(
+        source_id=source_id,
+        artifact_id=artifact_id,
+        provider="fake",
+        model="m",
+        total_chunks=1,
+    )
+    store.finish_extraction_job(job_id)
+    return job_id
+
+
+def test_surface_stale_demotes_a_confirmed_fact_with_no_current_evidence(tmp_path):
+    s = _store(tmp_path)
+    sid, old, new, stale, survivor = _stale_parts(s)
+    job = _done_job_at(s, source_id=sid, artifact_id=new)
+
+    demoted = s.surface_stale_engine_facts(job)
+
+    assert [d["id"] for d in demoted] == [stale]
+    # status AND stale flip together — the invariant both witness guards depend on.
+    row = s.get_fact(stale)
+    assert row["status"] == "needs_review"
+    assert row["stale"] == 1
+    # the survivor has evidence at the current artifact and is left untouched.
+    survivor_row = s.get_fact(survivor)
+    assert survivor_row["status"] == "confirmed"
+    assert survivor_row["stale"] == 0
+
+
+def test_surface_stale_demotes_an_accepted_fact_too(tmp_path):
+    s = _store(tmp_path)
+    sid, old, new, stale, survivor = _stale_parts(s)
+    s._conn.execute("UPDATE facts SET status = 'accepted' WHERE id = ?", (stale,))
+    job = _done_job_at(s, source_id=sid, artifact_id=new)
+
+    demoted = s.surface_stale_engine_facts(job)
+
+    assert [d["id"] for d in demoted] == [stale]
+    row = s.get_fact(stale)
+    assert row["status"] == "needs_review"
+    assert row["stale"] == 1
+
+
+def test_surface_stale_never_touches_a_superseded_fact(tmp_path):
+    s = _store(tmp_path)
+    sid, old, new, stale, survivor = _stale_parts(s)
+    gone = s.add_fact("Ada", "died_in", "Rome", status="candidate", source_id=sid)
+    s.add_fact_evidence(fact_id=gone, source_id=sid, artifact_id=old, snippet="Rome")
+    s.reject_fact(gone)  # a human's terminal rejection
+    job = _done_job_at(s, source_id=sid, artifact_id=new)
+
+    demoted = s.surface_stale_engine_facts(job)
+
+    assert gone not in [d["id"] for d in demoted]
+    assert s.get_fact(gone)["status"] == "superseded"
+    assert s.get_fact(gone)["stale"] == 0
+
+
+def test_surface_stale_guarded_update_noops_on_a_concurrent_status_change(tmp_path):
+    # The cross-connection race: a human reject lands on another connection after
+    # the sweep read the row but before its guarded UPDATE. The guard's WHERE
+    # status = <observed> then finds rowcount 0, so stale is NEVER stamped on a
+    # fact that did not actually transition (the Gap-1 re-promotion invariant).
+    db = tmp_path / "kb.sqlite"
+    sweeping = Store(db)
+    sweeping.init_schema()
+    other = Store(db)
+    sid, old, new, stale, survivor = _stale_parts(sweeping)
+    job = _done_job_at(sweeping, source_id=sid, artifact_id=new)
+
+    real_get_fact = sweeping.get_fact
+    interleaved = []
+
+    def reject_once_after_the_read(target_id):
+        row = real_get_fact(target_id)
+        if target_id == stale and not interleaved:
+            interleaved.append(True)
+            other.reject_fact(stale)  # the other connection's human rejects it
+        return row
+
+    sweeping.get_fact = reject_once_after_the_read
+    demoted = sweeping.surface_stale_engine_facts(job)
+
+    assert interleaved, "the concurrent reject never landed — the test proves nothing"
+    assert demoted == []  # the guard refused the stale write
+    assert other.get_fact(stale)["status"] == "superseded"
+    assert other.get_fact(stale)["stale"] == 0  # never stamped on a non-transition
+
+
+def test_surface_stale_returns_empty_when_the_job_artifact_is_null(tmp_path):
+    s = _store(tmp_path)
+    sid, old, new, stale, survivor = _stale_parts(s)
+    # A completed job with no artifact of its own cannot define "current artifact".
+    null_job = s.create_extraction_job(
+        source_id=sid, artifact_id=None, provider="fake", model="m", total_chunks=1
+    )
+    s.finish_extraction_job(null_job)
+
+    assert s.surface_stale_engine_facts(null_job) == []
+    assert s.get_fact(stale)["status"] == "confirmed"
+
+
+def test_surface_stale_returns_empty_for_a_non_done_job(tmp_path):
+    s = _store(tmp_path)
+    sid, old, new, stale, survivor = _stale_parts(s)
+    running = s.create_extraction_job(
+        source_id=sid, artifact_id=new, provider="fake", model="m", total_chunks=1
+    )
+    s.mark_extraction_job_running(running)
+    assert s.get_extraction_job(running)["status"] == "running"
+
+    assert s.surface_stale_engine_facts(running) == []
+    assert s.get_fact(stale)["status"] == "confirmed"
+
+
+def test_surface_stale_returns_empty_when_failed_chunks_is_nonzero(tmp_path):
+    s = _store(tmp_path)
+    sid, old, new, stale, survivor = _stale_parts(s)
+    job = _done_job_at(s, source_id=sid, artifact_id=new)
+    # The belt: a 'done' row that still carries a nonzero failed_chunks counter is
+    # refused even though status=='done' (a state fail_extraction_job can leave).
+    s._conn.execute("UPDATE extraction_jobs SET failed_chunks = 1 WHERE id = ?", (job,))
+
+    assert s.surface_stale_engine_facts(job) == []
+    assert s.get_fact(stale)["status"] == "confirmed"
+
+
+def test_surface_stale_returns_empty_when_not_the_latest_job(tmp_path):
+    s = _store(tmp_path)
+    sid, old, new, stale, survivor = _stale_parts(s)
+    done = _done_job_at(s, source_id=sid, artifact_id=new)
+    # A newer job supersedes it: the older done job ran over a now-superseded view.
+    s.create_extraction_job(
+        source_id=sid, artifact_id=new, provider="fake", model="m", total_chunks=1
+    )
+
+    assert s.surface_stale_engine_facts(done) == []
+    assert s.get_fact(stale)["status"] == "confirmed"
+
+
+def test_surface_stale_returns_empty_when_no_evidence_anchors_the_current_artifact(
+    tmp_path,
+):
+    # The empty/whiff guard: a source edited to empty (or a total LLM whiff) leaves
+    # NO anchor at the current artifact, so nothing is swept on pure absence.
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    old = s.add_source_artifact(
+        source_id=sid, kind="original_text", path="sources/a-v1.txt", checksum="v1"
+    )
+    new = s.add_source_artifact(
+        source_id=sid, kind="original_text", path="sources/a-v2.txt", checksum="v2"
+    )
+    stale = s.add_fact("Ada", "born_in", "London", status="confirmed", source_id=sid)
+    s.add_fact_evidence(fact_id=stale, source_id=sid, artifact_id=old, snippet="London")
+    job = _done_job_at(s, source_id=sid, artifact_id=new)  # no anchor at `new`
+
+    assert s.surface_stale_engine_facts(job) == []
+    assert s.get_fact(stale)["status"] == "confirmed"
+
+
+def test_surface_stale_excludes_a_fact_with_only_null_artifact_evidence(tmp_path):
+    s = _store(tmp_path)
+    sid, old, new, stale, survivor = _stale_parts(s)
+    # A legacy/non-chunked fact whose ONLY evidence carries a NULL artifact_id has
+    # no artifact baseline to judge staleness against and is never swept.
+    legacy = s.add_fact("Legacy", "is_a", "Fact", status="confirmed", source_id=sid)
+    s.add_fact_evidence(fact_id=legacy, source_id=sid, artifact_id=None, snippet="x")
+    job = _done_job_at(s, source_id=sid, artifact_id=new)
+
+    demoted = [d["id"] for d in s.surface_stale_engine_facts(job)]
+
+    assert legacy not in demoted
+    assert s.get_fact(legacy)["status"] == "confirmed"
+    # the genuinely stale fact still demotes, proving the sweep did run.
+    assert stale in demoted
+
+
+def test_surface_stale_emits_a_stale_citation_surfaced_event(tmp_path):
+    s = _store(tmp_path)
+    sid, old, new, stale, survivor = _stale_parts(s)
+    job = _done_job_at(s, source_id=sid, artifact_id=new)
+
+    s.surface_stale_engine_facts(job)
+
+    events = [
+        e for e in s.fact_events(stale) if e["event_type"] == "stale_citation_surfaced"
+    ]
+    assert len(events) == 1
+    assert events[0]["actor"] == "system"
+    assert events[0]["job_id"] == job  # keyed to THIS sweep's job, not the origin
+    assert events[0]["source_id"] == sid
+    # the untouched survivor gets no such event.
+    assert [
+        e
+        for e in s.fact_events(survivor)
+        if e["event_type"] == "stale_citation_surfaced"
+    ] == []
+
+
 def test_source_artifacts_are_upserted_and_listed_with_counts(tmp_path):
     s = _store(tmp_path)
     sid = s.add_source("sources/report.pdf", kind="binary")

@@ -832,3 +832,78 @@ def test_a_stale_bit_is_inert_once_a_fact_leaves_needs_review(tmp_path):
     assert recommendation is not None
     assert recommendation.eligible is True
     assert recommendation.support_sources == ("sources/a.txt", "sources/b.txt")
+
+
+def _done_job_at_artifact(store, *, source_id, artifact_id):
+    job_id = store.create_extraction_job(
+        source_id=source_id,
+        artifact_id=artifact_id,
+        provider="fake",
+        model="sample-model",
+        total_chunks=1,
+    )
+    store.finish_extraction_job(job_id)
+    return job_id
+
+
+def test_swept_fact_reobserved_then_auto_accepted_via_corroboration(tmp_path):
+    # The full cycle the sweep finally makes reachable (#329 x #264, INTENDED, not
+    # a defect): the real sweep demotes a confirmed citation as stale; its content
+    # later returns and note_fact_reobserved clears the stale bit; because two
+    # OTHER live sources still corroborate the triple, #264's auto-accept promotes
+    # it straight to `accepted` (not `confirmed` -- a machine trust tier keeps
+    # provenance honest) with no human re-click. Asserted to happen, not guarded.
+    _write_policy(tmp_path)  # born_in is not functional: no single-valued block
+    s = _store(tmp_path)
+
+    src_a = s.add_source("sources/a.txt")
+    a_old = s.add_source_artifact(
+        source_id=src_a, kind="original_text", path="sources/a-v1.txt", checksum="a1"
+    )
+    a_new = s.add_source_artifact(
+        source_id=src_a, kind="original_text", path="sources/a-v2.txt", checksum="a2"
+    )
+    a_old_job = _done_job_at_artifact(s, source_id=src_a, artifact_id=a_old)
+    a_fact = s.add_fact(
+        "Ada", "born_in", "London",
+        status="confirmed", source_id=src_a, job_id=a_old_job,
+    )
+    s.add_fact_evidence(fact_id=a_fact, source_id=src_a, artifact_id=a_old, snippet="London")
+
+    for path in ("sources/b.txt", "sources/c.txt"):
+        witness = s.add_source(path)
+        job = _done_job(s, witness)
+        s.add_fact(
+            "Ada", "born_in", "London",
+            status="confirmed", source_id=witness, job_id=job,
+        )
+
+    # A re-extracts at the new artifact: a Paris candidate anchors there (the whiff
+    # guard), and A's London has no anchor at a_new -> the sweep demotes it.
+    a_job = _done_job_at_artifact(s, source_id=src_a, artifact_id=a_new)
+    paris = s.add_fact(
+        "Ada", "born_in", "Paris", status="candidate", source_id=src_a, job_id=a_job
+    )
+    s.add_fact_evidence(fact_id=paris, source_id=src_a, artifact_id=a_new, snippet="Paris")
+
+    demoted = s.surface_stale_engine_facts(a_job)
+    assert [d["id"] for d in demoted] == [a_fact]
+    assert s.get_fact(a_fact)["status"] == "needs_review"
+    assert s.get_fact(a_fact)["stale"] == 1
+
+    # A's content returns to London: a later clean run re-observes it and clears
+    # the stale bit without touching the human's needs_review status.
+    a_back = s.add_source_artifact(
+        source_id=src_a, kind="original_text", path="sources/a-v3.txt", checksum="a3"
+    )
+    a_job_back = _done_job_at_artifact(s, source_id=src_a, artifact_id=a_back)
+    s.note_fact_reobserved(
+        fact_id=a_fact, source_id=src_a, artifact_id=a_back, job_id=a_job_back
+    )
+    assert s.get_fact(a_fact)["stale"] == 0
+    assert s.get_fact(a_fact)["status"] == "needs_review"
+
+    apply_auto_accept_recommendations(s)
+
+    # Witness-eligible again + corroborated by B and C -> promoted to `accepted`.
+    assert s.get_fact(a_fact)["status"] == "accepted"
