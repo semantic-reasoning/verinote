@@ -164,6 +164,131 @@ def test_sync_surfaces_llm_error(tmp_path, monkeypatch, capsys, fake_client):
     assert "extraction failed: provider down" in capsys.readouterr().err
 
 
+def test_sync_total_chunk_failure_exits_nonzero(
+    tmp_path, monkeypatch, capsys, fake_client
+):
+    _env(monkeypatch, tmp_path)
+    src = tmp_path / "note.txt"
+    src.write_text("body text", encoding="utf-8")
+    assert cli.main(["ingest", str(src)]) == 0
+    monkeypatch.setattr(
+        "verinote.llm.get_client",
+        lambda cfg: fake_client(error=LLMError("provider down")),
+    )
+
+    rc = cli.main(["sync"])
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "chunk(s) failed" in captured.err
+    assert "provider down" in captured.err
+    assert "sync complete" not in captured.out
+
+
+def test_sync_partial_chunk_failure_exits_nonzero(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    monkeypatch.setenv("VERINOTE_EXTRACTION_CHUNK_CHARS", "40")
+    monkeypatch.setenv("VERINOTE_EXTRACTION_CHUNK_OVERLAP_CHARS", "0")
+    src = tmp_path / "note.txt"
+    src.write_text(
+        "alpha beta gamma delta epsilon\n\nzeta eta theta iota kappa",
+        encoding="utf-8",
+    )
+    assert cli.main(["ingest", str(src)]) == 0
+
+    class _FlakyClient:
+        # Fails the first chunk's extraction, succeeds after: one failed chunk
+        # plus at least one completed chunk is the partial-failure shape.
+        def __init__(self):
+            self.calls = 0
+
+        def extract_facts(self, *, source_text, schema_hint=""):
+            self.calls += 1
+            if self.calls == 1:
+                raise LLMError("first chunk hiccup")
+            return [ExtractedFact("A", "is_a", "B", 0.9)]
+
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: _FlakyClient())
+
+    rc = cli.main(["sync"])
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "1 candidate(s)" in captured.out
+    assert "sync incomplete" in captured.err
+    assert "sync failed" not in captured.err
+
+
+def test_sync_mixed_success_and_total_source_failure_is_incomplete(
+    tmp_path, monkeypatch, capsys
+):
+    # A run where one source fully succeeds with real candidates and another
+    # totally fails is NOT a total failure: it must read "sync incomplete", so
+    # the real candidates already on stdout are not disowned by a "failed" verdict.
+    _env(monkeypatch, tmp_path)
+    good = tmp_path / "good.txt"
+    good.write_text("good source body", encoding="utf-8")
+    bad = tmp_path / "bad.txt"
+    bad.write_text("fail marker body", encoding="utf-8")
+    assert cli.main(["ingest", str(good)]) == 0
+    assert cli.main(["ingest", str(bad)]) == 0
+
+    class _KeyedClient:
+        # Keyed on chunk content: every chunk of the "fail" source raises, the
+        # other source yields one fact.
+        def extract_facts(self, *, source_text, schema_hint=""):
+            if "fail" in source_text:
+                raise LLMError("provider down on this source")
+            return [ExtractedFact("A", "is_a", "B", 0.9)]
+
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: _KeyedClient())
+
+    rc = cli.main(["sync"])
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "good.txt: 1 candidate(s)" in captured.out
+    assert "sync incomplete" in captured.err
+    assert "sync failed" not in captured.err
+    assert "reviewable" in captured.err
+    assert "Analysis failed" in captured.err
+
+
+def test_sync_all_complete_zero_candidates_is_success(
+    tmp_path, monkeypatch, capsys, fake_client
+):
+    _env(monkeypatch, tmp_path)
+    src = tmp_path / "note.txt"
+    src.write_text("body text", encoding="utf-8")
+    assert cli.main(["ingest", str(src)]) == 0
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: fake_client([]))
+
+    rc = cli.main(["sync"])
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "sync complete" in captured.out
+    assert "0 candidate(s)" in captured.out
+
+
+def test_sync_empty_source_is_success(tmp_path, monkeypatch, capsys, fake_client):
+    _env(monkeypatch, tmp_path)
+    src = tmp_path / "blank.txt"
+    src.write_text("   \n   \n", encoding="utf-8")
+    assert cli.main(["ingest", str(src)]) == 0
+    monkeypatch.setattr(
+        "verinote.llm.get_client",
+        lambda cfg: fake_client([ExtractedFact("A", "is_a", "B", 0.9)]),
+    )
+
+    rc = cli.main(["sync"])
+
+    # Zero chunks means zero failed chunks: an empty source is a clean success,
+    # never a total failure.
+    assert rc == 0
+    assert "sync failed" not in capsys.readouterr().err
+
+
 def test_query_adds_and_translates(tmp_path, monkeypatch, capsys, fake_client, intent_payload):
     _env(monkeypatch, tmp_path)
     monkeypatch.setattr(
