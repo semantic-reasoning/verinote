@@ -1827,3 +1827,47 @@ def test_query_with_a_saved_active_kb_elsewhere_creates_nothing_in_cwd(
     # It reached the real (saved) KB rather than refusing it.
     assert "no pending or failed questions" in capsys.readouterr().err
     assert (existing / "kb.sqlite").is_file()
+
+
+def test_sync_returns_a_stale_confirmed_fact_to_review(
+    tmp_path, monkeypatch, capsys, fake_client
+):
+    # #329 end to end through the CLI: a confirmed citation whose source text has
+    # since changed is returned to the review queue, and cmd_sync's per-source line
+    # reports it.
+    _env(monkeypatch, tmp_path)
+    s = Store(tmp_path / "kb.sqlite")
+    s.init_schema()
+    sid = s.add_source("sources/a.txt", kind="text")
+    old = s.add_source_artifact(
+        source_id=sid, kind="original_text", path="sources/a-v1.txt", checksum="v1"
+    )
+    london = s.add_fact("Ada", "born_in", "London", status="confirmed", source_id=sid)
+    s.add_fact_evidence(fact_id=london, source_id=sid, artifact_id=old, snippet="London")
+    # The edited text is the source's current artifact; its file is on disk so the
+    # no-path sync resolves and re-extracts it.
+    art_dir = tmp_path / "artifacts" / "sources" / str(sid)
+    art_dir.mkdir(parents=True, exist_ok=True)
+    (art_dir / "v2.txt").write_text("Ada was born in Paris.", encoding="utf-8")
+    s.add_source_artifact(
+        source_id=sid,
+        kind="original_text",
+        path=f"artifacts/sources/{sid}/v2.txt",
+        checksum="v2",
+    )
+    s.close()
+    monkeypatch.setattr(
+        "verinote.llm.get_client",
+        lambda cfg: fake_client([ExtractedFact("Ada", "born_in", "Paris", 0.9)]),
+    )
+
+    rc = cli.main(["sync"])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "1 confirmed fact(s) returned to review" in out
+    s2 = Store(tmp_path / "kb.sqlite")
+    london_row = next(f for f in s2.facts() if f["object"] == "London")
+    assert london_row["status"] == "needs_review"
+    assert london_row["stale"] == 1
+    assert london_row["id"] in [f["id"] for f in s2.review_queue()]
