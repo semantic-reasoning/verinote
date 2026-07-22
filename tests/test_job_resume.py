@@ -243,9 +243,10 @@ def test_sync_reports_a_resumed_run_that_fails_everything_as_failed_not_incomple
 def test_sync_retries_a_chunk_that_failed_before_the_halt(tmp_path, monkeypatch):
     """A `failed` chunk must not be stranded by resuming (regression, review).
 
-    `reset_running_chunks` rewinds only `running`; `next_pending_chunk` claims
-    only `pending`. A chunk left `failed` by a transient provider error is
-    NEITHER, so a resumed job walks straight past it and calls the source done.
+    `claim_pending_extraction_job`'s reclaim rewinds only `running`;
+    `next_pending_chunk` claims only `pending`. A chunk left `failed` by a
+    transient provider error is NEITHER, so a resumed job walks straight past it
+    and calls the source done.
     Its text never reaches the LLM again and the facts it would have produced are
     lost silently — `sync` exits 0 and the job reads `done`.
 
@@ -501,8 +502,8 @@ def test_sync_leaves_a_running_job_alone(tmp_path, monkeypatch, capsys):
     assert [int(job["id"]) for job in jobs] == [job_id]  # no replacement job
     store = _store(tmp_path)
     chunks = store.source_chunks(job_id)
-    # Not one chunk was claimed: resuming would have `reset_running_chunks` pull
-    # the other process's in-flight chunk back and send it to the LLM twice.
+    # Not one chunk was claimed: resuming would have `claim_pending_extraction_job`
+    # pull the other process's in-flight chunk back and send it to the LLM twice.
     assert {chunk["status"] for chunk in chunks} == {"pending"}
     assert {int(chunk["attempts"]) for chunk in chunks} == {0}
     store.close()
@@ -639,10 +640,14 @@ def _failed_retryable_job(tmp_path, *, source_text="alpha beta gamma", attempts=
     chunk_id = int(store.source_chunks(job_id)[0]["id"])
     store.mark_extraction_job_running(job_id)
     store.mark_chunk_running(chunk_id)
-    store.mark_chunk_failed(chunk_id, "provider down")  # job + chunk -> failed
+    store.mark_chunk_failed(chunk_id, "provider down")  # chunk -> failed
     store._conn.execute(
         "UPDATE source_chunks SET attempts = ? WHERE id = ?", (attempts, chunk_id)
     )
+    # A job is only `failed` once terminalised; mid-run it stays `running` (#337),
+    # so finish it to reach the genuine `failed` state the planner treats as a
+    # retry/give-up candidate.
+    store.finish_extraction_job(job_id)
     return store, source_id, job_id
 
 

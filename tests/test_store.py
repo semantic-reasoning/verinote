@@ -835,6 +835,7 @@ def test_sources_with_counts_includes_latest_analysis_summary(tmp_path):
     s.mark_chunk_done(chunks[0], candidates=3)
     s.mark_chunk_running(chunks[1])
     s.mark_chunk_failed(chunks[1], "provider down")
+    s.finish_extraction_job(job_id)  # terminalise to `failed` (#337)
 
     row = s.sources_with_counts()[0]
 
@@ -1028,31 +1029,21 @@ def test_extraction_job_tracks_chunk_progress_and_retry(tmp_path):
     s.mark_chunk_running(chunk_ids[1])
     s.mark_chunk_failed(chunk_ids[1], "provider down")
 
+    # The job is still owned and mid-run, so it stays `running` even with a failed
+    # chunk (#337); the counters and candidate tally track progress underneath.
     job = s.get_extraction_job(job_id)
-    assert job["status"] == "failed"
+    assert job["status"] == "running"
     assert job["completed_chunks"] == 1
     assert job["failed_chunks"] == 1
     assert job["candidate_count"] == 2
-    assert "1 chunk(s) failed" in job["message"]
+    assert "1/2 chunk(s) complete" in job["message"]
 
+    # Only an explicit finish terminalises the job to `failed`; that is the state
+    # the retry claim can then take.
+    s.finish_extraction_job(job_id)
+    assert s.get_extraction_job(job_id)["status"] == "failed"
     assert s.claim_extraction_job_for_retry(job_id, max_attempts=None) is True
     assert s.source_chunks(job_id)[1]["status"] == "pending"
-
-
-def test_reset_running_chunks_makes_job_resumable(tmp_path):
-    s = _store(tmp_path)
-    sid = s.add_source("sources/a.txt")
-    job_id = s.create_extraction_job(
-        source_id=sid, provider="fake", model="m", total_chunks=1
-    )
-    chunk_id = s.add_source_chunks(job_id=job_id, source_id=sid, chunks=["a"])[0]
-
-    s.mark_extraction_job_running(job_id)
-    s.mark_chunk_running(chunk_id)
-
-    assert s.reset_running_chunks(job_id) == 1
-    assert s.next_pending_chunk(job_id)["id"] == chunk_id
-    assert s.get_extraction_job(job_id)["status"] == "pending"
 
 
 def test_claim_pending_extraction_job_is_exclusive_across_connections(tmp_path):
@@ -1125,7 +1116,8 @@ def test_claim_pending_extraction_job_rejects_non_pending(tmp_path):
 
 def test_claim_pending_extraction_job_reclaims_a_stray_running_chunk(tmp_path):
     """A claim reclaims a stray `running` chunk WITHOUT flipping the job back out of
-    `running` — the reason the claim uses a raw update, not `reset_running_chunks` (#240)."""
+    `running` — the reason the reclaim is a raw update, not a helper that recomputes
+    job status from the chunks (#240)."""
     s = _store(tmp_path)
     sid = s.add_source("sources/a.txt")
     job_id = s.create_extraction_job(
@@ -1141,8 +1133,9 @@ def test_claim_pending_extraction_job_reclaims_a_stray_running_chunk(tmp_path):
 
     assert s.claim_pending_extraction_job(job_id) is True
 
-    # `reset_running_chunks` would have `_refresh_extraction_job` recompute the job
-    # from its (now zero) running chunks and flip it straight back to `pending`.
+    # The CAS set the job `running` and the reclaim is a raw update, so the job
+    # stays `running`: the reclaim never routes through `_refresh_extraction_job`,
+    # which since #337 would keep an owned job `running` anyway.
     assert s.get_extraction_job(job_id)["status"] == "running"
     assert s.source_chunks(job_id)[0]["status"] == "pending"  # stray chunk reclaimed
     assert s.next_pending_chunk(job_id)["id"] == chunk_ids[0]
@@ -1161,7 +1154,8 @@ def test_claim_extraction_job_for_retry_is_exclusive_across_connections(tmp_path
     chunk_id = store_a.add_source_chunks(job_id=job_id, source_id=sid, chunks=["a"])[0]
     store_a.mark_extraction_job_running(job_id)
     store_a.mark_chunk_running(chunk_id)
-    store_a.mark_chunk_failed(chunk_id, "provider down")  # job + chunk now 'failed'
+    store_a.mark_chunk_failed(chunk_id, "provider down")  # chunk 'failed'
+    store_a.finish_extraction_job(job_id)  # terminalise: job now genuinely 'failed'
     store_b = Store(db_path)  # a second process's connection to the same KB file
 
     assert store_a.claim_extraction_job_for_retry(job_id, max_attempts=None) is True
@@ -1195,6 +1189,7 @@ def test_claim_extraction_job_for_retry_respects_the_attempts_cap(tmp_path):
     s.mark_chunk_failed(chunk_id, "boom")
     # Force the chunk to the cap without disturbing its `failed` status.
     s._conn.execute("UPDATE source_chunks SET attempts = 2 WHERE id = ?", (chunk_id,))
+    s.finish_extraction_job(job_id)  # terminalise the job to `failed` first (#337)
 
     # attempts (2) is NOT < cap (2): the claim still takes ownership but resets nothing.
     assert s.claim_extraction_job_for_retry(job_id, max_attempts=2) is True
@@ -1247,7 +1242,7 @@ def test_claim_extraction_job_for_retry_refuses_a_canceled_job(tmp_path):
     chunk_id = s.add_source_chunks(job_id=job_id, source_id=sid, chunks=["a"])[0]
     s.mark_extraction_job_running(job_id)
     s.mark_chunk_running(chunk_id)
-    s.mark_chunk_failed(chunk_id, "provider down")  # job + chunk 'failed'
+    s.mark_chunk_failed(chunk_id, "provider down")  # chunk 'failed'; job 'running'
     s._conn.execute(
         "UPDATE extraction_jobs SET status = 'canceled' WHERE id = ?", (job_id,)
     )
@@ -1283,6 +1278,7 @@ def test_claim_extraction_job_for_retry_resets_only_under_cap_chunks_in_a_mixed_
     s._conn.execute(
         "UPDATE source_chunks SET attempts = 3 WHERE id = ?", (chunk_ids[1],)
     )  # at the cap
+    s.finish_extraction_job(job_id)  # terminalise the job to `failed` first (#337)
 
     assert s.claim_extraction_job_for_retry(job_id, max_attempts=3) is True
 
@@ -1321,6 +1317,114 @@ def test_claim_extraction_job_for_retry_reclaims_a_stray_running_chunk_on_a_fail
 
     assert s.get_extraction_job(job_id)["status"] == "running"  # claimed
     assert s.get_source_chunk(chunk_id)["status"] == "pending"  # stray reclaimed
+
+
+def test_mark_chunk_done_keeps_an_owned_job_running_against_a_second_claim(tmp_path):
+    """W1 (#337): a chunk finishing mid-run must not drop an owned job to `pending`
+    where a second connection's pending-claim could steal it.
+
+    Between one chunk finishing and the next being claimed, zero chunks are
+    `running` in the DB. Recomputing job status from that aggregate used to flip
+    the owner's job to `pending`, and a concurrent `claim_pending_extraction_job`
+    (CAS on `status='pending'`) then matched a job already being processed.
+    """
+    db_path = tmp_path / "kb.sqlite"
+    store_a = Store(db_path)
+    store_a.init_schema()
+    sid = store_a.add_source("sources/a.txt")
+    job_id = store_a.create_extraction_job(
+        source_id=sid, provider="fake", model="m", total_chunks=2
+    )
+    chunk_ids = store_a.add_source_chunks(
+        job_id=job_id, source_id=sid, chunks=["a", "b"]
+    )
+    store_b = Store(db_path)  # a second process's connection to the same KB file
+
+    assert store_a.claim_pending_extraction_job(job_id) is True
+    store_a.mark_chunk_running(chunk_ids[0])
+    store_a.mark_chunk_done(chunk_ids[0], candidates=1)
+
+    # Zero chunks `running` now, but the job is still owned: it stays `running`.
+    assert store_a.get_extraction_job(job_id)["status"] == "running"
+    # So the second connection cannot claim it out from under the live owner...
+    assert store_b.claim_pending_extraction_job(job_id) is False
+    # ...and the owner keeps processing its remaining chunk unobstructed.
+    assert store_a.mark_chunk_running(chunk_ids[1]) is not None
+    store_a.close()
+    store_b.close()
+
+
+def test_mark_chunk_failed_keeps_an_owned_job_running_against_a_retry_claim(tmp_path):
+    """W2 (#337): a chunk failing mid-run must not drop an owned job to `failed`
+    where a second connection's retry-claim could steal it — and reset the owner's
+    in-flight chunk out from under it.
+
+    `claim_extraction_job_for_retry` CASes `status IN ('pending','failed')` and, on
+    a match, reclaims stray `running` chunks. A mid-run failed chunk used to
+    terminalise the owned job to `failed`, so the retry claim matched it and its
+    stray-running reclaim rewound the owner's next chunk to `pending` — the same
+    chunk then sent to the LLM a second time.
+    """
+    db_path = tmp_path / "kb.sqlite"
+    store_a = Store(db_path)
+    store_a.init_schema()
+    sid = store_a.add_source("sources/a.txt")
+    job_id = store_a.create_extraction_job(
+        source_id=sid, provider="fake", model="m", total_chunks=2
+    )
+    chunk_ids = store_a.add_source_chunks(
+        job_id=job_id, source_id=sid, chunks=["a", "b"]
+    )
+    store_b = Store(db_path)  # a second process's connection to the same KB file
+
+    assert store_a.claim_pending_extraction_job(job_id) is True
+    store_a.mark_chunk_running(chunk_ids[0])
+    store_a.mark_chunk_failed(chunk_ids[0], "provider down")
+
+    # A failed chunk mid-run does NOT terminalise the still-owned job.
+    assert store_a.get_extraction_job(job_id)["status"] == "running"
+    # The owner moves on and claims its next chunk as `running`.
+    assert store_a.mark_chunk_running(chunk_ids[1]) is not None
+
+    # The retry claim cannot match a `running` job, so it neither takes ownership
+    # nor resets the owner's in-flight chunk.
+    assert store_b.claim_extraction_job_for_retry(job_id, max_attempts=3) is False
+    assert store_a.get_source_chunk(chunk_ids[1])["status"] == "running"
+    store_a.close()
+    store_b.close()
+
+
+def test_finish_extraction_job_terminalises_a_running_job(tmp_path):
+    """finish still terminalises correctly despite the running-guard (#337): a job
+    carrying a failed chunk stays `running` right up until finish, then `failed`;
+    a job whose chunks all finish cleanly ends `done`."""
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+
+    mixed = s.create_extraction_job(
+        source_id=sid, provider="fake", model="m", total_chunks=2
+    )
+    mixed_chunks = s.add_source_chunks(job_id=mixed, source_id=sid, chunks=["a", "b"])
+    s.mark_extraction_job_running(mixed)
+    s.mark_chunk_running(mixed_chunks[0])
+    s.mark_chunk_done(mixed_chunks[0], candidates=1)
+    s.mark_chunk_running(mixed_chunks[1])
+    s.mark_chunk_failed(mixed_chunks[1], "provider down")
+    # owned and mid-run, so still `running` even though a chunk has failed
+    assert s.get_extraction_job(mixed)["status"] == "running"
+    s.finish_extraction_job(mixed)
+    assert s.get_extraction_job(mixed)["status"] == "failed"
+
+    clean = s.create_extraction_job(
+        source_id=sid, provider="fake", model="m", total_chunks=2
+    )
+    clean_chunks = s.add_source_chunks(job_id=clean, source_id=sid, chunks=["a", "b"])
+    s.mark_extraction_job_running(clean)
+    for cid in clean_chunks:
+        s.mark_chunk_running(cid)
+        s.mark_chunk_done(cid, candidates=1)
+    s.finish_extraction_job(clean)
+    assert s.get_extraction_job(clean)["status"] == "done"
 
 
 def _job_with_mixed_chunks(s, sid):
@@ -1401,8 +1505,9 @@ def test_rollback_extraction_job_records_a_fact_event(tmp_path):
     assert event["actor"] == "system"
     assert event["job_id"] == job_id
     assert event["source_id"] == sid
-    # the job carried a failed chunk, so it stood at 'failed' before the rewind
-    assert json.loads(event["before_json"])["status"] == "failed"
+    # the job was halted mid-run, so it genuinely stood at 'running' before the
+    # rewind (a failed chunk no longer terminalises an owned job, #337)
+    assert json.loads(event["before_json"])["status"] == "running"
     assert json.loads(event["after_json"])["status"] == "pending"
 
 
@@ -1584,6 +1689,9 @@ def test_extraction_job_records_lifecycle_events(tmp_path):
     s.mark_extraction_job_running(failed_job)
     s.mark_chunk_running(failed_chunk)
     s.mark_chunk_failed(failed_chunk, "provider down")
+    # A failed chunk leaves the owned job `running`; only finish terminalises it to
+    # `failed` (a completed event) so the retry claim can then take it (#337).
+    s.finish_extraction_job(failed_job)
     s.claim_extraction_job_for_retry(failed_job, max_attempts=None)
     s.fail_extraction_job(failed_job, "analysis failed")
 
@@ -1613,6 +1721,7 @@ def test_extraction_job_records_lifecycle_events(tmp_path):
     assert event_types == [
         "extraction_job_started",  # mark_extraction_job_running(failed_job)
         "chunk_failed",  # mark_chunk_failed
+        "extraction_job_completed",  # finish_extraction_job terminalises it (#337)
         "chunk_retried",  # claim_extraction_job_for_retry resets the failed chunk
         "extraction_job_started",  # ...and takes ownership in the same locked step
         "extraction_job_failed",  # fail_extraction_job
