@@ -79,7 +79,7 @@ POLICY_UNRECORDED_BANNER = (
 # people to ignore the policy line, and then the HALTED line gets ignored with it.
 # The loud, actionable text for a real halt is `policy_missing_message`, which the
 # CLI prints to stderr *in addition* to the stdout marker.
-POLICY_CLI_LINE_PRESENT = "policy: ok (this KB's own rules are present)"
+POLICY_CLI_LINE_PRESENT = "policy: ok (policy file present)"
 POLICY_CLI_LINE_MISSING_RECORDED = "policy: HALTED (rules missing)"
 POLICY_CLI_LINE_UNRECORDED_DEFAULT = "policy: default (this KB records no rules of its own)"
 
