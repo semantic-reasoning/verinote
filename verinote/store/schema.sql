@@ -120,6 +120,42 @@ CREATE INDEX IF NOT EXISTS idx_facts_triple ON facts(subject, relation, object);
 -- not here: on a legacy DB this script runs before term_token is added, so an
 -- index over that column here would fail on the very DBs that most need it.
 
+-- #310: the lifecycle comment above is documentation; this trigger is the
+-- invariant. Every guard before it read a *syntactic* property of the source --
+-- "is the method name on the allowlist", "does this function body contain SQL
+-- of this shape" -- and each was walked past in turn, first by adding a name,
+-- then by reordering a SET clause. A BEFORE UPDATE trigger asks the only
+-- question that matters, at the only place it cannot be routed around: is this
+-- write leaving 'superseded'. However the SQL is spelled and wherever it lives,
+-- including a helper no source scan would think to read, it aborts.
+--
+-- Note what this does NOT do: it says nothing about tier membership. The
+-- resolution path #287 depends on -- reject a rival, it supersedes, the
+-- survivor auto-promotes on the next cascade -- works precisely because
+-- 'superseded' sits outside both ENGINE_STATUSES and REVIEW_STATUSES, and
+-- terminality is a separate axis from tiering. Reclassifying superseded into
+-- either tier would starve auto-accept; this trigger does not, and must not, be
+-- read as licence to. Pinned by
+-- tests/test_acceptance.py::test_rejecting_one_rival_unblocks_auto_accept_of_the_other.
+--
+-- The write into superseded stays open (reject_fact does exactly that), as does
+-- a same-status rewrite; only the way back out is closed.
+CREATE TRIGGER IF NOT EXISTS facts_superseded_status_is_terminal
+BEFORE UPDATE OF status ON facts
+FOR EACH ROW
+WHEN OLD.status = 'superseded' AND NEW.status <> 'superseded'
+BEGIN
+    SELECT RAISE(
+        ABORT,
+        'superseded is terminal: a rejected fact cannot be moved to another status'
+    );
+END;
+-- The companion trigger freezing a superseded fact's *content* (#311) is created
+-- in Store._ensure_schema_migrations for the same reason as the index above: its
+-- body names term_token, and SQLite resolves a trigger's columns when it fires
+-- rather than when it is created, so defining it here would succeed on a legacy
+-- DB and then break every later UPDATE with a bare "no such column".
+
 -- Source-backed evidence anchors for extracted facts. Chunk-level anchors are
 -- available for every chunked extraction; exact spans/table cells can be added
 -- later without changing the fact contract.
