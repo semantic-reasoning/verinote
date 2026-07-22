@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: MPL-2.0
+import json
 import sys
 
 import pytest
@@ -452,3 +453,327 @@ def test_config_corrupt_error_is_not_an_llm_error():
     # the dedicated halt handler.
     assert not issubclass(ConfigCorruptError, LLMError)
     assert not isinstance(ConfigCorruptError("x"), LLMError)
+
+
+# --- #325: a wrong-typed value in config.json is as unusable as a corrupt file ---
+
+
+def _write_settings(root, payload):
+    _write_settings_raw(root, json.dumps(payload))
+
+
+# Wrong-typed values that are nonetheless truthy and plausible in a hand-edited
+# file: the interesting cases are the ones a silent `if value:` guard would let
+# through, not `null` and `0`.
+_WRONG_FOR_STRING = [123, 0, 12.5, True, False, ["http://x"], {"url": "http://x"}]
+_WRONG_FOR_INT = ["450", "", 4.5, True, False, [450], {"n": 450}]
+_WRONG_FOR_BOOL = ["true", "false", "", 1, 0, ["true"], {"on": True}]
+
+# The nullability split the policy turns on. `save_settings` writes
+# `"base_url": null` and omits the extraction settings entirely, so null is a
+# legitimate "unset" in those; it never writes a null provider or model, so one
+# there is a present-but-unusable value.
+_NULLABLE = [
+    "base_url",
+    "extraction_chunk_chars",
+    "extraction_chunk_overlap_chars",
+    "extraction_max_facts_per_chunk",
+    "auto_accept_recommendations",
+]
+_NON_NULLABLE = ["provider", "model"]
+# Settings that decide where a request goes: unusable here means halt, not
+# default. The rest only tune local extraction.
+_ROUTING = ["provider", "model", "base_url"]
+_TUNING = [
+    "extraction_chunk_chars",
+    "extraction_chunk_overlap_chars",
+    "extraction_max_facts_per_chunk",
+    "auto_accept_recommendations",
+]
+
+
+def _valid_settings(**overrides):
+    payload = {"provider": "ollama", "model": "llama3.1", "base_url": "http://x"}
+    payload.update(overrides)
+    return payload
+
+
+# --- routing settings: unusable means the KB refuses to run ---
+
+
+@pytest.mark.parametrize("value", _WRONG_FOR_STRING)
+@pytest.mark.parametrize("key", _ROUTING)
+def test_wrong_typed_routing_setting_halts_instead_of_defaulting(
+    tmp_path, capsys, key, value
+):
+    # The whole point of the rework: dropping the key is what *causes* the
+    # silent fallback, so dropping cannot be the remedy. `provider` resolving to
+    # "anthropic" below is the leak this halt is the only thing standing in
+    # front of.
+    _write_settings(tmp_path, _valid_settings(**{key: value}))
+    capsys.readouterr()
+
+    cfg = Config.for_root(tmp_path)
+
+    assert cfg.settings_error is not None
+    assert key in cfg.settings_error
+    assert str(tmp_path / "config.json") in cfg.settings_error
+    with pytest.raises(ConfigCorruptError):
+        assert_settings_intact(cfg)
+
+
+@pytest.mark.parametrize("key", _NON_NULLABLE)
+def test_null_routing_setting_halts_because_it_is_unusable_not_unset(
+    tmp_path, capsys, key
+):
+    # `"provider": null` is present-but-unusable, not absent. Reading it as
+    # "unset" is how a null lands on the anthropic cloud default.
+    _write_settings(tmp_path, _valid_settings(**{key: None}))
+    capsys.readouterr()
+
+    cfg = Config.for_root(tmp_path)
+
+    assert cfg.settings_error is not None
+    assert key in cfg.settings_error
+    assert "null" in cfg.settings_error
+    with pytest.raises(ConfigCorruptError):
+        assert_settings_intact(cfg)
+
+
+@pytest.mark.parametrize("key", _ROUTING)
+def test_wrong_typed_routing_setting_never_reaches_a_provider_client(
+    tmp_path, capsys, key
+):
+    # The halt asserted through its real consumer, not through the flag: a
+    # config that should refuse must not hand back a working cloud client.
+    from verinote.llm.factory import get_client
+
+    _write_settings(tmp_path, _valid_settings(**{key: 123}))
+    capsys.readouterr()
+
+    with pytest.raises(ConfigCorruptError):
+        get_client(Config.for_root(tmp_path))
+
+
+def test_wrong_typed_provider_would_otherwise_resolve_to_the_cloud_default(
+    tmp_path, capsys
+):
+    # Pins the danger the halt exists for. If this ever stops holding, the
+    # halt tests above could pass for the wrong reason.
+    _write_settings(tmp_path, _valid_settings(provider=123))
+    capsys.readouterr()
+
+    assert Config.for_root(tmp_path).provider == "anthropic"
+
+
+def test_env_override_does_not_excuse_an_unusable_saved_routing_setting(
+    tmp_path, monkeypatch, capsys
+):
+    # An env var that happens to shadow the bad key does not make the file
+    # usable — the same stance main already takes for a whole-file corruption.
+    _write_settings(tmp_path, _valid_settings(base_url=123))
+    monkeypatch.setenv("VERINOTE_BASE_URL", "https://llm.internal/v1")
+    capsys.readouterr()
+
+    cfg = Config.for_root(tmp_path)
+
+    assert cfg.base_url == "https://llm.internal/v1"
+    assert cfg.settings_error is not None
+
+
+def test_wrong_typed_base_url_does_not_reach_the_adapter(tmp_path, capsys):
+    # The issue's reproduction: a number here used to survive `read_settings`
+    # and blow up far away, in `OllamaAdapter.__init__`'s `rstrip`. The halt is
+    # the remedy; this is the containment behind it.
+    from verinote.llm.ollama_adapter import OllamaAdapter
+
+    _write_settings(tmp_path, _valid_settings(base_url=123))
+    capsys.readouterr()
+
+    cfg = Config.for_root(tmp_path)
+    assert cfg.base_url is None
+    assert OllamaAdapter(cfg).base_url == "http://localhost:11434"
+
+
+@pytest.mark.parametrize("key", _ROUTING)
+def test_unusable_routing_setting_warns_that_the_kb_is_unusable(tmp_path, capsys, key):
+    # The warning must not promise a harmless default, because there is none.
+    _write_settings(tmp_path, _valid_settings(**{key: 123}))
+
+    read_settings(tmp_path)
+
+    err = capsys.readouterr().err
+    assert key in err
+    assert "falls back to its default" not in err
+    assert "unusable" in err
+
+
+def test_only_the_first_routing_reason_is_reported_and_it_is_stable(tmp_path, capsys):
+    # Key order in the file must not change the diagnosis, or the same broken
+    # config would describe itself differently on two machines.
+    both = {"model": 1, "provider": 2, "base_url": 3}
+    _write_settings(tmp_path, both)
+    capsys.readouterr()
+    first = Config.for_root(tmp_path).settings_error
+
+    _write_settings(tmp_path, {"base_url": 3, "model": 1, "provider": 2})
+    capsys.readouterr()
+
+    assert Config.for_root(tmp_path).settings_error == first
+    assert "provider" in first
+
+
+# --- tuning settings: unusable means warn and use the default, not halt ---
+
+
+@pytest.mark.parametrize("value", _WRONG_FOR_INT)
+@pytest.mark.parametrize("key", _TUNING[:3])
+def test_wrong_typed_int_setting_warns_and_defaults_without_halting(
+    tmp_path, capsys, key, value
+):
+    # The discriminator that keeps the policy a *split* rather than "everything
+    # halts": a bad chunk size changes how much local text a step reads, not
+    # where the text goes, so it must not brick the KB.
+    _write_settings(tmp_path, _valid_settings(**{key: value}))
+
+    cfg = Config.for_root(tmp_path)
+
+    assert key not in read_settings(tmp_path)
+    assert cfg.settings_error is None
+    assert_settings_intact(cfg)  # must not raise
+    assert getattr(cfg, key) == {
+        "extraction_chunk_chars": 300,
+        "extraction_chunk_overlap_chars": 40,
+        "extraction_max_facts_per_chunk": 8,
+    }[key]
+    assert key in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("value", _WRONG_FOR_BOOL)
+def test_wrong_typed_bool_setting_warns_and_defaults_without_halting(
+    tmp_path, capsys, value
+):
+    _write_settings(tmp_path, _valid_settings(auto_accept_recommendations=value))
+
+    cfg = Config.for_root(tmp_path)
+
+    assert "auto_accept_recommendations" not in read_settings(tmp_path)
+    assert cfg.settings_error is None
+    assert cfg.auto_accept_recommendations is False
+    assert "auto_accept_recommendations" in capsys.readouterr().err
+
+
+def test_json_true_is_not_a_chunk_size_and_json_one_is_not_a_flag(tmp_path, capsys):
+    # `bool` is an `int` subclass in Python but a distinct JSON type. A plain
+    # isinstance check would let each of these through as the other.
+    _write_settings(
+        tmp_path,
+        _valid_settings(extraction_chunk_chars=True, auto_accept_recommendations=1),
+    )
+
+    cfg = Config.for_root(tmp_path)
+
+    assert cfg.extraction_chunk_chars == 300
+    assert cfg.auto_accept_recommendations is False
+
+
+# --- what a valid file must keep doing ---
+
+
+def test_correctly_typed_settings_survive_untouched(tmp_path, capsys):
+    payload = _valid_settings(
+        extraction_chunk_chars=450,
+        extraction_chunk_overlap_chars=0,
+        extraction_max_facts_per_chunk=6,
+        auto_accept_recommendations=True,
+    )
+    _write_settings(tmp_path, payload)
+
+    cfg = Config.for_root(tmp_path)
+
+    assert read_settings(tmp_path) == payload
+    assert cfg.settings_error is None
+    assert (cfg.provider, cfg.model, cfg.base_url) == ("ollama", "llama3.1", "http://x")
+    assert cfg.extraction_chunk_chars == 450
+    assert cfg.extraction_chunk_overlap_chars == 0
+    assert cfg.extraction_max_facts_per_chunk == 6
+    assert cfg.auto_accept_recommendations is True
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("key", _NULLABLE)
+def test_null_in_a_nullable_setting_is_unset_and_stays_silent(tmp_path, capsys, key):
+    _write_settings(tmp_path, _valid_settings(**{key: None}))
+
+    cfg = Config.for_root(tmp_path)
+
+    assert read_settings(tmp_path)[key] is None
+    assert cfg.settings_error is None
+    assert_settings_intact(cfg)  # must not raise
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("provider", sorted(PROVIDERS))
+def test_nothing_save_settings_writes_can_halt_its_own_kb(tmp_path, capsys, provider):
+    # The self-inflicted-halt guard: every shape the Settings UI can produce
+    # must read back clean, including the `"base_url": null` it writes for a KB
+    # with no custom endpoint and the extraction keys it omits entirely.
+    save_settings(tmp_path, provider=provider, model="")
+    bare = Config.for_root(tmp_path)
+
+    save_settings(
+        tmp_path,
+        provider=provider,
+        model="m",
+        base_url="http://x",
+        extraction_chunk_chars=450,
+        extraction_chunk_overlap_chars=0,
+        extraction_max_facts_per_chunk=6,
+        auto_accept_recommendations=False,
+    )
+    full = Config.for_root(tmp_path)
+
+    assert bare.settings_error is None
+    assert full.settings_error is None
+    assert_settings_intact(bare)
+    assert_settings_intact(full)
+    assert capsys.readouterr().err == ""
+
+
+def test_unknown_setting_passes_through_and_never_halts(tmp_path, capsys):
+    # A config written by a newer verinote must not be eaten or condemned by an
+    # older one that has no opinion about its keys.
+    _write_settings(tmp_path, _valid_settings(future_setting=7))
+
+    cfg = Config.for_root(tmp_path)
+
+    assert read_settings(tmp_path)["future_setting"] == 7
+    assert cfg.settings_error is None
+    assert capsys.readouterr().err == ""
+
+
+def test_one_bad_tuning_setting_does_not_discard_the_good_ones(tmp_path, capsys):
+    _write_settings(tmp_path, _valid_settings(extraction_chunk_chars="450"))
+
+    saved = read_settings(tmp_path)
+
+    assert saved["provider"] == "ollama"
+    assert saved["base_url"] == "http://x"
+    assert "extraction_chunk_chars" not in saved
+
+
+@pytest.mark.parametrize(
+    ("key", "attr", "expected"),
+    [("provider", "provider", "ollama"), ("model", "model", "llama3.1")],
+)
+def test_saved_routing_values_still_go_through_the_trim_normalisation(
+    tmp_path, monkeypatch, key, attr, expected
+):
+    # Type-checking the saved side must not become a bypass around `_pick`: a
+    # padded saved value is a valid string, so it survives the type check and
+    # must still be trimmed on the way out.
+    monkeypatch.delenv("VERINOTE_PROVIDER", raising=False)
+    monkeypatch.delenv("VERINOTE_MODEL", raising=False)
+    _write_settings(tmp_path, _valid_settings(**{key: f"  {expected}  "}))
+
+    assert getattr(Config.for_root(tmp_path), attr) == expected
