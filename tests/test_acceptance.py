@@ -907,3 +907,198 @@ def test_swept_fact_reobserved_then_auto_accepted_via_corroboration(tmp_path):
 
     # Witness-eligible again + corroborated by B and C -> promoted to `accepted`.
     assert s.get_fact(a_fact)["status"] == "accepted"
+
+
+# --- #343: a human rejection must survive a relation-label rename ----------
+#
+# `reject_fact` supersedes a fact keyed on its LITERAL (subject, relation, object)
+# triple, but corroboration/auto-accept eligibility is keyed on the CANONICAL
+# relation. A re-extraction that relabels the same value to an aliased-synonym
+# relation therefore lands a fresh candidate whose own fact_id carries no rejection
+# history, and the two-source auto-accept rule could promote it -- silently
+# reversing a human's rejection with no review. The engine now carries a
+# source-scoped reject shadow, keyed on the canonical (source, subject, relation,
+# value), that blocks the resurrected candidate from BOTH promoting itself (the
+# recommend gate) and padding another candidate's witness count (the support filter).
+
+
+def _write_rename_policy(tmp_path) -> None:
+    """A real policy where `sales` and `revenue` canonicalize together (#343).
+
+    Uses the exact alias-file mechanism the suite already exercises, but keeps the
+    shared canonical relation `revenue` NON-functional and UNtyped so object_key is
+    a plain raw match. These tests then probe only the reject-shadow mechanism, free
+    of the #287 single-valued or typed-scalar interactions a functional/typed
+    relation would layer on top.
+    """
+    policy = tmp_path / "policy"
+    policy.mkdir()
+    (policy / "logic-policy.dl").write_text(
+        '.decl functional(rel: symbol)\n'
+        'functional("published_year").\n',
+        encoding="utf-8",
+    )
+    (policy / "relation-aliases.md").write_text(
+        "- `sales` -> `revenue`\n",
+        encoding="utf-8",
+    )
+    (policy / "typed-relations.md").write_text(
+        "# no typed relations: revenue stays a raw-string value here\n",
+        encoding="utf-8",
+    )
+
+
+def _reconciled_fact(store, *, subject, relation, obj, source_id):
+    """Insert one (source, triple) through the REAL reconcile_fact path.
+
+    Each call stands for one extraction run (its own done job), so a second call on
+    the same source is a genuine re-extraction. Returns the FactReconcileResult so
+    callers can assert whether Store-level dedup matched an existing row or truly
+    inserted a fresh one.
+    """
+    job_id = _done_job(store, source_id)
+    return store.reconcile_fact(subject, relation, obj, source_id=source_id, job_id=job_id)
+
+
+def test_relabeled_reextraction_cannot_silently_reverse_a_rejection(tmp_path):
+    # #343 completion criterion. Source A extracts a value under raw label "sales"
+    # and a human rejects it (-> superseded). A is re-extracted and the SAME value
+    # now carries "revenue" (canonically identical via the alias); the literal-triple
+    # dedup misses the superseded row, so a fresh candidate lands. Source B then
+    # corroborates the same value. NOTHING may auto-promote: the resurrected
+    # candidate is reject-shadowed, so it neither promotes itself nor pads B's count.
+    _write_rename_policy(tmp_path)
+    s = _store(tmp_path)
+
+    source_a = s.add_source("sources/a.txt")
+    f1 = _reconciled_fact(s, subject="Corp", relation="sales", obj="2020", source_id=source_a)
+    assert f1.created
+    s.reject_fact(f1.fact_id)
+    assert s.get_fact(f1.fact_id)["status"] == "superseded"
+
+    # The real dedup genuinely misses the relabeled re-extraction -- proving the
+    # gap is at the Store token layer, exactly where #343 locates it.
+    f2 = _reconciled_fact(s, subject="Corp", relation="revenue", obj="2020", source_id=source_a)
+    assert f2.created and f2.fact_id != f1.fact_id
+
+    source_b = s.add_source("sources/b.txt")
+    f_b = _reconciled_fact(s, subject="Corp", relation="revenue", obj="2020", source_id=source_b)
+    assert f_b.created
+
+    applied = apply_auto_accept_recommendations(s)
+
+    assert applied == []
+    assert s.get_fact(f1.fact_id)["status"] == "superseded"
+    assert s.get_fact(f2.fact_id)["status"] == "candidate"
+    assert s.get_fact(f_b.fact_id)["status"] == "candidate"
+    # No engine-tier promotion happened at all.
+    assert [f["id"] for f in s.facts(statuses=engine_statuses())] == []
+
+
+def test_recommend_gate_fires_on_the_resurrected_relabeled_candidate(tmp_path):
+    # #343 floor, multi-source: even with two further genuinely-independent sources
+    # corroborating (support is plainly sufficient), the resurrected candidate is
+    # ineligible -- the reject shadow is the only thing that can hold it, and it does.
+    _write_rename_policy(tmp_path)
+    s = _store(tmp_path)
+
+    source_a = s.add_source("sources/a.txt")
+    f1 = _reconciled_fact(s, subject="Corp", relation="sales", obj="2020", source_id=source_a)
+    s.reject_fact(f1.fact_id)
+    f2 = _reconciled_fact(s, subject="Corp", relation="revenue", obj="2020", source_id=source_a)
+    for path in ("sources/b.txt", "sources/c.txt"):
+        src = s.add_source(path)
+        _reconciled_fact(s, subject="Corp", relation="revenue", obj="2020", source_id=src)
+
+    rec = accept_recommendation(s, f2.fact_id)
+
+    assert rec is not None
+    assert rec.eligible is False
+    assert "previously_rejected_or_superseded" in rec.reasons
+
+
+def test_rejecting_one_value_does_not_shadow_a_different_value(tmp_path):
+    # object_key specificity: the shadow is keyed on the VALUE too, so rejecting
+    # "2020" must not veto "2021". Source A's own relabeled "2021" witness must keep
+    # counting -- were the key only (source, subject, relation) it would be wrongly
+    # excluded and "2021" would starve for a second source. It promotes normally.
+    _write_rename_policy(tmp_path)
+    s = _store(tmp_path)
+
+    source_a = s.add_source("sources/a.txt")
+    rejected = _reconciled_fact(s, subject="Corp", relation="sales", obj="2020", source_id=source_a)
+    s.reject_fact(rejected.fact_id)
+
+    a_2021 = _reconciled_fact(s, subject="Corp", relation="revenue", obj="2021", source_id=source_a)
+    source_b = s.add_source("sources/b.txt")
+    b_2021 = _reconciled_fact(s, subject="Corp", relation="revenue", obj="2021", source_id=source_b)
+
+    applied = apply_auto_accept_recommendations(s)
+
+    applied_ids = {r.fact_id for r in applied}
+    assert {a_2021.fact_id, b_2021.fact_id} <= applied_ids
+    assert s.get_fact(a_2021.fact_id)["status"] == "accepted"
+    assert s.get_fact(b_2021.fact_id)["status"] == "accepted"
+    assert s.get_fact(rejected.fact_id)["status"] == "superseded"
+
+
+def test_human_accept_of_a_relabeled_candidate_still_witnesses(tmp_path):
+    # Human-override preserved -- this is what proves part (B)'s is_review_eligible
+    # scoping is correct and does not overreach. After the relabeled candidate is
+    # resurrected, a human explicitly accepts it (-> confirmed, the engine tier).
+    # That deliberate decision must not be discounted: even though the confirmed
+    # fact is itself reject-shadowed (same source as the rejection), it must still
+    # count as a witness. A third source then corroborates, and the third fact is
+    # eligible on the strength of {confirmed A, fresh C}. Were the exclusion not
+    # scoped to review-eligible, the confirmed A witness would drop and C would starve.
+    _write_rename_policy(tmp_path)
+    s = _store(tmp_path)
+
+    source_a = s.add_source("sources/a.txt")
+    f1 = _reconciled_fact(s, subject="Corp", relation="sales", obj="2020", source_id=source_a)
+    s.reject_fact(f1.fact_id)
+    f2 = _reconciled_fact(s, subject="Corp", relation="revenue", obj="2020", source_id=source_a)
+    s.accept_fact(f2.fact_id)
+    assert s.get_fact(f2.fact_id)["status"] == "confirmed"
+
+    source_c = s.add_source("sources/c.txt")
+    f3 = _reconciled_fact(s, subject="Corp", relation="revenue", obj="2020", source_id=source_c)
+
+    rec = accept_recommendation(s, f3.fact_id)
+
+    assert rec is not None
+    assert rec.eligible is True
+    # The confirmed (human-decided) A witness still counts alongside fresh C.
+    assert set(rec.support_sources) == {"sources/a.txt", "sources/c.txt"}
+
+
+def test_one_sources_rejection_does_not_shadow_two_fresh_sources(tmp_path):
+    # INTENTIONAL SCOPE of #343, not a gap: one source's rejection is NOT a global
+    # veto. Whether enough genuinely independent later corroboration should override
+    # an earlier rejection is a policy question #343 explicitly leaves open, so the
+    # shadow is source-scoped -- two never-rejected sources still promote the same
+    # value the way they always could. A source-independent shadow would silently
+    # answer that open question by vetoing the value forever.
+    _write_rename_policy(tmp_path)
+    s = _store(tmp_path)
+
+    source_a = s.add_source("sources/a.txt")
+    f1 = _reconciled_fact(s, subject="Corp", relation="sales", obj="2020", source_id=source_a)
+    s.reject_fact(f1.fact_id)
+
+    fresh = []
+    for path in ("sources/b.txt", "sources/c.txt"):
+        src = s.add_source(path)
+        fresh.append(
+            _reconciled_fact(
+                s, subject="Corp", relation="revenue", obj="2020", source_id=src
+            ).fact_id
+        )
+
+    applied = apply_auto_accept_recommendations(s)
+
+    applied_ids = {r.fact_id for r in applied}
+    assert set(fresh) <= applied_ids
+    for fid in fresh:
+        assert s.get_fact(fid)["status"] == "accepted"
+    assert s.get_fact(f1.fact_id)["status"] == "superseded"
