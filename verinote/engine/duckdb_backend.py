@@ -42,12 +42,13 @@ from verinote.engine.wirelog import (
     NO_FINDINGS_TEXT,
     FindingRow,
     answer_bucket_sort_key,
+    answer_line,
+    answer_qid,
     dead_rule_warnings,
 )
 
 _ERROR_PREFIX = "error_"
 _WARN_PREFIX = "warn_"
-_ANSWER_PREFIX = "answer_q"
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _ZERO_ARITY_COLUMN = "__present"
 _RELATION_COLUMNS = ("subject", "rel", "object")
@@ -422,7 +423,7 @@ def _collect_report(
         if not (
             name.startswith(_ERROR_PREFIX)
             or name.startswith(_WARN_PREFIX)
-            or name.startswith(_ANSWER_PREFIX)
+            or answer_qid(name) is not None
         ):
             continue
         rows = con.execute(
@@ -452,15 +453,14 @@ def _collect_report(
                     name,
                     columns,
                 )
-        elif name.startswith(_ANSWER_PREFIX):
+        elif (qid := answer_qid(name)) is not None:
             if rows:
-                qid = name[len(_ANSWER_PREFIX) :]
                 answers_by_q.setdefault(qid, []).extend(
                     _render_answer_row(row) for row in rows
                 )
 
     answers = [
-        f"q{qid}: {', '.join(sorted(vals))}"
+        answer_line(qid, sorted(vals))
         for qid, vals in sorted(
             answers_by_q.items(), key=lambda item: answer_bucket_sort_key(item[0])
         )

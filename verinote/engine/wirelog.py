@@ -39,13 +39,31 @@ from verinote.engine.terms import StringLit, escape_string_value
 _ERROR_PREFIX = "error_"
 _WARN_PREFIX = "warn_"
 _ANSWER_PREFIX = "answer_q"
+# The qid format has one definition, and it lives here. `_ANSWER_DECL` holds an
+# LLM-authored query snippet to numeric qids, but a *policy* is user-authored and
+# ungated, so an `answer_q<anything>` relation really does reach the collectors —
+# every reader below it (bucket ordering, /report traceability, Ask's prefix
+# strip) has to agree on what that name means instead of re-deciding locally.
+_NUMERIC_QID_PATTERN = r"[0-9]+"
 # A qid is the question's INTEGER primary key rendered as text, so it has to sort
 # by number: plain string order puts q10 ahead of q2. `[0-9]+` matches what
 # `_ANSWER_DECL` accepts — `str.isdigit()` would let through digits like "²" that
-# `int()` then rejects. A policy is user-authored, so a non-numeric
-# `answer_q*` relation does reach here; park those after the numbered ones
-# instead of raising.
-_NUMERIC_QID = re.compile(r"[0-9]+\Z")
+# `int()` then rejects.
+_NUMERIC_QID = re.compile(_NUMERIC_QID_PATTERN + r"\Z")
+
+
+def answer_qid(predicate: str) -> str | None:
+    """The question id an `answer_q*` relation answers, or None if it is not one.
+
+    Tolerant on purpose: whatever follows the prefix is the qid, non-numeric
+    included. That is what the engine collectors have always accepted, so a
+    reader that narrowed it locally would just drop those answers on the floor.
+    An empty qid (a bare `answer_q` relation) is a qid too — `is None` is the
+    only correct way to test this result.
+    """
+    if not predicate.startswith(_ANSWER_PREFIX):
+        return None
+    return predicate[len(_ANSWER_PREFIX) :]
 
 
 def answer_bucket_sort_key(qid: str) -> tuple[int, int, str]:
@@ -60,6 +78,22 @@ def answer_bucket_sort_key(qid: str) -> tuple[int, int, str]:
         except ValueError:
             pass
     return (1, 0, qid)
+
+
+def answer_line(qid: str, values: Iterable[str]) -> str:
+    """Render one answer bucket as the `q<id>: v, v` line /report shows."""
+    return f"q{qid}: " + ", ".join(values)
+
+
+def strip_answer_line_prefix(line: str, qid: str | int) -> str:
+    """Drop the `q<id>: ` prefix `answer_line` added, for a reader that has none.
+
+    Takes the qid rather than pattern-matching the line because the prefix is
+    only a prefix when it is *this* question's: an answer value of its own may
+    start `q3: `, and guessing would eat it.
+    """
+    prefix = answer_line(str(qid), ())
+    return line[len(prefix) :] if line.startswith(prefix) else line
 
 # Shipped default policy. `verinote init` scaffolds a copy to
 # `<root>/policy/logic-policy.dl`; edit that copy per-KB.
@@ -358,7 +392,7 @@ def _degraded_report(dl_text: str, warnings: list[str] | None = None) -> CheckRe
 
 
 _RELATION_DECL = ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
-_ANSWER_DECL = re.compile(r"answer_q[0-9]+\Z")
+_ANSWER_DECL = re.compile(re.escape(_ANSWER_PREFIX) + _NUMERIC_QID_PATTERN + r"\Z")
 
 
 def validate_query(query_dl: str) -> tuple[bool, str]:
@@ -538,14 +572,13 @@ def run_check(
                     columns_by_rule.get(name, ()),
                 )
             )
-        elif name.startswith(_ANSWER_PREFIX):
-            qid = name[len(_ANSWER_PREFIX) :]
+        elif (qid := answer_qid(name)) is not None:
             answers_by_q.setdefault(qid, []).append(_render_row(row))
 
     errors.sort()
     warnings.sort()
     answers = [
-        f"q{qid}: {', '.join(sorted(vals))}"
+        answer_line(qid, sorted(vals))
         for qid, vals in sorted(
             answers_by_q.items(), key=lambda item: answer_bucket_sort_key(item[0])
         )

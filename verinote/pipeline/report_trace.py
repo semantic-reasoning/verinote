@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import re
 
 from verinote.engine.datalog import (
     AtomExpr,
@@ -22,6 +21,7 @@ from verinote.engine.terms import (
     term_compare_key,
     terms_equal,
 )
+from verinote.engine.wirelog import answer_bucket_sort_key, answer_qid
 from verinote.pipeline.corroboration import CorroborationPolicyError
 from verinote.pipeline.engine_input import engine_relation_rows
 from verinote.pipeline.query import load_query
@@ -29,7 +29,6 @@ from verinote.pipeline.trust import fact_trust_summary
 from verinote.store import Store, review_statuses
 
 _RELATION_DECL = ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
-_ANSWER_RE = re.compile(r"answer_q(?P<qid>[0-9]+)\Z")
 
 
 @dataclass(frozen=True)
@@ -121,7 +120,7 @@ def trace_query_answers(store: Store, query: str) -> tuple[AnswerTrace, ...]:
     traces = []
     seen: set[tuple[str, str, tuple[int, ...]]] = set()
     for rule in program.rules:
-        qid = _answer_qid(rule.head.predicate)
+        qid = answer_qid(rule.head.predicate)
         if qid is None:
             continue
         relation_atom = _direct_relation_atom(rule.body)
@@ -147,25 +146,14 @@ def trace_query_answers(store: Store, query: str) -> tuple[AnswerTrace, ...]:
                     conflicted=any(fact.conflicted for fact in trace_facts),
                 )
             )
+    # Same key the engine orders its "Query answers" line by, so the
+    # Traceability section below it lists the questions in the same order.
     return tuple(
-        sorted(traces, key=lambda trace: (*_qid_sort_key(trace.qid), trace.value))
+        sorted(
+            traces,
+            key=lambda trace: (*answer_bucket_sort_key(trace.qid), trace.value),
+        )
     )
-
-
-def _answer_qid(predicate: str) -> str | None:
-    match = _ANSWER_RE.fullmatch(predicate)
-    return match.group("qid") if match else None
-
-
-def _qid_sort_key(qid: str) -> tuple[int, int]:
-    # `_ANSWER_RE` guarantees all-digits but not that `int()` accepts them: past
-    # `sys.get_int_max_str_digits()` (4300 by default) it raises ValueError. Mirror
-    # `answer_bucket_sort_key`: park a pathologically long qid in a trailing bucket
-    # so it sorts after every parseable one instead of 500ing /report mid-sort.
-    try:
-        return (0, int(qid))
-    except ValueError:
-        return (1, 0)
 
 
 def _direct_relation_atom(body: tuple[AtomExpr | Comparison, ...]) -> AtomExpr | None:
