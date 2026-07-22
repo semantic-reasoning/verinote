@@ -272,6 +272,24 @@ tr.editing td { background: var(--editing-bg); }
 .warn-inline { color: var(--warn); }
 .error { background: var(--danger-bg); border: 1px solid var(--danger);
   color: var(--danger); border-radius: 8px; padding: .6rem .9rem; margin: 1rem 0; }
+
+/* The three banners were told apart by hue alone (#226): --ok, --warn and --danger over
+   their tinted backgrounds, on an otherwise identical box. That is nothing in greyscale
+   and nothing under a red-green deficiency, and unlike the Ask verdict there is no label
+   spelling the tone out -- the banner wraps whatever message the caller passed, which
+   may not name its own severity at all. The glyph is the channel that survives.
+
+   Same shape as `.ask-verdict::before` above, `/ ""` alt text included: the markup
+   already carries role="alert" / role="status", so the severity reaches a screen reader
+   through the live region. Announcing "check mark" ahead of the message only doubles it.
+
+   The `-inline` variants are deliberately left out. They tag a fragment inside a
+   sentence the template writes ("3 failed", "2 pending"), so the word beside them
+   already carries the meaning; a glyph mid-sentence would be noise, not a channel. */
+.ok-note::before, .warn::before, .error::before { margin-right: .45rem; font-size: 1.05em; }
+.ok-note::before { content: "✓" / ""; }
+.warn::before { content: "⚠" / ""; }
+.error::before { content: "✕" / ""; }
 .upload { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
   background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
   padding: 1rem; margin: 1.2rem 0; }
