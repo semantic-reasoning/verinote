@@ -13,7 +13,11 @@ from verinote.engine.terms import (
 )
 from verinote.store import Store
 from verinote.store.db import FACT_TERMS_MARKER_KEY
-from verinote.store.duckdb_fact_terms import DuckDBFactTermStoreError, fact_terms_path
+from verinote.store.duckdb_fact_terms import (
+    DuckDBFactTermStoreError,
+    fact_term_token,
+    fact_terms_path,
+)
 from verinote.store.fact_input import structural_term
 
 
@@ -264,6 +268,31 @@ def test_engine_fact_terms_rejects_missing_modern_sidecar_terms(tmp_path):
     assert s.get_fact_terms(fid) is None
 
 
+def test_amend_fact_refuses_and_writes_nothing_when_sidecar_is_corrupt(tmp_path):
+    # Guard the write at the store, not only the web route, so every caller (CLI,
+    # any future writer) is protected. The pre-write read of the structural terms
+    # forces the sidecar open, so genuine corruption aborts the amend before any
+    # SQLite write -- both stores are left untouched.
+    seed = _store(tmp_path)
+    fid = seed.add_fact(
+        Compound("person", (StringLit("Ada"),)),
+        Atom("born_in"),
+        StringLit("London"),
+        status="needs_review",
+    )
+    token = seed.get_fact(fid)["term_token"]
+    seed.close()
+    fact_terms_path(tmp_path).write_bytes(b"not a duckdb database file" * 500)
+
+    store = _store(tmp_path)
+    with pytest.raises(DuckDBFactTermStoreError):
+        store.amend_fact(fid, subject="Ada", relation="born_in", obj="Paris", note="")
+
+    # get_fact reads SQLite only, so it stays legible through the corruption; an
+    # unchanged token proves the amend wrote nothing to either store.
+    assert store.get_fact(fid)["term_token"] == token
+
+
 def test_engine_fact_terms_rejects_stale_modern_sidecar_terms(tmp_path):
     s = _store(tmp_path)
     fid = s.add_fact("Ada", "born_in", "Paris", status="confirmed")
@@ -376,9 +405,13 @@ def test_add_fact_duckdb_failure_rolls_back_sqlite_insert(tmp_path, monkeypatch)
     assert s.facts() == []
 
 
-def test_amend_fact_duckdb_failure_commits_sqlite_but_blocks_engine(
+def test_amend_fact_duckdb_failure_rolls_back_sqlite_leaving_no_divergence(
     tmp_path, monkeypatch
 ):
+    # The DuckDB write runs inside the amend's SQLite transaction, so a write-time
+    # sidecar failure rolls the SQLite update back too: the stores move together
+    # instead of leaving SQLite ahead of a stale DuckDB (the divergence that used
+    # to surface later as a confusing "stale DuckDB fact terms" engine error).
     s = _store(tmp_path)
     fid = s.add_fact("A", "r", "B", status="confirmed", note="orig")
     before_terms = s.get_fact_terms(fid)
@@ -393,15 +426,55 @@ def test_amend_fact_duckdb_failure_commits_sqlite_but_blocks_engine(
 
     row = s.get_fact(fid)
     assert (row["subject"], row["relation"], row["object"], row["note"]) == (
-        "A2",
-        "r2",
-        "B2",
-        "changed",
+        "A",
+        "r",
+        "B",
+        "orig",
     )
-    assert [event["action"] for event in s.fact_log(fid)] == ["amended"]
+    assert s.fact_log(fid) == []
     assert s.get_fact_terms(fid) == before_terms
-    with pytest.raises(DuckDBFactTermStoreError, match="stale DuckDB fact terms"):
-        s.engine_fact_terms()
+    # The stores still agree, so the engine reads cleanly -- no stale divergence.
+    assert len(s.engine_fact_terms()) == 1
+
+
+def test_amend_retry_self_heals_when_duckdb_is_ahead_of_stale_sqlite(tmp_path):
+    # Simulate the residual divergence the reordered write cannot fully close: a
+    # prior amend wrote DuckDB but its SQLite COMMIT failed, leaving DuckDB ahead
+    # of a stale SQLite row. A retry of the same edit must PROCEED and correct
+    # SQLite -- not early-return "unchanged" on the strength of DuckDB alone,
+    # which would mask the stale row forever. The no-op guard also compares
+    # SQLite's own term_token, so the retry self-heals.
+    s = _store(tmp_path)
+    fid = s.add_fact("A", "r", "B", status="needs_review")
+
+    new_subject = structural_term('person("Ada")')
+    new_relation = structural_term("born_in")
+    new_object = "London"
+    # DuckDB ahead of the request; SQLite still holds the stale "A"/"r"/"B" row.
+    s.fact_terms.put_fact_terms(
+        fid,
+        new_subject,
+        new_relation,
+        new_object,
+        term_token=fact_term_token(new_subject, new_relation, new_object),
+    )
+
+    decision = s.amend_fact(
+        fid, subject=new_subject, relation=new_relation, obj=new_object, note=""
+    )
+
+    assert decision.changed is True
+    row = s.get_fact(fid)
+    assert (row["subject"], row["relation"], row["object"]) == (
+        'person("Ada")',
+        "born_in",
+        "London",
+    )
+    assert s.get_fact_terms(fid) == (
+        Compound("person", (StringLit("Ada"),)),
+        Atom("born_in"),
+        StringLit("London"),
+    )
 
 
 def test_amend_fact_rejects_direct_nonground_terms_and_restores_state(tmp_path):
