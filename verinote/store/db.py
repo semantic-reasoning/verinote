@@ -28,6 +28,20 @@ ENGINE_STATUSES = frozenset({"confirmed", "accepted"})
 MAX_EVIDENCE_SNIPPET_CHARS = 1000
 
 
+class TerminalFactError(ValueError):
+    """A write was refused because the fact has reached a terminal status.
+
+    The invariant itself lives in the schema (the `facts_superseded_*` triggers),
+    which is what makes it unroutable-around. This exception is the *diagnosis*
+    layered over it: a caller that trips the trigger would otherwise get a bare
+    `sqlite3.IntegrityError` naming a trigger, which says what stopped the write
+    but not what the caller should do instead.
+
+    Subclasses ValueError so the web layer's existing "bad request" handling
+    treats it as the caller error it is, rather than a 500.
+    """
+
+
 @dataclass(frozen=True)
 class FactDecision:
     """The outcome of a review decision: the fact's row, and whether it moved.
@@ -1927,6 +1941,11 @@ class Store:
         target or an exact replay writes nothing, logs nothing, and returns
         `changed=False` so callers do not run follow-on effects for a request
         that made no decision.
+
+        Raises `TerminalFactError` when the target is `superseded` (#311): a
+        reject is a judgment about a specific claim, so the claim it names is
+        frozen with it. The schema enforces this too; the check here exists to
+        name the refusal rather than surface a trigger's IntegrityError.
         """
         with self._lock:
             from verinote.store.duckdb_fact_terms import fact_term_token
@@ -1958,6 +1977,22 @@ class Store:
                 and before["note"] == note
             ):
                 return FactDecision.unchanged(before)
+            # After the replay check, not before, so this layer refuses exactly
+            # the calls the trigger refuses: an amend asking for content already
+            # stored writes nothing, and the trigger (which compares old and new
+            # values) lets it pass too. Guarding earlier would turn a harmless
+            # replay into an error on this path only, and the two layers would
+            # disagree about what "amending a superseded fact" even means.
+            #
+            # Note this sits below the sidecar-corruption guard above as well, so
+            # a corrupt sidecar is still reported as corruption rather than being
+            # masked by a terminal-status refusal.
+            if before["status"] == "superseded":
+                raise TerminalFactError(
+                    f"fact {fact_id} is superseded: a rejected fact's content "
+                    "cannot be amended. Add the correction as a new fact so the "
+                    "rejection keeps naming what was actually rejected."
+                )
             self._conn.execute("BEGIN")
             try:
                 self._conn.execute(
@@ -2269,6 +2304,41 @@ class Store:
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_facts_source_term_token "
             "ON facts(source_id, term_token)"
+        )
+        # #311: superseded is terminal on the content axis too, and for the same
+        # reason it is terminal on the status axis. A reject is a judgment about
+        # a *specific claim*; rewriting the body afterwards leaves the audit
+        # log's "rejected" event pointing at text nobody ever rejected. The UI
+        # has always said as much -- a superseded row renders "rejected -- no
+        # further action" and offers no edit control -- so this closes the same
+        # door behind the route, which until now only the template guarded.
+        #
+        # Deliberately scoped to the amend axis rather than freezing the row:
+        # `stale` and `updated_at` must stay writable, because
+        # add_fact_evidence() clears stale=1 on every re-observation without
+        # regard to status (#329) and that path is load-bearing.
+        #
+        # Here rather than in schema.sql for the same reason as the index above:
+        # this body names term_token, and SQLite resolves a trigger's columns
+        # when it fires, not when it is created -- so on a legacy DB defining it
+        # there would create cleanly and then fail every subsequent UPDATE with
+        # a bare "no such column: NEW.term_token". By this point it exists.
+        #
+        # `IS NOT` rather than `<>` throughout: term_token is nullable, and
+        # NULL <> 'x' is NULL, which a WHEN clause reads as false -- so a
+        # comparison-based guard would wave through exactly the legacy rows
+        # (token still unbackfilled) it most needs to catch.
+        self._conn.execute(
+            "CREATE TRIGGER IF NOT EXISTS facts_superseded_content_is_frozen "
+            "BEFORE UPDATE OF subject, relation, object, note, term_token ON facts "
+            "FOR EACH ROW WHEN OLD.status = 'superseded' AND ("
+            "NEW.subject IS NOT OLD.subject "
+            "OR NEW.relation IS NOT OLD.relation "
+            "OR NEW.object IS NOT OLD.object "
+            "OR NEW.note IS NOT OLD.note "
+            "OR NEW.term_token IS NOT OLD.term_token) "
+            "BEGIN SELECT RAISE(ABORT, 'superseded is terminal: a rejected "
+            "fact''s content cannot be amended'); END"
         )
         self._conn.executescript(
             """

@@ -89,6 +89,7 @@ from verinote.store import (
     REVIEW_PAGE_SIZES,
     ReviewQueuePage,
     Store,
+    TerminalFactError,
     review_statuses,
 )
 # Imported as a module, not `from ... import ENGINE_STATUSES`: the tier must be
@@ -1194,10 +1195,19 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.get("/facts/{fact_id}/edit", response_class=HTMLResponse)
     def edit_fact(request: Request, fact_id: int):
+        fact = _active_store().get_fact(fact_id)
+        # #311: a superseded fact's content is frozen, so do not hand back a form
+        # that invites an edit the store will refuse. The row template already
+        # hides the edit control for these, so reaching here means a page that
+        # went stale (the fact was rejected while it was open) or a direct GET;
+        # re-rendering the read-only row answers both -- it swaps the stale
+        # controls for the current "rejected -- no further action" state.
+        if fact is not None and fact["status"] == "superseded":
+            return _row(request, fact)
         return templates.TemplateResponse(
             request,
             "partials/fact_edit.html",
-            _fact_edit_context(_active_store().get_fact(fact_id)),
+            _fact_edit_context(fact),
         )
 
     @app.get("/facts/{fact_id}/row", response_class=HTMLResponse)
@@ -1228,13 +1238,23 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 _fact_edit_context(_active_store().get_fact(fact_id), error=str(e)),
                 status_code=400,
             )
-        amended = _active_store().amend_fact(
-            fact_id,
-            subject=subject_value,
-            relation=relation_value,
-            obj=object_value,
-            note=note,
-        )
+        try:
+            amended = _active_store().amend_fact(
+                fact_id,
+                subject=subject_value,
+                relation=relation_value,
+                obj=object_value,
+                note=note,
+            )
+        except TerminalFactError:
+            # #311: the fact was rejected, so its content is frozen. Reachable
+            # from a form that was already open when someone else rejected it.
+            # Re-render the read-only row at 200 rather than an error at 4xx:
+            # htmx's default responseHandling does not swap 4xx, so an error
+            # status would leave the stale edit form on screen still offering a
+            # save that cannot succeed. The row it swaps in says "rejected -- no
+            # further action", which is both the state and the explanation.
+            return _row(request, _active_store().get_fact(fact_id))
         # The rule may act on the amended fact itself, unlike a toggle demotion.
         # An amend decides the fact's content, not its tier: correcting a term so
         # it finally matches a second source's wording *is* corroboration
