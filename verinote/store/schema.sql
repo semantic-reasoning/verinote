@@ -151,10 +151,12 @@ BEGIN
     );
 END;
 -- The companion trigger freezing a superseded fact's *content* (#311) is created
--- in Store._ensure_schema_migrations for the same reason as the index above: its
--- body names term_token, and SQLite resolves a trigger's columns when it fires
--- rather than when it is created, so defining it here would succeed on a legacy
--- DB and then break every later UPDATE with a bare "no such column".
+-- in Store._ensure_schema_migrations, next to the ALTER that adds the term_token
+-- column its body names. That placement is for locality, not necessity: unlike an
+-- index, a trigger resolves its column references when it fires rather than when
+-- it is created, so defining it here would work too (init_schema runs that ALTER
+-- immediately after this script, in the same call). Keeping it beside the ALTER
+-- means the dependency is visible instead of resting on that call ordering.
 
 -- Source-backed evidence anchors for extracted facts. Chunk-level anchors are
 -- available for every chunked extraction; exact spans/table cells can be added
