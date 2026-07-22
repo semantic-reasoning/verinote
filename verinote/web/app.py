@@ -89,6 +89,7 @@ from verinote.store import (
     REVIEW_PAGE_SIZES,
     ReviewQueuePage,
     Store,
+    TerminalFactError,
     review_statuses,
 )
 # Imported as a module, not `from ... import ENGINE_STATUSES`: the tier must be
@@ -206,7 +207,11 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
         Read routes (`/review`, `/provenance`, `GET /facts/{id}/edit`, `/report`'s
         trace) let `DuckDBFactTermStoreError` propagate here rather than degrading
-        a structural fact to a silent `kind="string"`. What reaching this handler
+        a structural fact to a silent `kind="string"`. One narrow exception since
+        #311: `GET /facts/{id}/edit` on a *superseded* fact returns the read-only
+        row without building the edit context, so it does not read that fact's
+        terms — the row render can still raise for its own reasons, but the edit
+        form's read is skipped. What reaching this handler
         means on a POST is route-dependent: `amend_fact` refuses in the store
         *before* it commits, so nothing was written; but `accept`/`reject`/`toggle`
         do a bare SQLite status UPDATE that autocommits immediately and only reach
@@ -1194,10 +1199,19 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.get("/facts/{fact_id}/edit", response_class=HTMLResponse)
     def edit_fact(request: Request, fact_id: int):
+        fact = _active_store().get_fact(fact_id)
+        # #311: a superseded fact's content is frozen, so do not hand back a form
+        # that invites an edit the store will refuse. The row template already
+        # hides the edit control for these, so reaching here means a page that
+        # went stale (the fact was rejected while it was open) or a direct GET;
+        # re-rendering the read-only row answers both -- it swaps the stale
+        # controls for the current "rejected -- no further action" state.
+        if fact is not None and fact["status"] == "superseded":
+            return _row(request, fact)
         return templates.TemplateResponse(
             request,
             "partials/fact_edit.html",
-            _fact_edit_context(_active_store().get_fact(fact_id)),
+            _fact_edit_context(fact),
         )
 
     @app.get("/facts/{fact_id}/row", response_class=HTMLResponse)
@@ -1228,13 +1242,28 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 _fact_edit_context(_active_store().get_fact(fact_id), error=str(e)),
                 status_code=400,
             )
-        amended = _active_store().amend_fact(
-            fact_id,
-            subject=subject_value,
-            relation=relation_value,
-            obj=object_value,
-            note=note,
-        )
+        try:
+            amended = _active_store().amend_fact(
+                fact_id,
+                subject=subject_value,
+                relation=relation_value,
+                obj=object_value,
+                note=note,
+            )
+        except TerminalFactError:
+            # #311: the fact was rejected, so its content is frozen. Reachable
+            # from a form that was already open when someone else rejected it.
+            # Re-render the read-only row at 200 rather than an error at 4xx:
+            # htmx's default responseHandling does not swap 4xx, so an error
+            # status would leave the stale edit form on screen still offering a
+            # save that cannot succeed. The row it swaps in says "rejected -- no
+            # further action", which is both the state and the explanation.
+            #
+            # By the same reasoning the validation-error path above, which
+            # re-renders the edit form at 400, does not swap either and so shows
+            # the user nothing. That predates this change and is left alone here
+            # rather than fixed in passing, but it is the same bug.
+            return _row(request, _active_store().get_fact(fact_id))
         # The rule may act on the amended fact itself, unlike a toggle demotion.
         # An amend decides the fact's content, not its tier: correcting a term so
         # it finally matches a second source's wording *is* corroboration

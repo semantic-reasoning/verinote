@@ -8,6 +8,7 @@ from verinote.store.db import (
     REVIEW_PAGE_SIZES,
     ReviewQueuePage,
     Store,
+    TerminalFactError,
 )
 from verinote.store.tiers import (
     engine_statuses,
@@ -23,6 +24,7 @@ from verinote.store.tiers import (
 __all__ = [
     "Store",
     "FactDecision",
+    "TerminalFactError",
     "POLICY_MARKER_KEY",
     "engine_statuses",
     "review_statuses",
