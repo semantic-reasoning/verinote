@@ -16,8 +16,9 @@
 </p>
 {% if rep.errors > 0 %}
 <p class="error" role="alert">
-  The knowledge base is inconsistent — promotion/query stay gated until the
-  errors below are resolved.
+  The knowledge base has unresolved errors under its policy (listed below).
+  Promotion is not blocked and this page still lists any answers, so resolve
+  these before trusting results.
 </p>
 {% endif %}
 {% if rep.findings %}

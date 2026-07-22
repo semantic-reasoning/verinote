@@ -68,9 +68,10 @@ DEFAULT_POLICY = f"""\
 //
 // verinote compiles confirmed/accepted facts to
 //   relation(subject, rel, object)
-// and runs this policy over them. A derived `error_*` relation FAILS the review
-// gate; a `warn_*` relation is a non-blocking note. Edit freely — the engine
-// re-checks every fact, so the policy is the one place review rules live.
+// and runs this policy over them. A derived `error_*` relation makes the check
+// report a failure; a `warn_*` relation is a non-blocking note. Edit freely —
+// the engine re-checks every fact, so the policy is the one place review rules
+// live.
 
 .decl relation(subject: symbol, rel: symbol, object: symbol)
 
@@ -481,8 +482,9 @@ def run_check(
     `dl_text` is `compile_dl` output (the verbatim engine input). `policy_dl`
     defaults to `DEFAULT_POLICY`. `query_dl` holds `answer_q<id>(...)` query rules
     (see pipeline.query). Derived `error_*`/`warn_*` tuples become findings
-    (`errors > 0` is the review gate); `answer_q<id>` tuples become answers. If
-    pyrewire is absent we still return a legacy compatibility report flagged
+    (`errors > 0` marks the report not-ok; it does not block promotion or query);
+    `answer_q<id>` tuples become answers. If pyrewire is absent we still return a
+    legacy compatibility report flagged
     `engine_available=False`.
     """
     policy = policy_dl if policy_dl is not None else DEFAULT_POLICY

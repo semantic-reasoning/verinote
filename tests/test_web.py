@@ -1591,7 +1591,7 @@ def test_report_traceability_renders_one_status_then_none(tmp_path):
     assert "awaiting review" not in body
 
 
-def test_report_gates_on_contradiction(tmp_path):
+def test_report_flags_contradiction(tmp_path):
     c = _client(tmp_path)
     store = c.app.state.store
     store.add_fact("Org", "established_on", "2020", status="confirmed")
@@ -1600,6 +1600,122 @@ def test_report_gates_on_contradiction(tmp_path):
     assert r.status_code == 200
     assert "ERRORS" in r.text
     assert "functional_conflict" in r.text
+
+
+def test_report_does_not_claim_a_promotion_gate(tmp_path):
+    """The errors banner must not resurrect the false "promotion/query gated" claim.
+
+    No gate exists (see #164): promotion writes never consult the report, and this
+    page renders its own answers unconditionally. The banner may say the KB is
+    inconsistent, but not that anything is blocked.
+    """
+    c = _client(tmp_path)
+    store = c.app.state.store
+    store.add_fact("Org", "established_on", "2020", status="confirmed")
+    store.add_fact("Org", "established_on", "2021", status="confirmed")
+
+    r = c.get("/report")
+
+    assert r.status_code == 200
+    assert "ERRORS" in r.text
+    # The old banner falsely claimed promotion and this page's own answers were
+    # gated; both are untrue.
+    assert "stay gated" not in r.text
+    assert "promotion/query" not in r.text
+    # The honest banner is present and says promotion is not blocked.
+    assert "Promotion is not blocked" in r.text
+
+
+def test_promotion_succeeds_while_errors_exist(tmp_path):
+    """The issue's own repro, pinned as intended behavior (#164).
+
+    A human's accept is a review-tier decision that writes unconditionally with
+    respect to the consistency report — an unrelated error must never block it,
+    and the promoted fact must reach engine input.
+    """
+    c = _client(tmp_path)
+    store = c.app.state.store
+    # A functional conflict on `established_on` (both confirmed): errors > 0.
+    store.add_fact("Org", "established_on", "2020", status="confirmed")
+    store.add_fact("Org", "established_on", "2021", status="confirmed")
+    assert "ERRORS" in c.get("/report").text
+    unrelated = store.add_fact("Widget", "is_a", "Gadget", status="needs_review")
+
+    r = c.post(f"/facts/{unrelated}/accept")
+
+    assert r.status_code == 200
+    assert store.get_fact(unrelated)["status"] == "confirmed"
+    assert unrelated in {int(row["id"]) for row in store.engine_fact_terms()}
+    # The error is unchanged — promotion neither cleared nor worsened it.
+    assert "ERRORS" in c.get("/report").text
+
+
+def test_report_shows_answers_even_while_errors_exist(tmp_path):
+    """The "query gated" half of the old claim was false: answers still render.
+
+    `verify()` returns findings and answers together and the template renders
+    `rep.answers` with no error guard, so an answer and an error coexist on the
+    page — the banner must not say otherwise.
+    """
+    c = _client(tmp_path)
+    store = c.app.state.store
+    source_id = store.add_source("sources/sample.txt")
+    store.add_fact("Ada", "born_in", "London", status="confirmed", source_id=source_id)
+    path = query_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        ".decl answer_q1(value: symbol)\n"
+        'answer_q1(O) :- relation("Ada", "born_in", O).\n',
+        encoding="utf-8",
+    )
+    # An unrelated functional conflict drives errors > 0 on the same page.
+    store.add_fact("Org", "established_on", "2020", status="confirmed")
+    store.add_fact("Org", "established_on", "2021", status="confirmed")
+
+    body = unescape(c.get("/report").text)
+
+    assert "ERRORS" in body
+    assert "London" in body
+
+
+def test_ask_still_verifies_a_clean_answer_while_errors_exist(tmp_path, monkeypatch):
+    """Ask does not gate its VERIFIED label on the KB consistency report (#164).
+
+    Ask certifies from the answer query's own run (policy is the base relation
+    decl), not from `/report`'s error count, so an unrelated functional_conflict
+    never downgrades a clean deterministic answer. This pins that the report
+    banner must NOT claim Ask withholds VERIFIED while errors stand — it does not.
+    If Ask ever starts gating on report errors, this fails and the banner copy
+    must be revisited in lockstep.
+    """
+    class DeterministicOnly:
+        name = "deterministic-only"
+
+        def extract_query_intent(self, *, question: str, schema_hint: str = ""):
+            raise AssertionError("deterministic question must bypass LLM")
+
+        def translate_query(self, *, question: str, qid: int, schema_hint: str = ""):
+            raise AssertionError("Ask must not call direct Datalog fallback")
+
+        def answer_question(self, *, question: str, context: str):
+            raise AssertionError("verified engine answer must not call fallback")
+
+    monkeypatch.setattr(webapp, "get_client", lambda cfg: DeterministicOnly())
+    c = _client(tmp_path)
+    store = c.app.state.store
+    source_id = store.add_source("sources/sample.txt")
+    store.add_fact("샘플인물", "역할", "검토자", status="confirmed", source_id=source_id)
+    # An unrelated functional conflict makes /report show errors > 0.
+    store.add_fact("Org", "established_on", "2020", status="confirmed")
+    store.add_fact("Org", "established_on", "2021", status="confirmed")
+    assert "ERRORS" in c.get("/report").text
+
+    r = c.post("/ask", data={"question": "샘플인물의 역할은 무엇인가?"})
+
+    assert r.status_code == 200
+    body = unescape(r.text)
+    assert "VERIFIED — engine" in body
+    assert "검토자" in body
 
 
 def test_report_shows_missing_duckdb_message(tmp_path, monkeypatch):
