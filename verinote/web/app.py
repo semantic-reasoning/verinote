@@ -207,7 +207,11 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
         Read routes (`/review`, `/provenance`, `GET /facts/{id}/edit`, `/report`'s
         trace) let `DuckDBFactTermStoreError` propagate here rather than degrading
-        a structural fact to a silent `kind="string"`. What reaching this handler
+        a structural fact to a silent `kind="string"`. One narrow exception since
+        #311: `GET /facts/{id}/edit` on a *superseded* fact returns the read-only
+        row without building the edit context, so it does not read that fact's
+        terms — the row render can still raise for its own reasons, but the edit
+        form's read is skipped. What reaching this handler
         means on a POST is route-dependent: `amend_fact` refuses in the store
         *before* it commits, so nothing was written; but `accept`/`reject`/`toggle`
         do a bare SQLite status UPDATE that autocommits immediately and only reach
@@ -1254,6 +1258,11 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             # status would leave the stale edit form on screen still offering a
             # save that cannot succeed. The row it swaps in says "rejected -- no
             # further action", which is both the state and the explanation.
+            #
+            # By the same reasoning the validation-error path above, which
+            # re-renders the edit form at 400, does not swap either and so shows
+            # the user nothing. That predates this change and is left alone here
+            # rather than fixed in passing, but it is the same bug.
             return _row(request, _active_store().get_fact(fact_id))
         # The rule may act on the amended fact itself, unlike a toggle demotion.
         # An amend decides the fact's content, not its tier: correcting a term so

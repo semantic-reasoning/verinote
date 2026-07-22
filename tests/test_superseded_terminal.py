@@ -249,6 +249,39 @@ def test_term_token_alone_is_frozen_on_a_superseded_fact(tmp_path):
         )
 
 
+@pytest.mark.parametrize(
+    "stored,written",
+    [(None, "'backfilled'"), ("'a-token'", "NULL")],
+)
+def test_a_null_term_token_is_frozen_in_both_directions(tmp_path, stored, written):
+    # The test that makes `IS NOT` load-bearing. term_token is nullable, and in
+    # SQL `NULL <> 'x'` evaluates to NULL, which a WHEN clause reads as false --
+    # so a comparison-based guard would wave through exactly the legacy rows
+    # (token never backfilled) it most needs to catch, and abort only on rows
+    # that already have one.
+    #
+    # Every other content test uses a fact built by add_fact, whose token is
+    # non-NULL, so `<>` fires on those and they stay green while the invariant
+    # is dead for legacy rows. Both directions are parameterised because each
+    # puts the NULL on a different side of the comparison.
+    store = _store(tmp_path)
+    fact_id = store.add_fact("Ledger", "owner", "Park", status="needs_review")
+    store._conn.execute(
+        f"UPDATE facts SET term_token = {'NULL' if stored is None else stored} "
+        "WHERE id = ?",
+        (fact_id,),
+    )
+    store.reject_fact(fact_id)
+    before = store.get_fact(fact_id)["term_token"]
+
+    with pytest.raises(sqlite3.IntegrityError):
+        store._conn.execute(
+            f"UPDATE facts SET term_token = {written} WHERE id = ?", (fact_id,)
+        )
+
+    assert store.get_fact(fact_id)["term_token"] == before
+
+
 def test_a_replayed_amend_on_a_superseded_fact_is_a_quiet_no_op(tmp_path):
     # The two layers must refuse the *same* calls. An amend asking for content
     # already stored writes nothing, so the trigger (which compares values) lets

@@ -2315,14 +2315,26 @@ class Store:
         #
         # Deliberately scoped to the amend axis rather than freezing the row:
         # `stale` and `updated_at` must stay writable, because
-        # add_fact_evidence() clears stale=1 on every re-observation without
+        # note_fact_reobserved() clears stale=1 on every re-observation without
         # regard to status (#329) and that path is load-bearing.
         #
-        # Here rather than in schema.sql for the same reason as the index above:
-        # this body names term_token, and SQLite resolves a trigger's columns
-        # when it fires, not when it is created -- so on a legacy DB defining it
-        # there would create cleanly and then fail every subsequent UPDATE with
-        # a bare "no such column: NEW.term_token". By this point it exists.
+        # `confidence`, `source_id`, `run_id` and `job_id` are also left
+        # writable, and that is a decision rather than an oversight: no path in
+        # the codebase updates any of them on an existing row today (checked
+        # against every `UPDATE facts` in this file). If one is ever added --
+        # re-pointing a fact at a different source is the plausible one -- this
+        # list must be revisited, because "which source's claim was rejected" is
+        # part of the same audit story the content freeze exists to protect.
+        #
+        # On placement: unlike the index above, this does NOT have to live here.
+        # SQLite resolves a trigger's column references when it fires rather
+        # than when it is created, so naming term_token in schema.sql would
+        # create cleanly and still work -- init_schema() runs the ALTER that adds
+        # the column immediately after executescript(), in the same call, so the
+        # column always exists before any UPDATE can reach the trigger. It is
+        # here so that dependency is local and visible: the trigger sits below
+        # the ALTER it needs instead of relying on a caller's ordering that a
+        # later refactor could silently change.
         #
         # `IS NOT` rather than `<>` throughout: term_token is nullable, and
         # NULL <> 'x' is NULL, which a WHEN clause reads as false -- so a
