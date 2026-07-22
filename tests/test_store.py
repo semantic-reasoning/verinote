@@ -284,6 +284,56 @@ def test_clear_source_analysis_removes_fact_evidence(tmp_path):
     assert list(s._conn.execute("SELECT * FROM fact_evidence")) == []
 
 
+def test_clear_source_analysis_preserves_human_decided_facts_and_their_terms(tmp_path):
+    # #339: reanalyze clears only the review tier. A human's engine-tier decision
+    # (confirmed/accepted) and terminal rejection (superseded) must survive, and a
+    # preserved fact's DuckDB terms must survive with it -- the SELECT is filtered
+    # too, so the term-deletion loop never reaches a preserved fact.
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    candidate = s.add_fact("Cand", "r", "X", status="candidate", source_id=sid)
+    needs_review = s.add_fact("Need", "r", "X", status="needs_review", source_id=sid)
+    confirmed = s.add_fact("Conf", "r", "X", status="confirmed", source_id=sid)
+    accepted = s.add_fact("Acc", "r", "X", status="accepted", source_id=sid)
+    superseded = s.add_fact("Sup", "r", "X", status="superseded", source_id=sid)
+
+    removed = s.clear_source_analysis(sid)
+
+    assert removed == 2
+    assert s.get_fact(candidate) is None
+    assert s.get_fact(needs_review) is None
+    # The preserved rows keep not just their presence but their exact status.
+    assert s.get_fact(confirmed)["status"] == "confirmed"
+    assert s.get_fact(accepted)["status"] == "accepted"
+    assert s.get_fact(superseded)["status"] == "superseded"
+    # The DuckDB-term half of the trap: a preserved fact keeps its terms, a
+    # removed one loses them. This is what proves the SELECT was filtered too --
+    # had it not been, the loop would have dropped these three facts' terms while
+    # leaving their SQLite rows intact, corrupting the engine's view invisibly.
+    assert s.get_fact_terms(confirmed) is not None
+    assert s.get_fact_terms(accepted) is not None
+    assert s.get_fact_terms(superseded) is not None
+    assert s.get_fact_terms(candidate) is None
+    assert s.get_fact_terms(needs_review) is None
+
+
+def test_clear_source_analysis_never_deletes_a_superseded_fact(tmp_path):
+    # #339 via the real human-rejection path: reject_fact, not a direct
+    # add_fact(status="superseded"), so this pins the fix for how rejection
+    # actually happens in production.
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    s.add_source_artifact(source_id=sid, kind="original_text", path="sources/a.txt")
+    rejected = s.add_fact("Ada", "died_in", "Rome", status="candidate", source_id=sid)
+    s.reject_fact(rejected)
+    assert s.get_fact(rejected)["status"] == "superseded"
+
+    s.clear_source_analysis(sid)
+
+    assert s.get_fact(rejected) is not None
+    assert s.get_fact(rejected)["status"] == "superseded"
+
+
 def test_fact_evidence_persists_chunk_and_span_references(tmp_path):
     s = _store(tmp_path)
     sid = s.add_source("sources/sample.txt")

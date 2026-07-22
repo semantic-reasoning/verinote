@@ -989,6 +989,118 @@ def test_reanalyze_source_reuses_artifact_and_replaces_extracted_facts(
     assert store.get_extraction_job_detail(fact["job_id"])["artifact_id"] == artifact_id
 
 
+def test_reanalyze_preserves_human_decisions_and_suppresses_resurrection(
+    tmp_path, monkeypatch, fake_client
+):
+    # #339 through the real route: reanalyze must not delete a human's confirmed
+    # fact nor resurrect a superseded one. The fake run re-emits the superseded
+    # triple, so reconcile_fact finds the preserved row and suppresses the
+    # re-insert (#160). The confirmed/superseded facts carry NO artifact-anchored
+    # evidence, isolating this from the #329 staleness sweep (see the next test).
+    monkeypatch.setattr(
+        webapp,
+        "get_client",
+        lambda cfg: fake_client(
+            [
+                ExtractedFact("New", "is_a", "Fact", 0.9),
+                ExtractedFact("Ghost", "is_a", "Spirit", 0.9),
+            ]
+        ),
+    )
+    c = _client(tmp_path)
+    store = c.app.state.store
+    sid = store.add_source("sources/a.txt", kind="text")
+    artifact_path = tmp_path / "sources" / "a.txt"
+    artifact_path.parent.mkdir()
+    artifact_path.write_text("source body", encoding="utf-8")
+    store.add_source_artifact(source_id=sid, kind="original_text", path="sources/a.txt")
+    store.add_fact("Old", "is_a", "Thing", status="candidate", source_id=sid)
+    confirmed = store.add_fact(
+        "Kept", "is_a", "Confirmed", status="confirmed", source_id=sid
+    )
+    superseded = store.add_fact(
+        "Ghost", "is_a", "Spirit", status="candidate", source_id=sid
+    )
+    store.reject_fact(superseded)
+    assert store.get_fact(superseded)["status"] == "superseded"
+
+    r = c.post(f"/sources/{sid}/reanalyze", follow_redirects=False)
+    assert r.status_code == 303
+
+    def reanalyzed():
+        assert any(row["subject"] == "New" for row in store.review_queue())
+        assert "Analysis complete: 1/1 chunk(s)" in c.get("/sources").text
+
+    _wait_for(reanalyzed)
+
+    # The review-tier candidate is gone; both human decisions are untouched.
+    assert not any(row["subject"] == "Old" for row in store.review_queue())
+    assert store.get_fact(confirmed)["status"] == "confirmed"
+    assert store.get_fact(superseded)["status"] == "superseded"
+    # Exactly one row for the superseded triple: the preserved rejection, never a
+    # fresh candidate resurrected from the re-emitted triple.
+    ghost_rows = [
+        f
+        for f in store.facts()
+        if (f["subject"], f["relation"], f["object"]) == ("Ghost", "is_a", "Spirit")
+    ]
+    assert len(ghost_rows) == 1
+    assert ghost_rows[0]["id"] == superseded
+    assert ghost_rows[0]["status"] == "superseded"
+
+
+def test_reanalyze_demotes_a_now_unsupported_confirmed_fact_via_the_sweep(
+    tmp_path, monkeypatch, fake_client
+):
+    # #339 composition proof: preserving the confirmed row is all it takes for the
+    # #329 post-extraction sweep to demote it when the current artifact no longer
+    # supports it -- NO demotion logic lives in clear_source_analysis or the route.
+    # The confirmed fact is anchored at an OLDER artifact; reanalyze runs over the
+    # newer one and re-extracts a different triple, so the sweep finds no evidence
+    # for the confirmed fact at the current artifact and returns it to review,
+    # stale=1 (never deleted, never silently left confirmed).
+    monkeypatch.setattr(
+        webapp,
+        "get_client",
+        lambda cfg: fake_client([ExtractedFact("Fresh", "is_a", "Fact", 0.9)]),
+    )
+    c = _client(tmp_path)
+    store = c.app.state.store
+    sid = store.add_source("sources/a.txt", kind="text")
+    artifact_path = tmp_path / "sources" / "a.txt"
+    artifact_path.parent.mkdir()
+    artifact_path.write_text("current body", encoding="utf-8")
+    old_artifact = store.add_source_artifact(
+        source_id=sid, kind="original_text", path="sources/a-v1.txt", checksum="v1"
+    )
+    new_artifact = store.add_source_artifact(
+        source_id=sid, kind="original_text", path="sources/a.txt", checksum="v2"
+    )
+    assert new_artifact != old_artifact
+    confirmed = store.add_fact(
+        "Ada", "is_a", "Analyst", status="confirmed", source_id=sid
+    )
+    store.add_fact_evidence(
+        fact_id=confirmed, source_id=sid, artifact_id=old_artifact, snippet="Ada"
+    )
+
+    r = c.post(f"/sources/{sid}/reanalyze", follow_redirects=False)
+    assert r.status_code == 303
+
+    # The sweep runs AFTER the job is marked done, so wait on the demotion itself
+    # rather than the "Analysis complete" message.
+    def swept():
+        assert any(row["subject"] == "Fresh" for row in store.review_queue())
+        assert store.get_fact(confirmed)["status"] == "needs_review"
+
+    _wait_for(swept)
+
+    row = store.get_fact(confirmed)
+    assert row is not None
+    assert row["status"] == "needs_review"
+    assert row["stale"] == 1
+
+
 def test_upload_docx_converts_and_extracts(tmp_path, monkeypatch, fake_client):
     import io
 

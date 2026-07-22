@@ -569,17 +569,32 @@ class Store:
                 raise
 
     def clear_source_analysis(self, source_id: int) -> int:
-        """Remove extracted facts and extraction jobs while keeping source files.
+        """Clear the review tier (candidate/needs_review facts + their terms) and
+        the extraction jobs for a source, keeping the source files.
 
-        Returns the number of facts removed. DuckDB term rows are deleted in the
-        same logical operation so re-analysis starts from a clean source state.
+        `confirmed`/`accepted` facts (a human's engine-tier decision) and
+        `superseded` facts (a human's terminal rejection) are preserved: a
+        reanalyze must never silently destroy a human decision (#339). Whether a
+        preserved engine-tier fact is still supported by the re-extracted source
+        is judged afterwards by the post-extraction `surface_stale_engine_facts`
+        sweep (#329), not here; a preserved superseded fact stays matchable so
+        `reconcile_fact` keeps suppressing its resurrection (#160).
+
+        The status filter is applied to BOTH the id-selecting SELECT and the
+        facts DELETE: the DuckDB `fact_terms` deletion loop is driven by the
+        SELECT's id list, so filtering only the DELETE would leave a preserved
+        fact's SQLite row intact while silently dropping its DuckDB terms.
+
+        Returns the number of review-tier facts removed.
         """
         with self._lock:
+            placeholders, statuses = _status_filter(REVIEW_STATUSES)
             fact_ids = [
                 int(row["id"])
                 for row in self._conn.execute(
-                    "SELECT id FROM facts WHERE source_id = ? ORDER BY id",
-                    (source_id,),
+                    f"SELECT id FROM facts WHERE source_id = ? "
+                    f"AND status IN ({placeholders}) ORDER BY id",
+                    (source_id, *statuses),
                 )
             ]
             deleted_terms: list[int] = []
@@ -588,7 +603,10 @@ class Store:
                 for fact_id in fact_ids:
                     self.fact_terms.delete_fact_terms(fact_id)
                     deleted_terms.append(fact_id)
-                self._conn.execute("DELETE FROM facts WHERE source_id = ?", (source_id,))
+                self._conn.execute(
+                    f"DELETE FROM facts WHERE source_id = ? AND status IN ({placeholders})",
+                    (source_id, *statuses),
+                )
                 self._conn.execute(
                     "DELETE FROM extraction_jobs WHERE source_id = ?", (source_id,)
                 )
