@@ -117,6 +117,13 @@ th { color: var(--muted); font-weight: 600; font-size: .85rem; }
 .badge-question-review-required, .badge-question-ambiguous { color: var(--warn); border-color: var(--warn); }
 .badge-question-translation-failed { color: var(--danger); border-color: var(--danger); }
 .badge-question-no-answer { color: var(--accent); border-color: var(--accent); }
+/* The two tiers of a review row (#223): a verdict is a call about the fact, a chip
+   is context. Weight and size carry the tier, not hue -- the row has to sort itself
+   in greyscale and for a colour-blind reader, so the palette only reinforces what
+   the heavier, larger face already says. Both are `.badge.<tier>` so they outrank
+   the single-class `.trust-*` and `.badge-*` colours they sit beside. */
+.badge.verdict { font-weight: 700; }
+.badge.chip { font-weight: 400; font-size: .72rem; color: var(--muted); }
 .question-message { margin-top: .25rem; }
 .question-query { max-width: 26rem; max-height: 9rem; }
 

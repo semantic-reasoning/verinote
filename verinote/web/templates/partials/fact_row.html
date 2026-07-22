@@ -12,40 +12,68 @@
       <span class="obj term-{{ f['object_kind'] }}">{{ f['object_display'] }}<span class="visually-hidden">&nbsp;({{ f['object_kind'] }})</span></span>
     </div>
     <div class="row-meta">
-      <span class="badge badge-{{ f['status'] }}">{{ f['status'] }}</span>
+      {# One of the row's two verdicts (#223); the other is the trust verdict in
+         .signals. `verdict` trails the status class so the pair still reads as
+         `badge badge-<status>` in the markup. #}
+      <span class="badge badge-{{ f['status'] }} verdict">{{ f['status'] }}</span>
       {% if f['source_path'] %}<code>{{ f['source_path'] }}</code>{% else %}<span class="muted">no source</span>{% endif %}
     </div>
   </td>
   <td class="signals">
+    {# Two tiers, so the row can be scanned by one rule: colour is a verdict, grey
+       is context (#223). A row spends its colour on at most two badges -- the
+       status over in .row-meta and one trust verdict here -- and every other
+       signal is a grey .chip. Before this the eleven possible badges shared a
+       single weight, so "this fact contradicts another" cost the same to read as
+       "this fact has two sources".
+
+       Priority is conflicted > accept recommended > corroborated: a contradiction
+       outranks a recommendation to accept it, which outranks bare corroboration.
+       `trust.conflict` and the `conflicted` label are the same finding said twice
+       (_trust_labels derives the label from that very summary), so they collapse
+       into this one verdict rather than two badges.
+
+       Every branch below stays inside `{% if trust %}` and reads only `f`, `trust`
+       and `recommendation` -- the whole context a lone HTMX row swap gets. #}
     {% if trust %}
-      {% for label in trust.trust_labels %}
-        <span class="badge trust-{{ label }}">{{ label|replace("_", " ") }}</span>
+      {% if trust.conflict or 'conflicted' in trust.trust_labels %}
+        {% set verdict_label, verdict_class, verdict_text = 'conflicted', 'trust-conflicted', 'conflicted' %}
+      {% elif recommendation and recommendation.eligible %}
+        {% set verdict_label, verdict_class, verdict_text = none, 'trust-reviewed', 'accept recommended' %}
+      {% elif 'corroborated' in trust.trust_labels %}
+        {% set verdict_label, verdict_class, verdict_text = 'corroborated', 'trust-corroborated', 'corroborated' %}
+      {% else %}
+        {% set verdict_label, verdict_class, verdict_text = none, none, none %}
+      {% endif %}
+      {% if verdict_text %}
+        <span class="badge verdict {{ verdict_class }}">{{ verdict_text }}</span>
+      {% endif %}
+      {# The label promoted to the verdict is dropped here so it is not said twice. #}
+      {% for label in trust.trust_labels if label != verdict_label %}
+        <span class="badge chip">{{ label|replace("_", " ") }}</span>
       {% endfor %}
-      <span class="badge">{{ trust.support.source_count }} source{% if trust.support.source_count != 1 %}s{% endif %}</span>
-      {% if trust.conflict %}<span class="badge trust-conflicted">conflict</span>{% endif %}
+      <span class="badge chip">{{ trust.support.source_count }} source{% if trust.support.source_count != 1 %}s{% endif %}</span>
       {% if trust.canonical_relation != f['relation'] %}
-        <span class="badge">canonical <code>{{ trust.canonical_relation }}</code></span>
+        <span class="badge chip">canonical <code>{{ trust.canonical_relation }}</code></span>
       {% endif %}
       {% if trust.typed_value %}
-        <span class="badge">{{ trust.typed_value.type }} <code>{{ trust.typed_value.alias }}</code></span>
+        <span class="badge chip">{{ trust.typed_value.type }} <code>{{ trust.typed_value.alias }}</code></span>
       {% endif %}
-      {% if recommendation %}
-        {% if recommendation.eligible %}
-          <span class="badge trust-reviewed">accept recommended</span>
-        {% else %}
-          {% for reason in recommendation.reasons[:2] %}
-            <span class="badge trust-unsupported">{{ reason|replace("_", " ") }}</span>
-          {% endfor %}
-        {% endif %}
+      {# Only the blocked case has reasons; the eligible case is already the verdict. #}
+      {% if recommendation and not recommendation.eligible %}
+        {% for reason in recommendation.reasons[:2] %}
+          <span class="badge chip">{{ reason|replace("_", " ") }}</span>
+        {% endfor %}
       {% endif %}
     {% else %}
-      <span class="badge trust-evidence_missing">trust unavailable</span>
+      {# No trust summary at all is a verdict on the row, not context. #}
+      <span class="badge verdict trust-evidence_missing">trust unavailable</span>
     {% endif %}
   </td>
   <td class="evidence-cell">
     {% if trust and trust.evidence %}
       {% set e = trust.evidence[0] %}
-      <div><span class="badge">{{ e.evidence_kind }}</span> <code>{{ e.source_path }}</code></div>
+      <div><span class="badge chip">{{ e.evidence_kind }}</span> <code>{{ e.source_path }}</code></div>
       <div class="src">
         {% if e.chunk_index is not none %}chunk {{ e.chunk_index }}{% else %}source{% endif %}
         {% if e.chunk_status %}· {{ e.chunk_status }}{% endif %}
