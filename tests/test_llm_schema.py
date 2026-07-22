@@ -2,6 +2,7 @@
 import copy
 import dataclasses
 import importlib.util
+import pathlib
 import sys
 
 import pytest
@@ -401,15 +402,32 @@ def test_blank_nullable_fields_split_a_new_property_by_its_enum():
     assert "note" in blank_nullable
 
 
-def _build_query_intent_module(monkeypatch, schema):
+def _build_query_intent_module(monkeypatch, schema, extra_fields=()):
     """Run a fresh, isolated copy of query_intent.py against `schema`.
 
     A separate module object rather than `importlib.reload`: a reload that raises
     part-way leaves the real module half-rebuilt, and even a successful one swaps
     the identity of `QueryIntent`/`IntentTarget` out from under every test that
     imported them, so dataclass equality starts failing elsewhere in the session.
+
+    `extra_fields` adds nullable string fields to the QueryIntent dataclass before
+    the copy executes. That is the one step a schema addition still requires by
+    hand, so a test that the *rest* is automatic has to perform it -- otherwise the
+    copy stops at the import guard and the parse path is never reached. Patching
+    the source is what makes the resulting module a faithful "developer added the
+    property and the field, and did nothing else".
     """
     monkeypatch.setattr(llm_schema, "QUERY_INTENT_SCHEMA", schema)
+    source = pathlib.Path(query_intent.__file__).read_text(encoding="utf-8")
+    if extra_fields:
+        anchor = "    reason: str | None = None\n"
+        # A drifted anchor would silently add nothing and leave every assertion
+        # below testing the unmodified module.
+        assert source.count(anchor) == 1, "QueryIntent's last field is no longer `reason`"
+        source = source.replace(
+            anchor,
+            anchor + "".join(f"    {name}: str | None = None\n" for name in extra_fields),
+        )
     name = "query_intent_under_test"
     spec = importlib.util.spec_from_file_location(name, query_intent.__file__)
     module = importlib.util.module_from_spec(spec)
@@ -417,7 +435,7 @@ def _build_query_intent_module(monkeypatch, schema):
     # `sys.modules[cls.__module__]`, so the copy has to be registered while it
     # executes or building QueryIntent dies on an unrelated AttributeError.
     monkeypatch.setitem(sys.modules, name, module)
-    spec.loader.exec_module(module)
+    exec(compile(source, query_intent.__file__, "exec"), module.__dict__)
     return module
 
 
@@ -459,6 +477,62 @@ def test_the_import_check_passes_on_the_schema_the_parser_does_read(monkeypatch)
     module = _build_query_intent_module(monkeypatch, copy.deepcopy(QUERY_INTENT_SCHEMA))
 
     assert module.QUERY_INTENT_FIELDS == tuple(QUERY_INTENT_SCHEMA["properties"])
+
+
+def test_a_new_enum_property_is_validated_on_parse_with_no_wiring(monkeypatch):
+    """The acceptance of #298: a schema addition rejects blank without a code change.
+
+    Deriving the allow-list and the name lists left the QueryIntent construction
+    written out by hand, so `unit` was admitted as a key and then never read: the
+    value was taken from the provider and dropped, and `unit: ""` or `unit: "lb"`
+    came back as None instead of being refused. This follows the derived parser
+    dispatch all the way to the value the caller gets back, which is the only place
+    that difference shows -- `"unit" in _intent_field_names(synthetic)` restates
+    the derivation and stayed green through the entire silent drop.
+
+    The dataclass field is added because that is the one step still done by hand;
+    nothing else about `unit` or `note` is named anywhere in the module.
+    """
+    module = _build_query_intent_module(
+        monkeypatch, _synthetic_intent_schema(), extra_fields=("unit", "note")
+    )
+
+    # An on-enum value survives the round trip: the property is parsed, not
+    # discarded, and the trimming every nullable string gets applies to it.
+    accepted = module.parse_query_intent(_intent_payload(unit="kg", note="  fine  "))
+    assert accepted.unit == "kg"
+    assert accepted.note == "fine"
+
+    # Blank on an enum property is an off-schema value, not a spelling of null:
+    # "" is in no enum, so it must reach the domain check rather than be
+    # normalised away. Off-enum is refused the same way.
+    for rejected in ("", "   ", "lb"):
+        with pytest.raises(LLMError) as excinfo:
+            module.parse_query_intent(_intent_payload(unit=rejected))
+        assert "unit must be one of kg, m" in str(excinfo.value)
+
+    # The property the schema leaves open keeps the #237 blank-is-null tolerance,
+    # so the new rule splits on the enum rather than on the property being new.
+    assert module.parse_query_intent(_intent_payload(note="")).note is None
+
+
+def test_a_property_type_with_no_parser_is_refused_rather_than_guessed(monkeypatch):
+    """Dispatching on the declared type must not fall back to the string parser.
+
+    A default would hand `["integer", "null"]` to `_parse_optional_string`, which
+    rejects a non-string with "must be a string" -- reporting schema-legal provider
+    output as a violation. Failing at import names the property and the table to
+    extend instead.
+    """
+    schema = copy.deepcopy(QUERY_INTENT_SCHEMA)
+    schema["properties"]["retries"] = {"type": ["integer", "null"]}
+    schema["required"] = list(schema["properties"])
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _build_query_intent_module(monkeypatch, schema, extra_fields=("retries",))
+
+    assert "retries" in str(excinfo.value)
+    assert not isinstance(excinfo.value, LLMError)
 
 
 def test_derived_nullable_string_fields_all_exist_on_the_query_intent_dataclass():

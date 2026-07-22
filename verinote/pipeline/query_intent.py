@@ -3,7 +3,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass, field, fields
 from enum import StrEnum
 import json
 import re
@@ -484,62 +485,15 @@ def _intent_field_names(schema: dict[str, Any]) -> tuple[str, ...]:
     refused for emitting it.
 
     Widening the allow-list is only half of accepting a property, though: the
-    constructor call below names its kwargs by hand, so a key admitted here and
-    not read there would be taken from the provider and dropped on the floor.
-    `_unconsumed_intent_fields` is what stops that half-wiring from being silent.
+    construction below has to read the key too, or it would be taken from the
+    provider and dropped on the floor. `_intent_field_parsers` is what makes the
+    second half follow the schema as well, and `_UNREAD_INTENT_FIELDS` is what
+    stops the one step still done by hand from being silent.
     """
     return tuple(schema["properties"])
 
 
 QUERY_INTENT_FIELDS = _intent_field_names(QUERY_INTENT_SCHEMA)
-
-# The names `_parse_query_intent_object` actually reads out of the payload. This
-# list cannot be derived -- it mirrors the hand-written kwargs of the QueryIntent
-# construction below -- and it does have to be trusted: it is held against the
-# schema, not against the kwargs below, so adding a name here without wiring the
-# kwarg re-opens the silent drop the import check exists to prevent. Deriving the
-# construction itself is what would remove the need to trust it.
-_PARSED_INTENT_FIELDS = frozenset(
-    {
-        "kind",
-        "subject",
-        "relation",
-        "object",
-        "relation_candidates",
-        "operator",
-        "value_type",
-        "value",
-        "reason",
-    }
-)
-
-
-def _unconsumed_intent_fields(field_names: tuple[str, ...]) -> frozenset[str]:
-    """Allow-listed names `_PARSED_INTENT_FIELDS` does not claim the parser reads.
-
-    "Does not claim" rather than "does not read": the comparison is against that
-    list, not against the construction it mirrors.
-    """
-    return frozenset(field_names) - _PARSED_INTENT_FIELDS
-
-
-# Checked once, at import, rather than per parse. Both halves of the comparison
-# are module constants, so a mismatch is a half-finished schema change and cannot
-# be provoked by anything a provider sends -- which is also why it must not be
-# raised from inside the parse path, where `parse_query_intent` converts
-# KeyError/TypeError/ValueError into LLMError and would report a local wiring bug
-# as "the provider violated the schema", sending the reader after the wrong
-# thing. Failing here rather than skipping the name is the call `__post_init__`
-# makes for the dataclass: a property the parser admits but never reads is taken
-# from the provider and silently discarded, which is the hole of #298 moved one
-# step along rather than closed.
-_UNREAD_INTENT_FIELDS = _unconsumed_intent_fields(QUERY_INTENT_FIELDS)
-if _UNREAD_INTENT_FIELDS:
-    raise RuntimeError(
-        "query intent schema has properties the parser never reads: "
-        f"{', '.join(sorted(_UNREAD_INTENT_FIELDS))}; add them to the QueryIntent "
-        "construction in _parse_query_intent_object"
-    )
 
 
 def parse_query_intent(raw: str | dict[str, Any]) -> QueryIntent:
@@ -574,16 +528,16 @@ def _parse_query_intent_object(data: Any) -> QueryIntent:
         kind = QueryIntentKind(raw_kind)
     except ValueError as exc:
         raise ValueError(f"unknown query intent kind: {raw_kind}") from exc
+    # The remaining kwargs are the dispatch table applied to the payload, not a
+    # second hand-written copy of the property names. Naming them here is what
+    # made a schema addition land in the allow-list and then be discarded: the
+    # key was admitted and never read. Now admitting it *is* reading it.
     return QueryIntent(
         kind=kind,
-        subject=_parse_intent_target(data, "subject"),
-        relation=_parse_intent_target(data, "relation"),
-        object=_parse_intent_target(data, "object"),
-        relation_candidates=_parse_relation_candidates(data),
-        operator=_parse_optional_string(data, "operator"),
-        value_type=_parse_optional_string(data, "value_type"),
-        value=_parse_optional_string(data, "value"),
-        reason=_parse_optional_string(data, "reason"),
+        **{
+            field_name: parse(data, field_name)
+            for field_name, parse in _INTENT_FIELD_PARSERS.items()
+        },
     )
 
 
@@ -606,14 +560,14 @@ def _parse_intent_target(data: dict[str, Any], field_name: str) -> IntentTarget 
     return IntentTarget(raw["kind"], raw["value"])
 
 
-def _parse_relation_candidates(data: dict[str, Any]) -> tuple[str, ...]:
-    raw = data.get("relation_candidates")
+def _parse_relation_candidates(data: dict[str, Any], field_name: str) -> tuple[str, ...]:
+    raw = data.get(field_name)
     if raw is None:
         return ()
     if not isinstance(raw, list):
-        raise TypeError("relation_candidates must be an array or null")
+        raise TypeError(f"{field_name} must be an array or null")
     if not all(isinstance(item, str) for item in raw):
-        raise TypeError("relation_candidates items must be strings")
+        raise TypeError(f"{field_name} items must be strings")
     return tuple(raw)
 
 
@@ -645,6 +599,87 @@ def _clean_optional_string(value: str, field_name: str) -> str | None:
     if not text and field_name in QUERY_INTENT_BLANK_NULLABLE_FIELDS:
         return None
     return text
+
+
+# `kind` is parsed by hand in `_parse_query_intent_object` and so is not in the
+# table: it is the only non-nullable property, a missing one is a KeyError rather
+# than a None, and it is converted to QueryIntentKind before the other fields are
+# read. Every other property is dispatched on its declared type.
+_INTENT_FIELD_PARSER_BY_TYPE: dict[
+    frozenset[str], Callable[[dict[str, Any], str], Any]
+] = {
+    frozenset({"string", "null"}): _parse_optional_string,
+    frozenset({"object", "null"}): _parse_intent_target,
+    frozenset({"array", "null"}): _parse_relation_candidates,
+}
+
+
+def _intent_field_parsers(
+    schema: dict[str, Any],
+) -> dict[str, Callable[[dict[str, Any], str], Any]]:
+    """A parser per schema property, chosen by the property's declared type.
+
+    This is the half of #298 that deriving the allow-list left open. With the
+    kwargs written out by hand, a property added to the schema was admitted by
+    `_intent_field_names` and then never read, so its value was taken from the
+    provider and dropped -- an off-enum or blank value came back as None instead
+    of being rejected. Dispatching on the declared type means the construction
+    follows the schema too: a new `["string", "null"]` property is trimmed,
+    blank-normalised off the enum fields, and held to its enum with no wiring
+    step, because it is parsed by the same function `operator` is.
+
+    A type shape with no parser fails here rather than defaulting to one: guessing
+    would hand a number or a nested object to a string parser.
+    """
+    parsers: dict[str, Callable[[dict[str, Any], str], Any]] = {}
+    for field_name, spec in schema["properties"].items():
+        if field_name == "kind":
+            continue
+        declared = spec.get("type")
+        key = frozenset(declared) if isinstance(declared, list) else frozenset({declared})
+        parser = _INTENT_FIELD_PARSER_BY_TYPE.get(key)
+        if parser is None:
+            raise RuntimeError(
+                f"query intent schema property {field_name!r} has type {declared!r}, "
+                "which no parser in _INTENT_FIELD_PARSER_BY_TYPE handles; add one "
+                "rather than letting the property be parsed as something it is not"
+            )
+        parsers[field_name] = parser
+    return parsers
+
+
+_INTENT_FIELD_PARSERS = _intent_field_parsers(QUERY_INTENT_SCHEMA)
+
+
+def _unconsumed_intent_fields(field_names: tuple[str, ...]) -> frozenset[str]:
+    """Allow-listed property names `QueryIntent` has no field to hold.
+
+    Both halves are derived -- the schema's properties against the dataclass's
+    actual fields -- so there is no third list claiming what the parser reads to
+    be trusted or to drift. Previously this compared the schema to a hand-written
+    `_PARSED_INTENT_FIELDS` mirroring the kwargs, which meant adding a name there
+    without wiring the kwarg re-opened the silent drop with the guard quiet.
+    """
+    return frozenset(field_names) - {dataclass_field.name for dataclass_field in fields(QueryIntent)}
+
+
+# Checked once, at import, rather than per parse. Both halves of the comparison
+# are fixed at import, so a mismatch is a half-finished schema change and cannot
+# be provoked by anything a provider sends -- which is also why it must not be
+# raised from inside the parse path, where `parse_query_intent` converts
+# KeyError/TypeError/ValueError into LLMError and would report a local wiring bug
+# as "the provider violated the schema", sending the reader after the wrong
+# thing. Failing here rather than skipping the name is the call `__post_init__`
+# makes for the dataclass: the construction now passes every admitted property as
+# a kwarg, so a property with no field would be a TypeError raised per parse and
+# laundered into "the provider violated the schema".
+_UNREAD_INTENT_FIELDS = _unconsumed_intent_fields(QUERY_INTENT_FIELDS)
+if _UNREAD_INTENT_FIELDS:
+    raise RuntimeError(
+        "query intent schema has properties QueryIntent has no field for: "
+        f"{', '.join(sorted(_UNREAD_INTENT_FIELDS))}; add them as fields on the "
+        "QueryIntent dataclass"
+    )
 
 
 def _clean_required_string(value: str, field_name: str) -> str:
