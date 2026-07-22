@@ -429,9 +429,33 @@ def test_no_get_route_crashes_when_the_policy_is_lost(tmp_path, monkeypatch):
     report = client.get("/report")
     assert report.status_code == 200
     assert "policy_missing" in report.text
-    # ("inconsistent — promotion stays gated" is the errors banner, not a claim
+    # (the "has unresolved errors under its policy" errors banner is not a claim
     # that the KB checked out clean)
     assert "knowledge base is consistent" not in report.text
+
+
+def test_report_banner_makes_no_fact_causal_claim_on_a_lost_policy(tmp_path, monkeypatch):
+    """The errors banner must be accurate for every `errors > 0` cause (#164).
+
+    A policy_missing KB short-circuits in `verify()` before the engine reads any
+    fact (errors=1), so a banner that said the errors were "derived from the
+    facts currently promoted" or advised "reject, correct, or demote the facts
+    involved" would assert a cause the check never produced — the same false-claim
+    class #164 exists to close, one layer down. Recovery here is restoring the
+    policy file, not touching facts.
+    """
+    client = _halted_client(tmp_path, monkeypatch)
+
+    report = client.get("/report")
+
+    assert report.status_code == 200
+    assert "policy_missing" in report.text
+    # The banner renders (errors > 0) and states the two load-bearing true things,
+    assert "Promotion is not blocked" in report.text
+    assert "has unresolved errors under its policy" in report.text
+    # but makes no fact-specific causal claim or fact-only recovery advice.
+    assert "from the facts currently promoted to it" not in report.text
+    assert "reject, correct, or demote the facts involved" not in report.text
 
 
 def test_report_survives_a_lost_policy_when_the_kb_has_a_query(tmp_path, monkeypatch):
