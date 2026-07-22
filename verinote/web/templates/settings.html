@@ -61,7 +61,7 @@
 
 <div id="connection-result" aria-live="polite">
   {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
-  {% if test_result %}<p class="ok-note" role="status">✓ {{ test_result }}</p>{% endif %}
+  {% if test_result %}<p class="ok-note" role="status">{{ test_result }}</p>{% endif %}
 </div>
 
 <h2>Prompts</h2>
