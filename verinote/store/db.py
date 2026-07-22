@@ -658,18 +658,6 @@ class Store:
             )
         )
 
-    def reset_running_chunks(self, job_id: int) -> int:
-        """Return stale running chunks for a job to pending before resume."""
-        with self._lock:
-            cur = self._conn.execute(
-                "UPDATE source_chunks SET status = 'pending', error = '', "
-                "updated_at = datetime('now') "
-                "WHERE job_id = ? AND status = 'running'",
-                (job_id,),
-            )
-            self._refresh_extraction_job(job_id)
-            return int(cur.rowcount)
-
     def next_pending_chunk(self, job_id: int) -> sqlite3.Row | None:
         return self._conn.execute(
             "SELECT * FROM source_chunks "
@@ -728,11 +716,11 @@ class Store:
             if cur.rowcount == 0:
                 return False
             # Now that we exclusively own it, reclaim any chunk a prior crashed run
-            # left `running`. RAW update, NOT `reset_running_chunks`: that helper ends
-            # in `_refresh_extraction_job`, which would recompute the job from its
-            # chunks and flip our just-set `running` back to `pending`. A claimed
-            # `pending` job has no `running` chunk in any real path, so this is a
-            # defensive no-op that preserves the invariant without disturbing status.
+            # left `running`. Raw update, no event, no `_refresh_extraction_job`: the
+            # status is ours by the CAS above and, since #337, stays `running` for the
+            # whole owned pass regardless. A claimed `pending` job has no `running`
+            # chunk in any real path, so this is a defensive no-op that preserves the
+            # invariant without disturbing status.
             self._conn.execute(
                 "UPDATE source_chunks SET status = 'pending', error = '', "
                 "updated_at = datetime('now') WHERE job_id = ? AND status = 'running'",
@@ -816,8 +804,8 @@ class Store:
         button — nothing stays stranded); an int resets only chunks still under the
         cap (`attempts < max_attempts`), leaving exhausted chunks failed so planning
         can surface the job as given up. Raw SQL, never `_refresh_extraction_job`:
-        that helper recomputes the job from its chunks and would flip our just-set
-        `running` straight back out.
+        the status is ours by the CAS above and stays `running` for the whole owned
+        pass (#337), so re-deriving it from the chunks here would only be redundant.
         """
         with self._lock:
             before = self.get_extraction_job(job_id)
@@ -2395,10 +2383,23 @@ class Store:
         failed = int(counts["failed"])
         running = int(counts["running"])
         total = int(counts["total"])
+        current = self.get_extraction_job(job_id)
+        current_status = current["status"] if current is not None else None
         if final and failed:
             status = "failed"
         elif final or (total and done == total):
             status = "done"
+        elif current_status == "running":
+            # An owned job stays 'running' for its whole processing pass. `status`
+            # is #240's ownership handshake -- the claim_pending_extraction_job /
+            # claim_extraction_job_for_retry CAS keys on it -- NOT a chunk
+            # aggregate: between chunks running == 0, and recomputing from that
+            # dropped an actively-owned job to 'pending' (after a done chunk) or
+            # 'failed' (after a failed one) mid-run, so a second worker's claim
+            # matched a job already being processed (#337). Only an explicit
+            # transition -- finish (final, handled above) or rollback (a direct
+            # UPDATE that never routes through here) -- leaves 'running'.
+            status = "running"
         elif running:
             status = "running"
         elif failed:

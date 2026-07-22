@@ -242,8 +242,9 @@ def plan_source_extraction(
 
     A job rolled back to `pending` (see `_halt_extraction_job`) still holds every
     chunk it finished, and the machinery to carry on already works —
-    `next_pending_chunk` skips `done` chunks, `reset_running_chunks` reclaims
-    in-flight ones, `candidate_count` accumulates. What was missing was anyone
+    `next_pending_chunk` skips `done` chunks, `claim_pending_extraction_job`
+    reclaims any in-flight one as it takes ownership, `candidate_count`
+    accumulates. What was missing was anyone
     asking for it, so every sync started from chunk zero and paid for the same
     LLM calls twice.
 
@@ -270,8 +271,9 @@ def plan_source_extraction(
     fresh, which is why the gates run before the failed-chunk handling below.
 
     A `failed` job that is NOT stale is decided by its failed chunks. A failed
-    chunk is invisible to resume (`reset_running_chunks` rewinds only `running`,
-    `next_pending_chunk` claims only `pending`), so the job is re-run through the
+    chunk is invisible to resume (`claim_pending_extraction_job`'s reclaim
+    rewinds only `running`, `next_pending_chunk` claims only `pending`), so the
+    job is re-run through the
     atomic retry claim, which resets the failed chunks under the same lock that
     takes ownership. But the moment ANY failed chunk has spent its whole attempt
     budget (`attempts >= max_chunk_attempts`) the job has given up: it is surfaced
@@ -282,8 +284,9 @@ def plan_source_extraction(
     resets every failed chunk regardless of attempt count.
 
     A `running` job is neither resumed nor replaced. It may belong to a live UI
-    worker, and resuming would have `reset_running_chunks` yank that worker's
-    in-flight chunk back into the queue — the same chunk sent to the LLM twice.
+    worker, and resuming would have `claim_pending_extraction_job`'s reclaim yank
+    that worker's in-flight chunk back into the queue — the same chunk sent to the
+    LLM twice.
     """
     jobs = store.source_extraction_jobs()
     latest_job_ids = latest_source_job_ids(jobs)
