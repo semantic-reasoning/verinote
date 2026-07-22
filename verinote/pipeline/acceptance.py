@@ -196,6 +196,23 @@ class _RecommendationEngine:
         self.typed = typed
         self.single_valued = single_valued
         self.facts = [_view_fact(row, aliases, typed) for row in store.facts()]
+        # #343: `reject_fact` -> `superseded` is the sole record of a human
+        # rejection, and it is the ONLY writer of that status, so the superseded
+        # rows are an exact, cheap proxy for "a human rejected this value". We key
+        # the shadow on the CANONICAL (source, subject, relation, value) rather than
+        # the literal relation label `reconcile_fact` deduped on: a later
+        # re-extraction that renames the value to an aliased-synonym relation lands
+        # a fresh fact_id with no rejection history of its own, and the literal-token
+        # dedup misses it. The key is SOURCE-scoped on purpose -- #343 deliberately
+        # leaves open whether enough independent later corroboration should ever
+        # override one source's earlier rejection, so this veto reaches only
+        # re-labelings of the SAME source's rejected value, never another source's
+        # independent proposal of it.
+        self._rejected_keys = frozenset(
+            (f.source, f.subject, f.canonical_relation, f.object_key)
+            for f in self.facts
+            if f.status == "superseded"
+        )
 
     def recommend(self, fact_row) -> AcceptRecommendation:
         target = _view_fact(fact_row, self.aliases, self.typed)
@@ -206,7 +223,11 @@ class _RecommendationEngine:
             reasons.append("source_missing")
         if not _job_done(self.store, target.job_id):
             reasons.append("source_analysis_incomplete")
-        if target.status == "superseded" or _was_rejected(self.store, target.id):
+        if (
+            target.status == "superseded"
+            or _was_rejected(self.store, target.id)
+            or self._reject_shadowed(target)
+        ):
             reasons.append("previously_rejected_or_superseded")
 
         support = self._supporting_facts(target)
@@ -235,6 +256,22 @@ class _RecommendationEngine:
             typed_normalization=target.typed_normalization,
         )
 
+    def _reject_shadowed(self, fact: _FactView) -> bool:
+        """True when `fact` re-labels a value THIS source has had rejected (#343).
+
+        Keyed on the canonical (source, subject, relation, value), so it catches a
+        re-extraction that renamed the relation to an aliased synonym -- the case
+        `reconcile_fact`'s literal-triple dedup misses, which lets a rejected value
+        return under a clean fact_id. Source-scoped: it never vetoes a different
+        source's independent proposal of the same value.
+        """
+        return (
+            fact.source,
+            fact.subject,
+            fact.canonical_relation,
+            fact.object_key,
+        ) in self._rejected_keys
+
     def _supporting_facts(self, target: _FactView) -> list[_FactView]:
         return [
             fact
@@ -246,6 +283,13 @@ class _RecommendationEngine:
             # needs_review keeps the flag inert the moment a human confirms or
             # rejects, so no explicit clear is owed on those transitions.
             and not (fact.stale and fact.status == "needs_review")
+            # #343 (witness half): a still-review-eligible fact that merely re-labels
+            # THIS source's rejected value must not pad another candidate's
+            # corroboration count. Scoped to review-eligible on purpose -- once a
+            # human confirms it (engine tier via `accept_fact`) that is a deliberate
+            # decision the fix must never discount, so a `confirmed` witness of an
+            # earlier-rejected-then-reaccepted value keeps counting.
+            and not (is_review_eligible(fact.status) and self._reject_shadowed(fact))
             and fact.subject == target.subject
             and fact.canonical_relation == target.canonical_relation
             and fact.object_key == target.object_key
