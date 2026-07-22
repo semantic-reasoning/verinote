@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: MPL-2.0
+import json
 import sys
 
 import pytest
@@ -357,3 +358,136 @@ def test_read_app_config_oserror_warns(tmp_path, monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "could not read" in err
     assert str(path) in err
+
+
+def _write_settings(root, payload):
+    _write_settings_raw(root, json.dumps(payload))
+
+
+# Wrong-typed values that are nonetheless truthy and plausible in a hand-edited
+# file: the interesting cases are the ones a silent `if value:` guard would let
+# through, not `null` and `0`.
+_WRONG_FOR_STRING = [123, 0, 12.5, True, False, ["http://x"], {"url": "http://x"}]
+_WRONG_FOR_INT = ["450", "", 4.5, True, False, [450], {"n": 450}]
+_WRONG_FOR_BOOL = ["true", "false", "", 1, 0, ["true"], {"on": True}]
+
+
+@pytest.mark.parametrize("value", _WRONG_FOR_STRING)
+@pytest.mark.parametrize("key", ["provider", "model", "base_url"])
+def test_wrong_typed_string_setting_is_dropped(tmp_path, capsys, key, value):
+    _write_settings(tmp_path, {key: value})
+
+    assert key not in read_settings(tmp_path)
+
+    err = capsys.readouterr().err
+    assert str(tmp_path / "config.json") in err
+    assert key in err
+
+
+@pytest.mark.parametrize("value", _WRONG_FOR_INT)
+@pytest.mark.parametrize(
+    "key",
+    [
+        "extraction_chunk_chars",
+        "extraction_chunk_overlap_chars",
+        "extraction_max_facts_per_chunk",
+    ],
+)
+def test_wrong_typed_int_setting_is_dropped(tmp_path, capsys, key, value):
+    _write_settings(tmp_path, {key: value})
+
+    assert key not in read_settings(tmp_path)
+    assert key in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("value", _WRONG_FOR_BOOL)
+def test_wrong_typed_bool_setting_is_dropped(tmp_path, capsys, value):
+    _write_settings(tmp_path, {"auto_accept_recommendations": value})
+
+    assert "auto_accept_recommendations" not in read_settings(tmp_path)
+    assert "auto_accept_recommendations" in capsys.readouterr().err
+
+
+def test_correctly_typed_settings_survive(tmp_path, capsys):
+    payload = {
+        "provider": "ollama",
+        "model": "llama3.1",
+        "base_url": "http://x",
+        "extraction_chunk_chars": 450,
+        "extraction_chunk_overlap_chars": 0,
+        "extraction_max_facts_per_chunk": 6,
+        "auto_accept_recommendations": True,
+    }
+    _write_settings(tmp_path, payload)
+
+    assert read_settings(tmp_path) == payload
+    assert capsys.readouterr().err == ""
+
+
+def test_null_setting_is_unset_not_a_type_error(tmp_path, capsys):
+    # `save_settings` writes `"base_url": null` itself, so null must stay a
+    # silent "unset" rather than becoming a warning about its own output.
+    _write_settings(tmp_path, {"provider": "ollama", "model": "m", "base_url": None})
+
+    assert read_settings(tmp_path)["base_url"] is None
+    assert capsys.readouterr().err == ""
+    assert Config.for_root(tmp_path).base_url is None
+
+
+def test_unknown_setting_passes_through_untouched(tmp_path, capsys):
+    _write_settings(tmp_path, {"provider": "ollama", "future_setting": 7})
+
+    assert read_settings(tmp_path)["future_setting"] == 7
+    assert capsys.readouterr().err == ""
+
+
+def test_one_bad_setting_does_not_discard_the_good_ones(tmp_path):
+    _write_settings(tmp_path, {"provider": "ollama", "base_url": 123})
+
+    saved = read_settings(tmp_path)
+    assert saved["provider"] == "ollama"
+    assert "base_url" not in saved
+
+
+def test_numeric_provider_falls_back_instead_of_reaching_normalisation(tmp_path):
+    _write_settings(tmp_path, {"provider": 123, "model": "m"})
+
+    assert Config.for_root(tmp_path).provider == "anthropic"
+
+
+def test_numeric_base_url_does_not_reach_the_adapter(tmp_path):
+    # The issue's reproduction: a number here used to survive `read_settings`
+    # and blow up far away, in `OllamaAdapter.__init__`'s `rstrip`.
+    from verinote.llm.ollama_adapter import OllamaAdapter
+
+    _write_settings(tmp_path, {"provider": "ollama", "model": "llama3.1", "base_url": 123})
+
+    cfg = Config.for_root(tmp_path)
+    assert cfg.base_url is None
+    assert OllamaAdapter(cfg).base_url == "http://localhost:11434"
+
+
+def test_wrong_typed_numeric_settings_fall_back_to_defaults(tmp_path):
+    _write_settings(
+        tmp_path,
+        {
+            "extraction_chunk_chars": "450",
+            "extraction_chunk_overlap_chars": [1],
+            "extraction_max_facts_per_chunk": True,
+            "auto_accept_recommendations": "true",
+        },
+    )
+
+    cfg = Config.for_root(tmp_path)
+
+    assert cfg.extraction_chunk_chars == 300
+    assert cfg.extraction_chunk_overlap_chars == 40
+    assert cfg.extraction_max_facts_per_chunk == 8
+    assert cfg.auto_accept_recommendations is False
+
+
+def test_env_still_wins_over_a_dropped_setting(tmp_path, monkeypatch):
+    _write_settings(tmp_path, {"provider": "ollama", "base_url": 123})
+    monkeypatch.setenv("VERINOTE_BASE_URL", "https://llm.internal/v1")
+
+    assert Config.for_root(tmp_path).base_url == "https://llm.internal/v1"
