@@ -513,6 +513,7 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
     from verinote.pipeline import (
         create_chunked_extraction_job,
         ExtractionJobBusyError,
+        latest_source_job_ids,
         MAX_CHUNK_ATTEMPTS,
         plan_source_extraction,
         process_extraction_job,
@@ -526,6 +527,20 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
             return cfg.extraction_schema_hint()
         except PromptError as exc:
             raise LLMError(str(exc)) from exc
+
+    # `--recover` rewinds a stuck `running` extraction job so this run can resume
+    # it, and those jobs exist only for registered sources: the path branch of
+    # `_resolve_sources` builds an unregistered legacy source with no chunked job
+    # to recover. Reject `--recover <path>` rather than silently running an
+    # ordinary path sync that recovers nothing and leaves the user thinking they
+    # scoped a recovery that never happened.
+    if args.recover and args.path:
+        print(
+            "error: --recover applies to registered sources; run "
+            "`verinote sync --recover` without a path",
+            file=sys.stderr,
+        )
+        return 2
 
     # No path, no KB, and no source files: there is nothing to sync, so refuse
     # before `_store()` — `Store()` mkdirs the parent and connects in its
@@ -564,6 +579,34 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
         client = get_client(cfg)
         registered = [source for source in sources if source.source_id is not None]
         if registered:
+            if args.recover:
+                # User-asserted crash recovery: before planning, rewind each
+                # source's newest job that is stuck `running` so the ordinary
+                # claim path below resumes it. The `status == 'running'` gate is
+                # mandatory and belongs HERE, not in the reused
+                # `rollback_extraction_job` (which only self-guards `canceled`):
+                # on a `done` job a rollback would churn an empty run, and on a
+                # `failed` job it would resume via the plain claim path,
+                # bypassing #323's retry/exhausted machinery. There is no
+                # liveness check — see the flag's help text.
+                recover_jobs = store.source_extraction_jobs()
+                recover_latest = latest_source_job_ids(recover_jobs)
+                for source in registered:
+                    latest_id = recover_latest.get(source.source_id)
+                    if latest_id is None:
+                        continue
+                    job = store.get_extraction_job(latest_id)
+                    if job is None or job["status"] != "running":
+                        continue
+                    store.rollback_extraction_job(
+                        latest_id,
+                        "Recovering an extraction job interrupted mid-run.",
+                    )
+                    print(
+                        f"recovering {source.source_path}: rolled back stuck "
+                        f"extraction job #{latest_id}; resuming it below",
+                        file=sys.stderr,
+                    )
             per_source = []
             blocked: list[_BlockedSource] = []
             total = 0
@@ -580,10 +623,17 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     chunk_overlap_chars=cfg.extraction_chunk_overlap_chars,
                 )
                 if plan.busy_job_id is not None:
+                    # A `running` job is either genuinely owned by a live worker
+                    # or was left `running` by a crash mid-run — the two are
+                    # indistinguishable from DB state alone (#337/#242), so this
+                    # names both and points at the recovery paths rather than
+                    # asserting an owner that may not exist.
                     print(
                         f"skipping {source.source_path}: extraction job "
-                        f"#{plan.busy_job_id} is already running (another process "
-                        f"owns its chunks)",
+                        f"#{plan.busy_job_id} is already running, or was "
+                        f"interrupted mid-run — if no analysis is in progress, "
+                        f"run `verinote ui` once to resume it, or "
+                        f"`verinote sync --recover` to resume it directly",
                         file=sys.stderr,
                     )
                     continue
@@ -1197,6 +1247,18 @@ def build_parser() -> argparse.ArgumentParser:
         "path",
         nargs="?",
         help="a source file; omit to sync every .txt/.md under <root>/sources/",
+    )
+    sync.add_argument(
+        "--recover",
+        action="store_true",
+        help=(
+            "before syncing, roll back each registered source's stuck 'running' "
+            "extraction job so this run resumes it (for a job left running by a "
+            "crash). Has NO liveness check: use only when you are certain no "
+            "analysis is in progress for this KB, including a running `verinote "
+            "ui` server, or it will reset a live worker's in-flight chunk. Cannot "
+            "be combined with a path"
+        ),
     )
     sync.set_defaults(func=cmd_sync, halt_safe=False)
 

@@ -289,6 +289,192 @@ def test_sync_empty_source_is_success(tmp_path, monkeypatch, capsys, fake_client
     assert "sync failed" not in capsys.readouterr().err
 
 
+def _register_two_chunk_source(tmp_path, monkeypatch) -> Path:
+    """Ingest a registered source whose text splits into two chunks."""
+    monkeypatch.setenv("VERINOTE_EXTRACTION_CHUNK_CHARS", "40")
+    monkeypatch.setenv("VERINOTE_EXTRACTION_CHUNK_OVERLAP_CHARS", "0")
+    src = tmp_path / "note.txt"
+    src.write_text(
+        "alpha beta gamma delta epsilon\n\nzeta eta theta iota kappa",
+        encoding="utf-8",
+    )
+    assert cli.main(["ingest", str(src)]) == 0
+    return src
+
+
+def _stuck_running_job(tmp_path) -> int:
+    """Leave the registered source's newest job `running` with a chunk in flight.
+
+    Built the way `cmd_sync` would build it (same artifact, provider, model and
+    chunk config), so once `--recover` rewinds it to `pending` the ordinary claim
+    path resumes it instead of rebuilding a fresh job.
+    """
+    from verinote.pipeline import create_chunked_extraction_job
+
+    cfg = config.Config.load()
+    s = Store(tmp_path / "kb.sqlite")
+    row = s.source_text_inputs()[0]
+    text = (cfg.root / row["artifact_path"]).read_text(encoding="utf-8")
+    job_id = create_chunked_extraction_job(
+        s,
+        source_id=int(row["source_id"]),
+        artifact_id=int(row["artifact_id"]),
+        source_text=text,
+        provider=cfg.provider,
+        model=cfg.model,
+        chunk_chars=cfg.extraction_chunk_chars,
+        chunk_overlap_chars=cfg.extraction_chunk_overlap_chars,
+    )
+    assert s.claim_pending_extraction_job(job_id) is True  # pending -> running
+    s.mark_chunk_running(int(s.source_chunks(job_id)[0]["id"]))  # a crash mid-run
+    s.close()
+    return job_id
+
+
+def _rolled_back_events(store, job_id: int | None = None) -> int:
+    sql = "SELECT COUNT(*) AS n FROM fact_events WHERE event_type = 'extraction_job_rolled_back'"
+    params: tuple = ()
+    if job_id is not None:
+        sql += " AND job_id = ?"
+        params = (job_id,)
+    return store._conn.execute(sql, params).fetchone()["n"]
+
+
+def test_sync_running_job_points_at_the_recovery_path(
+    tmp_path, monkeypatch, capsys, fake_client
+):
+    # A plain sync must not touch a `running` job, and its skip line must name
+    # BOTH possibilities (live worker vs. crashed mid-run) and the recovery path,
+    # since the two are indistinguishable from DB state (#337).
+    _env(monkeypatch, tmp_path)
+    _register_two_chunk_source(tmp_path, monkeypatch)
+    job_id = _stuck_running_job(tmp_path)
+    monkeypatch.setattr(
+        "verinote.llm.get_client",
+        lambda cfg: fake_client([ExtractedFact("A", "is_a", "B", 0.9)]),
+    )
+
+    rc = cli.main(["sync"])
+
+    err = capsys.readouterr().err
+    assert rc == 0
+    assert f"#{job_id} is already running, or was interrupted mid-run" in err
+    assert "verinote sync --recover" in err
+    s = Store(tmp_path / "kb.sqlite")
+    assert s.get_extraction_job(job_id)["status"] == "running"
+    assert _rolled_back_events(s) == 0
+
+
+def test_sync_recover_resumes_a_stuck_running_job(
+    tmp_path, monkeypatch, capsys, fake_client
+):
+    # The happy path: `--recover` rolls the stuck job back and the SAME invocation
+    # resumes it to completion.
+    _env(monkeypatch, tmp_path)
+    _register_two_chunk_source(tmp_path, monkeypatch)
+    job_id = _stuck_running_job(tmp_path)
+    monkeypatch.setattr(
+        "verinote.llm.get_client",
+        lambda cfg: fake_client([ExtractedFact("A", "is_a", "B", 0.9)]),
+    )
+
+    rc = cli.main(["sync", "--recover"])
+
+    err = capsys.readouterr().err
+    assert rc == 0
+    assert f"rolled back stuck extraction job #{job_id}" in err
+    s = Store(tmp_path / "kb.sqlite")
+    job = s.get_extraction_job(job_id)
+    assert job["status"] == "done"
+    assert int(job["completed_chunks"]) == int(job["total_chunks"]) == 2
+    assert _rolled_back_events(s, job_id) == 1
+
+
+def test_sync_recover_is_a_noop_on_a_done_job(tmp_path, monkeypatch, fake_client):
+    # The most important guard: `rollback_extraction_job` does NOT self-guard a
+    # `done` job, so a missing `status == 'running'` gate would rewind a finished
+    # job and churn an empty run. `--recover` must leave it strictly alone.
+    _env(monkeypatch, tmp_path)
+    _register_two_chunk_source(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "verinote.llm.get_client",
+        lambda cfg: fake_client([ExtractedFact("A", "is_a", "B", 0.9)]),
+    )
+    assert cli.main(["sync"]) == 0
+    s = Store(tmp_path / "kb.sqlite")
+    done_id = int(s.source_extraction_jobs()[0]["id"])
+    assert s.get_extraction_job(done_id)["status"] == "done"
+    s.close()
+
+    assert cli.main(["sync", "--recover"]) == 0
+
+    s2 = Store(tmp_path / "kb.sqlite")
+    assert _rolled_back_events(s2) == 0
+    assert s2.get_extraction_job(done_id)["status"] == "done"
+
+
+def test_sync_recover_is_a_noop_on_a_failed_job(tmp_path, monkeypatch, fake_client):
+    # `rollback_extraction_job` does not self-guard a `failed` job either. Rewinding
+    # one would resume it via the plain claim path, bypassing #323's retry/exhausted
+    # machinery, so `--recover` must not touch it — it stays exactly where a plain,
+    # non-`--recover` sync would leave it.
+    _env(monkeypatch, tmp_path)
+    _register_two_chunk_source(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "verinote.llm.get_client",
+        lambda cfg: fake_client(error=LLMError("provider down")),
+    )
+    assert cli.main(["sync"]) == 1  # every chunk fails -> job terminalises 'failed'
+    s = Store(tmp_path / "kb.sqlite")
+    failed_id = int(s.source_extraction_jobs()[0]["id"])
+    assert s.get_extraction_job(failed_id)["status"] == "failed"
+    s.close()
+
+    assert cli.main(["sync", "--recover"]) == 1
+
+    s2 = Store(tmp_path / "kb.sqlite")
+    # never rolled back: a plain-claim resume of a failed job requires a prior
+    # rollback to `pending`, which would have logged this event.
+    assert _rolled_back_events(s2, failed_id) == 0
+    assert s2.get_extraction_job(failed_id)["status"] == "failed"
+
+
+def test_sync_recover_is_a_noop_on_a_canceled_job(tmp_path, monkeypatch, fake_client):
+    # Consistent with `rollback_extraction_job`'s own `canceled` guard: a human
+    # took it out of the queue, and `--recover` must not revive it.
+    _env(monkeypatch, tmp_path)
+    _register_two_chunk_source(tmp_path, monkeypatch)
+    job_id = _stuck_running_job(tmp_path)
+    s = Store(tmp_path / "kb.sqlite")
+    s._conn.execute(
+        "UPDATE extraction_jobs SET status = 'canceled' WHERE id = ?", (job_id,)
+    )
+    s.close()
+    monkeypatch.setattr(
+        "verinote.llm.get_client",
+        lambda cfg: fake_client([ExtractedFact("A", "is_a", "B", 0.9)]),
+    )
+
+    assert cli.main(["sync", "--recover"]) == 0
+
+    s2 = Store(tmp_path / "kb.sqlite")
+    assert _rolled_back_events(s2, job_id) == 0
+    assert s2.get_extraction_job(job_id)["status"] == "canceled"
+
+
+def test_sync_recover_with_a_path_is_rejected(tmp_path, monkeypatch, capsys):
+    # A path routes to the legacy non-chunked sync, which has no extraction job to
+    # recover. Reject it rather than silently recovering nothing.
+    _env(monkeypatch, tmp_path)
+    src = tmp_path / "note.txt"
+    src.write_text("hello", encoding="utf-8")
+
+    rc = cli.main(["sync", str(src), "--recover"])
+
+    assert rc == 2
+    assert "--recover applies to registered sources" in capsys.readouterr().err
+
+
 def test_query_adds_and_translates(tmp_path, monkeypatch, capsys, fake_client, intent_payload):
     _env(monkeypatch, tmp_path)
     monkeypatch.setattr(
