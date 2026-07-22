@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fact terms unavailable — verinote</title>
+  <link rel="stylesheet" href="/static/app.css?v=4">
+</head>
+<body>
+  <main class="chooser">
+    <h1>Fact terms unavailable</h1>
+
+    {# Generic on purpose: the underlying error may be a corrupt/unopenable
+       structural term store, a stale or missing term row, or malformed input.
+       verinote stops rather than render or change a fact whose logical terms it
+       cannot read, because falling back to the plain-text mirror would show a
+       structural fact as an ordinary string and invite a save that destroys it. #}
+    <p class="error" role="alert">The knowledge base could not read this fact's
+      logical terms, so it stopped instead of showing or changing the fact in a
+      way that might misrepresent it.</p>
+
+    <p class="muted">If the structural term store (<code>facts.duckdb</code>) was
+      moved, replaced or damaged, restore it from a backup or version control. The
+      knowledge base recovers on its own once the terms can be read again.</p>
+
+    <p><a href="/">Dashboard</a> · <a href="/settings">Settings</a></p>
+  </main>
+</body>
+</html>

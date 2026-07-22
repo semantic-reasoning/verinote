@@ -25,6 +25,7 @@ from verinote.pipeline.query import query_path  # noqa: E402
 from verinote.pipeline.query_intent import parse_query_intent  # noqa: E402
 from verinote.store import Store  # noqa: E402
 from verinote.store import db as store_db  # noqa: E402
+from verinote.store.duckdb_fact_terms import fact_terms_path  # noqa: E402
 from verinote.store.fact_input import structural_term  # noqa: E402
 from verinote.web import create_app  # noqa: E402
 
@@ -1876,6 +1877,166 @@ def test_amend_endpoint_saves_term_looking_text_as_stringlit_in_string_mode(tmp_
         StringLit('role(person("Ada"), "PI")'),
     )
     assert 'class="subj term-string">"person(\\"Ada\\")"' in unescape(r.text)
+
+
+def _corrupt_sidecar_kb(tmp_path, *, status="needs_review", with_query=False):
+    """Build a KB whose facts.duckdb is genuine garbage and hand back a FRESH
+    client, so its store lazily opens the corrupt file on first use.
+
+    Seeding through one app then serving through another matters: a store that
+    already holds an open DuckDB handle would keep reading the pre-corruption
+    file from cache and give a false pass. The fact carries a compound term, so
+    the corruption destroys real structural data (not an empty row). Returns
+    (client, fact_id, sqlite_term_token).
+    """
+    cfg = Config(
+        root=tmp_path, db_path=tmp_path / "kb.sqlite",
+        provider="anthropic", model="m", api_key=None, base_url=None,
+    )
+    seed = create_app(cfg).state.store
+    source_id = seed.add_source("sources/a.txt")
+    fact_id = seed.add_fact(
+        structural_term('person("Ada")'),
+        structural_term("born_in"),
+        "London",
+        status=status,
+        source_id=source_id,
+        confidence=0.9,
+    )
+    token = seed.get_fact(fact_id)["term_token"]
+    if with_query:
+        qp = query_path(tmp_path)
+        qp.parent.mkdir(parents=True, exist_ok=True)
+        qp.write_text(
+            ".decl answer_q1(value: symbol)\n"
+            'answer_q1(O) :- relation("Ada", "born_in", O).\n',
+            encoding="utf-8",
+        )
+    seed.close()
+    fact_terms_path(tmp_path).write_bytes(b"not a duckdb database file" * 500)
+    return TestClient(create_app(cfg)), fact_id, token
+
+
+def test_review_halts_loudly_when_the_sidecar_is_unreadable(tmp_path):
+    # The dangerous former behavior: `_fact_view`'s `except ValueError` swallowed
+    # the corruption and rendered every field as kind="string" with a 200 -- a
+    # structural fact made indistinguishable from a genuine string fact. /review
+    # is a full-page GET, so the handler renders the halt page inline.
+    client, _fid, _token = _corrupt_sidecar_kb(tmp_path)
+
+    r = client.get("/review")
+
+    assert r.status_code == 409
+    assert "Fact terms unavailable" in r.text
+    assert "born_in" not in r.text  # the fact is never rendered as a plain string
+
+
+def test_provenance_halts_loudly_when_the_sidecar_is_unreadable(tmp_path):
+    client, fid, _token = _corrupt_sidecar_kb(tmp_path)
+
+    r = client.get(f"/facts/{fid}/provenance")
+
+    assert r.status_code == 409
+    assert "Fact terms unavailable" in r.text
+
+
+def test_report_halts_loudly_when_the_sidecar_is_unreadable(tmp_path):
+    # `report_trace` used to raise an uncaught 500 here while `verify()` degraded
+    # gracefully in the same route -- the two now converge on the halt page.
+    client, _fid, _token = _corrupt_sidecar_kb(
+        tmp_path, status="confirmed", with_query=True
+    )
+
+    r = client.get("/report")
+
+    assert r.status_code == 409
+    assert "Fact terms unavailable" in r.text
+
+
+def test_edit_form_over_htmx_redirects_instead_of_silently_swallowing(tmp_path):
+    # The edit form is an htmx partial swap, and htmx will not swap a 4xx/5xx body
+    # into the DOM -- an inline halt page would be a *silent* no-op on exactly the
+    # path #173 is about. The handler must send HX-Redirect so htmx does a
+    # full-page navigation to the halt page instead.
+    client, fid, _token = _corrupt_sidecar_kb(tmp_path)
+
+    r = client.get(f"/facts/{fid}/edit", headers={"HX-Request": "true"})
+
+    assert r.status_code == 409
+    assert r.headers.get("HX-Redirect") == webapp.FACT_TERMS_UNAVAILABLE_PATH
+
+
+def test_amend_over_htmx_is_refused_via_redirect_and_writes_nothing(tmp_path):
+    # The anti-data-loss guarantee on the real (htmx) save path: without
+    # HX-Redirect the swallowed 4xx would leave the user with no halt and no
+    # feedback at all. The redirect forces the halt page; nothing is written.
+    client, fid, token = _corrupt_sidecar_kb(tmp_path)
+
+    r = client.post(
+        f"/facts/{fid}/amend",
+        headers={"HX-Request": "true"},
+        data={
+            "subject": 'person("Ada")',
+            "subject_kind": "string",
+            "relation": "born_in",
+            "relation_kind": "string",
+            "object": "London",
+            "object_kind": "string",
+            "note": "",
+        },
+    )
+
+    assert r.headers.get("HX-Redirect") == webapp.FACT_TERMS_UNAVAILABLE_PATH
+    # get_fact reads SQLite only, so the token is legible through the corruption:
+    # an unchanged token proves the amend wrote nothing to either store.
+    assert client.app.state.store.get_fact(fid)["term_token"] == token
+
+
+def test_amend_without_htmx_is_refused_inline_and_writes_nothing(tmp_path):
+    # A non-browser client (script/API) sends no HX-Request header, so it gets the
+    # inline halt page. The store guard still refuses the write regardless.
+    client, fid, token = _corrupt_sidecar_kb(tmp_path)
+
+    r = client.post(
+        f"/facts/{fid}/amend",
+        data={
+            "subject": "A",
+            "subject_kind": "string",
+            "relation": "r",
+            "relation_kind": "string",
+            "object": "B",
+            "object_kind": "string",
+            "note": "",
+        },
+    )
+
+    assert r.status_code == 409
+    assert "Fact terms unavailable" in r.text
+    assert client.app.state.store.get_fact(fid)["term_token"] == token
+
+
+def test_fact_terms_unavailable_page_renders_without_touching_terms(tmp_path):
+    # The HX-Redirect target must render even while the term store cannot be read,
+    # so the route reads no fact terms of its own.
+    client, _fid, _token = _corrupt_sidecar_kb(tmp_path)
+
+    r = client.get(webapp.FACT_TERMS_UNAVAILABLE_PATH)
+
+    assert r.status_code == 409
+    assert "Fact terms unavailable" in r.text
+
+
+def test_review_renders_normally_for_a_string_fact_on_a_healthy_sidecar(tmp_path):
+    # False-positive guard: a legitimately string-typed fact must keep rendering
+    # as kind="string" with a 200 -- only a genuine raise halts, never the
+    # absent/None-terms path.
+    c = _client(tmp_path)
+
+    r = c.get("/review")
+
+    assert r.status_code == 200
+    assert "Fact terms unavailable" not in r.text
+    assert "is_a" in r.text
 
 
 def test_amend_endpoint_rejects_invalid_structural_terms_without_writing(tmp_path):

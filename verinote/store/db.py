@@ -1934,11 +1934,30 @@ class Store:
             before = self.get_fact(fact_id)
             if before is None:
                 return FactDecision.unchanged(None)
+            # Pre-write corruption guard: reading the structural terms forces the
+            # DuckDB sidecar open, so a corrupt/unreadable sidecar raises here and
+            # aborts the amend before BEGIN -- nothing is written. This is
+            # deliberate, not just change-detection: without it a corruption-driven
+            # read failure could let the SQLite mirror be rewritten (downgrading a
+            # structural term to text) while DuckDB is left behind. The guard fires
+            # only on genuine corruption, never on a healthy sidecar, so an
+            # intentional kind="string" downgrade stays allowed.
             previous_terms = self.fact_terms.get_fact_terms(fact_id)
             requested_terms = _stored_fact_terms(subject, relation, obj)
-            if previous_terms == requested_terms and before["note"] == note:
-                return FactDecision.unchanged(before)
             token = fact_term_token(subject, relation, obj)
+            # Treat the amend as a no-op only when BOTH stores already hold the
+            # request. Comparing SQLite's own term_token here (not just the DuckDB
+            # terms + note) is what lets a retry recover the residual divergence
+            # noted at the DuckDB write below: if a prior amend wrote DuckDB but
+            # its SQLite COMMIT then failed, DuckDB would already match the request
+            # while SQLite stayed stale, and a DuckDB-only check would early-return
+            # "unchanged" and mask the stale SQLite row forever.
+            if (
+                previous_terms == requested_terms
+                and before["term_token"] == token
+                and before["note"] == note
+            ):
+                return FactDecision.unchanged(before)
             self._conn.execute("BEGIN")
             try:
                 self._conn.execute(
@@ -1956,13 +1975,22 @@ class Store:
                 after = self.get_fact(fact_id)
                 self._log(fact_id, "amended", before, after)
                 self._record_fact_terms_marker_unlocked(origin="write")
+                # Write DuckDB inside the SQLite transaction, before COMMIT. The
+                # two stores share no transaction, so this is not true atomicity;
+                # it closes the common failure -- an unwritable sidecar raises here
+                # and the except below ROLLs BACK SQLite, so neither store changes
+                # and the amend is refused honestly. A residual window remains if
+                # put_fact_terms succeeds and the SQLite COMMIT then fails, leaving
+                # DuckDB ahead of a stale SQLite; that is rare, engine-detectable
+                # (the stale-token check), and self-healed on retry by the no-op
+                # guard above, which compares SQLite's own term_token.
+                self.fact_terms.put_fact_terms(
+                    fact_id, subject, relation, obj, term_token=token
+                )
                 self._conn.execute("COMMIT")
             except BaseException:
                 self._conn.execute("ROLLBACK")
                 raise
-            self.fact_terms.put_fact_terms(
-                fact_id, subject, relation, obj, term_token=token
-            )
             return FactDecision(fact=after, changed=True)
 
     # --- questions -------------------------------------------------------

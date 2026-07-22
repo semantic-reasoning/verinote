@@ -14,7 +14,7 @@ import threading
 import unicodedata
 from urllib.parse import urlencode
 
-from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi import FastAPI, File, Form, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -94,6 +94,7 @@ from verinote.store import (
 # Imported as a module, not `from ... import ENGINE_STATUSES`: the tier must be
 # read at call time so the web layer cannot pin a stale copy of the constant.
 from verinote.store import db as store_db
+from verinote.store.duckdb_fact_terms import DuckDBFactTermStoreError
 from verinote.store.fact_input import structural_term, term_input_kind
 
 logger = logging.getLogger(__name__)
@@ -109,6 +110,11 @@ _STATIC = resources.files("verinote.web").joinpath("static")
 # a change made while this KB's rules are not being applied.
 _POLICY_GUARD_READ_PATHS = ("/report", "/settings", "/static")
 _POLICY_GUARD_WRITE_PATHS = ("/kb/select", "/settings/root")
+
+# Full-page halt shown when a fact's logical terms cannot be read. htmx partial
+# swaps are redirected here (HX-Redirect) because htmx will not swap an error
+# response into the DOM -- see `_fact_terms_unreadable_handler`.
+FACT_TERMS_UNAVAILABLE_PATH = "/fact-terms-unavailable"
 
 
 def _matches(path: str, allowed: tuple[str, ...]) -> bool:
@@ -176,6 +182,57 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         return _policy_halted(request, str(exc))
 
     app.add_exception_handler(PolicyMissingError, _policy_missing_handler)
+
+    def _fact_terms_unavailable_page(request: Request):
+        # Deliberately generic: DuckDBFactTermStoreError covers a corrupt/unopenable
+        # sidecar but also stale/missing-term and malformed-input conditions, so the
+        # copy must not diagnose one specific cause it cannot be sure of.
+        return templates.TemplateResponse(
+            request,
+            "sidecar_unreadable.html",
+            {},
+            status_code=409,
+        )
+
+    @app.get(FACT_TERMS_UNAVAILABLE_PATH, response_class=HTMLResponse)
+    def fact_terms_unavailable(request: Request):
+        # The full-page halt and the HX-Redirect target below. It reads no fact
+        # terms, so it still renders while the term store cannot be read.
+        return _fact_terms_unavailable_page(request)
+
+    def _fact_terms_unreadable_handler(request: Request, exc: Exception):
+        """One loud, non-lying halt for every surface that cannot read a fact's
+        logical terms.
+
+        Read routes (`/review`, `/provenance`, `GET /facts/{id}/edit`, `/report`'s
+        trace) let `DuckDBFactTermStoreError` propagate here rather than degrading
+        a structural fact to a silent `kind="string"`. What reaching this handler
+        means on a POST is route-dependent: `amend_fact` refuses in the store
+        *before* it commits, so nothing was written; but `accept`/`reject`/`toggle`
+        do a bare SQLite status UPDATE that autocommits immediately and only reach
+        this handler on the follow-on row re-render, so for those the decision
+        already succeeded and merely could not be displayed. This page therefore
+        never claims the action was rejected -- only that the terms could not be
+        read.
+
+        htmx will NOT swap a 4xx/5xx response into the DOM -- it fires
+        `htmx:responseError` and swaps nothing -- so answering an htmx partial
+        swap (the edit form, the amend save) with an inline page would be a
+        *silent* no-op, the exact failure #173 forbids. For htmx requests we send
+        HX-Redirect to force a full-page navigation to the halt page; htmx 2.x
+        acts on HX-Redirect regardless of status, so the 409 stays honest.
+        Full-page (non-htmx) requests render the halt page inline.
+        """
+        if request.headers.get("HX-Request") == "true":
+            return Response(
+                status_code=409,
+                headers={"HX-Redirect": FACT_TERMS_UNAVAILABLE_PATH},
+            )
+        return _fact_terms_unavailable_page(request)
+
+    app.add_exception_handler(
+        DuckDBFactTermStoreError, _fact_terms_unreadable_handler
+    )
 
     def _active_store() -> Store:
         store = app.state.store
@@ -308,10 +365,11 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             return None
         store = _active_store()
         view = dict(fact)
-        try:
-            terms = store.get_fact_terms(fact["id"])
-        except ValueError:
-            terms = None
+        # A raise here (corrupt/unreadable sidecar) must propagate to the shared
+        # DuckDBFactTermStoreError handler, not be swallowed: silently treating it
+        # as `terms is None` would render a structural fact as a plain string,
+        # making genuine corruption indistinguishable from a real string fact.
+        terms = store.get_fact_terms(fact["id"])
         if terms is None:
             for field in ("subject", "relation", "object"):
                 view[f"{field}_display"] = fact[field]
