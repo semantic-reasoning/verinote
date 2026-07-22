@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
 import builtins
+import logging
 import re
 import threading
 import time
@@ -1632,6 +1633,84 @@ def test_worker_still_auto_accepts_on_a_healthy_kb(tmp_path, monkeypatch, fake_c
         assert _fact_statuses(cfg) == ["accepted", "accepted"]
 
     _wait_for(auto_accepted)
+
+
+def test_worker_leaves_a_done_job_done_when_auto_accept_raises(
+    tmp_path, monkeypatch, fake_client
+):
+    # #340 exception-safety, the sibling of the #329 sweep guard directly above it:
+    # auto-accept is a call inside the worker's try/except, so WITHOUT the local
+    # guard an auto-accept error would reach the outer `except Exception ->
+    # fail_extraction_job` and retroactively flip an already-`done` extraction to
+    # `failed` — the KB lying about its own run state (#194/#239). The extraction
+    # genuinely succeeded and its facts are already committed, so the guard must
+    # keep the job `done`.
+    cfg, job_id, _ = _auto_accept_kb(tmp_path)  # auto-accept on, policy present
+    monkeypatch.setattr(
+        webapp,
+        "get_client",
+        lambda cfg: fake_client([ExtractedFact("X", "is_a", "Y", 0.9)]),
+    )
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("auto-accept exploded")
+
+    # Patch the module-level function as bound in app.py's namespace (auto-accept is
+    # a module-level function reference here, not a Store method like the sweep).
+    monkeypatch.setattr(webapp, "apply_auto_accept_recommendations", boom)
+
+    create_app(cfg)  # resumes the pending job -> _start_source_extraction
+
+    def job_finished():
+        assert _job_row(cfg, job_id)["status"] == "done"
+
+    _wait_for(job_finished)
+    time.sleep(0.2)  # let a late fail_extraction_job land, if the guard regressed
+    row = _job_row(cfg, job_id)
+    assert row["status"] == "done"  # the auto-accept error did NOT flip it to failed
+    assert row["failed_chunks"] == 0
+    assert "analysis failed" not in (row["message"] or "")  # never marked failed
+    # extraction genuinely completed; only the (now contained) auto-accept failed.
+    with Store(cfg.db_path) as store:
+        store.init_schema()
+        assert any(f["subject"] == "X" for f in store.facts())
+
+
+def test_worker_lets_a_policy_missing_halt_from_auto_accept_reach_the_halt_handler(
+    tmp_path, monkeypatch, fake_client, caplog
+):
+    # A DIFFERENT test from the one above: a `PolicyMissingError` out of auto-accept
+    # is a #194 halt, not an ordinary failure. It must reach the worker's outer
+    # `except PolicyMissingError` handler (which writes NOTHING), NOT be swallowed by
+    # the local `except Exception` guard. Job status alone can't tell the two apart
+    # (`done` either way — this test passes on today's unguarded code too), so it
+    # pins the distinction on the LOG: the halt handler's line must appear and the
+    # local guard's must not. That is what catches a guard missing the
+    # `except PolicyMissingError: raise` clause, or ordering it below `except
+    # Exception`.
+    cfg, job_id, _ = _auto_accept_kb(tmp_path)  # auto-accept on, policy present
+    monkeypatch.setattr(
+        webapp,
+        "get_client",
+        lambda cfg: fake_client([ExtractedFact("X", "is_a", "Y", 0.9)]),
+    )
+
+    def halt(*args, **kwargs):
+        raise PolicyMissingError("policy vanished after the job finished")
+
+    monkeypatch.setattr(webapp, "apply_auto_accept_recommendations", halt)
+
+    with caplog.at_level(logging.WARNING, logger="verinote.web.app"):
+        create_app(cfg)  # resumes the pending job -> _start_source_extraction
+
+        def halt_logged():
+            assert "halted (KB policy missing)" in caplog.text
+
+        _wait_for(halt_logged)  # the halt reached the outer PolicyMissingError handler
+        # ...and the local `except Exception` guard did NOT swallow it as a failure.
+        assert "auto-accept failed" not in caplog.text
+    # the outer handler wrote nothing: the completed job is left exactly `done`.
+    assert _job_row(cfg, job_id)["status"] == "done"
 
 
 def test_report_ok_for_consistent_kb(tmp_path):
