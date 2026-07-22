@@ -171,8 +171,8 @@ def test_nothing_outside_the_normalizer_reads_engine_fact_terms():
 def test_duckdb_backend_sees_the_canonical_relation(tmp_path):
     """The operational path: a `설립` conflict reaches the `established_on` policy.
 
-    DuckDB is verinote's production engine, so this runs everywhere, including CI
-    without pyrewire — the wirelog half is a separate, guarded test below.
+    DuckDB is verinote's production engine, so this runs everywhere, including
+    where pyrewire is absent — the wirelog half is a separate, guarded test below.
     """
     s = _store(tmp_path)
     s.add_fact("회사", "설립", "2020", status="accepted")
@@ -186,10 +186,10 @@ def test_duckdb_backend_sees_the_canonical_relation(tmp_path):
 def test_wirelog_backend_sees_the_canonical_relation(tmp_path):
     """Both engines read one canonical input, so they cannot disagree about it.
 
-    The wirelog engine only runs when pyrewire is installed; without it,
-    `run_check` returns an `engine_available=False` compatibility report, so the
-    assertion would be meaningless. Skipping without pyrewire matches every other
-    wirelog test (`pytest.importorskip`), and CI runs without it (see #234).
+    pyrewire is an optional extra, so the wirelog engine may be absent; without
+    it `run_check` returns an `engine_available=False` compatibility report and
+    the assertion below would hold vacuously. Skipping in that case matches every
+    other wirelog test (`pytest.importorskip`). See #234.
     """
     pytest.importorskip("pyrewire")
     s = _store(tmp_path)
