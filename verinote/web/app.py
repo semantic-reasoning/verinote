@@ -863,9 +863,31 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                         # pass can't demote-then-immediately-re-promote them. Part
                         # C's `stale` flag is what blocks re-promotion on later
                         # syncs; this only ever covered the same-pass case.
-                        apply_auto_accept_recommendations(
-                            worker_store, exclude_fact_ids=demoted_ids
-                        )
+                        try:
+                            apply_auto_accept_recommendations(
+                                worker_store, exclude_fact_ids=demoted_ids
+                            )
+                        except PolicyMissingError:
+                            # ORDER IS LOAD-BEARING — this must stay ABOVE `except
+                            # Exception`. Auto-accept runs `assert_writable` as its
+                            # own first act (acceptance.py); a policy lost
+                            # post-completion is a #194 halt that must reach the
+                            # outer PolicyMissingError handler (which writes
+                            # NOTHING), never be contained here as if it were an
+                            # ordinary failure.
+                            raise
+                        except Exception:  # noqa: BLE001 - an auto-accept error must not fail a done job
+                            # Auto-accept does no LLM/network I/O, so a raise here is
+                            # a rare sqlite/WAL-lock-class error. The extraction
+                            # genuinely succeeded and its facts are already
+                            # committed; leave the job `done` rather than letting the
+                            # outer handler bury a completed run as `failed` (#340;
+                            # sibling of the #329 sweep guard directly above).
+                            logger.warning(
+                                "auto-accept failed for job %s; leaving it done",
+                                job_id,
+                                exc_info=True,
+                            )
             except PolicyMissingError as e:
                 # ORDER IS LOAD-BEARING — this must stay ABOVE `except Exception`.
                 # The worker runs outside the request middleware, so a halt surfaces
