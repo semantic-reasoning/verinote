@@ -833,6 +833,10 @@ def test_policy_cli_line_covers_every_policy_status():
     assert lines[PolicyStatus.PRESENT] == POLICY_CLI_LINE_PRESENT
     assert lines[PolicyStatus.UNRECORDED_DEFAULT] == POLICY_CLI_LINE_UNRECORDED_DEFAULT
     assert "HALTED" in POLICY_CLI_LINE_MISSING_RECORDED
+    # #288: PRESENT is the one state that cannot see rule content, so its line
+    # claims only the file's presence — never that the KB's rules exist.
+    assert POLICY_CLI_LINE_PRESENT == "policy: ok (policy file present)"
+    assert "rules" not in POLICY_CLI_LINE_PRESENT
 
 
 def test_status_says_the_kb_is_halted_on_stdout(tmp_path, monkeypatch, capsys):
@@ -897,6 +901,24 @@ def test_status_of_unrecorded_kb_prints_the_default_line(tmp_path, monkeypatch, 
     assert POLICY_CLI_LINE_UNRECORDED_DEFAULT in captured.out
     assert "HALTED" not in captured.out
     assert captured.err == ""  # the benign state is not an error
+
+
+def test_present_line_is_honest_on_an_empty_policy_file(tmp_path, monkeypatch, capsys):
+    """A 0-byte policy file still resolves to PRESENT (`is_file()` is True); the
+    line must not claim rules exist — the #288 lie. This asserts phrasing only:
+    *detecting* an empty policy is a separate issue (#359), deliberately not done
+    here.
+    """
+    _env(monkeypatch, tmp_path)
+    assert cli.main(["init"]) == 0
+    (tmp_path / POLICY_RELPATH).write_text("", encoding="utf-8")
+    capsys.readouterr()  # drop init's output
+
+    assert cli.main(["status"]) == 0
+
+    out = capsys.readouterr().out
+    assert POLICY_CLI_LINE_PRESENT in out
+    assert "rules are present" not in out  # the specific false claim #288 removed
 
 
 # --- (b) the worker: a mid-job halt must rewind the job, not strand it ------
