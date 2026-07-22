@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: MPL-2.0
 from verinote.engine.terms import Atom, Compound, StringLit
+from verinote.engine.wirelog import answer_bucket_sort_key
 from verinote.pipeline.query import query_path
-from verinote.pipeline.report_trace import AnswerTrace, _qid_sort_key, report_trace
+from verinote.pipeline.report_trace import AnswerTrace, report_trace
 from verinote.pipeline.verify import verify
 from verinote.store import Store, db as store_db
 
@@ -365,15 +366,15 @@ def test_report_trace_dedupes_render_alike_heads_by_engine_identity(tmp_path):
 def test_report_trace_sorts_an_overlong_qid_last_without_crashing():
     """A user-authored `answer_q<thousands of digits>` rule must not 500 /report.
 
-    `trace.qid` is the `[0-9]+` capture of `_ANSWER_RE`, so a policy can make it
-    longer than `int()` accepts (`sys.get_int_max_str_digits()`, 4300 by default).
-    The answer sort has to survive that, parking the answer after the numbered
-    ones the way the query-answer line's `answer_bucket_sort_key` already does.
+    `trace.qid` is whatever follows `answer_q`, so a policy can make it longer
+    than `int()` accepts (`sys.get_int_max_str_digits()`, 4300 by default). The
+    answer sort has to survive that, parking the answer after the numbered ones
+    the way the query-answer line does — it is the same key on both sides.
     """
     overlong = "1" * 5000
 
     # The guard itself: no raise, and a trailing bucket that outranks any number.
-    assert _qid_sort_key(overlong) > _qid_sort_key("999999")
+    assert answer_bucket_sort_key(overlong) > answer_bucket_sort_key("999999")
 
     def _trace(qid: str, value: str) -> AnswerTrace:
         return AnswerTrace(
@@ -381,6 +382,6 @@ def test_report_trace_sorts_an_overlong_qid_last_without_crashing():
         )
 
     traces = [_trace(overlong, "z"), _trace("10", "b"), _trace("2", "a")]
-    ordered = sorted(traces, key=lambda t: (*_qid_sort_key(t.qid), t.value))
+    ordered = sorted(traces, key=lambda t: (*answer_bucket_sort_key(t.qid), t.value))
 
     assert [t.qid for t in ordered] == ["2", "10", overlong]

@@ -10,6 +10,7 @@ import unicodedata
 
 from verinote.engine import CheckReport
 from verinote.engine.duckdb_backend import run_check_duckdb
+from verinote.engine.wirelog import strip_answer_line_prefix
 from verinote.llm.base import LLMClient, LLMError
 from verinote.pipeline.corroboration import CorroborationPolicyError, store_relation_aliases
 from verinote.pipeline.engine_input import engine_relation_rows
@@ -24,10 +25,6 @@ MAX_CONTEXT_CHARS = 12000
 MAX_EXCERPTS = 8
 MAX_GROUNDING_FACTS = 8
 _TOKEN = re.compile(r"[A-Za-z0-9_]{2,}|[가-힣一-龥ぁ-んァ-ン]{1,}")
-# The engine formats each answer as ``q<id>: value`` for the /report view. That
-# report prefix is never part of the answer itself, so strip it when it leaks
-# into an Ask answer body.
-_ANSWER_QID_PREFIX = re.compile(r"^q\d+:\s*")
 
 
 @dataclass(frozen=True)
@@ -243,7 +240,11 @@ def _render_engine_answer_body(
             lines.append(f"{subject}, {relation}, {obj}")
             lines.extend(f"    ← {source}" for source in sources)
         return "\n".join(lines)
-    return "\n".join(_ANSWER_QID_PREFIX.sub("", line) for line in answers)
+    # Ask asks exactly one question, `ASK_QID`, and `classify_query_draft`
+    # refuses a draft that answers any other one — so the prefix the engine put
+    # on these lines is this qid's, and undoing it by name beats re-guessing it
+    # with a pattern that would also eat an answer of the shape `q3: ...`.
+    return "\n".join(strip_answer_line_prefix(line, ASK_QID) for line in answers)
 
 
 def _fallback_answer(
