@@ -296,3 +296,21 @@ tr.editing td { background: var(--editing-bg); }
 .evidence pre { margin: .55rem 0 0; max-height: 14rem; overflow: auto; white-space: pre-wrap;
   background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: .65rem; }
 .error-inline { color: var(--danger); }
+
+/* Chunk progress bar on the Sources page (#228). Analysis is the only long task in
+   the app, and it used to report itself as one line of text -- unscannable across a
+   list of sources. The two segments are laid out in flow order (complete, then
+   failed) so they tile the track from the left; whatever is left uncovered is the
+   pending remainder, drawn by the track itself. Widths come from the template
+   because they are the data.
+
+   Tone follows the job, not the segment: accent while the work is in flight, ok once
+   the job reports `done`. Failed chunks keep the danger tone in both states -- a run
+   that finished with failures is not a clean pass, and the segment is the only place
+   on the bar that says so. Colour is not the sole channel for that: the bar sits
+   beside the status badge and the "N failed" text, which both say it in words. */
+.progress { display: flex; width: 100%; height: 4px; margin: .4rem 0 .15rem;
+  border-radius: 999px; overflow: hidden; background: var(--line); }
+.progress-complete { background: var(--accent); }
+.progress.is-done .progress-complete { background: var(--ok); }
+.progress-failed { background: var(--danger); }

@@ -14,8 +14,12 @@
 </form>
 
 {% if sources %}
-<table class="sources" aria-live="polite"
-       {% if has_running_jobs %}hx-get="/sources" hx-trigger="every 2s" hx-target="main" hx-select="main" hx-swap="outerHTML"{% endif %}>
+{# The poll swaps the table, not <main> (#228). `/sources` renders a whole page and
+   there is no partial endpoint, so hx-select still narrows the *response* -- but the
+   swap target has to narrow too, or every tick replaces the heading, the upload form
+   and the table together and takes the scroll position and focus with them. #}
+<table class="sources" id="sources-table" aria-live="polite"
+       {% if has_running_jobs %}hx-get="/sources" hx-trigger="every 2s" hx-target="#sources-table" hx-select="#sources-table" hx-swap="outerHTML"{% endif %}>
   <thead>
     <tr><th>Source</th><th>Analysis</th><th>Trust counts</th><th>Evidence</th><th>Actions</th></tr>
   </thead>
@@ -48,6 +52,33 @@
           {% endif %}
           {% if s["pending_chunks"] %}
             <span class="warn-inline">{{ s["pending_chunks"] }} pending</span>
+          {% endif %}
+          {# Chunk progress as a bar (#228). `completed_chunks` and `failed_chunks` are
+             disjoint counts of the job's chunk rows (db.py `_refresh_extraction_job`
+             counts `done` and `failed` separately), so the two segments tile the track
+             in order and the gap left over is what is still pending or running.
+
+             `total_chunks == 0` is a real state -- a job row is created before its
+             chunks are -- so the whole bar is guarded rather than divided by zero.
+             The percentages are data, not design, which is why they are the one thing
+             emitted inline; the geometry and the palette live in app.css.
+
+             `role="progressbar"` carries the same numbers as the text above it. That
+             is deliberate duplication: a 4px bar is a purely visual channel, and the
+             ARIA value is what makes it mean anything to a screen reader. #}
+          {% if s["total_chunks"] %}
+          <div class="progress{{ ' is-done' if s["analysis_status"] == 'done' }}"
+               role="progressbar" aria-label="Analysis progress"
+               aria-valuemin="0" aria-valuemax="{{ s["total_chunks"] }}"
+               aria-valuenow="{{ s["completed_chunks"] }}"
+               aria-valuetext="{{ s["completed_chunks"] }} of {{ s["total_chunks"] }} chunk(s) complete{% if s["failed_chunks"] %}, {{ s["failed_chunks"] }} failed{% endif %}">
+            <span class="progress-complete"
+                  style="width: {{ (100.0 * s["completed_chunks"] / s["total_chunks"]) | round(3) }}%"></span>
+            {% if s["failed_chunks"] %}
+            <span class="progress-failed"
+                  style="width: {{ (100.0 * s["failed_chunks"] / s["total_chunks"]) | round(3) }}%"></span>
+            {% endif %}
+          </div>
           {% endif %}
           <div class="src">
             {{ s["provider"] or '—' }} / <code>{{ s["model"] or '—' }}</code>
