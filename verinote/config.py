@@ -17,6 +17,17 @@ whitespace-only) `VERINOTE_API_KEY` normalises to unset (`None`) and a used
 value is trimmed. With no saved or default source to fall back to, a blank key
 simply becomes `None` rather than falling through a chain.
 
+The saved file is also type-checked per key, since it is hand-editable JSON.
+A setting whose value has the wrong JSON type is never handed on to the code
+that expects the right one. What happens next depends on the setting: a bad
+`provider`, `model`, or `base_url` makes the whole KB refuse to run
+(`settings_error`), because ignoring it would resolve to the built-in cloud
+default the user never chose; a bad extraction setting only warns and falls back
+to its default, which is what the numeric parsers already do for an unparsable
+value. `null` means "unset" only where `save_settings` can write it —
+`base_url` and the optional extraction settings — and counts as unusable in
+`provider` and `model`.
+
 The active KB root is stored in a platform-native app config file when the web
 UI selects one: Windows uses `%APPDATA%`, macOS uses `~/Library/Application
 Support`, and Unix uses `${XDG_CONFIG_HOME:-~/.config}`. `VERINOTE_ROOT` still
@@ -129,6 +140,15 @@ def _bad_config_reason(path: Path, error: Exception | None) -> str:
     return f"{path} is not a JSON object"
 
 
+def _warn_config(reason: str, consequence: str) -> None:
+    """Emit one config warning in the single shape every config warning has.
+
+    Whole-file and per-key problems differ in how they are classified, not in
+    how they are announced, so both go through here.
+    """
+    print(f"warning: {reason}; {consequence}", file=sys.stderr)
+
+
 def _warn_bad_config(path: Path, error: Exception | None, consequence: str) -> None:
     """Warn on stderr that a config file is unreadable and is being ignored.
 
@@ -137,7 +157,7 @@ def _warn_bad_config(path: Path, error: Exception | None, consequence: str) -> N
     real corruption from the user. `error` is the raised exception, or None for
     a well-formed JSON value that simply is not an object.
     """
-    print(f"warning: {_bad_config_reason(path, error)}; {consequence}", file=sys.stderr)
+    _warn_config(_bad_config_reason(path, error), consequence)
 
 
 def read_app_config() -> dict:
@@ -224,8 +244,143 @@ def _settings_path(root: Path) -> Path:
     return root / SETTINGS_FILENAME
 
 
+# Every setting this reader knows how to type-check: the JSON type its value
+# must have, and whether `null` is a legitimate way to write "unset".
+#
+# The nullability column is not decoration. `save_settings` writes
+# `"base_url": null` itself for a KB with no custom endpoint, so null there is
+# this app's own output and must stay a silent "unset". `provider` and `model`
+# are always written as strings, so a null in either is a value that is present
+# but unusable — reading it as "unset" would let it fall through to the
+# built-in `anthropic` default, which is exactly the silent cloud fallback the
+# halt below exists to prevent.
+_SETTING_SPECS: dict[str, tuple[type, bool]] = {  # key -> (JSON type, null means unset)
+    "provider": (str, False),
+    "model": (str, False),
+    "base_url": (str, True),
+    "extraction_chunk_chars": (int, True),
+    "extraction_chunk_overlap_chars": (int, True),
+    "extraction_max_facts_per_chunk": (int, True),
+    "auto_accept_recommendations": (bool, True),
+}
+
+# The settings that decide *where* a request goes and *what* answers it. An
+# unusable value in one of these cannot be warned about and defaulted away: the
+# default is the `anthropic` cloud, so "ignore it and carry on" would ship the
+# user's notes to a provider they never chose (#269). These become a
+# `settings_error`, i.e. the same halt a corrupt file already triggers. The
+# remaining settings only tune local extraction, where falling back to the
+# built-in default is the documented and harmless answer to a bad value.
+# Ordered, so the same broken file always reports the same reason.
+_ROUTING_SETTINGS = ("provider", "model", "base_url")
+
+_EXPECTED_NAMES = {str: "a string", int: "a whole number", bool: "true or false"}
+
+
+def _json_type_name(value: object) -> str:
+    """Name the JSON type a Python value came from, for the warning text."""
+    if isinstance(value, bool):
+        return "a boolean"
+    if isinstance(value, (int, float)):
+        return "a number"
+    if isinstance(value, str):
+        return "a string"
+    if isinstance(value, list):
+        return "an array"
+    if isinstance(value, dict):
+        return "an object"
+    return "null"
+
+
+def _has_type(value: object, expected: type) -> bool:
+    """Check a value against the JSON type a setting is declared to hold.
+
+    `bool` is a subclass of `int` in Python but a distinct type in JSON, so a
+    plain `isinstance` would let `true` pass as a chunk size and `1` pass as a
+    flag. Both directions are rejected here.
+    """
+    if expected is bool:
+        return isinstance(value, bool)
+    if expected is int:
+        return isinstance(value, int) and not isinstance(value, bool)
+    return isinstance(value, expected)
+
+
+def _bad_setting_reason(path: Path, key: str, value: object) -> str | None:
+    """Why one saved setting's value is unusable, or None when it is fine.
+
+    The single per-key verdict: the stderr warning and the `settings_error`
+    halt both ask *this*, so a value can never be dropped by one and accepted by
+    the other. Unknown keys are never judged — a `config.json` written by a
+    newer verinote may hold settings this version has no opinion about, and
+    guessing about them is worse than passing them through.
+    """
+    spec = _SETTING_SPECS.get(key)
+    if spec is None:
+        return None
+    expected, null_is_unset = spec
+    if value is None:
+        if null_is_unset:
+            return None
+        return f"{path} has {key} set to null, expected {_EXPECTED_NAMES[expected]}"
+    if _has_type(value, expected):
+        return None
+    return (
+        f"{path} has {key} as {_json_type_name(value)}, "
+        f"expected {_EXPECTED_NAMES[expected]}"
+    )
+
+
+def _bad_routing_setting_reason(path: Path, data: dict) -> str | None:
+    """The first unusable provider-routing setting in an otherwise valid file.
+
+    Separate from `_checked_settings` because the two do different jobs with the
+    same verdict: that one decides what a caller *sees*, this one decides
+    whether the KB may be used at all. Only `_ROUTING_SETTINGS` are consulted —
+    a bad chunk size is a warning, not a reason to refuse the KB.
+    """
+    for key in _ROUTING_SETTINGS:
+        if key not in data:
+            continue
+        reason = _bad_setting_reason(path, key, data[key])
+        if reason is not None:
+            return reason
+    return None
+
+
+def _checked_settings(path: Path, data: dict) -> dict:
+    """Drop settings whose value is unusable, warning about each.
+
+    This file is the boundary where untrusted JSON enters: a hand-edited (or
+    older-version-written) `config.json` can hold `"base_url": 123`, and without
+    this the failure surfaces far from its cause, as an `AttributeError` inside
+    whichever adapter finally calls a string method on it. Dropping is *not* the
+    whole answer for a routing setting — being dropped is what makes it fall
+    back to the cloud default — so those also raise a `settings_error` that
+    halts the KB, and the warning says so rather than promising a harmless
+    default. Unknown keys pass through untouched.
+    """
+    checked = {}
+    for key, value in data.items():
+        reason = _bad_setting_reason(path, key, value)
+        if reason is None:
+            checked[key] = value
+        elif key in _ROUTING_SETTINGS:
+            _warn_config(reason, f"this KB is unusable until {key} is fixed")
+        else:
+            _warn_config(reason, f"ignoring it, so {key} falls back to its default")
+    return checked
+
+
 def read_settings(root: Path) -> dict:
-    """Read saved non-secret runtime settings, or {} if absent/bad."""
+    """Read saved non-secret runtime settings, or {} if absent/bad.
+
+    Individual settings whose value is unusable are warned about and dropped, so
+    the caller sees them as unset rather than passing a number on to code that
+    expects a string. For a provider-routing setting that drop is a containment
+    measure, not the remedy: `_settings_error` turns the same verdict into a
+    halt. See `_checked_settings`.
+    """
     path = _settings_path(root)
     if not path.is_file():
         return {}
@@ -244,7 +399,7 @@ def read_settings(root: Path) -> dict:
     if not isinstance(data, dict):
         _warn_bad_config(path, None, consequence)
         return {}
-    return data
+    return _checked_settings(path, data)
 
 
 def _settings_error(root: Path) -> str | None:
@@ -252,14 +407,22 @@ def _settings_error(root: Path) -> str | None:
 
     A *missing* file is never an error — a fresh KB legitimately has none, and
     reporting one would spuriously halt it. Only a file that is PRESENT but
-    unreadable/corrupt yields a reason. Shares `_bad_config_reason` with the CLI
-    stderr warning so the web/GUI halt and the warning describe the same file the
-    same way.
+    unusable yields a reason. Shares `_bad_config_reason` with the CLI stderr
+    warning so the web/GUI halt and the warning describe the same file the same
+    way.
+
+    "Unusable" is not only whole-file corruption. A file that parses perfectly
+    but holds `"provider": 123` or `"model": null` is just as unusable, and
+    ignoring the key would resolve the provider to the `anthropic` cloud default
+    the user never chose — the identical leak, arrived at through a narrower
+    door (#325). So the per-key verdict on `_ROUTING_SETTINGS` halts here too,
+    while a bad chunk size stays a warning: it changes how much text a local
+    step reads, not where the text goes.
 
     Deliberately re-reads the file rather than inferring from `read_settings`'s
-    `{}` return: an empty `{}` is ambiguous (a valid empty object returns it too),
-    and `read_settings`'s return contract is left untouched — per-key validation
-    of its body is a separate concern (#325).
+    return: what that returns is ambiguous about *why* a key is absent (a valid
+    file simply omitting it looks the same as a dropped bad one), and an empty
+    `{}` is ambiguous about the file as a whole.
     """
     path = _settings_path(root)
     if not path.is_file():
@@ -270,7 +433,7 @@ def _settings_error(root: Path) -> str | None:
         return _bad_config_reason(path, err)
     if not isinstance(data, dict):
         return _bad_config_reason(path, None)
-    return None
+    return _bad_routing_setting_reason(path, data)
 
 
 def save_settings(
@@ -315,9 +478,10 @@ def _pick(env: str, saved: str | None, default: str | None) -> str | None:
     a URL that no endpoint answers.
     """
     for candidate in (os.environ.get(env), saved):
-        # A hand-edited config.json can hold a non-string here. Passing those
-        # through untouched is what this function has always done; normalising
-        # them is a separate question from the blank-value one.
+        # `read_settings` now type-checks the saved side, so a non-string should
+        # no longer arrive from there; this guard stays because it is what makes
+        # the blank-value rule apply to the string sources only, and because a
+        # caller may pass a saved value this function never chose.
         if isinstance(candidate, str):
             candidate = candidate.strip()
         if candidate:
@@ -373,11 +537,14 @@ class Config:
     extraction_chunk_overlap_chars: int = 40
     extraction_max_facts_per_chunk: int = 8
     auto_accept_recommendations: bool = False
-    # Set only when the settings file is PRESENT but unreadable/corrupt (never on
-    # a missing file — absence is legitimate). A trailing, defaulted field so no
-    # existing `Config(...)` construction site has to change. `assert_settings_intact`
-    # turns it into the halt that keeps a corrupt config from silently defaulting
-    # to a cloud provider the user never chose (#269).
+    # Set only when the settings file is PRESENT but unusable — either as a whole
+    # (unreadable/not a JSON object) or in one of the provider-routing keys, whose
+    # wrong-typed value would otherwise be dropped and resolve to the cloud
+    # default (#325). Never set for a missing file: absence is legitimate. A
+    # trailing, defaulted field so no existing `Config(...)` construction site has
+    # to change. `assert_settings_intact` turns it into the halt that keeps a
+    # corrupt config from silently defaulting to a provider the user never chose
+    # (#269).
     settings_error: str | None = None
 
     def extraction_schema_hint(self) -> str:
