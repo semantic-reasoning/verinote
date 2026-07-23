@@ -268,6 +268,39 @@ def dead_rule_warnings(policy_dl: str, present_relations: Iterable[str]) -> list
     )
 
 
+def review_rule_count(policy_dl: str) -> int:
+    """Count the review rules — ``error_*``/``warn_*`` heads — a policy defines.
+
+    A KB earns its "consistent" verdict by *running rules*: every ``error_*``
+    head is a blocking check and every ``warn_*`` head a non-blocking one. A
+    policy that declares ``relation/3`` and nothing else parses, runs, and
+    derives nothing, so the engine reports it clean — a green light on a KB no
+    rule ever examined. This count is how a caller tells "checked and consistent"
+    apart from "checked nothing"; the engine cannot, because deriving zero
+    findings is the correct result either way — the query-evaluation paths run a
+    deliberately rule-less ``relation/3`` policy and rely on exactly that. So this
+    is a caller-side concern and must never move into the engine, or every query
+    evaluation would trip it.
+
+    Only rule *heads* count. A bare ``.decl`` declares a relation but runs no
+    check, and an ``answer_q*`` head answers a query rather than reviewing the KB,
+    so neither is a review rule. A policy this parser cannot read yields 0, the
+    same convention `dead_rule_warnings` uses: the parse failure is already an
+    engine error, so this must not invent a second verdict from it. This shares
+    only `_read_policy` with dead-rule detection; the two checks stay separate,
+    since a rule that is *absent* and a rule that *cannot fire* are different
+    faults.
+    """
+    program = _read_policy(policy_dl)
+    if program is None:
+        return 0
+    return sum(
+        1
+        for rule in program.rules
+        if rule.head.predicate.startswith((_ERROR_PREFIX, _WARN_PREFIX))
+    )
+
+
 # The engine's "clean bill of health" body. Exported because it is a claim about
 # the policy that ran, so callers that ran a *different* policy than the KB's own
 # (see pipeline.policy_state) must be able to recognise and replace it rather

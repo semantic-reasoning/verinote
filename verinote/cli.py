@@ -1028,6 +1028,30 @@ def _print_policy_state_ro(conn: sqlite3.Connection, cfg: Config) -> bool:
     return False
 
 
+def _zero_review_rules_ro(conn: sqlite3.Connection, cfg: Config) -> bool:
+    """True when this KB has a *present* policy file that reviews nothing.
+
+    The read-only sibling of `verify()`'s zero-review-rule check. Only a policy a
+    human wrote (`PRESENT`) can trip it: `UNRECORDED_DEFAULT` runs the shipped
+    default (which has a real rule), and `MISSING_RECORDED` is already the halt
+    gate's. A policy this parser cannot read is *not* reported here — that is a
+    different fault, surfaced as an engine error by the web report, and calling a
+    broken policy "rule-less" would misreport it. So, mirroring `verify()`'s
+    `errors == 0` guard, an unreadable policy is left to that path; `_read_policy`
+    (the one authority on "unreadable") is the read-only proxy for it, since
+    `coverage` runs no engine.
+    """
+    from verinote.engine.wirelog import _read_policy, review_rule_count
+    from verinote.pipeline.policy_state import PolicyStatus
+
+    state = _policy_state_ro(conn, cfg)
+    if state.status is not PolicyStatus.PRESENT:
+        return False
+    if _read_policy(state.text) is None:
+        return False
+    return review_rule_count(state.text) == 0
+
+
 def _unusable_kb(cfg: Config, exc: Exception) -> int:
     """Turn a SQLite error escaping a read-only command into a diagnosis.
 
@@ -1089,6 +1113,9 @@ def _coverage(cfg: Config, args: argparse.Namespace) -> int:
             )
         cov = Coverage(sources=sources)
         halted = _print_policy_state_ro(conn, cfg)
+        # Compute before `conn.close()`: `_zero_review_rules_ro` reads the KB's
+        # policy marker over this same read-only connection.
+        zero_review_rules = _zero_review_rules_ro(conn, cfg)
     finally:
         conn.close()
     for s in cov.sources:
@@ -1109,6 +1136,13 @@ def _coverage(cfg: Config, args: argparse.Namespace) -> int:
     # stays rc=0: it is a recovery path, and a halt you cannot inspect is a brick.
     if args.strict and halted:
         print("strict: this KB's logic policy file is missing", file=sys.stderr)
+        return 1
+    if args.strict and zero_review_rules:
+        print(
+            "strict: this KB's policy defines no review rules (error_*/warn_*); "
+            "nothing is being checked",
+            file=sys.stderr,
+        )
         return 1
     if args.strict and cov.gaps:
         print("strict: uncovered text source(s) present", file=sys.stderr)
@@ -1275,7 +1309,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     coverage = sub.add_parser("coverage", help="report per-source engine-fact coverage")
     coverage.add_argument(
-        "--strict", action="store_true", help="exit non-zero if any text source has no engine facts"
+        "--strict",
+        action="store_true",
+        help=(
+            "exit non-zero if the KB is not review-ready: a missing/halted policy, "
+            "a policy that defines no review rules (error_*/warn_*), or a text "
+            "source with no engine facts"
+        ),
     )
     coverage.set_defaults(func=cmd_coverage, halt_safe=True)
 

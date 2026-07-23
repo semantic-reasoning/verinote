@@ -5,7 +5,12 @@ from pathlib import Path
 import verinote.engine.duckdb_backend as duckdb_backend
 from verinote.engine.terms import Atom, Compound, NumberLit, StringLit
 from verinote.pipeline.query import query_path
-from verinote.pipeline.verify import load_policy, policy_path, verify
+from verinote.pipeline.verify import (
+    NO_REVIEW_RULES_FINDING,
+    load_policy,
+    policy_path,
+    verify,
+)
 from verinote.store import Store
 from verinote.store.duckdb_fact_terms import fact_terms_path
 from verinote.store.fact_input import structural_term
@@ -548,4 +553,9 @@ def test_verify_cached_engine_does_not_leak_changed_policy_findings(tmp_path):
         encoding="utf-8",
     )
 
-    assert verify(s).findings == []
+    # The rewritten policy reviews nothing, so it now surfaces the zero-review-rule
+    # warning. The anti-leak property this test guards still holds: the stale
+    # `WARN has_isa: Ada` from the cached engine must be gone.
+    findings = verify(s).findings
+    assert findings == [NO_REVIEW_RULES_FINDING]
+    assert not any("has_isa" in f for f in findings)
