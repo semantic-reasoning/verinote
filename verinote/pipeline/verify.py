@@ -11,6 +11,7 @@ at minimum a warning.
 from __future__ import annotations
 
 from verinote.engine import NO_FINDINGS_TEXT, CheckReport
+from verinote.engine.wirelog import review_rule_count
 from verinote.pipeline.corroboration import CorroborationPolicyError
 from verinote.pipeline.engine_input import annotate_source_labels, engine_relation_rows
 from verinote.pipeline.policy_state import (
@@ -37,6 +38,22 @@ __all__ = [
     "resolve_policy",
     "verify",
 ]
+
+
+# A present policy that declares `relation/3` and no `error_*`/`warn_*` rule runs
+# clean and derives nothing, so the engine's clean-bill sentence becomes a green
+# light on a KB no rule ever checked. `verify()` prepends this finding and
+# replaces that sentence; `ok`/`errors` stay put — nothing inconsistent was
+# derived (see `_with_no_review_rules_warning`).
+NO_REVIEW_RULES_FINDING = (
+    "WARNING policy_no_review_rules: this KB's policy file declares no review "
+    "rules (error_*/warn_*), so verification checked nothing"
+)
+NO_REVIEW_RULES_NO_FINDINGS_TEXT = (
+    "no findings, but this KB's policy file declares no review rules "
+    "(error_*/warn_*): nothing was actually checked, so this says nothing about "
+    "the KB's consistency."
+)
 
 
 def load_policy(store: Store) -> str | None:
@@ -107,6 +124,16 @@ def verify(store: Store) -> CheckReport:
     )
     if state.status is PolicyStatus.UNRECORDED_DEFAULT:
         return _with_unrecorded_policy_warning(report)
+    # A present policy that declares `relation/3` and no review rule reviews
+    # nothing. The `errors == 0` guard is load-bearing: a malformed policy also
+    # counts zero review rules, but the engine already returned an error report
+    # for it, and stacking this note on that would double-report one fault.
+    if (
+        state.status is PolicyStatus.PRESENT
+        and report.errors == 0
+        and review_rule_count(state.text) == 0
+    ):
+        return _with_no_review_rules_warning(report)
     return report
 
 
@@ -123,4 +150,22 @@ def _with_unrecorded_policy_warning(report: CheckReport) -> CheckReport:
     report.findings = [POLICY_UNRECORDED_FINDING, *report.findings]
     report.text = report.text.replace(NO_FINDINGS_TEXT, POLICY_UNRECORDED_NO_FINDINGS_TEXT)
     report.text = f"{POLICY_UNRECORDED_BANNER}\n\n{report.text}"
+    return report
+
+
+def _with_no_review_rules_warning(report: CheckReport) -> CheckReport:
+    """Stop a policy that reviews nothing from reading as a clean bill of health.
+
+    A present policy that declares `relation/3` and no `error_*`/`warn_*` rule
+    runs cleanly and derives nothing, so the engine's "no findings — knowledge
+    base is consistent." sentence is true and badly misleading: no rule examined
+    the KB. As in `_with_unrecorded_policy_warning`, the sentence is replaced (not
+    just prefixed) and `ok`/`errors` are left alone — a rule-less policy derived
+    no inconsistency, and inventing an error would be inference. Only a KB-review
+    caller may add this; the engine must not, since the query-evaluation paths run
+    the same rule-less `relation/3` policy shape on purpose and are correct to.
+    """
+    report.warnings += 1
+    report.findings = [NO_REVIEW_RULES_FINDING, *report.findings]
+    report.text = report.text.replace(NO_FINDINGS_TEXT, NO_REVIEW_RULES_NO_FINDINGS_TEXT)
     return report

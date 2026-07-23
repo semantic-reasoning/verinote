@@ -889,6 +889,61 @@ def test_coverage_strict_gates_on_gap(tmp_path, monkeypatch, capsys):
     assert "GAP" in capsys.readouterr().out
 
 
+_BARE_RELATION_POLICY = ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
+
+
+def _kb_covered_fact_with_policy(tmp_path, policy_text):
+    """A KB with one fully-covered source (no gap, no orphan) and `policy_text`.
+
+    The confirmed fact carries a `source_id` and becomes engine input, so the
+    source has no coverage gap — this isolates the zero-review-rule gate from the
+    pre-existing gap gate. The source file is created so it is not an orphan
+    either. `policy_text` is written to the KB's policy file (a PRESENT policy).
+    """
+    (tmp_path / "sources").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "sources" / "a.txt").write_text("sample", encoding="utf-8")
+    s = Store(tmp_path / "kb.sqlite")
+    s.init_schema()
+    sid = s.add_source("sources/a.txt")
+    s.add_fact("A", "is_a", "B", status="confirmed", source_id=sid)
+    policy = tmp_path / "policy" / "logic-policy.dl"
+    policy.parent.mkdir(parents=True, exist_ok=True)
+    policy.write_text(policy_text, encoding="utf-8")
+    s.close()
+
+
+def test_coverage_strict_gates_on_zero_review_rules(tmp_path, monkeypatch, capsys):
+    # A present policy that declares relation/3 and no error_*/warn_* rule reviews
+    # nothing, so --strict must not green-light it. No gap exists, so this fails
+    # for the zero-rule reason alone.
+    _env(monkeypatch, tmp_path)
+    _kb_covered_fact_with_policy(tmp_path, _BARE_RELATION_POLICY)
+
+    assert cli.main(["coverage"]) == 0  # plain coverage is a recovery path, never gates
+    assert cli.main(["coverage", "--strict"]) == 1
+    assert "no review rules" in capsys.readouterr().err
+
+
+def test_coverage_strict_passes_when_policy_has_a_review_rule(tmp_path, monkeypatch, capsys):
+    # False-positive guard: a present policy that reviews something is gate-ready.
+    _env(monkeypatch, tmp_path)
+    _kb_covered_fact_with_policy(tmp_path, DEFAULT_POLICY)
+
+    assert cli.main(["coverage", "--strict"]) == 0
+
+
+def test_coverage_strict_does_not_mislabel_a_malformed_policy(tmp_path, monkeypatch, capsys):
+    # A malformed policy is a different fault — the web report surfaces it as an
+    # engine error. coverage must not call it "no review rules" (it may define
+    # rules that simply do not parse), so this gate stays quiet: out of #359's
+    # scope, rc is left unchanged from the pre-existing malformed-policy behaviour.
+    _env(monkeypatch, tmp_path)
+    _kb_covered_fact_with_policy(tmp_path, "this is not valid datalog !!!")
+
+    assert cli.main(["coverage", "--strict"]) == 0
+    assert "no review rules" not in capsys.readouterr().err
+
+
 def test_coverage_counts_structural_engine_fact_metadata(tmp_path, monkeypatch, capsys):
     _env(monkeypatch, tmp_path)
     s = Store(tmp_path / "kb.sqlite")
