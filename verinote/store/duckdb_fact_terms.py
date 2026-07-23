@@ -7,10 +7,12 @@ only the structural term payloads for fact triples, keyed by SQLite `facts.id`.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
 from pathlib import Path
-from typing import Iterable
+import time
+from typing import Iterable, Iterator
 
 from verinote.engine.duckdb_terms import (
     DuckDBTermError,
@@ -23,9 +25,30 @@ FACT_TERMS_FILENAME = "facts.duckdb"
 
 _TERM_COLUMNS = ("subject", "rel", "object")
 
+# DuckDB takes a single-process write lock on a database file and raises
+# immediately on a conflict -- it has no built-in wait -- so a `verinote sync`
+# launched while `verinote ui` holds the fact store would fail outright. A
+# file-backed store therefore holds no connection between calls (see below) and
+# waits out a transient holder up to this budget when it does open, mirroring the
+# SQLite `busy_timeout = 5000` convention in store/db.py. These are module-level
+# so a test can shrink the budget in-process; nothing on the production path
+# passes them, so the constructor signature stays as it was.
+_LOCK_TIMEOUT_SECONDS = 5.0
+_LOCK_POLL_SECONDS = 0.05
+_LOCK_MESSAGE_MARKERS = ("conflicting lock", "could not set lock")
+
 
 class DuckDBFactTermStoreError(ValueError):
     """Raised when the DuckDB fact-term store cannot complete an operation."""
+
+
+class DuckDBFactTermStoreLockedError(DuckDBFactTermStoreError):
+    """Raised when the fact-term file stays locked by another process past the retry budget.
+
+    A subclass of `DuckDBFactTermStoreError` so existing catch sites (the web
+    app's 409 handler) keep working, while the CLI can floor this one specific
+    cause with an actionable message instead of a raw traceback.
+    """
 
 
 @dataclass(frozen=True)
@@ -42,11 +65,22 @@ class DuckDBFactTermStore:
 
     def __init__(self, path: str | Path | None) -> None:
         self.path = Path(path).expanduser() if path is not None else None
+        self._schema_ready = False
         if self.path is not None:
             _reject_unsupported_path(self.path)
             self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._con = _connect(self.path)
-        self.init_schema()
+            # File-backed: hold no connection between calls. A long-lived Store
+            # (the web app's app.state.store lives for the whole server process)
+            # would otherwise keep the OS file lock forever and lock out a
+            # concurrent `verinote sync`. Each operation opens per-call instead.
+            self._con = None
+        else:
+            # In-memory: a fresh :memory: connection is a brand-new empty
+            # database, so the single connection must be held for the object's
+            # life. Only one process ever touches it, so there is no lock to hold.
+            self._con = _connect(self.path)
+            self.init_schema()
+            self._schema_ready = True
 
     @classmethod
     def for_root(cls, root: str | Path) -> "DuckDBFactTermStore":
@@ -55,7 +89,12 @@ class DuckDBFactTermStore:
 
     def init_schema(self) -> None:
         """Create the fact term table if it does not already exist."""
-        self._execute(
+        with self._operation() as con:
+            self._init_schema_on(con)
+
+    def _init_schema_on(self, con) -> None:
+        self._run(
+            con,
             """
             CREATE TABLE IF NOT EXISTS fact_terms (
                 fact_id BIGINT PRIMARY KEY,
@@ -64,20 +103,74 @@ class DuckDBFactTermStore:
                 object VARCHAR NOT NULL,
                 term_token VARCHAR
             )
-            """
+            """,
         )
         columns = {
             row[1]
-            for row in self._execute("PRAGMA table_info('fact_terms')").fetchall()
+            for row in self._run(con, "PRAGMA table_info('fact_terms')").fetchall()
         }
         if "term_token" not in columns:
-            self._execute("ALTER TABLE fact_terms ADD COLUMN term_token VARCHAR")
+            self._run(con, "ALTER TABLE fact_terms ADD COLUMN term_token VARCHAR")
 
     def close(self) -> None:
-        """Close the owned DuckDB connection. Safe to call more than once."""
+        """Release the store.
+
+        In-memory owns a persistent connection, so closing it is what "closed"
+        means for that mode. File-backed holds no connection between calls, so
+        this is a no-op there. Idempotent either way.
+        """
         if self._con is not None:
             self._con.close()
             self._con = None
+
+    @contextmanager
+    def _operation(self) -> Iterator[object]:
+        """Yield a connection for one store operation.
+
+        In-memory yields the persistent connection and never closes it. A
+        file-backed store opens a fresh connection (waiting out a transient lock
+        holder), initialises the schema once per object, and always closes the
+        connection when the operation finishes so nothing else is starved.
+        """
+        if self.path is None:
+            if self._con is None:
+                raise DuckDBFactTermStoreError("DuckDB fact-term store is closed")
+            yield self._con
+            return
+        con = self._open_with_retry()
+        try:
+            if not self._schema_ready:
+                self._init_schema_on(con)
+                self._schema_ready = True
+            yield con
+        finally:
+            con.close()
+
+    def _open_with_retry(self):
+        """Open the file-backed store, waiting out a transient lock holder.
+
+        DuckDB raises the lock conflict immediately with no wait of its own, so
+        we poll up to the retry budget. Only a genuine lock conflict is retried;
+        any other failure (a corrupt file, a missing driver) is re-raised at once
+        as the generic error so it is never mistaken for a busy peer.
+        """
+        deadline = time.monotonic() + max(0.0, _LOCK_TIMEOUT_SECONDS)
+        poll = _LOCK_POLL_SECONDS
+        while True:
+            try:
+                return _connect(self.path)
+            except DuckDBFactTermStoreError as exc:
+                if not _is_lock_conflict(exc):
+                    raise
+                if time.monotonic() >= deadline:
+                    raise DuckDBFactTermStoreLockedError(
+                        f"the DuckDB fact-term store at {str(self.path)!r} is locked "
+                        f"by another process. Another verinote process -- most likely "
+                        f"`verinote ui` serving this KB -- is holding it. Stop that "
+                        f"process (or wait for it to finish) and retry."
+                    ) from exc
+                time.sleep(min(poll, max(0.0, deadline - time.monotonic())))
+                poll = min(poll * 1.5, 0.25)
 
     def put_fact_terms(
         self,
@@ -94,25 +187,30 @@ class DuckDBFactTermStore:
         token = term_token or fact_term_token_from_values(values)
         if token != fact_term_token_from_values(values):
             raise DuckDBFactTermStoreError("fact term token does not match term payload")
-        self._execute(
-            """
-            INSERT INTO fact_terms (fact_id, subject, rel, object, term_token)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(fact_id) DO UPDATE SET
-                subject = excluded.subject,
-                rel = excluded.rel,
-                object = excluded.object,
-                term_token = excluded.term_token
-            """,
-            [fid, *values, token],
-        )
+        with self._operation() as con:
+            self._run(
+                con,
+                """
+                INSERT INTO fact_terms (fact_id, subject, rel, object, term_token)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(fact_id) DO UPDATE SET
+                    subject = excluded.subject,
+                    rel = excluded.rel,
+                    object = excluded.object,
+                    term_token = excluded.term_token
+                """,
+                [fid, *values, token],
+            )
 
     def get_fact_terms(self, fact_id: int) -> tuple[Term, Term, Term] | None:
         """Return one stored fact triple, or None when the fact id is absent."""
         fid = _validate_fact_id(fact_id)
-        row = self._execute(
-            "SELECT subject, rel, object FROM fact_terms WHERE fact_id = ?", [fid]
-        ).fetchone()
+        with self._operation() as con:
+            row = self._run(
+                con,
+                "SELECT subject, rel, object FROM fact_terms WHERE fact_id = ?",
+                [fid],
+            ).fetchone()
         if row is None:
             return None
         return _decode_row(fid, row)
@@ -120,10 +218,12 @@ class DuckDBFactTermStore:
     def get_fact_term_record(self, fact_id: int) -> FactTermRecord | None:
         """Return one stored fact triple with its coherence token."""
         fid = _validate_fact_id(fact_id)
-        row = self._execute(
-            "SELECT subject, rel, object, term_token FROM fact_terms WHERE fact_id = ?",
-            [fid],
-        ).fetchone()
+        with self._operation() as con:
+            row = self._run(
+                con,
+                "SELECT subject, rel, object, term_token FROM fact_terms WHERE fact_id = ?",
+                [fid],
+            ).fetchone()
         if row is None:
             return None
         return _decode_record(fid, row)
@@ -136,11 +236,13 @@ class DuckDBFactTermStore:
         if not ids:
             return {}
         placeholders = ", ".join("?" for _ in ids)
-        rows = self._execute(
-            "SELECT fact_id, subject, rel, object "
-            f"FROM fact_terms WHERE fact_id IN ({placeholders}) ORDER BY fact_id",
-            ids,
-        ).fetchall()
+        with self._operation() as con:
+            rows = self._run(
+                con,
+                "SELECT fact_id, subject, rel, object "
+                f"FROM fact_terms WHERE fact_id IN ({placeholders}) ORDER BY fact_id",
+                ids,
+            ).fetchall()
         return {
             int(row[0]): _decode_row(int(row[0]), (row[1], row[2], row[3]))
             for row in rows
@@ -154,23 +256,36 @@ class DuckDBFactTermStore:
         if not ids:
             return {}
         placeholders = ", ".join("?" for _ in ids)
-        rows = self._execute(
-            "SELECT fact_id, subject, rel, object, term_token "
-            f"FROM fact_terms WHERE fact_id IN ({placeholders}) ORDER BY fact_id",
-            ids,
-        ).fetchall()
+        with self._operation() as con:
+            rows = self._run(
+                con,
+                "SELECT fact_id, subject, rel, object, term_token "
+                f"FROM fact_terms WHERE fact_id IN ({placeholders}) ORDER BY fact_id",
+                ids,
+            ).fetchall()
         return {int(row[0]): _decode_record(int(row[0]), row[1:]) for row in rows}
 
     def delete_fact_terms(self, fact_id: int) -> None:
         """Delete a fact term row. Missing ids are ignored."""
         fid = _validate_fact_id(fact_id)
-        self._execute("DELETE FROM fact_terms WHERE fact_id = ?", [fid])
+        with self._operation() as con:
+            self._run(con, "DELETE FROM fact_terms WHERE fact_id = ?", [fid])
 
     def _execute(self, sql: str, params: list[object] | None = None):
-        if self._con is None:
-            raise DuckDBFactTermStoreError("DuckDB fact-term store is closed")
+        """Run one statement in its own operation.
+
+        Retained for direct callers that issue a single autocommitting statement
+        and do not read from the returned cursor: for a file-backed store the
+        connection is already closed by the time this returns, so fetching from
+        the result afterwards would fail. The public read methods above open the
+        operation themselves and fetch while the connection is still live.
+        """
+        with self._operation() as con:
+            return self._run(con, sql, params)
+
+    def _run(self, con, sql: str, params: list[object] | None = None):
         try:
-            return self._con.execute(sql, params or [])
+            return con.execute(sql, params or [])
         except DuckDBFactTermStoreError:
             raise
         except Exception as exc:
@@ -226,6 +341,18 @@ def _connect(path: Path | None):
         return duckdb.connect(str(path) if path is not None else ":memory:")
     except Exception as exc:
         raise DuckDBFactTermStoreError(f"failed to open DuckDB fact-term store: {exc}") from exc
+
+
+def _is_lock_conflict(exc: Exception) -> bool:
+    """Report whether a failed open was a single-writer lock conflict.
+
+    `_connect` wraps DuckDB's `IOException` into `DuckDBFactTermStoreError` but
+    keeps its text, so we match on the message rather than the type. Anything
+    else (a corrupt file, a missing driver) is not a lock conflict and must not
+    be retried or reclassified.
+    """
+    message = str(exc).lower()
+    return any(marker in message for marker in _LOCK_MESSAGE_MARKERS)
 
 
 def _validate_fact_id(fact_id: int) -> int:

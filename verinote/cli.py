@@ -14,6 +14,7 @@ from verinote import __version__
 from verinote.config import Config, local_root
 from verinote.pipeline.question_outcome import format_question_outcome
 from verinote.store import Store, engine_statuses
+from verinote.store.duckdb_fact_terms import DuckDBFactTermStoreLockedError
 
 # Local commands own their KB location: they never inherit the KB the web UI
 # last selected, so `verinote init` cannot scribble into somebody else's data.
@@ -1373,7 +1374,16 @@ def main(argv: list[str] | None = None) -> int:
         refusal = _refuse_on_halted_kb(cfg)
         if refusal is not None:
             return refusal
-    return args.func(cfg, args)
+    try:
+        return args.func(cfg, args)
+    except DuckDBFactTermStoreLockedError as exc:
+        # Centralized for the same reason as the halt guard above: every command
+        # that touches the DuckDB fact-term sidecar reaches it through this one
+        # line, so a single floor here spares `sync`, `seed`, and the rest from
+        # leaking a raw "Conflicting lock" traceback when another verinote
+        # process (typically `verinote ui`) is holding the store.
+        print(str(exc), file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
