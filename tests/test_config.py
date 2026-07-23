@@ -200,6 +200,27 @@ def test_api_key_only_from_env_never_persisted(tmp_path, monkeypatch):
     assert "supersecret" not in (tmp_path / "config.json").read_text(encoding="utf-8")
 
 
+def test_empty_api_key_env_reads_as_unset(tmp_path, monkeypatch):
+    # #326: the key now shares the blank-value normalisation the other settings
+    # get, so a blank VERINOTE_API_KEY is unset rather than an empty credential.
+    monkeypatch.setenv("VERINOTE_API_KEY", "")
+    assert Config.for_root(tmp_path).api_key is None
+
+
+def test_whitespace_only_api_key_env_reads_as_unset(tmp_path, monkeypatch):
+    monkeypatch.setenv("VERINOTE_API_KEY", "   ")
+    assert Config.for_root(tmp_path).api_key is None
+
+
+def test_padded_api_key_env_is_trimmed(tmp_path, monkeypatch):
+    # Surrounding whitespace on a real key is always a copy-paste or .env-file
+    # artifact, never part of the credential. Trimming makes an otherwise-valid
+    # key authenticate instead of failing; this is a deliberate decision, not an
+    # accidental side effect of routing through _pick.
+    monkeypatch.setenv("VERINOTE_API_KEY", "  sk-secret  ")
+    assert Config.for_root(tmp_path).api_key == "sk-secret"
+
+
 def test_active_root_uses_env_first(tmp_path, monkeypatch):
     monkeypatch.setenv("VERINOTE_ROOT", str(tmp_path))
     assert active_root() == tmp_path.resolve()

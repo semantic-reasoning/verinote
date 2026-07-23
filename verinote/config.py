@@ -12,8 +12,10 @@ the default; if the selected value is blank or an invalid number, numeric
 parsers fall back to the default, while the boolean parser treats recognised
 truthy strings as true and everything else as false. The API key is **only**
 ever read from the environment — it is never persisted to or read from the
-settings file, and it skips this normalisation entirely, so a blank
-`VERINOTE_API_KEY` reaches the provider as-is for it to reject.
+settings file — but it shares the same blank-value handling: a blank (empty or
+whitespace-only) `VERINOTE_API_KEY` normalises to unset (`None`) and a used
+value is trimmed. With no saved or default source to fall back to, a blank key
+simply becomes `None` rather than falling through a chain.
 
 The active KB root is stored in a platform-native app config file when the web
 UI selects one: Windows uses `%APPDATA%`, macOS uses `~/Library/Application
@@ -377,7 +379,7 @@ class Config:
             db_path=root / "kb.sqlite",
             provider=provider,
             model=model,
-            api_key=os.environ.get("VERINOTE_API_KEY"),  # secrets only from env
+            api_key=_pick("VERINOTE_API_KEY", None, None),  # no saved/default source — secrets only from env
             base_url=base_url,
             llm_timeout_seconds=_llm_timeout_seconds(),
             extraction_chunk_chars=chunk_chars,
