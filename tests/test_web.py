@@ -12,7 +12,7 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
 import verinote.web.app as webapp  # noqa: E402
-from verinote.config import Config  # noqa: E402
+from verinote.config import Config, ConfigCorruptError, save_settings  # noqa: E402
 from verinote.engine import DEFAULT_POLICY  # noqa: E402
 from verinote.engine.terms import Atom, Compound, StringLit  # noqa: E402
 from verinote.llm.base import ExtractedFact, LLMError  # noqa: E402
@@ -3554,3 +3554,267 @@ def test_worker_leaves_a_done_job_done_when_the_stale_sweep_raises(
     with Store(cfg.db_path) as store:
         store.init_schema()
         assert any(f["subject"] == "A" for f in store.facts())
+
+
+# --- #269: a corrupt config.json halts the web app instead of silently
+#     defaulting extraction/ask/test to the cloud provider the user never chose ---
+
+
+def _config_web_kb(tmp_path, *, corrupt, with_job=False):
+    """A KB with a *recorded* policy (so the policy guard is inert) whose
+    config.json is corrupt when `corrupt`, else a valid ollama config. Returns
+    (cfg, fact_id, job_id); job_id is None unless `with_job`. cfg is resolved via
+    Config.for_root so it carries the real settings_error the app will see."""
+    policy = tmp_path / POLICY_RELPATH
+    job_id = None
+    with Store(tmp_path / "kb.sqlite") as store:
+        store.init_schema()
+        fact_id = store.add_fact("A", "is_a", "B", status="needs_review", confidence=0.9)
+        policy.parent.mkdir(parents=True, exist_ok=True)
+        policy.write_text(DEFAULT_POLICY, encoding="utf-8")
+        store.record_policy_marker(policy_sha256(DEFAULT_POLICY), origin="scaffold")
+        if with_job:
+            sid = store.add_source("sources/a.txt")
+            job_id = store.create_extraction_job(
+                source_id=sid, provider="ollama", model="m", total_chunks=1
+            )
+            store.add_source_chunks(job_id=job_id, source_id=sid, chunks=["some text"])
+    if corrupt:
+        (tmp_path / "config.json").write_text("{bad json", encoding="utf-8")
+    else:
+        save_settings(tmp_path, provider="ollama", model="llama3.1")
+    return Config.for_root(tmp_path), fact_id, job_id
+
+
+def _spy_anthropic(monkeypatch):
+    """Record every construction of the concrete cloud adapter class.
+
+    The corrupt-config fallback provider is `anthropic`, so a non-empty list means
+    an adapter was built and bytes were about to leave the machine. A 409 alone
+    would not prove they didn't — only that the *response* was a halt."""
+    import verinote.llm.anthropic_adapter as aa
+
+    built = []
+    orig = aa.AnthropicAdapter.__init__
+
+    def spy(self, cfg):
+        built.append(cfg)
+        orig(self, cfg)
+
+    monkeypatch.setattr(aa.AnthropicAdapter, "__init__", spy)
+    return built
+
+
+def test_ask_on_corrupt_config_halts_and_never_builds_the_adapter(tmp_path, monkeypatch):
+    """A provider-calling POST (`/ask`) refuses with 409 AND the concrete adapter
+    is never constructed — the confidentiality guarantee, not just a halt page."""
+    cfg, _, _ = _config_web_kb(tmp_path, corrupt=True)
+    built = _spy_anthropic(monkeypatch)
+    c = TestClient(create_app(cfg))
+
+    r = c.post("/ask", data={"question": "who is A?"})
+
+    assert r.status_code == 409
+    assert "did not choose" in r.text  # the config_corrupt page, not a stack trace
+    assert built == []  # no bytes left the machine
+
+
+def test_sources_upload_on_corrupt_config_halts_before_extraction(tmp_path, monkeypatch):
+    """`/sources` refuses on the triggering request itself (the synchronous hoist
+    in `_start_source_extraction`), so no adapter is built and no doomed worker
+    runs."""
+    cfg, _, _ = _config_web_kb(tmp_path, corrupt=True)
+    built = _spy_anthropic(monkeypatch)
+    c = TestClient(create_app(cfg))
+
+    r = c.post("/sources", files={"file": ("note.txt", b"some text", "text/plain")})
+
+    assert r.status_code == 409
+    assert built == []
+
+
+def test_read_only_route_stays_reachable_under_corrupt_config(tmp_path):
+    """No over-blocking: `/review` reads no provider, so a deliberate absence of a
+    config middleware leaves it reachable at 200 while config is corrupt."""
+    cfg, _, _ = _config_web_kb(tmp_path, corrupt=True)
+    c = TestClient(create_app(cfg))
+
+    r = c.get("/review")
+
+    assert r.status_code == 200
+    assert "is_a" in r.text  # the reviewable fact renders normally
+
+
+def test_settings_test_over_htmx_redirects_not_inline(tmp_path):
+    """htmx never swaps a 4xx into the DOM (#173), so the handler answers an htmx
+    request with HX-Redirect to the full-page halt, not an inline 409 body."""
+    cfg, _, _ = _config_web_kb(tmp_path, corrupt=True)
+    c = TestClient(create_app(cfg))
+
+    r = c.post("/settings/test", headers={"HX-Request": "true"})
+
+    assert r.status_code == 409
+    assert r.headers.get("HX-Redirect") == webapp.CONFIG_UNAVAILABLE_PATH
+    # An htmx halt sends no inline body to be (silently) swallowed.
+    assert "did not choose" not in r.text
+
+
+def test_settings_page_reachable_and_warns_under_corrupt_config(tmp_path):
+    """`/settings` is the recovery page: it must stay reachable AND must not present
+    the fallback provider as if it were the user's saved choice."""
+    cfg, _, _ = _config_web_kb(tmp_path, corrupt=True)
+    c = TestClient(create_app(cfg))
+
+    r = c.get("/settings")
+
+    assert r.status_code == 200
+    body = " ".join(unescape(r.text).split())  # collapse template line-breaks
+    assert "built-in defaults" in body  # the warning banner
+    assert "not your saved choice" in body
+
+
+def test_resaving_valid_settings_clears_the_config_halt(tmp_path, monkeypatch, fake_client):
+    """Re-saving a provider writes a fresh valid file; the app re-resolves and the
+    next provider call goes through instead of halting."""
+    cfg, _, _ = _config_web_kb(tmp_path, corrupt=True)
+    app = create_app(cfg)
+    c = TestClient(app)
+
+    r = c.post("/settings", data={"provider": "ollama", "model": "llama3.1"})
+    assert r.status_code == 200  # followed the 303 redirect back to /settings
+    assert app.state.cfg.settings_error is None  # halt cleared on re-resolution
+
+    # And a provider call now reaches the client instead of 409-ing.
+    monkeypatch.setattr(
+        webapp, "get_client", lambda cfg: fake_client([ExtractedFact("A", "is_a", "B", 0.9)])
+    )
+    assert c.post("/settings/test").status_code == 200
+    assert "built-in defaults" not in c.get("/settings").text  # warning gone
+
+
+def test_mid_session_corruption_is_caught_at_the_next_resolution(tmp_path, monkeypatch):
+    """Healthy at create_app, corrupted on disk afterward: the next re-resolution
+    (re-opening the same root) must read DISK and catch it, not trust a cached
+    healthy dict from launch time.
+
+    The same action is the discriminator: re-opening the root succeeds (303) while
+    healthy, and is refused (400) once the file is corrupt.
+
+    This covers the explicit re-open path specifically. A passive on-disk corruption
+    with NO re-open keeps serving the cached (last-good) cfg, which is safe precisely
+    because `cfg.settings_error` is a one-time snapshot — the same frozen-snapshot
+    semantics that make the worker-thread ConfigCorruptError clause unreachable today
+    (see `test_worker_config_corrupt_does_not_mark_the_job_failed`) are what keep the
+    stale window from ever silently switching provider."""
+    cfg, _, _ = _config_web_kb(tmp_path, corrupt=False)  # valid ollama config
+    app = create_app(cfg)
+    c = TestClient(app)
+    assert app.state.cfg.settings_error is None
+
+    # Baseline: re-opening the (healthy) current root works.
+    r = c.post("/settings/root", data={"root": str(tmp_path)}, follow_redirects=False)
+    assert r.status_code == 303
+    assert app.state.cfg.provider == "ollama"
+
+    # Corrupt the current KB's config on disk, then re-open the same root.
+    (tmp_path / "config.json").write_text("{bad json", encoding="utf-8")
+    built = _spy_anthropic(monkeypatch)
+    r = c.post("/settings/root", data={"root": str(tmp_path)}, follow_redirects=False)
+
+    assert r.status_code == 400  # caught, not a stale/cached 303 false-negative
+    assert "config.json is corrupt" in unescape(r.text)
+    assert app.state.cfg.provider == "ollama"  # old healthy cfg still active
+    assert built == []
+
+
+def test_switching_root_to_a_corrupt_kb_is_refused_inline(tmp_path, monkeypatch):
+    """Switching from a healthy KB into a corrupt-config KB is refused inline (400)
+    with the OLD KB still active — never a transient swap into an untrusted cfg."""
+    healthy = tmp_path / "healthy"
+    corrupt = tmp_path / "corrupt"
+    healthy.mkdir()
+    corrupt.mkdir()
+    active_cfg, _, _ = _config_web_kb(healthy, corrupt=False)  # provider=ollama
+    _config_web_kb(corrupt, corrupt=True)
+
+    app = create_app(active_cfg)
+    c = TestClient(app)
+    built = _spy_anthropic(monkeypatch)
+
+    r = c.post("/settings/root", data={"root": str(corrupt)}, follow_redirects=False)
+
+    assert r.status_code == 400
+    assert "config.json is corrupt" in unescape(r.text)
+    # The old KB stays active: root unchanged, provider not swapped to the fallback.
+    assert app.state.cfg.root == healthy.resolve()
+    assert app.state.cfg.provider == "ollama"
+    assert built == []
+
+
+def test_launching_the_ui_on_a_corrupt_config_resumes_nothing(tmp_path, monkeypatch):
+    """A corrupt config discovered at launch resumes no jobs and touches nothing —
+    zero HTTP requests, and still the pending job must not be started or failed.
+    Mirrors `test_launching_the_ui_on_a_halted_kb_resumes_nothing` for #269."""
+    cfg, _, job_id = _config_web_kb(tmp_path, corrupt=True, with_job=True)
+    clients = []
+    monkeypatch.setattr(webapp, "get_client", lambda cfg: clients.append(cfg))
+    before = _job_row(cfg, job_id)
+
+    create_app(cfg)
+
+    time.sleep(0.2)  # a worker, had one started, would have written by now
+    assert clients == []  # no worker was started at all
+    assert _job_row(cfg, job_id) == before  # job untouched: still pending
+    assert before["status"] == "pending"
+    assert _job_event_types(cfg, job_id) == []  # no started / failed / rolled_back
+
+
+def test_launching_the_ui_on_a_valid_config_still_resumes(tmp_path, monkeypatch, fake_client):
+    """The config gate above refuses a *corrupt* config, not every config: a valid
+    one with a pending job still resumes normally."""
+    cfg, _, job_id = _config_web_kb(tmp_path, corrupt=False, with_job=True)
+    monkeypatch.setattr(
+        webapp, "get_client", lambda cfg: fake_client([ExtractedFact("X", "is_a", "Y", 0.9)])
+    )
+
+    create_app(cfg)  # the resume worker runs off a daemon thread started here
+
+    def resumed():
+        assert _job_row(cfg, job_id)["status"] == "done"
+
+    _wait_for(resumed)
+
+
+def test_worker_config_corrupt_does_not_mark_the_job_failed(tmp_path, monkeypatch, fake_client):
+    """`except ConfigCorruptError` must stay ABOVE `except Exception` in the worker.
+
+    This exercises an INJECTED scenario, not a naturally-occurring race: the worker's
+    get_client(cfg) reads the SAME frozen cfg that already passed the synchronous
+    hoist, and `cfg.settings_error` is a one-time `Config.for_root` snapshot, so today
+    the thread can never independently observe a fresher corruption. We monkeypatch
+    get_client to raise ConfigCorruptError to prove the clause is load-bearing IF such
+    an error were ever raised there (a future get_client that re-reads disk, or a
+    caller that passes a different cfg into the thread). A corrupt config is a
+    host/environment condition, not content-attributable, so the worker must write
+    NOTHING — not bury the job in `failed` (a misleading "analysis failed") and burn
+    this session's retry budget. Below `except Exception`, the generic handler would
+    call `fail_extraction_job`; this test pins that it does not."""
+    cfg, job_id, _ = _job_kb(tmp_path, with_policy=True)  # healthy cfg -> hoist passes
+    called = threading.Event()
+
+    def corrupt_at_get_client(cfg):
+        # Stand in for "config.json went corrupt after the hoist check": the worker
+        # reaches get_client and it raises the same error get_client would.
+        called.set()
+        raise ConfigCorruptError("config.json is not valid JSON")
+
+    monkeypatch.setattr(webapp, "get_client", corrupt_at_get_client)
+
+    create_app(cfg)  # resumes the pending job -> worker thread -> get_client raises
+
+    assert called.wait(timeout=2.0)
+    time.sleep(0.2)  # let a (wrong) fail_extraction_job land, if the order regressed
+    job = _job_row(cfg, job_id)
+    assert job["status"] == "pending", "a corrupt-config race buried the job in `failed`"
+    assert "analysis failed" not in (job["message"] or "")
+    assert "extraction_job_failed" not in _job_event_types(cfg, job_id)

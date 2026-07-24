@@ -2112,3 +2112,62 @@ def test_sync_returns_a_stale_confirmed_fact_to_review(
     assert london_row["status"] == "needs_review"
     assert london_row["stale"] == 1
     assert london_row["id"] in [f["id"] for f in s2.review_queue()]
+
+
+# --- #269: a corrupt config.json refuses writes before dispatch; read-only and
+#     launcher subcommands (which never call a provider) stay exempt ---
+
+
+def test_sync_refuses_on_corrupt_config_before_constructing_a_client(
+    tmp_path, monkeypatch, capsys
+):
+    _env(monkeypatch, tmp_path)
+    (tmp_path / "config.json").write_text("{bad json", encoding="utf-8")
+    src = tmp_path / "note.txt"
+    src.write_text("hello", encoding="utf-8")
+    # The sole gateway to an adapter; a recording spy proves dispatch never reached
+    # it, so no bytes could have left the machine.
+    calls = []
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: calls.append(cfg))
+
+    rc = cli.main(["sync", str(src)])
+
+    assert rc == 2  # refused before dispatch, same code as the halted-KB refusal
+    assert calls == []  # no client constructed
+    err = capsys.readouterr().err
+    assert str(tmp_path / "config.json") in err
+    assert "not valid JSON" in err
+
+
+def test_status_is_exempt_from_corrupt_config(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    assert cli.main(["init"]) == 0  # a real KB, config.json still absent here
+    (tmp_path / "config.json").write_text("{bad json", encoding="utf-8")
+    capsys.readouterr()
+
+    # `status` is halt_safe and calls no provider, so a corrupt config cannot leak
+    # through it — refusing would only strand the user's one diagnostic surface.
+    assert cli.main(["status"]) == 0
+
+
+def test_coverage_is_exempt_from_corrupt_config(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    assert cli.main(["init"]) == 0
+    (tmp_path / "config.json").write_text("{bad json", encoding="utf-8")
+    capsys.readouterr()
+
+    assert cli.main(["coverage"]) == 0
+
+
+def test_ui_is_exempt_from_corrupt_config(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    assert cli.main(["init"]) == 0
+    (tmp_path / "config.json").write_text("{bad json", encoding="utf-8")
+    capsys.readouterr()
+    # The web app renders its own proper config-corrupt halt page, so `ui` must
+    # still launch (halt_safe) rather than be refused at the CLI.
+    started = []
+    monkeypatch.setattr("uvicorn.run", lambda *a, **k: started.append(True))
+
+    assert cli.main(["ui", "--no-browser"]) == 0
+    assert started == [True]  # dispatch reached cmd_ui, not the refusal

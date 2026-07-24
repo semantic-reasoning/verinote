@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Config unreadable — verinote</title>
+  <link rel="stylesheet" href="/static/app.css?v=4">
+</head>
+<body>
+  <main class="chooser">
+    <h1>Configuration halted: this KB's config.json is unreadable</h1>
+
+    {# There is deliberately no "proceed anyway" button: proceeding is exactly the
+       silent cloud fallback this halt exists to prevent. Recovery is restoring the
+       file or re-saving a provider, both human decisions. #}
+    <p class="error" role="alert">verinote could not read this KB's
+      <code>config.json</code>, so it refused to proceed rather than silently
+      defaulting to a cloud provider you did not choose.{% if reason %} ({{ reason }}){% endif %}</p>
+
+    <p class="muted">Your saved provider choice cannot be trusted while the file is
+      corrupt. Recover by either restoring <code>config.json</code> from a backup or
+      version control, or opening <a href="/settings">Settings</a> and re-saving your
+      provider. Re-saving writes a fresh, valid file and clears this immediately; if
+      you restored the file another way, restart verinote or re-open this KB.</p>
+
+    <p><a href="/settings">Settings</a> · <a href="/">Dashboard</a></p>
+  </main>
+</body>
+</html>

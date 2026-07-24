@@ -6,6 +6,14 @@
   freely. Non-secret model settings are saved to that KB's <code>config.json</code>;
   the API key stays in the environment (<code>VERINOTE_API_KEY</code>).</p>
 
+{% if settings_error %}
+<p class="warn" role="alert">This KB's <code>config.json</code> is unreadable, so the
+  provider and model shown below are verinote's built-in defaults, <strong>not your
+  saved choice</strong>. Extraction and other provider calls are refused until it is
+  fixed. Re-save the provider below to write a fresh valid file, or restore
+  <code>config.json</code> from a backup. ({{ settings_error }})</p>
+{% endif %}
+
 <h2>Knowledge base</h2>
 <form class="settings" action="/settings/root" method="post">
   <label>Directory
