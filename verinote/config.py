@@ -111,6 +111,24 @@ def app_config_path() -> Path:
     return app_config_dir() / APP_CONFIG_FILENAME
 
 
+def _bad_config_reason(path: Path, error: Exception | None) -> str:
+    """Classify why a *present* config file cannot be used, as one plain line.
+
+    The single source of that classification: the CLI's stderr warning
+    (`_warn_bad_config`) and the web/GUI halt text (`Config.settings_error`) both
+    derive from it, so the two surfaces can never describe the same corrupt file
+    in different words. `error` is the raised exception, or None for a well-formed
+    JSON value that simply is not an object.
+    """
+    if isinstance(error, OSError):
+        return f"could not read {path}: {error}"
+    if isinstance(error, UnicodeDecodeError):
+        return f"could not decode {path} as UTF-8"
+    if isinstance(error, json.JSONDecodeError):
+        return f"{path} is not valid JSON"
+    return f"{path} is not a JSON object"
+
+
 def _warn_bad_config(path: Path, error: Exception | None, consequence: str) -> None:
     """Warn on stderr that a config file is unreadable and is being ignored.
 
@@ -119,15 +137,7 @@ def _warn_bad_config(path: Path, error: Exception | None, consequence: str) -> N
     real corruption from the user. `error` is the raised exception, or None for
     a well-formed JSON value that simply is not an object.
     """
-    if isinstance(error, OSError):
-        reason = f"could not read {path}: {error}"
-    elif isinstance(error, UnicodeDecodeError):
-        reason = f"could not decode {path} as UTF-8; ignoring it"
-    elif isinstance(error, json.JSONDecodeError):
-        reason = f"{path} is not valid JSON; ignoring it"
-    else:
-        reason = f"{path} is not a JSON object; ignoring it"
-    print(f"warning: {reason}; {consequence}", file=sys.stderr)
+    print(f"warning: {_bad_config_reason(path, error)}; {consequence}", file=sys.stderr)
 
 
 def read_app_config() -> dict:
@@ -237,6 +247,32 @@ def read_settings(root: Path) -> dict:
     return data
 
 
+def _settings_error(root: Path) -> str | None:
+    """Why the KB's saved settings file is unusable, or None if fine or absent.
+
+    A *missing* file is never an error — a fresh KB legitimately has none, and
+    reporting one would spuriously halt it. Only a file that is PRESENT but
+    unreadable/corrupt yields a reason. Shares `_bad_config_reason` with the CLI
+    stderr warning so the web/GUI halt and the warning describe the same file the
+    same way.
+
+    Deliberately re-reads the file rather than inferring from `read_settings`'s
+    `{}` return: an empty `{}` is ambiguous (a valid empty object returns it too),
+    and `read_settings`'s return contract is left untouched — per-key validation
+    of its body is a separate concern (#325).
+    """
+    path = _settings_path(root)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as err:
+        return _bad_config_reason(path, err)
+    if not isinstance(data, dict):
+        return _bad_config_reason(path, None)
+    return None
+
+
 def save_settings(
     root: Path,
     *,
@@ -337,6 +373,12 @@ class Config:
     extraction_chunk_overlap_chars: int = 40
     extraction_max_facts_per_chunk: int = 8
     auto_accept_recommendations: bool = False
+    # Set only when the settings file is PRESENT but unreadable/corrupt (never on
+    # a missing file — absence is legitimate). A trailing, defaulted field so no
+    # existing `Config(...)` construction site has to change. `assert_settings_intact`
+    # turns it into the halt that keeps a corrupt config from silently defaulting
+    # to a cloud provider the user never chose (#269).
+    settings_error: str | None = None
 
     def extraction_schema_hint(self) -> str:
         return render_prompt(
@@ -386,6 +428,7 @@ class Config:
             extraction_chunk_overlap_chars=chunk_overlap,
             extraction_max_facts_per_chunk=max_facts,
             auto_accept_recommendations=auto_accept,
+            settings_error=_settings_error(root),
         )
 
     @classmethod
@@ -396,3 +439,34 @@ class Config:
     def load_for_ui(cls) -> "Config | None":
         root = active_root()
         return cls.for_root(root) if root is not None else None
+
+
+class ConfigCorruptError(RuntimeError):
+    """Raised when a KB's `config.json` is present but unreadable/corrupt.
+
+    Deliberately NOT an `LLMError`: several `except LLMError` blocks wrap the very
+    `get_client()` call sites this guards (the web `/ask`, `/settings/test`, and
+    the CLI extraction path). Being an `LLMError` would let those blocks swallow
+    the halt into a generic "provider failed" message instead of reaching the
+    dedicated config-corrupt handler — and the whole point is that a corrupt
+    config must NOT silently fall back to the cloud default provider the user
+    never chose (#269).
+    """
+
+
+def assert_settings_intact(cfg: Config) -> None:
+    """Refuse to proceed when the KB's settings file is present but corrupt.
+
+    The single confidentiality predicate: `llm.factory.get_client` and every
+    explicit web/CLI checkpoint ask *this*, so none of them can disagree about
+    when a corrupt config halts. A corrupt `config.json` makes the resolved
+    provider untrustworthy — the user's saved `ollama` may have silently become
+    the `anthropic` cloud default — so any path that could reach a provider halts
+    instead of leaking to a cloud the user never consented to.
+
+    Mirrors `pipeline.policy_state.assert_writable`: a pure predicate over already
+    resolved state, raising the one dedicated error its callers catch. A missing
+    file is never corrupt, so a fresh KB with no `config.json` never halts here.
+    """
+    if cfg.settings_error is not None:
+        raise ConfigCorruptError(cfg.settings_error)

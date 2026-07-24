@@ -5,15 +5,18 @@ import pytest
 
 from verinote.config import (
     Config,
+    ConfigCorruptError,
     PROVIDERS,
     TESTABLE_PROVIDERS,
     active_root,
     app_config_path,
+    assert_settings_intact,
     read_app_config,
     read_settings,
     save_active_root,
     save_settings,
 )
+from verinote.llm.base import LLMError
 
 
 def test_save_and_read_round_trip(tmp_path):
@@ -378,3 +381,74 @@ def test_read_app_config_oserror_warns(tmp_path, monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "could not read" in err
     assert str(path) in err
+
+
+# --- #269: a corrupt config.json must halt, not silently fall back to the cloud ---
+
+
+def test_absent_config_sets_no_settings_error(tmp_path):
+    # The critical discriminator: a fresh KB with no config.json is legitimate and
+    # must never be flagged — a naive "flag whenever the dict is empty"
+    # implementation would spuriously halt every brand-new KB.
+    cfg = Config.for_root(tmp_path)
+    assert cfg.settings_error is None
+    assert_settings_intact(cfg)  # must not raise
+
+
+def test_valid_config_sets_no_settings_error(tmp_path):
+    save_settings(tmp_path, provider="ollama", model="llama3.1")
+    cfg = Config.for_root(tmp_path)
+    assert cfg.settings_error is None
+    assert_settings_intact(cfg)  # must not raise
+
+
+def test_broken_json_config_sets_settings_error_but_still_resolves(tmp_path, capsys):
+    save_settings(tmp_path, provider="ollama", model="llama3.1")
+    (tmp_path / "config.json").write_text("{bad", encoding="utf-8")
+    capsys.readouterr()  # drop the loader's stderr warning
+
+    cfg = Config.for_root(tmp_path)
+
+    assert cfg.settings_error is not None
+    assert str(tmp_path / "config.json") in cfg.settings_error
+    assert "not valid JSON" in cfg.settings_error
+    # The provider still resolves (to the built-in default) — the point is that a
+    # halt guards that fallback, not that resolution itself fails.
+    assert cfg.provider == "anthropic"
+
+
+def test_invalid_utf8_config_sets_settings_error(tmp_path, capsys):
+    (tmp_path / "config.json").write_bytes(b"\xff\xfe\x00bad")
+    capsys.readouterr()
+    cfg = Config.for_root(tmp_path)
+    assert cfg.settings_error is not None
+    assert "could not decode" in cfg.settings_error
+
+
+def test_non_dict_config_sets_settings_error(tmp_path, capsys):
+    (tmp_path / "config.json").write_text("[]", encoding="utf-8")
+    capsys.readouterr()
+    cfg = Config.for_root(tmp_path)
+    assert cfg.settings_error is not None
+    assert "not a JSON object" in cfg.settings_error
+
+
+def test_assert_settings_intact_raises_only_when_error_set(tmp_path, capsys):
+    (tmp_path / "config.json").write_text("{bad", encoding="utf-8")
+    capsys.readouterr()
+    corrupt = Config.for_root(tmp_path)
+
+    with pytest.raises(ConfigCorruptError) as excinfo:
+        assert_settings_intact(corrupt)
+    # The raised message is the settings_error reason verbatim, so the CLI/web
+    # surfaces cannot describe the same file in different words.
+    assert str(excinfo.value) == corrupt.settings_error
+
+
+def test_config_corrupt_error_is_not_an_llm_error():
+    # Load-bearing: several `except LLMError` blocks wrap the very get_client()
+    # sites this guards. If ConfigCorruptError were an LLMError it would be
+    # swallowed there into a generic provider-failure message instead of reaching
+    # the dedicated halt handler.
+    assert not issubclass(ConfigCorruptError, LLMError)
+    assert not isinstance(ConfigCorruptError("x"), LLMError)

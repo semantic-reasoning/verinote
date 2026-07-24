@@ -24,7 +24,9 @@ from verinote.config import (
     PROVIDERS,
     TESTABLE_PROVIDERS,
     Config,
+    ConfigCorruptError,
     app_config_path,
+    assert_settings_intact,
     save_active_root,
     save_settings,
 )
@@ -115,6 +117,11 @@ _POLICY_GUARD_WRITE_PATHS = ("/kb/select", "/settings/root")
 # swaps are redirected here (HX-Redirect) because htmx will not swap an error
 # response into the DOM -- see `_fact_terms_unreadable_handler`.
 FACT_TERMS_UNAVAILABLE_PATH = "/fact-terms-unavailable"
+
+# Full-page halt shown when this KB's config.json is present but corrupt. Same
+# HX-Redirect treatment as the fact-terms halt for the same htmx reason -- see
+# `_config_corrupt_handler`.
+CONFIG_UNAVAILABLE_PATH = "/config-unavailable"
 
 
 def _matches(path: str, allowed: tuple[str, ...]) -> bool:
@@ -234,6 +241,45 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         DuckDBFactTermStoreError, _fact_terms_unreadable_handler
     )
 
+    def _config_corrupt_page(request: Request, reason: str | None):
+        return templates.TemplateResponse(
+            request,
+            "config_corrupt.html",
+            {"reason": reason},
+            status_code=409,
+        )
+
+    @app.get(CONFIG_UNAVAILABLE_PATH, response_class=HTMLResponse)
+    def config_unavailable(request: Request):
+        # The full-page halt and the HX-Redirect target below. It reads no config
+        # file, so it still renders while config.json is corrupt; the already
+        # resolved `settings_error` field is shown for context when present.
+        cfg = app.state.cfg
+        return _config_corrupt_page(request, cfg.settings_error if cfg else None)
+
+    def _config_corrupt_handler(request: Request, exc: Exception):
+        """One loud, non-lying halt for every surface that would reach a provider
+        under a corrupt config.json.
+
+        Refusing here rather than silently resolving to the cloud default is the
+        whole point (#269): a user who chose `ollama` must not have a corrupt
+        config quietly ship their next extraction to `anthropic`.
+
+        htmx will NOT swap a 4xx/5xx response into the DOM -- it fires
+        `htmx:responseError` and swaps nothing -- so answering an htmx request
+        with an inline page would be a *silent* no-op, the failure #173 forbids.
+        For htmx requests we send HX-Redirect to force a full-page navigation to
+        the halt page; full-page requests render it inline at 409.
+        """
+        if request.headers.get("HX-Request") == "true":
+            return Response(
+                status_code=409,
+                headers={"HX-Redirect": CONFIG_UNAVAILABLE_PATH},
+            )
+        return _config_corrupt_page(request, str(exc))
+
+    app.add_exception_handler(ConfigCorruptError, _config_corrupt_handler)
+
     def _active_store() -> Store:
         store = app.state.store
         if store is None:
@@ -334,6 +380,10 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         root = root.expanduser().resolve()
         root.mkdir(parents=True, exist_ok=True)
         next_cfg = Config.for_root(root)
+        # Refuse BEFORE installing: transiently swapping in a corrupt cfg would let
+        # a provider call in the gap resolve to the silent cloud default. On a
+        # raise the old healthy cfg stays active and the caller renders the halt.
+        assert_settings_intact(next_cfg)
         next_store = Store(next_cfg.db_path)
         next_store.init_schema()
 
@@ -811,6 +861,13 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         retry: bool = False,
         retry_max_attempts: int | None = None,
     ) -> None:
+        # SYNCHRONOUS and OUTSIDE run(): raise on the triggering request itself so a
+        # corrupt config returns an immediate 409 instead of silently queuing a
+        # background job doomed to reach the cloud default. The worker's own
+        # get_client(cfg) below stays as a narrow backstop for the race window
+        # between this check and the thread actually running (#269).
+        assert_settings_intact(cfg)
+
         def run() -> None:
             try:
                 with Store(cfg.db_path) as worker_store:
@@ -916,6 +973,25 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                     "extraction job %s already owned by another worker; not started here",
                     job_id,
                 )
+            except ConfigCorruptError as exc:
+                # ORDER IS LOAD-BEARING — above `except Exception`. Defense-in-depth,
+                # NOT a currently-reachable path: the worker's get_client(cfg) reads
+                # the SAME frozen cfg that already passed the synchronous hoist check
+                # above, and `cfg.settings_error` is a one-time snapshot taken in
+                # `Config.for_root`, so today the thread can never independently
+                # observe a fresher corruption than the hoist already cleared. This
+                # clause exists so that if that ever changes — a future get_client
+                # that re-reads disk, or a caller that passes a *different* cfg into
+                # the thread — a corrupt config (a host/environment condition, not
+                # content-attributable) still writes NOTHING here (mirror
+                # `except PolicyMissingError`) instead of falling through to
+                # `except Exception`, which would call `fail_extraction_job` —
+                # burying the job in `failed` with a misleading "analysis failed" and
+                # consuming this session's MAX_CHUNK_ATTEMPTS retry budget for a cause
+                # unrelated to the source content (#269).
+                logger.warning(
+                    "extraction job %s halted (config.json corrupt): %s", job_id, exc
+                )
             except LLMError as e:
                 with Store(cfg.db_path) as worker_store:
                     worker_store.init_schema()
@@ -973,6 +1049,14 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         `updated_at`) and is filed as a follow-up, not solved here.
         """
         if app.state.store is None or app.state.cfg is None:
+            return
+        try:
+            assert_settings_intact(app.state.cfg)
+        except ConfigCorruptError as exc:
+            # Same shape as the policy gate below: launching against a corrupt
+            # config must not resume a job that would reach the cloud default with
+            # zero HTTP requests made. Log and touch nothing (#269).
+            logger.warning("not resuming extraction jobs: %s", exc)
             return
         try:
             assert_writable(app.state.store)
@@ -1433,6 +1517,11 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 "relation_aliases": _relation_aliases_text(),
                 "test_result": test_result,
                 "error": error,
+                # /settings is deliberately reachable during the halt (it is the
+                # recovery page). When config.json is corrupt the provider shown
+                # above is the built-in default, NOT the user's saved choice, so
+                # warn instead of silently presenting it as chosen (#269).
+                "settings_error": c.settings_error,
             },
             status_code=status_code,
         )
@@ -1526,6 +1615,14 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             return _settings(request, error="KB directory is required", status_code=400)
         try:
             _open_root(Path(path))
+        except ConfigCorruptError as e:
+            # The target KB's config.json is corrupt. Leave the current KB active
+            # rather than switch into one whose provider we cannot trust (#269).
+            return _settings(
+                request,
+                error=f"refused to open KB — its config.json is corrupt: {e}",
+                status_code=400,
+            )
         except OSError as e:
             return _settings(request, error=f"could not open KB directory: {e}", status_code=400)
         return RedirectResponse("/", status_code=303)

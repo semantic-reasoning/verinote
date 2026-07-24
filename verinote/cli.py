@@ -1264,6 +1264,28 @@ def _refuse_on_halted_kb(cfg: Config | None) -> int | None:
     return None
 
 
+def _refuse_on_corrupt_config(cfg: Config | None) -> int | None:
+    """Exit code to return instead of running a write on a corrupt config, or None.
+
+    Asked once, in `main`, for every subcommand that did not declare itself
+    `halt_safe`. Simpler than `_refuse_on_halted_kb`: it opens no Store — the
+    corruption verdict is already resolved onto `cfg.settings_error`, so this only
+    turns it into the same rc=2 refusal. A corrupt `config.json` must not silently
+    resolve to the cloud default provider the user never chose (#269). A missing
+    file is never corrupt, so a fresh KB is unaffected.
+    """
+    from verinote.config import ConfigCorruptError, assert_settings_intact
+
+    if cfg is None:
+        return None
+    try:
+        assert_settings_intact(cfg)
+    except ConfigCorruptError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    return None
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the CLI.
 
@@ -1402,6 +1424,11 @@ def main(argv: list[str] | None = None) -> int:
     # dispatch, because every subcommand goes through this one line — a guard
     # sprinkled per-command is a guard the next command will forget.
     if not getattr(args, "halt_safe", False):
+        # Corrupt config first: it makes the resolved provider itself untrustworthy,
+        # and unlike the halt check it opens no Store. Then the halted-KB check.
+        refusal = _refuse_on_corrupt_config(cfg)
+        if refusal is not None:
+            return refusal
         refusal = _refuse_on_halted_kb(cfg)
         if refusal is not None:
             return refusal
