@@ -1306,6 +1306,57 @@ def _job_event_types(cfg, job_id):
         ]
 
 
+def _empty_policy_web_kb(tmp_path, *, text=""):
+    """A KB that recorded a real policy whose file has since been truncated to
+    empty. Returns (cfg, fact_id): the fact is reviewable, so a POST acting on it
+    is a genuine write the halt guard must refuse (#171)."""
+    cfg = Config(
+        root=tmp_path,
+        db_path=tmp_path / "kb.sqlite",
+        provider="anthropic",
+        model="m",
+        api_key=None,
+        base_url=None,
+    )
+    policy = tmp_path / POLICY_RELPATH
+    with Store(cfg.db_path) as store:
+        store.init_schema()
+        fact_id = store.add_fact("A", "is_a", "B", status="needs_review", confidence=0.9)
+        policy.parent.mkdir(parents=True, exist_ok=True)
+        policy.write_text(DEFAULT_POLICY, encoding="utf-8")
+        store.record_policy_marker(policy_sha256(DEFAULT_POLICY), origin="scaffold")
+    policy.write_text(text, encoding="utf-8")  # truncated to empty under the KB
+    return cfg, fact_id
+
+
+def test_web_mutating_route_returns_409_on_an_empty_policy_kb(tmp_path):
+    """#171: an empty-policy KB is halted for writes on the web too. A mutating
+    route (accepting a fact) is refused by the existing middleware guard with the
+    existing 409 halted page — no new template — because PolicyEmptyError is a
+    PolicyMissingError that guard already catches."""
+    cfg, fact_id = _empty_policy_web_kb(tmp_path)
+    c = TestClient(create_app(cfg))
+
+    r = c.post(f"/facts/{fact_id}/accept")
+
+    assert r.status_code == 409
+    assert "empty" in r.text
+    assert "policy reset --force" in r.text
+
+
+def test_web_report_renders_the_empty_policy_diagnosis(tmp_path):
+    """/report is exempt from the write guard and calls verify() directly, so it
+    renders the new empty-policy diagnosis instead of the cryptic engine error."""
+    cfg, _ = _empty_policy_web_kb(tmp_path)
+    c = TestClient(create_app(cfg))
+
+    r = c.get("/report")
+
+    assert r.status_code == 200
+    assert "empty" in r.text
+    assert "must declare relation/3" not in r.text
+
+
 def test_launching_the_ui_on_a_halted_kb_resumes_nothing(tmp_path, monkeypatch, fake_client):
     """Zero HTTP requests, and still the launcher used to write to a halted KB (#194).
 

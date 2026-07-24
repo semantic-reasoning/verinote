@@ -19,9 +19,11 @@ from verinote.pipeline.policy_state import (
     POLICY_UNRECORDED_BANNER,
     POLICY_UNRECORDED_FINDING,
     POLICY_UNRECORDED_NO_FINDINGS_TEXT,
+    PolicyEmptyError,
     PolicyMissingError,
     PolicyState,
     PolicyStatus,
+    policy_empty_message,
     policy_missing_message,
     policy_path,
     resolve_policy,
@@ -30,6 +32,7 @@ from verinote.store import Store
 
 __all__ = [
     "POLICY_RELPATH",
+    "PolicyEmptyError",
     "PolicyMissingError",
     "PolicyState",
     "PolicyStatus",
@@ -60,14 +63,17 @@ def load_policy(store: Store) -> str | None:
     """The KB's policy text, or None to use the shipped default.
 
     Raises `PolicyMissingError` when the KB recorded a policy file that is now
-    gone: returning None there would silently substitute the shipped default for
-    rules a human wrote. Every policy consumer (verification and the
+    gone, and `PolicyEmptyError` (its subclass) when the file exists but is empty:
+    returning None in either case would silently substitute the shipped default
+    for rules a human wrote. Every policy consumer (verification and the
     corroboration/acceptance gates alike) goes through here, so none of them can
     quietly disagree about what this KB's rules are.
     """
     state = resolve_policy(store)
     if state.status is PolicyStatus.MISSING_RECORDED:
         raise PolicyMissingError(policy_missing_message(state))
+    if state.status is PolicyStatus.PRESENT_EMPTY:
+        raise PolicyEmptyError(policy_empty_message(state))
     if state.status is PolicyStatus.PRESENT:
         return state.text
     return None
@@ -87,6 +93,19 @@ def verify(store: Store) -> CheckReport:
             warnings=0,
             text=f"backend: DuckDB\n\npolicy error: {message}",
             findings=[f"ERROR policy_missing: {message}"],
+        )
+    # BEFORE the engine runs: an empty policy declares no `relation/3`, so letting
+    # it reach the backend produces the cryptic "program must declare relation/3"
+    # that names "policy/engine" but never the real cause. Halt here with the
+    # honest diagnosis instead (#171). Mirrors the MISSING_RECORDED branch above.
+    if state.status is PolicyStatus.PRESENT_EMPTY:
+        message = policy_empty_message(state)
+        return CheckReport(
+            ok=False,
+            errors=1,
+            warnings=0,
+            text=f"backend: DuckDB\n\npolicy error: {message}",
+            findings=[f"ERROR policy_empty: {message}"],
         )
 
     try:

@@ -117,8 +117,10 @@ def _scaffold_policy(cfg: Config, store: Store) -> Path | None:
     --force`).
     """
     from verinote.pipeline.policy_state import (
+        PolicyEmptyError,
         PolicyMissingError,
         PolicyStatus,
+        policy_empty_message,
         policy_missing_message,
         resolve_policy,
         write_default_policy,
@@ -129,6 +131,12 @@ def _scaffold_policy(cfg: Config, store: Store) -> Path | None:
         return None
     if state.status is PolicyStatus.MISSING_RECORDED:
         raise PolicyMissingError(policy_missing_message(state))
+    # An empty file is present, so it must not be overwritten with the default
+    # here: recovery is the explicit `policy reset --force`, never a silent
+    # re-scaffold. The pre-dispatch halt guard normally catches this first; this
+    # branch is the backstop so a direct call cannot misbehave (#171).
+    if state.status is PolicyStatus.PRESENT_EMPTY:
+        raise PolicyEmptyError(policy_empty_message(state))
     return write_default_policy(store, cfg.root, origin="scaffold")
 
 
@@ -424,17 +432,24 @@ def _policy_marker_ro(conn: sqlite3.Connection) -> dict[str, object] | None:
 
 
 def _policy_state_ro(conn: sqlite3.Connection, cfg: Config):
-    from verinote.pipeline.policy_state import POLICY_RELPATH, PolicyState, PolicyStatus
+    from verinote.pipeline.policy_state import (
+        POLICY_RELPATH,
+        PolicyState,
+        PolicyStatus,
+        _policy_text_is_empty,
+    )
 
     path = cfg.root / POLICY_RELPATH
     marker = _policy_marker_ro(conn)
     if path.is_file():
-        return PolicyState(
-            status=PolicyStatus.PRESENT,
-            path=path,
-            text=path.read_text(encoding="utf-8"),
-            marker=marker,
+        # Shares `_policy_text_is_empty` with `resolve_policy` so this read-only
+        # reimplementation (used by `status`/`coverage`) cannot drift from it and
+        # keep reporting "ok" on an empty-policy KB the write path already halts.
+        text = path.read_text(encoding="utf-8")
+        status = (
+            PolicyStatus.PRESENT_EMPTY if _policy_text_is_empty(text) else PolicyStatus.PRESENT
         )
+        return PolicyState(status=status, path=path, text=text, marker=marker)
     if marker is not None:
         return PolicyState(status=PolicyStatus.MISSING_RECORDED, path=path, marker=marker)
     return PolicyState(status=PolicyStatus.UNRECORDED_DEFAULT, path=path)
@@ -1002,6 +1017,7 @@ def _print_policy_state(store: Store) -> bool:
     from verinote.pipeline.policy_state import (
         PolicyStatus,
         policy_cli_line,
+        policy_empty_message,
         policy_missing_message,
         resolve_policy,
     )
@@ -1011,6 +1027,9 @@ def _print_policy_state(store: Store) -> bool:
     if state.status is PolicyStatus.MISSING_RECORDED:
         print(f"error: {policy_missing_message(state)}", file=sys.stderr)
         return True
+    if state.status is PolicyStatus.PRESENT_EMPTY:
+        print(f"error: {policy_empty_message(state)}", file=sys.stderr)
+        return True
     return False
 
 
@@ -1018,6 +1037,7 @@ def _print_policy_state_ro(conn: sqlite3.Connection, cfg: Config) -> bool:
     from verinote.pipeline.policy_state import (
         PolicyStatus,
         policy_cli_line,
+        policy_empty_message,
         policy_missing_message,
     )
 
@@ -1025,6 +1045,9 @@ def _print_policy_state_ro(conn: sqlite3.Connection, cfg: Config) -> bool:
     print(policy_cli_line(state))
     if state.status is PolicyStatus.MISSING_RECORDED:
         print(f"error: {policy_missing_message(state)}", file=sys.stderr)
+        return True
+    if state.status is PolicyStatus.PRESENT_EMPTY:
+        print(f"error: {policy_empty_message(state)}", file=sys.stderr)
         return True
     return False
 
@@ -1114,6 +1137,11 @@ def _coverage(cfg: Config, args: argparse.Namespace) -> int:
             )
         cov = Coverage(sources=sources)
         halted = _print_policy_state_ro(conn, cfg)
+        # Capture the halt reason while the connection is open so the --strict
+        # message can name it precisely: an empty policy file is not a *missing*
+        # one, and reporting it as missing would send the user hunting for a file
+        # that is right there (#171).
+        halted_status = _policy_state_ro(conn, cfg).status if halted else None
         # Compute before `conn.close()`: `_zero_review_rules_ro` reads the KB's
         # policy marker over this same read-only connection.
         zero_review_rules = _zero_review_rules_ro(conn, cfg)
@@ -1136,7 +1164,10 @@ def _coverage(cfg: Config, args: argparse.Namespace) -> int:
     # does — otherwise automation greenlights a KB with no rules. Plain `coverage`
     # stays rc=0: it is a recovery path, and a halt you cannot inspect is a brick.
     if args.strict and halted:
-        print("strict: this KB's logic policy file is missing", file=sys.stderr)
+        from verinote.pipeline.policy_state import PolicyStatus
+
+        detail = "empty" if halted_status is PolicyStatus.PRESENT_EMPTY else "missing"
+        print(f"strict: this KB's logic policy file is {detail}", file=sys.stderr)
         return 1
     if args.strict and zero_review_rules:
         print(

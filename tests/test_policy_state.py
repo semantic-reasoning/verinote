@@ -11,11 +11,15 @@ from verinote.pipeline.corroboration import store_functional_relations
 from verinote.pipeline.policy_state import (
     POLICY_CLI_LINE_MISSING_RECORDED,
     POLICY_CLI_LINE_PRESENT,
+    POLICY_CLI_LINE_PRESENT_EMPTY,
     POLICY_CLI_LINE_UNRECORDED_DEFAULT,
     POLICY_RELPATH,
+    PolicyEmptyError,
     PolicyMissingError,
     PolicyState,
     PolicyStatus,
+    assert_writable,
+    ensure_policy_marker,
     policy_cli_line,
     policy_sha256,
     resolve_policy,
@@ -831,8 +835,12 @@ def test_policy_cli_line_covers_every_policy_status():
     assert len(set(lines.values())) == len(PolicyStatus)  # states are distinguishable
     assert lines[PolicyStatus.MISSING_RECORDED] == POLICY_CLI_LINE_MISSING_RECORDED
     assert lines[PolicyStatus.PRESENT] == POLICY_CLI_LINE_PRESENT
+    assert lines[PolicyStatus.PRESENT_EMPTY] == POLICY_CLI_LINE_PRESENT_EMPTY
     assert lines[PolicyStatus.UNRECORDED_DEFAULT] == POLICY_CLI_LINE_UNRECORDED_DEFAULT
     assert "HALTED" in POLICY_CLI_LINE_MISSING_RECORDED
+    # #171: an empty policy file is a halt, so its line reads HALTED like the
+    # missing-recorded one — the two halted states share the loud word, distinct text.
+    assert "HALTED" in POLICY_CLI_LINE_PRESENT_EMPTY
     # #288: PRESENT is the one state that cannot see rule content, so its line
     # claims only the file's presence — never that the KB's rules exist.
     assert POLICY_CLI_LINE_PRESENT == "policy: ok (policy file present)"
@@ -903,22 +911,226 @@ def test_status_of_unrecorded_kb_prints_the_default_line(tmp_path, monkeypatch, 
     assert captured.err == ""  # the benign state is not an error
 
 
-def test_present_line_is_honest_on_an_empty_policy_file(tmp_path, monkeypatch, capsys):
-    """A 0-byte policy file still resolves to PRESENT (`is_file()` is True); the
-    line must not claim rules exist — the #288 lie. This asserts phrasing only:
-    *detecting* an empty policy is a separate issue (#359), deliberately not done
-    here.
+def test_status_halts_on_an_empty_policy_file(tmp_path, monkeypatch, capsys):
+    """#171 (was #288's placeholder): an empty policy file is HALTED, not "ok".
+
+    #288 could only make the PRESENT line honest ("policy file present", never
+    "rules present") because *detecting* emptiness was out of scope then. #171
+    detects it: an empty file resolves to PRESENT_EMPTY, so `status` prints the
+    HALTED-empty line on stdout and the actionable recovery text on stderr — no
+    longer the "ok" line. The original spirit survives: the output still makes no
+    false claim that rules are present.
     """
     _env(monkeypatch, tmp_path)
     assert cli.main(["init"]) == 0
     (tmp_path / POLICY_RELPATH).write_text("", encoding="utf-8")
     capsys.readouterr()  # drop init's output
 
-    assert cli.main(["status"]) == 0
+    assert cli.main(["status"]) == 0  # diagnosis must still work *on* a halted KB
 
-    out = capsys.readouterr().out
-    assert POLICY_CLI_LINE_PRESENT in out
-    assert "rules are present" not in out  # the specific false claim #288 removed
+    captured = capsys.readouterr()
+    assert POLICY_CLI_LINE_PRESENT_EMPTY in captured.out
+    assert POLICY_CLI_LINE_PRESENT not in captured.out  # not the old "ok" line
+    assert "rules are present" not in captured.out  # the #288 lie stays gone
+    assert "empty" in captured.err and "policy reset --force" in captured.err
+
+
+# --- #171: an empty/whitespace-only policy file is its own halted state -------
+#
+# `is_file()` is True for a 0-byte or whitespace-only policy, so the pre-#171 code
+# resolved both to PRESENT and let the engine reject them with a cryptic "program
+# must declare relation/3". These pin the dedicated PRESENT_EMPTY state instead:
+# halt loudly, name the file as empty, and (the resolved fork) never overwrite a
+# real recorded marker with `sha256("")` just because the file was truncated.
+
+_EMPTY_POLICY_TEXTS = [
+    pytest.param("", id="zero_byte"),
+    pytest.param("   \n\t  \n", id="whitespace_only"),
+]
+
+
+def _empty_policy_cli_kb(tmp_path, monkeypatch, *, text=""):
+    """A CLI-visible KB whose scaffolded policy file has been truncated to empty."""
+    _env(monkeypatch, tmp_path)
+    assert cli.main(["init"]) == 0
+    policy = tmp_path / POLICY_RELPATH
+    policy.write_text(text, encoding="utf-8")
+    return policy
+
+
+@pytest.mark.parametrize("text", _EMPTY_POLICY_TEXTS)
+@pytest.mark.parametrize("with_marker", [False, True], ids=["no_marker", "with_marker"])
+def test_empty_policy_file_resolves_to_present_empty(tmp_path, text, with_marker):
+    """A 0-byte AND a whitespace-only file both resolve to PRESENT_EMPTY — marker
+    or not. Emptiness is a property of the file's content, decided the same way
+    whether or not the KB ever recorded a policy."""
+    store = _store(tmp_path)
+    path = _write_policy(tmp_path, text)
+    if with_marker:
+        store.record_policy_marker(policy_sha256(FUNCTIONAL_POLICY), origin="scaffold")
+
+    state = resolve_policy(store)
+
+    assert state.status is PolicyStatus.PRESENT_EMPTY
+    assert state.path == path
+    store.close()
+
+
+@pytest.mark.parametrize("text", _EMPTY_POLICY_TEXTS)
+def test_emptying_a_policy_file_preserves_the_existing_marker(tmp_path, text):
+    """The resolved design fork, pinned. Opening a KB whose real policy file was
+    truncated must NOT overwrite the recorded marker with `sha256("")`: that would
+    erase the evidence a real policy ever existed, turning a recoverable truncation
+    into silent, permanent loss the next time the KB is opened (as the web UI does
+    on launch). The marker is returned exactly as it was read, unrefreshed.
+    """
+    store = _store(tmp_path)
+    path = _write_policy(tmp_path)  # a real, non-empty policy
+    real_sha = policy_sha256(path.read_text(encoding="utf-8"))
+    store.record_policy_marker(real_sha, origin="scaffold")
+    marker_before = dict(store.policy_marker())
+
+    path.write_text(text, encoding="utf-8")  # the file is truncated under the KB
+    state = ensure_policy_marker(store, tmp_path)  # merely opening the KB again
+
+    assert state.status is PolicyStatus.PRESENT_EMPTY
+    marker_after = dict(store.policy_marker())
+    assert marker_after == marker_before  # the whole marker is untouched
+    assert marker_after["sha256"] == real_sha  # specifically NOT overwritten
+    assert marker_after["sha256"] != policy_sha256(text)  # ...with sha256("")
+    store.close()
+
+
+@pytest.mark.parametrize("text", _EMPTY_POLICY_TEXTS)
+def test_assert_writable_raises_policy_empty_error(tmp_path, text):
+    """assert_writable halts an empty-policy KB with PolicyEmptyError — and that
+    error IS a PolicyMissingError, so every existing `except PolicyMissingError`
+    write gate catches it with no new catch clause."""
+    store = _store(tmp_path)
+    _write_policy(tmp_path, text)
+
+    with pytest.raises(PolicyEmptyError) as exc_info:
+        assert_writable(store)
+
+    assert isinstance(exc_info.value, PolicyMissingError)  # the subclass is load-bearing
+    message = str(exc_info.value)
+    assert "empty" in message and "policy reset --force" in message
+    store.close()
+
+
+def test_coverage_halts_on_an_empty_policy_file(tmp_path, monkeypatch, capsys):
+    """Plain `coverage` is a recovery path: it reports the empty halt but stays rc=0
+    so the KB can still be inspected."""
+    _empty_policy_cli_kb(tmp_path, monkeypatch)
+
+    assert cli.main(["coverage"]) == 0
+
+    captured = capsys.readouterr()
+    assert POLICY_CLI_LINE_PRESENT_EMPTY in captured.out
+    assert "coverage:" in captured.out
+    assert "empty" in captured.err and "policy reset --force" in captured.err
+
+
+def test_coverage_strict_reports_empty_not_missing_or_ruleless(tmp_path, monkeypatch, capsys):
+    """`--strict` fails an empty-policy KB and names it precisely: "empty", not
+    "missing" (the file is right there), and not #359's "no review rules" (a
+    rule-less relation-only policy is a different, still-valid state that must keep
+    its own message)."""
+    _empty_policy_cli_kb(tmp_path, monkeypatch)
+
+    assert cli.main(["coverage", "--strict"]) == 1
+
+    captured = capsys.readouterr()
+    assert POLICY_CLI_LINE_PRESENT_EMPTY in captured.out
+    assert "logic policy file is empty" in captured.err
+    assert "is missing" not in captured.err
+    assert "no review rules" not in captured.err
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        pytest.param(["seed"], id="seed"),
+        pytest.param(["ingest", "<src>"], id="ingest"),
+        pytest.param(["query", "who is Ada?"], id="query"),
+        pytest.param(["sync", "<src>"], id="sync"),
+    ],
+)
+def test_cli_write_commands_refuse_on_empty_policy_kb(tmp_path, monkeypatch, capsys, argv):
+    """Every write command is refused at the pre-dispatch guard on an empty-policy
+    KB — with the empty-specific message, exit code 2, and nothing written."""
+    policy = _empty_policy_cli_kb(tmp_path, monkeypatch)
+    src = tmp_path / "input.txt"
+    src.write_text("Ada is_a engineer\n", encoding="utf-8")
+
+    rc = cli.main([a.replace("<src>", str(src)) for a in argv])
+
+    assert rc == 2  # the same code the missing-policy refusal uses
+    err = capsys.readouterr().err
+    assert "empty" in err and "policy reset --force" in err
+    # nothing was written: no registered source file, no rows, no query file
+    assert not (tmp_path / "sources" / "input.txt").exists()
+    assert not (tmp_path / "facts" / "query.dl").exists()
+    assert _kb_rows(tmp_path) == (0, 0, 0)
+    assert policy.read_text(encoding="utf-8") == ""  # the empty file is left as-is
+
+
+def test_init_refuses_on_an_empty_policy_kb_without_overwriting_it(
+    tmp_path, monkeypatch, capsys
+):
+    """`init` on a present-but-empty KB is refused and must NOT silently rewrite the
+    empty file with the default — recovery is the explicit `policy reset --force`,
+    exactly as for a recorded-but-missing policy. `--seed` must not slip rows in on
+    the way to the refusal either."""
+    policy = _empty_policy_cli_kb(tmp_path, monkeypatch)
+
+    assert cli.main(["init", "--seed"]) == 2
+
+    assert "empty" in capsys.readouterr().err
+    assert policy.read_text(encoding="utf-8") == ""  # untouched, not re-scaffolded
+    assert _kb_rows(tmp_path) == (0, 0, 0)
+
+
+def test_init_refuses_an_empty_policy_file_when_no_db_exists_yet(tmp_path, monkeypatch, capsys):
+    """The reachable `_scaffold_policy` PRESENT_EMPTY branch — a DIFFERENT path from
+    the test above. When an empty policy file exists but `kb.sqlite` does not yet,
+    the pre-dispatch halt guard cannot fire (it gates on `db_path.is_file()`, still
+    false here), so `init` proceeds into `cmd_init`, creates the KB, and reaches
+    `_scaffold_policy` — which must refuse rather than silently overwrite the empty
+    file with the default policy. (The test above hits the pre-dispatch guard, whose
+    db already exists; this one is the only path that reaches the scaffold branch.)
+    """
+    _env(monkeypatch, tmp_path)
+    policy = tmp_path / POLICY_RELPATH
+    policy.parent.mkdir(parents=True, exist_ok=True)
+    policy.write_text("", encoding="utf-8")
+    assert not (tmp_path / "kb.sqlite").is_file()  # no DB: the pre-dispatch guard is inert
+
+    assert cli.main(["init"]) == 2
+
+    assert "empty" in capsys.readouterr().err
+    assert policy.read_text(encoding="utf-8") == ""  # NOT overwritten with the default
+    # the KB was created (init ran past the inert guard into cmd_init), so the
+    # refusal is `_scaffold_policy`'s — not a pre-dispatch halt that never got here
+    assert (tmp_path / "kb.sqlite").is_file()
+
+
+def test_policy_reset_force_recovers_an_empty_policy_kb(tmp_path, monkeypatch, capsys):
+    """`policy reset --force` overwrites the empty file with the shipped default and
+    un-halts the KB. This needs no code change, but a recovery path that does not
+    actually recover is no recovery — so it is pinned with a real run."""
+    policy = _empty_policy_cli_kb(tmp_path, monkeypatch)
+    src = tmp_path / "input.txt"
+    src.write_text("Ada is_a engineer\n", encoding="utf-8")
+    assert cli.main(["ingest", str(src)]) == 2  # halted before recovery
+    capsys.readouterr()
+
+    assert cli.main(["policy", "reset", "--force"]) == 0
+
+    assert policy.read_text(encoding="utf-8") == DEFAULT_POLICY
+    # and the KB accepts writes again — recovery that leaves it halted is no recovery
+    assert cli.main(["ingest", str(src)]) == 0
+    assert (tmp_path / "sources" / "input.txt").is_file()
 
 
 # --- (b) the worker: a mid-job halt must rewind the job, not strand it ------
