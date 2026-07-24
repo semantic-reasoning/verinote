@@ -214,8 +214,86 @@ def _settings_path(root: Path) -> Path:
     return root / SETTINGS_FILENAME
 
 
+_SETTINGS_TYPES: dict[str, type] = {
+    "provider": str,
+    "model": str,
+    "base_url": str,
+    "extraction_chunk_chars": int,
+    "extraction_chunk_overlap_chars": int,
+    "extraction_max_facts_per_chunk": int,
+    "auto_accept_recommendations": bool,
+}
+
+_EXPECTED_NAMES = {str: "a string", int: "a whole number", bool: "true or false"}
+
+
+def _json_type_name(value: object) -> str:
+    """Name the JSON type a Python value came from, for the warning text."""
+    if isinstance(value, bool):
+        return "a boolean"
+    if isinstance(value, (int, float)):
+        return "a number"
+    if isinstance(value, str):
+        return "a string"
+    if isinstance(value, list):
+        return "an array"
+    if isinstance(value, dict):
+        return "an object"
+    return "null"
+
+
+def _has_type(value: object, expected: type) -> bool:
+    """Check a value against the JSON type a setting is declared to hold.
+
+    `bool` is a subclass of `int` in Python but a distinct type in JSON, so a
+    plain `isinstance` would let `true` pass as a chunk size and `1` pass as a
+    flag. Both directions are rejected here.
+    """
+    if expected is bool:
+        return isinstance(value, bool)
+    if expected is int:
+        return isinstance(value, int) and not isinstance(value, bool)
+    return isinstance(value, expected)
+
+
+def _warn_bad_setting(path: Path, key: str, value: object, expected: type) -> None:
+    print(
+        f"warning: {path} has {key} as {_json_type_name(value)}, expected "
+        f"{_EXPECTED_NAMES[expected]}; ignoring it, so {key} falls back to its default",
+        file=sys.stderr,
+    )
+
+
+def _checked_settings(path: Path, data: dict) -> dict:
+    """Drop settings whose value is the wrong type, warning about each.
+
+    This file is the boundary where untrusted JSON enters: a hand-edited (or
+    older-version-written) `config.json` can hold `"base_url": 123`, and
+    without this the failure surfaces far from its cause, as an `AttributeError`
+    inside whichever adapter finally calls a string method on it. Rejecting per
+    key here is the same warn-and-ignore policy the whole-file checks already
+    use, just finer grained. `null` means *unset* rather than a type error —
+    `save_settings` itself writes `"base_url": null` — and unknown keys pass
+    through untouched, since this reader should not silently eat a key a newer
+    version wrote.
+    """
+    checked = {}
+    for key, value in data.items():
+        expected = _SETTINGS_TYPES.get(key)
+        if expected is None or value is None or _has_type(value, expected):
+            checked[key] = value
+        else:
+            _warn_bad_setting(path, key, value, expected)
+    return checked
+
+
 def read_settings(root: Path) -> dict:
-    """Read saved non-secret runtime settings, or {} if absent/bad."""
+    """Read saved non-secret runtime settings, or {} if absent/bad.
+
+    Individual settings whose value has the wrong type are warned about and
+    dropped, so the caller sees them as unset rather than passing a number on
+    to code that expects a string. See `_checked_settings`.
+    """
     path = _settings_path(root)
     if not path.is_file():
         return {}
@@ -234,7 +312,7 @@ def read_settings(root: Path) -> dict:
     if not isinstance(data, dict):
         _warn_bad_config(path, None, consequence)
         return {}
-    return data
+    return _checked_settings(path, data)
 
 
 def save_settings(
