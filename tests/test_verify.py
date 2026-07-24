@@ -2,11 +2,15 @@
 import builtins
 from pathlib import Path
 
+import pytest
+
 import verinote.engine.duckdb_backend as duckdb_backend
 from verinote.engine.terms import Atom, Compound, NumberLit, StringLit
 from verinote.pipeline.query import query_path
 from verinote.pipeline.verify import (
     NO_REVIEW_RULES_FINDING,
+    PolicyEmptyError,
+    PolicyMissingError,
     load_policy,
     policy_path,
     verify,
@@ -83,6 +87,51 @@ def test_verify_loads_kb_policy_file(tmp_path):
     rep = verify(s)
     assert rep.errors == 1
     assert "has_isa: Org company" in "\n".join(rep.findings)
+
+
+def _write_empty_policy(store: Store, text: str) -> None:
+    p = policy_path(store)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8")
+
+
+@pytest.mark.parametrize("text", ["", "   \n\t  \n"], ids=["zero_byte", "whitespace"])
+def test_verify_halts_on_an_empty_policy_file(tmp_path, text):
+    """#171: an empty policy file is diagnosed as empty and halted BEFORE the engine
+    runs — so the cryptic "program must declare relation/3" is never produced. The
+    finding names it `policy_empty`, and the report text says both what is wrong
+    ("empty") and how to fix it (`policy reset --force`)."""
+    s = _store(tmp_path)
+    s.add_fact("Org", "is_a", "company", status="confirmed")
+    _write_empty_policy(s, text)
+
+    rep = verify(s)
+
+    assert rep.ok is False
+    assert rep.errors == 1
+    assert rep.warnings == 0
+    assert any("policy_empty" in f for f in rep.findings), rep.findings
+    assert "empty" in rep.text
+    assert "policy reset --force" in rep.text
+    # the whole point: the pre-#171 cryptic engine error must never surface here
+    assert "must declare relation/3" not in rep.text
+    s.close()
+
+
+@pytest.mark.parametrize("text", ["", "   \n\t  \n"], ids=["zero_byte", "whitespace"])
+def test_load_policy_raises_policy_empty_error(tmp_path, text):
+    """load_policy raises PolicyEmptyError on an empty file — returning None there
+    would silently substitute the shipped default for rules a human wrote. The
+    error is a PolicyMissingError, so every existing catch site handles it."""
+    s = _store(tmp_path)
+    _write_empty_policy(s, text)
+
+    with pytest.raises(PolicyEmptyError) as exc_info:
+        load_policy(s)
+
+    assert isinstance(exc_info.value, PolicyMissingError)  # caught by the base handler
+    assert "empty" in str(exc_info.value)
+    s.close()
 
 
 def test_verify_loads_hand_written_fixture_policy(tmp_path):
