@@ -1260,8 +1260,16 @@ def test_init_refuses_a_foreign_facts_table(tmp_path, monkeypatch, capsys):
     db = root / "kb.sqlite"
     conn = sqlite3.connect(db)
     conn.execute("CREATE TABLE facts(a, b)")
+    conn.execute("INSERT INTO facts VALUES (1, 2)")
     conn.commit()
     conn.close()
+
+    # KB_ALIEN_FACTS must never reach the #335 row-count branch: its `facts`
+    # table isn't verinote's, so there is nothing of ours in it to count.
+    def _boom(cfg):
+        raise AssertionError("_facts_row_count must not run for KB_ALIEN_FACTS")
+
+    monkeypatch.setattr(cli, "_facts_row_count", _boom)
 
     assert cli.main(["init", str(root)]) == 1
 
@@ -1271,6 +1279,10 @@ def test_init_refuses_a_foreign_facts_table(tmp_path, monkeypatch, capsys):
     assert "Traceback" not in err
     assert _tables(db) == {"facts"}  # nothing verinote added
     assert not (root / "policy").exists()
+    # The discriminator must not over-fire onto the wrong case (#335).
+    assert "move it aside" in err
+    assert "backup" not in err
+    assert "holds" not in err
 
 
 def test_init_refuses_a_partial_schema(tmp_path, monkeypatch, capsys):
@@ -1293,6 +1305,89 @@ def test_init_refuses_a_partial_schema(tmp_path, monkeypatch, capsys):
     assert "is not a verinote KB" in err
     assert cli.KB_PARTIAL_SCHEMA in err
     assert _tables(db) == {"facts"}
+    # An EMPTY partial schema is disposable: pins the empty-vs-data split from the
+    # other direction, so an inverted `rows == 0` branch (#335) would fail this.
+    assert "move it aside" in err
+    assert "backup" not in err
+    assert "holds" not in err
+
+
+def test_init_refuses_a_data_bearing_partial_schema(tmp_path, monkeypatch, capsys):
+    # A partial schema is not always disposable: a bad file dropped in during
+    # recovery, a partial copy, or an accidentally-dropped core table can all
+    # leave real facts sitting in an otherwise-partial KB. Telling that user to
+    # "move it aside" risks discarding their only copy (#335).
+    _isolated(monkeypatch, tmp_path)
+    root = tmp_path / "partial"
+    root.mkdir()
+    db = root / "kb.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE facts(id INTEGER PRIMARY KEY, subject, relation, object, status)"
+    )
+    conn.executemany(
+        "INSERT INTO facts (subject, relation, object, status) VALUES (?, ?, ?, ?)",
+        [
+            ("Example Org", "is_a", "participant", "confirmed"),
+            ("Example Org", "established_on", "2020-01-01", "superseded"),
+            ("Demo Project", "has_participant", "Example Org", "rejected"),
+        ],
+    )
+    conn.commit()
+    conn.close()
+    before = db.read_bytes()
+
+    assert cli.main(["init", str(root)]) == 1
+
+    assert db.read_bytes() == before  # the refusal wrote nothing
+    err = capsys.readouterr().err
+    assert "is not a verinote KB" in err
+    assert "holds 3 fact(s)" in err
+    assert "backup" in err
+    assert "move it aside" not in err
+    assert "Traceback" not in err
+
+
+def test_init_refuses_a_partial_schema_with_corrupt_data_pages(tmp_path, monkeypatch, capsys):
+    # A partial schema's classification reads only schema metadata (table names,
+    # PRAGMA table_info), which can succeed even when the file's DATA pages are
+    # corrupted — exactly the "bad file during recovery" scenario #335 names. The
+    # row count must not crash init with a raw traceback when that happens.
+    _isolated(monkeypatch, tmp_path)
+    root = tmp_path / "partial"
+    root.mkdir()
+    db = root / "kb.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE facts(id INTEGER PRIMARY KEY, subject, relation, object, status)"
+    )
+    conn.executemany(
+        "INSERT INTO facts (subject, relation, object, status) VALUES (?, ?, ?, ?)",
+        [
+            (f"Subject-{i}", "is_a", f"Object-{i}-padding-padding-padding", "confirmed")
+            for i in range(5000)
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    # Corrupt a data page well past the schema page (page 1) without touching it,
+    # so `_kb_schema_problem`'s schema-only reads still succeed.
+    with open(db, "r+b") as f:
+        f.seek(4096 * 3)
+        f.write(b"\xff" * 200)
+
+    # Pin the precondition: this must land on the vulnerable branch, not some
+    # other classification.
+    problem = cli._kb_schema_problem(db)
+    assert problem is not None and problem.startswith(cli.KB_PARTIAL_SCHEMA)
+
+    assert cli.main(["init", str(root)]) == 1
+
+    err = capsys.readouterr().err
+    assert "Traceback" not in err
+    assert "backup" in err or "could not be read" in err
+    assert "move it aside" not in err
 
 
 def test_init_seed_on_a_foreign_facts_table_writes_nothing(tmp_path, monkeypatch, capsys):
