@@ -178,6 +178,25 @@ def cmd_init(cfg: Config, args: argparse.Namespace) -> int:
         # KB_NO_SCHEMA (a readable db with no `facts` table — init's whole
         # purpose) and a healthy KB (None — an idempotent re-init) may proceed.
         if problem is not None and problem != KB_NO_SCHEMA:
+            # A partial schema can still hold real data (e.g. a corrupted recovery
+            # copy), so it alone gets a row count before advising "move it aside" —
+            # KB_ALIEN_FACTS is excluded because its `facts` table isn't verinote's,
+            # so there is nothing of ours in it to count.
+            if problem.startswith(KB_PARTIAL_SCHEMA):
+                rows = _facts_row_count(cfg)
+                if rows != 0:  # rows > 0, or None (unreadable): may be the only copy of real data
+                    held = (
+                        "may hold facts that could not be read"
+                        if rows is None
+                        else f"holds {rows} fact(s)"
+                    )
+                    print(
+                        f"cannot initialise {cfg.root}: {cfg.db_path} is not a verinote KB "
+                        f"({problem}), but it {held}. Restore it from a backup instead of "
+                        f"moving it aside.",
+                        file=sys.stderr,
+                    )
+                    return 1
             print(
                 f"cannot initialise {cfg.root}: {cfg.db_path} is not a verinote KB "
                 f"({problem}); move it aside and run this again.",
@@ -367,6 +386,24 @@ def _read_only_conn(cfg: Config) -> sqlite3.Connection:
     conn = sqlite3.connect(uri, uri=True)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _facts_row_count(cfg: Config) -> int | None:
+    """Rows in `facts`, or None when they cannot be read.
+
+    Only meaningful once `_kb_schema_problem` has confirmed a verinote-shaped
+    `facts` table. A partial copy can pass that schema check yet have corrupt
+    data pages, so a bare COUNT(*) can still raise here (#335); returning None
+    keeps the refusal careful instead of crashing init with a raw traceback.
+    """
+    try:
+        conn = _read_only_conn(cfg)
+        try:
+            return int(conn.execute("SELECT COUNT(*) c FROM facts").fetchone()["c"])
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError:
+        return None
 
 
 def _read_only_columns(conn: sqlite3.Connection, table: str) -> set[str]:
