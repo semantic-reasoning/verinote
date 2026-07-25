@@ -4,6 +4,7 @@ import logging
 import re
 import threading
 import time
+import unicodedata
 from html import unescape
 
 import pytest
@@ -2235,6 +2236,75 @@ def test_amend_endpoint_saves_term_looking_text_as_stringlit_in_string_mode(tmp_
         StringLit('role(person("Ada"), "PI")'),
     )
     assert 'class="subj term-string">"person(\\"Ada\\")"' in unescape(r.text)
+
+
+def test_amend_normalizes_an_nfd_string_slot_to_nfc(tmp_path):
+    """#200 web boundary: an NFD value posted to the amend form is stored NFC.
+
+    `_fact_input` NFC-normalizes string-kind slots, so the fact is NFC at rest
+    and byte-matches an NFC query at the DuckDB engine level. The NFD input is
+    proven byte-different from its NFC form first, so the assertion means
+    something.
+    """
+    c = _client(tmp_path)
+    store = c.app.state.store
+    fid = store.add_fact("A", "is_a", "B", status="needs_review")
+    nfd_subject = unicodedata.normalize("NFD", "café")
+    nfc_subject = unicodedata.normalize("NFC", "café")
+    assert nfd_subject != nfc_subject
+
+    r = c.post(
+        f"/facts/{fid}/amend",
+        data={
+            "subject": nfd_subject,
+            "subject_kind": "string",
+            "relation": "is_a",
+            "relation_kind": "string",
+            "object": "B",
+            "object_kind": "string",
+            "note": "",
+        },
+    )
+
+    assert r.status_code == 200
+    assert store.get_fact_terms(fid)[0] == StringLit(nfc_subject)
+    assert store.get_fact(fid)["subject"] != nfd_subject
+
+
+def test_amend_normalizes_an_escape_encoded_nfd_term_leaf_to_nfc(tmp_path):
+    """#200 web boundary, the discriminating case: an ASCII term source -> NFD leaf.
+
+    The posted object is 100% ASCII (all \\uXXXX escapes) yet DECODES to an NFD
+    `StringLit` leaf after parsing. Only `nfc_term` running post-parse on the
+    amend path stores it NFC; a pre-parse whole-string `nfc()` would leave the
+    escape-encoded leaf in NFD, so this fails on the wrong implementation.
+    """
+    c = _client(tmp_path)
+    store = c.app.state.store
+    fid = store.add_fact("A", "is_a", "B", status="needs_review")
+    term_source = 'note("caf\\u0065\\u0301")'
+    assert term_source.isascii()
+    nfc_cafe = unicodedata.normalize("NFC", "café")
+    nfd_cafe = unicodedata.normalize("NFD", "café")
+    assert nfc_cafe != nfd_cafe
+
+    r = c.post(
+        f"/facts/{fid}/amend",
+        data={
+            "subject": "A",
+            "subject_kind": "string",
+            "relation": "is_a",
+            "relation_kind": "string",
+            "object": term_source,
+            "object_kind": "term",
+            "note": "",
+        },
+    )
+
+    assert r.status_code == 200
+    obj_term = store.get_fact_terms(fid)[2]
+    assert obj_term == Compound("note", (StringLit(nfc_cafe),))
+    assert obj_term.args[0].value != nfd_cafe
 
 
 def _corrupt_sidecar_kb(tmp_path, *, status="needs_review", with_query=False):

@@ -24,7 +24,8 @@ from verinote.pipeline.normalize import normalize_for_extraction
 from verinote.pipeline.policy_state import PolicyMissingError, assert_writable
 from verinote.prompts import PromptError, render_prompt
 from verinote.store import Store
-from verinote.store.fact_input import structural_term
+from verinote.store.fact_input import nfc_term, structural_term
+from verinote.text import nfc
 
 
 class ExtractionJobBusyError(Exception):
@@ -867,8 +868,8 @@ def _has_han_run_not_in_source(value: str, source_text: str) -> bool:
 
 def _extracted_value(value: str, kind: str) -> object:
     if kind == "term":
-        return structural_term(value)
-    return value
+        return nfc_term(structural_term(value))
+    return nfc(value)
 
 
 @dataclass(frozen=True)

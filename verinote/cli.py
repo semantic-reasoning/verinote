@@ -15,6 +15,7 @@ from verinote.config import Config, local_root
 from verinote.pipeline.question_outcome import format_question_outcome
 from verinote.store import Store, engine_statuses
 from verinote.store.duckdb_fact_terms import DuckDBFactTermStoreLockedError
+from verinote.text import nfc
 
 # Local commands own their KB location: they never inherit the KB the web UI
 # last selected, so `verinote init` cannot scribble into somebody else's data.
@@ -251,7 +252,13 @@ def _seed(store: Store) -> None:
     for subj, rel, obj, status, conf, src, note in _DEMO_FACTS:
         sid = store.add_source(src)
         store.reconcile_fact(
-            subj, rel, obj, status=status, confidence=conf, source_id=sid, note=note
+            nfc(subj),
+            nfc(rel),
+            nfc(obj),
+            status=status,
+            confidence=conf,
+            source_id=sid,
+            note=note,
         )
 
 

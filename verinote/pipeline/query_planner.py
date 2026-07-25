@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-import unicodedata
 
 from verinote.pipeline.corroboration import relation_label_matches
 from verinote.pipeline.query_intent import QueryIntent, QueryIntentKind
@@ -16,6 +15,7 @@ from verinote.pipeline.query_schema import (
     SnapshotFact,
     TermRef,
 )
+from verinote.text import nfc as _nfc
 
 
 @dataclass(frozen=True)
@@ -562,7 +562,3 @@ def _dedupe_candidates(candidates: list[QueryCandidate]) -> tuple[QueryCandidate
         )
         deduped.setdefault(key, candidate)
     return tuple(deduped.values())
-
-
-def _nfc(value: str) -> str:
-    return unicodedata.normalize("NFC", value)
