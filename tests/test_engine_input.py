@@ -11,6 +11,7 @@ a vocabulary list.
 """
 
 from pathlib import Path
+import unicodedata
 
 import pytest
 
@@ -29,6 +30,7 @@ from verinote.engine.policy_vocabulary import (
 from verinote.engine.terms import StringLit, bare_label
 from verinote.llm.base import ExtractedFact
 from verinote.pipeline import extract_source
+from verinote.pipeline.extract import _candidate_rows, _extracted_value
 from verinote.pipeline.engine_input import annotate_source_labels, engine_relation_rows
 from verinote.pipeline.query import query_path
 from verinote.pipeline.report_trace import report_trace
@@ -606,6 +608,124 @@ def test_findings_for_unaliased_relations_are_left_alone(tmp_path):
     rep = verify(s)
 
     assert rep.findings == ["ERROR functional_conflict: 회사 established_on"]
+
+
+def test_extracted_value_normalizes_every_string_slot_value():
+    """#200: the string write path NFC-normalizes whatever slot it is given.
+
+    `_extracted_value(value, "string")` takes no slot argument, so subject,
+    relation and object share this one path (proven per-slot end-to-end in the
+    `_candidate_rows` test below). Three distinct NFD strings, each proven to
+    differ from its NFC form first, so a green assertion means something.
+    """
+    for base in ("café", "résumé", "naïve"):
+        nfd_value = unicodedata.normalize("NFD", base)
+        nfc_value = unicodedata.normalize("NFC", base)
+        assert nfd_value != nfc_value
+        result = _extracted_value(nfd_value, "string")
+        assert result == nfc_value
+        assert result != nfd_value
+
+
+def test_extracted_value_normalizes_an_escape_encoded_nfd_term_leaf():
+    """#200's real discriminator: a 100%-ASCII term source that DECODES to NFD.
+
+    The source is all `\\uXXXX` escapes — pure ASCII — so a whole-string `nfc()`
+    applied BEFORE parsing is a no-op and leaves the decoded leaf in NFD. Only
+    normalizing the PARSED term's `StringLit` leaf (what `nfc_term` does) fixes
+    it, so this test fails on any pre-parse implementation.
+    """
+    source = 'note("caf\\u0065\\u0301")'
+    assert source.isascii()
+    nfc_cafe = unicodedata.normalize("NFC", "café")
+    nfd_cafe = unicodedata.normalize("NFD", "café")
+    assert nfc_cafe != nfd_cafe
+
+    term = _extracted_value(source, "term")
+
+    leaf = term.args[0]
+    assert isinstance(leaf, StringLit)
+    assert leaf.value == nfc_cafe
+    assert leaf.value != nfd_cafe
+
+
+def test_extracted_value_normalizes_a_plain_literal_nfd_term_leaf():
+    """The non-discriminating companion: NFD text sitting literally in the source.
+
+    Here the NFD codepoints are in the source string itself, so even a naive
+    pre-parse `nfc()` would catch them — it passes under both the correct and the
+    naive implementation. It exists only to confirm the escape case above is what
+    actually separates the two.
+    """
+    nfd_cafe = unicodedata.normalize("NFD", "café")
+    nfc_cafe = unicodedata.normalize("NFC", "café")
+    source = f'note("{nfd_cafe}")'
+
+    term = _extracted_value(source, "term")
+
+    assert term.args[0] == StringLit(nfc_cafe)
+
+
+def test_candidate_rows_normalize_subject_relation_and_object_to_nfc():
+    """#200 per-slot: subject, relation AND object each land NFC through the rows.
+
+    Latin+combining fixtures (café/résumé/naïve) with a plain-Latin source dodge
+    the Hangul/Han/metric drop filters entirely, so the row survives and each of
+    the three slots is asserted independently — one is not allowed to stand in
+    for the others.
+    """
+    nfd_subject = unicodedata.normalize("NFD", "café")
+    nfd_relation = unicodedata.normalize("NFD", "résumé")
+    nfd_object = unicodedata.normalize("NFD", "naïve")
+    nfc_subject = unicodedata.normalize("NFC", "café")
+    nfc_relation = unicodedata.normalize("NFC", "résumé")
+    nfc_object = unicodedata.normalize("NFC", "naïve")
+    fact = ExtractedFact(nfd_subject, nfd_relation, nfd_object, 0.9)
+
+    rows = _candidate_rows([fact], "café résumé naïve")
+
+    assert len(rows) == 1
+    subject, relation, obj, _f = rows[0]
+    assert subject == nfc_subject and subject != nfd_subject
+    assert relation == nfc_relation and relation != nfd_relation
+    assert obj == nfc_object and obj != nfd_object
+
+
+def test_extracted_nfd_fact_answers_an_nfc_engine_query(tmp_path, fake_client):
+    """#200 end-to-end at the DuckDB engine: NFD in, NFC at rest, NFC query answers.
+
+    A fact the model emits in NFD is stored NFC at rest by the write boundary, so
+    a query written in NFC joins it at the engine level. This is the join the
+    engine CANNOT make against an NFD-stored row — it does no runtime
+    normalization, so an NFC query over an NFD fact returns nothing. The stored
+    form here IS NFC (asserted), which is exactly what closes that gap.
+    """
+    s = _store(tmp_path)
+    nfd_subject = unicodedata.normalize("NFD", "Café")
+    nfc_subject = unicodedata.normalize("NFC", "Café")
+    assert nfd_subject != nfc_subject
+    client = fake_client([ExtractedFact(nfd_subject, "mentions", "Report", 0.9)])
+
+    extract_source(
+        s, client, source_path="sources/x.txt", source_text="Café mentions Report"
+    )
+    for fact in s.facts():
+        s.accept_fact(int(fact["id"]))
+
+    # Stored NFC at rest — not the NFD the model emitted.
+    assert {f["subject"] for f in s.facts()} == {nfc_subject}
+
+    qp = query_path(Path(s.db_path).parent)
+    qp.parent.mkdir(parents=True, exist_ok=True)
+    qp.write_text(
+        ".decl answer_q1(value: symbol)\n"
+        f'answer_q1(O) :- relation("{nfc_subject}", "mentions", O).\n',
+        encoding="utf-8",
+    )
+
+    trace = report_trace(s)
+
+    assert [(answer.qid, answer.value) for answer in trace.answers] == [("1", "Report")]
 
 
 def _text(term: object) -> str:

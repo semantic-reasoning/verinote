@@ -1110,6 +1110,19 @@ def test_seed_run_twice_does_not_double_demo_facts(tmp_path):
     store.close()
 
 
+def test_seed_stores_demo_triples_verbatim(tmp_path):
+    # The demo literals are ASCII, so the write boundary's NFC pass is a faithful
+    # no-op — this pins the seeded triples byte-identical to _DEMO_FACTS (#200).
+    store = Store(tmp_path / "kb.sqlite")
+    store.init_schema()
+
+    cli._seed(store)
+
+    stored = {(f["subject"], f["relation"], f["object"]) for f in store.facts()}
+    store.close()
+    assert stored == {(subj, rel, obj) for subj, rel, obj, *_ in cli._DEMO_FACTS}
+
+
 def test_init_help_does_not_promise_verinote_root_only(capsys):
     with pytest.raises(SystemExit):
         cli.main(["init", "--help"])

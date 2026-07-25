@@ -97,7 +97,8 @@ from verinote.store import (
 # read at call time so the web layer cannot pin a stale copy of the constant.
 from verinote.store import db as store_db
 from verinote.store.duckdb_fact_terms import DuckDBFactTermStoreError
-from verinote.store.fact_input import structural_term, term_input_kind
+from verinote.store.fact_input import nfc_term, structural_term, term_input_kind
+from verinote.text import nfc
 
 logger = logging.getLogger(__name__)
 
@@ -509,9 +510,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     def _fact_input(value: str, kind: str):
         if kind == "string":
-            return value
+            return nfc(value)
         if kind == "term":
-            return structural_term(value)
+            return nfc_term(structural_term(value))
         raise ValueError(f"unknown fact input kind: {kind}")
 
     def _review_filters() -> list[tuple[str, str]]:

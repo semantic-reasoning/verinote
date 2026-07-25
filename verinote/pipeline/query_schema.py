@@ -11,7 +11,6 @@ observed KB data.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import unicodedata
 from typing import Iterable, Mapping
 
 from verinote.engine.terms import (
@@ -31,6 +30,7 @@ from verinote.pipeline.corroboration import (
 )
 from verinote.pipeline.engine_input import engine_relation_rows
 from verinote.store import Store, engine_statuses
+from verinote.text import nfc as _nfc
 
 
 @dataclass(frozen=True)
@@ -401,7 +401,3 @@ def _fact_sort_key(fact: _Fact) -> tuple[object, ...]:
         fact.object.key,
         fact.fact_id,
     )
-
-
-def _nfc(value: str) -> str:
-    return unicodedata.normalize("NFC", value)
