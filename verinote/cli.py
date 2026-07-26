@@ -993,6 +993,40 @@ def cmd_ingest(cfg: Config, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_sources_repair_identities(cfg: Config, args: argparse.Namespace) -> int:
+    """Inspect or explicitly merge same-file NFC/NFD source identities."""
+    refusal = _require_existing_kb(cfg)
+    if refusal is not None:
+        return refusal
+    store = Store(cfg.db_path)
+    try:
+        # The default must not initialise or migrate the KB: planning is a pure
+        # scan.  --apply prepares the append-only audit table before it writes.
+        if args.apply:
+            store.init_schema()
+        plan = store.plan_source_identity_repairs()
+        if not plan.groups:
+            print("no NFC/NFD duplicate source identities found")
+            return 0
+        for group in plan.groups:
+            print(f"{group.status}: {group.canonical_path}")
+            for path in group.paths:
+                print(f"  {path}")
+        if not args.apply:
+            print("dry-run: no sources changed; rerun with --apply to repair ready groups")
+            return 0
+        result = store.apply_source_identity_repairs(plan)
+        repaired = sum(group.status == "repaired" for group in result.groups)
+        unchanged = len(result.groups) - repaired
+        for group in result.groups:
+            if group.status != "repaired":
+                print(f"unchanged: {group.status}: {group.canonical_path}")
+        print(f"source identity repair: {repaired} repaired, {unchanged} unchanged")
+        return 0
+    finally:
+        store.close()
+
+
 def cmd_query(cfg: Config, args: argparse.Namespace) -> int:
     from verinote.llm import LLMError, get_client
     from verinote.pipeline import translate_questions, write_query_file
@@ -1463,6 +1497,19 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("path", help="a .txt/.md file, or a .docx/.pdf to convert")
     ingest.set_defaults(func=cmd_ingest, halt_safe=False)
 
+    sources = sub.add_parser("sources", help="inspect and repair registered sources")
+    sources_sub = sources.add_subparsers(dest="sources_command", required=True)
+    repair_identities = sources_sub.add_parser(
+        "repair-identities",
+        help="scan NFC/NFD duplicate source identities; --apply repairs verified groups",
+    )
+    repair_identities.add_argument(
+        "--apply",
+        action="store_true",
+        help="confirm repair of groups whose paths are samefile-verified",
+    )
+    repair_identities.set_defaults(func=cmd_sources_repair_identities, halt_safe=False)
+
     query = sub.add_parser("query", help="translate pending NL questions to Datalog queries")
     query.add_argument("question", nargs="?", help="a question to add before translating")
     query.set_defaults(func=cmd_query, halt_safe=False)
@@ -1532,7 +1579,12 @@ def main(argv: list[str] | None = None) -> int:
     # The single CLI enforcement point for a halted KB. It sits here, before
     # dispatch, because every subcommand goes through this one line — a guard
     # sprinkled per-command is a guard the next command will forget.
-    if not getattr(args, "halt_safe", False):
+    halt_safe = getattr(args, "halt_safe", False) or (
+        args.command == "sources"
+        and args.sources_command == "repair-identities"
+        and not args.apply
+    )
+    if not halt_safe:
         # Corrupt config first: it makes the resolved provider itself untrustworthy,
         # and unlike the halt check it opens no Store. Then the halted-KB check.
         refusal = _refuse_on_corrupt_config(cfg)
