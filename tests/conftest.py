@@ -3,12 +3,12 @@
 
 `verinote.config.app_config_dir()` resolves through `HOME`/`USERPROFILE`/
 `XDG_CONFIG_HOME`/`APPDATA`/`LOCALAPPDATA` depending on the platform, and
-`active_root()` falls back to `./data` relative to the *current working
-directory*. A test that forgets to isolate either one can rewrite the
-developer's real `app.json` — repointing the active KB — or open the repo's own
-`data/kb.sqlite`. `Config.for_root()` also reads every `VERINOTE_*` variable
-env-first, so an ambient export in the developer's shell can change what a test
-sees.
+`Config.load()` resolves its default KB under `XDG_DATA_HOME` (or the platform
+equivalent), while `active_root()` reads the web UI's app config. A test that
+forgets to isolate either location can rewrite the developer's real `app.json`
+or open their real default KB. `Config.for_root()` also reads every
+`VERINOTE_*` variable env-first, so an ambient export in the developer's shell
+can change what a test sees.
 
 The sandbox is two-tier on purpose:
 
@@ -36,7 +36,14 @@ import pytest
 from verinote.llm.base import ExtractedFact, LLMError
 from verinote.pipeline.query_intent import parse_query_intent
 
-HOME_VARS = ("HOME", "USERPROFILE", "XDG_CONFIG_HOME", "APPDATA", "LOCALAPPDATA")
+HOME_VARS = (
+    "HOME",
+    "USERPROFILE",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "APPDATA",
+    "LOCALAPPDATA",
+)
 
 _session_patch: pytest.MonkeyPatch | None = None
 _session_tmp: str | None = None
@@ -89,9 +96,9 @@ def isolate_app_environment(monkeypatch, tmp_path_factory):
     pollute them. Every `VERINOTE_*` variable is dropped (`ROOT`, `PROVIDER`,
     `MODEL`, `BASE_URL`, `API_KEY`, `LLM_TIMEOUT`, the `EXTRACTION_*` knobs and
     `AUTO_ACCEPT_RECOMMENDATIONS` are all read env-first by `Config`), and the
-    CWD is moved off the repo so `active_root()`'s `./data` fallback cannot
-    reach the repo's own KB. Tests that set these vars themselves still win:
-    this runs first, their `setenv` runs after.
+    CWD is also moved off the repo to keep filesystem fixtures separate from the
+    checkout. Tests that set these vars themselves still win: this runs first,
+    their `setenv` runs after.
     """
     home = tmp_path_factory.mktemp("home")
     _sandbox_env(monkeypatch, home, tmp_path_factory.mktemp("cwd"))

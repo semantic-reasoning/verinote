@@ -62,15 +62,17 @@ the marker exists and the refusal above applies.
 
 ## Keep the KB outside the working tree
 
-The default root (`./data`) is a convenience for a first run, not a safe home:
+The default root is a platform user-data directory, but an explicit absolute
+root makes automated operation unambiguous:
 
 ```bash
-VERINOTE_ROOT=~/verinote-kb verinote init   # scaffold a KB outside the repo
-VERINOTE_ROOT=~/verinote-kb verinote ui
+verinote init --root ~/verinote-kb          # scaffold a KB outside the repo
+verinote --root ~/verinote-kb ui
 ```
 
-`VERINOTE_ROOT` selects the KB root for every command, so exporting it once in
-your shell profile keeps all of your data out of the working tree.
+`--root` wins over `VERINOTE_ROOT`, which wins over the platform default. `init`
+and `seed` reject targets inside normal or linked Git worktrees, including nested
+and symlinked paths resolving into one.
 
 ### A KB inside the repo tree gets committed
 

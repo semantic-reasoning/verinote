@@ -32,6 +32,7 @@ from verinote.config import (
     save_active_root,
     save_settings,
 )
+from verinote.kb_location import KBLocationError, assert_kb_root_is_safe_to_create
 from verinote.llm import LLMError, get_client
 from verinote.policy_defaults import DEFAULT_RELATION_ALIASES
 from verinote.pipeline import (
@@ -156,6 +157,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     app.state.repair_scheduler_lock = Lock()
     app.state.repair_scheduled = set()
     if cfg is not None:
+        assert_kb_root_is_safe_to_create(cfg.root)
         store = Store(cfg.db_path)
         store.init_schema()
         ensure_policy_marker(store, cfg.root)
@@ -485,6 +487,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     def _open_root(root: Path) -> None:
         """Point this running app at a KB root, creating it if needed."""
         root = root.expanduser().resolve()
+        assert_kb_root_is_safe_to_create(root)
         root.mkdir(parents=True, exist_ok=True)
         next_cfg = Config.for_root(root)
         # Refuse BEFORE installing: transiently swapping in a corrupt cfg would let
@@ -1269,7 +1272,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     def select_kb(request: Request, root: str = Form(...)):
         try:
             _open_root(Path(root))
-        except OSError as e:
+        except (KBLocationError, OSError) as e:
             return _kb_select(request, error=f"could not open KB: {e}", status_code=400)
         return RedirectResponse("/", status_code=303)
 
@@ -1835,7 +1838,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 error=f"refused to open KB — its config.json is corrupt: {e}",
                 status_code=400,
             )
-        except OSError as e:
+        except (KBLocationError, OSError) as e:
             return _settings(request, error=f"could not open KB directory: {e}", status_code=400)
         return RedirectResponse("/", status_code=303)
 

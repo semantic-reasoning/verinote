@@ -5,20 +5,24 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 from dataclasses import dataclass, field
 import sys
 from pathlib import Path
 
 from verinote import __version__
-from verinote.config import Config, local_root
+from verinote.config import Config
+from verinote.kb_location import (
+    KBLocationError,
+    assert_kb_root_is_safe_to_create,
+    resolve_kb_root,
+)
 from verinote.pipeline.question_outcome import format_question_outcome
 from verinote.store import Store, engine_statuses, fact_status_order
 from verinote.store.duckdb_fact_terms import DuckDBFactTermStoreLockedError
 from verinote.text import nfc
 
-# Local commands own their KB location: they never inherit the KB the web UI
-# last selected, so `verinote init` cannot scribble into somebody else's data.
 _LOCAL_ROOT_COMMANDS = frozenset({"init", "seed"})
 
 _DEMO_FACTS = [
@@ -1371,6 +1375,10 @@ def cmd_ui(cfg: Config | None, args: argparse.Namespace) -> int:
         print("uvicorn not installed; `pip install verinote`", file=sys.stderr)
         return 1
     url = f"http://{args.host}:{args.port}"
+    if args.root is not None and cfg is not None:
+        # Uvicorn imports the app factory separately, so carry the explicit CLI
+        # choice into that process without changing the saved UI selection.
+        os.environ["VERINOTE_ROOT"] = str(cfg.root)
     if cfg is None:
         print(f"verinote ui → {url}  (select a KB in the browser)")
     else:
@@ -1458,32 +1466,45 @@ def build_parser() -> argparse.ArgumentParser:
     """
     p = argparse.ArgumentParser(prog="verinote", description="Honest KB: LLM extracts, DuckDB verifies.")
     p.add_argument("--version", action="version", version=f"verinote {__version__}")
+    p.add_argument(
+        "--root",
+        metavar="PATH",
+        help="absolute KB root (overrides $VERINOTE_ROOT and the platform user-data default)",
+    )
     sub = p.add_subparsers(dest="command", required=True)
+    root_option = argparse.ArgumentParser(add_help=False)
+    root_option.add_argument("--root", metavar="PATH", default=argparse.SUPPRESS)
 
     init = sub.add_parser(
         "init",
-        help="scaffold a KB (SQLite) at ROOT (default: $VERINOTE_ROOT, else ./data in the current directory)",
+        parents=[root_option],
+        help="scaffold a KB (SQLite) at the resolved root",
     )
     init.add_argument(
-        "root",
+        "root_alias",
         nargs="?",
-        help="where to create the KB (default: $VERINOTE_ROOT, else ./data here)",
+        metavar="ROOT",
+        help="temporary compatibility alias for an absolute --root PATH",
     )
     init.add_argument("--seed", action="store_true", help="insert demo facts")
     init.set_defaults(func=cmd_init, halt_safe=False)
 
     seed = sub.add_parser(
         "seed",
-        help="insert demo facts into an existing KB at ROOT (default: $VERINOTE_ROOT, else ./data in the current directory)",
+        parents=[root_option],
+        help="insert demo facts into an existing KB at the resolved root",
     )
     seed.add_argument(
-        "root",
+        "root_alias",
         nargs="?",
-        help="an existing KB root (default: $VERINOTE_ROOT, else ./data here)",
+        metavar="ROOT",
+        help="temporary compatibility alias for an absolute --root PATH",
     )
     seed.set_defaults(func=cmd_seed, halt_safe=False)
 
-    sync = sub.add_parser("sync", help="extract candidate facts from sources via the LLM")
+    sync = sub.add_parser(
+        "sync", parents=[root_option], help="extract candidate facts from sources via the LLM"
+    )
     sync.add_argument(
         "path",
         nargs="?",
@@ -1503,14 +1524,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sync.set_defaults(func=cmd_sync, halt_safe=False)
 
-    ingest = sub.add_parser("ingest", help="register a source file (converting docx/pdf to text)")
+    ingest = sub.add_parser(
+        "ingest",
+        parents=[root_option],
+        help="register a source file (converting docx/pdf to text)",
+    )
     ingest.add_argument("path", help="a .txt/.md file, or a .docx/.pdf to convert")
     ingest.set_defaults(func=cmd_ingest, halt_safe=False)
 
-    sources = sub.add_parser("sources", help="inspect and repair registered sources")
+    sources = sub.add_parser(
+        "sources", parents=[root_option], help="inspect and repair registered sources"
+    )
     sources_sub = sources.add_subparsers(dest="sources_command", required=True)
     repair_identities = sources_sub.add_parser(
         "repair-identities",
+        parents=[root_option],
         help="scan NFC/NFD duplicate source identities; --apply repairs verified groups",
     )
     repair_identities.add_argument(
@@ -1520,14 +1548,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     repair_identities.set_defaults(func=cmd_sources_repair_identities, halt_safe=False)
 
-    query = sub.add_parser("query", help="translate pending NL questions to Datalog queries")
+    query = sub.add_parser(
+        "query", parents=[root_option], help="translate pending NL questions to Datalog queries"
+    )
     query.add_argument("question", nargs="?", help="a question to add before translating")
     query.set_defaults(func=cmd_query, halt_safe=False)
 
-    repair = sub.add_parser("repair", help="re-translate review_required questions (engine-gated)")
+    repair = sub.add_parser(
+        "repair", parents=[root_option], help="re-translate review_required questions (engine-gated)"
+    )
     repair.set_defaults(func=cmd_repair, halt_safe=False)
 
-    coverage = sub.add_parser("coverage", help="report per-source engine-fact coverage")
+    coverage = sub.add_parser(
+        "coverage", parents=[root_option], help="report per-source engine-fact coverage"
+    )
     coverage.add_argument(
         "--strict",
         action="store_true",
@@ -1539,13 +1573,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     coverage.set_defaults(func=cmd_coverage, halt_safe=True)
 
-    status = sub.add_parser("status", help="summarise KB state")
+    status = sub.add_parser("status", parents=[root_option], help="summarise KB state")
     status.set_defaults(func=cmd_status, halt_safe=True)
 
-    policy = sub.add_parser("policy", help="manage this KB's logic policy file")
+    policy = sub.add_parser(
+        "policy", parents=[root_option], help="manage this KB's logic policy file"
+    )
     policy_sub = policy.add_subparsers(dest="policy_command", required=True)
     policy_reset = policy_sub.add_parser(
-        "reset", help="re-create the default logic policy (explicit human gate)"
+        "reset",
+        parents=[root_option],
+        help="re-create the default logic policy (explicit human gate)",
     )
     policy_reset.add_argument(
         "--force",
@@ -1555,7 +1593,7 @@ def build_parser() -> argparse.ArgumentParser:
     # The one command that must run *on* a halted KB: it is how a halt is cleared.
     policy_reset.set_defaults(func=cmd_policy_reset, halt_safe=True)
 
-    ui = sub.add_parser("ui", help="launch the web app")
+    ui = sub.add_parser("ui", parents=[root_option], help="launch the web app")
     ui.add_argument("--host", default="127.0.0.1")
     ui.add_argument("--port", type=int, default=8731)
     ui.add_argument("--reload", action="store_true", help="auto-reload (dev)")
@@ -1564,7 +1602,7 @@ def build_parser() -> argparse.ArgumentParser:
     # blocks writes while still serving the /report page that explains the halt.
     # Refusing to start the server would strand the user with no way to diagnose it.
     ui.set_defaults(func=cmd_ui, halt_safe=True)
-    sub.add_parser("serve", help="alias for ui").set_defaults(
+    sub.add_parser("serve", parents=[root_option], help="alias for ui").set_defaults(
         func=cmd_ui, halt_safe=True, host="127.0.0.1", port=8731, reload=False, no_browser=True
     )
 
@@ -1573,17 +1611,23 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _config_for(args: argparse.Namespace) -> Config | None:
     if args.command in {"ui", "serve"}:
+        if args.root is not None or "VERINOTE_ROOT" in os.environ:
+            return Config.for_root(resolve_kb_root(args.root))
         return Config.load_for_ui()
     if args.command in _LOCAL_ROOT_COMMANDS:
-        return Config.for_root(local_root(args.root))
-    return Config.load()
+        if args.root is not None and args.root_alias is not None:
+            raise KBLocationError("cannot use ROOT and --root together; choose one KB root")
+        root = resolve_kb_root(args.root if args.root is not None else args.root_alias)
+        assert_kb_root_is_safe_to_create(root)
+        return Config.for_root(root)
+    return Config.for_root(resolve_kb_root(args.root))
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         cfg = _config_for(args)
-    except ValueError as exc:  # e.g. a blank explicit KB root
+    except KBLocationError as exc:
         print(str(exc), file=sys.stderr)
         return 1
     # The single CLI enforcement point for a halted KB. It sits here, before

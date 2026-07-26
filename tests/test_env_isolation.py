@@ -5,9 +5,8 @@ The bug these guard against is not hypothetical. `POST /settings/root` calls
 `save_active_root()`, which writes the platform app config resolved from `HOME`
 (and friends); a web test that forgot to isolate `HOME` therefore rewrote the
 developer's *real* `app.json` and repointed their active KB at a temp directory
-that pytest then deleted. `active_root()` also falls back to `./data` relative
-to the CWD, so an unisolated test run from the repo root opens the repo's own
-`data/kb.sqlite`.
+that pytest then deleted. `Config.load()` also resolves a default KB under the
+user-data directory, so an unisolated test could open the developer's real KB.
 
 Every test below deliberately omits manual isolation and never requests the
 `isolate_app_environment` fixture by name — it must be the *autouse* fixture in
@@ -36,6 +35,7 @@ from env_sandbox import (
     snapshot,
 )
 from verinote.config import Config, active_root, app_config_dir, app_config_path
+from verinote.kb_location import user_data_kb_root
 
 # The web stack is the only thing here that needs FastAPI. Guarding just the one
 # test that uses it — rather than `importorskip`ing the whole module — keeps the
@@ -105,27 +105,17 @@ def test_settings_switch_without_manual_isolation_stays_in_the_sandbox(tmp_path)
     assert active_root() == other.resolve()
 
 
-def test_active_root_fallback_is_cwd_relative_and_the_sandbox_cwd_is_off_the_repo(
-    tmp_path, monkeypatch
-):
-    # Prove the CWD guard without relying on the repo's own `data/` (which is
-    # gitignored, so it does not exist on CI — asserting `active_root() is None`
-    # there would pass even with the chdir isolation deleted). Instead: plant a
-    # KB under a temp CWD and show the fallback follows the CWD, then show the
-    # sandbox CWD has no KB and is not the repo.
+def test_config_load_uses_the_sandboxed_user_data_root_not_the_cwd(tmp_path, monkeypatch):
+    expected = user_data_kb_root()
     planted = tmp_path / "data"
     planted.mkdir()
     (planted / "kb.sqlite").write_text("", encoding="utf-8")
 
     with monkeypatch.context() as m:
         m.chdir(tmp_path)
-        assert active_root() == planted.resolve(), "the `./data` fallback is CWD-relative"
+        assert Config.load().root == expected.resolve()
 
-    cwd = Path.cwd()
-
-    assert cwd != REPO_ROOT, "the test run must not sit in the repo root"
-    assert REPO_ROOT not in cwd.parents, "the test run must not sit inside the repo"
-    assert active_root() is None, "the sandbox CWD must hold no KB to fall back to"
+    assert REPO_ROOT not in Config.load().root.parents
 
 
 def test_module_scoped_fixtures_run_inside_the_sandbox(module_scoped_app_config_dir):
@@ -140,8 +130,8 @@ def test_module_scoped_fixtures_run_inside_the_sandbox(module_scoped_app_config_
 
 
 def test_module_scoped_config_load_stays_in_the_sandbox(module_scoped_config):
-    # `Config.load()` resolves the root through the real `app.json` *and* the
-    # CWD-relative `./data` fallback, so both tiers of the leak show up here.
+    # `Config.load()` resolves through the platform user-data root, so a
+    # module-scoped fixture must still stay under the session environment seal.
     root = module_scoped_config.root
 
     assert session_home() is not None, "the session-start environment seal is not installed"

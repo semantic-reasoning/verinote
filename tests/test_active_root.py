@@ -133,3 +133,13 @@ def test_save_active_root_creates_file_when_absent(tmp_path, monkeypatch):
 
     assert app_config_path().is_file()
     assert read_app_config()["active_root"] == str(kb.resolve())
+
+
+def test_active_root_does_not_fall_back_to_cwd_data(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    monkeypatch.delenv("VERINOTE_ROOT", raising=False)
+    cwd_data = _make_kb(tmp_path, "data")
+    monkeypatch.chdir(tmp_path)
+
+    assert active_root() is None
+    assert cwd_data.is_dir()

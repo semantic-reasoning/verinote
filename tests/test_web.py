@@ -16,6 +16,7 @@ import verinote.web.app as webapp  # noqa: E402
 from verinote.config import Config, ConfigCorruptError, save_settings  # noqa: E402
 from verinote.engine import CheckReport, DEFAULT_POLICY, FindingDetail  # noqa: E402
 from verinote.engine.terms import Atom, Compound, StringLit  # noqa: E402
+from verinote.kb_location import KBRootSafetyError  # noqa: E402
 from verinote.llm.base import ExtractedFact, LLMError  # noqa: E402
 from verinote.pipeline import ChunkedExtractionResult, ExtractionJobBusyError  # noqa: E402
 from verinote.pipeline.verify import _with_unrecorded_policy_warning  # noqa: E402
@@ -359,6 +360,50 @@ def test_select_kb_activates_app(tmp_path, monkeypatch):
     assert (kb / "policy" / "logic-policy.dl").is_file()
     assert c.app.state.cfg.root == kb.resolve()
     assert "Knowledge base" in c.get("/").text
+
+
+def _unsafe_ui_root(tmp_path, kind):
+    worktree = tmp_path / "synthetic-worktree"
+    worktree.mkdir()
+    if kind == "linked-worktree":
+        (worktree / ".git").write_text("gitdir: synthetic\n", encoding="utf-8")
+    else:
+        (worktree / ".git").mkdir()
+    expected = worktree / "nested" / "kb"
+    if kind == "symlink":
+        alias = tmp_path / "synthetic-worktree-alias"
+        alias.symlink_to(worktree, target_is_directory=True)
+        return alias / "nested" / "kb", expected
+    return expected, expected
+
+
+@pytest.mark.parametrize("kind", ["normal-worktree", "linked-worktree", "symlink"])
+def test_ui_startup_refuses_worktree_descendant_before_initializing(tmp_path, kind):
+    root, expected = _unsafe_ui_root(tmp_path, kind)
+
+    with pytest.raises(KBRootSafetyError, match="inside Git worktree"):
+        create_app(Config.for_root(root))
+
+    assert not expected.exists()
+
+
+@pytest.mark.parametrize("path", ["/kb/select", "/settings/root"])
+@pytest.mark.parametrize("kind", ["normal-worktree", "linked-worktree", "symlink"])
+def test_ui_root_selection_refuses_worktree_descendant_before_initializing(
+    tmp_path, path, kind
+):
+    root, expected = _unsafe_ui_root(tmp_path, kind)
+    client = (
+        _client(tmp_path)
+        if path == "/settings/root"
+        else TestClient(create_app())
+    )
+
+    response = client.post(path, data={"root": str(root)}, follow_redirects=False)
+
+    assert response.status_code == 400
+    assert "inside Git worktree" in response.text
+    assert not expected.exists()
 
 
 def test_dashboard_shows_coverage_gap(tmp_path):
