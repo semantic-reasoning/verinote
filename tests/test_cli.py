@@ -94,6 +94,31 @@ def test_sync_file_inserts_candidates(tmp_path, monkeypatch, capsys, fake_client
     assert [f["subject"] for f in s.review_queue()] == ["A"]
 
 
+def test_sync_legacy_path_passes_configured_extraction_schema_hint(
+    tmp_path, monkeypatch
+):
+    from verinote.pipeline.extract import SyncResult
+
+    _env(monkeypatch, tmp_path)
+    monkeypatch.setenv("VERINOTE_EXTRACTION_MAX_FACTS_PER_CHUNK", "3")
+    source = tmp_path / "note.txt"
+    source.write_text("synthetic source text", encoding="utf-8")
+    received: dict[str, object] = {}
+
+    def sync_sources(store, client, sources, **kwargs):
+        received["schema_hint"] = kwargs["schema_hint"]
+        return SyncResult(run_id=1, per_source=[(path, 0) for path, _ in sources])
+
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: object())
+    monkeypatch.setattr("verinote.pipeline.sync_sources", sync_sources)
+
+    assert cli.main(["sync", str(source)]) == 0
+    assert received["schema_hint"] == (
+        "Extract at most 3 facts from this chunk. Prefer the most explicit "
+        "source-backed facts when more facts are available."
+    )
+
+
 def test_sync_missing_file_errors(tmp_path, monkeypatch, capsys):
     _env(monkeypatch, tmp_path)
     rc = cli.main(["sync", str(tmp_path / "nope.txt")])
