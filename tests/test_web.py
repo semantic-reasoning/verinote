@@ -796,15 +796,18 @@ def test_upload_normalizes_nfc_source_identity_and_chunk_text(tmp_path, monkeypa
     monkeypatch.setattr(webapp, "get_client", lambda _cfg: object())
     processed_jobs = set()
     processed_lock = threading.Lock()
-    workers_finished = threading.Event()
+    first_worker_finished = threading.Event()
+    second_worker_finished = threading.Event()
 
     def complete_job(store, _client, *, job_id, **_kwargs):
         assert store.claim_pending_extraction_job(job_id)
         store.finish_extraction_job(job_id)
         with processed_lock:
             processed_jobs.add(job_id)
-            if len(processed_jobs) == 2:
-                workers_finished.set()
+            if len(processed_jobs) == 1:
+                first_worker_finished.set()
+            elif len(processed_jobs) == 2:
+                second_worker_finished.set()
         return ChunkedExtractionResult(job_id=job_id)
 
     monkeypatch.setattr(
@@ -819,6 +822,8 @@ def test_upload_normalizes_nfc_source_identity_and_chunk_text(tmp_path, monkeypa
         files={"file": (nfd_filename, nfd_text.encode("utf-8"), "text/plain")},
         follow_redirects=False,
     )
+    assert first.status_code == 303
+    assert first_worker_finished.wait(timeout=2.0)
     assert (tmp_path / "sources" / nfc_filename).read_bytes() == nfd_text.encode("utf-8")
     source = c.app.state.store.get_source_by_path(f"sources/{nfc_filename}")
     assert source is not None
@@ -831,12 +836,12 @@ def test_upload_normalizes_nfc_source_identity_and_chunk_text(tmp_path, monkeypa
         follow_redirects=False,
     )
 
-    assert first.status_code == second.status_code == 303
+    assert second.status_code == 303
+    assert second_worker_finished.wait(timeout=2.0)
     sources = c.app.state.store.sources()
     assert len(sources) == 1
     assert sources[0]["path"] == f"sources/{nfc_filename}"
     assert chunk_inputs == [nfc_text, nfc_text]
-    assert workers_finished.wait(timeout=2.0)
 
 
 def test_upload_rejects_unsupported_type(tmp_path):
