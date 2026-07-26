@@ -26,11 +26,12 @@ from verinote.pipeline.query_intent import (
     parse_query_intent,
 )
 
-FIXTURE = Path(__file__).resolve().parent.parent / "fixtures" / "contract" / "query_intent_acme_ceo.json"
+FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "contract"
+LIVE_FIXTURES = tuple(sorted(FIXTURES_DIR.glob("*/query_intent_acme_ceo.json")))
 
 
-def _fixture() -> dict:
-    return json.loads(FIXTURE.read_text(encoding="utf-8"))
+def _fixture(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def test_deterministic_parser_does_not_resolve_the_role_question():
@@ -53,12 +54,26 @@ def test_live_provider_yields_valid_query_intent(require_live_provider):
 
 
 @pytest.mark.contract
-def test_replay_raw_intent_parses_through_production_boundary(require_opt_in):
-    fixture = _fixture()
-    raw = json.loads(fixture["raw_response"])
-    # Non-vacuity: the capture must actually hold the #237 failure shape — a
-    # populated `reason` on a lookup intent — or this replay proves nothing.
-    assert raw.get("reason"), "fixture does not capture the #237 failure shape (reason must be set)"
-    intent = parse_query_intent(fixture["raw_response"])
+@pytest.mark.parametrize("fixture_path", LIVE_FIXTURES, ids=lambda path: path.parent.name)
+def test_replay_raw_intent_parses_through_production_boundary(require_opt_in, fixture_path):
+    fixture = _fixture(fixture_path)
+    raw = fixture["raw_response"]
+    decoded = json.loads(raw) if isinstance(raw, str) else raw
+    assert isinstance(decoded, dict), "query-intent raw response must be an object"
+    intent = parse_query_intent(raw)
     assert isinstance(intent, QueryIntent)
     assert intent.kind != QueryIntentKind.UNKNOWN_OR_UNSUPPORTED
+
+
+@pytest.mark.contract
+def test_claudecli_replay_retains_reason_regression_shape(require_opt_in):
+    """Keep the captured #237 Claude response regression-specific assertion."""
+    fixture_path = FIXTURES_DIR / "claudecli" / "query_intent_acme_ceo.json"
+    fixture = _fixture(fixture_path)
+    raw = fixture["raw_response"]
+    decoded = json.loads(raw) if isinstance(raw, str) else raw
+    # Non-vacuity: the capture must actually hold the #237 failure shape — a
+    # populated `reason` on a lookup intent — or this replay proves nothing.
+    assert decoded.get("reason"), (
+        "fixture does not capture the #237 failure shape (reason must be set)"
+    )
