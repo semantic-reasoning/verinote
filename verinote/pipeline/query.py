@@ -58,6 +58,7 @@ class _QueryFlowResult:
     status: str
     query_dl: str | None
     reason: str
+    # Repair-only eligibility: ordinary translation is always schema-only.
     allow_direct_datalog_fallback: bool = False
     provider_failed: bool = False
 
@@ -376,8 +377,13 @@ def _translate_direct_datalog_fallback(
     question: str,
     llm_error_status: str,
 ) -> _QueryFlowResult:
+    """Run the repair-only direct-Datalog fallback with a schema-only hint."""
     try:
-        line = client.translate_query(question=question, qid=qid)
+        line = client.translate_query(
+            question=question,
+            qid=qid,
+            schema_hint=query_schema_hint(build_query_schema_snapshot(store)),
+        )
     except LLMError as exc:
         reason = _short_reason(exc)
         if llm_error_status == "translation_failed":
@@ -425,9 +431,8 @@ def translate_questions(
     client: LLMClient,
     *,
     root: Path,
-    allow_direct_datalog_fallback: bool = False,
 ) -> list[dict]:
-    """Translate pending and previously failed questions, persist drafts, rewrite `query.dl`.
+    """Translate pending and previously failed questions through the schema-only flow.
 
     Returns one dict per processed question: {id, status, query_dl, reason}.
     """
@@ -443,19 +448,6 @@ def translate_questions(
             llm_error_status="translation_failed",
         )
         status, query_dl, reason = flow.status, flow.query_dl, flow.reason
-        if (
-            allow_direct_datalog_fallback
-            and status == "review_required"
-            and flow.allow_direct_datalog_fallback
-        ):
-            fallback = _translate_direct_datalog_fallback(
-                store,
-                client,
-                qid=q["id"],
-                question=q["text"],
-                llm_error_status="translation_failed",
-            )
-            status, query_dl, reason = fallback.status, fallback.query_dl, fallback.reason
         store.set_question_query(q["id"], query_dl, status, reason)
         results.append(
             {"id": q["id"], "status": status, "query_dl": query_dl, "reason": reason}

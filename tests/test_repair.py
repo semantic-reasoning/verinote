@@ -178,16 +178,39 @@ def test_repair_fallback_accepts_valid_proposal_without_pyrewire(
     assert s.questions()[0]["status"] == "translated"
 
 
-def test_repair_rejects_engine_invalid_proposal(tmp_path, fake_client):
+def test_repair_fallback_schema_hint_is_advisory_and_engine_rejects_invalid_proposal(
+    tmp_path, fake_client
+):
     s, qid = _store_with_review_required(tmp_path)
-    # references an undeclared predicate -> engine rejects, question untouched
-    client = fake_client(query=lambda q, i: f"answer_q{i}(O) :- bogus(O).")
-    results = repair_questions(
-        s, client, root=tmp_path, allow_direct_datalog_fallback=True
+    s.add_fact(
+        "Synthetic Private Subject",
+        "synthetic_relation",
+        "Synthetic Private Object",
+        status="confirmed",
     )
+    client = fake_client()
+    schema_hints = []
 
+    def translate_query(*, question: str, qid: int, schema_hint: str = "") -> str:
+        schema_hints.append(schema_hint)
+        return (
+            f'answer_q{qid}(O) :- relation("Synthetic Private Subject", '
+            '"synthetic_relation", O), bogus(O).'
+        )
+
+    client.translate_query = translate_query
+
+    results = repair_questions(s, client, root=tmp_path)
+
+    assert results[0]["id"] == qid
     assert results[0]["accepted"] is False
     assert "bogus" in results[0]["reason"]
+    assert len(schema_hints) == 1
+    hint = schema_hints[0]
+    assert "Observed relations:" in hint
+    assert "synthetic_relation" in hint
+    assert "Synthetic Private Subject" not in hint
+    assert "Synthetic Private Object" not in hint
     q = s.questions()[0]
     assert q["status"] == "review_required"
     assert q["reason"] == results[0]["reason"]

@@ -5,6 +5,9 @@ The LLM proposes a corrected query line for each `review_required` question, but
 the proposal is only accepted if the deterministic engine validates it — the
 engine, not the model, has the final say. Rejected proposals leave the question
 untouched and the reason is logged.
+
+Schema vocabulary supplied to the repair fallback is advisory; only the engine
+gate approves a proposal.
 """
 
 from __future__ import annotations

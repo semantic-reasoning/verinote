@@ -403,7 +403,7 @@ def test_relation_alias_and_canonical_relation_names_are_honored(tmp_path):
     ]
 
 
-def test_no_answer_is_distinct_from_translation_failed(tmp_path):
+def test_unsupported_intent_is_distinct_from_translation_failed(tmp_path):
     class NoAnswerThenInvalidIntentClient:
         name = "no-answer-then-invalid-intent"
 
@@ -420,73 +420,27 @@ def test_no_answer_is_distinct_from_translation_failed(tmp_path):
             return parse_query_intent({"kind": "lookup_object"})
 
         def translate_query(self, *, question: str, qid: int, schema_hint: str = "") -> str:
-            return (
-                f'answer_q{qid}(O) :- relation("Missing Synthetic Subject", '
-                '"synthetic_relation", O).'
-            )
+            raise AssertionError("ordinary translation must not call direct Datalog fallback")
 
     store = _store(tmp_path)
     store.add_fact("Synthetic Subject", "synthetic_relation", "Value", status="confirmed")
     store.add_question("Which value is recorded for the missing subject?")
     store.add_question("Which value has invalid model output?")
 
-    results = translate_questions(
-        store,
-        NoAnswerThenInvalidIntentClient(),
-        root=tmp_path,
-        allow_direct_datalog_fallback=True,
-    )
+    results = translate_questions(store, NoAnswerThenInvalidIntentClient(), root=tmp_path)
 
     assert [result["status"] for result in results] == [
-        "no_answer",
+        "review_required",
         "translation_failed",
     ]
-    assert results[0]["query_dl"] == 'no_answer("no confirmed facts match")'
-    assert results[0]["reason"] == "no confirmed facts match"
+    assert results[0]["query_dl"] == 'review_required("synthetic fallback coverage")'
+    assert results[0]["reason"] == "synthetic fallback coverage"
     assert results[1]["query_dl"] is None
     assert "query intent output did not match schema:" in results[1]["reason"]
     rows = store.questions()
-    assert [row["status"] for row in rows] == ["no_answer", "translation_failed"]
+    assert [row["status"] for row in rows] == ["review_required", "translation_failed"]
     assert all(row["status"] != "pending" for row in rows)
     assert query_path(tmp_path).read_text(encoding="utf-8") == ""
-
-
-def test_invalid_direct_datalog_fallback_is_visible_but_not_written(tmp_path):
-    class InvalidDatalogClient:
-        name = "invalid-datalog"
-
-        def extract_query_intent(self, *, question: str, schema_hint: str = ""):
-            from verinote.pipeline.query_intent import parse_query_intent
-
-            return parse_query_intent(
-                _intent(
-                    "unknown_or_unsupported",
-                    reason="synthetic fallback coverage",
-                )
-            )
-
-        def translate_query(self, *, question: str, qid: int, schema_hint: str = "") -> str:
-            return "not valid datalog"
-
-    store = _store(tmp_path)
-    qid = store.add_question("Which value requires fallback?")
-
-    results = translate_questions(
-        store,
-        InvalidDatalogClient(),
-        root=tmp_path,
-        allow_direct_datalog_fallback=True,
-    )
-
-    assert results[0]["id"] == qid
-    assert results[0]["status"] == "review_required"
-    assert results[0]["query_dl"].startswith("review_required(")
-    assert "invalid query:" in results[0]["reason"]
-    question = store.questions()[0]
-    assert question["status"] == "review_required"
-    assert question["status"] != "pending"
-    assert "not valid datalog" not in question["query_dl"]
-    assert "not valid datalog" not in query_path(tmp_path).read_text(encoding="utf-8")
 
 
 def _typed_compare_payload(
