@@ -1196,8 +1196,9 @@ def test_seed_rejects_an_empty_db_file_instead_of_creating_a_schema(
 
     assert db.read_bytes() == b""  # no schema was created behind our back
     err = capsys.readouterr().err
-    assert "is not a verinote KB" in err
-    assert f"verinote init {root}" in err  # recovery path
+    assert cli.KB_NO_SCHEMA in err
+    assert "move it aside" in err
+    assert "backup" not in err
 
 
 def test_seed_rejects_a_corrupt_db_file_without_a_traceback(tmp_path, monkeypatch, capsys):
@@ -1211,8 +1212,143 @@ def test_seed_rejects_a_corrupt_db_file_without_a_traceback(tmp_path, monkeypatc
 
     assert db.read_bytes() == b"definitely not sqlite\n"
     err = capsys.readouterr().err
-    assert "is not a verinote KB" in err
+    assert cli.KB_UNREADABLE in err
+    assert "restore it from backup" in err
     assert f"verinote init {root}" in err
+    assert "Traceback" not in err
+
+
+def test_seed_refuses_a_data_bearing_partial_schema_with_backup_guidance(
+    tmp_path, monkeypatch, capsys
+):
+    _isolated(monkeypatch, tmp_path)
+    root = tmp_path / "partial"
+    root.mkdir()
+    db = root / "kb.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE facts(id INTEGER PRIMARY KEY, subject, relation, object, status)"
+    )
+    conn.executemany(
+        "INSERT INTO facts (subject, relation, object, status) VALUES (?, ?, ?, ?)",
+        [
+            ("Example Org", "is_a", "participant", "confirmed"),
+            ("Example Org", "established_on", "2020-01-01", "superseded"),
+        ],
+    )
+    conn.commit()
+    conn.close()
+    before = db.read_bytes()
+
+    assert cli.main(["seed", str(root)]) == 1
+
+    assert db.read_bytes() == before
+    err = capsys.readouterr().err
+    assert "holds 2 fact(s)" in err
+    assert "backup" in err
+    assert "move it aside" not in err
+    assert "Traceback" not in err
+
+
+def test_seed_refuses_a_partial_schema_with_corrupt_data_pages_safely(
+    tmp_path, monkeypatch, capsys
+):
+    _isolated(monkeypatch, tmp_path)
+    root = tmp_path / "partial"
+    root.mkdir()
+    db = root / "kb.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE facts(id INTEGER PRIMARY KEY, subject, relation, object, status)"
+    )
+    conn.executemany(
+        "INSERT INTO facts (subject, relation, object, status) VALUES (?, ?, ?, ?)",
+        [
+            (f"Subject-{i}", "is_a", f"Object-{i}-padding-padding-padding", "confirmed")
+            for i in range(5000)
+        ],
+    )
+    conn.commit()
+    conn.close()
+    with open(db, "r+b") as f:
+        f.seek(4096 * 3)
+        f.write(b"\xff" * 200)
+
+    problem = cli._kb_schema_problem(db)
+    assert problem is not None and problem.startswith(cli.KB_PARTIAL_SCHEMA)
+
+    assert cli.main(["seed", str(root)]) == 1
+
+    err = capsys.readouterr().err
+    assert "backup" in err or "could not be read" in err
+    assert "move it aside" not in err
+    assert "Traceback" not in err
+
+
+def test_seed_keeps_generic_guidance_for_an_empty_partial_schema(
+    tmp_path, monkeypatch, capsys
+):
+    _isolated(monkeypatch, tmp_path)
+    root = tmp_path / "partial"
+    root.mkdir()
+    db = root / "kb.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE facts(id INTEGER PRIMARY KEY, subject, relation, object, status)"
+    )
+    conn.commit()
+    conn.close()
+
+    assert cli.main(["seed", str(root)]) == 1
+
+    err = capsys.readouterr().err
+    assert cli.KB_PARTIAL_SCHEMA in err
+    assert "move it aside" in err
+    assert "backup" not in err
+    assert "holds" not in err
+
+
+def test_seed_keeps_generic_guidance_for_a_schema_less_sqlite_database(
+    tmp_path, monkeypatch, capsys
+):
+    _isolated(monkeypatch, tmp_path)
+    root = tmp_path / "empty"
+    root.mkdir()
+    db = root / "kb.sqlite"
+    sqlite3.connect(db).close()
+
+    assert cli.main(["seed", str(root)]) == 1
+
+    err = capsys.readouterr().err
+    assert cli.KB_NO_SCHEMA in err
+    assert "move it aside" in err
+    assert "backup" not in err
+
+
+def test_seed_keeps_foreign_facts_out_of_the_partial_schema_count(
+    tmp_path, monkeypatch, capsys
+):
+    _isolated(monkeypatch, tmp_path)
+    root = tmp_path / "foreign"
+    root.mkdir()
+    db = root / "kb.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE facts(a, b)")
+    conn.execute("INSERT INTO facts VALUES (1, 2)")
+    conn.commit()
+    conn.close()
+
+    def _boom(cfg):
+        raise AssertionError("_facts_row_count must not run for KB_ALIEN_FACTS")
+
+    monkeypatch.setattr(cli, "_facts_row_count", _boom)
+
+    assert cli.main(["seed", str(root)]) == 1
+
+    err = capsys.readouterr().err
+    assert cli.KB_ALIEN_FACTS in err
+    assert "move it aside" in err
+    assert "backup" not in err
 
 
 def test_init_refuses_a_corrupt_db_instead_of_raising(tmp_path, monkeypatch, capsys):

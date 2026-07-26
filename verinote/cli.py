@@ -509,6 +509,33 @@ def cmd_seed(cfg: Config, args: argparse.Namespace) -> int:
         return 1
     problem = _kb_schema_problem(cfg.db_path)
     if problem is not None:
+        # A damaged database may be the only copy of a user's review decisions.
+        # `seed` never writes on this path, but telling the user to move it aside
+        # invites a manual discard before they can restore it. Keep this recovery
+        # advice aligned with `init`'s cautious branches.
+        if problem == KB_UNREADABLE:
+            print(
+                f"cannot seed {cfg.root}: {cfg.db_path} exists and is {KB_UNREADABLE}. "
+                "If it is a damaged KB, restore it from backup; if it is not a KB at all, "
+                f"move it aside and run `verinote init {cfg.root}` to scaffold one.",
+                file=sys.stderr,
+            )
+            return 1
+        if problem.startswith(KB_PARTIAL_SCHEMA):
+            rows = _facts_row_count(cfg)
+            if rows != 0:  # rows > 0, or None when data pages cannot be read
+                held = (
+                    "may hold facts that could not be read"
+                    if rows is None
+                    else f"holds {rows} fact(s)"
+                )
+                print(
+                    f"cannot seed {cfg.root}: {cfg.db_path} is not a verinote KB "
+                    f"({problem}), but it {held}. Restore it from a backup instead of "
+                    "moving it aside.",
+                    file=sys.stderr,
+                )
+                return 1
         print(
             f"{cfg.db_path} is not a verinote KB ({problem}); move it aside and run "
             f"`verinote init {cfg.root}` to scaffold one",
