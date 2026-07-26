@@ -464,6 +464,22 @@ def test_the_bar_markup_is_not_styled_by_a_class_the_stylesheet_never_defines(pa
     )
 
 
+def test_terminal_progress_complete_uses_a_repeating_gradient_pattern() -> None:
+    """A completed terminal bar must remain distinguishable without colour alone."""
+    css = CSS_PATH.read_text(encoding="utf-8")
+    match = re.search(
+        r"\.progress\.is-done\s+\.progress-complete\s*\{(?P<body>[^}]*)\}",
+        css,
+        flags=re.DOTALL,
+    )
+
+    assert match, "app.css has no rule for completed terminal progress"
+    assert re.search(
+        r"background-image\s*:\s*repeating-linear-gradient\s*\(",
+        match.group("body"),
+    ), "completed terminal progress must use a repeating-linear-gradient pattern"
+
+
 # --- the poll (#228, second half) -------------------------------------------
 
 
