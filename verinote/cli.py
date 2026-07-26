@@ -834,7 +834,14 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
             # LLMError and exits rc 1 below, so every outcome reaching here is a
             # success with zero completed/failed chunks.
             pairs = [(source.source_path, source.text) for source in sources]
-            legacy = sync_sources(store, client, pairs, provider=cfg.provider, model=cfg.model)
+            legacy = sync_sources(
+                store,
+                client,
+                pairs,
+                provider=cfg.provider,
+                model=cfg.model,
+                schema_hint=extraction_schema_hint(),
+            )
             result = _SyncSummary(
                 per_source=[
                     _SourceSyncOutcome(path, n, 0, 0) for path, n in legacy.per_source
