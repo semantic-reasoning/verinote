@@ -51,39 +51,19 @@ def test_query_intent_prompt_states_the_reason_contract():
     # "unknown_or_unsupported", and this pin has to catch that.
     assert "fill it only when kind is unknown_or_unsupported" in text
     assert "For every other kind, leave reason null" in text
-    # The comparison fields need the contract to the same depth. "Use null for
-    # fields that do not apply" was the vague line that let a model put an
-    # operator on a lookup_object and kill the question. While
-    # compare_typed_value is off the table entirely (see the test below), "null
-    # on every kind" states that contract without leaning on a condition the
-    # prompt has already forbidden the model from reaching.
-    assert "Leave operator, value_type, and value null on every kind" in text
+    assert "Leave operator, value_type, and value null on every kind other than compare_typed_value" in text
     assert "put the answer's shape in subject, relation, and object instead" in text
 
 
-def test_query_intent_prompt_does_not_steer_threshold_questions_to_compare_typed_value():
-    """The prompt must not ask for an intent `query_planner.py` cannot plan.
-
-    `plan_query_candidates` has no `compare_typed_value` branch: it falls through
-    to "unsupported intent kind" and the question lands in review_required. A
-    prompt that told the model to answer threshold questions with
-    compare_typed_value therefore made following the prompt *deterministically*
-    fail. Until planner support lands, the prompt routes those to
-    unknown_or_unsupported, which at least carries a reason a human can read.
-    """
+def test_query_intent_prompt_supports_anchored_typed_thresholds():
     text = default_prompt_text("query-intent")
 
-    assert "worth more than 10 million" not in text
-    assert "compare a typed value against a threshold" not in text
-    assert (
-        "Do not classify a question as compare_typed_value: threshold comparisons "
-        "cannot be planned yet" in text
-    )
-    # Having banned the kind outright, the prompt must not then hand the model a
-    # rule conditioned on emitting it -- "fill these only when kind is
-    # compare_typed_value" is unreachable once the kind is forbidden, and an
-    # instruction the model can never satisfy is noise it has to reconcile.
-    assert "only when kind is compare_typed_value" not in text
+    assert "Use compare_typed_value only for an anchored subject and a typed threshold comparison" in text
+    assert '"operator":">="' in text
+    assert '"value_type":"amount"' in text
+    assert "use only a unit listed for that relation in the schema hint" in text
+    assert "Synthetic Company revenue at least one credit" in text
+    assert "USD" not in text
 
 
 def test_query_intent_prompt_does_not_steer_aggregate_questions_to_count():

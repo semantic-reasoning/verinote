@@ -172,6 +172,22 @@ def test_parse_query_intent_accepts_valid_compare_typed_value():
     assert intent.value == "10"
 
 
+def test_parse_query_intent_rejects_object_on_compare_typed_value():
+    with pytest.raises(LLMError, match="compare_typed_value does not accept object"):
+        parse_query_intent(
+            _intent_payload(
+                kind="compare_typed_value",
+                subject={"kind": "entity", "value": "Synthetic Company"},
+                relation={"kind": "relation", "value": "metric"},
+                object={"kind": "typed_value", "value": "number(10)"},
+                operator=">",
+                value_type="number",
+                value="10",
+                reason=None,
+            )
+        )
+
+
 def test_parse_query_intent_accepts_entity_relation_discovery():
     broad = parse_query_intent(
         _intent_payload(
