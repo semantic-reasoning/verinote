@@ -6,7 +6,7 @@
 
 **Ask your documents a question. Get an answer a deterministic engine has verified — with the source to prove it.**
 
-<!-- TODO: demo.gif — Ask tab showing "VERIFIED — engine" (#212) -->
+![Ask screen showing the question "What is the purpose of Example Org?", a VERIFIED engine answer, and source and evidence below it.](docs/img/ask-verified.png)
 
 For anyone whose notes, docs, and meeting minutes pile up until facts drift, go
 stale, and lose the source that justified them — and who has to *trust* an answer,
