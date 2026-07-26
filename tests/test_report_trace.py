@@ -2,7 +2,12 @@
 from verinote.engine.terms import Atom, Compound, StringLit
 from verinote.engine.wirelog import answer_bucket_sort_key
 from verinote.pipeline.query import query_path
-from verinote.pipeline.report_trace import AnswerTrace, report_trace
+from verinote.pipeline.report_trace import (
+    AnswerTrace,
+    TraceBounds,
+    report_trace,
+    trace_query_answers,
+)
 from verinote.pipeline.verify import verify
 from verinote.store import Store, db as store_db
 
@@ -94,7 +99,7 @@ def test_report_trace_links_two_filter_conditions_to_only_the_shared_answer(tmp_
     ]
 
 
-def test_report_trace_compresses_duplicate_two_hop_witnesses(tmp_path):
+def test_report_trace_aggregates_duplicate_two_hop_proofs_by_answer(tmp_path):
     s = _store(tmp_path)
     first_a = s.add_fact("Ada", "assigned_to", "Project", status="confirmed")
     first_b = s.add_fact("Ada", "assigned_to", "Project", status="confirmed")
@@ -110,8 +115,142 @@ def test_report_trace_compresses_duplicate_two_hop_witnesses(tmp_path):
     trace = report_trace(s)
 
     assert [(answer.value, [fact.id for fact in answer.facts]) for answer in trace.answers] == [
-        ("Research", [first_a, first_b, second_a, second_b])
+        ("Research", [first_a, first_b, second_a, second_b]),
     ]
+
+
+def test_report_trace_links_three_hop_answers_to_the_exact_facts(tmp_path):
+    s = _store(tmp_path)
+    first = s.add_fact("Ada", "assigned_to", "Project", status="confirmed")
+    second = s.add_fact("Project", "owned_by", "Research Team", status="confirmed")
+    third = s.add_fact("Research Team", "category", "Strategic", status="confirmed")
+
+    trace = trace_query_answers(
+        s,
+        '.decl answer_q1(value: symbol)\n'
+        'answer_q1(A) :- relation(A, "assigned_to", M), '
+        'relation(M, "owned_by", T), relation(T, "category", "Strategic").\n',
+    )
+
+    assert [(answer.value, [fact.id for fact in answer.facts]) for answer in trace] == [
+        ("Ada", [first, second, third])
+    ]
+
+
+def test_report_trace_keeps_distinct_three_hop_proof_sets_separate(tmp_path):
+    s = _store(tmp_path)
+    first_a = s.add_fact("Ada", "assigned_to", "Project A", status="confirmed")
+    second_a = s.add_fact("Project A", "owned_by", "Team A", status="confirmed")
+    third_a = s.add_fact("Team A", "category", "Strategic", status="confirmed")
+    first_b = s.add_fact("Ada", "assigned_to", "Project B", status="confirmed")
+    second_b = s.add_fact("Project B", "owned_by", "Team B", status="confirmed")
+    third_b = s.add_fact("Team B", "category", "Strategic", status="confirmed")
+
+    trace = trace_query_answers(
+        s,
+        '.decl answer_q1(value: symbol)\n'
+        'answer_q1(A) :- relation(A, "assigned_to", M), '
+        'relation(M, "owned_by", T), relation(T, "category", "Strategic").\n',
+    )
+
+    assert [(answer.value, [fact.id for fact in answer.facts]) for answer in trace] == [
+        ("Ada", [first_a, second_a, third_a]),
+        ("Ada", [first_b, second_b, third_b]),
+    ]
+
+
+def test_report_trace_excludes_incompatible_three_hop_bindings(tmp_path):
+    s = _store(tmp_path)
+    s.add_fact("Ada", "assigned_to", "Project A", status="confirmed")
+    s.add_fact("Project A", "owned_by", "Other Team", status="confirmed")
+    s.add_fact("Project A", "category", "Strategic", status="confirmed")
+    s.add_fact("Ada", "assigned_to", "Project B", status="confirmed")
+    s.add_fact("Project B", "owned_by", "Research Team", status="confirmed")
+    s.add_fact("Project B", "category", "Routine", status="confirmed")
+
+    trace = trace_query_answers(
+        s,
+        '.decl answer_q1(value: symbol)\n'
+        'answer_q1(A) :- relation(A, "assigned_to", M), '
+        'relation(M, "owned_by", "Research Team"), '
+        'relation(M, "category", "Strategic").\n',
+    )
+
+    assert trace == ()
+
+
+def test_report_trace_uses_head_variable_bound_only_by_first_atom(tmp_path):
+    s = _store(tmp_path)
+    first = s.add_fact(
+        Atom("ada"), "assigned_to", StringLit("project"), status="confirmed"
+    )
+    second = s.add_fact(Atom("project"), "purpose", "Research", status="confirmed")
+
+    trace = trace_query_answers(
+        s,
+        '.decl answer_q1(value: symbol)\n'
+        'answer_q1(A) :- relation(A, "assigned_to", M), '
+        'relation(M, "purpose", "Research").\n',
+    )
+
+    assert [(answer.value, [fact.id for fact in answer.facts]) for answer in trace] == [
+        ("ada", [first, second])
+    ]
+
+
+def test_report_trace_rejects_disconnected_and_four_atom_rules(tmp_path):
+    s = _store(tmp_path)
+    s.add_fact("Ada", "role", "Engineer", status="confirmed")
+    s.add_fact("Research Team", "category", "Strategic", status="confirmed")
+    s.add_fact("Ada", "assigned_to", "Project", status="confirmed")
+    s.add_fact("Project", "owned_by", "Research Team", status="confirmed")
+    s.add_fact("Research Team", "category", "Strategic", status="confirmed")
+    s.add_fact("Strategic", "label", "Priority", status="confirmed")
+    s.add_fact(Compound("f", (Atom("ada"),)), "role", "Engineer", status="confirmed")
+
+    disconnected = trace_query_answers(
+        s,
+        '.decl answer_q1(value: symbol)\n'
+        'answer_q1(A) :- relation(A, "role", "Engineer"), '
+        'relation("Research Team", "category", "Strategic").\n',
+    )
+    four_atoms = trace_query_answers(
+        s,
+        '.decl answer_q1(value: symbol)\n'
+        'answer_q1(A) :- relation(A, "assigned_to", M), '
+        'relation(M, "owned_by", T), relation(T, "category", C), '
+        'relation(C, "label", "Priority").\n',
+    )
+    compound_variable = trace_query_answers(
+        s,
+        '.decl answer_q1(value: symbol)\n'
+        'answer_q1(A) :- relation(f(A), "role", "Engineer").\n',
+    )
+
+    assert disconnected == ()
+    assert four_atoms == ()
+    assert compound_variable == ()
+
+
+def test_report_trace_bounds_fail_closed_without_partial_proofs(tmp_path):
+    s = _store(tmp_path)
+    s.add_fact("Ada", "assigned_to", "Project A", status="confirmed")
+    s.add_fact("Ada", "assigned_to", "Project B", status="confirmed")
+    s.add_fact("Project A", "purpose", "Research", status="confirmed")
+    s.add_fact("Project B", "purpose", "Research", status="confirmed")
+    query = (
+        '.decl answer_q1(value: symbol)\n'
+        'answer_q1(A) :- relation(A, "assigned_to", M), '
+        'relation(M, "purpose", "Research").\n'
+    )
+
+    assert trace_query_answers(s, query, bounds=TraceBounds(max_atom_matches=1)) == ()
+    assert trace_query_answers(
+        s,
+        query,
+        bounds=TraceBounds(max_partial_bindings=1),
+    ) == ()
+    assert trace_query_answers(s, query, bounds=TraceBounds(max_proof_sets=1)) == ()
 
 
 def test_report_answer_and_trace_render_a_comma_value_the_same_way(tmp_path):
