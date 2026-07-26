@@ -369,7 +369,6 @@ def test_direct_store_rejects_legacy_nfd_payloads_without_mutating_them(tmp_path
     _duckdb()
     path = fact_terms_path(tmp_path)
     nfd_value = "Cafe\u0301"
-    nfc_value = nfc(nfd_value)
     legacy_values = (
         _legacy_term_value(
             {
