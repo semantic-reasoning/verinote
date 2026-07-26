@@ -46,6 +46,7 @@ from verinote.engine.wirelog import (
     answer_qid,
     dead_rule_warnings,
 )
+from verinote.store.fact_input import validate_fact_slot
 
 _ERROR_PREFIX = "error_"
 _WARN_PREFIX = "warn_"
@@ -278,7 +279,10 @@ def _load_extensional_facts(
 
 def _coerce_fact_term(value: object) -> Term:
     if isinstance(value, (Atom, Compound, NumberLit, StringLit, Var)):
-        return value
+        try:
+            return validate_fact_slot(value)
+        except ValueError as exc:
+            raise DuckDBBackendError(str(exc)) from exc
     return StringLit(str(value))
 
 
