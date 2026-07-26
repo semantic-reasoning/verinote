@@ -44,7 +44,13 @@ CSS_PATH = WEB / "static" / "app.css"
 TEMPLATES = WEB / "templates"
 
 # Templates that link app.css directly (base.html covers every page that extends it).
-LINKING_TEMPLATES = ("base.html", "kb_select.html", "policy_halted.html")
+LINKING_TEMPLATES = (
+    "base.html",
+    "config_corrupt.html",
+    "kb_select.html",
+    "policy_halted.html",
+    "sidecar_unreadable.html",
+)
 
 CUSTOM_PROPERTY = re.compile(r"(--[A-Za-z0-9_-]+)\s*:")
 
@@ -121,6 +127,14 @@ def _light_palette_declarations(css: str) -> str:
     return inner
 
 
+def _explicit_light_palette_block(css: str) -> str:
+    """The manual-light override, which must beat an opposite OS preference."""
+    match = re.search(r'^:root\[data-theme="light"\]\s*\{', css, re.MULTILINE)
+    assert match, "app.css defines no explicit light theme override"
+    start, end = _block_at(css, match.start())
+    return css[start:end]
+
+
 def _strip_comments(css: str) -> str:
     """Drop /* ... */ comments.
 
@@ -132,8 +146,12 @@ def _strip_comments(css: str) -> str:
 
 
 def _rule_bodies(css: str) -> str:
-    """app.css with both palette blocks cut out -- everything that must use tokens."""
-    for block in (_light_media_block(css), _dark_root_block(css)):
+    """app.css with all palette blocks cut out -- everything else uses tokens."""
+    for block in (
+        _explicit_light_palette_block(css),
+        _light_media_block(css),
+        _dark_root_block(css),
+    ):
         css = css.replace(block, "", 1)
     return _strip_comments(css)
 
@@ -341,6 +359,22 @@ def test_light_palette_redefines_every_dark_token() -> None:
         f"the light palette never overrides {sorted(missing)}; those tokens would keep "
         "their dark values under (prefers-color-scheme: light)."
     )
+
+
+def test_manual_theme_overrides_have_the_same_light_palette() -> None:
+    """Light stays light even when the OS media query selects dark.
+
+    Dark needs no duplicate block: the base palette is dark and the media query
+    explicitly excludes `data-theme=dark`. System is the only value allowed to
+    enter that query, so it continues following the operating system.
+    """
+    css = _read_css()
+    media = _light_media_block(css)
+    explicit = _explicit_light_palette_block(css)
+
+    assert ':root:not([data-theme="light"]):not([data-theme="dark"])' in media
+    assert _palette_tokens(explicit) == _palette_tokens(_light_palette_declarations(css))
+    assert "color-scheme: light" in explicit
 
 
 def test_each_palette_declares_its_own_color_scheme() -> None:

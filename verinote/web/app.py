@@ -23,13 +23,16 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from verinote.config import (
+    APP_THEMES,
     PROVIDER_LABELS,
     PROVIDERS,
     TESTABLE_PROVIDERS,
     Config,
     ConfigCorruptError,
+    app_theme,
     assert_settings_intact,
     save_active_root,
+    save_app_theme,
     save_settings,
 )
 from verinote.kb_location import KBLocationError, assert_kb_root_is_safe_to_create
@@ -163,17 +166,18 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         ensure_policy_marker(store, cfg.root)
         app.state.store = store
 
-    def _common_template_context(request: Request) -> dict[str, int]:
+    def _common_template_context(request: Request) -> dict[str, int | str]:
         """Values needed by shared templates, including the primary navigation."""
         store = request.app.state.store
         if store is None:
-            return {"review_count": 0}
+            return {"review_count": 0, "theme": app_theme()}
 
         status_counts = store.status_counts()
         return {
             "review_count": sum(
                 status_counts.get(status, 0) for status in review_statuses()
-            )
+            ),
+            "theme": app_theme(),
         }
 
     templates = Jinja2Templates(
@@ -1720,6 +1724,12 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         c = app.state.cfg
         if c is None:
             return _kb_select(request)
+        theme_editable = True
+        if app.state.store is not None:
+            try:
+                assert_writable(app.state.store)
+            except PolicyMissingError:
+                theme_editable = False
         return templates.TemplateResponse(
             request,
             "settings.html",
@@ -1745,6 +1755,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 # above is the built-in default, NOT the user's saved choice, so
                 # warn instead of silently presenting it as chosen (#269).
                 "settings_error": c.settings_error,
+                "app_themes": APP_THEMES,
+                "theme_editable": theme_editable,
             },
             status_code=status_code,
         )
@@ -1814,6 +1826,14 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         )
         # reload from the app's own root so the change takes effect on next sync
         app.state.cfg = Config.for_root(cfg.root)
+        return RedirectResponse("/settings", status_code=303)
+
+    @app.post("/settings/theme", response_class=HTMLResponse)
+    def save_theme_route(request: Request, theme: str = Form(...)):
+        try:
+            save_app_theme(theme)
+        except ValueError as exc:
+            return _settings(request, error=str(exc), status_code=400)
         return RedirectResponse("/settings", status_code=303)
 
     @app.post("/settings/relation-aliases", response_class=HTMLResponse)
