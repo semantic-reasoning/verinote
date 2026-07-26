@@ -30,6 +30,7 @@ import json
 import os
 import tempfile
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Iterator
@@ -38,7 +39,6 @@ from verinote.config import Config, normalize_provider
 from verinote.llm import get_client
 from verinote.llm.base import ExtractedFact, LLMError
 
-CAPTURED_AT = "2026-07-16"
 FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "contract"
 
 _ADAPTER_MODULES = {
@@ -110,6 +110,10 @@ def _adapter_module(provider: str) -> ModuleType:
     return importlib.import_module(_ADAPTER_MODULES[provider])
 
 
+def _captured_at() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
+
 @contextmanager
 def _capture_raw(module: ModuleType, monkey_attr: str) -> Iterator[dict[str, object]]:
     """Wrap the parser the adapter imported so we keep the raw arg it is handed."""
@@ -127,7 +131,9 @@ def _capture_raw(module: ModuleType, monkey_attr: str) -> Iterator[dict[str, obj
         setattr(module, monkey_attr, original)
 
 
-def capture_query_intent(cfg: Config, client: Any, module: ModuleType) -> dict:
+def capture_query_intent(
+    cfg: Config, client: Any, module: ModuleType, captured_at: str | None = None
+) -> dict:
     parse_error = None
     with _capture_raw(module, "parse_query_intent") as box:
         try:
@@ -140,14 +146,16 @@ def capture_query_intent(cfg: Config, client: Any, module: ModuleType) -> dict:
         "provider": cfg.provider,
         "model": cfg.model,
         "prompt_id": "query-intent",
-        "captured_at": CAPTURED_AT,
+        "captured_at": captured_at or _captured_at(),
         "input": QUERY_INTENT_QUESTION,
         "raw_response": box["raw"],
         "parse_error": parse_error,
     }
 
 
-def capture_extraction(cfg: Config, client: Any, module: ModuleType) -> dict:
+def capture_extraction(
+    cfg: Config, client: Any, module: ModuleType, captured_at: str | None = None
+) -> dict:
     parse_error = None
     with _capture_raw(module, "parse_facts") as box:
         try:
@@ -160,7 +168,7 @@ def capture_extraction(cfg: Config, client: Any, module: ModuleType) -> dict:
         "provider": cfg.provider,
         "model": cfg.model,
         "prompt_id": "extraction",
-        "captured_at": CAPTURED_AT,
+        "captured_at": captured_at or _captured_at(),
         "input": EXTRACTION_SOURCE,
         "raw_response": box["raw"],
         "parse_error": parse_error,
@@ -176,7 +184,7 @@ class _AlwaysFailsClient:
         raise LLMError("provider refused chunk: synthetic outage for #239 capture")
 
 
-def capture_sync_failure() -> None:
+def capture_sync_failure(captured_at: str | None = None) -> None:
     """Record the reason the chunked pipeline persists when every chunk fails.
 
     Deterministic and provider-free: it drives the real chunked extraction job,
@@ -218,7 +226,7 @@ def capture_sync_failure() -> None:
             "provider": "always-fails",
             "model": "none",
             "prompt_id": "sync-extraction",
-            "captured_at": CAPTURED_AT,
+            "captured_at": captured_at or _captured_at(),
             "input": EXTRACTION_SOURCE,
             "completed_chunks": int(detail["completed_chunks"]),
             "failed_chunks": int(detail["failed_chunks"]),
@@ -230,11 +238,12 @@ def capture_sync_failure() -> None:
 
 def main() -> None:
     capture_sync_failure()
+    captured_at = _captured_at()
     cfg = _live_config()
     module = _adapter_module(cfg.provider)
     client = get_client(cfg)
-    query_intent = capture_query_intent(cfg, client, module)
-    extraction = capture_extraction(cfg, client, module)
+    query_intent = capture_query_intent(cfg, client, module, captured_at)
+    extraction = capture_extraction(cfg, client, module, captured_at)
     _write("query_intent_acme_ceo.json", query_intent)
     _write("extraction_acme_two_dates.json", extraction)
 
