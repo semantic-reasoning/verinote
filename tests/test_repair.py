@@ -20,6 +20,18 @@ def _store_with_review_required(tmp_path):
     return s, qid
 
 
+def _store_with_deterministic_planner_empty(tmp_path):
+    s = Store(tmp_path / "kb.sqlite")
+    s.init_schema()
+    qid = s.add_question("What is Sample Person's birth place?")
+    s.set_question_query(
+        qid,
+        'review_required("What is Sample Person\'s birth place?")',
+        "review_required",
+    )
+    return s, qid
+
+
 def test_repair_accepts_engine_valid_planned_query(tmp_path, fake_client, intent_payload):
     s, qid = _store_with_review_required(tmp_path)
     s.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
@@ -291,21 +303,79 @@ def test_repair_persists_ambiguous_lifecycle_outcome(
     assert "ambiguous" not in (load_query(s) or "")
 
 
-def test_repair_default_runs_direct_datalog_fallback(
+def test_repair_default_runs_direct_datalog_for_deterministic_planner_empty(
+    tmp_path, fake_client
+):
+    s, qid = _store_with_deterministic_planner_empty(tmp_path)
+    s.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
+    client = fake_client(
+        query=lambda q, i: f'answer_q{i}(O) :- relation("Sample Person", "born_in", O).',
+    )
+    client.extract_query_intent = lambda **kwargs: (_ for _ in ()).throw(
+        AssertionError("deterministic planner-empty repair must not extract intent")
+    )
+    # No flag passed: exercises the production default wiring.
+    results = repair_questions(s, client, root=tmp_path)
+
+    assert client.calls == 1
+    assert results == [{"id": qid, "accepted": True, "reason": ""}]
+    assert s.questions()[0]["status"] == "translated"
+    assert f"answer_q{qid}" in (load_query(s) or "")
+
+
+def test_repair_disabled_fallback_keeps_deterministic_planner_empty_under_review(
+    tmp_path, fake_client
+):
+    s, qid = _store_with_deterministic_planner_empty(tmp_path)
+    s.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
+    client = fake_client()
+    client.extract_query_intent = lambda **kwargs: (_ for _ in ()).throw(
+        AssertionError("deterministic planner-empty repair must not extract intent")
+    )
+    client.translate_query = lambda **kwargs: (_ for _ in ()).throw(
+        AssertionError("disabled fallback must not call direct Datalog")
+    )
+
+    results = repair_questions(
+        s, client, root=tmp_path, allow_direct_datalog_fallback=False
+    )
+
+    assert client.calls == 0
+    assert results == [
+        {
+            "id": qid,
+            "accepted": False,
+            "reason": "no query candidates matched the schema",
+        }
+    ]
+    assert s.questions()[0]["status"] == "review_required"
+
+
+def test_repair_llm_supported_planner_empty_does_not_call_direct_fallback(
     tmp_path, fake_client, intent_payload
 ):
     s, qid = _store_with_review_required(tmp_path)
     s.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
     client = fake_client(
-        intent=intent_payload("unknown_or_unsupported", reason="planner cannot map"),
-        query=lambda q, i: f'answer_q{i}(O) :- relation("Sample Person", "born_in", O).',
+        intent=intent_payload(
+            "lookup_object", subject="Sample Person", relation="missing_relation"
+        )
     )
-    # No flag passed: exercises the production default wiring.
+    client.translate_query = lambda **kwargs: (_ for _ in ()).throw(
+        AssertionError("LLM-supported planner-empty repair must not call direct Datalog")
+    )
+
     results = repair_questions(s, client, root=tmp_path)
 
-    assert results == [{"id": qid, "accepted": True, "reason": ""}]
-    assert s.questions()[0]["status"] == "translated"
-    assert f"answer_q{qid}" in (load_query(s) or "")
+    assert client.calls == 1
+    assert results == [
+        {
+            "id": qid,
+            "accepted": False,
+            "reason": "no query candidates matched the schema",
+        }
+    ]
+    assert s.questions()[0]["status"] == "review_required"
 
 
 def test_repair_rejects_fallback_answering_a_different_question(
@@ -511,11 +581,7 @@ def test_repair_llm_error_costs_one_provider_call(tmp_path, fake_client):
 def test_repair_unsupported_intent_still_reaches_fallback(
     tmp_path, fake_client, intent_payload
 ):
-    """Refusing the fallback on `LLMError` must not disarm the supported path.
-
-    An intent extraction that *succeeds* with `unknown_or_unsupported` is the
-    fallback's reason to exist, so it still costs the second call.
-    """
+    """An LLM-confirmed unsupported intent still costs the fallback call."""
     s, qid = _store_with_review_required(tmp_path)
     s.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
     client = fake_client(
