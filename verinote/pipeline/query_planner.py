@@ -42,6 +42,7 @@ class QueryCandidateFamily(StrEnum):
     MANUAL_DRAFT = "manual_draft"
     CONJUNCTIVE_TWO_HOP = "conjunctive_two_hop"
     CONJUNCTIVE_FILTER = "conjunctive_filter"
+    CONJUNCTIVE_THREE_HOP = "conjunctive_three_hop"
 
 
 class QueryCandidateDirection(StrEnum):
@@ -114,6 +115,16 @@ def plan_query_candidates(
             truncated=truncated,
             reason=None if candidates else "no conjunctive condition path matched the schema",
         )
+    elif intent.kind == QueryIntentKind.CONJUNCTIVE_THREE_HOP_LOOKUP:
+        candidates, truncated = _conjunctive_three_hop_candidates(
+            intent, snapshot, qid, max_candidates=bounds.max_candidates
+        )
+        return QueryCandidatePlan(
+            qid=qid,
+            candidates=candidates,
+            truncated=truncated,
+            reason=None if candidates else "no three-hop relation path matched the schema",
+        )
     else:
         candidates = ()
         reason = f"unsupported intent kind: {intent.kind.value}"
@@ -183,6 +194,93 @@ def _conjunctive_two_hop_candidates(
                 )
             )
     return tuple(candidates), False
+
+
+def _conjunctive_three_hop_candidates(
+    intent: QueryIntent,
+    snapshot: QuerySchemaSnapshot,
+    qid: int,
+    *,
+    max_candidates: int,
+) -> tuple[tuple[QueryCandidate, ...], bool]:
+    """Plan observed Entity -> Var -> Var -> Answer paths only.
+
+    Candidate identity is the executable rule shape, not a particular observed
+    path.  The planner therefore uses actual facts to establish that all joins
+    exist, while alias-equivalent relation labels and duplicate intermediates
+    consume one candidate slot.
+    """
+    if len(intent.chain_hops) != 3 or not intent.answer_var:
+        return (), False
+    if snapshot.join_facts_truncated:
+        return (), True
+
+    first_hop, second_hop, third_hop = intent.chain_hops
+    requested_first = (_nfc(first_hop.relation.value),)
+    requested_second = (_nfc(second_hop.relation.value),)
+    requested_third = (_nfc(third_hop.relation.value),)
+    aliases = {entry.alias: entry.canonical for entry in snapshot.relation_aliases}
+
+    second_by_subject: dict[str, list[SnapshotFact]] = {}
+    third_by_subject: dict[str, list[SnapshotFact]] = {}
+    for fact in snapshot.join_facts:
+        if _fact_relation_matches_any_requested(fact, requested_second, snapshot):
+            second_by_subject.setdefault(_term_ref_compare_key(fact.subject), []).append(fact)
+        if _fact_relation_matches_any_requested(fact, requested_third, snapshot):
+            third_by_subject.setdefault(_term_ref_compare_key(fact.subject), []).append(fact)
+    for facts in (*second_by_subject.values(), *third_by_subject.values()):
+        facts.sort(key=_snapshot_fact_representative_key)
+
+    representatives: dict[tuple[str, str, str, str], tuple[SnapshotFact, SnapshotFact, SnapshotFact]] = {}
+    for first in sorted(snapshot.join_facts, key=_snapshot_fact_representative_key):
+        if not _entity_ref_matches(first.subject, first_hop.subject.value):
+            continue
+        if not _fact_relation_matches_any_requested(first, requested_first, snapshot):
+            continue
+        for second in second_by_subject.get(_term_ref_compare_key(first.object), ()):
+            for third in third_by_subject.get(_term_ref_compare_key(second.object), ()):
+                shape = (
+                    first.subject.executable,
+                    _nfc(canonical_relation(first.relation.display, aliases)),
+                    _nfc(canonical_relation(second.relation.display, aliases)),
+                    _nfc(canonical_relation(third.relation.display, aliases)),
+                )
+                candidate_facts = (first, second, third)
+                existing = representatives.get(shape)
+                if existing is None:
+                    if len(representatives) >= max_candidates:
+                        return (), True
+                    representatives[shape] = candidate_facts
+                elif _three_hop_representative_key(candidate_facts) < _three_hop_representative_key(existing):
+                    representatives[shape] = candidate_facts
+
+    candidates = []
+    for _, (first, second, third) in sorted(representatives.items()):
+        candidates.append(
+            QueryCandidate(
+                query_dl=_query_dl(
+                    qid,
+                    intent.answer_var,
+                    "relation("
+                    f"{first.subject.executable}, {first.relation.executable}, {first_hop.object.value}), "
+                    f"relation({first_hop.object.value}, {second.relation.executable}, {second_hop.object.value}), "
+                    f"relation({second_hop.object.value}, {third.relation.executable}, {third_hop.object.value})",
+                ),
+                family=QueryCandidateFamily.CONJUNCTIVE_THREE_HOP,
+                direction=None,
+                relation_display=None,
+                relation_executable=None,
+                subject_executable=first.subject.executable,
+                object_executable=None,
+            )
+        )
+    return tuple(candidates), False
+
+
+def _three_hop_representative_key(
+    facts: tuple[SnapshotFact, SnapshotFact, SnapshotFact],
+) -> tuple[tuple[str, str, str, int], ...]:
+    return tuple(_snapshot_fact_representative_key(fact) for fact in facts)
 
 
 def _conjunctive_filter_candidates(

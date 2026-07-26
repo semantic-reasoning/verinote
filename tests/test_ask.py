@@ -95,6 +95,53 @@ class TwoHopIntentClient:
         raise AssertionError("verified two-hop Ask must not call fallback LLM")
 
 
+class ThreeHopIntentClient:
+    name = "three-hop-intent"
+
+    def extract_query_intent(self, *, question: str, schema_hint: str = ""):
+        from verinote.pipeline.query_intent import parse_query_intent
+
+        return parse_query_intent(
+            {
+                "kind": "conjunctive_three_hop_lookup",
+                "subject": None,
+                "relation": None,
+                "object": None,
+                "relation_candidates": None,
+                "operator": None,
+                "value_type": None,
+                "value": None,
+                "reason": None,
+                "hops": None,
+                "conditions": None,
+                "chain_hops": [
+                    {
+                        "subject": {"kind": "entity", "value": "Example Org"},
+                        "relation": {"kind": "relation", "value": "owns"},
+                        "object": {"kind": "var", "value": "M"},
+                    },
+                    {
+                        "subject": {"kind": "var", "value": "M"},
+                        "relation": {"kind": "relation", "value": "runs"},
+                        "object": {"kind": "var", "value": "N"},
+                    },
+                    {
+                        "subject": {"kind": "var", "value": "N"},
+                        "relation": {"kind": "relation", "value": "purpose"},
+                        "object": {"kind": "var", "value": "A"},
+                    },
+                ],
+                "answer_var": "A",
+            }
+        )
+
+    def translate_query(self, **kwargs):
+        raise AssertionError("three-hop Ask must not call direct Datalog translation")
+
+    def answer_question(self, **kwargs):
+        raise AssertionError("verified three-hop Ask must not call fallback LLM")
+
+
 class ConjunctiveFilterIntentClient:
     name = "conjunctive-filter-intent"
 
@@ -200,6 +247,32 @@ def test_ask_returns_verified_two_hop_answer_with_both_sources(tmp_path):
     assert {fact.source for fact in result.grounding_facts} == {
         "sources/assignment.txt",
         "sources/purpose.txt",
+    }
+
+
+def test_ask_returns_verified_three_hop_answer_with_all_sources(tmp_path):
+    store = _store(tmp_path)
+    first_source = store.add_source("sources/ownership.txt")
+    second_source = store.add_source("sources/operations.txt")
+    third_source = store.add_source("sources/purpose.txt")
+    store.add_fact("Example Org", "owns", "Program", status="confirmed", source_id=first_source)
+    store.add_fact("Program", "runs", "Project", status="confirmed", source_id=second_source)
+    store.add_fact("Project", "purpose", "Research", status="confirmed", source_id=third_source)
+
+    result = ask_question(
+        store, ThreeHopIntentClient(), root=tmp_path, question="Resolve the synthetic three-hop outcome."
+    )
+
+    assert result.route == "engine"
+    assert result.label == "VERIFIED — engine"
+    assert result.engine_answers == ("q0: Research",)
+    assert {
+        (fact.subject, fact.relation, fact.object, fact.source)
+        for fact in result.grounding_facts
+    } == {
+        ("Example Org", "owns", "Program", "sources/ownership.txt"),
+        ("Program", "runs", "Project", "sources/operations.txt"),
+        ("Project", "purpose", "Research", "sources/purpose.txt"),
     }
 
 
