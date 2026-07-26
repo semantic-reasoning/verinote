@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
 
+import verinote.pipeline.ask as ask_module
 from verinote.llm.base import LLMError
 from verinote.pipeline.ask import ask_question, search_source_excerpts
 from verinote.pipeline.query import query_path
@@ -142,6 +143,11 @@ class ThreeHopIntentClient:
         raise AssertionError("verified three-hop Ask must not call fallback LLM")
 
 
+class FallbackThreeHopIntentClient(ThreeHopIntentClient):
+    def answer_question(self, **kwargs):
+        return "UNVERIFIED synthetic fallback"
+
+
 class ConjunctiveFilterIntentClient:
     name = "conjunctive-filter-intent"
 
@@ -274,6 +280,71 @@ def test_ask_returns_verified_three_hop_answer_with_all_sources(tmp_path):
         ("Program", "runs", "Project", "sources/operations.txt"),
         ("Project", "purpose", "Research", "sources/purpose.txt"),
     }
+
+
+def test_ask_fails_closed_when_three_hop_trace_is_unavailable(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    first_source = store.add_source("sources/ownership.txt")
+    second_source = store.add_source("sources/operations.txt")
+    third_source = store.add_source("sources/purpose.txt")
+    store.add_fact("Example Org", "owns", "Program", status="confirmed", source_id=first_source)
+    store.add_fact("Program", "runs", "Project", status="confirmed", source_id=second_source)
+    store.add_fact("Project", "purpose", "Research", status="confirmed", source_id=third_source)
+    monkeypatch.setattr(ask_module, "trace_query_answers", lambda *_args, **_kwargs: ())
+
+    result = ask_question(
+        store,
+        FallbackThreeHopIntentClient(),
+        root=tmp_path,
+        question="Resolve the synthetic three-hop outcome without a trace.",
+    )
+
+    assert result.route == "fallback"
+    assert result.label != "VERIFIED — engine"
+    assert result.engine_answers == ()
+    assert result.grounding_facts == ()
+    assert result.reason == "three-hop query source trace is incomplete"
+
+
+def test_ask_three_hop_trace_uses_the_evaluated_fact_snapshot(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    first_source = store.add_source("sources/ownership.txt")
+    second_source = store.add_source("sources/operations.txt")
+    third_source = store.add_source("sources/purpose.txt")
+    injected_source = store.add_source("sources/injected.txt")
+    store.add_fact("Example Org", "owns", "Program", status="confirmed", source_id=first_source)
+    store.add_fact("Program", "runs", "Project", status="confirmed", source_id=second_source)
+    store.add_fact("Project", "purpose", "Research", status="confirmed", source_id=third_source)
+
+    original_trace = ask_module.trace_query_answers
+
+    def inject_fact_before_trace(*args, **kwargs):
+        store.add_fact(
+            "Project",
+            "purpose",
+            "Research",
+            status="confirmed",
+            source_id=injected_source,
+        )
+        return original_trace(*args, **kwargs)
+
+    monkeypatch.setattr(ask_module, "trace_query_answers", inject_fact_before_trace)
+
+    result = ask_question(
+        store,
+        ThreeHopIntentClient(),
+        root=tmp_path,
+        question="Resolve the synthetic three-hop outcome from one execution snapshot.",
+    )
+
+    assert result.route == "engine"
+    assert result.label == "VERIFIED — engine"
+    assert {fact.source for fact in result.grounding_facts} == {
+        "sources/ownership.txt",
+        "sources/operations.txt",
+        "sources/purpose.txt",
+    }
+    assert all(fact.source != "sources/injected.txt" for fact in result.grounding_facts)
 
 
 def test_ask_returns_only_shared_conjunctive_filter_answer_with_both_sources(tmp_path):

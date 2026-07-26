@@ -3,12 +3,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 import re
 import unicodedata
 
+from verinote.engine.datalog import (
+    AtomExpr,
+    DatalogParseError,
+    DatalogValidationError,
+    parse_and_validate_program,
+)
 from verinote.engine import CheckReport
+from verinote.engine.wirelog import answer_qid
 from verinote.engine.duckdb_backend import run_check_duckdb
 from verinote.engine.wirelog import strip_answer_line_prefix
 from verinote.llm.base import LLMClient, LLMError
@@ -25,6 +33,7 @@ MAX_CONTEXT_CHARS = 12000
 MAX_EXCERPTS = 8
 MAX_GROUNDING_FACTS = 8
 _TOKEN = re.compile(r"[A-Za-z0-9_]{2,}|[가-힣一-龥ぁ-んァ-ン]{1,}")
+_RELATION_DECL = ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
 
 
 @dataclass(frozen=True)
@@ -57,6 +66,14 @@ class AskResult:
     excerpts: tuple[AskExcerpt, ...] = ()
     grounding_facts: tuple[AskGroundingFact, ...] = ()
     warning: str | None = None
+
+
+@dataclass(frozen=True)
+class _EngineQuerySnapshot:
+    """The facts and display metadata used for one Ask engine evaluation."""
+
+    engine_rows: tuple[dict[str, object], ...]
+    fact_rows: Mapping[int, Mapping[str, object] | None]
 
 
 def ask_question(
@@ -97,11 +114,34 @@ def ask_question(
             reason=f"engine fact-term error: {_short_reason(exc)}",
         )
     if status == "translated" and query_dl:
-        report, expanded_query = _run_engine_query(store, query_dl)
+        report, expanded_query, snapshot = _run_engine_query(store, query_dl)
         if report.engine_available and report.ok and not report.errors:
             answers = tuple(dict.fromkeys(report.answers))
             if answers:
-                source_facts = tuple(_engine_source_facts(store, expanded_query))
+                evaluated_values = {
+                    strip_answer_line_prefix(answer, ASK_QID) for answer in answers
+                }
+                traces = tuple(
+                    trace
+                    for trace in trace_query_answers(
+                        store,
+                        expanded_query,
+                        engine_rows=snapshot.engine_rows,
+                        fact_rows=snapshot.fact_rows,
+                    )
+                    if trace.value in evaluated_values
+                )
+                if _is_three_hop_answer_query(expanded_query) and not _has_complete_three_hop_trace(
+                    answers, traces
+                ):
+                    return _fallback_answer(
+                        store,
+                        client,
+                        root=root,
+                        question=question,
+                        reason="three-hop query source trace is incomplete",
+                    )
+                source_facts = tuple(_grounding_facts_from_traces(traces))
                 return AskResult(
                     route="engine",
                     label="VERIFIED — engine",
@@ -152,16 +192,26 @@ def ask_question(
     )
 
 
-def _run_engine_query(store: Store, query_dl: str) -> tuple[CheckReport, str]:
+def _run_engine_query(
+    store: Store, query_dl: str
+) -> tuple[CheckReport, str, _EngineQuerySnapshot]:
     try:
         expanded = expand_query_relation_aliases(query_dl, store_relation_aliases(store))
+        engine_rows = tuple(dict(row) for row in engine_relation_rows(store))
+        snapshot = _EngineQuerySnapshot(
+            engine_rows=engine_rows,
+            fact_rows={
+                int(row["id"]): store.get_fact(int(row["id"])) for row in engine_rows
+            },
+        )
         return (
             run_check_duckdb(
-                engine_relation_rows(store),
+                list(engine_rows),
                 policy_dl=RELATION_DECL,
                 query_dl=expanded,
             ),
             expanded,
+            snapshot,
         )
     except CorroborationPolicyError as exc:
         return (
@@ -173,6 +223,7 @@ def _run_engine_query(store: Store, query_dl: str) -> tuple[CheckReport, str]:
                 findings=[f"ERROR policy error: {exc}"],
             ),
             query_dl,
+            _EngineQuerySnapshot(engine_rows=(), fact_rows={}),
         )
     except Exception as exc:  # noqa: BLE001 - keep Ask from failing closed
         return (
@@ -184,13 +235,18 @@ def _run_engine_query(store: Store, query_dl: str) -> tuple[CheckReport, str]:
                 findings=[f"ERROR engine error: {exc}"],
             ),
             query_dl,
+            _EngineQuerySnapshot(engine_rows=(), fact_rows={}),
         )
 
 
 def _engine_source_facts(store: Store, query_dl: str) -> list[AskGroundingFact]:
+    return _grounding_facts_from_traces(trace_query_answers(store, query_dl))
+
+
+def _grounding_facts_from_traces(traces) -> list[AskGroundingFact]:
     facts: list[AskGroundingFact] = []
     seen: set[tuple[str, int]] = set()
-    for answer in trace_query_answers(store, query_dl):
+    for answer in traces:
         for fact in answer.facts:
             key = (answer.value, fact.id)
             if key in seen:
@@ -213,6 +269,39 @@ def _engine_source_facts(store: Store, query_dl: str) -> list[AskGroundingFact]:
                 )
             )
     return facts
+
+
+def _is_three_hop_answer_query(query_dl: str) -> bool:
+    """Whether the expanded query contains a direct three-relation answer rule."""
+    try:
+        program = parse_and_validate_program(_RELATION_DECL + query_dl)
+    except (DatalogParseError, DatalogValidationError):
+        return False
+    return any(
+        answer_qid(rule.head.predicate) is not None
+        and len(rule.body) == 3
+        and all(
+            isinstance(item, AtomExpr)
+            and item.predicate == "relation"
+            and len(item.args) == 3
+            for item in rule.body
+        )
+        for rule in program.rules
+    )
+
+
+def _has_complete_three_hop_trace(answers: tuple[str, ...], traces) -> bool:
+    """Require one exact three-fact proof for each engine answer.
+
+    The engine evaluates the query before provenance is reconstructed.  For a
+    bounded three-hop rule, a missing or partial reconstruction therefore means
+    the result cannot be presented as verified.
+    """
+    complete_answers = {trace.value for trace in traces if len(trace.facts) == 3}
+    return all(
+        strip_answer_line_prefix(answer, ASK_QID) in complete_answers
+        for answer in answers
+    )
 
 
 def _render_engine_answer_body(
