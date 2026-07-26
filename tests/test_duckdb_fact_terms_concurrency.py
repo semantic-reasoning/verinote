@@ -20,10 +20,10 @@ from verinote.config import local_root
 from verinote.engine.terms import StringLit
 from verinote.store import duckdb_fact_terms
 from verinote.store.duckdb_fact_terms import (
+    FACT_TERMS_FILENAME,
     DuckDBFactTermStore,
     DuckDBFactTermStoreError,
     DuckDBFactTermStoreLockedError,
-    FACT_TERMS_FILENAME,
 )
 
 # The subprocess tests read child output through `select`, which does not work on
@@ -187,6 +187,79 @@ def test_retry_succeeds_when_holder_releases_within_budget(tmp_path):
         assert store.get_fact_terms(1) is None
     finally:
         _terminate(holder)
+
+
+def test_first_schema_create_retries_the_catalog_write_conflict(tmp_path, monkeypatch):
+    """The exact concurrent-create error closes, reopens, and retries once."""
+    _duckdb()
+    root = tmp_path / "kb"
+    root.mkdir()
+    monkeypatch.setattr(duckdb_fact_terms, "_LOCK_POLL_SECONDS", 0.0)
+    original_run = DuckDBFactTermStore._run
+    original_open = DuckDBFactTermStore._open_with_retry
+    create_calls = 0
+    open_calls = 0
+
+    def conflict_once(self, con, sql, params=None):
+        nonlocal create_calls
+        if "CREATE TABLE IF NOT EXISTS fact_terms" in sql:
+            create_calls += 1
+            if create_calls == 1:
+                raise DuckDBFactTermStoreError(
+                    "DuckDB fact-term store error: TransactionContext Error: "
+                    'Catalog write-write conflict on create with "Schema\\0main\\0main\\0'
+                    'Table\\0main\\0fact_terms"'
+                )
+        return original_run(self, con, sql, params)
+
+    def count_open(self):
+        nonlocal open_calls
+        open_calls += 1
+        return original_open(self)
+
+    monkeypatch.setattr(DuckDBFactTermStore, "_run", conflict_once)
+    monkeypatch.setattr(DuckDBFactTermStore, "_open_with_retry", count_open)
+    store = DuckDBFactTermStore.for_root(root)
+    try:
+        assert store.get_fact_terms(1) is None
+        assert create_calls == 2
+        assert open_calls == 2
+    finally:
+        store.close()
+
+
+def test_first_schema_create_does_not_retry_other_errors(tmp_path, monkeypatch):
+    """Only DuckDB's exact catalog-create conflict is considered transient."""
+    _duckdb()
+    root = tmp_path / "kb"
+    root.mkdir()
+    original_run = DuckDBFactTermStore._run
+    original_open = DuckDBFactTermStore._open_with_retry
+    create_calls = 0
+    open_calls = 0
+
+    def fail_create(self, con, sql, params=None):
+        nonlocal create_calls
+        if "CREATE TABLE IF NOT EXISTS fact_terms" in sql:
+            create_calls += 1
+            raise DuckDBFactTermStoreError("DuckDB fact-term store error: malformed sidecar")
+        return original_run(self, con, sql, params)
+
+    def count_open(self):
+        nonlocal open_calls
+        open_calls += 1
+        return original_open(self)
+
+    monkeypatch.setattr(DuckDBFactTermStore, "_run", fail_create)
+    monkeypatch.setattr(DuckDBFactTermStore, "_open_with_retry", count_open)
+    store = DuckDBFactTermStore.for_root(root)
+    try:
+        with pytest.raises(DuckDBFactTermStoreError, match="malformed sidecar"):
+            store.get_fact_terms(1)
+        assert create_calls == 1
+        assert open_calls == 1
+    finally:
+        store.close()
 
 
 @_posix_only

@@ -7,11 +7,11 @@ only the structural term payloads for fact triples, keyed by SQLite `facts.id`.
 
 from __future__ import annotations
 
+import hashlib
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
-import hashlib
 from pathlib import Path
-import time
 from typing import Iterable, Iterator
 
 from verinote.engine.duckdb_terms import (
@@ -38,6 +38,10 @@ _TERM_COLUMNS = ("subject", "rel", "object")
 _LOCK_TIMEOUT_SECONDS = 5.0
 _LOCK_POLL_SECONDS = 0.05
 _LOCK_MESSAGE_MARKERS = ("conflicting lock", "could not set lock")
+# Two same-process connections can both observe a missing table, then race on
+# DuckDB's transactional catalog update. This is distinct from the file-open
+# lock above: DuckDB reports it only when the losing CREATE executes.
+_SCHEMA_CREATE_CONFLICT_MARKER = "catalog write-write conflict on create"
 
 
 class DuckDBFactTermStoreError(ValueError):
@@ -304,11 +308,8 @@ class DuckDBFactTermStore:
                 raise DuckDBFactTermStoreError("DuckDB fact-term store is closed")
             yield self._con
             return
-        con = self._open_with_retry()
+        con = self._open_initialized_with_retry()
         try:
-            if not self._schema_ready:
-                self._init_schema_on(con)
-                self._schema_ready = True
             yield con
         finally:
             con.close()
@@ -354,6 +355,35 @@ class DuckDBFactTermStore:
                     ) from exc
                 time.sleep(min(poll, max(0.0, deadline - time.monotonic())))
                 poll = min(poll * 1.5, 0.25)
+
+    def _open_initialized_with_retry(self):
+        """Open a file-backed sidecar and safely initialize its schema once.
+
+        `CREATE TABLE IF NOT EXISTS` is not enough when two threads first open
+        the same brand-new sidecar: both can observe no table, and DuckDB aborts
+        one CREATE with a catalog write-write conflict. Retry only that known
+        transient conflict on a fresh connection. All other initialization
+        failures, including malformed sidecars, still surface immediately.
+        """
+        deadline = time.monotonic() + max(0.0, _LOCK_TIMEOUT_SECONDS)
+        poll = _LOCK_POLL_SECONDS
+        while True:
+            con = self._open_with_retry()
+            try:
+                if not self._schema_ready:
+                    self._init_schema_on(con)
+                    self._schema_ready = True
+            except DuckDBFactTermStoreError as exc:
+                con.close()
+                if not _is_schema_create_conflict(exc) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(min(poll, max(0.0, deadline - time.monotonic())))
+                poll = min(poll * 1.5, 0.25)
+                continue
+            except BaseException:
+                con.close()
+                raise
+            return con
 
     def put_fact_terms(
         self,
@@ -542,6 +572,11 @@ def _is_lock_conflict(exc: Exception) -> bool:
     """
     message = str(exc).lower()
     return any(marker in message for marker in _LOCK_MESSAGE_MARKERS)
+
+
+def _is_schema_create_conflict(exc: Exception) -> bool:
+    """Whether DuckDB rejected a concurrent `fact_terms` table creation."""
+    return _SCHEMA_CREATE_CONFLICT_MARKER in str(exc).lower()
 
 
 def _validate_fact_id(fact_id: int) -> int:
