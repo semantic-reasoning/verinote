@@ -7,7 +7,7 @@ import verinote.engine.duckdb_backend as duckdb_backend
 from verinote.engine import DEFAULT_POLICY
 from verinote.engine.duckdb_backend import DuckDBInferenceCache, run_check_duckdb
 from verinote.engine.duckdb_terms import term_to_duckdb_value
-from verinote.engine.terms import Atom, Compound, NumberLit, StringLit
+from verinote.engine.terms import Atom, Compound, NumberLit, StringLit, Var
 
 _RELATION_DECL = ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
 
@@ -134,6 +134,40 @@ def test_duckdb_backend_treats_equal_number_and_string_values_as_equal():
 
     assert rep.ok is True
     assert rep.errors == 0
+
+
+@pytest.mark.parametrize(
+    "term",
+    [
+        Var("Value"),
+        Compound("pair", (StringLit("fixed"), Var("Value"))),
+    ],
+)
+def test_duckdb_backend_rejects_non_ground_base_relation_terms(term):
+    with pytest.raises(duckdb_backend.DuckDBBackendError, match="fact terms must be ground"):
+        duckdb_backend._coerce_fact_term(term)
+
+
+@pytest.mark.parametrize(
+    "term",
+    [
+        Atom("item"),
+        Compound("pair", (Atom("item"), StringLit("fixed"))),
+        NumberLit(7),
+        StringLit("fixed"),
+    ],
+)
+def test_duckdb_backend_accepts_ground_base_relation_terms(term):
+    assert duckdb_backend._coerce_fact_term(term) is term
+
+
+def test_duckdb_backend_stringifies_raw_base_relation_values():
+    class _RawValue:
+        def __str__(self) -> str:
+            return "raw value"
+
+    assert duckdb_backend._coerce_fact_term(7) == StringLit("7")
+    assert duckdb_backend._coerce_fact_term(_RawValue()) == StringLit("raw value")
 
 
 def test_duckdb_backend_keeps_compounds_distinct_from_same_display_string():
