@@ -42,6 +42,56 @@ FACT_STATUS_ORDER = (
 MAX_EVIDENCE_SNIPPET_CHARS = 1000
 
 
+class _PolicyMarkerExpectedUnset:
+    pass
+
+
+_POLICY_MARKER_EXPECTED_UNSET = _PolicyMarkerExpectedUnset()
+
+
+def _invalid_policy_marker() -> dict[str, object]:
+    """A malformed marker remains evidence that a policy once existed."""
+    return {
+        "sha256": "",
+        "first_recorded_at": "",
+        "last_seen_at": "",
+        "origin": "unknown",
+    }
+
+
+def _marker_text(marker: dict[str, object] | None, key: str) -> str | None:
+    """Return a non-empty string field from an untrusted marker payload."""
+    if marker is None:
+        return None
+    value = marker.get(key)
+    return value if isinstance(value, str) and value else None
+
+
+def _marker_revision(marker: dict[str, object] | None) -> int | None:
+    """Return a valid marker publication revision, if this is a v2 marker."""
+    if marker is None:
+        return None
+    value = marker.get("revision")
+    return (
+        value
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0
+        else None
+    )
+
+
+def _policy_marker_matches_expected(
+    actual: dict[str, object] | None, expected: dict[str, object] | None
+) -> bool:
+    """Compare a marker snapshot without allowing a publication ABA."""
+    actual_revision = _marker_revision(actual)
+    expected_revision = _marker_revision(expected)
+    if actual_revision is not None or expected_revision is not None:
+        return actual_revision == expected_revision and actual == expected
+    # Legacy markers predate revisions. Preserve their former comparison until
+    # a publication upgrades the stored marker to include one.
+    return actual == expected
+
+
 def _validate_fact_status_vocabulary() -> None:
     if len(FACT_STATUS_ORDER) != len(set(FACT_STATUS_ORDER)):
         raise RuntimeError("fact status order contains duplicates")
@@ -499,20 +549,70 @@ class Store:
         try:
             marker = json.loads(raw)
         except json.JSONDecodeError:
-            return {"sha256": "", "recorded_at": "", "origin": "unknown"}
+            return _invalid_policy_marker()
         if not isinstance(marker, dict):
-            return {"sha256": "", "recorded_at": "", "origin": "unknown"}
+            return _invalid_policy_marker()
         return marker
 
-    def record_policy_marker(self, sha256: str, *, origin: str) -> dict[str, object]:
-        """Record that this KB has a policy file. Hash is evidence, not a verdict."""
-        marker: dict[str, object] = {
-            "sha256": sha256,
-            "recorded_at": _utc_now(),
-            "origin": origin,
-        }
-        self._set_meta(POLICY_MARKER_KEY, json.dumps(marker, ensure_ascii=False))
-        return marker
+    def record_policy_marker(
+        self,
+        sha256: str,
+        *,
+        origin: str,
+        force_seen: bool = False,
+        expected_previous_marker: (
+            dict[str, object] | None | _PolicyMarkerExpectedUnset
+        ) = _POLICY_MARKER_EXPECTED_UNSET,
+    ) -> dict[str, object] | None:
+        """Record policy evidence while preserving its immutable first observation.
+
+        `recorded_at` belongs to the old marker contract and was refreshed on
+        every open. It is consequently only legacy *last-observed* evidence;
+        never carry it into `first_recorded_at`. A conversion records a fresh
+        first observation under the new contract instead. Each publication
+        receives a durable, monotonic `revision`, so an expected marker makes
+        this an ABA-safe optimistic compare-and-set: a None return means
+        another writer published newer policy evidence after the caller
+        observed it.
+        """
+        with self.immediate_transaction():
+            previous = self.policy_marker()
+            if (
+                expected_previous_marker is not _POLICY_MARKER_EXPECTED_UNSET
+                and not _policy_marker_matches_expected(
+                    previous, expected_previous_marker
+                )
+            ):
+                return None
+            previous_sha = _marker_text(previous, "sha256")
+            previous_first_recorded_at = _marker_text(previous, "first_recorded_at")
+            previous_last_seen_at = _marker_text(previous, "last_seen_at")
+            if (
+                not force_seen
+                and previous_sha == sha256
+                and previous_first_recorded_at is not None
+                and previous_last_seen_at is not None
+            ):
+                return previous
+
+            now = _utc_now()
+            first_recorded_at = previous_first_recorded_at or now
+            last_seen_at = (
+                now
+                if force_seen or previous_sha != sha256 or previous_last_seen_at is None
+                else previous_last_seen_at
+            )
+            marker: dict[str, object] = {
+                "sha256": sha256,
+                "first_recorded_at": first_recorded_at,
+                "last_seen_at": last_seen_at,
+                "origin": origin,
+                "revision": (_marker_revision(previous) or 0) + 1,
+            }
+            self._set_meta_unlocked(
+                POLICY_MARKER_KEY, json.dumps(marker, ensure_ascii=False)
+            )
+            return marker
 
     def fact_terms_marker(self) -> dict[str, object] | None:
         """The KB's declaration that DuckDB owns canonical fact terms, or None."""

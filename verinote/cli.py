@@ -469,9 +469,19 @@ def _policy_marker_ro(conn: sqlite3.Connection) -> dict[str, object] | None:
     try:
         marker = json.loads(raw["value"])
     except json.JSONDecodeError:
-        return {"sha256": "", "recorded_at": "", "origin": "unknown"}
+        return {
+            "sha256": "",
+            "first_recorded_at": "",
+            "last_seen_at": "",
+            "origin": "unknown",
+        }
     if not isinstance(marker, dict):
-        return {"sha256": "", "recorded_at": "", "origin": "unknown"}
+        return {
+            "sha256": "",
+            "first_recorded_at": "",
+            "last_seen_at": "",
+            "origin": "unknown",
+        }
     return marker
 
 
