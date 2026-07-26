@@ -487,7 +487,9 @@ def _terminal_progress_palette_tokens(css: str, palette: str) -> dict[str, str]:
     else:
         match = re.search(
             r"@media\s*\(\s*prefers-color-scheme\s*:\s*light\s*\)\s*"
-            r"\{\s*:root\s*\{(?P<body>[^{}]*)\}",
+            + r"\{\s*"
+            + re.escape(':root:not([data-theme="light"]):not([data-theme="dark"])')
+            + r"\s*\{(?P<body>[^{}]*)\}",
             css,
             re.DOTALL,
         )
