@@ -241,6 +241,98 @@ def test_sync_keeps_nfd_citation_when_nfc_spelling_does_not_exist(
     assert paths == [nfd_name]
 
 
+def test_sources_repair_identities_is_dry_run_until_apply(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    nfd_name = unicodedata.normalize("NFD", "caf\u00e9.txt")
+    nfc_name = unicodedata.normalize("NFC", nfd_name)
+    assert nfd_name != nfc_name
+    nfd_path = f"sources/{nfd_name}"
+    nfc_path = f"sources/{nfc_name}"
+    store = Store(tmp_path / "kb.sqlite")
+    store.init_schema()
+    store.add_source(nfd_path)
+    store.add_source(nfc_path)
+    store.close()
+
+    def samefile(self, other):
+        assert {self, other} == {tmp_path / nfd_path, tmp_path / nfc_path}
+        return True
+
+    monkeypatch.setattr(Path, "samefile", samefile)
+
+    assert cli.main(["sources", "repair-identities"]) == 0
+    dry_run = capsys.readouterr().out
+    assert "ready:" in dry_run
+    assert "dry-run: no sources changed" in dry_run
+    check = Store(tmp_path / "kb.sqlite")
+    assert len(check.sources()) == 2
+    check.close()
+
+    assert cli.main(["sources", "repair-identities", "--apply"]) == 0
+    applied = capsys.readouterr().out
+    assert "source identity repair: 1 repaired, 0 unchanged" in applied
+    check = Store(tmp_path / "kb.sqlite")
+    assert [(row["path"], row["kind"]) for row in check.sources()] == [(nfc_path, "text")]
+    check.close()
+
+
+def test_sources_repair_identities_dry_run_supports_legacy_kb_without_jobs(
+    tmp_path, monkeypatch, capsys
+):
+    _env(monkeypatch, tmp_path)
+    nfd_name = unicodedata.normalize("NFD", "caf\u00e9.txt")
+    nfc_name = unicodedata.normalize("NFC", nfd_name)
+    assert nfd_name != nfc_name
+    nfd_path = f"sources/{nfd_name}"
+    nfc_path = f"sources/{nfc_name}"
+    conn = sqlite3.connect(tmp_path / "kb.sqlite")
+    conn.executescript(
+        """
+        CREATE TABLE sources (id INTEGER PRIMARY KEY, path TEXT NOT NULL, kind TEXT NOT NULL);
+        CREATE TABLE facts (
+            id INTEGER PRIMARY KEY,
+            subject TEXT NOT NULL,
+            relation TEXT NOT NULL,
+            object TEXT NOT NULL,
+            status TEXT NOT NULL
+        );
+        CREATE TABLE review_log (id INTEGER PRIMARY KEY);
+        CREATE TABLE runs (id INTEGER PRIMARY KEY);
+        """
+    )
+    conn.executemany(
+        "INSERT INTO sources(path, kind) VALUES(?, 'text')",
+        [(nfd_path,), (nfc_path,)],
+    )
+    conn.commit()
+    tables_before = [
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+        )
+    ]
+    conn.close()
+
+    def samefile(self, other):
+        assert {self, other} == {tmp_path / nfd_path, tmp_path / nfc_path}
+        return True
+
+    monkeypatch.setattr(Path, "samefile", samefile)
+
+    assert cli.main(["sources", "repair-identities"]) == 0
+    assert "dry-run: no sources changed" in capsys.readouterr().out
+
+    conn = sqlite3.connect(tmp_path / "kb.sqlite")
+    tables_after = [
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+        )
+    ]
+    conn.close()
+    assert tables_after == tables_before
+
+
 def test_ingest_registers_text_source(tmp_path, monkeypatch, capsys):
     _env(monkeypatch, tmp_path)
     src = tmp_path / "doc.txt"

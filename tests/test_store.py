@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: MPL-2.0
 import json
 import sqlite3
+import unicodedata
+from pathlib import Path
 
 import pytest
 
@@ -13,6 +15,13 @@ def _store(tmp_path) -> Store:
     s = Store(tmp_path / "kb.sqlite")
     s.init_schema()
     return s
+
+
+def _unicode_source_paths() -> tuple[str, str]:
+    nfd_name = unicodedata.normalize("NFD", "caf\u00e9.txt")
+    nfc_name = unicodedata.normalize("NFC", nfd_name)
+    assert nfd_name != nfc_name
+    return f"sources/{nfd_name}", f"sources/{nfc_name}"
 
 
 def test_toggle_promotes_and_reverts(tmp_path):
@@ -2088,3 +2097,210 @@ def test_reconcile_fact_prefers_live_row_over_superseded_duplicate(tmp_path):
     assert result.matched_status == "needs_review"
     assert _suppression_events(s, rejected) == []
     assert _suppression_events(s, live) == []
+
+
+def test_source_identity_repair_rewires_every_surface_and_artifact_collision(
+    tmp_path, monkeypatch
+):
+    s = _store(tmp_path)
+    nfd_path, nfc_path = _unicode_source_paths()
+    retired_id = s.add_source(nfd_path)
+    retained_id = s.add_source(nfc_path)
+    retired_artifact = s.add_source_artifact(
+        source_id=retired_id,
+        kind="original_text",
+        path="artifacts/synthetic-nfd.txt",
+        checksum="same-content",
+    )
+    retained_artifact = s.add_source_artifact(
+        source_id=retained_id,
+        kind="original_text",
+        path="artifacts/synthetic-nfc.txt",
+        checksum="same-content",
+    )
+    retired_job = s.create_extraction_job(
+        source_id=retired_id,
+        artifact_id=retired_artifact,
+        provider="fake",
+        model="m",
+        total_chunks=1,
+    )
+    retained_job = s.create_extraction_job(
+        source_id=retained_id,
+        artifact_id=retained_artifact,
+        provider="fake",
+        model="m",
+        total_chunks=1,
+    )
+    retired_chunk = s.add_source_chunks(
+        job_id=retired_job, source_id=retired_id, chunks=["synthetic chunk"]
+    )[0]
+    s.add_source_chunks(
+        job_id=retained_job, source_id=retained_id, chunks=["other synthetic chunk"]
+    )
+    s._conn.execute("UPDATE extraction_jobs SET status = 'done'")
+    fact_id = s.add_fact("Synthetic", "supports", "Repair", source_id=retired_id, job_id=retired_job)
+    evidence_id = s.add_fact_evidence(
+        fact_id=fact_id,
+        source_id=retired_id,
+        artifact_id=retired_artifact,
+        job_id=retired_job,
+        chunk_id=retired_chunk,
+        snippet="synthetic anchor",
+    )
+    event_id = s.add_fact_event(
+        fact_id=fact_id,
+        event_type="synthetic_repair_fixture",
+        source_id=retired_id,
+        job_id=retired_job,
+        chunk_id=retired_chunk,
+    )
+
+    def samefile(self, other):
+        assert {self, other} == {tmp_path / nfd_path, tmp_path / nfc_path}
+        return True
+
+    monkeypatch.setattr(Path, "samefile", samefile)
+    plan = s.plan_source_identity_repairs()
+    assert [group.status for group in plan.groups] == ["ready"]
+
+    result = s.apply_source_identity_repairs(plan)
+
+    assert [group.status for group in result.groups] == ["repaired"]
+    assert s.get_source(retired_id) is None
+    assert s.get_source(retained_id)["path"] == nfc_path
+    assert s.get_fact(fact_id)["source_id"] == retained_id
+    assert s.get_extraction_job(retired_job)["source_id"] == retained_id
+    assert s.get_extraction_job(retired_job)["artifact_id"] == retained_artifact
+    assert s.get_source_chunk(retired_chunk)["source_id"] == retained_id
+    evidence = s._conn.execute("SELECT * FROM fact_evidence WHERE id = ?", (evidence_id,)).fetchone()
+    assert (evidence["source_id"], evidence["artifact_id"]) == (retained_id, retained_artifact)
+    event = s._conn.execute("SELECT * FROM fact_events WHERE id = ?", (event_id,)).fetchone()
+    assert event["source_id"] == retained_id
+    assert s.get_source_artifact(retired_artifact) is None
+    assert [artifact["id"] for artifact in s.source_artifacts(retained_id)] == [retained_artifact]
+    audit = s._conn.execute("SELECT canonical_path, moves_json FROM source_identity_repair_log").fetchone()
+    assert audit["canonical_path"] == nfc_path
+    assert str(retired_id) in audit["moves_json"]
+    assert "synthetic anchor" not in audit["moves_json"]
+    assert list(s._conn.execute("PRAGMA foreign_key_check")) == []
+    s._validate_source_identity_repair_domain()
+    assert s.plan_source_identity_repairs().groups == ()
+    assert s.apply_source_identity_repairs(s.plan_source_identity_repairs()).groups == ()
+
+
+def test_source_identity_repair_aggregates_coverage_after_verified_merge(
+    tmp_path, monkeypatch
+):
+    s = _store(tmp_path)
+    nfd_path, nfc_path = _unicode_source_paths()
+    retired_id = s.add_source(nfd_path)
+    retained_id = s.add_source(nfc_path)
+    s.add_fact("Retired confirmed", "supports", "Merge", status="confirmed", source_id=retired_id)
+    s.add_fact("Retired candidate", "supports", "Merge", status="candidate", source_id=retired_id)
+    s.add_fact("Retained accepted", "supports", "Merge", status="accepted", source_id=retained_id)
+    s.add_fact("Retained review", "supports", "Merge", status="needs_review", source_id=retained_id)
+
+    monkeypatch.setattr(Path, "samefile", lambda self, other: True)
+    plan = s.plan_source_identity_repairs()
+
+    result = s.apply_source_identity_repairs(plan)
+
+    assert [group.status for group in result.groups] == ["repaired"]
+    report = coverage(s, root=tmp_path)
+    assert len(report.sources) == 1
+    assert report.sources[0].path == nfc_path
+    assert report.sources[0].total_facts == 4
+    assert report.sources[0].engine_facts == 2
+
+
+def test_source_identity_repair_rolls_back_after_late_validation_failure(
+    tmp_path, monkeypatch
+):
+    s = _store(tmp_path)
+    nfd_path, nfc_path = _unicode_source_paths()
+    retired_id = s.add_source(nfd_path)
+    retained_id = s.add_source(nfc_path)
+    retired_artifact = s.add_source_artifact(
+        source_id=retired_id,
+        kind="original_text",
+        path="artifacts/synthetic-nfd.txt",
+        checksum="synthetic-nfd",
+    )
+    retained_artifact = s.add_source_artifact(
+        source_id=retained_id,
+        kind="original_text",
+        path="artifacts/synthetic-nfc.txt",
+        checksum="synthetic-nfc",
+    )
+
+    monkeypatch.setattr(Path, "samefile", lambda self, other: True)
+    plan = s.plan_source_identity_repairs()
+
+    def fail_after_rewiring():
+        raise RuntimeError("late audit failure")
+
+    monkeypatch.setattr(s, "_validate_source_identity_repair_domain", fail_after_rewiring)
+    with pytest.raises(RuntimeError, match="late audit failure"):
+        s.apply_source_identity_repairs(plan)
+
+    assert s.get_source(retired_id)["path"] == nfd_path
+    assert s.get_source(retained_id)["path"] == nfc_path
+    assert s.get_source_artifact(retired_artifact)["source_id"] == retired_id
+    assert s.get_source_artifact(retained_artifact)["source_id"] == retained_id
+    assert s._conn.execute("SELECT COUNT(*) FROM source_identity_repair_log").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize(
+    ("samefile_result", "expected"),
+    [(False, "distinct_paths"), (FileNotFoundError("missing"), "unprovable_path")],
+)
+def test_source_identity_repair_leaves_distinct_or_missing_paths_unchanged(
+    tmp_path, monkeypatch, samefile_result, expected
+):
+    s = _store(tmp_path)
+    nfd_path, nfc_path = _unicode_source_paths()
+    nfd_id = s.add_source(nfd_path)
+    nfc_id = s.add_source(nfc_path)
+
+    def samefile(self, other):
+        if isinstance(samefile_result, BaseException):
+            raise samefile_result
+        return samefile_result
+
+    monkeypatch.setattr(Path, "samefile", samefile)
+    plan = s.plan_source_identity_repairs()
+    assert plan.groups[0].status == expected
+    result = s.apply_source_identity_repairs(plan)
+    assert result.groups[0].status == expected
+    assert s.get_source(nfd_id) is not None
+    assert s.get_source(nfc_id) is not None
+
+
+def test_source_identity_repair_blocks_active_jobs_and_mixed_kinds(tmp_path):
+    s = _store(tmp_path)
+    nfd_path, nfc_path = _unicode_source_paths()
+    mixed_nfd = nfd_path.replace("sources/", "sources/mixed-")
+    mixed_nfc = nfc_path.replace("sources/", "sources/mixed-")
+    s.add_source(mixed_nfd, kind="text")
+    s.add_source(mixed_nfc, kind="binary")
+    active_nfd = nfd_path.replace("sources/", "sources/active-")
+    active_nfc = nfc_path.replace("sources/", "sources/active-")
+    active_id = s.add_source(active_nfd)
+    s.add_source(active_nfc)
+    s.create_extraction_job(
+        source_id=active_id, provider="fake", model="m", total_chunks=1
+    )
+
+    plan = s.plan_source_identity_repairs()
+
+    assert {group.status for group in plan.groups} == {
+        "mixed_source_kind",
+        "active_extraction_job",
+    }
+    result = s.apply_source_identity_repairs(plan)
+    assert {group.status for group in result.groups} == {
+        "mixed_source_kind",
+        "active_extraction_job",
+    }
+    assert len(s.sources()) == 4

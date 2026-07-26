@@ -19,6 +19,8 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Iterable
 
+from verinote.text import nfc
+
 # Status tiers (kept in code so the web/pipeline layers share one definition).
 REVIEW_STATUSES = frozenset({"candidate", "needs_review"})
 # kb_meta key under which a KB declares that it owns a logic policy file.
@@ -96,6 +98,34 @@ class FactReconcileResult:
     fact_id: int  # existing row on a hit, or the newly created row
     created: bool  # True only when a new row was inserted
     matched_status: str | None  # status of the pre-existing row on a dedupe hit
+
+
+@dataclass(frozen=True)
+class SourceIdentityRepairGroup:
+    """One NFC-equivalent source group and its current repair verdict.
+
+    The plan deliberately carries source ids and paths only.  In particular it
+    never copies source or evidence text into an operator-facing plan or audit.
+    """
+
+    canonical_path: str
+    source_ids: tuple[int, ...]
+    paths: tuple[str, ...]
+    status: str
+
+
+@dataclass(frozen=True)
+class SourceIdentityRepairPlan:
+    """Read-only inventory of pre-existing NFC/NFD duplicate source rows."""
+
+    groups: tuple[SourceIdentityRepairGroup, ...]
+
+
+@dataclass(frozen=True)
+class SourceIdentityRepairResult:
+    """Outcome of applying a source-identity repair plan."""
+
+    groups: tuple[SourceIdentityRepairGroup, ...]
 
 
 REVIEW_PAGE_SIZES = (25, 50, 100)
@@ -526,6 +556,236 @@ class Store:
         return self._conn.execute(
             "SELECT * FROM sources WHERE path = ?", (path,)
         ).fetchone()
+
+    def plan_source_identity_repairs(self) -> SourceIdentityRepairPlan:
+        """Read-only plan for merging same-file NFC/NFD duplicate sources.
+
+        A plan is intentionally conservative.  It reports every NFC-equivalent
+        duplicate, but only marks a group ``ready`` when its kinds agree, no
+        extraction job is active, and every path can presently be proved to be
+        the same file.  Apply repeats each check while holding SQLite's write
+        lock, so this read-only result is never treated as an authority to write.
+        """
+        grouped: dict[str, list[sqlite3.Row]] = {}
+        for row in self._conn.execute("SELECT id, path, kind FROM sources ORDER BY id"):
+            grouped.setdefault(nfc(str(row["path"])), []).append(row)
+        groups: list[SourceIdentityRepairGroup] = []
+        for canonical_path, rows in sorted(grouped.items()):
+            if len(rows) < 2 or not any(str(row["path"]) != canonical_path for row in rows):
+                continue
+            groups.append(self._source_identity_group(rows, canonical_path))
+        return SourceIdentityRepairPlan(groups=tuple(groups))
+
+    def apply_source_identity_repairs(
+        self, plan: SourceIdentityRepairPlan
+    ) -> SourceIdentityRepairResult:
+        """Apply only the still-verified groups from a prior repair plan.
+
+        Each group gets its own short transaction.  A blocked or stale group is
+        reported unchanged, while another independently verified group may still
+        be repaired.  This makes re-running a plan idempotent and prevents a
+        filesystem or active-job race from turning a scan result into a merge.
+        """
+        outcomes: list[SourceIdentityRepairGroup] = []
+        for planned in plan.groups:
+            if planned.status != "ready":
+                outcomes.append(planned)
+                continue
+            with self._lock:
+                # This is deliberately adjacent to BEGIN IMMEDIATE rather than
+                # trusting the scan-time result.  The duplicate check below is
+                # repeated under the DB lock before the first UPDATE as well.
+                preflight = self._source_identity_samefile_status(planned.paths)
+                if preflight != "ready":
+                    outcomes.append(
+                        SourceIdentityRepairGroup(
+                            planned.canonical_path,
+                            planned.source_ids,
+                            planned.paths,
+                            preflight,
+                        )
+                    )
+                    continue
+                with self.immediate_transaction():
+                    placeholders = ",".join("?" for _ in planned.source_ids)
+                    rows = list(
+                        self._conn.execute(
+                            "SELECT id, path, kind FROM sources "
+                            f"WHERE id IN ({placeholders}) ORDER BY id",
+                            planned.source_ids,
+                        )
+                    )
+                    current = self._source_identity_group(rows, planned.canonical_path)
+                    if current.status != "ready":
+                        outcomes.append(current)
+                        continue
+                    self._apply_source_identity_group(rows, planned.canonical_path)
+                    outcomes.append(
+                        SourceIdentityRepairGroup(
+                            canonical_path=planned.canonical_path,
+                            source_ids=tuple(int(row["id"]) for row in rows),
+                            paths=tuple(str(row["path"]) for row in rows),
+                            status="repaired",
+                        )
+                    )
+        return SourceIdentityRepairResult(groups=tuple(outcomes))
+
+    def _source_identity_group(
+        self, rows: list[sqlite3.Row], canonical_path: str
+    ) -> SourceIdentityRepairGroup:
+        ids = tuple(int(row["id"]) for row in rows)
+        paths = tuple(str(row["path"]) for row in rows)
+        status = "ready"
+        if (
+            len(rows) < 2
+            or any(nfc(path) != canonical_path for path in paths)
+            or not any(path != canonical_path for path in paths)
+        ):
+            status = "stale_plan"
+        elif len({str(row["kind"]) for row in rows}) != 1:
+            status = "mixed_source_kind"
+        elif self._source_identity_has_active_job(ids):
+            status = "active_extraction_job"
+        else:
+            status = self._source_identity_samefile_status(paths)
+        return SourceIdentityRepairGroup(canonical_path, ids, paths, status)
+
+    def _source_identity_has_active_job(self, source_ids: tuple[int, ...]) -> bool:
+        has_extraction_jobs = self._conn.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'extraction_jobs'"
+        ).fetchone()
+        if has_extraction_jobs is None:
+            return False
+        placeholders = ",".join("?" for _ in source_ids)
+        row = self._conn.execute(
+            "SELECT 1 FROM extraction_jobs "
+            f"WHERE source_id IN ({placeholders}) AND status IN ('pending', 'running') "
+            "LIMIT 1",
+            source_ids,
+        ).fetchone()
+        return row is not None
+
+    def _source_identity_samefile_status(self, paths: tuple[str, ...]) -> str:
+        resolved = [self.db_path.parent / path for path in paths]
+        try:
+            for index, left in enumerate(resolved):
+                for right in resolved[index + 1 :]:
+                    if not left.samefile(right):
+                        return "distinct_paths"
+        except (OSError, ValueError):
+            return "unprovable_path"
+        return "ready"
+
+    def _apply_source_identity_group(
+        self, rows: list[sqlite3.Row], canonical_path: str
+    ) -> None:
+        # Prefer an existing canonical citation; otherwise retain the oldest
+        # source row and rename it only after the conflicting rows are gone.
+        retained = next(
+            (row for row in rows if str(row["path"]) == canonical_path), rows[0]
+        )
+        retained_id = int(retained["id"])
+        retired = [row for row in rows if int(row["id"]) != retained_id]
+        retired_ids = tuple(int(row["id"]) for row in retired)
+
+        for retired_id in retired_ids:
+            artifacts = list(
+                self._conn.execute(
+                    "SELECT id, kind, checksum FROM source_artifacts "
+                    "WHERE source_id = ? ORDER BY id",
+                    (retired_id,),
+                )
+            )
+            for artifact in artifacts:
+                artifact_id = int(artifact["id"])
+                retained_artifact = self._conn.execute(
+                    "SELECT id FROM source_artifacts "
+                    "WHERE source_id = ? AND kind = ? AND checksum = ?",
+                    (retained_id, artifact["kind"], artifact["checksum"]),
+                ).fetchone()
+                if retained_artifact is None:
+                    self._conn.execute(
+                        "UPDATE source_artifacts SET source_id = ? WHERE id = ?",
+                        (retained_id, artifact_id),
+                    )
+                    continue
+                retained_artifact_id = int(retained_artifact["id"])
+                self._conn.execute(
+                    "UPDATE extraction_jobs SET artifact_id = ? WHERE artifact_id = ?",
+                    (retained_artifact_id, artifact_id),
+                )
+                self._conn.execute(
+                    "UPDATE fact_evidence SET artifact_id = ? WHERE artifact_id = ?",
+                    (retained_artifact_id, artifact_id),
+                )
+                self._conn.execute("DELETE FROM source_artifacts WHERE id = ?", (artifact_id,))
+
+        # These are every source FK surface.  Keep this explicit rather than
+        # relying on ON DELETE actions, which would discard provenance.
+        placeholders = ",".join("?" for _ in retired_ids)
+        for table in (
+            "extraction_jobs",
+            "source_chunks",
+            "facts",
+            "fact_evidence",
+            "fact_events",
+        ):
+            self._conn.execute(
+                f"UPDATE {table} SET source_id = ? WHERE source_id IN ({placeholders})",
+                (retained_id, *retired_ids),
+            )
+
+        moves = {
+            "retained_source_id": retained_id,
+            "retired_sources": [
+                {"source_id": int(row["id"]), "path": str(row["path"])}
+                for row in retired
+            ],
+        }
+        self._conn.execute(
+            "INSERT INTO source_identity_repair_log(canonical_path, moves_json) VALUES(?, ?)",
+            (canonical_path, json.dumps(moves, ensure_ascii=False, sort_keys=True)),
+        )
+        self._conn.execute(
+            f"DELETE FROM sources WHERE id IN ({placeholders})", retired_ids
+        )
+        self._conn.execute(
+            "UPDATE sources SET path = ? WHERE id = ?", (canonical_path, retained_id)
+        )
+        self._validate_source_identity_repair_domain()
+
+    def _validate_source_identity_repair_domain(self) -> None:
+        if list(self._conn.execute("PRAGMA foreign_key_check")):
+            raise sqlite3.IntegrityError("source identity repair foreign key check failed")
+        checks = (
+            "SELECT 1 FROM extraction_jobs j JOIN source_artifacts a ON a.id = j.artifact_id "
+            "WHERE a.source_id != j.source_id LIMIT 1",
+            "SELECT 1 FROM source_chunks c JOIN extraction_jobs j ON j.id = c.job_id "
+            "WHERE c.source_id != j.source_id LIMIT 1",
+            "SELECT 1 FROM facts f JOIN extraction_jobs j ON j.id = f.job_id "
+            "WHERE f.source_id IS NOT NULL AND f.source_id != j.source_id LIMIT 1",
+            "SELECT 1 FROM fact_evidence e "
+            "LEFT JOIN facts f ON f.id = e.fact_id "
+            "LEFT JOIN source_artifacts a ON a.id = e.artifact_id "
+            "LEFT JOIN extraction_jobs j ON j.id = e.job_id "
+            "LEFT JOIN source_chunks c ON c.id = e.chunk_id "
+            "WHERE (f.source_id IS NOT NULL AND f.source_id != e.source_id) "
+            "OR (a.id IS NOT NULL AND a.source_id != e.source_id) "
+            "OR (j.id IS NOT NULL AND j.source_id != e.source_id) "
+            "OR (c.id IS NOT NULL AND c.source_id != e.source_id) "
+            "OR (c.id IS NOT NULL AND e.job_id IS NOT NULL AND c.job_id != e.job_id) LIMIT 1",
+            "SELECT 1 FROM fact_events e "
+            "LEFT JOIN facts f ON f.id = e.fact_id "
+            "LEFT JOIN extraction_jobs j ON j.id = e.job_id "
+            "LEFT JOIN source_chunks c ON c.id = e.chunk_id "
+            "WHERE (e.source_id IS NOT NULL AND f.source_id IS NOT NULL AND f.source_id != e.source_id) "
+            "OR (e.source_id IS NOT NULL AND j.id IS NOT NULL AND j.source_id != e.source_id) "
+            "OR (e.source_id IS NOT NULL AND c.id IS NOT NULL AND c.source_id != e.source_id) "
+            "OR (c.id IS NOT NULL AND e.job_id IS NOT NULL AND c.job_id != e.job_id) LIMIT 1",
+        )
+        if any(self._conn.execute(query).fetchone() is not None for query in checks):
+            raise sqlite3.IntegrityError("source identity repair domain check failed")
 
     def sources_with_counts(self) -> list[sqlite3.Row]:
         """Sources plus analysis and fact summaries for the Sources listing.
@@ -2763,6 +3023,28 @@ class Store:
                 ON fact_events(fact_id, id);
             CREATE INDEX IF NOT EXISTS idx_fact_events_job
                 ON fact_events(job_id);
+            """
+        )
+        self._conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS source_identity_repair_log (
+                id             INTEGER PRIMARY KEY,
+                canonical_path TEXT NOT NULL,
+                moves_json     TEXT NOT NULL,
+                at             TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TRIGGER IF NOT EXISTS source_identity_repair_log_no_update
+            BEFORE UPDATE ON source_identity_repair_log
+            FOR EACH ROW
+            BEGIN
+                SELECT RAISE(ABORT, 'source identity repair audit is append-only');
+            END;
+            CREATE TRIGGER IF NOT EXISTS source_identity_repair_log_no_delete
+            BEFORE DELETE ON source_identity_repair_log
+            FOR EACH ROW
+            BEGIN
+                SELECT RAISE(ABORT, 'source identity repair audit is append-only');
+            END;
             """
         )
         self._ensure_question_schema()

@@ -281,3 +281,27 @@ CREATE TABLE IF NOT EXISTS fact_events (
 
 CREATE INDEX IF NOT EXISTS idx_fact_events_fact ON fact_events(fact_id, id);
 CREATE INDEX IF NOT EXISTS idx_fact_events_job ON fact_events(job_id);
+
+-- Append-only record of an explicitly confirmed merge of source rows that
+-- resolved to the same filesystem object under NFC/NFD spellings.  It records
+-- ids and paths only: source/evidence text must never enter this audit trail.
+CREATE TABLE IF NOT EXISTS source_identity_repair_log (
+    id             INTEGER PRIMARY KEY,
+    canonical_path TEXT NOT NULL,
+    moves_json     TEXT NOT NULL,
+    at             TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TRIGGER IF NOT EXISTS source_identity_repair_log_no_update
+BEFORE UPDATE ON source_identity_repair_log
+FOR EACH ROW
+BEGIN
+    SELECT RAISE(ABORT, 'source identity repair audit is append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS source_identity_repair_log_no_delete
+BEFORE DELETE ON source_identity_repair_log
+FOR EACH ROW
+BEGIN
+    SELECT RAISE(ABORT, 'source identity repair audit is append-only');
+END;
