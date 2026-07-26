@@ -13,6 +13,7 @@ from verinote.llm.schema import (
     EXTRACTION_SYSTEM,
     FACT_OBJECT_SCHEMA,
     QUERY_INTENT_SCHEMA,
+    QUERY_INTENT_TARGET_SCHEMA,
     parse_facts,
 )
 from verinote.pipeline import query_intent
@@ -402,6 +403,11 @@ def test_blank_nullable_fields_split_a_new_property_by_its_enum():
     assert "note" in blank_nullable
 
 
+def _query_intent_field_line(entry):
+    name, declaration = entry if isinstance(entry, tuple) else (entry, "str | None = None")
+    return f"    {name}: {declaration}\n"
+
+
 def _build_query_intent_module(monkeypatch, schema, extra_fields=()):
     """Run a fresh, isolated copy of query_intent.py against `schema`.
 
@@ -410,12 +416,14 @@ def _build_query_intent_module(monkeypatch, schema, extra_fields=()):
     the identity of `QueryIntent`/`IntentTarget` out from under every test that
     imported them, so dataclass equality starts failing elsewhere in the session.
 
-    `extra_fields` adds nullable string fields to the QueryIntent dataclass before
-    the copy executes. That is the one step a schema addition still requires by
-    hand, so a test that the *rest* is automatic has to perform it -- otherwise the
-    copy stops at the import guard and the parse path is never reached. Patching
-    the source is what makes the resulting module a faithful "developer added the
-    property and the field, and did nothing else".
+    `extra_fields` adds fields to the QueryIntent dataclass before the copy
+    executes. That is the one step a schema addition still requires by hand, so a
+    test that the *rest* is automatic has to perform it -- otherwise the copy
+    stops at the import guard and the parse path is never reached. Patching the
+    source is what makes the resulting module a faithful "developer added the
+    property and the field, and did nothing else". An entry is either a name (a
+    nullable string field) or a `(name, declaration)` pair, so a property that is
+    not a string can be given the annotation and default its author would.
     """
     monkeypatch.setattr(llm_schema, "QUERY_INTENT_SCHEMA", schema)
     source = pathlib.Path(query_intent.__file__).read_text(encoding="utf-8")
@@ -426,7 +434,7 @@ def _build_query_intent_module(monkeypatch, schema, extra_fields=()):
         assert source.count(anchor) == 1, "QueryIntent's last field is no longer `reason`"
         source = source.replace(
             anchor,
-            anchor + "".join(f"    {name}: str | None = None\n" for name in extra_fields),
+            anchor + "".join(_query_intent_field_line(entry) for entry in extra_fields),
         )
     name = "query_intent_under_test"
     spec = importlib.util.spec_from_file_location(name, query_intent.__file__)
@@ -533,6 +541,243 @@ def test_a_property_type_with_no_parser_is_refused_rather_than_guessed(monkeypat
 
     assert "retries" in str(excinfo.value)
     assert not isinstance(excinfo.value, LLMError)
+
+
+def _intent_schema_with(name, spec):
+    """QUERY_INTENT_SCHEMA plus one property the module has never seen."""
+    schema = copy.deepcopy(QUERY_INTENT_SCHEMA)
+    schema["properties"][name] = spec
+    schema["required"] = list(schema["properties"])
+    return schema
+
+
+_DROP = object()
+
+
+def _target_like(**overrides):
+    """QUERY_INTENT_TARGET_SCHEMA with parts replaced, or dropped via `_DROP`.
+
+    Written as a diff against the real target schema so each case below says
+    exactly which part of the shape it breaks -- and so a case cannot pass by
+    breaking something else too.
+    """
+    spec = copy.deepcopy(QUERY_INTENT_TARGET_SCHEMA)
+    for key, value in overrides.items():
+        if value is _DROP:
+            del spec[key]
+        else:
+            spec[key] = value
+    return spec
+
+
+def _target_properties(**overrides):
+    properties = copy.deepcopy(QUERY_INTENT_TARGET_SCHEMA["properties"])
+    properties.update(overrides)
+    return properties
+
+
+# Each entry is `["object", "null"]` -- the declared type `subject`, `relation`,
+# and `object` carry -- and each is legal JSON Schema whose values
+# `_parse_intent_target` would refuse, one refusal per conjunct of the shape
+# check. Dispatching on the top-level type alone assigned that parser to all of
+# them, so the provider was handed a schema, obeyed it, and had its output
+# reported as "did not match schema".
+_UNSUPPORTED_NULLABLE_OBJECT_SHAPES = {
+    # The maintainer's example on #352: a wholly different object.
+    "a nested object with its own properties": {
+        "type": ["object", "null"],
+        "additionalProperties": False,
+        "required": ["name"],
+        "properties": {"name": {"type": "string", "minLength": 1}},
+    },
+    # `IntentTarget.__post_init__` refuses a kind outside INTENT_TARGET_KINDS.
+    "a kind enum reaching outside the target kinds": _target_like(
+        properties=_target_properties(
+            kind={"type": "string", "enum": ["entity", "literal"]}
+        )
+    ),
+    # No enum at all: every string is on-schema, and all but four are refused.
+    "an unconstrained kind": _target_like(
+        properties=_target_properties(kind={"type": "string"})
+    ),
+    # An enum admitting nothing: no output at all satisfies it.
+    "an empty kind enum": _target_like(
+        properties=_target_properties(kind={"type": "string", "enum": []})
+    ),
+    # A null kind is on-schema; `_parse_intent_target` demands a string.
+    "a nullable kind": _target_like(
+        properties=_target_properties(
+            kind={"type": ["string", "null"], "enum": ["entity", None]}
+        )
+    ),
+    # `_parse_intent_target` refuses any key beyond kind/value -- and `note` here
+    # is optional, so the extra property is the only thing wrong with it.
+    "an optional third property": _target_like(
+        properties=_target_properties(note={"type": "string", "minLength": 1}),
+    ),
+    # Without `additionalProperties: False` the provider may add keys legally.
+    "keys the schema does not close off": _target_like(additionalProperties=_DROP),
+    # Without `required`, a missing `value` is on-schema and raises KeyError.
+    "optional halves": _target_like(required=_DROP),
+    # Without `minLength`, `value: ""` is on-schema and IntentTarget refuses it.
+    "a value that may be blank": _target_like(
+        properties=_target_properties(value={"type": "string"})
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "spec",
+    list(_UNSUPPORTED_NULLABLE_OBJECT_SHAPES.values()),
+    ids=list(_UNSUPPORTED_NULLABLE_OBJECT_SHAPES),
+)
+def test_an_unsupported_nullable_object_property_is_refused_at_import(monkeypatch, spec):
+    """A `["object", "null"]` property that is not the target shape fails at import.
+
+    Sharing a top-level type with `subject` is not sharing a parser.
+    `_parse_intent_target` reads one object -- `{kind, value}`, kind on
+    INTENT_TARGET_KINDS, value non-blank -- and rejects everything else per parse,
+    where `parse_query_intent` relabels the rejection as an `LLMError` saying the
+    provider's output did not match the schema. For every property here that
+    sentence is false: the output matches the schema, and the parser is the thing
+    out of step. The whole point of #298's design is to refuse a shape it cannot
+    parse instead of guessing at one, so the refusal belongs at import, before any
+    provider is blamed.
+    """
+    with pytest.raises(RuntimeError) as excinfo:
+        _build_query_intent_module(
+            monkeypatch,
+            _intent_schema_with("topic", spec),
+            extra_fields=(("topic", "IntentTarget | None = None"),),
+        )
+
+    message = str(excinfo.value)
+    assert "topic" in message
+    # Not the "QueryIntent has no field for it" guard: the field was added, so
+    # only the shape check can be speaking here.
+    assert "matches no shape" in message
+    assert not isinstance(excinfo.value, LLMError)
+
+
+_UNSUPPORTED_NULLABLE_ARRAY_SHAPES = {
+    # The maintainer's example on #352: schema-legal, and not a string array.
+    # An array of the very objects `_parse_intent_target` reads, at that -- the
+    # parser next door is no help, because the array parser is the one assigned.
+    "an array of objects": {
+        "type": ["array", "null"],
+        "items": copy.deepcopy(QUERY_INTENT_TARGET_SCHEMA),
+    },
+    "an array of numbers": {"type": ["array", "null"], "items": {"type": "number"}},
+    # Unconstrained items admit objects, numbers and nulls alike.
+    "an array with no item schema": {"type": ["array", "null"]},
+    # `_clean_required_string` refuses a blank candidate, so without the bound
+    # the schema admits an item the parse path calls a provider violation.
+    "an array whose items may be blank": {
+        "type": ["array", "null"],
+        "items": {"type": "string"},
+    },
+    # A tuple schema: the leading entries are not the `items` string at all.
+    "a tuple whose leading entry is an object": {
+        "type": ["array", "null"],
+        "prefixItems": [copy.deepcopy(QUERY_INTENT_TARGET_SCHEMA)],
+        "items": {"type": "string", "minLength": 1},
+    },
+}
+
+
+@pytest.mark.parametrize(
+    "spec",
+    list(_UNSUPPORTED_NULLABLE_ARRAY_SHAPES.values()),
+    ids=list(_UNSUPPORTED_NULLABLE_ARRAY_SHAPES),
+)
+def test_an_unsupported_nullable_array_property_is_refused_at_import(monkeypatch, spec):
+    """A `["array", "null"]` property that is not a non-blank string array fails too.
+
+    `_parse_relation_candidates` is the only array parser, and it reads an array
+    of non-blank strings; every other element type it sees becomes an `LLMError`
+    blaming the provider for output its own schema allowed. Same failure as the
+    object case, same fix: refuse the shape at import rather than assign a parser
+    to it because the top-level type matched.
+    """
+    with pytest.raises(RuntimeError) as excinfo:
+        _build_query_intent_module(
+            monkeypatch,
+            _intent_schema_with("aliases", spec),
+            extra_fields=(("aliases", "tuple[str, ...] = ()"),),
+        )
+
+    message = str(excinfo.value)
+    assert "aliases" in message
+    assert "matches no shape" in message
+    assert not isinstance(excinfo.value, LLMError)
+
+
+def test_a_second_target_shaped_property_is_parsed_with_no_wiring(monkeypatch):
+    """The shape check must admit the shape, not just the three known names.
+
+    Rejecting every object property outside `subject`/`relation`/`object` would
+    pass the refusal tests above while throwing away the derivation #298 is for:
+    a property that *is* the target shape has to keep being parsed with no wiring
+    step. So this follows a schema-only addition to the value the caller gets
+    back -- a parsed `IntentTarget` with its value trimmed, not the raw dict and
+    not None -- and to the rejection of an off-enum kind, which is what says the
+    property is being validated rather than passed through.
+    """
+    module = _build_query_intent_module(
+        monkeypatch,
+        _intent_schema_with("topic", copy.deepcopy(QUERY_INTENT_TARGET_SCHEMA)),
+        extra_fields=(("topic", "IntentTarget | None = None"),),
+    )
+
+    parsed = module.parse_query_intent(
+        _intent_payload(topic={"kind": "entity", "value": "  Acme  "})
+    )
+    assert parsed.topic == module.IntentTarget("entity", "Acme")
+
+    # Null and an absent key both mean absent, as for every nullable property.
+    assert module.parse_query_intent(_intent_payload(topic=None)).topic is None
+    assert module.parse_query_intent(_intent_payload()).topic is None
+
+    # Off-enum: refused here, and refused as a provider error, because this one
+    # really is output the schema forbids.
+    with pytest.raises(LLMError):
+        module.parse_query_intent(_intent_payload(topic={"kind": "literal", "value": "x"}))
+
+
+def test_a_second_string_array_property_is_parsed_with_no_wiring(monkeypatch):
+    """The array half of the same discrimination: shape admitted, name not needed."""
+    module = _build_query_intent_module(
+        monkeypatch,
+        _intent_schema_with(
+            "aliases", {"type": ["array", "null"], "items": {"type": "string", "minLength": 1}}
+        ),
+        extra_fields=(("aliases", "tuple[str, ...] = ()"),),
+    )
+
+    parsed = module.parse_query_intent(_intent_payload(aliases=["alpha", "beta"]))
+    assert parsed.aliases == ("alpha", "beta")
+    assert module.parse_query_intent(_intent_payload(aliases=None)).aliases == ()
+
+    # Parsed rather than stored: a non-string item is refused, which a property
+    # nobody reads could not do.
+    with pytest.raises(LLMError):
+        module.parse_query_intent(_intent_payload(aliases=[{"kind": "entity", "value": "x"}]))
+
+
+def test_the_target_kinds_the_shape_check_admits_are_the_ones_intent_target_takes():
+    """One set, not two: the check and `__post_init__` must not drift apart.
+
+    A schema `kind` enum is safe exactly when every value on it constructs an
+    `IntentTarget`. Were the check to keep its own copy of the kinds, widening
+    one would let a schema through whose legal output the other refuses -- the
+    very mismatch this shape check exists to catch, reintroduced inside it.
+    """
+    for kind in query_intent.INTENT_TARGET_KINDS:
+        assert IntentTarget(kind, "x").kind == kind
+
+    with pytest.raises(ValueError):
+        IntentTarget("literal", "x")
+    assert "literal" not in query_intent.INTENT_TARGET_KINDS
 
 
 def test_derived_nullable_string_fields_all_exist_on_the_query_intent_dataclass():
