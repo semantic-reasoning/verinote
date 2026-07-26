@@ -83,6 +83,7 @@ class TwoHopIntentClient:
                         "object": {"kind": "var", "value": "A"},
                     },
                 ],
+                "conditions": None,
                 "answer_var": "A",
             }
         )
@@ -92,6 +93,69 @@ class TwoHopIntentClient:
 
     def answer_question(self, **kwargs):
         raise AssertionError("verified two-hop Ask must not call fallback LLM")
+
+
+class ConjunctiveFilterIntentClient:
+    name = "conjunctive-filter-intent"
+
+    def __init__(
+        self,
+        *,
+        role_relation: str = "role",
+        affiliation_relation: str = "affiliation",
+        conditions: tuple[dict[str, object], dict[str, object]] | None = None,
+    ):
+        self.role_relation = role_relation
+        self.affiliation_relation = affiliation_relation
+        self.conditions = conditions
+
+    def extract_query_intent(self, *, question: str, schema_hint: str = ""):
+        from verinote.pipeline.query_intent import parse_query_intent
+
+        return parse_query_intent(
+            {
+                "kind": "conjunctive_filter",
+                "subject": None,
+                "relation": None,
+                "object": None,
+                "relation_candidates": None,
+                "operator": None,
+                "value_type": None,
+                "value": None,
+                "reason": None,
+                "hops": None,
+                "conditions": list(
+                    self.conditions
+                    or (
+                        {
+                            "subject": {"kind": "var", "value": "A"},
+                            "relation": {"kind": "relation", "value": self.role_relation},
+                            "object": {"kind": "entity", "value": "Engineer"},
+                        },
+                        {
+                            "subject": {"kind": "entity", "value": "Research Team"},
+                            "relation": {
+                                "kind": "relation",
+                                "value": self.affiliation_relation,
+                            },
+                            "object": {"kind": "var", "value": "A"},
+                        },
+                    )
+                ),
+                "answer_var": "A",
+            }
+        )
+
+    def translate_query(self, **kwargs):
+        raise AssertionError("conjunctive-filter Ask must not call direct Datalog translation")
+
+    def answer_question(self, **kwargs):
+        raise AssertionError("verified conjunctive-filter Ask must not call fallback LLM")
+
+
+class FallbackConjunctiveFilterIntentClient(ConjunctiveFilterIntentClient):
+    def answer_question(self, **kwargs):
+        return "UNVERIFIED synthetic fallback"
 
 
 def _store(tmp_path) -> Store:
@@ -137,6 +201,123 @@ def test_ask_returns_verified_two_hop_answer_with_both_sources(tmp_path):
         "sources/assignment.txt",
         "sources/purpose.txt",
     }
+
+
+def test_ask_returns_only_shared_conjunctive_filter_answer_with_both_sources(tmp_path):
+    store = _store(tmp_path)
+    role_source = store.add_source("sources/roles.txt")
+    affiliation_source = store.add_source("sources/affiliations.txt")
+    store.add_fact("Ada", "role", "Engineer", status="confirmed", source_id=role_source)
+    store.add_fact(
+        "Research Team", "affiliation", "Ada", status="confirmed", source_id=affiliation_source
+    )
+    store.add_fact("Bryn", "role", "Engineer", status="confirmed", source_id=role_source)
+    store.add_fact(
+        "Research Team", "affiliation", "Cato", status="confirmed", source_id=affiliation_source
+    )
+
+    result = ask_question(
+        store,
+        ConjunctiveFilterIntentClient(),
+        root=tmp_path,
+        question="Which synthetic person has both requested conditions?",
+    )
+
+    assert result.route == "engine"
+    assert result.label == "VERIFIED — engine"
+    assert "Ada" in result.answer
+    assert "Bryn" not in result.answer
+    assert "Cato" not in result.answer
+    assert {
+        (fact.subject, fact.relation, fact.object, fact.source)
+        for fact in result.grounding_facts
+    } == {
+        ("Ada", "role", "Engineer", "sources/roles.txt"),
+        ("Research Team", "affiliation", "Ada", "sources/affiliations.txt"),
+    }
+    assert {fact.source for fact in result.grounding_facts} == {
+        "sources/roles.txt",
+        "sources/affiliations.txt",
+    }
+
+
+def test_ask_conjunctive_filter_matches_alias_requested_relations_with_both_sources(tmp_path):
+    store = _store(tmp_path)
+    policy = tmp_path / "policy"
+    policy.mkdir()
+    (policy / "relation-aliases.md").write_text(
+        "- `position` -> `role`\n- `member_of` -> `affiliation`\n",
+        encoding="utf-8",
+    )
+    role_source = store.add_source("sources/roles.txt")
+    affiliation_source = store.add_source("sources/affiliations.txt")
+    store.add_fact("Ada", "role", "Engineer", status="confirmed", source_id=role_source)
+    store.add_fact(
+        "Research Team", "affiliation", "Ada", status="confirmed", source_id=affiliation_source
+    )
+    store.add_fact("Bryn", "role", "Engineer", status="confirmed", source_id=role_source)
+    store.add_fact(
+        "Research Team", "affiliation", "Cato", status="confirmed", source_id=affiliation_source
+    )
+
+    result = ask_question(
+        store,
+        ConjunctiveFilterIntentClient(
+            role_relation="position", affiliation_relation="member_of"
+        ),
+        root=tmp_path,
+        question="Which synthetic person has both aliased conditions?",
+    )
+
+    assert result.route == "engine"
+    assert result.label == "VERIFIED — engine"
+    assert result.engine_answers == ("q0: Ada",)
+    assert {
+        (fact.subject, fact.relation, fact.object, fact.source)
+        for fact in result.grounding_facts
+    } == {
+        ("Ada", "role", "Engineer", "sources/roles.txt"),
+        ("Research Team", "affiliation", "Ada", "sources/affiliations.txt"),
+    }
+    assert {fact.source for fact in result.grounding_facts} == {
+        "sources/roles.txt",
+        "sources/affiliations.txt",
+    }
+
+
+def test_ask_conjunctive_filter_rejects_alias_equivalent_conditions(tmp_path):
+    store = _store(tmp_path)
+    policy = tmp_path / "policy"
+    policy.mkdir()
+    (policy / "relation-aliases.md").write_text(
+        "- `position` -> `role`\n", encoding="utf-8"
+    )
+    source = store.add_source("sources/positions.txt")
+    store.add_fact("Ada", "position", "Engineer", status="confirmed", source_id=source)
+
+    result = ask_question(
+        store,
+        FallbackConjunctiveFilterIntentClient(
+            conditions=(
+                {
+                    "subject": {"kind": "var", "value": "A"},
+                    "relation": {"kind": "relation", "value": "position"},
+                    "object": {"kind": "entity", "value": "Engineer"},
+                },
+                {
+                    "subject": {"kind": "var", "value": "A"},
+                    "relation": {"kind": "relation", "value": "role"},
+                    "object": {"kind": "entity", "value": "Engineer"},
+                },
+            )
+        ),
+        root=tmp_path,
+        question="Which synthetic person matches both aliased conditions?",
+    )
+
+    assert result.label != "VERIFIED — engine"
+    assert result.engine_answers == ()
+    assert result.grounding_facts == ()
 
 
 def test_ask_engine_answer_restates_triple_with_inline_source(tmp_path):
