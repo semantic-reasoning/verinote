@@ -1,0 +1,9 @@
+{
+  "provider": "ollama",
+  "model": "qwen3:30b-a3b",
+  "prompt_id": "query-intent",
+  "captured_at": "2026-07-26",
+  "input": "Who is the CEO of Acme Robotics?",
+  "raw_response": "{\n  \"answer_var\": null,\n  \"chain_hops\": null,\n  \"conditions\": null,\n  \"hops\": null,\n  \"kind\": \"lookup_object\",\n  \"object\": null,\n  \"operator\": null,\n  \"reason\": null,\n  \"relation\": {\n    \"kind\": \"relation\",\n    \"value\": \"CEO\"\n  },\n  \"relation_candidates\": [],\n  \"subject\": {\n    \"kind\": \"entity\",\n    \"value\": \"Acme Robotics\"\n  },\n  \"value\": null,\n  \"value_type\": null\n}",
+  "parse_error": null
+}
