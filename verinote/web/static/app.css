@@ -305,6 +305,13 @@ tr.editing td { background: var(--editing-bg); }
 .report { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 1rem; overflow-x: auto; white-space: pre-wrap; }
 .findings { margin: 1rem 0; padding-left: 1.2rem; }
 .findings li { font-family: ui-monospace, monospace; font-size: .9rem; margin: .2rem 0; }
+.report-findings { list-style: none; padding-left: 0; }
+.report-findings .finding { border-left: 4px solid var(--line); padding: .25rem .45rem; }
+.report-findings .finding-glyph::before { display: inline-block; width: 1.2rem; font-weight: 800; }
+.report-findings .finding-error { border-left-color: var(--danger); font-weight: 700; }
+.report-findings .finding-error .finding-glyph::before { content: "X"; }
+.report-findings .finding-warning { border-left-color: var(--warn); font-weight: 600; }
+.report-findings .finding-warning .finding-glyph::before { content: "!"; }
 .trust-block { margin: 1.2rem 0; }
 .trust-labels { display: flex; flex-wrap: wrap; gap: .45rem; margin: .7rem 0; }
 .trust-corroborated, .trust-source_backed, .trust-reviewed { color: var(--ok); border-color: var(--ok); }

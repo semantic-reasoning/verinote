@@ -38,6 +38,7 @@ from verinote.engine.terms import (
 )
 from verinote.engine.wirelog import (
     CheckReport,
+    FindingDetail,
     NO_FINDINGS_TEXT,
     FindingRow,
     answer_bucket_sort_key,
@@ -192,12 +193,14 @@ def _relation_fingerprint(facts: list[Mapping[str, object]]) -> tuple[tuple[obje
 
 
 def _engine_error(message: str, *, engine_available: bool = True) -> CheckReport:
+    finding = f"ERROR engine error: {message}"
     return CheckReport(
         ok=False,
         errors=1,
         warnings=0,
         text=f"backend: DuckDB\n\npolicy/engine error: {message}",
-        findings=[f"ERROR engine error: {message}"],
+        findings=[finding],
+        finding_details=[FindingDetail(finding, "error", "engine_error")],
         engine_available=engine_available,
     )
 
@@ -210,12 +213,14 @@ def _internal_engine_error(exc: Exception) -> CheckReport:
     failure, so its message must not read as if the user's policy were at fault.
     """
     message = f"internal engine error: {exc}"
+    finding = f"ERROR {message}"
     return CheckReport(
         ok=False,
         errors=1,
         warnings=0,
         text=f"backend: DuckDB\n\n{message}",
-        findings=[f"ERROR {message}"],
+        findings=[finding],
+        finding_details=[FindingDetail(finding, "error", "internal_engine_error")],
         engine_available=True,
     )
 
@@ -472,13 +477,36 @@ def _collect_report(
     }
     dead = dead_rule_warnings(policy_dl, present_relations)
 
-    rendered_errors = sorted(f"ERROR {derived.text}" for derived in errors)
+    error_details = sorted(
+        [
+            FindingDetail(
+                f"ERROR {derived.text}",
+                "error",
+                derived.rule[len(_ERROR_PREFIX) :],
+                derived.finding_row(f"ERROR {derived.text}"),
+            )
+            for derived in errors
+        ],
+        key=lambda detail: detail.text,
+    )
     # A dead-rule note describes the policy, not a derived tuple: it merges into
     # the warning lines and the count, but gets no `FindingRow` (nothing fired
     # behind it), mirroring the legacy wirelog path.
-    warning_lines = sorted([derived.text for derived in warnings] + dead)
-    rendered_warnings = [f"WARN {line}" for line in warning_lines]
-    findings = rendered_errors + rendered_warnings
+    warning_details = sorted(
+        [
+            FindingDetail(
+                f"WARN {derived.text}",
+                "warning",
+                derived.rule[len(_WARN_PREFIX) :],
+                derived.finding_row(f"WARN {derived.text}"),
+            )
+            for derived in warnings
+        ]
+        + [FindingDetail(f"WARN {line}", "warning", "dead_rule") for line in dead],
+        key=lambda detail: detail.text,
+    )
+    finding_details = error_details + warning_details
+    findings = [detail.text for detail in finding_details]
     finding_rows = [
         derived.finding_row(f"ERROR {derived.text}")
         for derived in sorted(errors)
@@ -486,7 +514,7 @@ def _collect_report(
         derived.finding_row(f"WARN {derived.text}")
         for derived in sorted(warnings)
     ]
-    warning_count = len(warning_lines)
+    warning_count = len(warning_details)
     summary = f"errors: {len(errors)}  warnings: {warning_count}  facts: {len(facts)}"
     body = "\n".join(findings) if findings else NO_FINDINGS_TEXT
     if answers:
@@ -506,6 +534,7 @@ def _collect_report(
         text=f"backend: DuckDB\n{summary}\n\n{body}{debug}",
         findings=findings,
         finding_rows=finding_rows,
+        finding_details=finding_details,
     )
 
 

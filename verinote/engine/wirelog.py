@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Iterable, Mapping
+from typing import Iterable, Literal, Mapping
 
 from verinote.engine.datalog import (
     AtomExpr,
@@ -379,6 +379,16 @@ class FindingRow:
     identity: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class FindingDetail:
+    """Presentation metadata for one report finding without parsing its text."""
+
+    text: str
+    severity: Literal["error", "warning"]
+    code: str
+    row: FindingRow | None = None
+
+
 @dataclass
 class CheckReport:
     ok: bool
@@ -392,6 +402,9 @@ class CheckReport:
     #: Empty on reports no engine derived (a degraded run, a policy error): they
     #: have findings but no tuple behind them.
     finding_rows: list[FindingRow] = field(default_factory=list)
+    #: Structured finding metadata for report renderers. This stays separate
+    #: from the legacy `findings` strings for compatibility.
+    finding_details: list[FindingDetail] = field(default_factory=list)
 
 
 def _load_engine():
@@ -409,6 +422,9 @@ def _load_engine():
 def _degraded_report(dl_text: str, warnings: list[str] | None = None) -> CheckReport:
     warnings = warnings or []
     findings = [f"WARN {w}" for w in warnings]
+    finding_details = [
+        FindingDetail(finding, "warning", "dead_rule") for finding in findings
+    ]
     n = dl_text.count("relation(")
     body = ("\n".join(findings) + "\n\n") if findings else ""
     return CheckReport(
@@ -417,6 +433,7 @@ def _degraded_report(dl_text: str, warnings: list[str] | None = None) -> CheckRe
         warnings=len(warnings),
         engine_available=False,
         findings=findings,
+        finding_details=finding_details,
         text=(
             "legacy wirelog compatibility engine (pyrewire) not installed — "
             "showing compiled input only.\n"
@@ -571,12 +588,14 @@ def run_check(dl_text: str, *, policy_dl: str, query_dl: str | None = None) -> C
                 session.insert_sym("relation", subject, rel, obj)
             deltas = session.step()
     except Exception as exc:  # pyrewire parse/exec errors -> blocking, surfaced
+        finding = f"engine error: {exc}"
         return CheckReport(
             ok=False,
             errors=1,
             warnings=0,
             text=f"policy/engine error: {exc}\n\n{dl_text}",
-            findings=[f"engine error: {exc}"],
+            findings=[finding],
+            finding_details=[FindingDetail(finding, "error", "engine_error")],
         )
 
     # The shape a finding may be read positionally by, from the same text the
@@ -622,15 +641,35 @@ def run_check(dl_text: str, *, policy_dl: str, query_dl: str | None = None) -> C
     # nothing fired, so there is no row behind it and it gets no `FindingRow`.
     # `_source_note` already omits a note for a finding with no row, which is
     # exactly right here — there are no facts to name for a rule that never fired.
-    warning_lines = sorted([row.text for row in warnings] + dead)
-    findings = [f"ERROR {row.text}" for row in errors] + [
-        f"WARN {line}" for line in warning_lines
+    error_details = [
+        FindingDetail(
+            f"ERROR {row.text}",
+            "error",
+            row.rule[len(_ERROR_PREFIX) :],
+            row.finding_row("ERROR"),
+        )
+        for row in errors
     ]
+    warning_details = sorted(
+        [
+            FindingDetail(
+                f"WARN {row.text}",
+                "warning",
+                row.rule[len(_WARN_PREFIX) :],
+                row.finding_row("WARN"),
+            )
+            for row in warnings
+        ]
+        + [FindingDetail(f"WARN {line}", "warning", "dead_rule") for line in dead],
+        key=lambda detail: detail.text,
+    )
+    finding_details = error_details + warning_details
+    findings = [detail.text for detail in finding_details]
     finding_rows = [row.finding_row("ERROR") for row in errors] + [
         row.finding_row("WARN") for row in warnings
     ]
     summary = (
-        f"errors: {len(errors)}  warnings: {len(warning_lines)}  facts: {len(facts)}"
+        f"errors: {len(errors)}  warnings: {len(warning_details)}  facts: {len(facts)}"
     )
     body = "\n".join(findings) if findings else NO_FINDINGS_TEXT
     if answers:
@@ -638,9 +677,10 @@ def run_check(dl_text: str, *, policy_dl: str, query_dl: str | None = None) -> C
     return CheckReport(
         ok=not errors,
         errors=len(errors),
-        warnings=len(warning_lines),
+        warnings=len(warning_details),
         answers=answers,
         text=f"{summary}\n\n{body}\n\n--- engine input ---\n{dl_text}",
         findings=findings,
         finding_rows=finding_rows,
+        finding_details=finding_details,
     )

@@ -15,7 +15,7 @@ from verinote.engine.datalog import (
     DatalogValidationError,
     parse_and_validate_program,
 )
-from verinote.engine import CheckReport
+from verinote.engine import CheckReport, FindingDetail
 from verinote.engine.wirelog import answer_qid
 from verinote.engine.duckdb_backend import run_check_duckdb
 from verinote.engine.wirelog import strip_answer_line_prefix
@@ -214,25 +214,29 @@ def _run_engine_query(
             snapshot,
         )
     except CorroborationPolicyError as exc:
+        finding = f"ERROR policy error: {exc}"
         return (
             CheckReport(
                 ok=False,
                 errors=1,
                 warnings=0,
                 text=f"policy error: {exc}",
-                findings=[f"ERROR policy error: {exc}"],
+                findings=[finding],
+                finding_details=[FindingDetail(finding, "error", "policy_error")],
             ),
             query_dl,
             _EngineQuerySnapshot(engine_rows=(), fact_rows={}),
         )
     except Exception as exc:  # noqa: BLE001 - keep Ask from failing closed
+        finding = f"ERROR engine error: {exc}"
         return (
             CheckReport(
                 ok=False,
                 errors=1,
                 warnings=0,
                 text=f"ask engine error: {exc}",
-                findings=[f"ERROR engine error: {exc}"],
+                findings=[finding],
+                finding_details=[FindingDetail(finding, "error", "engine_error")],
             ),
             query_dl,
             _EngineQuerySnapshot(engine_rows=(), fact_rows={}),

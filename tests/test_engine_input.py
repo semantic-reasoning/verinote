@@ -18,6 +18,7 @@ import pytest
 from verinote.engine import (
     DEFAULT_POLICY,
     CheckReport,
+    FindingDetail,
     FindingRow,
     compile_dl,
     run_check,
@@ -416,6 +417,132 @@ def test_source_label_annotator_mixed_conflict_does_not_borrow_neighbors():
         "ERROR functional_conflict: Org established_on "
         "(established_on #1=2020, 설립 #2=2021)"
     ]
+
+
+def test_source_label_annotator_updates_structured_finding_details():
+    line = "ERROR functional_conflict: Org established_on"
+    row = FindingRow(line, ("Org", "established_on"), *_CONFLICT_SHAPE)
+    report = CheckReport(
+        ok=False,
+        errors=1,
+        warnings=0,
+        text=line,
+        findings=[line],
+        finding_details=[FindingDetail(line, "error", "functional_conflict", row)],
+    )
+    rows = [
+        {
+            "id": 1,
+            "subject": StringLit("Org"),
+            "relation": StringLit("established_on"),
+            "relation_raw": StringLit("설립"),
+            "object": StringLit("2020"),
+        },
+        {
+            "id": 2,
+            "subject": StringLit("Org"),
+            "relation": StringLit("established_on"),
+            "relation_raw": StringLit("founded"),
+            "object": StringLit("2021"),
+        },
+    ]
+
+    annotate_source_labels(report, rows)
+
+    expected = (
+        "ERROR functional_conflict: Org established_on "
+        "(설립 #1=2020, founded #2=2021)"
+    )
+    assert report.findings == [expected]
+    assert report.finding_details == [
+        FindingDetail(expected, "error", "functional_conflict", row)
+    ]
+    assert report.text == expected
+
+
+def test_source_label_annotator_preserves_legacy_findings_with_partial_details():
+    warning = "WARNING policy_unrecorded: default policy was used"
+    line = "ERROR functional_conflict: Org established_on"
+    row = FindingRow(line, ("Org", "established_on"), *_CONFLICT_SHAPE)
+    report = CheckReport(
+        ok=False,
+        errors=1,
+        warnings=1,
+        text=f"{warning}\n{line}",
+        findings=[warning, line],
+        finding_rows=[row],
+        finding_details=[FindingDetail(warning, "warning", "policy_unrecorded")],
+    )
+    rows = [
+        {
+            "id": 1,
+            "subject": StringLit("Org"),
+            "relation": StringLit("established_on"),
+            "relation_raw": StringLit("founded"),
+            "object": StringLit("2020"),
+        }
+    ]
+
+    annotate_source_labels(report, rows)
+
+    assert report.findings == [warning, f"{line} (founded #1=2020)"]
+    assert [detail.text for detail in report.finding_details] == report.findings
+    assert report.finding_details[1].code == "legacy_finding"
+    assert report.text.splitlines() == report.findings
+
+
+def test_source_label_annotator_preserves_duplicate_structured_details():
+    line = "ERROR functional_conflict: Org 2 established_on"
+    first = FindingRow(
+        line,
+        ("Org 2", "established_on"),
+        *_CONFLICT_SHAPE,
+        ("subject:Org 2", "relation:established_on"),
+    )
+    second = FindingRow(
+        line,
+        ("Org", "2 established_on"),
+        *_CONFLICT_SHAPE,
+        ("subject:Org", "relation:2 established_on"),
+    )
+    report = CheckReport(
+        ok=False,
+        errors=2,
+        warnings=0,
+        text=f"{line}\n{line}",
+        findings=[line, line],
+        finding_details=[
+            FindingDetail(line, "error", "functional_conflict", first),
+            FindingDetail(line, "error", "functional_conflict", second),
+        ],
+    )
+    rows = [
+        {
+            "id": 1,
+            "subject": StringLit("Org 2"),
+            "relation": StringLit("established_on"),
+            "relation_raw": StringLit("설립"),
+            "object": StringLit("2020"),
+        },
+        {
+            "id": 2,
+            "subject": StringLit("Org"),
+            "relation": StringLit("2 established_on"),
+            "relation_raw": StringLit("founded relation"),
+            "object": StringLit("2021"),
+        },
+    ]
+
+    annotate_source_labels(report, rows)
+
+    expected = [
+        f"{line} (설립 #1=2020)",
+        f"{line} (founded relation #2=2021)",
+    ]
+    assert report.findings == expected
+    assert [detail.text for detail in report.finding_details] == expected
+    assert [detail.row for detail in report.finding_details] == [first, second]
+    assert report.text.splitlines() == expected
 
 
 def test_source_label_annotator_treats_same_value_different_identity_as_ambiguous():

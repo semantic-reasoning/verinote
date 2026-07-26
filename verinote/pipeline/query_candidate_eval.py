@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Mapping
 
-from verinote.engine import CheckReport, validate_query
+from verinote.engine import CheckReport, FindingDetail, validate_query
 from verinote.engine.duckdb_backend import run_check_duckdb
 from verinote.pipeline.corroboration import CorroborationPolicyError, store_relation_aliases
 from verinote.pipeline.engine_input import engine_relation_rows
@@ -88,14 +88,16 @@ def evaluate_query_candidate(
             query_dl=query_dl,
         )
     except CorroborationPolicyError as exc:
-        report = _engine_error_report(str(exc))
+        report = _policy_error_report(str(exc))
     except Exception as exc:
+        finding = f"ERROR engine error: {exc}"
         report = CheckReport(
             ok=False,
             errors=1,
             warnings=0,
             text=f"query candidate dry-run error: {exc}",
-            findings=[f"ERROR engine error: {exc}"],
+            findings=[finding],
+            finding_details=[FindingDetail(finding, "error", "engine_error")],
         )
 
     if not report.engine_available or not report.ok or report.errors:
@@ -141,7 +143,7 @@ def evaluate_query_candidate_plan(store, plan: QueryCandidatePlan) -> QueryCandi
     try:
         aliases = store_relation_aliases(store)
     except CorroborationPolicyError as exc:
-        report = _engine_error_report(str(exc))
+        report = _policy_error_report(str(exc))
         evaluations = tuple(
             QueryCandidateEvaluation(
                 candidate=candidate,
@@ -261,11 +263,25 @@ def _validation_engine_error(reason: str) -> bool:
 
 def _engine_error_report(reason: str) -> CheckReport:
     engine_available = "duckdb is not installed" not in reason.lower()
+    finding = f"ERROR engine error: {reason}"
     return CheckReport(
         ok=False,
         errors=1,
         warnings=0,
         text=f"query candidate validation error: {reason}",
-        findings=[f"ERROR engine error: {reason}"],
+        findings=[finding],
+        finding_details=[FindingDetail(finding, "error", "engine_error")],
         engine_available=engine_available,
+    )
+
+
+def _policy_error_report(reason: str) -> CheckReport:
+    finding = f"ERROR policy error: {reason}"
+    return CheckReport(
+        ok=False,
+        errors=1,
+        warnings=0,
+        text=f"query candidate policy error: {reason}",
+        findings=[finding],
+        finding_details=[FindingDetail(finding, "error", "policy_error")],
     )

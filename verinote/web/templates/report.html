@@ -21,8 +21,14 @@
   these before trusting results.
 </p>
 {% endif %}
-{% if rep.findings %}
-<ul class="findings">
+{% if rep.finding_details %}
+<ul class="findings finding-list report-findings">
+  {% for detail in rep.finding_details %}
+  <li class="finding finding-{{ detail.severity }}" data-code="{{ detail.code }}"><span class="finding-glyph" aria-hidden="true"></span>{{ detail.text }}</li>
+  {% endfor %}
+</ul>
+{% elif rep.findings %}
+<ul class="findings finding-list finding-list-legacy">
   {% for f in rep.findings %}<li>{{ f }}</li>{% endfor %}
 </ul>
 {% endif %}

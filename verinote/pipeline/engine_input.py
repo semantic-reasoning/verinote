@@ -34,9 +34,10 @@ does not do is name the wrong facts.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Iterable, Mapping
 
-from verinote.engine import CheckReport, FindingRow
+from verinote.engine import CheckReport, FindingDetail, FindingRow
 from verinote.engine.policy_vocabulary import functional_conflict_target
 from verinote.engine.terms import Atom, StringLit, bare_label
 from verinote.pipeline.corroboration import (
@@ -116,7 +117,13 @@ def annotate_source_labels(
     """
     relation_rows = list(rows)
     renamed = [row for row in relation_rows if _relation_was_renamed(row)]
-    if not renamed or not report.findings:
+    if not renamed:
+        return report
+
+    if report.finding_details:
+        return _annotate_finding_details(report, relation_rows)
+
+    if not report.findings:
         return report
 
     rows_by_finding = _finding_rows(report)
@@ -130,6 +137,55 @@ def annotate_source_labels(
         annotated.append(line)
         report.text = _replace_line(report.text, finding, line)
     report.findings = annotated
+    return report
+
+
+def compatible_finding_details(report: CheckReport) -> list[FindingDetail]:
+    """Return one ordered detail for every legacy finding string.
+
+    Structured metadata was added after ``findings`` became part of the report
+    contract. A partial migration must therefore retain a compatibility detail
+    for every unmatched legacy string rather than treating details as a
+    replacement list. ``legacy_finding`` deliberately has warning styling: its
+    severity is presentation metadata, not a reclassification of the finding.
+    """
+    if not report.findings:
+        return list(report.finding_details)
+
+    rows_by_finding = _finding_rows(report)
+    remaining = list(report.finding_details)
+    details: list[FindingDetail] = []
+    for finding in report.findings:
+        for index, detail in enumerate(remaining):
+            if detail.text == finding:
+                details.append(remaining.pop(index))
+                break
+        else:
+            details.append(
+                FindingDetail(
+                    finding,
+                    "warning",
+                    "legacy_finding",
+                    rows_by_finding.get(finding),
+                )
+            )
+    return details
+
+
+def _annotate_finding_details(
+    report: CheckReport, relation_rows: list[Mapping[str, object]]
+) -> CheckReport:
+    """Annotate immutable structured findings by their attached rows."""
+    original = [detail.text for detail in compatible_finding_details(report)]
+    annotated_details = []
+    for detail in compatible_finding_details(report):
+        note = _source_note(detail.row, relation_rows)
+        annotated_details.append(
+            replace(detail, text=f"{detail.text} {note}") if note else detail
+        )
+    report.finding_details = annotated_details
+    report.findings = [detail.text for detail in report.finding_details]
+    report.text = _replace_finding_lines(report.text, original, report.findings)
     return report
 
 
@@ -211,3 +267,16 @@ def _label(term: object) -> str:
 
 def _replace_line(text: str, old: str, new: str) -> str:
     return "\n".join(new if line == old else line for line in text.split("\n"))
+
+
+def _replace_finding_lines(text: str, old: list[str], new: list[str]) -> str:
+    """Replace one rendered line per detail, preserving duplicate identities."""
+    lines = text.split("\n")
+    cursor = 0
+    for expected, replacement in zip(old, new):
+        for index in range(cursor, len(lines)):
+            if lines[index] == expected:
+                lines[index] = replacement
+                cursor = index + 1
+                break
+    return "\n".join(lines)

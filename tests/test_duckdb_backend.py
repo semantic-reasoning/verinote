@@ -40,6 +40,9 @@ def test_duckdb_backend_missing_duckdb_is_blocking(monkeypatch):
     assert rep.engine_available is False
     assert rep.errors == 1
     assert "DuckDB is not installed" in rep.text
+    assert [(detail.severity, detail.code, detail.row) for detail in rep.finding_details] == [
+        ("error", "engine_error", None)
+    ]
 
 
 @pytest.mark.parametrize("kwargs", ({}, {"policy_dl": None}))
@@ -206,6 +209,10 @@ def test_duckdb_backend_warn_is_non_blocking():
     assert rep.errors == 0
     assert rep.warnings == 1
     assert rep.findings == ["WARN has_isa: Ada"]
+    assert [(detail.text, detail.severity, detail.code) for detail in rep.finding_details] == [
+        ("WARN has_isa: Ada", "warning", "has_isa")
+    ]
+    assert rep.finding_details[0].row is not None
 
 
 def test_duckdb_backend_answer_query_format_matches_check_report():

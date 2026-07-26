@@ -3,6 +3,7 @@
 import verinote.pipeline.query_candidate_eval as query_candidate_eval
 import verinote.pipeline.query_quality_policy as query_quality_policy
 from verinote.engine import CheckReport
+from verinote.pipeline.corroboration import CorroborationPolicyError
 from verinote.pipeline.query_candidate_eval import (
     QueryCandidateOutcome,
     QueryCandidateSetOutcome,
@@ -200,6 +201,43 @@ def test_evaluate_query_candidate_reports_backend_error(tmp_path, monkeypatch):
     assert evaluation.outcome == QueryCandidateOutcome.ENGINE_POLICY_ERROR
     assert evaluation.report is not None
     assert evaluation.report.findings == ["ERROR engine error: backend error"]
+
+
+def test_evaluate_query_candidate_marks_corroboration_errors_as_policy_errors(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path)
+    monkeypatch.setattr(query_candidate_eval, "validate_query", lambda _query_dl: (True, ""))
+    monkeypatch.setattr(
+        query_candidate_eval,
+        "engine_relation_rows",
+        lambda _store: (_ for _ in ()).throw(CorroborationPolicyError("bad aliases")),
+    )
+
+    evaluation = evaluate_query_candidate(store, _lookup(1, "Sample Person", "role"))
+
+    assert evaluation.outcome == QueryCandidateOutcome.ENGINE_POLICY_ERROR
+    assert evaluation.report is not None
+    assert evaluation.report.finding_details[0].code == "policy_error"
+    assert evaluation.report.findings == ["ERROR policy error: bad aliases"]
+
+
+def test_evaluate_query_candidate_marks_backend_exceptions_as_engine_errors(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path)
+    monkeypatch.setattr(query_candidate_eval, "engine_relation_rows", lambda _store: [])
+    monkeypatch.setattr(
+        query_candidate_eval,
+        "run_check_duckdb",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("backend failed")),
+    )
+
+    evaluation = evaluate_query_candidate(store, _lookup(1, "Sample Person", "role"))
+
+    assert evaluation.outcome == QueryCandidateOutcome.ENGINE_POLICY_ERROR
+    assert evaluation.report is not None
+    assert evaluation.report.finding_details[0].code == "engine_error"
 
 
 def test_evaluate_query_candidate_uses_minimal_relation_policy(tmp_path):
