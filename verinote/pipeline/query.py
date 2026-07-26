@@ -211,6 +211,9 @@ def _schema_aware_query_flow_result(
 
     snapshot = build_query_schema_snapshot(store)
     intent = deterministic_query_intent(question)
+    deterministic_intent_supported = (
+        intent.kind != QueryIntentKind.UNKNOWN_OR_UNSUPPORTED
+    )
     if intent.kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED:
         try:
             intent = client.extract_query_intent(
@@ -284,6 +287,12 @@ def _schema_aware_query_flow_result(
         )
     if evaluation.outcome == QueryCandidateSetOutcome.EMPTY:
         reason = _short_reason(plan.reason or "no query candidates matched the schema")
+        return _QueryFlowResult(
+            "review_required",
+            f"review_required({_lit(reason)})",
+            reason,
+            allow_direct_datalog_fallback=deterministic_intent_supported,
+        )
     elif evaluation.outcome == QueryCandidateSetOutcome.ENGINE_POLICY_ERROR:
         reason = _short_reason("engine/policy error: " + _evaluation_reason(evaluation))
     else:

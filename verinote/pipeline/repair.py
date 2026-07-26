@@ -38,12 +38,12 @@ def repair_questions(
     question. A model declaring `no_answer`/`ambiguous` is recorded as a reason
     and the question stays flagged, so a later run can still repair it.
 
-    With `allow_direct_datalog_fallback` (the default), a question the planner
-    reports it cannot support costs two provider calls: intent extraction, then
-    the direct Datalog fallback. A question whose intent extraction *failed*
-    costs one: a provider that errors has not reported the question unsupported,
-    so the fallback does not retry it and an outage or rate limit stays at one
-    failed call per question.
+    With `allow_direct_datalog_fallback` (the default), an LLM-confirmed
+    unsupported intent costs two provider calls: intent extraction, then the
+    direct Datalog fallback. A deterministically supported intent whose planner
+    returns no candidates costs one provider call: the direct Datalog fallback.
+    An intent-extraction LLM error costs one failed call and never retries the
+    provider.
     """
     results: list[dict] = []
     for q in store.questions():
