@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: MPL-2.0
 import json
 import sys
+from pathlib import Path
 
 import pytest
 
+import verinote.config as config_module
 from verinote.config import (
     Config,
     ConfigCorruptError,
@@ -453,6 +455,54 @@ def test_config_corrupt_error_is_not_an_llm_error():
     # the dedicated halt handler.
     assert not issubclass(ConfigCorruptError, LLMError)
     assert not isinstance(ConfigCorruptError("x"), LLMError)
+
+
+@pytest.mark.parametrize(
+    ("first", "later", "provider", "error_fragment"),
+    [
+        ("{bad", '{"provider":"ollama","model":"m"}', "anthropic", "not valid JSON"),
+        ('{"provider":"ollama","model":"m"}', "{bad", "ollama", None),
+        ('{"provider":123,"model":"m"}', '{"provider":"ollama","model":"m"}', "anthropic", "provider"),
+    ],
+)
+def test_for_root_uses_one_config_snapshot_for_values_and_halt(
+    tmp_path, monkeypatch, first, later, provider, error_fragment
+):
+    path = tmp_path / "config.json"
+    path.write_text('{"provider":"ollama","model":"m"}', encoding="utf-8")
+    original_read_text = Path.read_text
+    original_loads = config_module.json.loads
+    read_calls = 0
+    loads_calls = 0
+
+    def changing_read_text(self, *args, **kwargs):
+        nonlocal read_calls
+        if self == path:
+            read_calls += 1
+            return first if read_calls == 1 else later
+        return original_read_text(self, *args, **kwargs)
+
+    def counting_loads(value, *args, **kwargs):
+        nonlocal loads_calls
+        loads_calls += 1
+        return original_loads(value, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", changing_read_text)
+    monkeypatch.setattr(config_module.json, "loads", counting_loads)
+
+    cfg = Config.for_root(tmp_path)
+
+    assert read_calls == 1
+    assert loads_calls == 1
+    assert cfg.provider == provider
+    if error_fragment is None:
+        assert cfg.settings_error is None
+        assert_settings_intact(cfg)
+    else:
+        assert cfg.settings_error is not None
+        assert error_fragment in cfg.settings_error
+        with pytest.raises(ConfigCorruptError):
+            assert_settings_intact(cfg)
 
 
 # --- #325: a wrong-typed value in config.json is as unusable as a corrupt file ---
