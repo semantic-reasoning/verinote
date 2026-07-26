@@ -145,8 +145,6 @@ def test_extract_source_drops_typed_literals_in_subject_or_relation_slots(
                 0.9,
                 subject_kind="term",
             ),
-            ExtractedFact("샘플팀", "number(8)", "샘플값", 0.9),
-            ExtractedFact("number(8)", "인원", "샘플값", 0.9),
             ExtractedFact("샘플팀", "인원", "명", 0.9),
             ExtractedFact(
                 "샘플팀",
@@ -171,6 +169,21 @@ def test_extract_source_drops_typed_literals_in_subject_or_relation_slots(
     assert fact["relation"] == "인원"
     assert fact["object"] == "number(8)"
     assert fact["note"] == "원문: 8명"
+
+
+def test_extract_source_keeps_compound_looking_string_in_subject_or_relation_slots(
+    tmp_path, fake_client
+):
+    s = _store(tmp_path)
+    client = fake_client([ExtractedFact("date(2024)", "number(8)", "value", 0.9)])
+
+    assert extract_source(s, client, source_path="sources/x.txt", source_text="...") == 1
+    fact = s.facts()[0]
+    assert s.get_fact_terms(fact["id"]) == (
+        StringLit("date(2024)"),
+        StringLit("number(8)"),
+        StringLit("value"),
+    )
 
 
 def test_extract_source_stores_mixed_string_and_structural_terms(tmp_path, fake_client):

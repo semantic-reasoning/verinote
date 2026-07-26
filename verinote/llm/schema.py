@@ -254,12 +254,9 @@ def _parse_fact_slot(item: dict[str, Any], field: str) -> tuple[str, str, str]:
     if not value:
         raise ValueError(f"{field} was empty")
     if kind == "term":
-        try:
-            term = parse_term(value)
-            if not _is_ground_term(term):
-                raise TermParseError(f"{field} structural term must be ground")
-        except TermParseError as exc:
-            return value, "string", f"{field} marked term but stored as string: {exc}"
+        term = parse_term(value)
+        if not _is_ground_term(term):
+            raise TermParseError(f"{field} structural term must be ground")
     return value, kind, ""
 
 
