@@ -874,6 +874,24 @@ def test_query_schema_hint_lists_canonical_relation_before_aliases(tmp_path):
     assert "Synthetic Answer" not in hint
 
 
+def test_query_schema_hint_includes_typed_comparison_type_and_amount_units(tmp_path):
+    from verinote.pipeline.query_schema import build_query_schema_snapshot
+
+    s = _store(tmp_path)
+    policy = tmp_path / "policy"
+    policy.mkdir()
+    (policy / "typed-relations.md").write_text(
+        "- revenue : amount as revenue_scalar (credit=10, token=100)\n",
+        encoding="utf-8",
+    )
+    s.add_fact("Synthetic Company", "revenue", 'amount(2, "credit")', status="confirmed")
+
+    hint = query_schema_hint(build_query_schema_snapshot(s))
+
+    assert "typed: amount; units: credit=10, token=100" in hint
+    assert "Synthetic Company" not in hint
+
+
 def test_translate_persists_llm_error_as_translation_failed(tmp_path, fake_client):
     s = _store(tmp_path)
     qid = s.add_question("What is the sample answer?")

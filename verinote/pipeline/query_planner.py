@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
+import datetime
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation, localcontext
 from enum import StrEnum
+import re
 
 from verinote.engine.terms import parse_term, term_compare_key
 from verinote.pipeline.corroboration import canonical_relation, relation_label_matches
@@ -15,6 +18,7 @@ from verinote.pipeline.query_schema import (
     RelationSchema,
     SnapshotFact,
     TermRef,
+    TypedRelationEntry,
 )
 from verinote.text import nfc as _nfc
 
@@ -43,6 +47,7 @@ class QueryCandidateFamily(StrEnum):
     CONJUNCTIVE_TWO_HOP = "conjunctive_two_hop"
     CONJUNCTIVE_FILTER = "conjunctive_filter"
     CONJUNCTIVE_THREE_HOP = "conjunctive_three_hop"
+    TYPED_VALUE_COMPARISON = "typed_value_comparison"
 
 
 class QueryCandidateDirection(StrEnum):
@@ -70,6 +75,7 @@ class QueryCandidatePlan:
     candidates: tuple[QueryCandidate, ...]
     truncated: bool = False
     reason: str | None = None
+    no_answer: bool = False
 
 
 def plan_query_candidates(
@@ -125,11 +131,246 @@ def plan_query_candidates(
             truncated=truncated,
             reason=None if candidates else "no three-hop relation path matched the schema",
         )
+    elif intent.kind == QueryIntentKind.COMPARE_TYPED_VALUE:
+        if snapshot.exact_entity_facts_truncated:
+            return QueryCandidatePlan(
+                qid=qid,
+                candidates=(),
+                truncated=True,
+                reason="exact facts for typed comparison are truncated",
+            )
+        candidates, no_answer, reason = _typed_comparison_candidates(intent, snapshot, qid)
+        return _bounded_plan(
+            qid,
+            candidates,
+            bounds,
+            no_answer=no_answer,
+            reason=reason,
+        )
     else:
         candidates = ()
         reason = f"unsupported intent kind: {intent.kind.value}"
 
     return _bounded_plan(qid, candidates, bounds, reason=reason)
+
+
+_EXACT_NUMBER = re.compile(r"^-?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?$")
+_EXACT_NUMBER_COMPOUND = re.compile(
+    r'^number\(\s*"?(-?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?)"?\s*\)$',
+    re.IGNORECASE,
+)
+_EXACT_ORDINAL = re.compile(r"^ordinal\(\s*(\d+)\s*\)$", re.IGNORECASE)
+_EXACT_ORDINAL_RAW = re.compile(r"^(\d+)$")
+_EXACT_ORDINAL_KO = re.compile(r"^제?(\d+)\s*(?:호|위|번|차|등|째)$")
+_EXACT_ORDINAL_EN = re.compile(r"^(\d+)\s*(?:st|nd|rd|th)$", re.IGNORECASE)
+_EXACT_DATE = re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})$")
+_EXACT_DATE_COMPOUND = re.compile(
+    r"^date\(\s*(\d{4})\s*,\s*(\d{1,2})\s*,\s*(\d{1,2})\s*\)$",
+    re.IGNORECASE,
+)
+_EXACT_AMOUNT = re.compile(
+    r"^(?P<number>-?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?)\s*(?P<unit>\S.*)$"
+)
+_EXACT_AMOUNT_COMPOUND = re.compile(
+    r'^amount\(\s*"?(?P<number>-?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?)"?\s*,\s*'
+    r'(?:"(?P<quoted_unit>[^"]+)"|(?P<unit>[^,\)"]+))\s*\)$',
+    re.IGNORECASE,
+)
+_INT64_MAX = 2**63 - 1
+
+
+def _typed_comparison_candidates(
+    intent: QueryIntent, snapshot: QuerySchemaSnapshot, qid: int
+) -> tuple[tuple[QueryCandidate, ...], bool, str | None]:
+    """Plan exact typed comparisons as observed, ground fact rules.
+
+    Ordered comparisons are intentionally evaluated here, before Datalog is
+    emitted.  This keeps precision, unit policy, and partial typed literals out
+    of the engine and ensures every candidate has a finite observed answer set.
+    """
+    if (
+        intent.subject is None
+        or intent.operator is None
+        or intent.value_type is None
+        or intent.value is None
+    ):
+        return (), False, "typed comparison intent is incomplete"
+    if intent.operator not in {"=", "!=", "<", "<=", ">", ">="}:
+        return (), False, "typed comparison operator is unsupported"
+
+    requested = _relation_requests(intent)
+    aliases = _snapshot_relation_aliases(snapshot)
+    grouped: dict[str, list[SnapshotFact]] = {}
+    for fact in snapshot.exact_entity_facts:
+        if fact.matched_side not in {"subject", "both"}:
+            continue
+        if not _entity_ref_matches(fact.subject, intent.subject.value):
+            continue
+        if not _fact_relation_matches_requested_with_aliases(fact, requested, aliases):
+            continue
+        canonical = _nfc(canonical_relation(fact.relation.display, aliases))
+        grouped.setdefault(canonical, []).append(fact)
+
+    candidates: list[QueryCandidate] = []
+    invalid_threshold = False
+    saw_comparable_typed_facts = False
+    for canonical, facts in sorted(grouped.items()):
+        specs = _typed_specs_for_canonical_relation(canonical, snapshot, aliases)
+        if len(specs) != 1:
+            return (), False, "typed comparison relation has absent or ambiguous typed spec"
+        spec = next(iter(specs))
+        if spec.type != intent.value_type:
+            return (), False, "typed comparison relation has incompatible typed spec"
+        units = {unit.unit: unit.scale for unit in spec.units}
+        threshold = _parse_exact_typed_scalar(intent.value_type, intent.value, units)
+        if threshold is None:
+            invalid_threshold = True
+            break
+
+        qualifying: list[SnapshotFact] = []
+        for fact in sorted(facts, key=_snapshot_fact_representative_key):
+            scalar = _parse_exact_typed_scalar(intent.value_type, fact.object.display, units)
+            if scalar is None:
+                return (), False, "typed comparison has malformed or uncomparable evidence"
+            saw_comparable_typed_facts = True
+            if _compare_exact_scalars(scalar, intent.operator, threshold):
+                qualifying.append(fact)
+        if not qualifying:
+            continue
+        candidates.append(
+            QueryCandidate(
+                query_dl=_ground_fact_answer_query_dl(qid, qualifying),
+                family=QueryCandidateFamily.TYPED_VALUE_COMPARISON,
+                direction=QueryCandidateDirection.SUBJECT_TO_OBJECT,
+                relation_display=canonical,
+                relation_executable=None,
+                subject_executable=qualifying[0].subject.executable,
+                object_executable=None,
+            )
+        )
+    if invalid_threshold:
+        return (), False, "typed comparison value is malformed or not exact"
+    if candidates:
+        return tuple(candidates), False, None
+    if saw_comparable_typed_facts:
+        return (), True, None
+    return (), False, "no exact typed facts match the comparison"
+
+
+def _snapshot_relation_aliases(snapshot: QuerySchemaSnapshot) -> dict[str, str]:
+    aliases = {entry.alias: entry.canonical for entry in snapshot.relation_aliases}
+    for relation in snapshot.relations:
+        for entry in relation.aliases:
+            aliases.setdefault(entry.alias, entry.canonical)
+    return aliases
+
+
+def _fact_relation_matches_requested_with_aliases(
+    fact: SnapshotFact, requested: tuple[str, ...], aliases: dict[str, str]
+) -> bool:
+    return any(
+        relation_label_matches(observed, wanted, aliases)
+        for observed in (_nfc(fact.relation.display), _nfc(fact.relation.executable))
+        for wanted in requested
+    )
+
+
+def _typed_specs_for_canonical_relation(
+    canonical: str, snapshot: QuerySchemaSnapshot, aliases: dict[str, str]
+) -> set[TypedRelationEntry]:
+    entries = list(snapshot.typed_relations)
+    entries.extend(relation.typed for relation in snapshot.relations if relation.typed is not None)
+    return {
+        entry
+        for entry in entries
+        if _nfc(canonical_relation(entry.relation, aliases)) == canonical
+    }
+
+
+def _parse_exact_typed_scalar(
+    type_tag: str, raw: str, units: dict[str, int]
+) -> Decimal | int | datetime.date | None:
+    text = raw.strip()
+    if type_tag == "number":
+        match = _EXACT_NUMBER_COMPOUND.fullmatch(text)
+        number = match.group(1) if match else text
+        return _parse_exact_decimal(number)
+    if type_tag == "ordinal":
+        match = (
+            _EXACT_ORDINAL.fullmatch(text)
+            or _EXACT_ORDINAL_RAW.fullmatch(text)
+            or _EXACT_ORDINAL_KO.fullmatch(text)
+            or _EXACT_ORDINAL_EN.fullmatch(text)
+        )
+        if match is None:
+            return None
+        value = int(match.group(1))
+        return value if value <= _INT64_MAX else None
+    if type_tag == "date":
+        match = _EXACT_DATE_COMPOUND.fullmatch(text) or _EXACT_DATE.fullmatch(text)
+        if match is None:
+            return None
+        try:
+            return datetime.date(*(int(match.group(index)) for index in (1, 2, 3)))
+        except ValueError:
+            return None
+    if type_tag == "amount":
+        match = _EXACT_AMOUNT_COMPOUND.fullmatch(text)
+        if match is None:
+            match = _EXACT_AMOUNT.fullmatch(text)
+        if match is None:
+            return None
+        unit = (match.groupdict().get("quoted_unit") or match.group("unit")).strip()
+        multiplier = units.get(unit)
+        number = _parse_exact_decimal(match.group("number"))
+        if multiplier is None or number is None or multiplier > _INT64_MAX:
+            return None
+        # Decimal multiplication observes the active context. Set enough
+        # precision for the full configured-unit product before deciding that it
+        # is integral, so an otherwise exact value cannot be rounded into one.
+        with localcontext() as context:
+            context.prec = len(number.as_tuple().digits) + len(str(abs(multiplier))) + 1
+            product = number * multiplier
+        if product != product.to_integral_value() or abs(product) > _INT64_MAX:
+            return None
+        return int(product)
+    return None
+
+
+def _parse_exact_decimal(text: str) -> Decimal | None:
+    if _EXACT_NUMBER.fullmatch(text) is None:
+        return None
+    try:
+        value = Decimal(text.replace(",", ""))
+    except InvalidOperation:
+        return None
+    if not value.is_finite() or abs(value) > _INT64_MAX:
+        return None
+    return value
+
+
+def _compare_exact_scalars(
+    actual: Decimal | int | datetime.date, operator: str, threshold: Decimal | int | datetime.date
+) -> bool:
+    if type(actual) is not type(threshold):
+        return False
+    return {
+        "=": actual == threshold,
+        "!=": actual != threshold,
+        "<": actual < threshold,
+        "<=": actual <= threshold,
+        ">": actual > threshold,
+        ">=": actual >= threshold,
+    }[operator]
+
+
+def _ground_fact_answer_query_dl(qid: int, facts: list[SnapshotFact]) -> str:
+    rules = "\n".join(
+        f"answer_q{qid}({fact.object.executable}) :- relation("
+        f"{fact.subject.executable}, {fact.relation.executable}, {fact.object.executable})."
+        for fact in facts
+    )
+    return f".decl answer_q{qid}(value: symbol)\n{rules}"
 
 
 def _conjunctive_two_hop_candidates(
@@ -875,6 +1116,7 @@ def _bounded_plan(
     candidates: tuple[QueryCandidate, ...],
     bounds: QueryPlannerBounds,
     *,
+    no_answer: bool = False,
     reason: str | None,
 ) -> QueryCandidatePlan:
     bounded = candidates[: bounds.max_candidates]
@@ -882,6 +1124,7 @@ def _bounded_plan(
         qid=qid,
         candidates=bounded,
         truncated=len(candidates) > bounds.max_candidates,
+        no_answer=no_answer and not bounded,
         reason=reason,
     )
 

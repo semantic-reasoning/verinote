@@ -487,3 +487,203 @@ def test_invalid_direct_datalog_fallback_is_visible_but_not_written(tmp_path):
     assert question["status"] != "pending"
     assert "not valid datalog" not in question["query_dl"]
     assert "not valid datalog" not in query_path(tmp_path).read_text(encoding="utf-8")
+
+
+def _typed_compare_payload(
+    *,
+    relation: str,
+    operator: str = ">=",
+    value_type: str = "amount",
+    value: str = 'amount(1, "credit")',
+    relation_candidates: tuple[str, ...] = (),
+) -> dict:
+    payload = _intent("compare_typed_value", subject="Synthetic Company", relation=relation)
+    payload.update(
+        operator=operator,
+        value_type=value_type,
+        value=value,
+        relation_candidates=list(relation_candidates),
+    )
+    return payload
+
+
+def test_translate_typed_comparison_groups_alias_facts_and_keeps_raw_objects(tmp_path):
+    store = _store(tmp_path)
+    policy = tmp_path / "policy"
+    policy.mkdir()
+    (policy / "relation-aliases.md").write_text(
+        "- `gross_sales` -> `revenue`\n",
+        encoding="utf-8",
+    )
+    (policy / "typed-relations.md").write_text(
+        "- revenue : amount as revenue_scalar (credit=10)\n",
+        encoding="utf-8",
+    )
+    store.add_fact("Synthetic Company", "gross_sales", 'amount(2, "credit")', status="confirmed")
+    store.add_fact("Synthetic Company", "revenue", 'amount(3, "credit")', status="confirmed")
+    qid = store.add_question("Is Synthetic Company revenue at least one credit?")
+
+    results = translate_questions(
+        store,
+        IntentOnlyClient(_typed_compare_payload(relation="gross_sales")),
+        root=tmp_path,
+    )
+
+    assert results[0]["status"] == "translated"
+    query = store.questions()[0]["query_dl"]
+    assert (
+        f'answer_q{qid}("amount(2, \\"credit\\")") :- '
+        'relation("Synthetic Company", "gross_sales", "amount(2, \\"credit\\")").'
+    ) in query
+    assert (
+        f'answer_q{qid}("amount(3, \\"credit\\")") :- '
+        'relation("Synthetic Company", "revenue", "amount(3, \\"credit\\")").'
+    ) in query
+    assert "<=" not in query and ">=" not in query
+
+
+def test_translate_typed_comparison_reports_distinct_canonical_candidates_as_ambiguous(tmp_path):
+    store = _store(tmp_path)
+    policy = tmp_path / "policy"
+    policy.mkdir()
+    (policy / "typed-relations.md").write_text(
+        "- revenue : amount as revenue_scalar (credit=10)\n"
+        "- cost : amount as cost_scalar (credit=10)\n",
+        encoding="utf-8",
+    )
+    store.add_fact("Synthetic Company", "revenue", 'amount(2, "credit")', status="confirmed")
+    store.add_fact("Synthetic Company", "cost", 'amount(3, "credit")', status="confirmed")
+    store.add_question("Is Synthetic Company revenue or cost at least one credit?")
+
+    results = translate_questions(
+        store,
+        IntentOnlyClient(
+            _typed_compare_payload(relation="revenue", relation_candidates=("cost",))
+        ),
+        root=tmp_path,
+    )
+
+    assert results[0]["status"] == "ambiguous"
+    assert results[0]["reason"] == "multiple query candidates returned conflicting answers"
+
+
+def test_translate_typed_comparison_fails_closed_for_invalid_or_truncated_exact_facts(tmp_path):
+    store = _store(tmp_path)
+    policy = tmp_path / "policy"
+    policy.mkdir()
+    (policy / "typed-relations.md").write_text(
+        "- metric : number as metric_scalar\n",
+        encoding="utf-8",
+    )
+    store.add_fact("Synthetic Company", "metric", "number(not-a-number)", status="confirmed")
+    store.add_question("Is Synthetic Company metric at least ten?")
+
+    invalid = translate_questions(
+        store,
+        IntentOnlyClient(
+            _typed_compare_payload(relation="metric", value_type="number", value="number(10)")
+        ),
+        root=tmp_path,
+    )
+    assert invalid[0]["status"] == "review_required"
+
+    for index in range(51):
+        store.add_fact("Synthetic Company", "metric", f"number({index})", status="confirmed")
+    store.add_question("Is Synthetic Company metric at least ten again?")
+    truncated = translate_questions(
+        store,
+        IntentOnlyClient(
+            _typed_compare_payload(relation="metric", value_type="number", value="number(10)")
+        ),
+        root=tmp_path,
+    )
+    assert truncated[-1]["status"] == "review_required"
+    assert truncated[-1]["reason"] == "too many query candidates matched the schema"
+
+
+def test_translate_typed_comparison_nonmatching_valid_fact_is_no_answer(tmp_path):
+    store = _store(tmp_path)
+    policy = tmp_path / "policy"
+    policy.mkdir()
+    (policy / "typed-relations.md").write_text(
+        "- metric : number as metric_scalar\n",
+        encoding="utf-8",
+    )
+    store.add_fact("Synthetic Company", "metric", "number(9)", status="confirmed")
+    store.add_question("Is Synthetic Company metric above ten?")
+
+    results = translate_questions(
+        store,
+        IntentOnlyClient(
+            _typed_compare_payload(
+                relation="metric",
+                operator=">",
+                value_type="number",
+                value="number(10)",
+            )
+        ),
+        root=tmp_path,
+    )
+
+    assert results[0]["status"] == "no_answer"
+    assert results[0]["reason"] == "no confirmed facts match"
+
+
+def test_translate_typed_comparison_malformed_requested_relation_blocks_other_candidate(tmp_path):
+    store = _store(tmp_path)
+    policy = tmp_path / "policy"
+    policy.mkdir()
+    (policy / "typed-relations.md").write_text(
+        "- revenue : number as revenue_scalar\n"
+        "- cost : number as cost_scalar\n",
+        encoding="utf-8",
+    )
+    store.add_fact("Synthetic Company", "revenue", "number(20)", status="confirmed")
+    store.add_fact("Synthetic Company", "cost", "number(not-a-number)", status="confirmed")
+    store.add_question("Is Synthetic Company revenue or cost at least ten?")
+
+    results = translate_questions(
+        store,
+        IntentOnlyClient(
+            _typed_compare_payload(
+                relation="revenue",
+                relation_candidates=("cost",),
+                value_type="number",
+                value="number(10)",
+            )
+        ),
+        root=tmp_path,
+    )
+
+    assert results[0]["status"] == "review_required"
+    assert results[0]["reason"] == "typed comparison has malformed or uncomparable evidence"
+
+
+def test_translate_typed_comparison_type_mismatch_blocks_no_answer(tmp_path):
+    store = _store(tmp_path)
+    policy = tmp_path / "policy"
+    policy.mkdir()
+    (policy / "typed-relations.md").write_text(
+        "- revenue : number as revenue_scalar\n"
+        "- released_on : date as release_date\n",
+        encoding="utf-8",
+    )
+    store.add_fact("Synthetic Company", "revenue", "number(9)", status="confirmed")
+    store.add_fact("Synthetic Company", "released_on", "date(2024, 7, 3)", status="confirmed")
+    store.add_question("Is Synthetic Company revenue or release date above ten?")
+
+    results = translate_questions(
+        store,
+        IntentOnlyClient(
+            _typed_compare_payload(
+                relation="revenue",
+                relation_candidates=("released_on",),
+                value_type="number",
+                value="number(10)",
+            )
+        ),
+        root=tmp_path,
+    )
+
+    assert results[0]["status"] == "review_required"
+    assert results[0]["reason"] == "typed comparison relation has incompatible typed spec"

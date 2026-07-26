@@ -131,7 +131,12 @@ def evaluate_query_candidate(
 def evaluate_query_candidate_plan(store, plan: QueryCandidatePlan) -> QueryCandidateSetEvaluation:
     """Evaluate a candidate plan and choose a deterministic non-ambiguous candidate."""
     if not plan.candidates:
-        return QueryCandidateSetEvaluation(plan=plan, outcome=QueryCandidateSetOutcome.EMPTY)
+        outcome = (
+            QueryCandidateSetOutcome.NO_ANSWER
+            if plan.no_answer
+            else QueryCandidateSetOutcome.EMPTY
+        )
+        return QueryCandidateSetEvaluation(plan=plan, outcome=outcome)
 
     try:
         aliases = store_relation_aliases(store)

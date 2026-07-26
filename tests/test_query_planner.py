@@ -23,6 +23,7 @@ from verinote.pipeline.query_schema import (
     SnapshotFact,
     TermRef,
     TypedRelationEntry,
+    UnitScale,
 )
 
 
@@ -113,6 +114,44 @@ def _fact(
         status="confirmed",
         matched_entity=matched_entity,
         matched_side=matched_side,
+    )
+
+
+def _compare_intent(
+    *,
+    subject: str = "Synthetic Company",
+    relation: str = "metric",
+    operator: str = ">=",
+    value_type: str = "number",
+    value: str = "number(10)",
+    relation_candidates: tuple[str, ...] = (),
+) -> QueryIntent:
+    return QueryIntent(
+        kind=QueryIntentKind.COMPARE_TYPED_VALUE,
+        subject=IntentTarget("entity", subject),
+        relation=IntentTarget("relation", relation),
+        relation_candidates=relation_candidates,
+        operator=operator,
+        value_type=value_type,
+        value=value,
+    )
+
+
+def _typed_exact_snapshot(
+    facts: tuple[SnapshotFact, ...],
+    *,
+    typed: tuple[TypedRelationEntry, ...],
+    aliases: tuple[RelationAliasEntry, ...] = (),
+    truncated: bool = False,
+) -> QuerySchemaSnapshot:
+    return QuerySchemaSnapshot(
+        relations=(),
+        relations_truncated=False,
+        relation_aliases=aliases,
+        typed_relations=typed,
+        exact_entity_facts=facts,
+        exact_entity_facts_truncated=truncated,
+        fact_count=len(facts),
     )
 
 
@@ -1119,3 +1158,211 @@ def test_conjunctive_three_hop_deduplicates_canonical_shapes_and_fails_closed_on
     assert plan.truncated is False
     truncated_snapshot = QuerySchemaSnapshot(**{**snapshot.__dict__, "join_facts_truncated": True})
     assert plan_query_candidates(intent, truncated_snapshot, qid=32).truncated is True
+
+
+def test_typed_comparison_plans_exact_number_operators_at_boundaries():
+    subject = _term("Synthetic Company", '"Synthetic Company"')
+    relation = _term("metric", '"metric"')
+    facts = tuple(
+        SnapshotFact(index, subject, relation, _term(f"number({value})", f"number({value})", "Compound"), "confirmed", "Synthetic Company", "subject")
+        for index, value in enumerate(("9.999", "10", "10.001"), start=1)
+    )
+    snapshot = _typed_exact_snapshot(
+        facts,
+        typed=(TypedRelationEntry("metric", "number", "metric_scalar"),),
+    )
+
+    expected = {
+        "=": ("number(10)",),
+        "!=": ("number(9.999)", "number(10.001)"),
+        "<": ("number(9.999)",),
+        "<=": ("number(9.999)", "number(10)"),
+        ">": ("number(10.001)",),
+        ">=": ("number(10)", "number(10.001)"),
+    }
+    for operator, values in expected.items():
+        plan = plan_query_candidates(_compare_intent(operator=operator), snapshot, qid=41)
+
+        assert len(plan.candidates) == 1
+        assert all(f"answer_q41({value})" in plan.candidates[0].query_dl for value in values)
+
+
+def test_typed_comparison_requires_full_dates_and_exact_configured_amount_units():
+    subject = _term("Synthetic Company", '"Synthetic Company"')
+    date_relation = _term("released_on", '"released_on"')
+    amount_relation = _term("inventory_value", '"inventory_value"')
+    facts = (
+        SnapshotFact(1, subject, date_relation, _term("date(2024, 7, 3)", "date(2024, 7, 3)", "Compound"), "confirmed", "Synthetic Company", "subject"),
+        SnapshotFact(2, subject, amount_relation, _term('amount(1.5, "crate")', 'amount(1.5, "crate")', "Compound"), "confirmed", "Synthetic Company", "subject"),
+    )
+    snapshot = _typed_exact_snapshot(
+        facts,
+        typed=(
+            TypedRelationEntry("released_on", "date", "release_date"),
+            TypedRelationEntry("inventory_value", "amount", "inventory_scalar", ()),
+        ),
+    )
+    date_plan = plan_query_candidates(
+        _compare_intent(relation="released_on", value_type="date", value="date(2024, 7, 3)"),
+        snapshot,
+        qid=42,
+    )
+    assert len(date_plan.candidates) == 1
+    assert not plan_query_candidates(
+        _compare_intent(relation="released_on", value_type="date", value="date(2024, 7)"),
+        snapshot,
+        qid=42,
+    ).candidates
+
+    # Amount comparison accepts only a configured unit and only when Decimal *
+    # scale is an exact integral base-unit amount.
+    configured = QuerySchemaSnapshot(
+        **{
+            **snapshot.__dict__,
+            "typed_relations": (
+                TypedRelationEntry(
+                    "inventory_value", "amount", "inventory_scalar",
+                    units=(UnitScale("crate", 10),),
+                ),
+            ),
+        }
+    )
+    assert len(plan_query_candidates(
+        _compare_intent(relation="inventory_value", value_type="amount", value='amount(1.5, "crate")'),
+        configured,
+        qid=42,
+    ).candidates) == 1
+    assert not plan_query_candidates(
+        _compare_intent(relation="inventory_value", value_type="amount", value='amount(1.1, "crate")'),
+        QuerySchemaSnapshot(**{**configured.__dict__, "typed_relations": (TypedRelationEntry("inventory_value", "amount", "inventory_scalar", units=(UnitScale("crate", 3),)),)}),
+        qid=42,
+    ).candidates
+    assert not plan_query_candidates(
+        _compare_intent(relation="inventory_value", value_type="amount", value='amount(1, "unknown")'),
+        configured,
+        qid=42,
+    ).candidates
+
+
+def test_typed_comparison_groups_alias_facts_and_fails_closed_for_invalid_or_truncated_data():
+    subject = _term("Synthetic Company", '"Synthetic Company"')
+    alias_relation = _term("gross_sales", '"gross_sales"')
+    canonical_relation = _term("revenue", '"revenue"')
+    good_facts = (
+        SnapshotFact(1, subject, alias_relation, _term("number(11)", "number(11)", "Compound"), "confirmed", "Synthetic Company", "subject"),
+        SnapshotFact(2, subject, canonical_relation, _term("number(12)", "number(12)", "Compound"), "confirmed", "Synthetic Company", "subject"),
+    )
+    snapshot = _typed_exact_snapshot(
+        good_facts,
+        typed=(TypedRelationEntry("revenue", "number", "revenue_scalar"),),
+        aliases=(RelationAliasEntry("gross_sales", "revenue"),),
+    )
+    plan = plan_query_candidates(_compare_intent(relation="gross_sales"), snapshot, qid=43)
+
+    assert len(plan.candidates) == 1
+    assert plan.candidates[0].relation_display == "revenue"
+    assert 'relation("Synthetic Company", "gross_sales", number(11))' in plan.candidates[0].query_dl
+    assert 'relation("Synthetic Company", "revenue", number(12))' in plan.candidates[0].query_dl
+
+    # An untyped relation and a truncated fact slice must not produce a candidate
+    # that looks complete.
+    untyped = QuerySchemaSnapshot(**{**snapshot.__dict__, "typed_relations": ()})
+    assert not plan_query_candidates(_compare_intent(relation="gross_sales"), untyped, qid=43).candidates
+    assert plan_query_candidates(_compare_intent(relation="gross_sales"), QuerySchemaSnapshot(**{**snapshot.__dict__, "exact_entity_facts_truncated": True}), qid=43).truncated is True
+
+
+def test_typed_comparison_ordinal_rejects_nonordinal_facts_and_overflow():
+    subject = _term("Synthetic Company", '"Synthetic Company"')
+    relation = _term("rank", '"rank"')
+    snapshot = _typed_exact_snapshot(
+        (SnapshotFact(1, subject, relation, _term("제3호", '"제3호"'), "confirmed", "Synthetic Company", "subject"),),
+        typed=(TypedRelationEntry("rank", "ordinal", "rank_number"),),
+    )
+
+    assert len(plan_query_candidates(
+        _compare_intent(relation="rank", value_type="ordinal", operator="=", value="ordinal(3)"),
+        snapshot,
+        qid=44,
+    ).candidates) == 1
+    assert not plan_query_candidates(
+        _compare_intent(relation="rank", value_type="ordinal", value="ordinal(999999999999999999999)"),
+        snapshot,
+        qid=44,
+    ).candidates
+
+
+def test_typed_comparison_with_valid_nonmatching_facts_has_explicit_no_answer_plan():
+    subject = _term("Synthetic Company", '"Synthetic Company"')
+    relation = _term("metric", '"metric"')
+    snapshot = _typed_exact_snapshot(
+        (
+            SnapshotFact(
+                1,
+                subject,
+                relation,
+                _term("number(9)", "number(9)", "Compound"),
+                "confirmed",
+                "Synthetic Company",
+                "subject",
+            ),
+        ),
+        typed=(TypedRelationEntry("metric", "number", "metric_scalar"),),
+    )
+
+    plan = plan_query_candidates(_compare_intent(operator=">", value="number(10)"), snapshot, qid=45)
+
+    assert plan.candidates == ()
+    assert plan.no_answer is True
+    assert plan.reason is None
+
+
+def test_typed_comparison_malformed_requested_relation_aborts_other_candidates():
+    subject = _term("Synthetic Company", '"Synthetic Company"')
+    revenue = _term("revenue", '"revenue"')
+    cost = _term("cost", '"cost"')
+    snapshot = _typed_exact_snapshot(
+        (
+            SnapshotFact(1, subject, revenue, _term("number(20)", "number(20)", "Compound"), "confirmed", "Synthetic Company", "subject"),
+            SnapshotFact(2, subject, cost, _term("number(not-a-number)", "number(not-a-number)", "Compound"), "confirmed", "Synthetic Company", "subject"),
+        ),
+        typed=(
+            TypedRelationEntry("revenue", "number", "revenue_scalar"),
+            TypedRelationEntry("cost", "number", "cost_scalar"),
+        ),
+    )
+
+    plan = plan_query_candidates(
+        _compare_intent(relation="revenue", relation_candidates=("cost",)),
+        snapshot,
+        qid=46,
+    )
+
+    assert plan.candidates == ()
+    assert plan.no_answer is False
+    assert plan.reason == "typed comparison has malformed or uncomparable evidence"
+
+
+def test_typed_comparison_type_mismatch_aborts_instead_of_returning_no_answer():
+    subject = _term("Synthetic Company", '"Synthetic Company"')
+    revenue = _term("revenue", '"revenue"')
+    released_on = _term("released_on", '"released_on"')
+    snapshot = _typed_exact_snapshot(
+        (
+            SnapshotFact(1, subject, revenue, _term("number(9)", "number(9)", "Compound"), "confirmed", "Synthetic Company", "subject"),
+            SnapshotFact(2, subject, released_on, _term("date(2024, 7, 3)", "date(2024, 7, 3)", "Compound"), "confirmed", "Synthetic Company", "subject"),
+        ),
+        typed=(
+            TypedRelationEntry("revenue", "number", "revenue_scalar"),
+            TypedRelationEntry("released_on", "date", "release_date"),
+        ),
+    )
+
+    plan = plan_query_candidates(
+        _compare_intent(relation="revenue", relation_candidates=("released_on",)),
+        snapshot,
+        qid=47,
+    )
+
+    assert plan.candidates == ()
+    assert plan.no_answer is False
+    assert plan.reason == "typed comparison relation has incompatible typed spec"

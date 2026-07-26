@@ -142,8 +142,16 @@ def query_schema_hint(snapshot: QuerySchemaSnapshot) -> str:
         label_text = ", ".join(dict.fromkeys(labels))
         alias_text = ", ".join(dict.fromkeys(aliases))
         alias_suffix = f" (aliases: {alias_text})" if alias_text else ""
+        typed_suffix = ""
+        if relation.typed is not None:
+            typed_suffix = f" (typed: {relation.typed.type})"
+            if relation.typed.units:
+                units = ", ".join(
+                    f"{unit.unit}={unit.scale}" for unit in relation.typed.units
+                )
+                typed_suffix = f" (typed: {relation.typed.type}; units: {units})"
         lines.append(
-            f"- {label_text}{alias_suffix} "
+            f"- {label_text}{alias_suffix}{typed_suffix} "
             f"(subjects={relation.distinct_subject_count}, "
             f"objects={relation.distinct_object_count})"
         )

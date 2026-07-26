@@ -181,9 +181,9 @@ class QueryIntent:
     So a model that answers "Who is the CEO of Acme?" with `lookup_object` +
     `operator: "="`, or that fills in a `reason` for a question it classified
     correctly, is emitting schema-legal output. Rejecting it discarded a correct
-    intent over fields nothing outside this module reads (the planner does not
-    even branch on `compare_typed_value`), and that is what failed every
-    translation in issue #237.
+    intent over advisory fields the planner does not consume, and that is what
+    failed every translation in issue #237. A compare intent does consume its
+    threshold fields and rejects an object constraint rather than ignoring it.
 
     Still rejected: an off-schema *value* (`value_type="duration"`, on any kind)
     and a wrong *shape* (a `lookup_object` with no subject). Those are outside the
@@ -305,11 +305,8 @@ class QueryIntent:
                 )
             self._require_target_kind("subject", self.subject, {"entity"})
             self._require_relation_field()
-            # operator/value_type values are checked in _validate_schema_domains,
-            # which applies to every kind; this branch only adds that compare
-            # cannot do without them.
             if self.object is not None:
-                self._require_target_kind("object", self.object, {"typed_value", "value"})
+                raise ValueError("compare_typed_value does not accept object")
         elif kind == QueryIntentKind.CONJUNCTIVE_LOOKUP:
             if any(
                 item is not None
