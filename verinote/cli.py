@@ -13,7 +13,7 @@ from pathlib import Path
 from verinote import __version__
 from verinote.config import Config, local_root
 from verinote.pipeline.question_outcome import format_question_outcome
-from verinote.store import Store, engine_statuses
+from verinote.store import Store, engine_statuses, fact_status_order
 from verinote.store.duckdb_fact_terms import DuckDBFactTermStoreLockedError
 from verinote.text import nfc
 
@@ -1343,7 +1343,7 @@ def _status(cfg: Config) -> int:
         print(f"KB: {cfg.root}")
         print(f"sources: {sources_count}")
         print(f"facts:   {sum(counts.values())}")
-        for s in ("candidate", "needs_review", "confirmed", "accepted", "superseded"):
+        for s in fact_status_order():
             print(f"  {s:<13} {counts.get(s, 0)}")
         # `status` stays rc=0 even when halted: it is one of the paths that must keep
         # working *on* a halted KB, and a diagnosis command that fails is not a

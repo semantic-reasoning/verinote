@@ -21,6 +21,7 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from verinote.config import Config  # noqa: E402
+from verinote.store import db as store_db  # noqa: E402
 from verinote.store.tiers import engine_statuses, review_statuses  # noqa: E402
 from verinote.web import create_app  # noqa: E402
 
@@ -122,3 +123,15 @@ def test_queued_row_in_the_review_page_keeps_every_action(tmp_path):
     body = c.get("/review").text
 
     assert _offered(body, c.fact_id) == set(ALL_ACTIONS)
+
+
+def test_non_actionable_status_row_fails_closed(tmp_path, monkeypatch):
+    c = _client(tmp_path)
+    fact_id = c.store.add_fact("C", "is_a", "D", status="candidate", confidence=0.9)
+    monkeypatch.setattr(store_db, "REVIEW_STATUSES", frozenset({"needs_review"}))
+
+    body = c.get(f"/facts/{fact_id}/row").text
+
+    assert _offered(body, fact_id) == set()
+    assert f"/facts/{fact_id}/provenance" in body
+    assert "no further action" in body

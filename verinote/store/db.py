@@ -28,7 +28,28 @@ POLICY_MARKER_KEY = "policy.logic"
 # kb_meta key declaring that fact logical terms are managed by facts.duckdb.
 FACT_TERMS_MARKER_KEY = "fact_terms.duckdb"
 ENGINE_STATUSES = frozenset({"confirmed", "accepted"})
+TERMINAL_STATUSES = frozenset({"superseded"})
+ALL_FACT_STATUSES = REVIEW_STATUSES | ENGINE_STATUSES | TERMINAL_STATUSES
+# The stable display order for the schema vocabulary. New statuses can be
+# appended by callers at runtime; tier accessors place those after this list.
+FACT_STATUS_ORDER = (
+    "candidate",
+    "needs_review",
+    "confirmed",
+    "accepted",
+    "superseded",
+)
 MAX_EVIDENCE_SNIPPET_CHARS = 1000
+
+
+def _validate_fact_status_vocabulary() -> None:
+    if len(FACT_STATUS_ORDER) != len(set(FACT_STATUS_ORDER)):
+        raise RuntimeError("fact status order contains duplicates")
+    if set(FACT_STATUS_ORDER) != ALL_FACT_STATUSES:
+        raise RuntimeError("fact status order must cover the fact status vocabulary")
+
+
+_validate_fact_status_vocabulary()
 
 
 class TerminalFactError(ValueError):
@@ -790,22 +811,21 @@ class Store:
     def sources_with_counts(self) -> list[sqlite3.Row]:
         """Sources plus analysis and fact summaries for the Sources listing.
 
-        `engine_count` is derived from `ENGINE_STATUSES` (read at call time), so
-        the Sources page and the coverage report can never disagree about what
-        the engine actually reads.
+        `review_count` and `engine_count` are derived from their status tiers
+        at call time, so the Sources page cannot disagree with review actions
+        or coverage about which facts each workflow sees.
         """
-        placeholders, params = _status_filter(ENGINE_STATUSES)
+        review_placeholders, review_params = _status_filter(REVIEW_STATUSES)
+        engine_placeholders, engine_params = _status_filter(ENGINE_STATUSES)
         return list(
             self._conn.execute(
                 "SELECT s.id, s.path, s.kind, s.added_at, "
                 "(SELECT COUNT(*) FROM facts f WHERE f.source_id = s.id) "
                 "AS fact_count, "
                 "(SELECT COUNT(*) FROM facts f WHERE f.source_id = s.id "
-                "AND f.status = 'candidate') AS candidate_count, "
+                f"AND f.status IN ({review_placeholders})) AS review_count, "
                 "(SELECT COUNT(*) FROM facts f WHERE f.source_id = s.id "
-                "AND f.status = 'needs_review') AS needs_review_count, "
-                "(SELECT COUNT(*) FROM facts f WHERE f.source_id = s.id "
-                f"AND f.status IN ({placeholders})) AS engine_count, "
+                f"AND f.status IN ({engine_placeholders})) AS engine_count, "
                 "j.id AS job_id, j.status AS analysis_status, "
                 "j.total_chunks, j.completed_chunks, j.failed_chunks, "
                 "j.candidate_count AS analysis_candidate_count, "
@@ -817,7 +837,7 @@ class Store:
                 "  WHERE j2.source_id = s.id"
                 ") "
                 "ORDER BY s.path",
-                params,
+                review_params + engine_params,
             )
         )
 

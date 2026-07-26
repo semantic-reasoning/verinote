@@ -855,8 +855,7 @@ def test_source_artifacts_are_upserted_and_listed_with_counts(tmp_path):
     assert rows[0]["path"] == "sources/report.pdf"
     assert rows[0]["kind"] == "binary"
     assert rows[0]["fact_count"] == 1
-    assert rows[0]["candidate_count"] == 1
-    assert rows[0]["needs_review_count"] == 0
+    assert rows[0]["review_count"] == 1
     assert rows[0]["engine_count"] == 0
     assert "artifact_paths" not in rows[0].keys()
 
@@ -908,7 +907,7 @@ def test_sources_with_counts_includes_latest_analysis_summary(tmp_path):
     assert row["model"] == "qwen3.5:9b"
 
 
-def test_sources_with_counts_engine_count_follows_engine_statuses(tmp_path, monkeypatch):
+def test_sources_with_counts_status_counts_follow_their_tiers(tmp_path, monkeypatch):
     """The Sources page's "N confirmed" must mean the same thing as coverage.
 
     `engine_count` is derived from ENGINE_STATUSES, so widening the tier moves
@@ -924,8 +923,7 @@ def test_sources_with_counts_engine_count_follows_engine_statuses(tmp_path, monk
 
     before = s.sources_with_counts()[0]
     assert before["engine_count"] == 0
-    # The per-status count columns are a different question and must not move.
-    assert before["candidate_count"] == 1
+    assert before["review_count"] == 1
     assert before["fact_count"] == 3
 
     monkeypatch.setattr(db, "ENGINE_STATUSES", db.ENGINE_STATUSES | {"superseded"})
@@ -935,8 +933,13 @@ def test_sources_with_counts_engine_count_follows_engine_statuses(tmp_path, monk
     assert after["engine_count"] == len(
         [r for r in s.facts(statuses=db.ENGINE_STATUSES) if r["source_id"] == sid]
     )
-    assert after["candidate_count"] == 1
+    assert after["review_count"] == 1
     assert after["fact_count"] == 3
+
+    monkeypatch.setattr(db, "REVIEW_STATUSES", frozenset({"superseded"}))
+
+    after_review_change = s.sources_with_counts()[0]
+    assert after_review_change["review_count"] == superseded_count
 
 
 def test_sources_with_counts_engine_count_matches_coverage(tmp_path, monkeypatch):

@@ -135,6 +135,14 @@ def _engine_input_card(body: str) -> int:
     return int(match.group(1))
 
 
+def _review_card(body: str) -> int:
+    match = re.search(
+        r'<div class="num">(\d+)</div><div class="lbl">needs review</div>', body
+    )
+    assert match is not None, "needs review card not found in dashboard"
+    return int(match.group(1))
+
+
 def test_dashboard_engine_input_card_follows_engine_statuses(tmp_path, monkeypatch):
     """The dashboard's headline card must answer from ENGINE_STATUSES too.
 
@@ -162,6 +170,28 @@ def test_dashboard_engine_input_card_follows_engine_statuses(tmp_path, monkeypat
     assert _engine_input_card(body) == len(
         store.facts(statuses=store_db.ENGINE_STATUSES)
     )
+
+
+def test_dashboard_uses_call_time_review_and_all_status_accessors(tmp_path, monkeypatch):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    store.add_fact("C", "is_a", "D", status="candidate")
+    store.add_fact("E", "is_a", "F", status="confirmed")
+
+    assert _review_card(c.get("/").text) == 2
+
+    monkeypatch.setattr(store_db, "REVIEW_STATUSES", frozenset({"candidate"}))
+    monkeypatch.setattr(
+        store_db,
+        "ALL_FACT_STATUSES",
+        frozenset({"candidate", "confirmed", "superseded"}),
+    )
+
+    body = c.get("/").text
+    assert _review_card(body) == 1
+    assert '<span class="badge badge-needs_review">needs_review</span>' not in body
+    assert '<span class="badge badge-candidate">candidate</span>' in body
+    assert '<span class="badge badge-confirmed">confirmed</span>' in body
 
 
 def test_dashboard_shows_action_queue_counts_and_links(tmp_path):
@@ -682,7 +712,7 @@ def test_upload_extracts_and_redirects(tmp_path, monkeypatch, fake_client):
         assert "is_a" in c.get("/review").text
         body = c.get("/sources").text
         assert "Analysis complete: 1/1 chunk(s)" in body
-        assert "1 candidate(s)" in body
+        assert "1 awaiting review" in body
 
     _wait_for(extracted)
 
@@ -730,7 +760,7 @@ def test_sources_page_lists_sources(tmp_path):
     assert "failed" in r.text
     assert "1/2 chunk(s)" in r.text
     assert "provider down" in r.text
-    assert "1 candidate(s)" in r.text
+    assert "1 awaiting review" in r.text
     assert "1 unsupported" in r.text
     assert "ollama" in r.text
     assert "qwen3.5:9b" in r.text
@@ -812,7 +842,7 @@ def test_sources_accept_all_promotes_review_facts_for_that_source(tmp_path):
     assert store.fact_log(other_id) == []
 
     body = c.get("/sources").text
-    assert "0 candidate(s)" in body
+    assert "0 awaiting review" in body
 
 
 def test_sources_page_shows_trust_counts_and_evidence_snippets(tmp_path, monkeypatch):
