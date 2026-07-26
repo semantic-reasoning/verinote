@@ -372,68 +372,43 @@ def _checked_settings(path: Path, data: dict) -> dict:
     return checked
 
 
-def read_settings(root: Path) -> dict:
-    """Read saved non-secret runtime settings, or {} if absent/bad.
+def _read_settings_snapshot(root: Path) -> tuple[dict, str | None]:
+    """Read one settings-file snapshot for both resolution and the halt verdict.
 
-    Individual settings whose value is unusable are warned about and dropped, so
-    the caller sees them as unset rather than passing a number on to code that
-    expects a string. For a provider-routing setting that drop is a containment
-    measure, not the remedy: `_settings_error` turns the same verdict into a
-    halt. See `_checked_settings`.
+    A Config must never resolve its values from one version of config.json and
+    decide whether it is safe from another. The checked settings and the
+    settings_error therefore come from this single read and parse. `read_settings`
+    remains the public dict-only view for existing callers.
     """
     path = _settings_path(root)
     if not path.is_file():
-        return {}
+        return {}, None
     consequence = "saved runtime settings will fall back to defaults"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except OSError as err:
         _warn_bad_config(path, err, consequence)
-        return {}
+        return {}, _bad_config_reason(path, err)
     except UnicodeDecodeError as err:
         _warn_bad_config(path, err, consequence)
-        return {}
+        return {}, _bad_config_reason(path, err)
     except json.JSONDecodeError as err:
         _warn_bad_config(path, err, consequence)
-        return {}
+        return {}, _bad_config_reason(path, err)
     if not isinstance(data, dict):
         _warn_bad_config(path, None, consequence)
-        return {}
-    return _checked_settings(path, data)
+        return {}, _bad_config_reason(path, None)
+    return _checked_settings(path, data), _bad_routing_setting_reason(path, data)
 
 
-def _settings_error(root: Path) -> str | None:
-    """Why the KB's saved settings file is unusable, or None if fine or absent.
+def read_settings(root: Path) -> dict:
+    """Read saved non-secret runtime settings, or {} if absent/bad.
 
-    A *missing* file is never an error — a fresh KB legitimately has none, and
-    reporting one would spuriously halt it. Only a file that is PRESENT but
-    unusable yields a reason. Shares `_bad_config_reason` with the CLI stderr
-    warning so the web/GUI halt and the warning describe the same file the same
-    way.
-
-    "Unusable" is not only whole-file corruption. A file that parses perfectly
-    but holds `"provider": 123` or `"model": null` is just as unusable, and
-    ignoring the key would resolve the provider to the `anthropic` cloud default
-    the user never chose — the identical leak, arrived at through a narrower
-    door (#325). So the per-key verdict on `_ROUTING_SETTINGS` halts here too,
-    while a bad chunk size stays a warning: it changes how much text a local
-    step reads, not where the text goes.
-
-    Deliberately re-reads the file rather than inferring from `read_settings`'s
-    return: what that returns is ambiguous about *why* a key is absent (a valid
-    file simply omitting it looks the same as a dropped bad one), and an empty
-    `{}` is ambiguous about the file as a whole.
+    This preserves the public dict-only contract. `Config.for_root` uses
+    `_read_settings_snapshot` directly so its resolved values and halt verdict
+    come from the same observed file contents.
     """
-    path = _settings_path(root)
-    if not path.is_file():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as err:
-        return _bad_config_reason(path, err)
-    if not isinstance(data, dict):
-        return _bad_config_reason(path, None)
-    return _bad_routing_setting_reason(path, data)
+    return _read_settings_snapshot(root)[0]
 
 
 def save_settings(
@@ -556,7 +531,7 @@ class Config:
 
     @classmethod
     def for_root(cls, root: Path) -> "Config":
-        saved = read_settings(root)
+        saved, settings_error = _read_settings_snapshot(root)
         provider = normalize_provider(
             _pick("VERINOTE_PROVIDER", saved.get("provider"), "anthropic")
         )
@@ -595,7 +570,7 @@ class Config:
             extraction_chunk_overlap_chars=chunk_overlap,
             extraction_max_facts_per_chunk=max_facts,
             auto_accept_recommendations=auto_accept,
-            settings_error=_settings_error(root),
+            settings_error=settings_error,
         )
 
     @classmethod
