@@ -19,24 +19,16 @@ beyond its source record.
 
 ## Current pin and record
 
-There is no manifest, checksum file, or SRI attribute. The source comment and
-`HTMX_SHA256` near the top of `tests/test_base_template_assets.py` are the pin:
+`verinote/web/static/htmx.min.js.metadata.json` is the sole active provenance
+record for the vendored asset. It is public at
+`/static/htmx.min.js.metadata.json` and records the version, SHA-256, Git tag and
+commit, raw GitHub URL, npm package, and npm tarball URL. The asset test strictly
+validates this JSON record, its version/tag/URL relationships, its digest, and
+its static JSON response.
 
-```python
-# Source: htmx 2.0.10, https://raw.githubusercontent.com/bigskysoftware/htmx/v2.0.10/dist/htmx.min.js (0BSD).
-# Tag v2.0.10 commit: bdc7d7d3e25d0390c7ee11049806e8279b075598.
-# npm provenance: htmx.org@2.0.10, https://registry.npmjs.org/htmx.org/-/htmx.org-2.0.10.tgz.
-# The raw GitHub file and extracted npm dist/htmx.min.js matched byte-for-byte.
-HTMX_SHA256 = "71ea67185bfa8c98c39d31717c6fce5d852370fcdfd129db4543774d3145c0de"
-```
-
-A pin update must change the source record and hash in the same commit as the
-asset. Leave the `2.0.3` URL in the test module docstring alone: it records the
-old CDN load, not the active pin.
-
-For every future pin, record adjacent to `HTMX_SHA256`: the `v<VER>` tag, exact
-raw GitHub URL, npm package `htmx.org@<VER>`, npm `dist.tarball` URL, and verified
-SHA-256. Record the commands' date and the GitHub/npm agreement or any approved
+A pin update must change the metadata and asset together. Leave the `2.0.3` URL
+in the test module docstring alone: it records the old CDN load, not the active
+pin. Record the commands' date and the GitHub/npm agreement or any approved
 manual fallback in the PR or issue, using only synthetic examples when examples
 are needed.
 
@@ -140,27 +132,73 @@ still must succeed; manual selection never waives GitHub/npm agreement.
 
 ## Acquiring and verifying bytes
 
-Replace `<VER>` with the agreed version. The destination is not touched until the
-raw tagged file and npm tarball extraction have the same SHA-256. The staged file
-is created in the destination directory, so the final `mv` is an atomic rename.
-Any earlier error removes only temporary files and leaves the original asset.
+Replace `<VER>` with the agreed version. The destinations are not touched until
+the raw tagged file and npm tarball extraction have the same SHA-256. Each staged
+file is created in the destination directory, so each individual `mv` is atomic,
+but two renames are not an atomic pair. Immediately before installation, the
+script copies both current files to backups. If either installation is incomplete,
+its exit handler restores both originals from those backups.
 
 ```sh
 set -eu
 
 ver=<VER>
 target=verinote/web/static/htmx.min.js
+metadata="$target.metadata.json"
 target_dir=$(dirname "$target")
 work=$(mktemp -d "${TMPDIR:-/tmp}/htmx.XXXXXX")
-stage=$(mktemp "$target_dir/.htmx.min.js.XXXXXX")
+stage_asset=
+stage_metadata=
+backup_asset=
+backup_metadata=
+install_started=false
+installed=false
 cleanup() {
-  rm -rf "$work"
-  rm -f "$stage"
-}
-trap cleanup EXIT HUP INT TERM
+  status=$?
+  restore_failed=false
+  trap - EXIT HUP INT TERM
 
-curl --fail --location --silent --show-error -o "$stage" \
-  "https://raw.githubusercontent.com/bigskysoftware/htmx/v$ver/dist/htmx.min.js"
+  if [ "$install_started" = true ] && [ "$installed" != true ]; then
+    printf 'installation did not complete; restoring original asset and metadata\n' >&2
+    if ! cp -p "$backup_asset" "$target"; then
+      restore_failed=true
+    fi
+    if ! cp -p "$backup_metadata" "$metadata"; then
+      restore_failed=true
+    fi
+    if [ "$restore_failed" = true ]; then
+      printf 'automatic restore failed; backups were retained. Recover with:\n' >&2
+      printf 'cp -p %s %s; cp -p %s %s\n' \\
+        "$backup_asset" "$target" "$backup_metadata" "$metadata" >&2
+      status=1
+    fi
+  fi
+
+  rm -rf "$work"
+  [ -z "$stage_asset" ] || rm -f "$stage_asset"
+  [ -z "$stage_metadata" ] || rm -f "$stage_metadata"
+  if [ "$restore_failed" != true ]; then
+    [ -z "$backup_asset" ] || rm -f "$backup_asset"
+    [ -z "$backup_metadata" ] || rm -f "$backup_metadata"
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+stage_asset=$(mktemp "$target_dir/.htmx.min.js.XXXXXX")
+stage_metadata=$(mktemp "$target_dir/.htmx.min.js.metadata.json.XXXXXX")
+
+tag="v$ver"
+raw_url="https://raw.githubusercontent.com/bigskysoftware/htmx/$tag/dist/htmx.min.js"
+curl --fail --location --silent --show-error -o "$stage_asset" "$raw_url"
+
+tag_commit=$(curl --fail --location --silent --show-error \
+  "https://api.github.com/repos/bigskysoftware/htmx/git/ref/tags/$tag" \
+  | jq -er '.object | select(.type == "commit") | .sha
+      | select(test("^[0-9a-f]{40}$"))')
 
 curl --fail --location --silent --show-error -o "$work/npm.json" \
   https://registry.npmjs.org/htmx.org
@@ -174,7 +212,7 @@ tar -xzf "$work/htmx.tgz" -C "$work"
 npm_asset=$work/package/dist/htmx.min.js
 [ -f "$npm_asset" ] || { printf 'npm package lacks dist/htmx.min.js\n' >&2; exit 1; }
 
-raw_sha256=$(shasum -a 256 "$stage" | awk '{print $1}')
+raw_sha256=$(shasum -a 256 "$stage_asset" | awk '{print $1}')
 npm_sha256=$(shasum -a 256 "$npm_asset" | awk '{print $1}')
 [ "$raw_sha256" = "$npm_sha256" ] || {
   printf 'stop: raw SHA-256 %s differs from npm SHA-256 %s\n' \
@@ -182,16 +220,43 @@ npm_sha256=$(shasum -a 256 "$npm_asset" | awk '{print $1}')
   exit 1
 }
 
-mv -f "$stage" "$target"
-trap - EXIT HUP INT TERM
-rm -rf "$work"
-printf 'installed htmx %s with SHA-256 %s\n' "$ver" "$raw_sha256"
+jq -n \
+  --arg version "$ver" \
+  --arg sha256 "$raw_sha256" \
+  --arg tag "$tag" \
+  --arg tag_commit "$tag_commit" \
+  --arg raw_url "$raw_url" \
+  --arg npm_package "htmx.org@$ver" \
+  --arg npm_tarball_url "$npm_tarball" \
+  '{version: $version, sha256: $sha256, tag: $tag, tag_commit: $tag_commit,
+    raw_url: $raw_url, npm_package: $npm_package, npm_tarball_url: $npm_tarball_url}' \
+  > "$stage_metadata"
+
+[ -f "$target" ] && [ -f "$metadata" ] || {
+  printf 'existing asset or metadata is missing; refusing to install\n' >&2
+  exit 1
+}
+backup_asset=$(mktemp "$target_dir/.htmx.min.js.backup.XXXXXX")
+backup_metadata=$(mktemp "$target_dir/.htmx.min.js.metadata.json.backup.XXXXXX")
+cp -p "$target" "$backup_asset"
+cp -p "$metadata" "$backup_metadata"
+
+# These are separate renames. From this point, cleanup restores both originals
+# unless both moves have completed.
+install_started=true
+mv -f "$stage_asset" "$target"
+mv -f "$stage_metadata" "$metadata"
+installed=true
+printf 'installed htmx %s with SHA-256 %s and updated metadata\n' "$ver" "$raw_sha256"
 ```
 
 On systems without `shasum`, replace each `shasum -a 256 FILE | awk '{print $1}'`
 with `sha256sum FILE | awk '{print $1}'`. Do not copy a digest from an error into
-the pin. After the successful rename, update the source/provenance record and
-`HTMX_SHA256` with `raw_sha256`, then verify:
+the metadata. A failed `mv`, `HUP`, `INT`, or `TERM` exits through `cleanup` and
+restores both originals while installation is incomplete. `SIGKILL` and power
+loss cannot run that handler. If restoration itself fails, the handler retains
+the backup paths and prints the recovery command. After the successful renames,
+verify:
 
 ```sh
 pytest -q tests/test_base_template_assets.py
