@@ -101,6 +101,7 @@ class QueryIntentKind(StrEnum):
     COMPARE_TYPED_VALUE = "compare_typed_value"
     CONJUNCTIVE_LOOKUP = "conjunctive_lookup"
     CONJUNCTIVE_FILTER = "conjunctive_filter"
+    CONJUNCTIVE_THREE_HOP_LOOKUP = "conjunctive_three_hop_lookup"
     UNKNOWN_OR_UNSUPPORTED = "unknown_or_unsupported"
 
 
@@ -200,6 +201,7 @@ class QueryIntent:
     reason: str | None = None
     hops: tuple[ConjunctiveHop, ...] = field(default_factory=tuple)
     conditions: tuple[ConjunctiveHop, ...] = field(default_factory=tuple)
+    chain_hops: tuple[ConjunctiveHop, ...] = field(default_factory=tuple)
     answer_var: str | None = None
 
     def __post_init__(self) -> None:
@@ -216,6 +218,8 @@ class QueryIntent:
             raise ValueError("hops must be a tuple")
         if not isinstance(self.conditions, tuple):
             raise ValueError("conditions must be a tuple")
+        if not isinstance(self.chain_hops, tuple):
+            raise ValueError("chain_hops must be a tuple")
         if self.answer_var is not None:
             object.__setattr__(self, "answer_var", _clean_optional_string(self.answer_var, "answer_var"))
         # A blank nullable string is an absent one -- but only where the schema
@@ -257,7 +261,8 @@ class QueryIntent:
         if kind not in {
             QueryIntentKind.CONJUNCTIVE_LOOKUP,
             QueryIntentKind.CONJUNCTIVE_FILTER,
-        } and (self.hops or self.conditions or self.answer_var is not None):
+            QueryIntentKind.CONJUNCTIVE_THREE_HOP_LOOKUP,
+        } and (self.hops or self.conditions or self.chain_hops or self.answer_var is not None):
             raise ValueError(f"{kind.value} does not accept conjunctive fields")
         if kind == QueryIntentKind.LOOKUP_OBJECT:
             if self.subject is None or not has_relation or self.object is not None:
@@ -309,7 +314,7 @@ class QueryIntent:
             if any(
                 item is not None
                 for item in (self.subject, self.relation, self.object, self.operator, self.value_type, self.value)
-            ) or self.relation_candidates or self.conditions:
+            ) or self.relation_candidates or self.conditions or self.chain_hops:
                 raise ValueError("conjunctive_lookup accepts only hops and answer_var")
             if len(self.hops) != 2 or not self.answer_var:
                 raise ValueError("conjunctive_lookup requires exactly two hops and answer_var")
@@ -326,7 +331,7 @@ class QueryIntent:
             if any(
                 item is not None
                 for item in (self.subject, self.relation, self.object, self.operator, self.value_type, self.value)
-            ) or self.relation_candidates or self.hops:
+            ) or self.relation_candidates or self.hops or self.chain_hops:
                 raise ValueError("conjunctive_filter accepts only conditions and answer_var")
             if len(self.conditions) != 2 or not self.answer_var:
                 raise ValueError("conjunctive_filter requires exactly two conditions and answer_var")
@@ -343,6 +348,29 @@ class QueryIntent:
                     raise ValueError("each conjunctive_filter condition must contain answer_var exactly once")
                 if any(endpoint.kind != "entity" for endpoint in endpoints if endpoint.value != self.answer_var):
                     raise ValueError("conjunctive_filter requires an entity anchor in each condition")
+        elif kind == QueryIntentKind.CONJUNCTIVE_THREE_HOP_LOOKUP:
+            if any(
+                item is not None
+                for item in (self.subject, self.relation, self.object, self.operator, self.value_type, self.value)
+            ) or self.relation_candidates or self.hops or self.conditions:
+                raise ValueError("conjunctive_three_hop_lookup accepts only chain_hops and answer_var")
+            if len(self.chain_hops) != 3 or not self.answer_var:
+                raise ValueError("conjunctive_three_hop_lookup requires exactly three chain_hops and answer_var")
+            first, second, third = self.chain_hops
+            if first.subject.kind != "entity" or first.object.kind != "var":
+                raise ValueError("conjunctive_three_hop_lookup first hop requires entity subject and variable object")
+            if second.subject.kind != "var" or second.object.kind != "var":
+                raise ValueError("conjunctive_three_hop_lookup second hop requires variable endpoints")
+            if third.subject.kind != "var" or third.object.kind != "var":
+                raise ValueError("conjunctive_three_hop_lookup third hop requires variable endpoints")
+            if second.subject.value != first.object.value:
+                raise ValueError("conjunctive_three_hop_lookup first and second hops must share the intermediate variable")
+            if third.subject.value != second.object.value:
+                raise ValueError("conjunctive_three_hop_lookup second and third hops must share the intermediate variable")
+            if len({first.object.value, second.object.value, self.answer_var}) != 3:
+                raise ValueError("conjunctive_three_hop_lookup variables must be distinct")
+            if third.object.value != self.answer_var:
+                raise ValueError("conjunctive_three_hop_lookup answer_var must be the third hop object")
         elif kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED:
             if not self.reason:
                 raise ValueError("unknown_or_unsupported requires a reason")
@@ -830,6 +858,17 @@ def _is_conjunctive_hops_property(spec: dict[str, Any]) -> bool:
     return set(item.get("properties") or ()) == {"subject", "relation", "object"}
 
 
+def _is_conjunctive_three_hops_property(spec: dict[str, Any]) -> bool:
+    if _declared_types(spec) != frozenset({"array", "null"}):
+        return False
+    if spec.get("minItems") != 3 or spec.get("maxItems") != 3:
+        return False
+    item = spec.get("items")
+    if not isinstance(item, dict) or item.get("additionalProperties") is not False:
+        return False
+    return set(item.get("properties") or ()) == {"subject", "relation", "object"}
+
+
 # `kind` is parsed by hand in `_parse_query_intent_object` and so is not in the
 # table: it is the only non-nullable property, a missing one is a KeyError rather
 # than a None, and it is converted to QueryIntentKind before the other fields are
@@ -841,6 +880,7 @@ _INTENT_FIELD_PARSERS_BY_SHAPE: tuple[
     (_is_intent_target_property, _parse_intent_target),
     (_is_relation_candidates_property, _parse_relation_candidates),
     (_is_conjunctive_hops_property, _parse_conjunctive_hops),
+    (_is_conjunctive_three_hops_property, _parse_conjunctive_hops),
 )
 
 

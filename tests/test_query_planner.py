@@ -1046,3 +1046,76 @@ def test_structural_endpoint_terms_render_with_executable_identity():
         '.decl answer_q19(value: symbol)\n'
         'answer_q19(O) :- relation(person("Ada"), has_role, O).'
     ]
+
+
+def test_conjunctive_three_hop_uses_only_a_complete_observed_path():
+    owns = _term("owns", '"owns"')
+    runs = _term("runs", '"runs"')
+    purpose = _term("purpose", '"purpose"')
+    snapshot = QuerySchemaSnapshot(
+        **{
+            **_snapshot().__dict__,
+            "join_facts": (
+                SnapshotFact(1, _term("Example Org", '"Example Org"'), owns, _term("Program", '"Program"'), "confirmed"),
+                SnapshotFact(2, _term("Program", '"Program"'), runs, _term("Project", '"Project"'), "confirmed"),
+                SnapshotFact(3, _term("Project", '"Project"'), purpose, _term("Research", '"Research"'), "confirmed"),
+                SnapshotFact(4, _term("Other", '"Other"'), purpose, _term("Unrelated", '"Unrelated"'), "confirmed"),
+            ),
+        }
+    )
+    intent = QueryIntent(
+        kind=QueryIntentKind.CONJUNCTIVE_THREE_HOP_LOOKUP,
+        chain_hops=(
+            ConjunctiveHop(ConjunctiveEndpoint("entity", "Example Org"), IntentTarget("relation", "owns"), ConjunctiveEndpoint("var", "M")),
+            ConjunctiveHop(ConjunctiveEndpoint("var", "M"), IntentTarget("relation", "runs"), ConjunctiveEndpoint("var", "N")),
+            ConjunctiveHop(ConjunctiveEndpoint("var", "N"), IntentTarget("relation", "purpose"), ConjunctiveEndpoint("var", "A")),
+        ),
+        answer_var="A",
+    )
+
+    plan = plan_query_candidates(intent, snapshot, qid=31)
+
+    assert [candidate.query_dl for candidate in plan.candidates] == [
+        '.decl answer_q31(value: symbol)\n'
+        'answer_q31(A) :- relation("Example Org", "owns", M), relation(M, "runs", N), relation(N, "purpose", A).'
+    ]
+    assert plan.candidates[0].family is QueryCandidateFamily.CONJUNCTIVE_THREE_HOP
+
+
+def test_conjunctive_three_hop_deduplicates_canonical_shapes_and_fails_closed_on_cap():
+    snapshot = QuerySchemaSnapshot(
+        **{
+            **_snapshot().__dict__,
+            "relation_aliases": (
+                RelationAliasEntry(alias="owns_alpha", canonical="owns"),
+                RelationAliasEntry(alias="owns_beta", canonical="owns"),
+            ),
+            "join_facts": (
+                SnapshotFact(1, _term("Example Org", '"Example Org"'), _term("owns_alpha", '"owns_alpha"'), _term("Program One", '"Program One"'), "confirmed"),
+                SnapshotFact(2, _term("Program One", '"Program One"'), _term("runs", '"runs"'), _term("Project One", '"Project One"'), "confirmed"),
+                SnapshotFact(3, _term("Project One", '"Project One"'), _term("purpose", '"purpose"'), _term("Research", '"Research"'), "confirmed"),
+                SnapshotFact(4, _term("Example Org", '"Example Org"'), _term("owns_beta", '"owns_beta"'), _term("Program Two", '"Program Two"'), "confirmed"),
+                SnapshotFact(5, _term("Program Two", '"Program Two"'), _term("runs", '"runs"'), _term("Project Two", '"Project Two"'), "confirmed"),
+                SnapshotFact(6, _term("Project Two", '"Project Two"'), _term("purpose", '"purpose"'), _term("Delivery", '"Delivery"'), "confirmed"),
+                SnapshotFact(7, _term("Example Org", '"Example Org"'), _term("operates", '"operates"'), _term("Program Three", '"Program Three"'), "confirmed"),
+                SnapshotFact(8, _term("Program Three", '"Program Three"'), _term("runs", '"runs"'), _term("Project Three", '"Project Three"'), "confirmed"),
+                SnapshotFact(9, _term("Project Three", '"Project Three"'), _term("purpose", '"purpose"'), _term("Other", '"Other"'), "confirmed"),
+            ),
+        }
+    )
+    intent = QueryIntent(
+        kind=QueryIntentKind.CONJUNCTIVE_THREE_HOP_LOOKUP,
+        chain_hops=(
+            ConjunctiveHop(ConjunctiveEndpoint("entity", "Example Org"), IntentTarget("relation", "owns"), ConjunctiveEndpoint("var", "M")),
+            ConjunctiveHop(ConjunctiveEndpoint("var", "M"), IntentTarget("relation", "runs"), ConjunctiveEndpoint("var", "N")),
+            ConjunctiveHop(ConjunctiveEndpoint("var", "N"), IntentTarget("relation", "purpose"), ConjunctiveEndpoint("var", "A")),
+        ),
+        answer_var="A",
+    )
+
+    plan = plan_query_candidates(intent, snapshot, qid=32, bounds=QueryPlannerBounds(max_candidates=1))
+
+    assert len(plan.candidates) == 1
+    assert plan.truncated is False
+    truncated_snapshot = QuerySchemaSnapshot(**{**snapshot.__dict__, "join_facts_truncated": True})
+    assert plan_query_candidates(intent, truncated_snapshot, qid=32).truncated is True

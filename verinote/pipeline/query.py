@@ -251,6 +251,7 @@ def _schema_aware_query_flow_result(
     uses_join_facts = intent.kind in {
         QueryIntentKind.CONJUNCTIVE_LOOKUP,
         QueryIntentKind.CONJUNCTIVE_FILTER,
+        QueryIntentKind.CONJUNCTIVE_THREE_HOP_LOOKUP,
     }
     if exact_entities or uses_join_facts:
         snapshot = build_query_schema_snapshot(

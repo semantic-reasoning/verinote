@@ -145,6 +145,73 @@ def test_parse_conjunctive_filter_rejects_incomplete_conditions():
         parse_query_intent(payload)
 
 
+def test_conjunctive_three_hop_lookup_requires_one_forward_chain():
+    hops = (
+        ConjunctiveHop(
+            ConjunctiveEndpoint("entity", "Example Org"),
+            IntentTarget("relation", "owns"),
+            ConjunctiveEndpoint("var", "M"),
+        ),
+        ConjunctiveHop(
+            ConjunctiveEndpoint("var", "M"),
+            IntentTarget("relation", "runs"),
+            ConjunctiveEndpoint("var", "N"),
+        ),
+        ConjunctiveHop(
+            ConjunctiveEndpoint("var", "N"),
+            IntentTarget("relation", "purpose"),
+            ConjunctiveEndpoint("var", "A"),
+        ),
+    )
+
+    intent = QueryIntent(
+        kind=QueryIntentKind.CONJUNCTIVE_THREE_HOP_LOOKUP,
+        chain_hops=hops,
+        answer_var="A",
+    )
+
+    assert intent.chain_hops == hops
+    with pytest.raises(ValueError, match="must be distinct"):
+        QueryIntent(
+            kind=QueryIntentKind.CONJUNCTIVE_THREE_HOP_LOOKUP,
+            chain_hops=(
+                hops[0],
+                hops[1],
+                ConjunctiveHop(
+                    ConjunctiveEndpoint("var", "N"),
+                    IntentTarget("relation", "purpose"),
+                    ConjunctiveEndpoint("var", "N"),
+                ),
+            ),
+            answer_var="N",
+        )
+
+
+def test_parse_conjunctive_three_hop_lookup_rejects_disconnected_chain():
+    payload = {
+        "kind": "conjunctive_three_hop_lookup",
+        "subject": None,
+        "relation": None,
+        "object": None,
+        "relation_candidates": None,
+        "operator": None,
+        "value_type": None,
+        "value": None,
+        "reason": None,
+        "hops": None,
+        "conditions": None,
+        "chain_hops": [
+            {"subject": {"kind": "entity", "value": "Example Org"}, "relation": {"kind": "relation", "value": "owns"}, "object": {"kind": "var", "value": "M"}},
+            {"subject": {"kind": "var", "value": "M"}, "relation": {"kind": "relation", "value": "runs"}, "object": {"kind": "var", "value": "N"}},
+            {"subject": {"kind": "var", "value": "X"}, "relation": {"kind": "relation", "value": "purpose"}, "object": {"kind": "var", "value": "A"}},
+        ],
+        "answer_var": "A",
+    }
+
+    with pytest.raises(Exception, match="second and third"):
+        parse_query_intent(payload)
+
+
 def test_lookup_object_intent_is_frozen_and_typed():
     intent = QueryIntent(
         kind=QueryIntentKind.LOOKUP_OBJECT,

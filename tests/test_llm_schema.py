@@ -80,11 +80,14 @@ def test_query_intent_schema_is_separate_from_datalog_query_schema():
         in QUERY_INTENT_SCHEMA["properties"]["kind"]["enum"]
     )
     assert "count" not in QUERY_INTENT_SCHEMA["properties"]["kind"]["enum"]
+    assert "conjunctive_three_hop_lookup" in QUERY_INTENT_SCHEMA["properties"]["kind"]["enum"]
     hop = QUERY_INTENT_CONJUNCTIVE_HOP_SCHEMA
     assert hop["required"] == ["subject", "relation", "object"]
     assert hop["additionalProperties"] is False
     assert hop["properties"]["relation"]["type"] == "object"
     assert hop["properties"]["relation"]["properties"]["kind"]["enum"] == ["relation"]
+    assert QUERY_INTENT_SCHEMA["properties"]["chain_hops"]["minItems"] == 3
+    assert QUERY_INTENT_SCHEMA["properties"]["chain_hops"]["maxItems"] == 3
     for field in ("subject", "relation", "object"):
         schema = QUERY_INTENT_SCHEMA["properties"][field]
         assert schema["type"] == ["object", "null"]
