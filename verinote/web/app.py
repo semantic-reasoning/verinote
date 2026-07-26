@@ -161,7 +161,23 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         ensure_policy_marker(store, cfg.root)
         app.state.store = store
 
-    templates = Jinja2Templates(directory=str(_TEMPLATES))
+    def _common_template_context(request: Request) -> dict[str, int]:
+        """Values needed by shared templates, including the primary navigation."""
+        store = request.app.state.store
+        if store is None:
+            return {"review_count": 0}
+
+        status_counts = store.status_counts()
+        return {
+            "review_count": sum(
+                status_counts.get(status, 0) for status in review_statuses()
+            )
+        }
+
+    templates = Jinja2Templates(
+        directory=str(_TEMPLATES),
+        context_processors=[_common_template_context],
+    )
     app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
 
     def _policy_halted(request: Request, message: str):
@@ -923,7 +939,6 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 # "engine input" card must answer the same question as coverage
                 # and the Sources badge, from the same constant.
                 "engine_input": sum(counts.get(status, 0) for status in engine_statuses()),
-                "review_count": sum(counts.get(status, 0) for status in review_statuses()),
                 "all_fact_statuses": fact_status_order(),
                 "sources": store.sources(),
                 "coverage": coverage(store, root=cfg.root),
