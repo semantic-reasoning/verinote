@@ -102,6 +102,16 @@ class QueryIntentKind(StrEnum):
     UNKNOWN_OR_UNSUPPORTED = "unknown_or_unsupported"
 
 
+INTENT_TARGET_KINDS = frozenset({"entity", "relation", "value", "typed_value"})
+"""The target kinds `IntentTarget` admits.
+
+Named rather than written inline because the schema-shape check below reads it
+too: a nullable object property whose `kind` enum reaches outside this set is
+schema-legal output the parser would refuse, so the dispatch has to compare
+against the same set `__post_init__` enforces rather than a second copy of it.
+"""
+
+
 @dataclass(frozen=True)
 class IntentTarget:
     """A normalized query target without execution-language rendering."""
@@ -110,7 +120,7 @@ class IntentTarget:
     value: str
 
     def __post_init__(self) -> None:
-        if self.kind not in {"entity", "relation", "value", "typed_value"}:
+        if self.kind not in INTENT_TARGET_KINDS:
             raise ValueError(f"unsupported target kind: {self.kind}")
         if not isinstance(self.value, str) or not self.value.strip():
             raise ValueError("target value must be a non-empty string")
@@ -601,48 +611,150 @@ def _clean_optional_string(value: str, field_name: str) -> str | None:
     return text
 
 
+def _declared_types(spec: dict[str, Any]) -> frozenset[str]:
+    declared = spec.get("type")
+    return frozenset(declared) if isinstance(declared, list) else frozenset({declared})
+
+
+def _is_required_string_schema(spec: Any) -> bool:
+    """Whether a sub-schema admits exactly the non-blank strings the parser takes.
+
+    `minLength: 1` is not decoration here. `IntentTarget.value` and every
+    relation candidate go through `_clean_required_string`/`__post_init__`, which
+    refuse a blank; without the bound, `""` would be schema-legal output that the
+    parse path reports as a provider violation.
+    """
+    return (
+        isinstance(spec, dict)
+        and spec.get("type") == "string"
+        and isinstance(spec.get("minLength"), int)
+        and spec["minLength"] >= 1
+    )
+
+
+def _is_nullable_string_property(spec: dict[str, Any]) -> bool:
+    """Whether `_parse_optional_string` reads the property.
+
+    Nothing beyond the declared type is required: that parser accepts every
+    string and takes its domain from the property's own `enum`
+    (`_validate_schema_domains`), so no string sub-shape can make schema-legal
+    output be refused. This is what keeps a new nullable string enum property
+    parsed, trimmed, and validated with no wiring, as #298 asks.
+    """
+    return _declared_types(spec) == frozenset({"string", "null"})
+
+
+def _is_intent_target_property(spec: dict[str, Any]) -> bool:
+    """Whether `_parse_intent_target` reads the property.
+
+    `["object", "null"]` alone does not say so. That parser reads exactly one
+    object shape -- the `{kind, value}` pair of QUERY_INTENT_TARGET_SCHEMA -- and
+    refuses everything else per parse: an unexpected key, a missing one, a
+    non-string half, and (through `IntentTarget.__post_init__`) a kind outside
+    `INTENT_TARGET_KINDS` or a blank value. So each of those has to be off-schema
+    for the property, or the parser turns schema-legal provider output into an
+    `LLMError` naming the provider for a local mismatch.
+    """
+    if _declared_types(spec) != frozenset({"object", "null"}):
+        return False
+    if spec.get("additionalProperties") is not False:
+        return False
+    properties = spec.get("properties")
+    if not isinstance(properties, dict) or set(properties) != {"kind", "value"}:
+        return False
+    if set(spec.get("required") or ()) != {"kind", "value"}:
+        return False
+    kind = properties["kind"]
+    kind_enum = kind.get("enum") if isinstance(kind, dict) else None
+    # The enum, not the declared type, is what pins the legal values: an enum of
+    # target kinds admits only those four strings whatever `type` says, and an
+    # absent or empty one admits either every string or none at all. Both of
+    # those are schemas `IntentTarget` cannot promise to accept.
+    if not kind_enum or not all(value in INTENT_TARGET_KINDS for value in kind_enum):
+        return False
+    return _is_required_string_schema(properties["value"])
+
+
+def _is_relation_candidates_property(spec: dict[str, Any]) -> bool:
+    """Whether `_parse_relation_candidates` reads the property.
+
+    `["array", "null"]` alone does not say so either: that parser reads an array
+    of non-blank strings and refuses any other element per parse. An array of
+    objects, or a `prefixItems` tuple whose leading entries are not strings, is a
+    schema-legal array it would report as a provider violation.
+
+    The non-blank bound is asked of every array property, not just
+    `relation_candidates`, because this is the relation-candidate parser: what it
+    reads is that array, and `__post_init__` refuses a blank candidate. A
+    property meaning to admit blank items is a shape no parser here reads, so it
+    stops at import rather than being handed to this one on the strength of
+    sharing a type.
+    """
+    if _declared_types(spec) != frozenset({"array", "null"}):
+        return False
+    if "prefixItems" in spec:
+        return False
+    return _is_required_string_schema(spec.get("items"))
+
+
 # `kind` is parsed by hand in `_parse_query_intent_object` and so is not in the
 # table: it is the only non-nullable property, a missing one is a KeyError rather
 # than a None, and it is converted to QueryIntentKind before the other fields are
-# read. Every other property is dispatched on its declared type.
-_INTENT_FIELD_PARSER_BY_TYPE: dict[
-    frozenset[str], Callable[[dict[str, Any], str], Any]
-] = {
-    frozenset({"string", "null"}): _parse_optional_string,
-    frozenset({"object", "null"}): _parse_intent_target,
-    frozenset({"array", "null"}): _parse_relation_candidates,
-}
+# read. Every other property is matched against the shapes below, in order.
+_INTENT_FIELD_PARSERS_BY_SHAPE: tuple[
+    tuple[Callable[[dict[str, Any]], bool], Callable[[dict[str, Any], str], Any]], ...
+] = (
+    (_is_nullable_string_property, _parse_optional_string),
+    (_is_intent_target_property, _parse_intent_target),
+    (_is_relation_candidates_property, _parse_relation_candidates),
+)
 
 
 def _intent_field_parsers(
     schema: dict[str, Any],
 ) -> dict[str, Callable[[dict[str, Any], str], Any]]:
-    """A parser per schema property, chosen by the property's declared type.
+    """A parser per schema property, chosen by the property's whole shape.
 
     This is the half of #298 that deriving the allow-list left open. With the
     kwargs written out by hand, a property added to the schema was admitted by
     `_intent_field_names` and then never read, so its value was taken from the
     provider and dropped -- an off-enum or blank value came back as None instead
-    of being rejected. Dispatching on the declared type means the construction
-    follows the schema too: a new `["string", "null"]` property is trimmed,
-    blank-normalised off the enum fields, and held to its enum with no wiring
-    step, because it is parsed by the same function `operator` is.
+    of being rejected. Dispatching off the schema means the construction follows
+    it too: a new `["string", "null"]` property is trimmed, blank-normalised off
+    the enum fields, and held to its enum with no wiring step, because it is
+    parsed by the same function `operator` is.
 
-    A type shape with no parser fails here rather than defaulting to one: guessing
-    would hand a number or a nested object to a string parser.
+    Matching on the declared type alone was too coarse to keep that promise
+    honest. Each parser reads one shape, not one type: `_parse_intent_target`
+    reads the `{kind, value}` target and `_parse_relation_candidates` reads an
+    array of non-blank strings, and both refuse anything else per parse, where
+    `parse_query_intent` relabels the refusal as "the provider violated the
+    schema". So a differently shaped `["object", "null"]` or `["array", "null"]`
+    property -- a nested object with its own properties, an array of objects --
+    would pass this guard on its type and then blame the provider for output its
+    own schema allows. Assigning a parser only when the property is the shape
+    that parser reads moves that mismatch back to import, where it is: a
+    half-finished schema change, not a provider error.
+
+    An unmatched shape fails here rather than defaulting to a parser: guessing
+    would hand a number or a nested object to the string parser.
     """
     parsers: dict[str, Callable[[dict[str, Any], str], Any]] = {}
     for field_name, spec in schema["properties"].items():
         if field_name == "kind":
             continue
-        declared = spec.get("type")
-        key = frozenset(declared) if isinstance(declared, list) else frozenset({declared})
-        parser = _INTENT_FIELD_PARSER_BY_TYPE.get(key)
+        parser = next(
+            (parse for matches, parse in _INTENT_FIELD_PARSERS_BY_SHAPE if matches(spec)),
+            None,
+        )
         if parser is None:
             raise RuntimeError(
-                f"query intent schema property {field_name!r} has type {declared!r}, "
-                "which no parser in _INTENT_FIELD_PARSER_BY_TYPE handles; add one "
-                "rather than letting the property be parsed as something it is not"
+                f"query intent schema property {field_name!r} is {spec!r}, which "
+                "matches no shape any parser in _INTENT_FIELD_PARSERS_BY_SHAPE "
+                "reads (a nullable string, the IntentTarget kind/value object, or "
+                "a nullable array of non-blank strings); add a parser and the "
+                "check for its shape rather than letting the property be parsed "
+                "as something it is not"
             )
         parsers[field_name] = parser
     return parsers
