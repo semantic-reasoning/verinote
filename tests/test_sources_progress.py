@@ -917,6 +917,19 @@ def mid_run(tmp_path):
     after = client.get("/sources")
     assert after.status_code == 200, after.text
 
+    # The fixture's own preconditions, checked against the data rather than against any
+    # rendering of it: the run must really have ended with both a completed chunk and a
+    # failed one, and the job must be closed, or "the state the last tick delivers" is
+    # not the state this scenario is named for.
+    job = store.get_extraction_job(job_id)
+    assert int(job["completed_chunks"]) == MID_RUN_COMPLETED
+    assert int(job["failed_chunks"]) == MID_RUN_CHUNKS - MID_RUN_COMPLETED
+    assert job["status"] not in {"pending", "running"}, (
+        f"the fixture's job is still {job['status']!r}; the poll would not stop here and "
+        "the scenario's whole point is the tick that both reports the failure and ends "
+        "the polling"
+    )
+
     return {"before": _parse(before.text), "after": _parse(after.text)}
 
 
@@ -965,15 +978,20 @@ def test_a_tick_cannot_deliver_a_failure_without_the_button_that_answers_it(mid_
     that keeps the two in step passes -- refreshing the cell, or not making the buttons
     conditional on the counts in the first place -- and only the mismatch is red.
     """
-    fresh = mid_run["after"]
-    stale_labels = _labels(mid_run["before"], _cell(mid_run["before"], "actions"))
+    before, fresh = mid_run["before"], mid_run["after"]
     fresh_labels = _labels(fresh, _cell(fresh, "actions"))
 
-    # Non-vacuity: the run has to actually change which buttons the row offers, or the
-    # stale cell and the fresh one are the same cell and nothing below can fail.
-    assert fresh_labels - stale_labels, (
-        f"the fixture renders the same actions before ({sorted(stale_labels)}) and after "
-        f"({sorted(fresh_labels)}) the run; there is no staleness for a tick to expose"
+    # Non-vacuity, over the progress the two renders report rather than over the buttons
+    # they carry. Demanding that the button set change between them would fail exactly
+    # the implementations that fix this by never making a button conditional -- and
+    # those are fixes, not regressions. What has to hold is that the run moved, so that
+    # there is something for the tick to be stale about.
+    assert _reported_counts(_indicators(before)[0])[0] == 0, (
+        "the fixture's first render already shows processed chunks; it is not the "
+        "mid-run page a browser would have been holding"
+    )
+    assert _reported_counts(_indicators(fresh)[0])[0] == MID_RUN_CHUNKS, (
+        "the fixture's second render does not show the finished run"
     )
 
     analysis_doc, _analysis_cell = _after_one_tick(mid_run, "analysis-cell")
