@@ -16,6 +16,7 @@ from typing import Iterable, Iterator
 
 from verinote.engine.duckdb_terms import (
     DuckDBTermError,
+    _legacy_duckdb_value_to_term,
     duckdb_value_to_term,
     term_to_duckdb_value,
 )
@@ -61,6 +62,37 @@ class FactTermRecord:
     content_token: str
 
 
+@dataclass(frozen=True)
+class NfcFactTermRewrite:
+    """One fact-term row rewritten from the legacy non-NFC encoding."""
+
+    fact_id: int
+    old_values: tuple[str, str, str]
+    old_term_token: str | None
+    legacy_content_token: str
+    new_values: tuple[str, str, str]
+    new_term_token: str
+
+
+@dataclass(frozen=True)
+class NfcFactTermMigrationPlan:
+    """A non-mutating NFC migration plan for one existing sidecar."""
+
+    has_fact_terms_table: bool
+    has_term_token: bool
+    rewrites: tuple[NfcFactTermRewrite, ...]
+
+    @property
+    def needs_term_token(self) -> bool:
+        """Whether applying this plan must add the legacy missing column."""
+        return self.has_fact_terms_table and not self.has_term_token
+
+    @property
+    def needs_apply(self) -> bool:
+        """Whether this plan makes any DuckDB schema or payload change."""
+        return self.needs_term_token or bool(self.rewrites)
+
+
 class DuckDBFactTermStore:
     """Low-level DuckDB store for logical fact terms keyed by SQLite fact ids."""
 
@@ -89,11 +121,19 @@ class DuckDBFactTermStore:
         return cls(fact_terms_path(root))
 
     def init_schema(self) -> None:
-        """Create the fact term table if it does not already exist."""
+        """Create a missing fact-term table without rewriting existing rows."""
         with self._operation() as con:
             self._init_schema_on(con)
 
     def _init_schema_on(self, con) -> None:
+        if _fact_terms_columns(
+            self._run(
+                con,
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'fact_terms'",
+            ).fetchall()
+        ):
+            return
         self._run(
             con,
             """
@@ -106,12 +146,138 @@ class DuckDBFactTermStore:
             )
             """,
         )
-        columns = {
-            row[1]
-            for row in self._run(con, "PRAGMA table_info('fact_terms')").fetchall()
-        }
-        if "term_token" not in columns:
-            self._run(con, "ALTER TABLE fact_terms ADD COLUMN term_token VARCHAR")
+
+    def plan_nfc_migration(self) -> NfcFactTermMigrationPlan:
+        """Inspect an existing sidecar without changing its schema or rows."""
+        with self._existing_operation() as con:
+            columns = _fact_terms_columns(
+                self._run(
+                    con,
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = 'fact_terms'",
+                ).fetchall()
+            )
+            if not columns:
+                return NfcFactTermMigrationPlan(False, False, ())
+            required = {"fact_id", "subject", "rel", "object"}
+            if not required.issubset(columns):
+                raise DuckDBFactTermStoreError("DuckDB fact-term table has an invalid schema")
+            has_term_token = "term_token" in columns
+            token_sql = "term_token" if has_term_token else "NULL AS term_token"
+            rows = self._run(
+                con,
+                "SELECT fact_id, subject, rel, object, " + token_sql + " FROM fact_terms ORDER BY fact_id",
+            ).fetchall()
+        rewrites: list[NfcFactTermRewrite] = []
+        for row in rows:
+            fact_id = _validate_fact_id(row[0])
+            values = (row[1], row[2], row[3])
+            terms = _decode_legacy_row(fact_id, values)
+            normalized_values = (
+                term_to_duckdb_value(terms[0]),
+                term_to_duckdb_value(terms[1]),
+                term_to_duckdb_value(terms[2]),
+            )
+            legacy_token = _validate_legacy_token(fact_id, values, row[4])
+            # Adding term_token to a four-column sidecar must also backfill
+            # every existing row, even when its payload was already NFC.
+            if normalized_values != values or not has_term_token:
+                old_values = _string_values(values)
+                rewrites.append(
+                    NfcFactTermRewrite(
+                        fact_id=fact_id,
+                        old_values=old_values,
+                        old_term_token=legacy_token,
+                        legacy_content_token=fact_term_token_from_values(old_values),
+                        new_values=normalized_values,
+                        new_term_token=fact_term_token_from_values(normalized_values),
+                    )
+                )
+        return NfcFactTermMigrationPlan(True, has_term_token, tuple(rewrites))
+
+    def apply_nfc_migration(self, plan: NfcFactTermMigrationPlan) -> None:
+        """Apply a previously inspected plan in one guarded DuckDB transaction."""
+        if not plan.needs_apply:
+            return
+        with self._existing_operation() as con:
+            self._run(con, "BEGIN TRANSACTION")
+            try:
+                columns = _fact_terms_columns(
+                    self._run(
+                        con,
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name = 'fact_terms'",
+                    ).fetchall()
+                )
+                if not plan.has_fact_terms_table or not columns:
+                    raise DuckDBFactTermStoreError("DuckDB fact-term table changed during migration")
+                if ("term_token" in columns) != plan.has_term_token:
+                    raise DuckDBFactTermStoreError("DuckDB fact-term schema changed during migration")
+                if plan.needs_term_token:
+                    self._run(con, "ALTER TABLE fact_terms ADD COLUMN term_token VARCHAR")
+                for rewrite in plan.rewrites:
+                    token_sql = "term_token" if plan.has_term_token else "NULL AS term_token"
+                    row = self._run(
+                        con,
+                        "SELECT subject, rel, object, " + token_sql + " FROM fact_terms WHERE fact_id = ?",
+                        [rewrite.fact_id],
+                    ).fetchone()
+                    if row != (*rewrite.old_values, rewrite.old_term_token):
+                        raise DuckDBFactTermStoreError(
+                            "DuckDB fact-term data changed during migration for "
+                            f"fact_id={rewrite.fact_id}"
+                        )
+                    self._run(
+                        con,
+                        """
+                        UPDATE fact_terms
+                        SET subject = ?, rel = ?, object = ?, term_token = ?
+                        WHERE fact_id = ?
+                        """,
+                        [*rewrite.new_values, rewrite.new_term_token, rewrite.fact_id],
+                    )
+                self._run(con, "COMMIT")
+            except BaseException:
+                self._rollback_on(con)
+                raise
+
+    def revert_nfc_migration(self, plan: NfcFactTermMigrationPlan) -> None:
+        """Compensate a committed plan after the paired SQLite commit fails."""
+        if not plan.needs_apply:
+            return
+        with self._existing_operation() as con:
+            self._run(con, "BEGIN TRANSACTION")
+            try:
+                for rewrite in plan.rewrites:
+                    row = self._run(
+                        con,
+                        "SELECT subject, rel, object, term_token FROM fact_terms WHERE fact_id = ?",
+                        [rewrite.fact_id],
+                    ).fetchone()
+                    if row != (*rewrite.new_values, rewrite.new_term_token):
+                        raise DuckDBFactTermStoreError(
+                            "cannot restore NFC migration because fact-term data changed "
+                            f"for fact_id={rewrite.fact_id}"
+                        )
+                    self._run(
+                        con,
+                        """
+                        UPDATE fact_terms
+                        SET subject = ?, rel = ?, object = ?, term_token = ?
+                        WHERE fact_id = ?
+                        """,
+                        [*rewrite.old_values, rewrite.old_term_token, rewrite.fact_id],
+                    )
+                self._run(con, "COMMIT")
+            except BaseException:
+                self._rollback_on(con)
+                raise
+        if plan.needs_term_token:
+            # DuckDB cannot commit a DROP COLUMN in the same transaction that
+            # restores rows after the original ADD COLUMN. Run the schema half
+            # in a fresh transaction after the original values are durable.
+            with self._existing_operation() as con:
+                self._run(con, "ALTER TABLE fact_terms DROP COLUMN term_token")
 
     def close(self) -> None:
         """Release the store.
@@ -143,6 +309,22 @@ class DuckDBFactTermStore:
             if not self._schema_ready:
                 self._init_schema_on(con)
                 self._schema_ready = True
+            yield con
+        finally:
+            con.close()
+
+    @contextmanager
+    def _existing_operation(self) -> Iterator[object]:
+        """Open an existing file-backed sidecar without initializing it."""
+        if self.path is None:
+            if self._con is None:
+                raise DuckDBFactTermStoreError("DuckDB fact-term store is closed")
+            yield self._con
+            return
+        if not self.path.exists():
+            raise DuckDBFactTermStoreError("DuckDB fact-term store does not exist")
+        con = self._open_with_retry()
+        try:
             yield con
         finally:
             con.close()
@@ -292,6 +474,12 @@ class DuckDBFactTermStore:
         except Exception as exc:
             raise DuckDBFactTermStoreError(f"DuckDB fact-term store error: {exc}") from exc
 
+    def _rollback_on(self, con) -> None:
+        try:
+            self._run(con, "ROLLBACK")
+        except DuckDBFactTermStoreError:
+            pass
+
 
 def fact_terms_path(root: str | Path) -> Path:
     """Return the default DuckDB fact-term store path for a KB root."""
@@ -377,6 +565,51 @@ def _duckdb_term_values(subject: object, relation: object, obj: object) -> tuple
         term_to_duckdb_value(_coerce_term(relation)),
         term_to_duckdb_value(_coerce_term(obj)),
     )
+
+
+def _fact_terms_columns(rows: Iterable[tuple[object, ...]]) -> set[str]:
+    """Return names from an `information_schema.columns` result."""
+    return {str(row[0]) for row in rows}
+
+
+def _decode_legacy_row(
+    fact_id: int, row: tuple[object, object, object]
+) -> tuple[Term, Term, Term]:
+    """Decode the former exact JSON encoding while an initialization runs."""
+    decoded: list[Term] = []
+    for column, value in zip(_TERM_COLUMNS, row, strict=True):
+        try:
+            decoded.append(_legacy_duckdb_value_to_term(value))
+        except DuckDBTermError as exc:
+            raise DuckDBFactTermStoreError(
+                f"malformed legacy DuckDB term for fact_id={fact_id} column={column}: {exc}"
+            ) from exc
+    return (decoded[0], decoded[1], decoded[2])
+
+
+def _string_values(values: tuple[object, object, object]) -> tuple[str, str, str]:
+    """Narrow decoded DuckDB VARCHAR values for token hashing."""
+    if not all(isinstance(value, str) for value in values):
+        raise DuckDBFactTermStoreError("malformed legacy DuckDB term payload")
+    return (values[0], values[1], values[2])
+
+
+def _validate_legacy_token(
+    fact_id: int, values: tuple[object, object, object], stored_token: object
+) -> str | None:
+    """Reject a legacy token that was not coherent with its original payload."""
+    if stored_token is None:
+        return None
+    if not isinstance(stored_token, str):
+        raise DuckDBFactTermStoreError(
+            f"malformed DuckDB term token for fact_id={fact_id}: {stored_token!r}"
+        )
+    legacy_values = _string_values(values)
+    if stored_token != fact_term_token_from_values(legacy_values):
+        raise DuckDBFactTermStoreError(
+            f"legacy DuckDB term token does not match payload for fact_id={fact_id}"
+        )
+    return stored_token
 
 
 def _decode_row(fact_id: int, row: tuple[object, object, object]) -> tuple[Term, Term, Term]:
