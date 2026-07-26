@@ -13,6 +13,7 @@ from verinote.llm.base import ExtractedFact, LLMError
 from verinote.pipeline.ingest import register_converter
 from verinote.pipeline.query_intent import parse_query_intent
 from verinote.store import Store, engine_statuses
+from verinote.store import db as store_db
 from verinote.store.fact_input import structural_term
 
 
@@ -1848,6 +1849,53 @@ def test_seed_accepts_a_kb_whose_path_holds_a_uri_metacharacter(tmp_path, monkey
     store = Store(root / "kb.sqlite")
     assert len(store.facts()) == len(cli._DEMO_FACTS)
     store.close()
+
+
+def test_status_lists_fact_statuses_from_the_call_time_order_accessor(
+    tmp_path, monkeypatch, capsys
+):
+    _env(monkeypatch, tmp_path)
+    store = Store(tmp_path / "kb.sqlite")
+    store.init_schema()
+    store.add_fact("A", "is_a", "B", status="candidate")
+    store.add_fact("C", "is_a", "D", status="superseded")
+    store.close()
+
+    monkeypatch.setattr(store_db, "ALL_FACT_STATUSES", frozenset({"candidate"}))
+
+    assert cli.main(["status"]) == 0
+    output = capsys.readouterr().out
+    assert "candidate" in output
+    assert "superseded" not in output
+
+
+def test_status_keeps_legacy_order_then_sorts_runtime_statuses(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    store = Store(tmp_path / "kb.sqlite")
+    store.init_schema()
+    store.close()
+
+    monkeypatch.setattr(
+        store_db,
+        "ALL_FACT_STATUSES",
+        store_db.ALL_FACT_STATUSES | {"archived", "draft"},
+    )
+
+    assert cli.main(["status"]) == 0
+    statuses = [
+        line.split()[0]
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("  ")
+    ]
+    assert statuses == [
+        "candidate",
+        "needs_review",
+        "confirmed",
+        "accepted",
+        "superseded",
+        "archived",
+        "draft",
+    ]
 
 
 def test_status_on_absent_kb_refuses_and_creates_nothing(tmp_path, monkeypatch, capsys):

@@ -388,7 +388,7 @@ def _client(tmp_path):
     return client, client.app.state.store
 
 
-def test_edit_route_hands_back_a_read_only_row_for_a_superseded_fact(tmp_path):
+def test_edit_route_rejects_a_superseded_fact(tmp_path):
     # fact_row.html has always hidden the edit control on a superseded row, but
     # the control being absent from one render is not the same as the route
     # refusing. Anyone holding the URL — or a page opened before the reject
@@ -398,11 +398,7 @@ def test_edit_route_hands_back_a_read_only_row_for_a_superseded_fact(tmp_path):
 
     resp = client.get(f"/facts/{fact_id}/edit")
 
-    assert resp.status_code == 200
-    # The distinguishing mark of the edit partial is the amend form; the row
-    # says why there is nothing to do instead.
-    assert f'hx-post="/facts/{fact_id}/amend"' not in resp.text
-    assert "rejected" in resp.text
+    assert resp.status_code == 400
 
 
 def test_edit_route_still_serves_a_form_for_a_live_fact(tmp_path):
@@ -416,16 +412,11 @@ def test_edit_route_still_serves_a_form_for_a_live_fact(tmp_path):
     assert f'hx-post="/facts/{fact_id}/amend"' in resp.text
 
 
-def test_amend_route_on_a_superseded_fact_answers_without_a_server_error(tmp_path):
+def test_amend_route_rejects_a_superseded_fact_without_mutating_it(tmp_path):
     # The store raises TerminalFactError, which is a ValueError; unhandled it
     # would be a 500. Reachable from a form that was already open when someone
     # else rejected the fact, so it has to answer cleanly.
     #
-    # 200 rather than 4xx on purpose: htmx's default responseHandling does not
-    # swap 4xx, so an error status would leave the stale form on screen still
-    # offering a save that cannot succeed. Asserting the swapped-in row is what
-    # makes this a guard on the user-visible result and not just on the status
-    # code.
     client, store = _client(tmp_path)
     fact_id = _rejected_fact(store)
     before = _row(store, fact_id)
@@ -442,8 +433,7 @@ def test_amend_route_on_a_superseded_fact_answers_without_a_server_error(tmp_pat
         },
     )
 
-    assert resp.status_code == 200
-    assert "rejected" in resp.text
+    assert resp.status_code == 400
     assert _row(store, fact_id) == before
 
 

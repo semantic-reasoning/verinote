@@ -11,8 +11,8 @@ planner's schema hint never see.
 
 So the raw frozensets are no longer re-exported from `verinote.store`. Every
 status-tier question goes through the accessors here, which resolve
-`db.ENGINE_STATUSES` / `db.REVIEW_STATUSES` at call time. One question, one
-answer, one runtime definition.
+`db.ENGINE_STATUSES` / `db.REVIEW_STATUSES` and the complete fact-status
+vocabulary at call time. One question, one answer, one runtime definition.
 
 The empty tier is refused here too, for the same reason `_status_filter`
 refuses it: an empty tier turns every membership test into a silent "no" —
@@ -41,6 +41,29 @@ def review_statuses() -> frozenset[str]:
     return _require_populated(_db.REVIEW_STATUSES, "review")
 
 
+def terminal_fact_statuses() -> frozenset[str]:
+    """The terminal fact-status tier, read at call time."""
+    return _require_populated(_db.TERMINAL_STATUSES, "terminal fact")
+
+
+def all_fact_statuses() -> frozenset[str]:
+    """Every schema-supported fact status, read at call time."""
+    return _require_populated(_db.ALL_FACT_STATUSES, "all fact")
+
+
+def fact_status_order() -> tuple[str, ...]:
+    """Known statuses in legacy order, followed by sorted runtime additions."""
+    statuses = all_fact_statuses()
+    known = tuple(status for status in _db.FACT_STATUS_ORDER if status in statuses)
+    extras = tuple(sorted(statuses - set(_db.FACT_STATUS_ORDER)))
+    ordered = known + extras
+    if len(ordered) != len(set(ordered)):
+        raise ValueError("fact status order contains duplicates")
+    if set(ordered) != statuses:
+        raise ValueError("fact status order does not cover every fact status")
+    return ordered
+
+
 def is_engine_input(status: object) -> bool:
     """Whether `status` is read by the deterministic engine, decided at call time."""
     return str(status) in engine_statuses()
@@ -49,3 +72,8 @@ def is_engine_input(status: object) -> bool:
 def is_review_eligible(status: object) -> bool:
     """Whether `status` sits in the human-review tier, decided at call time."""
     return str(status) in review_statuses()
+
+
+def is_actionable_fact_status(status: object) -> bool:
+    """Whether a fact may receive review actions, decided at call time."""
+    return str(status) in review_statuses() | engine_statuses()

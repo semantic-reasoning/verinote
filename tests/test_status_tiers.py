@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+import re
 
 import pytest
 
@@ -33,6 +34,12 @@ from verinote.pipeline.report_trace import report_trace
 from verinote.pipeline.trust import fact_trust_summary
 from verinote.pipeline.workbench import trust_workbench
 from verinote.store import Store, db
+from verinote.store.tiers import (
+    all_fact_statuses,
+    fact_status_order,
+    is_actionable_fact_status,
+    terminal_fact_statuses,
+)
 
 
 def _store(tmp_path) -> Store:
@@ -44,6 +51,41 @@ def _store(tmp_path) -> Store:
 def _widen(monkeypatch) -> None:
     """Add `superseded` to the engine-input tier, the reviewer's mutation."""
     monkeypatch.setattr(db, "ENGINE_STATUSES", db.ENGINE_STATUSES | {"superseded"})
+
+
+def test_fact_status_constants_match_the_schema_check_exactly(tmp_path):
+    """The vocabulary has one schema-backed definition, with no phantom status."""
+    store = _store(tmp_path)
+    schema = store._conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'facts'"
+    ).fetchone()["sql"]
+    match = re.search(
+        r"status\s+TEXT NOT NULL DEFAULT 'candidate'\s+"
+        r"CHECK \(status IN \(([^)]*)\)\)",
+        schema,
+    )
+
+    assert match is not None
+    assert frozenset(re.findall(r"'([^']+)'", match.group(1))) == db.ALL_FACT_STATUSES
+    assert all_fact_statuses() == db.ALL_FACT_STATUSES
+    assert terminal_fact_statuses() == db.TERMINAL_STATUSES
+    assert fact_status_order() == db.FACT_STATUS_ORDER
+    assert all(
+        is_actionable_fact_status(status)
+        == (status in db.REVIEW_STATUSES | db.ENGINE_STATUSES)
+        for status in db.ALL_FACT_STATUSES
+    )
+
+
+def test_fact_status_order_sorts_runtime_extensions_and_rejects_duplicates(monkeypatch):
+    monkeypatch.setattr(
+        db, "ALL_FACT_STATUSES", db.ALL_FACT_STATUSES | {"archived", "draft"}
+    )
+    assert fact_status_order() == db.FACT_STATUS_ORDER + ("archived", "draft")
+
+    monkeypatch.setattr(db, "FACT_STATUS_ORDER", ("candidate", "candidate"))
+    with pytest.raises(ValueError, match="duplicates"):
+        fact_status_order()
 
 
 def test_engine_input_readers_agree_after_the_tier_is_widened(tmp_path, monkeypatch):

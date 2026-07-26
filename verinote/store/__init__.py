@@ -11,10 +11,14 @@ from verinote.store.db import (
     TerminalFactError,
 )
 from verinote.store.tiers import (
+    all_fact_statuses,
     engine_statuses,
+    fact_status_order,
+    is_actionable_fact_status,
     is_engine_input,
     is_review_eligible,
     review_statuses,
+    terminal_fact_statuses,
 )
 
 # The raw `ENGINE_STATUSES` / `REVIEW_STATUSES` frozensets are deliberately not
@@ -28,8 +32,12 @@ __all__ = [
     "POLICY_MARKER_KEY",
     "engine_statuses",
     "review_statuses",
+    "terminal_fact_statuses",
+    "all_fact_statuses",
+    "fact_status_order",
     "is_engine_input",
     "is_review_eligible",
+    "is_actionable_fact_status",
     "DEFAULT_REVIEW_PAGE_SIZE",
     "REVIEW_PAGE_SIZES",
     "ReviewQueuePage",

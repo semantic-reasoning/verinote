@@ -15,7 +15,7 @@ from threading import Lock
 import unicodedata
 from urllib.parse import urlencode
 
-from fastapi import FastAPI, File, Form, Request, Response, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -93,11 +93,12 @@ from verinote.store import (
     ReviewQueuePage,
     Store,
     TerminalFactError,
+    engine_statuses,
+    fact_status_order,
+    is_actionable_fact_status,
+    is_engine_input,
     review_statuses,
 )
-# Imported as a module, not `from ... import ENGINE_STATUSES`: the tier must be
-# read at call time so the web layer cannot pin a stale copy of the constant.
-from verinote.store import db as store_db
 from verinote.store.duckdb_fact_terms import DuckDBFactTermStoreError
 from verinote.store.fact_input import nfc_term, structural_term, term_input_kind
 from verinote.text import nfc
@@ -447,7 +448,20 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         if fact and recommendations is None:
             recommendations = accept_recommendations(_active_store())
         recommendation = recommendations.get(int(fact["id"])) if fact else None
-        return {"f": view, "trust": trust, "recommendation": recommendation}
+        return {
+            "f": view,
+            "trust": trust,
+            "recommendation": recommendation,
+            "actionable": bool(fact and is_actionable_fact_status(fact["status"])),
+        }
+
+    def _actionable_fact_or_error(fact_id: int):
+        fact = _active_store().get_fact(fact_id)
+        if fact is None:
+            raise HTTPException(status_code=404, detail="fact not found")
+        if not is_actionable_fact_status(fact["status"]):
+            raise HTTPException(status_code=400, detail="fact is not actionable")
+        return fact
 
     def _maybe_apply_auto_accept(exclude_fact_ids: tuple[int, ...] = ()) -> list:
         if _active_cfg().auto_accept_recommendations:
@@ -698,7 +712,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         typed = store_typed_relations(store)
         support_sources: dict[tuple[str, str, tuple[str, object]], set[str]] = {}
         for fact in facts:
-            if str(fact["status"]) not in store_db.ENGINE_STATUSES:
+            if not is_engine_input(fact["status"]):
                 continue
             source_path = str(fact["source_path"] or "").strip()
             if not source_path:
@@ -818,9 +832,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 # Derived here, not summed in the template: the dashboard's
                 # "engine input" card must answer the same question as coverage
                 # and the Sources badge, from the same constant.
-                "engine_input": sum(
-                    counts.get(status, 0) for status in store_db.ENGINE_STATUSES
-                ),
+                "engine_input": sum(counts.get(status, 0) for status in engine_statuses()),
+                "review_count": sum(counts.get(status, 0) for status in review_statuses()),
+                "all_fact_statuses": fact_status_order(),
                 "sources": store.sources(),
                 "coverage": coverage(store, root=cfg.root),
                 "corroboration": store_corroboration(store),
@@ -1331,6 +1345,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.post("/facts/{fact_id}/toggle", response_class=HTMLResponse)
     def toggle(request: Request, fact_id: int):
+        _actionable_fact_or_error(fact_id)
         toggled = _active_store().toggle_review(fact_id)
         # A demotion parks the fact in exactly the tier auto-accept promotes
         # from, so an unrestricted pass would undo the user's click inside their
@@ -1351,6 +1366,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.post("/facts/{fact_id}/accept", response_class=HTMLResponse)
     def accept(request: Request, fact_id: int):
+        _actionable_fact_or_error(fact_id)
         accepted = _active_store().accept_fact(fact_id)
         return _row_after_decision(
             request, accepted.fact, fact_id, decided=accepted.changed
@@ -1361,6 +1377,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         # Reject runs auto-accept too: removing a fact's support (or freeing a
         # single-valued slot it conflicted on) also reshapes corroboration, so
         # keeping the trigger here matches the other decision routes.
+        _actionable_fact_or_error(fact_id)
         rejected = _active_store().reject_fact(fact_id)
         return _row_after_decision(
             request, rejected.fact, fact_id, decided=rejected.changed
@@ -1368,15 +1385,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.get("/facts/{fact_id}/edit", response_class=HTMLResponse)
     def edit_fact(request: Request, fact_id: int):
-        fact = _active_store().get_fact(fact_id)
-        # #311: a superseded fact's content is frozen, so do not hand back a form
-        # that invites an edit the store will refuse. The row template already
-        # hides the edit control for these, so reaching here means a page that
-        # went stale (the fact was rejected while it was open) or a direct GET;
-        # re-rendering the read-only row answers both -- it swaps the stale
-        # controls for the current "rejected -- no further action" state.
-        if fact is not None and fact["status"] == "superseded":
-            return _row(request, fact)
+        fact = _actionable_fact_or_error(fact_id)
         return templates.TemplateResponse(
             request,
             "partials/fact_edit.html",
@@ -1400,6 +1409,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         object_kind: str = Form(...),
         note: str = Form(""),
     ):
+        _actionable_fact_or_error(fact_id)
         try:
             subject_value = _fact_input(subject, subject_kind)
             relation_value = _fact_input(relation, relation_kind)

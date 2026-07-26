@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from verinote.config import Config  # noqa: E402
 from verinote.pipeline import acceptance  # noqa: E402
 from verinote.store import Store  # noqa: E402
+from verinote.store import db as store_db  # noqa: E402
 from verinote.store.db import ENGINE_STATUSES  # noqa: E402
 from verinote.web import create_app  # noqa: E402
 
@@ -656,7 +657,7 @@ def test_accept_on_a_superseded_fact_does_not_run_auto_accept(tmp_path):
 
     resp = client.post(f"/facts/{target}/accept")
 
-    assert resp.status_code == 200
+    assert resp.status_code == 400
     assert store.get_fact(target)["status"] == "superseded"
     _assert_untouched(store, eligible, resp)
 
@@ -669,7 +670,7 @@ def test_replayed_reject_does_not_run_auto_accept(tmp_path):
 
     resp = client.post(f"/facts/{target}/reject")
 
-    assert resp.status_code == 200
+    assert resp.status_code == 400
     assert store.get_fact(target)["status"] == "superseded"
     _assert_untouched(store, eligible, resp)
 
@@ -682,12 +683,12 @@ def test_toggle_on_a_superseded_fact_does_not_run_auto_accept(tmp_path):
 
     resp = client.post(f"/facts/{target}/toggle")
 
-    assert resp.status_code == 200
+    assert resp.status_code == 400
     assert store.get_fact(target)["status"] == "superseded"
     _assert_untouched(store, eligible, resp)
 
 
-def test_missing_amend_target_does_not_run_auto_accept(tmp_path):
+def test_missing_amend_target_returns_not_found_without_running_auto_accept(tmp_path):
     # A stale inline-edit POST for a fact that no longer exists writes nothing,
     # so it must not become an excuse to promote unrelated eligible facts.
     client, store = _auto_accept_client(tmp_path)
@@ -705,8 +706,32 @@ def test_missing_amend_target_does_not_run_auto_accept(tmp_path):
         },
     )
 
-    assert resp.status_code == 200
+    assert resp.status_code == 404
     _assert_untouched(store, eligible, resp)
+
+
+def test_tier_mutation_blocks_direct_reject_and_amend(tmp_path, monkeypatch):
+    client, store = _auto_accept_client(tmp_path)
+    fact_id = store.add_fact("Ledger", "owner", "Park", status="candidate", note="original")
+    before = dict(store.get_fact(fact_id))
+    monkeypatch.setattr(store_db, "REVIEW_STATUSES", frozenset({"needs_review"}))
+
+    rejected = client.post(f"/facts/{fact_id}/reject")
+    amended = client.post(
+        f"/facts/{fact_id}/amend",
+        data={
+            "subject": "Changed",
+            "subject_kind": "string",
+            "relation": "owner",
+            "relation_kind": "string",
+            "object": "Other",
+            "object_kind": "string",
+            "note": "changed",
+        },
+    )
+
+    assert rejected.status_code == amended.status_code == 400
+    assert dict(store.get_fact(fact_id)) == before
 
 
 def test_replayed_amend_does_not_run_auto_accept(tmp_path):
