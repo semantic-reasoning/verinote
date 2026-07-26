@@ -1,19 +1,19 @@
 # SPDX-License-Identifier: MPL-2.0
-"""Review-gate transition guards (#231, #232, #257, #292).
+"""Review-gate transition guards (#231, #232, #257, #292, #309).
 
 These tests pin the rule that a human's rejection is terminal: neither a toggle
 nor an accept may revive a `superseded` fact, and the status-changing web routes
 apply auto-accept so a decision on one fact reveals promotions of its siblings.
 
-The #292 guards then sweep that rule across every public route that writes
-`facts.status`, deriving the route list from Store's own source so a status
-write inlined in a new public method cannot skip the sweep. That derivation
-reads one method body at a time, so it covers inlined writes only: a write
-factored into a private helper stays out of its view.
+The SQLite terminal-state trigger is the enforcement authority: it rejects a
+revival regardless of which Store path attempts it. The #292/#309 tests provide
+behavioral coverage for the reviewed transition paths and structurally inventory
+literal direct `facts.status` writes, including private helpers, so new code
+cannot quietly bypass that coverage.
 """
 
-import inspect
-import re
+import ast
+from pathlib import Path
 
 import pytest
 
@@ -878,13 +878,10 @@ def test_auto_retract_skips_when_the_fact_leaves_accepted_mid_transition(tmp_pat
 
 # --- #292: superseded stays superseded, whichever public route you take ---
 
-# Every public Store method whose own body writes `facts.status`. Membership is
-# not a matter of taste: the scan below reads each method's source and fails if
-# a status writer lands outside this set, so an inline blind write cannot join
-# the class by being left off a list. Its reach stops at the function boundary
-# — a write moved into a private helper and called from a public method is not
-# seen, which is a plain refactor rather than an attack, so treat this as a
-# guard against inlined writes and not as proof that none exist elsewhere.
+# Every Store method permitted to issue a direct `facts.status` assignment.
+# The module-level AST inventory below includes private helpers, so its equality
+# check is coverage for reviewed transitions rather than the terminal-state
+# enforcement itself. The SQLite trigger remains authoritative for that rule.
 # `amend_fact` is absent because it rewrites content and never touches status;
 # `add_fact(status=...)` is absent because it picks a fact's *starting* status
 # rather than moving an existing one.
@@ -900,81 +897,409 @@ FACT_TRANSITION_METHODS = frozenset(
     }
 )
 
-# The assignment list of every `UPDATE facts SET ... WHERE`. Matching the whole
-# SET clause rather than stopping at the first quote is what makes column order
-# irrelevant: `datetime('now')` sits between `SET` and `status` the moment
-# someone writes `updated_at` first, and a quote-sensitive pattern would read
-# that as "no status write" and wave the row straight past both guards.
-_STATUS_WRITE = re.compile(r"UPDATE\s+facts\s+SET(.*?)WHERE", re.IGNORECASE)
+def _sql_tokens(sql: str) -> list[str]:
+    """Tokenize enough SQLite syntax to inspect executable UPDATE statements."""
+    tokens: list[str] = []
+    index = 0
+    while index < len(sql):
+        char = sql[index]
+        if char.isspace():
+            index += 1
+        elif sql.startswith("--", index):
+            newline = sql.find("\n", index + 2)
+            index = len(sql) if newline == -1 else newline + 1
+        elif sql.startswith("/*", index):
+            close = sql.find("*/", index + 2)
+            index = len(sql) if close == -1 else close + 2
+        elif char == "'":
+            index += 1
+            while index < len(sql):
+                if sql[index] == "'":
+                    escaped = sql.startswith("''", index)
+                    index += 2 if escaped else 1
+                    if not escaped:
+                        break
+                else:
+                    index += 1
+        elif char in {'"', "`", "["}:
+            closing = "]" if char == "[" else char
+            close = sql.find(closing, index + 1)
+            if close == -1:
+                return tokens
+            tokens.append(sql[index + 1 : close].lower())
+            index = close + 1
+        elif char.isalpha() or char == "_":
+            end = index + 1
+            while end < len(sql) and (sql[end].isalnum() or sql[end] in "_$"):
+                end += 1
+            tokens.append(sql[index:end].lower())
+            index = end
+        else:
+            tokens.append(char)
+            index += 1
+    return tokens
 
 
-def _public_methods(cls) -> frozenset[str]:
-    return frozenset(
-        name
-        for name in dir(cls)
-        if not name.startswith("_") and callable(getattr(cls, name))
-    )
+def _starts_create_trigger(statement: list[str]) -> bool:
+    """Whether a statement starts SQLite's CREATE [TEMP] TRIGGER form."""
+    if statement[:1] != ["create"]:
+        return False
+    index = 1
+    if statement[index : index + 1] in (["temp"], ["temporary"]):
+        index += 1
+    if statement[index : index + 3] == ["if", "not", "exists"]:
+        index += 3
+    return statement[index : index + 1] == ["trigger"]
 
 
-def _writes_status(method) -> bool:
+def _top_level_sql_statements(tokens: list[str]) -> list[list[str]]:
+    """Split statements while leaving trigger bodies out of the executable stream."""
+    statements: list[list[str]] = []
+    statement: list[str] = []
+    in_trigger = False
+    for token in tokens:
+        if token != ";":
+            statement.append(token)
+            continue
+        if not statement:
+            continue
+        if in_trigger:
+            # SQLite trigger bodies contain semicolon-delimited statements. The
+            # final `END;` belongs to CREATE TRIGGER, not to the script itself.
+            if statement == ["end"]:
+                in_trigger = False
+        elif _starts_create_trigger(statement):
+            in_trigger = True
+        else:
+            statements.append(statement)
+        statement = []
+    if statement and not in_trigger:
+        statements.append(statement)
+    return statements
+
+
+def _assignment_writes_status(tokens: list[str]) -> bool:
+    """Whether one SET assignment has `status` among its targets."""
     try:
-        source = " ".join(inspect.getsource(method).split())
-    except OSError as exc:  # dynamically built method: nothing to read
-        raise AssertionError(
-            f"cannot scan {method.__qualname__} for status writes: define it in a "
-            "source file so this guard can read it"
-        ) from exc
-    return any("status" in clause for clause in _STATUS_WRITE.findall(source))
+        equals_index = tokens.index("=")
+    except ValueError:
+        return False
+    targets = tokens[:equals_index]
+    if targets == ["status"]:
+        return True
+    if len(targets) < 3 or targets[0] != "(" or targets[-1] != ")":
+        return False
+
+    column: list[str] = []
+    depth = 0
+    for token in targets[1:-1]:
+        if token == "(":
+            depth += 1
+        elif token == ")":
+            depth = max(depth - 1, 0)
+        if depth == 0 and token == ",":
+            if column == ["status"]:
+                return True
+            column = []
+        else:
+            column.append(token)
+    return column == ["status"]
 
 
-def _status_writers(cls) -> frozenset[str]:
-    return frozenset(
-        name for name in _public_methods(cls) if _writes_status(getattr(cls, name))
+def _set_clause_writes_status(tokens: list[str]) -> bool:
+    """Whether a top-level SET assignment targets the `status` column."""
+    assignment: list[str] = []
+    depth = 0
+    for token in tokens:
+        if token == "(":
+            depth += 1
+        elif token == ")":
+            depth = max(depth - 1, 0)
+        if depth == 0 and token in {",", "where", "returning", "order", "limit"}:
+            if _assignment_writes_status(assignment):
+                return True
+            if token in {"where", "returning", "order", "limit"}:
+                return False
+            assignment = []
+        else:
+            assignment.append(token)
+    return _assignment_writes_status(assignment)
+
+
+def _skip_parenthesized(tokens: list[str], index: int) -> int | None:
+    """Return the token after one balanced parenthesized expression."""
+    if tokens[index : index + 1] != ["("]:
+        return None
+    depth = 0
+    while index < len(tokens):
+        if tokens[index] == "(":
+            depth += 1
+        elif tokens[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+        index += 1
+    return None
+
+
+def _top_level_update_index(tokens: list[str]) -> int | None:
+    """Return the executable UPDATE after an optional WITH clause."""
+    if tokens[:1] == ["update"]:
+        return 0
+    if tokens[:1] != ["with"]:
+        return None
+
+    index = 1
+    if tokens[index : index + 1] == ["recursive"]:
+        index += 1
+    while True:
+        # A common-table expression is `name [(columns)] AS [(materialized)]
+        # (select)`. Skipping its balanced body keeps nested SQL out of scope.
+        if index >= len(tokens) or tokens[index] in {"(", ")", ",", ";"}:
+            return None
+        index += 1
+        if tokens[index : index + 1] == ["("]:
+            index = _skip_parenthesized(tokens, index)
+            if index is None:
+                return None
+        if tokens[index : index + 1] != ["as"]:
+            return None
+        index += 1
+        if tokens[index : index + 2] == ["not", "materialized"]:
+            index += 2
+        elif tokens[index : index + 1] == ["materialized"]:
+            index += 1
+        index = _skip_parenthesized(tokens, index)
+        if index is None:
+            return None
+        if tokens[index : index + 1] != [","]:
+            break
+        index += 1
+    return index if tokens[index : index + 1] == ["update"] else None
+
+
+def _facts_update_target_end(tokens: list[str], update_index: int) -> int | None:
+    """Return the token after an UPDATE target when it names facts."""
+    index = update_index + 1
+    if tokens[index : index + 1] == ["or"]:
+        index += 2
+    if tokens[index : index + 1] == ["facts"]:
+        return index + 1
+    if tokens[index + 1 : index + 3] == [".", "facts"]:
+        return index + 3
+    return None
+
+
+def _literal_sql_writes_facts_status(sql: str) -> bool:
+    """Recognize literal, top-level `UPDATE [schema.]facts` status assignments."""
+    for tokens in _top_level_sql_statements(_sql_tokens(sql)):
+        update_index = _top_level_update_index(tokens)
+        if update_index is None:
+            continue
+        target_end = _facts_update_target_end(tokens, update_index)
+        if target_end is None:
+            continue
+        try:
+            set_index = tokens.index("set", target_end)
+        except ValueError:
+            continue
+        if _set_clause_writes_status(tokens[set_index + 1 :]):
+            return True
+    return False
+
+
+class _LiteralSqlWriteVisitor(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.writes_status = False
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"execute", "executemany", "executescript"}
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+            and _literal_sql_writes_facts_status(node.args[0].value)
+        ):
+            self.writes_status = True
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        # A nested function is not a Store method, so do not attribute its SQL
+        # to the method that happens to define it.
+        return
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+    visit_Lambda = visit_FunctionDef
+
+
+def _status_writers_from_source(source: str) -> frozenset[str]:
+    """Return Store methods with literal direct `facts.status` assignments."""
+    module = ast.parse(source)
+    store = next(
+        (
+            node
+            for node in module.body
+            if isinstance(node, ast.ClassDef) and node.name == "Store"
+        ),
+        None,
     )
+    assert store is not None, "AST scan requires the Store class"
+    writers: set[str] = set()
+    for method in store.body:
+        if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        visitor = _LiteralSqlWriteVisitor()
+        for statement in method.body:
+            visitor.visit(statement)
+        if visitor.writes_status:
+            writers.add(method.name)
+    return frozenset(writers)
 
 
-# Two specimens for the scanner, deliberately not wired into Store. They exist
-# so the detection rule itself is under test rather than only its result on
-# today's five writers, which all happen to name `status` first.
-def _status_written_after_updated_at(self, fact_id: int, status: str) -> None:
-    self._conn.execute(
-        "UPDATE facts SET updated_at = datetime('now'), status = ? WHERE id = ?",
-        (status, fact_id),
-    )
+def _status_writers() -> frozenset[str]:
+    source_path = Path(store_db.__file__)
+    return _status_writers_from_source(source_path.read_text(encoding="utf-8"))
 
 
-def _no_status_written(self, fact_id: int, note: str) -> None:
-    self._conn.execute(
-        "UPDATE facts SET note = ?, updated_at = datetime('now') WHERE id = ?",
-        (note, fact_id),
-    )
+def test_ast_scan_detects_private_writers_for_each_cursor_execution_method():
+    source = '''
+class Store:
+    def _execute_status(self, fact_id, status):
+        self._conn.execute("UPDATE facts SET status = ? WHERE id = ?")
+
+    def _executemany_status(self, rows):
+        self._conn.executemany("UPDATE facts SET status = ? WHERE id = ?", rows)
+
+    def _executescript_status(self):
+        self._conn.executescript("UPDATE facts SET status = 'confirmed' WHERE id = 1;")
+'''
+
+    assert _status_writers_from_source(source) == {
+        "_execute_status",
+        "_executemany_status",
+        "_executescript_status",
+    }
 
 
-def test_scan_sees_a_status_write_whichever_column_comes_first():
-    # A blind write is free to assign `status` last, and `datetime('now')` then
-    # sits in front of it. A quote-sensitive pattern stops at that apostrophe,
-    # calls the specimen clean, and lets it past both guards — so the scan must
-    # read the whole SET clause, and this is what says so.
-    assert _writes_status(_status_written_after_updated_at)
+def test_ast_scan_detects_status_after_updated_at_in_adjacent_literals():
+    source = '''
+class Store:
+    def transition(self, fact_id, status):
+        self._conn.execute(
+            "UPDATE facts SET updated_at = datetime('now'), "
+            "status = ? "
+            "WHERE id = ?"
+        )
+'''
+
+    assert _status_writers_from_source(source) == {"transition"}
 
 
-def test_scan_ignores_a_write_that_leaves_status_alone():
-    # Keeps the guard above honest: detection has to discriminate, not just
-    # answer yes to every UPDATE on facts.
-    assert not _writes_status(_no_status_written)
+def test_ast_scan_detects_sqlite_row_value_status_assignments():
+    source = '''
+class Store:
+    def transition(self, fact_id, status):
+        self._conn.execute(
+            "UPDATE facts SET (status, stale) = (?, ?) WHERE id = ?",
+        )
+'''
+
+    assert _status_writers_from_source(source) == {"transition"}
+
+
+def test_ast_scan_detects_cte_prefixed_status_writes_but_not_nested_cte_updates():
+    source = '''
+class Store:
+    def cte_update(self, fact_id, status):
+        self._conn.execute("""
+            WITH RECURSIVE roots(id) AS (SELECT ?),
+            selected(id) AS (SELECT id FROM roots)
+            UPDATE facts SET status = ? WHERE id IN (SELECT id FROM selected)
+        """, (fact_id, status))
+
+    def nested_cte_update(self):
+        self._conn.execute("""
+            WITH nested AS (UPDATE facts SET status = 'confirmed' RETURNING id)
+            SELECT id FROM nested
+        """)
+'''
+
+    assert _status_writers_from_source(source) == {"cte_update"}
+
+
+def test_ast_scan_detects_schema_qualified_facts_status_writes():
+    source = '''
+class Store:
+    def main_facts(self, status):
+        self._conn.execute("UPDATE main.facts SET status = ?", (status,))
+
+    def quoted_main_facts(self, status):
+        self._conn.execute('UPDATE "main"."facts" SET status = ?', (status,))
+'''
+
+    assert _status_writers_from_source(source) == {"main_facts", "quoted_main_facts"}
+
+
+def test_ast_scan_ignores_non_status_assignments_and_status_mentions():
+    source = '''
+class Store:
+    def where_status(self, fact_id, note, status):
+        self._conn.execute(
+            "UPDATE facts SET note = ? WHERE status = ? -- status = ?",
+        )
+
+    def comment_status(self, fact_id, note):
+        self._conn.execute(
+            "UPDATE facts SET note = ? /* status = ? */ WHERE id = ?",
+        )
+
+    def literal_status(self, fact_id, note):
+        self._conn.execute(
+            "UPDATE facts SET note = 'status = ?' WHERE id = ?",
+        )
+
+    def other_table(self, fact_id, status):
+        self._conn.execute("UPDATE fact_events SET status = ? WHERE id = ?")
+'''
+
+    assert _status_writers_from_source(source) == frozenset()
+
+
+def test_ast_scan_requires_a_top_level_executable_update():
+    source = '''
+class Store:
+    def explain(self):
+        self._conn.execute("EXPLAIN UPDATE facts SET status = 'confirmed'")
+
+    def trigger(self):
+        self._conn.executescript("""
+            CREATE TRIGGER facts_after_insert AFTER INSERT ON facts
+            BEGIN
+                UPDATE facts SET status = 'confirmed' WHERE id = NEW.id;
+            END;
+        """)
+
+    def direct_script_update(self):
+        self._conn.executescript("""
+            CREATE TABLE scratch (id INTEGER);
+            UPDATE facts SET status = 'confirmed' WHERE id = 1;
+        """)
+'''
+
+    assert _status_writers_from_source(source) == {"direct_script_update"}
 
 
 def test_every_status_writer_is_a_swept_transition():
-    # A public method that writes facts.status in its own body is red until it
-    # joins the sweep below, which is what stops an inlined unguarded write from
-    # landing quietly. It also subsumes the structural check on `set_status`
-    # (#292): reintroducing it, or anything shaped like it, shows up here as an
-    # unswept writer.
+    # A Store method, including a private helper, that directly writes
+    # facts.status is red until it joins the reviewed transition set below. The
+    # SQLite terminal-state trigger enforces the invariant at runtime; this
+    # inventory makes the behavioral sweep explicit and complete.
     #
     # Equality, not containment, because a subset assert is happy with the empty
     # set — if the pattern or the SQL shape drifts so that detection finds
     # nothing at all, that must be a failure and not a silent pass.
-    assert _status_writers(Store) == FACT_TRANSITION_METHODS
+    assert _status_writers() == FACT_TRANSITION_METHODS
 
 
 def test_no_public_transition_revives_a_superseded_fact(tmp_path):
