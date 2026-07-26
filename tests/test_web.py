@@ -2052,13 +2052,53 @@ def test_amend_endpoint_updates_and_audits(tmp_path):
     c = _client(tmp_path)
     r = c.post(
         f"/facts/{c.fact_id}/amend",
-        data={"subject": "NewSubj", "relation": "became", "object": "NewObj", "note": "n"},
+        data={
+            "subject": "NewSubj",
+            "subject_kind": "string",
+            "relation": "became",
+            "relation_kind": "string",
+            "object": "NewObj",
+            "object_kind": "string",
+            "note": "n",
+        },
     )
     assert r.status_code == 200
     assert "NewSubj" in r.text and "NewObj" in r.text
     store = c.app.state.store
     assert store.get_fact(c.fact_id)["subject"] == "NewSubj"
     assert any(e["action"] == "amended" for e in store.fact_log(c.fact_id))
+
+
+@pytest.mark.parametrize("missing_kind", ["subject_kind", "relation_kind", "object_kind"])
+def test_amend_endpoint_rejects_missing_kind_without_writing(tmp_path, missing_kind):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    fid = store.add_fact(
+        structural_term('person("Ada")'),
+        structural_term("has_role"),
+        structural_term('role(person("Ada"), "PI")'),
+        status="needs_review",
+        note="original",
+    )
+    before_row = dict(store.get_fact(fid))
+    before_terms = store.get_fact_terms(fid)
+    data = {
+        "subject": 'person("Ada")',
+        "subject_kind": "term",
+        "relation": "has_role",
+        "relation_kind": "term",
+        "object": 'role(person("Ada"), "PI")',
+        "object_kind": "term",
+        "note": "changed",
+    }
+    del data[missing_kind]
+
+    r = c.post(f"/facts/{fid}/amend", data=data)
+
+    assert r.status_code == 422
+    assert dict(store.get_fact(fid)) == before_row
+    assert store.get_fact_terms(fid) == before_terms
+    assert store.fact_log(fid) == []
 
 
 def test_edit_form_preserves_structural_fact_input_kinds(tmp_path):

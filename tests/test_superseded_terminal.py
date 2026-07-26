@@ -432,7 +432,14 @@ def test_amend_route_on_a_superseded_fact_answers_without_a_server_error(tmp_pat
 
     resp = client.post(
         f"/facts/{fact_id}/amend",
-        data={"subject": "Ledger", "relation": "owner", "object": "Choi"},
+        data={
+            "subject": "Ledger",
+            "subject_kind": "string",
+            "relation": "owner",
+            "relation_kind": "string",
+            "object": "Choi",
+            "object_kind": "string",
+        },
     )
 
     assert resp.status_code == 200
