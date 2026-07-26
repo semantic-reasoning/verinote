@@ -558,6 +558,33 @@ def _rel_to_root(root: Path, p: Path) -> str:
         return str(p)
 
 
+def _sync_source_citation(root: Path, source: Path) -> str:
+    """Return a safe NFC citation for an unregistered sync source.
+
+    Filesystems differ on whether NFC and NFD spellings name the same file. Keep
+    the path used to read the source unchanged, and only use an NFC citation
+    after the alternate spelling has been proven to identify that same file.
+    """
+    citation = _rel_to_root(root, source)
+    normalized = nfc(citation)
+    if normalized == citation:
+        return citation
+
+    candidate = (
+        Path(normalized)
+        if Path(citation).is_absolute()
+        else root / normalized
+    )
+    try:
+        if source.samefile(candidate):
+            return normalized
+    except OSError:
+        # The NFC spelling may not exist, or may not be stat-able. In either
+        # case it has not been proven to identify this source.
+        pass
+    return citation
+
+
 def _source_dir_files(cfg: Config) -> list[Path]:
     """Loose source files under `<root>/sources` — the unregistered-input path.
 
@@ -575,7 +602,11 @@ def _resolve_sources(cfg: Config, store: Store, path: str | None) -> list[_Sourc
         f = Path(path)
         if not f.is_file():
             raise FileNotFoundError(f"no such file: {path}")
-        return [_SourceInput(_rel_to_root(cfg.root, f), f.read_text(encoding="utf-8"))]
+        return [
+            _SourceInput(
+                _sync_source_citation(cfg.root, f), f.read_text(encoding="utf-8")
+            )
+        ]
 
     inputs = [
         _SourceInput(
@@ -590,7 +621,7 @@ def _resolve_sources(cfg: Config, store: Store, path: str | None) -> list[_Sourc
         return inputs
 
     return [
-        _SourceInput(_rel_to_root(cfg.root, f), f.read_text(encoding="utf-8"))
+        _SourceInput(_sync_source_citation(cfg.root, f), f.read_text(encoding="utf-8"))
         for f in _source_dir_files(cfg)
     ]
 

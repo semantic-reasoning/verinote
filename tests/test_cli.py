@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 import sqlite3
 import sys
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -124,6 +125,120 @@ def test_sync_missing_file_errors(tmp_path, monkeypatch, capsys):
     rc = cli.main(["sync", str(tmp_path / "nope.txt")])
     assert rc == 2
     assert "no such file" in capsys.readouterr().err
+
+
+def _capture_legacy_sync_paths(monkeypatch):
+    """Replace extraction with a recorder for unregistered sync citations."""
+    from verinote.pipeline.extract import SyncResult
+
+    paths: list[str] = []
+
+    def sync_sources(store, client, sources, **kwargs):
+        pairs = list(sources)
+        paths.extend(path for path, _ in pairs)
+        return SyncResult(run_id=1, per_source=[(path, 0) for path, _ in pairs])
+
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: object())
+    monkeypatch.setattr("verinote.pipeline.sync_sources", sync_sources)
+    return paths
+
+
+def test_sync_explicit_nfd_source_citation_uses_nfc_when_samefile_proves_identity(
+    tmp_path, monkeypatch
+):
+    _env(monkeypatch, tmp_path / "kb")
+    nfd_name = unicodedata.normalize("NFD", "cafe\u0301.txt")
+    nfc_name = unicodedata.normalize("NFC", nfd_name)
+    assert nfd_name != nfc_name
+    source = tmp_path / nfd_name
+    source.write_text("synthetic source text", encoding="utf-8")
+    nfc_candidate = tmp_path / nfc_name
+
+    def samefile(self, other):
+        assert self == source
+        assert other == nfc_candidate
+        return True
+
+    monkeypatch.setattr(Path, "samefile", samefile)
+    paths = _capture_legacy_sync_paths(monkeypatch)
+
+    assert cli.main(["sync", str(source)]) == 0
+
+    assert paths == [str(nfc_candidate)]
+
+
+def test_sync_glob_nfd_source_citation_uses_nfc_when_samefile_proves_identity(
+    tmp_path, monkeypatch
+):
+    _env(monkeypatch, tmp_path)
+    nfd_name = unicodedata.normalize("NFD", "cafe\u0301.txt")
+    nfc_name = unicodedata.normalize("NFC", nfd_name)
+    assert nfd_name != nfc_name
+    source = tmp_path / "sources" / nfd_name
+    source.parent.mkdir()
+    source.write_text("synthetic source text", encoding="utf-8")
+    nfc_candidate = tmp_path / "sources" / nfc_name
+
+    def samefile(self, other):
+        assert self == source
+        assert other == nfc_candidate
+        return True
+
+    monkeypatch.setattr(Path, "samefile", samefile)
+    monkeypatch.setattr(cli, "_source_dir_files", lambda cfg: [source])
+    paths = _capture_legacy_sync_paths(monkeypatch)
+
+    assert cli.main(["sync"]) == 0
+
+    assert paths == [f"sources/{nfc_name}"]
+
+
+def test_sync_keeps_nfd_citation_when_nfc_spelling_is_a_distinct_file(
+    tmp_path, monkeypatch
+):
+    _env(monkeypatch, tmp_path)
+    nfd_name = unicodedata.normalize("NFD", "cafe\u0301.txt")
+    nfc_name = unicodedata.normalize("NFC", nfd_name)
+    assert nfd_name != nfc_name
+    source = tmp_path / nfd_name
+    source.write_text("synthetic source text", encoding="utf-8")
+    nfc_candidate = tmp_path / nfc_name
+
+    def samefile(self, other):
+        assert self == source
+        assert other == nfc_candidate
+        return False
+
+    monkeypatch.setattr(Path, "samefile", samefile)
+    paths = _capture_legacy_sync_paths(monkeypatch)
+
+    assert cli.main(["sync", str(source)]) == 0
+
+    assert paths == [nfd_name]
+
+
+def test_sync_keeps_nfd_citation_when_nfc_spelling_does_not_exist(
+    tmp_path, monkeypatch
+):
+    _env(monkeypatch, tmp_path)
+    nfd_name = unicodedata.normalize("NFD", "cafe\u0301.txt")
+    nfc_name = unicodedata.normalize("NFC", nfd_name)
+    assert nfd_name != nfc_name
+    source = tmp_path / nfd_name
+    source.write_text("synthetic source text", encoding="utf-8")
+    nfc_candidate = tmp_path / nfc_name
+
+    def samefile(self, other):
+        assert self == source
+        assert other == nfc_candidate
+        raise FileNotFoundError(nfc_candidate)
+
+    monkeypatch.setattr(Path, "samefile", samefile)
+    paths = _capture_legacy_sync_paths(monkeypatch)
+
+    assert cli.main(["sync", str(source)]) == 0
+
+    assert paths == [nfd_name]
 
 
 def test_ingest_registers_text_source(tmp_path, monkeypatch, capsys):
