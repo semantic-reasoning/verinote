@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: MPL-2.0
+import hashlib
 import io
+import unicodedata
 
 import pytest
 
 from verinote.pipeline import ingest_bytes, ingest_file, supported_suffixes
-from verinote.pipeline.ingest import IngestError
+from verinote.pipeline.ingest import IngestError, store_source
 from verinote.pipeline.ingest import register_converter
 from verinote.store import Store
 
@@ -63,6 +65,24 @@ def test_ingest_file_registers_text_source(tmp_path):
     assert [(r["path"], r["kind"], r["fact_count"]) for r in rows] == [
         ("sources/doc.txt", "text", 0)
     ]
+
+
+def test_store_source_normalizes_filename_and_text_but_preserves_raw_bytes(tmp_path):
+    s = _store(tmp_path)
+    nfd_filename = unicodedata.normalize("NFD", "\ubb38\uc11c.txt")
+    nfc_filename = unicodedata.normalize("NFC", nfd_filename)
+    nfd_text = unicodedata.normalize("NFD", "\uac00\uac01 \uc815\ubcf4")
+    nfc_text = unicodedata.normalize("NFC", nfd_text)
+    raw = nfd_text.encode("utf-8")
+
+    result = store_source(s, tmp_path, nfd_filename, raw, nfd_text, "text")
+
+    digest = hashlib.sha256(nfc_text.encode("utf-8")).hexdigest()
+    assert result["citation"] == f"sources/{nfc_filename}"
+    assert result["text"] == nfc_text
+    assert result["artifact_path"] == f"artifacts/sources/1/{digest}.txt"
+    assert (tmp_path / "sources" / nfc_filename).read_bytes() == raw
+    assert (tmp_path / result["artifact_path"]).read_text(encoding="utf-8") == nfc_text
 
 
 def test_ingest_file_converts_binary_source(tmp_path):

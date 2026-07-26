@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Callable
 
 from verinote.store import Store
+from verinote.text import nfc
 
 # Stored as-is, no conversion.
 TEXT_SUFFIXES = {".txt", ".md"}
@@ -94,7 +95,8 @@ def store_source(
     """Persist an original source and its extraction text artifact."""
     sources_dir = root / "sources"
     sources_dir.mkdir(parents=True, exist_ok=True)
-    name = Path(filename).name
+    name = nfc(Path(filename).name)
+    text = nfc(text)
     source_path = sources_dir / name
     source_path.write_bytes(raw)
     citation = f"sources/{name}"

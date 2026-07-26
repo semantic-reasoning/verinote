@@ -1195,7 +1195,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             store,
             source_id=int(source["id"]),
             artifact_id=int(result["artifact_id"]),
-            source_text=text,
+            source_text=result["text"],
             provider=cfg.provider,
             model=cfg.model,
             chunk_chars=cfg.extraction_chunk_chars,
