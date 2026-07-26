@@ -168,8 +168,10 @@ cleanup() {
     fi
     if [ "$restore_failed" = true ]; then
       printf 'automatic restore failed; backups were retained. Recover with:\n' >&2
-      printf 'cp -p %s %s; cp -p %s %s\n' \\
-        "$backup_asset" "$target" "$backup_metadata" "$metadata" >&2
+      cat >&2 <<EOF
+cp -p "$backup_asset" "$target"
+cp -p "$backup_metadata" "$metadata"
+EOF
       status=1
     fi
   fi
