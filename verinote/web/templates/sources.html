@@ -31,7 +31,7 @@
    that reports the failure, it would stay that way until a manual reload.
 
    So the actions cell is swapped like the rest, and focus survives by identity
-   instead of by exclusion. htmx 2.0.9 (`swap()` in static/htmx.min.js) records the
+   instead of by exclusion. htmx 2.0.10 (`swap()` in static/htmx.min.js) records the
    focused element and its selection range, and after the swap, if that element has
    left the document and carried an `id`, it calls `document.getElementById(id)` and
    focuses the result. Every control below therefore has an id keyed on the source id:

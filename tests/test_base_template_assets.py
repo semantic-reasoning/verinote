@@ -29,14 +29,11 @@ BASE_TEMPLATE = WEB / "templates" / "base.html"
 VENDORED_HTMX = WEB / "static" / "htmx.min.js"
 
 # SHA256 of the vendored file, pinned so a tampered or version-swapped htmx fails.
-# Source: htmx 2.0.9, https://unpkg.com/htmx.org@2.0.9/dist/htmx.min.js (0BSD).
-# Not 2.0.10, though that is the newer 2.x: neither v2.0.10 nor v2.0.8 has a GitHub
-# Release, so the two-source byte comparison this vendoring procedure requires cannot be
-# run against them at all. 2.0.10's release-note items are inert here anyway -- it
-# restores TypeScript definitions (we vendor only the minified bytes) and wraps a settle
-# lookup in CSS.escape() (ids are `INTEGER PRIMARY KEY`, so those selectors are always
-# CSS-safe).
-HTMX_SHA256 = "57d9191515339922bd1356d7b2d80b1ee3b29f1b3a2c65a078bb8b2e8fd9ae5f"
+# Source: htmx 2.0.10, https://raw.githubusercontent.com/bigskysoftware/htmx/v2.0.10/dist/htmx.min.js (0BSD).
+# Tag v2.0.10 commit: bdc7d7d3e25d0390c7ee11049806e8279b075598.
+# npm provenance: htmx.org@2.0.10, https://registry.npmjs.org/htmx.org/-/htmx.org-2.0.10.tgz.
+# The raw GitHub file and extracted npm dist/htmx.min.js matched byte-for-byte.
+HTMX_SHA256 = "71ea67185bfa8c98c39d31717c6fce5d852370fcdfd129db4543774d3145c0de"
 
 # `src="..."` / `href="..."` whose value starts with an absolute http(s) origin,
 # either quote style. Protocol-relative `//cdn...` is caught too via the optional scheme.
