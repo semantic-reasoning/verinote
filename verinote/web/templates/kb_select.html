@@ -9,20 +9,21 @@
 <body>
   <main class="chooser">
     <h1>Select a knowledge base</h1>
-    <p class="muted">Choose a KB folder to open. If it does not exist yet,
-      verinote will create it and initialise <code>kb.sqlite</code>.</p>
+    <p class="muted">Choose an absolute KB folder to open in this web process. If it
+      does not exist yet, verinote will create it and initialise <code>kb.sqlite</code>.</p>
 
     {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
 
     <form class="settings" action="/kb/select" method="post">
       <label>KB folder
-        <input type="text" name="root" value="./data" placeholder="/path/to/verinote-kb" required>
+        <input type="text" name="root" placeholder="/absolute/path/to/verinote-kb" required>
       </label>
       <button class="btn" type="submit">Open KB</button>
     </form>
 
-    <p class="muted">The active KB path is saved in
-      <code>{{ config_path }}</code>. <code>VERINOTE_ROOT</code> overrides it.</p>
+    <p class="muted">Opening a KB does not change the machine-wide active KB. You can
+      explicitly save an opened KB as the future web default in Settings.
+      <code>VERINOTE_ROOT</code> overrides the saved choice.</p>
   </main>
 </body>
 </html>
