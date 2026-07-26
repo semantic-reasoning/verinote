@@ -9,6 +9,7 @@ import pytest
 import verinote.cli as cli
 from verinote import config
 from verinote.engine import DEFAULT_POLICY
+from verinote.kb_location import user_data_kb_root
 from verinote.llm.base import ExtractedFact, LLMError
 from verinote.pipeline.ingest import register_converter
 from verinote.pipeline.query_intent import parse_query_intent
@@ -1207,7 +1208,9 @@ def _isolated(monkeypatch, tmp_path):
     home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(home / ".local" / "share"))
     monkeypatch.setenv("APPDATA", str(home / "AppData"))
+    monkeypatch.setenv("LOCALAPPDATA", str(home / "AppData" / "Local"))
     return home
 
 
@@ -1235,7 +1238,8 @@ def test_init_seed_in_empty_dir_ignores_saved_active_kb(tmp_path, monkeypatch, c
 
     assert cli.main(["init", "--seed"]) == 0
 
-    new_db = workdir / "data" / "kb.sqlite"
+    new_root = user_data_kb_root()
+    new_db = new_root / "kb.sqlite"
     assert new_db.is_file()
     # The saved KB is untouched, byte for byte.
     assert (existing / "kb.sqlite").read_bytes() == before
@@ -1245,7 +1249,7 @@ def test_init_seed_in_empty_dir_ignores_saved_active_kb(tmp_path, monkeypatch, c
     assert config.read_app_config()["active_root"] == str(existing)
 
     out = capsys.readouterr().out
-    assert f"initialised KB at {workdir / 'data'}" in out
+    assert f"initialised KB at {new_root}" in out
     assert str(existing) not in out
 
 
@@ -1391,7 +1395,7 @@ def test_init_rejects_a_root_that_is_an_existing_file(tmp_path, monkeypatch, cap
 
 
 def test_init_rejects_an_empty_root_argument(tmp_path, monkeypatch, capsys):
-    """An empty ROOT must fail, not silently fall back to ./data."""
+    """An empty ROOT must fail, not silently fall back to the default root."""
     _isolated(monkeypatch, tmp_path)
     workdir = tmp_path / "cwd"
     workdir.mkdir()
@@ -1904,13 +1908,15 @@ def test_status_on_absent_kb_refuses_and_creates_nothing(tmp_path, monkeypatch, 
     workdir = tmp_path / "empty"
     workdir.mkdir()
     monkeypatch.chdir(workdir)
+    root = user_data_kb_root()
 
     assert cli.main(["status"]) == 1
 
-    assert not (workdir / "data").exists()  # no KB was created behind our back
+    assert not root.exists()  # no KB was created behind our back
+    assert not (workdir / "data").exists()  # CWD is never the implicit root
     err = capsys.readouterr().err
     assert "no KB" in err
-    assert str(workdir / "data") in err
+    assert str(root) in err
 
 
 def test_coverage_on_absent_kb_refuses_and_creates_nothing(tmp_path, monkeypatch, capsys):
@@ -1918,13 +1924,15 @@ def test_coverage_on_absent_kb_refuses_and_creates_nothing(tmp_path, monkeypatch
     workdir = tmp_path / "empty"
     workdir.mkdir()
     monkeypatch.chdir(workdir)
+    root = user_data_kb_root()
 
     assert cli.main(["coverage"]) == 1
 
+    assert not root.exists()
     assert not (workdir / "data").exists()
     err = capsys.readouterr().err
     assert "no KB" in err
-    assert str(workdir / "data") in err
+    assert str(root) in err
 
 
 def test_status_rejects_an_empty_db_file_instead_of_creating_a_schema(
@@ -2501,39 +2509,57 @@ def test_sync_with_nothing_to_sync_creates_no_kb(tmp_path, monkeypatch, capsys):
 def test_sync_scaffolds_when_source_files_exist_without_a_kb(tmp_path, monkeypatch):
     # The workflow the guard must not break: drop files under sources/ and sync.
     # There IS work to do, so scaffolding the KB is legitimate.
+    from verinote.pipeline.extract import SyncResult
+
     _isolated(monkeypatch, tmp_path)
     workdir = tmp_path / "work"
-    sources = workdir / "data" / "sources"
+    workdir.mkdir()
+    root = user_data_kb_root()
+    sources = root / "sources"
     sources.mkdir(parents=True)
     (sources / "x.txt").write_text("body", encoding="utf-8")
     monkeypatch.chdir(workdir)
-    monkeypatch.setattr(
-        "verinote.llm.get_client",
-        lambda cfg: (_ for _ in ()).throw(LLMError("provider down")),
-    )
+    received = {}
 
-    cli.main(["sync"])
+    def sync_sources(store, client, source_pairs, **kwargs):
+        received["source_pairs"] = source_pairs
+        return SyncResult(run_id=1, per_source=[(path, 0) for path, _ in source_pairs])
 
-    # It got past the guard and opened the KB — that is what is being pinned.
-    assert (workdir / "data" / "kb.sqlite").is_file()
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: object())
+    monkeypatch.setattr("verinote.pipeline.sync_sources", sync_sources)
+
+    assert cli.main(["sync"]) == 0
+
+    assert (root / "kb.sqlite").is_file()
+    assert received["source_pairs"] == [("sources/x.txt", "body")]
+    assert not (workdir / "data").exists()
 
 
 def test_sync_with_a_path_argument_still_scaffolds(tmp_path, monkeypatch):
     # An explicit path is work by itself, so the guard must not fire on it.
+    from verinote.pipeline.extract import SyncResult
+
     _isolated(monkeypatch, tmp_path)
     workdir = tmp_path / "work"
     workdir.mkdir()
     monkeypatch.chdir(workdir)
     note = workdir / "note.txt"
     note.write_text("body", encoding="utf-8")
-    monkeypatch.setattr(
-        "verinote.llm.get_client",
-        lambda cfg: (_ for _ in ()).throw(LLMError("provider down")),
-    )
+    root = user_data_kb_root()
+    received = {}
 
-    cli.main(["sync", str(note)])
+    def sync_sources(store, client, source_pairs, **kwargs):
+        received["source_pairs"] = source_pairs
+        return SyncResult(run_id=1, per_source=[(path, 0) for path, _ in source_pairs])
 
-    assert (workdir / "data" / "kb.sqlite").is_file()
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: object())
+    monkeypatch.setattr("verinote.pipeline.sync_sources", sync_sources)
+
+    assert cli.main(["sync", str(note)]) == 0
+
+    assert (root / "kb.sqlite").is_file()
+    assert received["source_pairs"] == [(str(note.resolve()), "body")]
+    assert not (workdir / "data").exists()
 
 
 def test_sync_on_an_existing_kb_with_no_sources_keeps_its_message(
@@ -2564,22 +2590,17 @@ def test_query_with_a_question_still_creates_a_kb(tmp_path, monkeypatch):
 
     cli.main(["query", "What is X?"])
 
-    db_path = workdir / "data" / "kb.sqlite"
+    db_path = user_data_kb_root() / "kb.sqlite"
     assert db_path.is_file()
     store = Store(db_path)
     assert [q["text"] for q in store.questions()] == ["What is X?"]
     store.close()
 
 
-def test_query_with_a_saved_active_kb_elsewhere_creates_nothing_in_cwd(
+def test_query_without_an_explicit_root_does_not_use_the_saved_active_kb(
     tmp_path, monkeypatch, capsys
 ):
-    """The guard judges the RESOLVED cfg.db_path, not the directory you stand in.
-
-    #185 adjacency: with no VERINOTE_ROOT and a saved active KB pointing
-    elsewhere, `verinote query` must work against that KB and leave the cwd
-    untouched — never scaffolding a stray `./data` beside the user.
-    """
+    """CLI commands use the canonical default, never the UI's saved KB."""
     _isolated(monkeypatch, tmp_path)
     existing = _existing_kb(tmp_path)
     workdir = tmp_path / "elsewhere"
@@ -2589,8 +2610,7 @@ def test_query_with_a_saved_active_kb_elsewhere_creates_nothing_in_cwd(
     assert cli.main(["query"]) == 1
 
     assert not (workdir / "data").exists()
-    # It reached the real (saved) KB rather than refusing it.
-    assert "no pending or failed questions" in capsys.readouterr().err
+    assert "no KB at" in capsys.readouterr().err
     assert (existing / "kb.sqlite").is_file()
 
 

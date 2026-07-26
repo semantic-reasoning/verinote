@@ -28,10 +28,12 @@ value. `null` means "unset" only where `save_settings` can write it —
 `base_url` and the optional extraction settings — and counts as unusable in
 `provider` and `model`.
 
-The active KB root is stored in a platform-native app config file when the web
-UI selects one: Windows uses `%APPDATA%`, macOS uses `~/Library/Application
-Support`, and Unix uses `${XDG_CONFIG_HOME:-~/.config}`. `VERINOTE_ROOT` still
-overrides this for scripts and tests.
+CLI and non-UI runtime paths resolve their KB root consistently: an explicit
+root (the CLI's `--root`) wins, then `VERINOTE_ROOT`, then a CWD-independent
+platform user-data location. The web UI's separately selected active KB remains
+stored in a platform-native app config file: Windows uses `%APPDATA%`, macOS
+uses `~/Library/Application Support`, and Unix uses
+`${XDG_CONFIG_HOME:-~/.config}`.
 """
 
 from __future__ import annotations
@@ -42,6 +44,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from verinote.kb_location import resolve_kb_root
 from verinote.prompts import render_prompt
 
 SETTINGS_FILENAME = "config.json"
@@ -72,37 +75,13 @@ def normalize_provider(provider: str | None) -> str:
     return key
 
 
-def _default_root() -> Path:
-    return Path("./data").expanduser().resolve()
-
-
 def _root() -> Path:
-    root = active_root()
-    return root if root is not None else _default_root()
+    return resolve_kb_root()
 
 
 def local_root(explicit: Path | str | None = None) -> Path:
-    """Resolve the KB root for *local* commands that must never target a saved KB.
-
-    Commands like `init` and `seed` act on a location the caller names, not on
-    whatever KB the web UI last selected. Precedence (highest first): the
-    explicit argument, `VERINOTE_ROOT`, then `./data` relative to the current
-    working directory. The saved app config (`active_root()`) is deliberately
-    **not** consulted — otherwise `verinote init` in an empty directory would
-    write into somebody else's KB.
-
-    A blank explicit root raises `ValueError`: falling back would write the KB
-    somewhere the caller never named, which is exactly what these commands
-    promise not to do.
-    """
-    if explicit is not None:
-        if isinstance(explicit, str) and not explicit.strip():
-            raise ValueError("KB root must be a path, not an empty string")
-        return Path(explicit).expanduser().resolve()
-    env_root = os.environ.get("VERINOTE_ROOT")
-    if env_root:
-        return Path(env_root).expanduser().resolve()
-    return _default_root()
+    """Backward-compatible name for the single CLI/config KB root resolver."""
+    return resolve_kb_root(explicit)
 
 
 def app_config_dir() -> Path:
@@ -233,10 +212,6 @@ def active_root() -> Path | None:
     saved = _saved_root(read_app_config())
     if saved is not None and (saved / "kb.sqlite").is_file():
         return saved
-
-    default = _default_root()
-    if (default / "kb.sqlite").is_file():
-        return default
     return None
 
 

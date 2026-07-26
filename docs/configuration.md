@@ -14,28 +14,38 @@ The active KB path is saved in a platform-native app config file:
 | macOS | `~/Library/Application Support/verinote/app.json` |
 | Linux/Unix | `${XDG_CONFIG_HOME:-~/.config}/verinote/app.json` |
 
-`VERINOTE_ROOT` overrides the saved active KB and is still useful for scripts,
-tests, and one-off launches:
+`VERINOTE_ROOT` overrides the saved active KB for the UI and is still useful for
+scripts, tests, and one-off launches:
 
 ```bash
 VERINOTE_ROOT=/path/to/kb verinote ui
 ```
 
-## Scaffolding a KB from the CLI
+## CLI KB roots
 
-`init` and `seed` are *local* commands: they never write to the saved active KB.
-They target the root you name, else `VERINOTE_ROOT`, else `./data` in the current
-directory.
+Every non-UI CLI command uses the same root resolver. Precedence is `--root`,
+then `VERINOTE_ROOT`, then a CWD-independent platform user-data default:
+
+| Platform | Default KB root |
+|---|---|
+| Windows | `%LOCALAPPDATA%\\verinote\\kb` |
+| macOS | `~/Library/Application Support/verinote/kb` |
+| Linux/Unix | `${XDG_DATA_HOME:-~/.local/share}/verinote/kb` |
+
+Explicit roots expand `~` but must be absolute; relative roots are rejected.
+`init` and `seed` retain an absolute positional root as a temporary compatibility
+alias, but it cannot be combined with `--root`.
 
 ```bash
-verinote init                 # ./data here (or $VERINOTE_ROOT if set)
-verinote init /path/to/kb     # a named root
-verinote seed /path/to/kb     # demo facts into an existing KB
+verinote init --root /path/to/kb
+verinote --root /path/to/kb status
+VERINOTE_ROOT=/path/to/kb verinote seed
+verinote init /path/to/kb     # temporary positional compatibility alias
 ```
 
-Creating a KB does not make it the active one. Every other command still reads the
-saved active KB, so to work with the KB you just created, either point
-`VERINOTE_ROOT` at it or select it in the UI:
+Creating a KB does not make it the active UI selection. The web UI still uses its
+saved active KB unless `VERINOTE_ROOT` or its own `--root` is provided. CLI
+commands continue to use the resolver above:
 
 ```bash
 VERINOTE_ROOT=/path/to/kb verinote status
@@ -46,6 +56,9 @@ data has to pass through human review like anything else.
 
 > Prefer a KB outside the working tree. See
 > [operations.md](operations.md#keep-the-kb-outside-the-working-tree).
+
+`init` and `seed` refuse targets inside normal and linked Git worktrees before
+creating any KB files, including nested or symlinked paths that resolve there.
 
 ## Providers
 
