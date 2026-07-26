@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from verinote.engine.datalog import (
@@ -141,14 +142,26 @@ def trace_query_answers(
     query: str,
     *,
     bounds: TraceBounds = TraceBounds(),
+    engine_rows: Sequence[Mapping[str, object]] | None = None,
+    fact_rows: Mapping[int, Mapping[str, object] | None] | None = None,
 ) -> tuple[AnswerTrace, ...]:
-    """Trace direct answer_q rules in one query back to engine-input facts."""
+    """Trace direct answer_q rules in one query back to engine-input facts.
+
+    Callers that execute a query may pass the exact engine rows and display rows
+    they used for that execution.  The default keeps report tracing's existing
+    read-from-store behavior, while Ask can avoid attaching post-execution
+    changes to an already evaluated answer.
+    """
     try:
         program = parse_and_validate_program(_RELATION_DECL + query)
     except (DatalogParseError, DatalogValidationError):
         return ()
-    facts = engine_relation_rows(store)
-    fact_rows = {int(row["id"]): store.get_fact(int(row["id"])) for row in facts}
+    facts = list(engine_rows) if engine_rows is not None else engine_relation_rows(store)
+    display_rows = (
+        dict(fact_rows)
+        if fact_rows is not None
+        else {int(row["id"]): store.get_fact(int(row["id"])) for row in facts}
+    )
     traces = []
     seen: set[tuple[str, str, tuple[int, ...]]] = set()
     for rule in program.rules:
@@ -175,9 +188,9 @@ def trace_query_answers(
                 continue
             seen.add(key)
             trace_facts = tuple(
-                _trace_fact(store, fact_id, fact_rows[fact_id])
+                _trace_fact(store, fact_id, display_rows[fact_id])
                 for fact_id in sorted(fact_ids)
-                if fact_rows[fact_id] is not None
+                if display_rows.get(fact_id) is not None
             )
             traces.append(
                 AnswerTrace(

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 from verinote.engine.terms import Atom, Compound, StringLit
 from verinote.engine.wirelog import answer_bucket_sort_key
+from verinote.pipeline.engine_input import engine_relation_rows
 from verinote.pipeline.query import query_path
 from verinote.pipeline.report_trace import (
     AnswerTrace,
@@ -135,6 +136,39 @@ def test_report_trace_links_three_hop_answers_to_the_exact_facts(tmp_path):
     assert [(answer.value, [fact.id for fact in answer.facts]) for answer in trace] == [
         ("Ada", [first, second, third])
     ]
+
+
+def test_trace_query_answers_uses_supplied_execution_snapshot(tmp_path):
+    s = _store(tmp_path)
+    original_source = s.add_source("sources/original.txt")
+    injected_source = s.add_source("sources/injected.txt")
+    original = s.add_fact(
+        "Ada", "assigned_to", "Project", status="confirmed", source_id=original_source
+    )
+    query = (
+        '.decl answer_q1(value: symbol)\n'
+        'answer_q1(A) :- relation("Ada", "assigned_to", A).\n'
+    )
+    engine_rows = tuple(dict(row) for row in engine_relation_rows(s))
+    fact_rows = {int(row["id"]): s.get_fact(int(row["id"])) for row in engine_rows}
+    injected = s.add_fact(
+        "Ada", "assigned_to", "Project", status="confirmed", source_id=injected_source
+    )
+
+    trace = trace_query_answers(
+        s,
+        query,
+        engine_rows=engine_rows,
+        fact_rows=fact_rows,
+    )
+
+    assert [(answer.value, [fact.id for fact in answer.facts]) for answer in trace] == [
+        ("Project", [original])
+    ]
+    assert injected not in {fact.id for answer in trace for fact in answer.facts}
+    assert {fact.source for answer in trace for fact in answer.facts} == {
+        "sources/original.txt"
+    }
 
 
 def test_report_trace_keeps_distinct_three_hop_proof_sets_separate(tmp_path):
