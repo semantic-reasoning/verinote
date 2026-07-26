@@ -14,28 +14,39 @@
 </form>
 
 {% if sources %}
-{# The poll swaps the analysis output and nothing the user can touch (#228).
+{# The poll swaps every cell whose content the analysis changes, and keeps focus by
+   giving the controls stable ids (#228).
 
    Swapping <main> took the heading and the upload form with every tick; swapping
-   `#sources-table` instead only shrank the blast radius, because the table still
-   holds Retry / Re-analyze / Accept all / Delete. htmx restores focus by keeping a
-   reference to `document.activeElement`, and a replaced node is not the node it
-   kept -- so a button being replaced under the cursor loses focus, every 2s, for as
-   long as an analysis runs.
+   `#sources-table` instead only shrank the blast radius. Both lost keyboard focus,
+   because htmx captures `document.activeElement` before the swap and a replaced node
+   is not the node it captured. That was the reopened bug.
 
-   So the swap set is now exactly the cells that carry analysis output, none of which
-   is interactive:
+   Leaving the `.actions` cell *out* of the swap is not the fix, and shipping it that
+   way was a regression: which buttons the row offers is derived from the same job
+   data the swapped cells show. Retry appears once a chunk has failed, Accept all once
+   the extraction has produced a candidate. A browser that opened the page mid-run
+   would see the analysis cell reach "4/4, 1 failed" and the actions cell still show
+   the row it had at load -- no Retry -- and, because the poll stops in the same tick
+   that reports the failure, it would stay that way until a manual reload.
+
+   So the actions cell is swapped like the rest, and focus survives by identity
+   instead of by exclusion. htmx 2.0.9 (`swap()` in static/htmx.min.js) records the
+   focused element and its selection range, and after the swap, if that element has
+   left the document and carried an `id`, it calls `document.getElementById(id)` and
+   focuses the result. Every control below therefore has an id keyed on the source id:
+   the tick tears out `#retry-3` and puts back `#retry-3`, and the keyboard cursor
+   lands on it again. The ids are derived from data, not from position, so they hold
+   when rows are reordered.
+
+   The swap set:
 
    * The main swap replaces `#sources-poll`, an empty element whose whole job is to
-     own the timer. That is also how the poll stops: once the last job finishes the
-     server renders that element without the hx-* attributes, the swap installs that
-     version, and the tick is gone. Something has to be swapped for the poll to be
-     able to turn itself off, and this is the only thing that can be swapped without
-     taking a control with it.
-   * `hx-select-oob` carries the per-row payload into the analysis, trust and
-     evidence cells by id. Every one of those holds badges and text. The `.actions`
-     cell -- every button and form on the row -- is not in the list, so no tick can
-     remove it.
+     own the timer. That is how the poll stops: once the last job finishes the server
+     renders that element without the hx-* attributes, the swap installs that version,
+     and the tick is gone.
+   * `hx-select-oob` carries the per-row payload into the analysis, trust, evidence
+     and actions cells by id.
 
    The trade: no tick creates or removes a row any more, so a source uploaded or
    deleted in another tab shows up on the next real page load rather than within 2s.
@@ -43,7 +54,7 @@
 <div id="sources-poll" hidden
      {% if has_running_jobs %}hx-get="/sources" hx-trigger="every 2s"
      hx-target="#sources-poll" hx-select="#sources-poll" hx-swap="outerHTML"
-     hx-select-oob="{% for s in sources %}#analysis-{{ s["id"] }},#trust-{{ s["id"] }},#evidence-{{ s["id"] }}{% if not loop.last %},{% endif %}{% endfor %}"{% endif %}></div>
+     hx-select-oob="{% for s in sources %}#analysis-{{ s["id"] }},#trust-{{ s["id"] }},#evidence-{{ s["id"] }},#actions-{{ s["id"] }}{% if not loop.last %},{% endif %}{% endfor %}"{% endif %}></div>
 <table class="sources" id="sources-table" aria-live="polite">
   <thead>
     <tr><th>Source</th><th>Analysis</th><th>Trust counts</th><th>Evidence</th><th>Actions</th></tr>
@@ -68,7 +79,7 @@
         </div>
         {% endif %}
       </td>
-      {# The three cells the poll refreshes carry ids so `hx-select-oob` can name
+      {# The four cells the poll refreshes carry ids so `hx-select-oob` can name
          them one by one. They are ids rather than a class selector because htmx
          resolves an out-of-band swap by id, and stable because the source id is. #}
       <td class="analysis-cell" id="analysis-{{ s["id"] }}">
@@ -158,22 +169,28 @@
           <span class="muted">No evidence snippets</span>
         {% endif %}
       </td>
-      <td class="actions">
+      {# Swapped like the other cells, because Retry and Accept all are conditional on
+         the very counts the tick delivers. Each button carries an id keyed on the
+         source (not on its position in the row, and not on the job, which changes on
+         re-analysis) so htmx can put the keyboard cursor back on it afterwards -- see
+         the swap-set note above. A conditional button simply has no id in the
+         document while it is not rendered, so nothing collides. #}
+      <td class="actions" id="actions-{{ s["id"] }}">
         {% if s["job_id"] and s["failed_chunks"] %}
         <form action="/sources/jobs/{{ s["job_id"] }}/retry" method="post">
-          <button class="btn ghost" type="submit">Retry</button>
+          <button class="btn ghost" id="retry-{{ s["id"] }}" type="submit">Retry</button>
         </form>
         {% endif %}
         <form action="/sources/{{ s["id"] }}/reanalyze" method="post">
-          <button class="btn ghost" type="submit">Re-analyze</button>
+          <button class="btn ghost" id="reanalyze-{{ s["id"] }}" type="submit">Re-analyze</button>
         </form>
         {% if s["candidate_count"] or s["needs_review_count"] %}
         <form action="/sources/{{ s["id"] }}/accept-all" method="post">
-          <button class="btn ghost" type="submit">Accept all</button>
+          <button class="btn ghost" id="accept-all-{{ s["id"] }}" type="submit">Accept all</button>
         </form>
         {% endif %}
         <form action="/sources/{{ s["id"] }}/delete" method="post">
-          <button class="danger" type="submit">Delete</button>
+          <button class="danger" id="delete-{{ s["id"] }}" type="submit">Delete</button>
         </form>
       </td>
     </tr>
