@@ -145,6 +145,13 @@ th { color: var(--muted); font-weight: 600; font-size: .85rem; }
    the single-class `.trust-*` and `.badge-*` colours they sit beside. */
 .badge.verdict { font-weight: 700; }
 .badge.chip { font-weight: 400; font-size: .72rem; color: var(--muted); }
+/* `code` has a global accent colour, and that element rule beats the chip's inherited
+   grey. Context needs to stay grey through its payload as well as its wrapper. */
+.badge.chip code { color: inherit; }
+/* The trust verdict slot holds cautions as well as reassurances. The risk marker
+   keeps that split readable without hue; the textual verdict already names it, so
+   the pseudo-element's accessible alternative stays empty. */
+.badge.verdict.risk::before { content: "⚠" / ""; margin-right: .3rem; font-size: .92em; }
 .question-message { margin-top: .25rem; }
 .question-query { max-width: 26rem; max-height: 9rem; }
 
@@ -178,6 +185,13 @@ th { color: var(--muted); font-weight: 600; font-size: .85rem; }
 .row-meta { display: flex; gap: .4rem; flex-wrap: wrap; margin-top: .35rem; }
 .signals { min-width: 13rem; }
 .signals .badge { display: inline-block; margin: .12rem .1rem; }
+/* A crowded trust cell keeps two context chips in view. The native disclosure
+   supplies keyboard and assistive-technology behaviour without a script; keeping
+   it inline lets the +N control read as the same compact chip run. */
+.meta-overflow { display: inline; }
+.meta-overflow > summary { list-style: none; cursor: pointer; }
+.meta-overflow > summary::-webkit-details-marker { display: none; }
+.meta-overflow-items { display: inline; }
 .evidence-cell { min-width: 14rem; max-width: 24rem; }
 .snippet { color: var(--muted); font-size: .85rem; margin-top: .25rem;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
