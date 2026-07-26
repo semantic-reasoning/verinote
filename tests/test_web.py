@@ -768,7 +768,7 @@ def test_sources_page_lists_sources(tmp_path):
     assert "extracted_text" in r.text
     assert f'title="{long_artifact_path}"' in r.text
     assert 'class="truncate"' in r.text
-    assert "Accept all" in r.text
+    assert "Accept all review facts" in r.text
 
 
 def test_sources_page_labels_the_engine_count_by_what_it_means(tmp_path, monkeypatch):
