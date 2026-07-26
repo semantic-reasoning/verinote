@@ -64,3 +64,39 @@ reasons, query details, source tables, or excerpts.
 Treat that first block as the evidence. Any surrounding explanation must follow it
 and stay short; do not restate, translate, or summarize the block rows before the
 user has seen them.
+
+## Synthetic Ask capture
+
+`docs/img/ask-verified.png` is a reproducible local UI capture, not a product
+mockup. Use a throwaway KB outside the repository and only these synthetic values:
+
+```bash
+ROOT=/tmp/verinote-ask-verified-demo
+uv run verinote init "$ROOT"
+uv run python - <<'PY'
+from pathlib import Path
+from verinote.pipeline.ingest import store_source
+from verinote.store import Store
+
+root = Path("/tmp/verinote-ask-verified-demo")
+store = Store(root / "kb.sqlite")
+store.init_schema()
+text = "Example Org states that its purpose is a synthetic verification demo.\n"
+source = store_source(store, root, "example-org-brief.txt", text.encode("utf-8"), text, "text")
+fact = store.add_fact("Example Org", "purpose", "synthetic verification demo",
+                      status="confirmed", confidence=1.0, source_id=source["source_id"])
+store.add_fact_evidence(fact_id=fact, source_id=source["source_id"],
+                        artifact_id=source["artifact_id"], evidence_kind="statement",
+                        locator="line 1", snippet=text.strip())
+store.close()
+PY
+VERINOTE_ROOT="$ROOT" VERINOTE_PROVIDER=ollama VERINOTE_MODEL=synthetic \
+  uv run verinote ui --no-browser --port 8732
+```
+
+With Chrome Headless at a 1440x1100 viewport, open `/ask`, submit `What is the
+purpose of Example Org?`, and capture the resulting page to
+`docs/img/ask-verified.png`. Verify in the rendered DOM and image that the
+question, `VERIFIED — engine`, answer block, and the `Source` and `Evidence`
+columns appear in that order. The deterministic question shape avoids any model
+request; the Ollama setting only supplies the local adapter instance.
