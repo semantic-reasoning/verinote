@@ -446,6 +446,9 @@ def test_unrecorded_policy_runs_default_with_a_warning(tmp_path):
     assert rep.errors == 0
     assert rep.warnings >= 1
     assert any("policy_unrecorded" in finding for finding in rep.findings)
+    assert rep.finding_details[0].code == "policy_unrecorded"
+    assert rep.finding_details[0].severity == "warning"
+    assert rep.finding_details[0].text == rep.findings[0]
     assert "shipped default" in rep.text
     # a run of the default policy is not a statement about this KB's rules, so
     # the engine's clean-bill sentence must not survive into the report

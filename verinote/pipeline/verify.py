@@ -10,10 +10,14 @@ at minimum a warning.
 
 from __future__ import annotations
 
-from verinote.engine import NO_FINDINGS_TEXT, CheckReport
+from verinote.engine import NO_FINDINGS_TEXT, CheckReport, FindingDetail
 from verinote.engine.wirelog import review_rule_count
 from verinote.pipeline.corroboration import CorroborationPolicyError
-from verinote.pipeline.engine_input import annotate_source_labels, engine_relation_rows
+from verinote.pipeline.engine_input import (
+    annotate_source_labels,
+    compatible_finding_details,
+    engine_relation_rows,
+)
 from verinote.pipeline.policy_state import (
     POLICY_RELPATH,
     POLICY_UNRECORDED_BANNER,
@@ -86,12 +90,14 @@ def verify(store: Store) -> CheckReport:
     state = resolve_policy(store)
     if state.status is PolicyStatus.MISSING_RECORDED:
         message = policy_missing_message(state)
+        finding = f"ERROR policy_missing: {message}"
         return CheckReport(
             ok=False,
             errors=1,
             warnings=0,
             text=f"backend: DuckDB\n\npolicy error: {message}",
-            findings=[f"ERROR policy_missing: {message}"],
+            findings=[finding],
+            finding_details=[FindingDetail(finding, "error", "policy_missing")],
         )
     # BEFORE the engine runs: an empty policy declares no `relation/3`, so letting
     # it reach the backend produces the cryptic "program must declare relation/3"
@@ -99,41 +105,49 @@ def verify(store: Store) -> CheckReport:
     # honest diagnosis instead (#171). Mirrors the MISSING_RECORDED branch above.
     if state.status is PolicyStatus.PRESENT_EMPTY:
         message = policy_empty_message(state)
+        finding = f"ERROR policy_empty: {message}"
         return CheckReport(
             ok=False,
             errors=1,
             warnings=0,
             text=f"backend: DuckDB\n\npolicy error: {message}",
-            findings=[f"ERROR policy_empty: {message}"],
+            findings=[finding],
+            finding_details=[FindingDetail(finding, "error", "policy_empty")],
         )
 
     try:
         rows = engine_relation_rows(store)
     except DuckDBFactTermStoreError as exc:
+        finding = f"ERROR engine error: {exc}"
         return CheckReport(
             ok=False,
             errors=1,
             warnings=0,
             text=f"backend: DuckDB\n\npolicy/engine error: {exc}",
-            findings=[f"ERROR engine error: {exc}"],
+            findings=[finding],
+            finding_details=[FindingDetail(finding, "error", "engine_error")],
         )
     except CorroborationPolicyError as exc:
+        finding = f"ERROR policy error: {exc}"
         return CheckReport(
             ok=False,
             errors=1,
             warnings=0,
             text=f"backend: DuckDB\n\npolicy/error: {exc}",
-            findings=[f"ERROR policy error: {exc}"],
+            findings=[finding],
+            finding_details=[FindingDetail(finding, "error", "policy_error")],
         )
     try:
         query_dl = load_query(store)
     except CorroborationPolicyError as exc:
+        finding = f"ERROR policy error: {exc}"
         return CheckReport(
             ok=False,
             errors=1,
             warnings=0,
             text=f"backend: DuckDB\n\npolicy/error: {exc}",
-            findings=[f"ERROR policy error: {exc}"],
+            findings=[finding],
+            finding_details=[FindingDetail(finding, "error", "policy_error")],
         )
 
     policy_dl = runnable_policy_text(state)
@@ -165,8 +179,10 @@ def _with_unrecorded_policy_warning(report: CheckReport) -> CheckReport:
     `errors` are deliberately left alone — with no marker there is no evidence
     that a policy was ever lost, and inventing an error would be inference.
     """
-    report.warnings += 1
-    report.findings = [POLICY_UNRECORDED_FINDING, *report.findings]
+    _prepend_policy_warning(
+        report,
+        FindingDetail(POLICY_UNRECORDED_FINDING, "warning", "policy_unrecorded"),
+    )
     report.text = report.text.replace(NO_FINDINGS_TEXT, POLICY_UNRECORDED_NO_FINDINGS_TEXT)
     report.text = f"{POLICY_UNRECORDED_BANNER}\n\n{report.text}"
     return report
@@ -184,7 +200,16 @@ def _with_no_review_rules_warning(report: CheckReport) -> CheckReport:
     caller may add this; the engine must not, since the query-evaluation paths run
     the same rule-less `relation/3` policy shape on purpose and are correct to.
     """
-    report.warnings += 1
-    report.findings = [NO_REVIEW_RULES_FINDING, *report.findings]
+    _prepend_policy_warning(
+        report,
+        FindingDetail(NO_REVIEW_RULES_FINDING, "warning", "policy_no_review_rules"),
+    )
     report.text = report.text.replace(NO_FINDINGS_TEXT, NO_REVIEW_RULES_NO_FINDINGS_TEXT)
     return report
+
+
+def _prepend_policy_warning(report: CheckReport, detail: FindingDetail) -> None:
+    """Prepend a policy warning without losing legacy report entries."""
+    report.finding_details = [detail, *compatible_finding_details(report)]
+    report.findings = [detail.text, *report.findings]
+    report.warnings += 1

@@ -14,10 +14,11 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import verinote.web.app as webapp  # noqa: E402
 from verinote.config import Config, ConfigCorruptError, save_settings  # noqa: E402
-from verinote.engine import DEFAULT_POLICY  # noqa: E402
+from verinote.engine import CheckReport, DEFAULT_POLICY, FindingDetail  # noqa: E402
 from verinote.engine.terms import Atom, Compound, StringLit  # noqa: E402
 from verinote.llm.base import ExtractedFact, LLMError  # noqa: E402
 from verinote.pipeline import ExtractionJobBusyError  # noqa: E402
+from verinote.pipeline.verify import _with_unrecorded_policy_warning  # noqa: E402
 from verinote.pipeline.policy_state import (  # noqa: E402
     POLICY_RELPATH,
     PolicyMissingError,
@@ -99,6 +100,65 @@ def test_dashboard_renders(tmp_path):
     r = c.get("/")
     assert r.status_code == 200
     assert "verinote" in r.text
+
+
+def test_report_falls_back_to_legacy_finding_strings(tmp_path, monkeypatch):
+    report = CheckReport(
+        ok=True,
+        errors=0,
+        warnings=1,
+        text="legacy report",
+        findings=["WARN legacy: rendered without structured metadata"],
+    )
+    monkeypatch.setattr(webapp, "verify", lambda _store: report)
+
+    body = _client(tmp_path).get("/report").text
+
+    assert "finding-list-legacy" in body
+    assert "WARN legacy: rendered without structured metadata" in body
+
+
+def test_report_renders_structured_finding_metadata(tmp_path, monkeypatch):
+    finding = "ERROR synthetic_rule: Example"
+    report = CheckReport(
+        ok=False,
+        errors=1,
+        warnings=0,
+        text="structured report",
+        findings=[finding],
+        finding_details=[FindingDetail(finding, "error", "synthetic_rule")],
+    )
+    monkeypatch.setattr(webapp, "verify", lambda _store: report)
+
+    body = _client(tmp_path).get("/report").text
+
+    assert 'class="finding finding-error" data-code="synthetic_rule"' in body
+    assert finding in body
+
+
+def test_report_renders_all_legacy_findings_after_policy_warning(tmp_path, monkeypatch):
+    legacy_findings = [
+        "ERROR legacy_rule: first finding",
+        "WARN legacy_rule: second finding",
+    ]
+    report = _with_unrecorded_policy_warning(
+        CheckReport(
+            ok=False,
+            errors=1,
+            warnings=0,
+            text="\n".join(legacy_findings),
+            findings=legacy_findings,
+        )
+    )
+    monkeypatch.setattr(webapp, "verify", lambda _store: report)
+
+    body = _client(tmp_path).get("/report").text
+
+    assert [detail.text for detail in report.finding_details] == report.findings
+    assert all(finding in body for finding in report.findings)
+    assert [body.index(finding) for finding in report.findings] == sorted(
+        body.index(finding) for finding in report.findings
+    )
 
 
 def test_dashboard_shows_factlog_borrowed_source_signals(tmp_path):
