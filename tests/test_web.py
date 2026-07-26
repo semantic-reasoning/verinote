@@ -17,7 +17,7 @@ from verinote.config import Config, ConfigCorruptError, save_settings  # noqa: E
 from verinote.engine import CheckReport, DEFAULT_POLICY, FindingDetail  # noqa: E402
 from verinote.engine.terms import Atom, Compound, StringLit  # noqa: E402
 from verinote.llm.base import ExtractedFact, LLMError  # noqa: E402
-from verinote.pipeline import ExtractionJobBusyError  # noqa: E402
+from verinote.pipeline import ChunkedExtractionResult, ExtractionJobBusyError  # noqa: E402
 from verinote.pipeline.verify import _with_unrecorded_policy_warning  # noqa: E402
 from verinote.pipeline.policy_state import (  # noqa: E402
     POLICY_RELPATH,
@@ -794,10 +794,23 @@ def test_upload_normalizes_nfc_source_identity_and_chunk_text(tmp_path, monkeypa
 
     monkeypatch.setattr(webapp, "create_chunked_extraction_job", capture_chunk_job)
     monkeypatch.setattr(webapp, "get_client", lambda _cfg: object())
+    processed_jobs = set()
+    processed_lock = threading.Lock()
+    workers_finished = threading.Event()
+
+    def complete_job(store, _client, *, job_id, **_kwargs):
+        assert store.claim_pending_extraction_job(job_id)
+        store.finish_extraction_job(job_id)
+        with processed_lock:
+            processed_jobs.add(job_id)
+            if len(processed_jobs) == 2:
+                workers_finished.set()
+        return ChunkedExtractionResult(job_id=job_id)
+
     monkeypatch.setattr(
         webapp,
         "process_extraction_job",
-        lambda *_args, **_kwargs: type("Result", (), {"failed_chunks": 1})(),
+        complete_job,
     )
     c = _client(tmp_path)
 
@@ -823,6 +836,7 @@ def test_upload_normalizes_nfc_source_identity_and_chunk_text(tmp_path, monkeypa
     assert len(sources) == 1
     assert sources[0]["path"] == f"sources/{nfc_filename}"
     assert chunk_inputs == [nfc_text, nfc_text]
+    assert workers_finished.wait(timeout=2.0)
 
 
 def test_upload_rejects_unsupported_type(tmp_path):
