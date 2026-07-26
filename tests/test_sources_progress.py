@@ -14,7 +14,7 @@ tick destroys, computed from all three of htmx's removal channels at once, and r
 that set to contain every progress bar, to leave the chrome alone, and to contain no
 control htmx could not hand the focus back to.
 
-That last clause is weaker than "no control at all", and deliberately: htmx 2.0.9,
+That last clause is weaker than "no control at all", and deliberately: htmx 2.0.10,
 which this repo vendors, restores focus across a swap by id (see
 `test_a_tick_only_replaces_controls_htmx_can_hand_the_focus_back_to`). Excluding the
 actions cell instead is not just unnecessary, it is its own bug -- the row's buttons
@@ -488,7 +488,7 @@ def _inherited(doc: _Doc, node: dict, attribute: str) -> str | None:
 
     Every htmx attribute this file reads -- `hx-swap`, `hx-target`, `hx-select`,
     `hx-select-oob` -- is resolved by `getClosestAttributeValue` (`ne()` in the
-    vendored 2.0.9), which walks the parent chain. Reading only the poller's own
+    vendored 2.0.10), which walks the parent chain. Reading only the poller's own
     attributes leaves a blind spot the width of the table: an out-of-band list hung on
     the <tbody>, or an `hx-swap="outerHTML"` on a wrapper, removes nodes exactly the
     same and would go unmodelled.
@@ -561,7 +561,7 @@ def _response_oob_swaps(doc: _Doc) -> list[tuple[dict, str]]:
 
     `hx-select-oob` is a property of the poller; `hx-swap-oob` is a property of the
     **response**, carried on the elements themselves, and the poller has no attribute
-    that mentions it. `oobSwap()` (`_e()` in the vendored htmx 2.0.9) scans the whole
+    that mentions it. `oobSwap()` (`He()` in the vendored htmx 2.0.10) scans the whole
     response for `[hx-swap-oob]` and swaps each match over the live node with the same
     id -- and it runs *before* `hx-select` narrows anything, so a narrow `hx-select`
     does not contain it.
@@ -570,7 +570,7 @@ def _response_oob_swaps(doc: _Doc) -> list[tuple[dict, str]]:
     a faithful stand-in for what comes back. Without this, one attribute on the actions
     cell reinstates the focus bug with every assertion in this file still green.
 
-    Nested elements count, because htmx 2.0.9 ships `allowNestedOobSwaps: true` -- a
+    Nested elements count, because htmx 2.0.10 ships `allowNestedOobSwaps: true` -- a
     `<td>` inside a `<tr>` is swapped rather than stripped of the attribute.
     """
     swaps: list[tuple[dict, str]] = []
@@ -761,7 +761,7 @@ def test_a_tick_only_replaces_controls_htmx_can_hand_the_focus_back_to(page) -> 
     Narrowing the swap from <main> to `#sources-table` did not fix the focus loss, and
     an earlier version of this test drew the wrong conclusion from that -- it asserted
     that a tick may remove *no* focusable node, on the stated grounds that "ids do not
-    survive `outerHTML`". That is false for the htmx this repo vendors. In 2.0.9's
+    survive `outerHTML`". That is false for the htmx this repo vendors. In 2.0.10's
     `swap()` (static/htmx.min.js) htmx records `document.activeElement` with its
     `selectionStart`/`selectionEnd` before swapping, and afterwards, if that element
     has left the document (`getRootNode({composed:true}) !== document`) and carried an
