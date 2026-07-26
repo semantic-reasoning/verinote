@@ -5,8 +5,9 @@ A single row can emit up to eleven badges, and before this they all wore the sam
 `.badge` weight: "this fact contradicts another one" read exactly like "this fact
 has two sources". The fix gives the reader one rule -- **colour is a verdict, grey
 is context** -- with at most two coloured badges per row (the fact's status and one
-trust verdict, chosen by the priority `conflicted > accept recommended >
-corroborated`) and everything else demoted to a grey chip.
+trust verdict, chosen by the priority `conflicted > evidence_missing > unsupported
+> single_source > accept recommended > corroborated`) and everything else demoted
+to a grey chip. A higher caution demotes the lower finding without deleting it.
 
 The CSS guard below is written the way this repo's UI guards have repeatedly *not*
 been. Asserting that a rule exists, or that two rules' declaration sets differ, has
@@ -32,6 +33,7 @@ alone is the defect #226 is about, so hue cannot be what satisfies this file.
 
 from __future__ import annotations
 
+from collections import Counter
 import re
 from html.parser import HTMLParser
 from pathlib import Path
@@ -41,7 +43,9 @@ import pytest
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
+import verinote.web.app as webapp  # noqa: E402
 from verinote.config import Config  # noqa: E402
+from verinote.pipeline.trust import fact_trust_summary  # noqa: E402
 from verinote.web import create_app  # noqa: E402
 
 WEB = Path(__file__).resolve().parents[1] / "verinote" / "web"
@@ -50,6 +54,10 @@ CSS_PATH = WEB / "static" / "app.css"
 BASE = ".badge"
 VERDICT = ".badge.verdict"
 CHIP = ".badge.chip"
+RISK = ".badge.verdict.risk"
+META_OVERFLOW = ".meta-overflow"
+META_SUMMARY = ".meta-overflow > summary"
+META_WEBKIT_MARKER = ".meta-overflow > summary::-webkit-details-marker"
 
 # Properties that could honestly carry "verdict vs context", each mapped to the
 # value it has when nobody declares it. Resolving to the initial value is what
@@ -175,6 +183,23 @@ def _difference(css: str) -> set[str]:
     return {prop for prop in FAMILY_INITIALS if verdict[prop] != chip[prop]}
 
 
+def _risk_difference(css: str) -> set[str]:
+    """Non-colour channels that distinguish a caution verdict from reassurance.
+
+    The caution selector cascades after `.badge.verdict`, so it must be folded onto
+    the resolved verdict values rather than inspected as an isolated declaration.
+    That keeps `content: "" / ""` and other no-op declarations from satisfying the
+    marker guard.
+    """
+    verdict = _resolve(VERDICT, css)
+    risk = dict(verdict)
+    _apply(risk, _declarations(RISK, css))
+    content = _declarations(f"{RISK}::before", css).get("content")
+    if content is not None:
+        risk["glyph"] = _glyph(content)
+    return {prop for prop in FAMILY_INITIALS if risk[prop] != verdict[prop]}
+
+
 def _coloured_classes(css: str) -> set[str]:
     """Single-class selectors that paint a colour readable as a verdict.
 
@@ -234,7 +259,7 @@ def _client(tmp_path) -> TestClient:
     return TestClient(create_app(cfg))
 
 
-def _busiest_row(tmp_path) -> list[tuple[frozenset[str], list[str]]]:
+def _busiest_fixture(tmp_path) -> tuple[TestClient, int]:
     """The row the issue asks for: contradicted, thinly supported, alias-expanded.
 
     Two engine-tier rivals put the subject/relation into single-valued conflict; the
@@ -249,6 +274,11 @@ def _busiest_row(tmp_path) -> list[tuple[frozenset[str], list[str]]]:
     store.add_fact("회사", "established_on", "2020", status="accepted", source_id=a)
     store.add_fact("회사", "established_on", "2021", status="accepted", source_id=b)
     fact_id = store.add_fact("회사", "설립", "2020", status="needs_review", source_id=a)
+    return client, fact_id
+
+
+def _busiest_row(tmp_path) -> list[tuple[frozenset[str], list[str]]]:
+    client, fact_id = _busiest_fixture(tmp_path)
 
     body = client.get("/review").text
     row = re.search(rf'<tr id="fact-{fact_id}".*?</tr>', body, re.DOTALL)
@@ -256,6 +286,62 @@ def _busiest_row(tmp_path) -> list[tuple[frozenset[str], list[str]]]:
     parser = _Badges()
     parser.feed(row.group(0))
     return parser.badges
+
+
+def _signal_markup(response_text: str) -> str:
+    cell = re.search(r'<td class="signals">(.*?)</td>', response_text, re.DOTALL)
+    assert cell is not None, "the review row has no trust-signals cell"
+    return cell.group(1)
+
+
+def _signal_badges(client: TestClient, fact_id: int) -> list[tuple[frozenset[str], str]]:
+    """Badges in the trust cell, excluding the row status verdict."""
+    body = client.get("/review").text
+    row = re.search(rf'<tr id="fact-{fact_id}".*?</tr>', body, re.DOTALL)
+    assert row is not None, f"/review did not render fact {fact_id}"
+    parser = _Badges()
+    parser.feed(_signal_markup(row.group(0)))
+    return [(classes, " ".join(text)) for classes, text in parser.badges]
+
+
+def _trust_verdict(client: TestClient, fact_id: int) -> tuple[frozenset[str], str]:
+    verdicts = [
+        (classes, text)
+        for classes, text in _signal_badges(client, fact_id)
+        if "verdict" in classes
+    ]
+    assert len(verdicts) == 1, f"trust verdicts rendered: {verdicts}"
+    return verdicts[0]
+
+
+def _single_source_row(tmp_path, *, evidence: bool) -> tuple[TestClient, int]:
+    """A review fact with exactly one engine-tier source supporting it."""
+    client = _client(tmp_path)
+    store = client.app.state.store
+    source_id = store.add_source("sources/only.txt", kind="text")
+    store.add_fact("Sample Company", "uses", "Sample Service", status="accepted", source_id=source_id)
+    fact_id = store.add_fact(
+        "Sample Company", "uses", "Sample Service", status="needs_review", source_id=source_id
+    )
+    if evidence:
+        store.add_fact_evidence(
+            fact_id=fact_id, source_id=source_id, snippet="Sample Company uses Sample Service."
+        )
+    return client, fact_id
+
+
+def _unsupported_row(tmp_path) -> tuple[TestClient, int]:
+    """An anchored review fact without any engine-tier support."""
+    client = _client(tmp_path)
+    store = client.app.state.store
+    source_id = store.add_source("sources/only.txt", kind="text")
+    fact_id = store.add_fact(
+        "Sample Company", "uses", "Sample Service", status="needs_review", source_id=source_id
+    )
+    store.add_fact_evidence(
+        fact_id=fact_id, source_id=source_id, snippet="Sample Company uses Sample Service."
+    )
+    return client, fact_id
 
 
 def test_the_two_tiers_differ_in_a_channel_that_is_not_colour() -> None:
@@ -305,6 +391,155 @@ def test_the_guard_accepts_other_honest_implementations() -> None:
             "yet this guard passes it; the family has a member that reads presence "
             "rather than effect"
         )
+
+
+def test_a_caution_verdict_has_a_non_colour_marker() -> None:
+    """Cautions and reassurances share the verdict slot, so hue cannot split them."""
+    assert _risk_difference(_read_css()), (
+        f"{RISK} and {VERDICT} resolve identically across non-colour channels; a "
+        "single-source warning becomes an all-clear in greyscale"
+    )
+
+
+def test_the_caution_marker_guard_rejects_noop_content() -> None:
+    """The marker guard resolves the cascade instead of accepting source text."""
+    base = ".badge { font-size: .78rem; }\n.badge.verdict { font-weight: 700; }\n"
+    honest = {
+        "glyph": '.badge.verdict.risk::before { content: "!" / ""; }',
+        "shape": ".badge.verdict.risk { border-style: double; }",
+    }
+    for name, rule in honest.items():
+        assert _risk_difference(base + rule), f"the {name} marker is visually real"
+
+    no_ops = {
+        "blank glyph": '.badge.verdict.risk::before { content: "" / ""; }',
+        "colour only": ".badge.verdict.risk { color: var(--warn); }",
+        "initial value": ".badge.verdict.risk { font-style: normal; }",
+    }
+    for name, rule in no_ops.items():
+        assert not _risk_difference(base + rule), (
+            f"the {name} mutant adds no non-colour caution marker but the guard passed"
+        )
+
+
+def test_single_source_renders_as_a_warning_verdict_with_a_marker(tmp_path) -> None:
+    """A valid anchor does not turn one-source support into ordinary context."""
+    client, fact_id = _single_source_row(tmp_path, evidence=True)
+    summary = fact_trust_summary(client.app.state.store, fact_id)
+    assert summary is not None
+    assert {"source_backed", "single_source"} <= set(summary.trust_labels)
+
+    classes, text = _trust_verdict(client, fact_id)
+    assert text == "single source"
+    assert {"trust-single_source", "risk", "verdict"} <= classes
+    assert "single source" not in [
+        text for classes, text in _signal_badges(client, fact_id) if "chip" in classes
+    ], "the promoted single-source finding must not be repeated as a chip"
+
+
+def test_unsupported_renders_as_a_higher_warning_verdict(tmp_path) -> None:
+    """An anchored fact with no engine support must not fall through to a grey chip."""
+    client, fact_id = _unsupported_row(tmp_path)
+    classes, text = _trust_verdict(client, fact_id)
+
+    assert text == "unsupported"
+    assert {"trust-unsupported", "risk", "verdict"} <= classes
+
+
+def test_evidence_missing_demotes_single_source_once(tmp_path) -> None:
+    """The absent anchor outranks thin support, while retaining it once as context."""
+    client, fact_id = _single_source_row(tmp_path, evidence=False)
+    summary = fact_trust_summary(client.app.state.store, fact_id)
+    assert summary is not None
+    assert {"evidence_missing", "single_source"} <= set(summary.trust_labels)
+
+    classes, text = _trust_verdict(client, fact_id)
+    chips = [text for classes, text in _signal_badges(client, fact_id) if "chip" in classes]
+    assert text == "evidence missing"
+    assert {"trust-evidence_missing", "risk", "verdict"} <= classes
+    assert chips.count("single source") == 1, (
+        f"the demoted caution must be retained exactly once, got chips {chips}"
+    )
+
+
+def test_meta_overflow_keeps_two_chips_visible_and_expands_the_rest_once(tmp_path) -> None:
+    """The standalone HTMX row uses a native +N disclosure for crowded metadata."""
+    client, fact_id = _busiest_fixture(tmp_path)
+
+    response = client.get(f"/facts/{fact_id}/row")
+    assert response.status_code == 200
+    assert f'<tr id="fact-{fact_id}"' in response.text
+    signals = _signal_markup(response.text)
+    overflow = re.search(
+        r'<details class="meta-overflow">(.*?)</details>', signals, re.DOTALL
+    )
+    assert overflow is not None, "a crowded row needs a native metadata disclosure"
+    assert " open" not in overflow.group(0).split(">", 1)[0], (
+        "the overflow must start folded so the +N count actually reduces the row"
+    )
+
+    before_overflow = signals[:overflow.start()]
+    visible_parser = _Badges()
+    visible_parser.feed(before_overflow)
+    visible = [" ".join(text) for classes, text in visible_parser.badges if "chip" in classes]
+    assert len(visible) == 2, f"the folded row shows {visible}, not exactly two metadata chips"
+
+    summary = re.search(r'<summary class="badge chip">\+(\d+)', overflow.group(1))
+    assert summary is not None, "the disclosure summary must expose its +N count as a chip"
+    overflow_count = int(summary.group(1))
+    assert f"Show {overflow_count} more trust signals" in overflow.group(1), (
+        "the terse +N summary needs an accessible expansion name"
+    )
+
+    overflow_parser = _Badges()
+    overflow_parser.feed(overflow.group(1))
+    hidden = [
+        " ".join(text)
+        for classes, text in overflow_parser.badges
+        if "chip" in classes and not " ".join(text).startswith("+")
+    ]
+    expanded = visible + hidden
+    assert len(hidden) == overflow_count, (
+        f"the +{overflow_count} control reveals {hidden}; its count is wrong"
+    )
+    assert len(expanded) == 2 + overflow_count
+    assert all(count == 1 for count in Counter(expanded).values()), (
+        f"expanding the metadata repeats a chip instead of showing each once: {expanded}"
+    )
+
+    parser = _Badges()
+    parser.feed(response.text)
+    verdicts = [classes for classes, _ in parser.badges if "verdict" in classes]
+    assert len(verdicts) == 2, f"the fact row renders {len(verdicts)} verdicts: {verdicts}"
+
+
+def test_meta_overflow_css_keeps_the_native_control_inline_and_operable() -> None:
+    """The +N control must remain a compact summary, not a script-shaped button."""
+    css = _read_css()
+    assert _declarations(META_OVERFLOW, css).get("display") == "inline"
+    summary = _declarations(META_SUMMARY, css)
+    assert summary.get("list-style") == "none"
+    assert summary.get("cursor") == "pointer"
+    assert _declarations(META_WEBKIT_MARKER, css).get("display") == "none"
+
+
+def test_single_row_partial_keeps_the_trust_unavailable_verdict_without_overflow(
+    tmp_path, monkeypatch
+) -> None:
+    """A partial render may have no trust summary and still needs a valid trust verdict."""
+    client = _client(tmp_path)
+    fact_id = client.app.state.store.add_fact("Sample", "uses", "Service", status="needs_review")
+    monkeypatch.setattr(webapp, "fact_trust_summary", lambda store, fact_id: None)
+
+    response = client.get(f"/facts/{fact_id}/row")
+    assert response.status_code == 200
+    assert "trust unavailable" in response.text
+    assert "meta-overflow" not in response.text
+    parser = _Badges()
+    parser.feed(_signal_markup(response.text))
+    verdicts = [classes for classes, _ in parser.badges if "verdict" in classes]
+    assert len(verdicts) == 1
+    assert {"risk", "trust-evidence_missing", "verdict"} <= verdicts[0]
 
 
 def test_the_busiest_row_spends_its_colour_on_at_most_two_badges(tmp_path) -> None:

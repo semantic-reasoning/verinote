@@ -27,8 +27,17 @@
        single weight, so "this fact contradicts another" cost the same to read as
        "this fact has two sources".
 
-       Priority is conflicted > accept recommended > corroborated: a contradiction
-       outranks a recommendation to accept it, which outranks bare corroboration.
+       The ladder runs cautions first, reassurances after:
+
+         conflicted > evidence_missing > unsupported > single_source
+           > accept recommended > corroborated
+
+       A green verdict must never be what suppresses a warning. `evidence_missing`
+       (no evidence anchor) outranks `unsupported` (no engine-tier support), and
+       both outrank an otherwise valid single source. The promoted label is the only
+       one removed from the chip run below, so losing the slot is a demotion rather
+       than deletion: a higher caution leaves `single source` as context exactly
+       once, and an accept recommendation a caution outranks still appears as a chip.
        `trust.conflict` and the `conflicted` label are the same finding said twice
        (_trust_labels derives the label from that very summary), so they collapse
        into this one verdict rather than two badges.
@@ -37,37 +46,65 @@
        and `recommendation` -- the whole context a lone HTMX row swap gets. #}
     {% if trust %}
       {% if trust.conflict or 'conflicted' in trust.trust_labels %}
-        {% set verdict_label, verdict_class, verdict_text = 'conflicted', 'trust-conflicted', 'conflicted' %}
+        {% set verdict_label, verdict_class, verdict_text, verdict_risk = 'conflicted', 'trust-conflicted', 'conflicted', true %}
+      {% elif 'evidence_missing' in trust.trust_labels %}
+        {% set verdict_label, verdict_class, verdict_text, verdict_risk = 'evidence_missing', 'trust-evidence_missing', 'evidence missing', true %}
+      {% elif 'unsupported' in trust.trust_labels %}
+        {% set verdict_label, verdict_class, verdict_text, verdict_risk = 'unsupported', 'trust-unsupported', 'unsupported', true %}
+      {% elif 'single_source' in trust.trust_labels %}
+        {% set verdict_label, verdict_class, verdict_text, verdict_risk = 'single_source', 'trust-single_source', 'single source', true %}
       {% elif recommendation and recommendation.eligible %}
-        {% set verdict_label, verdict_class, verdict_text = none, 'trust-reviewed', 'accept recommended' %}
+        {% set verdict_label, verdict_class, verdict_text, verdict_risk = none, 'trust-reviewed', 'accept recommended', false %}
       {% elif 'corroborated' in trust.trust_labels %}
-        {% set verdict_label, verdict_class, verdict_text = 'corroborated', 'trust-corroborated', 'corroborated' %}
+        {% set verdict_label, verdict_class, verdict_text, verdict_risk = 'corroborated', 'trust-corroborated', 'corroborated', false %}
       {% else %}
-        {% set verdict_label, verdict_class, verdict_text = none, none, none %}
+        {% set verdict_label, verdict_class, verdict_text, verdict_risk = none, none, none, false %}
       {% endif %}
       {% if verdict_text %}
-        <span class="badge verdict {{ verdict_class }}">{{ verdict_text }}</span>
+        <span class="badge verdict{% if verdict_risk %} risk{% endif %} {{ verdict_class }}">{{ verdict_text }}</span>
       {% endif %}
+      {# Keep every context item in one ordered list. The first two remain visible;
+         native details exposes the rest without duplicating those two on expand. #}
+      {% macro meta_chip(chip) -%}
+        <span class="badge chip">{{ chip[0] }}{% if chip[1] is not none %} <code>{{ chip[1] }}</code>{% endif %}</span>
+      {%- endmacro %}
+      {% set meta = namespace(chips=[]) %}
       {# The label promoted to the verdict is dropped here so it is not said twice. #}
       {% for label in trust.trust_labels if label != verdict_label %}
-        <span class="badge chip">{{ label|replace("_", " ") }}</span>
+        {% set meta.chips = meta.chips + [(label|replace("_", " "), none)] %}
       {% endfor %}
-      <span class="badge chip">{{ trust.support.source_count }} source{% if trust.support.source_count != 1 %}s{% endif %}</span>
+      {% set meta.chips = meta.chips + [(trust.support.source_count ~ ' source' ~ ('s' if trust.support.source_count != 1 else ''), none)] %}
       {% if trust.canonical_relation != f['relation'] %}
-        <span class="badge chip">canonical <code>{{ trust.canonical_relation }}</code></span>
+        {% set meta.chips = meta.chips + [('canonical', trust.canonical_relation)] %}
       {% endif %}
       {% if trust.typed_value %}
-        <span class="badge chip">{{ trust.typed_value.type }} <code>{{ trust.typed_value.alias }}</code></span>
+        {% set meta.chips = meta.chips + [(trust.typed_value.type, trust.typed_value.alias)] %}
       {% endif %}
-      {# Only the blocked case has reasons; the eligible case is already the verdict. #}
+      {# A caution may demote an eligible recommendation, but must not erase it. #}
       {% if recommendation and not recommendation.eligible %}
         {% for reason in recommendation.reasons[:2] %}
-          <span class="badge chip">{{ reason|replace("_", " ") }}</span>
+          {% set meta.chips = meta.chips + [(reason|replace("_", " "), none)] %}
         {% endfor %}
+      {% elif recommendation and recommendation.eligible and verdict_risk %}
+        {% set meta.chips = meta.chips + [('accept recommended', none)] %}
+      {% endif %}
+      {% for chip in meta.chips[:2] %}
+        {{ meta_chip(chip) }}
+      {% endfor %}
+      {% if meta.chips|length > 2 %}
+        {% set overflow_count = meta.chips|length - 2 %}
+        <details class="meta-overflow">
+          <summary class="badge chip">+{{ overflow_count }}<span class="visually-hidden">Show {{ overflow_count }} more trust signals</span></summary>
+          <span class="meta-overflow-items">
+            {% for chip in meta.chips[2:] %}
+              {{ meta_chip(chip) }}
+            {% endfor %}
+          </span>
+        </details>
       {% endif %}
     {% else %}
       {# No trust summary at all is a verdict on the row, not context. #}
-      <span class="badge verdict trust-evidence_missing">trust unavailable</span>
+      <span class="badge verdict risk trust-evidence_missing">trust unavailable</span>
     {% endif %}
   </td>
   <td class="evidence-cell">
