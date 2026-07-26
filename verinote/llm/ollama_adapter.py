@@ -13,6 +13,7 @@ import urllib.request
 from verinote.config import Config
 from verinote.llm.base import ExtractedFact, LLMError
 from verinote.llm.schema import (
+    FACT_ARRAY_SCHEMA,
     QUERY_INTENT_SCHEMA,
     QUERY_SCHEMA,
     parse_facts,
@@ -21,22 +22,6 @@ from verinote.llm.schema import (
 from verinote.pipeline.query_intent import QueryIntent, parse_query_intent
 from verinote.prompts import PromptError, render_prompt
 
-
-OLLAMA_FACT_ARRAY_SCHEMA = {
-    "type": "array",
-    "items": {
-        "type": "object",
-        "required": ["subject", "relation", "object", "confidence", "note"],
-        "additionalProperties": False,
-        "properties": {
-            "subject": {"type": "string"},
-            "relation": {"type": "string"},
-            "object": {"type": "string"},
-            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-            "note": {"type": "string"},
-        },
-    },
-}
 
 class OllamaAdapter:
     name = "ollama"
@@ -58,8 +43,10 @@ class OllamaAdapter:
             "model": self.cfg.model,
             "stream": False,
             "think": False,
-            # Ollama local models are much more reliable with flat string slots.
-            "format": OLLAMA_FACT_ARRAY_SCHEMA,
+            # Terms are structural only when their slot explicitly says so.
+            # The common schema preserves that distinction for local extraction
+            # instead of storing compound-looking values as string literals.
+            "format": FACT_ARRAY_SCHEMA,
             "options": {"temperature": 0, "num_predict": 1800},
             "messages": [
                 {"role": "system", "content": system},

@@ -763,6 +763,8 @@ def test_extraction_prompt_prefers_typed_literal_terms():
     assert "`amount(N,\"unit\")`" in EXTRACTION_SYSTEM
     assert "`number(N)`" in EXTRACTION_SYSTEM
     assert "Typed literals are object values, never subjects or relations" in EXTRACTION_SYSTEM
+    assert "or integer" in EXTRACTION_SYSTEM
+    assert "number(-2.5)" not in EXTRACTION_SYSTEM
     assert 'Emit these typed literal objects with object.kind="term"' in EXTRACTION_SYSTEM
     assert 'do not emit compound-looking text as object.kind="string"' in EXTRACTION_SYSTEM
     assert "relation `number(8)` and object `명`" in EXTRACTION_SYSTEM
@@ -876,49 +878,38 @@ def test_parse_facts_accepts_explicit_term_slots():
     assert fact.note == "source-backed"
 
 
-def test_parse_facts_downgrades_invalid_term_slots_to_strings():
-    facts = parse_facts(
-        {
-            "facts": [
-                {
-                    "subject": {"kind": "term", "value": "Example Corp"},
-                    "relation": {"kind": "string", "value": "legal_representative"},
-                    "object": {"kind": "term", "value": 'person("Ada")'},
-                    "confidence": 1,
-                    "note": "",
-                }
-            ]
-        }
-    )
-
-    fact = facts[0]
-    assert fact.subject == "Example Corp"
-    assert fact.object == 'person("Ada")'
-    assert (fact.subject_kind, fact.relation_kind, fact.object_kind) == (
-        "string",
-        "string",
-        "term",
-    )
-    assert "subject marked term but stored as string" in fact.note
+def test_parse_facts_rejects_invalid_explicit_term_slots():
+    with pytest.raises(LLMError, match="malformed fact object"):
+        parse_facts(
+            {
+                "facts": [
+                    {
+                        "subject": {"kind": "term", "value": "Example Corp"},
+                        "relation": {"kind": "string", "value": "legal_representative"},
+                        "object": {"kind": "term", "value": 'person("Ada")'},
+                        "confidence": 1,
+                        "note": "",
+                    }
+                ]
+            }
+        )
 
 
-def test_parse_facts_downgrades_variable_bearing_term_slots_to_strings():
-    fact = parse_facts(
-        {
-            "facts": [
-                {
-                    "subject": {"kind": "term", "value": "person(Name)"},
-                    "relation": {"kind": "string", "value": "has_role"},
-                    "object": {"kind": "string", "value": "PI"},
-                    "confidence": 0.9,
-                    "note": "",
-                }
-            ]
-        }
-    )[0]
-
-    assert fact.subject_kind == "string"
-    assert "structural term must be ground" in fact.note
+def test_parse_facts_rejects_variable_bearing_explicit_term_slots():
+    with pytest.raises(LLMError, match="structural term must be ground"):
+        parse_facts(
+            {
+                "facts": [
+                    {
+                        "subject": {"kind": "term", "value": "person(Name)"},
+                        "relation": {"kind": "string", "value": "has_role"},
+                        "object": {"kind": "string", "value": "PI"},
+                        "confidence": 0.9,
+                        "note": "",
+                    }
+                ]
+            }
+        )
 
 
 @pytest.mark.parametrize(

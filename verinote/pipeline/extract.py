@@ -715,7 +715,9 @@ def _is_bad_spo_shape(f: ExtractedFact) -> bool:
     return False
 
 
-def _slot_is_typed_literal(value: str, _kind: str) -> bool:
+def _slot_is_typed_literal(value: str, kind: str) -> bool:
+    if kind != "term":
+        return False
     try:
         term = parse_term(value)
     except TermParseError:

@@ -5,9 +5,13 @@ from types import SimpleNamespace
 import pytest
 
 from verinote.config import Config, save_settings
+from verinote.engine.terms import Compound, NumberLit
 from verinote.llm.base import LLMError
 from verinote.llm.ollama_adapter import OllamaAdapter
+from verinote.llm.schema import FACT_ARRAY_SCHEMA
+from verinote.pipeline import extract_source
 from verinote.prompts import save_prompt_override
+from verinote.store import Store
 
 
 def _cfg(tmp_path, *, timeout: float = 900.0) -> Config:
@@ -72,8 +76,7 @@ def test_ollama_extract_uses_configured_timeout(tmp_path, monkeypatch):
     payload = json.loads(calls[0].req.data.decode("utf-8"))
     assert payload["think"] is False
     assert payload["options"] == {"temperature": 0, "num_predict": 1800}
-    assert payload["format"]["type"] == "array"
-    assert payload["format"]["items"]["properties"]["subject"] == {"type": "string"}
+    assert payload["format"] == FACT_ARRAY_SCHEMA
     assert "document chunk" in payload["messages"][0]["content"]
     assert "up to 8 facts" in payload["messages"][0]["content"]
     assert "Do not summarize" in payload["messages"][0]["content"]
@@ -88,12 +91,55 @@ def test_ollama_extract_uses_configured_timeout(tmp_path, monkeypatch):
     assert "`date(YYYY)`" in payload["messages"][0]["content"]
     assert "`amount(N,\"unit\")`" in payload["messages"][0]["content"]
     assert "Typed literals are object values, never subjects or relations" in payload["messages"][0]["content"]
+    assert '`{"kind":"term","value":"..."}`' in payload["messages"][0]["content"]
     assert "relation `number(8)` and object `명`" in payload["messages"][0]["content"]
     assert "key-value or label-value text" in payload["messages"][0]["content"]
     assert "use relation `value`" in payload["messages"][0]["content"]
     assert "Do not use `is_a` unless" in payload["messages"][0]["content"]
     assert "Do not include source, status, CSV headers" in payload["messages"][0]["content"]
     assert facts[0].subject == "Ada"
+
+
+def test_ollama_extract_preserves_explicit_compound_term_slots(tmp_path, monkeypatch):
+    def fake_urlopen(req, *, timeout):
+        return _Response(
+            json.dumps(
+                {
+                    "facts": [
+                        {
+                            "subject": {"kind": "string", "value": "Example Corp"},
+                            "relation": {"kind": "string", "value": "founded_on"},
+                            "object": {"kind": "term", "value": "date(2024,1,2)"},
+                            "confidence": 0.9,
+                            "note": "",
+                        }
+                    ]
+                }
+            )
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    fact = OllamaAdapter(_cfg(tmp_path)).extract_facts(source_text="Example Corp was founded on 2024-01-02.")[0]
+
+    assert fact.object == "date(2024,1,2)"
+    assert fact.object_kind == "term"
+
+    store = Store(tmp_path / "kb.sqlite")
+    store.init_schema()
+    assert (
+        extract_source(
+            store,
+            OllamaAdapter(_cfg(tmp_path)),
+            source_path="sources/example.txt",
+            source_text="Example Corp was founded on 2024-01-02.",
+        )
+        == 1
+    )
+    stored = store.facts()[0]
+    assert store.get_fact_terms(stored["id"])[2] == Compound(
+        "date", (NumberLit(2024), NumberLit(1), NumberLit(2))
+    )
 
 
 def test_ollama_extract_raises_on_malformed_only_fact_payload(tmp_path, monkeypatch):
