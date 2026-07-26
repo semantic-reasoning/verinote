@@ -6,6 +6,14 @@ as `3/8 chunk(s)` -- a string you have to read one row at a time. Meanwhile the 
 carried `hx-target="main" hx-select="main"`, so every tick replaced the heading, the
 upload form and the table as one unit and took scroll position and focus with it.
 
+Narrowing that to `#sources-table` was not enough, which is why this file has a second
+poll section. The table holds Retry, Re-analyze, Accept all and Delete; replacing it
+still pulls whichever of them has keyboard focus out of the document, and htmx cannot
+put focus back on a node that is gone. So the tests below do not ask whether the swap
+avoids the page chrome -- they ask what set of live nodes a tick destroys, computed
+from every htmx attribute on the poller at once, and require that set to contain every
+progress bar and no focusable control.
+
 WHAT THESE TESTS ASSERT, AND WHY NOT THE OBVIOUS THING. Asserting "app.css contains a
 `.progress` rule" or "sources.html mentions a bar" is worthless here: both stay green
 under a one-line edit that changes the text and nothing a reader would see. So nothing
@@ -58,12 +66,12 @@ PROPORTION_DECL = re.compile(
 
 
 class _Doc(HTMLParser):
-    """A minimal element tree: every start tag with its attributes and its ancestors.
+    """A minimal element tree: every start tag with its attributes, ancestors and text.
 
     Enough to ask "is X inside Y", which is the only structural question here. Using
-    a parser rather than a regex matters for the poll test: proving the swapped region
-    does not contain the page heading is a containment question, and a regex over the
-    source text can only guess at it.
+    a parser rather than a regex matters for the poll tests: proving that the swapped
+    region does not contain the page heading -- or the Delete button -- is a
+    containment question, and a regex over the source text can only guess at it.
     """
 
     def __init__(self) -> None:
@@ -74,10 +82,17 @@ class _Doc(HTMLParser):
     def handle_starttag(self, tag: str, attrs) -> None:
         index = len(self.nodes)
         self.nodes.append(
-            {"tag": tag, "attrs": dict(attrs), "ancestors": list(self._open), "index": index}
+            {
+                "tag": tag, "attrs": dict(attrs), "ancestors": list(self._open),
+                "index": index, "text": [],
+            }
         )
         if tag not in VOID_TAGS:
             self._open.append(index)
+
+    def handle_data(self, data: str) -> None:
+        if self._open:
+            self.nodes[self._open[-1]]["text"].append(data)
 
     def handle_endtag(self, tag: str) -> None:
         for depth in range(len(self._open) - 1, -1, -1):
@@ -93,6 +108,18 @@ class _Doc(HTMLParser):
 
     def contains(self, outer: dict, inner: dict) -> bool:
         return outer["index"] in inner["ancestors"]
+
+    def subtree(self, node: dict) -> list[dict]:
+        return [node, *self.descendants(node)]
+
+    def text(self, node: dict) -> str:
+        """The element's visible text, whitespace-collapsed.
+
+        Used only to name a button by its label, where the text is a direct child, so
+        the flattening of nested runs is not something any caller here depends on.
+        """
+        parts = [chunk for element in self.subtree(node) for chunk in element["text"]]
+        return " ".join("".join(parts).split())
 
 
 def _parse(html: str) -> _Doc:
@@ -157,6 +184,13 @@ SOURCES = {
     "partly-failed.txt": (4, 1, 2, 0),
 }
 
+# Every button the Sources row offers. Two of them are conditional -- Retry needs a
+# failed chunk and Accept all needs an unresolved candidate -- so the fixture below
+# arranges for all four to render, and `test_the_fixture_renders_every_row_action`
+# fails loudly if that stops being true. Otherwise "no tick removes these controls"
+# would pass on a page that has none of them.
+ROW_ACTIONS = ("Retry", "Re-analyze", "Accept all", "Delete")
+
 
 @pytest.fixture()
 def page(tmp_path):
@@ -187,6 +221,9 @@ def page(tmp_path):
         cursor += failed
         for chunk_id in chunk_ids[cursor : cursor + running]:
             store.mark_chunk_running(chunk_id)
+        # An unresolved candidate is what puts "Accept all" on the row; without one,
+        # the poll tests would be checking a row that is missing an action.
+        store.add_fact(f"{path} subject", "relates to", "object", source_id=source_id)
         jobs[path] = job_id
 
     response = client.get("/sources")
@@ -245,18 +282,55 @@ def test_every_analysed_source_gets_a_progress_indicator(page, path: str) -> Non
 
 
 @pytest.mark.parametrize("path", sorted(SOURCES))
-def test_the_indicator_announces_the_real_chunk_counts(page, path: str) -> None:
-    """The value channel: what a screen reader hears must be the job's own numbers.
+def test_the_indicator_announces_the_chunks_it_has_processed(page, path: str) -> None:
+    """The value channel: `aria-valuenow` is chunks *processed*, complete plus failed.
+
+    That is the meaning #228 settled on, and it is a decision rather than a detail, so
+    it is pinned here. The bar measures how far the job has got; a failed chunk is not
+    retried by itself, so the job is finished with it. Counting only the successes
+    would leave the announced value smaller than the drawn fill for any run with a
+    failure -- see the consistency test below, which is the reason this reading wins.
+    Success rate is a separate question and lives in `aria-valuetext`.
 
     Read back from the job row rather than from the fixture's constants, so a bar that
     drifts from the data it claims to show fails here rather than in review.
     """
     job = _job_row(page, path)
+    processed = float(int(job["completed_chunks"]) + int(job["failed_chunks"]))
     now, ceiling = _reported_counts(_indicator_for(page, path))
 
-    assert (now, ceiling) == (float(job["completed_chunks"]), float(job["total_chunks"])), (
-        f"{path}: the indicator announces {now:g}/{ceiling:g} but the job row says "
-        f"{job['completed_chunks']}/{job['total_chunks']}"
+    assert (now, ceiling) == (processed, float(job["total_chunks"])), (
+        f"{path}: the indicator announces {now:g}/{ceiling:g} but the job row has "
+        f"{job['completed_chunks']} complete + {job['failed_chunks']} failed of "
+        f"{job['total_chunks']}"
+    )
+
+
+@pytest.mark.parametrize("path", sorted(SOURCES))
+def test_the_announced_value_covers_exactly_as_much_track_as_the_bar_draws(
+    page, path: str
+) -> None:
+    """The two channels must agree, or the bar lies to one audience.
+
+    A sighted reader sees the completed and failed segments tile the track together;
+    a screen reader hears `aria-valuenow` out of `aria-valuemax`. If those disagree --
+    which they did while the value counted completed chunks only -- the same bar is
+    75% full and 25% done at once.
+
+    "What the bar draws" is the sum of the proportional lengths inside the indicator,
+    which is what tiling means. A native `<progress>` reports one length equal to its
+    own value and satisfies this for free; a single-fill bar does too. What cannot
+    satisfy it is a bar that paints a segment it does not count.
+    """
+    node = _indicator_for(page, path)
+    now, ceiling = _reported_counts(node)
+    announced = 100.0 * now / ceiling
+    drawn = sum(_drawn_fractions(page["doc"], node).values())
+
+    assert abs(drawn - announced) < 0.01, (
+        f"{path}: the bar covers {drawn:g}% of its track but announces {now:g}/{ceiling:g} "
+        f"= {announced:g}%. Either the value or the fill is wrong about how far along "
+        "the job is."
     )
 
 
@@ -386,12 +460,20 @@ def test_the_bar_markup_is_not_styled_by_a_class_the_stylesheet_never_defines(pa
 # --- the poll (#228, second half) -------------------------------------------
 
 
-def _poller(doc: _Doc) -> dict:
-    polling = doc.find(lambda node: "hx-get" in node["attrs"])
-    assert len(polling) == 1, (
-        f"expected exactly one polling element on /sources, found {len(polling)}"
+def _pollers(doc: _Doc) -> list[dict]:
+    """Every element that issues a request on a timer.
+
+    A list rather than the one element, so an implementation that gives each row its
+    own poller is judged by the same rules instead of failing on a head count.
+    """
+    polling = doc.find(
+        lambda node: "hx-get" in node["attrs"] and "every" in node["attrs"].get("hx-trigger", "")
     )
-    return polling[0]
+    assert polling, (
+        "nothing on /sources polls while a job is live; every containment assertion "
+        "about the swap would be vacuously true"
+    )
+    return polling
 
 
 def _swap_region(doc: _Doc, poller: dict, attribute: str) -> dict:
@@ -418,42 +500,274 @@ def _swap_region(doc: _Doc, poller: dict, attribute: str) -> dict:
     return matches[0]
 
 
+def _oob_targets(doc: _Doc, poller: dict) -> list[tuple[dict, str]]:
+    """The `(element, swap style)` pairs `hx-select-oob` names, against the live page.
+
+    htmx resolves out-of-band swaps by id and by nothing else (it strips a leading `#`
+    and looks the rest up), so the value is a list of ids each with an optional
+    `:strategy` that defaults to `true`, htmx's spelling of `outerHTML`. An id that
+    names nothing is a silently dead entry in htmx, which is worth failing on here
+    rather than shipping.
+    """
+    targets: list[tuple[dict, str]] = []
+    for entry in poller["attrs"].get("hx-select-oob", "").split(","):
+        name, _, style = entry.partition(":")
+        wanted = name.strip().lstrip("#")
+        if not wanted:
+            continue
+        matches = doc.find(lambda node, wanted=wanted: node["attrs"].get("id") == wanted)
+        assert len(matches) == 1, (
+            f"hx-select-oob names #{wanted}, which matches {len(matches)} elements in the "
+            "rendered page; htmx would swap nothing (or the wrong thing) for it"
+        )
+        targets.append((matches[0], style.strip() or "true"))
+    return targets
+
+
+# What each htmx swap style does to the nodes already in the page. `true` is how an
+# out-of-band swap spells `outerHTML`. The positional styles insert next to the target
+# and remove nothing, which is why they are absent from both sets rather than lumped
+# in with `innerHTML`.
+STYLES_REMOVING_TARGET = frozenset({"outerHTML", "delete", "true"})
+STYLES_REMOVING_CHILDREN = frozenset({"innerHTML", "textContent"})
+
+
+def _removed_by(doc: _Doc, target: dict, style: str) -> list[dict]:
+    if style in STYLES_REMOVING_TARGET:
+        return doc.subtree(target)
+    if style in STYLES_REMOVING_CHILDREN:
+        return doc.descendants(target)
+    return []
+
+
+def _removed_nodes(doc: _Doc, poller: dict) -> list[dict]:
+    """Every node a tick tears out of the live DOM.
+
+    This is the question the whole poll section turns on, and it is deliberately
+    computed from all of the poller's htmx attributes at once rather than read off
+    one of them: a guard that only inspected `hx-target` would miss content arriving
+    out of band, and one that only inspected `hx-select-oob` would miss the main swap.
+    Both channels remove nodes.
+
+    The distinction between removing the target and removing only its children is kept
+    because one of the invariants below turns on it -- an `innerHTML` swap leaves the
+    poller in place with its `hx-trigger` intact, so a page that stops it that way
+    would poll forever. `none` swaps nothing into the target and leaves only the
+    out-of-band list.
+    """
+    attrs = poller["attrs"]
+    style = (attrs.get("hx-swap") or "innerHTML").split()[0]
+    removed = [
+        node
+        for target, oob_style in _oob_targets(doc, poller)
+        for node in _removed_by(doc, target, oob_style)
+    ]
+    if style != "none":
+        target = _swap_region(doc, poller, "hx-target") if "hx-target" in attrs else poller
+        removed += _removed_by(doc, target, style)
+    return removed
+
+
+def _injected_regions(doc: _Doc, poller: dict) -> list[dict]:
+    """Every region of the response a tick pastes into the page.
+
+    The mirror of `_removed_nodes`, and the reason `hx-select` is not ignored:
+    selecting a wide region into a narrow target does not remove the chrome, it
+    duplicates it. With no `hx-select` at all htmx uses the whole response body, which
+    is why that case resolves to <body> here instead of to nothing.
+    """
+    attrs = poller["attrs"]
+    style = (attrs.get("hx-swap") or "innerHTML").split()[0]
+    regions = [target for target, _style in _oob_targets(doc, poller)]
+    if style != "none":
+        if "hx-select" in attrs:
+            regions.append(_swap_region(doc, poller, "hx-select"))
+        else:
+            regions.extend(doc.find(lambda node: node["tag"] == "body"))
+    return regions
+
+
+def _swept_away(doc: _Doc, page_doc_pollers: list[dict]) -> set[int]:
+    """Indices of every node any poller removes, across the whole page."""
+    return {
+        node["index"]
+        for poller in page_doc_pollers
+        for node in _removed_nodes(doc, poller)
+    }
+
+
+def _focusable(node: dict) -> bool:
+    """Can this element hold keyboard focus?
+
+    The list is the one the HTML spec makes focusable by default, plus the two
+    attributes that make anything focusable. It is written as a property of the
+    element rather than as a search for the four buttons this page happens to have,
+    because the thing that must not be swapped is "a control the user is interacting
+    with", and a future row that grows a link or a select is the same bug.
+    """
+    attrs = node["attrs"]
+    tag = node["tag"]
+    if "tabindex" in attrs:
+        return True
+    editable = attrs.get("contenteditable")
+    if editable is not None and editable.lower() != "false":
+        return True
+    if tag == "input":
+        return attrs.get("type", "text").lower() != "hidden"
+    if tag in {"a", "area"}:
+        return "href" in attrs
+    return tag in {"button", "select", "textarea", "summary", "iframe", "object", "embed"}
+
+
 def test_the_page_still_polls_while_a_job_is_live(page) -> None:
     """The counterpart guard: narrowing the swap must not be achieved by not polling.
 
     Deleting the poll would make every containment assertion below vacuously true.
     """
-    poller = _poller(page["doc"])
-    assert poller["attrs"].get("hx-get") == "/sources"
-    assert "every" in poller["attrs"].get("hx-trigger", ""), (
-        f"the sources poll no longer runs on a timer: {poller['attrs'].get('hx-trigger')!r}"
-    )
+    for poller in _pollers(page["doc"]):
+        assert poller["attrs"].get("hx-get") == "/sources"
 
 
-@pytest.mark.parametrize("attribute", ["hx-target", "hx-select"])
-def test_the_poll_leaves_the_page_chrome_alone(page, attribute: str) -> None:
-    """Neither half of the swap may take the whole page with it.
+def test_the_poll_still_refreshes_the_progress_it_exists_to_show(page) -> None:
+    """The other half of that guard: the bars must actually be inside the swap.
 
-    The bug was `hx-target="main" hx-select="main"`: htmx narrowed the *response* and
-    then replaced everything anyway. Both attributes are checked, because getting one
-    right and the other wrong is worse than the bug -- selecting `main` into a narrow
-    target nests the page chrome inside the table.
-
-    The assertion is containment, not a string comparison: the swapped region must not
-    contain the <h1>. That is what "scroll position and focus survive" reduces to, and
-    it holds for any narrowing (the table, its tbody, a wrapper) rather than pinning
-    the one this change happened to pick.
+    "Swap nothing" satisfies every safety assertion below and ships a progress bar
+    that never moves. So every progress indicator on the page has to fall inside some
+    region a tick replaces -- which is the narrowest statement of what the poll is
+    for, and the thing the safety assertions are trading against.
     """
     doc = page["doc"]
-    region = _swap_region(doc, _poller(doc), attribute)
+    indicators = _indicators(doc)
+    assert indicators, "no progress indicators on the page; this check is vacuous"
+    refreshed = _swept_away(doc, _pollers(doc))
 
-    assert region["tag"] not in {"main", "body", "html"}, (
-        f"{attribute} still swaps <{region['tag']}>; every tick replaces the page"
-    )
+    for indicator in indicators:
+        assert indicator["index"] in refreshed, (
+            "a progress bar sits outside everything the poll swaps, so it will show the "
+            "chunk counts from page load until the user reloads by hand"
+        )
+
+
+def test_the_poll_can_turn_itself_off(page) -> None:
+    """A tick has to be able to remove the element that owns the timer.
+
+    This page already shipped a bug where a superseded job left it polling every two
+    seconds forever (see `is_live_extraction_job` in web/app.py). The template's half
+    of that guarantee is structural: the poll stops because the server renders the
+    polling element without its hx-* attributes once no job is live, and the swap
+    installs that version -- which only works if the swap actually removes the old
+    element. An `innerHTML` swap, or a `none` swap with the poller outside the
+    out-of-band list, leaves the original `hx-trigger` in the document and the timer
+    runs until the tab closes.
+    """
+    doc = page["doc"]
+    for poller in _pollers(doc):
+        removed = {node["index"] for node in _removed_nodes(doc, poller)}
+        assert poller["index"] in removed, (
+            f"the polling <{poller['tag']}> is never removed by its own swap, so its "
+            "hx-trigger outlives the jobs and /sources is requested every 2s forever"
+        )
+
+
+def test_the_poll_leaves_the_page_chrome_alone(page) -> None:
+    """No part of the swap may take the whole page with it.
+
+    The original bug was `hx-target="main" hx-select="main"`: htmx narrowed the
+    *response* and then replaced everything anyway. Both halves are checked, plus the
+    out-of-band list, because getting one right and another wrong is worse than the
+    bug -- selecting `main` into a narrow target nests the page chrome inside it.
+
+    The assertion is containment, not a string comparison: no swapped region may
+    contain the <h1>. That is what "scroll position survives" reduces to, and it holds
+    for any narrowing (the table, its tbody, a wrapper) rather than pinning the one
+    this change happened to pick.
+    """
+    doc = page["doc"]
     headings = doc.find(lambda node: node["tag"] == "h1")
     assert headings, "the sources page lost its <h1>; the containment check is vacuous"
+    torn_out = _swept_away(doc, _pollers(doc))
+
     for heading in headings:
-        assert not doc.contains(region, heading), (
-            f"{attribute} resolves to a region containing the page heading, so the 2s "
-            "poll rebuilds the whole view and drops scroll position and focus"
+        assert heading["index"] not in torn_out, (
+            "the poll tears out the page heading, so the 2s tick rebuilds the whole "
+            "view and drops the scroll position"
+        )
+    for poller in _pollers(doc):
+        for region in _injected_regions(doc, poller):
+            assert region["tag"] not in {"main", "body", "html"}, (
+                f"the poll pastes a whole <{region['tag']}> back into the page every tick"
+            )
+            for heading in headings:
+                assert not doc.contains(region, heading), (
+                    f"the poll selects a <{region['tag']}> containing the page heading and "
+                    "pastes it into the swap target, duplicating the chrome every 2s"
+                )
+
+
+def test_the_poll_never_replaces_a_control_the_user_can_focus(page) -> None:
+    """The requirement #228 was reopened for: a tick must not remove a focusable node.
+
+    Narrowing the swap from <main> to `#sources-table` did not fix this. htmx restores
+    focus by holding a reference to `document.activeElement`; when that element is one
+    of the nodes the swap replaced, the reference points at a node no longer in the
+    document and the focus is simply gone. So a Retry or Delete button under the
+    keyboard cursor was still being pulled out every 2 seconds.
+
+    The assertion is over the *rendered* page, and over every focusable element rather
+    than the four this row happens to have: the swapped regions are resolved to real
+    nodes and their subtrees must contain no focusable element at all. An
+    implementation that keeps the controls out of the swap passes however it does it,
+    and one that reaches the same place by giving buttons stable ids does not -- ids
+    do not survive `outerHTML`, which is the point.
+    """
+    doc = page["doc"]
+    assert [node for node in doc.nodes if _focusable(node)], (
+        "the rendered page has no focusable element at all; this check is vacuous"
+    )
+
+    for poller in _pollers(doc):
+        doomed = [node for node in _removed_nodes(doc, poller) if _focusable(node)]
+        assert not doomed, (
+            f"a tick removes {[node['tag'] for node in doomed]} from the document; "
+            "keyboard focus on any of them is lost every 2 seconds while an analysis runs"
+        )
+
+
+def test_the_fixture_renders_every_row_action(page) -> None:
+    """Guard against a vacuous poll suite: all four controls must be on the page.
+
+    Retry and Accept all are conditional, so a fixture drifting away from failed
+    chunks or unresolved candidates would quietly reduce the test below to checking
+    that a swap does not remove buttons that were never rendered.
+    """
+    doc = page["doc"]
+    labels = {doc.text(node) for node in doc.find(lambda node: node["tag"] == "button")}
+    missing = [label for label in ROW_ACTIONS if label not in labels]
+    assert not missing, (
+        f"the fixture renders no {missing} button; found {sorted(labels)}. The poll "
+        "tests would be checking a row that has no actions to lose."
+    )
+
+
+@pytest.mark.parametrize("label", ROW_ACTIONS)
+def test_the_named_row_actions_survive_every_tick(page, label: str) -> None:
+    """The same requirement, named: these four buttons, by the text on them.
+
+    `test_the_poll_never_replaces_a_control_the_user_can_focus` states the rule; this
+    states the instance, so a failure report says "Delete is inside the swap" instead
+    of "a <button> is". Both are kept because the general one can be satisfied by a
+    page that has stopped rendering the buttons, and this one cannot.
+    """
+    doc = page["doc"]
+    buttons = [
+        node for node in doc.find(lambda node: node["tag"] == "button")
+        if doc.text(node) == label
+    ]
+    assert buttons, f"no {label!r} button on the page"
+    swapped_away = _swept_away(doc, _pollers(doc))
+
+    for button in buttons:
+        assert button["index"] not in swapped_away, (
+            f"the {label!r} button is inside a region the poll replaces; pressing tab to "
+            "it and waiting two seconds loses it"
         )

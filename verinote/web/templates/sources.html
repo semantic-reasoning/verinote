@@ -14,12 +14,37 @@
 </form>
 
 {% if sources %}
-{# The poll swaps the table, not <main> (#228). `/sources` renders a whole page and
-   there is no partial endpoint, so hx-select still narrows the *response* -- but the
-   swap target has to narrow too, or every tick replaces the heading, the upload form
-   and the table together and takes the scroll position and focus with them. #}
-<table class="sources" id="sources-table" aria-live="polite"
-       {% if has_running_jobs %}hx-get="/sources" hx-trigger="every 2s" hx-target="#sources-table" hx-select="#sources-table" hx-swap="outerHTML"{% endif %}>
+{# The poll swaps the analysis output and nothing the user can touch (#228).
+
+   Swapping <main> took the heading and the upload form with every tick; swapping
+   `#sources-table` instead only shrank the blast radius, because the table still
+   holds Retry / Re-analyze / Accept all / Delete. htmx restores focus by keeping a
+   reference to `document.activeElement`, and a replaced node is not the node it
+   kept -- so a button being replaced under the cursor loses focus, every 2s, for as
+   long as an analysis runs.
+
+   So the swap set is now exactly the cells that carry analysis output, none of which
+   is interactive:
+
+   * The main swap replaces `#sources-poll`, an empty element whose whole job is to
+     own the timer. That is also how the poll stops: once the last job finishes the
+     server renders that element without the hx-* attributes, the swap installs that
+     version, and the tick is gone. Something has to be swapped for the poll to be
+     able to turn itself off, and this is the only thing that can be swapped without
+     taking a control with it.
+   * `hx-select-oob` carries the per-row payload into the analysis, trust and
+     evidence cells by id. Every one of those holds badges and text. The `.actions`
+     cell -- every button and form on the row -- is not in the list, so no tick can
+     remove it.
+
+   The trade: no tick creates or removes a row any more, so a source uploaded or
+   deleted in another tab shows up on the next real page load rather than within 2s.
+   The poll reports the progress of work already on screen, which is what it is for. #}
+<div id="sources-poll" hidden
+     {% if has_running_jobs %}hx-get="/sources" hx-trigger="every 2s"
+     hx-target="#sources-poll" hx-select="#sources-poll" hx-swap="outerHTML"
+     hx-select-oob="{% for s in sources %}#analysis-{{ s["id"] }},#trust-{{ s["id"] }},#evidence-{{ s["id"] }}{% if not loop.last %},{% endif %}{% endfor %}"{% endif %}></div>
+<table class="sources" id="sources-table" aria-live="polite">
   <thead>
     <tr><th>Source</th><th>Analysis</th><th>Trust counts</th><th>Evidence</th><th>Actions</th></tr>
   </thead>
@@ -43,7 +68,10 @@
         </div>
         {% endif %}
       </td>
-      <td class="analysis-cell">
+      {# The three cells the poll refreshes carry ids so `hx-select-oob` can name
+         them one by one. They are ids rather than a class selector because htmx
+         resolves an out-of-band swap by id, and stable because the source id is. #}
+      <td class="analysis-cell" id="analysis-{{ s["id"] }}">
         {% if s["analysis_status"] %}
           <span class="badge">{{ 'complete' if s["analysis_status"] == 'done' else s["analysis_status"] }}</span>
           <span>{{ s["completed_chunks"] }}/{{ s["total_chunks"] }} chunk(s)</span>
@@ -65,13 +93,22 @@
 
              `role="progressbar"` carries the same numbers as the text above it. That
              is deliberate duplication: a 4px bar is a purely visual channel, and the
-             ARIA value is what makes it mean anything to a screen reader. #}
+             ARIA value is what makes it mean anything to a screen reader.
+
+             What the value *means* is chunks **processed**, completed plus failed --
+             not chunks that succeeded. The bar measures how far the job has got, and
+             a failed chunk is not retried on its own, so it is work the job is done
+             with; counting it is also the only reading under which the announced
+             value matches what is drawn, since both segments fill the track. Success
+             rate is a different question, and `aria-valuetext` is where it is
+             answered: it splits the processed count back into complete and failed so
+             a failure is never hidden behind a bar that looks finished. #}
           {% if s["total_chunks"] %}
           <div class="progress{{ ' is-done' if s["analysis_status"] == 'done' }}"
                role="progressbar" aria-label="Analysis progress"
                aria-valuemin="0" aria-valuemax="{{ s["total_chunks"] }}"
-               aria-valuenow="{{ s["completed_chunks"] }}"
-               aria-valuetext="{{ s["completed_chunks"] }} of {{ s["total_chunks"] }} chunk(s) complete{% if s["failed_chunks"] %}, {{ s["failed_chunks"] }} failed{% endif %}">
+               aria-valuenow="{{ s["completed_chunks"] + s["failed_chunks"] }}"
+               aria-valuetext="{% if s["failed_chunks"] %}{{ s["completed_chunks"] + s["failed_chunks"] }} of {{ s["total_chunks"] }} chunk(s) processed: {{ s["completed_chunks"] }} complete, {{ s["failed_chunks"] }} failed{% else %}{{ s["completed_chunks"] }} of {{ s["total_chunks"] }} chunk(s) complete{% endif %}">
             <span class="progress-complete"
                   style="width: {{ (100.0 * s["completed_chunks"] / s["total_chunks"]) | round(3) }}%"></span>
             {% if s["failed_chunks"] %}
@@ -100,7 +137,7 @@
           <span class="muted">Not analyzed</span>
         {% endif %}
       </td>
-      <td class="conf">
+      <td class="conf" id="trust-{{ s["id"] }}">
         {{ s["candidate_count"] }} candidate(s)
         {% if s["needs_review_count"] %}<br>{{ s["needs_review_count"] }} needs review{% endif %}
         {# Derived from ENGINE_STATUSES, which already includes `accepted`:
@@ -112,7 +149,7 @@
           <span class="badge trust-corroborated">{{ s["corroborated_count"] }} corroborated</span>
         </div>
       </td>
-      <td class="evidence-cell">
+      <td class="evidence-cell" id="evidence-{{ s["id"] }}">
         {% if s["evidence_snippets"] %}
           {% for snippet in s["evidence_snippets"] %}
             <div class="snippet">{{ snippet }}</div>
