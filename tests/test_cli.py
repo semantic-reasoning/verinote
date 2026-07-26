@@ -1043,7 +1043,7 @@ def test_query_prints_review_required_outcome(tmp_path, monkeypatch, capsys):
     _env(monkeypatch, tmp_path)
     monkeypatch.setattr("verinote.llm.get_client", lambda cfg: object())
 
-    def translate(store, client, *, root, allow_direct_datalog_fallback=False):
+    def translate(store, client, *, root):
         q = store.questions(pending_only=True)[0]
         reason = "unsupported synthetic question"
         store.set_question_query(
@@ -1066,7 +1066,7 @@ def test_query_prints_no_answer_outcome(tmp_path, monkeypatch, capsys):
     _env(monkeypatch, tmp_path)
     monkeypatch.setattr("verinote.llm.get_client", lambda cfg: object())
 
-    def translate(store, client, *, root, allow_direct_datalog_fallback=False):
+    def translate(store, client, *, root):
         q = store.questions(pending_only=True)[0]
         reason = "no confirmed facts match"
         store.set_question_query(q["id"], f'no_answer("{reason}")', "no_answer", reason)
@@ -1084,7 +1084,7 @@ def test_query_prints_ambiguous_outcome(tmp_path, monkeypatch, capsys):
     _env(monkeypatch, tmp_path)
     monkeypatch.setattr("verinote.llm.get_client", lambda cfg: object())
 
-    def translate(store, client, *, root, allow_direct_datalog_fallback=False):
+    def translate(store, client, *, root):
         q = store.questions(pending_only=True)[0]
         reason = "multiple synthetic candidates matched"
         store.set_question_query(q["id"], f'ambiguous("{reason}")', "ambiguous", reason)

@@ -3123,7 +3123,7 @@ def test_translate_shows_invalid_model_output_reason_in_question_row(
 ):
     monkeypatch.setattr(webapp, "get_client", lambda cfg: object())
 
-    def translate(store, client, *, root, allow_direct_datalog_fallback=False):
+    def translate(store, client, *, root):
         q = store.questions(pending_only=True)[0]
         reason = "invalid model output: missing answer rule"
         store.set_question_query(

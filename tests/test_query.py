@@ -605,24 +605,36 @@ def test_invalid_intent_output_fails_translation_and_skips_draft(tmp_path, fake_
     assert load_query(s) == ""
 
 
-def test_query_intent_errors_are_catchable_and_separate_from_datalog_translation(
-    tmp_path, fake_client
-):
+def test_query_intent_errors_are_catchable(tmp_path, fake_client):
     intent_client = fake_client(intent="not json")
     with pytest.raises(LLMError, match="query intent output was not JSON"):
         intent_client.extract_query_intent(question="What is the sample answer?")
 
+
+def test_translation_never_calls_direct_datalog_fallback(
+    tmp_path, fake_client, intent_payload
+):
     s = _store(tmp_path)
     qid = s.add_question("What is the sample answer?")
-    datalog_client = fake_client(query=lambda question, qid: "this is not datalog")
-
-    results = translate_questions(
-        s, datalog_client, root=tmp_path, allow_direct_datalog_fallback=True
+    client = fake_client(
+        intent=intent_payload(
+            "unknown_or_unsupported", reason="requires a synthetic relation"
+        )
+    )
+    client.translate_query = lambda **kwargs: (_ for _ in ()).throw(
+        AssertionError("ordinary translation must not call direct Datalog fallback")
     )
 
-    assert results[0]["id"] == qid
-    assert results[0]["status"] == "review_required"
-    assert "invalid query:" in results[0]["reason"]
+    results = translate_questions(s, client, root=tmp_path)
+
+    assert results == [
+        {
+            "id": qid,
+            "status": "review_required",
+            "query_dl": 'review_required("requires a synthetic relation")',
+            "reason": "requires a synthetic relation",
+        }
+    ]
 
 
 def test_planner_no_candidates_requires_review(tmp_path, fake_client, intent_payload):
@@ -764,7 +776,7 @@ def test_quality_policy_review_required_outcome_is_persisted(
     assert load_query(s) == ""
 
 
-def test_supported_planner_review_required_does_not_call_direct_fallback(
+def test_supported_planner_review_required_does_not_call_direct_datalog(
     tmp_path, fake_client, intent_payload
 ):
     s = _store(tmp_path)
@@ -780,12 +792,7 @@ def test_supported_planner_review_required_does_not_call_direct_fallback(
         AssertionError("planner-supported review must not call direct Datalog fallback")
     )
 
-    results = translate_questions(
-        s,
-        client,
-        root=tmp_path,
-        allow_direct_datalog_fallback=True,
-    )
+    results = translate_questions(s, client, root=tmp_path)
 
     assert results == [
         {
