@@ -19,7 +19,8 @@ from verinote.engine.duckdb_terms import (
     duckdb_value_to_term,
     term_to_duckdb_value,
 )
-from verinote.engine.terms import Atom, Compound, NumberLit, StringLit, Term, Var
+from verinote.engine.terms import Term
+from verinote.store.fact_input import validate_fact_slot
 
 FACT_TERMS_FILENAME = "facts.duckdb"
 
@@ -364,17 +365,10 @@ def _validate_fact_id(fact_id: int) -> int:
 
 
 def _coerce_term(value: object) -> Term:
-    if isinstance(value, Var):
-        raise DuckDBFactTermStoreError("fact terms must be ground")
-    if isinstance(value, Compound):
-        from verinote.store.fact_input import is_ground_term
-
-        if not is_ground_term(value):
-            raise DuckDBFactTermStoreError("fact terms must be ground")
-        return value
-    if isinstance(value, (Atom, NumberLit, StringLit)):
-        return value
-    return StringLit(str(value))
+    try:
+        return validate_fact_slot(value)
+    except ValueError as exc:
+        raise DuckDBFactTermStoreError(str(exc)) from exc
 
 
 def _duckdb_term_values(subject: object, relation: object, obj: object) -> tuple[str, str, str]:

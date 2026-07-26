@@ -5,7 +5,7 @@ import sys
 import pytest
 
 from verinote.engine.duckdb_terms import term_to_duckdb_value
-from verinote.engine.terms import Atom, Compound, NumberLit, StringLit
+from verinote.engine.terms import Atom, Compound, NumberLit, StringLit, Var
 from verinote.store.duckdb_fact_terms import (
     FACT_TERMS_FILENAME,
     DuckDBFactTermStore,
@@ -17,6 +17,69 @@ from verinote.store.duckdb_fact_terms import (
 
 def _duckdb():
     return pytest.importorskip("duckdb")
+
+
+def _malformed_stringlit() -> StringLit:
+    term = StringLit("synthetic")
+    object.__setattr__(term, "value", 7)
+    return term
+
+
+def _malformed_atom() -> Atom:
+    term = Atom("synthetic")
+    object.__setattr__(term, "name", "Synthetic")
+    return term
+
+
+def _malformed_numberlit() -> NumberLit:
+    term = NumberLit(1)
+    object.__setattr__(term, "value", True)
+    return term
+
+
+def _malformed_compound_functor() -> Compound:
+    term = Compound("synthetic", (StringLit("value"),))
+    object.__setattr__(term, "functor", "Synthetic")
+    return term
+
+
+def _malformed_compound_args() -> Compound:
+    term = Compound("synthetic", (StringLit("value"),))
+    object.__setattr__(term, "args", [])
+    return term
+
+
+def _cyclic_compound() -> Compound:
+    term = Compound("synthetic", ())
+    object.__setattr__(term, "args", (term,))
+    return term
+
+
+_INVALID_FACT_SLOTS = (
+    7,
+    1.5,
+    True,
+    None,
+    [],
+    (),
+    {},
+    {"value"},
+    object(),
+    _malformed_stringlit(),
+    Compound("person", (_malformed_stringlit(),)),
+    _malformed_atom(),
+    Compound("person", (_malformed_atom(),)),
+    _malformed_numberlit(),
+    Compound("person", (_malformed_numberlit(),)),
+    _malformed_compound_functor(),
+    Compound("person", (_malformed_compound_functor(),)),
+    _malformed_compound_args(),
+    Compound("person", (_malformed_compound_args(),)),
+    _cyclic_compound(),
+    Compound("person", (_cyclic_compound(),)),
+    Var("Slot"),
+    Compound("person", (Var("Name"),)),
+)
 
 
 def test_fact_terms_path_uses_kb_root():
@@ -126,6 +189,24 @@ def test_store_rejects_a_supplied_token_that_does_not_match_payload():
         with pytest.raises(DuckDBFactTermStoreError, match="token does not match"):
             store.put_fact_terms(1, "A", "r", "B", term_token="0" * 64)
         assert store.get_fact_terms(1) is None
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("value", _INVALID_FACT_SLOTS)
+def test_sidecar_and_token_reject_invalid_slots_without_partial_state(value):
+    _duckdb()
+    store = DuckDBFactTermStore(None)
+    try:
+        store.put_fact_terms(1, "A", "rel", "B")
+        before = store.get_fact_term_record(1)
+
+        with pytest.raises(DuckDBFactTermStoreError):
+            store.put_fact_terms(1, "A2", "rel", value)
+        with pytest.raises(DuckDBFactTermStoreError):
+            fact_term_token("A2", "rel", value)
+
+        assert store.get_fact_term_record(1) == before
     finally:
         store.close()
 

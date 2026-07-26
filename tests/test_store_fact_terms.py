@@ -21,6 +21,70 @@ from verinote.store.duckdb_fact_terms import (
 from verinote.store.fact_input import structural_term
 
 
+def _malformed_stringlit() -> StringLit:
+    term = StringLit("synthetic")
+    object.__setattr__(term, "value", 7)
+    return term
+
+
+def _malformed_atom() -> Atom:
+    term = Atom("synthetic")
+    object.__setattr__(term, "name", "Synthetic")
+    return term
+
+
+def _malformed_numberlit() -> NumberLit:
+    term = NumberLit(1)
+    object.__setattr__(term, "value", True)
+    return term
+
+
+def _malformed_compound_functor() -> Compound:
+    term = Compound("synthetic", (StringLit("value"),))
+    object.__setattr__(term, "functor", "Synthetic")
+    return term
+
+
+def _malformed_compound_args() -> Compound:
+    term = Compound("synthetic", (StringLit("value"),))
+    object.__setattr__(term, "args", [])
+    return term
+
+
+def _cyclic_compound() -> Compound:
+    term = Compound("synthetic", ())
+    object.__setattr__(term, "args", (term,))
+    return term
+
+
+_INVALID_FACT_SLOTS = (
+    7,
+    1.5,
+    True,
+    None,
+    [],
+    (),
+    {},
+    {"value"},
+    object(),
+    _malformed_stringlit(),
+    Compound("person", (_malformed_stringlit(),)),
+    _malformed_atom(),
+    Compound("person", (_malformed_atom(),)),
+    _malformed_numberlit(),
+    Compound("person", (_malformed_numberlit(),)),
+    _malformed_compound_functor(),
+    Compound("person", (_malformed_compound_functor(),)),
+    _malformed_compound_args(),
+    Compound("person", (_malformed_compound_args(),)),
+    _cyclic_compound(),
+    Compound("person", (_cyclic_compound(),)),
+    Var("Slot"),
+    Compound("person", (Var("Name"),)),
+)
+_INVALID_CONFIDENCES = (True, None, "0.5", float("nan"), float("inf"), -0.1, 1.1)
+
+
 def _store(tmp_path) -> Store:
     s = Store(tmp_path / "kb.sqlite")
     s.init_schema()
@@ -68,6 +132,27 @@ def test_add_fact_accepts_structural_terms_without_parsing_strings(tmp_path):
     )
 
 
+def test_add_fact_accepts_a_shared_acyclic_compound_dag(tmp_path):
+    s = _store(tmp_path)
+    shared = Compound("child", (StringLit("synthetic"),))
+    parent = Compound("parent", (shared, shared))
+
+    assert parent.args[0] is parent.args[1]
+    fid = s.add_fact(parent, "rel", "object")
+
+    assert s.get_fact_terms(fid) == (
+        Compound(
+            "parent",
+            (
+                Compound("child", (StringLit("synthetic"),)),
+                Compound("child", (StringLit("synthetic"),)),
+            ),
+        ),
+        StringLit("rel"),
+        StringLit("object"),
+    )
+
+
 def test_structural_term_is_an_explicit_input_boundary(tmp_path):
     s = _store(tmp_path)
 
@@ -112,6 +197,30 @@ def test_store_rejects_direct_nonground_term_inputs_without_writing(tmp_path):
 
     assert s.facts() == []
     assert s.fact_terms.get_many_fact_terms([1, 2]) == {}
+
+
+@pytest.mark.parametrize("value", _INVALID_FACT_SLOTS)
+def test_add_fact_rejects_invalid_slots_before_any_storage_write(tmp_path, value):
+    s = _store(tmp_path)
+
+    with pytest.raises(ValueError):
+        s.add_fact(value, "rel", "object")
+
+    assert s.facts() == []
+    assert not fact_terms_path(tmp_path).exists()
+    assert s._conn.execute("SELECT COUNT(*) FROM fact_events").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("confidence", _INVALID_CONFIDENCES)
+def test_add_fact_rejects_invalid_confidence_before_any_storage_write(tmp_path, confidence):
+    s = _store(tmp_path)
+
+    with pytest.raises(ValueError, match="confidence"):
+        s.add_fact("subject", "rel", "object", confidence=confidence)
+
+    assert s.facts() == []
+    assert not fact_terms_path(tmp_path).exists()
+    assert s._conn.execute("SELECT COUNT(*) FROM fact_events").fetchone()[0] == 0
 
 
 def test_fact_terms_sidecar_persists_across_store_reopen(tmp_path):
@@ -495,6 +604,69 @@ def test_amend_fact_rejects_direct_nonground_terms_and_restores_state(tmp_path):
     assert dict(s.get_fact(fid)) == before
     assert s.get_fact_terms(fid) == before_terms
     assert s.fact_log(fid) == []
+
+
+@pytest.mark.parametrize("value", _INVALID_FACT_SLOTS)
+def test_amend_fact_rejects_invalid_slots_without_partial_state(tmp_path, value):
+    s = _store(tmp_path)
+    fid = s.add_fact("A", "rel", "B", status="needs_review", note="original")
+    before = dict(s.get_fact(fid))
+    before_terms = s.get_fact_terms(fid)
+
+    with pytest.raises(ValueError):
+        s.amend_fact(fid, subject="A2", relation="rel", obj=value, note="changed")
+
+    assert dict(s.get_fact(fid)) == before
+    assert s.get_fact_terms(fid) == before_terms
+    assert s.fact_log(fid) == []
+
+
+@pytest.mark.parametrize("confidence", _INVALID_CONFIDENCES)
+def test_reconcile_duplicate_rejects_invalid_confidence_without_suppression_event(
+    tmp_path, confidence
+):
+    s = _store(tmp_path)
+    source_id = s.add_source("synthetic-source.txt")
+    fid = s.add_fact("A", "rel", "B", source_id=source_id)
+    s.reject_fact(fid)
+    before_events = s._conn.execute("SELECT COUNT(*) FROM fact_events").fetchone()[0]
+
+    with pytest.raises(ValueError, match="confidence"):
+        s.reconcile_fact("A", "rel", "B", source_id=source_id, confidence=confidence)
+
+    assert len(s.facts()) == 1
+    assert s.get_fact_terms(fid) == (StringLit("A"), StringLit("rel"), StringLit("B"))
+    assert s._conn.execute("SELECT COUNT(*) FROM fact_events").fetchone()[0] == before_events
+
+
+def test_reconcile_duplicate_rejects_invalid_slot_without_suppression_event(tmp_path):
+    s = _store(tmp_path)
+    source_id = s.add_source("synthetic-source.txt")
+    fid = s.add_fact("A", "rel", "36", source_id=source_id)
+    s.reject_fact(fid)
+    before_events = s._conn.execute("SELECT COUNT(*) FROM fact_events").fetchone()[0]
+
+    with pytest.raises(ValueError):
+        s.reconcile_fact("A", "rel", 36, source_id=source_id)
+
+    assert len(s.facts()) == 1
+    assert s.get_fact_terms(fid) == (StringLit("A"), StringLit("rel"), StringLit("36"))
+    assert s._conn.execute("SELECT COUNT(*) FROM fact_events").fetchone()[0] == before_events
+
+
+def test_reconcile_rejects_nested_malformed_stringlit_without_partial_state(tmp_path):
+    s = _store(tmp_path)
+    source_id = s.add_source("synthetic-source.txt")
+    fid = s.add_fact("A", "rel", "B", source_id=source_id)
+    before_events = s._conn.execute("SELECT COUNT(*) FROM fact_events").fetchone()[0]
+    malformed = Compound("person", (_malformed_stringlit(),))
+
+    with pytest.raises(ValueError, match="StringLit"):
+        s.reconcile_fact("A", "rel", malformed, source_id=source_id)
+
+    assert len(s.facts()) == 1
+    assert s.get_fact_terms(fid) == (StringLit("A"), StringLit("rel"), StringLit("B"))
+    assert s._conn.execute("SELECT COUNT(*) FROM fact_events").fetchone()[0] == before_events
 
 
 def test_amend_fact_audit_failure_rolls_back_sqlite_and_restores_terms(
