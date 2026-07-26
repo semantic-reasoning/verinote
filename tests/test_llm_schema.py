@@ -576,12 +576,12 @@ def _target_properties(**overrides):
     return properties
 
 
-# Each entry is `["object", "null"]` -- the declared type `subject`, `relation`,
-# and `object` carry -- and each is legal JSON Schema whose values
-# `_parse_intent_target` would refuse, one refusal per conjunct of the shape
-# check. Dispatching on the top-level type alone assigned that parser to all of
-# them, so the provider was handed a schema, obeyed it, and had its output
-# reported as "did not match schema".
+# Each entry declares an object among its types -- all but the last are the
+# `["object", "null"]` that `subject`, `relation`, and `object` carry -- and each
+# is legal JSON Schema whose values `_parse_intent_target` would refuse, one
+# refusal per conjunct of the shape check. Dispatching on the top-level type
+# alone assigned that parser to all of them, so the provider was handed a schema,
+# obeyed it, and had its output reported as "did not match schema".
 _UNSUPPORTED_NULLABLE_OBJECT_SHAPES = {
     # The maintainer's example on #352: a wholly different object.
     "a nested object with its own properties": {
@@ -623,6 +623,27 @@ _UNSUPPORTED_NULLABLE_OBJECT_SHAPES = {
     "a value that may be blank": _target_like(
         properties=_target_properties(value={"type": "string"})
     ),
+    # The bound present but set to the length that admits everything: `minLength:
+    # 0` is exactly `""` again, said the long way. Dropping the key and writing
+    # `0` are the same schema, so the check has to read the number rather than
+    # settle for one being there.
+    "a value bounded at zero length": _target_like(
+        properties=_target_properties(value={"type": "string", "minLength": 0})
+    ),
+    # A nullable `value`: `{"kind": "entity", "value": null}` is on-schema, and
+    # `_parse_intent_target` calls a null half "must be a string". The bound says
+    # nothing about it -- `minLength` constrains the string branch alone -- so the
+    # declared type has to be the string on its own, not a union containing one.
+    "a value that may be null": _target_like(
+        properties=_target_properties(value={"type": ["string", "null"], "minLength": 1})
+    ),
+    # Admitting a string alongside the object: `subject: "Acme"` is then on-schema
+    # and `_parse_intent_target` refuses it as "must be an object". The extra
+    # branch of the union is invisible to a check asking only whether `object` is
+    # among the declared types.
+    "a three-way union of object, null and string": _target_like(
+        type=["object", "null", "string"]
+    ),
 }
 
 
@@ -632,7 +653,7 @@ _UNSUPPORTED_NULLABLE_OBJECT_SHAPES = {
     ids=list(_UNSUPPORTED_NULLABLE_OBJECT_SHAPES),
 )
 def test_an_unsupported_nullable_object_property_is_refused_at_import(monkeypatch, spec):
-    """A `["object", "null"]` property that is not the target shape fails at import.
+    """A property admitting an object that is not the target shape fails at import.
 
     Sharing a top-level type with `subject` is not sharing a parser.
     `_parse_intent_target` reads one object -- `{kind, value}`, kind on
@@ -682,6 +703,27 @@ _UNSUPPORTED_NULLABLE_ARRAY_SHAPES = {
         "prefixItems": [copy.deepcopy(QUERY_INTENT_TARGET_SCHEMA)],
         "items": {"type": "string", "minLength": 1},
     },
+    # `minLength: 0` admits `[""]` exactly as omitting the key does, so a check
+    # content with the bound merely being present would let the blank item back
+    # in under a number.
+    "an array whose items are bounded at zero length": {
+        "type": ["array", "null"],
+        "items": {"type": "string", "minLength": 0},
+    },
+    # `["alpha", null]` is on-schema here and `_parse_relation_candidates` calls
+    # it "items must be strings". `minLength` does not exclude the null branch --
+    # it only bounds the string one -- so the item type has to be the bare string.
+    "an array whose items may be null": {
+        "type": ["array", "null"],
+        "items": {"type": ["string", "null"], "minLength": 1},
+    },
+    # A bare string is on-schema for this property, and the parser refuses
+    # anything that is not a list. The array branch being present says nothing
+    # about the branches beside it.
+    "a three-way union of array, null and string": {
+        "type": ["array", "null", "string"],
+        "items": {"type": "string", "minLength": 1},
+    },
 }
 
 
@@ -691,7 +733,7 @@ _UNSUPPORTED_NULLABLE_ARRAY_SHAPES = {
     ids=list(_UNSUPPORTED_NULLABLE_ARRAY_SHAPES),
 )
 def test_an_unsupported_nullable_array_property_is_refused_at_import(monkeypatch, spec):
-    """A `["array", "null"]` property that is not a non-blank string array fails too.
+    """A property admitting an array that is not a non-blank string array fails too.
 
     `_parse_relation_candidates` is the only array parser, and it reads an array
     of non-blank strings; every other element type it sees becomes an `LLMError`
@@ -708,6 +750,35 @@ def test_an_unsupported_nullable_array_property_is_refused_at_import(monkeypatch
 
     message = str(excinfo.value)
     assert "aliases" in message
+    assert "matches no shape" in message
+    assert not isinstance(excinfo.value, LLMError)
+
+
+def test_a_property_admitting_a_string_among_other_types_is_refused_at_import(monkeypatch):
+    """The string half of the same discrimination: a union is not a nullable string.
+
+    `_parse_optional_string` accepts every string and null, and refuses anything
+    else as "must be a string or null" -- so it reads `["string", "null"]` and
+    only that. On the union here `"count": 3` is output the schema explicitly
+    invites, and a check asking merely whether `string` is among the declared
+    types would hand the property to that parser and have it call the provider's
+    obedient `3` a schema violation.
+
+    This is the case `["integer", "null"]` above cannot make: there the property
+    admits no string at all, so every candidate check rejects it. It takes a type
+    list containing `string` *and* something else to tell "is exactly a nullable
+    string" apart from "mentions string somewhere".
+    """
+    with pytest.raises(RuntimeError) as excinfo:
+        _build_query_intent_module(
+            monkeypatch,
+            _intent_schema_with("count", {"type": ["string", "null", "integer"]}),
+            extra_fields=(("count", "str | int | None = None"),),
+        )
+
+    message = str(excinfo.value)
+    assert "count" in message
+    # The shape check speaking, not the missing-field guard: the field was added.
     assert "matches no shape" in message
     assert not isinstance(excinfo.value, LLMError)
 
