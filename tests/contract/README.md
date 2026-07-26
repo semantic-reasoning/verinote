@@ -73,25 +73,69 @@ VN_CONTRACT_PROVIDER=ollama VN_CONTRACT_MODEL=qwen3:8b \
     python -m pytest tests/contract -m contract -rs
 
 VN_CONTRACT_PROVIDER=openai VN_CONTRACT_MODEL=gpt-4o \
-    VN_CONTRACT_API_KEY=sk-... python -m pytest tests/contract -m contract -rs
+    VN_CONTRACT_API_KEY="$OPENAI_API_KEY" python -m pytest tests/contract -m contract -rs
 ```
 
 ## Replay fixtures
 
-`tests/fixtures/contract/*.json` hold **pre-parse** provider responses captured
-from a real provider (`captured_at` records when). The replay tests feed the raw
-string back through the production parse boundary (`parse_query_intent` /
-`parse_facts`), so they reproduce a captured failure deterministically without a
-provider — while still gated opt-in so the default suite stays green.
+`tests/fixtures/contract/<provider>/*.json` hold **pre-parse** provider responses
+captured from a real provider (`captured_at` records when). The replay tests feed
+the raw string or structured object back through the production parse boundary
+(`parse_query_intent` / `parse_facts`), so they reproduce a captured failure
+deterministically without a provider — while still gated opt-in so the default
+suite stays green. Each provider directory must contain the query-intent and
+extraction pair. The deterministic `sync_all_chunks_failed.json` artifact is the
+only permitted flat fixture.
 
-Recapture (needs a live provider) with:
+Run the captured query/extraction replays without a provider, credentials, or
+network access with this exact command:
+
+```bash
+VN_CONTRACT_PROVIDER=replay .venv/bin/pytest -q \
+    tests/contract/test_query_intent_contract.py::test_replay_raw_intent_parses_through_production_boundary \
+    tests/contract/test_query_intent_contract.py::test_claudecli_replay_retains_reason_regression_shape \
+    tests/contract/test_extraction_contract.py::test_replay_founding_relation_normalizes_into_functional_vocab
+```
+
+The parametrized nodes discover every valid provider fixture pair: the current
+fixture layout runs 3 tests, and each additional provider pair adds 2 more.
+
+`replay` is intentionally not a real provider. It only satisfies
+`require_opt_in` for these deterministic tests; the explicit node IDs exclude
+the live guards. If a live guard is added to this command by mistake, it fails
+at provider validation before an adapter or network request is created.
+
+The capture script sends only the fixed synthetic Acme Robotics question and
+source text in `capture.py`. Do not change those inputs to customer, company,
+person, document, or source data. It stages both live payloads before writing
+the provider-qualified pair, so a failed capture cannot leave one new live
+fixture behind.
+
+Recapture with the repository virtual environment. The provider credentials must
+already be available in your environment; never paste a credential into a
+fixture, command history, or repository file:
 
 ```bash
 VN_CONTRACT_PROVIDER=claudecli PYTHONPATH=$PWD \
-    python tests/contract/capture.py
+    .venv/bin/python tests/contract/capture.py
+
+VN_CONTRACT_PROVIDER=ollama VN_CONTRACT_MODEL=qwen3:8b \
+    VN_CONTRACT_BASE_URL=http://localhost:11434 PYTHONPATH=$PWD \
+    .venv/bin/python tests/contract/capture.py
+
+VN_CONTRACT_PROVIDER=openai VN_CONTRACT_MODEL=gpt-4o \
+    VN_CONTRACT_API_KEY="$OPENAI_API_KEY" PYTHONPATH=$PWD \
+    .venv/bin/python tests/contract/capture.py
+
+VN_CONTRACT_PROVIDER=anthropic VN_CONTRACT_MODEL=claude-opus-4-8 \
+    VN_CONTRACT_API_KEY="$ANTHROPIC_API_KEY" PYTHONPATH=$PWD \
+    .venv/bin/python tests/contract/capture.py
 ```
 
-`capture.py` currently drives `claudecli`. To capture from another provider,
-point its config at that adapter in `_live_config()` and supply the matching
-`VN_CONTRACT_*` credentials; the `#239` fixture is provider-free and is
-regenerated from the real pipeline on every run.
+`claudecli` needs the `claude` executable on `PATH`. `ollama` needs a running
+server at `VN_CONTRACT_BASE_URL` (default `http://localhost:11434`). `openai`
+and `anthropic` require `VN_CONTRACT_API_KEY`; the commands above forward an
+already-exported provider-specific environment variable. `VN_CONTRACT_MODEL`
+and `VN_CONTRACT_BASE_URL` are honored by capture for every adapter that uses
+them. The `#239` fixture is provider-free and is regenerated from the real
+pipeline on every run.

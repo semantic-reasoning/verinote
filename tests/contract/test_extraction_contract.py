@@ -29,13 +29,14 @@ from verinote.pipeline.corroboration import (
 )
 from verinote.policy_defaults import DEFAULT_RELATION_ALIASES
 
-FIXTURE = Path(__file__).resolve().parent.parent / "fixtures" / "contract" / "extraction_acme_two_dates.json"
+FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "contract"
+LIVE_FIXTURES = tuple(sorted(FIXTURES_DIR.glob("*/extraction_acme_two_dates.json")))
 
 _YEAR = re.compile(r"20(?:20|21)")
 
 
-def _fixture() -> dict:
-    return json.loads(FIXTURE.read_text(encoding="utf-8"))
+def _fixture(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _founding_relations(facts) -> set[str]:
@@ -59,7 +60,11 @@ def _founding_relations(facts) -> set[str]:
 def test_live_founding_relation_normalizes_into_functional_vocab(require_live_provider):
     client = require_live_provider
     facts = client.extract_facts(
-        source_text=_fixture()["input"],
+        source_text=(
+            "Acme Robotics is a company. Acme Robotics was founded in 2020 according to "
+            "its incorporation filing. A later press release states that Acme Robotics "
+            "was established in 2021."
+        ),
     )
     functional = functional_relations(DEFAULT_POLICY)
     normalized = _founding_relations(facts)
@@ -71,8 +76,9 @@ def test_live_founding_relation_normalizes_into_functional_vocab(require_live_pr
 
 
 @pytest.mark.contract
-def test_replay_founding_relation_normalizes_into_functional_vocab(require_opt_in):
-    fixture = _fixture()
+@pytest.mark.parametrize("fixture_path", LIVE_FIXTURES, ids=lambda path: path.parent.name)
+def test_replay_founding_relation_normalizes_into_functional_vocab(require_opt_in, fixture_path):
+    fixture = _fixture(fixture_path)
     facts = parse_facts(fixture["raw_response"])
     # Non-vacuity: the capture must actually contain both founding years, or the
     # replay would pass without ever testing the contradiction it exists for.

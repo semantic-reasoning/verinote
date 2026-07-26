@@ -15,6 +15,7 @@ non-zero, while a run that never asked must stay green.
 from __future__ import annotations
 
 import ast
+from datetime import date
 import importlib.util
 import json
 import os
@@ -26,7 +27,10 @@ from pathlib import Path
 
 import pytest
 
+from verinote.config import Config
+
 from . import conftest as contract_conftest
+from . import capture
 from .conftest import (
     API_KEY_VAR,
     BASE_URL_VAR,
@@ -45,14 +49,11 @@ RUN_SH = CONTRACT_DIR / "run.sh"
 # Located via the ambient PATH here, then re-exposed on the *controlled* PATH the
 # wrapper actually runs with, so locating them is not the thing under test.
 WRAPPER_TOOLS = ("bash", "dirname")
-PROVENANCE_KEYS = ("provider", "model", "captured_at")
-# Each replay guard depends on a specific fixture; naming them (instead of
-# globbing for "at least one") makes deleting any single one turn this red.
-REQUIRED_FIXTURES = (
-    "query_intent_acme_ceo.json",
-    "extraction_acme_two_dates.json",
-    "sync_all_chunks_failed.json",
-)
+PROVENANCE_KEYS = ("provider", "model", "captured_at", "prompt_id", "input")
+LIVE_FIXTURE_NAMES = {
+    "query_intent_acme_ceo.json": ("query-intent", capture.QUERY_INTENT_QUESTION, (str, dict)),
+    "extraction_acme_two_dates.json": ("extraction", capture.EXTRACTION_SOURCE, (str, list, dict)),
+}
 CONTRACT_MODULES = (
     "test_query_intent_contract.py",
     "test_extraction_contract.py",
@@ -66,6 +67,12 @@ GATE_ONLY_MODULE = "test_sync_rc_contract.py"
 MIXED_MODULE = "test_query_intent_contract.py"
 # A keyword matching exactly one ungated control in this directory and no guard.
 CONTROL_ONLY_KEYWORD = "deterministic_parser"
+REPLAY_ONLY_GATE = "replay"
+REPLAY_ONLY_TARGETS = (
+    "tests/contract/test_query_intent_contract.py::test_replay_raw_intent_parses_through_production_boundary",
+    "tests/contract/test_query_intent_contract.py::test_claudecli_replay_retains_reason_regression_shape",
+    "tests/contract/test_extraction_contract.py::test_replay_founding_relation_normalizes_into_functional_vocab",
+)
 
 
 def test_contract_marker_is_registered(pytestconfig):
@@ -76,15 +83,170 @@ def test_contract_marker_is_registered(pytestconfig):
     )
 
 
-@pytest.mark.parametrize("fixture_name", REQUIRED_FIXTURES)
-def test_required_replay_fixture_exists_and_carries_provenance(fixture_name):
+def test_sync_replay_fixture_exists_and_carries_provenance():
     assert FIXTURES_DIR.is_dir(), f"missing fixtures dir: {FIXTURES_DIR}"
-    path = FIXTURES_DIR / fixture_name
-    assert path.is_file(), f"missing required contract fixture: {fixture_name}"
+    path = FIXTURES_DIR / "sync_all_chunks_failed.json"
+    assert path.is_file(), f"missing required contract fixture: {path.name}"
     data = json.loads(path.read_text(encoding="utf-8"))
-    assert data, f"empty fixture: {fixture_name}"
+    assert data, f"empty fixture: {path.name}"
     missing = [key for key in PROVENANCE_KEYS if not data.get(key)]
-    assert not missing, f"{fixture_name} is missing provenance keys: {missing}"
+    assert not missing, f"{path.name} is missing provenance keys: {missing}"
+    assert data["input"] == capture.EXTRACTION_SOURCE
+
+
+def _valid_live_fixture_pairs() -> dict[str, set[str]]:
+    """Validate live fixture metadata and return prompt pairs by provider."""
+    paths = tuple(sorted(FIXTURES_DIR.glob("*/*.json")))
+    assert paths, f"no provider-qualified live fixtures under {FIXTURES_DIR}"
+    pairs: dict[str, set[str]] = {}
+    for path in paths:
+        assert path.name in LIVE_FIXTURE_NAMES, (
+            f"unexpected live fixture: {path.relative_to(FIXTURES_DIR)}"
+        )
+        expected_prompt, expected_input, raw_types = LIVE_FIXTURE_NAMES[path.name]
+        data = json.loads(path.read_text(encoding="utf-8"))
+        missing = [key for key in PROVENANCE_KEYS if not data.get(key)]
+        assert not missing, (
+            f"{path.relative_to(FIXTURES_DIR)} is missing provenance keys: {missing}"
+        )
+        assert path.parent.name in capture._ADAPTER_MODULES, (
+            f"unknown fixture provider path: {path.parent.name}"
+        )
+        assert data["provider"] == path.parent.name, (
+            f"fixture provider does not match its path: {path.relative_to(FIXTURES_DIR)}"
+        )
+        assert data["prompt_id"] == expected_prompt
+        assert data["input"] == expected_input, (
+            "live fixture input must be the synthetic capture input"
+        )
+        assert isinstance(data["model"], str) and data["model"]
+        date.fromisoformat(data["captured_at"])
+        assert isinstance(data.get("raw_response"), raw_types), (
+            f"{path.relative_to(FIXTURES_DIR)} has an unsupported raw response type"
+        )
+        pairs.setdefault(path.parent.name, set()).add(data["prompt_id"])
+    assert all(prompts == {"query-intent", "extraction"} for prompts in pairs.values()), (
+        "each provider fixture directory must contain a query-intent/extraction pair"
+    )
+    return pairs
+
+
+def test_live_replay_fixtures_have_valid_provider_qualified_metadata():
+    """Every live replay is a paired, synthetic capture in its provider directory."""
+    _valid_live_fixture_pairs()
+
+
+def test_legacy_flat_live_fixtures_are_rejected():
+    """The deterministic sync artifact is the only allowed flat contract fixture."""
+    for path in FIXTURES_DIR.glob("*.json"):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert data.get("prompt_id") not in {"query-intent", "extraction"}, (
+            f"legacy flat live fixture must move under its provider directory: {path.name}"
+        )
+
+
+def test_capture_config_normalizes_provider_and_uses_contract_defaults(monkeypatch):
+    for var in (GATE_VAR, MODEL_VAR, BASE_URL_VAR, API_KEY_VAR):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv(GATE_VAR, "Claude")
+
+    cfg = capture._live_config()
+
+    assert cfg.provider == "claudecli"
+    assert cfg.model == "sonnet"
+    assert cfg.api_key is None
+    assert cfg.base_url is None
+
+
+def test_capture_config_uses_all_documented_companions(monkeypatch):
+    monkeypatch.setenv(GATE_VAR, "openai")
+    monkeypatch.setenv(MODEL_VAR, "synthetic-model")
+    monkeypatch.setenv(BASE_URL_VAR, "http://synthetic.example/v1")
+    monkeypatch.setenv(API_KEY_VAR, "synthetic-key")
+
+    cfg = capture._live_config()
+
+    assert (cfg.provider, cfg.model, cfg.base_url, cfg.api_key) == (
+        "openai",
+        "synthetic-model",
+        "http://synthetic.example/v1",
+        "synthetic-key",
+    )
+
+
+def test_capture_config_rejects_unknown_or_keyless_cloud_provider(monkeypatch):
+    monkeypatch.setenv(GATE_VAR, "unknown")
+    with pytest.raises(SystemExit, match="not a known provider"):
+        capture._live_config()
+
+    monkeypatch.setenv(GATE_VAR, "anthropic")
+    monkeypatch.delenv(API_KEY_VAR, raising=False)
+    with pytest.raises(SystemExit, match="requires VN_CONTRACT_API_KEY"):
+        capture._live_config()
+
+
+def test_capture_patch_restores_selected_adapter_symbol_after_parser_failure():
+    module = type(sys)("synthetic_adapter")
+
+    def original(raw):
+        raise RuntimeError(raw)
+
+    module.parse_query_intent = original
+    with capture._capture_raw(module, "parse_query_intent") as box:
+        with pytest.raises(RuntimeError, match="synthetic raw"):
+            module.parse_query_intent("synthetic raw")
+    assert box == {"raw": "synthetic raw"}
+    assert module.parse_query_intent is original
+
+
+def test_capture_keeps_object_raw_responses_without_writing(tmp_path):
+    module = type(sys)("synthetic_adapter")
+    module.parse_query_intent = lambda raw: raw
+    cfg = Config(
+        root=tmp_path,
+        db_path=tmp_path / "kb.sqlite",
+        provider="anthropic",
+        model="synthetic-model",
+        api_key="synthetic-key",
+        base_url=None,
+        llm_timeout_seconds=1,
+    )
+
+    class Client:
+        def extract_query_intent(self, *, question):
+            assert question == capture.QUERY_INTENT_QUESTION
+            return module.parse_query_intent({"kind": "lookup_object"})
+
+    payload = capture.capture_query_intent(cfg, Client(), module)
+    assert payload["raw_response"] == {"kind": "lookup_object"}
+
+
+def test_capture_main_writes_no_live_fixture_when_second_payload_fails(monkeypatch, tmp_path):
+    cfg = Config(
+        root=tmp_path,
+        db_path=tmp_path / "kb.sqlite",
+        provider="claudecli",
+        model="sonnet",
+        api_key=None,
+        base_url=None,
+        llm_timeout_seconds=1,
+    )
+    writes = []
+    monkeypatch.setattr(capture, "capture_sync_failure", lambda: None)
+    monkeypatch.setattr(capture, "_live_config", lambda: cfg)
+    monkeypatch.setattr(capture, "_adapter_module", lambda provider: object())
+    monkeypatch.setattr(capture, "get_client", lambda config: object())
+    monkeypatch.setattr(capture, "capture_query_intent", lambda *args: {"provider": "claudecli"})
+    monkeypatch.setattr(
+        capture,
+        "capture_extraction",
+        lambda *args: (_ for _ in ()).throw(SystemExit("failed")),
+    )
+    monkeypatch.setattr(capture, "_write", lambda *args: writes.append(args))
+
+    with pytest.raises(SystemExit, match="failed"):
+        capture.main()
+    assert writes == []
 
 
 def _load_module(path: Path):
@@ -148,6 +310,21 @@ def test_all_skipped_contract_selection_fails_the_session():
     )
     assert "no guard executed" in result.stdout, (
         f"the session failed without saying why:\n{result.stdout}\n{result.stderr}"
+    )
+
+
+def test_replay_only_targets_run_without_a_real_provider():
+    """The documented replay path must not construct a live provider client."""
+    result = _nested_pytest(*REPLAY_ONLY_TARGETS, gate_env={GATE_VAR: REPLAY_ONLY_GATE})
+    assert result.returncode == 0, (
+        "the replay-only command should pass with the non-provider replay gate.\n"
+        f"{result.stdout}\n{result.stderr}"
+    )
+    expected_count = 2 * len(_valid_live_fixture_pairs()) + 1
+    assert f"{expected_count} passed" in result.stdout, (
+        "the replay-only command did not run every discovered provider fixture pair "
+        "and the Claude regression assertion.\n"
+        f"{result.stdout}\n{result.stderr}"
     )
 
 
@@ -333,13 +510,22 @@ def test_meta_nested_pytest_never_opts_into_a_live_provider():
         for keyword in node.keywords:
             if keyword.arg != "gate_env" or not isinstance(keyword.value, ast.Dict):
                 continue
-            keys = []
-            for key in keyword.value.keys:
+            entries = []
+            for key, value in zip(keyword.value.keys, keyword.value.values, strict=True):
                 if isinstance(key, ast.Constant):
-                    keys.append(key.value)
+                    resolved_key = key.value
                 elif isinstance(key, ast.Name):
-                    keys.append(globals().get(key.id))
-            if GATE_VAR in keys:
+                    resolved_key = globals().get(key.id)
+                else:
+                    continue
+                if isinstance(value, ast.Constant):
+                    resolved_value = value.value
+                elif isinstance(value, ast.Name):
+                    resolved_value = globals().get(value.id)
+                else:
+                    resolved_value = None
+                entries.append((resolved_key, resolved_value))
+            if any(key == GATE_VAR and value != REPLAY_ONLY_GATE for key, value in entries):
                 live_gate_calls.append(node.lineno)
     assert live_gate_calls == []
 

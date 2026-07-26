@@ -18,22 +18,41 @@ by running the real chunked extraction pipeline with a stub client that raises
 on every chunk, then reading the reason the store recorded — a genuine pipeline
 artifact, not a hand-written string.
 
-See ``README.md`` for the ollama/openai/anthropic capture procedure.
+Live fixtures are written under ``tests/fixtures/contract/<provider>/``.  The
+two live payloads are collected before either file is written, preventing a
+failed second request from leaving a misleading half-capture behind.
 """
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
-from pathlib import Path
 import tempfile
+from contextlib import contextmanager
+from pathlib import Path
+from types import ModuleType
+from typing import Any, Iterator
 
-import verinote.llm.claude_cli_adapter as claude_cli_adapter
-from verinote.config import Config
+from verinote.config import Config, normalize_provider
+from verinote.llm import get_client
 from verinote.llm.base import ExtractedFact, LLMError
 
 CAPTURED_AT = "2026-07-16"
 FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "contract"
+
+_ADAPTER_MODULES = {
+    "anthropic": "verinote.llm.anthropic_adapter",
+    "claudecli": "verinote.llm.claude_cli_adapter",
+    "openai": "verinote.llm.openai_adapter",
+    "ollama": "verinote.llm.ollama_adapter",
+}
+_MODEL_DEFAULTS = {
+    "anthropic": "claude-opus-4-8",
+    "claudecli": "sonnet",
+    "openai": "gpt-4o",
+    "ollama": "llama3.1",
+}
 
 # #237: a role question the deterministic parser deliberately does not resolve,
 # so the live provider is the only thing that can produce an intent for it.
@@ -51,94 +70,101 @@ EXTRACTION_SOURCE = (
 
 
 def _live_config() -> Config:
-    provider = os.environ.get("VN_CONTRACT_PROVIDER")
-    if provider not in (None, "claudecli"):
+    requested = os.environ.get("VN_CONTRACT_PROVIDER") or "claudecli"
+    provider = normalize_provider(requested)
+    if provider not in _ADAPTER_MODULES:
         raise SystemExit(
-            f"capture.py currently drives claudecli; got VN_CONTRACT_PROVIDER={provider!r}. "
-            "See README.md for other providers."
+            f"VN_CONTRACT_PROVIDER={requested!r} is not a known provider "
+            "(expected claudecli|ollama|anthropic|openai)"
+        )
+    api_key = os.environ.get("VN_CONTRACT_API_KEY") or None
+    if provider in ("anthropic", "openai") and not api_key:
+        raise SystemExit(
+            f"VN_CONTRACT_PROVIDER={provider} requires VN_CONTRACT_API_KEY for capture"
         )
     root = Path(tempfile.mkdtemp(prefix="verinote-capture-"))
     return Config(
         root=root,
         db_path=root / "kb.sqlite",
-        provider="claudecli",
-        model="sonnet",
-        api_key=None,
-        base_url=None,
+        provider=provider,
+        model=os.environ.get("VN_CONTRACT_MODEL") or _MODEL_DEFAULTS[provider],
+        api_key=api_key,
+        base_url=os.environ.get("VN_CONTRACT_BASE_URL")
+        or ("http://localhost:11434" if provider == "ollama" else None),
         llm_timeout_seconds=180.0,
     )
 
 
-def _write(name: str, payload: dict) -> None:
-    FIXTURES_DIR.mkdir(parents=True, exist_ok=True)
-    path = FIXTURES_DIR / name
+def _write(name: str, payload: dict, *, provider_qualified: bool = True) -> None:
+    path = (
+        FIXTURES_DIR / payload["provider"] / name
+        if provider_qualified
+        else FIXTURES_DIR / name
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"wrote {path.relative_to(FIXTURES_DIR.parent.parent)}")
 
 
-def _capture_raw(monkey_attr: str):
+def _adapter_module(provider: str) -> ModuleType:
+    return importlib.import_module(_ADAPTER_MODULES[provider])
+
+
+@contextmanager
+def _capture_raw(module: ModuleType, monkey_attr: str) -> Iterator[dict[str, object]]:
     """Wrap the parser the adapter imported so we keep the raw arg it is handed."""
-    original = getattr(claude_cli_adapter, monkey_attr)
+    original = getattr(module, monkey_attr)
     box: dict[str, object] = {}
 
     def wrapper(raw, *args, **kwargs):
         box["raw"] = raw
         return original(raw, *args, **kwargs)
 
-    setattr(claude_cli_adapter, monkey_attr, wrapper)
-    return original, box
-
-
-def capture_query_intent(cfg: Config) -> None:
-    client = claude_cli_adapter.ClaudeCliAdapter(cfg)
-    original, box = _capture_raw("parse_query_intent")
-    parse_error = None
+    setattr(module, monkey_attr, wrapper)
     try:
-        client.extract_query_intent(question=QUERY_INTENT_QUESTION)
-    except LLMError as exc:
-        parse_error = str(exc)
+        yield box
     finally:
-        claude_cli_adapter.parse_query_intent = original
+        setattr(module, monkey_attr, original)
+
+
+def capture_query_intent(cfg: Config, client: Any, module: ModuleType) -> dict:
+    parse_error = None
+    with _capture_raw(module, "parse_query_intent") as box:
+        try:
+            client.extract_query_intent(question=QUERY_INTENT_QUESTION)
+        except LLMError as exc:
+            parse_error = str(exc)
     if "raw" not in box:
         raise SystemExit("query-intent capture never reached the parse boundary")
-    _write(
-        "query_intent_acme_ceo.json",
-        {
-            "provider": cfg.provider,
-            "model": cfg.model,
-            "prompt_id": "query-intent",
-            "captured_at": CAPTURED_AT,
-            "input": QUERY_INTENT_QUESTION,
-            "raw_response": box["raw"],
-            "parse_error": parse_error,
-        },
-    )
+    return {
+        "provider": cfg.provider,
+        "model": cfg.model,
+        "prompt_id": "query-intent",
+        "captured_at": CAPTURED_AT,
+        "input": QUERY_INTENT_QUESTION,
+        "raw_response": box["raw"],
+        "parse_error": parse_error,
+    }
 
 
-def capture_extraction(cfg: Config) -> None:
-    client = claude_cli_adapter.ClaudeCliAdapter(cfg)
-    original, box = _capture_raw("parse_facts")
+def capture_extraction(cfg: Config, client: Any, module: ModuleType) -> dict:
     parse_error = None
-    try:
-        client.extract_facts(source_text=EXTRACTION_SOURCE)
-    except LLMError as exc:
-        parse_error = str(exc)
-    finally:
-        claude_cli_adapter.parse_facts = original
+    with _capture_raw(module, "parse_facts") as box:
+        try:
+            client.extract_facts(source_text=EXTRACTION_SOURCE)
+        except LLMError as exc:
+            parse_error = str(exc)
     if "raw" not in box:
         raise SystemExit("extraction capture never reached the parse boundary")
-    _write(
-        "extraction_acme_two_dates.json",
-        {
-            "provider": cfg.provider,
-            "model": cfg.model,
-            "prompt_id": "extraction",
-            "captured_at": CAPTURED_AT,
-            "input": EXTRACTION_SOURCE,
-            "raw_response": box["raw"],
-            "parse_error": parse_error,
-        },
-    )
+    return {
+        "provider": cfg.provider,
+        "model": cfg.model,
+        "prompt_id": "extraction",
+        "captured_at": CAPTURED_AT,
+        "input": EXTRACTION_SOURCE,
+        "raw_response": box["raw"],
+        "parse_error": parse_error,
+    }
 
 
 class _AlwaysFailsClient:
@@ -198,14 +224,19 @@ def capture_sync_failure() -> None:
             "failed_chunks": int(detail["failed_chunks"]),
             "failure_reason": reasons[0],
         },
+        provider_qualified=False,
     )
 
 
 def main() -> None:
     capture_sync_failure()
     cfg = _live_config()
-    capture_query_intent(cfg)
-    capture_extraction(cfg)
+    module = _adapter_module(cfg.provider)
+    client = get_client(cfg)
+    query_intent = capture_query_intent(cfg, client, module)
+    extraction = capture_extraction(cfg, client, module)
+    _write("query_intent_acme_ceo.json", query_intent)
+    _write("extraction_acme_two_dates.json", extraction)
 
 
 if __name__ == "__main__":
