@@ -1923,9 +1923,8 @@ def test_reconcile_fact_never_resurrects_a_legacy_superseded_row(tmp_path):
     # The token is cleared *before* the reject, not after: a legacy row has a NULL
     # token from creation and is rejected later, so this is the order the scenario
     # actually occurs in. The reverse order also trips the #311 content freeze,
-    # which is correct of it -- no production path rewrites a superseded row's
-    # term_token (backfill_fact_terms writes DuckDB, not facts.term_token), so
-    # only this fixture was doing it.
+    # which is correct of it -- backfill_fact_terms preserves terminal rows'
+    # NULL tokens, so only this fixture writes one before rejection.
     s = _store(tmp_path)
     sid = s.add_source("sources/sample.txt")
     fact_id = s.add_fact("A", "count", NumberLit(36), source_id=sid)

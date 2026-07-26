@@ -1959,29 +1959,86 @@ class Store:
             ]
 
     def backfill_fact_terms(self) -> int:
-        """Backfill legacy SQLite-only fact rows into DuckDB as StringLit terms."""
+        """Backfill legacy SQLite-only fact rows into DuckDB as StringLit terms.
+
+        The token is part of the paired fact representation, so a backfilled
+        DuckDB row also repairs the legacy SQLite NULL token.  Keeping both
+        copies canonical makes a later unchanged amend a real replay rather
+        than an apparent divergence that needs an amend to self-heal.
+        """
+        from verinote.store.duckdb_fact_terms import fact_term_token
+
         with self._lock:
             rows = list(
                 self._conn.execute(
-                    "SELECT id, subject, relation, object FROM facts ORDER BY id"
+                    "SELECT id, subject, relation, object, status, term_token "
+                    "FROM facts ORDER BY id"
                 )
             )
-            existing = self.fact_terms.get_many_fact_terms(row["id"] for row in rows)
-            missing = [int(row["id"]) for row in rows if int(row["id"]) not in existing]
+            fact_terms = self.fact_terms
+            records = fact_terms.get_many_fact_term_records(row["id"] for row in rows)
+            missing = [int(row["id"]) for row in rows if int(row["id"]) not in records]
             if missing and self._has_fact_terms_marker():
                 raise _missing_fact_terms_error(missing)
-            written = 0
+
+            # A failed final SQLite commit can leave a just-backfilled DuckDB
+            # row ahead of its SQLite token. Recover that narrow window on the
+            # next backfill, but only when the sidecar still proves it encodes
+            # this legacy display triple as the same canonical StringLit tuple.
+            token_updates: list[tuple[int, str, str | None]] = []
             for row in rows:
                 fact_id = int(row["id"])
-                if fact_id in existing:
-                    continue
-                self.fact_terms.put_fact_terms(
-                    fact_id, row["subject"], row["relation"], row["object"]
+                token = fact_term_token(row["subject"], row["relation"], row["object"])
+                record = records.get(fact_id)
+                should_sync = record is None or (
+                    row["term_token"] is None
+                    and record.term_token == token
+                    and record.content_token == token
                 )
-                written += 1
+                # A superseded fact's content axis is immutable, including its
+                # token. It cannot reach amend's replay path, so leave that
+                # terminal legacy metadata untouched.
+                if should_sync and row["status"] != "superseded":
+                    sqlite_token = row["term_token"]
+                    if sqlite_token not in {None, token}:
+                        raise _stale_fact_terms_error([fact_id])
+                    if sqlite_token != token:
+                        token_updates.append((fact_id, token, sqlite_token))
+
+            written = 0
             if rows:
-                origin = "legacy_backfill" if written else "existing_sidecar"
-                self._record_fact_terms_marker_unlocked(origin=origin)
+                self._conn.execute("BEGIN")
+                try:
+                    for fact_id, token, sqlite_token in token_updates:
+                        cur = self._conn.execute(
+                            "UPDATE facts SET term_token = ? "
+                            "WHERE id = ? AND term_token IS ?",
+                            (token, fact_id, sqlite_token),
+                        )
+                        if cur.rowcount != 1:
+                            raise _stale_fact_terms_error([fact_id])
+                    for row in rows:
+                        fact_id = int(row["id"])
+                        if fact_id not in missing:
+                            continue
+                        token = fact_term_token(
+                            row["subject"], row["relation"], row["object"]
+                        )
+                        fact_terms.put_fact_terms(
+                            fact_id,
+                            row["subject"],
+                            row["relation"],
+                            row["object"],
+                            term_token=token,
+                        )
+                        written += 1
+                    if rows:
+                        origin = "legacy_backfill" if written else "existing_sidecar"
+                        self._record_fact_terms_marker_unlocked(origin=origin)
+                    self._conn.execute("COMMIT")
+                except BaseException:
+                    self._rollback_quietly()
+                    raise
             return written
 
     def get_fact(self, fact_id: int) -> sqlite3.Row | None:

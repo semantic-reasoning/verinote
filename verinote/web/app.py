@@ -8,6 +8,7 @@ swaps a single row partial). No JS build step. The app owns one `Store` (SQLite)
 from __future__ import annotations
 
 from importlib import resources
+import json
 import logging
 from pathlib import Path
 import threading
@@ -127,6 +128,14 @@ FACT_TERMS_UNAVAILABLE_PATH = "/fact-terms-unavailable"
 # `_config_corrupt_handler`.
 CONFIG_UNAVAILABLE_PATH = "/config-unavailable"
 
+# The public action names are deliberately separate from the append-only audit
+# vocabulary. A halt redirect carries both forms through SQLite validation.
+_FACT_DECISION_LOG_ACTIONS = {
+    "toggle": "toggled",
+    "accept": "accepted",
+    "reject": "rejected",
+}
+
 
 def _matches(path: str, allowed: tuple[str, ...]) -> bool:
     return any(path == a or path.startswith(a + "/") for a in allowed)
@@ -196,22 +205,81 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     app.add_exception_handler(PolicyMissingError, _policy_missing_handler)
 
-    def _fact_terms_unavailable_page(request: Request):
+    def _fact_terms_unavailable_page(
+        request: Request, *, saved_decision: str | None = None
+    ):
         # Deliberately generic: DuckDBFactTermStoreError covers a corrupt/unopenable
         # sidecar but also stale/missing-term and malformed-input conditions, so the
         # copy must not diagnose one specific cause it cannot be sure of.
         return templates.TemplateResponse(
             request,
             "sidecar_unreadable.html",
-            {},
+            {"saved_decision": saved_decision},
             status_code=409,
         )
 
     @app.get(FACT_TERMS_UNAVAILABLE_PATH, response_class=HTMLResponse)
-    def fact_terms_unavailable(request: Request):
+    def fact_terms_unavailable(
+        request: Request,
+        decision_fact_id: str | None = None,
+        decision_action: str | None = None,
+        decision_log_id: str | None = None,
+    ):
         # The full-page halt and the HX-Redirect target below. It reads no fact
         # terms, so it still renders while the term store cannot be read.
-        return _fact_terms_unavailable_page(request)
+        saved_decision = _saved_fact_decision(
+            decision_fact_id, decision_action, decision_log_id
+        )
+        return _fact_terms_unavailable_page(request, saved_decision=saved_decision)
+
+    def _saved_fact_decision(
+        fact_id: object, action: object, log_id: object
+    ) -> str | None:
+        """Validate a halt notice against the durable SQLite decision audit.
+
+        The URL is deliberately self-contained so it survives an application
+        restart. It is not trusted: the referenced audit row must be the fact's
+        latest human decision and the current SQLite status must still be the
+        status that action committed. This keeps forged and stale URLs generic.
+        """
+        if not isinstance(action, str) or action not in _FACT_DECISION_LOG_ACTIONS:
+            return None
+        try:
+            parsed_fact_id = int(fact_id)
+            parsed_log_id = int(log_id)
+        except (TypeError, ValueError):
+            return None
+        if parsed_fact_id <= 0 or parsed_log_id <= 0:
+            return None
+
+        store = app.state.store
+        if store is None:
+            return None
+        fact = store.get_fact(parsed_fact_id)
+        log = store.fact_log(parsed_fact_id)
+        if fact is None or not log:
+            return None
+        latest = log[-1]
+        if (
+            int(latest["id"]) != parsed_log_id
+            or latest["action"] != _FACT_DECISION_LOG_ACTIONS[action]
+        ):
+            return None
+        matching_events = [
+            event
+            for event in store.fact_events(parsed_fact_id)
+            if event["event_type"] == _FACT_DECISION_LOG_ACTIONS[action]
+            and event["actor"] == "human"
+        ]
+        if not matching_events:
+            return None
+        try:
+            after = json.loads(matching_events[-1]["after_json"])
+        except (TypeError, json.JSONDecodeError):
+            return None
+        if not isinstance(after, dict) or after.get("status") != fact["status"]:
+            return None
+        return action
 
     def _fact_terms_unreadable_handler(request: Request, exc: Exception):
         """One loud, non-lying halt for every surface that cannot read a fact's
@@ -228,9 +296,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         *before* it commits, so nothing was written; but `accept`/`reject`/`toggle`
         do a bare SQLite status UPDATE that autocommits immediately and only reach
         this handler on the follow-on row re-render, so for those the decision
-        already succeeded and merely could not be displayed. This page therefore
-        never claims the action was rejected -- only that the terms could not be
-        read.
+        already succeeded and merely could not be displayed. The decision routes
+        mark only a changed, committed decision on the request. That explicit
+        state adds a saved-decision notice here; all other halts stay generic.
 
         htmx will NOT swap a 4xx/5xx response into the DOM -- it fires
         `htmx:responseError` and swaps nothing -- so answering an htmx partial
@@ -240,12 +308,25 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         acts on HX-Redirect regardless of status, so the 409 stays honest.
         Full-page (non-htmx) requests render the halt page inline.
         """
+        saved_decision = _saved_fact_decision(
+            *getattr(request.state, "saved_fact_decision", (None, None, None))
+        )
         if request.headers.get("HX-Request") == "true":
+            redirect_path = FACT_TERMS_UNAVAILABLE_PATH
+            notice = getattr(request.state, "saved_fact_decision", None)
+            if saved_decision and notice is not None:
+                redirect_path += "?" + urlencode(
+                    {
+                        "decision_fact_id": notice[0],
+                        "decision_action": notice[1],
+                        "decision_log_id": notice[2],
+                    }
+                )
             return Response(
                 status_code=409,
-                headers={"HX-Redirect": FACT_TERMS_UNAVAILABLE_PATH},
+                headers={"HX-Redirect": redirect_path},
             )
-        return _fact_terms_unavailable_page(request)
+        return _fact_terms_unavailable_page(request, saved_decision=saved_decision)
 
     app.add_exception_handler(
         DuckDBFactTermStoreError, _fact_terms_unreadable_handler
@@ -516,6 +597,15 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         if any(rec.fact_id != acted_fact_id for rec in applied):
             response.headers["HX-Refresh"] = "true"
         return response
+
+    def _mark_saved_fact_decision(request: Request, action: str, decision) -> None:
+        """Carry one committed review-log record to a later sidecar halt."""
+        if not decision.changed or decision.fact is None:
+            return
+        fact_id = int(decision.fact["id"])
+        log = _active_store().fact_log(fact_id)
+        if log and log[-1]["action"] == _FACT_DECISION_LOG_ACTIONS[action]:
+            request.state.saved_fact_decision = (fact_id, action, int(log[-1]["id"]))
 
     def _fact_edit_context(fact, *, error: str | None = None):
         kinds = {"subject": "string", "relation": "string", "object": "string"}
@@ -1347,6 +1437,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     def toggle(request: Request, fact_id: int):
         _actionable_fact_or_error(fact_id)
         toggled = _active_store().toggle_review(fact_id)
+        _mark_saved_fact_decision(request, "toggle", toggled)
         # A demotion parks the fact in exactly the tier auto-accept promotes
         # from, so an unrestricted pass would undo the user's click inside their
         # own request. The demotion is the decision; the rule may act on the
@@ -1368,6 +1459,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     def accept(request: Request, fact_id: int):
         _actionable_fact_or_error(fact_id)
         accepted = _active_store().accept_fact(fact_id)
+        _mark_saved_fact_decision(request, "accept", accepted)
         return _row_after_decision(
             request, accepted.fact, fact_id, decided=accepted.changed
         )
@@ -1379,6 +1471,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         # keeping the trigger here matches the other decision routes.
         _actionable_fact_or_error(fact_id)
         rejected = _active_store().reject_fact(fact_id)
+        _mark_saved_fact_decision(request, "reject", rejected)
         return _row_after_decision(
             request, rejected.fact, fact_id, decided=rejected.changed
         )

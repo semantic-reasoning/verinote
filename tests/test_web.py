@@ -2746,6 +2746,99 @@ def test_fact_terms_unavailable_page_renders_without_touching_terms(tmp_path):
     assert "Fact terms unavailable" in r.text
 
 
+@pytest.mark.parametrize(
+    ("action", "expected_status"),
+    [
+        ("toggle", "confirmed"),
+        ("accept", "confirmed"),
+        ("reject", "superseded"),
+    ],
+)
+def test_committed_decision_over_htmx_carries_saved_notice_to_sidecar_halt(
+    tmp_path, action, expected_status
+):
+    """A corrupt term sidecar cannot hide a status decision SQLite committed."""
+    client, fid, _token = _corrupt_sidecar_kb(tmp_path)
+
+    post = client.post(
+        f"/facts/{fid}/{action}", headers={"HX-Request": "true"}
+    )
+
+    assert post.status_code == 409
+    redirect = post.headers["HX-Redirect"]
+    assert redirect.startswith(
+        webapp.FACT_TERMS_UNAVAILABLE_PATH
+        + f"?decision_fact_id={fid}&decision_action={action}&decision_log_id="
+    )
+    assert client.app.state.store.get_fact(fid)["status"] == expected_status
+
+    halt = client.get(redirect)
+
+    assert halt.status_code == 409
+    body = " ".join(halt.text.split())
+    assert f"Your {action} decision was already saved in SQLite" in body
+    assert "facts.duckdb" in halt.text
+    assert "confirm the fact's current status" in body
+
+
+def test_committed_decision_notice_survives_an_app_restart(tmp_path):
+    client, fid, _token = _corrupt_sidecar_kb(tmp_path)
+
+    post = client.post(f"/facts/{fid}/accept", headers={"HX-Request": "true"})
+
+    restarted = TestClient(create_app(client.app.state.cfg))
+    halt = restarted.get(post.headers["HX-Redirect"])
+
+    assert halt.status_code == 409
+    assert "Your accept decision was already saved in SQLite" in " ".join(
+        halt.text.split()
+    )
+
+
+def test_saved_decision_notice_rejects_forged_or_stale_redirect_state(tmp_path):
+    client, fid, _token = _corrupt_sidecar_kb(tmp_path)
+    post = client.post(f"/facts/{fid}/accept", headers={"HX-Request": "true"})
+    redirect = post.headers["HX-Redirect"]
+
+    forged = client.get(redirect.replace("decision_action=accept", "decision_action=reject"))
+    assert "decision was already saved in SQLite" not in forged.text
+
+    client.app.state.store.toggle_review(fid)
+    stale = client.get(redirect)
+    assert "decision was already saved in SQLite" not in stale.text
+
+
+def test_non_htmx_committed_decision_renders_the_saved_notice_inline(tmp_path):
+    client, fid, _token = _corrupt_sidecar_kb(tmp_path)
+
+    halt = client.post(f"/facts/{fid}/accept")
+
+    assert halt.status_code == 409
+    assert "Your accept decision was already saved in SQLite" in " ".join(
+        halt.text.split()
+    )
+
+
+def test_unchanged_decision_does_not_create_a_saved_notice(tmp_path):
+    client, fid, _token = _corrupt_sidecar_kb(tmp_path, status="confirmed")
+
+    post = client.post(f"/facts/{fid}/accept", headers={"HX-Request": "true"})
+
+    assert post.status_code == 409
+    assert post.headers["HX-Redirect"] == webapp.FACT_TERMS_UNAVAILABLE_PATH
+    halt = client.get(post.headers["HX-Redirect"])
+    assert "decision was already saved in SQLite" not in halt.text
+
+
+def test_generic_sidecar_halt_does_not_claim_a_decision_was_saved(tmp_path):
+    client, _fid, _token = _corrupt_sidecar_kb(tmp_path)
+
+    r = client.get(webapp.FACT_TERMS_UNAVAILABLE_PATH)
+
+    assert r.status_code == 409
+    assert "decision was already saved in SQLite" not in r.text
+
+
 def test_review_renders_normally_for_a_string_fact_on_a_healthy_sidecar(tmp_path):
     # False-positive guard: a legitimately string-typed fact must keep rendering
     # as kind="string" with a 200 -- only a genuine raise halts, never the
