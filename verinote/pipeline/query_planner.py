@@ -6,8 +6,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from verinote.pipeline.corroboration import relation_label_matches
-from verinote.pipeline.query_intent import QueryIntent, QueryIntentKind
+from verinote.engine.terms import parse_term, term_compare_key
+from verinote.pipeline.corroboration import canonical_relation, relation_label_matches
+from verinote.pipeline.query_intent import ConjunctiveHop, QueryIntent, QueryIntentKind
 from verinote.pipeline.query_schema import (
     EntityRef,
     QuerySchemaSnapshot,
@@ -40,6 +41,7 @@ class QueryCandidateFamily(StrEnum):
     EXACT_FACT_FALLBACK = "exact_fact_fallback"
     MANUAL_DRAFT = "manual_draft"
     CONJUNCTIVE_TWO_HOP = "conjunctive_two_hop"
+    CONJUNCTIVE_FILTER = "conjunctive_filter"
 
 
 class QueryCandidateDirection(StrEnum):
@@ -101,6 +103,16 @@ def plan_query_candidates(
             candidates=candidates,
             truncated=truncated,
             reason=None if candidates else "no two-hop relation path matched the schema",
+        )
+    elif intent.kind == QueryIntentKind.CONJUNCTIVE_FILTER:
+        candidates, truncated = _conjunctive_filter_candidates(
+            intent, snapshot, qid, max_candidates=bounds.max_candidates
+        )
+        return QueryCandidatePlan(
+            qid=qid,
+            candidates=candidates,
+            truncated=truncated,
+            reason=None if candidates else "no conjunctive condition path matched the schema",
         )
     else:
         candidates = ()
@@ -171,6 +183,157 @@ def _conjunctive_two_hop_candidates(
                 )
             )
     return tuple(candidates), False
+
+
+def _conjunctive_filter_candidates(
+    intent: QueryIntent,
+    snapshot: QuerySchemaSnapshot,
+    qid: int,
+    *,
+    max_candidates: int,
+) -> tuple[tuple[QueryCandidate, ...], bool]:
+    """Plan two fact-supported conditions with one shared answer variable."""
+    if len(intent.conditions) != 2 or not intent.answer_var:
+        return (), False
+    if snapshot.join_facts_truncated:
+        return (), True
+    if _conjunctive_filter_conditions_are_semantic_duplicates(
+        intent.conditions, intent.answer_var, snapshot
+    ):
+        # Alias expansion would turn these into the same predicate. Treating one
+        # fact as evidence for both conditions would falsely verify a non-
+        # independent conjunction, so do not evaluate a partial candidate set.
+        return (), True
+
+    condition_matches = [
+        _conjunctive_condition_matches(condition, intent.answer_var, snapshot)
+        for condition in intent.conditions
+    ]
+    if not condition_matches[0] or not condition_matches[1]:
+        return (), False
+
+    candidates: list[QueryCandidate] = []
+    seen_shapes: set[tuple[tuple[str, str, str], tuple[str, str, str]]] = set()
+    shared_answers = sorted(set(condition_matches[0]) & set(condition_matches[1]))
+    for answer_key in shared_answers:
+        first_shapes = condition_matches[0][answer_key]
+        second_shapes = condition_matches[1][answer_key]
+        for first_shape, first_fact in first_shapes.items():
+            for second_shape, second_fact in second_shapes.items():
+                shape = tuple(sorted((first_shape, second_shape)))
+                if shape in seen_shapes:
+                    continue
+                seen_shapes.add(shape)
+                if len(candidates) >= max_candidates:
+                    return tuple(candidates), True
+                atoms = sorted(
+                    (
+                        _conjunctive_condition_atom(first_fact, intent.conditions[0], intent.answer_var),
+                        _conjunctive_condition_atom(second_fact, intent.conditions[1], intent.answer_var),
+                    )
+                )
+                candidates.append(
+                    QueryCandidate(
+                        query_dl=_query_dl(qid, intent.answer_var, ", ".join(atoms)),
+                        family=QueryCandidateFamily.CONJUNCTIVE_FILTER,
+                        direction=None,
+                        relation_display=None,
+                        relation_executable=None,
+                        subject_executable=None,
+                        object_executable=None,
+                    )
+                )
+    return tuple(candidates), False
+
+
+def _conjunctive_filter_conditions_are_semantic_duplicates(
+    conditions: tuple[ConjunctiveHop, ...],
+    answer_var: str,
+    snapshot: QuerySchemaSnapshot,
+) -> bool:
+    """Return whether alias policy makes both requested conditions identical."""
+    aliases = {entry.alias: entry.canonical for entry in snapshot.relation_aliases}
+    shapes = []
+    for condition in conditions:
+        answer_is_subject = (
+            condition.subject.kind == "var" and condition.subject.value == answer_var
+        )
+        anchor = condition.object if answer_is_subject else condition.subject
+        shapes.append(
+            (
+                _nfc(canonical_relation(condition.relation.value, aliases)),
+                "subject" if answer_is_subject else "object",
+                _nfc(anchor.value),
+            )
+        )
+    return shapes[0] == shapes[1]
+
+
+def _conjunctive_condition_matches(
+    condition: ConjunctiveHop,
+    answer_var: str,
+    snapshot: QuerySchemaSnapshot,
+) -> dict[str, dict[tuple[str, str, str], SnapshotFact]]:
+    """Index observed condition facts by engine-equality answer key and rule shape."""
+    # QueryIntent validation guarantees the concrete hop shape and endpoint roles.
+    subject = condition.subject
+    obj = condition.object
+    answer_is_subject = subject.kind == "var" and subject.value == answer_var
+    anchor = obj if answer_is_subject else subject
+    requested = (_nfc(condition.relation.value),)
+    aliases = {entry.alias: entry.canonical for entry in snapshot.relation_aliases}
+    matches: dict[str, dict[tuple[str, str, str], SnapshotFact]] = {}
+    for fact in snapshot.join_facts:
+        if not _fact_relation_matches_any_requested(fact, requested, snapshot):
+            continue
+        answer_ref = fact.subject if answer_is_subject else fact.object
+        anchor_ref = fact.object if answer_is_subject else fact.subject
+        if not _entity_ref_matches(anchor_ref, anchor.value):
+            continue
+        shape = (
+            _nfc(canonical_relation(fact.relation.display, aliases)),
+            "subject" if answer_is_subject else "object",
+            _term_ref_compare_key(anchor_ref),
+        )
+        answer_matches = matches.setdefault(_term_ref_compare_key(answer_ref), {})
+        existing = answer_matches.get(shape)
+        if existing is None or _snapshot_fact_representative_key(fact) < _snapshot_fact_representative_key(existing):
+            answer_matches[shape] = fact
+    return matches
+
+
+def _snapshot_fact_representative_key(fact: SnapshotFact) -> tuple[str, str, str, int]:
+    """Choose one stable raw fact for an alias-equivalent rule shape."""
+    return (
+        fact.relation.executable,
+        fact.subject.executable,
+        fact.object.executable,
+        fact.fact_id,
+    )
+
+
+def _conjunctive_condition_atom(
+    fact: SnapshotFact, condition: ConjunctiveHop, answer_var: str
+) -> str:
+    answer_is_subject = condition.subject.kind == "var" and condition.subject.value == answer_var
+    if answer_is_subject:
+        return f"relation({answer_var}, {fact.relation.executable}, {fact.object.executable})"
+    return f"relation({fact.subject.executable}, {fact.relation.executable}, {answer_var})"
+
+
+def _term_ref_compare_key(ref: TermRef) -> str:
+    """Return the engine equality key without losing TermRef's stored kind.
+
+    Re-parsing an executable term alone is ambiguous for an Atom-like value
+    whose spelling also matches a Datalog variable. Leaf values compare by
+    their displayed surface in the engine, while compound values intentionally
+    retain their structural parser representation.
+    """
+    if ref.kind in {"Atom", "StringLit", "NumberLit"}:
+        return f"s:{ref.display}"
+    if ref.kind == "Var":
+        return f"v:{ref.display}"
+    return term_compare_key(parse_term(ref.executable))
 
 
 def _discover_entity_relation_candidates(

@@ -83,6 +83,68 @@ def test_parse_conjunctive_lookup_rejects_incomplete_or_disconnected_hops():
         parse_query_intent(payload)
 
 
+def test_conjunctive_filter_requires_two_conditions_on_one_answer_variable():
+    conditions = (
+        ConjunctiveHop(
+            ConjunctiveEndpoint("var", "A"),
+            IntentTarget("relation", "role"),
+            ConjunctiveEndpoint("entity", "Engineer"),
+        ),
+        ConjunctiveHop(
+            ConjunctiveEndpoint("entity", "Research Team"),
+            IntentTarget("relation", "affiliation"),
+            ConjunctiveEndpoint("var", "A"),
+        ),
+    )
+
+    intent = QueryIntent(
+        kind=QueryIntentKind.CONJUNCTIVE_FILTER,
+        conditions=conditions,
+        answer_var="A",
+    )
+
+    assert intent.conditions == conditions
+    with pytest.raises(ValueError, match="additional variables"):
+        QueryIntent(
+            kind=QueryIntentKind.CONJUNCTIVE_FILTER,
+            conditions=(
+                conditions[0],
+                ConjunctiveHop(
+                    ConjunctiveEndpoint("var", "B"),
+                    IntentTarget("relation", "affiliation"),
+                    ConjunctiveEndpoint("entity", "Research Team"),
+                ),
+            ),
+            answer_var="A",
+        )
+
+
+def test_parse_conjunctive_filter_rejects_incomplete_conditions():
+    payload = {
+        "kind": "conjunctive_filter",
+        "subject": None,
+        "relation": None,
+        "object": None,
+        "relation_candidates": None,
+        "operator": None,
+        "value_type": None,
+        "value": None,
+        "reason": None,
+        "hops": None,
+        "conditions": [
+            {
+                "subject": {"kind": "var", "value": "A"},
+                "relation": {"kind": "relation", "value": "role"},
+                "object": {"kind": "entity", "value": "Engineer"},
+            }
+        ],
+        "answer_var": "A",
+    }
+
+    with pytest.raises(Exception, match="exactly two conditions"):
+        parse_query_intent(payload)
+
+
 def test_lookup_object_intent_is_frozen_and_typed():
     intent = QueryIntent(
         kind=QueryIntentKind.LOOKUP_OBJECT,

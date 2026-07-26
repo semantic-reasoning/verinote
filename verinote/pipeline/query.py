@@ -248,11 +248,15 @@ def _schema_aware_query_flow_result(
         )
 
     exact_entities = _intent_exact_entities(intent)
-    if exact_entities or intent.kind == QueryIntentKind.CONJUNCTIVE_LOOKUP:
+    uses_join_facts = intent.kind in {
+        QueryIntentKind.CONJUNCTIVE_LOOKUP,
+        QueryIntentKind.CONJUNCTIVE_FILTER,
+    }
+    if exact_entities or uses_join_facts:
         snapshot = build_query_schema_snapshot(
             store,
             exact_entities=exact_entities,
-            include_join_facts=intent.kind == QueryIntentKind.CONJUNCTIVE_LOOKUP,
+            include_join_facts=uses_join_facts,
         )
     plan = plan_query_candidates(intent, snapshot, qid=qid)
     # A truncated candidate set is not a safe basis for a verified answer: an

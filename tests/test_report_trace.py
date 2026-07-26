@@ -73,6 +73,27 @@ def test_report_trace_links_two_hop_answers_to_one_shared_binding(tmp_path):
     ]
 
 
+def test_report_trace_links_two_filter_conditions_to_only_the_shared_answer(tmp_path):
+    s = _store(tmp_path)
+    first = s.add_fact("Ada", "role", "Engineer", status="confirmed")
+    second = s.add_fact("Research Team", "affiliation", "Ada", status="confirmed")
+    s.add_fact("Bryn", "role", "Engineer", status="confirmed")
+    s.add_fact("Research Team", "affiliation", "Cato", status="confirmed")
+    query_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    query_path(tmp_path).write_text(
+        '.decl answer_q1(value: symbol)\n'
+        'answer_q1(A) :- relation(A, "role", "Engineer"), '
+        'relation("Research Team", "affiliation", A).\n',
+        encoding="utf-8",
+    )
+
+    trace = report_trace(s)
+
+    assert [(answer.value, [fact.id for fact in answer.facts]) for answer in trace.answers] == [
+        ("Ada", [first, second])
+    ]
+
+
 def test_report_trace_compresses_duplicate_two_hop_witnesses(tmp_path):
     s = _store(tmp_path)
     first_a = s.add_fact("Ada", "assigned_to", "Project", status="confirmed")

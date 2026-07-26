@@ -100,6 +100,7 @@ class QueryIntentKind(StrEnum):
     DISCOVER_ENTITY_RELATIONS = "discover_entity_relations"
     COMPARE_TYPED_VALUE = "compare_typed_value"
     CONJUNCTIVE_LOOKUP = "conjunctive_lookup"
+    CONJUNCTIVE_FILTER = "conjunctive_filter"
     UNKNOWN_OR_UNSUPPORTED = "unknown_or_unsupported"
 
 
@@ -198,6 +199,7 @@ class QueryIntent:
     value: str | None = None
     reason: str | None = None
     hops: tuple[ConjunctiveHop, ...] = field(default_factory=tuple)
+    conditions: tuple[ConjunctiveHop, ...] = field(default_factory=tuple)
     answer_var: str | None = None
 
     def __post_init__(self) -> None:
@@ -212,6 +214,8 @@ class QueryIntent:
         )
         if not isinstance(self.hops, tuple):
             raise ValueError("hops must be a tuple")
+        if not isinstance(self.conditions, tuple):
+            raise ValueError("conditions must be a tuple")
         if self.answer_var is not None:
             object.__setattr__(self, "answer_var", _clean_optional_string(self.answer_var, "answer_var"))
         # A blank nullable string is an absent one -- but only where the schema
@@ -250,6 +254,11 @@ class QueryIntent:
     def _validate_combination(self) -> None:
         kind = self.kind
         has_relation = self.relation is not None or bool(self.relation_candidates)
+        if kind not in {
+            QueryIntentKind.CONJUNCTIVE_LOOKUP,
+            QueryIntentKind.CONJUNCTIVE_FILTER,
+        } and (self.hops or self.conditions or self.answer_var is not None):
+            raise ValueError(f"{kind.value} does not accept conjunctive fields")
         if kind == QueryIntentKind.LOOKUP_OBJECT:
             if self.subject is None or not has_relation or self.object is not None:
                 raise ValueError("lookup_object requires subject and relation, and no object")
@@ -300,7 +309,7 @@ class QueryIntent:
             if any(
                 item is not None
                 for item in (self.subject, self.relation, self.object, self.operator, self.value_type, self.value)
-            ) or self.relation_candidates:
+            ) or self.relation_candidates or self.conditions:
                 raise ValueError("conjunctive_lookup accepts only hops and answer_var")
             if len(self.hops) != 2 or not self.answer_var:
                 raise ValueError("conjunctive_lookup requires exactly two hops and answer_var")
@@ -313,6 +322,27 @@ class QueryIntent:
                 raise ValueError("conjunctive_lookup hops must share the intermediate variable")
             if second.object.value != self.answer_var:
                 raise ValueError("conjunctive_lookup answer_var must be the second hop object")
+        elif kind == QueryIntentKind.CONJUNCTIVE_FILTER:
+            if any(
+                item is not None
+                for item in (self.subject, self.relation, self.object, self.operator, self.value_type, self.value)
+            ) or self.relation_candidates or self.hops:
+                raise ValueError("conjunctive_filter accepts only conditions and answer_var")
+            if len(self.conditions) != 2 or not self.answer_var:
+                raise ValueError("conjunctive_filter requires exactly two conditions and answer_var")
+            if not _CONJUNCTIVE_VARIABLE.fullmatch(self.answer_var):
+                raise ValueError("conjunctive_filter answer_var must be a Datalog variable name")
+            for condition in self.conditions:
+                endpoints = (condition.subject, condition.object)
+                if any(
+                    endpoint.kind == "var" and endpoint.value != self.answer_var
+                    for endpoint in endpoints
+                ):
+                    raise ValueError("conjunctive_filter does not accept additional variables")
+                if sum(endpoint.kind == "var" and endpoint.value == self.answer_var for endpoint in endpoints) != 1:
+                    raise ValueError("each conjunctive_filter condition must contain answer_var exactly once")
+                if any(endpoint.kind != "entity" for endpoint in endpoints if endpoint.value != self.answer_var):
+                    raise ValueError("conjunctive_filter requires an entity anchor in each condition")
         elif kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED:
             if not self.reason:
                 raise ValueError("unknown_or_unsupported requires a reason")
@@ -644,18 +674,18 @@ def _parse_conjunctive_hops(data: dict[str, Any], field_name: str) -> tuple[Conj
     if raw is None:
         return ()
     if not isinstance(raw, list):
-        raise TypeError("hops must be an array or null")
+        raise TypeError(f"{field_name} must be an array or null")
     hops = []
     for index, item in enumerate(raw):
         if not isinstance(item, dict):
-            raise TypeError(f"hops[{index}] must be an object")
+            raise TypeError(f"{field_name}[{index}] must be an object")
         if set(item) != {"subject", "relation", "object"}:
-            raise ValueError(f"hops[{index}] must contain subject, relation, and object")
+            raise ValueError(f"{field_name}[{index}] must contain subject, relation, and object")
         hops.append(
             ConjunctiveHop(
-                subject=_parse_conjunctive_endpoint(item["subject"], f"hops[{index}].subject"),
-                relation=_parse_required_intent_target(item["relation"], f"hops[{index}].relation"),
-                object=_parse_conjunctive_endpoint(item["object"], f"hops[{index}].object"),
+                subject=_parse_conjunctive_endpoint(item["subject"], f"{field_name}[{index}].subject"),
+                relation=_parse_required_intent_target(item["relation"], f"{field_name}[{index}].relation"),
+                object=_parse_conjunctive_endpoint(item["object"], f"{field_name}[{index}].object"),
             )
         )
     return tuple(hops)

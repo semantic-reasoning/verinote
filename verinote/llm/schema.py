@@ -135,6 +135,7 @@ QUERY_INTENT_SCHEMA: dict[str, Any] = {
                 "discover_entity_relations",
                 "compare_typed_value",
                 "conjunctive_lookup",
+                "conjunctive_filter",
                 "unknown_or_unsupported",
             ],
         },
@@ -153,6 +154,12 @@ QUERY_INTENT_SCHEMA: dict[str, Any] = {
         "value": {"type": ["string", "null"], "minLength": 1},
         "reason": {"type": ["string", "null"], "minLength": 1},
         "hops": {
+            "type": ["array", "null"],
+            "minItems": 2,
+            "maxItems": 2,
+            "items": QUERY_INTENT_CONJUNCTIVE_HOP_SCHEMA,
+        },
+        "conditions": {
             "type": ["array", "null"],
             "minItems": 2,
             "maxItems": 2,

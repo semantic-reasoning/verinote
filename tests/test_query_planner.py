@@ -214,6 +214,185 @@ def test_conjunctive_lookup_deduplicates_relation_paths_before_candidate_cap():
     assert plan.truncated is False
 
 
+def test_conjunctive_filter_uses_only_a_shared_engine_equality_binding():
+    role = _term("role", '"role"')
+    affiliation = _term("affiliation", '"affiliation"')
+    snapshot = QuerySchemaSnapshot(
+        **{
+            **_snapshot().__dict__,
+            "join_facts": (
+                SnapshotFact(1, _term("Ada", '"Ada"'), role, _term("Engineer", '"Engineer"'), "confirmed"),
+                SnapshotFact(2, _term("Ada", '"Ada"'), affiliation, _term("Research Team", '"Research Team"'), "confirmed"),
+                SnapshotFact(3, _term("Bryn", '"Bryn"'), role, _term("Engineer", '"Engineer"'), "confirmed"),
+                SnapshotFact(4, _term("Cato", '"Cato"'), affiliation, _term("Research Team", '"Research Team"'), "confirmed"),
+            ),
+        }
+    )
+    intent = QueryIntent(
+        kind=QueryIntentKind.CONJUNCTIVE_FILTER,
+        conditions=(
+            ConjunctiveHop(ConjunctiveEndpoint("var", "A"), IntentTarget("relation", "role"), ConjunctiveEndpoint("entity", "Engineer")),
+            ConjunctiveHop(ConjunctiveEndpoint("var", "A"), IntentTarget("relation", "affiliation"), ConjunctiveEndpoint("entity", "Research Team")),
+        ),
+        answer_var="A",
+    )
+
+    plan = plan_query_candidates(intent, snapshot, qid=19)
+
+    assert [candidate.query_dl for candidate in plan.candidates] == [
+        '.decl answer_q19(value: symbol)\n'
+        'answer_q19(A) :- relation(A, "affiliation", "Research Team"), relation(A, "role", "Engineer").'
+    ]
+    assert plan.candidates[0].family is QueryCandidateFamily.CONJUNCTIVE_FILTER
+
+
+def test_conjunctive_filter_uses_engine_leaf_equality_for_the_shared_binding():
+    role = _term("role", '"role"')
+    affiliation = _term("affiliation", '"affiliation"')
+    snapshot = QuerySchemaSnapshot(
+        **{
+            **_snapshot().__dict__,
+            "join_facts": (
+                SnapshotFact(1, _term("Ada", 'Ada', "Atom"), role, _term("Engineer", '"Engineer"'), "confirmed"),
+                SnapshotFact(2, _term("Ada", '"Ada"'), affiliation, _term("Research Team", '"Research Team"'), "confirmed"),
+            ),
+        }
+    )
+    intent = QueryIntent(
+        kind=QueryIntentKind.CONJUNCTIVE_FILTER,
+        conditions=(
+            ConjunctiveHop(ConjunctiveEndpoint("var", "A"), IntentTarget("relation", "role"), ConjunctiveEndpoint("entity", "Engineer")),
+            ConjunctiveHop(ConjunctiveEndpoint("var", "A"), IntentTarget("relation", "affiliation"), ConjunctiveEndpoint("entity", "Research Team")),
+        ),
+        answer_var="A",
+    )
+
+    plan = plan_query_candidates(intent, snapshot, qid=20)
+
+    assert len(plan.candidates) == 1
+
+
+def test_conjunctive_filter_bounds_unique_rule_shapes_not_matching_facts():
+    role = _term("role", '"role"')
+    affiliation = _term("affiliation", '"affiliation"')
+    facts = []
+    for index in range(3):
+        person = _term(f"Person {index}", f'"Person {index}"')
+        facts.extend((
+            SnapshotFact(index * 2 + 1, person, role, _term("Engineer", '"Engineer"'), "confirmed"),
+            SnapshotFact(index * 2 + 2, person, affiliation, _term("Research Team", '"Research Team"'), "confirmed"),
+        ))
+    snapshot = QuerySchemaSnapshot(**{**_snapshot().__dict__, "join_facts": tuple(facts)})
+    intent = QueryIntent(
+        kind=QueryIntentKind.CONJUNCTIVE_FILTER,
+        conditions=(
+            ConjunctiveHop(ConjunctiveEndpoint("var", "A"), IntentTarget("relation", "role"), ConjunctiveEndpoint("entity", "Engineer")),
+            ConjunctiveHop(ConjunctiveEndpoint("var", "A"), IntentTarget("relation", "affiliation"), ConjunctiveEndpoint("entity", "Research Team")),
+        ),
+        answer_var="A",
+    )
+
+    plan = plan_query_candidates(intent, snapshot, qid=21, bounds=QueryPlannerBounds(max_candidates=1))
+
+    assert len(plan.candidates) == 1
+    assert plan.truncated is False
+
+
+def test_conjunctive_filter_deduplicates_alias_equivalent_rule_shapes_before_candidate_cap():
+    snapshot = QuerySchemaSnapshot(
+        **{
+            **_snapshot().__dict__,
+            "relation_aliases": (
+                RelationAliasEntry(alias="role_alpha", canonical="role"),
+                RelationAliasEntry(alias="role_beta", canonical="role"),
+                RelationAliasEntry(alias="affiliation_alpha", canonical="affiliation"),
+                RelationAliasEntry(alias="affiliation_beta", canonical="affiliation"),
+            ),
+            "join_facts": (
+                SnapshotFact(1, _term("Ada", '"Ada"'), _term("role_beta", '"role_beta"'), _term("Engineer", '"Engineer"'), "confirmed"),
+                SnapshotFact(2, _term("Ada", '"Ada"'), _term("affiliation_beta", '"affiliation_beta"'), _term("Research Team", '"Research Team"'), "confirmed"),
+                SnapshotFact(3, _term("Bryn", '"Bryn"'), _term("role_alpha", '"role_alpha"'), _term("Engineer", '"Engineer"'), "confirmed"),
+                SnapshotFact(4, _term("Bryn", '"Bryn"'), _term("affiliation_alpha", '"affiliation_alpha"'), _term("Research Team", '"Research Team"'), "confirmed"),
+            ),
+        }
+    )
+    intent = QueryIntent(
+        kind=QueryIntentKind.CONJUNCTIVE_FILTER,
+        conditions=(
+            ConjunctiveHop(ConjunctiveEndpoint("var", "A"), IntentTarget("relation", "role"), ConjunctiveEndpoint("entity", "Engineer")),
+            ConjunctiveHop(ConjunctiveEndpoint("var", "A"), IntentTarget("relation", "affiliation"), ConjunctiveEndpoint("entity", "Research Team")),
+        ),
+        answer_var="A",
+    )
+
+    plan = plan_query_candidates(intent, snapshot, qid=22, bounds=QueryPlannerBounds(max_candidates=1))
+
+    assert len(plan.candidates) == 1
+    assert plan.truncated is False
+    assert plan.candidates[0].query_dl == (
+        '.decl answer_q22(value: symbol)\n'
+        'answer_q22(A) :- relation(A, "affiliation_beta", "Research Team"), relation(A, "role_beta", "Engineer").'
+    )
+
+
+def test_conjunctive_filter_fails_closed_for_alias_equivalent_conditions():
+    snapshot = QuerySchemaSnapshot(
+        **{
+            **_snapshot().__dict__,
+            "relation_aliases": (RelationAliasEntry(alias="position", canonical="role"),),
+            "join_facts": (
+                SnapshotFact(
+                    1,
+                    _term("Ada", '"Ada"'),
+                    _term("position", '"position"'),
+                    _term("Engineer", '"Engineer"'),
+                    "confirmed",
+                ),
+            ),
+        }
+    )
+    intent = QueryIntent(
+        kind=QueryIntentKind.CONJUNCTIVE_FILTER,
+        conditions=(
+            ConjunctiveHop(
+                ConjunctiveEndpoint("var", "A"),
+                IntentTarget("relation", "position"),
+                ConjunctiveEndpoint("entity", "Engineer"),
+            ),
+            ConjunctiveHop(
+                ConjunctiveEndpoint("var", "A"),
+                IntentTarget("relation", "role"),
+                ConjunctiveEndpoint("entity", "Engineer"),
+            ),
+        ),
+        answer_var="A",
+    )
+
+    plan = plan_query_candidates(intent, snapshot, qid=24)
+
+    assert plan.candidates == ()
+    assert plan.truncated is True
+
+
+def test_conjunctive_filter_truncates_when_join_facts_are_truncated():
+    snapshot = QuerySchemaSnapshot(
+        **{**_snapshot().__dict__, "join_facts_truncated": True}
+    )
+    intent = QueryIntent(
+        kind=QueryIntentKind.CONJUNCTIVE_FILTER,
+        conditions=(
+            ConjunctiveHop(ConjunctiveEndpoint("var", "A"), IntentTarget("relation", "role"), ConjunctiveEndpoint("entity", "Engineer")),
+            ConjunctiveHop(ConjunctiveEndpoint("var", "A"), IntentTarget("relation", "affiliation"), ConjunctiveEndpoint("entity", "Research Team")),
+        ),
+        answer_var="A",
+    )
+
+    plan = plan_query_candidates(intent, snapshot, qid=23)
+
+    assert plan.candidates == ()
+    assert plan.truncated is True
+
+
 def test_entity_relation_discovery_generates_subject_side_candidates():
     plan = plan_query_candidates(
         QueryIntent(
