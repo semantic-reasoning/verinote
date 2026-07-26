@@ -1059,6 +1059,9 @@ class Store:
         already in the review queue or the engine and nothing is being suppressed.
         """
         from verinote.store.duckdb_fact_terms import fact_term_token
+        from verinote.store.fact_input import validate_fact_slots
+
+        validate_fact_slots(subject, relation, obj)
 
         row = self._conn.execute(
             "SELECT id, status FROM facts "
@@ -1249,11 +1252,15 @@ class Store:
         job_id: int | None = None,
         note: str = "",
     ) -> int:
+        from verinote.store.fact_input import validate_fact_confidence, validate_fact_slots
+
+        terms = validate_fact_slots(subject, relation, obj)
+        confidence = validate_fact_confidence(confidence)
         with self._lock:
             from verinote.store.duckdb_fact_terms import fact_term_token
 
             fact_id: int | None = None
-            token = fact_term_token(subject, relation, obj)
+            token = fact_term_token(*terms)
             self._conn.execute("BEGIN")
             try:
                 cur = self._conn.execute(
@@ -1276,7 +1283,7 @@ class Store:
                 )
                 fact_id = int(cur.fetchone()[0])
                 self.fact_terms.put_fact_terms(
-                    fact_id, subject, relation, obj, term_token=token
+                    fact_id, *terms, term_token=token
                 )
                 self._record_fact_terms_marker_unlocked(origin="write")
                 self._add_fact_event(
@@ -1348,6 +1355,10 @@ class Store:
         seed has no run (`run_id` is None); a re-seed is a rare, human-initiated
         act, so each occurrence is itself signal and is emitted unconditionally.
         """
+        from verinote.store.fact_input import validate_fact_confidence, validate_fact_slots
+
+        validate_fact_slots(subject, relation, obj)
+        validate_fact_confidence(confidence)
         with self._lock:
             existing = self.existing_fact_for_source(
                 source_id=source_id, subject=subject, relation=relation, obj=obj
@@ -1980,6 +1991,9 @@ class Store:
         frozen with it. The schema enforces this too; the check here exists to
         name the refusal rather than surface a trigger's IntegrityError.
         """
+        from verinote.store.fact_input import validate_fact_slots
+
+        requested_terms = validate_fact_slots(subject, relation, obj)
         with self._lock:
             from verinote.store.duckdb_fact_terms import fact_term_token
 
@@ -1995,8 +2009,7 @@ class Store:
             # only on genuine corruption, never on a healthy sidecar, so an
             # intentional kind="string" downgrade stays allowed.
             previous_terms = self.fact_terms.get_fact_terms(fact_id)
-            requested_terms = _stored_fact_terms(subject, relation, obj)
-            token = fact_term_token(subject, relation, obj)
+            token = fact_term_token(*requested_terms)
             # Treat the amend as a no-op only when BOTH stores already hold the
             # request. Comparing SQLite's own term_token here (not just the DuckDB
             # terms + note) is what lets a retry recover the residual divergence
@@ -2053,7 +2066,7 @@ class Store:
                 # (the stale-token check), and self-healed on retry by the no-op
                 # guard above, which compares SQLite's own term_token.
                 self.fact_terms.put_fact_terms(
-                    fact_id, subject, relation, obj, term_token=token
+                    fact_id, *requested_terms, term_token=token
                 )
                 self._conn.execute("COMMIT")
             except BaseException:
@@ -2791,9 +2804,9 @@ def _display_fact_value(value: object) -> str:
 
 
 def _stored_fact_terms(subject: object, relation: object, obj: object):
-    from verinote.store.duckdb_fact_terms import _coerce_term
+    from verinote.store.fact_input import validate_fact_slots
 
-    return (_coerce_term(subject), _coerce_term(relation), _coerce_term(obj))
+    return validate_fact_slots(subject, relation, obj)
 
 
 def _json_payload(value: dict[str, object] | sqlite3.Row | None) -> str | None:
