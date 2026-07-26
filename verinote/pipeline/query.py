@@ -12,10 +12,16 @@ evaluation. Non-executable outcomes are tracked in the DB only.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import errno
 from itertools import product
+import os
 from pathlib import Path
 import re
+import sqlite3
+import stat
+import tempfile
 import unicodedata
+from typing import Callable
 
 from verinote.engine.datalog import AtomExpr, Comparison, DatalogParseError, parse_program
 from verinote.engine.terms import Atom, StringLit, render_term
@@ -58,6 +64,42 @@ class _QueryFlowResult:
 
 def query_path(root: Path) -> Path:
     return root / QUERY_RELPATH
+
+
+_UNSUPPORTED_DIRECTORY_SYNC_ERRORS = frozenset(
+    {
+        errno.EINVAL,
+        errno.ENOTSUP,
+        errno.EOPNOTSUPP,
+    }
+)
+
+
+def _fsync_directory(path: Path) -> None:
+    """Persist a replacement's directory entry where the platform supports it."""
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    if directory_flag is None:
+        return
+    try:
+        fd = os.open(path, os.O_RDONLY | directory_flag)
+    except OSError as exc:
+        if _directory_sync_is_unsupported(exc):
+            return
+        raise
+    try:
+        os.fsync(fd)
+    except OSError as exc:
+        if _directory_sync_is_unsupported(exc):
+            return
+        raise
+    finally:
+        os.close(fd)
+
+
+def _directory_sync_is_unsupported(exc: OSError) -> bool:
+    return exc.errno in _UNSUPPORTED_DIRECTORY_SYNC_ERRORS or (
+        os.name == "nt" and exc.errno in {errno.EACCES, errno.EPERM}
+    )
 
 
 def _is_review_required(line: str) -> bool:
@@ -414,16 +456,51 @@ def translate_questions(
     return results
 
 
-def write_query_file(store: Store, root: Path) -> Path:
+def write_query_file(
+    store: Store,
+    root: Path,
+    *,
+    publication_guard: Callable[[sqlite3.Connection], bool] | None = None,
+) -> Path | None:
     """Write the engine query draft (translated rules only) to `<root>/facts/query.dl`."""
-    lines = [
-        q["query_dl"]
-        for q in store.questions()
-        if q["status"] == "translated" and q["query_dl"]
-    ]
     path = query_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    staged: Path | None = None
+    try:
+        with store.immediate_transaction() as conn:
+            if publication_guard is not None and not publication_guard(conn):
+                return None
+            rows = conn.execute(
+                "SELECT query_dl FROM questions WHERE status = 'translated' "
+                "AND query_dl IS NOT NULL ORDER BY id"
+            )
+            lines = [row["query_dl"] for row in rows]
+            contents = "\n".join(lines) + ("\n" if lines else "")
+            mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o644
+            fd, staged_name = tempfile.mkstemp(prefix=".query.dl.", dir=path.parent)
+            staged = Path(staged_name)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    fd = -1
+                    handle.write(contents)
+                    handle.flush()
+                    # chmod(path) is available on Windows, unlike os.fchmod().
+                    os.chmod(staged, mode)
+                    os.fsync(handle.fileno())
+                os.replace(staged, path)
+                staged = None
+                # The old name is no longer available to restore if this fails.
+                _fsync_directory(path.parent)
+            except BaseException:
+                if fd != -1:
+                    os.close(fd)
+                raise
+    finally:
+        if staged is not None:
+            try:
+                staged.unlink()
+            except FileNotFoundError:
+                pass
     return path
 
 

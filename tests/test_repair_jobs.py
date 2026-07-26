@@ -87,15 +87,22 @@ def test_expired_item_is_reclaimed_and_stale_owner_is_fenced(tmp_path):
     assert old.persist_repair_question(
         job_id, int(old_item["id"]), "old", qid, "old write", "translated", ""
     ) is False
-    wrote = []
-    assert old.write_owned_repair_query_file(
-        job_id, "old", policy_guard=lambda: None, writer=lambda: wrote.append(True)
-    ) is False
-    assert wrote == []
+    from verinote.pipeline.query import write_query_file
+
+    assert write_query_file(
+        old,
+        tmp_path,
+        publication_guard=lambda conn: Store.repair_query_publication_owned(conn, job_id, "old"),
+    ) is None
     assert old.repair_job_question(qid)["status"] == "review_required"
     reclaimed = new.claim_next_repair_item(job_id, "new")
     assert int(reclaimed["id"]) == int(old_item["id"])
     assert reclaimed["owner_token"] == "new"
+    assert write_query_file(
+        new,
+        tmp_path,
+        publication_guard=lambda conn: Store.repair_query_publication_owned(conn, job_id, "new"),
+    ) == tmp_path / "facts" / "query.dl"
 
 
 def test_policy_deleted_during_provider_call_leaves_job_recoverable(tmp_path):
