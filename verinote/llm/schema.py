@@ -91,6 +91,37 @@ QUERY_INTENT_TARGET_SCHEMA: dict[str, Any] = {
     },
 }
 
+QUERY_INTENT_CONJUNCTIVE_ENDPOINT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["kind", "value"],
+    "additionalProperties": False,
+    "properties": {
+        "kind": {"type": "string", "enum": ["entity", "var"]},
+        "value": {"type": "string", "minLength": 1},
+    },
+}
+
+QUERY_INTENT_CONJUNCTIVE_RELATION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["kind", "value"],
+    "additionalProperties": False,
+    "properties": {
+        "kind": {"type": "string", "enum": ["relation"]},
+        "value": {"type": "string", "minLength": 1},
+    },
+}
+
+QUERY_INTENT_CONJUNCTIVE_HOP_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["subject", "relation", "object"],
+    "additionalProperties": False,
+    "properties": {
+        "subject": QUERY_INTENT_CONJUNCTIVE_ENDPOINT_SCHEMA,
+        "relation": QUERY_INTENT_CONJUNCTIVE_RELATION_SCHEMA,
+        "object": QUERY_INTENT_CONJUNCTIVE_ENDPOINT_SCHEMA,
+    },
+}
+
 QUERY_INTENT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -103,6 +134,7 @@ QUERY_INTENT_SCHEMA: dict[str, Any] = {
                 "lookup_relation",
                 "discover_entity_relations",
                 "compare_typed_value",
+                "conjunctive_lookup",
                 "unknown_or_unsupported",
             ],
         },
@@ -120,6 +152,13 @@ QUERY_INTENT_SCHEMA: dict[str, Any] = {
         },
         "value": {"type": ["string", "null"], "minLength": 1},
         "reason": {"type": ["string", "null"], "minLength": 1},
+        "hops": {
+            "type": ["array", "null"],
+            "minItems": 2,
+            "maxItems": 2,
+            "items": QUERY_INTENT_CONJUNCTIVE_HOP_SCHEMA,
+        },
+        "answer_var": {"type": ["string", "null"], "minLength": 1},
     },
 }
 # Every property is required, `reason` included. OpenAI structured outputs run

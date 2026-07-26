@@ -68,6 +68,23 @@ def test_snapshot_uses_engine_statuses_only_and_preserves_term_identity(tmp_path
     assert [obj.display for obj in atom_relation.objects] == ['"compound"', "atom"]
 
 
+def test_snapshot_bounds_join_evidence_and_marks_truncation(tmp_path):
+    s = _store(tmp_path)
+    s.add_fact("A", "first", "M1", status="confirmed")
+    s.add_fact("M1", "second", "Answer", status="confirmed")
+
+    snapshot = build_query_schema_snapshot(
+        s, bounds=QuerySchemaBounds(max_join_facts=1)
+    )
+
+    assert snapshot.join_facts == ()
+    bounded = build_query_schema_snapshot(
+        s, bounds=QuerySchemaBounds(max_join_facts=1), include_join_facts=True
+    )
+    assert [fact.fact_id for fact in bounded.join_facts] == [1]
+    assert bounded.join_facts_truncated is True
+
+
 def test_aliases_preserve_observed_nfd_relation_and_attach_canonical_metadata(tmp_path):
     s = _store(tmp_path)
     policy = tmp_path / "policy"

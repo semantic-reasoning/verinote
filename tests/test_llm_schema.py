@@ -12,6 +12,7 @@ from verinote.llm import schema as llm_schema
 from verinote.llm.schema import (
     EXTRACTION_SYSTEM,
     FACT_OBJECT_SCHEMA,
+    QUERY_INTENT_CONJUNCTIVE_HOP_SCHEMA,
     QUERY_INTENT_SCHEMA,
     QUERY_INTENT_TARGET_SCHEMA,
     parse_facts,
@@ -79,6 +80,11 @@ def test_query_intent_schema_is_separate_from_datalog_query_schema():
         in QUERY_INTENT_SCHEMA["properties"]["kind"]["enum"]
     )
     assert "count" not in QUERY_INTENT_SCHEMA["properties"]["kind"]["enum"]
+    hop = QUERY_INTENT_CONJUNCTIVE_HOP_SCHEMA
+    assert hop["required"] == ["subject", "relation", "object"]
+    assert hop["additionalProperties"] is False
+    assert hop["properties"]["relation"]["type"] == "object"
+    assert hop["properties"]["relation"]["properties"]["kind"]["enum"] == ["relation"]
     for field in ("subject", "relation", "object"):
         schema = QUERY_INTENT_SCHEMA["properties"][field]
         assert schema["type"] == ["object", "null"]
@@ -346,7 +352,7 @@ def test_query_intent_blank_nullable_fields_are_the_schema_fields_without_an_enu
         for name in _nullable_string_fields(QUERY_INTENT_SCHEMA)
         if "enum" not in QUERY_INTENT_SCHEMA["properties"][name]
     )
-    assert QUERY_INTENT_BLANK_NULLABLE_FIELDS == frozenset({"value", "reason"})
+    assert QUERY_INTENT_BLANK_NULLABLE_FIELDS == frozenset({"value", "reason", "answer_var"})
 
 
 def test_nullable_string_fields_follow_a_schema_it_has_never_seen():

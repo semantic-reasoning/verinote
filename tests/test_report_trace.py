@@ -53,6 +53,46 @@ def test_report_trace_links_direct_answers_to_engine_facts_and_evidence(tmp_path
     assert answer.facts[0].evidence == "Sample Person was born in Sample City."
 
 
+def test_report_trace_links_two_hop_answers_to_one_shared_binding(tmp_path):
+    s = _store(tmp_path)
+    source_id = s.add_source("sources/chain.txt")
+    first = s.add_fact("Ada", "assigned_to", "Project", status="confirmed", source_id=source_id)
+    second = s.add_fact("Project", "purpose", "Research", status="confirmed", source_id=source_id)
+    s.add_fact("Other", "purpose", "Wrong", status="confirmed", source_id=source_id)
+    query_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    query_path(tmp_path).write_text(
+        '.decl answer_q1(value: symbol)\n'
+        'answer_q1(A) :- relation("Ada", "assigned_to", M), relation(M, "purpose", A).\n',
+        encoding="utf-8",
+    )
+
+    trace = report_trace(s)
+
+    assert [(answer.value, [fact.id for fact in answer.facts]) for answer in trace.answers] == [
+        ("Research", [first, second])
+    ]
+
+
+def test_report_trace_compresses_duplicate_two_hop_witnesses(tmp_path):
+    s = _store(tmp_path)
+    first_a = s.add_fact("Ada", "assigned_to", "Project", status="confirmed")
+    first_b = s.add_fact("Ada", "assigned_to", "Project", status="confirmed")
+    second_a = s.add_fact("Project", "purpose", "Research", status="confirmed")
+    second_b = s.add_fact("Project", "purpose", "Research", status="confirmed")
+    query_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    query_path(tmp_path).write_text(
+        '.decl answer_q1(value: symbol)\n'
+        'answer_q1(A) :- relation("Ada", "assigned_to", M), relation(M, "purpose", A).\n',
+        encoding="utf-8",
+    )
+
+    trace = report_trace(s)
+
+    assert [(answer.value, [fact.id for fact in answer.facts]) for answer in trace.answers] == [
+        ("Research", [first_a, first_b, second_a, second_b])
+    ]
+
+
 def test_report_answer_and_trace_render_a_comma_value_the_same_way(tmp_path):
     """/report shows one answer twice; both renderings must agree.
 
