@@ -777,6 +777,54 @@ def test_upload_extracts_and_redirects(tmp_path, monkeypatch, fake_client):
     _wait_for(extracted)
 
 
+def test_upload_normalizes_nfc_source_identity_and_chunk_text(tmp_path, monkeypatch):
+    nfd_filename = unicodedata.normalize("NFD", "\ubb38\uc11c.txt")
+    nfc_filename = unicodedata.normalize("NFC", nfd_filename)
+    nfd_text = unicodedata.normalize("NFD", "\uac00\uac01 \uc815\ubcf4")
+    nfc_text = unicodedata.normalize("NFC", nfd_text)
+    assert nfd_filename != nfc_filename
+    assert nfd_text != nfc_text
+
+    chunk_inputs = []
+    real_create_chunked_job = webapp.create_chunked_extraction_job
+
+    def capture_chunk_job(store, **kwargs):
+        chunk_inputs.append(kwargs["source_text"])
+        return real_create_chunked_job(store, **kwargs)
+
+    monkeypatch.setattr(webapp, "create_chunked_extraction_job", capture_chunk_job)
+    monkeypatch.setattr(webapp, "get_client", lambda _cfg: object())
+    monkeypatch.setattr(
+        webapp,
+        "process_extraction_job",
+        lambda *_args, **_kwargs: type("Result", (), {"failed_chunks": 1})(),
+    )
+    c = _client(tmp_path)
+
+    first = c.post(
+        "/sources",
+        files={"file": (nfd_filename, nfd_text.encode("utf-8"), "text/plain")},
+        follow_redirects=False,
+    )
+    assert (tmp_path / "sources" / nfc_filename).read_bytes() == nfd_text.encode("utf-8")
+    source = c.app.state.store.get_source_by_path(f"sources/{nfc_filename}")
+    assert source is not None
+    artifact = c.app.state.store.latest_source_text_artifact(int(source["id"]))
+    assert artifact is not None
+    assert (tmp_path / artifact["path"]).read_text(encoding="utf-8") == nfc_text
+    second = c.post(
+        "/sources",
+        files={"file": (nfc_filename, nfc_text.encode("utf-8"), "text/plain")},
+        follow_redirects=False,
+    )
+
+    assert first.status_code == second.status_code == 303
+    sources = c.app.state.store.sources()
+    assert len(sources) == 1
+    assert sources[0]["path"] == f"sources/{nfc_filename}"
+    assert chunk_inputs == [nfc_text, nfc_text]
+
+
 def test_upload_rejects_unsupported_type(tmp_path):
     c = _client(tmp_path)
     r = c.post("/sources", files={"file": ("blob.bin", b"\x00\x01", "application/octet-stream")})
