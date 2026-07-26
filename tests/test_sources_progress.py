@@ -8,11 +8,18 @@ upload form and the table as one unit and took scroll position and focus with it
 
 Narrowing that to `#sources-table` was not enough, which is why this file has a second
 poll section. The table holds Retry, Re-analyze, Accept all and Delete; replacing it
-still pulls whichever of them has keyboard focus out of the document, and htmx cannot
-put focus back on a node that is gone. So the tests below do not ask whether the swap
-avoids the page chrome -- they ask what set of live nodes a tick destroys, computed
-from every htmx attribute on the poller at once, and require that set to contain every
-progress bar and no focusable control.
+pulls whichever of them has keyboard focus out of the document. So the tests below do
+not ask whether the swap avoids the page chrome -- they ask what set of live nodes a
+tick destroys, computed from all three of htmx's removal channels at once, and require
+that set to contain every progress bar, to leave the chrome alone, and to contain no
+control htmx could not hand the focus back to.
+
+That last clause is weaker than "no control at all", and deliberately: htmx 2.0.9,
+which this repo vendors, restores focus across a swap by id (see
+`test_a_tick_only_replaces_controls_htmx_can_hand_the_focus_back_to`). Excluding the
+actions cell instead is not just unnecessary, it is its own bug -- the row's buttons
+are conditional on the counts the tick delivers, so a cell left out of the swap goes
+stale against the cell beside it. The last poll section pins that.
 
 WHAT THESE TESTS ASSERT, AND WHY NOT THE OBVIOUS THING. Asserting "app.css contains a
 `.progress` rule" or "sources.html mentions a bar" is worthless here: both stay green
@@ -476,6 +483,23 @@ def _pollers(doc: _Doc) -> list[dict]:
     return polling
 
 
+def _inherited(doc: _Doc, node: dict, attribute: str) -> str | None:
+    """The attribute's value on `node`, or failing that on its nearest ancestor.
+
+    Every htmx attribute this file reads -- `hx-swap`, `hx-target`, `hx-select`,
+    `hx-select-oob` -- is resolved by `getClosestAttributeValue` (`ne()` in the
+    vendored 2.0.9), which walks the parent chain. Reading only the poller's own
+    attributes leaves a blind spot the width of the table: an out-of-band list hung on
+    the <tbody>, or an `hx-swap="outerHTML"` on a wrapper, removes nodes exactly the
+    same and would go unmodelled.
+    """
+    for index in [node["index"], *reversed(node["ancestors"])]:
+        value = doc.nodes[index]["attrs"].get(attribute)
+        if value is not None:
+            return value
+    return None
+
+
 def _swap_region(doc: _Doc, poller: dict, attribute: str) -> dict:
     """Resolve an hx-target/hx-select value to the element it names.
 
@@ -483,7 +507,7 @@ def _swap_region(doc: _Doc, poller: dict, attribute: str) -> dict:
     and an `#id`. A bare tag selector is resolved too, which is how `main` -- the bug --
     still resolves to a node and gets caught by the caller.
     """
-    value = " ".join(poller["attrs"][attribute].split())
+    value = " ".join((_inherited(doc, poller, attribute) or "").split())
     if value == "this":
         return poller
     selector = value.split(" ", 1)[1] if value.startswith("closest ") else value
@@ -510,7 +534,7 @@ def _oob_targets(doc: _Doc, poller: dict) -> list[tuple[dict, str]]:
     rather than shipping.
     """
     targets: list[tuple[dict, str]] = []
-    for entry in poller["attrs"].get("hx-select-oob", "").split(","):
+    for entry in (_inherited(doc, poller, "hx-select-oob") or "").split(","):
         name, _, style = entry.partition(":")
         wanted = name.strip().lstrip("#")
         if not wanted:
@@ -532,6 +556,32 @@ STYLES_REMOVING_TARGET = frozenset({"outerHTML", "delete", "true"})
 STYLES_REMOVING_CHILDREN = frozenset({"innerHTML", "textContent"})
 
 
+def _response_oob_swaps(doc: _Doc) -> list[tuple[dict, str]]:
+    """The `(element, swap style)` pairs htmx's *other* out-of-band channel produces.
+
+    `hx-select-oob` is a property of the poller; `hx-swap-oob` is a property of the
+    **response**, carried on the elements themselves, and the poller has no attribute
+    that mentions it. `oobSwap()` (`_e()` in the vendored htmx 2.0.9) scans the whole
+    response for `[hx-swap-oob]` and swaps each match over the live node with the same
+    id -- and it runs *before* `hx-select` narrows anything, so a narrow `hx-select`
+    does not contain it.
+
+    The poll fetches /sources, so the response is this page: the rendered document is
+    a faithful stand-in for what comes back. Without this, one attribute on the actions
+    cell reinstates the focus bug with every assertion in this file still green.
+
+    Nested elements count, because htmx 2.0.9 ships `allowNestedOobSwaps: true` -- a
+    `<td>` inside a `<tr>` is swapped rather than stripped of the attribute.
+    """
+    swaps: list[tuple[dict, str]] = []
+    for node in doc.find(lambda node: "hx-swap-oob" in node["attrs"]):
+        # The value is a swap style, optionally `style:#other-target`; an empty value
+        # (a bare `hx-swap-oob` attribute) means htmx's default for the channel.
+        value = (node["attrs"].get("hx-swap-oob") or "true").strip()
+        swaps.append((node, value.split(":", 1)[0].strip() or "true"))
+    return swaps
+
+
 def _removed_by(doc: _Doc, target: dict, style: str) -> list[dict]:
     if style in STYLES_REMOVING_TARGET:
         return doc.subtree(target)
@@ -544,26 +594,27 @@ def _removed_nodes(doc: _Doc, poller: dict) -> list[dict]:
     """Every node a tick tears out of the live DOM.
 
     This is the question the whole poll section turns on, and it is deliberately
-    computed from all of the poller's htmx attributes at once rather than read off
+    computed from all three of htmx's removal channels at once rather than read off
     one of them: a guard that only inspected `hx-target` would miss content arriving
-    out of band, and one that only inspected `hx-select-oob` would miss the main swap.
-    Both channels remove nodes.
+    out of band, one that only inspected `hx-select-oob` would miss the main swap, and
+    one that inspected only the poller's attributes would miss `hx-swap-oob` in the
+    response entirely -- see `_response_oob_swaps`. All three remove nodes.
 
     The distinction between removing the target and removing only its children is kept
     because one of the invariants below turns on it -- an `innerHTML` swap leaves the
     poller in place with its `hx-trigger` intact, so a page that stops it that way
     would poll forever. `none` swaps nothing into the target and leaves only the
-    out-of-band list.
+    out-of-band lists.
     """
-    attrs = poller["attrs"]
-    style = (attrs.get("hx-swap") or "innerHTML").split()[0]
+    style = (_inherited(doc, poller, "hx-swap") or "innerHTML").split()[0]
     removed = [
         node
-        for target, oob_style in _oob_targets(doc, poller)
+        for target, oob_style in [*_oob_targets(doc, poller), *_response_oob_swaps(doc)]
         for node in _removed_by(doc, target, oob_style)
     ]
     if style != "none":
-        target = _swap_region(doc, poller, "hx-target") if "hx-target" in attrs else poller
+        has_target = _inherited(doc, poller, "hx-target") is not None
+        target = _swap_region(doc, poller, "hx-target") if has_target else poller
         removed += _removed_by(doc, target, style)
     return removed
 
@@ -576,11 +627,11 @@ def _injected_regions(doc: _Doc, poller: dict) -> list[dict]:
     duplicates it. With no `hx-select` at all htmx uses the whole response body, which
     is why that case resolves to <body> here instead of to nothing.
     """
-    attrs = poller["attrs"]
-    style = (attrs.get("hx-swap") or "innerHTML").split()[0]
+    style = (_inherited(doc, poller, "hx-swap") or "innerHTML").split()[0]
     regions = [target for target, _style in _oob_targets(doc, poller)]
+    regions += [target for target, _style in _response_oob_swaps(doc)]
     if style != "none":
-        if "hx-select" in attrs:
+        if _inherited(doc, poller, "hx-select") is not None:
             regions.append(_swap_region(doc, poller, "hx-select"))
         else:
             regions.extend(doc.find(lambda node: node["tag"] == "body"))
@@ -704,21 +755,35 @@ def test_the_poll_leaves_the_page_chrome_alone(page) -> None:
                 )
 
 
-def test_the_poll_never_replaces_a_control_the_user_can_focus(page) -> None:
-    """The requirement #228 was reopened for: a tick must not remove a focusable node.
+def test_a_tick_only_replaces_controls_htmx_can_hand_the_focus_back_to(page) -> None:
+    """The requirement #228 was reopened for, stated the way htmx actually behaves.
 
-    Narrowing the swap from <main> to `#sources-table` did not fix this. htmx restores
-    focus by holding a reference to `document.activeElement`; when that element is one
-    of the nodes the swap replaced, the reference points at a node no longer in the
-    document and the focus is simply gone. So a Retry or Delete button under the
-    keyboard cursor was still being pulled out every 2 seconds.
+    Narrowing the swap from <main> to `#sources-table` did not fix the focus loss, and
+    an earlier version of this test drew the wrong conclusion from that -- it asserted
+    that a tick may remove *no* focusable node, on the stated grounds that "ids do not
+    survive `outerHTML`". That is false for the htmx this repo vendors. In 2.0.9's
+    `swap()` (static/htmx.min.js) htmx records `document.activeElement` with its
+    `selectionStart`/`selectionEnd` before swapping, and afterwards, if that element
+    has left the document (`getRootNode({composed:true}) !== document`) and carried an
+    `id`, it looks the id up with `document.getElementById` and focuses the result,
+    restoring the selection range. Focus survives replacement -- by identity.
 
-    The assertion is over the *rendered* page, and over every focusable element rather
-    than the four this row happens to have: the swapped regions are resolved to real
-    nodes and their subtrees must contain no focusable element at all. An
-    implementation that keeps the controls out of the swap passes however it does it,
-    and one that reaches the same place by giving buttons stable ids does not -- ids
-    do not survive `outerHTML`, which is the point.
+    Believing otherwise cost something real: it ruled out putting the actions cell in
+    the swap set, and that exclusion is a bug of its own, because which buttons the row
+    offers is derived from the counts the tick delivers (see
+    `test_a_tick_cannot_deliver_a_failure_without_the_button_that_answers_it`).
+
+    So the rule is not "replace nothing focusable" but "replace nothing focusable that
+    htmx cannot find again": every focusable node inside the swap must carry an id, and
+    that id must name exactly one element, since `getElementById` returns one node and
+    a duplicate would hand the cursor to the wrong control. Stated over every focusable
+    element rather than the four this row happens to have, because the requirement is
+    about "a control the user is interacting with" and a future row that grows a link
+    or a select is the same bug.
+
+    An implementation that keeps its controls out of the swap entirely still passes,
+    and correctly so -- it has nothing to restore. What holds *that* honest is the
+    behavioural test named above, not this one.
     """
     doc = page["doc"]
     assert [node for node in doc.nodes if _focusable(node)], (
@@ -726,11 +791,21 @@ def test_the_poll_never_replaces_a_control_the_user_can_focus(page) -> None:
     )
 
     for poller in _pollers(doc):
-        doomed = [node for node in _removed_nodes(doc, poller) if _focusable(node)]
-        assert not doomed, (
-            f"a tick removes {[node['tag'] for node in doomed]} from the document; "
-            "keyboard focus on any of them is lost every 2 seconds while an analysis runs"
+        replaced = [node for node in _removed_nodes(doc, poller) if _focusable(node)]
+        anonymous = [node for node in replaced if not node["attrs"].get("id")]
+        assert not anonymous, (
+            f"a tick removes {[node['tag'] for node in anonymous]} from the document and "
+            "they carry no id, so htmx has nothing to look up afterwards; keyboard focus "
+            "on any of them is lost every 2 seconds while an analysis runs"
         )
+        for node in replaced:
+            name = node["attrs"]["id"]
+            twins = doc.find(lambda other, name=name: other["attrs"].get("id") == name)
+            assert len(twins) == 1, (
+                f"{len(twins)} elements share id={name!r}; after a tick replaces the "
+                "focused one, getElementById hands the keyboard cursor to whichever "
+                "of them comes first"
+            )
 
 
 def test_the_fixture_renders_every_row_action(page) -> None:
@@ -750,13 +825,17 @@ def test_the_fixture_renders_every_row_action(page) -> None:
 
 
 @pytest.mark.parametrize("label", ROW_ACTIONS)
-def test_the_named_row_actions_survive_every_tick(page, label: str) -> None:
+def test_the_named_row_actions_keep_their_identity_across_a_tick(page, label: str) -> None:
     """The same requirement, named: these four buttons, by the text on them.
 
-    `test_the_poll_never_replaces_a_control_the_user_can_focus` states the rule; this
-    states the instance, so a failure report says "Delete is inside the swap" instead
-    of "a <button> is". Both are kept because the general one can be satisfied by a
-    page that has stopped rendering the buttons, and this one cannot.
+    `test_a_tick_only_replaces_controls_htmx_can_hand_the_focus_back_to` states the
+    rule; this states the instance, so a failure report says "Delete loses its focus"
+    instead of "a <button> does". Both are kept because the general one can be
+    satisfied by a page that has stopped rendering the buttons, and this one cannot.
+
+    Scoped to the buttons a tick actually replaces: a control the swap leaves alone
+    needs no id, and requiring one anyway would fail an implementation that keeps its
+    actions outside the swap for no reason a user could observe.
     """
     doc = page["doc"]
     buttons = [
@@ -767,7 +846,186 @@ def test_the_named_row_actions_survive_every_tick(page, label: str) -> None:
     swapped_away = _swept_away(doc, _pollers(doc))
 
     for button in buttons:
-        assert button["index"] not in swapped_away, (
-            f"the {label!r} button is inside a region the poll replaces; pressing tab to "
-            "it and waiting two seconds loses it"
+        if button["index"] not in swapped_away:
+            continue
+        name = button["attrs"].get("id")
+        assert name, (
+            f"the {label!r} button is inside a region the poll replaces and has no id, so "
+            "pressing tab to it and waiting two seconds loses it"
         )
+        twins = doc.find(lambda other, name=name: other["attrs"].get("id") == name)
+        assert len(twins) == 1, (
+            f"the {label!r} button's id={name!r} is shared by {len(twins)} elements, so "
+            "a tick can hand the keyboard cursor to a different row's control"
+        )
+
+
+# --- what the tick leaves behind (#228, the regression the exclusion caused) --
+#
+# Keeping the actions cell out of the swap set looks safe until you notice that the
+# row's buttons are *derived from the counts the swap delivers*: Retry is rendered
+# only once a chunk has failed, Accept all only once the extraction has produced a
+# candidate. So a page opened mid-run watches its analysis cell fill in and its
+# actions cell stay frozen at the state it was loaded with -- and the poll turns
+# itself off on the very tick that reports the failure, so nothing but a manual
+# reload ever fixes it.
+
+MID_RUN_PATH = "mid-run.txt"
+MID_RUN_CHUNKS = 4
+MID_RUN_COMPLETED = 3
+
+
+@pytest.fixture()
+def mid_run(tmp_path):
+    """One source rendered twice: during the extraction, and after it ends badly.
+
+    `before` is what a browser gets for opening /sources while chunks are still being
+    processed -- nothing has completed, so the row offers neither Retry (which needs a
+    failed chunk) nor Accept all (which needs a candidate). `after` is the same page
+    once the run is over: three chunks done, one failed, one candidate extracted, and
+    the job closed. That is both the state the last tick has to deliver and the tick on
+    which the poll stops, so whatever it fails to carry, the browser never gets.
+    """
+    root = tmp_path / "mid-run"
+    root.mkdir(parents=True, exist_ok=True)
+    cfg = Config(
+        root=root, db_path=root / "kb.sqlite",
+        provider="anthropic", model="m", api_key=None, base_url=None,
+    )
+    app = create_app(cfg)
+    client = TestClient(app)
+    store = app.state.store
+
+    source_id = store.add_source(MID_RUN_PATH, "text")
+    job_id = store.create_extraction_job(
+        source_id=source_id, provider="anthropic", model="m", total_chunks=MID_RUN_CHUNKS
+    )
+    chunk_ids = store.add_source_chunks(
+        job_id=job_id, source_id=source_id,
+        chunks=[f"chunk {i}" for i in range(MID_RUN_CHUNKS)],
+    )
+    store.mark_chunk_running(chunk_ids[0])
+    before = client.get("/sources")
+    assert before.status_code == 200, before.text
+
+    for chunk_id in chunk_ids[:MID_RUN_COMPLETED]:
+        store.mark_chunk_done(chunk_id)
+    for chunk_id in chunk_ids[MID_RUN_COMPLETED:]:
+        store.mark_chunk_failed(chunk_id, "boom")
+    store.add_fact(f"{MID_RUN_PATH} subject", "relates to", "object", source_id=source_id)
+    store.finish_extraction_job(job_id)
+    after = client.get("/sources")
+    assert after.status_code == 200, after.text
+
+    return {"before": _parse(before.text), "after": _parse(after.text)}
+
+
+def _cell(doc: _Doc, class_name: str) -> dict:
+    """The single table cell carrying `class_name`. The fixture renders one row."""
+    matches = doc.find(
+        lambda node: class_name in node["attrs"].get("class", "").split()
+    )
+    assert len(matches) == 1, (
+        f"expected exactly one .{class_name} on the page, found {len(matches)}"
+    )
+    return matches[0]
+
+
+def _labels(doc: _Doc, cell: dict) -> set[str]:
+    return {doc.text(node) for node in doc.subtree(cell) if node["tag"] == "button"}
+
+
+def _after_one_tick(mid_run, class_name: str) -> tuple[_Doc, dict]:
+    """The version of a cell a browser holding `before` is looking at once a tick lands.
+
+    The server's current rendering if a tick replaces that node, the one the browser
+    loaded otherwise. That is the whole of what the poll does for a page nobody
+    reloads, and the only question this section asks.
+    """
+    doc = mid_run["before"]
+    cell = _cell(doc, class_name)
+    if cell["index"] in _swept_away(doc, _pollers(doc)):
+        fresh = mid_run["after"]
+        return fresh, _cell(fresh, class_name)
+    return doc, cell
+
+
+def test_a_tick_cannot_deliver_a_failure_without_the_button_that_answers_it(mid_run) -> None:
+    """The row a tick leaves behind has to be a row the server would render.
+
+    This is the regression that came with narrowing the swap: the analysis cell is
+    refreshed and the actions cell is not, so the page ends up showing "4/4 chunk(s),
+    1 failed" next to a cell with no Retry button -- a state no render of /sources ever
+    produces. And it is terminal, because the same tick that reports the failure is the
+    one that stops the poll.
+
+    Stated as an outcome rather than as a rule about the swap set: reconstruct what the
+    browser is looking at after the tick, and require its buttons to be the ones the
+    server renders for the state the rest of the row is now showing. Any implementation
+    that keeps the two in step passes -- refreshing the cell, or not making the buttons
+    conditional on the counts in the first place -- and only the mismatch is red.
+    """
+    fresh = mid_run["after"]
+    stale_labels = _labels(mid_run["before"], _cell(mid_run["before"], "actions"))
+    fresh_labels = _labels(fresh, _cell(fresh, "actions"))
+
+    # Non-vacuity: the run has to actually change which buttons the row offers, or the
+    # stale cell and the fresh one are the same cell and nothing below can fail.
+    assert fresh_labels - stale_labels, (
+        f"the fixture renders the same actions before ({sorted(stale_labels)}) and after "
+        f"({sorted(fresh_labels)}) the run; there is no staleness for a tick to expose"
+    )
+
+    analysis_doc, _analysis_cell = _after_one_tick(mid_run, "analysis-cell")
+    assert analysis_doc is fresh, (
+        "a tick does not refresh the analysis cell at all, so the progress bar this "
+        "page exists for never moves; that is a different bug, and it is here instead"
+    )
+
+    actions_doc, actions_cell = _after_one_tick(mid_run, "actions")
+    shown = _labels(actions_doc, actions_cell)
+
+    assert shown == fresh_labels, (
+        f"after the tick the page shows the finished analysis -- {MID_RUN_CHUNKS - MID_RUN_COMPLETED} "
+        f"of {MID_RUN_CHUNKS} chunk(s) failed -- beside {sorted(shown)}, but the server "
+        f"renders {sorted(fresh_labels)} for that state. Missing: "
+        f"{sorted(fresh_labels - shown)}. The poll stops on this tick, so the row stays "
+        "wrong until the user reloads by hand."
+    )
+
+
+@pytest.mark.parametrize("label", ("Re-analyze", "Delete"))
+def test_a_control_a_tick_replaces_answers_to_the_same_id_afterwards(mid_run, label) -> None:
+    """Restoring focus by id only works if the id names the same control next render.
+
+    htmx looks the focused element's id up in the *response*, so an id that is stable
+    within one render and different in the next -- derived from the row's position, from
+    a counter, or from the job id, which a re-analysis replaces -- restores nothing:
+    `getElementById` finds no node and the keyboard cursor is gone just as if the id had
+    never been there. The two labels here are the unconditional actions, the only ones
+    present on both sides of the run to compare.
+
+    Vacuous, and rightly so, for an implementation that does not replace these controls:
+    there is then no lookup to get wrong.
+    """
+    before = mid_run["before"]
+    replaced = _swept_away(before, _pollers(before))
+
+    def named(doc: _Doc) -> dict:
+        matches = [
+            node for node in doc.find(lambda node: node["tag"] == "button")
+            if doc.text(node) == label
+        ]
+        assert len(matches) == 1, f"expected one {label!r} button, found {len(matches)}"
+        return matches[0]
+
+    button = named(before)
+    if button["index"] not in replaced:
+        pytest.skip(f"no tick replaces the {label!r} button; nothing to look up")
+
+    was = button["attrs"].get("id")
+    now = named(mid_run["after"])["attrs"].get("id")
+    assert was and was == now, (
+        f"the {label!r} button is id={was!r} while the analysis runs and id={now!r} "
+        "afterwards, so htmx cannot find it again and focus is lost on the tick anyway"
+    )
