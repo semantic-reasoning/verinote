@@ -208,6 +208,47 @@ CREATE TABLE IF NOT EXISTS questions (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Durable, KB-scoped repair passes.  Unlike extraction jobs these snapshot
+-- question ids, because repairing is a question lifecycle operation and must
+-- never borrow source-analysis ownership or progress.
+CREATE TABLE IF NOT EXISTS repair_jobs (
+    id              INTEGER PRIMARY KEY,
+    status          TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','running','done','failed')),
+    provider        TEXT,
+    model           TEXT,
+    total_items     INTEGER NOT NULL DEFAULT 0,
+    completed_items INTEGER NOT NULL DEFAULT 0,
+    skipped_items   INTEGER NOT NULL DEFAULT 0,
+    failed_items    INTEGER NOT NULL DEFAULT 0,
+    message         TEXT NOT NULL DEFAULT '',
+    owner_token     TEXT,
+    lease_until     TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- question_id intentionally has no FK: a user may delete a snapshot question
+-- while the job is queued, and the worker records that item as skipped.
+CREATE TABLE IF NOT EXISTS repair_job_items (
+    id          INTEGER PRIMARY KEY,
+    job_id      INTEGER NOT NULL REFERENCES repair_jobs(id) ON DELETE CASCADE,
+    question_id INTEGER NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending','running','done','skipped','failed')),
+    owner_token TEXT,
+    reason      TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(job_id, question_id)
+);
+
+-- One live repair pass per KB. Terminal history remains available for display.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_repair_jobs_one_live
+    ON repair_jobs(status) WHERE status IN ('pending','running');
+CREATE INDEX IF NOT EXISTS idx_repair_job_items_status
+    ON repair_job_items(job_id, status, id);
+
 -- Append-only audit of human review decisions (toggle/accept/reject/amend),
 -- mirroring the "decisions are preserved" property of the borrowed concept.
 CREATE TABLE IF NOT EXISTS review_log (

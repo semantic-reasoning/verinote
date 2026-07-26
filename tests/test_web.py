@@ -3141,6 +3141,7 @@ def test_questions_page_recovers_reason_from_non_executable_query(tmp_path):
 
 
 def test_repair_action_accepts_valid_fix(tmp_path, monkeypatch, fake_client, intent_payload):
+    import time
     monkeypatch.setattr(
         webapp,
         "get_client",
@@ -3160,7 +3161,80 @@ def test_repair_action_accepts_valid_fix(tmp_path, monkeypatch, fake_client, int
 
     r = c.post("/questions/repair", follow_redirects=False)
     assert r.status_code == 303
+    for _ in range(100):
+        if store.questions()[0]["status"] == "translated":
+            break
+        time.sleep(0.01)
     assert store.questions()[0]["status"] == "translated"
+
+
+def test_repair_post_enqueues_without_constructing_a_client(tmp_path, monkeypatch):
+    class ThreadRecorder:
+        def __init__(self):
+            self.started = []
+
+        def Thread(self, *, target, name, daemon):  # noqa: N802 - threading API
+            recorder = self
+
+            class Handle:
+                def start(self):
+                    recorder.started.append(name)
+
+            return Handle()
+
+    recorder = ThreadRecorder()
+    monkeypatch.setattr(webapp, "threading", recorder)
+    monkeypatch.setattr(
+        webapp, "get_client", lambda cfg: (_ for _ in ()).throw(AssertionError("request called LLM"))
+    )
+    c = _client(tmp_path)
+    store = c.app.state.store
+    _id = store.add_question("What is synthetic?")
+    store.set_question_query(_id, 'review_required("synthetic")', "review_required")
+
+    response = c.post("/questions/repair", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert recorder.started == ["verinote-question-repair-1"]
+    assert store.latest_repair_job()["status"] == "pending"
+
+
+def test_questions_page_shows_live_repair_progress_and_terminal_failure(tmp_path):
+    c = _client(tmp_path)
+    store = c.app.state.store
+    qid = store.add_question("What is synthetic?")
+    store.set_question_query(qid, 'review_required("synthetic")', "review_required")
+    job, _ = store.enqueue_repair_job(provider="fake", model="m")
+
+    live = c.get("/questions").text
+    assert "Repair job #1: pending" in live
+    assert 'hx-trigger="every 2s"' in live
+
+    store.fail_pending_repair_job(int(job["id"]), "Repair failed: synthetic provider outage")
+    terminal = c.get("/questions").text
+    assert "synthetic provider outage" in terminal
+    assert 'hx-trigger="every 2s"' not in terminal
+
+
+def test_questions_progress_counts_real_failed_item(tmp_path):
+    from verinote.pipeline.repair import process_repair_job
+
+    class OutageClient:
+        def extract_query_intent(self, *, question, schema_hint):
+            raise LLMError("synthetic provider outage")
+
+    c = _client(tmp_path)
+    store = c.app.state.store
+    for text in ("What is synthetic one?", "What is synthetic two?"):
+        qid = store.add_question(text)
+        store.set_question_query(qid, 'review_required("synthetic")', "review_required")
+    job, _ = store.enqueue_repair_job(provider="fake", model="m")
+    process_repair_job(store, OutageClient(), job_id=int(job["id"]), root=tmp_path)
+
+    body = c.get("/questions").text
+    assert "Repair job #1: failed" in body
+    assert "1/2 processed" in body
+    assert "synthetic provider outage" in body
 
 
 def test_settings_page_renders(tmp_path):

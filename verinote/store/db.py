@@ -2063,6 +2063,230 @@ class Store:
         with self._lock:
             self._conn.execute("DELETE FROM questions WHERE id = ?", (question_id,))
 
+    # --- durable question repair jobs -----------------------------------
+    def enqueue_repair_job(self, *, provider: str | None, model: str | None) -> tuple[sqlite3.Row, bool]:
+        """Create a snapshot repair pass, or return the existing live pass.
+
+        The partial unique index is the cross-process backstop; this method's
+        transaction makes the snapshot and live-job decision one operation.
+        """
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                live = self._conn.execute(
+                    "SELECT * FROM repair_jobs WHERE status IN ('pending','running') "
+                    "ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                if live is not None:
+                    self._conn.execute("COMMIT")
+                    return live, False
+                ids = [
+                    int(row["id"])
+                    for row in self._conn.execute(
+                        "SELECT id FROM questions WHERE status = 'review_required' ORDER BY id"
+                    )
+                ]
+                status = "pending" if ids else "done"
+                message = "Pending repair" if ids else "No review_required questions to repair."
+                cur = self._conn.execute(
+                    "INSERT INTO repair_jobs(status, provider, model, total_items, message) "
+                    "VALUES(?,?,?,?,?) RETURNING id",
+                    (status, provider, model, len(ids), message),
+                )
+                job_id = int(cur.fetchone()[0])
+                self._conn.executemany(
+                    "INSERT INTO repair_job_items(job_id, question_id) VALUES(?,?)",
+                    [(job_id, question_id) for question_id in ids],
+                )
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._rollback_quietly()
+                raise
+            job = self.get_repair_job(job_id)
+            assert job is not None
+            return job, True
+
+    def get_repair_job(self, job_id: int) -> sqlite3.Row | None:
+        return self._conn.execute("SELECT * FROM repair_jobs WHERE id = ?", (job_id,)).fetchone()
+
+    def latest_repair_job(self) -> sqlite3.Row | None:
+        return self._conn.execute("SELECT * FROM repair_jobs ORDER BY id DESC LIMIT 1").fetchone()
+
+    def repair_job_items(self, job_id: int) -> list[sqlite3.Row]:
+        return list(self._conn.execute("SELECT * FROM repair_job_items WHERE job_id = ? ORDER BY id", (job_id,)))
+
+    def repair_jobs_to_resume(self) -> list[sqlite3.Row]:
+        """Return pending jobs and expired leases, never an apparently live owner."""
+        return list(self._conn.execute(
+            "SELECT * FROM repair_jobs WHERE status = 'pending' OR "
+            "(status = 'running' AND lease_until IS NOT NULL AND lease_until < datetime('now')) "
+            "ORDER BY id"
+        ))
+
+    def claim_repair_job(self, job_id: int, owner_token: str) -> bool:
+        """Take an expired/pending job and reclaim its abandoned running items.
+
+        Ownership is at-least-once: a crashed owner can have already sent a
+        provider request.  The token fences every later item/question/file write.
+        """
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                cur = self._conn.execute(
+                "UPDATE repair_jobs SET status = 'running', owner_token = ?, "
+                "lease_until = datetime('now', '+30 seconds'), updated_at = datetime('now'), "
+                "message = 'Repairing questions' WHERE id = ? AND (status = 'pending' OR "
+                "(status = 'running' AND lease_until IS NOT NULL AND lease_until < datetime('now'))) ",
+                (owner_token, job_id),
+                )
+                if cur.rowcount != 1:
+                    self._conn.execute("ROLLBACK")
+                    return False
+                self._conn.execute(
+                    "UPDATE repair_job_items SET status = 'pending', owner_token = NULL, "
+                    "updated_at = datetime('now') WHERE job_id = ? AND status = 'running'",
+                    (job_id,),
+                )
+                self._conn.execute("COMMIT")
+                return True
+            except Exception:
+                self._rollback_quietly()
+                raise
+
+    def renew_repair_job_lease(self, job_id: int, owner_token: str) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE repair_jobs SET lease_until = datetime('now', '+30 seconds'), "
+                "updated_at = datetime('now') WHERE id = ? AND status = 'running' AND owner_token = ? "
+                "AND lease_until >= datetime('now')",
+                (job_id, owner_token),
+            )
+            return cur.rowcount == 1
+
+    def claim_next_repair_item(self, job_id: int, owner_token: str) -> sqlite3.Row | None:
+        """CAS-claim one snapshot item. A job owner still claims items explicitly."""
+        with self._lock:
+            if not self.renew_repair_job_lease(job_id, owner_token):
+                return None
+            row = self._conn.execute(
+                "SELECT * FROM repair_job_items WHERE job_id = ? AND status = 'pending' ORDER BY id LIMIT 1",
+                (job_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            cur = self._conn.execute(
+                "UPDATE repair_job_items SET status = 'running', owner_token = ?, "
+                "updated_at = datetime('now') WHERE id = ? AND status = 'pending' "
+                "AND EXISTS (SELECT 1 FROM repair_jobs WHERE id = ? AND status = 'running' "
+                "AND owner_token = ? AND lease_until >= datetime('now'))",
+                (owner_token, row["id"], job_id, owner_token),
+            )
+            if cur.rowcount != 1:
+                return None
+            return self._conn.execute("SELECT * FROM repair_job_items WHERE id = ?", (row["id"],)).fetchone()
+
+    def repair_job_question(self, question_id: int) -> sqlite3.Row | None:
+        return self._conn.execute("SELECT * FROM questions WHERE id = ?", (question_id,)).fetchone()
+
+    def finish_repair_item(self, item_id: int, owner_token: str, *, status: str, reason: str = "") -> bool:
+        if status not in {"done", "skipped", "failed"}:
+            raise ValueError(f"unknown repair item status: {status}")
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE repair_job_items SET status = ?, reason = ?, owner_token = NULL, "
+                "updated_at = datetime('now') WHERE id = ? AND status = 'running' AND owner_token = ? "
+                "AND EXISTS (SELECT 1 FROM repair_jobs WHERE id = repair_job_items.job_id "
+                "AND status = 'running' AND owner_token = ? AND lease_until >= datetime('now'))",
+                (status, reason, item_id, owner_token, owner_token),
+            )
+            return cur.rowcount == 1
+
+    def persist_repair_question(
+        self, job_id: int, item_id: int, owner_token: str, question_id: int,
+        query_dl: str | None, status: str, reason: str,
+    ) -> bool:
+        """Persist only while this worker still owns the running snapshot item."""
+        if status not in QUESTION_STATUSES:
+            raise ValueError(f"unknown question status: {status}")
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE questions SET query_dl = ?, status = ?, reason = ? WHERE id = ? "
+                "AND status = 'review_required' AND EXISTS (SELECT 1 FROM repair_job_items "
+                "WHERE id = ? AND job_id = ? AND status = 'running' AND owner_token = ?) "
+                "AND EXISTS (SELECT 1 FROM repair_jobs WHERE id = ? AND status = 'running' "
+                "AND owner_token = ? AND lease_until >= datetime('now'))",
+                (query_dl, status, reason, question_id, item_id, job_id, owner_token, job_id, owner_token),
+            )
+            return cur.rowcount == 1
+
+    def write_owned_repair_query_file(self, job_id: int, owner_token: str, *, policy_guard, writer) -> bool:
+        """Fence the derived-file boundary against a reclaimed owner.
+
+        This intentionally uses the existing writer; it does not attempt #388's
+        cross-process publication redesign.  The short SQLite write transaction
+        simply prevents a new owner from claiming between the ownership check and
+        this workflow's derived-file regeneration.
+        """
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                owned = self._conn.execute(
+                    "SELECT 1 FROM repair_jobs WHERE id = ? AND status = 'running' AND owner_token = ? "
+                    "AND lease_until >= datetime('now')",
+                    (job_id, owner_token),
+                ).fetchone()
+                if owned is None:
+                    self._conn.execute("ROLLBACK")
+                    return False
+                policy_guard()
+                writer()
+                self._conn.execute("COMMIT")
+                return True
+            except Exception:
+                self._rollback_quietly()
+                raise
+
+    def finish_repair_job(self, job_id: int, owner_token: str, *, failed: bool = False, message: str = "") -> None:
+        with self._lock:
+            counts = self._conn.execute(
+                "SELECT SUM(status = 'done') AS done, SUM(status = 'skipped') AS skipped, "
+                "SUM(status = 'failed') AS failed FROM repair_job_items WHERE job_id = ?", (job_id,)
+            ).fetchone()
+            done = int(counts["done"] or 0)
+            skipped = int(counts["skipped"] or 0)
+            failed_items = int(counts["failed"] or 0)
+            status = "failed" if failed else "done"
+            if not message:
+                message = (f"Repair failed: {failed_items} item(s) failed" if failed else
+                           f"Repair complete: {done} repaired, {skipped} skipped")
+            self._conn.execute(
+                "UPDATE repair_jobs SET status = ?, completed_items = ?, skipped_items = ?, "
+                "failed_items = ?, message = ?, lease_until = NULL, updated_at = datetime('now') "
+                "WHERE id = ? AND status = 'running' AND owner_token = ? "
+                "AND lease_until >= datetime('now')",
+                (status, done + skipped + failed_items, skipped, failed_items, message, job_id, owner_token),
+            )
+
+    def defer_repair_job(self, job_id: int, owner_token: str, message: str) -> bool:
+        """Release a job whose derived query file needs a later regeneration."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE repair_jobs SET status = 'pending', owner_token = NULL, lease_until = NULL, "
+                "message = ?, updated_at = datetime('now') WHERE id = ? AND status = 'running' "
+                "AND owner_token = ? AND lease_until >= datetime('now')",
+                (message, job_id, owner_token),
+            )
+            return cur.rowcount == 1
+
+    def fail_pending_repair_job(self, job_id: int, message: str) -> None:
+        """Expose a pre-claim worker setup failure without adopting a live job."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE repair_jobs SET status = 'failed', message = ?, updated_at = datetime('now') "
+                "WHERE id = ? AND status = 'pending'",
+                (message, job_id),
+            )
+
     # --- audit -----------------------------------------------------------
     def fact_log(self, fact_id: int) -> list[sqlite3.Row]:
         """Audit trail (oldest first) for one fact — drives the provenance view."""
@@ -2414,6 +2638,11 @@ class Store:
             """
         )
         self._ensure_question_schema()
+        repair_item_columns = {
+            row["name"] for row in self._conn.execute("PRAGMA table_info(repair_job_items)")
+        }
+        if repair_item_columns and "owner_token" not in repair_item_columns:
+            self._conn.execute("ALTER TABLE repair_job_items ADD COLUMN owner_token TEXT")
 
     def _ensure_question_schema(self) -> None:
         columns = {
