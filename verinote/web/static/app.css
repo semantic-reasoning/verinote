@@ -33,11 +33,30 @@
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--fg);
   font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif; }
-header { display: flex; align-items: center; gap: 1.5rem;
+header { display: flex; align-items: flex-start; gap: .8rem 1.5rem; flex-wrap: wrap;
   padding: .8rem 1.4rem; border-bottom: 1px solid var(--line); background: var(--panel); }
 .brand { font-weight: 700; letter-spacing: .02em; color: var(--fg); text-decoration: none; }
 nav a { color: var(--muted); text-decoration: none; margin-right: 1rem; }
 nav a:hover { color: var(--fg); }
+/* Primary navigation groups task-oriented destinations without affecting the review
+   filters or pagination navs that share this document. */
+header nav { display: flex; flex: 1 1 42rem; flex-wrap: wrap; align-items: baseline;
+  gap: .45rem 1rem; min-width: 0; }
+header .nav-group { display: flex; align-items: baseline; gap: .45rem; padding-right: 1rem;
+  border-right: 1px solid var(--line); }
+header .nav-group:last-child { padding-right: 0; border-right: 0; }
+header .nav-group-label { color: var(--muted); font-size: .72rem; font-weight: 700;
+  text-transform: uppercase; }
+header nav a { margin-right: 0; white-space: nowrap; }
+header .nav-count { display: inline-flex; align-items: center; justify-content: center;
+  min-width: 1.35rem; padding: .02rem .3rem; border: 1px solid var(--accent);
+  border-radius: 999px; color: var(--fg); font-size: .75rem; font-variant-numeric: tabular-nums;
+  line-height: 1.25; vertical-align: .08em; }
+@media (max-width: 720px) {
+  header { align-items: stretch; }
+  header nav { flex-basis: 100%; }
+  header .nav-group { border-right: 0; padding-right: 0; }
+}
 /* The current page (#225). Colour alone would not carry it -- #226 -- so the
    weight and the underline mark it on a non-colour channel too. Scoped to the
    header nav: review.html's <nav class="filters"> marks its own active badge

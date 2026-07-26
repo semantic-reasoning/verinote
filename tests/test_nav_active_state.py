@@ -19,6 +19,7 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from verinote.config import Config  # noqa: E402
+from verinote.store import db as store_db  # noqa: E402
 from verinote.web import create_app  # noqa: E402
 
 CSS_PATH = Path(__file__).resolve().parents[1] / "verinote" / "web" / "static" / "app.css"
@@ -124,6 +125,12 @@ def _current(html: str) -> list[str]:
     return [href for href, is_current in _nav_links(html) if is_current]
 
 
+def _review_link_body(html: str) -> str:
+    match = re.search(r'<a\b[^>]*href="/review"[^>]*>(.*?)</a>', html, re.S)
+    assert match, "the primary nav renders no Review link"
+    return match.group(1)
+
+
 def test_each_nav_destination_marks_its_own_link(tmp_path) -> None:
     client = _client(tmp_path)
     hrefs = [href for href, _ in _nav_links(client.get("/").text)]
@@ -164,11 +171,78 @@ def test_page_outside_the_nav_marks_nothing(tmp_path) -> None:
     assert _current(response.text) == []
 
 
+def test_primary_nav_groups_destinations_by_task(tmp_path) -> None:
+    client = _client(tmp_path)
+    header = HEADER_BLOCK.search(client.get("/").text)
+    assert header, "the page renders no header"
+
+    groups = dict(re.findall(
+        r'<div class="nav-group" role="group" aria-labelledby="nav-group-([^\"]+)">(.*?)</div>',
+        header.group(1),
+        re.S,
+    ))
+    assert set(groups) == {"manage", "review", "explore", "configure"}
+    assert "Dashboard" in groups["manage"]
+    assert "Sources" in groups["manage"]
+    assert "Review" in groups["review"]
+    assert "Workbench" in groups["review"]
+    assert "Ask" in groups["explore"]
+    assert "Analytics" in groups["explore"]
+    assert "Prompts" in groups["configure"]
+    assert "Settings" in groups["configure"]
+
+
+def test_review_nav_count_uses_the_runtime_review_tier(tmp_path, monkeypatch) -> None:
+    """The shared count follows `review_statuses()`, not a copied status list."""
+    client = _client(tmp_path)
+    client.app.state.store.add_fact(
+        "Synthetic accepted", "is_a", "Synthetic type", status="accepted", confidence=0.9
+    )
+    monkeypatch.setattr(store_db, "REVIEW_STATUSES", frozenset({"accepted"}))
+
+    body = _review_link_body(client.get("/sources").text)
+    assert '<span class="nav-count" aria-hidden="true">1</span>' in body
+    assert '<span class="visually-hidden"> 1 awaiting review</span>' in body
+
+
+def test_review_nav_count_is_hidden_when_the_queue_is_empty(tmp_path) -> None:
+    cfg = Config(
+        root=tmp_path, db_path=tmp_path / "kb.sqlite",
+        provider="anthropic", model="m", api_key=None, base_url=None,
+    )
+    client = TestClient(create_app(cfg))
+
+    body = _review_link_body(client.get("/").text)
+    assert "nav-count" not in body
+    assert "awaiting review" not in body
+
+
+def test_common_nav_context_is_safe_without_an_active_kb(tmp_path, monkeypatch) -> None:
+    """Context processors run for kb_select.html too, where `store` is None."""
+    monkeypatch.delenv("VERINOTE_ROOT", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    monkeypatch.chdir(tmp_path)
+
+    response = TestClient(create_app()).get("/")
+    assert response.status_code == 200
+    assert "Select a knowledge base" in response.text
+
+
 def test_stylesheet_styles_the_current_link() -> None:
     """Without a rule, the attribute is invisible to anyone not using a screen reader."""
     assert _rule_body(CURRENT_SELECTOR) is not None, (
         "app.css has no rule selecting the current nav link"
     )
+
+
+def test_nav_group_styles_are_scoped_to_the_header() -> None:
+    css = CSS_PATH.read_text(encoding="utf-8")
+    for selector in ("header nav", "header .nav-group", "header .nav-group-label", "header .nav-count"):
+        assert re.search(rf"(?:^|\n){re.escape(selector)}\s*\{{", css), (
+            f"app.css has no header-scoped rule for {selector}"
+        )
 
 
 def test_current_link_is_marked_off_a_non_colour_channel() -> None:

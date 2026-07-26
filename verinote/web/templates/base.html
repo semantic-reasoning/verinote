@@ -10,25 +10,24 @@
 <body>
   <header>
     <a class="brand" href="/">verinote</a>
-    {% set nav_links = [
-      ("/", "Dashboard"),
-      ("/sources", "Sources"),
-      ("/review", "Review"),
-      ("/workbench", "Workbench"),
-      ("/ask", "Ask"),
-      ("/questions", "Questions"),
-      ("/report", "Report"),
-      ("/analytics", "Analytics"),
-      ("/prompts", "Prompts"),
-      ("/settings", "Settings"),
+    {% set nav_groups = [
+      ("Manage", "manage", [("/", "Dashboard"), ("/sources", "Sources")]),
+      ("Review", "review", [("/review", "Review"), ("/workbench", "Workbench")]),
+      ("Explore", "explore", [("/ask", "Ask"), ("/questions", "Questions"), ("/report", "Report"), ("/analytics", "Analytics")]),
+      ("Configure", "configure", [("/prompts", "Prompts"), ("/settings", "Settings")]),
     ] %}
     {# `/` matches exactly; a prefix match there would light Dashboard up on every
        page. Sub-paths (`/sources/…`) keep their section link current. Pages under
        no nav entry (e.g. a fact's provenance) leave every link inactive. #}
     {% set path = request.url.path %}
-    <nav>
-      {% for href, label in nav_links %}
-      <a href="{{ href }}"{% if path == href or (href != "/" and path.startswith(href ~ "/")) %} aria-current="page"{% endif %}>{{ label }}</a>
+    <nav aria-label="Primary">
+      {% for group_label, group_id, links in nav_groups %}
+      <div class="nav-group" role="group" aria-labelledby="nav-group-{{ group_id }}">
+        <span class="nav-group-label" id="nav-group-{{ group_id }}">{{ group_label }}</span>
+        {% for href, label in links %}
+        <a href="{{ href }}"{% if path == href or (href != "/" and path.startswith(href ~ "/")) %} aria-current="page"{% endif %}>{{ label }}{% if href == "/review" and review_count > 0 %} <span class="nav-count" aria-hidden="true">{{ review_count }}</span><span class="visually-hidden"> {{ review_count }} awaiting review</span>{% endif %}</a>
+        {% endfor %}
+      </div>
       {% endfor %}
     </nav>
   </header>
