@@ -3649,6 +3649,51 @@ def test_settings_page_renders(tmp_path):
     assert 'href="/prompts"' in r.text
 
 
+def test_settings_saves_app_theme_across_kb_switches(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    c = _client(tmp_path)
+    other = tmp_path / "other-kb"
+
+    initial = c.get("/settings")
+    assert 'data-theme="system"' in initial.text
+    assert 'action="/settings/theme"' in initial.text
+    assert 'name="theme"' in initial.text
+
+    r = c.post("/settings/theme", data={"theme": "dark"}, follow_redirects=False)
+
+    assert r.status_code == 303
+    assert r.headers["location"] == "/settings"
+    assert read_app_config()["theme"] == "dark"
+    assert 'data-theme="dark"' in c.get("/settings").text
+
+    assert c.post("/settings/root", data={"root": str(other)}).status_code == 200
+    assert read_app_config()["theme"] == "dark"
+    assert 'data-theme="dark"' in c.get("/settings").text
+
+
+def test_halted_kb_disables_and_refuses_app_theme_changes(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    cfg, _, _ = _job_kb(tmp_path, with_policy=False)
+    c = TestClient(create_app(cfg))
+
+    settings = c.get("/settings")
+
+    assert settings.status_code == 200
+    assert 'action="/settings/theme"' in settings.text
+    assert 'name="theme" disabled' in settings.text
+    assert "Theme changes are unavailable while this KB's logic policy is halted." in settings.text
+
+    r = c.post("/settings/theme", data={"theme": "light"}, follow_redirects=False)
+
+    assert r.status_code == 409
+    assert "Verification halted" in r.text
+    assert read_app_config() == {}
+
+
 def test_prompts_page_renders_default_prompt(tmp_path):
     c = _client(tmp_path)
 

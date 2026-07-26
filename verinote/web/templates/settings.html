@@ -31,6 +31,23 @@
   <button class="btn ghost" type="submit">Save machine-wide active KB</button>
 </form>
 
+<h2>Appearance</h2>
+<form class="settings" action="/settings/theme" method="post">
+  <label>Theme
+    <select name="theme"{% if not theme_editable %} disabled{% endif %}>
+      {% for option in app_themes %}
+      <option value="{{ option }}" {{ 'selected' if option == theme else '' }}>
+        {{ option|capitalize }}
+      </option>
+      {% endfor %}
+    </select>
+  </label>
+  <button class="btn" type="submit"{% if not theme_editable %} disabled aria-disabled="true"{% endif %}>Save theme</button>
+</form>
+{% if not theme_editable %}
+<p class="warn" role="alert">Theme changes are unavailable while this KB's logic policy is halted. Restore the policy or open another KB before changing the app-wide theme.</p>
+{% endif %}
+
 <h2>LLM provider</h2>
 <form class="settings" action="/settings" method="post">
   <label>Provider

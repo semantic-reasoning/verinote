@@ -14,6 +14,12 @@ The active KB path is saved in a platform-native app config file:
 | macOS | `~/Library/Application Support/verinote/app.json` |
 | Linux/Unix | `${XDG_CONFIG_HOME:-~/.config}/verinote/app.json` |
 
+The same app-level file stores the Settings theme preference: `system` (the
+default, following the operating system), `light`, or `dark`. It is independent
+of the active KB, so changing KBs does not change the selected theme. Theme
+changes are intentionally unavailable while a KB's logic policy is halted: the
+policy guard permits only writes that leave the halted KB.
+
 `VERINOTE_ROOT` overrides the saved active KB for the UI and is still useful for
 scripts, tests, and one-off launches:
 

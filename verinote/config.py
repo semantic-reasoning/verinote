@@ -50,6 +50,7 @@ from verinote.prompts import render_prompt
 SETTINGS_FILENAME = "config.json"
 APP_CONFIG_FILENAME = "app.json"
 APP_NAME = "verinote"
+APP_THEMES = ("system", "light", "dark")
 
 _MODEL_DEFAULTS = {
     "anthropic": "claude-opus-4-8",
@@ -198,6 +199,27 @@ def save_active_root(root: Path) -> None:
     path = app_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {**existing, "active_root": str(resolved)}
+    path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+
+
+def app_theme() -> str:
+    """Return the app-wide colour preference, defaulting safely to the system."""
+    theme = read_app_config().get("theme")
+    return theme if theme in APP_THEMES else "system"
+
+
+def save_app_theme(theme: str) -> None:
+    """Persist an app-wide colour preference without disturbing other app settings."""
+    if theme not in APP_THEMES:
+        raise ValueError(f"unknown app theme: {theme}")
+    existing = read_app_config()
+    if existing.get("theme") == theme:
+        return
+    path = app_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {**existing, "theme": theme}
     path.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )

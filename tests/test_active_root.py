@@ -6,9 +6,11 @@ import os
 
 from verinote.config import (
     active_root,
+    app_theme,
     app_config_path,
     read_app_config,
     save_active_root,
+    save_app_theme,
 )
 
 _SENTINEL_NS = 1_000_000_000_000_000_000  # a fixed, unmistakably-old mtime
@@ -105,6 +107,33 @@ def test_save_active_root_keeps_unknown_keys_when_switching(tmp_path, monkeypatc
 
     # Switching KBs must not drop settings this version does not know about.
     assert read_app_config()["extra"] == "keep"
+
+
+def test_save_app_theme_keeps_active_root_and_unknown_keys(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    kb = _make_kb(tmp_path, "kb")
+    _seed_app_config(kb)
+
+    save_app_theme("dark")
+
+    assert read_app_config() == {
+        "active_root": str(kb),
+        "extra": "keep",
+        "theme": "dark",
+    }
+    assert active_root() == kb.resolve()
+    assert app_theme() == "dark"
+
+
+def test_app_theme_defaults_to_system_for_absent_or_unknown_values(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+
+    assert app_theme() == "system"
+    path = app_config_path()
+    path.parent.mkdir(parents=True)
+    path.write_text('{"theme": "synthetic-future-theme"}\n', encoding="utf-8")
+
+    assert app_theme() == "system"
 
 
 def test_save_active_root_writes_when_saved_value_is_empty(tmp_path, monkeypatch):
