@@ -946,6 +946,8 @@ def test_status_halts_on_an_empty_policy_file(tmp_path, monkeypatch, capsys):
 _EMPTY_POLICY_TEXTS = [
     pytest.param("", id="zero_byte"),
     pytest.param("   \n\t  \n", id="whitespace_only"),
+    pytest.param("\ufeff", id="bom_only"),
+    pytest.param("\ufeff \n\t", id="bom_then_whitespace"),
 ]
 
 
@@ -973,6 +975,19 @@ def test_empty_policy_file_resolves_to_present_empty(tmp_path, text, with_marker
 
     assert state.status is PolicyStatus.PRESENT_EMPTY
     assert state.path == path
+    store.close()
+
+
+def test_bom_prefixed_nonempty_policy_remains_present(tmp_path):
+    store = _store(tmp_path)
+    text = "\ufeff" + FUNCTIONAL_POLICY
+    path = _write_policy(tmp_path, text)
+
+    state = resolve_policy(store)
+
+    assert state.status is PolicyStatus.PRESENT
+    assert state.path == path
+    assert state.text == text
     store.close()
 
 
