@@ -185,7 +185,7 @@
         </form>
         {% if s["review_count"] %}
         <form action="/sources/{{ s["id"] }}/accept-all" method="post">
-          <button class="btn ghost" id="accept-all-{{ s["id"] }}" type="submit">Accept all</button>
+          <button class="btn ghost" id="accept-all-{{ s["id"] }}" type="submit">Accept all review facts</button>
         </form>
         {% endif %}
         <form action="/sources/{{ s["id"] }}/delete" method="post">
