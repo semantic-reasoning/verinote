@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: MPL-2.0
 """A lost logic policy must never read as a consistent KB (#155)."""
 
+import importlib
+
 import pytest
 
 import verinote.cli as cli
 import verinote.pipeline.acceptance as acceptance
-from verinote.engine import DEFAULT_POLICY
+from verinote.engine import CheckReport, DEFAULT_POLICY
 from verinote.pipeline.acceptance import AcceptRecommendation
 from verinote.pipeline.corroboration import store_functional_relations
 from verinote.pipeline.policy_state import (
@@ -27,6 +29,8 @@ from verinote.pipeline.policy_state import (
 from verinote.pipeline.query import query_path
 from verinote.pipeline.verify import load_policy, verify
 from verinote.store import Store
+
+verify_pipeline = importlib.import_module("verinote.pipeline.verify")
 
 # A human-written policy: `employed_by` is single-valued for a subject. This is
 # exactly the rule that evaporates in #155 when the policy file is deleted.
@@ -137,7 +141,28 @@ def test_unrecorded_policy_runs_default_with_a_warning(tmp_path):
     # the engine's clean-bill sentence must not survive into the report
     assert "consistent" not in rep.text
     assert resolve_policy(store).status is PolicyStatus.UNRECORDED_DEFAULT
-    assert load_policy(store) is None
+    assert load_policy(store) == DEFAULT_POLICY
+
+
+def test_unrecorded_policy_passes_explicit_default_to_verify(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    captured = {}
+
+    class CapturingCache:
+        def run_check(self, rows, *, policy_dl, query_dl=None):
+            captured["policy_dl"] = policy_dl
+            return CheckReport(ok=True, errors=0, warnings=0, text="clean")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(verify_pipeline, "engine_relation_rows", lambda _store: [])
+    store._inference_cache = CapturingCache()
+
+    report = verify(store)
+
+    assert captured["policy_dl"] == DEFAULT_POLICY
+    assert any("policy_unrecorded" in finding for finding in report.findings)
 
 
 def test_unrecorded_policy_still_reports_default_policy_errors(tmp_path):

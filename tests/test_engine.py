@@ -32,6 +32,7 @@ _CONSISTENT = compile_dl(
         {"subject": "Org", "relation": "is_a", "object": "company"},
     ]
 )
+_RELATION_DECL = ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
 
 
 def _require_pyrewire():
@@ -43,9 +44,15 @@ def test_parse_relation_facts_roundtrips_escaping():
     assert wl._parse_relation_facts(dl) == [('a"b', "r", "c")]
 
 
+@pytest.mark.parametrize("kwargs", ({}, {"policy_dl": None}))
+def test_wirelog_run_check_requires_an_explicit_string_policy(kwargs):
+    with pytest.raises(TypeError, match="policy_dl"):
+        run_check(_CONFLICT, **kwargs)
+
+
 def test_run_check_flags_functional_conflict():
     _require_pyrewire()
-    rep = run_check(_CONFLICT)
+    rep = run_check(_CONFLICT, policy_dl=DEFAULT_POLICY)
     assert rep.engine_available is True
     assert rep.errors > 0
     assert rep.ok is False
@@ -57,7 +64,7 @@ def test_run_check_flags_functional_conflict():
 
 def test_run_check_consistent_is_ok():
     _require_pyrewire()
-    rep = run_check(_CONSISTENT)
+    rep = run_check(_CONSISTENT, policy_dl=DEFAULT_POLICY)
     assert rep.errors == 0
     assert rep.ok is True
     # A consistent KB gates clean: no ERROR findings. (Non-blocking dead_rule
@@ -67,7 +74,7 @@ def test_run_check_consistent_is_ok():
 
 def test_run_check_empty_kb_is_ok():
     _require_pyrewire()
-    rep = run_check("")
+    rep = run_check("", policy_dl=DEFAULT_POLICY)
     assert rep.ok is True and rep.errors == 0
 
 
@@ -94,7 +101,7 @@ def test_run_check_surfaces_policy_error():
 
 def test_run_check_degrades_without_engine(monkeypatch):
     monkeypatch.setattr(wl, "_load_engine", lambda: None)
-    rep = run_check(_CONFLICT)
+    rep = run_check(_CONFLICT, policy_dl=DEFAULT_POLICY)
     assert rep.engine_available is False
     assert rep.ok is True and rep.errors == 0  # cannot gate without the engine
     assert "not installed" in rep.text
@@ -114,7 +121,7 @@ def test_run_check_evaluates_query():
         ]
     )
     query = '.decl answer_q1(value: symbol)\nanswer_q1(O) :- relation("Ada", "born_in", O).\n'
-    rep = run_check(dl, query_dl=query)
+    rep = run_check(dl, policy_dl=_RELATION_DECL, query_dl=query)
     assert rep.ok is True
     assert rep.answers == ["q1: London"]
     assert "q1: London" in rep.text
@@ -123,7 +130,7 @@ def test_run_check_evaluates_query():
 def test_run_check_without_query_has_no_answers():
     _require_pyrewire()
     dl = compile_dl([{"subject": "Ada", "relation": "is_a", "object": "x"}])
-    assert run_check(dl).answers == []
+    assert run_check(dl, policy_dl=DEFAULT_POLICY).answers == []
 
 
 def test_validate_query_accepts_relation_only():
@@ -291,7 +298,7 @@ def test_degraded_wirelog_report_cannot_echo_forged_lines(monkeypatch):
     )
     monkeypatch.setattr(wl, "_load_engine", lambda: None)
 
-    rep = run_check(dl)
+    rep = run_check(dl, policy_dl=DEFAULT_POLICY)
 
     assert rep.engine_available is False
     assert not any(line.startswith("ERROR forged") for line in rep.text.splitlines())
@@ -468,7 +475,7 @@ def test_run_check_orders_two_findings_of_the_same_level():
     this sort before happened to derive at most one tuple per level.
     """
     _require_pyrewire()
-    rep = run_check(_TWO_CONFLICTS)
+    rep = run_check(_TWO_CONFLICTS, policy_dl=DEFAULT_POLICY)
 
     assert rep.errors == 2
     errors = [f for f in rep.findings if f.startswith("ERROR ")]
@@ -525,7 +532,7 @@ def test_wirelog_finding_row_carries_a_shape_the_annotator_can_read():
     `test_wirelog_finding_shape.py`.
     """
     _require_pyrewire()
-    rep = run_check(_CONFLICT)
+    rep = run_check(_CONFLICT, policy_dl=DEFAULT_POLICY)
 
     # The level prefix picks the error rows; the count pins this to the one
     # conflict. The dead-rule WARN notes this policy also emits are not what the

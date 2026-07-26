@@ -177,6 +177,23 @@ def resolve_policy(store: "Store") -> PolicyState:
     return PolicyState(status=PolicyStatus.UNRECORDED_DEFAULT, path=path)
 
 
+def runnable_policy_text(state: PolicyState) -> str:
+    """Return the policy text for a state that is allowed to reach an engine.
+
+    This is the sole default-policy resolution point. Callers must halt missing
+    or empty states before asking for runnable text.
+    """
+    if state.status is PolicyStatus.PRESENT:
+        if state.text is None:  # Defensive: a present file always supplies text.
+            raise RuntimeError("present policy state has no policy text")
+        return state.text
+    if state.status is PolicyStatus.UNRECORDED_DEFAULT:
+        from verinote.engine import DEFAULT_POLICY
+
+        return DEFAULT_POLICY
+    raise RuntimeError(f"policy state is not runnable: {state.status.value}")
+
+
 def policy_missing_message(state: PolicyState) -> str:
     """The loud, actionable message for a recorded-but-missing policy."""
     marker = state.marker or {}

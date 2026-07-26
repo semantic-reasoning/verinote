@@ -26,6 +26,7 @@ from verinote.pipeline.policy_state import (
     policy_empty_message,
     policy_missing_message,
     policy_path,
+    runnable_policy_text,
     resolve_policy,
 )
 from verinote.store import Store
@@ -59,8 +60,8 @@ NO_REVIEW_RULES_NO_FINDINGS_TEXT = (
 )
 
 
-def load_policy(store: Store) -> str | None:
-    """The KB's policy text, or None to use the shipped default.
+def load_policy(store: Store) -> str:
+    """The explicit policy text that applies to this KB.
 
     Raises `PolicyMissingError` when the KB recorded a policy file that is now
     gone, and `PolicyEmptyError` (its subclass) when the file exists but is empty:
@@ -74,9 +75,7 @@ def load_policy(store: Store) -> str | None:
         raise PolicyMissingError(policy_missing_message(state))
     if state.status is PolicyStatus.PRESENT_EMPTY:
         raise PolicyEmptyError(policy_empty_message(state))
-    if state.status is PolicyStatus.PRESENT:
-        return state.text
-    return None
+    return runnable_policy_text(state)
 
 
 def verify(store: Store) -> CheckReport:
@@ -137,8 +136,9 @@ def verify(store: Store) -> CheckReport:
             findings=[f"ERROR policy error: {exc}"],
         )
 
+    policy_dl = runnable_policy_text(state)
     report = annotate_source_labels(
-        store.inference_cache.run_check(rows, policy_dl=state.text, query_dl=query_dl),
+        store.inference_cache.run_check(rows, policy_dl=policy_dl, query_dl=query_dl),
         rows,
     )
     if state.status is PolicyStatus.UNRECORDED_DEFAULT:
@@ -150,7 +150,7 @@ def verify(store: Store) -> CheckReport:
     if (
         state.status is PolicyStatus.PRESENT
         and report.errors == 0
-        and review_rule_count(state.text) == 0
+        and review_rule_count(policy_dl) == 0
     ):
         return _with_no_review_rules_warning(report)
     return report

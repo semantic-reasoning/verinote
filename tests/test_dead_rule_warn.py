@@ -111,7 +111,7 @@ def test_run_check_surfaces_dead_rule_as_nonblocking_finding():
             {"subject": "Org", "relation": "is_a", "object": "company"},
         ]
     )
-    rep = run_check(dl)
+    rep = run_check(dl, policy_dl=DEFAULT_POLICY)
     assert rep.ok is True
     assert rep.errors == 0
     assert rep.warnings >= 1
@@ -143,7 +143,8 @@ def test_duckdb_production_path_surfaces_dead_rule_with_consistent_count():
         [
             {"subject": "Org", "relation": "established_on", "object": "2020"},
             {"subject": "Org", "relation": "is_a", "object": "company"},
-        ]
+        ],
+        policy_dl=DEFAULT_POLICY,
     )
 
     assert rep.ok is True
@@ -245,7 +246,8 @@ def test_duckdb_conflict_and_dead_rule_coexist_without_suppression():
             {"subject": "Org", "relation": "established_on", "object": "2020"},
             {"subject": "Org", "relation": "established_on", "object": "2021"},
             {"subject": "Org", "relation": "is_a", "object": "company"},
-        ]
+        ],
+        policy_dl=DEFAULT_POLICY,
     )
 
     assert rep.ok is False

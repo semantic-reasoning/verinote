@@ -106,7 +106,8 @@ def test_functional_conflict_fires_on_two_dates(require_opt_in):
         [
             {"subject": "Acme Robotics", "relation": rel, "object": "2020"},
             {"subject": "Acme Robotics", "relation": rel, "object": "2021"},
-        ]
+        ],
+        policy_dl=DEFAULT_POLICY,
     )
     assert conflict.engine_available is True
     assert conflict.errors == 1
@@ -118,6 +119,7 @@ def test_functional_conflict_fires_on_two_dates(require_opt_in):
         [
             {"subject": "Acme Robotics", "relation": non_functional, "object": "2020"},
             {"subject": "Acme Robotics", "relation": non_functional, "object": "2021"},
-        ]
+        ],
+        policy_dl=DEFAULT_POLICY,
     )
     assert clean.errors == 0

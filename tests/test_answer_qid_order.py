@@ -36,20 +36,26 @@ def _qids_in_order(rep):
     return [answer.split(":")[0] for answer in rep.answers]
 
 
-def _wirelog_check(query_dl=None, policy_dl=None):
+def _wirelog_check(query_dl=None, policy_dl=_RELATION_DECL):
     return run_check(compile_dl(_FACTS), policy_dl=policy_dl, query_dl=query_dl)
 
 
 def test_duckdb_answers_order_by_question_number():
     _duckdb()
-    rep = run_check_duckdb(_FACTS, query_dl=_query_for(range(1, 13)))
+    rep = run_check_duckdb(
+        _FACTS, policy_dl=_RELATION_DECL, query_dl=_query_for(range(1, 13))
+    )
 
     assert _qids_in_order(rep) == [f"q{n}" for n in range(1, 13)]
 
 
 def test_duckdb_answers_order_across_the_hundreds_boundary():
     _duckdb()
-    rep = run_check_duckdb(_FACTS, query_dl=_query_for([9, 10, 99, 100, 101]))
+    rep = run_check_duckdb(
+        _FACTS,
+        policy_dl=_RELATION_DECL,
+        query_dl=_query_for([9, 10, 99, 100, 101]),
+    )
 
     assert _qids_in_order(rep) == ["q9", "q10", "q99", "q100", "q101"]
 
