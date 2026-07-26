@@ -672,9 +672,9 @@ def test_engine_fact_terms_rejects_missing_modern_sidecar_terms(tmp_path):
     assert s.get_fact_terms(fid) is None
 
 
-def test_store_init_schema_refuses_a_corrupt_existing_sidecar(tmp_path):
-    # Existing sidecars are opened at initialization so corruption cannot be
-    # deferred until a later SQLite write transaction first accesses fact_terms.
+def test_store_init_schema_defers_a_corrupt_existing_sidecar(tmp_path):
+    # Sidecar availability failures remain deferred so web callers can render
+    # their normal halt state instead of failing before a route is selected.
     seed = _store(tmp_path)
     fid = seed.add_fact(
         Compound("person", (StringLit("Ada"),)),
@@ -688,9 +688,10 @@ def test_store_init_schema_refuses_a_corrupt_existing_sidecar(tmp_path):
 
     store = Store(tmp_path / "kb.sqlite")
     try:
+        store.init_schema()
         with pytest.raises(DuckDBFactTermStoreError, match="failed to open DuckDB fact-term store"):
-            store.init_schema()
-        # SQLite was not modified before the corrupt sidecar error surfaced.
+            store.fact_terms
+        # Initialization and the deferred open failure leave SQLite unchanged.
         assert store.get_fact(fid)["term_token"] == token
     finally:
         store.close()
