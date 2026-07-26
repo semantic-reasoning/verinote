@@ -1,18 +1,21 @@
 # SPDX-License-Identifier: MPL-2.0
 import builtins
+import json
 import sys
 
 import pytest
 
-from verinote.engine.duckdb_terms import term_to_duckdb_value
+from verinote.engine.duckdb_terms import DuckDBTermError, duckdb_value_to_term, term_to_duckdb_value
 from verinote.engine.terms import Atom, Compound, NumberLit, StringLit, Var
 from verinote.store.duckdb_fact_terms import (
     FACT_TERMS_FILENAME,
     DuckDBFactTermStore,
     DuckDBFactTermStoreError,
     fact_term_token,
+    fact_term_token_from_values,
     fact_terms_path,
 )
+from verinote.text import nfc
 
 
 def _duckdb():
@@ -53,6 +56,48 @@ def _cyclic_compound() -> Compound:
     term = Compound("synthetic", ())
     object.__setattr__(term, "args", (term,))
     return term
+
+
+def _legacy_term_value(payload: dict[str, object]) -> str:
+    """Build a canonical payload from before StringLit NFC encoding."""
+    return json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+
+def _create_raw_fact_terms(
+    path, rows: list[tuple[object, ...]], *, has_term_token: bool = True
+) -> None:
+    duckdb = _duckdb()
+    con = duckdb.connect(str(path))
+    try:
+        token_column = ", term_token VARCHAR" if has_term_token else ""
+        placeholders = "?, ?, ?, ?, ?" if has_term_token else "?, ?, ?, ?"
+        con.execute(
+            f"""
+            CREATE TABLE fact_terms (
+                fact_id BIGINT PRIMARY KEY,
+                subject VARCHAR NOT NULL,
+                rel VARCHAR NOT NULL,
+                object VARCHAR NOT NULL{token_column}
+            )
+            """
+        )
+        con.executemany(f"INSERT INTO fact_terms VALUES ({placeholders})", rows)
+    finally:
+        con.close()
+
+
+def _raw_fact_term_row(path, fact_id: int) -> tuple[object, ...]:
+    duckdb = _duckdb()
+    con = duckdb.connect(str(path), read_only=True)
+    try:
+        row = con.execute(
+            "SELECT subject, rel, object, term_token FROM fact_terms WHERE fact_id = ?",
+            [fact_id],
+        ).fetchone()
+        assert row is not None
+        return row
+    finally:
+        con.close()
 
 
 _INVALID_FACT_SLOTS = (
@@ -274,7 +319,7 @@ def test_store_schema_initialization_is_idempotent(tmp_path):
         second.close()
 
 
-def test_store_migrates_existing_fact_terms_table_to_add_token(tmp_path):
+def test_direct_store_leaves_existing_four_column_table_unchanged(tmp_path):
     duckdb = _duckdb()
     path = fact_terms_path(tmp_path)
     con = duckdb.connect(str(path))
@@ -301,14 +346,221 @@ def test_store_migrates_existing_fact_terms_table_to_add_token(tmp_path):
 
     store = DuckDBFactTermStore(path)
     try:
-        record = store.get_fact_term_record(1)
-        assert record is not None
-        assert record.terms == (StringLit("A"), StringLit("r"), StringLit("B"))
-        assert record.term_token is None
-        store.put_fact_terms(1, "A", "r", "B")
-        assert store.get_fact_term_record(1).term_token == fact_term_token("A", "r", "B")
+        plan = store.plan_nfc_migration()
+        assert plan.needs_term_token is True
+        assert len(plan.rewrites) == 1
+        assert plan.rewrites[0].new_values == (
+            term_to_duckdb_value(StringLit("A")),
+            term_to_duckdb_value(StringLit("r")),
+            term_to_duckdb_value(StringLit("B")),
+        )
     finally:
         store.close()
+
+    con = duckdb.connect(str(path), read_only=True)
+    try:
+        columns = {row[1] for row in con.execute("PRAGMA table_info('fact_terms')").fetchall()}
+        assert columns == {"fact_id", "subject", "rel", "object"}
+    finally:
+        con.close()
+
+
+def test_direct_store_rejects_legacy_nfd_payloads_without_mutating_them(tmp_path):
+    _duckdb()
+    path = fact_terms_path(tmp_path)
+    nfd_value = "Cafe\u0301"
+    nfc_value = nfc(nfd_value)
+    legacy_values = (
+        _legacy_term_value(
+            {
+                "t": "compound",
+                "f": "person",
+                "a": [{"t": "string", "v": nfd_value}],
+            }
+        ),
+        _legacy_term_value({"t": "string", "v": "has_label"}),
+        _legacy_term_value(
+            {
+                "t": "compound",
+                "f": "record",
+                "a": [
+                    {
+                        "t": "compound",
+                        "f": "label",
+                        "a": [{"t": "string", "v": nfd_value}],
+                    }
+                ],
+            }
+        ),
+    )
+    _create_raw_fact_terms(
+        path,
+        [(1, *legacy_values, fact_term_token_from_values(legacy_values))],
+    )
+
+    # The production decoder stays strict; only initialization can read this
+    # former, structurally canonical encoding.
+    with pytest.raises(DuckDBTermError, match="not canonical"):
+        duckdb_value_to_term(legacy_values[0])
+
+    store = DuckDBFactTermStore(path)
+    try:
+        plan = store.plan_nfc_migration()
+        assert len(plan.rewrites) == 1
+        with pytest.raises(DuckDBFactTermStoreError, match="not canonical"):
+            store.get_fact_terms(1)
+    finally:
+        store.close()
+
+    assert _raw_fact_term_row(path, 1) == (
+        *legacy_values,
+        fact_term_token_from_values(legacy_values),
+    )
+
+
+def test_new_direct_and_nested_nfd_terms_have_nfc_identical_storage_and_tokens():
+    _duckdb()
+    store = DuckDBFactTermStore(None)
+    nfd_value = "Cafe\u0301"
+    nfc_value = nfc(nfd_value)
+    direct_nfd = (StringLit(nfd_value), StringLit("rel"), StringLit(nfd_value))
+    direct_nfc = (StringLit(nfc_value), StringLit("rel"), StringLit(nfc_value))
+    nested_nfd = (
+        Compound("outer", (StringLit(nfd_value), Compound("inner", (StringLit(nfd_value),)))),
+        Atom("rel"),
+        Compound("target", (StringLit(nfd_value),)),
+    )
+    nested_nfc = (
+        Compound("outer", (StringLit(nfc_value), Compound("inner", (StringLit(nfc_value),)))),
+        Atom("rel"),
+        Compound("target", (StringLit(nfc_value),)),
+    )
+    try:
+        store.put_fact_terms(1, *direct_nfd)
+        store.put_fact_terms(2, *direct_nfc)
+        store.put_fact_terms(3, *nested_nfd)
+        store.put_fact_terms(4, *nested_nfc)
+
+        with store._operation() as con:
+            rows = {
+                int(row[0]): row[1:]
+                for row in con.execute(
+                    "SELECT fact_id, subject, rel, object, term_token FROM fact_terms ORDER BY fact_id"
+                ).fetchall()
+            }
+        assert rows[1] == rows[2]
+        assert rows[3] == rows[4]
+        assert rows[1][-1] == fact_term_token(*direct_nfc)
+        assert rows[3][-1] == fact_term_token(*nested_nfc)
+        assert store.get_fact_terms(1) == direct_nfc
+        assert store.get_fact_terms(3) == nested_nfc
+    finally:
+        store.close()
+
+
+def test_direct_nfc_migration_planning_is_idempotent_without_mutation(tmp_path):
+    _duckdb()
+    path = fact_terms_path(tmp_path)
+    nfd_value = "Cafe\u0301"
+    legacy_values = (
+        _legacy_term_value({"t": "string", "v": nfd_value}),
+        _legacy_term_value({"t": "string", "v": "rel"}),
+        _legacy_term_value({"t": "string", "v": nfd_value}),
+    )
+    _create_raw_fact_terms(
+        path,
+        [(1, *legacy_values, fact_term_token_from_values(legacy_values))],
+    )
+
+    first = DuckDBFactTermStore(path)
+    try:
+        first_plan = first.plan_nfc_migration()
+    finally:
+        first.close()
+    after_first_plan = _raw_fact_term_row(path, 1)
+
+    second = DuckDBFactTermStore(path)
+    try:
+        second_plan = second.plan_nfc_migration()
+    finally:
+        second.close()
+
+    assert second_plan == first_plan
+    assert _raw_fact_term_row(path, 1) == after_first_plan
+
+
+def test_nfc_fact_term_migration_rolls_back_when_a_legacy_row_is_malformed(tmp_path):
+    _duckdb()
+    path = fact_terms_path(tmp_path)
+    nfd_value = "Cafe\u0301"
+    valid_values = (
+        _legacy_term_value({"t": "string", "v": nfd_value}),
+        _legacy_term_value({"t": "string", "v": "rel"}),
+        _legacy_term_value({"t": "string", "v": nfd_value}),
+    )
+    malformed_values = (
+        "not json",
+        _legacy_term_value({"t": "string", "v": "rel"}),
+        _legacy_term_value({"t": "string", "v": "value"}),
+    )
+    _create_raw_fact_terms(
+        path,
+        [
+            (1, *valid_values, fact_term_token_from_values(valid_values)),
+            (2, *malformed_values, fact_term_token_from_values(malformed_values)),
+        ],
+    )
+
+    store = DuckDBFactTermStore(path)
+    try:
+        with pytest.raises(
+            DuckDBFactTermStoreError, match="fact_id=2 column=subject"
+        ):
+            store.plan_nfc_migration()
+    finally:
+        store.close()
+
+    assert _raw_fact_term_row(path, 1) == (*valid_values, fact_term_token_from_values(valid_values))
+
+
+def test_nfc_migration_keeps_a_malformed_four_column_table_unchanged(tmp_path):
+    duckdb = _duckdb()
+    path = fact_terms_path(tmp_path)
+    nfd_value = "Cafe\u0301"
+    valid_values = (
+        _legacy_term_value({"t": "string", "v": nfd_value}),
+        _legacy_term_value({"t": "string", "v": "rel"}),
+        _legacy_term_value({"t": "string", "v": nfd_value}),
+    )
+    malformed_values = (
+        "not json",
+        _legacy_term_value({"t": "string", "v": "rel"}),
+        _legacy_term_value({"t": "string", "v": "value"}),
+    )
+    _create_raw_fact_terms(
+        path,
+        [(1, *valid_values), (2, *malformed_values)],
+        has_term_token=False,
+    )
+
+    store = DuckDBFactTermStore(path)
+    try:
+        with pytest.raises(
+            DuckDBFactTermStoreError, match="fact_id=2 column=subject"
+        ):
+            store.plan_nfc_migration()
+    finally:
+        store.close()
+
+    con = duckdb.connect(str(path), read_only=True)
+    try:
+        columns = {row[1] for row in con.execute("PRAGMA table_info('fact_terms')").fetchall()}
+        assert columns == {"fact_id", "subject", "rel", "object"}
+        assert con.execute(
+            "SELECT subject, rel, object FROM fact_terms WHERE fact_id = ?", [1]
+        ).fetchone() == valid_values
+    finally:
+        con.close()
 
 
 @pytest.mark.parametrize("fact_id", [0, -1, True, "1"])

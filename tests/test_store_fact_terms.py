@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: MPL-2.0
+import json
 import sqlite3
 
 import pytest
@@ -14,11 +15,14 @@ from verinote.engine.terms import (
 from verinote.store import Store
 from verinote.store.db import FACT_TERMS_MARKER_KEY
 from verinote.store.duckdb_fact_terms import (
+    DuckDBFactTermStore,
     DuckDBFactTermStoreError,
     fact_term_token,
+    fact_term_token_from_values,
     fact_terms_path,
 )
 from verinote.store.fact_input import structural_term
+from verinote.text import nfc
 
 
 def _malformed_stringlit() -> StringLit:
@@ -89,6 +93,297 @@ def _store(tmp_path) -> Store:
     s = Store(tmp_path / "kb.sqlite")
     s.init_schema()
     return s
+
+
+def _legacy_string_value(value: str) -> str:
+    return json.dumps({"t": "string", "v": value}, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+
+def test_store_init_schema_keeps_a_fresh_kb_without_a_fact_term_sidecar(tmp_path):
+    s = _store(tmp_path)
+    try:
+        assert not fact_terms_path(tmp_path).exists()
+    finally:
+        s.close()
+
+
+def test_store_init_schema_migrates_paired_nfd_tokens_before_write_transactions(tmp_path):
+    duckdb = pytest.importorskip("duckdb")
+    bootstrap = _store(tmp_path)
+    bootstrap.close()
+    nfd_value = "Cafe\u0301"
+    legacy_values = (
+        _legacy_string_value(nfd_value),
+        _legacy_string_value("rel"),
+        _legacy_string_value(nfd_value),
+    )
+    legacy_token = fact_term_token_from_values(legacy_values)
+    sqlite_con = sqlite3.connect(tmp_path / "kb.sqlite")
+    try:
+        cur = sqlite_con.execute(
+            """
+            INSERT INTO facts(subject, relation, object, status, term_token)
+            VALUES (?, ?, ?, 'confirmed', ?) RETURNING id
+            """,
+            (nfd_value, "rel", nfd_value, legacy_token),
+        )
+        fact_id = int(cur.fetchone()[0])
+        sqlite_con.commit()
+    finally:
+        sqlite_con.close()
+    con = duckdb.connect(str(fact_terms_path(tmp_path)))
+    try:
+        con.execute(
+            """
+            CREATE TABLE fact_terms (
+                fact_id BIGINT PRIMARY KEY,
+                subject VARCHAR NOT NULL,
+                rel VARCHAR NOT NULL,
+                object VARCHAR NOT NULL,
+                term_token VARCHAR
+            )
+            """
+        )
+        con.execute(
+            "INSERT INTO fact_terms VALUES (?, ?, ?, ?, ?)",
+            [fact_id, *legacy_values, legacy_token],
+        )
+    finally:
+        con.close()
+
+    direct = DuckDBFactTermStore(fact_terms_path(tmp_path))
+    try:
+        with pytest.raises(DuckDBFactTermStoreError, match="not canonical"):
+            direct.get_fact_terms(fact_id)
+    finally:
+        direct.close()
+    con = duckdb.connect(str(fact_terms_path(tmp_path)), read_only=True)
+    try:
+        assert con.execute(
+            "SELECT subject, rel, object, term_token FROM fact_terms WHERE fact_id = ?", [fact_id]
+        ).fetchone() == (*legacy_values, legacy_token)
+    finally:
+        con.close()
+
+    s = _store(tmp_path)
+    nfc_value = nfc(nfd_value)
+    expected_terms = (StringLit(nfc_value), StringLit("rel"), StringLit(nfc_value))
+    expected_token = fact_term_token(*expected_terms)
+    try:
+        # `add_fact` opens a SQLite write transaction, then accesses fact_terms.
+        # It is safe because init_schema already coordinated the legacy rewrite.
+        s.add_fact("new", "rel", "value", status="candidate")
+        assert s.engine_fact_terms() == [
+            {
+                "id": fact_id,
+                "subject": expected_terms[0],
+                "relation": expected_terms[1],
+                "object": expected_terms[2],
+            }
+        ]
+        assert s.get_fact(fact_id)["term_token"] == expected_token
+        record = s.fact_terms.get_fact_term_record(fact_id)
+        assert record is not None
+        assert record.term_token == record.content_token == expected_token
+    finally:
+        s.close()
+
+    reopened = _store(tmp_path)
+    try:
+        assert reopened.fact_terms.get_fact_term_record(fact_id) == record
+    finally:
+        reopened.close()
+
+
+def test_store_backfills_tokens_for_a_canonical_four_column_sidecar(tmp_path):
+    duckdb = pytest.importorskip("duckdb")
+    bootstrap = _store(tmp_path)
+    bootstrap.close()
+    legacy_values = (
+        _legacy_string_value("subject"),
+        _legacy_string_value("rel"),
+        _legacy_string_value("object"),
+    )
+    token = fact_term_token_from_values(legacy_values)
+    sqlite_con = sqlite3.connect(tmp_path / "kb.sqlite")
+    try:
+        cur = sqlite_con.execute(
+            """
+            INSERT INTO facts(subject, relation, object, status, term_token)
+            VALUES ('subject', 'rel', 'object', 'confirmed', ?) RETURNING id
+            """,
+            (token,),
+        )
+        fact_id = int(cur.fetchone()[0])
+        sqlite_con.commit()
+    finally:
+        sqlite_con.close()
+    con = duckdb.connect(str(fact_terms_path(tmp_path)))
+    try:
+        con.execute(
+            """
+            CREATE TABLE fact_terms (
+                fact_id BIGINT PRIMARY KEY,
+                subject VARCHAR NOT NULL,
+                rel VARCHAR NOT NULL,
+                object VARCHAR NOT NULL
+            )
+            """
+        )
+        con.execute("INSERT INTO fact_terms VALUES (?, ?, ?, ?)", [fact_id, *legacy_values])
+    finally:
+        con.close()
+
+    s = _store(tmp_path)
+    try:
+        assert s.engine_fact_terms() == [
+            {
+                "id": fact_id,
+                "subject": StringLit("subject"),
+                "relation": StringLit("rel"),
+                "object": StringLit("object"),
+            }
+        ]
+        assert s.get_fact(fact_id)["term_token"] == token
+        record = s.fact_terms.get_fact_term_record(fact_id)
+        assert record is not None
+        assert record.term_token == record.content_token == token
+    finally:
+        s.close()
+
+
+def test_stale_four_column_nfc_migration_fails_during_store_initialization(tmp_path):
+    duckdb = pytest.importorskip("duckdb")
+    bootstrap = _store(tmp_path)
+    bootstrap.close()
+    nfd_value = "Cafe\u0301"
+    legacy_values = (
+        _legacy_string_value(nfd_value),
+        _legacy_string_value("rel"),
+        _legacy_string_value(nfd_value),
+    )
+    sqlite_con = sqlite3.connect(tmp_path / "kb.sqlite")
+    try:
+        cur = sqlite_con.execute(
+            """
+            INSERT INTO facts(subject, relation, object, status, term_token)
+            VALUES (?, ?, ?, 'confirmed', ?) RETURNING id
+            """,
+            (nfd_value, "rel", nfd_value, "stale-token"),
+        )
+        fact_id = int(cur.fetchone()[0])
+        sqlite_con.commit()
+    finally:
+        sqlite_con.close()
+    con = duckdb.connect(str(fact_terms_path(tmp_path)))
+    try:
+        con.execute(
+            """
+            CREATE TABLE fact_terms (
+                fact_id BIGINT PRIMARY KEY,
+                subject VARCHAR NOT NULL,
+                rel VARCHAR NOT NULL,
+                object VARCHAR NOT NULL
+            )
+            """
+        )
+        con.execute("INSERT INTO fact_terms VALUES (?, ?, ?, ?)", [fact_id, *legacy_values])
+    finally:
+        con.close()
+
+    s = Store(tmp_path / "kb.sqlite")
+    try:
+        with pytest.raises(DuckDBFactTermStoreError, match="stale DuckDB fact terms"):
+            s.init_schema()
+    finally:
+        s.close()
+
+    sqlite_con = sqlite3.connect(tmp_path / "kb.sqlite")
+    try:
+        assert sqlite_con.execute(
+            "SELECT term_token FROM facts WHERE id = ?", (fact_id,)
+        ).fetchone() == ("stale-token",)
+    finally:
+        sqlite_con.close()
+    con = duckdb.connect(str(fact_terms_path(tmp_path)), read_only=True)
+    try:
+        columns = {row[1] for row in con.execute("PRAGMA table_info('fact_terms')").fetchall()}
+        assert columns == {"fact_id", "subject", "rel", "object"}
+        assert con.execute(
+            "SELECT subject, rel, object FROM fact_terms WHERE fact_id = ?", [fact_id]
+        ).fetchone() == legacy_values
+    finally:
+        con.close()
+
+
+def test_sqlite_commit_failure_compensates_a_four_column_nfc_migration(tmp_path, monkeypatch):
+    duckdb = pytest.importorskip("duckdb")
+    bootstrap = _store(tmp_path)
+    bootstrap.close()
+    nfd_value = "Cafe\u0301"
+    legacy_values = (
+        _legacy_string_value(nfd_value),
+        _legacy_string_value("rel"),
+        _legacy_string_value(nfd_value),
+    )
+    legacy_token = fact_term_token_from_values(legacy_values)
+    sqlite_con = sqlite3.connect(tmp_path / "kb.sqlite")
+    try:
+        cur = sqlite_con.execute(
+            """
+            INSERT INTO facts(subject, relation, object, status, term_token)
+            VALUES (?, ?, ?, 'confirmed', ?) RETURNING id
+            """,
+            (nfd_value, "rel", nfd_value, legacy_token),
+        )
+        fact_id = int(cur.fetchone()[0])
+        sqlite_con.commit()
+    finally:
+        sqlite_con.close()
+    con = duckdb.connect(str(fact_terms_path(tmp_path)))
+    try:
+        con.execute(
+            """
+            CREATE TABLE fact_terms (
+                fact_id BIGINT PRIMARY KEY,
+                subject VARCHAR NOT NULL,
+                rel VARCHAR NOT NULL,
+                object VARCHAR NOT NULL
+            )
+            """
+        )
+        con.execute("INSERT INTO fact_terms VALUES (?, ?, ?, ?)", [fact_id, *legacy_values])
+    finally:
+        con.close()
+
+    s = Store(tmp_path / "kb.sqlite")
+
+    def fail_commit() -> None:
+        raise sqlite3.OperationalError("forced SQLite commit failure")
+
+    monkeypatch.setattr(s, "_commit_nfc_sqlite_migration", fail_commit)
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="forced SQLite commit failure"):
+            s.init_schema()
+    finally:
+        s.close()
+
+    sqlite_con = sqlite3.connect(tmp_path / "kb.sqlite")
+    try:
+        assert sqlite_con.execute(
+            "SELECT term_token FROM facts WHERE id = ?", (fact_id,)
+        ).fetchone() == (legacy_token,)
+    finally:
+        sqlite_con.close()
+    con = duckdb.connect(str(fact_terms_path(tmp_path)), read_only=True)
+    try:
+        columns = {row[1] for row in con.execute("PRAGMA table_info('fact_terms')").fetchall()}
+        assert columns == {"fact_id", "subject", "rel", "object"}
+        assert con.execute(
+            "SELECT subject, rel, object FROM fact_terms WHERE fact_id = ?", [fact_id]
+        ).fetchone() == legacy_values
+    finally:
+        con.close()
 
 
 def test_add_fact_writes_sqlite_metadata_and_stringlit_terms(tmp_path):
@@ -377,11 +672,9 @@ def test_engine_fact_terms_rejects_missing_modern_sidecar_terms(tmp_path):
     assert s.get_fact_terms(fid) is None
 
 
-def test_amend_fact_refuses_and_writes_nothing_when_sidecar_is_corrupt(tmp_path):
-    # Guard the write at the store, not only the web route, so every caller (CLI,
-    # any future writer) is protected. The pre-write read of the structural terms
-    # forces the sidecar open, so genuine corruption aborts the amend before any
-    # SQLite write -- both stores are left untouched.
+def test_store_init_schema_refuses_a_corrupt_existing_sidecar(tmp_path):
+    # Existing sidecars are opened at initialization so corruption cannot be
+    # deferred until a later SQLite write transaction first accesses fact_terms.
     seed = _store(tmp_path)
     fid = seed.add_fact(
         Compound("person", (StringLit("Ada"),)),
@@ -393,13 +686,14 @@ def test_amend_fact_refuses_and_writes_nothing_when_sidecar_is_corrupt(tmp_path)
     seed.close()
     fact_terms_path(tmp_path).write_bytes(b"not a duckdb database file" * 500)
 
-    store = _store(tmp_path)
-    with pytest.raises(DuckDBFactTermStoreError):
-        store.amend_fact(fid, subject="Ada", relation="born_in", obj="Paris", note="")
-
-    # get_fact reads SQLite only, so it stays legible through the corruption; an
-    # unchanged token proves the amend wrote nothing to either store.
-    assert store.get_fact(fid)["term_token"] == token
+    store = Store(tmp_path / "kb.sqlite")
+    try:
+        with pytest.raises(DuckDBFactTermStoreError, match="failed to open DuckDB fact-term store"):
+            store.init_schema()
+        # SQLite was not modified before the corrupt sidecar error surfaced.
+        assert store.get_fact(fid)["term_token"] == token
+    finally:
+        store.close()
 
 
 def test_engine_fact_terms_rejects_stale_modern_sidecar_terms(tmp_path):

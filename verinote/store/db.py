@@ -257,6 +257,28 @@ class Store:
     def init_schema(self) -> None:
         self._conn.executescript(_load_schema())
         self._ensure_schema_migrations()
+        # A legacy sidecar must migrate before any later SQLite write transaction
+        # reaches `fact_terms`: its NFC rewrite also updates SQLite tokens and
+        # therefore needs to start its own short transaction. Keep a new KB lazy
+        # by doing this only when the sidecar already exists.
+        from verinote.store.duckdb_fact_terms import (
+            DuckDBFactTermStoreError,
+            DuckDBFactTermStoreLockedError,
+            fact_terms_path,
+        )
+
+        if fact_terms_path(self.db_path.parent).is_file():
+            try:
+                _ = self.fact_terms
+            except DuckDBFactTermStoreError as exc:
+                # Only conditions that can clear without changing the sidecar
+                # are deferred. Corrupt/open failures and structured migration
+                # failures must surface now, before a later write transaction
+                # can retry coordination.
+                if isinstance(exc, DuckDBFactTermStoreLockedError) or str(exc) == "DuckDB is not installed":
+                    pass
+                else:
+                    raise
 
     def close(self) -> None:
         if self._inference_cache is not None:
@@ -302,10 +324,79 @@ class Store:
     def fact_terms(self):
         """Per-KB DuckDB sidecar for structural fact terms."""
         if self._fact_terms is None:
-            from verinote.store.duckdb_fact_terms import DuckDBFactTermStore
+            from verinote.store.duckdb_fact_terms import DuckDBFactTermStore, fact_terms_path
 
-            self._fact_terms = DuckDBFactTermStore.for_root(self.db_path.parent)
+            fact_terms = DuckDBFactTermStore.for_root(self.db_path.parent)
+            try:
+                if fact_terms_path(self.db_path.parent).exists():
+                    plan = fact_terms.plan_nfc_migration()
+                    self._migrate_nfc_fact_terms(fact_terms, plan)
+                fact_terms.init_schema()
+            except BaseException:
+                fact_terms.close()
+                raise
+            self._fact_terms = fact_terms
         return self._fact_terms
+
+    def _migrate_nfc_fact_terms(self, fact_terms, plan) -> None:
+        """Coordinate a planned sidecar NFC migration with SQLite tokens.
+
+        A fact token is a cross-store corruption guard, not display metadata.
+        Therefore a row is eligible only when it still has the legacy token (or
+        predates SQLite tokens entirely); a different token remains stale. The
+        SQLite transaction stages those guarded updates, DuckDB applies its
+        schema/payload transaction, and SQLite commits last. If that final
+        commit fails, DuckDB compensates the exact plan, including a legacy
+        four-column schema.
+        """
+        if not plan.needs_apply:
+            return
+        if self._conn.in_transaction:
+            from verinote.store.duckdb_fact_terms import DuckDBFactTermStoreError
+
+            raise DuckDBFactTermStoreError(
+                "cannot coordinate NFC fact-term migration inside an existing SQLite transaction"
+            )
+        duckdb_applied = False
+        self._conn.execute("BEGIN")
+        try:
+            for migration in plan.rewrites:
+                row = self._conn.execute(
+                    "SELECT term_token FROM facts WHERE id = ?", (migration.fact_id,)
+                ).fetchone()
+                if row is None:
+                    continue
+                sqlite_token = row["term_token"]
+                if sqlite_token == migration.new_term_token:
+                    continue
+                if sqlite_token not in {None, migration.legacy_content_token}:
+                    raise _stale_fact_terms_error([migration.fact_id])
+                cur = self._conn.execute(
+                    "UPDATE facts SET term_token = ? WHERE id = ? AND term_token IS ?",
+                    (migration.new_term_token, migration.fact_id, sqlite_token),
+                )
+                if cur.rowcount != 1:
+                    raise _stale_fact_terms_error([migration.fact_id])
+            fact_terms.apply_nfc_migration(plan)
+            duckdb_applied = True
+            self._commit_nfc_sqlite_migration()
+        except BaseException:
+            self._rollback_quietly()
+            if duckdb_applied:
+                try:
+                    fact_terms.revert_nfc_migration(plan)
+                except Exception as exc:
+                    from verinote.store.duckdb_fact_terms import DuckDBFactTermStoreError
+
+                    raise DuckDBFactTermStoreError(
+                        "failed to restore DuckDB fact terms after SQLite NFC token "
+                        "synchronization failed"
+                    ) from exc
+            raise
+
+    def _commit_nfc_sqlite_migration(self) -> None:
+        """Commit the SQLite half after DuckDB has applied a migration plan."""
+        self._conn.execute("COMMIT")
 
     def __enter__(self) -> "Store":
         return self
@@ -1431,17 +1522,25 @@ class Store:
         """Return confirmed/accepted facts using DuckDB terms as logical values."""
         with self._lock:
             rows = self.facts(statuses=ENGINE_STATUSES)
+            if not rows:
+                return []
+            # Initializing the sidecar may migrate legacy NFD terms and update
+            # their SQLite coherence tokens. Read the authoritative metadata
+            # only after that coordinator step, not from a stale pre-migration
+            # snapshot.
+            fact_terms = self.fact_terms
+            rows = self.facts(statuses=ENGINE_STATUSES)
             ids = [int(row["id"]) for row in rows]
             if not ids:
                 return []
 
-            records = self.fact_terms.get_many_fact_term_records(ids)
+            records = fact_terms.get_many_fact_term_records(ids)
             missing = [fact_id for fact_id in ids if fact_id not in records]
             if missing:
                 if self._has_fact_terms_marker():
                     raise _missing_fact_terms_error(missing)
                 self.backfill_fact_terms()
-                records = self.fact_terms.get_many_fact_term_records(ids)
+                records = fact_terms.get_many_fact_term_records(ids)
                 missing = [fact_id for fact_id in ids if fact_id not in records]
             if missing:
                 raise _missing_fact_terms_error(missing)

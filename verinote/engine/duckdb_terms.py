@@ -26,6 +26,7 @@ from verinote.engine.terms import (
     Var,
     term_compare_key,
 )
+from verinote.text import nfc
 
 # Re-exported for the backend, which reads storage encoding and equality from
 # one place. `term_compare_key` itself belongs to `engine.terms`: it is the term
@@ -61,6 +62,25 @@ def term_to_duckdb_value(term: Term) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
+
+
+def _legacy_duckdb_value_to_term(value: object) -> Term:
+    """Decode a pre-NFC canonical value for the fact-term migration only.
+
+    This deliberately preserves the former JSON format's exactness while
+    allowing StringLit leaves that are not NFC. Production reads must continue
+    through `duckdb_value_to_term`, which requires the current encoding.
+    """
+    if not isinstance(value, str):
+        raise DuckDBTermError(f"DuckDB term value must be a string, got {type(value)!r}")
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise DuckDBTermError(f"invalid DuckDB term JSON: {exc}") from exc
+    term = _payload_to_term(payload)
+    if _legacy_term_to_duckdb_value(term) != value:
+        raise DuckDBTermError("legacy DuckDB term value is not canonical")
+    return term
 
 
 def duckdb_value_to_term(value: object) -> Term:
@@ -112,18 +132,31 @@ def create_decl_table_sql(declaration: Declaration) -> str:
     )
 
 
-def _term_to_payload(term: Term) -> dict[str, Any]:
+def _legacy_term_to_duckdb_value(term: Term) -> str:
+    """Return the canonical term encoding used before StringLit NFC storage."""
+    return json.dumps(
+        _term_to_payload(term, normalize_strings=False),
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _term_to_payload(term: Term, *, normalize_strings: bool = True) -> dict[str, Any]:
     if isinstance(term, Atom):
         return {"t": "atom", "v": term.name}
     if isinstance(term, Var):
         return {"t": "var", "v": term.name}
     if isinstance(term, StringLit):
-        return {"t": "string", "v": term.value}
+        return {"t": "string", "v": nfc(term.value) if normalize_strings else term.value}
     if isinstance(term, NumberLit):
         return {"t": "number", "v": term.value}
     if isinstance(term, Compound):
         return {
-            "a": [_term_to_payload(arg) for arg in term.args],
+            "a": [
+                _term_to_payload(arg, normalize_strings=normalize_strings)
+                for arg in term.args
+            ],
             "f": term.functor,
             "t": "compound",
         }
