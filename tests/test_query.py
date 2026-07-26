@@ -468,6 +468,43 @@ def test_planned_executable_without_rows_becomes_no_answer(
     assert load_query(s) == ""
 
 
+def test_truncated_candidate_plan_is_review_required_without_evaluation(
+    tmp_path, fake_client, intent_payload, monkeypatch
+):
+    from verinote.pipeline.query_planner import (
+        QueryCandidate,
+        QueryCandidateFamily,
+        QueryCandidatePlan,
+    )
+
+    s = _store(tmp_path)
+    s.add_fact("Sample Subject", "is_a", "Synthetic Answer", status="confirmed")
+    qid = s.add_question("What is Sample Subject?")
+    client = fake_client(intent=intent_payload("lookup_object", subject="Sample Subject", relation="is_a"))
+    candidate = QueryCandidate(
+        query_dl='.decl answer_q0(value: symbol)\nanswer_q0(O) :- relation("Sample Subject", "is_a", O).',
+        family=QueryCandidateFamily.DIRECT_OBJECT_LOOKUP,
+        direction=None,
+        relation_display=None,
+        relation_executable=None,
+        subject_executable=None,
+        object_executable=None,
+    )
+    monkeypatch.setattr(
+        "verinote.pipeline.query.plan_query_candidates",
+        lambda *args, **kwargs: QueryCandidatePlan(qid=qid, candidates=(candidate,), truncated=True),
+    )
+    monkeypatch.setattr(
+        "verinote.pipeline.query.evaluate_query_candidate_plan",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("truncated plan must not be evaluated")),
+    )
+
+    results = translate_questions(s, client, root=tmp_path)
+
+    assert results[0]["status"] == "review_required"
+    assert results[0]["reason"] == "too many query candidates matched the schema"
+
+
 def test_quality_policy_review_required_outcome_is_persisted(
     tmp_path, fake_client, intent_payload, monkeypatch
 ):

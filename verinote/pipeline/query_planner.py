@@ -39,6 +39,7 @@ class QueryCandidateFamily(StrEnum):
     OBJECT_RELATION_DISCOVERY = "object_relation_discovery"
     EXACT_FACT_FALLBACK = "exact_fact_fallback"
     MANUAL_DRAFT = "manual_draft"
+    CONJUNCTIVE_TWO_HOP = "conjunctive_two_hop"
 
 
 class QueryCandidateDirection(StrEnum):
@@ -91,11 +92,85 @@ def plan_query_candidates(
     elif intent.kind == QueryIntentKind.DISCOVER_ENTITY_RELATIONS:
         candidates = _discover_entity_relation_candidates(intent, snapshot, qid)
         reason = None if candidates else "no relation discovery candidates matched the schema"
+    elif intent.kind == QueryIntentKind.CONJUNCTIVE_LOOKUP:
+        candidates, truncated = _conjunctive_two_hop_candidates(
+            intent, snapshot, qid, max_candidates=bounds.max_candidates
+        )
+        return QueryCandidatePlan(
+            qid=qid,
+            candidates=candidates,
+            truncated=truncated,
+            reason=None if candidates else "no two-hop relation path matched the schema",
+        )
     else:
         candidates = ()
         reason = f"unsupported intent kind: {intent.kind.value}"
 
     return _bounded_plan(qid, candidates, bounds, reason=reason)
+
+
+def _conjunctive_two_hop_candidates(
+    intent: QueryIntent,
+    snapshot: QuerySchemaSnapshot,
+    qid: int,
+    *,
+    max_candidates: int,
+) -> tuple[tuple[QueryCandidate, ...], bool]:
+    """Plan only fact-supported Entity -> Var -> Answer two-hop chains."""
+    if len(intent.hops) != 2:
+        return (), False
+    if snapshot.join_facts_truncated:
+        return (), True
+    first_hop, second_hop = intent.hops
+    requested_first = (_nfc(first_hop.relation.value),)
+    requested_second = (_nfc(second_hop.relation.value),)
+    candidates: list[QueryCandidate] = []
+    second_by_subject: dict[str, dict[str, SnapshotFact]] = {}
+    for fact in snapshot.join_facts:
+        if _fact_relation_matches_any_requested(fact, requested_second, snapshot):
+            second_by_subject.setdefault(fact.subject.key, {}).setdefault(
+                fact.relation.executable, fact
+            )
+    seen_first_shapes: set[tuple[str, str, str]] = set()
+    seen_candidate_shapes: set[tuple[str, str, str]] = set()
+    for first in snapshot.join_facts:
+        if not _entity_ref_matches(first.subject, first_hop.subject.value):
+            continue
+        if not _fact_relation_matches_any_requested(first, requested_first, snapshot):
+            continue
+        first_shape = (first.subject.executable, first.relation.executable, first.object.key)
+        if first_shape in seen_first_shapes:
+            continue
+        seen_first_shapes.add(first_shape)
+        for second in second_by_subject.get(first.object.key, {}).values():
+            candidate_shape = (
+                first.subject.executable,
+                first.relation.executable,
+                second.relation.executable,
+            )
+            if candidate_shape in seen_candidate_shapes:
+                continue
+            seen_candidate_shapes.add(candidate_shape)
+            if len(candidates) >= max_candidates:
+                return tuple(candidates), True
+            candidates.append(
+                QueryCandidate(
+                    query_dl=_query_dl(
+                        qid,
+                        second_hop.object.value,
+                        "relation("
+                        f"{first.subject.executable}, {first.relation.executable}, {first_hop.object.value}), "
+                        f"relation({first_hop.object.value}, {second.relation.executable}, {second_hop.object.value})",
+                    ),
+                    family=QueryCandidateFamily.CONJUNCTIVE_TWO_HOP,
+                    direction=None,
+                    relation_display=None,
+                    relation_executable=None,
+                    subject_executable=first.subject.executable,
+                    object_executable=None,
+                )
+            )
+    return tuple(candidates), False
 
 
 def _discover_entity_relation_candidates(

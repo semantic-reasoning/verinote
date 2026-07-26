@@ -38,12 +38,14 @@ class QuerySchemaBounds:
     max_relations: int = 100
     max_entities_per_side: int = 100
     max_exact_entity_facts: int = 50
+    max_join_facts: int = 500
 
     def __post_init__(self) -> None:
         for field in (
             "max_relations",
             "max_entities_per_side",
             "max_exact_entity_facts",
+            "max_join_facts",
         ):
             value = getattr(self, field)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
@@ -122,6 +124,9 @@ class QuerySchemaSnapshot:
     exact_entity_facts: tuple[SnapshotFact, ...]
     exact_entity_facts_truncated: bool
     fact_count: int
+    join_facts: tuple[SnapshotFact, ...] = ()
+    """Complete engine-input fact rows used only for bounded join planning."""
+    join_facts_truncated: bool = False
 
 
 @dataclass(frozen=True)
@@ -139,6 +144,7 @@ def build_query_schema_snapshot(
     exact_entities: Iterable[str] = (),
     bounds: QuerySchemaBounds = QuerySchemaBounds(),
     include_typed_relations: bool = True,
+    include_join_facts: bool = False,
 ) -> QuerySchemaSnapshot:
     """Build a deterministic schema snapshot for future query planning."""
     aliases = store_relation_aliases(store)
@@ -149,6 +155,16 @@ def build_query_schema_snapshot(
     typed_entries = _typed_entries(typed_specs)
     relation_rows = _relation_schemas(facts, aliases, typed_specs, bounds)
     exact_rows = _exact_entity_facts(facts, exact_entities, bounds)
+    join_rows = tuple(
+        SnapshotFact(
+            fact_id=fact.fact_id,
+            subject=fact.subject,
+            relation=fact.relation,
+            object=fact.object,
+            status=fact.status,
+        )
+        for fact in sorted(facts, key=_fact_sort_key)[: bounds.max_join_facts]
+    ) if include_join_facts else ()
 
     return QuerySchemaSnapshot(
         relations=relation_rows[: bounds.max_relations],
@@ -158,6 +174,8 @@ def build_query_schema_snapshot(
         exact_entity_facts=exact_rows[: bounds.max_exact_entity_facts],
         exact_entity_facts_truncated=len(exact_rows) > bounds.max_exact_entity_facts,
         fact_count=len(facts),
+        join_facts=join_rows,
+        join_facts_truncated=include_join_facts and len(facts) > bounds.max_join_facts,
     )
 
 

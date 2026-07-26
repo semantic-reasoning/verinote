@@ -99,6 +99,7 @@ class QueryIntentKind(StrEnum):
     LOOKUP_RELATION = "lookup_relation"
     DISCOVER_ENTITY_RELATIONS = "discover_entity_relations"
     COMPARE_TYPED_VALUE = "compare_typed_value"
+    CONJUNCTIVE_LOOKUP = "conjunctive_lookup"
     UNKNOWN_OR_UNSUPPORTED = "unknown_or_unsupported"
 
 
@@ -125,6 +126,40 @@ class IntentTarget:
         if not isinstance(self.value, str) or not self.value.strip():
             raise ValueError("target value must be a non-empty string")
         object.__setattr__(self, "value", self.value.strip())
+
+
+_CONJUNCTIVE_VARIABLE = re.compile(r"^[A-Z][A-Za-z0-9_]*$")
+
+
+@dataclass(frozen=True)
+class ConjunctiveEndpoint:
+    """One constant entity or named variable in a bounded conjunctive hop."""
+
+    kind: str
+    value: str
+
+    def __post_init__(self) -> None:
+        if self.kind not in {"entity", "var"}:
+            raise ValueError("conjunctive endpoint kind must be entity or var")
+        if not isinstance(self.value, str) or not self.value.strip():
+            raise ValueError("conjunctive endpoint value must be a non-empty string")
+        value = self.value.strip()
+        if self.kind == "var" and not _CONJUNCTIVE_VARIABLE.fullmatch(value):
+            raise ValueError("conjunctive variable must be a Datalog variable name")
+        object.__setattr__(self, "value", value)
+
+
+@dataclass(frozen=True)
+class ConjunctiveHop:
+    """One relation/3 atom for the narrow two-hop lookup contract."""
+
+    subject: ConjunctiveEndpoint
+    relation: IntentTarget
+    object: ConjunctiveEndpoint
+
+    def __post_init__(self) -> None:
+        if self.relation.kind != "relation":
+            raise ValueError("conjunctive hop relation must be relation")
 
 
 @dataclass(frozen=True)
@@ -162,6 +197,8 @@ class QueryIntent:
     value_type: str | None = None
     value: str | None = None
     reason: str | None = None
+    hops: tuple[ConjunctiveHop, ...] = field(default_factory=tuple)
+    answer_var: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, QueryIntentKind):
@@ -173,6 +210,10 @@ class QueryIntent:
             "relation_candidates",
             tuple(_clean_required_string(item, "relation candidate") for item in self.relation_candidates),
         )
+        if not isinstance(self.hops, tuple):
+            raise ValueError("hops must be a tuple")
+        if self.answer_var is not None:
+            object.__setattr__(self, "answer_var", _clean_optional_string(self.answer_var, "answer_var"))
         # A blank nullable string is an absent one -- but only where the schema
         # pins no domain for the field. Every schema property typed
         # `["string", "null"]` is normalised here, and each is still listed in
@@ -255,6 +296,23 @@ class QueryIntent:
             # cannot do without them.
             if self.object is not None:
                 self._require_target_kind("object", self.object, {"typed_value", "value"})
+        elif kind == QueryIntentKind.CONJUNCTIVE_LOOKUP:
+            if any(
+                item is not None
+                for item in (self.subject, self.relation, self.object, self.operator, self.value_type, self.value)
+            ) or self.relation_candidates:
+                raise ValueError("conjunctive_lookup accepts only hops and answer_var")
+            if len(self.hops) != 2 or not self.answer_var:
+                raise ValueError("conjunctive_lookup requires exactly two hops and answer_var")
+            first, second = self.hops
+            if first.subject.kind != "entity" or first.object.kind != "var":
+                raise ValueError("conjunctive_lookup first hop requires entity subject and variable object")
+            if second.subject.kind != "var" or second.object.kind != "var":
+                raise ValueError("conjunctive_lookup second hop requires variable endpoints")
+            if second.subject.value != first.object.value:
+                raise ValueError("conjunctive_lookup hops must share the intermediate variable")
+            if second.object.value != self.answer_var:
+                raise ValueError("conjunctive_lookup answer_var must be the second hop object")
         elif kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED:
             if not self.reason:
                 raise ValueError("unknown_or_unsupported requires a reason")
@@ -581,6 +639,40 @@ def _parse_relation_candidates(data: dict[str, Any], field_name: str) -> tuple[s
     return tuple(raw)
 
 
+def _parse_conjunctive_hops(data: dict[str, Any], field_name: str) -> tuple[ConjunctiveHop, ...]:
+    raw = data.get(field_name)
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise TypeError("hops must be an array or null")
+    hops = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise TypeError(f"hops[{index}] must be an object")
+        if set(item) != {"subject", "relation", "object"}:
+            raise ValueError(f"hops[{index}] must contain subject, relation, and object")
+        hops.append(
+            ConjunctiveHop(
+                subject=_parse_conjunctive_endpoint(item["subject"], f"hops[{index}].subject"),
+                relation=_parse_required_intent_target(item["relation"], f"hops[{index}].relation"),
+                object=_parse_conjunctive_endpoint(item["object"], f"hops[{index}].object"),
+            )
+        )
+    return tuple(hops)
+
+
+def _parse_required_intent_target(raw: Any, field_name: str) -> IntentTarget:
+    if not isinstance(raw, dict) or set(raw) != {"kind", "value"}:
+        raise ValueError(f"{field_name} must contain kind and value")
+    return IntentTarget(raw["kind"], raw["value"])
+
+
+def _parse_conjunctive_endpoint(raw: Any, field_name: str) -> ConjunctiveEndpoint:
+    if not isinstance(raw, dict) or set(raw) != {"kind", "value"}:
+        raise ValueError(f"{field_name} must contain kind and value")
+    return ConjunctiveEndpoint(raw["kind"], raw["value"])
+
+
 def _parse_optional_string(data: dict[str, Any], field_name: str) -> str | None:
     value = data.get(field_name)
     if value is None:
@@ -697,6 +789,17 @@ def _is_relation_candidates_property(spec: dict[str, Any]) -> bool:
     return _is_required_string_schema(spec.get("items"))
 
 
+def _is_conjunctive_hops_property(spec: dict[str, Any]) -> bool:
+    if _declared_types(spec) != frozenset({"array", "null"}):
+        return False
+    if spec.get("minItems") != 2 or spec.get("maxItems") != 2:
+        return False
+    item = spec.get("items")
+    if not isinstance(item, dict) or item.get("additionalProperties") is not False:
+        return False
+    return set(item.get("properties") or ()) == {"subject", "relation", "object"}
+
+
 # `kind` is parsed by hand in `_parse_query_intent_object` and so is not in the
 # table: it is the only non-nullable property, a missing one is a KeyError rather
 # than a None, and it is converted to QueryIntentKind before the other fields are
@@ -707,6 +810,7 @@ _INTENT_FIELD_PARSERS_BY_SHAPE: tuple[
     (_is_nullable_string_property, _parse_optional_string),
     (_is_intent_target_property, _parse_intent_target),
     (_is_relation_candidates_property, _parse_relation_candidates),
+    (_is_conjunctive_hops_property, _parse_conjunctive_hops),
 )
 
 

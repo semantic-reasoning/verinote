@@ -123,10 +123,10 @@ def trace_query_answers(store: Store, query: str) -> tuple[AnswerTrace, ...]:
         qid = answer_qid(rule.head.predicate)
         if qid is None:
             continue
-        relation_atom = _direct_relation_atom(rule.body)
-        if relation_atom is None:
+        relation_atoms = _traceable_relation_atoms(rule.body)
+        if relation_atoms is None:
             continue
-        matches = _match_relation_atom(relation_atom, facts, rule.head.args)
+        matches = _match_relation_atoms(relation_atoms, facts, rule.head.args)
         for identity, (value, display_value, fact_ids) in sorted(matches.items()):
             key = (qid, identity, tuple(sorted(fact_ids)))
             if key in seen:
@@ -156,21 +156,27 @@ def trace_query_answers(store: Store, query: str) -> tuple[AnswerTrace, ...]:
     )
 
 
-def _direct_relation_atom(body: tuple[AtomExpr | Comparison, ...]) -> AtomExpr | None:
+def _traceable_relation_atoms(
+    body: tuple[AtomExpr | Comparison, ...],
+) -> tuple[AtomExpr, ...] | None:
     atoms = [item for item in body if isinstance(item, AtomExpr)]
     comparisons = [item for item in body if isinstance(item, Comparison)]
-    if len(atoms) != 1 or comparisons:
+    if not 1 <= len(atoms) <= 2 or comparisons:
         return None
-    atom = atoms[0]
-    if atom.predicate != "relation" or len(atom.args) != 3:
+    if any(
+        atom.predicate != "relation"
+        or len(atom.args) != 3
+        or any(_has_vars(term) and not isinstance(term, Var) for term in atom.args)
+        for atom in atoms
+    ):
         return None
-    if any(_has_vars(term) and not isinstance(term, Var) for term in atom.args):
+    if len(atoms) == 2 and not (_atom_variables(atoms[0]) & _atom_variables(atoms[1])):
         return None
-    return atom
+    return tuple(atoms)
 
 
-def _match_relation_atom(
-    atom: AtomExpr,
+def _match_relation_atoms(
+    atoms: tuple[AtomExpr, ...],
     facts: list[dict[str, object]],
     head_args: tuple[Term, ...],
 ) -> dict[str, tuple[str, str, set[int]]]:
@@ -185,6 +191,46 @@ def _match_relation_atom(
     if len(head_args) != 1:
         return {}
     matches: dict[str, tuple[str, str, set[int]]] = {}
+    atom_matches = [_atom_matches(atom, facts) for atom in atoms]
+    if len(atoms) == 1:
+        bindings_and_ids = ((bindings, {fact_id}) for bindings, fact_id in atom_matches[0])
+    else:
+        shared = tuple(sorted(_atom_variables(atoms[0]) & _atom_variables(atoms[1])))
+        first_index: dict[tuple[str, ...], set[int]] = {}
+        for bindings, fact_id in atom_matches[0]:
+            key = tuple(term_compare_key(bindings[name]) for name in shared)
+            first_index.setdefault(key, set()).add(fact_id)
+        second_index: dict[
+            tuple[str, ...], dict[tuple[tuple[str, str], ...], tuple[dict[str, Term], set[int]]]
+        ] = {}
+        for bindings, fact_id in atom_matches[1]:
+            key = tuple(term_compare_key(bindings[name]) for name in shared)
+            binding_key = tuple(sorted((name, term_compare_key(value)) for name, value in bindings.items()))
+            by_binding = second_index.setdefault(key, {})
+            if binding_key not in by_binding:
+                by_binding[binding_key] = (bindings, set())
+            by_binding[binding_key][1].add(fact_id)
+        bindings_and_ids = (
+            (second_bindings, first_ids | second_ids)
+            for key, first_ids in first_index.items()
+            for second_bindings, second_ids in second_index.get(key, {}).values()
+        )
+    for bindings, fact_ids in bindings_and_ids:
+        value = _head_value(head_args[0], bindings)
+        if value is None:
+            continue
+        group = matches.setdefault(
+            term_compare_key(value),
+            (render_answer_value(value), render_display_value(value), set()),
+        )
+        group[2].update(fact_ids)
+    return matches
+
+
+def _atom_matches(
+    atom: AtomExpr, facts: list[dict[str, object]]
+) -> list[tuple[dict[str, Term], int]]:
+    matches = []
     for fact in facts:
         bindings: dict[str, Term] = {}
         if not _match_term(atom.args[0], fact["subject"], bindings):
@@ -193,15 +239,12 @@ def _match_relation_atom(
             continue
         if not _match_term(atom.args[2], fact["object"], bindings):
             continue
-        value = _head_value(head_args[0], bindings)
-        if value is None:
-            continue
-        group = matches.setdefault(
-            term_compare_key(value),
-            (render_answer_value(value), render_display_value(value), set()),
-        )
-        group[2].add(int(fact["id"]))
+        matches.append((bindings, int(fact["id"])))
     return matches
+
+
+def _atom_variables(atom: AtomExpr) -> set[str]:
+    return {term.name for term in atom.args if isinstance(term, Var)}
 
 
 def _match_term(pattern: Term, value: object, bindings: dict[str, Term]) -> bool:

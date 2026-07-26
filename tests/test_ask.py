@@ -54,6 +54,46 @@ class FallbackClient:
         return self.answer
 
 
+class TwoHopIntentClient:
+    name = "two-hop-intent"
+
+    def extract_query_intent(self, *, question: str, schema_hint: str = ""):
+        from verinote.pipeline.query_intent import parse_query_intent
+
+        return parse_query_intent(
+            {
+                "kind": "conjunctive_lookup",
+                "subject": None,
+                "relation": None,
+                "object": None,
+                "relation_candidates": None,
+                "operator": None,
+                "value_type": None,
+                "value": None,
+                "reason": None,
+                "hops": [
+                    {
+                        "subject": {"kind": "entity", "value": "Ada"},
+                        "relation": {"kind": "relation", "value": "assigned_to"},
+                        "object": {"kind": "var", "value": "M"},
+                    },
+                    {
+                        "subject": {"kind": "var", "value": "M"},
+                        "relation": {"kind": "relation", "value": "purpose"},
+                        "object": {"kind": "var", "value": "A"},
+                    },
+                ],
+                "answer_var": "A",
+            }
+        )
+
+    def translate_query(self, **kwargs):
+        raise AssertionError("two-hop Ask must not call direct Datalog translation")
+
+    def answer_question(self, **kwargs):
+        raise AssertionError("verified two-hop Ask must not call fallback LLM")
+
+
 def _store(tmp_path) -> Store:
     store = Store(tmp_path / "kb.sqlite")
     store.init_schema()
@@ -77,6 +117,26 @@ def test_ask_returns_verified_engine_answer_without_persisting(tmp_path):
     assert result.grounding_facts[0].source == "sources/sample.txt"
     assert store.questions() == []
     assert not query_path(tmp_path).exists()
+
+
+def test_ask_returns_verified_two_hop_answer_with_both_sources(tmp_path):
+    store = _store(tmp_path)
+    first_source = store.add_source("sources/assignment.txt")
+    second_source = store.add_source("sources/purpose.txt")
+    store.add_fact("Ada", "assigned_to", "Project", status="confirmed", source_id=first_source)
+    store.add_fact("Project", "purpose", "Research", status="confirmed", source_id=second_source)
+
+    result = ask_question(
+        store, TwoHopIntentClient(), root=tmp_path, question="Resolve the linked outcome for this case."
+    )
+
+    assert result.route == "engine"
+    assert result.label == "VERIFIED — engine"
+    assert "Research" in result.answer
+    assert {fact.source for fact in result.grounding_facts} == {
+        "sources/assignment.txt",
+        "sources/purpose.txt",
+    }
 
 
 def test_ask_engine_answer_restates_triple_with_inline_source(tmp_path):

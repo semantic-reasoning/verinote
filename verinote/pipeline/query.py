@@ -248,9 +248,20 @@ def _schema_aware_query_flow_result(
         )
 
     exact_entities = _intent_exact_entities(intent)
-    if exact_entities:
-        snapshot = build_query_schema_snapshot(store, exact_entities=exact_entities)
+    if exact_entities or intent.kind == QueryIntentKind.CONJUNCTIVE_LOOKUP:
+        snapshot = build_query_schema_snapshot(
+            store,
+            exact_entities=exact_entities,
+            include_join_facts=intent.kind == QueryIntentKind.CONJUNCTIVE_LOOKUP,
+        )
     plan = plan_query_candidates(intent, snapshot, qid=qid)
+    # A truncated candidate set is not a safe basis for a verified answer: an
+    # omitted path could return a different result and evade the ambiguity gate.
+    if plan.truncated:
+        reason = "too many query candidates matched the schema"
+        return _QueryFlowResult(
+            "review_required", f"review_required({_lit(reason)})", reason
+        )
     evaluation = evaluate_query_candidate_plan(store, plan)
 
     if evaluation.outcome == QueryCandidateSetOutcome.VALID and evaluation.selected:

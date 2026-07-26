@@ -4,6 +4,8 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 from verinote.pipeline.query_intent import (
+    ConjunctiveEndpoint,
+    ConjunctiveHop,
     ENGLISH_ROLE_RELATION_CANDIDATES,
     KOREAN_ROLE_RELATION_CANDIDATES,
     PURPOSE_RELATION_CANDIDATES,
@@ -11,7 +13,74 @@ from verinote.pipeline.query_intent import (
     QueryIntent,
     QueryIntentKind,
     deterministic_query_intent,
+    parse_query_intent,
 )
+
+
+def test_conjunctive_lookup_requires_one_connected_two_hop_chain():
+    intent = QueryIntent(
+        kind=QueryIntentKind.CONJUNCTIVE_LOOKUP,
+        hops=(
+            ConjunctiveHop(
+                ConjunctiveEndpoint("entity", "Ada"),
+                IntentTarget("relation", "assigned_to"),
+                ConjunctiveEndpoint("var", "M"),
+            ),
+            ConjunctiveHop(
+                ConjunctiveEndpoint("var", "M"),
+                IntentTarget("relation", "purpose"),
+                ConjunctiveEndpoint("var", "A"),
+            ),
+        ),
+        answer_var="A",
+    )
+
+    assert intent.kind is QueryIntentKind.CONJUNCTIVE_LOOKUP
+    with pytest.raises(ValueError, match="intermediate"):
+        QueryIntent(
+            kind=QueryIntentKind.CONJUNCTIVE_LOOKUP,
+            hops=(
+                intent.hops[0],
+                ConjunctiveHop(
+                    ConjunctiveEndpoint("var", "X"),
+                    IntentTarget("relation", "purpose"),
+                    ConjunctiveEndpoint("var", "A"),
+                ),
+            ),
+            answer_var="A",
+        )
+
+
+def test_parse_conjunctive_lookup_rejects_incomplete_or_disconnected_hops():
+    payload = {
+        "kind": "conjunctive_lookup",
+        "subject": None,
+        "relation": None,
+        "object": None,
+        "relation_candidates": None,
+        "operator": None,
+        "value_type": None,
+        "value": None,
+        "reason": None,
+        "hops": [
+            {
+                "subject": {"kind": "entity", "value": "Ada"},
+                "relation": {"kind": "relation", "value": "assigned_to"},
+                "object": {"kind": "var", "value": "M"},
+            },
+            {
+                "subject": {"kind": "var", "value": "M"},
+                "relation": {"kind": "relation", "value": "purpose"},
+                "object": {"kind": "var", "value": "A"},
+            },
+        ],
+        "answer_var": "A",
+    }
+
+    assert parse_query_intent(payload).answer_var == "A"
+    payload["hops"][1]["subject"]["value"] = "X"
+    with pytest.raises(Exception, match="intermediate"):
+        parse_query_intent(payload)
 
 
 def test_lookup_object_intent_is_frozen_and_typed():

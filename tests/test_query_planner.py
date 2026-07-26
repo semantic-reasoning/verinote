@@ -2,7 +2,13 @@
 
 import unicodedata
 
-from verinote.pipeline.query_intent import IntentTarget, QueryIntent, QueryIntentKind
+from verinote.pipeline.query_intent import (
+    ConjunctiveEndpoint,
+    ConjunctiveHop,
+    IntentTarget,
+    QueryIntent,
+    QueryIntentKind,
+)
 from verinote.pipeline.query_planner import (
     QueryCandidateDirection,
     QueryCandidateFamily,
@@ -144,6 +150,67 @@ def test_lookup_object_uses_observed_relation_and_subject_side():
     assert [candidate.direction for candidate in plan.candidates] == [
         QueryCandidateDirection.SUBJECT_TO_OBJECT
     ]
+    assert plan.truncated is False
+
+
+def test_conjunctive_lookup_uses_only_an_observed_join_path():
+    ada = _term("Ada", '\"Ada\"')
+    project = _term("Project", '\"Project\"')
+    purpose = _term("Research", '\"Research\"')
+    assigned = _term("assigned_to", '\"assigned_to\"')
+    purpose_relation = _term("purpose", '\"purpose\"')
+    snapshot = _snapshot()
+    snapshot = QuerySchemaSnapshot(
+        **{**snapshot.__dict__, "join_facts": (
+            _fact(ada, assigned, project, matched_entity="Ada", matched_side="subject"),
+            SnapshotFact(2, project, purpose_relation, purpose, "confirmed"),
+            SnapshotFact(3, _term("Other", '\"Other\"'), purpose_relation, _term("Wrong", '\"Wrong\"'), "confirmed"),
+        )}
+    )
+    intent = QueryIntent(
+        kind=QueryIntentKind.CONJUNCTIVE_LOOKUP,
+        hops=(
+            ConjunctiveHop(ConjunctiveEndpoint("entity", "Ada"), IntentTarget("relation", "assigned_to"), ConjunctiveEndpoint("var", "M")),
+            ConjunctiveHop(ConjunctiveEndpoint("var", "M"), IntentTarget("relation", "purpose"), ConjunctiveEndpoint("var", "A")),
+        ),
+        answer_var="A",
+    )
+
+    plan = plan_query_candidates(intent, snapshot, qid=17)
+
+    assert [candidate.query_dl for candidate in plan.candidates] == [
+        '.decl answer_q17(value: symbol)\n'
+        'answer_q17(A) :- relation("Ada", "assigned_to", M), relation(M, "purpose", A).'
+    ]
+
+
+def test_conjunctive_lookup_deduplicates_relation_paths_before_candidate_cap():
+    assigned = _term("assigned_to", '\"assigned_to\"')
+    purpose = _term("purpose", '\"purpose\"')
+    facts = []
+    for index in range(3):
+        intermediate = _term(f"Project {index}", f'\"Project {index}\"')
+        facts.extend(
+            [
+                SnapshotFact(index * 2 + 1, _term("Ada", '\"Ada\"'), assigned, intermediate, "confirmed"),
+                SnapshotFact(index * 2 + 2, intermediate, purpose, _term(f"Answer {index}", f'\"Answer {index}\"'), "confirmed"),
+            ]
+        )
+    snapshot = QuerySchemaSnapshot(
+        **{**_snapshot().__dict__, "join_facts": tuple(facts)}
+    )
+    intent = QueryIntent(
+        kind=QueryIntentKind.CONJUNCTIVE_LOOKUP,
+        hops=(
+            ConjunctiveHop(ConjunctiveEndpoint("entity", "Ada"), IntentTarget("relation", "assigned_to"), ConjunctiveEndpoint("var", "M")),
+            ConjunctiveHop(ConjunctiveEndpoint("var", "M"), IntentTarget("relation", "purpose"), ConjunctiveEndpoint("var", "A")),
+        ),
+        answer_var="A",
+    )
+
+    plan = plan_query_candidates(intent, snapshot, qid=18, bounds=QueryPlannerBounds(max_candidates=1))
+
+    assert len(plan.candidates) == 1
     assert plan.truncated is False
 
 
