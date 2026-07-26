@@ -143,14 +143,15 @@ def policy_sha256(text: str) -> str:
 def _policy_text_is_empty(text: str) -> bool:
     """Whether a present policy file declares nothing at all (#171).
 
-    A 0-byte file and a whitespace-only one are byte-different but behave
+    A 0-byte file, a whitespace-only one, and a BOM-only one are byte-different but behave
     identically: both parse to an empty program and fail the engine's later
-    `relation/3` check. `text.strip() == ""` is the whole definition on purpose —
-    a comment-only file or one that declares `functional` but not literally
-    `relation` is *not* empty and is left to the engine, not caught here. The CLI's
-    read-only resolver shares this helper so the two cannot drift apart.
+    `relation/3` check. A leading UTF-8 BOM is not policy content, so it is
+    removed before the whitespace check; a BOM-prefixed policy with real content
+    remains present. A comment-only file or one that declares `functional` but
+    not literally `relation` is *not* empty and is left to the engine, not caught
+    here. The CLI's read-only resolver shares this helper so the two cannot drift.
     """
-    return text.strip() == ""
+    return text.lstrip("\ufeff").strip() == ""
 
 
 def policy_path(store: "Store") -> Path:
