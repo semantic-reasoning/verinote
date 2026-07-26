@@ -74,6 +74,33 @@ class ReportTrace:
     excluded_by_status: tuple[tuple[str, int], ...]
 
 
+@dataclass(frozen=True)
+class TraceBounds:
+    """Fail-closed limits for direct relation provenance tracing.
+
+    The inference engine is responsible for evaluating a query.  Tracing is a
+    separate reconstruction pass, so it must not return a partial proof when a
+    join would exceed a bounded amount of work.
+    """
+
+    max_relation_atoms: int = 3
+    max_atom_matches: int = 512
+    max_partial_bindings: int = 512
+    max_proof_sets: int = 256
+
+    def __post_init__(self) -> None:
+        if any(
+            limit < 1
+            for limit in (
+                self.max_relation_atoms,
+                self.max_atom_matches,
+                self.max_partial_bindings,
+                self.max_proof_sets,
+            )
+        ):
+            raise ValueError("trace bounds must be positive")
+
+
 def _excluded_by_status(store: Store) -> tuple[tuple[str, int], ...]:
     counts = store.status_counts()
     # Ask the tier accessor rather than binding the frozenset: widening the tier at
@@ -109,7 +136,12 @@ def report_trace(store: Store) -> ReportTrace:
     )
 
 
-def trace_query_answers(store: Store, query: str) -> tuple[AnswerTrace, ...]:
+def trace_query_answers(
+    store: Store,
+    query: str,
+    *,
+    bounds: TraceBounds = TraceBounds(),
+) -> tuple[AnswerTrace, ...]:
     """Trace direct answer_q rules in one query back to engine-input facts."""
     try:
         program = parse_and_validate_program(_RELATION_DECL + query)
@@ -123,12 +155,22 @@ def trace_query_answers(store: Store, query: str) -> tuple[AnswerTrace, ...]:
         qid = answer_qid(rule.head.predicate)
         if qid is None:
             continue
-        relation_atoms = _traceable_relation_atoms(rule.body)
+        relation_atoms = _traceable_relation_atoms(rule.body, bounds)
         if relation_atoms is None:
             continue
-        matches = _match_relation_atoms(relation_atoms, facts, rule.head.args)
-        for identity, (value, display_value, fact_ids) in sorted(matches.items()):
-            key = (qid, identity, tuple(sorted(fact_ids)))
+        matches = _match_relation_atoms(
+            relation_atoms, facts, rule.head.args, bounds=bounds
+        )
+        if len(relation_atoms) <= 2:
+            matches = _aggregate_legacy_proofs(matches)
+        for (identity, fact_id_key), (value, display_value, fact_ids) in sorted(
+            matches.items()
+        ):
+            # Direct and two-relation traces have historically exposed one row
+            # per answer, with every supporting fact aggregated into that row.
+            # Three-relation traces retain distinct complete proof sets so that
+            # facts from independent paths are never presented as one witness.
+            key = (qid, identity, fact_id_key)
             if key in seen:
                 continue
             seen.add(key)
@@ -151,17 +193,39 @@ def trace_query_answers(store: Store, query: str) -> tuple[AnswerTrace, ...]:
     return tuple(
         sorted(
             traces,
-            key=lambda trace: (*answer_bucket_sort_key(trace.qid), trace.value),
+            key=lambda trace: (
+                *answer_bucket_sort_key(trace.qid),
+                trace.value,
+                tuple(fact.id for fact in trace.facts),
+            ),
         )
     )
 
 
+def _aggregate_legacy_proofs(
+    proofs: dict[tuple[str, tuple[int, ...]], tuple[str, str, set[int]]],
+) -> dict[tuple[str, tuple[int, ...]], tuple[str, str, set[int]]]:
+    """Restore the established one-row-per-answer trace contract for <=2 atoms."""
+    grouped: dict[str, tuple[str, str, set[int]]] = {}
+    for (identity, _fact_ids), (value, display_value, fact_ids) in proofs.items():
+        existing = grouped.get(identity)
+        if existing is None:
+            grouped[identity] = (value, display_value, set(fact_ids))
+            continue
+        existing[2].update(fact_ids)
+    return {
+        (identity, tuple(sorted(fact_ids))): (value, display_value, fact_ids)
+        for identity, (value, display_value, fact_ids) in grouped.items()
+    }
+
+
 def _traceable_relation_atoms(
     body: tuple[AtomExpr | Comparison, ...],
+    bounds: TraceBounds,
 ) -> tuple[AtomExpr, ...] | None:
     atoms = [item for item in body if isinstance(item, AtomExpr)]
     comparisons = [item for item in body if isinstance(item, Comparison)]
-    if not 1 <= len(atoms) <= 2 or comparisons:
+    if not 1 <= len(atoms) <= bounds.max_relation_atoms or comparisons:
         return None
     if any(
         atom.predicate != "relation"
@@ -170,7 +234,7 @@ def _traceable_relation_atoms(
         for atom in atoms
     ):
         return None
-    if len(atoms) == 2 and not (_atom_variables(atoms[0]) & _atom_variables(atoms[1])):
+    if not _atoms_are_connected(atoms):
         return None
     return tuple(atoms)
 
@@ -179,7 +243,9 @@ def _match_relation_atoms(
     atoms: tuple[AtomExpr, ...],
     facts: list[dict[str, object]],
     head_args: tuple[Term, ...],
-) -> dict[str, tuple[str, str, set[int]]]:
+    *,
+    bounds: TraceBounds,
+) -> dict[tuple[str, tuple[int, ...]], tuple[str, str, set[int]]]:
     """Group matching facts by answer value.
 
     Keyed on `term_compare_key`, not on either display rendering. Two terms the
@@ -190,46 +256,106 @@ def _match_relation_atoms(
     """
     if len(head_args) != 1:
         return {}
-    matches: dict[str, tuple[str, str, set[int]]] = {}
-    atom_matches = [_atom_matches(atom, facts) for atom in atoms]
-    if len(atoms) == 1:
-        bindings_and_ids = ((bindings, {fact_id}) for bindings, fact_id in atom_matches[0])
-    else:
-        shared = tuple(sorted(_atom_variables(atoms[0]) & _atom_variables(atoms[1])))
-        first_index: dict[tuple[str, ...], set[int]] = {}
-        for bindings, fact_id in atom_matches[0]:
-            key = tuple(term_compare_key(bindings[name]) for name in shared)
-            first_index.setdefault(key, set()).add(fact_id)
-        second_index: dict[
-            tuple[str, ...], dict[tuple[tuple[str, str], ...], tuple[dict[str, Term], set[int]]]
-        ] = {}
-        for bindings, fact_id in atom_matches[1]:
-            key = tuple(term_compare_key(bindings[name]) for name in shared)
-            binding_key = tuple(sorted((name, term_compare_key(value)) for name, value in bindings.items()))
-            by_binding = second_index.setdefault(key, {})
-            if binding_key not in by_binding:
-                by_binding[binding_key] = (bindings, set())
-            by_binding[binding_key][1].add(fact_id)
-        bindings_and_ids = (
-            (second_bindings, first_ids | second_ids)
-            for key, first_ids in first_index.items()
-            for second_bindings, second_ids in second_index.get(key, {}).values()
-        )
-    for bindings, fact_ids in bindings_and_ids:
+    atom_matches = []
+    for atom in atoms:
+        matches = _atom_matches(atom, facts, max_matches=bounds.max_atom_matches)
+        if matches is None:
+            return {}
+        atom_matches.append(matches)
+
+    states = _join_relation_atom_matches(atoms, atom_matches, bounds)
+    if states is None:
+        return {}
+
+    proofs: dict[tuple[str, tuple[int, ...]], tuple[str, str, set[int]]] = {}
+    for bindings, fact_ids in states:
         value = _head_value(head_args[0], bindings)
         if value is None:
             continue
-        group = matches.setdefault(
-            term_compare_key(value),
-            (render_answer_value(value), render_display_value(value), set()),
+        identity = term_compare_key(value)
+        proof_key = (identity, tuple(sorted(fact_ids)))
+        proofs.setdefault(
+            proof_key,
+            (render_answer_value(value), render_display_value(value), set(fact_ids)),
         )
-        group[2].update(fact_ids)
-    return matches
+        if len(proofs) > bounds.max_proof_sets:
+            return {}
+    return proofs
+
+
+def _join_relation_atom_matches(
+    atoms: tuple[AtomExpr, ...],
+    atom_matches: list[list[tuple[dict[str, Term], int]]],
+    bounds: TraceBounds,
+) -> list[tuple[dict[str, Term], set[int]]] | None:
+    """Return complete, exact proof bindings in a deterministic join order."""
+    remaining = set(range(len(atoms)))
+    first = min(remaining, key=lambda index: (len(atom_matches[index]), index))
+    ordered = [first]
+    remaining.remove(first)
+    bound_vars = set(_atom_variables(atoms[first]))
+    while remaining:
+        candidates = [
+            index
+            for index in remaining
+            if bound_vars & _atom_variables(atoms[index])
+        ]
+        if not candidates:
+            return None
+        next_index = min(
+            candidates,
+            key=lambda index: (
+                -len(bound_vars & _atom_variables(atoms[index])),
+                len(atom_matches[index]),
+                index,
+            ),
+        )
+        ordered.append(next_index)
+        remaining.remove(next_index)
+        bound_vars.update(_atom_variables(atoms[next_index]))
+
+    states: list[tuple[dict[str, Term], set[int]]] = [({}, set())]
+    for atom_index in ordered:
+        next_states: dict[
+            tuple[tuple[tuple[str, str], ...], tuple[int, ...]],
+            tuple[dict[str, Term], set[int]],
+        ] = {}
+        for current_bindings, current_ids in states:
+            for bindings, fact_id in atom_matches[atom_index]:
+                merged = _merge_bindings(current_bindings, bindings)
+                if merged is None:
+                    continue
+                fact_ids = current_ids | {fact_id}
+                key = (_binding_key(merged), tuple(sorted(fact_ids)))
+                next_states.setdefault(key, (merged, fact_ids))
+                if len(next_states) > bounds.max_partial_bindings:
+                    return None
+        states = list(next_states.values())
+    return states
+
+
+def _merge_bindings(
+    left: dict[str, Term], right: dict[str, Term]
+) -> dict[str, Term] | None:
+    merged = dict(left)
+    for name, value in right.items():
+        existing = merged.get(name)
+        if existing is not None and not terms_equal(existing, value):
+            return None
+        merged.setdefault(name, value)
+    return merged
+
+
+def _binding_key(bindings: dict[str, Term]) -> tuple[tuple[str, str], ...]:
+    return tuple(sorted((name, term_compare_key(value)) for name, value in bindings.items()))
 
 
 def _atom_matches(
-    atom: AtomExpr, facts: list[dict[str, object]]
-) -> list[tuple[dict[str, Term], int]]:
+    atom: AtomExpr,
+    facts: list[dict[str, object]],
+    *,
+    max_matches: int,
+) -> list[tuple[dict[str, Term], int]] | None:
     matches = []
     for fact in facts:
         bindings: dict[str, Term] = {}
@@ -240,11 +366,32 @@ def _atom_matches(
         if not _match_term(atom.args[2], fact["object"], bindings):
             continue
         matches.append((bindings, int(fact["id"])))
+        if len(matches) > max_matches:
+            return None
     return matches
 
 
 def _atom_variables(atom: AtomExpr) -> set[str]:
     return {term.name for term in atom.args if isinstance(term, Var)}
+
+
+def _atoms_are_connected(atoms: list[AtomExpr]) -> bool:
+    if len(atoms) == 1:
+        return True
+    remaining = set(range(1, len(atoms)))
+    reachable = set(_atom_variables(atoms[0]))
+    while remaining:
+        newly_reachable = [
+            index
+            for index in remaining
+            if reachable & _atom_variables(atoms[index])
+        ]
+        if not newly_reachable:
+            return False
+        for index in newly_reachable:
+            reachable.update(_atom_variables(atoms[index]))
+            remaining.remove(index)
+    return True
 
 
 def _match_term(pattern: Term, value: object, bindings: dict[str, Term]) -> bool:
