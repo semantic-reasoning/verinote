@@ -271,11 +271,16 @@ class Store:
             try:
                 _ = self.fact_terms
             except DuckDBFactTermStoreError as exc:
-                # Only conditions that can clear without changing the sidecar
-                # are deferred. Corrupt/open failures and structured migration
-                # failures must surface now, before a later write transaction
-                # can retry coordination.
-                if isinstance(exc, DuckDBFactTermStoreLockedError) or str(exc) == "DuckDB is not installed":
+                # Availability failures remain deferred so callers can render
+                # their established sidecar-halt state. Legacy NFC migration
+                # semantic failures (malformed payloads or stale tokens) are
+                # deliberately not in this set: they must surface before a
+                # later SQLite write transaction retries coordination.
+                if (
+                    isinstance(exc, DuckDBFactTermStoreLockedError)
+                    or str(exc) == "DuckDB is not installed"
+                    or str(exc).startswith("failed to open DuckDB fact-term store:")
+                ):
                     pass
                 else:
                     raise
