@@ -14,6 +14,7 @@ import datetime
 import json
 import sqlite3
 import threading
+from contextlib import contextmanager
 from importlib import resources
 from pathlib import Path
 from typing import Any, Iterable
@@ -265,6 +266,28 @@ class Store:
             self._fact_terms.close()
             self._fact_terms = None
         self._conn.close()
+
+    @contextmanager
+    def immediate_transaction(self):
+        """Hold this store's lock and SQLite's cross-process write mutex.
+
+        Callers must keep the work here short.  In particular, this is suitable
+        for publishing a derived file from a fresh SQLite projection, but never
+        for provider or network work.
+        """
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield self._conn
+            except BaseException:
+                self._rollback_quietly()
+                raise
+            else:
+                try:
+                    self._conn.execute("COMMIT")
+                except BaseException:
+                    self._rollback_quietly()
+                    raise
 
     @property
     def inference_cache(self):
@@ -2219,32 +2242,16 @@ class Store:
             )
             return cur.rowcount == 1
 
-    def write_owned_repair_query_file(self, job_id: int, owner_token: str, *, policy_guard, writer) -> bool:
-        """Fence the derived-file boundary against a reclaimed owner.
-
-        This intentionally uses the existing writer; it does not attempt #388's
-        cross-process publication redesign.  The short SQLite write transaction
-        simply prevents a new owner from claiming between the ownership check and
-        this workflow's derived-file regeneration.
-        """
-        with self._lock:
-            self._conn.execute("BEGIN IMMEDIATE")
-            try:
-                owned = self._conn.execute(
-                    "SELECT 1 FROM repair_jobs WHERE id = ? AND status = 'running' AND owner_token = ? "
-                    "AND lease_until >= datetime('now')",
-                    (job_id, owner_token),
-                ).fetchone()
-                if owned is None:
-                    self._conn.execute("ROLLBACK")
-                    return False
-                policy_guard()
-                writer()
-                self._conn.execute("COMMIT")
-                return True
-            except Exception:
-                self._rollback_quietly()
-                raise
+    @staticmethod
+    def repair_query_publication_owned(
+        conn: sqlite3.Connection, job_id: int, owner_token: str
+    ) -> bool:
+        """Whether a repair worker may publish while its transaction is held."""
+        return conn.execute(
+            "SELECT 1 FROM repair_jobs WHERE id = ? AND status = 'running' AND owner_token = ? "
+            "AND lease_until >= datetime('now')",
+            (job_id, owner_token),
+        ).fetchone() is not None
 
     def finish_repair_job(self, job_id: int, owner_token: str, *, failed: bool = False, message: str = "") -> None:
         with self._lock:

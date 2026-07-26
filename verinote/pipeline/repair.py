@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from dataclasses import dataclass
+import sqlite3
 import threading
 from uuid import uuid4
 
@@ -166,15 +167,20 @@ def process_repair_job(
 
     thread = threading.Thread(target=heartbeat, name=f"verinote-repair-heartbeat-{job_id}", daemon=True)
     thread.start()
+
+    def publish_query_file() -> bool:
+        def guard(conn: sqlite3.Connection) -> bool:
+            policy_guard()
+            return Store.repair_query_publication_owned(conn, job_id, owner_token)
+
+        return write_query_file(store, root, publication_guard=guard) is not None
+
     try:
         while True:
             item = store.claim_next_repair_item(job_id, owner_token)
             if item is None:
                 try:
-                    if not store.write_owned_repair_query_file(
-                        job_id, owner_token, policy_guard=policy_guard,
-                        writer=lambda: write_query_file(store, root),
-                    ):
+                    if not publish_query_file():
                         return
                 except PolicyMissingError:
                     raise
@@ -228,10 +234,7 @@ def process_repair_job(
             # If it fails, the item remains done and a later worker regenerates
             # the file without calling that question's provider again.
             try:
-                if not store.write_owned_repair_query_file(
-                    job_id, owner_token, policy_guard=policy_guard,
-                    writer=lambda: write_query_file(store, root),
-                ):
+                if not publish_query_file():
                     return
             except PolicyMissingError:
                 raise

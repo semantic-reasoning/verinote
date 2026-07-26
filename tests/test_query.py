@@ -1,5 +1,8 @@
 # SPDX-License-Identifier: MPL-2.0
 import unicodedata
+import os
+import stat
+import threading
 
 import pytest
 
@@ -10,7 +13,9 @@ from verinote.pipeline.query import (
     query_path,
     query_schema_hint,
     translate_questions,
+    write_query_file,
 )
+import verinote.pipeline.query as query_module
 from verinote.pipeline.corroboration import CorroborationPolicyError
 from verinote.pipeline.query_intent import deterministic_query_intent
 from verinote.store import Store
@@ -52,6 +57,212 @@ def test_translate_persists_query_and_writes_file(tmp_path, fake_client, intent_
     assert draft.is_file()
     assert load_query(s) == draft.read_text(encoding="utf-8")
     assert f"answer_q{qid}" in load_query(s)
+
+
+def _translated_question(store: Store, text: str, rule: str) -> int:
+    qid = store.add_question(text)
+    store.set_question_query(qid, rule, "translated")
+    return qid
+
+
+def test_query_file_publishers_from_independent_stores_serialize(tmp_path, monkeypatch):
+    first = _store(tmp_path)
+    second = Store(tmp_path / "kb.sqlite")
+    second.init_schema()
+    _translated_question(first, "Synthetic one?", ".decl answer_q1()\nanswer_q1().")
+    _translated_question(first, "Synthetic two?", ".decl answer_q2()\nanswer_q2().")
+
+    entered_replace = threading.Event()
+    release_replace = threading.Event()
+    original_replace = os.replace
+
+    def paused_replace(source, destination):
+        entered_replace.set()
+        assert release_replace.wait(2)
+        original_replace(source, destination)
+
+    monkeypatch.setattr("verinote.pipeline.query.os.replace", paused_replace)
+    first_done = threading.Event()
+    second_done = threading.Event()
+    t1 = threading.Thread(target=lambda: (write_query_file(first, tmp_path), first_done.set()))
+    t2 = threading.Thread(target=lambda: (write_query_file(second, tmp_path), second_done.set()))
+    t1.start()
+    assert entered_replace.wait(2)
+    t2.start()
+    assert not second_done.wait(0.1)
+    release_replace.set()
+    t1.join(2)
+    t2.join(2)
+    assert first_done.is_set() and second_done.is_set()
+    expected = "\n".join(q["query_dl"] for q in second.questions() if q["status"] == "translated") + "\n"
+    assert query_path(tmp_path).read_text(encoding="utf-8") == expected
+
+
+def test_query_file_readers_keep_old_complete_output_while_staging(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    _translated_question(store, "Synthetic?", ".decl answer_q1()\nanswer_q1().")
+    path = query_path(tmp_path)
+    path.parent.mkdir()
+    path.write_text("old complete output\n", encoding="utf-8")
+    entered_replace = threading.Event()
+    release_replace = threading.Event()
+    original_replace = os.replace
+
+    def paused_replace(source, destination):
+        entered_replace.set()
+        assert release_replace.wait(2)
+        original_replace(source, destination)
+
+    monkeypatch.setattr("verinote.pipeline.query.os.replace", paused_replace)
+    thread = threading.Thread(target=lambda: write_query_file(store, tmp_path))
+    thread.start()
+    assert entered_replace.wait(2)
+    assert path.read_text(encoding="utf-8") == "old complete output\n"
+    release_replace.set()
+    thread.join(2)
+    assert not thread.is_alive()
+
+
+@pytest.mark.parametrize("failure", ["fsync", "replace"])
+def test_query_file_staging_or_replace_failure_keeps_existing_output_and_cleans_temp(
+    tmp_path, monkeypatch, failure
+):
+    store = _store(tmp_path)
+    _translated_question(store, "Synthetic?", ".decl answer_q1()\nanswer_q1().")
+    path = query_path(tmp_path)
+    path.parent.mkdir()
+    path.write_text("old complete output\n", encoding="utf-8")
+    if failure == "fsync":
+        monkeypatch.setattr("verinote.pipeline.query.os.fsync", lambda *_: (_ for _ in ()).throw(OSError("synthetic")))
+    else:
+        monkeypatch.setattr("verinote.pipeline.query.os.replace", lambda *_: (_ for _ in ()).throw(OSError("synthetic")))
+
+    with pytest.raises(OSError, match="synthetic"):
+        write_query_file(store, tmp_path)
+
+    assert path.read_text(encoding="utf-8") == "old complete output\n"
+    assert not list(path.parent.glob(".query.dl.*"))
+
+
+def test_query_file_preserves_existing_mode(tmp_path):
+    store = _store(tmp_path)
+    _translated_question(store, "Synthetic?", ".decl answer_q1()\nanswer_q1().")
+    path = query_path(tmp_path)
+    path.parent.mkdir()
+    path.write_text("old\n", encoding="utf-8")
+    path.chmod(0o640)
+
+    write_query_file(store, tmp_path)
+
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+
+
+def test_query_file_uses_0644_for_new_file(tmp_path):
+    store = _store(tmp_path)
+    _translated_question(store, "Synthetic?", ".decl answer_q1()\nanswer_q1().")
+
+    path = write_query_file(store, tmp_path)
+
+    assert path is not None
+    assert stat.S_IMODE(path.stat().st_mode) == 0o644
+
+
+def test_query_file_mode_does_not_require_fchmod(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    _translated_question(store, "Synthetic?", ".decl answer_q1()\nanswer_q1().")
+    monkeypatch.delattr(query_module.os, "fchmod", raising=False)
+
+    path = write_query_file(store, tmp_path)
+
+    assert path is not None
+    assert stat.S_IMODE(path.stat().st_mode) == 0o644
+
+
+def test_query_file_applies_mode_before_staged_file_fsync(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    _translated_question(store, "Synthetic?", ".decl answer_q1()\nanswer_q1().")
+    calls = []
+    original_chmod = os.chmod
+    original_fsync = os.fsync
+
+    def record_chmod(*args):
+        calls.append("chmod")
+        return original_chmod(*args)
+
+    def record_fsync(*args):
+        calls.append("fsync")
+        return original_fsync(*args)
+
+    monkeypatch.setattr(query_module.os, "chmod", record_chmod)
+    monkeypatch.setattr(query_module.os, "fsync", record_fsync)
+
+    write_query_file(store, tmp_path)
+
+    assert calls.index("chmod") < calls.index("fsync")
+
+
+def test_directory_fsync_is_called_after_query_file_replacement(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    _translated_question(store, "Synthetic?", ".decl answer_q1()\nanswer_q1().")
+    calls = []
+    monkeypatch.setattr(query_module, "_fsync_directory", lambda path: calls.append(path))
+
+    write_query_file(store, tmp_path)
+
+    assert calls == [query_path(tmp_path).parent]
+
+
+def test_directory_fsync_skips_platforms_without_directory_open_support(tmp_path, monkeypatch):
+    monkeypatch.delattr(query_module.os, "O_DIRECTORY", raising=False)
+    monkeypatch.setattr(query_module.os, "open", lambda *_: pytest.fail("directory must not be opened"))
+
+    query_module._fsync_directory(tmp_path)
+
+
+def test_directory_fsync_ignores_unsupported_sync_error(tmp_path, monkeypatch):
+    closed = []
+    monkeypatch.setattr(query_module.os, "open", lambda *_: 42)
+    monkeypatch.setattr(
+        query_module.os,
+        "fsync",
+        lambda _: (_ for _ in ()).throw(OSError(query_module.errno.EINVAL, "unsupported")),
+    )
+    monkeypatch.setattr(query_module.os, "close", closed.append)
+
+    query_module._fsync_directory(tmp_path)
+
+    assert closed == [42]
+
+
+def test_directory_fsync_propagates_supported_platform_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(query_module.os, "open", lambda *_: 42)
+    monkeypatch.setattr(
+        query_module.os,
+        "fsync",
+        lambda _: (_ for _ in ()).throw(OSError(query_module.errno.EIO, "synthetic")),
+    )
+    monkeypatch.setattr(query_module.os, "close", lambda _: None)
+
+    with pytest.raises(OSError, match="synthetic"):
+        query_module._fsync_directory(tmp_path)
+
+
+def test_directory_fsync_failure_reports_failed_publish_after_replace(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    _translated_question(store, "Synthetic?", ".decl answer_q1()\nanswer_q1().")
+    path = query_path(tmp_path)
+    path.parent.mkdir()
+    path.write_text("old complete output\n", encoding="utf-8")
+    monkeypatch.setattr(
+        query_module,
+        "_fsync_directory",
+        lambda _: (_ for _ in ()).throw(OSError("synthetic directory fsync failure")),
+    )
+
+    with pytest.raises(OSError, match="directory fsync failure"):
+        write_query_file(store, tmp_path)
+
+    assert path.read_text(encoding="utf-8") == ".decl answer_q1()\nanswer_q1().\n"
 
 
 def test_translate_survives_a_reason_on_a_well_classified_intent(
