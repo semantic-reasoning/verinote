@@ -19,7 +19,16 @@
   <label>Directory
     <input type="text" name="root" value="{{ root }}" placeholder="/path/to/kb">
   </label>
-  <button class="btn" type="submit">Open KB</button>
+  <button class="btn" type="submit">Open in this web process</button>
+</form>
+<p class="muted">Opening a KB changes only this web process.</p>
+<form class="settings" action="/settings/root/persist" method="post">
+  <input type="hidden" name="root" value="{{ root }}">
+  <label class="inline-setting">
+    <input type="checkbox" name="confirm_persistence" value="on" required>
+    Save <code>{{ root }}</code> as this machine's active KB for future verinote web processes
+  </label>
+  <button class="btn ghost" type="submit">Save machine-wide active KB</button>
 </form>
 
 <h2>LLM provider</h2>

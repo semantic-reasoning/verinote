@@ -10,6 +10,7 @@ from __future__ import annotations
 from importlib import resources
 import json
 import logging
+import os
 from pathlib import Path
 import threading
 from threading import Lock
@@ -27,7 +28,6 @@ from verinote.config import (
     TESTABLE_PROVIDERS,
     Config,
     ConfigCorruptError,
-    app_config_path,
     assert_settings_intact,
     save_active_root,
     save_settings,
@@ -486,8 +486,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     def _open_root(root: Path) -> None:
         """Point this running app at a KB root, creating it if needed."""
-        root = root.expanduser().resolve()
         assert_kb_root_is_safe_to_create(root)
+        root = root.expanduser().resolve()
         root.mkdir(parents=True, exist_ok=True)
         next_cfg = Config.for_root(root)
         # Refuse BEFORE installing: transiently swapping in a corrupt cfg would let
@@ -505,7 +505,6 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         if resolve_policy(next_store).status is PolicyStatus.UNRECORDED_DEFAULT:
             write_default_policy(next_store, root, origin="scaffold")
 
-        save_active_root(root)
         old_store = app.state.store
         if old_store is not None:
             old_store.close()
@@ -516,7 +515,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         return templates.TemplateResponse(
             request,
             "kb_select.html",
-            {"error": error, "config_path": app_config_path()},
+            {"error": error},
             status_code=status_code,
         )
 
@@ -1270,8 +1269,17 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.post("/kb/select", response_class=HTMLResponse)
     def select_kb(request: Request, root: str = Form(...)):
+        path = root.strip()
+        if not path:
+            return _kb_select(request, error="KB directory is required", status_code=400)
         try:
-            _open_root(Path(root))
+            _open_root(Path(path))
+        except ConfigCorruptError as e:
+            return _kb_select(
+                request,
+                error=f"refused to open KB — its config.json is corrupt: {e}",
+                status_code=400,
+            )
         except (KBLocationError, OSError) as e:
             return _kb_select(request, error=f"could not open KB: {e}", status_code=400)
         return RedirectResponse("/", status_code=303)
@@ -1841,6 +1849,59 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         except (KBLocationError, OSError) as e:
             return _settings(request, error=f"could not open KB directory: {e}", status_code=400)
         return RedirectResponse("/", status_code=303)
+
+    @app.post("/settings/root/persist", response_class=HTMLResponse)
+    def persist_root(
+        request: Request,
+        root: str = Form(...),
+        confirm_persistence: str | None = Form(None),
+    ):
+        """Persist the current KB only after an explicit, path-bound confirmation."""
+        cfg = app.state.cfg
+        if cfg is None:
+            return _kb_select(request)
+        if os.environ.get("VERINOTE_ROOT") is not None:
+            return _settings(
+                request,
+                error="VERINOTE_ROOT controls this process, so its KB cannot be saved as the machine-wide active KB.",
+                status_code=400,
+            )
+
+        path = root.strip()
+        if not path:
+            return _settings(request, error="KB directory is required", status_code=400)
+        try:
+            # Validate the submitted path independently of the active config. This
+            # keeps a forged persistence form from recording a worktree descendant.
+            assert_kb_root_is_safe_to_create(path)
+            target = Path(path).expanduser().resolve()
+        except (KBLocationError, OSError) as e:
+            return _settings(
+                request,
+                error=f"could not save KB directory: {e}",
+                status_code=400,
+            )
+        if target != cfg.root:
+            return _settings(
+                request,
+                error="Open this KB before saving it as the machine-wide active KB.",
+                status_code=400,
+            )
+        if confirm_persistence != "on":
+            return _settings(
+                request,
+                error="Confirm the machine-wide KB change before saving it.",
+                status_code=400,
+            )
+        try:
+            save_active_root(target)
+        except OSError as e:
+            return _settings(
+                request,
+                error=f"could not save KB directory: {e}",
+                status_code=400,
+            )
+        return RedirectResponse("/settings", status_code=303)
 
     @app.post("/settings/test", response_class=HTMLResponse)
     def test_connection(request: Request):

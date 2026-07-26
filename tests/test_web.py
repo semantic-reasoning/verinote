@@ -13,7 +13,13 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
 import verinote.web.app as webapp  # noqa: E402
-from verinote.config import Config, ConfigCorruptError, save_settings  # noqa: E402
+from verinote.config import (  # noqa: E402
+    Config,
+    ConfigCorruptError,
+    app_config_path,
+    read_app_config,
+    save_settings,
+)
 from verinote.engine import CheckReport, DEFAULT_POLICY, FindingDetail  # noqa: E402
 from verinote.engine.terms import Atom, Compound, StringLit  # noqa: E402
 from verinote.kb_location import KBRootSafetyError  # noqa: E402
@@ -359,6 +365,7 @@ def test_select_kb_activates_app(tmp_path, monkeypatch):
     assert (kb / "kb.sqlite").is_file()
     assert (kb / "policy" / "logic-policy.dl").is_file()
     assert c.app.state.cfg.root == kb.resolve()
+    assert not app_config_path().exists()
     assert "Knowledge base" in c.get("/").text
 
 
@@ -3927,6 +3934,7 @@ def test_settings_switches_active_kb_root(tmp_path, monkeypatch):
     assert c.app.state.cfg.root == other.resolve()
     assert c.app.state.store.db_path == other.resolve() / "kb.sqlite"
     assert (other / "kb.sqlite").is_file()
+    assert not app_config_path().exists()
     assert "Review queue is empty" in c.get("/review").text
     assert str(other.resolve()) in c.get("/").text
 
@@ -3938,6 +3946,125 @@ def test_settings_rejects_empty_kb_root(tmp_path):
 
     assert r.status_code == 400
     assert "KB directory is required" in r.text
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/kb/select", "/settings/root", "/settings/root/persist"],
+)
+def test_web_root_selection_errors_leave_active_root_and_app_config_unchanged(
+    tmp_path, path
+):
+    c = _client(tmp_path)
+    before_root = c.app.state.cfg.root
+    config_path = app_config_path()
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        '{"active_root": "/synthetic/saved-kb", "extra": "keep"}\n',
+        encoding="utf-8",
+    )
+    before_config = config_path.read_bytes()
+
+    r = c.post(
+        path,
+        data={"root": "relative-kb", "confirm_persistence": "on"},
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 400
+    assert "absolute path" in r.text
+    assert c.app.state.cfg.root == before_root
+    assert config_path.read_bytes() == before_config
+
+
+@pytest.mark.parametrize("path", ["/kb/select", "/settings/root"])
+def test_reopening_selected_kb_does_not_modify_saved_active_root(tmp_path, path):
+    c = _client(tmp_path)
+    config_path = app_config_path()
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        '{"active_root": "/synthetic/saved-kb", "extra": "keep"}\n',
+        encoding="utf-8",
+    )
+    before = config_path.read_bytes()
+
+    r = c.post(path, data={"root": str(tmp_path.resolve())}, follow_redirects=False)
+
+    assert r.status_code == 303
+    assert c.app.state.cfg.root == tmp_path.resolve()
+    assert config_path.read_bytes() == before
+
+
+def test_settings_renders_explicit_machine_wide_kb_confirmation(tmp_path):
+    c = _client(tmp_path)
+
+    r = c.get("/settings")
+
+    assert r.status_code == 200
+    assert 'action="/settings/root/persist"' in r.text
+    assert 'name="confirm_persistence"' in r.text
+    assert str(tmp_path.resolve()) in r.text
+    assert "future verinote web processes" in r.text
+
+
+def test_settings_persist_active_kb_requires_confirmation(tmp_path):
+    c = _client(tmp_path)
+
+    r = c.post(
+        "/settings/root/persist",
+        data={"root": str(tmp_path.resolve())},
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 400
+    assert "Confirm the machine-wide KB change" in r.text
+    assert not app_config_path().exists()
+
+
+def test_settings_persist_active_kb_after_explicit_confirmation(tmp_path):
+    c = _client(tmp_path)
+
+    r = c.post(
+        "/settings/root/persist",
+        data={"root": str(tmp_path.resolve()), "confirm_persistence": "on"},
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 303
+    assert r.headers["location"] == "/settings"
+    assert read_app_config()["active_root"] == str(tmp_path.resolve())
+
+
+def test_settings_persist_refuses_unsafe_root_without_touching_app_config(tmp_path):
+    c = _client(tmp_path)
+    root, expected = _unsafe_ui_root(tmp_path, "normal-worktree")
+
+    r = c.post(
+        "/settings/root/persist",
+        data={"root": str(root), "confirm_persistence": "on"},
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 400
+    assert "inside Git worktree" in r.text
+    assert c.app.state.cfg.root == tmp_path.resolve()
+    assert not expected.exists()
+    assert not app_config_path().exists()
+
+
+def test_settings_persist_refuses_when_verinote_root_overrides(tmp_path, monkeypatch):
+    monkeypatch.setenv("VERINOTE_ROOT", str(tmp_path))
+    c = _client(tmp_path)
+
+    r = c.post(
+        "/settings/root/persist",
+        data={"root": str(tmp_path.resolve()), "confirm_persistence": "on"},
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 400
+    assert "VERINOTE_ROOT controls this process" in r.text
+    assert not app_config_path().exists()
 
 
 def test_settings_never_renders_api_key(tmp_path):
