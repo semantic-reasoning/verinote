@@ -173,6 +173,7 @@ def _declarations(body: str) -> dict[str, str]:
 # palettes so neither can regress.
 
 WCAG_AA_NORMAL = 4.5
+NON_TEXT_CONTRAST = 3.0
 
 # banner selector -> (tint token, text token), both resolved within one palette.
 BANNER_CONTRAST = {selector: (f"--{stem}-bg", f"--{stem}") for selector, stem in BANNERS.items()}
@@ -280,6 +281,23 @@ def _banner_contrast(palette_block: str, selector: str) -> tuple[float, tuple[fl
 def _palette_blocks() -> dict[str, str]:
     css = _read_css()
     return {"dark": _dark_root_block(css), "light": _light_media_block(css)}
+
+
+def _terminal_progress_contrast(palette_block: str) -> float:
+    """Contrast between the terminal progress fill and its opaque stripe."""
+    rules = _rules(_rule_bodies(_read_css()))
+    body = rules.get(".progress.is-done .progress-complete")
+    assert body is not None, "app.css has no terminal progress fill rule"
+    declarations = _declarations(body)
+    tokens = _palette_tokens(palette_block)
+    fill = _resolve_rgba(declarations["background"], tokens)
+    stripe_match = re.search(
+        r"var\(\s*(--[A-Za-z0-9_-]+)\s*\)", declarations["background-image"]
+    )
+    assert stripe_match, "terminal progress gradient has no palette stripe colour"
+    stripe = _resolve_rgba(f"var({stripe_match.group(1)})", tokens)
+    assert fill[3] == stripe[3] == 1.0, "terminal progress colours must be opaque"
+    return _contrast_ratio(fill[:3], stripe[:3])
 
 
 def test_rule_bodies_are_not_empty_after_cutting_palettes() -> None:
@@ -524,3 +542,13 @@ def test_banner_tints_are_translucent_so_the_composite_matters(palette: str) -> 
             f"{selector}'s tint {tint_token} in the {palette} palette is opaque "
             f"(alpha {alpha}); the contrast test would never exercise compositing."
         )
+
+
+@pytest.mark.parametrize("palette", sorted(_palette_blocks()))
+def test_terminal_progress_stripe_has_non_text_contrast(palette: str) -> None:
+    """Terminal stripes must remain visible against the completed fill in both palettes."""
+    ratio = _terminal_progress_contrast(_palette_blocks()[palette])
+    assert ratio >= NON_TEXT_CONTRAST, (
+        f"terminal progress stripe in the {palette} palette is {ratio:.3f}:1 against "
+        f"the completed fill, under the {NON_TEXT_CONTRAST}:1 non-text contrast floor"
+    )

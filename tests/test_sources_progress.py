@@ -480,6 +480,78 @@ def test_terminal_progress_complete_uses_a_repeating_gradient_pattern() -> None:
     ), "completed terminal progress must use a repeating-linear-gradient pattern"
 
 
+def _terminal_progress_palette_tokens(css: str, palette: str) -> dict[str, str]:
+    """Return the declarations of the requested root palette."""
+    if palette == "dark":
+        match = re.search(r"^:root\s*\{(?P<body>[^{}]*)\}", css, re.MULTILINE)
+    else:
+        match = re.search(
+            r"@media\s*\(\s*prefers-color-scheme\s*:\s*light\s*\)\s*"
+            r"\{\s*:root\s*\{(?P<body>[^{}]*)\}",
+            css,
+            re.DOTALL,
+        )
+    assert match, f"app.css has no {palette} root palette"
+    return {
+        name: value.strip()
+        for name, value in re.findall(r"(--[A-Za-z0-9_-]+)\s*:\s*([^;]+);", match.group("body"))
+    }
+
+
+def _terminal_progress_rgb(value: str, tokens: dict[str, str]) -> tuple[int, int, int]:
+    """Resolve an opaque hex colour or palette var used by the terminal progress bar."""
+    var = re.fullmatch(r"var\(\s*(--[A-Za-z0-9_-]+)\s*\)", value.strip())
+    if var:
+        assert var.group(1) in tokens, f"{var.group(1)} is absent from this palette"
+        return _terminal_progress_rgb(tokens[var.group(1)], tokens)
+    hex_value = value.strip().removeprefix("#")
+    assert re.fullmatch(r"[0-9a-fA-F]{6}", hex_value), (
+        f"terminal progress colour {value!r} is not an opaque six-digit hex colour"
+    )
+    return tuple(int(hex_value[i : i + 2], 16) for i in (0, 2, 4))  # type: ignore[return-value]
+
+
+def _relative_luminance(rgb: tuple[int, int, int]) -> float:
+    channels = []
+    for channel in rgb:
+        value = channel / 255
+        channels.append(value / 12.92 if value <= 0.04045 else ((value + .055) / 1.055) ** 2.4)
+    return .2126 * channels[0] + .7152 * channels[1] + .0722 * channels[2]
+
+
+def _contrast_ratio(first: tuple[int, int, int], second: tuple[int, int, int]) -> float:
+    low, high = sorted((_relative_luminance(first), _relative_luminance(second)))
+    return (high + .05) / (low + .05)
+
+
+@pytest.mark.parametrize("palette", ("dark", "light"))
+def test_terminal_progress_stripe_has_wcag_non_text_contrast(palette: str) -> None:
+    """The terminal-only stripe clears 3:1 against the completed fill in each palette."""
+    css = CSS_PATH.read_text(encoding="utf-8")
+    rule = re.search(
+        r"\.progress\.is-done\s+\.progress-complete\s*\{(?P<body>[^}]*)\}",
+        css,
+        flags=re.DOTALL,
+    )
+    assert rule, "app.css has no terminal completed-progress rule"
+    tokens = _terminal_progress_palette_tokens(css, palette)
+    fill = re.search(r"background\s*:\s*([^;]+);", rule.group("body"))
+    stripe = re.search(
+        r"repeating-linear-gradient\([^)]*?\b(var\(\s*--[A-Za-z0-9_-]+\s*\))",
+        rule.group("body"),
+        flags=re.DOTALL,
+    )
+    assert fill and stripe, "terminal progress must define both fill and palette stripe colours"
+    ratio = _contrast_ratio(
+        _terminal_progress_rgb(fill.group(1), tokens),
+        _terminal_progress_rgb(stripe.group(1), tokens),
+    )
+    assert ratio >= 3.0, (
+        f"terminal progress stripe in the {palette} palette is {ratio:.3f}:1 against "
+        "the completed fill; WCAG non-text contrast requires at least 3.0:1"
+    )
+
+
 # --- the poll (#228, second half) -------------------------------------------
 
 

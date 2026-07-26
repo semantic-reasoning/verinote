@@ -8,7 +8,7 @@ import re
 
 import pytest
 
-from tests.css_signal_guard import assert_pairwise_distinct_signals, non_colour_drawn_signals
+from css_signal_guard import assert_pairwise_distinct_signals, non_colour_drawn_signals
 
 CSS_PATH = Path(__file__).resolve().parents[1] / "verinote" / "web" / "static" / "app.css"
 
@@ -88,6 +88,25 @@ def test_pseudo_without_non_empty_content_does_not_count_as_a_signal(
         (".ask-verdict-verified .ask-verdict", selector),
     )
     assert not any(prop == "::before|content" for prop, _ in signals)
+
+
+@pytest.mark.parametrize("declaration", ('content: none;', 'content: "";', 'display: none;'))
+def test_later_pseudo_declaration_overrides_an_earlier_glyph(declaration: str) -> None:
+    """An exact selector's later declaration controls whether its pseudo can signal."""
+    selector = ".ask-verdict-verified .ask-verdict::before"
+    baseline = non_colour_drawn_signals(
+        _css(),
+        (".ask-verdict-verified .ask-verdict", selector),
+    )
+    assert ("::before|content", "✓") in baseline
+
+    mutated = f"{_css()}\n{selector} {{ {declaration} }}\n"
+    signals = non_colour_drawn_signals(
+        mutated,
+        (".ask-verdict-verified .ask-verdict", selector),
+    )
+
+    assert not any(prop.startswith("::before|") for prop, _ in signals)
 
 
 def test_colour_only_mutation_fails_the_progress_guard() -> None:

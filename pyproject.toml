@@ -55,6 +55,7 @@ packages = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 markers = ["contract: opt-in tests that call a real LLM provider (issue #241)"]
 
 [tool.ruff]
