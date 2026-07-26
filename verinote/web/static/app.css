@@ -2,6 +2,7 @@
   color-scheme: dark;
   --bg: #0f1115; --panel: #171a21; --line: #262b36; --fg: #e6e9ef;
   --muted: #8b93a5; --accent: #5b9dff; --ok: #3fb950; --warn: #d29922; --danger: #f0526d;
+  --progress-terminal-stripe: #0f1115;
   --on-accent: #06101f;
   --editing-bg: rgba(91, 157, 255, .06);
   --ok-bg: rgba(63, 185, 80, .12);
@@ -16,6 +17,7 @@
     color-scheme: light;
     --bg: #f6f8fa; --panel: #ffffff; --line: #d0d7de; --fg: #1f2328;
     --muted: #59636e; --accent: #0969da; --ok: #116329; --warn: #7d4e00; --danger: #a40e26;
+    --progress-terminal-stripe: #ffffff;
     --on-accent: #ffffff;
     --editing-bg: rgba(9, 105, 218, .06);
     --ok-bg: rgba(26, 127, 55, .10);
@@ -333,7 +335,9 @@ tr.editing td { background: var(--editing-bg); }
    the job reports `done`. Failed chunks keep the danger tone in both states -- a run
    that finished with failures is not a clean pass, and the segment is the only place
    on the bar that says so. Colour is not the sole channel for that: the bar sits
-   beside the status badge and the "N failed" text, which both say it in words. */
+   beside the status badge and the "N failed" text, which both say it in words. The
+   stripe marks terminal completion, not success: a done job can still have failed
+   chunks. */
 .progress { display: flex; width: 100%; height: 4px; margin: .4rem 0 .15rem;
   border-radius: 999px; overflow: hidden; background: var(--line); }
 .progress-complete { background: var(--accent); }
@@ -342,7 +346,7 @@ tr.editing td { background: var(--editing-bg); }
   background-image: repeating-linear-gradient(
     135deg,
     transparent 0 .25rem,
-    rgb(0 0 0 / .18) .25rem .5rem
+    var(--progress-terminal-stripe) .25rem .5rem
   );
 }
 .progress-failed { background: var(--danger); }

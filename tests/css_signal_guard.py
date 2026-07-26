@@ -33,7 +33,8 @@ def parse_rules(css: str) -> list[tuple[str, str]]:
     """Return flat CSS rules after removing comments.
 
     This is deliberately shallow static analysis: it does not model nesting,
-    selector specificity, inheritance, or the cascade.
+    selector specificity, or inheritance.  For repeated exact selectors it does
+    apply declaration order (and ``!important``) within that selector scope.
     """
     css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
     return [(match.group("selector").strip(), match.group("body")) for match in RULE.finditer(css)]
@@ -64,6 +65,25 @@ def selector_declarations(css: str, selectors: Sequence[str]) -> list[tuple[str,
     return found
 
 
+def effective_selector_declarations(
+    css: str, selectors: Sequence[str]
+) -> list[tuple[str, str]]:
+    """Return the final applicable declaration per exact selector scope and property.
+
+    The parser intentionally only knows exact selectors, so this is not a general
+    cascade implementation.  Within one exact selector, though, later declarations
+    win unless an earlier declaration is ``!important``.
+    """
+    effective: dict[str, tuple[str, bool]] = {}
+    for prop, value in selector_declarations(css, selectors):
+        clean_value = value.removesuffix("!important").rstrip()
+        important = clean_value != value
+        previous = effective.get(prop)
+        if previous is None or important or not previous[1]:
+            effective[prop] = (clean_value, important)
+    return [(prop, value) for prop, (value, _) in effective.items()]
+
+
 def _paints(text: str) -> bool:
     return any(unicodedata.category(char) not in INVISIBLE_CATEGORIES for char in text)
 
@@ -91,24 +111,26 @@ def non_colour_drawn_signals(css: str, selectors: Sequence[str]) -> frozenset[tu
     A ``::before`` rule without non-empty drawn ``content`` is ignored entirely: without
     a glyph it is not a usable drawn signal for this guard.
     """
-    declarations = selector_declarations(css, selectors)
-    pseudo_has_content = any(
-        prop == "::before|content" and _drawn(prop, value) is not None
-        for prop, value in declarations
-    )
     signals = set()
-    for prop, value in declarations:
-        scope, base = prop.split("|", 1)
-        if scope == "::before" and not pseudo_has_content:
-            continue
-        if COLOUR_PROPERTY.match(base) or not SIGNAL_PROPERTY.match(base):
-            continue
-        stripped = " ".join(COLOUR_VAR.sub(" ", value).split())
-        if not stripped:
-            continue
-        drawn = _drawn(prop, stripped)
-        if drawn is not None:
-            signals.add((prop, drawn))
+    for selector in selectors:
+        declarations = effective_selector_declarations(css, (selector,))
+        values = dict(declarations)
+        pseudo_has_content = _drawn(
+            "::before|content", values.get("::before|content", "none")
+        ) is not None
+        pseudo_is_displayed = values.get("::before|display") != "none"
+        for prop, value in declarations:
+            scope, base = prop.split("|", 1)
+            if scope == "::before" and (not pseudo_has_content or not pseudo_is_displayed):
+                continue
+            if COLOUR_PROPERTY.match(base) or not SIGNAL_PROPERTY.match(base):
+                continue
+            stripped = " ".join(COLOUR_VAR.sub(" ", value).split())
+            if not stripped:
+                continue
+            drawn = _drawn(prop, stripped)
+            if drawn is not None:
+                signals.add((prop, drawn))
     return frozenset(signals)
 
 
