@@ -844,6 +844,101 @@ def test_upload_normalizes_nfc_source_identity_and_chunk_text(tmp_path, monkeypa
     assert chunk_inputs == [nfc_text, nfc_text]
 
 
+def test_upload_nfd_korean_fact_and_query_match_nfc(
+    tmp_path, monkeypatch, fake_client, intent_payload
+):
+    """#411: NFC/NFD-equivalent Korean input must remain query-equivalent end to end."""
+    nfd_filename = unicodedata.normalize("NFD", "합성문서.txt")
+    nfc_filename = unicodedata.normalize("NFC", nfd_filename)
+    nfd_subject = unicodedata.normalize("NFD", "합성프로젝트")
+    nfc_subject = unicodedata.normalize("NFC", nfd_subject)
+    nfd_relation = unicodedata.normalize("NFD", "목적")
+    nfc_relation = unicodedata.normalize("NFC", nfd_relation)
+    nfd_object = unicodedata.normalize("NFD", "검증목표")
+    nfc_object = unicodedata.normalize("NFC", nfd_object)
+    nfd_text = f"{nfd_subject} {nfd_relation} {nfd_object}"
+    nfc_text = unicodedata.normalize("NFC", nfd_text)
+    assert nfd_text != nfc_text
+
+    nfc_question = f"사실 확인 {nfc_subject}"
+    nfd_question = unicodedata.normalize("NFD", nfc_question)
+    assert nfd_question != nfc_question
+
+    def intent_for(question: str):
+        assert question in {nfc_question, nfd_question}
+        return intent_payload(
+            "lookup_object",
+            subject=nfd_subject if question == nfd_question else nfc_subject,
+            relation=nfd_relation if question == nfd_question else nfc_relation,
+        )
+
+    client = fake_client(
+        [ExtractedFact(nfd_subject, nfd_relation, nfd_object, 0.9)], intent=intent_for
+    )
+    extraction_inputs = []
+    extract_facts = client.extract_facts
+
+    def capture_extract_facts(*, source_text: str, schema_hint: str = ""):
+        extraction_inputs.append(source_text)
+        return extract_facts(source_text=source_text, schema_hint=schema_hint)
+
+    monkeypatch.setattr(client, "extract_facts", capture_extract_facts)
+    monkeypatch.setattr(webapp, "get_client", lambda _cfg: client)
+    c = _client(tmp_path)
+
+    upload = c.post(
+        "/sources",
+        files={"file": (nfd_filename, nfd_text.encode("utf-8"), "text/plain")},
+        follow_redirects=False,
+    )
+    assert upload.status_code == 303
+
+    store = c.app.state.store
+
+    def extracted_fact():
+        facts = [fact for fact in store.review_queue() if fact["subject"] == nfc_subject]
+        assert len(facts) == 1
+
+    _wait_for(extracted_fact)
+    source = store.get_source_by_path(f"sources/{nfc_filename}")
+    assert source is not None
+    artifact = store.latest_source_text_artifact(int(source["id"]))
+    assert artifact is not None
+    assert (tmp_path / artifact["path"]).read_text(encoding="utf-8") == nfc_text
+    assert extraction_inputs == [nfc_text]
+
+    fact = next(fact for fact in store.review_queue() if fact["subject"] == nfc_subject)
+    assert (fact["subject"], fact["relation"], fact["object"]) == (
+        nfc_subject,
+        nfc_relation,
+        nfc_object,
+    )
+    assert store.get_fact_terms(int(fact["id"])) == (
+        StringLit(nfc_subject),
+        StringLit(nfc_relation),
+        StringLit(nfc_object),
+    )
+
+    accepted = c.post(f"/facts/{fact['id']}/accept", follow_redirects=False)
+    assert accepted.status_code == 200
+    assert store.get_fact(int(fact["id"]))["status"] == "confirmed"
+
+    answers = []
+    for question in (nfd_question, nfc_question):
+        response = c.post("/ask", data={"question": question})
+        assert response.status_code == 200
+        body = unescape(response.text)
+        assert "VERIFIED — engine" in body
+        match = re.search(
+            r'<div class="answer-box">\s*<pre>(.*?)</pre>', body, flags=re.DOTALL
+        )
+        assert match is not None
+        answers.append(match.group(1).strip())
+
+    assert answers[0] == answers[1]
+    assert answers[0].startswith(f"{nfc_subject}, {nfc_relation}, {nfc_object}")
+
+
 def test_upload_rejects_unsupported_type(tmp_path):
     c = _client(tmp_path)
     r = c.post("/sources", files={"file": ("blob.bin", b"\x00\x01", "application/octet-stream")})
