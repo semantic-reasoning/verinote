@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: MPL-2.0
 import unicodedata
 
+import pytest
+
 from verinote.pipeline.corroboration import (
     CorroborationPolicyError,
     corroboration,
@@ -33,6 +35,11 @@ functional("quoted \" relation").
         "established_on",
         'quoted " relation',
     }
+
+
+def test_functional_relations_rejects_none_policy():
+    with pytest.raises(TypeError, match="policy_dl"):
+        functional_relations(None)
 
 
 def test_store_relation_aliases_include_default_policy(tmp_path):

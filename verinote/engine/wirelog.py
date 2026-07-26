@@ -541,20 +541,20 @@ def _render_row(row: Iterable[object]) -> str:
     return " ".join(escape_string_value(str(value)) for value in row)
 
 
-def run_check(
-    dl_text: str, *, policy_dl: str | None = None, query_dl: str | None = None
-) -> CheckReport:
+def run_check(dl_text: str, *, policy_dl: str, query_dl: str | None = None) -> CheckReport:
     """Run the legacy pyrewire policy path over compiled facts.
 
     `dl_text` is `compile_dl` output (the verbatim engine input). `policy_dl`
-    defaults to `DEFAULT_POLICY`. `query_dl` holds `answer_q<id>(...)` query rules
+    is the policy to execute. `query_dl` holds `answer_q<id>(...)` query rules
     (see pipeline.query). Derived `error_*`/`warn_*` tuples become findings
     (`errors > 0` marks the report not-ok; it does not block promotion or query);
     `answer_q<id>` tuples become answers. If pyrewire is absent we still return a
     legacy compatibility report flagged
     `engine_available=False`.
     """
-    policy = policy_dl if policy_dl is not None else DEFAULT_POLICY
+    if not isinstance(policy_dl, str):
+        raise TypeError("policy_dl must be a str")
+    policy = policy_dl
     facts = _parse_relation_facts(dl_text)
     present = {rel for _, rel, _ in facts}
     dead = dead_rule_warnings(policy, present)

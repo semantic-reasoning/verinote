@@ -38,7 +38,6 @@ from verinote.engine.terms import (
 )
 from verinote.engine.wirelog import (
     CheckReport,
-    DEFAULT_POLICY,
     NO_FINDINGS_TEXT,
     FindingRow,
     answer_bucket_sort_key,
@@ -73,10 +72,12 @@ class _Binding:
 def run_check_duckdb(
     facts: Iterable[Mapping[str, object]],
     *,
-    policy_dl: str | None = None,
+    policy_dl: str,
     query_dl: str | None = None,
 ) -> CheckReport:
     """Run supported non-recursive Datalog rules through an in-memory DuckDB DB."""
+    if not isinstance(policy_dl, str):
+        raise TypeError("policy_dl must be a str")
     cache = DuckDBInferenceCache()
     try:
         return cache.run_check(facts, policy_dl=policy_dl, query_dl=query_dl)
@@ -111,17 +112,18 @@ class DuckDBInferenceCache:
         self,
         facts: Iterable[Mapping[str, object]],
         *,
-        policy_dl: str | None = None,
+        policy_dl: str,
         query_dl: str | None = None,
     ) -> CheckReport:
         """Run a check while reusing the cached DuckDB base relation."""
+        if not isinstance(policy_dl, str):
+            raise TypeError("policy_dl must be a str")
         try:
             import duckdb
         except ImportError:
             return _engine_error("DuckDB is not installed", engine_available=False)
 
-        policy = policy_dl if policy_dl is not None else DEFAULT_POLICY
-        source = policy + ("\n" + query_dl if query_dl else "")
+        source = policy_dl + ("\n" + query_dl if query_dl else "")
         try:
             program = parse_and_validate_program(source)
             _validate_relation_decl(program)
@@ -161,7 +163,7 @@ class DuckDBInferenceCache:
                     con,
                     declarations,
                     fact_rows,
-                    policy_dl=policy,
+                    policy_dl=policy_dl,
                     query_dl=query_dl,
                 )
         except DuckDBBackendError as exc:

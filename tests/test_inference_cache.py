@@ -10,6 +10,7 @@ trusting a now-empty table and reporting a false "consistent" result.
 import pytest
 
 import verinote.engine.duckdb_backend as duckdb_backend
+from verinote.engine import DEFAULT_POLICY
 from verinote.engine.duckdb_backend import DuckDBInferenceCache
 
 # Same subject established on two different dates: the default policy's
@@ -49,7 +50,7 @@ def test_cache_reloads_after_a_failed_reload(monkeypatch):
     cache = DuckDBInferenceCache()
     try:
         # 1) Load the conflict facts cleanly: the conflict is detected.
-        first = cache.run_check(_CONFLICT_FACTS)
+        first = cache.run_check(_CONFLICT_FACTS, policy_dl=DEFAULT_POLICY)
         assert first.ok is False
         assert first.findings == _CONFLICT_FINDINGS
 
@@ -62,7 +63,7 @@ def test_cache_reloads_after_a_failed_reload(monkeypatch):
             raise RuntimeError(boom)
 
         monkeypatch.setattr(duckdb_backend, "_load_relation_facts", raising_load)
-        failed = cache.run_check(_OTHER_FACTS)
+        failed = cache.run_check(_OTHER_FACTS, policy_dl=DEFAULT_POLICY)
         assert failed.ok is False
         assert failed.findings == [f"ERROR internal engine error: {boom}"]
 
@@ -70,7 +71,7 @@ def test_cache_reloads_after_a_failed_reload(monkeypatch):
         #    cache instance. The reload must run again (the base relation was
         #    emptied by the failed run), so the conflict is detected once more.
         monkeypatch.undo()
-        again = cache.run_check(_CONFLICT_FACTS)
+        again = cache.run_check(_CONFLICT_FACTS, policy_dl=DEFAULT_POLICY)
         assert again.ok is False
         assert again.findings == _CONFLICT_FINDINGS
     finally:

@@ -4,9 +4,12 @@ import builtins
 import pytest
 
 import verinote.engine.duckdb_backend as duckdb_backend
+from verinote.engine import DEFAULT_POLICY
 from verinote.engine.duckdb_backend import DuckDBInferenceCache, run_check_duckdb
 from verinote.engine.duckdb_terms import term_to_duckdb_value
 from verinote.engine.terms import Atom, Compound, NumberLit, StringLit
+
+_RELATION_DECL = ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
 
 
 def _duckdb():
@@ -31,12 +34,28 @@ def test_duckdb_backend_missing_duckdb_is_blocking(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
 
-    rep = run_check_duckdb([])
+    rep = run_check_duckdb([], policy_dl=DEFAULT_POLICY)
 
     assert rep.ok is False
     assert rep.engine_available is False
     assert rep.errors == 1
     assert "DuckDB is not installed" in rep.text
+
+
+@pytest.mark.parametrize("kwargs", ({}, {"policy_dl": None}))
+def test_duckdb_backend_requires_an_explicit_string_policy(kwargs):
+    with pytest.raises(TypeError, match="policy_dl"):
+        run_check_duckdb([], **kwargs)
+
+
+@pytest.mark.parametrize("kwargs", ({}, {"policy_dl": None}))
+def test_duckdb_inference_cache_requires_an_explicit_string_policy(kwargs):
+    cache = DuckDBInferenceCache()
+    try:
+        with pytest.raises(TypeError, match="policy_dl"):
+            cache.run_check([], **kwargs)
+    finally:
+        cache.close()
 
 
 def test_duckdb_backend_default_policy_flags_functional_conflict():
@@ -46,7 +65,8 @@ def test_duckdb_backend_default_policy_flags_functional_conflict():
             {"subject": "Org", "relation": "established_on", "object": "2020"},
             {"subject": "Org", "relation": "established_on", "object": "2021"},
             {"subject": "Org", "relation": "is_a", "object": "company"},
-        ]
+        ],
+        policy_dl=DEFAULT_POLICY,
     )
 
     assert rep.engine_available is True
@@ -80,7 +100,8 @@ def test_duckdb_backend_compares_equivalent_atom_string_and_number_terms():
                 "relation": Atom("born_on"),
                 "object": NumberLit(1900),
             },
-        ]
+        ],
+        policy_dl=DEFAULT_POLICY,
     )
 
     assert rep.ok is False
@@ -104,7 +125,8 @@ def test_duckdb_backend_treats_equal_number_and_string_values_as_equal():
                 "relation": Atom("born_on"),
                 "object": NumberLit(1815),
             },
-        ]
+        ],
+        policy_dl=DEFAULT_POLICY,
     )
 
     assert rep.ok is True
@@ -150,7 +172,8 @@ def test_duckdb_backend_consistent_kb_is_ok():
         [
             {"subject": "Org", "relation": "established_on", "object": "2020"},
             {"subject": "Org", "relation": "is_a", "object": "company"},
-        ]
+        ],
+        policy_dl=DEFAULT_POLICY,
     )
 
     # No functional conflict, so the gate stays open — but the shipped default
@@ -193,6 +216,7 @@ def test_duckdb_backend_answer_query_format_matches_check_report():
             {"subject": "Ada", "relation": "born_in", "object": "London"},
             {"subject": "Ada", "relation": "is_a", "object": "mathematician"},
         ],
+        policy_dl=DEFAULT_POLICY,
         query_dl=query,
     )
 
@@ -206,6 +230,7 @@ def test_duckdb_backend_omits_answer_bucket_when_query_has_no_rows():
     query = '.decl answer_q1(value: symbol)\nanswer_q1(O) :- relation("Other", "born_in", O).\n'
     rep = run_check_duckdb(
         [{"subject": "Ada", "relation": "born_in", "object": "London"}],
+        policy_dl=DEFAULT_POLICY,
         query_dl=query,
     )
 
@@ -323,6 +348,7 @@ def test_duckdb_backend_supports_compound_terms_in_base_relation():
                 ),
             }
         ],
+        policy_dl=DEFAULT_POLICY,
         query_dl=query,
     )
 
@@ -436,7 +462,7 @@ def test_duckdb_backend_string_values_are_parameterized():
 
 def test_duckdb_backend_check_report_fields_are_compatible():
     _duckdb()
-    rep = run_check_duckdb([])
+    rep = run_check_duckdb([], policy_dl=DEFAULT_POLICY)
 
     assert isinstance(rep.ok, bool)
     assert isinstance(rep.errors, int)
@@ -464,8 +490,8 @@ def test_duckdb_inference_cache_reuses_unchanged_relation(monkeypatch):
     cache = DuckDBInferenceCache()
     try:
         facts = [{"subject": "Org", "relation": "is_a", "object": "company"}]
-        assert cache.run_check(facts).ok is True
-        assert cache.run_check(list(facts)).ok is True
+        assert cache.run_check(facts, policy_dl=DEFAULT_POLICY).ok is True
+        assert cache.run_check(list(facts), policy_dl=DEFAULT_POLICY).ok is True
     finally:
         cache.close()
 
@@ -485,13 +511,15 @@ def test_duckdb_inference_cache_reloads_changed_relation(monkeypatch):
     cache = DuckDBInferenceCache()
     try:
         assert cache.run_check(
-            [{"subject": "Org", "relation": "established_on", "object": "2020"}]
+            [{"subject": "Org", "relation": "established_on", "object": "2020"}],
+            policy_dl=DEFAULT_POLICY,
         ).ok is True
         assert cache.run_check(
             [
                 {"subject": "Org", "relation": "established_on", "object": "2020"},
                 {"subject": "Org", "relation": "established_on", "object": "2021"},
-            ]
+            ],
+            policy_dl=DEFAULT_POLICY,
         ).ok is False
     finally:
         cache.close()
@@ -506,8 +534,8 @@ def test_duckdb_inference_cache_does_not_leak_query_answers():
         facts = [{"subject": "Ada", "relation": "born_in", "object": "London"}]
         query = '.decl answer_q1(value: symbol)\nanswer_q1(O) :- relation("Ada", "born_in", O).\n'
 
-        first = cache.run_check(facts, query_dl=query)
-        second = cache.run_check(facts)
+        first = cache.run_check(facts, policy_dl=DEFAULT_POLICY, query_dl=query)
+        second = cache.run_check(facts, policy_dl=DEFAULT_POLICY)
     finally:
         cache.close()
 
@@ -638,6 +666,7 @@ def test_duckdb_backend_escapes_control_characters_in_answers():
                 "object": "alpha\nbeta\tgamma\rdelta",
             }
         ],
+        policy_dl=_RELATION_DECL,
         query_dl=_ANSWER_QUERY,
     )
 
@@ -659,6 +688,7 @@ def test_duckdb_backend_keeps_meaningful_joiners_in_answers():
     value = "Ba\u200cnu \U0001f468\u200d\U0001f469\u200d\U0001f467"
     rep = run_check_duckdb(
         [{"subject": "Widget", "relation": "located_in", "object": value}],
+        policy_dl=_RELATION_DECL,
         query_dl=_ANSWER_QUERY,
     )
 
@@ -676,6 +706,7 @@ def test_duckdb_backend_neutralizes_bidi_overrides_in_answers():
                 "object": "safe\u202edangerous",
             }
         ],
+        policy_dl=_RELATION_DECL,
         query_dl=_ANSWER_QUERY,
     )
 
@@ -688,6 +719,7 @@ def test_duckdb_backend_escaping_is_lossless():
     _duckdb()
     rep = run_check_duckdb(
         [{"subject": "Widget", "relation": "located_in", "object": "alpha\nbeta"}],
+        policy_dl=_RELATION_DECL,
         query_dl=_ANSWER_QUERY,
     )
 
@@ -699,10 +731,12 @@ def test_duckdb_backend_keeps_literal_backslash_distinct_from_newline():
     _duckdb()
     literal = run_check_duckdb(
         [{"subject": "Widget", "relation": "located_in", "object": "alpha\\nbeta"}],
+        policy_dl=_RELATION_DECL,
         query_dl=_ANSWER_QUERY,
     )
     newline = run_check_duckdb(
         [{"subject": "Widget", "relation": "located_in", "object": "alpha\nbeta"}],
+        policy_dl=_RELATION_DECL,
         query_dl=_ANSWER_QUERY,
     )
 
@@ -716,6 +750,7 @@ def test_duckdb_backend_keeps_non_ascii_values_intact():
     _duckdb()
     rep = run_check_duckdb(
         [{"subject": "Widget", "relation": "located_in", "object": "제작소 Gizmo"}],
+        policy_dl=_RELATION_DECL,
         query_dl=_ANSWER_QUERY,
     )
 
@@ -726,6 +761,7 @@ def test_duckdb_backend_plain_string_answers_stay_unquoted():
     _duckdb()
     rep = run_check_duckdb(
         [{"subject": "Widget", "relation": "located_in", "object": "Gadget Works"}],
+        policy_dl=_RELATION_DECL,
         query_dl=_ANSWER_QUERY,
     )
 
@@ -831,6 +867,7 @@ def test_duckdb_backend_answer_comma_cannot_forge_two_answers():
     )
     rep = run_check_duckdb(
         [{"subject": "Ada", "relation": "worked_at", "object": "Analytical Engine, Ltd"}],
+        policy_dl=_RELATION_DECL,
         query_dl=query,
     )
 
@@ -855,6 +892,7 @@ def test_duckdb_backend_answers_keep_distinct_tuples_that_render_alike():
             {"subject": "Subj", "relation": "role", "object": _c("pair", Atom("a"), Atom("b"))},
             {"subject": "Subj", "relation": "role", "object": "pair(a, b)"},
         ],
+        policy_dl=_RELATION_DECL,
         query_dl=_ROLE_QUERY,
     )
 
@@ -884,6 +922,7 @@ def test_duckdb_backend_multi_column_answer_columns_cannot_forge_each_other():
             {"subject": "A B", "relation": "pair", "object": "C"},
             {"subject": "A", "relation": "pair", "object": "B C"},
         ],
+        policy_dl=_RELATION_DECL,
         query_dl=_PAIR_QUERY,
     )
 

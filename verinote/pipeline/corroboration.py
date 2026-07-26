@@ -16,7 +16,6 @@ import re
 import unicodedata
 from typing import Any, Iterable, Mapping
 
-from verinote.engine import DEFAULT_POLICY
 from verinote.policy_defaults import (
     DEFAULT_RELATION_ALIASES,
     RELATION_ALIASES_RELPATH,
@@ -101,10 +100,11 @@ class TypedRelationSpec:
     units: dict[str, int] | None = None
 
 
-def functional_relations(policy_dl: str | None) -> set[str]:
+def functional_relations(policy_dl: str) -> set[str]:
     """Parse ``functional("rel").`` declarations from a policy program."""
-    text = DEFAULT_POLICY if policy_dl is None else policy_dl
-    return {_unescape(m.group(1)) for m in _FUNCTIONAL_RE.finditer(text)}
+    if not isinstance(policy_dl, str):
+        raise TypeError("policy_dl must be a str")
+    return {_unescape(m.group(1)) for m in _FUNCTIONAL_RE.finditer(policy_dl)}
 
 
 def store_functional_relations(store: Store) -> set[str]:
