@@ -53,6 +53,7 @@ class _QueryFlowResult:
     query_dl: str | None
     reason: str
     allow_direct_datalog_fallback: bool = False
+    provider_failed: bool = False
 
 
 def query_path(root: Path) -> Path:
@@ -239,6 +240,7 @@ def _schema_aware_query_flow_result(
                 "review_required",
                 f"review_required({_lit(reason)})",
                 reason,
+                provider_failed=True,
             )
 
     if intent.kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED:
@@ -323,15 +325,17 @@ def _translate_direct_datalog_fallback(
     qid: int,
     question: str,
     llm_error_status: str,
-) -> tuple[str, str | None, str]:
+) -> _QueryFlowResult:
     try:
         line = client.translate_query(question=question, qid=qid)
     except LLMError as exc:
         reason = _short_reason(exc)
         if llm_error_status == "translation_failed":
-            return "translation_failed", None, reason
+            return _QueryFlowResult("translation_failed", None, reason, provider_failed=True)
         reason = _short_reason(f"llm error: {exc}")
-        return "review_required", f"review_required({_lit(reason)})", reason
+        return _QueryFlowResult(
+            "review_required", f"review_required({_lit(reason)})", reason, provider_failed=True
+        )
 
     outcome = _non_executable_outcome(line)
     if outcome is None and _is_review_required(line):
@@ -346,9 +350,10 @@ def _translate_direct_datalog_fallback(
         # engine-derived `no_answer`/`ambiguous` (the candidate dry-run finding
         # no rows) keep those statuses.
         reason = _short_reason(f"unvalidated model claim: {declared}: {claim}")
-        return "review_required", f"review_required({_lit(reason)})", reason
+        return _QueryFlowResult("review_required", f"review_required({_lit(reason)})", reason)
     proposal = f".decl {ANSWER_PREFIX}{qid}(value: symbol)\n{line}"
-    return classify_query_draft(store, qid, proposal)
+    status, query_dl, reason = classify_query_draft(store, qid, proposal)
+    return _QueryFlowResult(status, query_dl, reason)
 
 
 def _evaluation_reason(evaluation) -> str:
@@ -393,13 +398,14 @@ def translate_questions(
             and status == "review_required"
             and flow.allow_direct_datalog_fallback
         ):
-            status, query_dl, reason = _translate_direct_datalog_fallback(
+            fallback = _translate_direct_datalog_fallback(
                 store,
                 client,
                 qid=q["id"],
                 question=q["text"],
                 llm_error_status="translation_failed",
             )
+            status, query_dl, reason = fallback.status, fallback.query_dl, fallback.reason
         store.set_question_query(q["id"], query_dl, status, reason)
         results.append(
             {"id": q["id"], "status": status, "query_dl": query_dl, "reason": reason}

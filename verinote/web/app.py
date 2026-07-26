@@ -11,6 +11,7 @@ from importlib import resources
 import logging
 from pathlib import Path
 import threading
+from threading import Lock
 import unicodedata
 from urllib.parse import urlencode
 
@@ -41,9 +42,9 @@ from verinote.pipeline import (
     is_live_extraction_job,
     latest_source_job_ids,
     process_extraction_job,
+    process_repair_job,
     store_source,
     supported_suffixes,
-    repair_questions,
     translate_questions,
     verify,
     write_query_file,
@@ -142,6 +143,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     app = FastAPI(title="verinote")
     app.state.cfg = cfg
     app.state.store = None
+    app.state.repair_scheduler_lock = Lock()
+    app.state.repair_scheduled = set()
     if cfg is not None:
         store = Store(cfg.db_path)
         store.init_schema()
@@ -1080,6 +1083,65 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 )
             _start_source_extraction(int(job["id"]), app.state.cfg)
 
+    def _start_repair_job(job_id: int, cfg: Config) -> None:
+        """Schedule durable repair work; the request path never reaches an LLM."""
+        assert_settings_intact(cfg)
+
+        with app.state.repair_scheduler_lock:
+            if job_id in app.state.repair_scheduled:
+                return
+            app.state.repair_scheduled.add(job_id)
+
+        def run() -> None:
+            try:
+                with Store(cfg.db_path) as worker_store:
+                    worker_store.init_schema()
+                    # Repeat both gates in the worker: settings and policy may have
+                    # changed after enqueue but before this daemon gets CPU time.
+                    assert_settings_intact(cfg)
+                    assert_writable(worker_store)
+                    client = get_client(cfg)
+                    process_repair_job(
+                        worker_store, client, job_id=job_id, root=cfg.root,
+                        policy_guard=lambda: assert_writable(worker_store),
+                    )
+            except PolicyMissingError as exc:
+                # Do not write a halted KB merely to annotate a background job.
+                logger.warning("repair job %s halted (KB policy missing): %s", job_id, exc)
+            except ConfigCorruptError as exc:
+                with Store(cfg.db_path) as worker_store:
+                    worker_store.init_schema()
+                    worker_store.fail_pending_repair_job(job_id, f"repair failed: {exc}")
+            except LLMError as exc:
+                with Store(cfg.db_path) as worker_store:
+                    worker_store.init_schema()
+                    worker_store.fail_pending_repair_job(job_id, f"repair failed: {exc}")
+            except Exception as exc:  # noqa: BLE001 - durable UI-visible worker error
+                logger.exception("repair job %s failed", job_id)
+                with Store(cfg.db_path) as worker_store:
+                    worker_store.init_schema()
+                    worker_store.fail_pending_repair_job(job_id, f"repair failed: {_short_error(exc)}")
+            finally:
+                with app.state.repair_scheduler_lock:
+                    app.state.repair_scheduled.discard(job_id)
+
+        threading.Thread(
+            target=run, name=f"verinote-question-repair-{job_id}", daemon=True
+        ).start()
+
+    def _resume_repair_jobs() -> None:
+        """Schedule only pending or expired-lease repair jobs, never live owners."""
+        if app.state.store is None or app.state.cfg is None:
+            return
+        try:
+            assert_settings_intact(app.state.cfg)
+            assert_writable(app.state.store)
+        except (ConfigCorruptError, PolicyMissingError) as exc:
+            logger.warning("not resuming repair jobs: %s", exc)
+            return
+        for job in app.state.store.repair_jobs_to_resume():
+            _start_repair_job(int(job["id"]), app.state.cfg)
+
     @app.get("/", response_class=HTMLResponse)
     def dashboard(request: Request):
         return _dashboard(request)
@@ -1424,6 +1486,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 "questions": [question_outcome_view(q) for q in store.questions()],
                 "answers": rep.answers,
                 "error": page_error,
+                "repair_job": store.latest_repair_job(),
             },
             status_code=status_code,
         )
@@ -1492,11 +1555,12 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     def repair(request: Request):
         store = _active_store()
         cfg = _active_cfg()
-        try:
-            client = get_client(app.state.cfg)
-        except LLMError as e:
-            return _questions(request, error=f"repair failed: {e}", status_code=502)
-        repair_questions(store, client, root=cfg.root)
+        # This is intentionally the only synchronous validation. Constructing a
+        # client can touch provider configuration; LLM work belongs to the worker.
+        assert_settings_intact(cfg)
+        job, _created = store.enqueue_repair_job(provider=cfg.provider, model=cfg.model)
+        if job["status"] == "pending":
+            _start_repair_job(int(job["id"]), cfg)
         return RedirectResponse("/questions", status_code=303)
 
     @app.get("/report", response_class=HTMLResponse)
@@ -1681,6 +1745,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         )
 
     _resume_source_extraction_jobs()
+    _resume_repair_jobs()
 
     return app
 

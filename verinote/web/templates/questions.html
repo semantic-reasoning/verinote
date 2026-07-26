@@ -25,8 +25,17 @@
   </button>
 </p>
 
+{% if repair_job %}
+<section id="repair-progress"{% if repair_job.status in ('pending', 'running') %} hx-get="/questions" hx-trigger="every 2s" hx-target="body" hx-swap="outerHTML"{% endif %}>
+  <p class="muted">Repair job #{{ repair_job.id }}: {{ repair_job.status }}
+    ({{ repair_job.completed_items }}/{{ repair_job.total_items }} processed{% if repair_job.skipped_items %}, {{ repair_job.skipped_items }} skipped{% endif %}{% if repair_job.failed_items %}, {{ repair_job.failed_items }} failed{% endif %}).
+    {% if repair_job.message %}{{ repair_job.message }}{% endif %}
+  </p>
+</section>
+{% endif %}
+
 {% if questions %}
-<table class="counts">
+<table id="questions-table" class="counts">
   <thead><tr><th>#</th><th>Question</th><th>Outcome</th><th>Query</th><th>Actions</th></tr></thead>
   <tbody>
     {% for q in questions %}
