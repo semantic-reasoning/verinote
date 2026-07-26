@@ -1333,9 +1333,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         subject: str = Form(...),
         relation: str = Form(...),
         object: str = Form(...),
-        subject_kind: str = Form("string"),
-        relation_kind: str = Form("string"),
-        object_kind: str = Form("string"),
+        subject_kind: str = Form(...),
+        relation_kind: str = Form(...),
+        object_kind: str = Form(...),
         note: str = Form(""),
     ):
         try:

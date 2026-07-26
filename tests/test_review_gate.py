@@ -551,7 +551,14 @@ def test_amend_lets_the_rule_promote_the_amended_fact(tmp_path):
 
     resp = client.post(
         f"/facts/{acted}/amend",
-        data={"subject": "Report", "relation": "author", "object": "Kim"},
+        data={
+            "subject": "Report",
+            "subject_kind": "string",
+            "relation": "author",
+            "relation_kind": "string",
+            "object": "Kim",
+            "object_kind": "string",
+        },
     )
 
     assert resp.status_code == 200
@@ -688,7 +695,14 @@ def test_missing_amend_target_does_not_run_auto_accept(tmp_path):
 
     resp = client.post(
         "/facts/999999/amend",
-        data={"subject": "Ledger", "relation": "owner", "object": "Park"},
+        data={
+            "subject": "Ledger",
+            "subject_kind": "string",
+            "relation": "owner",
+            "relation_kind": "string",
+            "object": "Park",
+            "object_kind": "string",
+        },
     )
 
     assert resp.status_code == 200
@@ -709,8 +723,11 @@ def test_replayed_amend_does_not_run_auto_accept(tmp_path):
         f"/facts/{target}/amend",
         data={
             "subject": "Ledger",
+            "subject_kind": "string",
             "relation": "owner",
+            "relation_kind": "string",
             "object": "Park",
+            "object_kind": "string",
             "note": "unchanged",
         },
     )
