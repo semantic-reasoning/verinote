@@ -12,12 +12,19 @@
 
     {# Generic on purpose: the underlying error may be a corrupt/unopenable
        structural term store, a stale or missing term row, or malformed input.
-       verinote stops rather than render or change a fact whose logical terms it
-       cannot read, because falling back to the plain-text mirror would show a
-       structural fact as an ordinary string and invite a save that destroys it. #}
+       verinote stops rather than render a fact whose logical terms it cannot
+       read, because falling back to the plain-text mirror would show a structural
+       fact as an ordinary string and invite a save that destroys it. #}
     <p class="error" role="alert">The knowledge base could not read this fact's
-      logical terms, so it stopped instead of showing or changing the fact in a
-      way that might misrepresent it.</p>
+      logical terms, so it stopped instead of showing the fact or making further
+      changes in a way that might misrepresent it.</p>
+
+    {% if saved_decision %}
+    <p class="error" role="alert">Your {{ saved_decision }} decision was already
+      saved in SQLite before the result could be rendered. After restoring
+      <code>facts.duckdb</code>, return to Review to confirm the fact's current
+      status.</p>
+    {% endif %}
 
     <p class="muted">If the structural term store (<code>facts.duckdb</code>) was
       moved, replaced or damaged, restore it from a backup or version control. The

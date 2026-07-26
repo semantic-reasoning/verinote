@@ -624,6 +624,121 @@ def test_backfill_fact_terms_migrates_legacy_sqlite_text_as_stringlit(tmp_path):
     assert s.backfill_fact_terms() == 0
 
 
+def test_backfill_fact_terms_recovers_after_sqlite_commit_failure(tmp_path, monkeypatch):
+    s = _store(tmp_path)
+    cur = s._conn.execute(
+        "INSERT INTO facts(subject, relation, object, status) VALUES(?,?,?,?) RETURNING id",
+        ("Synthetic report", "published_year", "2024", "needs_review"),
+    )
+    fact_id = int(cur.fetchone()[0])
+    token = fact_term_token("Synthetic report", "published_year", "2024")
+    original_conn = s._conn
+
+    class CommitFailingConnection:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def execute(self, sql, params=()):
+            if sql == "COMMIT":
+                raise sqlite3.OperationalError("forced SQLite commit failure")
+            return self._conn.execute(sql, params)
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(s, "_conn", CommitFailingConnection(original_conn))
+        with pytest.raises(sqlite3.OperationalError, match="forced SQLite commit failure"):
+            s.backfill_fact_terms()
+
+    # DuckDB commits independently before the failed SQLite commit, while the
+    # SQLite token and marker both roll back with that transaction.
+    assert s.get_fact(fact_id)["term_token"] is None
+    assert s._get_meta(FACT_TERMS_MARKER_KEY) is None
+    record = s.fact_terms.get_fact_term_record(fact_id)
+    assert record is not None
+    assert record.term_token == record.content_token == token
+
+    # A retry recognizes the committed canonical sidecar row and repairs the
+    # SQLite half, including the marker, without rewriting DuckDB.
+    assert s.backfill_fact_terms() == 0
+    assert s.get_fact(fact_id)["term_token"] == token
+    assert s._get_meta(FACT_TERMS_MARKER_KEY) is not None
+
+
+def test_backfill_fact_terms_duckdb_failure_rolls_back_sqlite_token_and_marker(
+    tmp_path, monkeypatch
+):
+    s = _store(tmp_path)
+    cur = s._conn.execute(
+        "INSERT INTO facts(subject, relation, object, status) VALUES(?,?,?,?) RETURNING id",
+        ("Synthetic report", "published_year", "2024", "needs_review"),
+    )
+    fact_id = int(cur.fetchone()[0])
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("sidecar down")
+
+    monkeypatch.setattr(s.fact_terms, "put_fact_terms", fail)
+
+    with pytest.raises(RuntimeError, match="sidecar down"):
+        s.backfill_fact_terms()
+
+    assert s.get_fact(fact_id)["term_token"] is None
+    assert s._get_meta(FACT_TERMS_MARKER_KEY) is None
+    assert s.get_fact_terms(fact_id) is None
+
+
+def test_backfill_fact_terms_preserves_superseded_legacy_content_and_null_token(tmp_path):
+    s = _store(tmp_path)
+    content = ("Synthetic terminal report", "published_year", "2024")
+    cur = s._conn.execute(
+        "INSERT INTO facts(subject, relation, object, status) VALUES(?,?,?,?) RETURNING id",
+        (*content, "superseded"),
+    )
+    fact_id = int(cur.fetchone()[0])
+    before = tuple(
+        s._conn.execute(
+            "SELECT subject, relation, object, term_token FROM facts WHERE id = ?", (fact_id,)
+        ).fetchone()
+    )
+
+    assert s.backfill_fact_terms() == 1
+
+    assert tuple(
+        s._conn.execute(
+            "SELECT subject, relation, object, term_token FROM facts WHERE id = ?", (fact_id,)
+        ).fetchone()
+    ) == before == (*content, None)
+    assert s.get_fact_terms(fact_id) == tuple(StringLit(value) for value in content)
+
+
+def test_backfill_fact_terms_keeps_unchanged_legacy_amend_event_free(tmp_path):
+    s = _store(tmp_path)
+    cur = s._conn.execute(
+        "INSERT INTO facts(subject, relation, object, status) VALUES(?,?,?,?) RETURNING id",
+        ("Synthetic Report", "published_year", "2024", "needs_review"),
+    )
+    fact_id = int(cur.fetchone()[0])
+    token = fact_term_token("Synthetic Report", "published_year", "2024")
+
+    assert s.backfill_fact_terms() == 1
+    assert s.get_fact(fact_id)["term_token"] == token
+    record = s.fact_terms.get_fact_term_record(fact_id)
+    assert record is not None
+    assert record.term_token == record.content_token == token
+
+    decision = s.amend_fact(
+        fact_id,
+        subject="Synthetic Report",
+        relation="published_year",
+        obj="2024",
+    )
+
+    assert decision.changed is False
+    assert s.fact_log(fact_id) == []
+
+
 def test_store_migrates_existing_facts_table_to_add_term_token(tmp_path):
     conn = sqlite3.connect(tmp_path / "kb.sqlite")
     conn.execute(
