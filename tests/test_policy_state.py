@@ -2,11 +2,13 @@
 """A lost logic policy must never read as a consistent KB (#155)."""
 
 import importlib
+import json
 
 import pytest
 
 import verinote.cli as cli
 import verinote.pipeline.acceptance as acceptance
+import verinote.store.db as store_db
 from verinote.engine import CheckReport, DEFAULT_POLICY
 from verinote.pipeline.acceptance import AcceptRecommendation
 from verinote.pipeline.corroboration import store_functional_relations
@@ -23,8 +25,10 @@ from verinote.pipeline.policy_state import (
     assert_writable,
     ensure_policy_marker,
     policy_cli_line,
+    policy_missing_message,
     policy_sha256,
     resolve_policy,
+    write_default_policy,
 )
 from verinote.pipeline.query import query_path
 from verinote.pipeline.verify import load_policy, verify
@@ -122,6 +126,312 @@ def test_hash_mismatch_is_not_an_error(tmp_path):
     state = resolve_policy(store)
     assert state.status is PolicyStatus.PRESENT
     assert verify(store).ok is True
+
+
+# --- marker evidence: first observation is immutable; unchanged opens are reads ---
+
+
+def _kb_meta_writes(statements: list[str]) -> list[str]:
+    return [
+        statement
+        for statement in statements
+        if "INSERT INTO KB_META" in statement.upper()
+        or "UPDATE KB_META" in statement.upper()
+    ]
+
+
+def test_unchanged_policy_open_preserves_evidence_without_metadata_write(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path)
+    path = _write_policy(tmp_path)
+    monkeypatch.setattr(store_db, "_utc_now", lambda: "2030-01-01T00:00:00Z")
+    marker_before = store.record_policy_marker(
+        policy_sha256(path.read_text(encoding="utf-8")), origin="scaffold"
+    )
+    statements: list[str] = []
+    store._conn.set_trace_callback(statements.append)
+
+    state = ensure_policy_marker(store, tmp_path)
+
+    store._conn.set_trace_callback(None)
+    assert state.status is PolicyStatus.PRESENT
+    assert state.marker == marker_before
+    assert store.policy_marker() == marker_before
+    assert _kb_meta_writes(statements) == []
+    store.close()
+
+
+def test_recording_same_v2_policy_marker_performs_no_metadata_write(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    sha = policy_sha256(FUNCTIONAL_POLICY)
+    monkeypatch.setattr(store_db, "_utc_now", lambda: "2030-01-01T00:00:00Z")
+    marker_before = store.record_policy_marker(sha, origin="scaffold")
+    statements: list[str] = []
+    store._conn.set_trace_callback(statements.append)
+
+    marker_after = store.record_policy_marker(sha, origin="scaffold")
+
+    store._conn.set_trace_callback(None)
+    assert marker_after == marker_before
+    assert _kb_meta_writes(statements) == []
+    store.close()
+
+
+def test_refresh_preserves_unrecognized_existing_marker_origin(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    path = _write_policy(tmp_path)
+    original = {
+        "sha256": policy_sha256(path.read_text(encoding="utf-8")),
+        "first_recorded_at": "2030-01-01T00:00:00Z",
+        "last_seen_at": "2030-01-01T00:00:00Z",
+        "origin": "imported_v1",
+    }
+    store._set_meta("policy.logic", json.dumps(original))
+    monkeypatch.setattr(store_db, "_utc_now", lambda: "2030-01-02T00:00:00Z")
+    path.write_text(FUNCTIONAL_POLICY + "// synthetic changed policy\n", encoding="utf-8")
+
+    state = ensure_policy_marker(store, tmp_path)
+
+    assert state.marker is not None
+    assert state.marker["origin"] == "imported_v1"
+    assert state.marker["first_recorded_at"] == original["first_recorded_at"]
+    store.close()
+
+
+def test_changed_policy_preserves_first_evidence_and_refreshes_last_seen(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    path = _write_policy(tmp_path)
+    clock = iter(["2030-01-01T00:00:00Z", "2030-01-02T00:00:00Z"])
+    monkeypatch.setattr(store_db, "_utc_now", lambda: next(clock))
+    first_marker = store.record_policy_marker(
+        policy_sha256(path.read_text(encoding="utf-8")), origin="scaffold"
+    )
+    changed_policy = FUNCTIONAL_POLICY + "// synthetic changed policy\n"
+    path.write_text(changed_policy, encoding="utf-8")
+
+    state = ensure_policy_marker(store, tmp_path)
+
+    assert state.marker is not None
+    assert state.marker["sha256"] == policy_sha256(changed_policy)
+    assert state.marker["origin"] == "scaffold"
+    assert state.marker["first_recorded_at"] == first_marker["first_recorded_at"]
+    assert state.marker["last_seen_at"] == "2030-01-02T00:00:00Z"
+    store.close()
+
+
+def test_legacy_marker_stays_read_only_until_a_real_marker_write(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    path = _write_policy(tmp_path)
+    sha = policy_sha256(path.read_text(encoding="utf-8"))
+    legacy = {
+        "sha256": sha,
+        "recorded_at": "2020-01-01T00:00:00Z",
+        "origin": "scaffold",
+    }
+    store._set_meta("policy.logic", json.dumps(legacy))
+    statements: list[str] = []
+    store._conn.set_trace_callback(statements.append)
+
+    state = ensure_policy_marker(store, tmp_path)
+
+    store._conn.set_trace_callback(None)
+    assert state.marker == legacy
+    assert store.policy_marker() == legacy
+    assert _kb_meta_writes(statements) == []
+    path.unlink()
+    message = policy_missing_message(resolve_policy(store))
+    assert "first_recorded_at=unavailable" in message
+    assert "last_observed_at=2020-01-01T00:00:00Z" in message
+
+    path.write_text(FUNCTIONAL_POLICY + "// synthetic changed policy\n", encoding="utf-8")
+    monkeypatch.setattr(store_db, "_utc_now", lambda: "2030-01-02T00:00:00Z")
+    migrated = ensure_policy_marker(store, tmp_path).marker
+
+    assert migrated is not None
+    assert migrated["first_recorded_at"] == "2030-01-02T00:00:00Z"
+    assert migrated["last_seen_at"] == "2030-01-02T00:00:00Z"
+    assert "recorded_at" not in migrated
+    store.close()
+
+
+def test_read_only_cli_reports_legacy_marker_evidence_without_writing(
+    tmp_path, monkeypatch, capsys
+):
+    _env(monkeypatch, tmp_path)
+    store = _store(tmp_path)
+    path = _write_policy(tmp_path)
+    store._set_meta(
+        "policy.logic",
+        json.dumps(
+            {
+                "sha256": policy_sha256(path.read_text(encoding="utf-8")),
+                "recorded_at": "2020-01-01T00:00:00Z",
+                "origin": "scaffold",
+            }
+        ),
+    )
+    store.close()
+    path.unlink()
+    db = tmp_path / "kb.sqlite"
+    before = db.read_bytes()
+
+    assert cli.main(["status"]) == 0
+
+    captured = capsys.readouterr()
+    assert "first_recorded_at=unavailable" in captured.err
+    assert "last_observed_at=2020-01-01T00:00:00Z" in captured.err
+    assert db.read_bytes() == before
+
+
+def test_missing_policy_message_cites_immutable_first_recorded_evidence(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    path = _write_policy(tmp_path)
+    monkeypatch.setattr(store_db, "_utc_now", lambda: "2030-01-01T00:00:00Z")
+    store.record_policy_marker(policy_sha256(FUNCTIONAL_POLICY), origin="scaffold")
+    path.unlink()
+
+    message = policy_missing_message(resolve_policy(store))
+
+    assert "first_recorded_at=2030-01-01T00:00:00Z" in message
+    assert ", recorded_at=" not in message
+    store.close()
+
+
+def test_forced_reset_preserves_first_evidence_and_refreshes_last_seen(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    path = _write_policy(tmp_path, DEFAULT_POLICY)
+    clock = iter(["2030-01-01T00:00:00Z", "2030-01-02T00:00:00Z"])
+    monkeypatch.setattr(store_db, "_utc_now", lambda: next(clock))
+    original = store.record_policy_marker(
+        policy_sha256(path.read_text(encoding="utf-8")), origin="scaffold"
+    )
+
+    write_default_policy(store, tmp_path, origin="reset")
+
+    reset = store.policy_marker()
+    assert reset is not None
+    assert reset["origin"] == "reset"
+    assert reset["sha256"] == original["sha256"]
+    assert reset["first_recorded_at"] == original["first_recorded_at"]
+    assert reset["last_seen_at"] == "2030-01-02T00:00:00Z"
+    store.close()
+
+
+@pytest.mark.parametrize(
+    ("recorded_policy", "stale_policy"),
+    [
+        (FUNCTIONAL_POLICY, DEFAULT_POLICY),
+        (DEFAULT_POLICY, DEFAULT_POLICY + "// synthetic stale policy\n"),
+    ],
+    ids=["different_sha", "same_sha"],
+)
+def test_stale_ensure_cannot_overwrite_a_forced_reset_marker(
+    tmp_path, monkeypatch, recorded_policy, stale_policy
+):
+    """A reset wins if it lands after another store has read its old evidence."""
+    stale_store = _store(tmp_path)
+    reset_store = Store(tmp_path / "kb.sqlite")
+    path = _write_policy(tmp_path, recorded_policy)
+    stale_store.record_policy_marker(
+        policy_sha256(path.read_text(encoding="utf-8")), origin="scaffold"
+    )
+    path.write_text(stale_policy, encoding="utf-8")
+    original_record = stale_store.record_policy_marker
+    reset_done = False
+
+    def interleaved_record(*args, **kwargs):
+        nonlocal reset_done
+        if not reset_done:
+            reset_done = True
+            write_default_policy(reset_store, tmp_path, origin="reset")
+        return original_record(*args, **kwargs)
+
+    monkeypatch.setattr(stale_store, "record_policy_marker", interleaved_record)
+
+    state = ensure_policy_marker(stale_store, tmp_path)
+
+    marker = reset_store.policy_marker()
+    assert state.marker == marker
+    assert marker is not None
+    assert marker["origin"] == "reset"
+    assert marker["sha256"] == policy_sha256(DEFAULT_POLICY)
+    stale_store.close()
+    reset_store.close()
+
+
+def test_stale_ensure_cannot_overwrite_a_same_time_equivalent_forced_reset(
+    tmp_path, monkeypatch
+):
+    """A reset publication beats a stale snapshot even when its evidence repeats."""
+    stale_store = _store(tmp_path)
+    reset_store = Store(tmp_path / "kb.sqlite")
+    monkeypatch.setattr(store_db, "_utc_now", lambda: "2030-01-01T00:00:00Z")
+    write_default_policy(stale_store, tmp_path, origin="reset")
+    initial = stale_store.policy_marker()
+    assert initial is not None
+    path = tmp_path / "policy" / "logic-policy.dl"
+    path.write_text(DEFAULT_POLICY + "// synthetic stale policy\n", encoding="utf-8")
+    original_record = stale_store.record_policy_marker
+    reset_marker = None
+
+    def interleaved_record(*args, **kwargs):
+        nonlocal reset_marker
+        if reset_marker is None:
+            write_default_policy(reset_store, tmp_path, origin="reset")
+            reset_marker = reset_store.policy_marker()
+        return original_record(*args, **kwargs)
+
+    monkeypatch.setattr(stale_store, "record_policy_marker", interleaved_record)
+
+    state = ensure_policy_marker(stale_store, tmp_path)
+
+    marker = reset_store.policy_marker()
+    assert reset_marker is not None
+    assert {
+        key: value for key, value in reset_marker.items() if key != "revision"
+    } == {key: value for key, value in initial.items() if key != "revision"}
+    assert reset_marker["revision"] == initial["revision"] + 1
+    assert state.marker == reset_marker
+    assert marker == reset_marker
+    assert marker["origin"] == "reset"
+    stale_store.close()
+    reset_store.close()
+
+
+def test_stale_ensure_retries_after_a_genuine_policy_edit(tmp_path, monkeypatch):
+    """Another ensure's fresh evidence must beat an older file observation."""
+    stale_store = _store(tmp_path)
+    edit_store = Store(tmp_path / "kb.sqlite")
+    path = _write_policy(tmp_path)
+    stale_store.record_policy_marker(
+        policy_sha256(path.read_text(encoding="utf-8")), origin="scaffold"
+    )
+    stale_policy = FUNCTIONAL_POLICY + "// synthetic stale policy\n"
+    edited_policy = FUNCTIONAL_POLICY + "// synthetic current policy\n"
+    path.write_text(stale_policy, encoding="utf-8")
+    original_record = stale_store.record_policy_marker
+    edit_done = False
+
+    def interleaved_record(*args, **kwargs):
+        nonlocal edit_done
+        if not edit_done:
+            edit_done = True
+            path.write_text(edited_policy, encoding="utf-8")
+            ensure_policy_marker(edit_store, tmp_path)
+        return original_record(*args, **kwargs)
+
+    monkeypatch.setattr(stale_store, "record_policy_marker", interleaved_record)
+
+    state = ensure_policy_marker(stale_store, tmp_path)
+
+    marker = edit_store.policy_marker()
+    assert state.text == edited_policy
+    assert state.marker == marker
+    assert marker is not None
+    assert marker["sha256"] == policy_sha256(edited_policy)
+    stale_store.close()
+    edit_store.close()
 
 
 # --- 2. fresh KB: no file, no marker -> default policy, but loudly ---

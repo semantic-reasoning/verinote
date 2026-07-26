@@ -15,8 +15,9 @@ the judgement here.
 
 The marker stores a sha256 as *evidence* (so a report can say what was there),
 not as a verdict: editing a policy is normal and a hash mismatch is never an
-error. The `.dl` file remains the owner of the policy text; the DB never stores
-its body.
+error. It also records immutable `first_recorded_at` evidence and the most
+recent content observation in `last_seen_at`. The `.dl` file remains the owner
+of the policy text; the DB never stores its body.
 
 Four states, one resolution point:
 
@@ -197,13 +198,35 @@ def runnable_policy_text(state: PolicyState) -> str:
 def policy_missing_message(state: PolicyState) -> str:
     """The loud, actionable message for a recorded-but-missing policy."""
     marker = state.marker or {}
-    origin = str(marker.get("origin") or "unknown")
-    recorded_at = str(marker.get("recorded_at") or "unknown")
-    sha = str(marker.get("sha256") or "")
+    origin_value = marker.get("origin")
+    origin = origin_value if isinstance(origin_value, str) and origin_value else "unknown"
+    first_value = marker.get("first_recorded_at")
+    first_recorded_at = (
+        first_value if isinstance(first_value, str) and first_value else None
+    )
+    last_value = marker.get("last_seen_at")
+    legacy_recorded_at = marker.get("recorded_at")
+    last_observed_at = (
+        last_value
+        if isinstance(last_value, str) and last_value
+        else legacy_recorded_at
+        if isinstance(legacy_recorded_at, str) and legacy_recorded_at
+        else "unknown"
+    )
+    timestamp_evidence = (
+        f"first_recorded_at={first_recorded_at}"
+        if first_recorded_at is not None
+        else (
+            "first_recorded_at=unavailable, "
+            f"last_observed_at={last_observed_at}"
+        )
+    )
+    sha_value = marker.get("sha256")
+    sha = sha_value if isinstance(sha_value, str) else ""
     sha_text = sha[:12] if sha else "unknown"
     return (
         f"policy file {state.path} is missing, but this KB recorded one "
-        f"(origin={origin}, recorded_at={recorded_at}, sha256={sha_text}). "
+        f"(origin={origin}, {timestamp_evidence}, sha256={sha_text}). "
         "Verification is halted instead of silently falling back to the shipped "
         "default policy. Recover by either (1) restoring the policy file from a "
         "backup or version control, or (2) running `verinote policy reset --force` "
@@ -269,11 +292,14 @@ def assert_writable(store: "Store") -> PolicyState:
 
 
 def ensure_policy_marker(store: "Store", root: Path | None = None) -> PolicyState:
-    """Record/refresh the policy marker when a KB is opened.
+    """Record policy evidence when a KB is opened.
 
     * file present, no marker  -> adopt it (`origin="adopted"`); pre-marker KBs
       keep working, and any *later* loss of the file is loud.
-    * file present, marker     -> refresh the evidence hash (never an error).
+    * file present, changed marker -> refresh the evidence hash and `last_seen_at`
+      (never an error).
+    * file present, same marker -> do nothing. Opening an unchanged KB must not
+      write SQLite metadata.
     * file present but empty    -> record NOTHING and return `PRESENT_EMPTY` with
       the marker as read: recording `sha256("")` here would silently overwrite a
       real policy's marker, so merely opening a KB whose file was truncated — which
@@ -283,24 +309,41 @@ def ensure_policy_marker(store: "Store", root: Path | None = None) -> PolicyStat
       distinguishable and must stay that way.
     """
     path = (root / POLICY_RELPATH) if root is not None else policy_path(store)
-    marker = store.policy_marker()
-    if not path.is_file():
-        status = (
-            PolicyStatus.MISSING_RECORDED if marker is not None else PolicyStatus.UNRECORDED_DEFAULT
+    while True:
+        marker = store.policy_marker()
+        if not path.is_file():
+            status = (
+                PolicyStatus.MISSING_RECORDED
+                if marker is not None
+                else PolicyStatus.UNRECORDED_DEFAULT
+            )
+            return PolicyState(status=status, path=path, marker=marker)
+        text = path.read_text(encoding="utf-8")
+        if _policy_text_is_empty(text):
+            return PolicyState(
+                status=PolicyStatus.PRESENT_EMPTY, path=path, text=text, marker=marker
+            )
+        sha = policy_sha256(text)
+        marker_sha = marker.get("sha256") if marker else None
+        if isinstance(marker_sha, str) and marker_sha == sha:
+            return PolicyState(
+                status=PolicyStatus.PRESENT, path=path, text=text, marker=marker
+            )
+        origin_value = marker.get("origin") if marker else None
+        origin = (
+            "adopted"
+            if marker is None
+            else origin_value
+            if isinstance(origin_value, str) and origin_value
+            else "unknown"
         )
-        return PolicyState(status=status, path=path, marker=marker)
-    text = path.read_text(encoding="utf-8")
-    if _policy_text_is_empty(text):
-        return PolicyState(
-            status=PolicyStatus.PRESENT_EMPTY, path=path, text=text, marker=marker
+        refreshed = store.record_policy_marker(
+            sha, origin=origin, expected_previous_marker=marker
         )
-    origin = str(marker.get("origin")) if marker else "adopted"
-    if origin not in POLICY_ORIGINS:
-        origin = "adopted"
-    refreshed = store.record_policy_marker(policy_sha256(text), origin=origin)
-    return PolicyState(
-        status=PolicyStatus.PRESENT, path=path, text=text, marker=refreshed
-    )
+        if refreshed is not None:
+            return PolicyState(
+                status=PolicyStatus.PRESENT, path=path, text=text, marker=refreshed
+            )
 
 
 def write_default_policy(store: "Store", root: Path | None = None, *, origin: str) -> Path:
@@ -318,5 +361,7 @@ def write_default_policy(store: "Store", root: Path | None = None, *, origin: st
     # these two lines and the only recovery path starts tripping over the very
     # halt it exists to clear.
     path.write_text(DEFAULT_POLICY, encoding="utf-8")
-    store.record_policy_marker(policy_sha256(DEFAULT_POLICY), origin=origin)
+    store.record_policy_marker(
+        policy_sha256(DEFAULT_POLICY), origin=origin, force_seen=True
+    )
     return path
