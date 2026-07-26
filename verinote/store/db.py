@@ -1390,14 +1390,18 @@ class Store:
         A None `run_id` (the seed path) is emitted every time by design.
         """
         if run_id is not None:
-            already = self._conn.execute(
-                "SELECT 1 FROM fact_events "
-                "WHERE fact_id = ? AND event_type = 'reextraction_suppressed' "
-                "AND json_extract(after_json, '$.run_id') = ? LIMIT 1",
-                (fact_id, run_id),
-            ).fetchone()
-            if already is not None:
-                return
+            event_rows = self._conn.execute(
+                "SELECT after_json FROM fact_events "
+                "WHERE fact_id = ? AND event_type = 'reextraction_suppressed'",
+                (fact_id,),
+            )
+            for event_row in event_rows:
+                try:
+                    payload = json.loads(event_row["after_json"])
+                except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
+                    continue
+                if isinstance(payload, dict) and payload.get("run_id") == run_id:
+                    return
         self._add_fact_event(
             fact_id=fact_id,
             event_type="reextraction_suppressed",

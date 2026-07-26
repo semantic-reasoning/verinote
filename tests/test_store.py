@@ -1984,6 +1984,48 @@ def test_reconcile_fact_emits_one_suppression_event_per_run(tmp_path):
     assert [json.loads(e["after_json"])["run_id"] for e in events] == [run_one, run_two]
 
 
+def test_reconcile_fact_suppression_does_not_require_sqlite_json1(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/sample.txt")
+    fact_id = s.add_fact("A", "count", NumberLit(36), source_id=sid)
+    other_fact_id = s.add_fact("B", "count", NumberLit(37), source_id=sid)
+    s.reject_fact(fact_id)
+    s.reject_fact(other_fact_id)
+    run_id = s.add_run(provider="fake", model="m")
+
+    def json_function_called(*_args):
+        raise AssertionError("suppression dedupe must not use SQLite JSON1")
+
+    s._conn.create_function("json" + "_extract", 2, json_function_called)
+
+    s.reconcile_fact("B", "count", NumberLit(37), source_id=sid, run_id=run_id)
+    s.reconcile_fact("A", "count", NumberLit(36), source_id=sid, run_id=run_id)
+    s.reconcile_fact("A", "count", NumberLit(36), source_id=sid, run_id=run_id)
+
+    assert len(_suppression_events(s, fact_id)) == 1
+    assert len(_suppression_events(s, other_fact_id)) == 1
+
+
+def test_reconcile_fact_ignores_malformed_legacy_suppression_payloads(tmp_path):
+    s = _store(tmp_path)
+    sid = s.add_source("sources/sample.txt")
+    fact_id = s.add_fact("A", "count", NumberLit(36), source_id=sid)
+    s.reject_fact(fact_id)
+    run_id = s.add_run(provider="fake", model="m")
+
+    for after_json in (None, "not json", "null", "[]", sqlite3.Binary(b"\xff")):
+        s._conn.execute(
+            "INSERT INTO fact_events(fact_id, event_type, after_json) VALUES(?,?,?)",
+            (fact_id, "reextraction_suppressed", after_json),
+        )
+
+    s.reconcile_fact("A", "count", NumberLit(36), source_id=sid, run_id=run_id)
+
+    events = _suppression_events(s, fact_id)
+    assert len(events) == 6
+    assert json.loads(events[-1]["after_json"])["run_id"] == run_id
+
+
 def test_reconcile_fact_seed_path_emits_suppression_event_each_time(tmp_path):
     s = _store(tmp_path)
     sid = s.add_source("sources/sample.txt")
