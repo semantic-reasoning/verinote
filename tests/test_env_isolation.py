@@ -34,7 +34,7 @@ from env_sandbox import (
     session_home,
     snapshot,
 )
-from verinote.config import Config, active_root, app_config_dir, app_config_path
+from verinote.config import Config, app_config_dir, app_config_path
 from verinote.kb_location import user_data_kb_root
 
 # The web stack is the only thing here that needs FastAPI. Guarding just the one
@@ -91,6 +91,9 @@ def test_settings_switch_without_manual_isolation_stays_in_the_sandbox(tmp_path)
     )
     client = TestClient(create_app(cfg))
     other = tmp_path / "other-kb"
+    sandbox_config_path = app_config_path()
+
+    assert not sandbox_config_path.exists()
 
     r = client.post("/settings/root", data={"root": str(other)}, follow_redirects=False)
 
@@ -100,9 +103,11 @@ def test_settings_switch_without_manual_isolation_stays_in_the_sandbox(tmp_path)
     )
     home = sandbox_home()
     assert home is not None
-    assert home in app_config_path().parents
-    assert app_config_path().is_file()
-    assert active_root() == other.resolve()
+    assert home in sandbox_config_path.parents
+    assert not sandbox_config_path.exists(), "an ordinary KB switch persisted app.json"
+    assert client.app.state.cfg.root == other.resolve()
+    assert client.app.state.store.db_path == other.resolve() / "kb.sqlite"
+    assert (other / "kb.sqlite").is_file()
 
 
 def test_config_load_uses_the_sandboxed_user_data_root_not_the_cwd(tmp_path, monkeypatch):
