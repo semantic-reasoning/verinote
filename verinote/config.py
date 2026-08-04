@@ -41,6 +41,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -217,6 +218,38 @@ def _saved_root(config: dict) -> Path | None:
     return _normalize_root(str(saved))
 
 
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    """Replace `path` with `payload`, or leave it exactly as it was.
+
+    `write_text` truncates in place, so a crash, a full disk, or two verinote
+    processes writing at once can leave a half-written file. The reader
+    (`read_app_config`) turns unparsable JSON into `{}` after a stderr-only
+    warning, which in the web UI is invisible: the app silently forgets the
+    active KB and the chosen theme rather than reporting that it lost them.
+
+    Writing a sibling temp file and `os.replace`-ing it makes the swap atomic on
+    POSIX and Windows alike, so a reader sees either the whole old file or the
+    whole new one. `fsync` before the rename is what makes that survive a power
+    loss rather than only a process crash; the parent-directory fsync that would
+    also durably record the rename itself is deliberately skipped — it is not
+    portable, and the guarantee being bought here is "never torn", not
+    "committed before we return".
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 def save_active_root(root: Path) -> None:
     """Persist the active KB root outside any individual KB.
 
@@ -230,12 +263,7 @@ def save_active_root(root: Path) -> None:
     existing = read_app_config()
     if _saved_root(existing) == resolved:
         return
-    path = app_config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {**existing, "active_root": str(resolved)}
-    path.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
+    _write_json_atomic(app_config_path(), {**existing, "active_root": str(resolved)})
 
 
 def app_theme() -> str:
@@ -251,12 +279,7 @@ def save_app_theme(theme: str) -> None:
     existing = read_app_config()
     if existing.get("theme") == theme:
         return
-    path = app_config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {**existing, "theme": theme}
-    path.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
+    _write_json_atomic(app_config_path(), {**existing, "theme": theme})
 
 
 def active_root() -> Path | None:
