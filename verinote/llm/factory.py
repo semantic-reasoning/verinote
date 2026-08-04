@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from verinote.config import Config, assert_settings_intact
+from verinote.config import PROVIDERS, Config, assert_settings_intact
 from verinote.llm.base import LLMClient, LLMError
 
 
@@ -25,10 +25,17 @@ def get_client(cfg: Config) -> LLMClient:
         from verinote.llm.openai_adapter import OpenAIAdapter
 
         return OpenAIAdapter(cfg)
+    if provider == "openrouter":
+        from verinote.llm.openrouter_adapter import OpenRouterAdapter
+
+        return OpenRouterAdapter(cfg)
     if provider == "ollama":
         from verinote.llm.ollama_adapter import OllamaAdapter
 
         return OllamaAdapter(cfg)
+    # Derived from PROVIDERS rather than spelled out: a hand-written list here
+    # goes stale the moment a provider is added, and this message is what tells
+    # a user with a typo in config.json what they were allowed to write.
     raise LLMError(
-        f"unknown VERINOTE_PROVIDER={provider!r}; expected anthropic|claudecli|openai|ollama"
+        f"unknown VERINOTE_PROVIDER={provider!r}; expected {'|'.join(PROVIDERS)}"
     )

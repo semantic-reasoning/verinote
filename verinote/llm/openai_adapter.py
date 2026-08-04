@@ -35,9 +35,20 @@ class OpenAIAdapter:
             raise LLMError("openai SDK not installed; `pip install verinote[openai]`") from exc
         return OpenAI(
             api_key=self.cfg.api_key,
-            base_url=self.cfg.base_url,
+            base_url=self._base_url(),
             timeout=self.cfg.llm_timeout_seconds,
         )
+
+    def _base_url(self) -> str | None:
+        """The endpoint to dial. `None` lets the SDK use its own default.
+
+        A seam, not indirection for its own sake: a subclass that IS one
+        specific service overrides this so an unset `base_url` cannot silently
+        resolve to `api.openai.com` and ship documents to a vendor the user did
+        not choose. Keeping it here means there is still exactly one `OpenAI(...)`
+        construction site.
+        """
+        return self.cfg.base_url
 
     def extract_facts(self, *, source_text: str, schema_hint: str = "") -> list[ExtractedFact]:
         client = self._client()
@@ -59,7 +70,7 @@ class OpenAIAdapter:
                 },
             )
         except Exception as exc:  # noqa: BLE001 - normalise provider errors
-            raise LLMError(f"openai request failed: {exc}") from exc
+            raise LLMError(f"{self.name} request failed: {exc}") from exc
 
         return parse_facts(resp.choices[0].message.content or "")
 
@@ -86,7 +97,7 @@ class OpenAIAdapter:
                 },
             )
         except Exception as exc:  # noqa: BLE001 - normalise provider errors
-            raise LLMError(f"openai request failed: {exc}") from exc
+            raise LLMError(f"{self.name} request failed: {exc}") from exc
 
         return parse_query(resp.choices[0].message.content or "")
 
@@ -115,7 +126,7 @@ class OpenAIAdapter:
                 },
             )
         except Exception as exc:  # noqa: BLE001 - normalise provider errors
-            raise LLMError(f"openai request failed: {exc}") from exc
+            raise LLMError(f"{self.name} request failed: {exc}") from exc
 
         return parse_query_intent(resp.choices[0].message.content or "")
 
@@ -137,7 +148,7 @@ class OpenAIAdapter:
                 temperature=0,
             )
         except Exception as exc:  # noqa: BLE001 - normalise provider errors
-            raise LLMError(f"openai request failed: {exc}") from exc
+            raise LLMError(f"{self.name} request failed: {exc}") from exc
 
         return (resp.choices[0].message.content or "").strip()
 

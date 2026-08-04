@@ -2,8 +2,8 @@
 """Provider-agnostic LLM layer.
 
 `LLMClient` is the single seam the rest of verinote talks to. Concrete adapters
-(Anthropic / Claude CLI / OpenAI / Ollama) normalise structured (JSON-schema)
-output in-house so no vendor API leaks upward. This is the anti-lock-in design:
+(one per entry in `config.PROVIDERS`) normalise structured (JSON-schema) output
+in-house so no vendor API leaks upward. This is the anti-lock-in design:
 the deterministic DuckDB-backed verifier re-checks every fact, so the provider/model
 is freely swappable.
 """
