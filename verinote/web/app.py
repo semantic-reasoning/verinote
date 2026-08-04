@@ -1733,7 +1733,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         return templates.TemplateResponse(request, "analytics.html", {"a": compute(_active_cfg().db_path)})
 
     def _model_field_context(
-        *, provider: str, model: str, base_url: str, lazy: bool
+        *, provider: str, model: str, base_url: str, lazy: bool, custom: bool = False
     ) -> dict:
         """Resolve the Model field's state for one (provider, base URL) pair.
 
@@ -1752,12 +1752,16 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         `aliases` is the other kind of list, and stays a separate key on
         purpose: it is curated from the adapter, never read from a provider, so
         it can never stand in for `models` or be mistaken for discovery.
+        `custom` swaps that picker for a text input so a full model id can still
+        be entered — a view state, never persisted, so a reload returns to the
+        list showing whatever was actually saved.
         """
         listable = provider in MODEL_LISTING_PROVIDERS
         base = {
             "provider": provider,
             "model": model,
             "aliases": MODEL_ALIASES_BY_PROVIDER.get(provider, ()),
+            "custom": custom,
             # The URL actually dialled, not the literal "(default)" — so the
             # page names the same endpoint the adapter will use.
             "endpoint": (base_url.strip() or OLLAMA_DEFAULT_BASE_URL) if listable else "",
@@ -1786,6 +1790,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         provider: str = "",
         model: str = "",
         base_url: str = "",
+        custom: int = 0,
     ):
         if app.state.cfg is None:
             return _kb_select(request)
@@ -1797,6 +1802,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 model=model,
                 base_url=base_url,
                 lazy=False,
+                custom=bool(custom),
             ),
         )
 

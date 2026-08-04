@@ -103,15 +103,21 @@ silently swapped for one that is — the page reports your KB's real state.
 
 The `claude` binary has no listing command, so there is nothing to discover —
 its `--model` help documents three aliases and otherwise takes a full model id.
-Settings therefore offers a **datalist**: `fable`, `opus`, and `sonnet` appear as
-suggestions, and you can type past them.
+Settings offers those as a dropdown:
 
-The distinction the wording keeps is that these are the aliases *verinote*
-resolves — a claim about this code — not a report of what your account can
-reach, which verinote cannot see. An alias selects the latest model of that
-family; a full id such as `claude-opus-4-8` reaches the CLI unchanged and stays
-pinned to that version. A model that does not exist, or that your CLI cannot
-reach, surfaces as the CLI's own error rather than a silent substitution.
+| Option | Meaning |
+|---|---|
+| **CLI default (no --model)** | verinote passes no `--model`, so the CLI uses whatever it is configured for |
+| `fable` / `opus` / `sonnet` | the latest model of that family |
+| *(a pinned id, when one is saved)* | shown selected, so the list always reports what `config.json` says |
+
+Because that list is curated rather than discovered, it is not the set of models
+you can reach — it is the set of aliases *verinote* resolves, which is a claim
+about this code and not about your account. **Enter a model id** swaps the
+dropdown for a text box when you want to pin a version: a full id such as
+`claude-opus-4-8` reaches the CLI unchanged and stays on that version. A model
+that does not exist, or that your CLI cannot reach, surfaces as the CLI's own
+error rather than a silent substitution.
 
 Because the list cannot be verified against a server, **Test connection** is the
 check that matters here: it runs one real extraction through the `claude` binary

@@ -4764,9 +4764,10 @@ def test_model_field_halts_under_a_corrupt_config(tmp_path):
 # --- the Claude CLI alias picker: suggestions you can type past ---
 
 
-def test_model_field_offers_cli_aliases_without_reaching_a_provider(tmp_path, monkeypatch):
-    """The CLI has no listing endpoint, so the suggestions are curated from the
-    adapter -- rendering them must not require (or attempt) a provider call."""
+def test_model_field_offers_cli_aliases_as_a_real_select(tmp_path, monkeypatch):
+    """Curated does not mean typed. The CLI has no listing endpoint, so the
+    options are curated from the adapter -- rendering them must not require (or
+    attempt) a provider call, and must still be a control you pick from."""
     monkeypatch.setattr(
         webapp, "get_client", lambda _cfg: pytest.fail("claudecli has nothing to enumerate")
     )
@@ -4774,15 +4775,41 @@ def test_model_field_offers_cli_aliases_without_reaching_a_provider(tmp_path, mo
     r = _ollama_client(tmp_path).get("/settings/model-field?provider=claudecli&model=opus")
 
     assert r.status_code == 200
-    assert '<datalist id="model-aliases">' in r.text
-    assert '<input type="text" name="model" value="opus" list="model-aliases"' in r.text
-    assert "<select" not in r.text  # typing a full id must stay possible
+    assert '<select name="model">' in r.text
+    assert '<option value="opus" selected>opus — latest</option>' in unescape(r.text)
+    assert 'type="text" name="model"' not in r.text  # choosing costs a click, not typing
     assert 'hx-trigger="load"' not in r.text  # nothing to lazily fetch
 
 
-def test_model_field_alias_suggestions_match_what_the_adapter_resolves(tmp_path):
-    """A suggested alias the adapter did not recognise would be offered as a
-    choice and then silently mean something else.
+def test_model_field_keeps_the_cli_default_selectable(tmp_path):
+    """An empty model means "pass no --model, let the CLI decide" -- this KB's
+    shipped default. Without an option for it the browser auto-selects the first
+    alias, so merely opening Settings and pressing Save would switch the KB to
+    `fable` without anyone choosing it."""
+    r = _ollama_client(tmp_path).get("/settings/model-field?provider=claudecli&model=")
+
+    assert '<option value="" selected>CLI default (no --model)</option>' in r.text
+    first_option = re.search(r"<option [^>]*>", r.text).group(0)
+    assert 'value=""' in first_option  # and it is the one a browser lands on
+
+
+def test_model_field_keeps_a_pinned_id_in_the_list_and_selected(tmp_path):
+    """A pin is not an alias, but it is still what config.json says. Dropping it
+    from the options would make the page report a model the KB is not using."""
+    r = _ollama_client(tmp_path).get(
+        "/settings/model-field?provider=claudecli&model=claude-opus-4-8"
+    )
+
+    assert (
+        '<option value="claude-opus-4-8" selected>claude-opus-4-8 — pinned</option>'
+        in unescape(r.text)
+    )
+    assert '<option value="" >CLI default (no --model)</option>' in r.text  # not selected
+
+
+def test_model_field_alias_options_match_what_the_adapter_resolves(tmp_path):
+    """A listed alias the adapter did not recognise would be offered as a choice
+    and then silently mean something else.
 
     `_cli_model(alias) == alias` is NOT the property to assert: unknown strings
     are passed through unchanged, so any invented alias satisfies it. What only
@@ -4792,22 +4819,62 @@ def test_model_field_alias_suggestions_match_what_the_adapter_resolves(tmp_path)
 
     r = _ollama_client(tmp_path).get("/settings/model-field?provider=claudecli&model=")
 
-    offered = re.findall(r'<option value="([^"]+)"></option>', r.text)
-    assert offered == list(CLI_MODEL_ALIASES)  # rendered list cannot drift
-    for alias in offered:
+    offered = re.findall(r'<option value="([^"]*)"[^>]*>([^<]*) — latest</option>', r.text)
+    assert [value for value, _ in offered] == list(CLI_MODEL_ALIASES)
+    for alias, _ in offered:
         assert _cli_model(f"Claude {alias.title()} 9.9") == alias
 
 
-def test_model_field_tells_the_truth_about_pinning_a_full_id(tmp_path):
-    """The note promises a full id reaches the CLI unchanged; that promise is the
-    behaviour `_cli_model` now guarantees, so assert them together."""
-    from verinote.llm.claude_cli_adapter import _cli_model
+def test_model_field_swaps_to_a_text_input_for_a_full_id(tmp_path, monkeypatch):
+    """The escape hatch sits beside the control, not inside it: the list stays a
+    list, and a full id is still reachable in one click."""
+    monkeypatch.setattr(
+        webapp, "get_client", lambda _cfg: pytest.fail("claudecli has nothing to enumerate")
+    )
 
-    r = _ollama_client(tmp_path).get("/settings/model-field?provider=claudecli&model=")
+    listed = _ollama_client(tmp_path).get("/settings/model-field?provider=claudecli&model=opus")
+    typed = _ollama_client(tmp_path).get(
+        "/settings/model-field?provider=claudecli&model=opus&custom=1"
+    )
 
-    assert "claude-opus-4-8" in r.text
-    assert "passed to the CLI unchanged" in r.text
-    assert _cli_model("claude-opus-4-8") == "claude-opus-4-8"
+    assert "Enter a model id" in listed.text
+    assert '<input type="text" name="model" value="opus"' in typed.text
+    assert "<select" not in typed.text
+    assert "passed to the CLI unchanged" in typed.text
+    assert "Back to the list" in typed.text  # and the swap is reversible
+
+
+def test_settings_page_renders_the_cli_picker_as_a_list(tmp_path):
+    """`custom` is a view state the partial owns; the page render must never
+    start in it. A Settings page that opened on a text input would put every
+    user back to typing -- the exact thing the select replaced."""
+    cfg = Config(
+        root=tmp_path,
+        db_path=tmp_path / "kb.sqlite",
+        provider="claudecli",
+        model="opus",
+        api_key=None,
+        base_url=None,
+    )
+
+    r = TestClient(create_app(cfg)).get("/settings")
+
+    assert '<select name="model">' in r.text
+    assert 'type="text" name="model"' not in r.text
+
+
+def test_model_field_custom_never_downgrades_the_discovered_picker(tmp_path, monkeypatch):
+    """A stray `custom=1` must not turn Ollama's discovered list into free text --
+    that list is evidence, and there is no reason to type past it."""
+    fake = _FakeOllama(models=["qwen3:8b"])
+    monkeypatch.setattr(webapp, "get_client", fake.factory)
+
+    r = _ollama_client(tmp_path).get(
+        "/settings/model-field?provider=ollama&model=qwen3:8b&custom=1"
+    )
+
+    assert '<select name="model">' in r.text
+    assert 'type="text" name="model"' not in r.text
 
 
 def test_model_field_keeps_aliases_off_the_ollama_picker(tmp_path, monkeypatch):
