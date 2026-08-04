@@ -27,6 +27,17 @@ _MODEL_ALIASES = {
     "opus": "opus",
     "sonnet": "sonnet",
 }
+# The aliases the CLI's own `--model` help documents, in its order. Exported so
+# the settings UI offers exactly what `_cli_model` recognises: a picker that
+# listed an alias this adapter cannot resolve would be advertising a choice that
+# silently does something else.
+CLI_MODEL_ALIASES = tuple(_MODEL_ALIASES)
+
+# A canonical model id -- lowercase, hyphen-separated, at least three segments
+# (`claude-opus-4-8`, `claude-haiku-4-5`, `claude-3-opus-20240229`). The CLI
+# accepts these verbatim, so they must reach it unchanged; only looser *display*
+# names ("Opus 4.8", "Claude Opus") are collapsed to an alias.
+_CANONICAL_MODEL_ID = re.compile(r"^claude-[a-z0-9]+(?:-[a-z0-9]+)+$")
 
 
 class ClaudeCliAdapter:
@@ -182,9 +193,26 @@ def _render_prompt(root, prompt_id: str, **values: object) -> str:
 
 
 def _cli_model(model: str) -> str:
-    """Convert UI/display model names to Claude CLI aliases."""
+    """Convert UI/display model names to Claude CLI aliases.
+
+    A *canonical* model id is passed through untouched. The substring match
+    below is deliberately loose so "Opus 4.8" resolves to `opus`, but that same
+    looseness silently rewrote `claude-opus-4-8` -- a pinned id the CLI accepts
+    verbatim -- into `opus`, i.e. whatever is newest. The KB's config.json then
+    named one model while the CLI ran another, and the pin was lost with no
+    error. Canonical ids are recognised first so a pin stays a pin; an id that
+    turns out not to exist is the CLI's own loud `exit 1`, not a silent
+    downgrade to a model the user did not choose.
+    """
+    stripped = model.strip()
+    # Canonical ids are lowercase by definition, but a typed-in `CLAUDE-OPUS-4-8`
+    # is still unambiguously that pin -- fold the case rather than sending it
+    # down the alias path, which would drop the pin over capitalisation alone.
+    folded = stripped.casefold()
+    if _CANONICAL_MODEL_ID.match(folded):
+        return folded
     normalized = re.sub(r"[^a-z0-9]+", "", model.casefold())
     for key, value in _MODEL_ALIASES.items():
         if key in normalized:
             return value
-    return model.strip()
+    return stripped
