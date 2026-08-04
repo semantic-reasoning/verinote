@@ -31,7 +31,11 @@ from verinote.config import (
     TESTABLE_PROVIDERS,
     Config,
     ConfigCorruptError,
+    CredentialsCorruptError,
     app_theme,
+    credentials_path,
+    provider_key_env_var,
+    assert_credentials_intact,
     assert_settings_intact,
     normalize_provider,
     save_active_root,
@@ -143,6 +147,11 @@ FACT_TERMS_UNAVAILABLE_PATH = "/fact-terms-unavailable"
 # HX-Redirect treatment as the fact-terms halt for the same htmx reason -- see
 # `_config_corrupt_handler`.
 CONFIG_UNAVAILABLE_PATH = "/config-unavailable"
+
+# Full-page halt shown when the machine-wide credentials file is present but
+# unreadable. A distinct path and page from the config.json halt on purpose: a
+# different file, a different scope (every KB, not one), and a different fix.
+CREDENTIALS_UNAVAILABLE_PATH = "/credentials-unavailable"
 
 # The public action names are deliberately separate from the append-only audit
 # vocabulary. A halt redirect carries both forms through SQLite validation.
@@ -509,6 +518,37 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     app.add_exception_handler(ConfigCorruptError, _config_corrupt_handler)
 
+    def _credentials_corrupt_page(request: Request, reason: str | None):
+        cfg = app.state.cfg
+        provider = cfg.provider if cfg else ""
+        return templates.TemplateResponse(
+            request,
+            "credentials_corrupt.html",
+            {
+                "reason": reason,
+                "credentials_path": str(credentials_path()),
+                "env_var": provider_key_env_var(provider) if provider else "VERINOTE_API_KEY",
+            },
+            status_code=409,
+        )
+
+    @app.get(CREDENTIALS_UNAVAILABLE_PATH, response_class=HTMLResponse)
+    def credentials_unavailable(request: Request):
+        cfg = app.state.cfg
+        return _credentials_corrupt_page(request, cfg.credentials_error if cfg else None)
+
+    def _credentials_corrupt_handler(request: Request, exc: Exception):
+        """Same htmx reasoning as the config halt (#173): a 4xx is never swapped,
+        so an inline body would be a silent no-op."""
+        if request.headers.get("HX-Request") == "true":
+            return Response(
+                status_code=409,
+                headers={"HX-Redirect": CREDENTIALS_UNAVAILABLE_PATH},
+            )
+        return _credentials_corrupt_page(request, str(exc))
+
+    app.add_exception_handler(CredentialsCorruptError, _credentials_corrupt_handler)
+
     def _active_store() -> Store:
         store = app.state.store
         if store is None:
@@ -614,6 +654,13 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         # a provider call in the gap resolve to the silent cloud default. On a
         # raise the old healthy cfg stays active and the caller renders the halt.
         assert_settings_intact(next_cfg)
+        # Deliberately NOT assert_credentials_intact here. That file is
+        # machine-wide and byte-identical before and after the switch, so
+        # refusing the open prevents no provider call that `get_client`, the job
+        # starts and the connection test do not already gate — while making
+        # every KB unopenable, including the one the user would switch to in
+        # order to select a provider that needs no key. The per-KB reasoning
+        # above does not transfer to a machine-wide file.
         next_store = Store(next_cfg.db_path)
         next_store.init_schema()
 
@@ -1117,6 +1164,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         # get_client(cfg) below stays as a narrow backstop for the race window
         # between this check and the thread actually running (#269).
         assert_settings_intact(cfg)
+        assert_credentials_intact(cfg)
 
         def run() -> None:
             try:
@@ -1223,7 +1271,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                     "extraction job %s already owned by another worker; not started here",
                     job_id,
                 )
-            except ConfigCorruptError as exc:
+            except (ConfigCorruptError, CredentialsCorruptError) as exc:
                 # ORDER IS LOAD-BEARING — above `except Exception`. Defense-in-depth,
                 # NOT a currently-reachable path: the worker's get_client(cfg) reads
                 # the SAME frozen cfg that already passed the synchronous hoist check
@@ -1240,7 +1288,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 # consuming this session's MAX_CHUNK_ATTEMPTS retry budget for a cause
                 # unrelated to the source content (#269).
                 logger.warning(
-                    "extraction job %s halted (config.json corrupt): %s", job_id, exc
+                    "extraction job %s halted (%s): %s", job_id, type(exc).__name__, exc
                 )
             except LLMError as e:
                 with Store(cfg.db_path) as worker_store:
@@ -1302,7 +1350,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             return
         try:
             assert_settings_intact(app.state.cfg)
-        except ConfigCorruptError as exc:
+            assert_credentials_intact(app.state.cfg)
+        except (ConfigCorruptError, CredentialsCorruptError) as exc:
             # Same shape as the policy gate below: launching against a corrupt
             # config must not resume a job that would reach the cloud default with
             # zero HTTP requests made. Log and touch nothing (#269).
@@ -1327,6 +1376,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     def _start_repair_job(job_id: int, cfg: Config) -> None:
         """Schedule durable repair work; the request path never reaches an LLM."""
         assert_settings_intact(cfg)
+        assert_credentials_intact(cfg)
 
         with app.state.repair_scheduler_lock:
             if job_id in app.state.repair_scheduled:
@@ -1340,6 +1390,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                     # Repeat both gates in the worker: settings and policy may have
                     # changed after enqueue but before this daemon gets CPU time.
                     assert_settings_intact(cfg)
+                    assert_credentials_intact(cfg)
                     assert_writable(worker_store)
                     client = get_client(cfg)
                     process_repair_job(
@@ -1349,7 +1400,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             except PolicyMissingError as exc:
                 # Do not write a halted KB merely to annotate a background job.
                 logger.warning("repair job %s halted (KB policy missing): %s", job_id, exc)
-            except ConfigCorruptError as exc:
+            except (ConfigCorruptError, CredentialsCorruptError) as exc:
                 with Store(cfg.db_path) as worker_store:
                     worker_store.init_schema()
                     worker_store.fail_pending_repair_job(job_id, f"repair failed: {exc}")
@@ -1376,8 +1427,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             return
         try:
             assert_settings_intact(app.state.cfg)
+            assert_credentials_intact(app.state.cfg)
             assert_writable(app.state.store)
-        except (ConfigCorruptError, PolicyMissingError) as exc:
+        except (ConfigCorruptError, CredentialsCorruptError, PolicyMissingError) as exc:
             logger.warning("not resuming repair jobs: %s", exc)
             return
         for job in app.state.store.repair_jobs_to_resume():
@@ -1807,6 +1859,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         # This is intentionally the only synchronous validation. Constructing a
         # client can touch provider configuration; LLM work belongs to the worker.
         assert_settings_intact(cfg)
+        assert_credentials_intact(cfg)
         job, _created = store.enqueue_repair_job(provider=cfg.provider, model=cfg.model)
         if job["status"] == "pending":
             _start_repair_job(int(job["id"]), cfg)
@@ -1936,6 +1989,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 "auto_accept_recommendations": c.auto_accept_recommendations,
                 "root": c.root,
                 "has_key": bool(c.api_key),  # never render the key itself
+                # "not set" would assert the user has no key stored; when the
+                # file cannot be read the honest answer is that we do not know.
+                "credentials_error": c.credentials_error,
                 "connection_test_enabled": c.provider in TESTABLE_PROVIDERS,
                 "relation_aliases": _relation_aliases_text(),
                 # The Model field starts as the plain text input and, for a

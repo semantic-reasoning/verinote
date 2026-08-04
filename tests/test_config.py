@@ -211,7 +211,7 @@ def test_legacy_claude_provider_normalizes_to_claudecli(tmp_path):
     assert Config.for_root(tmp_path).provider == "claudecli"
 
 
-def test_api_key_only_from_env_never_persisted(tmp_path, monkeypatch):
+def test_api_key_is_never_persisted_into_the_kb(tmp_path, monkeypatch):
     monkeypatch.setenv("VERINOTE_API_KEY", "supersecret")
     save_settings(tmp_path, provider="anthropic", model="m")
     cfg = Config.for_root(tmp_path)

@@ -47,7 +47,8 @@ class AnthropicAdapter:
         """
         if not self.cfg.api_key:
             raise LLMError(
-                f"{self.name} requires an API key; set VERINOTE_API_KEY "
+                f"{self.name} requires an API key; set "
+                f"VERINOTE_{self.name.upper()}_API_KEY "
                 f"(the {self.name} SDK's own environment variable is deliberately not used)"
             )
         return self.cfg.api_key
