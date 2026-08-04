@@ -218,7 +218,7 @@ def _saved_root(config: dict) -> Path | None:
     return _normalize_root(str(saved))
 
 
-def _write_json_atomic(path: Path, payload: dict) -> None:
+def _write_json_atomic(path: Path, payload: dict, *, mode: int = 0o600) -> None:
     """Replace `path` with `payload`, or leave it exactly as it was.
 
     `write_text` truncates in place, so a crash, a full disk, or two verinote
@@ -234,12 +234,28 @@ def _write_json_atomic(path: Path, payload: dict) -> None:
     also durably record the rename itself is deliberately skipped — it is not
     portable, and the guarantee being bought here is "never torn", not
     "committed before we return".
+
+    `mode` is explicit because `mkstemp` creates its file 0o600 and `os.replace`
+    carries that over — so switching to this writer silently tightened `app.json`
+    from the 0o644 `write_text` produced, on existing files too. That tightening
+    is kept (this directory is per-user, and it is about to hold a secrets file
+    beside it), but it is stated here rather than left as a side effect of the
+    temp-file mechanism.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     tmp = Path(tmp_name)
     try:
+        # Set on the fd, not the path: the mode then lands on *this* file rather
+        # than on whatever might occupy `tmp`'s name, and `os.replace` carries it
+        # over. Guarded because `os.fchmod` is absent on Windows, which this
+        # module explicitly supports — and unlike a best-effort restore, a
+        # secrets file must not proceed as though a failed chmod had succeeded.
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, mode)
+        else:
+            os.chmod(tmp, mode)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
             handle.flush()

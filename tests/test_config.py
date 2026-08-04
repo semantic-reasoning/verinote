@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
 import json
+import os
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -917,3 +918,29 @@ def test_a_failed_write_leaves_no_temp_file_behind(tmp_path, monkeypatch):
         config_module.save_app_theme("light")
 
     assert [p.name for p in directory.iterdir()] == ["app.json"]
+
+
+@pytest.mark.skipif(not hasattr(os, "fchmod"), reason="POSIX file modes only")
+def test_app_config_is_written_owner_only(tmp_path, monkeypatch):
+    """Switching to the atomic writer tightened this from the 0o644 `write_text`
+    produced. That is intended — the directory is per-user and is about to hold a
+    secrets file beside it — so it is pinned rather than left to `mkstemp`."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+
+    config_module.save_app_theme("dark")
+
+    assert config_module.app_config_path().stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.skipif(not hasattr(os, "fchmod"), reason="POSIX file modes only")
+def test_the_atomic_writer_honours_a_requested_mode(tmp_path):
+    """The mode must be applied, not inherited. `mkstemp` already creates 0o600,
+    so asking for 0o600 here would pass with the chmod deleted — the assertion
+    has to request a mode the temp file does not already have."""
+    target = tmp_path / "other.json"
+
+    config_module._write_json_atomic(target, {"k": "v"}, mode=0o640)
+
+    assert target.stat().st_mode & 0o777 == 0o640
