@@ -56,6 +56,24 @@ _MODEL_DEFAULTS = {
     "anthropic": "claude-opus-4-8",
     "claudecli": "",
     "openai": "gpt-4o",
+    # A concrete free model that advertises the structured output verinote
+    # forces, NOT the `openrouter/free` router. A router picks a different model
+    # per request, so the settings banner's "answered ... from <model>" and a
+    # captured fixture's recorded model would both name something that did not
+    # answer — and one Test connection could not stand for the next request.
+    #
+    # Chosen because *every* endpoint serving it advertises structured output —
+    # it has exactly one. More endpoints is the wrong criterion here: OpenRouter
+    # routes across them per request, and `google/gemma-4-26b-a4b-it:free`, the
+    # only free structured-output model with two, is served by one endpoint that
+    # advertises it and one that does not. Being routed to the second would drop
+    # the schema, so a Test connection that passed would say nothing about the
+    # next extraction — the same failure the router above is rejected for.
+    #
+    # What is verified is that OpenRouter *advertises* structured output for this
+    # model and its endpoint. Whether the endpoint honours `strict` is only
+    # knowable by running it, which is what Test connection is for.
+    "openrouter": "openai/gpt-oss-20b:free",
     "ollama": "llama3.1",
 }
 PROVIDERS = tuple(_MODEL_DEFAULTS)
@@ -63,17 +81,24 @@ PROVIDER_LABELS = {
     "anthropic": "Anthropic",
     "claudecli": "ClaudeCLI",
     "openai": "OpenAI",
+    "openrouter": "OpenRouter",
     "ollama": "Ollama",
 }
 # Providers whose configuration can be checked by actually running it. `claudecli`
 # belongs here for the same reason the others do -- the check is one real
 # extraction -- and it matters most there: its installed models cannot be
 # enumerated, so running the chosen one is the only way to learn it works.
-TESTABLE_PROVIDERS = frozenset({"anthropic", "claudecli", "openai", "ollama"})
+TESTABLE_PROVIDERS = frozenset({"anthropic", "claudecli", "openai", "openrouter", "ollama"})
 # Providers whose installed models can be enumerated from the very endpoint the
 # user configured, so the settings UI can offer a picker instead of free text.
-# A cloud catalogue is not a property of its endpoint and `claudecli` has no
-# listing at all, so neither can be answered truthfully here.
+# A vendor's own catalogue is not a property of its endpoint and `claudecli` has
+# no listing at all, so neither can be answered truthfully here.
+#
+# `openrouter` is the exception that does not generalise: its catalogue IS
+# served by the endpoint being configured (`GET {base_url}/models`, unauthenticated),
+# so the original "a cloud catalogue is never endpoint-served" reasoning does not
+# cover it. It is absent here only because its picker is a separate unit of work,
+# not because the claim above applies to it.
 MODEL_LISTING_PROVIDERS = frozenset({"ollama"})
 
 
@@ -509,7 +534,7 @@ def _pick_bool(env: str, saved: object, default: bool) -> bool:
 class Config:
     root: Path
     db_path: Path
-    provider: str  # "anthropic" | "claudecli" | "openai" | "ollama"
+    provider: str  # one of PROVIDERS — enumerating it here only goes stale
     model: str
     api_key: str | None
     base_url: str | None
