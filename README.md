@@ -61,6 +61,21 @@ pip install -e ".[anthropic,test]"   # pick the providers you use
 verinote ui                          # opens http://127.0.0.1:8731
 ```
 
+On Windows, `scripts\run.cmd` does both steps for you — it creates the virtual
+environment, installs verinote into it, and starts the app. Double-clicking it in
+Explorer works, and so does running it from a shell:
+
+```cmd
+scripts\run.cmd                 REM verinote ui
+scripts\run.cmd ui --port 9000  REM arguments are passed straight through
+scripts\run.cmd status
+```
+
+It re-installs only when `pyproject.toml` or your chosen extras change. Set
+`VERINOTE_EXTRAS` to pick different providers (`VERINOTE_EXTRAS=ingest` for a
+vendor-neutral install with Ollama or the Claude CLI), `PYTHON` to choose the
+interpreter, or `VERINOTE_DRY_RUN=1` to see what it would do without doing it.
+
 On first launch verinote asks you to pick a KB folder (creating `kb.sqlite` if
 needed) and remembers it for next time.
 

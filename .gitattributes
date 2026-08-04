@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# cmd.exe reads a batch file by byte offset as it executes it, so `goto`, labels
+# and multi-line `if (...)` blocks are the known-fragile constructs under LF line
+# endings — and scripts/run.cmd uses all three. Git for Windows defaults to
+# core.autocrlf=true, so this rule is insurance for the checkouts that default
+# does not cover (autocrlf=false, or a clone made from Linux/WSL), not a fix for
+# a bug seen in the wild.
+*.cmd text eol=crlf
