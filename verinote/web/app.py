@@ -7,8 +7,8 @@ swaps a single row partial). No JS build step. The app owns one `Store` (SQLite)
 
 from __future__ import annotations
 
-from dataclasses import replace
 from importlib import resources
+import inspect
 import json
 import logging
 import os
@@ -49,7 +49,10 @@ from verinote.config import (
 from verinote.kb_location import KBLocationError, assert_kb_root_is_safe_to_create
 from verinote.llm import MIN_REDACTABLE_SECRET, LLMError, get_client
 from verinote.llm.claude_cli_adapter import CLI_MODEL_ALIASES
-from verinote.llm.ollama_adapter import OLLAMA_DEFAULT_BASE_URL
+from verinote.llm.ollama_adapter import (
+    OLLAMA_DEFAULT_BASE_URL,
+    list_models as _list_ollama_models,
+)
 from verinote.policy_defaults import DEFAULT_RELATION_ALIASES
 from verinote.pipeline import (
     create_chunked_extraction_job,
@@ -142,6 +145,132 @@ _POLICY_GUARD_WRITE_PATHS = ("/kb/select", "/settings/root")
 # modules, which import `config`, so this is the layer that can name both.
 MODEL_ALIASES_BY_PROVIDER = {"claudecli": CLI_MODEL_ALIASES}
 
+# `list_models` is an interactive page-load call, not a generation, so it is
+# bounded far tighter than `cfg.llm_timeout_seconds` (minutes, sized for a long
+# local completion). It is provider-neutral on purpose: `_list_models_for`
+# applies it to every lister, so it bounds any interactive model listing rather
+# than Ollama's in particular, and it lives here because this dispatch is the
+# last place that still holds a `Config` to clamp against. The effective bound
+# stays the *smaller* of the two so a user who configures an even shorter
+# timeout keeps it.
+MODEL_LIST_TIMEOUT_SECONDS = 5.0
+
+# How each listable provider's models are enumerated. Every lister takes
+# `(base_url, timeout)` and NOTHING else — in particular never a `Config`.
+#
+# That signature is a security control, not a convention. `/settings/model-field`
+# dials an endpoint the caller supplied in a query string, and `Config` carries a
+# resolved `api_key`; worse, it is the key of the *saved* provider, because
+# `Config.for_root` resolves it once and `dataclasses.replace(provider=...)` does
+# not recompute it. Handing that object to a listing routine would mean one
+# request could send, say, an Anthropic key to an attacker-named URL.
+#
+# What the check below buys, stated exactly, because an over-claim here is worse
+# than no comment at all: nothing in the *shipped* table can be handed a key at
+# the call site. Parameter names alone would not get that far — a
+# `functools.partial(keyed_lister, cfg)`, a closure over a `Config`, and an
+# object whose `__call__` takes `(base_url, timeout)` each present exactly the
+# right parameters while carrying a key — so the check also demands a plain,
+# non-closing function.
+#
+# Two things it does NOT buy, and neither is closed anywhere else:
+#   1. It runs once at import, over the table as shipped — not at dispatch.
+#      A test's `monkeypatch.setitem`, or any other runtime mutation of this
+#      dict, is never seen by it; `_list_models_for` dispatches whatever it
+#      finds there at call time.
+#   2. It constrains what a lister is *handed*, never what its body can *reach*.
+#      One line of `os.environ[...]` or `Config.for_root(...)` inside a lister
+#      would put a key back within reach and still pass every clause.
+#
+# So this is a *weaker* control than the corrupt-config halt in `get_client`, and
+# deliberately not the same argument (#269): that assert is the unavoidable first
+# statement of the only construction path, which protects every caller by
+# construction, whereas this is a shape rule evaluated once at import over one
+# dict. The trade was accepted because dropping the `get_client` call is itself
+# what puts the API key out of this seam's reach — the check exists to keep an
+# ordinary-looking edit from quietly undoing that, not to make it unconditional.
+_MODEL_LISTERS = {"ollama": _list_ollama_models}
+# The parameter names every lister must have, checked below rather than trusted.
+_LISTER_SIGNATURE = ("base_url", "timeout")
+
+
+def _check_every_listable_provider_has_a_keyless_lister(providers, listers) -> None:
+    """Fail at import if the listing table and `MODEL_LISTING_PROVIDERS` disagree.
+
+    Both directions matter and for different reasons. A provider in
+    `MODEL_LISTING_PROVIDERS` with no lister would render a picker that can
+    never fill; a lister for a provider not declared listable is dead code that
+    a later edit could wire up without passing this gate.
+
+    The shape clauses are the half that keeps "keyless" a fact about the shipped
+    table rather than a claim in a comment. Each rejects a different way to smuggle
+    a `Config` in: a `cfg` parameter (caught by the names), a `functools.partial`
+    or a callable object that has already bound one (caught by `isfunction`), and
+    a closure cell holding one (caught by `__closure__`). The clauses run in that
+    order so `__closure__` is only read off something that has one. The names are
+    read with `follow_wrapped=False` because `inspect.signature` otherwise reports
+    the parameters of `__wrapped__`, which a lister that really takes a `cfg` can
+    set to a two-parameter decoy. What none of them constrain is a body that
+    *reaches* a key it was never handed, and none of them see the table after
+    import — see the comment above.
+    """
+    missing = set(providers) ^ set(listers)
+    if missing:
+        raise RuntimeError(
+            "every listable provider needs exactly one model lister and vice versa: "
+            f"{sorted(missing)}"
+        )
+    not_plain = sorted(name for name, fn in listers.items() if not inspect.isfunction(fn))
+    if not_plain:
+        raise RuntimeError(
+            "a model lister must be a plain function, not a functools.partial, a "
+            "callable object, a bound method, or a builtin: each of those can already "
+            f"hold a Config that its parameter names never mention: {not_plain}"
+        )
+    closing = sorted(name for name, fn in listers.items() if fn.__closure__ is not None)
+    if closing:
+        raise RuntimeError(
+            "a model lister must not close over anything: a closure cell can hold a "
+            f"Config that its parameter names never mention: {closing}"
+        )
+    wrong = sorted(
+        name
+        for name, fn in listers.items()
+        if tuple(inspect.signature(fn, follow_wrapped=False).parameters) != _LISTER_SIGNATURE
+    )
+    if wrong:
+        raise RuntimeError(
+            f"a model lister must take exactly {_LISTER_SIGNATURE} so it cannot be "
+            f"handed an API key: {wrong}"
+        )
+
+
+_check_every_listable_provider_has_a_keyless_lister(MODEL_LISTING_PROVIDERS, _MODEL_LISTERS)
+
+
+def _list_models_for(cfg: Config, provider: str, base_url: str | None) -> list[str]:
+    """Enumerate `provider`'s models at `base_url`, handing the lister no key.
+
+    This must remain the only place a lister from `_MODEL_LISTERS` is called.
+    Nothing enforces that; it is an invariant maintainers have to uphold, and
+    the safety argument rests on it — a second call site could reach a lister
+    without the two halts below, so a lister added later would be dialled
+    unguarded.
+
+    Those halts are hand-written per-route: exactly the enumeration #269 was
+    able to avoid, because it centralised both asserts in `get_client` as that
+    function's first act, protecting every caller by construction. That cost is
+    accepted here because dropping the factory call is precisely what puts the
+    API key out of the listing seam's reach. A corrupt config.json or an
+    unreadable credentials file must still halt before any provider is dialled.
+    """
+    assert_settings_intact(cfg)
+    assert_credentials_intact(cfg)
+    return _MODEL_LISTERS[provider](
+        base_url, min(cfg.llm_timeout_seconds, MODEL_LIST_TIMEOUT_SECONDS)
+    )
+
+
 # Full-page halt shown when a fact's logical terms cannot be read. htmx partial
 # swaps are redirected here (HX-Redirect) because htmx will not swap an error
 # response into the DOM -- see `_fact_terms_unreadable_handler`.
@@ -180,9 +309,14 @@ _SAFE_FETCH_SITES = frozenset({"same-origin", "none"})
 # issued but unreadable, and gating navigation would 403 an ordinary inbound
 # link. The exception is keyed on "does this dial a caller-supplied endpoint",
 # not on "does this mutate" — `/settings/model-field` takes `base_url` from the
-# query string and builds a client from it. That is a blind SSRF probe today
-# because only Ollama is listable and it sends no key; the moment a keyed
-# provider joins MODEL_LISTING_PROVIDERS it becomes one-request key exfiltration.
+# query string and dials it. `_MODEL_LISTERS` is what keeps that a blind SSRF
+# probe rather than key exfiltration, by handing the listing seam no key and
+# building no client that holds one — narrower than "no way to hold a key",
+# since an import-time shape rule cannot stop a lister body from going and
+# fetching one (see `_MODEL_LISTERS`). This guard is the separate, weaker
+# control that stops another site from provoking the probe at all. Neither
+# substitutes for the other, which is why this path stays listed even though
+# the listing is handed no key.
 _ORIGIN_GUARD_GET_PATHS = ("/settings/model-field",)
 
 
@@ -1934,13 +2068,10 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         }
         if lazy or not listable:
             return base
-        # Routed through the factory, never by constructing the adapter here, so
-        # this path inherits the corrupt-config halt every provider call gets.
-        client = get_client(
-            replace(app.state.cfg, provider=provider, base_url=base_url.strip() or None)
-        )
         try:
-            base["models"] = client.list_models()
+            base["models"] = _list_models_for(
+                app.state.cfg, provider, base_url.strip() or None
+            )
         except LLMError as exc:
             base["models_error"] = str(exc)
         return base

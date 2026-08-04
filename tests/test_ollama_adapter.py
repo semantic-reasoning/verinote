@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: MPL-2.0
 import json
-from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -8,7 +7,7 @@ import pytest
 from verinote.config import Config, save_settings
 from verinote.engine.terms import Compound, NumberLit
 from verinote.llm.base import LLMError
-from verinote.llm.ollama_adapter import OllamaAdapter
+from verinote.llm.ollama_adapter import OllamaAdapter, list_models
 from verinote.llm.schema import FACT_ARRAY_SCHEMA
 from verinote.pipeline import extract_source
 from verinote.prompts import save_prompt_override
@@ -362,61 +361,66 @@ def test_list_models_returns_sorted_unique_names_from_tags(tmp_path, monkeypatch
         },
     )
 
-    models = OllamaAdapter(_cfg(tmp_path)).list_models()
+    models = list_models(None, 5.0)
 
     assert models == ["llava:7b", "qwen3:8b"]
     assert calls[0].url == "http://localhost:11434/api/tags"
 
 
-def test_list_models_honours_the_configured_base_url(tmp_path, monkeypatch):
+def test_list_models_honours_the_supplied_base_url(monkeypatch):
     calls = _tags(monkeypatch, {"models": []})
 
-    OllamaAdapter(replace(_cfg(tmp_path), base_url="http://llm.internal:9999/")).list_models()
+    list_models("http://llm.internal:9999/", 5.0)
 
     assert calls[0].url == "http://llm.internal:9999/api/tags"
 
 
-def test_list_models_is_bounded_far_below_the_generation_timeout(tmp_path, monkeypatch):
-    """A page-load call must not inherit the minutes-long completion budget."""
+def test_list_models_passes_the_supplied_timeout_through(monkeypatch):
+    """The clamp against the generation budget belongs to the caller that still
+    holds a Config; this function must not silently re-derive or override it."""
     calls = _tags(monkeypatch, {"models": []})
 
-    OllamaAdapter(_cfg(tmp_path, timeout=900.0)).list_models()
-
-    assert calls[0].timeout == 5.0
-
-
-def test_list_models_keeps_an_even_shorter_configured_timeout(tmp_path, monkeypatch):
-    """The bound is the *smaller* of the two, so a tighter user setting still wins."""
-    calls = _tags(monkeypatch, {"models": []})
-
-    OllamaAdapter(_cfg(tmp_path, timeout=1.5)).list_models()
+    list_models(None, 1.5)
 
     assert calls[0].timeout == 1.5
 
 
-def test_list_models_returns_empty_for_a_server_with_nothing_pulled(tmp_path, monkeypatch):
+def test_list_models_takes_no_config_so_it_cannot_be_handed_a_key(monkeypatch):
+    """The settings picker dials a caller-supplied URL, so a listing routine that
+    could reach `cfg.api_key` would be one edit away from exfiltrating it. Taking
+    no `Config` means no key is handed in, which is what this pins for Ollama's
+    lister. It is not a guarantee that no key is reachable: a body can still go
+    fetch one. `_check_every_listable_provider_has_a_keyless_lister` applies the
+    same shape rule at import to every lister in the web layer's shipped table."""
+    import inspect
+
+    assert tuple(inspect.signature(list_models).parameters) == ("base_url", "timeout")
+    assert not hasattr(OllamaAdapter, "list_models")
+
+
+def test_list_models_returns_empty_for_a_server_with_nothing_pulled(monkeypatch):
     """Reachable-but-empty is data, not an error: the caller must be able to say
     'this server has no models' rather than 'this server could not be reached'."""
     _tags(monkeypatch, {"models": []})
 
-    assert OllamaAdapter(_cfg(tmp_path)).list_models() == []
+    assert list_models(None, 5.0) == []
 
 
-def test_list_models_raises_on_transport_failure(tmp_path, monkeypatch):
+def test_list_models_raises_on_transport_failure(monkeypatch):
     def boom(req, *, timeout):
         raise OSError("connection refused")
 
     monkeypatch.setattr("urllib.request.urlopen", boom)
 
     with pytest.raises(LLMError, match="ollama request failed"):
-        OllamaAdapter(_cfg(tmp_path)).list_models()
+        list_models(None, 5.0)
 
 
 @pytest.mark.parametrize("payload", [{"models": "qwen3:8b"}, {}, ["qwen3:8b"]])
-def test_list_models_raises_on_schema_mismatch(tmp_path, monkeypatch, payload):
+def test_list_models_raises_on_schema_mismatch(monkeypatch, payload):
     """A shape that is not {'models': [...]} is a failure, never a silent empty
     list -- that would render as 'no models installed' and blame the user."""
     _tags(monkeypatch, payload)
 
     with pytest.raises(LLMError, match="did not match schema"):
-        OllamaAdapter(_cfg(tmp_path)).list_models()
+        list_models(None, 5.0)

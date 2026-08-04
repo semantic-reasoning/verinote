@@ -792,8 +792,8 @@ def test_settings_model_field_stays_usable_on_a_halted_policy(tmp_path, monkeypa
     import verinote.web.app as webapp
 
     client = _halted_client(tmp_path, monkeypatch)
-    monkeypatch.setattr(
-        webapp, "get_client", lambda _cfg: type("C", (), {"list_models": lambda s: ["qwen3:8b"]})()
+    monkeypatch.setitem(
+        webapp._MODEL_LISTERS, "ollama", lambda base_url, timeout: ["qwen3:8b"]
     )
 
     r = client.get("/settings/model-field?provider=ollama&model=qwen3:8b")

@@ -1,7 +1,12 @@
 # SPDX-License-Identifier: MPL-2.0
 import builtins
+from dataclasses import replace
+import functools
+import importlib.util
+import inspect
 import logging
 import re
+import sys
 import threading
 import time
 import unicodedata
@@ -12,6 +17,7 @@ import pytest
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
+import verinote.config  # noqa: E402
 import verinote.web.app as webapp  # noqa: E402
 from verinote.config import (  # noqa: E402
     Config,
@@ -23,7 +29,11 @@ from verinote.config import (  # noqa: E402
 from verinote.engine import CheckReport, DEFAULT_POLICY, FindingDetail  # noqa: E402
 from verinote.engine.terms import Atom, Compound, StringLit  # noqa: E402
 from verinote.kb_location import KBRootSafetyError  # noqa: E402
+from verinote.llm.anthropic_adapter import AnthropicAdapter  # noqa: E402
 from verinote.llm.base import ExtractedFact, LLMError  # noqa: E402
+from verinote.llm.claude_cli_adapter import ClaudeCliAdapter  # noqa: E402
+from verinote.llm.ollama_adapter import OllamaAdapter  # noqa: E402
+from verinote.llm.openai_adapter import OpenAIAdapter  # noqa: E402
 from verinote.pipeline import ChunkedExtractionResult, ExtractionJobBusyError  # noqa: E402
 from verinote.pipeline.verify import _with_unrecorded_policy_warning  # noqa: E402
 from verinote.pipeline.policy_state import (  # noqa: E402
@@ -4594,7 +4604,19 @@ def test_worker_config_corrupt_does_not_mark_the_job_failed(tmp_path, monkeypatc
 # --- the Ollama model picker: choose from what the server actually has ---
 
 
-def _ollama_client(tmp_path, *, provider="ollama", model="qwen3:8b", base_url=None):
+def _ollama_client(
+    tmp_path,
+    *,
+    provider="ollama",
+    model="qwen3:8b",
+    base_url=None,
+    llm_timeout_seconds=None,
+):
+    # No default of its own: an unset timeout must be Config's own default, so
+    # this helper cannot silently retune every test that uses it.
+    timeout = (
+        {} if llm_timeout_seconds is None else {"llm_timeout_seconds": llm_timeout_seconds}
+    )
     return TestClient(
         create_app(
             Config(
@@ -4604,27 +4626,34 @@ def _ollama_client(tmp_path, *, provider="ollama", model="qwen3:8b", base_url=No
                 model=model,
                 api_key=None,
                 base_url=base_url,
+                **timeout,
             )
         )
     )
 
 
 class _FakeOllama:
-    """Stands in for the adapter the factory would return, recording the base URL
-    it was resolved with so a test can prove which endpoint got asked."""
+    """Stands in for the keyless lister, recording the base URL and timeout it was
+    called with so a test can prove which endpoint got asked, and how patiently.
 
-    name = "ollama"
+    Installed over `webapp._MODEL_LISTERS` rather than over `webapp.get_client`:
+    the listing path deliberately no longer builds a client, and a fake wired to
+    the factory would sit unused while the real endpoint was dialled for real.
+    """
 
     def __init__(self, models=(), error=None):
         self.models = list(models)
         self.error = error
         self.seen = []
+        self.timeouts = []
 
-    def factory(self, cfg):
-        self.seen.append(cfg.base_url)
+    def install(self, monkeypatch, provider="ollama"):
+        monkeypatch.setitem(webapp._MODEL_LISTERS, provider, self.lister)
         return self
 
-    def list_models(self):
+    def lister(self, base_url, timeout):
+        self.seen.append(base_url)
+        self.timeouts.append(timeout)
         if self.error is not None:
             raise self.error
         return self.models
@@ -4634,8 +4663,10 @@ def test_settings_defers_the_ollama_model_list_off_the_page_load(tmp_path, monke
     """`/settings` is also the recovery page for a corrupt config and a halted
     policy, so rendering it must never wait on a provider. The field ships as a
     working text input that lazily swaps itself for the picker."""
-    monkeypatch.setattr(
-        webapp, "get_client", lambda _cfg: pytest.fail("/settings must not call the provider")
+    monkeypatch.setitem(
+        webapp._MODEL_LISTERS,
+        "ollama",
+        lambda base_url, timeout: pytest.fail("/settings must not call the provider"),
     )
 
     r = _ollama_client(tmp_path).get("/settings")
@@ -4658,8 +4689,7 @@ def test_settings_does_not_defer_for_a_provider_with_nothing_to_enumerate(tmp_pa
 
 
 def test_model_field_offers_the_installed_models_as_a_picker(tmp_path, monkeypatch):
-    fake = _FakeOllama(models=["llava:7b", "qwen3:8b"])
-    monkeypatch.setattr(webapp, "get_client", fake.factory)
+    _FakeOllama(models=["llava:7b", "qwen3:8b"]).install(monkeypatch)
 
     r = _ollama_client(tmp_path).get("/settings/model-field?provider=ollama&model=qwen3:8b")
 
@@ -4674,8 +4704,7 @@ def test_model_field_asks_the_endpoint_being_edited_not_the_saved_one(tmp_path, 
     """The form's Base URL is the endpoint whose models the user is choosing from.
     Listing against the saved config instead would show models from a server the
     user is in the middle of switching away from."""
-    fake = _FakeOllama(models=["qwen3:8b"])
-    monkeypatch.setattr(webapp, "get_client", fake.factory)
+    fake = _FakeOllama(models=["qwen3:8b"]).install(monkeypatch)
 
     r = _ollama_client(tmp_path, base_url="http://saved:11434").get(
         "/settings/model-field?provider=ollama&model=qwen3:8b&base_url=http://edited:9999"
@@ -4688,8 +4717,7 @@ def test_model_field_asks_the_endpoint_being_edited_not_the_saved_one(tmp_path, 
 def test_model_field_keeps_a_configured_model_the_server_does_not_have(tmp_path, monkeypatch):
     """config.json really does name this model. Dropping it from the picker would
     silently select a different one and make the page misreport the KB's state."""
-    fake = _FakeOllama(models=["llava:7b", "qwen3:8b"])
-    monkeypatch.setattr(webapp, "get_client", fake.factory)
+    _FakeOllama(models=["llava:7b", "qwen3:8b"]).install(monkeypatch)
 
     r = _ollama_client(tmp_path, model="llama3.1").get(
         "/settings/model-field?provider=ollama&model=llama3.1"
@@ -4703,8 +4731,7 @@ def test_model_field_keeps_a_configured_model_the_server_does_not_have(tmp_path,
 def test_model_field_falls_back_to_typing_when_the_server_is_unreachable(tmp_path, monkeypatch):
     """An empty picker would read as 'nothing to choose' and, worse, leave the user
     unable to set a model at all. Say what failed and keep the field usable."""
-    fake = _FakeOllama(error=LLMError("ollama request failed: connection refused"))
-    monkeypatch.setattr(webapp, "get_client", fake.factory)
+    _FakeOllama(error=LLMError("ollama request failed: connection refused")).install(monkeypatch)
 
     r = _ollama_client(tmp_path).get("/settings/model-field?provider=ollama&model=qwen3:8b")
 
@@ -4718,8 +4745,7 @@ def test_model_field_falls_back_to_typing_when_the_server_is_unreachable(tmp_pat
 def test_model_field_distinguishes_an_empty_server_from_an_unreachable_one(tmp_path, monkeypatch):
     """Reachable-with-nothing-pulled and could-not-be-reached are different facts
     about the user's machine, and the fix for each is different."""
-    fake = _FakeOllama(models=[])
-    monkeypatch.setattr(webapp, "get_client", fake.factory)
+    _FakeOllama(models=[]).install(monkeypatch)
 
     r = _ollama_client(tmp_path).get("/settings/model-field?provider=ollama&model=")
 
@@ -4729,8 +4755,7 @@ def test_model_field_distinguishes_an_empty_server_from_an_unreachable_one(tmp_p
 
 
 def test_model_field_names_the_default_endpoint_it_will_actually_dial(tmp_path, monkeypatch):
-    fake = _FakeOllama(models=[])
-    monkeypatch.setattr(webapp, "get_client", fake.factory)
+    fake = _FakeOllama(models=[]).install(monkeypatch)
 
     r = _ollama_client(tmp_path).get("/settings/model-field?provider=ollama&model=")
 
@@ -4740,7 +4765,9 @@ def test_model_field_names_the_default_endpoint_it_will_actually_dial(tmp_path, 
 
 def test_model_field_does_not_reach_the_provider_for_a_text_input_provider(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        webapp, "get_client", lambda _cfg: pytest.fail("no provider call for anthropic")
+        webapp,
+        "_list_models_for",
+        lambda *a, **k: pytest.fail("no provider call for anthropic"),
     )
 
     r = _ollama_client(tmp_path).get("/settings/model-field?provider=anthropic&model=gpt")
@@ -4749,11 +4776,22 @@ def test_model_field_does_not_reach_the_provider_for_a_text_input_provider(tmp_p
     assert 'hx-trigger="load"' not in r.text
 
 
-def test_model_field_halts_under_a_corrupt_config(tmp_path):
+def test_model_field_halts_under_a_corrupt_config(tmp_path, monkeypatch):
     """The picker is a provider call like any other: a corrupt config.json makes the
     resolved provider untrustworthy, so it halts rather than listing against a
-    provider the user never chose (#269)."""
+    provider the user never chose (#269).
+
+    The lister is replaced with a tripwire for the same reason its credentials-halt
+    sibling does it: a regressed halt would otherwise dial localhost:11434 for real
+    on any dev box running Ollama, and the assertions below would still pass or
+    fail on the status code alone without saying that happened.
+    """
     cfg, _, _ = _config_web_kb(tmp_path, corrupt=True)
+    monkeypatch.setattr(
+        webapp,
+        "_MODEL_LISTERS",
+        {"ollama": lambda base_url, timeout: pytest.fail("dialled despite the halt")},
+    )
     c = TestClient(create_app(cfg))
 
     r = c.get(
@@ -4762,6 +4800,250 @@ def test_model_field_halts_under_a_corrupt_config(tmp_path):
 
     assert r.status_code == 409
     assert r.headers.get("HX-Redirect") == webapp.CONFIG_UNAVAILABLE_PATH
+
+
+def test_model_field_halts_under_unreadable_credentials(tmp_path, monkeypatch):
+    """The other halt `get_client` used to supply for free on this path.
+
+    Dropping the factory call is what puts the API key out of the listing's
+    reach, but it also removed both halts, so each is now a hand-written line
+    with nothing else guarding it. Without this test `assert_credentials_intact`
+    could be deleted from `_list_models_for` and everything else stays green.
+    """
+    cfg, _, _ = _config_web_kb(tmp_path, corrupt=False)
+    monkeypatch.setattr(
+        webapp,
+        "_MODEL_LISTERS",
+        {"ollama": lambda base_url, timeout: pytest.fail("dialled despite the halt")},
+    )
+    c = TestClient(create_app(replace(cfg, credentials_error="credentials.json is not valid JSON")))
+
+    r = c.get(
+        "/settings/model-field?provider=ollama&model=m", headers={"HX-Request": "true"}
+    )
+
+    assert r.status_code == 409
+    assert r.headers.get("HX-Redirect") == webapp.CREDENTIALS_UNAVAILABLE_PATH
+
+
+def test_model_field_never_constructs_a_provider_adapter(tmp_path, monkeypatch):
+    """The load-bearing test for the keyless listing seam.
+
+    A `Config` carries a resolved `api_key` — and, after `replace(provider=...)`,
+    the *saved* provider's key. So the guarantee is not "the lister happens not
+    to read it" but "no object holding it is ever built on this path". Counting
+    constructions, rather than asserting an error, is what keeps this true
+    against a future edit that gives some adapter a `list_models` again.
+
+    `OpenAIAdapter.__init__` is patched rather than `OpenRouterAdapter`'s, which
+    it inherits; patching the subclass would miss a listing routed through the base.
+    `ClaudeCliAdapter` never reads `cfg.api_key`, but it still stores the whole
+    `Config` (`self.cfg = cfg`), so constructing one here would put an object
+    holding the saved provider's key on this path. All four are checked because
+    the name says *no* adapter and that has to be literally what is checked.
+    """
+    built = []
+    for cls in (OllamaAdapter, OpenAIAdapter, AnthropicAdapter, ClaudeCliAdapter):
+        monkeypatch.setattr(
+            cls, "__init__", lambda self, cfg, _n=cls.__name__: built.append(_n)
+        )
+    monkeypatch.setattr(
+        webapp, "get_client", lambda _cfg: pytest.fail("the listing path built a client")
+    )
+    fake = _FakeOllama(models=["qwen3:8b"]).install(monkeypatch)
+
+    r = _ollama_client(tmp_path).get("/settings/model-field?provider=ollama&model=qwen3:8b")
+
+    assert r.status_code == 200
+    assert '<select name="model">' in r.text  # it really did render the picker
+    assert fake.seen == [None]  # ...and really did go through the lister
+    assert built == []
+
+
+def test_model_field_listing_clamps_the_page_load_timeout(tmp_path, monkeypatch):
+    """A page-load call must not inherit the minutes-long completion budget.
+
+    The clamp moved here with the seam: the lister takes a float and cannot
+    re-derive it, so this is the only place left that can get it wrong.
+    """
+    fake = _FakeOllama(models=[]).install(monkeypatch)
+
+    _ollama_client(tmp_path, llm_timeout_seconds=900.0).get(
+        "/settings/model-field?provider=ollama&model="
+    )
+
+    assert fake.timeouts == [5.0]
+
+
+def test_model_field_listing_keeps_an_even_shorter_configured_timeout(tmp_path, monkeypatch):
+    """The bound is the *smaller* of the two, so a tighter user setting still wins.
+    Without this, clamping to a flat 5.0 would pass the test above."""
+    fake = _FakeOllama(models=[]).install(monkeypatch)
+
+    _ollama_client(tmp_path, llm_timeout_seconds=1.5).get(
+        "/settings/model-field?provider=ollama&model="
+    )
+
+    assert fake.timeouts == [1.5]
+
+
+@pytest.mark.parametrize(
+    "providers, listers, expected",
+    [
+        ({"ollama", "openai"}, {"ollama": lambda base_url, timeout: []}, "openai"),
+        ({"ollama"}, {"ollama": lambda base_url, timeout: [], "openai": None}, "openai"),
+    ],
+)
+def test_the_check_rejects_a_provider_set_and_lister_table_that_disagree(
+    providers, listers, expected
+):
+    """Both directions: a picker that can never fill, and dead code a later edit
+    could wire up without passing this gate."""
+    with pytest.raises(RuntimeError, match=expected):
+        webapp._check_every_listable_provider_has_a_keyless_lister(providers, listers)
+
+
+def test_the_check_rejects_a_lister_that_could_be_handed_a_config():
+    """Set equality alone would accept this. The parameter-name clause is what
+    keeps 'keyless' a fact about the code rather than a claim in a comment.
+
+    Mutation: delete the `_LISTER_SIGNATURE` clause and this no longer raises --
+    a plain non-closing lambda passes every other clause.
+    """
+    with pytest.raises(RuntimeError, match="cannot be handed an API key"):
+        webapp._check_every_listable_provider_has_a_keyless_lister(
+            {"ollama"}, {"ollama": lambda cfg, base_url, timeout: []}
+        )
+
+
+# The next three are the shapes that satisfy the parameter names *while already
+# carrying a Config*, which is what makes the names alone insufficient. Each was
+# accepted by the check before the `isfunction` and `__closure__` clauses existed.
+
+
+def test_the_check_rejects_a_partial_that_has_already_bound_a_config():
+    """`functools.partial` hides the bound first argument from `signature`, so a
+    keyed lister with `cfg` pre-filled reports exactly ('base_url', 'timeout').
+
+    Mutation: delete the `inspect.isfunction` clause and this stops raising the
+    RuntimeError asserted here -- the check falls through to `fn.__closure__`,
+    which a partial does not have at all.
+    """
+    def keyed_lister(cfg, base_url, timeout):
+        return [cfg.api_key]
+
+    bound = functools.partial(keyed_lister, object())
+    # The premise: it looks exactly like a conforming lister.
+    assert tuple(inspect.signature(bound).parameters) == webapp._LISTER_SIGNATURE
+
+    with pytest.raises(RuntimeError, match="must be a plain function"):
+        webapp._check_every_listable_provider_has_a_keyless_lister(
+            {"ollama"}, {"ollama": bound}
+        )
+
+
+def test_the_check_rejects_a_closure_over_a_captured_config():
+    """A closure cell holds the Config, and no parameter ever mentions it. This is
+    the shape a maintainer reaches for most naturally -- defining a lister inside
+    a factory that already has the config in scope.
+
+    Mutation: delete the `fn.__closure__` clause and this stops raising -- a
+    closure is a plain function with the right parameter names.
+    """
+    cfg = object()
+
+    def lister(base_url, timeout):
+        return [cfg]
+
+    # The premise: it looks exactly like a conforming lister.
+    assert tuple(inspect.signature(lister).parameters) == webapp._LISTER_SIGNATURE
+    assert lister.__closure__ is not None
+
+    with pytest.raises(RuntimeError, match="must not close over anything"):
+        webapp._check_every_listable_provider_has_a_keyless_lister(
+            {"ollama"}, {"ollama": lister}
+        )
+
+
+def test_the_check_rejects_a_callable_object_holding_a_config():
+    """`__call__(self, base_url, timeout)` presents the right parameters (`signature`
+    drops `self`) while the instance carries the Config as an attribute.
+
+    Mutation: delete the `inspect.isfunction` clause and this stops raising the
+    RuntimeError asserted here -- the check falls through to `fn.__closure__`,
+    which an instance does not have.
+    """
+    class KeyedLister:
+        def __init__(self, cfg):
+            self.cfg = cfg
+
+        def __call__(self, base_url, timeout):
+            return [self.cfg]
+
+    lister = KeyedLister(object())
+    # The premise: it looks exactly like a conforming lister.
+    assert tuple(inspect.signature(lister).parameters) == webapp._LISTER_SIGNATURE
+
+    with pytest.raises(RuntimeError, match="must be a plain function"):
+        webapp._check_every_listable_provider_has_a_keyless_lister(
+            {"ollama"}, {"ollama": lister}
+        )
+
+
+# And the names themselves are read off the function rather than trusted from
+# `inspect.signature`'s default view, because a lister can lie about them without
+# taking any of the three shapes above.
+
+
+def test_the_check_rejects_a_lister_whose_wrapped_attribute_hides_a_config():
+    """`inspect.signature` follows `__wrapped__`, so a plain, non-closing function
+    that really takes `(cfg, base_url, timeout)` can report the conforming two by
+    pointing that attribute at a decoy.
+
+    Mutation: drop `follow_wrapped=False` from the parameter-name clause and this
+    stops raising -- the decoy's names are then what the check sees, and every
+    other clause already passes.
+    """
+    def decoy(base_url, timeout):
+        return []
+
+    def keyed_lister(cfg, base_url, timeout):
+        return [cfg.api_key]
+
+    keyed_lister.__wrapped__ = decoy
+    # The premise: under the default it looks exactly like a conforming lister.
+    assert tuple(inspect.signature(keyed_lister).parameters) == webapp._LISTER_SIGNATURE
+
+    with pytest.raises(RuntimeError, match="cannot be handed an API key"):
+        webapp._check_every_listable_provider_has_a_keyless_lister(
+            {"ollama"}, {"ollama": keyed_lister}
+        )
+
+
+def test_the_module_body_runs_the_check(monkeypatch):
+    """The predicate is only a gate if the module body actually calls it.
+
+    The tests above call it themselves, and `sys.modules` caching means
+    the real import already happened before any of them ran -- so deleting the
+    module-level call leaves every one of them green. This re-executes
+    `app.py`'s body into a fresh module object with a provider set the shipped
+    `_MODEL_LISTERS` cannot satisfy, which raises only if that call site exists.
+
+    A separate module object rather than `importlib.reload`: reloading the live
+    `verinote.web.app` would swap out the identity of `Config`-facing handlers
+    and helper objects every other test in this session imported, and a reload
+    that raises part-way (which is the point here) leaves it half-rebuilt.
+    """
+    monkeypatch.setattr(
+        verinote.config, "MODEL_LISTING_PROVIDERS", frozenset({"ollama", "anthropic"})
+    )
+    name = "verinote_web_app_under_test"
+    spec = importlib.util.spec_from_file_location(name, webapp.__file__)
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, name, module)
+
+    with pytest.raises(RuntimeError, match="anthropic"):
+        spec.loader.exec_module(module)
 
 
 # --- the Claude CLI alias picker: suggestions you can type past ---
@@ -4869,8 +5151,7 @@ def test_settings_page_renders_the_cli_picker_as_a_list(tmp_path):
 def test_model_field_custom_never_downgrades_the_discovered_picker(tmp_path, monkeypatch):
     """A stray `custom=1` must not turn Ollama's discovered list into free text --
     that list is evidence, and there is no reason to type past it."""
-    fake = _FakeOllama(models=["qwen3:8b"])
-    monkeypatch.setattr(webapp, "get_client", fake.factory)
+    _FakeOllama(models=["qwen3:8b"]).install(monkeypatch)
 
     r = _ollama_client(tmp_path).get(
         "/settings/model-field?provider=ollama&model=qwen3:8b&custom=1"
@@ -4883,8 +5164,7 @@ def test_model_field_custom_never_downgrades_the_discovered_picker(tmp_path, mon
 def test_model_field_keeps_aliases_off_the_ollama_picker(tmp_path, monkeypatch):
     """Curated aliases and a discovered list are different claims; the Ollama
     field must never quietly gain entries no server reported."""
-    fake = _FakeOllama(models=["qwen3:8b"])
-    monkeypatch.setattr(webapp, "get_client", fake.factory)
+    _FakeOllama(models=["qwen3:8b"]).install(monkeypatch)
 
     r = _ollama_client(tmp_path).get("/settings/model-field?provider=ollama&model=qwen3:8b")
 

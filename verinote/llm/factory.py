@@ -16,6 +16,10 @@ def get_client(cfg: Config) -> LLMClient:
     # First act, before any provider branch: a corrupt config.json must never
     # resolve to a silent cloud fallback. Every current and future caller is
     # protected here by construction, so no route enumeration is needed (#269).
+    # One deliberate exception, and it is not a caller: the settings
+    # model-listing seam (`web.app._list_models_for`) builds no client at all,
+    # precisely so it cannot hold an API key while dialling a caller-supplied
+    # URL. It therefore re-asserts both halts below by hand.
     assert_settings_intact(cfg)
     # Same reasoning, different file: an unreadable credentials file must not
     # resolve to "no key" and let a provider be called unauthenticated.
