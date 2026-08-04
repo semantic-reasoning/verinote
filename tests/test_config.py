@@ -188,8 +188,19 @@ def test_extraction_settings_round_trip_and_env_override(tmp_path, monkeypatch):
 
 def test_claude_cli_provider_is_available():
     assert "claudecli" in PROVIDERS
-    assert "claudecli" not in TESTABLE_PROVIDERS
     assert "ollama" in TESTABLE_PROVIDERS
+
+
+def test_every_shipped_provider_can_be_connection_tested():
+    """`claudecli` was excluded as a "non-API" provider, but the test is one real
+    extraction, which the CLI serves as well as an HTTP endpoint does. It is also
+    the provider that needs it most: its models cannot be enumerated, so running
+    the chosen one is the only evidence available that the choice works.
+
+    Asserted over PROVIDERS rather than as a claudecli special case, so a new
+    provider has to make the same decision deliberately.
+    """
+    assert set(PROVIDERS) <= TESTABLE_PROVIDERS
 
 
 def test_legacy_claude_provider_normalizes_to_claudecli(tmp_path):

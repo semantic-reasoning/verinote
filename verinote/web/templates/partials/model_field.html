@@ -12,7 +12,13 @@
    UNREACHABLE server both fall back to the text input plus a note saying which
    of the two happened. An empty picker would look like a normal empty field and
    quietly claim "your server offers nothing to choose", which is a different
-   statement from "your server could not be reached". #}
+   statement from "your server could not be reached".
+
+   The Claude CLI has no listing to read -- its `--model` help documents three
+   aliases and otherwise takes a full model id -- so it gets a *datalist*, not a
+   select: suggestions you can also type past. The wording below says these are
+   the aliases verinote resolves, which is a claim about this code, not the
+   discovery claim the Ollama picker makes about a live server. #}
 <div id="model-field"{% if lazy %}
      hx-get="/settings/model-field"
      hx-trigger="load"
@@ -46,6 +52,19 @@
     <code>{{ model }}</code>, which is not installed on <code>{{ endpoint }}</code>.
     Pick an installed model, or run <code>ollama pull {{ model }}</code>.</p>
   {% endif %}
+  {% elif aliases %}
+  <label>Model
+    <input type="text" name="model" value="{{ model }}" list="model-aliases"
+           placeholder="alias or model id">
+  </label>
+  <datalist id="model-aliases">
+    {% for alias in aliases %}<option value="{{ alias }}"></option>{% endfor %}
+  </datalist>
+  <p class="muted field-note">
+    {{ aliases|join(', ') }} select the latest model of that family. A full id
+    such as <code>claude-opus-4-8</code> is passed to the CLI unchanged, so it
+    stays pinned to that version.
+  </p>
   {% else %}
   <label>Model
     <input type="text" name="model" value="{{ model }}" placeholder="model id">

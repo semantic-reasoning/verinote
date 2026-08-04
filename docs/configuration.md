@@ -99,9 +99,27 @@ type a model id and save. And a model named in `config.json` that the server
 does not have stays selected, marked `— not installed`, rather than being
 silently swapped for one that is — the page reports your KB's real state.
 
-Every other provider keeps the free-text field. A cloud catalogue is not a
-property of the endpoint you point at, and `claudecli` has nothing to enumerate,
-so there is no list either could answer truthfully.
+### Picking a Claude CLI model
+
+The `claude` binary has no listing command, so there is nothing to discover —
+its `--model` help documents three aliases and otherwise takes a full model id.
+Settings therefore offers a **datalist**: `fable`, `opus`, and `sonnet` appear as
+suggestions, and you can type past them.
+
+The distinction the wording keeps is that these are the aliases *verinote*
+resolves — a claim about this code — not a report of what your account can
+reach, which verinote cannot see. An alias selects the latest model of that
+family; a full id such as `claude-opus-4-8` reaches the CLI unchanged and stays
+pinned to that version. A model that does not exist, or that your CLI cannot
+reach, surfaces as the CLI's own error rather than a silent substitution.
+
+Because the list cannot be verified against a server, **Test connection** is the
+check that matters here: it runs one real extraction through the `claude` binary
+with the model you chose.
+
+The cloud providers keep the plain free-text field — a vendor catalogue is not a
+property of the endpoint you point at, so there is no list they could answer
+truthfully either.
 
 ## Auto-accept
 

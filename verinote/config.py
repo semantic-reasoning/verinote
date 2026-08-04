@@ -65,7 +65,11 @@ PROVIDER_LABELS = {
     "openai": "OpenAI",
     "ollama": "Ollama",
 }
-TESTABLE_PROVIDERS = frozenset({"anthropic", "openai", "ollama"})
+# Providers whose configuration can be checked by actually running it. `claudecli`
+# belongs here for the same reason the others do -- the check is one real
+# extraction -- and it matters most there: its installed models cannot be
+# enumerated, so running the chosen one is the only way to learn it works.
+TESTABLE_PROVIDERS = frozenset({"anthropic", "claudecli", "openai", "ollama"})
 # Providers whose installed models can be enumerated from the very endpoint the
 # user configured, so the settings UI can offer a picker instead of free text.
 # A cloud catalogue is not a property of its endpoint and `claudecli` has no

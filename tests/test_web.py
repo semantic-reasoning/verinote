@@ -3911,11 +3911,14 @@ def test_settings_save_changes_active_provider(tmp_path, monkeypatch):
     assert (tmp_path / "config.json").is_file()
 
 
-def test_settings_disables_connection_test_for_non_api_provider(tmp_path):
+def test_settings_disables_connection_test_for_untestable_provider(tmp_path):
+    """Every provider verinote ships can be connection-tested, so the disabled
+    state is reached by a `config.json` naming one it does not -- the case where
+    running the test would mean resolving a provider that has no adapter."""
     cfg = Config(
         root=tmp_path,
         db_path=tmp_path / "kb.sqlite",
-        provider="claudecli",
+        provider="madeup",
         model="",
         api_key=None,
         base_url=None,
@@ -3924,17 +3927,16 @@ def test_settings_disables_connection_test_for_non_api_provider(tmp_path):
 
     r = client.get("/settings")
 
-    assert "ClaudeCLI" in r.text
     assert "Test connection" in r.text
     assert 'aria-disabled="true"' in r.text
     assert "Connection test is not available for this provider." not in r.text
 
 
-def test_test_connection_rejects_non_api_provider(tmp_path):
+def test_test_connection_rejects_untestable_provider(tmp_path):
     cfg = Config(
         root=tmp_path,
         db_path=tmp_path / "kb.sqlite",
-        provider="claudecli",
+        provider="madeup",
         model="",
         api_key=None,
         base_url=None,
@@ -3945,6 +3947,26 @@ def test_test_connection_rejects_non_api_provider(tmp_path):
 
     assert r.status_code == 400
     assert "Connection test is not available for this provider." in r.text
+
+
+def test_settings_enables_connection_test_for_claude_cli(tmp_path):
+    """The CLI's models cannot be listed, so actually running the chosen one is
+    the only evidence available that it works -- the button matters most here."""
+    cfg = Config(
+        root=tmp_path,
+        db_path=tmp_path / "kb.sqlite",
+        provider="claudecli",
+        model="opus",
+        api_key=None,
+        base_url=None,
+    )
+    client = TestClient(create_app(cfg))
+
+    r = client.get("/settings")
+
+    assert "ClaudeCLI" in r.text
+    assert "Test connection" in r.text
+    assert 'aria-disabled="true"' not in r.text
 
 
 def test_settings_enables_connection_test_for_ollama(tmp_path):
@@ -4737,3 +4759,72 @@ def test_model_field_halts_under_a_corrupt_config(tmp_path):
 
     assert r.status_code == 409
     assert r.headers.get("HX-Redirect") == webapp.CONFIG_UNAVAILABLE_PATH
+
+
+# --- the Claude CLI alias picker: suggestions you can type past ---
+
+
+def test_model_field_offers_cli_aliases_without_reaching_a_provider(tmp_path, monkeypatch):
+    """The CLI has no listing endpoint, so the suggestions are curated from the
+    adapter -- rendering them must not require (or attempt) a provider call."""
+    monkeypatch.setattr(
+        webapp, "get_client", lambda _cfg: pytest.fail("claudecli has nothing to enumerate")
+    )
+
+    r = _ollama_client(tmp_path).get("/settings/model-field?provider=claudecli&model=opus")
+
+    assert r.status_code == 200
+    assert '<datalist id="model-aliases">' in r.text
+    assert '<input type="text" name="model" value="opus" list="model-aliases"' in r.text
+    assert "<select" not in r.text  # typing a full id must stay possible
+    assert 'hx-trigger="load"' not in r.text  # nothing to lazily fetch
+
+
+def test_model_field_alias_suggestions_match_what_the_adapter_resolves(tmp_path):
+    """A suggested alias the adapter did not recognise would be offered as a
+    choice and then silently mean something else.
+
+    `_cli_model(alias) == alias` is NOT the property to assert: unknown strings
+    are passed through unchanged, so any invented alias satisfies it. What only
+    a real alias satisfies is absorbing a decorated display name of its family.
+    """
+    from verinote.llm.claude_cli_adapter import CLI_MODEL_ALIASES, _cli_model
+
+    r = _ollama_client(tmp_path).get("/settings/model-field?provider=claudecli&model=")
+
+    offered = re.findall(r'<option value="([^"]+)"></option>', r.text)
+    assert offered == list(CLI_MODEL_ALIASES)  # rendered list cannot drift
+    for alias in offered:
+        assert _cli_model(f"Claude {alias.title()} 9.9") == alias
+
+
+def test_model_field_tells_the_truth_about_pinning_a_full_id(tmp_path):
+    """The note promises a full id reaches the CLI unchanged; that promise is the
+    behaviour `_cli_model` now guarantees, so assert them together."""
+    from verinote.llm.claude_cli_adapter import _cli_model
+
+    r = _ollama_client(tmp_path).get("/settings/model-field?provider=claudecli&model=")
+
+    assert "claude-opus-4-8" in r.text
+    assert "passed to the CLI unchanged" in r.text
+    assert _cli_model("claude-opus-4-8") == "claude-opus-4-8"
+
+
+def test_model_field_keeps_aliases_off_the_ollama_picker(tmp_path, monkeypatch):
+    """Curated aliases and a discovered list are different claims; the Ollama
+    field must never quietly gain entries no server reported."""
+    fake = _FakeOllama(models=["qwen3:8b"])
+    monkeypatch.setattr(webapp, "get_client", fake.factory)
+
+    r = _ollama_client(tmp_path).get("/settings/model-field?provider=ollama&model=qwen3:8b")
+
+    assert "<datalist" not in r.text
+    for alias in ("fable", "sonnet"):
+        assert f'value="{alias}"' not in r.text
+
+
+def test_model_field_gives_no_aliases_to_a_plain_text_provider(tmp_path):
+    r = _ollama_client(tmp_path).get("/settings/model-field?provider=anthropic&model=claude")
+
+    assert "<datalist" not in r.text
+    assert '<input type="text" name="model" value="claude" placeholder="model id">' in r.text
