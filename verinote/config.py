@@ -10,12 +10,16 @@ model, or base URL value counts as unset and falls through the chain, so
 settings use the environment value when present, otherwise the saved file, then
 the default; if the selected value is blank or an invalid number, numeric
 parsers fall back to the default, while the boolean parser treats recognised
-truthy strings as true and everything else as false. The API key is **only**
-ever read from the environment — it is never persisted to or read from the
-settings file — but it shares the same blank-value handling: a blank (empty or
-whitespace-only) `VERINOTE_API_KEY` normalises to unset (`None`) and a used
-value is trimmed. With no saved or default source to fall back to, a blank key
-simply becomes `None` rather than falling through a chain.
+truthy strings as true and everything else as false. The API key is never in
+the settings file and never inside a KB — a KB gets synced and shared — but it
+is not environment-only either: it resolves from the provider-scoped
+`VERINOTE_<PROVIDER>_API_KEY`, then a key saved in the machine-wide
+`credentials.json` beside `app.json`, then the legacy provider-agnostic
+`VERINOTE_API_KEY`. That last tier sits *below* the saved key deliberately,
+against this module's usual env-first rule: naming no provider, it would
+otherwise replace a key saved for one provider with whatever single value
+happens to be exported. Every tier shares the blank-value handling — a blank
+value normalises to unset and a used value is trimmed.
 
 The saved file is also type-checked per key, since it is hand-editable JSON.
 A setting whose value has the wrong JSON type is never handed on to the code
@@ -42,6 +46,12 @@ import json
 import os
 import sys
 import tempfile
+from contextlib import contextmanager
+
+try:  # POSIX only; the credentials lock degrades to atomic-replace without it
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None  # type: ignore[assignment]
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -50,6 +60,8 @@ from verinote.prompts import render_prompt
 
 SETTINGS_FILENAME = "config.json"
 APP_CONFIG_FILENAME = "app.json"
+CREDENTIALS_FILENAME = "credentials.json"
+CREDENTIALS_VERSION = 1
 APP_NAME = "verinote"
 APP_THEMES = ("system", "light", "dark")
 
@@ -101,6 +113,41 @@ TESTABLE_PROVIDERS = frozenset({"anthropic", "claudecli", "openai", "openrouter"
 # cover it. It is absent here only because its picker is a separate unit of work,
 # not because the claim above applies to it.
 MODEL_LISTING_PROVIDERS = frozenset({"ollama"})
+# Providers that authenticate with an API key. The others never read
+# `cfg.api_key` at all (`claudecli` shells out, `ollama` talks to a local
+# endpoint), so resolving a key for them could only produce a value that cannot
+# be used and can leak — resolution returns None for them unconditionally.
+PROVIDERS_REQUIRING_KEY = frozenset({"anthropic", "openai", "openrouter"})
+_KEYLESS_PROVIDERS = frozenset({"claudecli", "ollama"})
+
+
+def _check_every_provider_is_classified(providers, requiring, keyless) -> None:
+    """Every provider must be on exactly one side of "needs an API key".
+
+    A *partition* check, not a subset one. A subset assertion passes when a new
+    provider is added to `_MODEL_DEFAULTS` and classified nowhere — which is the
+    one case that must not slip through, because resolution would silently
+    return None for it and the provider would be called unauthenticated.
+
+    A function so it can be tested against a hypothetical provider set; raised
+    rather than asserted so `python -O` cannot strip the guard whose whole job
+    is to fail loudly.
+    """
+    # Both directions, and the contradiction: a provider missing from both sets
+    # would resolve to None silently, one in a set but not in PROVIDERS is a
+    # stale entry, and one in *both* sets is classified ambiguously — which a
+    # union-based check cannot see, because the union looks complete.
+    wrong = (set(providers) ^ (set(requiring) | set(keyless))) | (
+        set(requiring) & set(keyless)
+    )
+    if wrong:
+        raise RuntimeError(
+            "every provider must be classified as needing an API key or not, "
+            f"and exactly once: {sorted(wrong)}"
+        )
+
+
+_check_every_provider_is_classified(PROVIDERS, PROVIDERS_REQUIRING_KEY, _KEYLESS_PROVIDERS)
 
 
 def normalize_provider(provider: str | None) -> str:
@@ -135,6 +182,21 @@ def app_config_dir() -> Path:
 
 def app_config_path() -> Path:
     return app_config_dir() / APP_CONFIG_FILENAME
+
+
+def credentials_path() -> Path:
+    """Where stored API keys live: beside `app.json`, never inside a KB.
+
+    A KB is user data that gets synced, copied and shared; the app config
+    directory is machine-local. Keeping the two apart is what lets
+    `config.json` stay safe to hand to somebody else.
+    """
+    return app_config_dir() / CREDENTIALS_FILENAME
+
+
+def provider_key_env_var(provider: str) -> str:
+    """The provider-scoped environment variable name for `provider`'s key."""
+    return f"VERINOTE_{provider.upper()}_API_KEY"
 
 
 def _bad_config_reason(path: Path, error: Exception | None) -> str:
@@ -534,6 +596,172 @@ def _pick(env: str, saved: str | None, default: str | None) -> str | None:
     return default
 
 
+
+class CredentialsCorruptError(RuntimeError):
+    """Raised when `credentials.json` is present but unreadable.
+
+    Deliberately its own type rather than a `ConfigCorruptError`: that one names
+    a *KB's* `config.json` everywhere it surfaces — the halt page, the settings
+    banner, the KB-switch error, the CLI. Reusing it for a machine-wide secrets
+    file would tell the user the wrong file, the wrong scope, and a recovery
+    action ("re-save your provider") that does not touch this file at all.
+    """
+
+
+def _read_credentials() -> tuple[dict[str, str], str | None]:
+    """Stored keys, plus why they could not be read.
+
+    A missing file is not an error — that is the normal state before anyone
+    saves a key — so it returns `({}, None)`. Anything else that stops the file
+    being understood returns `({}, reason)`: an unreadable secrets file must
+    never be indistinguishable from "no keys are stored", because the two lead
+    to opposite conclusions about whether the user has to enter one again.
+    """
+    path = credentials_path()
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}, None
+    except (OSError, UnicodeDecodeError) as exc:
+        return {}, _bad_config_reason(path, exc)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return {}, _bad_config_reason(path, exc)
+    if not isinstance(data, dict):
+        return {}, _bad_config_reason(path, None)
+    keys = data.get("keys")
+    if keys is None:
+        return {}, None
+    if not isinstance(keys, dict):
+        return {}, f"{path} has a 'keys' entry that is not an object"
+    # A non-string value is refused, never coerced: `str()` on an object would
+    # invent a credential out of a structure a future version meant as
+    # something else (a keychain reference, say).
+    for provider, value in keys.items():
+        if not isinstance(value, str):
+            return {}, f"{path} holds a non-string key for {provider!r}"
+    return {str(k): v for k, v in keys.items()}, None
+
+
+def resolve_api_key(provider: str, stored: dict[str, str]) -> str | None:
+    """The key to authenticate `provider` with, or None.
+
+    Order: the provider-scoped environment variable, then the stored key, then
+    the legacy provider-agnostic `VERINOTE_API_KEY`.
+
+    This inverts the module's usual env-then-saved rule for that last tier, on
+    purpose. `VERINOTE_API_KEY` names no provider, so ranking it above a stored
+    key would take a key the user saved *for OpenAI* and replace it with
+    whatever single value happens to be exported — commonly their Anthropic key,
+    which would then be transmitted to `api.openai.com`. The scoped variable
+    keeps env-first available for anyone who wants it, without that ambiguity;
+    the legacy variable stays last so existing setups keep working unchanged for
+    any provider that has no stored key.
+    """
+    if provider not in PROVIDERS_REQUIRING_KEY:
+        return None
+    for candidate in (
+        os.environ.get(provider_key_env_var(provider)),
+        stored.get(provider),
+        os.environ.get("VERINOTE_API_KEY"),
+    ):
+        if isinstance(candidate, str):
+            candidate = candidate.strip()
+        if candidate:
+            return candidate
+    return None
+
+
+
+@contextmanager
+def _credentials_lock():
+    """Serialise read-modify-write on the credentials file across processes.
+
+    A save merges one provider's key into the others, so two verinote processes
+    saving at once can each write a payload built from the state before the
+    other's — losing a key with no error and no UI signal. The atomic replace
+    bounds that to a lost update rather than a corrupt file, but a silently
+    vanished secret is still the worst failure this file has.
+
+    POSIX only. `fcntl` is absent on Windows, where this degrades to the
+    atomic-replace guarantee alone; that gap is real and is not papered over.
+    """
+    directory = app_config_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    if fcntl is None:  # pragma: no cover - platform-dependent
+        yield
+        return
+    lock_path = directory / (CREDENTIALS_FILENAME + ".lock")
+    with open(lock_path, "w", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _ensure_config_dir_gitignore() -> None:
+    """Keep a secrets file out of a version-controlled config directory.
+
+    `XDG_CONFIG_HOME` is routinely `~/.config` tracked as a dotfiles repo, and a
+    subdirectory `.gitignore` is honoured by a repo rooted anywhere above it.
+    Written only when absent, so a user's own file is never overwritten.
+
+    Bounded value, stated so it is not mistaken for protection: it does nothing
+    for a file git already tracks, for a dotfiles manager that copies rather
+    than symlinks, or for a backup tool.
+    """
+    path = app_config_dir() / ".gitignore"
+    if path.exists():
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("*\n", encoding="utf-8")
+    except OSError:
+        pass  # advisory only; never block saving a key on it
+
+
+def save_credential(provider: str, key: str) -> None:
+    """Store `provider`'s API key, leaving every other provider's untouched."""
+    if provider not in PROVIDERS_REQUIRING_KEY:
+        raise ValueError(f"{provider} does not use an API key")
+    cleaned = key.strip()
+    if not cleaned:
+        raise ValueError("API key is empty")
+    with _credentials_lock():
+        stored, error = _read_credentials()
+        if error is not None:
+            # Refuse rather than clobber: a save is a *merge*, so writing a fresh
+            # file over an unreadable one would silently discard every other
+            # provider's key. (`save_settings` may rewrite a corrupt config.json
+            # because it writes a complete payload from the form; this cannot.)
+            raise CredentialsCorruptError(error)
+        _ensure_config_dir_gitignore()
+        _write_json_atomic(
+            credentials_path(),
+            {"version": CREDENTIALS_VERSION, "keys": {**stored, provider: cleaned}},
+            mode=0o600,
+        )
+
+
+def delete_credential(provider: str) -> bool:
+    """Remove `provider`'s stored key. True when one was actually removed."""
+    with _credentials_lock():
+        stored, error = _read_credentials()
+        if error is not None:
+            raise CredentialsCorruptError(error)
+        if provider not in stored:
+            return False
+        remaining = {k: v for k, v in stored.items() if k != provider}
+        _write_json_atomic(
+            credentials_path(),
+            {"version": CREDENTIALS_VERSION, "keys": remaining},
+            mode=0o600,
+        )
+        return True
+
+
 def _llm_timeout_seconds() -> float:
     raw = os.environ.get("VERINOTE_LLM_TIMEOUT")
     if raw is None:
@@ -595,6 +823,13 @@ class Config:
     # corrupt config from silently defaulting to a provider the user never chose
     # (#269).
     settings_error: str | None = None
+    # Set only when the machine-wide credentials file is PRESENT but unreadable
+    # AND the resolved provider needs a key AND no environment tier supplied one
+    # — i.e. only when the unreadable file is what actually decides the outcome.
+    # An Ollama user, or one with the scoped variable exported, is not halted by
+    # a file that could not have changed their result. A trailing, defaulted
+    # field so no existing `Config(...)` construction site has to change.
+    credentials_error: str | None = None
 
     def extraction_schema_hint(self) -> str:
         return render_prompt(
@@ -632,12 +867,17 @@ class Config:
             saved.get("auto_accept_recommendations"),
             False,
         )
+        stored_keys, credentials_error = _read_credentials()
+        api_key = resolve_api_key(provider, stored_keys)
+        if api_key is not None or provider not in PROVIDERS_REQUIRING_KEY:
+            # The file could not have changed the outcome, so it is not a halt.
+            credentials_error = None
         return cls(
             root=root,
             db_path=root / "kb.sqlite",
             provider=provider,
             model=model,
-            api_key=_pick("VERINOTE_API_KEY", None, None),  # no saved/default source — secrets only from env
+            api_key=api_key,
             base_url=base_url,
             llm_timeout_seconds=_llm_timeout_seconds(),
             extraction_chunk_chars=chunk_chars,
@@ -645,6 +885,7 @@ class Config:
             extraction_max_facts_per_chunk=max_facts,
             auto_accept_recommendations=auto_accept,
             settings_error=settings_error,
+            credentials_error=credentials_error,
         )
 
     @classmethod
@@ -668,6 +909,17 @@ class ConfigCorruptError(RuntimeError):
     config must NOT silently fall back to the cloud default provider the user
     never chose (#269).
     """
+
+
+def assert_credentials_intact(cfg: Config) -> None:
+    """Refuse to proceed when the stored-keys file is present but unreadable.
+
+    Separate from `assert_settings_intact` because it is a different file with a
+    different scope and a different fix. Only reached when the file is what
+    decides the key — see `Config.credentials_error`.
+    """
+    if cfg.credentials_error is not None:
+        raise CredentialsCorruptError(cfg.credentials_error)
 
 
 def assert_settings_intact(cfg: Config) -> None:

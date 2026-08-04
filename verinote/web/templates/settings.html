@@ -4,7 +4,7 @@
 <h1>Settings</h1>
 <p class="muted">Choose the local KB directory and swap the LLM provider/model
   freely. Non-secret model settings are saved to that KB's <code>config.json</code>;
-  the API key stays in the environment (<code>VERINOTE_API_KEY</code>).</p>
+  the API key is never written into the KB.</p>
 
 {% if settings_error %}
 <p class="warn" role="alert">This KB's <code>config.json</code> is unreadable, so the
@@ -88,7 +88,17 @@
   <button class="btn" type="submit">Save</button>
 </form>
 
-<p class="muted">API key: {{ 'set (from environment)' if has_key else 'not set — export VERINOTE_API_KEY' }}</p>
+{# Deliberately says only whether a key resolved, not where it came from: with
+   three possible sources naming one would be a guess. The per-provider source
+   breakdown is the next unit's work. #}
+{% if credentials_error %}
+<p class="warn" role="alert">Your saved API keys could not be read, so verinote
+  refuses provider calls rather than treating them as absent. ({{ credentials_error }})
+  <a href="/credentials-unavailable">How to recover</a></p>
+<p class="muted">API key: unknown — the stored keys are unreadable</p>
+{% else %}
+<p class="muted">API key: {{ 'set' if has_key else 'not set' }}</p>
+{% endif %}
 
 <form class="connection-test" action="/settings/test" method="post"
       hx-post="/settings/test" hx-target="main" hx-select="main" hx-swap="outerHTML"

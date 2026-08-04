@@ -1435,13 +1435,19 @@ def _refuse_on_corrupt_config(cfg: Config | None) -> int | None:
     resolve to the cloud default provider the user never chose (#269). A missing
     file is never corrupt, so a fresh KB is unaffected.
     """
-    from verinote.config import ConfigCorruptError, assert_settings_intact
+    from verinote.config import (
+        ConfigCorruptError,
+        CredentialsCorruptError,
+        assert_credentials_intact,
+        assert_settings_intact,
+    )
 
     if cfg is None:
         return None
     try:
         assert_settings_intact(cfg)
-    except ConfigCorruptError as exc:
+        assert_credentials_intact(cfg)
+    except (ConfigCorruptError, CredentialsCorruptError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     return None

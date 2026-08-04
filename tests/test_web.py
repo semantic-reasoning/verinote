@@ -4142,7 +4142,7 @@ def test_settings_never_renders_api_key(tmp_path):
     client = TestClient(create_app(cfg))
     r = client.get("/settings")
     assert "supersecret" not in r.text
-    assert "set (from environment)" in r.text
+    assert "API key: set" in r.text
 
 
 def test_test_connection_reports_adapter(tmp_path, monkeypatch, fake_client):

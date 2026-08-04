@@ -47,6 +47,7 @@ TEMPLATES = WEB / "templates"
 LINKING_TEMPLATES = (
     "base.html",
     "config_corrupt.html",
+    "credentials_corrupt.html",
     "kb_select.html",
     "policy_halted.html",
     "sidecar_unreadable.html",

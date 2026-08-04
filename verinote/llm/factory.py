@@ -3,7 +3,12 @@
 
 from __future__ import annotations
 
-from verinote.config import PROVIDERS, Config, assert_settings_intact
+from verinote.config import (
+    PROVIDERS,
+    Config,
+    assert_credentials_intact,
+    assert_settings_intact,
+)
 from verinote.llm.base import LLMClient, LLMError
 
 
@@ -12,6 +17,9 @@ def get_client(cfg: Config) -> LLMClient:
     # resolve to a silent cloud fallback. Every current and future caller is
     # protected here by construction, so no route enumeration is needed (#269).
     assert_settings_intact(cfg)
+    # Same reasoning, different file: an unreadable credentials file must not
+    # resolve to "no key" and let a provider be called unauthenticated.
+    assert_credentials_intact(cfg)
     provider = cfg.provider
     if provider == "anthropic":
         from verinote.llm.anthropic_adapter import AnthropicAdapter
