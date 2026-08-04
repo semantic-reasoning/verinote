@@ -361,9 +361,9 @@ def test_list_models_returns_sorted_unique_names_from_tags(tmp_path, monkeypatch
         },
     )
 
-    models = list_models(None, 5.0)
+    listing = list_models(None, 5.0)
 
-    assert models == ["llava:7b", "qwen3:8b"]
+    assert listing.models == ("llava:7b", "qwen3:8b")
     assert calls[0].url == "http://localhost:11434/api/tags"
 
 
@@ -403,7 +403,23 @@ def test_list_models_returns_empty_for_a_server_with_nothing_pulled(monkeypatch)
     'this server has no models' rather than 'this server could not be reached'."""
     _tags(monkeypatch, {"models": []})
 
-    assert list_models(None, 5.0) == []
+    assert list_models(None, 5.0).models == ()
+
+
+def test_list_models_reports_no_structured_output_opinion_at_all(monkeypatch):
+    """`/api/tags` says nothing about capabilities, so this listing must not
+    answer for it. `None` is 'this listing does not say'; the empty frozenset a
+    listing that does report the property would return means 'it says none'.
+
+    Mutation: return `frozenset()` here instead of `None` and the settings picker
+    files every installed model under 'Does not advertise structured output' — a
+    heading claiming the Ollama server declared something it never mentioned.
+    """
+    _tags(monkeypatch, {"models": [{"name": "qwen3:8b"}]})
+
+    listing = list_models(None, 5.0)
+
+    assert listing.structured_output_ids is None
 
 
 def test_list_models_raises_on_transport_failure(monkeypatch):

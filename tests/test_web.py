@@ -2,8 +2,10 @@
 import builtins
 from dataclasses import replace
 import functools
+import importlib.resources
 import importlib.util
 import inspect
+import json
 import logging
 import re
 import sys
@@ -18,6 +20,7 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
 import verinote.config  # noqa: E402
+import verinote.llm.openrouter_adapter  # noqa: E402
 import verinote.web.app as webapp  # noqa: E402
 from verinote.config import (  # noqa: E402
     Config,
@@ -30,7 +33,7 @@ from verinote.engine import CheckReport, DEFAULT_POLICY, FindingDetail  # noqa: 
 from verinote.engine.terms import Atom, Compound, StringLit  # noqa: E402
 from verinote.kb_location import KBRootSafetyError  # noqa: E402
 from verinote.llm.anthropic_adapter import AnthropicAdapter  # noqa: E402
-from verinote.llm.base import ExtractedFact, LLMError  # noqa: E402
+from verinote.llm.base import ExtractedFact, LLMError, ModelListing  # noqa: E402
 from verinote.llm.claude_cli_adapter import ClaudeCliAdapter  # noqa: E402
 from verinote.llm.ollama_adapter import OllamaAdapter  # noqa: E402
 from verinote.llm.openai_adapter import OpenAIAdapter  # noqa: E402
@@ -4610,6 +4613,7 @@ def _ollama_client(
     provider="ollama",
     model="qwen3:8b",
     base_url=None,
+    api_key=None,
     llm_timeout_seconds=None,
 ):
     # No default of its own: an unset timeout must be Config's own default, so
@@ -4624,7 +4628,7 @@ def _ollama_client(
                 db_path=tmp_path / "kb.sqlite",
                 provider=provider,
                 model=model,
-                api_key=None,
+                api_key=api_key,
                 base_url=base_url,
                 **timeout,
             )
@@ -4632,17 +4636,24 @@ def _ollama_client(
     )
 
 
-class _FakeOllama:
+class _FakeLister:
     """Stands in for the keyless lister, recording the base URL and timeout it was
     called with so a test can prove which endpoint got asked, and how patiently.
 
     Installed over `webapp._MODEL_LISTERS` rather than over `webapp.get_client`:
     the listing path deliberately no longer builds a client, and a fake wired to
     the factory would sit unused while the real endpoint was dialled for real.
+
+    `structured_output_ids` defaults to `None` -- what a listing that does not
+    report the property returns, which is Ollama's case and the one most of these
+    tests are about. A listing that does report it passes a frozenset, including
+    an empty one, because "reported and none" is a different fact from "not
+    reported" and the picker renders the two differently.
     """
 
-    def __init__(self, models=(), error=None):
-        self.models = list(models)
+    def __init__(self, models=(), error=None, structured_output_ids=None):
+        self.models = tuple(models)
+        self.structured_output_ids = structured_output_ids
         self.error = error
         self.seen = []
         self.timeouts = []
@@ -4656,7 +4667,9 @@ class _FakeOllama:
         self.timeouts.append(timeout)
         if self.error is not None:
             raise self.error
-        return self.models
+        return ModelListing(
+            models=self.models, structured_output_ids=self.structured_output_ids
+        )
 
 
 def test_settings_defers_the_ollama_model_list_off_the_page_load(tmp_path, monkeypatch):
@@ -4689,7 +4702,7 @@ def test_settings_does_not_defer_for_a_provider_with_nothing_to_enumerate(tmp_pa
 
 
 def test_model_field_offers_the_installed_models_as_a_picker(tmp_path, monkeypatch):
-    _FakeOllama(models=["llava:7b", "qwen3:8b"]).install(monkeypatch)
+    _FakeLister(models=["llava:7b", "qwen3:8b"]).install(monkeypatch)
 
     r = _ollama_client(tmp_path).get("/settings/model-field?provider=ollama&model=qwen3:8b")
 
@@ -4704,7 +4717,7 @@ def test_model_field_asks_the_endpoint_being_edited_not_the_saved_one(tmp_path, 
     """The form's Base URL is the endpoint whose models the user is choosing from.
     Listing against the saved config instead would show models from a server the
     user is in the middle of switching away from."""
-    fake = _FakeOllama(models=["qwen3:8b"]).install(monkeypatch)
+    fake = _FakeLister(models=["qwen3:8b"]).install(monkeypatch)
 
     r = _ollama_client(tmp_path, base_url="http://saved:11434").get(
         "/settings/model-field?provider=ollama&model=qwen3:8b&base_url=http://edited:9999"
@@ -4717,7 +4730,7 @@ def test_model_field_asks_the_endpoint_being_edited_not_the_saved_one(tmp_path, 
 def test_model_field_keeps_a_configured_model_the_server_does_not_have(tmp_path, monkeypatch):
     """config.json really does name this model. Dropping it from the picker would
     silently select a different one and make the page misreport the KB's state."""
-    _FakeOllama(models=["llava:7b", "qwen3:8b"]).install(monkeypatch)
+    _FakeLister(models=["llava:7b", "qwen3:8b"]).install(monkeypatch)
 
     r = _ollama_client(tmp_path, model="llama3.1").get(
         "/settings/model-field?provider=ollama&model=llama3.1"
@@ -4731,7 +4744,7 @@ def test_model_field_keeps_a_configured_model_the_server_does_not_have(tmp_path,
 def test_model_field_falls_back_to_typing_when_the_server_is_unreachable(tmp_path, monkeypatch):
     """An empty picker would read as 'nothing to choose' and, worse, leave the user
     unable to set a model at all. Say what failed and keep the field usable."""
-    _FakeOllama(error=LLMError("ollama request failed: connection refused")).install(monkeypatch)
+    _FakeLister(error=LLMError("ollama request failed: connection refused")).install(monkeypatch)
 
     r = _ollama_client(tmp_path).get("/settings/model-field?provider=ollama&model=qwen3:8b")
 
@@ -4745,7 +4758,7 @@ def test_model_field_falls_back_to_typing_when_the_server_is_unreachable(tmp_pat
 def test_model_field_distinguishes_an_empty_server_from_an_unreachable_one(tmp_path, monkeypatch):
     """Reachable-with-nothing-pulled and could-not-be-reached are different facts
     about the user's machine, and the fix for each is different."""
-    _FakeOllama(models=[]).install(monkeypatch)
+    _FakeLister(models=[]).install(monkeypatch)
 
     r = _ollama_client(tmp_path).get("/settings/model-field?provider=ollama&model=")
 
@@ -4755,12 +4768,16 @@ def test_model_field_distinguishes_an_empty_server_from_an_unreachable_one(tmp_p
 
 
 def test_model_field_names_the_default_endpoint_it_will_actually_dial(tmp_path, monkeypatch):
-    fake = _FakeOllama(models=[]).install(monkeypatch)
+    fake = _FakeLister(models=[]).install(monkeypatch)
 
     r = _ollama_client(tmp_path).get("/settings/model-field?provider=ollama&model=")
 
     assert fake.seen == [None]  # an unset Base URL stays unset in config
     assert "http://localhost:11434" in r.text  # ...but the page names the real target
+    # Ollama's entry in the default-endpoint map, not just *some* entry: a map
+    # whose two values were swapped would otherwise satisfy the openrouter test
+    # and this one both, while telling every user the wrong host.
+    assert "openrouter.ai" not in r.text
 
 
 def test_model_field_does_not_reach_the_provider_for_a_text_input_provider(tmp_path, monkeypatch):
@@ -4826,6 +4843,34 @@ def test_model_field_halts_under_unreadable_credentials(tmp_path, monkeypatch):
     assert r.headers.get("HX-Redirect") == webapp.CREDENTIALS_UNAVAILABLE_PATH
 
 
+def test_model_field_halts_on_config_first_when_both_errors_are_set(tmp_path, monkeypatch):
+    """Config-first order: settings_error must win when both halts apply.
+
+    A corrupt config.json falls back to the built-in cloud provider, which
+    requires a key, so credentials_error can be set alongside settings_error
+    on the very same Config. `_list_models_for` hand-writes the same
+    settings-then-credentials order `get_client` centralises; nothing keeps
+    the two surfaces agreeing. Swapping the two assert lines produces zero
+    failures elsewhere in the suite -- this is the one test that would catch it.
+    """
+    cfg, _, _ = _config_web_kb(tmp_path, corrupt=True)
+    monkeypatch.setattr(
+        webapp,
+        "_MODEL_LISTERS",
+        {"ollama": lambda base_url, timeout: pytest.fail("dialled despite the halt")},
+    )
+    c = TestClient(
+        create_app(replace(cfg, credentials_error="credentials.json is not valid JSON"))
+    )
+
+    r = c.get(
+        "/settings/model-field?provider=ollama&model=m", headers={"HX-Request": "true"}
+    )
+
+    assert r.status_code == 409
+    assert r.headers.get("HX-Redirect") == webapp.CONFIG_UNAVAILABLE_PATH
+
+
 def test_model_field_never_constructs_a_provider_adapter(tmp_path, monkeypatch):
     """The load-bearing test for the keyless listing seam.
 
@@ -4850,7 +4895,7 @@ def test_model_field_never_constructs_a_provider_adapter(tmp_path, monkeypatch):
     monkeypatch.setattr(
         webapp, "get_client", lambda _cfg: pytest.fail("the listing path built a client")
     )
-    fake = _FakeOllama(models=["qwen3:8b"]).install(monkeypatch)
+    fake = _FakeLister(models=["qwen3:8b"]).install(monkeypatch)
 
     r = _ollama_client(tmp_path).get("/settings/model-field?provider=ollama&model=qwen3:8b")
 
@@ -4866,7 +4911,7 @@ def test_model_field_listing_clamps_the_page_load_timeout(tmp_path, monkeypatch)
     The clamp moved here with the seam: the lister takes a float and cannot
     re-derive it, so this is the only place left that can get it wrong.
     """
-    fake = _FakeOllama(models=[]).install(monkeypatch)
+    fake = _FakeLister(models=[]).install(monkeypatch)
 
     _ollama_client(tmp_path, llm_timeout_seconds=900.0).get(
         "/settings/model-field?provider=ollama&model="
@@ -4878,7 +4923,7 @@ def test_model_field_listing_clamps_the_page_load_timeout(tmp_path, monkeypatch)
 def test_model_field_listing_keeps_an_even_shorter_configured_timeout(tmp_path, monkeypatch):
     """The bound is the *smaller* of the two, so a tighter user setting still wins.
     Without this, clamping to a flat 5.0 would pass the test above."""
-    fake = _FakeOllama(models=[]).install(monkeypatch)
+    fake = _FakeLister(models=[]).install(monkeypatch)
 
     _ollama_client(tmp_path, llm_timeout_seconds=1.5).get(
         "/settings/model-field?provider=ollama&model="
@@ -5151,7 +5196,7 @@ def test_settings_page_renders_the_cli_picker_as_a_list(tmp_path):
 def test_model_field_custom_never_downgrades_the_discovered_picker(tmp_path, monkeypatch):
     """A stray `custom=1` must not turn Ollama's discovered list into free text --
     that list is evidence, and there is no reason to type past it."""
-    _FakeOllama(models=["qwen3:8b"]).install(monkeypatch)
+    _FakeLister(models=["qwen3:8b"]).install(monkeypatch)
 
     r = _ollama_client(tmp_path).get(
         "/settings/model-field?provider=ollama&model=qwen3:8b&custom=1"
@@ -5164,7 +5209,7 @@ def test_model_field_custom_never_downgrades_the_discovered_picker(tmp_path, mon
 def test_model_field_keeps_aliases_off_the_ollama_picker(tmp_path, monkeypatch):
     """Curated aliases and a discovered list are different claims; the Ollama
     field must never quietly gain entries no server reported."""
-    _FakeOllama(models=["qwen3:8b"]).install(monkeypatch)
+    _FakeLister(models=["qwen3:8b"]).install(monkeypatch)
 
     r = _ollama_client(tmp_path).get("/settings/model-field?provider=ollama&model=qwen3:8b")
 
@@ -5178,3 +5223,752 @@ def test_model_field_gives_no_aliases_to_a_plain_text_provider(tmp_path):
 
     assert "<datalist" not in r.text
     assert '<input type="text" name="model" value="claude" placeholder="model id">' in r.text
+
+
+# --- the OpenRouter catalogue picker: grouped by what each entry advertises ---
+
+
+_CATALOGUE = {
+    "schema": ("openai/gpt-oss-20b:free", "z/vendor-schema"),
+    "plain": ("a/vendor-plain",),
+}
+
+
+def _openrouter_lister(monkeypatch, **kwargs):
+    """A stub OpenRouter catalogue: two advertising entries and one that is not."""
+    models = _CATALOGUE["schema"] + _CATALOGUE["plain"]
+    defaults = {
+        "models": sorted(models),
+        "structured_output_ids": frozenset(_CATALOGUE["schema"]),
+    }
+    defaults.update(kwargs)
+    return _FakeLister(**defaults).install(monkeypatch, provider="openrouter")
+
+
+def _optgroups(text: str) -> list[str]:
+    return re.findall(r'<optgroup label="([^"]*)">', text)
+
+
+def test_settings_defers_the_openrouter_catalogue_off_the_page_load(tmp_path, monkeypatch):
+    """OpenRouter is listable now, so its Model field must behave like Ollama's:
+    a working text input that lazily swaps itself for the picker, never a network
+    call on the critical path of the page that also recovers a corrupt config."""
+    monkeypatch.setitem(
+        webapp._MODEL_LISTERS,
+        "openrouter",
+        lambda base_url, timeout: pytest.fail("/settings must not call the provider"),
+    )
+
+    r = _ollama_client(tmp_path, provider="openrouter", model="openai/gpt-oss-20b:free").get(
+        "/settings"
+    )
+
+    assert r.status_code == 200
+    assert 'hx-trigger="load"' in r.text
+    assert 'name="model"' in r.text
+
+
+def test_openrouter_model_field_groups_the_catalogue_by_advertised_structured_output(
+    tmp_path, monkeypatch
+):
+    """The catalogue says which entries advertise structured output, and verinote
+    always asks for a JSON-schema `response_format` -- so which group a model is
+    in is the one thing about it that predicts a failure, and it has to be visible
+    while choosing.
+
+    Mutation: render the ids flat (drop the `structured_output_ids is none`
+    branch's else arm) and the two `<optgroup>`s disappear while every option
+    stays, so a user picks a non-advertising model with nothing said about it.
+    """
+    _openrouter_lister(monkeypatch)
+
+    r = _ollama_client(tmp_path, provider="openrouter", model="openai/gpt-oss-20b:free").get(
+        "/settings/model-field?provider=openrouter&model=openai/gpt-oss-20b:free"
+    )
+
+    assert r.status_code == 200
+    assert '<select name="model">' in r.text
+    assert _optgroups(r.text) == [
+        "Advertises structured output",
+        "Does not advertise structured output",
+    ]
+    advertising, unadvertising = r.text.split('<optgroup label="Does not advertise')
+    for model in _CATALOGUE["schema"]:
+        assert f'value="{model}"' in advertising
+    for model in _CATALOGUE["plain"]:
+        assert f'value="{model}"' in unadvertising
+        assert f'value="{model}"' not in advertising
+
+
+def test_ollama_model_field_stays_flat_because_its_listing_reports_no_capability(
+    tmp_path, monkeypatch
+):
+    """`/api/tags` says nothing about structured output, so grouping Ollama's
+    models would attribute a claim to a server that never made it.
+
+    Mutation: collapse the two in `_model_field_context`
+    (`listing.structured_output_ids or frozenset()`), which is the one-character
+    version of treating "does not report it" as "reports none" -- every installed
+    model then lands under "Does not advertise structured output".
+    """
+    _FakeLister(models=["llava:7b", "qwen3:8b"]).install(monkeypatch)
+
+    r = _ollama_client(tmp_path).get("/settings/model-field?provider=ollama&model=qwen3:8b")
+
+    assert '<select name="model">' in r.text
+    assert _optgroups(r.text) == []
+    assert "advertise" not in r.text
+
+
+def test_openrouter_model_field_groups_a_catalogue_where_nothing_advertises(
+    tmp_path, monkeypatch
+):
+    """A listing that reports the property and finds nothing advertising it is not
+    a listing that does not report the property: the first is a catalogue saying
+    "none of these", the second (Ollama) is silence. Both groups render whenever
+    the property IS reported, so an empty "Advertises structured output" heading
+    is itself the honest answer -- and this state is reachable, being exactly what
+    OpenRouter renaming `structured_outputs` would produce.
+
+    Mutation: `{% if structured_output_ids is none %}` -> `{% if not
+    structured_output_ids %}` in `model_field.html`, which folds the empty
+    frozenset into the `None` case; the picker goes flat and every model loses the
+    heading that says its own entry does not advertise what verinote will ask it
+    for. The two sibling grouping tests miss it -- OpenRouter's set is non-empty
+    there and Ollama's is `None`, so neither tells truthiness from `is none`.
+    """
+    models = sorted(_CATALOGUE["schema"] + _CATALOGUE["plain"])
+    _FakeLister(models=models, structured_output_ids=frozenset()).install(
+        monkeypatch, provider="openrouter"
+    )
+
+    r = _ollama_client(tmp_path, provider="openrouter", model="openai/gpt-oss-20b:free").get(
+        "/settings/model-field?provider=openrouter&model=openai/gpt-oss-20b:free"
+    )
+
+    assert r.status_code == 200
+    assert '<select name="model">' in r.text
+    assert _optgroups(r.text) == [
+        "Advertises structured output",
+        "Does not advertise structured output",
+    ]
+    advertising, unadvertising = r.text.split('<optgroup label="Does not advertise')
+    for model in models:
+        assert f'value="{model}"' in unadvertising
+        assert f'value="{model}"' not in advertising
+
+
+def test_openrouter_model_field_groups_a_catalogue_where_everything_advertises(
+    tmp_path, monkeypatch
+):
+    """The mirror of the sibling above, for the other empty group.
+
+    "Both groups are rendered whenever the property IS reported, even if one is
+    empty" is a claim about either group, and only one half of it was pinned. A
+    catalogue in which every entry advertises structured output leaves the SECOND
+    group empty, and its heading still has to appear: dropping it would turn the
+    remaining heading into an unlabelled section over the whole list, so a user
+    reading it has no way to know a "does not advertise" group exists at all --
+    and the next entry to land in it would arrive under a heading that had never
+    been shown.
+
+    Mutation: wrap either `<optgroup>` in a non-empty guard (for this one,
+    `{% if models | reject('in', structured_output_ids) | list %}`). The sibling
+    above catches that guard on the first group only, because its first group is
+    the empty one; this catches it on the second. Neither of the two grouping
+    tests with a mixed catalogue sees either, since both of their groups are
+    non-empty.
+    """
+    models = sorted(_CATALOGUE["schema"] + _CATALOGUE["plain"])
+    _FakeLister(models=models, structured_output_ids=frozenset(models)).install(
+        monkeypatch, provider="openrouter"
+    )
+
+    r = _ollama_client(tmp_path, provider="openrouter", model="openai/gpt-oss-20b:free").get(
+        "/settings/model-field?provider=openrouter&model=openai/gpt-oss-20b:free"
+    )
+
+    assert r.status_code == 200
+    assert '<select name="model">' in r.text
+    assert _optgroups(r.text) == [
+        "Advertises structured output",
+        "Does not advertise structured output",
+    ]
+    advertising, unadvertising = r.text.split('<optgroup label="Does not advertise')
+    for model in models:
+        assert f'value="{model}"' in advertising
+        assert f'value="{model}"' not in unadvertising
+
+
+def test_openrouter_model_field_names_openrouters_endpoint_not_ollamas(tmp_path, monkeypatch):
+    """With a second listable provider, a hardcoded `OLLAMA_DEFAULT_BASE_URL`
+    would tell an OpenRouter user the page dialled `http://localhost:11434`.
+
+    Mutation: drop `_LISTABLE_DEFAULT_ENDPOINTS` and go back to the Ollama
+    constant -- the positive assertion is what catches it, since the note would
+    still render, just naming a host nothing here ever contacted.
+    """
+    fake = _openrouter_lister(monkeypatch)
+
+    r = _ollama_client(tmp_path, provider="openrouter", model="openai/gpt-oss-20b:free").get(
+        "/settings/model-field?provider=openrouter&model=openai/gpt-oss-20b:free"
+    )
+
+    assert fake.seen == [None]  # an unset Base URL stays unset in config
+    assert "https://openrouter.ai/api/v1" in r.text
+    assert "localhost:11434" not in r.text
+
+
+def test_openrouter_model_field_note_makes_no_ollama_claim(tmp_path, monkeypatch):
+    """The note under the picker is what stops the catalogue reading as account
+    entitlement and the two groups reading as a measurement. Both claims are
+    OpenRouter-specific and both are load-bearing: the request carried no key, so
+    this is what the endpoint publishes rather than what this account may call,
+    and the groups repeat `supported_parameters` rather than reporting a run.
+
+    Mutation: the note's `{% if provider == 'ollama' %}` -> `{% if 1 %}`, one
+    token no other test sees; the page then tells an OpenRouter user that N models
+    are "installed on" `https://openrouter.ai/api/v1` and the entire keyless
+    caveat disappears.
+    """
+    _openrouter_lister(monkeypatch)
+
+    r = _ollama_client(tmp_path, provider="openrouter", model="openai/gpt-oss-20b:free").get(
+        "/settings/model-field?provider=openrouter&model=openai/gpt-oss-20b:free"
+    )
+
+    assert "3 models listed by" in r.text
+    assert "answered without an API key" in r.text
+    assert "not a list of what your account can reach" in r.text
+    # The sentence that keeps the grouping a repetition rather than a measurement.
+    assert "has not run any of them" in r.text
+    assert "installed on" not in r.text
+    assert "ollama pull" not in r.text
+
+
+def test_ollama_model_field_note_makes_no_openrouter_claim(tmp_path, monkeypatch):
+    """The other half of that branch, so an inversion fails in both directions.
+    Ollama's list is what is installed on a machine the user controls, where a
+    missing model is fixed with `ollama pull`; the catalogue copy would tell that
+    user their own server "answered without an API key" and that what it reported
+    is a published list rather than what they pulled.
+
+    Mutation: invert the note's `{% if provider == 'ollama' %}` the other way (to
+    `{% if 0 %}`, or swap the two arms) -- the OpenRouter sibling above still
+    passes, and only this catches it.
+    """
+    _FakeLister(models=["llava:7b", "qwen3:8b"]).install(monkeypatch)
+
+    r = _ollama_client(tmp_path).get("/settings/model-field?provider=ollama&model=qwen3:8b")
+
+    assert "2 models installed on" in r.text
+    assert "http://localhost:11434" in r.text
+    assert "answered without an API key" not in r.text
+    assert "your account can reach" not in r.text
+    assert "listed by" not in r.text
+
+
+def test_openrouter_model_field_names_a_configured_proxy_not_the_literal_default(
+    tmp_path, monkeypatch
+):
+    """The note must interpolate the endpoint actually dialled. Hardcoding
+    `openrouter.ai` into the copy would pass the test above and then misreport
+    every gateway or proxy deployment.
+
+    Mutation: write the literal URL into `model_field.html` instead of
+    `{{ endpoint }}` -- that mutation is invisible to the sibling test and fails
+    only here.
+    """
+    fake = _openrouter_lister(monkeypatch)
+
+    r = _ollama_client(tmp_path, provider="openrouter", model="openai/gpt-oss-20b:free").get(
+        "/settings/model-field?provider=openrouter&model=openai/gpt-oss-20b:free"
+        "&base_url=https://proxy.internal/v1"
+    )
+
+    assert fake.seen == ["https://proxy.internal/v1"]
+    assert "proxy.internal" in r.text
+    assert "openrouter.ai" not in r.text
+
+
+def test_openrouter_model_field_keeps_a_configured_model_absent_from_the_catalogue(
+    tmp_path, monkeypatch
+):
+    """config.json really does name this model, and the catalogue is a published
+    list, not a verdict on the id. Dropping it would silently select a different
+    model and make the page misreport the KB's own state.
+
+    Mutation: drop the "keep the configured model" branch and the option vanishes
+    while the picker still renders -- the browser then selects the first entry,
+    so the field shows a model this KB is not configured for. Mutation 2: leave
+    the label at Ollama's `— not installed` and an OpenRouter user is told a
+    catalogue entry is an installation.
+    """
+    _openrouter_lister(monkeypatch)
+
+    r = _ollama_client(tmp_path, provider="openrouter", model="vendor/private-model").get(
+        "/settings/model-field?provider=openrouter&model=vendor/private-model"
+    )
+
+    assert (
+        '<option value="vendor/private-model" selected>vendor/private-model'
+        " — not in this catalogue</option>" in unescape(r.text)
+    )
+    assert "did not list" in r.text
+    assert "not installed" not in r.text
+    assert "ollama pull" not in r.text
+
+
+def test_openrouter_model_field_falls_back_to_typing_when_the_catalogue_fails(
+    tmp_path, monkeypatch
+):
+    """An empty picker would read as "the catalogue offers nothing" and leave the
+    user unable to set a model at all.
+
+    The real lister runs here, against an `urlopen` that refuses, rather than a
+    stub raising `LLMError`: the mutation this exists for lives in the adapter.
+    Mutation: return an empty `ModelListing` from
+    `openrouter_adapter.list_models` on a transport error instead of raising --
+    the page then renders the empty-catalogue copy, blaming OpenRouter for
+    listing nothing when it was never reached. A stubbed lister would pass that
+    mutation, since the stub is what raises.
+    """
+
+    def refuse(req, *, timeout):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr("urllib.request.urlopen", refuse)
+
+    r = _ollama_client(tmp_path, provider="openrouter", model="openai/gpt-oss-20b:free").get(
+        "/settings/model-field?provider=openrouter&model=openai/gpt-oss-20b:free"
+    )
+
+    assert r.status_code == 200
+    assert "<select" not in r.text
+    assert '<input type="text" name="model" value="openai/gpt-oss-20b:free"' in r.text
+    assert "Could not load the model list" in r.text
+    assert "connection refused" in r.text
+    assert "is reachable but" not in r.text
+
+
+def test_openrouter_empty_catalogue_copy_is_not_ollamas(tmp_path, monkeypatch):
+    """`ollama pull` fires for any listable provider whose listing came back
+    empty, so the moment OpenRouter joined, this state told an OpenRouter user to
+    run a command for a program they may not have installed.
+
+    Mutation: reuse Ollama's string for both and `ollama pull` appears here.
+    """
+    _FakeLister(models=[], structured_output_ids=frozenset()).install(
+        monkeypatch, provider="openrouter"
+    )
+
+    r = _ollama_client(tmp_path, provider="openrouter", model="").get(
+        "/settings/model-field?provider=openrouter&model="
+    )
+
+    assert "ollama pull" not in r.text
+    assert "installed" not in r.text
+    assert "listed no models" in r.text
+    assert "https://openrouter.ai/api/v1" in r.text
+    assert '<input type="text" name="model"' in r.text
+
+
+def test_openrouter_model_field_offers_no_blank_option(tmp_path, monkeypatch):
+    """Unlike the CLI picker, a blank model here is not "no model": it falls
+    through to `_MODEL_DEFAULTS['openrouter']`, so an option labelled as an
+    absence would misreport the model this KB would actually use."""
+    _openrouter_lister(monkeypatch)
+
+    r = _ollama_client(tmp_path, provider="openrouter", model="openai/gpt-oss-20b:free").get(
+        "/settings/model-field?provider=openrouter&model=openai/gpt-oss-20b:free"
+    )
+
+    assert 'value=""' not in r.text
+
+
+def test_openrouter_model_field_puts_no_api_key_on_the_wire(tmp_path, monkeypatch):
+    """The egress site itself, not a proxy for it.
+
+    `test_model_field_never_constructs_a_provider_adapter` counts constructions,
+    which is one step removed: a lister body that read a key directly would build
+    nothing and still ship it. This runs the real `openrouter_adapter.list_models`
+    against an intercepted `urlopen` with a key in `app.state.cfg`, and asserts the
+    sentinel appears in none of the three places a request can carry it.
+
+    Mutation: add `Authorization: Bearer {cfg.api_key}` anywhere on that path --
+    which requires handing the lister a Config, so the import-time shape check is
+    the other half of this -- and the header assertion fails.
+    """
+    sentinel = "sk-or-v1-SENTINEL-DO-NOT-SEND-0123456789"
+    requests = []
+
+    class _Catalogue:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return None
+
+        def read(self):
+            entry = {"id": "a/b", "supported_parameters": ["structured_outputs"]}
+            return json.dumps({"data": [entry]}).encode("utf-8")
+
+    def fake_urlopen(req, *, timeout):
+        requests.append(req)
+        return _Catalogue()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    client = _ollama_client(
+        tmp_path, provider="openrouter", model="a/b", api_key=sentinel
+    )
+    # The premise: the app really is holding the key while this request runs.
+    assert client.app.state.cfg.api_key == sentinel
+
+    r = client.get("/settings/model-field?provider=openrouter&model=a/b")
+
+    assert r.status_code == 200
+    assert '<select name="model">' in r.text  # it really did render the picker
+    assert len(requests) == 1  # ...and really did dial the catalogue
+    req = requests[0]
+    assert sentinel not in req.full_url
+    assert not [item for item in req.header_items() if sentinel in str(item)]
+    assert req.data is None or sentinel.encode("utf-8") not in req.data
+
+
+# --- the default-endpoint map is checked at import, like the lister table ---
+
+
+@pytest.mark.parametrize(
+    "providers, endpoints, expected",
+    [
+        ({"ollama", "openrouter"}, {"ollama": "http://localhost:11434"}, "openrouter"),
+        (
+            {"ollama"},
+            {"ollama": "http://localhost:11434", "openrouter": "https://openrouter.ai/api/v1"},
+            "openrouter",
+        ),
+    ],
+)
+def test_the_check_rejects_a_listable_provider_without_a_default_endpoint(
+    providers, endpoints, expected
+):
+    """Both directions. A listable provider with no default endpoint would print
+    some other provider's host as the one that answered; an endpoint for a
+    provider that is not listable is an unused URL the next edit adopts without
+    anyone re-checking it.
+
+    Mutation: make the check a subset test (`set(providers) - set(endpoints)`)
+    and the second case stops raising.
+    """
+    with pytest.raises(RuntimeError, match=expected):
+        webapp._check_every_listable_provider_names_its_default_endpoint(providers, endpoints)
+
+
+def test_the_check_rejects_a_blank_default_endpoint():
+    """A present-but-empty entry passes the membership clause and then renders as
+    `<code></code>` under the picker -- a name for the dialled host that names
+    nothing.
+
+    Mutation: drop the blank clause and this stops raising.
+    """
+    with pytest.raises(RuntimeError, match="ollama"):
+        webapp._check_every_listable_provider_names_its_default_endpoint(
+            {"ollama"}, {"ollama": "   "}
+        )
+
+
+def test_the_module_body_runs_the_default_endpoint_check(monkeypatch):
+    """The predicate is only a gate if the module body calls it, and the tests
+    above call it themselves -- so deleting the module-level call leaves them all
+    green (`sys.modules` cached the real import long before they ran).
+
+    Blanking the adapter constant rather than adding a provider is what isolates
+    THIS check: an unknown listable provider is rejected by the lister check
+    first, so it could never prove this one runs. A fresh module object rather
+    than `importlib.reload`, for the reason its sibling states.
+    """
+    monkeypatch.setattr(
+        verinote.llm.openrouter_adapter, "OPENROUTER_DEFAULT_BASE_URL", ""
+    )
+    name = "verinote_web_app_endpoint_check_under_test"
+    spec = importlib.util.spec_from_file_location(name, webapp.__file__)
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, name, module)
+
+    with pytest.raises(RuntimeError, match="openrouter"):
+        spec.loader.exec_module(module)
+
+
+# --- the Model field's per-provider copy is checked at import too ---
+
+
+_ONE_CHAIN = "{% if provider == 'ollama' %}a{% elif provider == 'openrouter' %}b{% endif %}"
+
+
+@pytest.mark.parametrize(
+    "providers, source, expected",
+    [
+        ({"ollama", "openrouter"}, "{% if provider == 'ollama' %}a{% endif %}", "openrouter"),
+        ({"ollama"}, _ONE_CHAIN, "openrouter"),
+    ],
+)
+def test_the_check_rejects_a_listable_provider_without_model_field_copy(
+    providers, source, expected
+):
+    """Both directions. A listable provider with no arm gets whatever the chain's
+    catch-all says -- which is another provider's copy, the failure this replaces
+    -- or, with no catch-all, nothing at all. An arm for a provider that is not
+    listable is copy no render reaches, and the next edit to
+    `MODEL_LISTING_PROVIDERS` would adopt it without anyone re-reading it.
+
+    Mutation: drop the `unlistable` clause and the second case stops raising;
+    drop `missing` and the first does.
+    """
+    with pytest.raises(RuntimeError, match=expected):
+        webapp._check_every_listable_provider_has_model_field_copy(providers, source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # Lopsided: `openrouter` appears fewer times than `ollama` overall.
+        _ONE_CHAIN + "{% if provider == 'ollama' %}c{% endif %}",
+        # Balanced: three arms each across the file, and still one chain that
+        # renders `openrouter` nothing, paid for by a duplicate arm elsewhere
+        # that no render can reach.
+        _ONE_CHAIN
+        + "{% if provider == 'ollama' %}c{% endif %}"
+        + "{% if provider == 'ollama' %}d{% elif provider == 'openrouter' %}e"
+        "{% elif provider == 'openrouter' %}f{% endif %}",
+    ],
+)
+def test_the_check_rejects_copy_written_at_only_some_of_the_branch_sites(source):
+    """Membership alone would pass copy written at one chain and forgotten at the
+    rest, which is the likely shape of the mistake: the template branches on the
+    provider in four separate places, and a new provider needs an arm in each.
+
+    The second source is why membership per chain is the rule rather than equal
+    totals: the totals balance at three apiece, so a check that counted names
+    across the whole file would pass it while the second chain rendered
+    `openrouter` nothing at all.
+
+    Mutation: compare totals per name instead of membership per chain -- the
+    shape this check had -- and the second source stops raising.
+    """
+    with pytest.raises(RuntimeError, match="openrouter"):
+        webapp._check_every_listable_provider_has_model_field_copy(
+            {"ollama", "openrouter"}, source
+        )
+
+
+def test_the_check_rejects_a_template_with_no_provider_chain_left_in_it():
+    """A per-chain rule says nothing about a file with no chains: flatten every
+    arm back into shared prose and there is no chain left to be missing a
+    provider, so the loop would pass a template that tells every provider's users
+    the same sentence -- the exact misreport this check exists for.
+
+    Mutation: delete the empty-`chains` guard and this stops raising.
+    """
+    source = "<p>{{ models|length }} models installed on {{ endpoint }}.</p>"
+
+    with pytest.raises(RuntimeError, match="no longer branches on `provider`"):
+        webapp._check_every_listable_provider_has_model_field_copy(
+            {"ollama", "openrouter"}, source
+        )
+
+
+def test_the_check_rejects_a_second_arm_for_the_same_provider_in_one_chain():
+    """"Exactly one arm" is the rule, and the second half of it is its own clause:
+    a chain that tests the same provider twice has a second arm no render can
+    reach, so the copy in it is never seen and never re-read. Membership alone
+    would pass this -- both names are present -- which is why the counts inside
+    the chain are checked as well as the names.
+
+    Mutation: stop collecting `repeated` and this stops raising, while a
+    maintainer could write a new sentence into a dead arm and see nothing.
+    """
+    source = (
+        "{% if provider == 'ollama' %}a{% elif provider == 'openrouter' %}b"
+        "{% elif provider == 'ollama' %}c{% endif %}"
+    )
+
+    with pytest.raises(RuntimeError, match=r"duplicate arms \['ollama'\]"):
+        webapp._check_every_listable_provider_has_model_field_copy(
+            {"ollama", "openrouter"}, source
+        )
+
+
+def test_the_check_does_not_count_a_provider_named_only_in_a_comment():
+    """The header comment above the markup discusses these arms at length, so a
+    name can appear there with no arm anywhere. Reading the file as text, four
+    such mentions look exactly like four arms; parsing drops `{# ... #}` in the
+    lexer, so they are not arms and the missing copy is still reported.
+
+    Mutation: find the arms with `re.findall(r"provider == '([^']*)'")` over the
+    source -- the shape this check had -- and this stops raising, because
+    `newguy` then "appears" in all four chains without a line of copy written for
+    it anywhere.
+    """
+    shipped = webapp._TEMPLATES.joinpath(webapp._MODEL_FIELD_TEMPLATE).read_text(
+        encoding="utf-8"
+    )
+    source = shipped.replace(
+        "#}",
+        "\n   e.g. provider == 'newguy', provider == 'newguy',\n"
+        "   provider == 'newguy', provider == 'newguy' #}",
+        1,
+    )
+    assert source != shipped, "the header comment's closing `#}` moved"
+
+    with pytest.raises(RuntimeError, match=r"missing \['newguy'\]"):
+        webapp._check_every_listable_provider_has_model_field_copy(
+            {"ollama", "openrouter", "newguy"}, source
+        )
+
+
+def test_a_comment_that_illustrates_an_arm_does_not_brick_the_check():
+    """The other direction of the same property, and the live one: the header
+    comment invites quoting one of these tests to explain it, and doing so must
+    not stop the app from starting.
+
+    Mutation: find the arms with `re.findall(r"provider == '([^']*)'")` over the
+    source and this raises -- `ollama` then "appears" five times to
+    `openrouter`'s four, so the app refuses to start and the error names
+    `openrouter`, whose four arms are all present and correct.
+    """
+    shipped = webapp._TEMPLATES.joinpath(webapp._MODEL_FIELD_TEMPLATE).read_text(
+        encoding="utf-8"
+    )
+    source = shipped.replace(
+        "#}", "\n   Each chain opens with provider == 'ollama'. #}", 1
+    )
+    assert source != shipped, "the header comment's closing `#}` moved"
+
+    webapp._check_every_listable_provider_has_model_field_copy(
+        {"ollama", "openrouter"}, source
+    )
+
+
+def test_the_check_catches_reverting_the_shipped_arms_to_a_catch_all_else():
+    """The realistic regression, run against the shipped file rather than a
+    fixture: someone folds `{% elif provider == 'openrouter' %}` back into
+    `{% else %}` because two providers make the elif look redundant. Every chain
+    then hands Ollama's copy -- "installed", "ollama pull" -- to whatever joins
+    next, which is the failure the whole check exists to stop.
+
+    Mutation: return early from the check when a chain has any arm at all, rather
+    than requiring each listable provider to have one, and this stops raising.
+    """
+    shipped = webapp._TEMPLATES.joinpath(webapp._MODEL_FIELD_TEMPLATE).read_text(
+        encoding="utf-8"
+    )
+    source = shipped.replace("{% elif provider == 'openrouter' %}", "{% else %}")
+    assert source != shipped, "the shipped arms no longer read `elif provider == ...`"
+
+    with pytest.raises(RuntimeError, match=r"missing \['openrouter'\]"):
+        webapp._check_every_listable_provider_has_model_field_copy(
+            {"ollama", "openrouter"}, source
+        )
+
+
+def test_the_check_finds_the_inline_chain_inside_the_option_tag():
+    """Four chains, not three. One of them is inline in an `<option>` tag rather
+    than a block of its own, and it carries the sentence that says why a
+    configured model is absent -- "not installed" versus "not in this catalogue".
+    A walk that only found block-level chains would let that one drift.
+
+    Mutation: skip `nodes.If` whose body is not a block and this returns three
+    chains, so the inline arms could be reverted to an `{% else %}` unnoticed.
+    """
+    shipped = webapp._TEMPLATES.joinpath(webapp._MODEL_FIELD_TEMPLATE).read_text(
+        encoding="utf-8"
+    )
+    anchor = "{% if provider == 'ollama' %} — not installed"
+    inline_lineno = shipped[: shipped.index(anchor)].count("\n") + 1
+
+    chains = webapp._model_field_provider_chains(shipped)
+
+    assert [names for _, names in chains] == [["ollama", "openrouter"]] * 4
+    assert inline_lineno in [lineno for lineno, _ in chains]
+
+
+def test_the_walk_ignores_chains_that_do_not_test_the_provider():
+    """Only chains that branch on `provider` are places a provider needs an arm.
+    The template's `{% if models %}` and `{% if structured_output_ids is none %}`
+    are not, and dragging them in would demand arms where the distinction being
+    made is not per-provider at all.
+
+    Mutation: treat every `nodes.If` as a provider chain and this returns extra
+    entries with no names, which the check would then report as missing both
+    providers -- the shipped template would not import.
+    """
+    source = "{% if models %}x{% endif %}" + _ONE_CHAIN
+
+    assert webapp._model_field_provider_chains(source) == [(1, ["ollama", "openrouter"])]
+
+
+def test_a_compound_guard_still_counts_as_that_providers_arm():
+    """`_provider_names_compared` walks every `Compare` node inside the test, not
+    just the test node itself, so an arm guarded by `provider == 'x' and models`
+    -- rather than a bare `provider == 'x'` -- is still `x`'s arm, not a chain
+    the walk fails to recognise.
+
+    One test rather than two: the chain-level assertion pins that `openrouter`
+    is attributed to *that* arm specifically (not merely that something passed),
+    and the check-level call is the positive-acceptance case the surrounding
+    tests lack -- every other guard test here asserts a raise, which a walk that
+    cannot see the compound arm would still produce (a chain missing an arm
+    always raises), so a rejection test cannot tell a correctly-attributed
+    compound arm apart from an invisible one. Passing is the only outcome a
+    narrowed walk cannot fake, and both assertions are cheap enough on one
+    `source` that splitting them would only duplicate the fixture.
+
+    Mutation: narrow the walk in `_provider_names_compared` to
+    `for node in (test,):` and the compound `openrouter` arm goes unseen, so the
+    chain reads as `['ollama']` -- missing `openrouter` -- and both assertions
+    fail: the chain list no longer matches, and the check raises.
+    """
+    source = (
+        "{% if provider == 'ollama' %}a"
+        "{% elif provider == 'openrouter' and models %}b"
+        "{% endif %}"
+    )
+
+    assert webapp._model_field_provider_chains(source) == [(1, ["ollama", "openrouter"])]
+    webapp._check_every_listable_provider_has_model_field_copy(
+        {"ollama", "openrouter"}, source
+    )
+
+
+def test_the_module_body_runs_the_model_field_copy_check(tmp_path, monkeypatch):
+    """The predicate is only a gate if the module body calls it; the tests above
+    call it themselves, so deleting the module-level call leaves them green.
+
+    Doctoring a copy of the shipped template is what isolates THIS check: it is
+    the only import-time check that reads that file, so nothing else can raise
+    first. `resources.files` is redirected rather than the repo's template being
+    edited, so the real one is never touched and a crashed run cannot leave it
+    mutated. A fresh module object rather than `importlib.reload`, for the reason
+    its sibling states.
+    """
+    shipped = webapp._TEMPLATES.joinpath(webapp._MODEL_FIELD_TEMPLATE).read_text(
+        encoding="utf-8"
+    )
+    partials = tmp_path / "templates" / "partials"
+    partials.mkdir(parents=True)
+    (partials / "model_field.html").write_text(
+        shipped.replace("provider == 'openrouter'", "provider == 'ollama'"), encoding="utf-8"
+    )
+    real_files = importlib.resources.files
+    monkeypatch.setattr(
+        importlib.resources,
+        "files",
+        lambda package: tmp_path if package == "verinote.web" else real_files(package),
+    )
+    name = "verinote_web_app_copy_check_under_test"
+    spec = importlib.util.spec_from_file_location(name, webapp.__file__)
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, name, module)
+
+    with pytest.raises(RuntimeError, match="openrouter"):
+        spec.loader.exec_module(module)

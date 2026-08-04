@@ -5,6 +5,8 @@ names. Re-testing the four inherited methods against a stub would pass with the
 endpoint binding deleted, which is the whole point of having this provider.
 """
 
+import inspect
+import json
 import sys
 from types import SimpleNamespace
 
@@ -14,7 +16,11 @@ from verinote.config import PROVIDERS, Config, ConfigCorruptError
 from verinote.llm import factory
 from verinote.llm.base import LLMError
 from verinote.llm.openai_adapter import OpenAIAdapter
-from verinote.llm.openrouter_adapter import OPENROUTER_DEFAULT_BASE_URL, OpenRouterAdapter
+from verinote.llm.openrouter_adapter import (
+    OPENROUTER_DEFAULT_BASE_URL,
+    OpenRouterAdapter,
+    list_models,
+)
 
 _DATALOG = 'answer_q1(V) :- relation(V, "is_a", "x").'
 _INTENT = {
@@ -201,3 +207,168 @@ def test_default_model_is_a_concrete_model_not_a_router(tmp_path, monkeypatch):
     # The equality is the whole assertion; a separate `not startswith("openrouter/")`
     # check would be implied by it and could never fail on its own.
     assert Config.for_root(tmp_path).model == "openai/gpt-oss-20b:free"
+
+
+# --- list_models: the settings picker's source of truth ---
+
+
+class _CatalogueResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return None
+
+    def read(self):
+        return json.dumps(self.payload).encode("utf-8")
+
+
+def _catalogue(monkeypatch, payload):
+    """Answer /models with `payload`; return the recorded requests."""
+    calls = []
+
+    def fake_urlopen(req, *, timeout):
+        calls.append(SimpleNamespace(url=req.full_url, timeout=timeout, headers=req.header_items()))
+        return _CatalogueResponse(payload)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    return calls
+
+
+def _entry(model_id, *, structured=True, extra_parameters=("temperature",)):
+    parameters = list(extra_parameters) + (["structured_outputs"] if structured else [])
+    return {"id": model_id, "supported_parameters": parameters}
+
+
+def test_list_models_groups_the_catalogue_by_what_each_entry_advertises(monkeypatch):
+    """The picker's two groups are exactly this split, so both halves have to be
+    reported: the ids, and which of them listed `structured_outputs`.
+
+    Mutation: return every id in `structured_output_ids` (or none of them) and
+    the settings picker files a model under a heading its catalogue entry
+    contradicts.
+    """
+    calls = _catalogue(
+        monkeypatch,
+        {
+            "data": [
+                _entry("z/schema-model"),
+                _entry("a/plain-model", structured=False),
+                _entry("  z/schema-model  "),  # same id, padded
+            ]
+        },
+    )
+
+    listing = list_models(None, 5.0)
+
+    assert listing.models == ("a/plain-model", "z/schema-model")
+    assert listing.structured_output_ids == frozenset({"z/schema-model"})
+    assert calls[0].url == "https://openrouter.ai/api/v1/models"
+
+
+def test_list_models_sends_no_authorization_header(monkeypatch):
+    """The catalogue answers unauthenticated, so there is nothing to trade for
+    the omission -- and this lister is dialled at a URL the caller supplied in a
+    query string, where a key must never go.
+
+    The request is asserted to carry NO headers at all rather than to lack an
+    `Authorization` one specifically: a credential can be spelled `X-Api-Key`, or
+    ride in any header a later edit adds, and an empty list is the only assertion
+    that does not have to enumerate the spellings. Mutation: add any header here
+    and this fails, which is the intended review prompt.
+
+    The end-to-end egress proof lives in `tests/test_web.py`'s
+    `test_openrouter_model_field_puts_no_api_key_on_the_wire`; this one pins the
+    adapter in isolation.
+    """
+    calls = _catalogue(monkeypatch, {"data": []})
+
+    list_models(None, 5.0)
+
+    assert calls[0].headers == []
+
+
+def test_list_models_honours_the_supplied_base_url(monkeypatch):
+    """A proxy or gateway is configured with Base URL, and the catalogue must be
+    read from the endpoint that will actually serve the generation."""
+    calls = _catalogue(monkeypatch, {"data": []})
+
+    list_models("https://proxy.internal/v1/", 5.0)
+
+    assert calls[0].url == "https://proxy.internal/v1/models"
+
+
+def test_list_models_passes_the_supplied_timeout_through(monkeypatch):
+    """The clamp against the generation budget belongs to the caller that still
+    holds a Config; this function must not silently re-derive or override it."""
+    calls = _catalogue(monkeypatch, {"data": []})
+
+    list_models(None, 1.5)
+
+    assert calls[0].timeout == 1.5
+
+
+def test_list_models_takes_no_config_so_it_cannot_be_handed_a_key(monkeypatch):
+    """`openrouter` IS a key-holding provider, so unlike Ollama's lister there is
+    a real key to leak here. Taking no `Config` means none is handed in; it is not
+    a guarantee that none is reachable, which is why the web layer applies the
+    same shape rule at import to every lister in its shipped table."""
+    assert tuple(inspect.signature(list_models).parameters) == ("base_url", "timeout")
+    assert not hasattr(OpenRouterAdapter, "list_models")
+
+
+def test_list_models_returns_empty_for_a_catalogue_that_lists_nothing(monkeypatch):
+    """Reachable-but-empty is data, not an error: the caller must be able to say
+    'this endpoint listed nothing' rather than 'it could not be reached'."""
+    _catalogue(monkeypatch, {"data": []})
+
+    listing = list_models(None, 5.0)
+
+    assert listing.models == ()
+    # Reported and empty -- NOT `None`, which would mean "this listing does not
+    # report the property at all". The picker renders the two differently.
+    assert listing.structured_output_ids == frozenset()
+
+
+def test_list_models_raises_on_transport_failure(monkeypatch):
+    """Never `[]` on error: 'reachable but empty' and 'could not be reached' are
+    different facts, and the settings page renders each differently."""
+
+    def boom(req, *, timeout):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr("urllib.request.urlopen", boom)
+
+    with pytest.raises(LLMError, match="openrouter request failed"):
+        list_models(None, 5.0)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"data": "gpt"},
+        {},
+        ["gpt"],
+        {"data": [{"supported_parameters": []}]},
+        {"data": [{"id": "  ", "supported_parameters": []}]},
+        {"data": ["not-an-object"]},
+        {"data": [{"id": "a/b"}]},
+        {"data": [{"id": "a/b", "supported_parameters": None}]},
+    ],
+)
+def test_list_models_raises_on_schema_mismatch(monkeypatch, payload):
+    """A shape that is not `{'data': [{id, supported_parameters}, ...]}` is a
+    failure, never a silent empty or half-read list.
+
+    The per-entry cases are the load-bearing ones: an entry that cannot be
+    classified must not be swept into 'does not advertise structured output',
+    which would report a claim the catalogue never made. Mutation: skip such
+    entries (or default them to non-advertising) and these stop raising.
+    """
+    _catalogue(monkeypatch, payload)
+
+    with pytest.raises(LLMError, match="did not match schema"):
+        list_models(None, 5.0)

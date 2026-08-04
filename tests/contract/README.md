@@ -9,6 +9,7 @@ or that the deterministic suite would otherwise paper over:
 | `test_query_intent_contract.py` | #237 | A role question the deterministic parser hands off must yield a valid intent through the live provider and the production parse boundary. |
 | `test_extraction_contract.py` | #238 | A founding-date fact the extractor produces must normalise into the policy's *functional* relation vocabulary, so a two-date contradiction is catchable. |
 | `test_sync_rc_contract.py` | #239 | `verinote sync` must not report success when every extraction chunk fails. |
+| `test_openrouter_catalogue_contract.py` | — | OpenRouter's model catalogue must still carry the `id` and `supported_parameters` fields the settings Model picker is built from, and still declare `structured_outputs`. Needs no key or client; reads the live endpoint. |
 | `test_contract_meta.py` | — | Meta guards on the harness itself (marker registered, fixtures carry provenance, every module has a guard, the skipped-run guard bites). Runs in the default suite. |
 
 ## Running

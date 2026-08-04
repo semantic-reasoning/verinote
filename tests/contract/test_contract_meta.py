@@ -58,6 +58,7 @@ CONTRACT_MODULES = (
     "test_query_intent_contract.py",
     "test_extraction_contract.py",
     "test_sync_rc_contract.py",
+    "test_openrouter_catalogue_contract.py",
 )
 # A module whose contract tests are *all* gated, so an ungated run executes none
 # of them.

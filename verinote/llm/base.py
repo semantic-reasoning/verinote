@@ -73,6 +73,32 @@ class ExtractedFact:
                 raise ValueError(f"{name} must be 'string' or 'term', got {value!r}")
 
 
+@dataclass(frozen=True)
+class ModelListing:
+    """What one provider's model listing reported, for the settings picker.
+
+    Every lister in `web.app._MODEL_LISTERS` returns this, so the dispatch has
+    one return contract however many listers exist. Chosen over the two values
+    (`list[str]` plus a parallel `frozenset[str] | None`) the design review also
+    offered: those carry the same facts, but a bare pair is unpacked positionally,
+    so swapping the two at one call site is a silent misgrouping rather than an
+    error, and neither element can be named where a reader meets it.
+
+    `models` is every id the listing returned, ordered.
+
+    `structured_output_ids` is the subset the listing said advertises structured
+    output, or `None` when the listing does not report that property at all.
+    Those are different facts and the UI renders them differently: Ollama's
+    `/api/tags` carries no such field, so `None` means "this listing does not
+    say", while an empty frozenset means "it does say, and nothing advertised
+    it". Collapsing the two would put every Ollama model under a heading
+    claiming its server declared something it never mentioned.
+    """
+
+    models: tuple[str, ...]
+    structured_output_ids: frozenset[str] | None = None
+
+
 @runtime_checkable
 class LLMClient(Protocol):
     """Every provider adapter implements this; callers depend only on it.
