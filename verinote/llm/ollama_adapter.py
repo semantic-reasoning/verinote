@@ -11,7 +11,7 @@ import json
 import urllib.request
 
 from verinote.config import Config
-from verinote.llm.base import ExtractedFact, LLMError
+from verinote.llm.base import ExtractedFact, LLMError, ModelListing
 from verinote.llm.schema import (
     FACT_ARRAY_SCHEMA,
     QUERY_INTENT_SCHEMA,
@@ -27,7 +27,7 @@ from verinote.prompts import PromptError, render_prompt
 OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434"
 
 
-def list_models(base_url: str | None, timeout: float) -> list[str]:
+def list_models(base_url: str | None, timeout: float) -> ModelListing:
     """Model ids this Ollama server has installed, sorted, deduplicated.
 
     A module-level function taking a URL and a timeout, deliberately NOT a
@@ -42,11 +42,17 @@ def list_models(base_url: str | None, timeout: float) -> list[str]:
     buy. The timeout ceiling this parameter is clamped against lives there too,
     because that dispatch is the last caller still holding a `Config`.
 
+    `structured_output_ids` is left `None`: `/api/tags` reports a name, a size
+    and a digest per model and nothing about capabilities, so this listing has
+    no answer to give. `None` says exactly that, and is not the same as the
+    empty set a listing that *does* report the property and found none would
+    return — see `ModelListing`.
+
     Raises `LLMError` on any transport or shape failure rather than
-    returning `[]` — an empty list means "this server has no models pulled",
-    and a caller must be able to tell that apart from "the server could not
-    be reached" (which the settings UI reports verbatim instead of showing
-    an empty picker).
+    returning an empty listing — no models means "this server has no models
+    pulled", and a caller must be able to tell that apart from "the server
+    could not be reached" (which the settings UI reports verbatim instead of
+    showing an empty picker).
     """
     root = (base_url or OLLAMA_DEFAULT_BASE_URL).rstrip("/")
     req = urllib.request.Request(f"{root}/api/tags")
@@ -67,7 +73,7 @@ def list_models(base_url: str | None, timeout: float) -> list[str]:
         and isinstance(entry.get("name"), str)
         and entry["name"].strip()
     }
-    return sorted(names)
+    return ModelListing(models=tuple(sorted(names)))
 
 
 class OllamaAdapter:

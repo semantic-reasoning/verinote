@@ -20,9 +20,12 @@ Two gates share it:
   provider is unreachable (e.g. the ``claude`` binary is missing) it *fails*,
   never skips — a provider you asked to exercise but that cannot run is a real
   failure, not an absence of coverage (issue #234).
-* :func:`require_opt_in` gates the deterministic contract tests (replay and the
-  sync exit-code guard). They need no live provider but must still stay out of
-  the default suite, so they skip on the same unset gate.
+* :func:`require_opt_in` gates the guards that build no provider client: the
+  replays, the sync exit-code guard, and the OpenRouter catalogue guard. The
+  first two are deterministic; the last reads a live, unauthenticated HTTP
+  endpoint. What they share is that none of them needs a provider client or a
+  key — and that all of them must stay out of the default suite, so they skip on
+  the same unset gate.
 
 :func:`pytest_sessionfinish` closes the harness's worst failure mode: asking for
 contract tests and getting a green run that exercised nothing. Whenever a run
@@ -265,7 +268,13 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
 
 @pytest.fixture
 def require_opt_in() -> str:
-    """Skip unless the opt-in gate is set. For deterministic contract tests."""
+    """Skip unless the opt-in gate is set. For contract tests needing no client.
+
+    Which provider the gate names is not read here: these guards build no
+    provider client, so any set gate means "run the opt-in tests". Not every one
+    of them is offline — the OpenRouter catalogue guard reads a live endpoint —
+    so this is not a promise that nothing touches the network.
+    """
     provider = contract_provider()
     if not provider:
         pytest.skip(GATE_HINT)

@@ -10,6 +10,7 @@ import verinote.cli as cli
 import verinote.pipeline.acceptance as acceptance
 import verinote.store.db as store_db
 from verinote.engine import CheckReport, DEFAULT_POLICY
+from verinote.llm.base import ModelListing
 from verinote.pipeline.acceptance import AcceptRecommendation
 from verinote.pipeline.corroboration import store_functional_relations
 from verinote.pipeline.policy_state import (
@@ -785,7 +786,7 @@ def test_settings_model_field_stays_usable_on_a_halted_policy(tmp_path, monkeypa
     """The settings page is the recovery surface, so its fragments must load too.
 
     A halt here would be worse than a visible error: htmx never swaps a 4xx into
-    the DOM (#173), so the Model field would sit on "Loading installed models..."
+    the DOM (#173), so the Model field would sit on "Loading the model list..."
     forever while the user is trying to recover the KB. A lost logic policy is a
     statement about verification, not about which model the user may pick.
     """
@@ -793,7 +794,9 @@ def test_settings_model_field_stays_usable_on_a_halted_policy(tmp_path, monkeypa
 
     client = _halted_client(tmp_path, monkeypatch)
     monkeypatch.setitem(
-        webapp._MODEL_LISTERS, "ollama", lambda base_url, timeout: ["qwen3:8b"]
+        webapp._MODEL_LISTERS,
+        "ollama",
+        lambda base_url, timeout: ModelListing(models=("qwen3:8b",)),
     )
 
     r = client.get("/settings/model-field?provider=ollama&model=qwen3:8b")

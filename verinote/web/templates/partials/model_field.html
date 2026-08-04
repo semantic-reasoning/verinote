@@ -1,18 +1,57 @@
 {# The Model field of the LLM provider form, swapped in place by HTMX whenever
    the chosen provider or base URL changes.
 
-   For Ollama the installed models ARE enumerable from the endpoint the user
-   pointed at (`GET /api/tags`), so the field is a picker over what that server
-   actually has rather than free text a typo turns into a runtime failure. Every
-   other provider keeps the text input: a cloud catalogue is not a property of
-   the endpoint, so there is nothing truthful to enumerate there.
+   Two providers are enumerable from the endpoint the user pointed at, so the
+   field is a picker there rather than free text a typo turns into a runtime
+   failure. For Ollama the models installed on that server are what is
+   enumerated (`GET /api/tags`); for OpenRouter it is the catalogue the endpoint
+   being configured publishes (`GET {base_url}/models`, unauthenticated). No
+   other provider's field is a discovery: `claudecli` has no listing at all (its
+   options below are curated from the adapter, which the wording says), and a
+   vendor's catalogue is not otherwise a property of the endpoint being
+   configured, so `anthropic` and `openai` keep the text input.
+   `MODEL_LISTING_PROVIDERS` in `config.py` states the same rule.
 
-   Three states, kept distinct on purpose (#state-honesty): a reachable server
-   WITH models becomes a picker; a reachable server with NO models pulled and an
-   UNREACHABLE server both fall back to the text input plus a note saying which
-   of the two happened. An empty picker would look like a normal empty field and
-   quietly claim "your server offers nothing to choose", which is a different
-   statement from "your server could not be reached".
+   The two listings are not the same claim, so the wording differs and every
+   sentence that depends on which one it is sits in a named arm. Ollama's is
+   about a machine the user controls, where a missing model is fixed with
+   `ollama pull`. OpenRouter's was read with no API key: it is what the catalogue
+   publishes, not what this user's account may call, and `ollama pull` would be
+   nonsense advice.
+
+   Each of those chains names both providers and has no catch-all `{% else %}`,
+   which is the point: an else arm would hand its copy to whatever listable
+   provider joins next, telling that provider's users their endpoint "answered
+   without an API key" -- the same failure the hardcoded default endpoint was,
+   one provider later. Nothing here can notice that on its own, so
+   `_check_every_listable_provider_has_model_field_copy` in `web/app.py` parses
+   this file at import and refuses to start unless every chain that branches on
+   `provider` gives each listable provider exactly one arm. It walks the parsed
+   arms rather than the file's text, so a provider named in a comment -- this
+   one included -- is neither counted as an arm nor mistaken for a missing one.
+   Renaming a provider, or adding a chain, means updating the arms together or
+   that check fails, naming the file, the chain's line, and what is missing from
+   it.
+
+   What that check does not do is forbid the `{% else %}` these chains leave out;
+   the absence above is a convention. What it forbids is a listable provider with
+   no arm of its own, which is the half an else arm would otherwise paper over.
+   Nor can it tell whether an arm's sentences are true of the provider named on
+   that arm; that is a reviewer's job.
+
+   Three states, kept distinct on purpose (#state-honesty): a reachable endpoint
+   WITH models becomes a picker; a reachable endpoint listing NOTHING and an
+   UNREACHABLE one both fall back to the text input plus a note saying which of
+   the two happened. An empty picker would look like a normal empty field and
+   quietly claim "there is nothing to choose", which is a different statement
+   from "that endpoint could not be reached".
+
+   A listing that reports which models advertise structured output is grouped
+   into two <optgroup>s; one that does not (Ollama) stays flat. The two are told
+   apart by `structured_output_ids` being `None` rather than empty, so "this
+   listing does not say" never renders as "none of them advertise it". Both
+   groups are rendered whenever the property IS reported, even if one is empty:
+   an empty group under its heading is itself the honest answer.
 
    The Claude CLI has no listing to read -- its `--model` help documents three
    aliases and otherwise takes a full model id -- so its options are curated,
@@ -36,29 +75,64 @@
   <label>Model
     <select name="model">
       {% if model and model not in models %}
-      {# Never drop the configured model just because this server lacks it: the
+      {# Never drop the configured model just because this listing lacks it: the
          KB's config.json really does name it, and silently selecting a
          different model would make the page misreport the KB's own state. Show
-         it, keep it selected, and say plainly that it is not installed. #}
-      <option value="{{ model }}" selected>{{ model }} — not installed</option>
+         it, keep it selected, and say plainly what the listing said about it --
+         which is a different sentence per provider, so it is not "not
+         installed" everywhere. Outside the groups below on purpose: the listing
+         said nothing about this id, so it belongs under neither heading. #}
+      <option value="{{ model }}" selected>{{ model }}{% if provider == 'ollama' %} — not installed{% elif provider == 'openrouter' %} — not in this catalogue{% endif %}</option>
       {% endif %}
+      {% if structured_output_ids is none %}
       {% for m in models %}
       <option value="{{ m }}" {{ 'selected' if m == model else '' }}>{{ m }}</option>
       {% endfor %}
+      {% else %}
+      <optgroup label="Advertises structured output">
+        {% for m in models if m in structured_output_ids %}
+        <option value="{{ m }}" {{ 'selected' if m == model else '' }}>{{ m }}</option>
+        {% endfor %}
+      </optgroup>
+      <optgroup label="Does not advertise structured output">
+        {% for m in models if m not in structured_output_ids %}
+        <option value="{{ m }}" {{ 'selected' if m == model else '' }}>{{ m }}</option>
+        {% endfor %}
+      </optgroup>
+      {% endif %}
     </select>
   </label>
   <p class="muted field-note">
+    {% if provider == 'ollama' %}
     {{ models|length }} model{{ '' if models|length == 1 else 's' }} installed on
     <code>{{ endpoint }}</code>.
+    {% elif provider == 'openrouter' %}
+    {{ models|length }} model{{ '' if models|length == 1 else 's' }} listed by
+    <code>{{ endpoint }}</code>, which answered without an API key — so this is the
+    catalogue it publishes, not a list of what your account can reach. The two
+    groups repeat what each entry declares in its <code>supported_parameters</code>;
+    verinote has not run any of them. The distinction matters because verinote
+    asks for a JSON-schema <code>response_format</code> on every call that has to
+    come back as JSON — extraction, query translation, query intent — so a model
+    in the second group is being asked for something its own entry does not
+    advertise.
+    {% endif %}
     <button class="btn ghost" type="button"
             hx-get="/settings/model-field"
             hx-include="[name='provider'], [name='base_url'], [name='model']"
             hx-target="#model-field" hx-swap="outerHTML">Refresh list</button>
   </p>
   {% if model and model not in models %}
+  {% if provider == 'ollama' %}
   <p class="warn field-note" role="alert">This KB is configured for
     <code>{{ model }}</code>, which is not installed on <code>{{ endpoint }}</code>.
     Pick an installed model, or run <code>ollama pull {{ model }}</code>.</p>
+  {% elif provider == 'openrouter' %}
+  <p class="warn field-note" role="alert">This KB is configured for
+    <code>{{ model }}</code>, which <code>{{ endpoint }}</code> did not list. It stays
+    selected because this KB's config.json names it; pick a listed model to change
+    that.</p>
+  {% endif %}
   {% endif %}
   {% elif aliases and not custom %}
   <label>Model
@@ -111,6 +185,7 @@
             hx-target="#model-field" hx-swap="outerHTML">Retry</button>
   </p>
   {% elif models is not none %}
+  {% if provider == 'ollama' %}
   <p class="warn field-note" role="alert"><code>{{ endpoint }}</code> is reachable but
     has no models installed. Run <code>ollama pull &lt;model&gt;</code>, then
     <button class="btn ghost" type="button"
@@ -118,8 +193,19 @@
             hx-include="[name='provider'], [name='base_url'], [name='model']"
             hx-target="#model-field" hx-swap="outerHTML">refresh the list</button>.
   </p>
+  {% elif provider == 'openrouter' %}
+  <p class="warn field-note" role="alert"><code>{{ endpoint }}</code> is reachable but
+    listed no models, so the model must be typed in.
+    <button class="btn ghost" type="button"
+            hx-get="/settings/model-field"
+            hx-include="[name='provider'], [name='base_url'], [name='model']"
+            hx-target="#model-field" hx-swap="outerHTML">refresh the list</button>
+  </p>
+  {% endif %}
   {% elif lazy %}
-  <p class="muted field-note" role="status">Loading installed models…</p>
+  {# Not "installed": this state is shared with a provider whose listing is a
+     published catalogue, where nothing is installed anywhere. #}
+  <p class="muted field-note" role="status">Loading the model list…</p>
   {% endif %}
   {% endif %}
 </div>

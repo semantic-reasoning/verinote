@@ -102,17 +102,19 @@ PROVIDER_LABELS = {
 # extraction -- and it matters most there: its installed models cannot be
 # enumerated, so running the chosen one is the only way to learn it works.
 TESTABLE_PROVIDERS = frozenset({"anthropic", "claudecli", "openai", "openrouter", "ollama"})
-# Providers whose installed models can be enumerated from the very endpoint the
-# user configured, so the settings UI can offer a picker instead of free text.
-# A vendor's own catalogue is not a property of its endpoint and `claudecli` has
-# no listing at all, so neither can be answered truthfully here.
+# Providers whose models can be enumerated from the very endpoint the user
+# configured, so the settings UI can offer a picker instead of free text.
+# `anthropic` and `openai` are absent because a vendor's own catalogue is not a
+# property of the endpoint being configured, and `claudecli` because it has no
+# listing at all, so neither can be answered truthfully for them.
 #
 # `openrouter` is the exception that does not generalise: its catalogue IS
 # served by the endpoint being configured (`GET {base_url}/models`, unauthenticated),
-# so the original "a cloud catalogue is never endpoint-served" reasoning does not
-# cover it. It is absent here only because its picker is a separate unit of work,
-# not because the claim above applies to it.
-MODEL_LISTING_PROVIDERS = frozenset({"ollama"})
+# so the "a cloud catalogue is never endpoint-served" reasoning does not cover it.
+# What that listing enumerates is the published catalogue, not what this user's
+# account may call — the request carries no key, which is also what keeps the
+# listing seam keyless (`web.app._MODEL_LISTERS`).
+MODEL_LISTING_PROVIDERS = frozenset({"ollama", "openrouter"})
 # Providers that authenticate with an API key. The others never read
 # `cfg.api_key` at all (`claudecli` shells out, `ollama` talks to a local
 # endpoint), so resolving a key for them could only produce a value that cannot

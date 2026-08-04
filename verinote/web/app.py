@@ -22,6 +22,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, Response, Uploa
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from jinja2 import Environment, nodes
 
 from verinote.config import (
     APP_THEMES,
@@ -48,10 +49,15 @@ from verinote.config import (
 )
 from verinote.kb_location import KBLocationError, assert_kb_root_is_safe_to_create
 from verinote.llm import MIN_REDACTABLE_SECRET, LLMError, get_client
+from verinote.llm.base import ModelListing
 from verinote.llm.claude_cli_adapter import CLI_MODEL_ALIASES
 from verinote.llm.ollama_adapter import (
     OLLAMA_DEFAULT_BASE_URL,
     list_models as _list_ollama_models,
+)
+from verinote.llm.openrouter_adapter import (
+    OPENROUTER_DEFAULT_BASE_URL,
+    list_models as _list_openrouter_models,
 )
 from verinote.policy_defaults import DEFAULT_RELATION_ALIASES
 from verinote.pipeline import (
@@ -189,9 +195,44 @@ MODEL_LIST_TIMEOUT_SECONDS = 5.0
 # dict. The trade was accepted because dropping the `get_client` call is itself
 # what puts the API key out of this seam's reach — the check exists to keep an
 # ordinary-looking edit from quietly undoing that, not to make it unconditional.
-_MODEL_LISTERS = {"ollama": _list_ollama_models}
+#
+# Every lister returns a `ModelListing`, not a bare list: a listing that reports
+# which models advertise structured output and one that reports nothing but names
+# have to arrive as the same type here, or this dispatch would need a per-provider
+# branch to read its own table's results.
+_MODEL_LISTERS = {
+    "ollama": _list_ollama_models,
+    "openrouter": _list_openrouter_models,
+}
 # The parameter names every lister must have, checked below rather than trusted.
 _LISTER_SIGNATURE = ("base_url", "timeout")
+
+# The URL each listable provider dials when the Base URL field is left blank,
+# keyed to the adapter constant so the page cannot name one endpoint while the
+# lister dials another. Deliberately not a mapping in `config`, for the reason
+# `MODEL_ALIASES_BY_PROVIDER` is not either: the values live in the adapter
+# modules, which import `config`, so this is the layer that can name both.
+#
+# It exists because the endpoint is *reported to the user*. Hardcoding
+# `OLLAMA_DEFAULT_BASE_URL` here was correct while Ollama was the only listable
+# provider and became a flat misreport the moment a second one joined — an
+# OpenRouter user would have been told the page dialled `http://localhost:11434`.
+_LISTABLE_DEFAULT_ENDPOINTS = {
+    "ollama": OLLAMA_DEFAULT_BASE_URL,
+    "openrouter": OPENROUTER_DEFAULT_BASE_URL,
+}
+
+# The Model field's copy is not shared prose: what a listing IS differs per
+# provider (an installed set on a machine the user controls, versus a published
+# catalogue read with no key), so the partial branches on the provider name and
+# each arm asserts things true only of its own. The check that follows finds
+# those arms by parsing the shipped template and walking its `if`/`elif` chains
+# as syntax rather than matching its text, so what it counts as an arm is what
+# Jinja will actually branch on. That is what lets it read the template instead
+# of a list kept beside it: a list would be satisfied by appending a name, which
+# is the edit the check exists to stop — and so, against a text scan, would
+# writing that name into one of this file's comments.
+_MODEL_FIELD_TEMPLATE = "partials/model_field.html"
 
 
 def _check_every_listable_provider_has_a_keyless_lister(providers, listers) -> None:
@@ -245,10 +286,205 @@ def _check_every_listable_provider_has_a_keyless_lister(providers, listers) -> N
         )
 
 
+def _check_every_listable_provider_names_its_default_endpoint(providers, endpoints) -> None:
+    """Fail at import if a listable provider has no default endpoint to name.
+
+    A sibling of the lister check rather than another clause inside it, because
+    it guards a different failure: not "the picker can never fill" but "the page
+    names the wrong host".
+
+    The two ways this map can be wrong fail differently, and the check is worth
+    having for both. A *missing* entry is loud only where it bites: the
+    subscript in `_model_field_context` sits behind `base_url.strip() or …`, so
+    it raises `KeyError` and the route answers 500 only when the Base URL field
+    is blank — a broken picker, not a misreport. A user who instead configured
+    a proxy or gateway never reaches the subscript: the picker renders and
+    names their own host correctly, and the missing entry stays invisible to
+    exactly the users most likely to have a non-default endpoint. This check
+    turns that split outcome into one import-time failure with a name in it,
+    catching the entry before either half can happen. A *present but wrong*
+    entry is the quiet one, and the misreport this map exists to prevent: the
+    page renders and prints a URL that is not the one the lister dialled. No
+    import-time check can tell a wrong URL from a right one, so what the map
+    buys there is that each provider's URL is written once, beside the adapter
+    constant it must equal.
+
+    Both directions again, and the second is not cosmetic: an entry for a
+    provider that is not listable is a default endpoint nothing dials, and the
+    next edit to `MODEL_LISTING_PROVIDERS` would silently adopt it without anyone
+    checking it is still right.
+
+    A present-but-blank entry is rejected too: it satisfies membership and then
+    renders as an empty `<code></code>` where the dialled host should be, which
+    is the same misreport arriving quietly.
+
+    Raised rather than asserted so `python -O` cannot strip it, matching
+    `config._check_every_provider_is_classified`.
+    """
+    missing = set(providers) ^ set(endpoints)
+    if missing:
+        raise RuntimeError(
+            "every listable provider needs exactly one default endpoint and vice versa: "
+            "a missing entry raises KeyError on a model-field render with a blank "
+            "Base URL, and is invisible on one with a Base URL set, and an entry no "
+            "listable provider claims is a URL nothing dials "
+            f"that the next edit would adopt unchecked: {sorted(missing)}"
+        )
+    blank = sorted(name for name, url in endpoints.items() if not (url or "").strip())
+    if blank:
+        raise RuntimeError(
+            "a listable provider's default endpoint must be a URL the settings page "
+            f"can name, not an empty string: {blank}"
+        )
+
+
+def _provider_names_compared(test) -> list[str]:
+    """The literals one `if`/`elif` test compares `provider` against, in order.
+
+    Every `provider == '<name>'` anywhere inside the test counts, not just a test
+    that is exactly that comparison, so an arm guarded by `provider == 'x' and …`
+    is still that provider's arm rather than a chain the walk fails to recognise.
+    """
+    found = []
+    for node in (test, *test.find_all(nodes.Compare)):
+        if not isinstance(node, nodes.Compare):
+            continue
+        if not (isinstance(node.expr, nodes.Name) and node.expr.name == "provider"):
+            continue
+        found.extend(
+            op.expr.value
+            for op in node.ops
+            if op.op == "eq" and isinstance(op.expr, nodes.Const)
+        )
+    return found
+
+
+def _model_field_provider_chains(template_source) -> list[tuple[int, list[str]]]:
+    """Parse the template; return `(line, names)` per `if`/`elif` chain on `provider`.
+
+    A chain is one `if` head plus the `elif` arms Jinja hangs off it, which is
+    the unit the check reasons about: those arms are alternatives to each other,
+    so a provider missing from one of them is a render that shows that provider
+    nothing. Arms are collected off `elif_`; an `if` written inside another
+    chain's body is a chain of its own rather than an arm of it. Nothing here
+    cares whether a chain is a block or is written inline, so the four the
+    template has — including the one inside an `<option>` tag — are all found.
+
+    Chains whose tests never compare `provider` are not returned at all — the
+    template's `{% if models %}` is not a place a provider needs an arm.
+    """
+
+    def arms(head):
+        yield head
+        for arm in head.elif_:
+            yield from arms(arm)
+
+    parsed = Environment().parse(template_source)
+    all_ifs = list(parsed.find_all(nodes.If))
+    continuations = {id(arm) for head in all_ifs for arm in head.elif_}
+    chains = []
+    for head in all_ifs:
+        if id(head) in continuations:
+            continue
+        names = [name for arm in arms(head) for name in _provider_names_compared(arm.test)]
+        if names:
+            chains.append((head.lineno, names))
+    return chains
+
+
+def _check_every_listable_provider_has_model_field_copy(providers, template_source) -> None:
+    """Fail at import if the Model field's copy does not branch per listable provider.
+
+    The third sibling, guarding the third way this surface misreports. The
+    lister check keeps the picker fillable and the endpoint check keeps the host
+    name right; this one keeps the *sentences around them* attached to the
+    provider they are true of. `{% if provider == 'ollama' %}…{% else %}…` was
+    the shape here before, and it is the same mistake the hardcoded
+    `OLLAMA_DEFAULT_BASE_URL` was: correct only while the set has exactly two
+    members, and a flat misreport the moment a third joins — an else arm telling
+    that third provider's users their endpoint "answered without an API key".
+
+    So the shipped template is parsed, and every `if`/`elif` chain in it that
+    compares `provider` to a literal must — on its own — give each listable
+    provider exactly one arm and no other provider any. Per chain, not in total:
+    totals are what the likely mistake slips past, because the template branches
+    on the provider in four separate places and copy written at one chain and
+    dropped from another leaves those renders showing that provider nothing
+    while the totals still balance. Both directions at every chain, too. An
+    unbranched listable provider has no copy there; an arm for a provider that is
+    not listable is copy no render reaches, which the next edit to
+    `MODEL_LISTING_PROVIDERS` would silently adopt without anyone re-reading it;
+    a provider with two arms in one chain has a second one nothing can reach.
+    At least one such chain has to exist, too: a per-chain rule has nothing left
+    to fail on once every arm has been flattened back into shared prose.
+
+    Parsed rather than matched over the file's text, and that is what makes "an
+    arm" mean an arm. Jinja drops `{# … #}` in the lexer, so a name that appears
+    only in the header comment above the markup is not seen here at all: it
+    cannot stand in for an arm nobody wrote, and — the other direction, and the
+    live one, since that comment already spends a paragraph explaining these
+    chains — a comment that quotes one of these tests cannot fail the build, nor
+    accuse a provider whose arms are all present.
+
+    What it does NOT check, and cannot: whether the copy inside an arm is *true*
+    of that provider. An arm could name the other provider's endpoint, or say
+    "installed" about a published catalogue, and this would pass. Nor does it
+    ask that per-provider copy live inside one of these chains — a sentence
+    written outside every `provider` chain is a sentence this never sees. Like its
+    siblings it is a shape rule over the shipped file, evaluated once at import.
+    It forces a maintainer to write a sentence at each site it can see; a
+    reviewer is what makes the sentence right.
+    """
+    location = f"verinote/web/templates/{_MODEL_FIELD_TEMPLATE}"
+    chains = _model_field_provider_chains(template_source)
+    if not chains:
+        raise RuntimeError(
+            f"{location} no longer branches on `provider` anywhere, so either its "
+            "per-provider copy has become prose that claims one provider's listing is "
+            "every provider's, or the arms moved somewhere this check cannot see them: "
+            f"restore the `{{% if provider == '<name>' %}}` chains. Listable: "
+            f"{sorted(providers)}"
+        )
+    faults = []
+    for lineno, names in chains:
+        missing = sorted(set(providers) - set(names))
+        unlistable = sorted(set(names) - set(providers))
+        repeated = sorted({name for name in names if names.count(name) > 1})
+        if not (missing or unlistable or repeated):
+            continue
+        fault = f"the chain starting at line {lineno} has arms {names}"
+        if missing:
+            fault += f", missing {missing}"
+        if unlistable:
+            fault += f", arms for providers that are not listable {unlistable}"
+        if repeated:
+            fault += f", unreachable duplicate arms {repeated}"
+        faults.append(fault)
+    if faults:
+        raise RuntimeError(
+            "every `if`/`elif` chain that tests `provider` in "
+            f"{location} must give each listable provider exactly one arm, and no "
+            "other provider any, or those renders show that provider nothing at all. "
+            "Where a chain below is missing one, add `{% elif provider == '<name>' %}` "
+            "to that chain with copy that is true of <name> (what its listing "
+            "enumerates, and what fixes a model missing from it); where it names an "
+            "arm as unlistable or duplicated, delete that arm. Listable: "
+            f"{sorted(providers)}. Wrong: "
+            + "; ".join(faults)
+        )
+
+
 _check_every_listable_provider_has_a_keyless_lister(MODEL_LISTING_PROVIDERS, _MODEL_LISTERS)
+_check_every_listable_provider_names_its_default_endpoint(
+    MODEL_LISTING_PROVIDERS, _LISTABLE_DEFAULT_ENDPOINTS
+)
+_check_every_listable_provider_has_model_field_copy(
+    MODEL_LISTING_PROVIDERS,
+    _TEMPLATES.joinpath(_MODEL_FIELD_TEMPLATE).read_text(encoding="utf-8"),
+)
 
 
-def _list_models_for(cfg: Config, provider: str, base_url: str | None) -> list[str]:
+def _list_models_for(cfg: Config, provider: str, base_url: str | None) -> ModelListing:
     """Enumerate `provider`'s models at `base_url`, handing the lister no key.
 
     This must remain the only place a lister from `_MODEL_LISTERS` is called.
@@ -263,6 +499,18 @@ def _list_models_for(cfg: Config, provider: str, base_url: str | None) -> list[s
     accepted here because dropping the factory call is precisely what puts the
     API key out of the listing seam's reach. A corrupt config.json or an
     unreadable credentials file must still halt before any provider is dialled.
+
+    Settings before credentials, matching `get_client`'s order -- this seam
+    hand-writes what that function centralises, so nothing besides this
+    comment and a test keeps the two surfaces agreeing. The order is
+    observable, not academic: a corrupt config.json falls back to the
+    built-in cloud default, which requires a key, so `credentials_error` can
+    be set on the very same `Config` that carries `settings_error`. Config
+    wins that race because it is the more fundamental failure -- the
+    provider itself could not be resolved, so a credentials verdict for
+    whatever provider *would* have been resolved is not yet meaningful.
+    Swapping these two lines produces zero test failures anywhere else in
+    the suite; see `test_model_field_halts_on_config_first_when_both_errors_are_set`.
     """
     assert_settings_intact(cfg)
     assert_credentials_intact(cfg)
@@ -2034,12 +2282,17 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
         `lazy=True` returns the not-yet-loaded state without touching the
         network; the partial then fetches itself. Only the eager call reaches
-        the provider, and only for a provider whose installed models are a
-        property of the endpoint the user pointed at.
+        the provider, and only for a provider whose models are enumerable from
+        the endpoint the user pointed at.
 
-        `models` distinguishes three outcomes the UI must not conflate: a list
-        (what that server has, possibly empty), or `None` with `models_error`
-        set (the server could not be asked). `ConfigCorruptError` is left to
+        `models` distinguishes three outcomes the UI must not conflate: a
+        sequence of ids (what that endpoint listed, possibly empty), or `None`
+        with `models_error`
+        set (the endpoint could not be asked). `structured_output_ids` carries a
+        further distinction alongside it, orthogonal to those three — the subset
+        that advertises structured output, or `None` when the listing does not
+        report the property at all (see `ModelListing`), which is why the picker
+        only groups for some providers. `ConfigCorruptError` is left to
         propagate to the app-wide halt handler — a corrupt config.json means the
         resolved provider is untrustworthy, and this route would otherwise
         report on a provider the user never chose (#269).
@@ -2058,22 +2311,26 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             "aliases": MODEL_ALIASES_BY_PROVIDER.get(provider, ()),
             "custom": custom,
             # The URL actually dialled, not the literal "(default)" — so the
-            # page names the same endpoint the adapter will use.
-            "endpoint": (base_url.strip() or OLLAMA_DEFAULT_BASE_URL) if listable else "",
+            # page names the same endpoint the lister will use, per provider.
+            "endpoint": (
+                (base_url.strip() or _LISTABLE_DEFAULT_ENDPOINTS[provider]) if listable else ""
+            ),
             # A provider with nothing to enumerate must not sit in a lazy state
             # forever: it renders its text input once and never self-fetches.
             "lazy": lazy and listable,
             "models": None,
+            "structured_output_ids": None,
             "models_error": None,
         }
         if lazy or not listable:
             return base
         try:
-            base["models"] = _list_models_for(
-                app.state.cfg, provider, base_url.strip() or None
-            )
+            listing = _list_models_for(app.state.cfg, provider, base_url.strip() or None)
         except LLMError as exc:
             base["models_error"] = str(exc)
+            return base
+        base["models"] = listing.models
+        base["structured_output_ids"] = listing.structured_output_ids
         return base
 
     @app.get("/settings/model-field", response_class=HTMLResponse)
