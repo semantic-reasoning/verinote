@@ -166,3 +166,91 @@ def test_claude_cli_prompt_validation_error_is_llm_error(tmp_path):
 
     with pytest.raises(LLMError, match="\\{schema_json\\}"):
         ClaudeCliAdapter(_cfg(tmp_path)).extract_facts(source_text="x")
+
+
+# --- a pinned model id must survive to the CLI, not collapse to "latest" ---
+
+
+def _record_commands(monkeypatch):
+    commands = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        return SimpleNamespace(returncode=0, stdout='{"facts":[]}', stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return commands
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "claude-opus-4-8",
+        "claude-fable-5",
+        "claude-sonnet-5",
+        "claude-haiku-4-5",
+        "claude-3-opus-20240229",
+    ],
+)
+def test_claude_cli_passes_a_canonical_model_id_through_unchanged(tmp_path, monkeypatch, model):
+    """The CLI accepts these verbatim. Rewriting `claude-opus-4-8` to `opus` ran
+    whatever is newest instead, so config.json named one model and the CLI ran
+    another -- a lost pin with no error to notice it by."""
+    commands = _record_commands(monkeypatch)
+
+    ClaudeCliAdapter(_cfg(tmp_path, model=model)).extract_facts(source_text="x")
+
+    assert commands[0][0:3] == ["claude", "--model", model]
+
+
+def test_claude_cli_keeps_a_pin_that_differs_only_in_capitalisation(tmp_path, monkeypatch):
+    """Capitalisation is not a reason to lose a pin: fold it to the canonical id
+    rather than letting the alias path claim it."""
+    commands = _record_commands(monkeypatch)
+
+    ClaudeCliAdapter(_cfg(tmp_path, model="CLAUDE-OPUS-4-8")).extract_facts(source_text="x")
+
+    assert commands[0][0:3] == ["claude", "--model", "claude-opus-4-8"]
+
+
+def test_claude_cli_pins_the_id_for_every_call_shape(tmp_path, monkeypatch):
+    """`--model` is assembled separately in the JSON-schema and plain-text paths;
+    a pin that survived only one of them would still be lost on the other."""
+    commands = _record_commands(monkeypatch)
+    adapter = ClaudeCliAdapter(_cfg(tmp_path, model="claude-opus-4-8"))
+
+    adapter.extract_facts(source_text="x")  # --json-schema path
+    adapter.answer_question(question="Who?", context="c")  # plain-text path
+
+    assert [c[0:3] for c in commands] == [["claude", "--model", "claude-opus-4-8"]] * 2
+
+
+@pytest.mark.parametrize(
+    ("display", "expected"),
+    [("Opus 4.8", "opus"), ("Claude Opus", "opus"), ("claude-opus", "opus"), ("SONNET", "sonnet")],
+)
+def test_claude_cli_still_collapses_loose_display_names(tmp_path, monkeypatch, display, expected):
+    """The looseness stays for names that are not ids -- only canonical ids are
+    exempt, so pinning is not bought by breaking the display-name convenience."""
+    commands = _record_commands(monkeypatch)
+
+    ClaudeCliAdapter(_cfg(tmp_path, model=display)).extract_facts(source_text="x")
+
+    assert commands[0][0:3] == ["claude", "--model", expected]
+
+
+def test_claude_cli_surfaces_an_unknown_model_id_instead_of_substituting_one(tmp_path, monkeypatch):
+    """Passing an id through means a wrong one reaches the CLI, which exits 1 with
+    its own message. That loud failure is the point: the alternative was quietly
+    running a model the user never chose."""
+    def fake_run(cmd, **kwargs):
+        return SimpleNamespace(
+            returncode=1,
+            stdout="There's an issue with the selected model (claude-nonexistent-9).",
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(LLMError, match="claude-nonexistent-9"):
+        ClaudeCliAdapter(_cfg(tmp_path, model="claude-nonexistent-9")).extract_facts(source_text="x")
