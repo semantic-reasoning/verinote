@@ -412,3 +412,8 @@ tr.editing td { background: var(--editing-bg); }
   );
 }
 .progress-failed { background: var(--danger); }
+/* One block per provider in the API keys section. Each carries its own form, so
+   the rows need visible separation or the Save buttons read as one control. */
+.key-row { border-top: 1px solid var(--line); padding: .7rem 0; }
+.key-row .key-form { margin: .4rem 0 0; max-width: 32rem; }
+.key-row .warn-inline { display: block; margin: .3rem 0 0; }

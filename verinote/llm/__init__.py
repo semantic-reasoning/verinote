@@ -8,7 +8,7 @@ the deterministic DuckDB-backed verifier re-checks every fact, so the provider/m
 is freely swappable.
 """
 
-from verinote.llm.base import ExtractedFact, LLMClient, LLMError
+from verinote.llm.base import MIN_REDACTABLE_SECRET, ExtractedFact, LLMClient, LLMError
 from verinote.llm.factory import get_client
 
-__all__ = ["LLMClient", "ExtractedFact", "LLMError", "get_client"]
+__all__ = ["LLMClient", "ExtractedFact", "LLMError", "MIN_REDACTABLE_SECRET", "get_client"]

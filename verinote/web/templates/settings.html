@@ -88,17 +88,70 @@
   <button class="btn" type="submit">Save</button>
 </form>
 
-{# Deliberately says only whether a key resolved, not where it came from: with
-   three possible sources naming one would be a guess. The per-provider source
-   breakdown is the next unit's work. #}
-{% if credentials_error %}
+<h2>API keys</h2>
+{% if credentials_halting %}
 <p class="warn" role="alert">Your saved API keys could not be read, so verinote
   refuses provider calls rather than treating them as absent. ({{ credentials_error }})
   <a href="/credentials-unavailable">How to recover</a></p>
-<p class="muted">API key: unknown — the stored keys are unreadable</p>
-{% else %}
-<p class="muted">API key: {{ 'set' if has_key else 'not set' }}</p>
+{% elif credentials_error %}
+<p class="warn" role="alert">Your saved API keys could not be read
+  ({{ credentials_error }}), but every provider below is getting its key from the
+  environment, so nothing is being refused. Saving a key stays refused until the
+  file is repaired. <a href="/credentials-unavailable">How to recover</a></p>
 {% endif %}
+<p class="muted">Saved keys are written to this machine's config directory, never
+  into a KB, so a KB stays safe to copy or share. Each provider is separate: a key
+  saved for one is never sent to another.</p>
+{% if not credentials_editable %}
+<p class="warn" role="alert">Saving keys is unavailable while this KB's logic policy
+  is halted. Restore the policy or open another KB.</p>
+{% endif %}
+
+{# One form per provider, not fields inside the big settings form: a key must
+   never ride along with a provider/model save, and a browser offered a password
+   field inside a larger form tends to save the whole thing as a site login.
+   The value is never rendered back, so the input is always empty. #}
+{% for row in provider_keys %}
+<div class="key-row">
+  <strong>{{ row.label }}</strong>
+  {% if row.state == 'not_needed' %}
+    <span class="muted">no API key needed</span>
+  {% else %}
+    {% if row.state == 'env_provider' %}
+      <span class="muted">set from <code>{{ row.env_var }}</code></span>
+      {% if row.shadowed %}
+      <span class="warn-inline">a saved key exists but the environment variable takes precedence</span>
+      {% endif %}
+    {% elif row.state == 'stored' %}
+      <span class="muted">saved in this app</span>
+    {% elif row.state == 'env_global' %}
+      <span class="muted">set from <code>VERINOTE_API_KEY</code> (applies to every provider)</span>
+    {% elif row.state == 'unknown' %}
+      <span class="warn-inline">unknown — the saved keys could not be read</span>
+    {% else %}
+      <span class="muted">not set</span>
+    {% endif %}
+    <form class="settings key-form" action="/settings/credentials" method="post"
+          autocomplete="off">
+      <input type="hidden" name="provider" value="{{ row.provider }}">
+      <label>Key for {{ row.label }}
+        <input type="password" name="api_key" autocomplete="new-password"
+               spellcheck="false" placeholder="leave empty to keep the current one"
+               {% if not credentials_editable %}disabled{% endif %}>
+      </label>
+      <button class="btn" type="submit"
+              {% if not credentials_editable %}disabled aria-disabled="true"{% endif %}>Save key</button>
+    </form>
+    {% if row.stored %}
+    <form class="key-form" action="/settings/credentials/remove" method="post">
+      <input type="hidden" name="provider" value="{{ row.provider }}">
+      <button class="btn ghost" type="submit"
+              {% if not credentials_editable %}disabled aria-disabled="true"{% endif %}>Remove saved key</button>
+    </form>
+    {% endif %}
+  {% endif %}
+</div>
+{% endfor %}
 
 <form class="connection-test" action="/settings/test" method="post"
       hx-post="/settings/test" hx-target="main" hx-select="main" hx-swap="outerHTML"
