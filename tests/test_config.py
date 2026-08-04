@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -838,3 +839,37 @@ def test_saved_routing_values_still_go_through_the_trim_normalisation(
     _write_settings(tmp_path, _valid_settings(**{key: f"  {expected}  "}))
 
     assert getattr(Config.for_root(tmp_path), attr) == expected
+
+
+def test_api_key_is_not_in_the_config_repr():
+    """A stray `logger.exception` with locals, or a pytest assertion diff on two
+    Configs, would otherwise print the credential. Asserts the *value* is absent
+    from every stringification, not merely that the field name is missing."""
+    cfg = Config(
+        root=Path("/kb"),
+        db_path=Path("/kb/kb.sqlite"),
+        provider="openai",
+        model="m",
+        api_key="sk-test-DEADBEEFDEADBEEF",
+        base_url=None,
+    )
+
+    for rendered in (repr(cfg), str(cfg), f"{cfg}"):
+        assert "sk-test-DEADBEEFDEADBEEF" not in rendered
+    assert cfg.api_key == "sk-test-DEADBEEFDEADBEEF"  # still readable by callers
+
+
+def test_replace_preserves_the_api_key():
+    """`_model_field_context` rebuilds the Config with `dataclasses.replace` to
+    list models against the endpoint being edited; dropping the key there would
+    silently unauthenticate every provider call made through that path."""
+    cfg = Config(
+        root=Path("/kb"),
+        db_path=Path("/kb/kb.sqlite"),
+        provider="openai",
+        model="m",
+        api_key="sk-test-DEADBEEFDEADBEEF",
+        base_url=None,
+    )
+
+    assert replace(cfg, provider="openrouter").api_key == "sk-test-DEADBEEFDEADBEEF"

@@ -16,7 +16,7 @@ from pathlib import Path
 import threading
 from threading import Lock
 import unicodedata
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -153,8 +153,78 @@ _FACT_DECISION_LOG_ACTIONS = {
 }
 
 
+# A browser attaches ambient authority to requests a *different* site provokes:
+# verinote listens on a fixed loopback port, has no auth, and a urlencoded form
+# POST is a CORS "simple" request, so any page the user visits can drive one. The
+# concrete reach today is `POST /settings` (which stores an unvalidated base_url)
+# followed by `POST /settings/test` (which dials it carrying the API key).
+#
+# This is a browser-ambient-authority gate, NOT an authorization mechanism: it is
+# deliberately fail-open for clients that send neither header, because no browser
+# page can produce that combination on a state-changing request (see below).
+_SAFE_FETCH_SITES = frozenset({"same-origin", "none"})
+# Reads are not gated: no CORS header is set anywhere, so a cross-origin GET is
+# issued but unreadable, and gating navigation would 403 an ordinary inbound
+# link. The exception is keyed on "does this dial a caller-supplied endpoint",
+# not on "does this mutate" — `/settings/model-field` takes `base_url` from the
+# query string and builds a client from it. That is a blind SSRF probe today
+# because only Ollama is listable and it sends no key; the moment a keyed
+# provider joins MODEL_LISTING_PROVIDERS it becomes one-request key exfiltration.
+_ORIGIN_GUARD_GET_PATHS = ("/settings/model-field",)
+
+
 def _matches(path: str, allowed: tuple[str, ...]) -> bool:
     return any(path == a or path.startswith(a + "/") for a in allowed)
+
+
+def _origin_guard_applies(method: str, path: str) -> bool:
+    if method not in {"GET", "HEAD", "OPTIONS"}:
+        return True
+    return _matches(path, _ORIGIN_GUARD_GET_PATHS)
+
+
+def _is_same_origin(request: Request) -> bool:
+    """Whether a request's declared origin matches the authority it was sent to.
+
+    Deliberately NOT "attributable to verinote's own UI": this does not survive
+    DNS rebinding. A page on a domain the attacker rebinds to loopback is
+    genuinely same-origin with the service, so `Origin` and `Host` agree and this
+    returns True. Blocking that needs the request authority checked against the
+    bind address, which this process cannot see (uvicorn is handed `--host` by
+    the CLI) — a separate change, and one that would refuse every non-loopback
+    deployment. What this does close is the ordinary cross-origin case, where an
+    attacker's page keeps its own origin and cannot forge these headers.
+
+    `Origin` is authoritative when present: the Fetch spec attaches it to every
+    request whose method is not GET/HEAD regardless of CORS mode — which is
+    exactly why a form POST needs no preflight and *still* carries it — and no
+    HTML or JS API lets a page suppress it. Compared against `Host` rather than a
+    hardcoded loopback address because the port is configurable and the app
+    cannot see uvicorn's bind address; host:port only, since a TLS-terminating
+    proxy legitimately changes the scheme.
+
+    Falling back to `Sec-Fetch-Site` covers same-origin POSTs from browsers that
+    omit `Origin`. `same-site` is refused along with `cross-site`: for an IP host
+    every loopback port is same-site but cross-origin, so accepting it would let
+    any other local dev server drive verinote.
+
+    Both absent means the caller is not a browser page this project supports —
+    curl, a script, the test client. Such a caller carries no ambient authority
+    to abuse, so it is allowed. Note the two paths are not equally defended: a
+    POST always carries `Origin`, so it has two independent signals, whereas a
+    cross-origin GET (`<img>`, `<script>`, a `form method=get`) never carries one
+    at all, leaving the gated GET below resting entirely on `Sec-Fetch-Site`.
+    """
+    origin = request.headers.get("origin")
+    if origin is not None:
+        netloc = urlsplit(origin).netloc
+        # `Origin: null` (sandboxed iframe, opaque origin) has no netloc, and
+        # must not be allowed to match an empty or missing Host header.
+        return bool(netloc) and netloc.lower() == (request.headers.get("host") or "").lower()
+    site = request.headers.get("sec-fetch-site")
+    if site is not None:
+        return site in _SAFE_FETCH_SITES
+    return True
 
 
 def _policy_guard_exempt(method: str, path: str) -> bool:
@@ -223,6 +293,40 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 assert_writable(store)
             except PolicyMissingError as exc:
                 return _policy_halted(request, str(exc))
+        return await call_next(request)
+
+    # Defined AFTER `policy_halted_guard` so it runs BEFORE it: `add_middleware`
+    # inserts at index 0, so the last one defined is the outermost. That
+    # inversion is easy to undo by reordering, so it is asserted by a test.
+    #
+    # Outermost is the point. An unattributable request must not reach the policy
+    # guard, which reads the store and renders a templated 409 — that would be an
+    # attacker-triggerable oracle for the KB's policy state. It also keeps this
+    # guard's exemptions exactly its own, so another guard's allowlist can never
+    # silently widen this one.
+    @app.middleware("http")
+    async def same_origin_guard(request: Request, call_next):
+        if _origin_guard_applies(request.method, request.url.path) and not _is_same_origin(
+            request
+        ):
+            logger.warning(
+                "refused cross-origin %s %s (origin=%r)",
+                request.method,
+                request.url.path,
+                request.headers.get("origin"),
+            )
+            # Plain text, not a template: rendering one runs the shared context
+            # processor, which reads the store for a request just judged
+            # untrustworthy. 403 rather than this app's 409 halt vocabulary, so a
+            # forged request is never mistaken for a KB halt. No HX-Redirect —
+            # that pattern exists so a *user's* htmx action cannot silently
+            # no-op, and this response is delivered to the attacker's document,
+            # not the user's tab.
+            return Response(
+                "cross-origin request refused\n",
+                status_code=403,
+                media_type="text/plain",
+            )
         return await call_next(request)
 
     def _policy_missing_handler(request: Request, exc: Exception):

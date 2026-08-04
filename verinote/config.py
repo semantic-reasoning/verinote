@@ -41,7 +41,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from verinote.kb_location import resolve_kb_root
@@ -536,7 +536,11 @@ class Config:
     db_path: Path
     provider: str  # one of PROVIDERS — enumerating it here only goes stale
     model: str
-    api_key: str | None
+    # Kept out of the repr so a stray `logger.exception` with locals, or a
+    # pytest assertion diff, cannot print the credential. Necessary but not
+    # sufficient once keys are stored on disk: that unit must also handle file
+    # mode, `asdict`, and the fact that a frozen dataclass compares on this field.
+    api_key: str | None = field(repr=False)
     base_url: str | None
     llm_timeout_seconds: float = 600.0
     extraction_chunk_chars: int = 300

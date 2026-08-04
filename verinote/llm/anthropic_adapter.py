@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from verinote.config import Config
-from verinote.llm.base import ExtractedFact, LLMError
+from verinote.llm.base import ExtractedFact, LLMError, redact_secret
 from verinote.llm.schema import (
     FACT_ARRAY_SCHEMA,
     QUERY_INTENT_SCHEMA,
@@ -22,6 +22,36 @@ class AnthropicAdapter:
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
 
+    def _request_failed(self, exc: Exception) -> LLMError:
+        """One construction site for provider failures, so a raise site somebody
+        forgot cannot let the configured key survive into an error message.
+
+        It can only redact the key it knows about, which is why `_require_key`
+        refuses to let the SDK authenticate with one this process never saw.
+        """
+        return LLMError(redact_secret(f"{self.name} request failed: {exc}", self.cfg.api_key))
+
+    def _require_key(self) -> str:
+        """The configured key, or a clear failure instead of a silent fallback.
+
+        Handing `api_key=None` to either vendor SDK makes it read its own
+        `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` instead — verified against the
+        installed SDKs. The request then authenticates with a credential verinote
+        never resolved, so `redact_secret` cannot match it and a 4xx body echoing
+        it is persisted verbatim into `source_chunks.error`. Since `base_url` is
+        caller-supplied, that echo is attacker-influenced.
+
+        Raising `LLMError` rather than passing `""` (which the SDK rejects with
+        its own error type, outside the `except LLMError` every caller uses) keeps
+        the failure inside the contract callers already handle.
+        """
+        if not self.cfg.api_key:
+            raise LLMError(
+                f"{self.name} requires an API key; set VERINOTE_API_KEY "
+                f"(the {self.name} SDK's own environment variable is deliberately not used)"
+            )
+        return self.cfg.api_key
+
     def _client(self):
         """Build a client that honours the configured request timeout.
 
@@ -33,7 +63,7 @@ class AnthropicAdapter:
         except ImportError as exc:  # pragma: no cover - optional dep
             raise LLMError("anthropic SDK not installed; `pip install verinote[anthropic]`") from exc
         return anthropic.Anthropic(
-            api_key=self.cfg.api_key,
+            api_key=self._require_key(),
             base_url=self.cfg.base_url,
             timeout=self.cfg.llm_timeout_seconds,
         )
@@ -57,7 +87,7 @@ class AnthropicAdapter:
                 messages=[{"role": "user", "content": source_text}],
             )
         except Exception as exc:  # noqa: BLE001 - normalise provider errors
-            raise LLMError(f"anthropic request failed: {exc}") from exc
+            raise self._request_failed(exc) from exc
 
         for block in msg.content:
             if getattr(block, "type", None) == "tool_use":
@@ -84,7 +114,7 @@ class AnthropicAdapter:
                 messages=[{"role": "user", "content": question}],
             )
         except Exception as exc:  # noqa: BLE001 - normalise provider errors
-            raise LLMError(f"anthropic request failed: {exc}") from exc
+            raise self._request_failed(exc) from exc
 
         for block in msg.content:
             if getattr(block, "type", None) == "tool_use":
@@ -110,7 +140,7 @@ class AnthropicAdapter:
                 messages=[{"role": "user", "content": question}],
             )
         except Exception as exc:  # noqa: BLE001 - normalise provider errors
-            raise LLMError(f"anthropic request failed: {exc}") from exc
+            raise self._request_failed(exc) from exc
 
         for block in msg.content:
             if getattr(block, "type", None) == "tool_use":
@@ -132,7 +162,7 @@ class AnthropicAdapter:
                 ],
             )
         except Exception as exc:  # noqa: BLE001 - normalise provider errors
-            raise LLMError(f"anthropic request failed: {exc}") from exc
+            raise self._request_failed(exc) from exc
 
         parts = [
             str(getattr(block, "text", "")).strip()

@@ -16,6 +16,38 @@ class LLMError(RuntimeError):
     """Any provider-side or parsing failure, normalised across adapters."""
 
 
+# A secret shorter than this cannot be replaced without mangling ordinary text —
+# a key of "key" would turn "invalid api key" into "invalid api ***" — so it is
+# deliberately left alone. That is a statement about collateral damage, not about
+# what counts as a credential: a short key (a self-hosted gateway's shared token,
+# say) is NOT protected here. Error text that varies with the key's content is
+# itself a small oracle, which is the other half of why the floor exists.
+_MIN_REDACTABLE_SECRET = 8
+
+
+def redact_secret(text: str, secret: str | None) -> str:
+    """Replace `secret` wherever it appears in `text`.
+
+    Applied where an `LLMError` is *constructed*, not where one is stored. A
+    provider's 401 body can echo the key it rejected, and that text reaches four
+    different sinks — the settings banner, `source_chunks.error`, a question's
+    failure reason, and the model-list error. Redacting at the sinks means
+    enumerating sinks; redacting at construction means the secret never enters
+    an `LLMError` in the first place, which is the same protected-by-construction
+    argument `factory.get_client` makes for the corrupt-config halt.
+
+    Substring replacement on the one string known to be secret, never a
+    `sk-`-style pattern: key formats differ per vendor and self-hosted gateways
+    invent their own, so a pattern both misses real keys and mangles innocent
+    text. This does not cover a key echoed back *transformed* (encoded, hashed);
+    that residue is why not shipping keys to caller-named endpoints is the
+    primary control and this is defence in depth.
+    """
+    if not secret or len(secret) < _MIN_REDACTABLE_SECRET:
+        return text
+    return text.replace(secret, "***")
+
+
 @dataclass(frozen=True)
 class ExtractedFact:
     """One candidate fact the extractor proposes from a source.
