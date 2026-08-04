@@ -755,7 +755,12 @@ def test_no_get_route_crashes_when_the_policy_is_lost(tmp_path, monkeypatch):
     """Enumerated so a newly added route is covered automatically."""
     client = _halted_client(tmp_path, monkeypatch)
     app = client.app
-    exempt = {"/report", "/settings"}
+    # Prefixes, not exact paths: the read guard exempts a diagnostic page *and its
+    # fragments* (`_matches`), because a settings sub-view that halted would leave
+    # htmx unable to swap anything into the recovery page it belongs to. Spelled
+    # out here rather than read off `_POLICY_GUARD_READ_PATHS` so widening that
+    # constant to a real KB page still fails this test.
+    exempt = ("/report", "/settings")
 
     paths = _get_paths(app, client)
     assert "/" in paths and "/review" in paths and "/workbench" in paths
@@ -763,7 +768,7 @@ def test_no_get_route_crashes_when_the_policy_is_lost(tmp_path, monkeypatch):
     for path in paths:
         resp = client.get(path)
         assert resp.status_code != 500, f"{path} crashed instead of reporting"
-        if path in exempt:
+        if any(path == e or path.startswith(e + "/") for e in exempt):
             continue
         assert resp.status_code == 409, f"{path} did not halt"
         assert "policy reset --force" in resp.text, f"{path} hid the recovery route"
@@ -774,6 +779,28 @@ def test_no_get_route_crashes_when_the_policy_is_lost(tmp_path, monkeypatch):
     # (the "has unresolved errors under its policy" errors banner is not a claim
     # that the KB checked out clean)
     assert "knowledge base is consistent" not in report.text
+
+
+def test_settings_model_field_stays_usable_on_a_halted_policy(tmp_path, monkeypatch):
+    """The settings page is the recovery surface, so its fragments must load too.
+
+    A halt here would be worse than a visible error: htmx never swaps a 4xx into
+    the DOM (#173), so the Model field would sit on "Loading installed models..."
+    forever while the user is trying to recover the KB. A lost logic policy is a
+    statement about verification, not about which model the user may pick.
+    """
+    import verinote.web.app as webapp
+
+    client = _halted_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        webapp, "get_client", lambda _cfg: type("C", (), {"list_models": lambda s: ["qwen3:8b"]})()
+    )
+
+    r = client.get("/settings/model-field?provider=ollama&model=qwen3:8b")
+
+    assert r.status_code == 200
+    assert '<select name="model">' in r.text
+    assert "policy reset --force" not in r.text
 
 
 def test_report_banner_makes_no_fact_causal_claim_on_a_lost_policy(tmp_path, monkeypatch):

@@ -77,6 +77,32 @@ vendor's package:
 pip install -e ".[anthropic]"   # or .[openai] — Ollama needs no SDK
 ```
 
+### Picking an Ollama model
+
+With `ollama` selected, Settings turns the Model field into a picker over the
+models that server actually has (`GET /api/tags` against the Base URL you
+configured, or `http://localhost:11434` when it is unset), so a mistyped tag
+cannot become a runtime failure at the first extraction. The list reloads when
+you change the provider or the Base URL, and a **Refresh list** button picks up
+anything pulled since the page loaded.
+
+Three outcomes stay distinct, because the fix for each is different:
+
+| What you see | What it means |
+|---|---|
+| A picker | that server is reachable and has these models |
+| Text input + *"has no models installed"* | reachable, but nothing pulled yet — `ollama pull <model>` |
+| Text input + *"Could not load the model list"* | that endpoint could not be reached; the error is quoted verbatim |
+
+The field never becomes unusable: when the list cannot be loaded you can still
+type a model id and save. And a model named in `config.json` that the server
+does not have stays selected, marked `— not installed`, rather than being
+silently swapped for one that is — the page reports your KB's real state.
+
+Every other provider keeps the free-text field. A cloud catalogue is not a
+property of the endpoint you point at, and `claudecli` has nothing to enumerate,
+so there is no list either could answer truthfully.
+
 ## Auto-accept
 
 `auto_accept_recommendations` is the one setting that changes what verinote

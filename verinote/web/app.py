@@ -7,6 +7,7 @@ swaps a single row partial). No JS build step. The app owns one `Store` (SQLite)
 
 from __future__ import annotations
 
+from dataclasses import replace
 from importlib import resources
 import json
 import logging
@@ -24,6 +25,7 @@ from fastapi.templating import Jinja2Templates
 
 from verinote.config import (
     APP_THEMES,
+    MODEL_LISTING_PROVIDERS,
     PROVIDER_LABELS,
     PROVIDERS,
     TESTABLE_PROVIDERS,
@@ -31,12 +33,14 @@ from verinote.config import (
     ConfigCorruptError,
     app_theme,
     assert_settings_intact,
+    normalize_provider,
     save_active_root,
     save_app_theme,
     save_settings,
 )
 from verinote.kb_location import KBLocationError, assert_kb_root_is_safe_to_create
 from verinote.llm import LLMError, get_client
+from verinote.llm.ollama_adapter import OLLAMA_DEFAULT_BASE_URL
 from verinote.policy_defaults import DEFAULT_RELATION_ALIASES
 from verinote.pipeline import (
     create_chunked_extraction_job,
@@ -1720,6 +1724,69 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
         return templates.TemplateResponse(request, "analytics.html", {"a": compute(_active_cfg().db_path)})
 
+    def _model_field_context(
+        *, provider: str, model: str, base_url: str, lazy: bool
+    ) -> dict:
+        """Resolve the Model field's state for one (provider, base URL) pair.
+
+        `lazy=True` returns the not-yet-loaded state without touching the
+        network; the partial then fetches itself. Only the eager call reaches
+        the provider, and only for a provider whose installed models are a
+        property of the endpoint the user pointed at.
+
+        `models` distinguishes three outcomes the UI must not conflate: a list
+        (what that server has, possibly empty), or `None` with `models_error`
+        set (the server could not be asked). `ConfigCorruptError` is left to
+        propagate to the app-wide halt handler — a corrupt config.json means the
+        resolved provider is untrustworthy, and this route would otherwise
+        report on a provider the user never chose (#269).
+        """
+        listable = provider in MODEL_LISTING_PROVIDERS
+        base = {
+            "provider": provider,
+            "model": model,
+            # The URL actually dialled, not the literal "(default)" — so the
+            # page names the same endpoint the adapter will use.
+            "endpoint": (base_url.strip() or OLLAMA_DEFAULT_BASE_URL) if listable else "",
+            # A provider with nothing to enumerate must not sit in a lazy state
+            # forever: it renders its text input once and never self-fetches.
+            "lazy": lazy and listable,
+            "models": None,
+            "models_error": None,
+        }
+        if lazy or not listable:
+            return base
+        # Routed through the factory, never by constructing the adapter here, so
+        # this path inherits the corrupt-config halt every provider call gets.
+        client = get_client(
+            replace(app.state.cfg, provider=provider, base_url=base_url.strip() or None)
+        )
+        try:
+            base["models"] = client.list_models()
+        except LLMError as exc:
+            base["models_error"] = str(exc)
+        return base
+
+    @app.get("/settings/model-field", response_class=HTMLResponse)
+    def model_field(
+        request: Request,
+        provider: str = "",
+        model: str = "",
+        base_url: str = "",
+    ):
+        if app.state.cfg is None:
+            return _kb_select(request)
+        return templates.TemplateResponse(
+            request,
+            "partials/model_field.html",
+            _model_field_context(
+                provider=normalize_provider(provider),
+                model=model,
+                base_url=base_url,
+                lazy=False,
+            ),
+        )
+
     def _settings(request: Request, *, test_result=None, error=None, status_code=200):
         c = app.state.cfg
         if c is None:
@@ -1748,6 +1815,14 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 "has_key": bool(c.api_key),  # never render the key itself
                 "connection_test_enabled": c.provider in TESTABLE_PROVIDERS,
                 "relation_aliases": _relation_aliases_text(),
+                # The Model field starts as the plain text input and, for a
+                # model-enumerable provider, lazily swaps itself for the picker
+                # (`hx-trigger="load"`). Enumerating eagerly here would put a
+                # network call on the critical path of the one page that is also
+                # the recovery surface for a corrupt config and a halted policy.
+                **_model_field_context(
+                    provider=c.provider, model=c.model, base_url=c.base_url or "", lazy=True
+                ),
                 "test_result": test_result,
                 "error": error,
                 # /settings is deliberately reachable during the halt (it is the

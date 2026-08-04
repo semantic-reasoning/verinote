@@ -4564,3 +4564,176 @@ def test_worker_config_corrupt_does_not_mark_the_job_failed(tmp_path, monkeypatc
     assert job["status"] == "pending", "a corrupt-config race buried the job in `failed`"
     assert "analysis failed" not in (job["message"] or "")
     assert "extraction_job_failed" not in _job_event_types(cfg, job_id)
+
+
+# --- the Ollama model picker: choose from what the server actually has ---
+
+
+def _ollama_client(tmp_path, *, provider="ollama", model="qwen3:8b", base_url=None):
+    return TestClient(
+        create_app(
+            Config(
+                root=tmp_path,
+                db_path=tmp_path / "kb.sqlite",
+                provider=provider,
+                model=model,
+                api_key=None,
+                base_url=base_url,
+            )
+        )
+    )
+
+
+class _FakeOllama:
+    """Stands in for the adapter the factory would return, recording the base URL
+    it was resolved with so a test can prove which endpoint got asked."""
+
+    name = "ollama"
+
+    def __init__(self, models=(), error=None):
+        self.models = list(models)
+        self.error = error
+        self.seen = []
+
+    def factory(self, cfg):
+        self.seen.append(cfg.base_url)
+        return self
+
+    def list_models(self):
+        if self.error is not None:
+            raise self.error
+        return self.models
+
+
+def test_settings_defers_the_ollama_model_list_off_the_page_load(tmp_path, monkeypatch):
+    """`/settings` is also the recovery page for a corrupt config and a halted
+    policy, so rendering it must never wait on a provider. The field ships as a
+    working text input that lazily swaps itself for the picker."""
+    monkeypatch.setattr(
+        webapp, "get_client", lambda _cfg: pytest.fail("/settings must not call the provider")
+    )
+
+    r = _ollama_client(tmp_path).get("/settings")
+
+    assert r.status_code == 200
+    assert 'id="model-field"' in r.text
+    assert 'hx-get="/settings/model-field"' in r.text
+    assert 'hx-trigger="load"' in r.text
+    assert 'name="model"' in r.text  # usable without htmx, never a dead field
+
+
+def test_settings_does_not_defer_for_a_provider_with_nothing_to_enumerate(tmp_path):
+    """A cloud catalogue is not a property of the endpoint, so anthropic keeps the
+    text input and must NOT sit in a lazy state waiting for a list forever."""
+    r = _ollama_client(tmp_path, provider="anthropic", model="claude-opus-4-8").get("/settings")
+
+    assert 'id="model-field"' in r.text
+    assert 'hx-trigger="load"' not in r.text
+    assert '<input type="text" name="model" value="claude-opus-4-8"' in r.text
+
+
+def test_model_field_offers_the_installed_models_as_a_picker(tmp_path, monkeypatch):
+    fake = _FakeOllama(models=["llava:7b", "qwen3:8b"])
+    monkeypatch.setattr(webapp, "get_client", fake.factory)
+
+    r = _ollama_client(tmp_path).get("/settings/model-field?provider=ollama&model=qwen3:8b")
+
+    assert r.status_code == 200
+    assert '<select name="model">' in r.text
+    assert '<option value="llava:7b" >llava:7b</option>' in unescape(r.text)
+    assert '<option value="qwen3:8b" selected>qwen3:8b</option>' in unescape(r.text)
+    assert 'type="text" name="model"' not in r.text  # no free-text field alongside
+
+
+def test_model_field_asks_the_endpoint_being_edited_not_the_saved_one(tmp_path, monkeypatch):
+    """The form's Base URL is the endpoint whose models the user is choosing from.
+    Listing against the saved config instead would show models from a server the
+    user is in the middle of switching away from."""
+    fake = _FakeOllama(models=["qwen3:8b"])
+    monkeypatch.setattr(webapp, "get_client", fake.factory)
+
+    r = _ollama_client(tmp_path, base_url="http://saved:11434").get(
+        "/settings/model-field?provider=ollama&model=qwen3:8b&base_url=http://edited:9999"
+    )
+
+    assert fake.seen == ["http://edited:9999"]
+    assert "http://edited:9999" in r.text
+
+
+def test_model_field_keeps_a_configured_model_the_server_does_not_have(tmp_path, monkeypatch):
+    """config.json really does name this model. Dropping it from the picker would
+    silently select a different one and make the page misreport the KB's state."""
+    fake = _FakeOllama(models=["llava:7b", "qwen3:8b"])
+    monkeypatch.setattr(webapp, "get_client", fake.factory)
+
+    r = _ollama_client(tmp_path, model="llama3.1").get(
+        "/settings/model-field?provider=ollama&model=llama3.1"
+    )
+
+    assert '<option value="llama3.1" selected>llama3.1 — not installed</option>' in unescape(r.text)
+    assert "which is not installed on" in r.text
+    assert "ollama pull llama3.1" in r.text
+
+
+def test_model_field_falls_back_to_typing_when_the_server_is_unreachable(tmp_path, monkeypatch):
+    """An empty picker would read as 'nothing to choose' and, worse, leave the user
+    unable to set a model at all. Say what failed and keep the field usable."""
+    fake = _FakeOllama(error=LLMError("ollama request failed: connection refused"))
+    monkeypatch.setattr(webapp, "get_client", fake.factory)
+
+    r = _ollama_client(tmp_path).get("/settings/model-field?provider=ollama&model=qwen3:8b")
+
+    assert r.status_code == 200
+    assert "<select" not in r.text
+    assert '<input type="text" name="model" value="qwen3:8b"' in r.text
+    assert "Could not load the model list" in r.text
+    assert "connection refused" in r.text
+
+
+def test_model_field_distinguishes_an_empty_server_from_an_unreachable_one(tmp_path, monkeypatch):
+    """Reachable-with-nothing-pulled and could-not-be-reached are different facts
+    about the user's machine, and the fix for each is different."""
+    fake = _FakeOllama(models=[])
+    monkeypatch.setattr(webapp, "get_client", fake.factory)
+
+    r = _ollama_client(tmp_path).get("/settings/model-field?provider=ollama&model=")
+
+    assert "has no models installed" in r.text
+    assert "Could not load the model list" not in r.text
+    assert '<input type="text" name="model"' in r.text
+
+
+def test_model_field_names_the_default_endpoint_it_will_actually_dial(tmp_path, monkeypatch):
+    fake = _FakeOllama(models=[])
+    monkeypatch.setattr(webapp, "get_client", fake.factory)
+
+    r = _ollama_client(tmp_path).get("/settings/model-field?provider=ollama&model=")
+
+    assert fake.seen == [None]  # an unset Base URL stays unset in config
+    assert "http://localhost:11434" in r.text  # ...but the page names the real target
+
+
+def test_model_field_does_not_reach_the_provider_for_a_text_input_provider(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        webapp, "get_client", lambda _cfg: pytest.fail("no provider call for anthropic")
+    )
+
+    r = _ollama_client(tmp_path).get("/settings/model-field?provider=anthropic&model=gpt")
+
+    assert '<input type="text" name="model" value="gpt"' in r.text
+    assert 'hx-trigger="load"' not in r.text
+
+
+def test_model_field_halts_under_a_corrupt_config(tmp_path):
+    """The picker is a provider call like any other: a corrupt config.json makes the
+    resolved provider untrustworthy, so it halts rather than listing against a
+    provider the user never chose (#269)."""
+    cfg, _, _ = _config_web_kb(tmp_path, corrupt=True)
+    c = TestClient(create_app(cfg))
+
+    r = c.get(
+        "/settings/model-field?provider=ollama&model=m", headers={"HX-Request": "true"}
+    )
+
+    assert r.status_code == 409
+    assert r.headers.get("HX-Redirect") == webapp.CONFIG_UNAVAILABLE_PATH

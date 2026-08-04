@@ -66,6 +66,11 @@ PROVIDER_LABELS = {
     "ollama": "Ollama",
 }
 TESTABLE_PROVIDERS = frozenset({"anthropic", "openai", "ollama"})
+# Providers whose installed models can be enumerated from the very endpoint the
+# user configured, so the settings UI can offer a picker instead of free text.
+# A cloud catalogue is not a property of its endpoint and `claudecli` has no
+# listing at all, so neither can be answered truthfully here.
+MODEL_LISTING_PROVIDERS = frozenset({"ollama"})
 
 
 def normalize_provider(provider: str | None) -> str:

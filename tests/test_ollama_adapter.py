@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -315,3 +316,107 @@ def test_padded_base_url_env_does_not_break_the_request_url(tmp_path, monkeypatc
     OllamaAdapter(Config.for_root(tmp_path)).extract_facts(source_text="Ada")
 
     assert urls == ["https://llm.internal/v1/api/chat"]
+
+
+# --- list_models: the settings picker's source of truth ---
+
+
+class _TagsResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return None
+
+    def read(self):
+        return json.dumps(self.payload).encode("utf-8")
+
+
+def _tags(monkeypatch, payload):
+    """Answer /api/tags with `payload`; return the recorded (url, timeout) calls."""
+    calls = []
+
+    def fake_urlopen(req, *, timeout):
+        calls.append(SimpleNamespace(url=req.full_url, timeout=timeout))
+        return _TagsResponse(payload)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    return calls
+
+
+def test_list_models_returns_sorted_unique_names_from_tags(tmp_path, monkeypatch):
+    calls = _tags(
+        monkeypatch,
+        {
+            "models": [
+                {"name": "qwen3:8b"},
+                {"name": "llava:7b"},
+                {"name": "  qwen3:8b  "},  # same model, padded
+                {"name": "   "},  # no usable id
+                {"no_name": 1},
+                "not-an-object",
+            ]
+        },
+    )
+
+    models = OllamaAdapter(_cfg(tmp_path)).list_models()
+
+    assert models == ["llava:7b", "qwen3:8b"]
+    assert calls[0].url == "http://localhost:11434/api/tags"
+
+
+def test_list_models_honours_the_configured_base_url(tmp_path, monkeypatch):
+    calls = _tags(monkeypatch, {"models": []})
+
+    OllamaAdapter(replace(_cfg(tmp_path), base_url="http://llm.internal:9999/")).list_models()
+
+    assert calls[0].url == "http://llm.internal:9999/api/tags"
+
+
+def test_list_models_is_bounded_far_below_the_generation_timeout(tmp_path, monkeypatch):
+    """A page-load call must not inherit the minutes-long completion budget."""
+    calls = _tags(monkeypatch, {"models": []})
+
+    OllamaAdapter(_cfg(tmp_path, timeout=900.0)).list_models()
+
+    assert calls[0].timeout == 5.0
+
+
+def test_list_models_keeps_an_even_shorter_configured_timeout(tmp_path, monkeypatch):
+    """The bound is the *smaller* of the two, so a tighter user setting still wins."""
+    calls = _tags(monkeypatch, {"models": []})
+
+    OllamaAdapter(_cfg(tmp_path, timeout=1.5)).list_models()
+
+    assert calls[0].timeout == 1.5
+
+
+def test_list_models_returns_empty_for_a_server_with_nothing_pulled(tmp_path, monkeypatch):
+    """Reachable-but-empty is data, not an error: the caller must be able to say
+    'this server has no models' rather than 'this server could not be reached'."""
+    _tags(monkeypatch, {"models": []})
+
+    assert OllamaAdapter(_cfg(tmp_path)).list_models() == []
+
+
+def test_list_models_raises_on_transport_failure(tmp_path, monkeypatch):
+    def boom(req, *, timeout):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr("urllib.request.urlopen", boom)
+
+    with pytest.raises(LLMError, match="ollama request failed"):
+        OllamaAdapter(_cfg(tmp_path)).list_models()
+
+
+@pytest.mark.parametrize("payload", [{"models": "qwen3:8b"}, {}, ["qwen3:8b"]])
+def test_list_models_raises_on_schema_mismatch(tmp_path, monkeypatch, payload):
+    """A shape that is not {'models': [...]} is a failure, never a silent empty
+    list -- that would render as 'no models installed' and blame the user."""
+    _tags(monkeypatch, payload)
+
+    with pytest.raises(LLMError, match="did not match schema"):
+        OllamaAdapter(_cfg(tmp_path)).list_models()
