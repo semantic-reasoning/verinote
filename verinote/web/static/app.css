@@ -234,6 +234,13 @@ tr.editing td { background: var(--editing-bg); }
 .settings .inline-setting { flex-direction: row; align-items: center; color: var(--fg); }
 .settings .inline-setting input { width: auto; }
 .settings .btn { align-self: flex-start; }
+/* #model-field wraps its label so HTMX can swap the whole field -- input, note
+   and warning -- as one unit. It has to keep behaving like the bare label it
+   replaced: a flex column item of .settings, with the note tucked under the
+   control rather than spaced like a sibling field. */
+.settings #model-field { display: flex; flex-direction: column; gap: .3rem; }
+.settings .field-note { margin: 0; font-size: .85rem; }
+.settings .field-note .btn { display: inline-block; padding: .1rem .4rem; font-size: .85em; }
 .ask-form { display: flex; flex-direction: column; gap: .7rem; margin: 1.2rem 0; }
 .ask-form label { display: flex; flex-direction: column; gap: .3rem; color: var(--muted); }
 .ask-form textarea { min-height: 7rem; resize: vertical; background: var(--bg); color: var(--fg);

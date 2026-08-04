@@ -50,8 +50,14 @@
 
 <h2>LLM provider</h2>
 <form class="settings" action="/settings" method="post">
+  {# Provider and base URL both decide what the Model field can offer, so both
+     re-render it. `hx-include` carries the current model along so switching
+     provider never silently discards what is configured. #}
   <label>Provider
-    <select name="provider">
+    <select name="provider"
+            hx-get="/settings/model-field"
+            hx-include="[name='base_url'], [name='model']"
+            hx-target="#model-field" hx-swap="outerHTML">
       {% for p in providers %}
       <option value="{{ p }}" {{ 'selected' if p == provider else '' }}>
         {{ provider_labels.get(p, p) }}
@@ -59,11 +65,12 @@
       {% endfor %}
     </select>
   </label>
-  <label>Model
-    <input type="text" name="model" value="{{ model }}" placeholder="model id">
-  </label>
+  {% include "partials/model_field.html" %}
   <label>Base URL <span class="muted">(optional)</span>
-    <input type="text" name="base_url" value="{{ base_url }}" placeholder="https://…">
+    <input type="text" name="base_url" value="{{ base_url }}" placeholder="https://…"
+           hx-get="/settings/model-field" hx-trigger="change"
+           hx-include="[name='provider'], [name='model']"
+           hx-target="#model-field" hx-swap="outerHTML">
   </label>
   <label>Chunk size
     <input type="number" name="extraction_chunk_chars" value="{{ extraction_chunk_chars }}" min="1" step="50">

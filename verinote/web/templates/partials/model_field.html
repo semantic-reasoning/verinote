@@ -1,0 +1,73 @@
+{# The Model field of the LLM provider form, swapped in place by HTMX whenever
+   the chosen provider or base URL changes.
+
+   For Ollama the installed models ARE enumerable from the endpoint the user
+   pointed at (`GET /api/tags`), so the field is a picker over what that server
+   actually has rather than free text a typo turns into a runtime failure. Every
+   other provider keeps the text input: a cloud catalogue is not a property of
+   the endpoint, so there is nothing truthful to enumerate there.
+
+   Three states, kept distinct on purpose (#state-honesty): a reachable server
+   WITH models becomes a picker; a reachable server with NO models pulled and an
+   UNREACHABLE server both fall back to the text input plus a note saying which
+   of the two happened. An empty picker would look like a normal empty field and
+   quietly claim "your server offers nothing to choose", which is a different
+   statement from "your server could not be reached". #}
+<div id="model-field"{% if lazy %}
+     hx-get="/settings/model-field"
+     hx-trigger="load"
+     hx-include="[name='provider'], [name='base_url'], [name='model']"
+     hx-target="this" hx-swap="outerHTML"{% endif %}>
+  {% if models %}
+  <label>Model
+    <select name="model">
+      {% if model and model not in models %}
+      {# Never drop the configured model just because this server lacks it: the
+         KB's config.json really does name it, and silently selecting a
+         different model would make the page misreport the KB's own state. Show
+         it, keep it selected, and say plainly that it is not installed. #}
+      <option value="{{ model }}" selected>{{ model }} — not installed</option>
+      {% endif %}
+      {% for m in models %}
+      <option value="{{ m }}" {{ 'selected' if m == model else '' }}>{{ m }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <p class="muted field-note">
+    {{ models|length }} model{{ '' if models|length == 1 else 's' }} installed on
+    <code>{{ endpoint }}</code>.
+    <button class="btn ghost" type="button"
+            hx-get="/settings/model-field"
+            hx-include="[name='provider'], [name='base_url'], [name='model']"
+            hx-target="#model-field" hx-swap="outerHTML">Refresh list</button>
+  </p>
+  {% if model and model not in models %}
+  <p class="warn field-note" role="alert">This KB is configured for
+    <code>{{ model }}</code>, which is not installed on <code>{{ endpoint }}</code>.
+    Pick an installed model, or run <code>ollama pull {{ model }}</code>.</p>
+  {% endif %}
+  {% else %}
+  <label>Model
+    <input type="text" name="model" value="{{ model }}" placeholder="model id">
+  </label>
+  {% if models_error %}
+  <p class="warn field-note" role="alert">Could not load the model list from
+    <code>{{ endpoint }}</code>, so the model must be typed in. ({{ models_error }})
+    <button class="btn ghost" type="button"
+            hx-get="/settings/model-field"
+            hx-include="[name='provider'], [name='base_url'], [name='model']"
+            hx-target="#model-field" hx-swap="outerHTML">Retry</button>
+  </p>
+  {% elif models is not none %}
+  <p class="warn field-note" role="alert"><code>{{ endpoint }}</code> is reachable but
+    has no models installed. Run <code>ollama pull &lt;model&gt;</code>, then
+    <button class="btn ghost" type="button"
+            hx-get="/settings/model-field"
+            hx-include="[name='provider'], [name='base_url'], [name='model']"
+            hx-target="#model-field" hx-swap="outerHTML">refresh the list</button>.
+  </p>
+  {% elif lazy %}
+  <p class="muted field-note" role="status">Loading installed models…</p>
+  {% endif %}
+  {% endif %}
+</div>

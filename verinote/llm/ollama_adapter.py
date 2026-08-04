@@ -22,13 +22,57 @@ from verinote.llm.schema import (
 from verinote.pipeline.query_intent import QueryIntent, parse_query_intent
 from verinote.prompts import PromptError, render_prompt
 
+# `list_models` is an interactive page-load call, not a generation, so it is
+# bounded far tighter than `cfg.llm_timeout_seconds` (minutes, sized for a long
+# local completion). The effective bound is still the *smaller* of the two, so a
+# user who configures an even shorter timeout keeps it.
+MODEL_LIST_TIMEOUT_SECONDS = 5.0
+
+# The endpoint an unset `base_url` resolves to. Named so the settings UI can
+# report the *same* URL it will actually talk to instead of printing "(default)".
+OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434"
+
 
 class OllamaAdapter:
     name = "ollama"
 
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
-        self.base_url = (cfg.base_url or "http://localhost:11434").rstrip("/")
+        self.base_url = (cfg.base_url or OLLAMA_DEFAULT_BASE_URL).rstrip("/")
+
+    def list_models(self) -> list[str]:
+        """Model ids this Ollama server has installed, sorted, deduplicated.
+
+        Ollama-specific by design, so it is deliberately NOT on the `LLMClient`
+        protocol: the cloud adapters' catalogues are not a property of the
+        endpoint the user pointed at, and `claudecli` has nothing to enumerate.
+        Callers that want the list ask the Ollama adapter for it.
+
+        Raises `LLMError` on any transport or shape failure rather than
+        returning `[]` — an empty list means "this server has no models pulled",
+        and a caller must be able to tell that apart from "the server could not
+        be reached" (which the settings UI reports verbatim instead of showing
+        an empty picker).
+        """
+        req = urllib.request.Request(f"{self.base_url}/api/tags")
+        try:
+            with urllib.request.urlopen(  # noqa: S310 - local trusted endpoint
+                req, timeout=min(self.cfg.llm_timeout_seconds, MODEL_LIST_TIMEOUT_SECONDS)
+            ) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:  # noqa: BLE001 - normalise provider/transport errors
+            raise LLMError(f"ollama request failed: {exc}") from exc
+
+        if not isinstance(body, dict) or not isinstance(body.get("models"), list):
+            raise LLMError("ollama model list did not match schema: expected {'models': [...]}")
+        names = {
+            entry["name"].strip()
+            for entry in body["models"]
+            if isinstance(entry, dict)
+            and isinstance(entry.get("name"), str)
+            and entry["name"].strip()
+        }
+        return sorted(names)
 
     def extract_facts(self, *, source_text: str, schema_hint: str = "") -> list[ExtractedFact]:
         system = _with_schema_hint(
