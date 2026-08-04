@@ -873,3 +873,47 @@ def test_replace_preserves_the_api_key():
     )
 
     assert replace(cfg, provider="openrouter").api_key == "sk-test-DEADBEEFDEADBEEF"
+
+
+# --- app.json survives a failed write instead of being truncated ---
+
+
+def test_a_failed_app_config_write_leaves_the_previous_file_intact(tmp_path, monkeypatch):
+    """`write_text` truncates in place, so a crash mid-write left JSON the reader
+    silently turns into `{}` — the app forgetting the active KB and the theme
+    without reporting it. Asserts byte-identity, not merely that the file parses."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    config_module.save_app_theme("dark")
+    path = config_module.app_config_path()
+    before = path.read_bytes()
+
+    real_replace = config_module.os.replace
+    monkeypatch.setattr(
+        config_module.os, "replace", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full"))
+    )
+    with pytest.raises(OSError):
+        config_module.save_active_root(tmp_path / "kb")
+    monkeypatch.setattr(config_module.os, "replace", real_replace)
+
+    assert path.read_bytes() == before
+    assert config_module.app_theme() == "dark"
+
+
+def test_a_failed_write_leaves_no_temp_file_behind(tmp_path, monkeypatch):
+    """A sibling temp file that outlived its failed write would accumulate in the
+    user's config directory forever."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    config_module.save_app_theme("dark")
+    directory = config_module.app_config_dir()
+
+    monkeypatch.setattr(
+        config_module.os, "replace", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full"))
+    )
+    with pytest.raises(OSError):
+        config_module.save_app_theme("light")
+
+    assert [p.name for p in directory.iterdir()] == ["app.json"]
