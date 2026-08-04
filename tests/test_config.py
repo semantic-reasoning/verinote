@@ -860,20 +860,36 @@ def test_api_key_is_not_in_the_config_repr():
     assert cfg.api_key == "sk-test-DEADBEEFDEADBEEF"  # still readable by callers
 
 
-def test_replace_preserves_the_api_key():
-    """`_model_field_context` rebuilds the Config with `dataclasses.replace` to
-    list models against the endpoint being edited; dropping the key there would
-    silently unauthenticate every provider call made through that path."""
+def test_replace_carries_the_saved_providers_key_to_a_different_provider():
+    """A sharp edge, pinned so it stays visible rather than rediscovered.
+
+    `for_root` resolves `api_key` once, for the provider it resolved, and
+    `dataclasses.replace(provider=...)` does not recompute it. So a Config
+    switched to another provider still holds the FIRST provider's key — an
+    Anthropic key on a Config that says `openrouter`.
+
+    That is fine for generation, where the provider is the saved one. It is why
+    the settings model picker must never be handed a Config at all: it dials a
+    URL taken from a query string, so a listing routine that read `cfg.api_key`
+    — which nothing stopped it from doing — would have sent this key to a
+    caller-named host in a single request. `_MODEL_LISTERS` takes
+    `(base_url, timeout)` for exactly this reason. This test asserts the
+    carry-over EXISTS; it is not a licence to route a caller-supplied endpoint
+    through a Config.
+    """
     cfg = Config(
         root=Path("/kb"),
         db_path=Path("/kb/kb.sqlite"),
-        provider="openai",
+        provider="anthropic",
         model="m",
         api_key="sk-test-DEADBEEFDEADBEEF",
         base_url=None,
     )
 
-    assert replace(cfg, provider="openrouter").api_key == "sk-test-DEADBEEFDEADBEEF"
+    switched = replace(cfg, provider="openrouter", base_url="http://caller.example")
+
+    assert switched.provider == "openrouter"
+    assert switched.api_key == "sk-test-DEADBEEFDEADBEEF"
 
 
 # --- app.json survives a failed write instead of being truncated ---

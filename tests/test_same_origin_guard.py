@@ -156,9 +156,17 @@ def test_cross_origin_reads_are_not_gated(tmp_path, path):
 
 
 def test_the_model_field_get_is_gated_because_it_dials_a_caller_url(tmp_path):
-    """`?base_url=` becomes a client. Keyless today, because only Ollama is
-    listable; one keyed provider in MODEL_LISTING_PROVIDERS turns this into
-    single-request key exfiltration with no form and no interaction."""
+    """`?base_url=` names a host this GET will dial. What this guard stops is
+    another site provoking that SSRF probe with no form and no interaction.
+
+    It is not what keeps the probe keyless: `_MODEL_LISTERS` does that, by giving
+    the listing seam a `(base_url, timeout)` signature that is handed no API key,
+    and by building no client that holds one. That is narrower than "no way to
+    hold a key" -- an import-time shape rule cannot stop a lister body from going
+    and fetching one -- but the two are still independent controls over the same
+    path and neither substitutes for the other: a keyless probe an attacker can
+    still trigger is a real finding, and so is a same-origin-only request that
+    could carry a key."""
     c = _client(tmp_path)
     url = "/settings/model-field?provider=ollama&base_url=http://evil.example"
 
