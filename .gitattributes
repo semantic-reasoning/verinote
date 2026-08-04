@@ -7,3 +7,9 @@
 # does not cover (autocrlf=false, or a clone made from Linux/WSL), not a fix for
 # a bug seen in the wild.
 *.cmd text eol=crlf
+
+# The mirror of the rule above, for the opposite failure. A CRLF checkout of a
+# shell script breaks at the shebang -- `/usr/bin/env bash\r` is not a program
+# -- and Git for Windows' default core.autocrlf=true would produce exactly that
+# in a clone someone then runs under WSL or shares onto a Mac.
+*.sh text eol=lf
