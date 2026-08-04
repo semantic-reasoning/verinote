@@ -40,6 +40,7 @@ from verinote.config import (
 )
 from verinote.kb_location import KBLocationError, assert_kb_root_is_safe_to_create
 from verinote.llm import LLMError, get_client
+from verinote.llm.claude_cli_adapter import CLI_MODEL_ALIASES
 from verinote.llm.ollama_adapter import OLLAMA_DEFAULT_BASE_URL
 from verinote.policy_defaults import DEFAULT_RELATION_ALIASES
 from verinote.pipeline import (
@@ -125,6 +126,13 @@ _STATIC = resources.files("verinote.web").joinpath("static")
 # a change made while this KB's rules are not being applied.
 _POLICY_GUARD_READ_PATHS = ("/report", "/settings", "/static")
 _POLICY_GUARD_WRITE_PATHS = ("/kb/select", "/settings/root")
+
+# Providers whose Model field offers a *curated* list rather than a discovered
+# one, keyed to the adapter constant so the two cannot drift: every suggestion
+# here is an alias that adapter actually resolves. Deliberately not a set in
+# `config` alongside MODEL_LISTING_PROVIDERS -- the values come from the adapter
+# modules, which import `config`, so this is the layer that can name both.
+MODEL_ALIASES_BY_PROVIDER = {"claudecli": CLI_MODEL_ALIASES}
 
 # Full-page halt shown when a fact's logical terms cannot be read. htmx partial
 # swaps are redirected here (HX-Redirect) because htmx will not swap an error
@@ -1740,11 +1748,16 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         propagate to the app-wide halt handler — a corrupt config.json means the
         resolved provider is untrustworthy, and this route would otherwise
         report on a provider the user never chose (#269).
+
+        `aliases` is the other kind of list, and stays a separate key on
+        purpose: it is curated from the adapter, never read from a provider, so
+        it can never stand in for `models` or be mistaken for discovery.
         """
         listable = provider in MODEL_LISTING_PROVIDERS
         base = {
             "provider": provider,
             "model": model,
+            "aliases": MODEL_ALIASES_BY_PROVIDER.get(provider, ()),
             # The URL actually dialled, not the literal "(default)" — so the
             # page names the same endpoint the adapter will use.
             "endpoint": (base_url.strip() or OLLAMA_DEFAULT_BASE_URL) if listable else "",
