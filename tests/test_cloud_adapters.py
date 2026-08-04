@@ -8,6 +8,7 @@ from verinote.config import Config, save_settings
 from verinote.llm.anthropic_adapter import AnthropicAdapter
 from verinote.llm.base import LLMError
 from verinote.llm.openai_adapter import OpenAIAdapter
+from verinote.llm.openrouter_adapter import OpenRouterAdapter
 from verinote.prompts import save_prompt_override
 
 
@@ -253,6 +254,17 @@ _CLOUD_ADAPTERS = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _configured_key(monkeypatch):
+    """The base_url tests below resolve their Config from the environment, and a
+    cloud adapter now refuses to run without a key rather than letting the vendor
+    SDK fall back to its own env var. They are about base_url plumbing, so give
+    them a key. Tests that exercise key handling build their Config directly and
+    are unaffected by this.
+    """
+    monkeypatch.setenv("VERINOTE_API_KEY", "configured-test-key")
+
+
 @pytest.mark.parametrize("provider", sorted(_CLOUD_ADAPTERS))
 def test_empty_base_url_env_reaches_cloud_client_as_none(tmp_path, monkeypatch, provider):
     # `is None`, not falsy: an empty string is falsy too, so a truthiness check
@@ -315,3 +327,88 @@ def test_padded_base_url_reaches_cloud_client_trimmed(tmp_path, monkeypatch, pro
     adapter_cls(Config.for_root(tmp_path)).extract_facts(source_text="x")
 
     assert recorded["base_url"] == "https://llm.internal/v1"
+
+
+# --- a provider's 401 body can echo the key it rejected ---
+
+_LONG_KEY = "sk-test-DEADBEEFDEADBEEF"
+
+
+def _raising_sdk(monkeypatch, provider: str, exc: Exception) -> None:
+    """Stub the vendor SDK so the request path raises inside the adapter's try."""
+
+    class _Raises:
+        def create(self, **kwargs):
+            raise exc
+
+    if provider in ("openai", "openrouter"):
+        client = SimpleNamespace(chat=SimpleNamespace(completions=_Raises()))
+        monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=lambda **k: client))
+    else:
+        client = SimpleNamespace(messages=_Raises())
+        monkeypatch.setitem(
+            sys.modules, "anthropic", SimpleNamespace(Anthropic=lambda **k: client)
+        )
+
+
+def _keyed_cfg(tmp_path, provider: str, key: str | None) -> Config:
+    return Config(
+        root=tmp_path,
+        db_path=tmp_path / "kb.sqlite",
+        provider=provider,
+        model="model",
+        api_key=key,
+        base_url=None,
+    )
+
+
+@pytest.mark.parametrize("method", sorted(_INVOCATIONS))
+@pytest.mark.parametrize("provider", sorted(_CLOUD_ADAPTERS))
+def test_provider_error_never_carries_the_key(tmp_path, monkeypatch, method, provider):
+    """This string is persisted into `source_chunks.error` and rendered on three
+    pages, so a key echoed back by a 401 would come to rest inside the KB — the
+    one place the key is supposed never to reach. Every method is covered because
+    each raise site is its own chance to bypass the redacting constructor."""
+    adapter_cls = _CLOUD_ADAPTERS[provider][1]
+    _raising_sdk(monkeypatch, provider, RuntimeError(f"401 invalid key {_LONG_KEY}"))
+
+    with pytest.raises(LLMError) as exc:
+        _INVOCATIONS[method](adapter_cls(_keyed_cfg(tmp_path, provider, _LONG_KEY)))
+
+    assert _LONG_KEY not in str(exc.value)
+    assert "***" in str(exc.value)
+
+
+def test_a_short_key_leaves_the_message_intact(tmp_path, monkeypatch):
+    """Redacting a short string mangles ordinary diagnostics — `api_key="key"` is
+    live in this file and would turn "invalid api key" into "invalid api ***".
+    Message text that varies with the key's content is its own small oracle."""
+    _raising_sdk(monkeypatch, "openai", RuntimeError("invalid api key here"))
+
+    with pytest.raises(LLMError, match="invalid api key here"):
+        OpenAIAdapter(_keyed_cfg(tmp_path, "openai", "key")).extract_facts(source_text="x")
+
+
+# OpenRouter inherits both guards from OpenAIAdapter, so it is listed explicitly
+# rather than left to transitive coverage: it is the provider most likely to be
+# pointed at a caller-supplied endpoint, which is where an unredactable key hurts.
+_KEYED_ADAPTERS = {"openai": OpenAIAdapter, "anthropic": AnthropicAdapter,
+                   "openrouter": OpenRouterAdapter}
+
+
+@pytest.mark.parametrize("provider", sorted(_KEYED_ADAPTERS))
+def test_no_key_refuses_instead_of_falling_back_to_the_vendor_env_var(
+    tmp_path, monkeypatch, provider
+):
+    """Both SDKs read their own OPENAI_API_KEY/ANTHROPIC_API_KEY when handed
+    `api_key=None`, so the request would authenticate with a credential this
+    process never resolved — one `redact_secret` cannot match, whose echo in a
+    4xx body is persisted verbatim into `source_chunks.error`. The env vars are
+    set here so the test fails if the fallback is ever restored."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env-FALLBACK-SECRET-0001")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-env-FALLBACK-SECRET-0001")
+    adapter_cls = _KEYED_ADAPTERS[provider]
+    _raising_sdk(monkeypatch, provider, RuntimeError("unreachable"))
+
+    with pytest.raises(LLMError, match="requires an API key"):
+        adapter_cls(_keyed_cfg(tmp_path, provider, None)).extract_facts(source_text="x")
