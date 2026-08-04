@@ -22,7 +22,7 @@ class LLMError(RuntimeError):
 # what counts as a credential: a short key (a self-hosted gateway's shared token,
 # say) is NOT protected here. Error text that varies with the key's content is
 # itself a small oracle, which is the other half of why the floor exists.
-_MIN_REDACTABLE_SECRET = 8
+MIN_REDACTABLE_SECRET = 8
 
 
 def redact_secret(text: str, secret: str | None) -> str:
@@ -43,7 +43,7 @@ def redact_secret(text: str, secret: str | None) -> str:
     that residue is why not shipping keys to caller-named endpoints is the
     primary control and this is defence in depth.
     """
-    if not secret or len(secret) < _MIN_REDACTABLE_SECRET:
+    if not secret or len(secret) < MIN_REDACTABLE_SECRET:
         return text
     return text.replace(secret, "***")
 

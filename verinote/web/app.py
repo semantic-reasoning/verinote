@@ -33,8 +33,12 @@ from verinote.config import (
     ConfigCorruptError,
     CredentialsCorruptError,
     app_theme,
+    _read_credentials,
+    api_key_source,
     credentials_path,
+    delete_credential,
     provider_key_env_var,
+    save_credential,
     assert_credentials_intact,
     assert_settings_intact,
     normalize_provider,
@@ -43,7 +47,7 @@ from verinote.config import (
     save_settings,
 )
 from verinote.kb_location import KBLocationError, assert_kb_root_is_safe_to_create
-from verinote.llm import LLMError, get_client
+from verinote.llm import MIN_REDACTABLE_SECRET, LLMError, get_client
 from verinote.llm.claude_cli_adapter import CLI_MODEL_ALIASES
 from verinote.llm.ollama_adapter import OLLAMA_DEFAULT_BASE_URL
 from verinote.policy_defaults import DEFAULT_RELATION_ALIASES
@@ -1968,11 +1972,17 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         if c is None:
             return _kb_select(request)
         theme_editable = True
+        # Same treatment as the theme, and for the same reason: `/settings/root/persist`
+        # also writes machine-wide state and is NOT exempt from the policy guard,
+        # so "it writes outside the KB" is not this repo's rule. Disabling the
+        # control beats a live form that 409s about an unrelated KB.
+        credentials_editable = True
         if app.state.store is not None:
             try:
                 assert_writable(app.state.store)
             except PolicyMissingError:
                 theme_editable = False
+                credentials_editable = False
         return templates.TemplateResponse(
             request,
             "settings.html",
@@ -1988,10 +1998,14 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 "extraction_max_facts_per_chunk": c.extraction_max_facts_per_chunk,
                 "auto_accept_recommendations": c.auto_accept_recommendations,
                 "root": c.root,
-                "has_key": bool(c.api_key),  # never render the key itself
-                # "not set" would assert the user has no key stored; when the
-                # file cannot be read the honest answer is that we do not know.
-                "credentials_error": c.credentials_error,
+                # Read from disk, not from `c`: `app.state.cfg` is a snapshot, and
+                # the page must report what is stored now. Never the value — only
+                # which source answered.
+                # Both from the SAME fresh read: rows disk-fresh while the banner
+                # came from the snapshot meant the one state that most needs the
+                # recovery link — "unknown" — could render without it.
+                **_credentials_context(c.provider),
+                "credentials_editable": credentials_editable,
                 "connection_test_enabled": c.provider in TESTABLE_PROVIDERS,
                 "relation_aliases": _relation_aliases_text(),
                 # The Model field starts as the plain text input and, for a
@@ -2014,6 +2028,51 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             },
             status_code=status_code,
         )
+
+    def _credentials_context(active_provider: str) -> dict:
+        """The API-keys section, all from one read of the file."""
+        stored, error = _read_credentials()
+        rows = _provider_key_rows(stored, error)
+        # The read error and the *refusal* are different facts. An unreadable
+        # file only halts a provider whose key it would have decided, so with an
+        # environment key in place nothing is refused — reporting the raw read
+        # error as a refusal put a red "extraction is halted" alert on a setup
+        # that was working. `halting` is the claim; `credentials_error` is the
+        # detail, shown either way because an unreadable file is worth saying.
+        return {
+            "provider_keys": rows,
+            "credentials_error": error,
+            # The ACTIVE provider decides the claim: `any(unknown)` is true as
+            # soon as some other provider would be affected, which turned a
+            # working setup into a red "extraction is halted" alert. The other
+            # providers' own rows already say `unknown` for themselves.
+            "credentials_halting": any(
+                row["provider"] == active_provider and row["state"] == "unknown"
+                for row in rows
+            ),
+        }
+
+    def _provider_key_rows(stored: dict, error: str | None) -> list[dict]:
+        """One row per provider: which source supplies its key, never the key.
+
+        `shadowed` exists because "set from the environment" alone would hide
+        that a key the user saved is being overridden — they would edit the
+        saved one and see nothing change.
+        """
+        rows = []
+        for provider in PROVIDERS:
+            state, _ = api_key_source(provider, stored, error)
+            rows.append(
+                {
+                    "provider": provider,
+                    "label": PROVIDER_LABELS.get(provider, provider),
+                    "state": state,
+                    "env_var": provider_key_env_var(provider),
+                    "shadowed": state == "env_provider" and bool(stored.get(provider)),
+                    "stored": bool(stored.get(provider)),
+                }
+            )
+        return rows
 
     @app.get("/settings", response_class=HTMLResponse)
     def settings_page(request: Request):
@@ -2081,6 +2140,69 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         # reload from the app's own root so the change takes effect on next sync
         app.state.cfg = Config.for_root(cfg.root)
         return RedirectResponse("/settings", status_code=303)
+
+    @app.post("/settings/credentials", response_class=HTMLResponse)
+    def save_credential_route(
+        request: Request,
+        provider: str = Form(...),
+        api_key: str = Form(""),
+    ):
+        """Store one provider's key. An empty field means "leave it alone".
+
+        The input renders empty on every load because the key is never echoed
+        back, so an empty POST is indistinguishable from "did not touch it";
+        treating it as a clear would silently unset a working key. Removing one
+        is its own explicit action.
+        """
+        canonical = normalize_provider(provider)
+        if not api_key.strip():
+            return _settings(request)
+        try:
+            save_credential(canonical, api_key)
+        except (ValueError, CredentialsCorruptError, OSError) as exc:
+            return _settings(request, error=str(exc), status_code=400)
+        # Rebuild the snapshot: without this the badge would read the new key
+        # from disk while every provider call kept using the old one.
+        # Guarded because `_active_cfg()` raises when no KB is selected: the
+        # write has already succeeded by then, so raising would report a stored
+        # key as a server error.
+        if app.state.cfg is not None:
+            app.state.cfg = Config.for_root(app.state.cfg.root)
+        note = f"Saved an API key for {PROVIDER_LABELS.get(canonical, canonical)}."
+        if len(api_key.strip()) < MIN_REDACTABLE_SECRET:
+            # Not rejected: a self-hosted gateway token can legitimately be this
+            # short. But it will not be redacted from provider error text, which
+            # is persisted, so say so rather than let it be discovered later.
+            note += (
+                f" It is shorter than {MIN_REDACTABLE_SECRET} characters, so it"
+                " cannot be redacted from provider error messages, which are"
+                " stored in this KB."
+            )
+        return _settings(request, test_result=note)
+
+    @app.post("/settings/credentials/remove", response_class=HTMLResponse)
+    def remove_credential_route(request: Request, provider: str = Form(...)):
+        canonical = normalize_provider(provider)
+        try:
+            removed = delete_credential(canonical)
+        except (ValueError, CredentialsCorruptError, OSError) as exc:
+            return _settings(request, error=str(exc), status_code=400)
+        # Guarded because `_active_cfg()` raises when no KB is selected: the
+        # write has already succeeded by then, so raising would report a stored
+        # key as a server error.
+        if app.state.cfg is not None:
+            app.state.cfg = Config.for_root(app.state.cfg.root)
+        label = PROVIDER_LABELS.get(canonical, canonical)
+        if not removed:
+            return _settings(request, test_result=f"No saved key to remove for {label}.")
+        # A bare "removed" would read as "this provider has no key now", which is
+        # false when the environment still supplies one.
+        stored, _error = _read_credentials()
+        state, _ = api_key_source(canonical, stored)
+        note = f"Removed the saved key for {label}."
+        if state in {"env_provider", "env_global"}:
+            note += " An environment variable still supplies a key for it."
+        return _settings(request, test_result=note)
 
     @app.post("/settings/theme", response_class=HTMLResponse)
     def save_theme_route(request: Request, theme: str = Form(...)):

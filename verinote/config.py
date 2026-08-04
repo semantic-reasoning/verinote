@@ -644,6 +644,43 @@ def _read_credentials() -> tuple[dict[str, str], str | None]:
     return {str(k): v for k, v in keys.items()}, None
 
 
+def api_key_source(
+    provider: str, stored: dict[str, str], error: str | None = None
+) -> tuple[str, str | None]:
+    """Where `provider`'s key comes from, and what it is.
+
+    One walk, two answers: the settings badge and the resolved value apply the
+    same precedence rather than two hand-kept copies of it, so neither can rank
+    the sources differently from the other.
+
+    What this does NOT make identical is the *inputs*. The badge reads the file
+    fresh on every render; a running app holds `Config` as a snapshot. If the
+    file changes out of band — a second verinote process, a hand edit — the page
+    leads the snapshot until something rebuilds it. Every credentials route
+    rebuilds it, so the in-app flow stays consistent; the residue is a
+    deliberately fresh page, not a shared-input guarantee.
+
+    States: `not_needed`, `env_provider`, `stored`, `env_global`, `unknown`
+    (the file is present but unreadable, so we cannot say), `unset`.
+    """
+    if provider not in PROVIDERS_REQUIRING_KEY:
+        return "not_needed", None
+    scoped = os.environ.get(provider_key_env_var(provider))
+    if isinstance(scoped, str) and scoped.strip():
+        return "env_provider", scoped.strip()
+    saved = stored.get(provider)
+    if isinstance(saved, str) and saved.strip():
+        return "stored", saved.strip()
+    legacy = os.environ.get("VERINOTE_API_KEY")
+    if isinstance(legacy, str) and legacy.strip():
+        return "env_global", legacy.strip()
+    # Only now does an unreadable file matter: every tier above it came back
+    # empty, so the file is what would have decided.
+    if error is not None:
+        return "unknown", None
+    return "unset", None
+
+
 def resolve_api_key(provider: str, stored: dict[str, str]) -> str | None:
     """The key to authenticate `provider` with, or None.
 
@@ -659,20 +696,7 @@ def resolve_api_key(provider: str, stored: dict[str, str]) -> str | None:
     the legacy variable stays last so existing setups keep working unchanged for
     any provider that has no stored key.
     """
-    if provider not in PROVIDERS_REQUIRING_KEY:
-        return None
-    for candidate in (
-        os.environ.get(provider_key_env_var(provider)),
-        stored.get(provider),
-        os.environ.get("VERINOTE_API_KEY"),
-    ):
-        if isinstance(candidate, str):
-            candidate = candidate.strip()
-        if candidate:
-            return candidate
-    return None
-
-
+    return api_key_source(provider, stored)[1]
 
 @contextmanager
 def _credentials_lock():
@@ -747,6 +771,10 @@ def save_credential(provider: str, key: str) -> None:
 
 def delete_credential(provider: str) -> bool:
     """Remove `provider`'s stored key. True when one was actually removed."""
+    if provider not in PROVIDERS_REQUIRING_KEY:
+        # Same membership rule as `save_credential`: without it a bogus id gets a
+        # cheerful "nothing to remove" while the same id is refused on save.
+        raise ValueError(f"{provider} does not use an API key")
     with _credentials_lock():
         stored, error = _read_credentials()
         if error is not None:
@@ -867,11 +895,12 @@ class Config:
             saved.get("auto_accept_recommendations"),
             False,
         )
-        stored_keys, credentials_error = _read_credentials()
-        api_key = resolve_api_key(provider, stored_keys)
-        if api_key is not None or provider not in PROVIDERS_REQUIRING_KEY:
-            # The file could not have changed the outcome, so it is not a halt.
-            credentials_error = None
+        stored_keys, credentials_read_error = _read_credentials()
+        state, api_key = api_key_source(provider, stored_keys, credentials_read_error)
+        # The halt is exactly the state that says we cannot tell — every other
+        # state means some tier answered, so the unreadable file could not have
+        # changed the outcome and must not stop this provider.
+        credentials_error = credentials_read_error if state == "unknown" else None
         return cls(
             root=root,
             db_path=root / "kb.sqlite",

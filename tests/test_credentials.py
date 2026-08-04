@@ -402,3 +402,263 @@ def test_settings_links_the_recovery_page(tmp_path, isolated_app_config, monkeyp
     r = _web_client(tmp_path).get("/settings")
 
     assert "/credentials-unavailable" in r.text
+
+
+# --- entering a key in the web page ---
+
+
+def _settings_client(tmp_path, provider="openai"):
+    from fastapi.testclient import TestClient
+
+    from verinote.web import create_app
+
+    # The provider is persisted, not just constructed: every credentials route
+    # rebuilds `app.state.cfg` with `Config.for_root`, which re-resolves the
+    # provider from disk. A client whose provider existed only in memory would
+    # silently become the default on the first save.
+    save_settings(tmp_path, provider=provider, model="m")
+    return TestClient(create_app(Config.for_root(tmp_path)), raise_server_exceptions=False)
+
+
+def test_saving_a_key_takes_effect_without_a_restart(tmp_path, isolated_app_config):
+    """`app.state.cfg` is a snapshot. Without rebuilding it the badge would read
+    the new key from disk while every provider call kept using the old one — the
+    user would save a key and watch Test connection still say none is set."""
+    client = _settings_client(tmp_path)
+
+    client.post("/settings/credentials", data={"provider": "openai", "api_key": _STORED})
+
+    assert client.app.state.cfg.api_key == _STORED
+
+
+def test_the_page_never_echoes_a_saved_key_back(tmp_path, isolated_app_config):
+    """An input that prefilled `value=` would put the secret in the DOM of a page
+    that is also reachable while other things are broken."""
+    client = _settings_client(tmp_path)
+    client.post("/settings/credentials", data={"provider": "openai", "api_key": _STORED})
+
+    body = client.get("/settings").text
+
+    assert _STORED not in body
+    assert "saved in this app" in body
+
+
+def test_an_empty_submit_leaves_the_saved_key_alone(tmp_path, isolated_app_config):
+    """The field renders empty on every load, so an empty POST cannot be told
+    apart from "did not touch it". Treating it as a clear would silently unset a
+    working key."""
+    client = _settings_client(tmp_path)
+    client.post("/settings/credentials", data={"provider": "openai", "api_key": _STORED})
+
+    r = client.post("/settings/credentials", data={"provider": "openai", "api_key": ""})
+
+    assert client.app.state.cfg.api_key == _STORED
+    # The storage layer refuses an empty key either way, so surviving is not the
+    # property under test — not being told off for touching nothing is.
+    assert r.status_code == 200
+    assert "API key is empty" not in r.text
+
+
+def test_removing_says_when_an_environment_key_still_applies(
+    tmp_path, isolated_app_config, monkeypatch
+):
+    """A bare "removed" reads as "this provider has no key now", which is false
+    while the environment still supplies one."""
+    client = _settings_client(tmp_path)
+    client.post("/settings/credentials", data={"provider": "openai", "api_key": _STORED})
+    monkeypatch.setenv("VERINOTE_API_KEY", _GLOBAL)
+
+    body = client.post(
+        "/settings/credentials/remove", data={"provider": "openai"}, follow_redirects=True
+    ).text
+
+    assert "still supplies a key" in body
+
+
+def test_removing_nothing_does_not_claim_a_removal(tmp_path, isolated_app_config):
+    client = _settings_client(tmp_path)
+
+    body = client.post(
+        "/settings/credentials/remove", data={"provider": "openai"}, follow_redirects=True
+    ).text
+
+    assert "No saved key to remove" in body
+
+
+def test_a_shadowed_saved_key_is_reported(tmp_path, isolated_app_config, monkeypatch):
+    """"set from the environment" alone would hide that the key the user saved is
+    being overridden — they would edit it and see nothing change."""
+    client = _settings_client(tmp_path)
+    client.post("/settings/credentials", data={"provider": "openai", "api_key": _STORED})
+    monkeypatch.setenv(provider_key_env_var("openai"), _SCOPED)
+
+    body = client.get("/settings").text
+
+    assert "takes precedence" in body
+
+
+def test_a_keyless_provider_gets_no_input(tmp_path, isolated_app_config):
+    """A key field for Ollama would be a control that does nothing. Asserting the
+    label alone proves nothing — every provider gets a row on every settings
+    page — so this scopes to Ollama's row and asserts the input is absent."""
+    import re
+
+    body = _settings_client(tmp_path, provider="ollama").get("/settings").text
+    rows = re.findall(r'<div class="key-row">.*?</div>', body, re.S)
+    ollama = [r for r in rows if "Ollama" in r]
+
+    assert len(ollama) == 1
+    assert "no API key needed" in ollama[0]
+    assert 'name="api_key"' not in ollama[0]
+
+
+def test_a_short_key_is_stored_but_flagged_as_unredactable(tmp_path, isolated_app_config):
+    """Not rejected — a self-hosted gateway token can legitimately be short — but
+    it will not be redacted from provider errors, which are persisted into the KB."""
+    client = _settings_client(tmp_path)
+
+    body = client.post(
+        "/settings/credentials", data={"provider": "openai", "api_key": "short"}
+    ).text
+
+    assert client.app.state.cfg.api_key == "short"
+    assert "cannot be redacted" in body
+
+
+def test_a_provider_name_is_canonicalised_before_storing(tmp_path, isolated_app_config):
+    """The form posts a raw string. Stored under a non-canonical id the key would
+    be written successfully and then resolve for nobody — asserting a *refusal*
+    proves nothing, because an unnormalised id is refused anyway."""
+    client = _settings_client(tmp_path)
+
+    r = client.post(
+        "/settings/credentials", data={"provider": "OpenAI", "api_key": _STORED}
+    )
+
+    assert r.status_code == 200
+    assert _stored_keys() == {"openai": _STORED}
+    assert client.app.state.cfg.api_key == _STORED
+
+
+def test_a_halted_policy_disables_and_refuses_a_key_write(tmp_path, isolated_app_config):
+    """Correct today, and nothing would say if it stopped being: adding these
+    paths to the policy guard's write allowlist would un-gate key writes on a
+    halted KB with a fully green suite. Asserts the disabled control AND the
+    refusal AND that no file was written — the shape the theme test already uses.
+    """
+    from fastapi.testclient import TestClient
+
+    from verinote.engine import DEFAULT_POLICY
+    from verinote.pipeline.policy_state import POLICY_RELPATH, policy_sha256
+    from verinote.store import Store
+    from verinote.web import create_app
+
+    save_settings(tmp_path, provider="openai", model="m")
+    with Store(tmp_path / "kb.sqlite") as store:
+        store.init_schema()
+        policy = tmp_path / POLICY_RELPATH
+        policy.parent.mkdir(parents=True, exist_ok=True)
+        policy.write_text(DEFAULT_POLICY, encoding="utf-8")
+        store.record_policy_marker(policy_sha256(DEFAULT_POLICY), origin="scaffold")
+    (tmp_path / POLICY_RELPATH).unlink()
+    client = TestClient(create_app(Config.for_root(tmp_path)), raise_server_exceptions=False)
+
+    assert "Saving keys is unavailable" in client.get("/settings").text
+    r = client.post("/settings/credentials", data={"provider": "openai", "api_key": _STORED})
+
+    assert r.status_code == 409
+    assert not credentials_path().exists()
+
+
+@pytest.mark.parametrize("path", ["/settings/credentials", "/settings/credentials/remove"])
+def test_a_cross_origin_key_write_is_refused(tmp_path, isolated_app_config, path):
+    """Gated by method rather than by a path list, so these were covered the
+    moment they existed — pinned because a key write is the highest-value thing
+    that gate protects."""
+    client = _settings_client(tmp_path)
+
+    r = client.post(
+        path,
+        data={"provider": "openai", "api_key": _STORED},
+        headers={"Origin": "http://evil.example"},
+    )
+
+    assert r.status_code == 403
+    assert not credentials_path().exists()
+
+
+def test_removing_a_provider_that_cannot_own_a_key_is_refused(tmp_path, isolated_app_config):
+    """Save refuses a bogus id; remove used to answer "nothing to remove" for the
+    same input, reflecting caller-supplied text back as a provider label."""
+    client = _settings_client(tmp_path)
+
+    r = client.post("/settings/credentials/remove", data={"provider": "ollama"})
+
+    assert r.status_code == 400
+
+
+@pytest.mark.parametrize("path", ["/settings/credentials", "/settings/credentials/remove"])
+def test_a_filesystem_failure_is_reported_not_a_500(
+    tmp_path, isolated_app_config, monkeypatch, path
+):
+    """The write reaches mkdir, a lock file and an atomic replace — all OSError.
+    A bare 500 gives the user nothing to act on, and the failing frame's locals
+    hold the plaintext key, which is one locals-rendering handler from exposure.
+    """
+    import verinote.web.app as webapp
+
+    client = _settings_client(tmp_path)
+    for name in ("save_credential", "delete_credential"):
+        monkeypatch.setattr(
+            webapp, name, lambda *a, **k: (_ for _ in ()).throw(OSError("no space left"))
+        )
+
+    r = client.post(path, data={"provider": "openai", "api_key": _STORED})
+
+    assert r.status_code == 400
+    assert "no space left" in r.text
+
+
+def test_no_refusal_is_claimed_while_the_environment_supplies_the_key(
+    tmp_path, isolated_app_config, monkeypatch
+):
+    """An unreadable file only halts a provider whose key it would have decided.
+    Claiming "verinote refuses provider calls" on a setup running fine from an
+    environment variable is a red alert about nothing — and `any(unknown)` says
+    exactly that, because the *other* providers' rows are unknown."""
+    monkeypatch.setenv(provider_key_env_var("openai"), _SCOPED)
+    client = _settings_client(tmp_path)
+    _corrupt()
+
+    body = client.get("/settings").text
+
+    assert "refuses provider calls" not in body
+    assert "could not be read" in body  # the file is still broken; say so
+
+
+def test_a_refusal_is_claimed_when_the_active_provider_really_is_halted(
+    tmp_path, isolated_app_config
+):
+    """Pairs with the test above: narrowing the claim must not silence it."""
+    client = _settings_client(tmp_path)
+    _corrupt()
+
+    assert "refuses provider calls" in client.get("/settings").text
+
+
+@pytest.mark.parametrize("path", ["/settings/credentials", "/settings/credentials/remove"])
+def test_a_write_with_no_active_kb_does_not_report_success_as_a_server_error(
+    tmp_path, isolated_app_config, path
+):
+    """The snapshot rebuild runs after the write. `_active_cfg()` raises when no
+    KB is selected, so the key would be stored (or deleted) and the response
+    would still be a 500."""
+    from fastapi.testclient import TestClient
+
+    from verinote.web import create_app
+
+    client = TestClient(create_app(None), raise_server_exceptions=False)
+
+    r = client.post(path, data={"provider": "openai", "api_key": _STORED})
+
+    assert r.status_code != 500
