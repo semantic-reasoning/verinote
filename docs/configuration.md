@@ -69,13 +69,20 @@ creating any KB files, including nested or symlinked paths that resolve there.
 ## Providers
 
 Provider choice lives in `config.json` (or `VERINOTE_PROVIDER`), and one adapter
-is selected from it: `anthropic`, `claudecli`, `openai`, or `ollama`. Install only
-the SDK you need — the LLM extras exist so the app installs without any single
-vendor's package:
+is selected from it: `anthropic`, `claudecli`, `openai`, `openrouter`, or
+`ollama`. Install only the SDK you need — the LLM extras exist so the app
+installs without any single vendor's package:
 
 ```bash
 pip install -e ".[anthropic]"   # or .[openai] — Ollama needs no SDK
 ```
+
+OpenRouter speaks the OpenAI wire protocol and inherits that adapter's request
+paths, so it uses the same `.[openai]` extra; there is no separate `openrouter`
+extra. What it does not inherit is the endpoint: an unset Base URL resolves to
+`https://openrouter.ai/api/v1` rather than to OpenAI's API, so clearing the field
+cannot send your documents to a vendor you did not select. A Base URL you do set
+still overrides it.
 
 ### Picking an Ollama model
 
@@ -98,6 +105,58 @@ The field never becomes unusable: when the list cannot be loaded you can still
 type a model id and save. And a model named in `config.json` that the server
 does not have stays selected, marked `— not installed`, rather than being
 silently swapped for one that is — the page reports your KB's real state.
+
+### Picking an OpenRouter model
+
+With `openrouter` selected, Settings turns the Model field into a picker too, but
+over a different kind of list: the catalogue the endpoint you configured
+publishes (`GET {base_url}/models` against your Base URL, or
+`https://openrouter.ai/api/v1` when it is unset). That request carries **no API
+key**, so what comes back is the catalogue that endpoint publishes — not a list
+of what your account can reach. A model in the dropdown is one the catalogue lists,
+not one verinote has confirmed your key can call: **Test connection** runs one
+real extraction with the provider and model you chose, and that is what confirms
+a choice works.
+
+The options are split into two groups, **Advertises structured output** and
+**Does not advertise structured output**, built from what each catalogue entry
+declares in its `supported_parameters`. The split matters because verinote asks
+for a JSON-schema `response_format` on every call that has to come back as JSON —
+extraction, query translation, query intent — so picking from the second group
+means asking a model for something its own entry does not advertise. Both groups
+render even when one is empty, and neither is a measurement: verinote has not run
+these models, it is repeating what the catalogue says about them.
+
+As with Ollama, the list reloads when you change the provider or the Base URL, a
+**Refresh list** button re-reads it, and the field never becomes unusable — when
+the catalogue cannot be loaded you can still type a model id and save. The same
+three outcomes stay distinct:
+
+| What you see | What it means |
+|---|---|
+| A grouped picker | that endpoint is reachable and lists these models |
+| Text input + *"is reachable but listed no models"* | reachable, but the catalogue came back empty |
+| Text input + *"Could not load the model list"* | that endpoint could not be reached; the error is quoted verbatim |
+
+A model named in `config.json` that the catalogue does not list stays selected,
+marked `— not in this catalogue`, rather than being silently swapped — the page
+reports your KB's real state. Leave the model blank and the built-in default
+applies: `openai/gpt-oss-20b:free`, a concrete free model rather than the
+`openrouter/free` router. A router picks a different model per request, so one
+**Test connection** could not stand for the next call, and the settings banner
+would name a model that did not answer. This one was chosen because every
+endpoint serving it advertises structured output — which holds because it has
+exactly one endpoint, not because a fleet of them was surveyed. And again,
+*advertises*: whether an endpoint honours `strict` is only knowable by running
+it.
+
+Switching the provider select **to** OpenRouter clears the Base URL field,
+because that field's only job is to point verinote at a different endpoint and
+the endpoint you are leaving belongs to the provider you are leaving —
+`http://localhost:11434` is not an OpenRouter endpoint. Only OpenRouter does
+this. The clear is announced, not silent: a note names the value that was
+discarded and what would be dialled instead, nothing is written until you press
+**Save**, and typing the old value back in keeps it.
 
 ### Picking a Claude CLI model
 
@@ -123,9 +182,71 @@ Because the list cannot be verified against a server, **Test connection** is the
 check that matters here: it runs one real extraction through the `claude` binary
 with the model you chose.
 
-The cloud providers keep the plain free-text field — a vendor catalogue is not a
-property of the endpoint you point at, so there is no list they could answer
-truthfully either.
+Anthropic and OpenAI keep the plain free-text field — a vendor's own catalogue is
+not a property of the endpoint you point at, so there is no list they could
+answer truthfully either. OpenRouter is the exception among the cloud providers,
+and it does not generalise: there, the endpoint you are configuring is itself
+what serves the catalogue.
+
+## API keys
+
+`anthropic`, `openai`, and `openrouter` authenticate with an API key. The other
+two never read one at all — `claudecli` shells out to the `claude` binary and
+`ollama` talks to a local endpoint — so Settings lists them as *no API key
+needed*.
+
+Settings has an **API keys** section with one small form per key-using provider —
+its own form, so a key can never ride along with a provider/model save. All five
+providers get a row; the two that need no key get no form. The field is a
+password input and is never rendered back with a value, so submitting it empty
+means *leave the current key alone*; **Remove saved key** is the separate action
+that clears one.
+
+Saved keys are written to `credentials.json` in the same app config directory as
+`app.json` — never inside a KB, so a KB stays safe to copy or share — with file
+mode `0600`, and each provider's key is stored separately so a key saved for one
+is never sent to another. One caveat to that first claim: a key shorter than
+the app's redaction threshold is accepted (a self-hosted gateway's token can
+legitimately be that short) but Settings warns when you save one, because
+redaction of a provider's error text only covers secrets at least that long,
+and those error messages *are* stored in the KB.
+
+A provider-scoped environment variable wins. For each provider, the key is
+resolved in this order:
+
+| Source | Notes |
+|---|---|
+| `VERINOTE_<PROVIDER>_API_KEY` | provider-scoped, e.g. `VERINOTE_OPENROUTER_API_KEY`, `VERINOTE_ANTHROPIC_API_KEY`, `VERINOTE_OPENAI_API_KEY` |
+| the key saved in Settings | per provider |
+| `VERINOTE_API_KEY` | legacy, provider-agnostic — applies to whichever provider got this far |
+
+The saved key sits above the legacy variable on purpose: `VERINOTE_API_KEY` names
+no provider, so ranking it first would take a key you saved *for OpenAI* and
+replace it with whatever single value happens to be exported. The scoped variable
+keeps env-first available without that ambiguity. Settings shows which of these
+each provider's key is actually coming from, and warns when a saved key is being
+shadowed by the environment.
+
+An unreadable `credentials.json` is a halt, not an absence. If the file is there
+but cannot be read or understood, and it is what would have decided the selected
+provider's key, verinote refuses provider calls. That check sits at the one
+place every provider call is built, before the provider is even chosen, so it
+covers every path that calls one by construction — extraction, question repair,
+asking a question, translating questions, the model list, and **Test
+connection** are examples of what stops, not the full set — rather than
+proceeding as though no key were saved and calling a provider unauthenticated. A
+provider whose key comes from either environment variable is unaffected, because
+the file could not have changed the outcome. Settings says which of those two
+situations you are in, and `/credentials-unavailable` names the file and the
+ways out — restore it from a backup, delete it, export the scoped variable for
+the provider you are using, or switch to a provider that needs no key. Saving a
+key stays refused until then: a save merges into the other providers' entries,
+so writing over a file it cannot read would silently discard them.
+
+verinote does not fall back to a vendor SDK's own `OPENAI_API_KEY` or
+`ANTHROPIC_API_KEY`: a request that authenticated with a credential verinote
+never resolved could not be redacted from an error message, so a missing key is
+an error instead.
 
 ## Auto-accept
 
@@ -149,7 +270,7 @@ Set it in the Settings UI, in `config.json`, or via
 
 | Extra | What it installs |
 |---|---|
-| `anthropic`, `openai` | the vendor SDK for that provider |
+| `anthropic`, `openai` | the vendor SDK for that provider (OpenRouter uses `openai` — see [Providers](#providers)) |
 | `ingest` | `python-docx` + `pypdf`, for binary source ingestion (docx/pdf → text) |
 | `test` | the test dependencies |
 | `analytics` | nothing — a **compatibility no-op**. DuckDB is a core dependency because it powers verification, and analytics uses that same dependency. |

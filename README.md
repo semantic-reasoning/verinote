@@ -43,11 +43,12 @@ Three things set verinote apart:
    which adapter *and endpoint* you configure decides what leaves your machine:
    document text and your questions go to whatever endpoint that adapter is
    pointed at. By default that is Anthropic's or OpenAI's API for those
-   adapters, and a server on your own machine for Ollama — but `VERINOTE_BASE_URL`
-   redirects any of the three, in either direction. The Claude CLI adapter is the
-   exception: it shells out to the `claude` binary, so it goes wherever that CLI
-   is configured to talk to — Anthropic unless your environment redirects it. No
-   lock-in either way; that is a design principle, not a missing feature.
+   adapters, `https://openrouter.ai/api/v1` for OpenRouter, and a server on your
+   own machine for Ollama — but `VERINOTE_BASE_URL` redirects any of the four,
+   in either direction. The Claude CLI adapter is the exception: it shells out
+   to the `claude` binary, so it goes wherever that CLI is configured to talk to
+   — Anthropic unless your environment redirects it. No lock-in either way; that
+   is a design principle, not a missing feature.
 
 When you ask a question, the answer arrives labeled with how much you can trust
 it: **`VERIFIED — engine`** when the Datalog engine proved it from facts you
@@ -99,7 +100,7 @@ that mapping and the rest of the query path are in
 | Concern | Decision |
 |---|---|
 | Logic engine | **DuckDB-backed Datalog.** Confirmed rows load into in-memory DuckDB; non-recursive policy/query rules compile to SQL. |
-| LLM | **Hand-rolled `LLMClient` adapters** (Anthropic / Claude CLI / OpenAI / Ollama). No vendor lock-in. |
+| LLM | **Hand-rolled `LLMClient` adapters** (Anthropic / Claude CLI / OpenAI / OpenRouter / Ollama). No vendor lock-in. |
 | Web | **FastAPI + HTMX + Jinja** — server-rendered partials, no JS build step. |
 | Storage | **SQLite** owns KB metadata, source/run provenance, review lifecycle, the audit log, and the text display mirrors. **DuckDB** owns the canonical logical fact terms, runs verification, and attaches SQLite read-only for metadata analytics. `.dl` policy/query files stay editable inputs. |
 
