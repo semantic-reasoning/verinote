@@ -5074,20 +5074,32 @@ def test_the_module_body_runs_the_check(monkeypatch):
     `app.py`'s body into a fresh module object with a provider set the shipped
     `_MODEL_LISTERS` cannot satisfy, which raises only if that call site exists.
 
+    The match names the check, not just the provider, and that is what makes the
+    sentence above true: an unsatisfiable provider set fails the default-endpoint
+    check too, so matching on `anthropic` alone passed with THIS call site
+    deleted -- the sibling's error standing in for it.
+
     A separate module object rather than `importlib.reload`: reloading the live
     `verinote.web.app` would swap out the identity of `Config`-facing handlers
     and helper objects every other test in this session imported, and a reload
     that raises part-way (which is the point here) leaves it half-rebuilt.
+
+    The set ADDS to the shipped one rather than replacing it, so this stays a
+    test of the lister call site: dropping `openrouter` from listable would make
+    the clearing-set check -- which runs before this one -- raise first, about a
+    provider that clears the Base URL with no endpoint to name.
     """
     monkeypatch.setattr(
-        verinote.config, "MODEL_LISTING_PROVIDERS", frozenset({"ollama", "anthropic"})
+        verinote.config,
+        "MODEL_LISTING_PROVIDERS",
+        frozenset({"ollama", "openrouter", "anthropic"}),
     )
     name = "verinote_web_app_under_test"
     spec = importlib.util.spec_from_file_location(name, webapp.__file__)
     module = importlib.util.module_from_spec(spec)
     monkeypatch.setitem(sys.modules, name, module)
 
-    with pytest.raises(RuntimeError, match="anthropic"):
+    with pytest.raises(RuntimeError, match=r"model lister.*anthropic"):
         spec.loader.exec_module(module)
 
 
@@ -5576,14 +5588,20 @@ def test_openrouter_empty_catalogue_copy_is_not_ollamas(tmp_path, monkeypatch):
 def test_openrouter_model_field_offers_no_blank_option(tmp_path, monkeypatch):
     """Unlike the CLI picker, a blank model here is not "no model": it falls
     through to `_MODEL_DEFAULTS['openrouter']`, so an option labelled as an
-    absence would misreport the model this KB would actually use."""
+    absence would misreport the model this KB would actually use.
+
+    `<option value=""` rather than a bare `value=""`, so this keeps asserting
+    what its name says: an empty Base URL input carries `value=""` too, and a
+    response that started including one would fail this test for a reason that
+    has nothing to do with the picker's options.
+    """
     _openrouter_lister(monkeypatch)
 
     r = _ollama_client(tmp_path, provider="openrouter", model="openai/gpt-oss-20b:free").get(
         "/settings/model-field?provider=openrouter&model=openai/gpt-oss-20b:free"
     )
 
-    assert 'value=""' not in r.text
+    assert '<option value=""' not in r.text
 
 
 def test_openrouter_model_field_puts_no_api_key_on_the_wire(tmp_path, monkeypatch):
@@ -5633,6 +5651,239 @@ def test_openrouter_model_field_puts_no_api_key_on_the_wire(tmp_path, monkeypatc
     assert sentinel not in req.full_url
     assert not [item for item in req.header_items() if sentinel in str(item)]
     assert req.data is None or sentinel.encode("utf-8") not in req.data
+
+
+# --- switching to OpenRouter clears the Base URL, and says what it discarded ---
+
+
+def test_switching_to_openrouter_clears_the_base_url(tmp_path, monkeypatch):
+    """The Base URL field's only job is to point verinote somewhere other than
+    the provider's own endpoint, so the value carried over from the provider
+    being left is not an OpenRouter endpoint at all -- `http://localhost:11434`
+    would be dialled as one. Clear it, and list against OpenRouter's own.
+
+    Mutation: drop the rule in `model_field` and the Ollama endpoint is still in
+    the field, and is what the catalogue is listed from.
+    """
+    fake = _openrouter_lister(monkeypatch)
+
+    r = _ollama_client(tmp_path, base_url="http://localhost:11434").get(
+        "/settings/model-field?provider_changed=1&provider=openrouter"
+        "&model=&base_url=http://localhost:11434"
+    )
+
+    assert r.status_code == 200
+    assert '<input type="text" name="base_url" value=""' in r.text
+    assert fake.seen == [None]  # ...and the listing followed the clear
+
+
+def test_switching_to_another_provider_keeps_the_typed_base_url(tmp_path, monkeypatch):
+    """The falsifier for the test above. "Always clear" satisfies the OpenRouter
+    request and destroys the endpoint of everyone pointing Ollama at another box
+    -- and silently, since Save then writes it away.
+
+    Mutation: clear unconditionally (drop the `provider == "openrouter"` clause)
+    and this typed endpoint is gone.
+    """
+    fake = _FakeLister(models=["qwen3:8b"]).install(monkeypatch)
+
+    r = _ollama_client(tmp_path, provider="openrouter", model="").get(
+        "/settings/model-field?provider_changed=1&provider=ollama"
+        "&model=&base_url=http://box.lan:11434"
+    )
+
+    assert r.status_code == 200
+    assert '<input type="text" name="base_url" value="http://box.lan:11434"' in r.text
+    assert fake.seen == ["http://box.lan:11434"]
+    assert "cleared it" not in r.text  # nothing was discarded, so nothing is claimed
+
+
+def test_settings_renders_a_saved_openrouter_base_url(tmp_path):
+    """A page load is not a provider change. This KB's config.json really does
+    name a proxy, and blanking the field on load would make the page misreport
+    the KB's own state -- then destroy the value on the next Save.
+
+    Mutation: move the clear into the template and this saved proxy renders as
+    an empty field.
+
+    NOT the route's `provider_changed` condition, though, and this test must not
+    be read as covering it: `/settings` renders through `_settings`, which calls
+    `_model_field_context` directly and never enters `model_field`, so the
+    condition is not on this path at all and dropping it leaves this green. What
+    that condition protects is the plain model-field GET -- the one the Base URL
+    input itself fires -- and dropping it is caught by
+    `test_openrouter_model_field_names_a_configured_proxy_not_the_literal_default`,
+    where the clear would then take the configured proxy away before listing and
+    the catalogue would be read from OpenRouter's own endpoint instead.
+    """
+    r = _ollama_client(
+        tmp_path, provider="openrouter", model="a/b", base_url="https://proxy.internal/v1"
+    ).get("/settings")
+
+    assert r.status_code == 200
+    assert '<input type="text" name="base_url" value="https://proxy.internal/v1"' in r.text
+    assert "cleared it" not in r.text
+
+
+def test_the_provider_change_response_carries_the_model_and_the_base_url(tmp_path, monkeypatch):
+    """The swap has to land on a region holding both fields. Before this, the
+    provider select targeted `#model-field`, which the Base URL input sits
+    outside of -- so no provider change could reach it however the route decided.
+
+    Mutation: leave the base URL input out of the wrapper and the form loses the
+    field entirely after one provider change.
+    """
+    _openrouter_lister(monkeypatch)
+
+    r = _ollama_client(tmp_path).get(
+        "/settings/model-field?provider_changed=1&provider=openrouter"
+        "&model=openai/gpt-oss-20b:free&base_url="
+    )
+
+    assert r.status_code == 200
+    assert 'id="provider-fields"' in r.text
+    assert 'name="model"' in r.text
+    assert 'name="base_url"' in r.text
+
+
+def test_a_base_url_change_re_renders_only_the_model_field(tmp_path, monkeypatch):
+    """This response is swapped into a DOM that already holds the Base URL input,
+    so it must not carry a second one: two `name="base_url"` inputs POST two
+    values, and it would also re-render the field being typed into.
+
+    Mutation: always render the wrapper and this count is 1, i.e. 2 in the page.
+    """
+    _FakeLister(models=["qwen3:8b"]).install(monkeypatch)
+
+    r = _ollama_client(tmp_path).get(
+        "/settings/model-field?provider=ollama&model=qwen3:8b&base_url=http://box.lan:11434"
+    )
+
+    assert r.status_code == 200
+    assert 'id="model-field"' in r.text
+    assert 'id="provider-fields"' not in r.text
+    assert r.text.count('name="base_url"') == 0
+
+
+def test_the_cleared_base_url_is_announced_not_silently_dropped(tmp_path, monkeypatch):
+    """`POST /settings` maps `base_url or None`, so Save on an empty field
+    DESTROYS the stored value. Between the clear and Save the page would
+    otherwise show an empty Base URL while config.json still holds one -- the
+    page asserting a state it does not have. Name what is going, and what would
+    be dialled instead.
+
+    Mutation: drop the note and the discard is silent.
+    """
+    _openrouter_lister(monkeypatch)
+
+    r = _ollama_client(tmp_path, base_url="https://proxy.internal/v1").get(
+        "/settings/model-field?provider_changed=1&provider=openrouter"
+        "&model=&base_url=https://proxy.internal/v1"
+    )
+
+    assert r.status_code == 200
+    assert "https://proxy.internal/v1" in r.text  # what is being discarded
+    assert "https://openrouter.ai/api/v1" in r.text  # ...and what replaces it
+    assert "Nothing has been saved yet" in r.text  # a proposal, not a done deal
+
+
+def test_no_discard_note_when_there_was_nothing_to_discard(tmp_path, monkeypatch):
+    """An empty Base URL loses nothing, so a note would claim a discard that did
+    not happen -- and name a URL the user never had.
+
+    Mutation: render the note unconditionally and it appears here with an empty
+    `<code></code>` where the discarded URL should be.
+    """
+    _openrouter_lister(monkeypatch)
+
+    r = _ollama_client(tmp_path).get(
+        "/settings/model-field?provider_changed=1&provider=openrouter"
+        "&model=openai/gpt-oss-20b:free&base_url="
+    )
+
+    assert r.status_code == 200
+    assert "cleared it" not in r.text
+    assert "Nothing has been saved yet" not in r.text
+
+
+def test_settings_wires_the_provider_select_to_the_clearing_route(tmp_path):
+    """Every test above calls `/settings/model-field?provider_changed=1` on the
+    route directly. None of them reads the shipped page, so a broken `<select>`
+    could sit there inert -- switched from Ollama to OpenRouter by hand in a
+    browser -- while the whole suite around it stays green.
+
+    One test, not two, even though it names two mutations: both are the same
+    promise -- "the shipped select safely reaches the clearing route" -- read out
+    of `provider_fields.html`'s comment ("this wrapper is served only for a
+    provider change" via `hx-get`, "the provider select itself stays outside this
+    div" via `hx-target`). `test_the_provider_change_response_carries_the_model_and_the_base_url`
+    above bundles three assertions the same way, under one promise about what one
+    response carries, rather than one test per assertion.
+
+    Parses `<select name="provider" ...>` out of the page first and reads
+    attributes from within that match, the way
+    `test_the_provider_change_url_the_page_actually_uses_is_gated` in
+    `test_same_origin_guard.py` was just hardened to: a single pattern anchored on
+    `name="provider"` spanning the whole tag would go `None` the moment someone
+    reorders the template's attributes, which is a tidy-up, not a bug, and would
+    fail closed rather than reporting what actually broke.
+
+    Mutation (M7): drop `provider_changed=1` from the select's `hx-get`. The
+    route then returns `model_field.html` instead of the `#provider-fields`
+    wrapper, so switching from Ollama to OpenRouter never clears
+    `http://localhost:11434` -- Save stores it as OpenRouter's own endpoint.
+    Caught by the `hx-get` assertion below.
+
+    Mutation (M6): change the select's `hx-target` from `#provider-fields` to
+    `#model-field`. `#model-field` sits inside the wrapper, so the wrapper --
+    which carries its own `base_url` input and the discard note -- gets swapped
+    into a region it contains, and the original input outside it survives. The
+    page then holds two `name="base_url"` inputs, one still showing the old
+    proxy, sitting directly beneath a note claiming the field was cleared; Save
+    posts both. Caught by the `hx-target` assertion below.
+
+    Mutation (M8): drop `[name='base_url']` from the select's `hx-include`.
+    The route then receives `base_url=""` on every provider change, so
+    `discarded_base_url` is always empty and no note renders -- even when the
+    field held a real endpoint -- and `POST /settings` maps `base_url or
+    None`, so Save silently destroys the stored value with nothing on the page
+    ever having said so. This is worse than M6 or M7: those corrupt or
+    misroute the response, but this one makes the loss invisible. Caught by
+    the `hx-include` assertion below.
+
+    Mutation (M9): drop `[name='model']` from the select's `hx-include`. Same
+    class of bug, on the sibling field the same doc comment
+    (`settings.html:54-55`) also names. The route then receives `model=""` on
+    every provider change, so whatever model was configured is silently
+    dropped from the field -- and unlike the Base URL there is no discard note
+    for Model at all, so this loss is even less visible: `POST /settings`
+    stores `model` as given (no `or None` guard), so Save overwrites
+    config.json's model with an empty string with no warning shown anywhere.
+    Caught by the `hx-include` assertion below.
+    """
+    r = _ollama_client(tmp_path).get("/settings")
+    assert r.status_code == 200
+
+    select = re.search(r'<select\b[^>]*\bname="provider"[^>]*>', r.text)
+    assert select is not None, "the settings page no longer has a provider select"
+    tag = select.group(0)
+
+    hx_get = re.search(r'\bhx-get="([^"]*)"', tag)
+    assert hx_get is not None, "the provider select no longer has an hx-get"
+    assert "provider_changed=1" in hx_get.group(1)  # M7
+
+    hx_target = re.search(r'\bhx-target="([^"]*)"', tag)
+    assert hx_target is not None, "the provider select no longer has an hx-target"
+    assert hx_target.group(1) == "#provider-fields"  # M6
+
+    hx_include = re.search(r'\bhx-include="([^"]*)"', tag)
+    assert hx_include is not None, "the provider select no longer has an hx-include"
+    assert "[name='base_url']" in hx_include.group(1)  # M8
+    assert "[name='model']" in hx_include.group(1)  # M9
+
+    assert r.text.count('name="base_url"') == 1
+    # ...and it must stay outside the region it targets, never inside it.
+    assert select.start() < r.text.index('id="provider-fields"')
 
 
 # --- the default-endpoint map is checked at import, like the lister table ---
@@ -5971,4 +6222,60 @@ def test_the_module_body_runs_the_model_field_copy_check(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, name, module)
 
     with pytest.raises(RuntimeError, match="openrouter"):
+        spec.loader.exec_module(module)
+
+
+# --- which providers clear the Base URL is checked at import too ---
+
+
+def test_the_check_rejects_a_clearing_provider_that_cannot_name_its_replacement():
+    """The note the clear renders promises what verinote would dial instead, and
+    `_model_field_context` fills `endpoint` only for a listable provider -- so a
+    clearing provider outside `MODEL_LISTING_PROVIDERS` renders that promise
+    around an empty `<code></code>`. Same misreport the blank-endpoint clause
+    rejects, reached by a one-line edit to either set instead.
+
+    Mutation: drop the check body and this stops raising.
+    """
+    with pytest.raises(RuntimeError, match="anthropic"):
+        webapp._check_every_clearing_provider_can_name_its_replacement(
+            {"anthropic"}, {"ollama", "openrouter"}
+        )
+
+
+def test_the_check_allows_a_listable_provider_that_does_not_clear():
+    """The falsifier for the test above, and the reason this one is a subset test
+    and not the symmetric difference its three siblings use: Ollama is listable
+    and must NOT clear, since clearing on every switch would wipe an endpoint the
+    user typed. Asserted here rather than left to import, so the rule is stated
+    where a maintainer copying a sibling would read it.
+
+    Mutation: make it `set(clearing) ^ set(listable)` and this raises.
+    """
+    webapp._check_every_clearing_provider_can_name_its_replacement(
+        {"openrouter"}, {"ollama", "openrouter"}
+    )
+
+
+def test_the_module_body_runs_the_clearing_provider_check(monkeypatch):
+    """The predicate is only a gate if the module body calls it, and the tests
+    above call it themselves -- so deleting the module-level call leaves them
+    green (`sys.modules` cached the real import long before they ran).
+
+    Narrowing `MODEL_LISTING_PROVIDERS` is the only lever that can reach this
+    check, because `_BASE_URL_CLEARING_PROVIDERS` is a literal rebuilt by the
+    exec below. That narrowing also breaks the three table checks, so what
+    isolates THIS one is that its call site runs before theirs and that the match
+    below is a phrase only its message contains: move the call after them, or
+    delete it, and the error that arrives is the lister table's instead. A fresh
+    module object rather than `importlib.reload`, for the reason its siblings
+    state.
+    """
+    monkeypatch.setattr(verinote.config, "MODEL_LISTING_PROVIDERS", frozenset({"ollama"}))
+    name = "verinote_web_app_clearing_check_under_test"
+    spec = importlib.util.spec_from_file_location(name, webapp.__file__)
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, name, module)
+
+    with pytest.raises(RuntimeError, match="clears the Base URL"):
         spec.loader.exec_module(module)

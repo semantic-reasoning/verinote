@@ -8,6 +8,9 @@ browser would, and the allow cases exist so a gate that simply refuses anything
 carrying an `Origin` — which would break every real browser — cannot pass.
 """
 
+import re
+from urllib.parse import urlsplit
+
 import pytest
 
 pytest.importorskip("fastapi")
@@ -172,6 +175,39 @@ def test_the_model_field_get_is_gated_because_it_dials_a_caller_url(tmp_path):
 
     assert c.get(url, headers={"Origin": "http://evil.example"}).status_code == 403
     assert c.get(url, headers={"Sec-Fetch-Site": "same-origin"}).status_code == 200
+
+
+def test_the_provider_change_url_the_page_actually_uses_is_gated(tmp_path):
+    """The provider select's URL renders Model *plus* Base URL, and dials
+    `?base_url=` exactly as the plain variant does -- so it has to be a query
+    parameter on the listed path, not a route of its own. Read out of the shipped
+    page rather than written here, because the mutation this must catch is a
+    sibling route: `_ORIGIN_GUARD_GET_PATHS` matches on exact path or
+    `path + "/"`, so `/settings/provider-fields` would sit outside it, and a
+    hardcoded `/settings/model-field?provider_changed=1` in this test would go on
+    passing while nothing in the browser used it.
+
+    Mutation: serve the wrapper from a new ungated route -- the predicate goes
+    False and the 403 becomes a 200, an ungated caller-URL dialer.
+
+    The element is matched first and its `hx-get` read out of it, rather than one
+    pattern spanning both: an attribute pattern anchored to `name="provider"`
+    would go None the moment someone reorders the attributes in `settings.html`,
+    which fails closed on the assert below but reports a template tidy-up as a
+    guard failure.
+    """
+    c = _client(tmp_path)
+    page = c.get("/settings").text
+    select = re.search(r'<select\b[^>]*\bname="provider"[^>]*>', page)
+
+    assert select is not None, "the settings page no longer has a provider select"
+    hx_get = re.search(r'\bhx-get="([^"]+)"', select.group(0))
+    assert hx_get is not None, "the provider select no longer has an hx-get to check"
+    url = hx_get.group(1)
+    assert webapp._origin_guard_applies("GET", urlsplit(url).path)
+    probe = f"{url}{'&' if '?' in url else '?'}provider=ollama&base_url=http://evil.example"
+    assert c.get(probe, headers={"Origin": "http://evil.example"}).status_code == 403
+    assert c.get(probe, headers={"Sec-Fetch-Site": "same-origin"}).status_code == 200
 
 
 # --- ordering, and what the reject path is allowed to touch ---
