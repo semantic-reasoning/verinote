@@ -501,6 +501,34 @@ def test_ask_answers_generic_korean_attribute_question_from_engine(tmp_path):
     assert result.grounding_facts[0].source == "sources/sample-project.txt"
 
 
+def test_ask_answers_a_who_question_from_the_engine_without_a_provider_call(tmp_path):
+    """`X의 <relation>는 누구인가?` is answerable from the KB, and for free.
+
+    The relation is stored under the exact label the question names, so nothing
+    here needs a model: the deterministic reading alone should reach the engine.
+    `DeterministicOnlyClient` raises on every provider entry point, so this fails
+    if the interrogative leaks into the relation candidate and the planner falls
+    through to the UNVERIFIED source-exploration route.
+    """
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/sample-project.txt")
+    store.add_fact(
+        "샘플프로젝트", "담당자", "샘플인물", status="confirmed", source_id=source_id
+    )
+
+    result = ask_question(
+        store,
+        DeterministicOnlyClient(),
+        root=tmp_path,
+        question="샘플프로젝트의 담당자는 누구인가?",
+    )
+
+    assert result.route == "engine"
+    assert result.label == "VERIFIED — engine"
+    assert "샘플인물" in result.answer
+    assert result.grounding_facts[0].source == "sources/sample-project.txt"
+
+
 def test_ask_does_not_call_stale_fact_terms_verified(tmp_path):
     store = _store(tmp_path)
     source_id = store.add_source("sources/sample-project.txt")

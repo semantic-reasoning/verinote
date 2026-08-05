@@ -562,14 +562,49 @@ def _is_generic_entity_anchor(value: str) -> bool:
     return value.strip().casefold() in _GENERIC_ENTITY_ANCHORS
 
 
+_KOREAN_INTERROGATIVE_TAIL = (
+    r"무엇(?:인가요?|입니까)?"
+    r"|누구(?:인가요?|입니까|예요|이에요|야)?"
+    r"|얼마(?:인가요?|입니까|예요|이에요|야)?"
+    r"|어디(?:인가요?|입니까|예요|이에요|야)?"
+    r"|언제(?:인가요?|입니까|예요|이에요|야)?"
+    r"|뭐(?:인가요?|입니까|예요|야)?"
+    r"|어떤\s*것(?:인가요?|입니까)?"
+    r"|인가|입니까"
+)
+"""The interrogative tails `_clean_korean_attribute_label` strips.
+
+`누구` and `얼마` are how Korean asks for a person and an amount, and stripping
+only `무엇` left `프로젝트A의 담당자는 누구인가?` asking for a relation literally
+named `담당자는 누구` -- a label no schema can hold, so the planner built no
+candidates and a question naming its relation exactly was answered UNVERIFIED.
+`어디` and `언제` are the same defect for a place and a time.
+
+This is the stems and suffix forms observed so far, not the whole interrogative
+class: `무엇` and `어떤 것` take no `예요`/`야` here, and no stem takes a past
+form, so `담당자는 누구였나요?` is still left unstripped -- untouched by this
+rule rather than handled by it.
+
+Every suffix this rule adds is reachable only bound to a stem. That is what
+keeps it safe: admitting a stemless `요` or `야` alternative would cut a relation
+named `개요` down to `개`, or `분야` to `분`. The two stemless alternatives,
+`인가` and `입니까`, are HEAD's and are left exactly as they were -- deliberately
+not widened to `인가요?`, which would have cut `샘플사업의 재인가요?` down to
+`재`, the very hazard the stem-bound rule exists to avoid. They are also why
+`샘플사업의 인가?`, naming a relation spelled like the copula, already loses its
+whole label on the unchanged path.
+"""
+
+_KOREAN_ATTRIBUTE_LABEL_TAIL = re.compile(
+    rf"\s*(?:{_KOREAN_INTERROGATIVE_TAIL})\s*$"
+)
+_KOREAN_ATTRIBUTE_LABEL_JOSA = re.compile(r"(?:은|는|이|가)\s*$")
+
+
 def _clean_korean_attribute_label(value: str) -> str:
     label = " ".join(value.strip().split())
-    label = re.sub(
-        r"\s*(?:무엇(?:인가|입니까)?|뭐(?:야|입니까)?|어떤\s*것(?:인가|입니까)?|인가|입니까)\s*$",
-        "",
-        label,
-    ).strip()
-    label = re.sub(r"(?:은|는|이|가)\s*$", "", label).strip()
+    label = _KOREAN_ATTRIBUTE_LABEL_TAIL.sub("", label).strip()
+    label = _KOREAN_ATTRIBUTE_LABEL_JOSA.sub("", label).strip()
     return label
 
 
@@ -577,6 +612,16 @@ def _looks_like_korean_attribute_question(raw_label: str, question: str) -> bool
     tail = raw_label.strip()
     if question.rstrip().endswith(("?", "？")):
         return True
+    # Deliberately NOT widened alongside the label cleaner. This decides whether
+    # the flat attribute shape is claimed at all, and only for a question with no
+    # `?` -- the branch above short-circuits otherwise -- so widening it changes
+    # nothing for a `?`-terminated question. For one without a `?` it cuts both
+    # ways: it would claim `샘플제품의 가격은 얼마` deterministically, but would
+    # also flatten `샘플프로젝트의 담당자의 상사는 누구` into a single-hop label
+    # that can only plan empty, taking it from the LLM, which can read it as a
+    # two-hop lookup. Neither population is measured, so the cleaner is widened
+    # and this is not. A `?`-terminated multi-hop question flattens either way;
+    # that is a separate, larger defect this rule does not address.
     return bool(
         re.search(
             r"(?:은|는|이|가|무엇(?:인가|입니까)?|뭐(?:야|입니까)?|"
