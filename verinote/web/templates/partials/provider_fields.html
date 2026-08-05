@@ -1,0 +1,57 @@
+{# The two fields a provider change can invalidate — Model and Base URL — plus a
+   note naming anything that change is proposing to throw away.
+
+   It is a wrapper because of where the swap has to land. The Model field alone
+   was `#model-field`, so a provider change could only ever reach the Model
+   field; clearing the Base URL means the provider select must swap a region
+   that contains BOTH. The provider `<select>` itself stays outside this div on
+   purpose: swapping it would destroy the focused control mid-interaction, and
+   in Firefox a keyboard user arrowing through the options fires `change` per
+   arrow, so each arrow key would replace the element being arrowed.
+
+   The Base URL input keeps its own `hx-trigger="change"` aimed at the inner
+   `#model-field`, exactly as before, so editing it re-renders only the Model
+   field and never the element being typed into. That is also what keeps
+   `name="base_url"` present exactly once after any swap: this wrapper is served
+   only for a provider change, and the base-URL-triggered swap gets the Model
+   field partial, which has no base_url input to duplicate.
+
+   Served by `GET /settings/model-field?provider_changed=1`, not by a route of
+   its own. `_ORIGIN_GUARD_GET_PATHS` lists that exact path because it dials a
+   caller-supplied `base_url`; a sibling path would be an ungated caller-URL
+   dialer, which is precisely what that guard exists to stop.
+
+   The discard note below is deliberately NOT a per-provider `if` chain. Which
+   provider clears the Base URL is decided in `model_field` in `web/app.py`, and
+   every provider-specific noun in the sentence — the label, the endpoint that
+   would be dialled instead — is a context value the route filled in for the
+   provider it actually decided about. So the sentence is true of whatever
+   provider is cleared, and there is no arm here for
+   `_check_every_listable_provider_has_model_field_copy` to demand: that check
+   reads `model_field.html`, where the copy really is a claim about a specific
+   provider's listing. Pointing it at this file would refuse startup outright,
+   since it raises when a file it checks branches on `provider` nowhere.
+
+   Why the note has to exist at all: `POST /settings` maps `base_url or None`,
+   so an empty field DESTROYS the stored value. Between this clear and Save,
+   the page would otherwise show an empty Base URL while config.json still holds
+   one — the page misreporting the state it is supposed to report. Same
+   resolution as the Model field one line up, where a configured model missing
+   from a listing is shown and named rather than silently dropped. #}
+<div id="provider-fields">
+  {% include "partials/model_field.html" %}
+  <label>Base URL <span class="muted">(optional)</span>
+    <input type="text" name="base_url" value="{{ base_url }}" placeholder="https://…"
+           hx-get="/settings/model-field" hx-trigger="change"
+           hx-include="[name='provider'], [name='model']"
+           hx-target="#model-field" hx-swap="outerHTML">
+  </label>
+  {% if discarded_base_url %}
+  <p class="warn field-note" role="alert">The Base URL field held
+    <code>{{ discarded_base_url }}</code>, and switching to {{ provider_label }}
+    cleared it. Nothing has been saved yet — this is what <strong>Save</strong>
+    would store: no Base URL, so verinote would dial {{ provider_label }}'s own
+    <code>{{ endpoint }}</code> instead. Type <code>{{ discarded_base_url }}</code>
+    back in above to keep it.</p>
+  {% endif %}
+</div>

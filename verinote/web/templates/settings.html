@@ -51,13 +51,18 @@
 <h2>LLM provider</h2>
 <form class="settings" action="/settings" method="post">
   {# Provider and base URL both decide what the Model field can offer, so both
-     re-render it. `hx-include` carries the current model along so switching
-     provider never silently discards what is configured. #}
+     re-render it. `hx-include` carries the current model and base URL along so
+     switching provider never silently discards what is configured — and, for a
+     provider whose Base URL is cleared by the switch, so the response can name
+     what it is proposing to discard. A provider change swaps the whole
+     `#provider-fields` region because it can invalidate the Base URL as well as
+     the Model; this select stays outside that region so the swap never destroys
+     the control being used. #}
   <label>Provider
     <select name="provider"
-            hx-get="/settings/model-field"
+            hx-get="/settings/model-field?provider_changed=1"
             hx-include="[name='base_url'], [name='model']"
-            hx-target="#model-field" hx-swap="outerHTML">
+            hx-target="#provider-fields" hx-swap="outerHTML">
       {% for p in providers %}
       <option value="{{ p }}" {{ 'selected' if p == provider else '' }}>
         {{ provider_labels.get(p, p) }}
@@ -65,13 +70,7 @@
       {% endfor %}
     </select>
   </label>
-  {% include "partials/model_field.html" %}
-  <label>Base URL <span class="muted">(optional)</span>
-    <input type="text" name="base_url" value="{{ base_url }}" placeholder="https://…"
-           hx-get="/settings/model-field" hx-trigger="change"
-           hx-include="[name='provider'], [name='model']"
-           hx-target="#model-field" hx-swap="outerHTML">
-  </label>
+  {% include "partials/provider_fields.html" %}
   <label>Chunk size
     <input type="number" name="extraction_chunk_chars" value="{{ extraction_chunk_chars }}" min="1" step="50">
   </label>

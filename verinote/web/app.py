@@ -222,6 +222,17 @@ _LISTABLE_DEFAULT_ENDPOINTS = {
     "openrouter": OPENROUTER_DEFAULT_BASE_URL,
 }
 
+# The providers a provider CHANGE clears the Base URL for (see `model_field`).
+# A set named here rather than a literal at the decision site, so the rule can be
+# checked against `MODEL_LISTING_PROVIDERS` at import: the clear renders a note
+# naming the endpoint that would be dialled instead, and `_model_field_context`
+# fills `endpoint` only for a listable provider. So a clearing provider that is
+# not listable renders that sentence around an empty `<code></code>` — the same
+# misreport `_check_every_listable_provider_names_its_default_endpoint` rejects a
+# blank entry for, arriving through a door that check does not watch, since a
+# one-line edit to either set opens it.
+_BASE_URL_CLEARING_PROVIDERS = frozenset({"openrouter"})
+
 # The Model field's copy is not shared prose: what a listing IS differs per
 # provider (an installed set on a machine the user controls, versus a published
 # catalogue read with no key), so the partial branches on the provider name and
@@ -474,6 +485,62 @@ def _check_every_listable_provider_has_model_field_copy(providers, template_sour
         )
 
 
+def _check_every_clearing_provider_can_name_its_replacement(clearing, listable) -> None:
+    """Fail at import if a Base-URL-clearing provider has no endpoint to name.
+
+    The fourth sibling, and the subset relation is the whole of it: every
+    provider that clears the Base URL must be one whose models are listable.
+    Not because the clear needs a listing, but because of what the clear must
+    SAY. Taking the field away means the next Save stores no Base URL, so the
+    note has to name what verinote would dial instead — and `endpoint` is filled
+    by `_model_field_context` only for a provider in `MODEL_LISTING_PROVIDERS`.
+    A clearing provider outside that set renders the sentence "verinote would
+    dial <label>'s own <code></code> instead": a promise about the endpoint with
+    the endpoint missing, which is the misreport the blank-entry clause of
+    `_check_every_listable_provider_names_its_default_endpoint` already rejects,
+    reached here by a different door — a one-line edit to either set.
+
+    One direction only, unlike its siblings. A listable provider that does NOT
+    clear is the normal case and the one Ollama is: clearing on every switch
+    would wipe an endpoint the user typed. So this must stay a subset test, never
+    a symmetric difference.
+
+    Raised rather than asserted so `python -O` cannot strip it, matching its
+    siblings.
+    """
+    stray = sorted(set(clearing) - set(listable))
+    if stray:
+        raise RuntimeError(
+            "a provider that clears the Base URL must be one whose models are "
+            "listable, because the note the clear renders names the default "
+            "endpoint that would be dialled instead and only a listable provider "
+            f"has one to name: {stray}"
+        )
+
+
+# The clearing check goes first: the only edit that can reach it while the three
+# below still pass is one to `_BASE_URL_CLEARING_PROVIDERS`, and the one that can
+# reach it while they do NOT — narrowing `MODEL_LISTING_PROVIDERS` — has to be
+# seen here before the table checks reject the same narrowing under their own
+# names. That ordering is also what lets a test prove this call site exists.
+#
+# Invariant these four call sites hold, and how to re-establish it: deleting any
+# one call site, on its own, must make exactly one module-body test fail — the
+# one below that pins THAT guard (`test_the_module_body_runs_the_clearing_provider_check`,
+# `test_the_module_body_runs_the_check` for the keyless-lister guard,
+# `test_the_module_body_runs_the_default_endpoint_check`,
+# `test_the_module_body_runs_the_model_field_copy_check`). This is not
+# self-enforcing — nothing here runs that matrix automatically — so it is only
+# as true as the last time someone ran it by hand. It failed silently once
+# already: a sibling guard raised on the same narrowed fixture the lister
+# check's test used, on a message that happened to name the same provider, so
+# the lister test kept passing for the wrong reason for two commits. Adding a
+# guard, deleting one, or reordering these calls means re-running the
+# delete-one-at-a-time matrix by hand, because a sibling raising on the same
+# fixture can silently make a neighbour's test vacuous.
+_check_every_clearing_provider_can_name_its_replacement(
+    _BASE_URL_CLEARING_PROVIDERS, MODEL_LISTING_PROVIDERS
+)
 _check_every_listable_provider_has_a_keyless_lister(MODEL_LISTING_PROVIDERS, _MODEL_LISTERS)
 _check_every_listable_provider_names_its_default_endpoint(
     MODEL_LISTING_PROVIDERS, _LISTABLE_DEFAULT_ENDPOINTS
@@ -2340,19 +2407,60 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         model: str = "",
         base_url: str = "",
         custom: int = 0,
+        provider_changed: int = 0,
     ):
+        """The Model field, or — on a provider change — Model plus Base URL.
+
+        `provider_changed=1` is the provider select's request, and it is the only
+        one that renders the wrapper. Deliberately this route under a query
+        parameter rather than a route of its own: `_ORIGIN_GUARD_GET_PATHS` lists
+        this exact path because it dials a caller-supplied `base_url`, and a
+        sibling path would fall outside that guard.
+
+        Switching to OpenRouter clears the Base URL, because that field's only
+        job is to point verinote at a different endpoint and the endpoint being
+        left belongs to the provider being left — `http://localhost:11434` is not
+        an OpenRouter endpoint. Only OpenRouter: clearing on every switch would
+        wipe an Ollama user's endpoint whenever they touched the provider select.
+        Which providers those are is `_BASE_URL_CLEARING_PROVIDERS`, named as a
+        set so the import-time check can hold it inside the listable ones — the
+        note below has an endpoint to name only for a listable provider.
+
+        The clear lives here and not in the template because it must happen on a
+        provider CHANGE and never on a page load. `_settings` renders this same
+        context, so a template-side rule would blank a KB whose config.json
+        really does name a proxy — the page misreporting the KB's own state.
+
+        And it is announced, not silent: `POST /settings` maps `base_url or None`,
+        so Save on an empty field destroys the stored value. `discarded_base_url`
+        carries what the field held into the note, which says plainly that this is
+        a proposal until Save and what would be dialled instead.
+        """
         if app.state.cfg is None:
             return _kb_select(request)
+        provider = normalize_provider(provider)
+        clears_base_url = bool(provider_changed) and provider in _BASE_URL_CLEARING_PROVIDERS
+        discarded_base_url = base_url.strip() if clears_base_url else ""
+        if clears_base_url:
+            base_url = ""
+        context = _model_field_context(
+            provider=provider,
+            model=model,
+            base_url=base_url,
+            lazy=False,
+            custom=bool(custom),
+        )
+        if not provider_changed:
+            return templates.TemplateResponse(request, "partials/model_field.html", context)
         return templates.TemplateResponse(
             request,
-            "partials/model_field.html",
-            _model_field_context(
-                provider=normalize_provider(provider),
-                model=model,
-                base_url=base_url,
-                lazy=False,
-                custom=bool(custom),
-            ),
+            "partials/provider_fields.html",
+            {
+                **context,
+                "base_url": base_url,
+                "discarded_base_url": discarded_base_url,
+                "provider_label": PROVIDER_LABELS.get(provider, provider),
+            },
         )
 
     def _settings(request: Request, *, test_result=None, error=None, status_code=200):
