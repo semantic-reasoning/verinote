@@ -415,6 +415,98 @@ def test_generic_korean_attribute_requires_question_shape():
     assert intent.kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED
 
 
+# Built as an actual cross-product rather than a hand-written list, so that
+# every added stem really is pinned against every suffix form the rule admits.
+# A hand-list drifts: with `이에요` written out for one stem only, dropping it
+# from the other three fails no test, because the stem that still carries it
+# masks them.
+_KOREAN_INTERROGATIVE_STEMS = (
+    ("샘플프로젝트의 담당자는 누구", ("담당자",)),
+    ("샘플제품의 가격은 얼마", ("가격",)),
+    ("샘플조직의 본사는 어디", ("본사",)),
+    ("샘플프로젝트의 착수일은 언제", ("착수일",)),
+)
+_KOREAN_INTERROGATIVE_QUESTION_FORMS = (
+    "인가?",
+    "인가요?",
+    "입니까?",
+    "예요?",
+    "이에요?",
+    "야?",
+    "?",
+)
+
+
+@pytest.mark.parametrize(
+    ("question", "candidates"),
+    [
+        (stem + form, expected)
+        for stem, expected in _KOREAN_INTERROGATIVE_STEMS
+        for form in _KOREAN_INTERROGATIVE_QUESTION_FORMS
+    ]
+    # The pre-existing stems keep working, including the forms this rule newly
+    # admits on each of them. They are listed separately because they do not
+    # carry the same suffix set as the four added stems.
+    + [
+        ("샘플프로젝트의 목적은 무엇인가요?", PURPOSE_RELATION_CANDIDATES),
+        ("샘플프로젝트의 목적이 뭐인가요?", PURPOSE_RELATION_CANDIDATES),
+        ("샘플프로젝트의 목적이 뭐예요?", PURPOSE_RELATION_CANDIDATES),
+        ("샘플문서의 형식은 어떤 것인가요?", ("형식",)),
+    ],
+)
+def test_korean_attribute_questions_strip_person_place_time_and_amount_words(
+    question, candidates
+):
+    """`누구`/`얼마`/`어디`/`언제` are interrogatives, not part of the relation.
+
+    Stripping only `무엇` left the relation candidate as the entire phrase (e.g.
+    `담당자는 누구`), which no schema can hold, so a question that named its
+    relation exactly still planned no candidates and was answered UNVERIFIED.
+    """
+    intent = deterministic_query_intent(question)
+
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.relation_candidates == candidates
+
+
+@pytest.mark.parametrize("relation", ["개요", "분야"])
+def test_korean_attribute_label_keeps_a_relation_whose_last_syllable_is_an_ending(
+    relation,
+):
+    """The interrogative strip must not eat a syllable a relation name owns.
+
+    `개요` and `분야` end in `요` and `야`, the two endings the added stems carry
+    that are also ordinary final syllables. Admitting either as an alternative
+    that can match with an empty stem would ask the schema for `개` or `분`, and
+    the question would stop matching its own relation.
+
+    Only the bare form is asserted. Behind a josa the label is protected anyway
+    -- in `개요는 무엇인가요?` the `무엇인가요` wins the end-of-string anchor --
+    so that form cannot fail and would be coverage in name only.
+    """
+    assert deterministic_query_intent(f"샘플문서의 {relation}?").relation_candidates == (
+        relation,
+    )
+
+
+def test_korean_attribute_label_does_not_strip_a_stemless_politeness_ending():
+    """The stemless `인가`/`입니까` alternatives must stay unwidened.
+
+    They are the only alternatives that match with no interrogative stem in
+    front, so giving either one an optional `요` puts the whole rule back in the
+    hazard the stem-bound suffixes avoid: `재인가요` would lose four syllables
+    and ask the schema for `재`.
+    """
+    assert deterministic_query_intent("샘플사업의 재인가요?").relation_candidates == (
+        "재인가요",
+    )
+    # The form a KB holding `재인가` actually answers keeps working, because the
+    # `는` here is a real josa rather than a politeness ending.
+    assert deterministic_query_intent("샘플사업의 재인가는?").relation_candidates == (
+        "재인가",
+    )
+
+
 def test_deterministic_entity_relation_discovery_questions_are_generic():
     english = deterministic_query_intent("How is Sample Entity related?")
     connected = deterministic_query_intent(
