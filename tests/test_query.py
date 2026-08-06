@@ -651,7 +651,10 @@ def test_planner_no_candidates_requires_review(tmp_path, fake_client, intent_pay
 
     assert results[0]["id"] == qid
     assert results[0]["status"] == "review_required"
-    assert results[0]["reason"] == "no query candidates matched the schema"
+    # The relation `is_a` exists; the subject does not. The reason says which,
+    # because "no query candidates matched the schema" sent the reader looking
+    # for a missing relation that is right there.
+    assert results[0]["reason"] == 'entity "Missing Subject" is not in the knowledge base'
     assert load_query(s) == ""
 
 
@@ -1042,7 +1045,9 @@ def test_llm_first_path_makes_exactly_one_intent_call(
     results = translate_questions(s, client, root=tmp_path)
 
     assert results[0]["status"] == "review_required"
-    assert results[0]["reason"] == "no query candidates matched the schema"
+    assert results[0]["reason"] == (
+        'relation "missing_relation" is not in the schema or its aliases (a policy/relation-aliases.md entry would map it)'
+    )
     assert client.calls == 1
 
 
@@ -1068,7 +1073,427 @@ def test_reinterpretation_llm_error_declines_the_direct_datalog_fallback(
     )
 
     assert flow.status == "review_required"
-    assert "no query candidates matched the schema" in flow.reason
+    assert 'relation "birth place" is not in the schema or its aliases (a policy/relation-aliases.md entry would map it)' in flow.reason
     assert "synthetic outage" in flow.reason
     assert flow.provider_failed is True
     assert flow.allow_direct_datalog_fallback is False
+
+
+def _diagnosis_store(tmp_path):
+    s = _store(tmp_path)
+    s.add_fact("샘플프로젝트", "purpose", "샘플목표", status="confirmed")
+    s.add_fact("샘플조직", "is_a", "조직", status="confirmed")
+    return s
+
+
+def _plan_for(store, *, subject, relation, qid=1):
+    from verinote.pipeline.query_intent import (
+        IntentTarget,
+        QueryIntent,
+        QueryIntentKind,
+    )
+    from verinote.pipeline.query_planner import plan_query_candidates
+    from verinote.pipeline.query_schema import build_query_schema_snapshot
+
+    intent = QueryIntent(
+        kind=QueryIntentKind.LOOKUP_OBJECT,
+        subject=IntentTarget("entity", subject),
+        relation=IntentTarget("relation", relation),
+    )
+    snapshot = build_query_schema_snapshot(store, exact_entities=(subject,))
+    return plan_query_candidates(intent, snapshot, qid=qid)
+
+
+@pytest.mark.parametrize(
+    ("subject", "relation", "relation_in_schema", "entity_in_kb"),
+    [
+        ("샘플프로젝트", "담당자", False, True),   # (a) relation absent
+        ("없는조직", "purpose", True, False),      # (b) entity absent
+        ("없는조직", "담당자", False, False),      # (a+b) both absent
+        ("샘플조직", "purpose", True, True),       # (c) both known, no fact joins them
+    ],
+)
+def test_empty_lookup_plan_reports_which_half_is_missing(
+    tmp_path, subject, relation, relation_in_schema, entity_in_kb
+):
+    """One empty plan, three remedies -- so it has to say which one applies.
+
+    (a+b) is listed because it is a real case, not a corner: the parser can
+    mis-split a question so that neither half survives, and a diagnosis that
+    picked one winner would send the user to fix half the problem.
+    """
+    plan = _plan_for(_diagnosis_store(tmp_path), subject=subject, relation=relation)
+
+    assert plan.candidates == ()
+    assert plan.diagnosis is not None
+    assert plan.diagnosis.relation_in_schema is relation_in_schema
+    assert plan.diagnosis.entity_in_kb is entity_in_kb
+
+
+def test_relation_membership_is_read_from_the_complete_label_set(tmp_path):
+    """Membership must not be answered from the bounded, rendered relation list.
+
+    `snapshot.relations` is capped at `max_relations` because it is rendered
+    into the model's hint and into candidate generation. Answering "does this
+    relation exist?" from that cap reports a relation the KB holds as absent,
+    which would tell the user to add an alias for something already there --
+    and, once the re-read is gated on this field, would spend a provider call
+    on it too.
+    """
+    from verinote.pipeline.query_schema import build_query_schema_snapshot
+
+    s = _store(tmp_path)
+    for index in range(120):
+        s.add_fact("샘플주체", f"관계{index:03d}", f"값{index:03d}", status="confirmed")
+    snapshot = build_query_schema_snapshot(s, exact_entities=("없는주체",))
+    assert snapshot.relations_truncated  # the rendered list really is capped
+
+    # A relation past the cap, asked about with a subject that does not hold it.
+    plan = _plan_for(s, subject="없는주체", relation="관계119")
+
+    assert plan.candidates == ()
+    assert plan.diagnosis is not None
+    assert plan.diagnosis.relation_in_schema is True
+    assert plan.diagnosis.entity_in_kb is False
+
+
+def test_diagnosis_is_skipped_when_the_snapshot_carries_no_membership_sets(tmp_path):
+    """Absence is unknown, not false, when the sets were never built.
+
+    A snapshot assembled by hand has no complete membership data. Treating that
+    as "nothing exists" would emit a confidently wrong reason; the planner
+    reports no diagnosis instead and the caller keeps its old wording.
+    """
+    from verinote.pipeline.query_intent import (
+        IntentTarget,
+        QueryIntent,
+        QueryIntentKind,
+    )
+    from verinote.pipeline.query_planner import plan_query_candidates
+    from verinote.pipeline.query_schema import QuerySchemaSnapshot
+
+    bare = QuerySchemaSnapshot(
+        relations=(),
+        relations_truncated=False,
+        relation_aliases=(),
+        typed_relations=(),
+        exact_entity_facts=(),
+        exact_entity_facts_truncated=False,
+        fact_count=0,
+    )
+    intent = QueryIntent(
+        kind=QueryIntentKind.LOOKUP_OBJECT,
+        subject=IntentTarget("entity", "샘플조직"),
+        relation=IntentTarget("relation", "purpose"),
+    )
+
+    plan = plan_query_candidates(intent, bare, qid=1)
+
+    assert plan.candidates == ()
+    assert plan.diagnosis is None
+
+
+def test_known_entity_with_no_such_fact_is_reported_as_neither_half_missing(
+    tmp_path, fake_client, intent_payload
+):
+    """Case (c) reads differently from the two absences, because nothing is wrong.
+
+    The user has no alias to add and no spelling to fix; the KB simply does not
+    hold the fact. Saying so is the difference between an instruction and a
+    dead end.
+    """
+    s = _diagnosis_store(tmp_path)
+    s.add_question("샘플조직의 목적은?")
+    client = fake_client(
+        intent=intent_payload("lookup_object", subject="샘플조직", relation="purpose")
+    )
+
+    results = translate_questions(s, client, root=tmp_path)
+
+    assert results[0]["status"] == "review_required"
+    # The single requested label resolved, so nothing was substituted and no
+    # reading is singled out.
+    assert results[0]["reason"] == (
+        'entity "샘플조직" is in the knowledge base and the requested relation '
+        "resolved, but no confirmed fact joins them"
+    )
+
+
+def test_reason_names_only_the_endpoint_the_knowledge_base_is_missing(tmp_path):
+    """A question naming two entities must not accuse the one the KB holds.
+
+    `entity_in_kb` is a single bool over both endpoints, so "how are A and B
+    related?" with only B misspelled makes it False for the pair. Rendering that
+    as "entity A, B is not in the knowledge base" states something false about
+    A -- in the very message added to stop the reason being unhelpful. The
+    diagnosis therefore carries the absent endpoints, not just the verdict.
+    """
+    from verinote.pipeline.query import _empty_plan_reason
+    from verinote.pipeline.query_intent import (
+        IntentTarget,
+        QueryIntent,
+        QueryIntentKind,
+    )
+    from verinote.pipeline.query_planner import plan_query_candidates
+    from verinote.pipeline.query_schema import build_query_schema_snapshot
+
+    s = _store(tmp_path)
+    s.add_fact("샘플조직", "is_a", "조직", status="confirmed")
+    intent = QueryIntent(
+        kind=QueryIntentKind.LOOKUP_RELATION,
+        subject=IntentTarget("entity", "샘플조직"),
+        object=IntentTarget("entity", "없는것"),
+    )
+    snapshot = build_query_schema_snapshot(s, exact_entities=("샘플조직", "없는것"))
+
+    plan = plan_query_candidates(intent, snapshot, qid=1)
+
+    assert plan.candidates == ()
+    assert plan.diagnosis is not None
+    assert plan.diagnosis.entity_in_kb is False
+    assert plan.diagnosis.absent_entities == ("없는것",)
+    reason = _empty_plan_reason(plan, intent)
+    assert reason == 'entity "없는것" is not in the knowledge base'
+    assert "샘플조직" not in reason
+
+
+def test_a_typed_relation_alias_counts_as_being_in_the_schema(tmp_path):
+    """The planner matches a typed alias, so membership must see it too.
+
+    `_relation_matches_any` observes a relation's typed-spec name and alias,
+    which are declared in `policy/typed-relations.md` and appear in no fact. A
+    membership set built from facts alone calls such an alias absent, and the
+    reason then tells the user to add it to `policy/relation-aliases.md` -- a
+    remedy for a problem they do not have, prescribed about a relation the
+    planner can already match.
+    """
+    from verinote.pipeline.query_intent import (
+        IntentTarget,
+        QueryIntent,
+        QueryIntentKind,
+    )
+    from verinote.pipeline.query_planner import (
+        _matching_relations,
+        _requested_relations_in_schema,
+    )
+    from verinote.pipeline.query_schema import build_query_schema_snapshot
+
+    s = _store(tmp_path)
+    (tmp_path / "policy").mkdir(exist_ok=True)
+    (tmp_path / "policy" / "typed-relations.md").write_text(
+        "- `가격`: amount as price (원=1)\n", encoding="utf-8"
+    )
+    s.add_fact("샘플제품", "가격", "1000", status="confirmed")
+    snapshot = build_query_schema_snapshot(s, exact_entities=("다른제품",))
+    intent = QueryIntent(
+        kind=QueryIntentKind.LOOKUP_OBJECT,
+        subject=IntentTarget("entity", "다른제품"),
+        relation=IntentTarget("relation", "price"),
+    )
+
+    # The planner does match it; membership must not disagree.
+    assert _matching_relations(intent, snapshot)
+    assert _requested_relations_in_schema(("price",), snapshot) == (("price",), False)
+
+
+def test_an_entity_seen_only_as_an_object_is_in_the_knowledge_base(tmp_path):
+    """Being in the KB is not the same as being some relation's subject.
+
+    `entity_in_kb` exists to catch a name the KB has never heard of. An entity
+    that appears only on the object side has been heard of, so calling it absent
+    would report a spelling problem for a correctly spelled name -- and the real
+    finding, that this subject has no such fact, would be lost.
+    """
+    plan = _plan_for(
+        _kb_with_object_only_entity(tmp_path), subject="김철수", relation="owner"
+    )
+
+    assert plan.candidates == ()
+    assert plan.diagnosis is not None
+    assert plan.diagnosis.entity_in_kb is True
+    assert plan.diagnosis.absent_entities == ()
+
+
+def _kb_with_object_only_entity(tmp_path):
+    s = _store(tmp_path)
+    s.add_fact("프로젝트A", "owner", "김철수", status="confirmed")
+    return s
+
+
+def test_membership_sets_carry_every_spelling_the_matcher_compares_against(tmp_path):
+    """The sets must mirror the matcher's spellings, not a convenient subset.
+
+    `_matching_entities` compares an intent's value against a term's `display`,
+    `executable` and `key`, and `_relation_matches_any` does the same for a
+    relation. A membership set holding only the displayed surface therefore says
+    "absent" for a spelling the planner would have matched -- the divergence
+    that made a typed alias read as missing. Pinning the spellings keeps the two
+    from drifting apart again.
+    """
+    from verinote.pipeline.query_schema import build_query_schema_snapshot
+
+    s = _store(tmp_path)
+    s.add_fact("샘플조직", "is_a", "조직", status="confirmed")
+    snapshot = build_query_schema_snapshot(s)
+    relation = snapshot.relations[0].relation
+    subject = snapshot.relations[0].subjects[0]
+
+    assert snapshot.all_relation_labels is not None
+    assert {relation.display, relation.executable, relation.key} <= snapshot.all_relation_labels
+    assert snapshot.all_entity_surfaces is not None
+    assert {subject.display, subject.executable, subject.key} <= snapshot.all_entity_surfaces
+    # The three really are different spellings, or this test would pass vacuously.
+    assert len({relation.display, relation.executable, relation.key}) == 3
+
+
+def _kb_where_the_join_search_truncates(tmp_path):
+    """A hub relation and a busy entity, so both bounded views are capped."""
+    s = _store(tmp_path)
+    for index in range(150):  # past max_entities_per_side on purpose.subjects
+        s.add_fact(f"주체{index:03d}", "purpose", f"목표{index:03d}", status="confirmed")
+    for index in range(60):  # past max_exact_entity_facts, sorting before "purpose"
+        s.add_fact("힣타겟", f"aaa{index:03d}", f"값{index:03d}", status="confirmed")
+    s.add_fact("힣타겟", "purpose", "진짜목표", status="confirmed")
+    return s
+
+
+def test_no_fact_joins_them_is_not_claimed_when_the_search_was_truncated(tmp_path):
+    """Emptiness is read from bounded views, so it cannot always be trusted.
+
+    Membership comes from complete sets, but candidate generation does not: a
+    relation's subject list and the exact-fact list are both capped. On a hub
+    relation the joining fact can sit just past a cap, and the planner comes up
+    empty while the fact exists. Saying "no confirmed fact joins them" there is
+    a false statement about the KB's own contents -- worse than the vague string
+    it replaced, which was at least true.
+    """
+    from verinote.pipeline.query import _empty_plan_reason
+    from verinote.pipeline.query_intent import (
+        IntentTarget,
+        QueryIntent,
+        QueryIntentKind,
+    )
+    from verinote.pipeline.query_planner import plan_query_candidates
+    from verinote.pipeline.query_schema import build_query_schema_snapshot
+
+    s = _kb_where_the_join_search_truncates(tmp_path)
+    intent = QueryIntent(
+        kind=QueryIntentKind.LOOKUP_OBJECT,
+        subject=IntentTarget("entity", "힣타겟"),
+        relation=IntentTarget("relation", "purpose"),
+    )
+    snapshot = build_query_schema_snapshot(s, exact_entities=("힣타겟",))
+    # The fixture really does truncate, or this test proves nothing.
+    assert snapshot.exact_entity_facts_truncated
+    plan = plan_query_candidates(intent, snapshot, qid=1)
+    assert plan.candidates == ()
+    # ...and the fact it would have to have found is really there.
+    assert any(
+        row["subject"] == "힣타겟" and row["relation"] == "purpose"
+        for row in s.facts(statuses=["confirmed"])
+    )
+
+    assert plan.diagnosis is not None
+    assert plan.diagnosis.join_search_complete is False
+    assert _empty_plan_reason(plan, intent) == "no query candidates matched the schema"
+
+
+def test_no_fact_joins_them_is_claimed_when_the_search_was_complete(tmp_path):
+    """The guard must not swallow the case it was built to report.
+
+    On a KB small enough for every view to be whole, emptiness really does prove
+    the fact is absent, and that is the one reading of the three that tells the
+    user nothing needs fixing.
+    """
+    plan = _plan_for(_diagnosis_store(tmp_path), subject="샘플조직", relation="purpose")
+
+    assert plan.diagnosis is not None
+    assert plan.diagnosis.join_search_complete is True
+
+
+def test_case_c_names_the_reading_only_when_a_requested_label_was_dropped(tmp_path):
+    """Name the substitution when there is one, and stay quiet when there is not.
+
+    `_relation_requests` merges `intent.relation` with `relation_candidates`, and
+    an LLM-supplied candidate need not be an alias sibling of the relation it
+    accompanies. When only the sibling resolves, "the requested relation
+    resolved" hides that the question was read as a different word. When every
+    label resolves they are one relation under alias policy -- always so for the
+    sets the deterministic parser invents -- and singling one out would show the
+    user a word they may never have typed.
+    """
+    from verinote.pipeline.query import _empty_plan_reason
+    from verinote.pipeline.query_intent import (
+        IntentTarget,
+        QueryIntent,
+        QueryIntentKind,
+    )
+    from verinote.pipeline.query_planner import plan_query_candidates
+    from verinote.pipeline.query_schema import build_query_schema_snapshot
+
+    s = _store(tmp_path)
+    s.add_fact("홍길동", "purpose", "샘플목표", status="confirmed")
+    s.add_fact("샘플조직", "is_a", "조직", status="confirmed")
+    partial = QueryIntent(
+        kind=QueryIntentKind.LOOKUP_OBJECT,
+        subject=IntentTarget("entity", "샘플조직"),
+        relation=IntentTarget("relation", "담당자"),
+        # `목적` resolves to the `purpose` relation, so its canonical differs
+        # from its spelling -- which is what makes the display rule testable.
+        relation_candidates=("목적",),
+    )
+    snapshot = build_query_schema_snapshot(s, exact_entities=("샘플조직",))
+
+    plan = plan_query_candidates(partial, snapshot, qid=1)
+
+    assert plan.candidates == ()
+    assert plan.diagnosis is not None
+    # `담당자` is absent and `목적` resolved, so the reading is disclosed --
+    # spelled as the question spelled it, not as `purpose`, which is neither the
+    # requested word nor a label this KB would show for it.
+    assert plan.diagnosis.any_unmatched is True
+    assert plan.diagnosis.matched_relations == ("목적",)
+    assert _empty_plan_reason(plan, partial) == (
+        'entity "샘플조직" is in the knowledge base and relation "목적" '
+        "resolved, but no confirmed fact joins them"
+    )
+
+
+def test_no_fact_joins_them_needs_evidence_not_merely_an_untruncated_list(tmp_path):
+    """An empty exact-fact list is not a completed search; it is no search.
+
+    `not truncated` is also true of a list that was never populated, so a
+    snapshot built without `exact_entities` would report the join search as
+    exhaustive with no backstop behind it and claim a fact absent on no
+    evidence. A diagnosed entity that is in the KB has at least one fact, so an
+    empty list here means the snapshot was built for something else.
+    """
+    from verinote.pipeline.query import _empty_plan_reason
+    from verinote.pipeline.query_intent import (
+        IntentTarget,
+        QueryIntent,
+        QueryIntentKind,
+    )
+    from verinote.pipeline.query_planner import plan_query_candidates
+    from verinote.pipeline.query_schema import build_query_schema_snapshot
+
+    s = _store(tmp_path)
+    s.add_fact("샘플주체", "관계000", "값000", status="confirmed")
+    s.add_fact("다른주체", "관계001", "값001", status="confirmed")
+    # 샘플주체 is in the KB and 관계001 is in the schema, but they do not join --
+    # the (c) shape, which is the one that needs evidence.
+    intent = QueryIntent(
+        kind=QueryIntentKind.LOOKUP_OBJECT,
+        subject=IntentTarget("entity", "샘플주체"),
+        relation=IntentTarget("relation", "관계001"),
+    )
+    # Built WITHOUT exact_entities: the list is empty and un-truncated.
+    snapshot = build_query_schema_snapshot(s)
+    assert snapshot.exact_entity_facts == ()
+    assert snapshot.exact_entity_facts_truncated is False
+
+    plan = plan_query_candidates(intent, snapshot, qid=1)
+
+    assert plan.diagnosis is not None
+    assert plan.diagnosis.join_search_complete is False
+    assert "no confirmed fact joins them" not in _empty_plan_reason(plan, intent)

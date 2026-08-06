@@ -127,6 +127,30 @@ class QuerySchemaSnapshot:
     join_facts: tuple[SnapshotFact, ...] = ()
     """Complete engine-input fact rows used only for bounded join planning."""
     join_facts_truncated: bool = False
+    all_relation_labels: frozenset[str] | None = None
+    """Every relation surface in the KB, NFC-folded and *not* truncated.
+
+    The lists above are bounded because they are rendered -- into the model's
+    schema hint and into candidate generation -- so a large KB must not blow
+    either up. Membership is a different question: answering "does this label
+    exist at all?" from a list capped at `max_relations` reports a relation the
+    KB holds as absent, which is worse than not answering. These sets are
+    derived from the same complete fact list the bounded views are taken from
+    (`_engine_facts` reads every engine-status fact), so they cost no extra
+    query and carry no truncation.
+
+    `None` means the snapshot was built without them -- by a caller constructing
+    one directly rather than through `build_query_schema_snapshot` -- and
+    absence is then unknown rather than false. Diagnosis is skipped instead of
+    guessed.
+    """
+    all_entity_surfaces: frozenset[str] | None = None
+    """Every subject and object surface in the KB, NFC-folded and not truncated.
+
+    Carries each term's `display`, `executable` and `key` spellings, because
+    that is the set `_matching_entities` compares an intent's entity against.
+    See `all_relation_labels` for why this is unbounded and what `None` means.
+    """
 
 
 @dataclass(frozen=True)
@@ -176,6 +200,8 @@ def build_query_schema_snapshot(
         fact_count=len(facts),
         join_facts=join_rows,
         join_facts_truncated=include_join_facts and len(facts) > bounds.max_join_facts,
+        all_relation_labels=_all_relation_labels(facts, typed_entries),
+        all_entity_surfaces=_all_entity_surfaces(facts),
     )
 
 
@@ -385,6 +411,45 @@ def _typed_entry(relation: str, spec: TypedRelationSpec) -> TypedRelationEntry:
         type=spec.type,
         alias=spec.alias,
         units=units,
+    )
+
+
+def _all_relation_labels(
+    facts: Iterable[_Fact], typed: Iterable[TypedRelationEntry]
+) -> frozenset[str]:
+    """Every spelling by which a relation can be requested, for membership only.
+
+    Facts are not the whole story. `_relation_matches_any` also observes a
+    relation's typed-spec name and its alias, and those live in
+    `policy/typed-relations.md` rather than in any fact -- so a set built from
+    facts alone reports a typed alias the planner does match as absent, and the
+    reason built on it tells the user to declare something they have declared.
+    """
+    labels = {
+        _nfc(surface)
+        for fact in facts
+        for surface in (fact.relation.display, fact.relation.executable, fact.relation.key)
+    }
+    for entry in typed:
+        labels.add(_nfc(entry.relation))
+        if entry.alias:
+            labels.add(_nfc(entry.alias))
+    return frozenset(labels)
+
+
+def _all_entity_surfaces(facts: Iterable[_Fact]) -> frozenset[str]:
+    """Every spelling of every subject and object in the KB.
+
+    Both endpoints are collected, not just subjects: this answers "is this a
+    real entity in this KB?", and an entity sighted only as an object is just as
+    real. What it must never be read as is "this entity can be the subject of
+    that relation" -- that is what the absence of a planned candidate says.
+    """
+    return frozenset(
+        _nfc(surface)
+        for fact in facts
+        for ref in (fact.subject, fact.object)
+        for surface in (ref.display, ref.executable, ref.key)
     )
 
 

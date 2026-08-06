@@ -531,7 +531,9 @@ def test_repair_disabled_fallback_keeps_deterministic_planner_empty_under_review
         {
             "id": qid,
             "accepted": False,
-            "reason": "no query candidates matched the schema",
+            "reason": (
+                'relation "birth place" is not in the schema or its aliases (a policy/relation-aliases.md entry would map it)'
+            ),
         }
     ]
     assert s.questions()[0]["status"] == "review_required"
@@ -557,7 +559,7 @@ def test_repair_provider_error_during_reinterpretation_skips_direct_fallback(
 
     assert client.calls == 1
     assert results[0]["accepted"] is False
-    assert "no query candidates matched the schema" in results[0]["reason"]
+    assert 'relation "birth place" is not in the schema or its aliases (a policy/relation-aliases.md entry would map it)' in results[0]["reason"]
     assert "synthetic outage" in results[0]["reason"]
     assert s.questions()[0]["status"] == "review_required"
 
@@ -583,7 +585,9 @@ def test_repair_llm_supported_planner_empty_does_not_call_direct_fallback(
         {
             "id": qid,
             "accepted": False,
-            "reason": "no query candidates matched the schema",
+            "reason": (
+                'relation "missing_relation" is not in the schema or its aliases (a policy/relation-aliases.md entry would map it)'
+            ),
         }
     ]
     assert s.questions()[0]["status"] == "review_required"
