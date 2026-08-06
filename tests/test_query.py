@@ -1211,10 +1211,12 @@ def test_known_entity_with_no_such_fact_is_reported_as_neither_half_missing(
     results = translate_questions(s, client, root=tmp_path)
 
     assert results[0]["status"] == "review_required"
-    # The single requested label resolved, so nothing was substituted and no
-    # reading is singled out.
+    # The question also carries its un-stripped josa reading (#431), which no KB
+    # holds, so `any_unmatched` fires and the resolved reading is named. It is
+    # the user's own word, so the message stays true -- but see #441: the
+    # "a word was substituted" signal is now close to always-on for this shape.
     assert results[0]["reason"] == (
-        'entity "샘플조직" is in the knowledge base and the requested relation '
+        'entity "샘플조직" is in the knowledge base and relation "목적" '
         "resolved, but no confirmed fact joins them"
     )
 

@@ -488,7 +488,7 @@ def deterministic_query_intent(question: str) -> QueryIntent:
             return QueryIntent(
                 kind=QueryIntentKind.LOOKUP_OBJECT,
                 subject=IntentTarget("entity", entity),
-                relation_candidates=_attribute_relation_candidates(label),
+                relation_candidates=_korean_attribute_relation_candidates(raw_label),
             )
 
     match = _ENGLISH_POSSESSIVE_ATTRIBUTE_QUESTION.match(text)
@@ -601,11 +601,56 @@ _KOREAN_ATTRIBUTE_LABEL_TAIL = re.compile(
 _KOREAN_ATTRIBUTE_LABEL_JOSA = re.compile(r"(?:은|는|이|가)\s*$")
 
 
-def _clean_korean_attribute_label(value: str) -> str:
+def _korean_attribute_label_readings(value: str) -> tuple[str, ...]:
+    """Both ways to read a label whose last syllable might be a josa.
+
+    A trailing `은`/`는`/`이`/`가` is genuinely ambiguous and no rule available
+    here settles it. Stripping it -- what this did unconditionally -- turns the
+    relation `단가` into `단` and `길이` into `길`. Keeping it turns a mis-typed
+    `가격는?` into a relation named `가격는`, which no KB holds. Both are single
+    guesses, each with its own failure class, and the evidence that decides
+    between them is the schema: only it knows whether `단가` or `단` is a
+    relation. So both readings are offered and the planner picks whichever the
+    KB has, the same reasoning that kept the multi-hop guard out of the parser.
+
+    Korean phonology narrows which reading is *likelier* -- `은`/`이` follow a
+    syllable with a 받침, `는`/`가` follow one without, so the `가` in `단가`
+    cannot be a josa -- but not which is *right*: `가격는` is exactly that
+    impossible spelling and is still a mis-typed `가격`. Ordering by that rule
+    is a reporting refinement, not part of this decision.
+
+    The stripped reading comes first, preserving the reading this has always
+    proposed; the un-stripped one is added, never substituted, so the candidate
+    set is a superset of what this asked for before -- no relation the KB holds
+    is dropped from the request. That is weaker than "nothing can stop
+    resolving": a second reading that *also* names a real relation reaches the
+    conflict gate, so a KB holding both `평` and `평가` on one subject turns
+    `평가?` from an answer into an ambiguity report. That is the honest outcome
+    for a question the KB genuinely does not disambiguate.
+
+    The interrogative tail is stripped before any of this and is still a single
+    guess: `재인가?` loses `인가` and asks only for `재`, so a KB holding
+    `재인가` is not covered by this change. See #443.
+    """
     label = " ".join(value.strip().split())
     label = _KOREAN_ATTRIBUTE_LABEL_TAIL.sub("", label).strip()
-    label = _KOREAN_ATTRIBUTE_LABEL_JOSA.sub("", label).strip()
-    return label
+    stripped = _KOREAN_ATTRIBUTE_LABEL_JOSA.sub("", label).strip()
+    if not stripped:
+        # The whole label is a josa. Reading it as a relation name would claim
+        # a shape this parser has always declined -- `{entity}의 {label}은?`
+        # with a blank label lands here -- and then advise adding a policy
+        # alias for a grammatical particle. A KB that really does hold a
+        # relation named `은` is still reachable through the model, which sees
+        # it in the schema hint.
+        return ()
+    if stripped == label:
+        return (label,)
+    return (stripped, label)
+
+
+def _clean_korean_attribute_label(value: str) -> str:
+    readings = _korean_attribute_label_readings(value)
+    return readings[0] if readings else ""
 
 
 def _looks_like_korean_attribute_question(raw_label: str, question: str) -> bool:
@@ -634,6 +679,26 @@ def _looks_like_korean_attribute_question(raw_label: str, question: str) -> bool
 def _clean_english_attribute_label(value: str) -> str:
     label = " ".join(value.strip().split())
     return label.removeprefix("the ").strip()
+
+
+def _korean_attribute_relation_candidates(raw_label: str) -> tuple[str, ...]:
+    """Relation candidates for a Korean attribute label, both josa readings.
+
+    Only the leading reading is expanded through `_attribute_relation_candidates`.
+    The stripped reading leads, and today it is the only one that can be a
+    synonym key: no key in that function's set ends in `은`/`는`/`이`/`가`,
+    while the second reading ends in one by construction. So expanding it too
+    is a branch nothing can currently reach.
+
+    That is a fact about the key set, not a law. Add a key like `평가` -- which
+    ends in a josa syllable and is in this issue's own list -- and `평가?` would
+    need the second reading expanded to keep its synonyms, because the leading
+    `평` is not a key. Expand both if that day comes.
+    """
+    readings = _korean_attribute_label_readings(raw_label)
+    candidates = list(_attribute_relation_candidates(readings[0]))
+    candidates.extend(readings[1:])
+    return tuple(dict.fromkeys(candidates))
 
 
 def _attribute_relation_candidates(label: str) -> tuple[str, ...]:

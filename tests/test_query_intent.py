@@ -403,7 +403,17 @@ def test_generic_attribute_questions_become_lookup_object_intents():
 
     for intent in (korean, korean_explicit, english_possessive, english_of):
         assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
-        assert intent.relation_candidates == PURPOSE_RELATION_CANDIDATES
+        # The Korean forms also carry their un-stripped josa reading (#431);
+        # English has no josa, so those stay exactly the synonym set.
+        assert intent.relation_candidates[: len(PURPOSE_RELATION_CANDIDATES)] == (
+            PURPOSE_RELATION_CANDIDATES
+        )
+    assert english_possessive.relation_candidates == PURPOSE_RELATION_CANDIDATES
+    assert english_of.relation_candidates == PURPOSE_RELATION_CANDIDATES
+    assert korean.relation_candidates == PURPOSE_RELATION_CANDIDATES + ("목적은",)
+    assert korean_explicit.relation_candidates == PURPOSE_RELATION_CANDIDATES + (
+        "목적은",
+    )
     assert korean.subject == IntentTarget("entity", "샘플프로젝트")
     assert english_possessive.subject == IntentTarget("entity", "Sample Project")
     assert english_of.subject == IntentTarget("entity", "Sample Project")
@@ -420,11 +430,15 @@ def test_generic_korean_attribute_requires_question_shape():
 # A hand-list drifts: with `이에요` written out for one stem only, dropping it
 # from the other three fails no test, because the stem that still carries it
 # masks them.
+# The second entry of each pair is the un-stripped josa reading, offered
+# alongside the stripped one because nothing here can tell a josa from a
+# label's own last syllable (#431). It never matches for these labels; the
+# stripped reading is the one the KB holds.
 _KOREAN_INTERROGATIVE_STEMS = (
-    ("샘플프로젝트의 담당자는 누구", ("담당자",)),
-    ("샘플제품의 가격은 얼마", ("가격",)),
-    ("샘플조직의 본사는 어디", ("본사",)),
-    ("샘플프로젝트의 착수일은 언제", ("착수일",)),
+    ("샘플프로젝트의 담당자는 누구", ("담당자", "담당자는")),
+    ("샘플제품의 가격은 얼마", ("가격", "가격은")),
+    ("샘플조직의 본사는 어디", ("본사", "본사는")),
+    ("샘플프로젝트의 착수일은 언제", ("착수일", "착수일은")),
 )
 _KOREAN_INTERROGATIVE_QUESTION_FORMS = (
     "인가?",
@@ -448,10 +462,10 @@ _KOREAN_INTERROGATIVE_QUESTION_FORMS = (
     # admits on each of them. They are listed separately because they do not
     # carry the same suffix set as the four added stems.
     + [
-        ("샘플프로젝트의 목적은 무엇인가요?", PURPOSE_RELATION_CANDIDATES),
-        ("샘플프로젝트의 목적이 뭐인가요?", PURPOSE_RELATION_CANDIDATES),
-        ("샘플프로젝트의 목적이 뭐예요?", PURPOSE_RELATION_CANDIDATES),
-        ("샘플문서의 형식은 어떤 것인가요?", ("형식",)),
+        ("샘플프로젝트의 목적은 무엇인가요?", PURPOSE_RELATION_CANDIDATES + ("목적은",)),
+        ("샘플프로젝트의 목적이 뭐인가요?", PURPOSE_RELATION_CANDIDATES + ("목적이",)),
+        ("샘플프로젝트의 목적이 뭐예요?", PURPOSE_RELATION_CANDIDATES + ("목적이",)),
+        ("샘플문서의 형식은 어떤 것인가요?", ("형식", "형식은")),
     ],
 )
 def test_korean_attribute_questions_strip_person_place_time_and_amount_words(
@@ -504,6 +518,7 @@ def test_korean_attribute_label_does_not_strip_a_stemless_politeness_ending():
     # `는` here is a real josa rather than a politeness ending.
     assert deterministic_query_intent("샘플사업의 재인가는?").relation_candidates == (
         "재인가",
+        "재인가는",
     )
 
 
@@ -560,3 +575,90 @@ def test_deterministic_entity_relation_discovery_rejects_generic_what_does_shape
         deterministic_query_intent("What does Sample Entity have?").kind
         == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED
     )
+
+
+@pytest.mark.parametrize(
+    "label",
+    ["단가", "물가", "증가", "평가", "나이", "차이", "길이", "넓이", "허가", "기준단가"],
+)
+def test_a_labels_own_last_syllable_survives_as_one_reading(label):
+    """A trailing `은`/`는`/`이`/`가` may belong to the relation, not the grammar.
+
+    Stripping it unconditionally asked the schema for `단`, `길`, `나` -- labels
+    no KB holds -- so a question naming its relation exactly was answered
+    UNVERIFIED. The full spelling is now offered as a reading, and the schema
+    decides which one exists.
+    """
+    intent = deterministic_query_intent(f"샘플대상의 {label}?")
+
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert label in intent.relation_candidates
+
+
+@pytest.mark.parametrize(
+    ("question", "label"),
+    [
+        ("샘플대상의 성과 지표은?", "성과 지표"),
+        ("샘플대상의 가격는?", "가격"),
+        ("샘플대상의 담당자은?", "담당자"),
+        ("샘플제품의 길이 얼마인가?", "길이"),
+    ],
+)
+def test_the_stripped_reading_survives_too(question, label):
+    """Keeping the full spelling must not cost the stripped one.
+
+    The first two questions carry a josa that does not agree with the word
+    before it -- `지표은` should be `지표는`, `가격는` should be `가격은` -- which
+    a person mistypes and a caller templating `{relation}은?` produces
+    mechanically. Committing to the full reading there would ask for a relation
+    named `가격는`. Both readings are offered precisely because neither guess is
+    safe on its own.
+    """
+    intent = deterministic_query_intent(question)
+
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert label in intent.relation_candidates
+
+
+@pytest.mark.parametrize("question", ["샘플프로젝트의 목적는?", "샘플프로젝트의 목적이?"])
+def test_the_synonym_set_survives_the_second_reading(question):
+    """Adding a second reading must not cost the synonyms the first one carries.
+
+    `목적는` is a mis-typed `목적`, and the stripped reading is the one that
+    resolves to the purpose set. Only that reading is expanded -- the second
+    cannot be a synonym key today -- so this pins that the set still arrives.
+    """
+    intent = deterministic_query_intent(question)
+
+    for synonym in PURPOSE_RELATION_CANDIDATES:
+        assert synonym in intent.relation_candidates
+
+
+def test_a_label_that_is_only_a_josa_is_not_claimed():
+    """`{entity}의 {label}은?` with a blank label is not an attribute question.
+
+    Reading a bare `은` as a relation name would claim a shape this parser has
+    always declined, and then tell the user to add a `policy/relation-aliases.md`
+    entry for a grammatical particle -- advice about their own KB that is simply
+    wrong. Declining sends it to the model instead, which sees the schema hint,
+    so a KB that really does hold a relation named `은` is still reachable.
+    """
+    for question in ("샘플조직의 은?", "샘플조직의 은 무엇인가요?", "샘플조직의 가?"):
+        intent = deterministic_query_intent(question)
+
+        assert intent.kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED
+        assert intent.relation_candidates == ()
+
+    # Pinned on the function too, not only through the call site's truthiness
+    # check: a label that is only a josa has no readings, rather than a reading
+    # that happens to be the empty string.
+    from verinote.pipeline.query_intent import _korean_attribute_label_readings
+
+    assert _korean_attribute_label_readings("은") == ()
+    assert _korean_attribute_label_readings("가") == ()
+
+    # The boundary: one syllable of label before the josa is a label, so `이는?`
+    # is an ordinary two-reading question rather than a declined one.
+    boundary = deterministic_query_intent("샘플조직의 이는?")
+    assert boundary.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert boundary.relation_candidates == ("이", "이는")
