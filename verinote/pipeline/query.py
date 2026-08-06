@@ -568,12 +568,13 @@ def _empty_plan_reason(plan, intent: QueryIntent) -> str:
         and diagnosis.entity_in_kb
         and diagnosis.join_search_complete
     ):
-        # The reading is named only when some requested label did NOT resolve,
-        # because that is the only case where naming it tells the reader
-        # something: one of the words the question carried was substituted for
-        # another. When every label resolved they are aliases of one relation,
-        # and singling one out would put a sibling on screen that the user may
-        # never have typed.
+        # The reading is named only when some requested label did NOT resolve.
+        # That used to mean a word the question carried was substituted for
+        # another; since #431 it usually means the speculative josa reading did
+        # not match, and the label named is the user's own word. It can still be
+        # a sibling they never typed -- `목표는?` names `목적`, the synonym set's
+        # leading spelling -- so the message is true but no longer selective.
+        # #441 is where that distinction gets restored.
         if diagnosis.any_unmatched and diagnosis.matched_relations:
             resolved = ", ".join(f'"{value}"' for value in diagnosis.matched_relations)
             return (

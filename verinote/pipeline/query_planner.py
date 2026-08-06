@@ -133,13 +133,21 @@ class EmptyPlanDiagnosis:
     any_unmatched: bool = False
     """Whether some requested label failed to resolve.
 
-    A question asks for every label `_relation_requests` collects, and when all
-    of them resolve they are aliases of one relation -- always so for the sets
-    the deterministic parser invents, which are alias-closed by construction. In
-    that case no reading was substituted and singling one label out would show
-    the user a sibling they may never have typed. Only a partial match, which
-    needs an LLM-supplied candidate that is not an alias sibling, means the
-    question was answered about a different word than one it carried.
+    A question asks for every label `_relation_requests` collects. When all of
+    them resolve they are aliases of one relation -- true of the *synonym* sets
+    the deterministic parser invents, which mirror the default alias policy --
+    so nothing was substituted and singling one label out would show the user a
+    sibling they may never have typed.
+
+    A partial match means some requested label was not used, but no longer that
+    the question was answered about a different word. Since #431 the parser also
+    offers both readings of a trailing josa syllable, and those are deliberately
+    not alias siblings: `단가?` asks for `단` and `단가`, only one of which any
+    KB holds. So this fires for nearly every Korean attribute question, and the
+    label it leads the renderer to name is usually the user's own word rather
+    than a substitution. The message stays true; the signal is duller than it
+    was. Separating a requested label from a speculative reading would sharpen
+    it again -- see #441.
     """
 
 
