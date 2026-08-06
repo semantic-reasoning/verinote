@@ -21,7 +21,7 @@ import sqlite3
 import stat
 import tempfile
 import unicodedata
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from verinote.engine.datalog import AtomExpr, Comparison, DatalogParseError, parse_program
 from verinote.engine.terms import Atom, StringLit, render_term
@@ -31,6 +31,7 @@ from verinote.pipeline.corroboration import (
     store_relation_aliases,
 )
 from verinote.pipeline.query_intent import (
+    QueryIntent,
     QueryIntentKind,
     deterministic_query_intent,
 )
@@ -40,6 +41,14 @@ from verinote.pipeline.query_schema import (
     build_query_schema_snapshot,
 )
 from verinote.store import Store
+
+if TYPE_CHECKING:
+    # Runtime imports of this module are deliberately kept inside the functions
+    # that need it: query_candidate_eval imports back from here, so a module-level
+    # import would be circular. Annotations are strings under
+    # `from __future__ import annotations`, so the name is only ever needed by a
+    # type checker.
+    from verinote.pipeline.query_candidate_eval import QueryCandidateSetOutcome
 
 # Query draft, relative to the KB root (the db file's directory).
 QUERY_RELPATH = Path("facts") / "query.dl"
@@ -259,8 +268,6 @@ def _schema_aware_query_flow_result(
     question: str,
     llm_error_status: str,
 ) -> _QueryFlowResult:
-    from verinote.pipeline.query_candidate_eval import QueryCandidateSetOutcome
-
     snapshot = build_query_schema_snapshot(store)
     intent = deterministic_query_intent(question)
     deterministic_intent_supported = (
@@ -303,6 +310,149 @@ def _schema_aware_query_flow_result(
             allow_direct_datalog_fallback=True,
         )
 
+    from verinote.pipeline.query_candidate_eval import QueryCandidateSetOutcome
+
+    result, outcome = _plan_and_evaluate_intent(
+        store,
+        intent,
+        qid=qid,
+        base_snapshot=snapshot,
+        deterministic_intent_supported=deterministic_intent_supported,
+    )
+    # `EMPTY` is the only outcome worth re-reading the question for, and only
+    # when the deterministic parser is the one that read it. The parser is
+    # schema-blind -- it sees the question and nothing else -- so it cannot tell
+    # a relation the KB really holds from a chain of them: `X의 회의 일정은?` and
+    # `X의 담당자의 상사는?` are the same shape to it, and it hands both to the
+    # planner as one relation name. When that subject really does hold a
+    # relation by that name the plan is VALID and nothing here runs; otherwise
+    # the schema has just answered the question the parser was guessing at, and
+    # the model -- which gets the observed relations in its hint -- deserves a
+    # look. The population that reaches here is therefore every deterministic
+    # empty plan, not only chains: a subject with no fact for an otherwise real
+    # relation is re-read too, and pays a provider call to arrive back at the
+    # same place.
+    #
+    # Every other outcome is the engine's own verdict over candidates that were
+    # actually built, and re-reading the question until a verdict changes is how
+    # a system talks itself out of an answer it already has. A truncated plan
+    # reports no outcome at all (`None`), so it cannot reach this either.
+    if (
+        deterministic_intent_supported
+        and outcome == QueryCandidateSetOutcome.EMPTY
+    ):
+        return _reinterpret_empty_plan(
+            store,
+            client,
+            qid=qid,
+            question=question,
+            base_snapshot=snapshot,
+            deterministic_result=result,
+        )
+    return result
+
+
+def _reinterpret_empty_plan(
+    store: Store,
+    client: LLMClient,
+    *,
+    qid: int,
+    question: str,
+    base_snapshot: QuerySchemaSnapshot,
+    deterministic_result: _QueryFlowResult,
+) -> _QueryFlowResult:
+    """Re-read a question the deterministic parser could plan nothing for.
+
+    Only a `VALID` re-reading may replace the deterministic result, plus an
+    engine or policy error, which is a failure signal rather than an answer and
+    must never be hidden behind a stale reason. A model-supplied `no_answer` or
+    `ambiguous` is refused on purpose even though the engine produced it: Ask
+    renders `no_answer` as `VERIFIED — engine (negative)`, the strongest claim
+    the system makes, and both statuses are terminal -- `translate_questions`
+    re-picks only `pending`/`translation_failed` and `repair_questions` only
+    `review_required`, so nothing would ever revisit the question. Keeping the
+    deterministic `review_required` also keeps its
+    `allow_direct_datalog_fallback`, so a declining re-reading costs the
+    question nothing: repair still reaches the direct-Datalog rescue it reaches
+    today.
+
+    An `LLMError` is the one case that returns a *changed* deterministic result:
+    the reason gains the provider error, and the fallback is switched off
+    because `_prepare_repair_question` consults that flag before it looks at
+    `provider_failed`, and would otherwise send a second request to a provider
+    that has just failed.
+    """
+    from verinote.pipeline.query_candidate_eval import QueryCandidateSetOutcome
+
+    try:
+        intent = client.extract_query_intent(
+            question=question,
+            schema_hint=query_schema_hint(base_snapshot),
+        )
+    except LLMError as exc:
+        reason = _short_reason(
+            f"{deterministic_result.reason}; schema-aware reinterpretation "
+            f"unavailable: llm error: {exc}"
+        )
+        return _QueryFlowResult(
+            "review_required",
+            f"review_required({_lit(reason)})",
+            reason,
+            allow_direct_datalog_fallback=False,
+            provider_failed=True,
+        )
+
+    if intent.kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED:
+        return deterministic_result
+
+    # `deterministic_intent_supported=False`: this intent came from the model.
+    # The flag only decides the EMPTY branch's fallback permission, and that
+    # branch's result is discarded below in favour of the deterministic one,
+    # which carries the permission the question already had.
+    result, outcome = _plan_and_evaluate_intent(
+        store,
+        intent,
+        qid=qid,
+        base_snapshot=base_snapshot,
+        deterministic_intent_supported=False,
+    )
+    if outcome in {
+        QueryCandidateSetOutcome.VALID,
+        QueryCandidateSetOutcome.ENGINE_POLICY_ERROR,
+    }:
+        return result
+    return deterministic_result
+
+
+def _plan_and_evaluate_intent(
+    store: Store,
+    intent: QueryIntent,
+    *,
+    qid: int,
+    base_snapshot: QuerySchemaSnapshot,
+    deterministic_intent_supported: bool,
+) -> tuple[_QueryFlowResult, QueryCandidateSetOutcome | None]:
+    """Plan one intent's candidates and turn the engine's verdict into a result.
+
+    The outcome is returned beside the result because the two say different
+    things: the result is what the question's lifecycle becomes, while the
+    outcome is *why*. Several outcomes share the `review_required` status, and a
+    caller that needs to tell them apart cannot recover the distinction from the
+    result -- the reason string is human-facing prose, not a discriminator.
+
+    `None` is returned in place of an outcome when the candidate set was
+    truncated, and it is a different state from every `QueryCandidateSetOutcome`
+    including `EMPTY`. Neither reaches the engine -- the evaluator returns for a
+    candidate-less plan before executing anything -- but they mean opposite
+    things: truncated is candidates built and deliberately left unevaluated,
+    while `EMPTY` is no candidates built at all.
+
+    `base_snapshot` is taken by value. The entity-narrowed rebuild below replaces
+    it for planning only, so the caller keeps the unnarrowed snapshot it built.
+    """
+    from verinote.pipeline.query_candidate_eval import QueryCandidateSetOutcome
+
+    snapshot = base_snapshot
     exact_entities = _intent_exact_entities(intent)
     uses_join_facts = intent.kind in {
         QueryIntentKind.CONJUNCTIVE_LOOKUP,
@@ -320,37 +470,58 @@ def _schema_aware_query_flow_result(
     # omitted path could return a different result and evade the ambiguity gate.
     if plan.truncated:
         reason = "too many query candidates matched the schema"
-        return _QueryFlowResult(
-            "review_required", f"review_required({_lit(reason)})", reason
+        return (
+            _QueryFlowResult(
+                "review_required", f"review_required({_lit(reason)})", reason
+            ),
+            None,
         )
     evaluation = evaluate_query_candidate_plan(store, plan)
 
     if evaluation.outcome == QueryCandidateSetOutcome.VALID and evaluation.selected:
-        return _QueryFlowResult("translated", evaluation.selected.query_dl, "")
+        return (
+            _QueryFlowResult("translated", evaluation.selected.query_dl, ""),
+            evaluation.outcome,
+        )
     if evaluation.outcome == QueryCandidateSetOutcome.NO_ANSWER:
         reason = "no confirmed facts match"
-        return _QueryFlowResult("no_answer", f"no_answer({_lit(reason)})", reason)
+        return (
+            _QueryFlowResult("no_answer", f"no_answer({_lit(reason)})", reason),
+            evaluation.outcome,
+        )
     if evaluation.outcome == QueryCandidateSetOutcome.AMBIGUOUS_CONFLICTING:
         reason = "multiple query candidates returned conflicting answers"
-        return _QueryFlowResult("ambiguous", f"ambiguous({_lit(reason)})", reason)
+        return (
+            _QueryFlowResult("ambiguous", f"ambiguous({_lit(reason)})", reason),
+            evaluation.outcome,
+        )
     if evaluation.outcome == QueryCandidateSetOutcome.REVIEW_REQUIRED:
         reason = _short_reason(_evaluation_reason(evaluation))
-        return _QueryFlowResult(
-            "review_required", f"review_required({_lit(reason)})", reason
+        return (
+            _QueryFlowResult(
+                "review_required", f"review_required({_lit(reason)})", reason
+            ),
+            evaluation.outcome,
         )
     if evaluation.outcome == QueryCandidateSetOutcome.EMPTY:
         reason = _short_reason(plan.reason or "no query candidates matched the schema")
-        return _QueryFlowResult(
-            "review_required",
-            f"review_required({_lit(reason)})",
-            reason,
-            allow_direct_datalog_fallback=deterministic_intent_supported,
+        return (
+            _QueryFlowResult(
+                "review_required",
+                f"review_required({_lit(reason)})",
+                reason,
+                allow_direct_datalog_fallback=deterministic_intent_supported,
+            ),
+            evaluation.outcome,
         )
     elif evaluation.outcome == QueryCandidateSetOutcome.ENGINE_POLICY_ERROR:
         reason = _short_reason("engine/policy error: " + _evaluation_reason(evaluation))
     else:
         reason = _short_reason("invalid query: " + _evaluation_reason(evaluation))
-    return _QueryFlowResult("review_required", f"review_required({_lit(reason)})", reason)
+    return (
+        _QueryFlowResult("review_required", f"review_required({_lit(reason)})", reason),
+        evaluation.outcome,
+    )
 
 
 def _intent_exact_entities(intent: object) -> tuple[str, ...]:

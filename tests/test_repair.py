@@ -326,24 +326,188 @@ def test_repair_persists_ambiguous_lifecycle_outcome(
     assert "ambiguous" not in (load_query(s) or "")
 
 
-def test_repair_default_runs_direct_datalog_for_deterministic_planner_empty(
+def test_repair_reaches_direct_datalog_after_a_declining_reinterpretation(
     tmp_path, fake_client
 ):
+    """A re-reading that declines must not cost the question its rescue.
+
+    A deterministically supported intent that plans nothing stays
+    `review_required` with the direct-Datalog fallback still permitted, and
+    `/repair` uses that permission to translate the question. The schema-aware
+    reinterpretation now runs first; when it produces nothing executable, the
+    question has to arrive at the fallback exactly as it does today.
+    """
     s, qid = _store_with_deterministic_planner_empty(tmp_path)
     s.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
     client = fake_client(
         query=lambda q, i: f'answer_q{i}(O) :- relation("Sample Person", "born_in", O).',
     )
-    client.extract_query_intent = lambda **kwargs: (_ for _ in ()).throw(
-        AssertionError("deterministic planner-empty repair must not extract intent")
-    )
+    # No intent override: the fake client answers `unknown_or_unsupported`, so
+    # the model declines to re-read the question.
     # No flag passed: exercises the production default wiring.
     results = repair_questions(s, client, root=tmp_path)
 
-    assert client.calls == 1
+    assert client.calls == 2  # the reinterpretation, then the rescue
     assert results == [{"id": qid, "accepted": True, "reason": ""}]
     assert s.questions()[0]["status"] == "translated"
     assert f"answer_q{qid}" in (load_query(s) or "")
+
+
+@pytest.mark.parametrize(
+    "retry_outcome_name",
+    ["NO_ANSWER", "AMBIGUOUS_CONFLICTING", "REVIEW_REQUIRED", "EMPTY"],
+)
+def test_repair_reaches_direct_datalog_after_any_declining_reinterpretation(
+    tmp_path, fake_client, intent_payload, monkeypatch, retry_outcome_name
+):
+    """No re-reading verdict short of an executable query may close the question.
+
+    `no_answer` and `ambiguous` are terminal -- nothing re-picks them -- and the
+    repair gate forwards only `review_required` to the direct-Datalog fallback.
+    So letting a re-reading's verdict replace the deterministic result would take
+    away the rescue that translates this question today, on a reading of the
+    question the deterministic layer never understood. `review_required` and a
+    second `empty` lose the rescue a different way: the re-reading's result is
+    built with `deterministic_intent_supported=False`, so it carries
+    `allow_direct_datalog_fallback=False` where the deterministic one carried
+    True.
+
+    Parametrized so each outcome is independently falsifiable: admitting just one
+    of them into the accept set must fail here, not be masked by the others.
+    """
+    from verinote.pipeline.query_candidate_eval import (
+        QueryCandidateSetEvaluation,
+        QueryCandidateSetOutcome,
+    )
+
+    s, qid = _store_with_deterministic_planner_empty(tmp_path)
+    s.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
+    client = fake_client(
+        intent=intent_payload(
+            "lookup_object", subject="Sample Person", relation="born_in"
+        ),
+        query=lambda q, i: f'answer_q{i}(O) :- relation("Sample Person", "born_in", O).',
+    )
+
+    def declining(store, plan):
+        # The deterministic pass plans nothing, so it must see a real EMPTY. The
+        # re-reading's intent names a relation this KB holds, so its plan really
+        # does carry a candidate and the verdict below is a verdict over one.
+        if not plan.candidates:
+            return QueryCandidateSetEvaluation(
+                plan=plan, outcome=QueryCandidateSetOutcome.EMPTY
+            )
+        return QueryCandidateSetEvaluation(
+            plan=plan, outcome=getattr(QueryCandidateSetOutcome, retry_outcome_name)
+        )
+
+    monkeypatch.setattr(
+        "verinote.pipeline.query.evaluate_query_candidate_plan", declining
+    )
+
+    results = repair_questions(s, client, root=tmp_path)
+
+    assert client.calls == 2  # the reinterpretation, then the rescue
+    assert results == [{"id": qid, "accepted": True, "reason": ""}]
+    assert s.questions()[0]["status"] == "translated"
+
+
+def test_repair_reaches_direct_datalog_after_a_truncated_reinterpretation(
+    tmp_path, fake_client, intent_payload, monkeypatch
+):
+    """A re-reading whose own plan truncates must not close the question either.
+
+    Truncation reports no outcome at all, so it is the one member of the
+    disposition domain the outcome parametrization above cannot reach -- it
+    happens before evaluation, so patching the evaluator cannot produce it. The
+    consequence of admitting it is the same as for the others: the truncated
+    result is built with `deterministic_intent_supported=False`, so it carries
+    `allow_direct_datalog_fallback=False` and the question loses its rescue.
+    """
+    from verinote.pipeline.query_planner import (
+        QueryCandidatePlan,
+        plan_query_candidates,
+    )
+
+    real_plan_query_candidates = plan_query_candidates
+    s, qid = _store_with_deterministic_planner_empty(tmp_path)
+    s.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
+    client = fake_client(
+        intent=intent_payload(
+            "lookup_object", subject="Sample Person", relation="born_in"
+        ),
+        query=lambda q, i: f'answer_q{i}(O) :- relation("Sample Person", "born_in", O).',
+    )
+    planned = {"count": 0}
+
+    def truncate_only_the_reinterpretation(intent, snapshot, **kwargs):
+        plan = real_plan_query_candidates(intent, snapshot, **kwargs)
+        planned["count"] += 1
+        if planned["count"] == 1:
+            return plan  # the deterministic pass: a genuinely empty plan
+        return QueryCandidatePlan(
+            qid=plan.qid, candidates=plan.candidates, truncated=True
+        )
+
+    monkeypatch.setattr(
+        "verinote.pipeline.query.plan_query_candidates",
+        truncate_only_the_reinterpretation,
+    )
+
+    results = repair_questions(s, client, root=tmp_path)
+
+    assert planned["count"] == 2
+    assert client.calls == 2  # the reinterpretation, then the rescue
+    assert results == [{"id": qid, "accepted": True, "reason": ""}]
+    assert s.questions()[0]["status"] == "translated"
+
+
+def test_repair_surfaces_an_engine_error_found_by_the_reinterpretation(
+    tmp_path, fake_client, intent_payload, monkeypatch
+):
+    """An engine or policy error is a failure signal, not a declined reading.
+
+    It is the one non-VALID outcome the re-reading may return in place of the
+    deterministic result, because hiding it behind "no query candidates matched
+    the schema" would report a broken engine as an ordinary miss -- and because
+    spending the direct-Datalog rescue on an engine that is already erroring
+    buys nothing.
+    """
+    from verinote.pipeline.query_candidate_eval import (
+        QueryCandidateSetEvaluation,
+        QueryCandidateSetOutcome,
+    )
+
+    s, _qid = _store_with_deterministic_planner_empty(tmp_path)
+    s.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
+    client = fake_client(
+        intent=intent_payload(
+            "lookup_object", subject="Sample Person", relation="born_in"
+        )
+    )
+    client.translate_query = lambda **kwargs: (_ for _ in ()).throw(
+        AssertionError("an erroring engine must not be handed a direct Datalog draft")
+    )
+
+    def engine_error(store, plan):
+        if not plan.candidates:
+            return QueryCandidateSetEvaluation(
+                plan=plan, outcome=QueryCandidateSetOutcome.EMPTY
+            )
+        return QueryCandidateSetEvaluation(
+            plan=plan, outcome=QueryCandidateSetOutcome.ENGINE_POLICY_ERROR
+        )
+
+    monkeypatch.setattr(
+        "verinote.pipeline.query.evaluate_query_candidate_plan", engine_error
+    )
+
+    results = repair_questions(s, client, root=tmp_path)
+
+    assert client.calls == 1
+    assert results[0]["accepted"] is False
+    assert results[0]["reason"].startswith("engine/policy error:")
+    assert s.questions()[0]["status"] == "review_required"
 
 
 def test_repair_disabled_fallback_keeps_deterministic_planner_empty_under_review(
@@ -352,9 +516,6 @@ def test_repair_disabled_fallback_keeps_deterministic_planner_empty_under_review
     s, qid = _store_with_deterministic_planner_empty(tmp_path)
     s.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
     client = fake_client()
-    client.extract_query_intent = lambda **kwargs: (_ for _ in ()).throw(
-        AssertionError("deterministic planner-empty repair must not extract intent")
-    )
     client.translate_query = lambda **kwargs: (_ for _ in ()).throw(
         AssertionError("disabled fallback must not call direct Datalog")
     )
@@ -363,7 +524,9 @@ def test_repair_disabled_fallback_keeps_deterministic_planner_empty_under_review
         s, client, root=tmp_path, allow_direct_datalog_fallback=False
     )
 
-    assert client.calls == 0
+    # The flag scopes the direct-Datalog fallback and nothing else. The
+    # reinterpretation belongs to translation, so it still runs.
+    assert client.calls == 1
     assert results == [
         {
             "id": qid,
@@ -371,6 +534,31 @@ def test_repair_disabled_fallback_keeps_deterministic_planner_empty_under_review
             "reason": "no query candidates matched the schema",
         }
     ]
+    assert s.questions()[0]["status"] == "review_required"
+
+
+def test_repair_provider_error_during_reinterpretation_skips_direct_fallback(
+    tmp_path, fake_client
+):
+    """An outage must not be answered with a second request to the same provider.
+
+    `_prepare_repair_question` consults `allow_direct_datalog_fallback` before it
+    looks at `provider_failed`, so the reinterpretation's failure has to switch
+    that flag off itself or the fallback fires into the same outage.
+    """
+    s, _qid = _store_with_deterministic_planner_empty(tmp_path)
+    s.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
+    client = fake_client(error=LLMError("synthetic outage"))
+    client.translate_query = lambda **kwargs: (_ for _ in ()).throw(
+        AssertionError("a failed provider must not be called again for this question")
+    )
+
+    results = repair_questions(s, client, root=tmp_path)
+
+    assert client.calls == 1
+    assert results[0]["accepted"] is False
+    assert "no query candidates matched the schema" in results[0]["reason"]
+    assert "synthetic outage" in results[0]["reason"]
     assert s.questions()[0]["status"] == "review_required"
 
 

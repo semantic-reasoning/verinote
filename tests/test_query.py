@@ -929,3 +929,146 @@ def test_translate_only_touches_pending(tmp_path, fake_client):
     # second run with no new pending questions returns nothing
     again = translate_questions(s, fake_client(), root=tmp_path)
     assert again == []
+
+
+_DETERMINISTIC_QUESTION = "What is Sample Person's birth place?"
+
+
+@pytest.mark.parametrize(
+    "outcome_name",
+    ["NO_ANSWER", "AMBIGUOUS_CONFLICTING", "REVIEW_REQUIRED", "ENGINE_POLICY_ERROR"],
+)
+def test_engine_verdicts_are_not_reinterpreted(
+    tmp_path, fake_client, monkeypatch, outcome_name
+):
+    """Only an empty plan may be re-read; every engine verdict stands.
+
+    An empty plan is the schema declining to build anything, so it says nothing
+    about the facts. Each of these outcomes is the engine's answer over
+    candidates that were actually built, and re-reading the question until an
+    answer changes is how a system talks itself out of a verdict it already has.
+
+    Parametrized rather than looped so that a change re-litigating only one
+    outcome still fails: a single test asserting all four would let three pass
+    for the fourth.
+    """
+    from verinote.pipeline.query_candidate_eval import (
+        QueryCandidateSetEvaluation,
+        QueryCandidateSetOutcome,
+    )
+
+    s = _store(tmp_path)
+    s.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
+    s.add_question(_DETERMINISTIC_QUESTION)
+    client = fake_client()
+    client.extract_query_intent = lambda **kwargs: (_ for _ in ()).throw(
+        AssertionError(f"{outcome_name} is an engine verdict and must not be re-read")
+    )
+    monkeypatch.setattr(
+        "verinote.pipeline.query.evaluate_query_candidate_plan",
+        lambda store, plan: QueryCandidateSetEvaluation(
+            plan=plan, outcome=getattr(QueryCandidateSetOutcome, outcome_name)
+        ),
+    )
+
+    results = translate_questions(s, client, root=tmp_path)
+
+    assert results[0]["status"] != "translated"
+    assert client.calls == 0
+
+
+def test_truncated_plan_is_not_reinterpreted(tmp_path, fake_client, monkeypatch):
+    """A truncated plan reports no outcome at all, so it cannot reach the re-read.
+
+    Truncation means too many candidates matched, the opposite of the empty plan
+    the re-reading exists for. It also returns before the engine runs, so there
+    is no verdict to compare against -- which is why the planner helper answers
+    `None` rather than folding it into `EMPTY`.
+    """
+    from verinote.pipeline.query_planner import (
+        QueryCandidate,
+        QueryCandidateFamily,
+        QueryCandidatePlan,
+    )
+
+    s = _store(tmp_path)
+    s.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
+    qid = s.add_question(_DETERMINISTIC_QUESTION)
+    client = fake_client()
+    client.extract_query_intent = lambda **kwargs: (_ for _ in ()).throw(
+        AssertionError("a truncated plan must not be re-read")
+    )
+    candidate = QueryCandidate(
+        query_dl=f".decl answer_q{qid}(value: symbol)\nanswer_q{qid}(O) :- relation(\"Sample Person\", \"born_in\", O).",
+        family=QueryCandidateFamily.DIRECT_OBJECT_LOOKUP,
+        direction=None,
+        relation_display=None,
+        relation_executable=None,
+        subject_executable=None,
+        object_executable=None,
+    )
+    monkeypatch.setattr(
+        "verinote.pipeline.query.plan_query_candidates",
+        lambda *args, **kwargs: QueryCandidatePlan(
+            qid=qid, candidates=(candidate,), truncated=True
+        ),
+    )
+
+    results = translate_questions(s, client, root=tmp_path)
+
+    assert results[0]["status"] == "review_required"
+    assert results[0]["reason"] == "too many query candidates matched the schema"
+    assert client.calls == 0
+
+
+def test_llm_first_path_makes_exactly_one_intent_call(
+    tmp_path, fake_client, intent_payload
+):
+    """A question the parser declined is already the model's reading.
+
+    Re-reading it would ask the same provider the same question twice. The gate
+    is the deterministic parser's support, not the empty plan alone -- this
+    fixture plans empty, so a trigger that dropped that half would call twice.
+    """
+    s = _store(tmp_path)
+    s.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
+    s.add_question("Tell me something about Sample Person, synthetically speaking")
+    client = fake_client(
+        intent=intent_payload(
+            "lookup_object", subject="Sample Person", relation="missing_relation"
+        )
+    )
+
+    results = translate_questions(s, client, root=tmp_path)
+
+    assert results[0]["status"] == "review_required"
+    assert results[0]["reason"] == "no query candidates matched the schema"
+    assert client.calls == 1
+
+
+def test_reinterpretation_llm_error_declines_the_direct_datalog_fallback(
+    tmp_path, fake_client
+):
+    """A failed re-reading must not be laundered, and must not invite a retry.
+
+    `_prepare_repair_question` checks `allow_direct_datalog_fallback` before it
+    checks `provider_failed`, so leaving the permission on would send a second
+    request to the provider that has just failed.
+    """
+    s = _store(tmp_path)
+    s.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
+    client = fake_client(error=LLMError("synthetic outage"))
+
+    flow = query_module._schema_aware_query_flow_result(
+        s,
+        client,
+        qid=1,
+        question=_DETERMINISTIC_QUESTION,
+        llm_error_status="review_required",
+    )
+
+    assert flow.status == "review_required"
+    assert "no query candidates matched the schema" in flow.reason
+    assert "synthetic outage" in flow.reason
+    assert flow.provider_failed is True
+    assert flow.allow_direct_datalog_fallback is False
