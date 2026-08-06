@@ -70,12 +70,87 @@ class QueryCandidate:
 
 
 @dataclass(frozen=True)
+class EmptyPlanDiagnosis:
+    """Why a lookup produced no candidates, in the two terms a user can act on.
+
+    An empty plan has one message today -- "no query candidates matched the
+    schema" -- for situations with different remedies: a relation the KB does
+    not have (add an alias), an entity spelled differently from the stored one
+    (fix the spelling), and a known entity that simply has no such fact (nothing
+    to fix). Naming which one occurred is the difference between a shrug and an
+    instruction.
+
+    The two verdicts are plain booleans because they are answered from the
+    snapshot's complete, untruncated membership sets. `None` means only that the
+    question does not arise for this intent kind -- `lookup_relation` requests
+    no particular relation, so `relation_in_schema` has nothing to report --
+    never that it could not be determined.
+
+    The two are independent and both are reported: a question can name a
+    relation the KB lacks *and* an entity it lacks, and fixing one of them still
+    yields no answer.
+    """
+
+    relation_in_schema: bool | None
+    entity_in_kb: bool | None
+    join_search_complete: bool = False
+    """Whether the search that found no candidates covered the whole KB.
+
+    The two membership verdicts are read from complete sets, but *emptiness*
+    is not: candidates are generated from the bounded views -- a relation's
+    subject and object lists (`max_entities_per_side`) and the exact-fact list
+    (`max_exact_entity_facts`). So on a hub relation or a busy entity the
+    planner can come up empty while the joining fact exists just past a cap.
+
+    Only the "both known, nothing joins them" reading depends on that search
+    having been exhaustive; the two absence readings rest on the complete sets
+    and are unaffected. When this is False, a caller must not claim the fact is
+    missing -- vague and true beats specific and false.
+    """
+    absent_entities: tuple[str, ...] = ()
+    """Exactly the named endpoints the KB does not hold.
+
+    `entity_in_kb` is one bool over possibly two endpoints, and a question like
+    "how are A and B related?" can name one the KB has and one it does not. A
+    caller with only the bool has to accuse both, which puts a false statement
+    about the KB's own contents in the reason -- the opposite of what this
+    diagnosis exists for. Naming them is the only way the message can be about
+    the endpoint that is actually missing.
+    """
+    matched_relations: tuple[str, ...] = ()
+    """Every requested label that resolved, one per relation it resolved to.
+
+    Verbatim as requested, like `absent_entities`, and deduplicated by canonical
+    form so a set of aliases for one relation is reported once rather than five
+    times. The requested spelling is kept rather than the canonical, because a
+    reader can compare their own word against it while a canonical such as
+    `role` is often neither their word nor any label the KB holds.
+
+    This is a fact, not a decision: it lists what resolved whether or not
+    anything else failed to. Whether naming it *tells the reader anything* is
+    `any_unmatched`, and the renderer -- not this field -- makes that call.
+    """
+    any_unmatched: bool = False
+    """Whether some requested label failed to resolve.
+
+    A question asks for every label `_relation_requests` collects, and when all
+    of them resolve they are aliases of one relation -- always so for the sets
+    the deterministic parser invents, which are alias-closed by construction. In
+    that case no reading was substituted and singling one label out would show
+    the user a sibling they may never have typed. Only a partial match, which
+    needs an LLM-supplied candidate that is not an alias sibling, means the
+    question was answered about a different word than one it carried.
+    """
+
+
+@dataclass(frozen=True)
 class QueryCandidatePlan:
     qid: int
     candidates: tuple[QueryCandidate, ...]
     truncated: bool = False
     reason: str | None = None
     no_answer: bool = False
+    diagnosis: EmptyPlanDiagnosis | None = None
 
 
 def plan_query_candidates(
@@ -151,7 +226,135 @@ def plan_query_candidates(
         candidates = ()
         reason = f"unsupported intent kind: {intent.kind.value}"
 
-    return _bounded_plan(qid, candidates, bounds, reason=reason)
+    return _bounded_plan(
+        qid,
+        candidates,
+        bounds,
+        reason=reason,
+        diagnosis=None if candidates else _diagnose_empty_lookup(intent, snapshot),
+    )
+
+
+_DIAGNOSED_KINDS = frozenset(
+    {
+        QueryIntentKind.LOOKUP_OBJECT,
+        QueryIntentKind.LOOKUP_SUBJECT,
+        QueryIntentKind.LOOKUP_RELATION,
+        QueryIntentKind.DISCOVER_ENTITY_RELATIONS,
+    }
+)
+"""The kinds whose emptiness reduces to one relation and one entity.
+
+The conjunctive and typed-comparison kinds are left out because each carries
+several relations and endpoints, so "the relation" and "the entity" are not
+single things and a per-hop taxonomy is a different design. They return their
+own plan before this runs, so the check is a statement of scope rather than a
+gate anything reaches today -- keep it, but do not read it as protecting their
+specific reasons ("no two-hop relation path matched the schema" and its
+siblings); the early return does that.
+"""
+
+
+def _diagnose_empty_lookup(
+    intent: QueryIntent, snapshot: QuerySchemaSnapshot
+) -> EmptyPlanDiagnosis | None:
+    """Say which half of a lookup the KB does not have, if either."""
+    if intent.kind not in _DIAGNOSED_KINDS:
+        return None
+    if snapshot.all_relation_labels is None or snapshot.all_entity_surfaces is None:
+        # A hand-built snapshot with no membership sets. Absence is unknown, and
+        # reporting it as false would tell a user to add a relation they have.
+        return None
+    requested = _relation_requests(intent)
+    entities = _diagnosed_entities(intent)
+    absent = tuple(
+        value for value in entities if _nfc(value) not in snapshot.all_entity_surfaces
+    )
+    matched, any_unmatched = _requested_relations_in_schema(requested, snapshot)
+    return EmptyPlanDiagnosis(
+        relation_in_schema=bool(matched) if requested else None,
+        entity_in_kb=(not absent) if entities else None,
+        join_search_complete=_join_search_was_complete(snapshot),
+        absent_entities=absent,
+        matched_relations=matched,
+        any_unmatched=any_unmatched,
+    )
+
+
+def _join_search_was_complete(snapshot: QuerySchemaSnapshot) -> bool:
+    """Whether an empty plan proves the joining fact is absent.
+
+    Only the exact-fact list has to be whole. Every diagnosed kind generates
+    candidates from it as well as from the relation views
+    (`_lookup_object_exact_fact_candidates` and its siblings), and when it was
+    built for the intent's entities it holds every fact touching them. So a
+    complete list turns an empty plan into a proof that the entity has no fact
+    with that relation, whatever the relation views dropped.
+
+    Both halves are required, and the non-empty check is the interesting one.
+    "Not truncated" is also true of a list that was never populated -- a
+    snapshot built without `exact_entities` -- and that list is not a whole
+    search but no search, so reading it as proof would assert the fact is absent
+    on no evidence. A diagnosed entity that is in the KB has at least one fact,
+    so an empty list here means the snapshot was built for something else.
+
+    Checking `relations_truncated` or a relation's `subjects_truncated` too
+    would read as extra safety and be neither: with the exact-fact list whole
+    they cannot change the verdict, so they would be branches no test could ever
+    kill. That holds because every stored term is currently a `StringLit`, so
+    `_entity_matches` and the membership sets agree on the displayed surface.
+    """
+    return bool(snapshot.exact_entity_facts) and not snapshot.exact_entity_facts_truncated
+
+
+def _diagnosed_entities(intent: QueryIntent) -> tuple[str, ...]:
+    """The intent's named endpoints, whichever roles this kind puts them in."""
+    return tuple(
+        target.value
+        for target in (intent.subject, intent.object)
+        if target is not None
+    )
+
+
+def _requested_relations_in_schema(
+    requested: tuple[str, ...], snapshot: QuerySchemaSnapshot
+) -> tuple[tuple[str, ...], bool]:
+    """Which requested labels name a relation the KB holds, and whether any did not.
+
+    Returns the labels rather than only a verdict, because *which* one resolved
+    is load-bearing for the message. `_relation_requests` includes the candidates
+    the deterministic parser invents -- asking for `역할` also asks for `직책`
+    and `직위` -- so "one of them resolved" can be true of a word the user never
+    typed, and reporting that as "the requested relation resolved" would tell
+    them nothing needs fixing when the remedy is an alias for the word they did
+    type.
+
+    Read against the complete label set rather than `snapshot.relations`, which
+    is capped: a relation past the cap is one the KB has, and calling it absent
+    would send the user to add an alias for something already there.
+    """
+    aliases = {entry.alias: entry.canonical for entry in snapshot.relation_aliases}
+    observed_labels = snapshot.all_relation_labels or frozenset()
+    # One entry per relation resolved to, spelled as the question spelled it.
+    #
+    # Deduplication is by canonical form because asking for `목적` also asks for
+    # `목표`, `purpose`, `objective` and `goal`, and when those are aliases of
+    # one relation, listing five names describes the attempt rather than the
+    # reading. The name kept is the requested one, not the canonical: a reader
+    # can compare "relation `목적` resolved" against the word they typed, while a
+    # canonical such as `role` is often neither their word nor any label in the
+    # KB, so it gives them nothing to compare and states a name no fact carries.
+    matched: dict[str, str] = {}
+    unmatched = False
+    for value in requested:
+        if any(
+            relation_label_matches(observed, value, aliases)
+            for observed in observed_labels
+        ):
+            matched.setdefault(_nfc(canonical_relation(value, aliases)), value)
+        else:
+            unmatched = True
+    return tuple(matched.values()), unmatched
 
 
 _EXACT_NUMBER = re.compile(r"^-?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?$")
@@ -1118,6 +1321,7 @@ def _bounded_plan(
     *,
     no_answer: bool = False,
     reason: str | None,
+    diagnosis: EmptyPlanDiagnosis | None = None,
 ) -> QueryCandidatePlan:
     bounded = candidates[: bounds.max_candidates]
     return QueryCandidatePlan(
@@ -1126,6 +1330,10 @@ def _bounded_plan(
         truncated=len(candidates) > bounds.max_candidates,
         no_answer=no_answer and not bounded,
         reason=reason,
+        # No `not bounded` guard here, unlike `no_answer`: the only caller that
+        # passes a diagnosis already withholds it when candidates survive, so a
+        # second gate would be a branch no test could reach.
+        diagnosis=diagnosis,
     )
 
 

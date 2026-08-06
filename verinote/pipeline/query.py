@@ -504,7 +504,7 @@ def _plan_and_evaluate_intent(
             evaluation.outcome,
         )
     if evaluation.outcome == QueryCandidateSetOutcome.EMPTY:
-        reason = _short_reason(plan.reason or "no query candidates matched the schema")
+        reason = _short_reason(_empty_plan_reason(plan, intent))
         return (
             _QueryFlowResult(
                 "review_required",
@@ -522,6 +522,75 @@ def _plan_and_evaluate_intent(
         _QueryFlowResult("review_required", f"review_required({_lit(reason)})", reason),
         evaluation.outcome,
     )
+
+
+def _empty_plan_reason(plan, intent: QueryIntent) -> str:
+    """Say which half of the question the KB does not have, and name it.
+
+    "No query candidates matched the schema" is true of three situations whose
+    remedies differ -- add a relation alias, fix the entity's spelling, or
+    accept that the fact is simply absent -- so on its own it tells a user only
+    that something did not work. The planner has already established which one
+    it was; this turns that into the sentence the user acts on.
+
+    Falls back to the planner's own reason whenever the diagnosis is absent,
+    which is every kind whose emptiness does not reduce to one relation and one
+    entity. Those kinds carry more specific messages already.
+    """
+    diagnosis = plan.diagnosis
+    if diagnosis is None:
+        return plan.reason or "no query candidates matched the schema"
+
+    relation = ", ".join(
+        f'"{value}"' for value in _intent_relation_labels(intent)
+    )
+    entities = ", ".join(
+        f'"{target.value}"'
+        for target in (intent.subject, intent.object)
+        if target is not None
+    )
+    missing: list[str] = []
+    if diagnosis.relation_in_schema is False and relation:
+        missing.append(
+            f"relation {relation} is not in the schema or its aliases "
+            "(a policy/relation-aliases.md entry would map it)"
+        )
+    if diagnosis.absent_entities:
+        # Only the endpoints that are actually missing. A question naming two
+        # entities can have one the KB holds and one it does not, and saying
+        # "entity A, B is not in the knowledge base" would be false about A.
+        absent = ", ".join(f'"{value}"' for value in diagnosis.absent_entities)
+        missing.append(f"entity {absent} is not in the knowledge base")
+    if missing:
+        return "; ".join(missing)
+    if (
+        diagnosis.relation_in_schema
+        and diagnosis.entity_in_kb
+        and diagnosis.join_search_complete
+    ):
+        # The reading is named only when some requested label did NOT resolve,
+        # because that is the only case where naming it tells the reader
+        # something: one of the words the question carried was substituted for
+        # another. When every label resolved they are aliases of one relation,
+        # and singling one out would put a sibling on screen that the user may
+        # never have typed.
+        if diagnosis.any_unmatched and diagnosis.matched_relations:
+            resolved = ", ".join(f'"{value}"' for value in diagnosis.matched_relations)
+            return (
+                f"entity {entities} is in the knowledge base and relation "
+                f"{resolved} resolved, but no confirmed fact joins them"
+            )
+        return (
+            f"entity {entities} is in the knowledge base and the requested "
+            "relation resolved, but no confirmed fact joins them"
+        )
+    return plan.reason or "no query candidates matched the schema"
+
+
+def _intent_relation_labels(intent: QueryIntent) -> tuple[str, ...]:
+    values = [intent.relation.value] if intent.relation is not None else []
+    values.extend(intent.relation_candidates)
+    return tuple(dict.fromkeys(values))
 
 
 def _intent_exact_entities(intent: object) -> tuple[str, ...]:
