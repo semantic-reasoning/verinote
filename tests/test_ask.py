@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 
+import pytest
+
 import verinote.pipeline.ask as ask_module
 from verinote.llm.base import LLMError
 from verinote.pipeline.ask import ask_question, search_source_excerpts
@@ -527,6 +529,232 @@ def test_ask_answers_a_who_question_from_the_engine_without_a_provider_call(tmp_
     assert result.label == "VERIFIED — engine"
     assert "샘플인물" in result.answer
     assert result.grounding_facts[0].source == "sources/sample-project.txt"
+
+
+class KoreanChainIntentClient:
+    """Reads `X의 <relation>의 <relation>` as the two-hop lookup it is."""
+
+    name = "korean-chain-intent"
+
+    def __init__(self):
+        self.intent_calls = 0
+        self.schema_hints: list[str] = []
+
+    def extract_query_intent(self, *, question: str, schema_hint: str = ""):
+        from verinote.pipeline.query_intent import parse_query_intent
+
+        self.intent_calls += 1
+        self.schema_hints.append(schema_hint)
+        return parse_query_intent(
+            {
+                "kind": "conjunctive_lookup",
+                "subject": None,
+                "relation": None,
+                "object": None,
+                "relation_candidates": None,
+                "operator": None,
+                "value_type": None,
+                "value": None,
+                "reason": None,
+                "hops": [
+                    {
+                        "subject": {"kind": "entity", "value": "샘플프로젝트"},
+                        "relation": {"kind": "relation", "value": "담당자"},
+                        "object": {"kind": "var", "value": "M"},
+                    },
+                    {
+                        "subject": {"kind": "var", "value": "M"},
+                        "relation": {"kind": "relation", "value": "상사"},
+                        "object": {"kind": "var", "value": "A"},
+                    },
+                ],
+                "conditions": None,
+                "answer_var": "A",
+            }
+        )
+
+    def translate_query(self, **kwargs):
+        raise AssertionError("Ask must not call direct Datalog translation")
+
+    def answer_question(self, **kwargs):
+        raise AssertionError("a verified chain answer must not call the fallback LLM")
+
+
+def _chain_store(tmp_path) -> Store:
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/sample-project.txt")
+    store.add_fact("샘플프로젝트", "담당자", "샘플인물", status="confirmed", source_id=source_id)
+    store.add_fact("샘플인물", "상사", "샘플상급자", status="confirmed", source_id=source_id)
+    return store
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["샘플프로젝트의 담당자의 상사는 누구인가?", "샘플프로젝트의 담당자의상사는 누구인가?"],
+)
+def test_ask_answers_a_korean_chain_question_by_reinterpreting_an_empty_plan(
+    tmp_path, question
+):
+    """A chained question must reach the model that can read it as two hops.
+
+    The deterministic parser is schema-blind: it claims `X의 <label>?` and hands
+    the whole chain over as one relation name. Nothing in the question says
+    whether `담당자의 상사` is a relation the KB holds or a path through two --
+    only the schema does, and it answers by planning no candidates at all. That
+    empty plan is the signal to re-read the question.
+
+    The second case has no space inside the chain, which is part of why this
+    cannot be solved by looking for a particle in the label. The markers issue
+    #432 proposes -- `의`/`와`/`과`/`중` -- fail in both directions. Bound to a
+    word and followed by a space they decline ordinary multi-token relations
+    (`회의 일정` and `협의 결과` on `의`, `성과 지표` on `과`) and still miss
+    this chain. Narrowed to `의` and allowed to match without a space they do
+    catch it, but then decline ordinary nouns that merely contain the syllable
+    (`회의실`, `주의사항`, `편의점`). Which of the two any label is depends on
+    the schema, and the parser cannot see it.
+    """
+    store = _chain_store(tmp_path)
+    client = KoreanChainIntentClient()
+
+    result = ask_question(store, client, root=tmp_path, question=question)
+
+    assert result.route == "engine"
+    assert result.label == "VERIFIED — engine"
+    assert "샘플상급자" in result.answer
+    assert client.intent_calls == 1
+    assert {fact.relation for fact in result.grounding_facts} == {"담당자", "상사"}
+
+
+class EnglishChainIntentClient(KoreanChainIntentClient):
+    """The same two-hop reading, for the English chain shapes."""
+
+    name = "english-chain-intent"
+
+    def extract_query_intent(self, *, question: str, schema_hint: str = ""):
+        from verinote.pipeline.query_intent import parse_query_intent
+
+        self.intent_calls += 1
+        self.schema_hints.append(schema_hint)
+        return parse_query_intent(
+            {
+                "kind": "conjunctive_lookup",
+                "subject": None,
+                "relation": None,
+                "object": None,
+                "relation_candidates": None,
+                "operator": None,
+                "value_type": None,
+                "value": None,
+                "reason": None,
+                "hops": [
+                    {
+                        "subject": {"kind": "entity", "value": "Sample Project"},
+                        "relation": {"kind": "relation", "value": "owner"},
+                        "object": {"kind": "var", "value": "M"},
+                    },
+                    {
+                        "subject": {"kind": "var", "value": "M"},
+                        "relation": {"kind": "relation", "value": "manager"},
+                        "object": {"kind": "var", "value": "A"},
+                    },
+                ],
+                "conditions": None,
+                "answer_var": "A",
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "What is the manager of the owner of Sample Project?",
+        "What is Sample Project's owner's manager?",
+    ],
+)
+def test_ask_answers_an_english_chain_question_by_reinterpreting_an_empty_plan(
+    tmp_path, question
+):
+    """English chains reach the re-reading too, by two different routes.
+
+    They are worth pinning together because they fail differently. The `of` form
+    flattens the chain into the *label* (`manager of the owner`), the same defect
+    as the Korean case. The possessive form does not: the regex takes
+    `Sample Project's owner` as the **entity** and leaves a clean `manager`
+    label, so it plans nothing because no such subject exists. One empty plan,
+    two causes -- which is the argument for guarding at the plan rather than at
+    any one parse rule.
+    """
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/sample-project.txt")
+    store.add_fact(
+        "Sample Project", "owner", "Sample Person", status="confirmed", source_id=source_id
+    )
+    store.add_fact(
+        "Sample Person", "manager", "Sample Lead", status="confirmed", source_id=source_id
+    )
+    client = EnglishChainIntentClient()
+
+    result = ask_question(store, client, root=tmp_path, question=question)
+
+    assert result.route == "engine"
+    assert result.label == "VERIFIED — engine"
+    assert "Sample Lead" in result.answer
+    assert client.intent_calls == 1
+    assert {fact.relation for fact in result.grounding_facts} == {"owner", "manager"}
+
+
+def test_ask_gives_the_reinterpretation_the_observed_schema(tmp_path):
+    """The re-reading is only worth making if the model can see the schema.
+
+    Mapping the question's words onto relation labels the KB actually uses is
+    the whole reason to ask a model at all -- without the hint it is guessing at
+    exactly what the schema-blind parser already guessed at. Every other stub
+    client in this file ignores the parameter, so nothing else would notice it
+    going blank.
+    """
+    store = _chain_store(tmp_path)
+    client = KoreanChainIntentClient()
+
+    ask_question(
+        store, client, root=tmp_path, question="샘플프로젝트의 담당자의 상사는 누구인가?"
+    )
+
+    assert len(client.schema_hints) == 1
+    hint = client.schema_hints[0]
+    assert "담당자" in hint
+    assert "상사" in hint
+
+
+@pytest.mark.parametrize("relation", ["회의 일정", "성과 지표"])
+def test_ask_answers_a_multi_token_relation_without_a_provider_call(tmp_path, relation):
+    """A label that names a real relation must never reach the re-reading.
+
+    These are the labels that killed the parse-time approach: a rule looking for
+    one of issue #432's markers (`의`/`와`/`과`/`중`) bound inside the label
+    declines `회의 일정` on its `의` and `성과 지표` on its `과`, along with the
+    chains. At the empty-plan boundary they are safe for free, because a
+    label this subject really holds plans VALID and is never reconsidered --
+    `DeterministicOnlyClient` raises on every provider entry point, so it is not
+    consulted rather than merely not counted.
+
+    The subject matters: a relation the KB holds for some *other* subject still
+    plans nothing here and is re-read like any other empty plan. That is a cost,
+    not a correctness problem, and it is what makes issue #434 worth doing.
+    """
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/sample-project.txt")
+    store.add_fact("샘플프로젝트", relation, "샘플값", status="confirmed", source_id=source_id)
+
+    result = ask_question(
+        store,
+        DeterministicOnlyClient(),
+        root=tmp_path,
+        question=f"샘플프로젝트의 {relation}은?",
+    )
+
+    assert result.route == "engine"
+    assert result.label == "VERIFIED — engine"
+    assert "샘플값" in result.answer
 
 
 def test_ask_does_not_call_stale_fact_terms_verified(tmp_path):

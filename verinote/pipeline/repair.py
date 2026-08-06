@@ -122,9 +122,15 @@ def repair_questions(
     With `allow_direct_datalog_fallback` (the default), an LLM-confirmed
     unsupported intent costs two provider calls: intent extraction, then the
     direct Datalog fallback. A deterministically supported intent whose planner
-    returns no candidates costs one provider call: the direct Datalog fallback.
-    An intent-extraction LLM error costs one failed call and never retries the
-    provider.
+    returns no candidates costs up to two: the schema-aware reinterpretation of
+    the question, and then the direct Datalog fallback if that reinterpretation
+    declines. It costs one whenever the reinterpretation settles the question --
+    either because it produced an executable query, so the question leaves
+    `review_required`, or because it surfaced an engine or policy error, which
+    replaces the result and withholds the fallback rather than handing a draft
+    to an engine that is already failing. An intent-extraction LLM error costs
+    one failed call and never retries the provider; so does a reinterpretation
+    LLM error, which switches the fallback off for that reason.
     """
     results: list[dict] = []
     for q in store.questions():
