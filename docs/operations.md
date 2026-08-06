@@ -103,6 +103,23 @@ inside the working tree destroys the KB and its audit log with no undo.
 Moving the default root outside the working tree is tracked in
 [#185](https://github.com/semantic-reasoning/verinote/issues/185).
 
+## Windows: don't launch verinote from an elevated terminal
+
+Opening a KB root the process cannot write to fails with `sqlite3.OperationalError:
+unable to open database file` (caught and rendered as a 400 on the KB-select
+page, not a 500 — but still a hard stop; see `_open_root`'s callers in
+`verinote/web/app.py`). The common cause on Windows: `scripts\run.cmd` (or
+`verinote ui` run directly) was launched from an elevated ("Run as
+Administrator") terminal. A folder created by a full-admin token is owned by
+`BUILTIN\Administrators`, and your normal account only inherits Read+Execute on
+it, not Write — so the KB folder gets created, but `kb.sqlite` inside it
+cannot be. Launch verinote from a normal, non-elevated terminal instead.
+
+If a KB folder already got created this way, either delete the empty folder
+and let a non-elevated launch recreate it, or fix it in place from an elevated
+prompt (only an admin token can grant rights on an Administrators-owned
+object): `icacls <path> /grant <you>:(OI)(CI)F /T`.
+
 ## Backups are your responsibility
 
 verinote takes none. Copy **the whole KB root** — it is a plain folder — on your

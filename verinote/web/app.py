@@ -13,6 +13,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import sqlite3
 import threading
 from threading import Lock
 import unicodedata
@@ -1905,7 +1906,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 error=f"refused to open KB — its config.json is corrupt: {e}",
                 status_code=400,
             )
-        except (KBLocationError, OSError) as e:
+        except (KBLocationError, OSError, sqlite3.OperationalError) as e:
             return _kb_select(request, error=f"could not open KB: {e}", status_code=400)
         return RedirectResponse("/", status_code=303)
 
@@ -2738,7 +2739,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 error=f"refused to open KB — its config.json is corrupt: {e}",
                 status_code=400,
             )
-        except (KBLocationError, OSError) as e:
+        except (KBLocationError, OSError, sqlite3.OperationalError) as e:
             return _settings(request, error=f"could not open KB directory: {e}", status_code=400)
         return RedirectResponse("/", status_code=303)
 

@@ -8,6 +8,7 @@ import inspect
 import json
 import logging
 import re
+import sqlite3
 import sys
 import threading
 import time
@@ -424,6 +425,27 @@ def test_ui_root_selection_refuses_worktree_descendant_before_initializing(
     assert response.status_code == 400
     assert "inside Git worktree" in response.text
     assert not expected.exists()
+
+
+@pytest.mark.parametrize("path", ["/kb/select", "/settings/root"])
+def test_kb_root_selection_reports_unopenable_db_instead_of_500(tmp_path, path, monkeypatch):
+    """A KB root whose kb.sqlite cannot be opened (e.g. a directory owned by a
+    different account, or a locked file) surfaces as a 400 with a clear message,
+    not an unhandled 500 — sqlite3.OperationalError must be caught alongside
+    KBLocationError/OSError in _open_root's callers (#Windows admin-owned KB dir)."""
+    target = tmp_path / "kb"
+    target.mkdir()
+    client = _client(tmp_path) if path == "/settings/root" else TestClient(create_app())
+
+    def boom(self, db_path):
+        raise sqlite3.OperationalError("unable to open database file")
+
+    monkeypatch.setattr(store_db.Store, "__init__", boom)
+
+    response = client.post(path, data={"root": str(target)}, follow_redirects=False)
+
+    assert response.status_code == 400
+    assert "could not open KB" in response.text
 
 
 def test_dashboard_shows_coverage_gap(tmp_path):
