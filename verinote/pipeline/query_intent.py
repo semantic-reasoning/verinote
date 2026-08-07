@@ -574,6 +574,12 @@ _KOREAN_INTERROGATIVE_TAIL = (
 )
 """The interrogative tails `_clean_korean_attribute_label` strips.
 
+Every alternative is an interrogative stem with an optional copula suffix,
+except the two bare endings `인가`/`입니까` discussed below.
+`_KOREAN_MEASURE_QUESTION_TAIL` carries the tails this alternation cannot
+express, the ones with a counter noun or a conjugated predicate inside them
+(`몇 살인가`, `얼마나 되나요`).
+
 `누구` and `얼마` are how Korean asks for a person and an amount, and stripping
 only `무엇` left `프로젝트A의 담당자는 누구인가?` asking for a relation literally
 named `담당자는 누구` -- a label no schema can hold, so the planner built no
@@ -599,6 +605,69 @@ _KOREAN_ATTRIBUTE_LABEL_TAIL = re.compile(
     rf"\s*(?:{_KOREAN_INTERROGATIVE_TAIL})\s*$"
 )
 _KOREAN_ATTRIBUTE_LABEL_JOSA = re.compile(r"(?:은|는|이|가)\s*$")
+
+_KOREAN_MEASURE_COUNTER = (
+    r"살|명|개|건|년|개월|달|주|일|시간|분|초|번|회|차|가지|종류|종|"
+    r"퍼센트|프로|원|점|위|권|장|쪽|편|배|층"
+)
+_KOREAN_MEASURE_PREDICATE = r"인가요?|입니까|이에요|이야|예요|야"
+_KOREAN_MEASURE_QUESTION_TAIL = (
+    rf"(?<![가-힣])몇\s*(?:{_KOREAN_MEASURE_COUNTER})?\s*(?:{_KOREAN_MEASURE_PREDICATE})?"
+    r"|(?<![가-힣])얼마나(?:\s*[가-힣]{1,6}){0,2}"
+)
+"""The measure-question tails `_clean_korean_attribute_label` strips.
+
+`샘플인물의 나이는 몇 살인가?` asked the schema for a relation named
+`나이는 몇 살`. No schema holds that, so a question naming its relation exactly
+was answered UNVERIFIED -- the same defect `누구`/`얼마` had, in a different
+shape: a counter noun sits between the interrogative and the predicate, which
+`_KOREAN_INTERROGATIVE_TAIL`'s stem-and-suffix alternatives cannot express. That
+is why this is a separate pattern rather than two more stems there.
+
+The two halves are bounded differently because they complement different word
+classes. `몇` takes a counter noun, an enumerable class, so the counters are
+listed. `얼마나` takes a conjugated predicate, which is open, so it takes a
+bounded wildcard: Hangul syllables only, in at most two runs of at most six,
+anchored to the end of the label. A run may end mid-word but may never cross a
+space, so where the space falls decides: `얼마나 소요되겠습니까?` is one word of
+seven and is stripped, two runs covering it between them, while
+`얼마나 가나 다라마바사아자` is nine and is not: one run is spent on the first
+word, leaving the second word's seven syllables to a single run of six. Twelve
+syllables is the ceiling -- one word of twelve, or two words of six.
+
+Both interrogatives carry `(?<![가-힣])`, so neither may follow a Hangul
+syllable. `몇몇` is an ordinary Korean determiner, and without that guard its
+second syllable matched the bare-`몇` form and cut `몇몇` down to `몇`. What the
+guard buys for the bare `야`/`예요` predicates is narrower than safety: inside a
+Hangul label they are reachable only bound to a word-initial `몇`, so this rule
+cannot cut a word in half the way a stemless `야` would leave `분야` as `분` --
+it takes whole words. The guard names Hangul only, so any non-Hangul character
+before the interrogative -- punctuation as much as another script -- falls
+outside that reasoning, and there the rule does leave a fragment:
+`샘플대상의 가격-몇 개?` asks for `가격-`. A label whose tail really is `몇` +
+counter + `야` still loses that phrase: `샘플대상의 최근 몇 주야?` asks only for
+`최근`. That is the "several" case below, not a truncation.
+
+The guard is on the interrogative, not on the counter, so `몇살인가?` is still
+read; the spaces on either side of the counter are both optional, so
+`몇 살 인가?` is read too. What falls outside is any label with no space before
+the interrogative -- `나이는몇살인가?` and `가격은얼마나?` alike.
+
+`몇` also means "several" non-interrogatively and nothing here settles which it
+is: `샘플기간의 최근 몇 년?` loses its `몇 년` and asks only for `최근`. That is
+an accepted cost, weighed against `최근 몇 년` being an implausible relation
+name, not a case this handles.
+
+Not covered, and stated rather than implied: a counter outside the list
+(`몇 톤인가?`), a non-Hangul unit (`몇 %인가?`), an ordinal (`몇 번째인가?`), the
+`-나` particle (`몇 개나 되나요?`). Past forms such as `몇 살이었나요?` are
+untouched by this rule, the same gap `_KOREAN_INTERROGATIVE_TAIL` records for
+`누구였나요?`.
+"""
+
+_KOREAN_ATTRIBUTE_LABEL_MEASURE_TAIL = re.compile(
+    rf"\s*(?:{_KOREAN_MEASURE_QUESTION_TAIL})\s*$"
+)
 
 
 def _korean_attribute_label_readings(value: str) -> tuple[str, ...]:
@@ -628,11 +697,46 @@ def _korean_attribute_label_readings(value: str) -> tuple[str, ...]:
     `평가?` from an answer into an ambiguity report. That is the honest outcome
     for a question the KB genuinely does not disambiguate.
 
-    The interrogative tail is stripped before any of this and is still a single
-    guess: `재인가?` loses `인가` and asks only for `재`, so a KB holding
-    `재인가` is not covered by this change. See #443.
+    Two tails are stripped before any of this and both are single guesses: the
+    interrogative tail (`재인가?` loses `인가` and asks only for `재` -- see
+    #443) and the measure tail. They differ in whether they may leave a label
+    with nothing to ask for. The interrogative tail may, which is how
+    `샘플사업의 인가?` loses its whole label and is declined. The measure tail
+    may not, and what enforces that is not the strip but the readings it leads
+    to: the measure reading is adopted only when it yields readings, and
+    otherwise the label is read whole, exactly as it would be read without this
+    rule. So this change declines no question that was not already declined.
+    Unlike the josa, a measure tail is not a spelling of a relation name the way
+    `단가` is, so there is no second reading for the schema to choose between;
+    the one narrow case where it could be, `몇` read as "several", is named in
+    `_KOREAN_MEASURE_QUESTION_TAIL`'s docstring.
     """
     label = " ".join(value.strip().split())
+    # Adopting the measure reading is conditional on it surviving the rest of
+    # the cleaning, because declining is not neutral: `샘플대상의 몇 개?` would
+    # stop reaching `_reinterpret_empty_plan`, the gate that refuses a model
+    # `no_answer` -- the reading Ask renders as `VERIFIED — engine (negative)`,
+    # its strongest claim -- for a question the deterministic parser could plan
+    # nothing for. Should the model then return an intent that itself plans
+    # empty, that plan would also lose the direct-Datalog fallback a
+    # deterministic intent keeps. Testing the finished readings rather than this
+    # strip's own output is what covers the labels the two later strips would
+    # empty, which `measured` alone does not see.
+    measured = _KOREAN_ATTRIBUTE_LABEL_MEASURE_TAIL.sub("", label).strip()
+    if measured != label:
+        readings = _label_readings_after_measure(measured)
+        if readings:
+            return readings
+    return _label_readings_after_measure(label)
+
+
+def _label_readings_after_measure(label: str) -> tuple[str, ...]:
+    """The rest of the cleaning: the interrogative tail, then the josa reading.
+
+    Returns no readings at all when the label cleans away to nothing. That empty
+    result is the signal the caller reads: a measure reading that cleans away is
+    dropped in favour of reading the whole label.
+    """
     label = _KOREAN_ATTRIBUTE_LABEL_TAIL.sub("", label).strip()
     stripped = _KOREAN_ATTRIBUTE_LABEL_JOSA.sub("", label).strip()
     if not stripped:
