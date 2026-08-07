@@ -522,6 +522,337 @@ def test_korean_attribute_label_does_not_strip_a_stemless_politeness_ending():
     )
 
 
+# Two lists, not one, and not only for grammaticality (`개이야` is not Korean).
+# The halves pin different alternatives: the vowel counters are the only thing
+# here that pins the bare `야`, whereas `이야` is pinned redundantly -- these
+# counters, the counterless `몇이야?` below and the spaced-off `몇 살 이야?`
+# each kill its removal. A single merged list would let one mask the other.
+_KOREAN_MEASURE_BATCHIM_COUNTERS = ("살", "명", "건", "년", "원", "시간")
+_KOREAN_MEASURE_BATCHIM_FORMS = ("인가?", "인가요?", "입니까?", "이야?", "이에요?", "?")
+_KOREAN_MEASURE_VOWEL_COUNTERS = ("개", "차", "배", "가지", "퍼센트", "회")
+_KOREAN_MEASURE_VOWEL_FORMS = ("인가?", "인가요?", "입니까?", "야?", "예요?", "?")
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        f"샘플인물의 나이는 몇 {counter}{form}"
+        for counter in _KOREAN_MEASURE_BATCHIM_COUNTERS
+        for form in _KOREAN_MEASURE_BATCHIM_FORMS
+    ],
+)
+def test_a_counted_measure_question_asks_for_the_relation_it_names(question):
+    """`몇` plus a counter noun is the question, not part of the relation.
+
+    `샘플인물의 나이는 몇 살인가?` asked the schema for a relation named
+    `나이는 몇 살`, which no schema holds, so a question naming its relation
+    exactly was answered UNVERIFIED. Built as a real cross-product so that one
+    counter carrying a form cannot mask that form's absence on the others.
+    """
+    intent = deterministic_query_intent(question)
+
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.relation_candidates == ("나이", "나이는")
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        f"샘플인물의 나이는 몇 {counter}{form}"
+        for counter in _KOREAN_MEASURE_VOWEL_COUNTERS
+        for form in _KOREAN_MEASURE_VOWEL_FORMS
+    ],
+)
+def test_a_vowel_final_counter_takes_the_vowel_final_predicates(question):
+    """The same rule, on the counters that take `야`/`예요` rather than `이야`.
+
+    These cells are the only ones that pin the bare `야` alternative; the
+    받침 counters pin `이야`. Asserting both sets on one counter list would
+    put ungrammatical Korean (`개이야`) in the fixture.
+    """
+    intent = deterministic_query_intent(question)
+
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.relation_candidates == ("나이", "나이는")
+
+
+@pytest.mark.parametrize("question", ["샘플인물의 나이는 몇인가?", "샘플인물의 나이는 몇이야?", "샘플인물의 나이는 몇?"])
+def test_a_measure_question_needs_no_counter(question):
+    """`몇` alone is a measure question -- the counter is optional.
+
+    Requiring one would leave `나이는 몇` as the relation candidate, the same
+    label no schema holds that the counted forms already fail on.
+    """
+    intent = deterministic_query_intent(question)
+
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.relation_candidates == ("나이", "나이는")
+
+
+def test_a_measure_question_may_omit_the_space_before_the_counter():
+    """`몇살인가?` is how the form is commonly typed.
+
+    The space is optional between the interrogative and its counter. After a
+    Hangul syllable it is not optional before the interrogative itself -- see
+    the word-boundary tests.
+    """
+    intent = deterministic_query_intent("샘플인물의 나이는 몇살인가?")
+
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.relation_candidates == ("나이", "나이는")
+
+
+@pytest.mark.parametrize(
+    ("question", "candidates"),
+    [
+        ("샘플인물의 나이는 몇 살 인가?", ("나이", "나이는")),
+        ("샘플인물의 나이는 몇 살 이야?", ("나이", "나이는")),
+        ("샘플대상의 수량은 몇 개 인가요?", ("수량", "수량은")),
+        ("샘플사업의 기간은 몇 년 입니까?", ("기간", "기간은")),
+    ],
+)
+def test_a_measure_question_may_space_the_predicate_off_the_counter(
+    question, candidates
+):
+    """The space *after* the counter is optional too, and separately so.
+
+    Its sibling above pins the space before the counter. Nothing else pins this
+    one: without it the measure tail stops reaching the end anchor on every one
+    of these, and each falls back to naming a relation that still carries its
+    counter -- `나이는 몇 살`, `수량은 몇 개 인가요` -- which is the defect this
+    rule exists to fix, in the spelling a writer gets by putting a space where
+    Korean allows one.
+    """
+    intent = deterministic_query_intent(question)
+
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.relation_candidates == candidates
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "샘플사업의 기간은 얼마나 되나요?",
+        "샘플사업의 기간은 얼마나 됩니까?",
+        "샘플사업의 기간은 얼마나 길어?",
+        "샘플사업의 기간은 얼마나 걸리나요?",
+    ],
+)
+def test_an_amount_measure_question_strips_its_open_class_predicate(question):
+    """`얼마나` complements a conjugated predicate, which is an open class.
+
+    A closed verb list would be a losing game -- `되나요`, `됩니까`, `길어`,
+    `걸리나요` are four spellings of the same question -- so the bound is the
+    literal `얼마나` plus a capped wildcard rather than an enumeration.
+    """
+    intent = deterministic_query_intent(question)
+
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.relation_candidates == ("기간", "기간은")
+
+
+@pytest.mark.parametrize(
+    "question", ["샘플사업의 기간은 얼마나?", "샘플사업의 기간은 얼마나 오래 걸리나요?"]
+)
+def test_the_amount_predicate_may_be_absent_or_two_words(question):
+    """Both ends of the wildcard's word count are load-bearing.
+
+    `얼마나?` carries no predicate at all and `얼마나 오래 걸리나요?` carries
+    two words, so a cap of one word in either direction drops one of them.
+    """
+    intent = deterministic_query_intent(question)
+
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.relation_candidates == ("기간", "기간은")
+
+
+@pytest.mark.parametrize(
+    ("question", "candidates"),
+    [
+        ("샘플사업의 기간은 얼마나 3개월?", ("기간은 얼마나 3개월",)),
+        ("샘플사업의 기간은 얼마나 A?", ("기간은 얼마나 A",)),
+        ("샘플사업의 기간은 얼마나 오래-걸리나요?", ("기간은 얼마나 오래-걸리나요",)),
+    ],
+)
+def test_the_amount_wildcard_spans_hangul_only(question, candidates):
+    """The wildcard is Hangul syllables, not any non-space run.
+
+    A conjugated Korean predicate is written in Hangul, so a digit, a Latin
+    letter or a hyphen means the tail is not the conjugation this rule claims to
+    recognise. Widened to `\\S` all three lose everything from `얼마나` rightward
+    and ask for `기간` instead of the words the question spelled -- and nothing
+    else here notices, because every other amount fixture is pure Hangul.
+    """
+    intent = deterministic_query_intent(question)
+
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.relation_candidates == candidates
+
+
+@pytest.mark.parametrize(
+    ("predicate", "candidates"),
+    [
+        # One word, where a run may end mid-word, so two runs reach twelve.
+        ("소요되겠습니까", ("기간", "기간은")),  # 7
+        ("가나다라마바사아자차카타", ("기간", "기간은")),  # 12, the ceiling
+        ("가나다라마바사아자차카타파", ("기간은 얼마나 가나다라마바사아자차카타파",)),  # 13
+        # Two words: neither run may cross the space, so each word costs one.
+        ("가나다라마바 사아자차카타", ("기간", "기간은")),  # 6+6, the ceiling again
+        ("가나다 라마바사아자", ("기간", "기간은")),  # 3+6
+        ("가나 다라마바사아자", ("기간은 얼마나 가나 다라마바사아자",)),  # 2+7
+    ],
+)
+def test_the_amount_wildcard_caps_each_run_and_not_only_the_total(
+    predicate, candidates
+):
+    """Twelve syllables, in at most two runs of at most six.
+
+    Nothing else pins those numbers -- widening each run from six to twelve, or
+    to ten, leaves every other test here passing. The last two rows are what
+    makes the per-run half falsifiable: `3+6` is stripped and the shorter `2+7`
+    is not, because one run is spent on the first word and six cannot cover the
+    second. A cap on the total alone would take both, or neither.
+    """
+    intent = deterministic_query_intent(f"샘플사업의 기간은 얼마나 {predicate}?")
+
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.relation_candidates == candidates
+
+
+def test_the_measure_interrogative_must_begin_a_word():
+    """`몇몇` is an ordinary Korean determiner, not `몇` plus a stray syllable.
+
+    Without the word-boundary guard the second syllable matched the bare-`몇`
+    form and cut the label to `몇` -- the `개요`->`개` hazard, one constant over.
+    Only the bare spelling exercises the guard: behind a josa the rule cannot fire
+    at all -- the trailing `은` of `몇몇은` is neither a counter nor a
+    predicate, so nothing reaches the end anchor -- and `몇몇은?` would pass
+    with the guard removed.
+    """
+    intent = deterministic_query_intent("샘플대상의 몇몇?")
+
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.relation_candidates == ("몇몇",)
+
+
+def test_the_counter_list_stays_closed():
+    """The closed counter list is otherwise pinned by nothing.
+
+    Its two siblings mask it: opening the list to any Hangul word takes the
+    whole of `몇몇?` and the whole of `몇분야?`, and a label the strip empties is
+    read whole, so both still name themselves. Only here does the wildcard leave
+    something behind -- it eats `몇몇` and asks for `최근` -- so this is the only
+    test that fails when the counter list becomes a wildcard, which is why it
+    survives despite `최근 몇몇` being a marginal relation name.
+    """
+    intent = deterministic_query_intent("샘플대상의 최근 몇몇?")
+
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.relation_candidates == ("최근 몇몇",)
+
+
+@pytest.mark.parametrize(
+    ("question", "candidates"),
+    [
+        ("샘플대상의 가격은얼마나?", ("가격은얼마나",)),
+        ("샘플사업의 기간은얼마나 길어?", ("기간은얼마나 길어",)),
+        ("샘플대상의 비용은얼마나 되나요?", ("비용은얼마나 되나요",)),
+    ],
+)
+def test_the_amount_interrogative_must_begin_a_word_too(question, candidates):
+    """The word-boundary guard on `얼마나`, which its sibling does not pin.
+
+    Splitting the guard per interrogative shows that dropping it from `얼마나`
+    alone survives every other test here -- `몇몇?` only exercises the `몇` half.
+    Without it these labels lose everything from `얼마나` rightward and ask for
+    `가격`, `기간`, `비용` instead of the words the question spelled.
+    """
+    intent = deterministic_query_intent(question)
+
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.relation_candidates == candidates
+
+
+def test_the_measure_tail_matches_only_at_the_end_of_the_label():
+    """`몇` inside a label is not a tail.
+
+    Unanchored, the rule ate forward from the `몇` and left `째 심사` -- a
+    fragment of the relation the question named.
+    """
+    intent = deterministic_query_intent("샘플사업의 몇 번째 심사는?")
+
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.relation_candidates == ("몇 번째 심사", "몇 번째 심사는")
+
+
+@pytest.mark.parametrize(
+    ("question", "candidates"),
+    [
+        ("샘플대상의 몇 개?", ("몇 개",)),
+        ("샘플대상의 얼마나 많은 인원?", ("얼마나 많은 인원",)),
+        ("샘플문서의 몇분야?", ("몇분야",)),
+    ],
+)
+def test_a_label_the_measure_strip_would_empty_is_read_whole(question, candidates):
+    """The tail is the whole label here, so the label is read whole instead.
+
+    Declining a whole-label measure question is worse than claiming it: an
+    emptied label is declined, which routes the question past
+    `_reinterpret_empty_plan` -- the gate that refuses a model `no_answer`,
+    the reading Ask renders as `VERIFIED — engine (negative)`. Should the model
+    then return an intent that itself plans empty, that plan loses the
+    direct-Datalog fallback too. These stay exactly where they are without this
+    change.
+    """
+    intent = deterministic_query_intent(question)
+
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.relation_candidates == candidates
+
+
+@pytest.mark.parametrize(
+    ("question", "candidates"),
+    [
+        ("샘플제품의 이 몇 개인가?", ("이 몇 개",)),
+        ("샘플광산의 은 몇 개인가?", ("은 몇 개",)),
+        ("샘플대상의 가 몇 개?", ("가 몇 개",)),
+        ("샘플모임의 누구 몇 명인가?", ("누구 몇 명",)),
+    ],
+)
+def test_a_label_the_later_strips_would_empty_is_read_whole(question, candidates):
+    """Not emptying a label takes more than not letting *this* strip empty it.
+
+    Two more strips run after the measure tail, and what the measure tail leaves
+    behind is exactly what they are built to remove: a lone josa syllable, or an
+    interrogative. Guarding on the measure strip's own output lets those finish
+    the job and decline the question anyway, which is the harm the guard exists
+    to prevent. Guarding on the finished readings is what actually holds these
+    where they were, so the measure rule adds nothing to the declined class.
+    """
+    intent = deterministic_query_intent(question)
+
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.relation_candidates == candidates
+
+
+@pytest.mark.parametrize(
+    "question", ["샘플인물의 나이는 몇 살이야", "샘플사업의 기간은 얼마나 되나요"]
+)
+def test_a_measure_question_without_a_question_mark_is_still_declined(question):
+    """The measure tails are added to the label cleaner, not to the shape check.
+
+    `_looks_like_korean_attribute_question` decides whether the flat attribute
+    shape is claimed at all, and only for a question with no `?`. Widening it
+    with the measure predicates would claim these, but would also flatten a
+    no-`?` multi-hop question the model can read as two hops -- the trade its
+    own comment records declining. Nothing here changes that.
+    """
+    assert (
+        deterministic_query_intent(question).kind
+        == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED
+    )
+
+
 def test_deterministic_entity_relation_discovery_questions_are_generic():
     english = deterministic_query_intent("How is Sample Entity related?")
     connected = deterministic_query_intent(
