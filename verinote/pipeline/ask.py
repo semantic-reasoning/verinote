@@ -24,6 +24,7 @@ from verinote.pipeline.corroboration import CorroborationPolicyError, store_rela
 from verinote.pipeline.engine_input import engine_relation_rows
 from verinote.pipeline.query import expand_query_relation_aliases, schema_aware_query_flow
 from verinote.pipeline.query_candidate_eval import RELATION_DECL
+from verinote.pipeline.query_intent import korean_measure_unit_mismatch
 from verinote.pipeline.report_trace import trace_query_answers
 from verinote.store import Store, engine_statuses
 from verinote.store.duckdb_fact_terms import DuckDBFactTermStoreError
@@ -152,11 +153,7 @@ def ask_question(
                     engine_answers=answers,
                     reason="deterministic query matched confirmed/accepted facts",
                     grounding_facts=source_facts,
-                    warning=(
-                        None
-                        if source_facts
-                        else "source trace unavailable for this verified query shape"
-                    ),
+                    warning=_engine_answer_warning(question, source_facts),
                 )
             return AskResult(
                 route="engine",
@@ -189,6 +186,58 @@ def ask_question(
         root=root,
         question=question,
         reason=reason or f"deterministic query status: {status}",
+    )
+
+
+def _engine_answer_warning(
+    question: str, source_facts: tuple[AskGroundingFact, ...]
+) -> str | None:
+    """The caveat shown beside a verified engine answer, if there is one.
+
+    Two unrelated caveats share this slot because the template renders one. The
+    standing one is that there is no source trace, so the answer cannot be shown
+    as facts; it wins when both would apply, because the unit caveat needs the
+    trace to find the fact the answer came from. A multi-valued answer never
+    reaches the unit caveat, and not because it is an unreachable state: it is
+    answered and verified, and it produces no source trace, so it takes that
+    first branch.
+
+    The second says the verified value is in a different unit from the one the
+    question asked in (#445). It declines nothing, converts nothing, and changes
+    no label, route, or reason: `VERIFIED — engine` is a claim about provenance
+    and that claim is still accurate.
+
+    The answering fact is the one whose object is the answer; a two-hop proof
+    also lists its intermediate fact, whose object is not. `_fold` is applied to
+    both sides because the two strings arrive by different routes -- `answer` is
+    composed through NFC by the trace, while `object` is the store's text as
+    written -- so without it an NFD value would fail this test on every fact and
+    the caveat would silently never fire. The comparison is still between a
+    rendered string and a stored one, and rendering escapes more than it
+    normalises: a stored `2년<TAB>` gives object `'2년\\t'` and answer
+    `'2년\\\\t'`, which the fold does not reconcile, so that answer gets no
+    caveat. Silence, never a wrong sentence.
+
+    The sentence carries no backticks or other markup: `ask.html` renders this
+    slot as text, and no warning text this module writes uses any. (The fallback
+    path also puts a provider error message in this slot; that text is not
+    written here.)
+    """
+    if not source_facts:
+        return "source trace unavailable for this verified query shape"
+    answering = next(
+        (f for f in source_facts if _fold(f.object) == _fold(f.answer)), None
+    )
+    if answering is None:
+        return None
+    mismatch = korean_measure_unit_mismatch(question, answering.object)
+    if mismatch is None:
+        return None
+    counter, stated = mismatch
+    return (
+        f"the question's counter is {counter}; the verified value states "
+        f"{stated}. verinote shows stored values as recorded and applies "
+        f"no unit conversion"
     )
 
 
