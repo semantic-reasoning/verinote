@@ -897,3 +897,275 @@ def test_ask_grounding_table_shows_a_comma_answer_in_its_source_form(tmp_path):
     # is the source's value: no report-join escape reaches this screen.
     assert fact.answer == "검토자, 팀장"
     assert fact.object == "검토자, 팀장"
+
+
+# --- the measure-unit caveat (#445) ----------------------------------------
+
+_UNIT_WARNING = (
+    "the question's counter is 개월; the verified value states 년. verinote "
+    "shows stored values as recorded and applies no unit conversion"
+)
+
+
+class TwoHopMeasureIntentClient:
+    """Reads `X의 <label>의 <label>은 몇 <counter>인가?` as two hops.
+
+    The deterministic parser flattens the chain into one relation name, plans no
+    candidates, and the empty plan is re-read by the model -- the same route
+    `test_ask_answers_a_korean_chain_question_by_reinterpreting_an_empty_plan`
+    pins, here with a measure tail on the end.
+    """
+
+    name = "two-hop-measure-intent"
+
+    def extract_query_intent(self, *, question: str, schema_hint: str = ""):
+        from verinote.pipeline.query_intent import parse_query_intent
+
+        return parse_query_intent(
+            {
+                "kind": "conjunctive_lookup",
+                "subject": None,
+                "relation": None,
+                "object": None,
+                "relation_candidates": None,
+                "operator": None,
+                "value_type": None,
+                "value": None,
+                "reason": None,
+                "hops": [
+                    {
+                        "subject": {"kind": "entity", "value": "샘플사업"},
+                        "relation": {"kind": "relation", "value": "하위단계"},
+                        "object": {"kind": "var", "value": "M"},
+                    },
+                    {
+                        "subject": {"kind": "var", "value": "M"},
+                        "relation": {"kind": "relation", "value": "기간"},
+                        "object": {"kind": "var", "value": "A"},
+                    },
+                ],
+                "conditions": None,
+                "answer_var": "A",
+            }
+        )
+
+    def translate_query(self, **kwargs):
+        raise AssertionError("Ask must not call direct Datalog translation")
+
+    def answer_question(self, **kwargs):
+        raise AssertionError("a verified chain answer must not call the fallback LLM")
+
+
+def test_ask_warns_beside_a_verified_answer_stated_in_another_unit(tmp_path):
+    """#445: the answer stands, and a caveat is shown beside it.
+
+    `샘플사업의 기간은 몇 개월인가?` against a KB holding `(샘플사업, 기간, 2년)`
+    has been answered `VERIFIED — engine` with `2년` since #442, which moved the
+    whole measure-question family onto the engine. None of that changes here: the
+    route, label, answer and reason are exactly what they were, and only the
+    caveat is new. The assertion is on the whole sentence, because a caveat that
+    named `MONTH` instead of `개월` would be worse than none.
+    """
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/sample-plan.txt")
+    store.add_fact("샘플사업", "기간", "2년", status="confirmed", source_id=source_id)
+
+    result = ask_question(
+        store,
+        DeterministicOnlyClient(),
+        root=tmp_path,
+        question="샘플사업의 기간은 몇 개월인가?",
+    )
+
+    assert result.route == "engine"
+    assert result.label == "VERIFIED — engine"
+    assert result.status == "translated"
+    assert result.reason == "deterministic query matched confirmed/accepted facts"
+    assert result.answer == "샘플사업, 기간, 2년\n    ← sources/sample-plan.txt"
+    assert result.warning == _UNIT_WARNING
+    # ask.html renders this slot as text, so the sentence carries no markup.
+    assert "`" not in result.warning
+    assert "*" not in result.warning
+
+
+def test_ask_does_not_warn_when_the_verified_value_is_in_the_asked_unit(tmp_path):
+    """The same question and the same shape of fact, stated in months."""
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/sample-plan.txt")
+    store.add_fact("샘플사업", "기간", "24개월", status="confirmed", source_id=source_id)
+
+    result = ask_question(
+        store,
+        DeterministicOnlyClient(),
+        root=tmp_path,
+        question="샘플사업의 기간은 몇 개월인가?",
+    )
+
+    assert result.label == "VERIFIED — engine"
+    assert result.warning is None
+
+
+def test_ask_warns_on_the_answering_fact_of_a_two_hop_proof(tmp_path):
+    """A two-hop proof lists an intermediate fact whose object is not the answer.
+
+    Here the first fact's object is `샘플단계` and the second's is `2년`. Reading
+    the caveat off the first fact in the trace would find no unit in `샘플단계`
+    and go silent, so this pins the `_fold(object) == _fold(answer)` filter.
+    """
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/sample-plan.txt")
+    store.add_fact("샘플사업", "하위단계", "샘플단계", status="confirmed", source_id=source_id)
+    store.add_fact("샘플단계", "기간", "2년", status="confirmed", source_id=source_id)
+
+    result = ask_question(
+        store,
+        TwoHopMeasureIntentClient(),
+        root=tmp_path,
+        question="샘플사업의 하위단계의 기간은 몇 개월인가?",
+    )
+
+    assert result.label == "VERIFIED — engine"
+    assert [fact.object for fact in result.grounding_facts] == ["샘플단계", "2년"]
+    assert result.warning == _UNIT_WARNING
+
+
+def test_ask_keeps_the_trace_warning_for_a_multi_valued_answer(tmp_path):
+    """Two facts on one relation are answered, and produce no source trace.
+
+    That is not an unreachable state -- the question is answered and verified --
+    so the caveat slot is already taken by the standing "no source trace" one,
+    which wins because the unit caveat needs the trace to find the answering
+    fact. This pins that the new branch did not displace it.
+    """
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/sample-plan.txt")
+    store.add_fact("샘플사업", "기간", "2년", status="confirmed", source_id=source_id)
+    store.add_fact("샘플사업", "기간", "18개월", status="confirmed", source_id=source_id)
+
+    result = ask_question(
+        store,
+        DeterministicOnlyClient(),
+        root=tmp_path,
+        question="샘플사업의 기간은 몇 개월인가?",
+    )
+
+    assert result.label == "VERIFIED — engine"
+    assert result.grounding_facts == ()
+    assert result.warning == "source trace unavailable for this verified query shape"
+
+
+def test_ask_warns_on_a_value_the_store_holds_in_decomposed_form(tmp_path):
+    """The two sides of the answering-fact test arrive by different routes.
+
+    `Store.add_fact` keeps the `object` column exactly as written, so a
+    decomposed `2년` stays four code points there, while the trace composes the
+    answer it renders through NFC. Without `_fold` on both sides no fact matches
+    and this caveat silently never fires.
+    """
+    import unicodedata
+
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/sample-plan.txt")
+    decomposed = unicodedata.normalize("NFD", "2년")
+    store.add_fact("샘플사업", "기간", decomposed, status="confirmed", source_id=source_id)
+
+    result = ask_question(
+        store,
+        DeterministicOnlyClient(),
+        root=tmp_path,
+        question="샘플사업의 기간은 몇 개월인가?",
+    )
+
+    fact = result.grounding_facts[0]
+    assert len(fact.object) == 4
+    assert len(fact.answer) == 2
+    assert fact.object != fact.answer
+    assert result.warning == _UNIT_WARNING
+
+
+def test_ask_is_silent_when_the_rendered_answer_escapes_the_stored_value(tmp_path):
+    """Folding normalises; it does not un-escape, and the caveat fails silent.
+
+    A stored `2년<TAB>` reaches the trace as object `'2년\\t'` and answer
+    `'2년\\\\t'`, and NFC-plus-casefold does not reconcile those. No fact passes
+    the answering-fact test, so no caveat is shown -- silence beside a correct
+    answer, never a sentence about the wrong fact.
+    """
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/sample-plan.txt")
+    store.add_fact("샘플사업", "기간", "2년\t", status="confirmed", source_id=source_id)
+
+    result = ask_question(
+        store,
+        DeterministicOnlyClient(),
+        root=tmp_path,
+        question="샘플사업의 기간은 몇 개월인가?",
+    )
+
+    fact = result.grounding_facts[0]
+    assert (fact.object, fact.answer) == ("2년\t", "2년\\t")
+    assert result.label == "VERIFIED — engine"
+    assert result.warning is None
+
+
+def test_ask_does_not_warn_for_a_relation_literally_named_with_a_counter(tmp_path):
+    """A KB may hold a relation named `몇 년`, and this question asks for it."""
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/sample-plan.txt")
+    store.add_fact("샘플사업", "몇 년", "24개월", status="confirmed", source_id=source_id)
+
+    result = ask_question(
+        store,
+        DeterministicOnlyClient(),
+        root=tmp_path,
+        question="샘플사업의 몇 년인가?",
+    )
+
+    assert result.label == "VERIFIED — engine"
+    assert result.answer == "샘플사업, 몇 년, 24개월\n    ← sources/sample-plan.txt"
+    assert result.warning is None
+
+
+def test_ask_does_not_warn_for_a_question_that_asked_in_no_unit(tmp_path):
+    """An ordinary attribute question is untouched, whatever its value states."""
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/sample.txt")
+    store.add_fact("샘플인물", "역할", "2년", status="confirmed", source_id=source_id)
+
+    result = ask_question(
+        store, DeterministicOnlyClient(), root=tmp_path, question="샘플인물의 역할은 무엇인가?"
+    )
+
+    assert result.label == "VERIFIED — engine"
+    assert result.warning is None
+
+
+def test_ask_warns_on_a_value_whose_case_differs_from_the_rendered_answer(tmp_path):
+    """`_fold` is load-bearing on the ANSWER side too, not only the object side.
+
+    The decomposed-value test above pins only half of it. There the object is
+    NFD and the answer NFC, so folding the object alone is enough to make them
+    meet -- drop the fold from the answer side and that test still passes.
+
+    A mixed-case Latin value separates them: `3 Weeks` needs casefolding on
+    whichever side is left unfolded, so this fails if either call goes. The
+    caveat reports the folded spelling, which is why it says `weeks`.
+    """
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/sample-plan.txt")
+    store.add_fact("샘플사업", "기간", "3 Weeks", status="confirmed", source_id=source_id)
+
+    result = ask_question(
+        store,
+        DeterministicOnlyClient(),
+        root=tmp_path,
+        question="샘플사업의 기간은 몇 개월인가?",
+    )
+
+    fact = result.grounding_facts[0]
+    assert (fact.object, fact.answer) == ("3 Weeks", "3 Weeks")
+    assert result.label == "VERIFIED — engine"
+    assert result.warning == (
+        "the question's counter is 개월; the verified value states weeks. "
+        "verinote shows stored values as recorded and applies no unit conversion"
+    )

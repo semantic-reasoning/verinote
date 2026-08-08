@@ -12,6 +12,7 @@ from typing import Any
 
 from verinote.llm.base import LLMError
 from verinote.llm.schema import QUERY_INTENT_SCHEMA
+from verinote.text import nfc
 
 
 # Every derivation below takes its schema as an argument rather than reading
@@ -612,7 +613,7 @@ _KOREAN_MEASURE_COUNTER = (
 )
 _KOREAN_MEASURE_PREDICATE = r"인가요?|입니까|이에요|이야|예요|야"
 _KOREAN_MEASURE_QUESTION_TAIL = (
-    rf"(?<![가-힣])몇\s*(?:{_KOREAN_MEASURE_COUNTER})?\s*(?:{_KOREAN_MEASURE_PREDICATE})?"
+    rf"(?<![가-힣])몇\s*(?:(?P<counter>{_KOREAN_MEASURE_COUNTER}))?\s*(?:{_KOREAN_MEASURE_PREDICATE})?"
     r"|(?<![가-힣])얼마나(?:\s*[가-힣]{1,6}){0,2}"
 )
 """The measure-question tails `_clean_korean_attribute_label` strips.
@@ -663,11 +664,457 @@ Not covered, and stated rather than implied: a counter outside the list
 `-나` particle (`몇 개나 되나요?`). Past forms such as `몇 살이었나요?` are
 untouched by this rule, the same gap `_KOREAN_INTERROGATIVE_TAIL` records for
 `누구였나요?`.
+
+The counter is captured as `counter` so the unit rule below can read the word
+this strip discards -- the strip itself does not consult the group, and naming
+it changed no substitution this pattern makes. On the `얼마나` branch the group
+does not participate, so it reads back as None, which is the right answer:
+`얼마나` names no unit.
 """
 
 _KOREAN_ATTRIBUTE_LABEL_MEASURE_TAIL = re.compile(
     rf"\s*(?:{_KOREAN_MEASURE_QUESTION_TAIL})\s*$"
 )
+
+_MEASUREMENT_FAMILY = {
+    "YEAR": "time", "MONTH": "time", "WEEK": "time", "DAY": "time",
+    "HOUR": "time", "MINUTE": "time", "SECOND": "time",
+    "PERCENT": "ratio", "TIMES": "ratio",
+    "KRW": "money", "USD": "money", "JPY": "money", "EUR": "money",
+}
+"""The quantity each canonical unit measures.
+
+Two units in one family measure the same thing, so asking in one and being
+answered in the other is a mismatch a reader can act on. Two units in different
+families are not comparable at all: `몇 원인가?` answered `2년` is a money
+question answered with a duration, which is a mis-read question or a mis-stored
+fact rather than a unit difference, and saying "no unit conversion is applied"
+would be the wrong thing to tell that reader. So the cross-family case is
+silent.
+"""
+
+_MEASUREMENT_UNIT_SPELLINGS = {
+    "년": "YEAR", "연": "YEAR", "살": "YEAR", "세": "YEAR", "year": "YEAR", "years": "YEAR",
+    "개월": "MONTH", "달": "MONTH", "month": "MONTH", "months": "MONTH",
+    "주": "WEEK", "주일": "WEEK", "week": "WEEK", "weeks": "WEEK",
+    "일": "DAY", "day": "DAY", "days": "DAY",
+    "시간": "HOUR", "hour": "HOUR", "hours": "HOUR",
+    "분": "MINUTE", "minute": "MINUTE", "minutes": "MINUTE",
+    "초": "SECOND", "second": "SECOND", "seconds": "SECOND",
+    "퍼센트": "PERCENT", "프로": "PERCENT", "%": "PERCENT", "percent": "PERCENT",
+    "배": "TIMES",
+    "원": "KRW", "won": "KRW",
+    "달러": "USD", "dollar": "USD", "dollars": "USD",
+    "엔": "JPY", "yen": "JPY",
+    "유로": "EUR", "euro": "EUR",
+}
+"""Every spelling read as a unit, mapped to its canonical unit.
+
+One table serves both sides of the comparison -- the counter a question asks in
+and the unit a value states -- so a row added for one side is live on the other,
+and a test whose asked counter is the row under test cannot pin that row: delete
+the row and the question side goes silent too.
+
+Absent on purpose, each for its own reason:
+
+* bare `월`. `3월` is March, and `개월` is the counter for a month-count and is
+  present. Nothing here reads `월` as a month of the year either, though: the
+  row is absent, so a `6월` that really did mean six months states no unit this
+  rule can see, and is silent for want of any reading rather than by a
+  judgement between two.
+* `일` is present, unlike `월`: `3일` is three days far more often than it is the
+  third of the month. That is a judgement about which reading is commoner, not a
+  guarantee that the other one is caught. `_CALENDAR_DATE` reaches a day of the
+  month only when a digit month stands beside the day with nothing but
+  whitespace between them, so `3월 15일` and `3월15일` are dates while
+  `매월 15일`, `15일 마감`, `3월 중 15일`, `3월의 15일` and `3월 말 15일` are not,
+  and all of those do state `일` -- the last three have the month in digits and
+  are still missed, because a word between the two ends the match. See
+  `korean_measure_unit_mismatch`.
+* `개년`. It fired on `5개년 계획`, which is the name of a plan rather than a
+  duration.
+* `$`, `₩`, `€`. Every quantity here begins at a digit, and these precede their
+  number, so no row in this table could reach them. `%` is read because it
+  follows the number. That asymmetry is by construction; it is not an omission
+  a row would restore.
+"""
+
+_UNIT_SUFFIX_MEMBERS = ("간", "가량", "정도", "쯤", "짜리")
+"""The members of `_UNIT_SUFFIX`, named so a test can assert over the live set.
+
+Every member is Hangul, and `_VALUE_MEASUREMENT_RELAXED` is dropped from that
+pattern on exactly that ground. A test that restated the members as its own
+literal would go on passing if a non-Hangul one were added here, which is the
+case the argument does not survive: a digit member makes `3년2주` read as `년`
+alone and a `몇 주인가?` against it answer "the verified value states 주".
+"""
+
+_UNIT_SUFFIX = r"(?:" + "|".join(_UNIT_SUFFIX_MEMBERS) + r")?"
+"""The particles that may follow a unit and still leave it read as one.
+
+`2년간` states two years. The set is closed, and the lookahead in
+`_VALUE_MEASUREMENT` still applies after it, so `3일간의 일정` and `3주간격`
+state no unit here: with the suffix taken, the next character is Hangul and the
+lookahead refuses it; without it, `간` is Hangul and the lookahead refuses that.
+"""
+
+_VALUE_MEASUREMENT = re.compile(
+    r"[0-9][0-9,.]*\s*[만억천조]?\s*(?P<unit>"
+    + "|".join(re.escape(s) for s in _MEASUREMENT_UNIT_SPELLINGS)
+    + r")" + _UNIT_SUFFIX + r"(?![가-힣0-9A-Za-z])"
+)
+"""One quantity stated inside a value: digits, at most one Korean magnitude
+word, and a unit spelling.
+
+`[만억천조]?` is one character, not a run, so `3만원` is read and `2천만원` is
+not -- a number that stacks magnitudes states nothing this pattern can see.
+
+Requiring the digits is the whole precision of this rule. Ordinary Korean prose
+is full of syllables that are also unit spellings -- `지원`, `내년`, `일정`,
+`분야` -- and read without a number in front of them they turn a caveat into
+noise. The prose sweep in the tests is what measures that.
+
+The alternation is built from the spellings table in the table's own order, and
+what reads `3달러` as USD is the trailing lookahead plus backtracking rather
+than that order: `달` is tried first and matches, the lookahead rejects it
+because `러` is Hangul and so inside the lookahead's class, and the engine
+backtracks into `달러`. Every prefix pair in the table today is extended by a
+Hangul or Latin character, both of which that class covers, which is why
+re-sorting the table by length changes no reading. A spelling extended by
+punctuation would sit outside the class, and there the order would decide.
+"""
+
+_CALENDAR_DATE = re.compile(
+    r"[0-9]{1,2}\s*월\s*[0-9]{1,2}\s*일"
+    r"|(?<![0-9])[0-9]{2,4}\s*년\s*[0-9]{1,2}\s*월"
+    r"|(?<![0-9])[0-9]{4}\s*년(?![0-9])"
+    r"|(?<![0-9])[0-9]{2,4}\s*[-./]\s*[0-9]{1,2}\s*[-./]\s*[0-9]{1,2}"
+)
+"""Shapes that make a value a point in time rather than a quantity of one.
+
+`2021년` is a year, not two thousand and twenty-one years, and a question asking
+`몇 개월인가?` must not be told that value states years. The guard is on the
+whole value rather than on the matched span, so a value containing a calendar
+date reports no units at all, including a genuine mismatch stated elsewhere in
+the same value: `2021년 착수, 총 3주` asked in months, and `2021년 기준 30분`
+asked in hours, are both silent though each states a real same-family mismatch.
+
+Four alternatives, each of which some value needs; the tests delete them one at
+a time and every deletion changes an outcome.
+
+A year followed by a month is a date whatever the year's width, which is the
+branch that reads `21년 3월` and `25년 12월` as dates rather than as twenty-one
+and twenty-five years. Two-digit years are ordinary Korean document notation, so
+without it the issue's own headline question -- `기간` asked in `몇 개월` --
+answers a date range with "the verified value states 년". The year is bounded
+below at two digits: `2년 3월` is left alone because one digit is as likely to be
+a duration as a date and nothing here separates them. What distinguishes this
+branch from a real duration is the counter, not the number: `12년 6개월` is
+twelve years and six months and stays a duration, because `개월` is not `월`.
+
+A bare two-digit year is deliberately NOT caught. `21년` on its own really can be
+twenty-one years, so it is left reading YEAR and disclosed in
+`korean_measure_unit_mismatch` instead. Widening the four-digit branch to
+`[0-9]{2,4}` would silence it, and that is the trade this declines.
+
+The four-digit year branch is bounded on both sides, and the two bounds do
+different work. The left-hand `(?<![0-9])` is what stops a genuine `10000년`
+matching on its inner `0000년`. The right-hand `(?![0-9])` stops a four-digit run
+that continues into more digits from being read as a year, which only a
+contrived value reaches (`2021년12개월`).
+
+The ISO branch earns its place narrowly. An ISO date on its own states no unit,
+so the branch does nothing for `2021-03-15`; what it catches is a date with a
+unit spelling run onto the end of it, `2021.03.15 일` and `2021-03-15일`, which
+without it are read as stating days. It is the worst-paying of the four, because
+the same whole-value suppression costs real caveats elsewhere: `2024/01/02 3주`
+and `2021-03-15 (3일)` state genuine durations and go silent. Kept because a
+false sentence is worse than a missing one, which is this rule's standing
+preference; a span-local guard would take both, and that is a change of its own.
+
+Its year is `[0-9]{2,4}` for the same reason the year+month branch's is, and
+holding it at four digits while arguing two-digit years are ordinary notation
+one branch above was the contradiction that got it widened: `21.03.15일` and
+`25-01-15일` are dates by exactly the premise this file already accepts. Bounded
+below at two digits and on the left, so `2.03.15일` and `12021.03.15일` are not
+dates. What the branch still misses is a date with no year at all -- `03/15일`
+needs two separators to be reached and has one -- which is disclosed in
+`korean_measure_unit_mismatch` rather than chased with a fifth alternative.
+
+Widening the year also widened what else looks like a date, and that is a third
+cost on top of the two above: a dotted or dashed numeric triple whose first
+component is two or three digits now reads as one. `12.5.3 버전, 3주 소요`,
+`10.1.2 릴리스, 3주` and `10.0.0.1 서버, 3주` each state a genuine duration and
+are silent, where before the widening they were caveated. A one-digit first
+component still falls outside, so `1.2.3 버전, 3주` is unaffected -- which is
+luck of the bound rather than a rule about version numbers.
+
+`1500년` and `2000년간` are read as calendar years; both spellings are really
+used for durations too, so that reading is honestly ambiguous and this rule
+picks the date one.
+"""
+
+
+_VALUE_MEASUREMENT_RELAXED = re.compile(
+    r"[0-9][0-9,.]*\s*[만억천조]?\s*(?P<unit>"
+    + "|".join(
+        re.escape(s) for s in sorted(_MEASUREMENT_UNIT_SPELLINGS, key=len, reverse=True)
+    )
+    + r")"
+    # No `_UNIT_SUFFIX` here, unlike `_VALUE_MEASUREMENT`. NOT because a match's
+    # end is unread -- `finditer` resumes from it, so in general an optional
+    # trailing group does change what is found later: `(?P<u>[ab])` reads "ab"
+    # as a, b and `(?P<u>[ab])(?:b)?` reads it as a alone. It is inert here
+    # because of what the two character sets are: every `_UNIT_SUFFIX_MEMBERS`
+    # entry is Hangul, and every match must begin at a digit, so a start this
+    # scan cares about can never fall inside a suffix that a longer match
+    # swallowed. Ends do move; readings cannot. All three parts -- the premise
+    # over the live tuple, the moving ends, the unchanged readings -- are
+    # re-derived by `test_a_unit_suffix_would_be_inert_here`, not quoted here.
+)
+"""`_VALUE_MEASUREMENT` without the trailing lookahead, for the suppression test.
+
+The lookahead is right for deciding what a value STATES -- `2년차` is a second
+year of service, not two years -- but wrong for deciding whether the value
+already carries the unit that was ASKED for. There it hid the asked unit and let
+the caveat fire anyway: `3시간30분` answering `몇 시간인가?` was told the value
+states minutes and that no conversion is applied, when the leading quantity is
+exactly the hours asked for. A single space changed the outcome, because
+`3시간 30분` passes the lookahead and `3시간30분` does not.
+
+Suppression can only ever produce silence, so reading generously here is
+safety-increasing in a way that reading generously in `_value_measure_units`
+would not be. What it spends is caveats, and it does spend them -- see the last
+paragraph, which is part of the design rather than a caveat about it.
+
+Dropping the lookahead alone would have been wrong for one specific reason: it
+is what makes `3달러` read as USD rather than as `달` plus a stray syllable, so
+without it a question asked in months would find `달` inside `달러` and suppress
+a caveat the value never earned. `달`/`달러` is the only one of the table's ten
+prefix pairs that crosses canonical units; the other nine are two spellings of
+one unit, where which of them matches cannot change any answer. So the whole of
+what the lookahead was doing for THIS scan is discharged by reading `달러`
+before `달`.
+
+The alternation is sorted longest spelling first because that states the
+intent, but length is not the property to preserve -- putting `달러` before `달`
+is. Reversed-table and reverse-alphabetical orderings also satisfy it and read
+identically; table order, shortest-first and alphabetical do not and read
+differently. No count is quoted here on purpose: the numbers in this file have
+rotted once already, so
+`test_only_the_달러_before_달_constraint_decides_the_suppression_ordering`
+partitions the orderings off the live table and asserts both halves instead.
+This is the opposite of `_VALUE_MEASUREMENT`, where the lookahead does the work
+and the order is free.
+
+What no ordering buys, and nothing here does: a unit spelling that is merely a
+syllable of an unrelated Korean word is still read as that unit whenever a digit
+precedes it. `3분기` reads MINUTE, `1주년` reads WEEK, `80년대` reads YEAR,
+`3 secondary` reads SECOND. Each of those suppresses a caveat the value had
+earned, silently -- `몇 분인가?` answered `3분기 실적, 2시간 소요` named `시간`
+before this scan existed and says nothing now, and the same goes for
+`몇 주인가?` on `1주년 기념, 3개월 준비` and `몇 년인가?` on `80년대 후반, 3개월`.
+These are lost caveats, not near-misses, and this is the noisier half of the
+rule. The trade is deliberate: a lost caveat beats the wrong sentence the strict
+reading produced on `3시간30분`. It is still a trade.
+"""
+
+
+def _value_states_asked_unit(value: str, asked_unit: str) -> bool:
+    """Whether the value carries a quantity in the unit the question asked for.
+
+    Read with `_VALUE_MEASUREMENT_RELAXED`, which is a strict superset of what
+    `_value_measure_units` finds, so every unit that function reports is caught
+    here too and this subsumes the plain equality test it replaced.
+    """
+    folded = nfc(value).casefold()
+    return any(
+        _MEASUREMENT_UNIT_SPELLINGS[match.group("unit")] == asked_unit
+        for match in _VALUE_MEASUREMENT_RELAXED.finditer(folded)
+    )
+
+
+def _question_measure_unit(question: str) -> tuple[str, str] | None:
+    """The unit a Korean measure question asked in -- its last, if it names two.
+
+    Returned as (spelling, unit). The singular in a summary line is worth
+    qualifying because a two-counter question falsifies it:
+    `기간은 몇 년 몇 개월인가?` yields `개월`, so against a `2년` value this rule
+    would name a mismatch against a question that did ask in years. That is
+    latent rather than user-visible -- the cleaned label `기간은 몇 년` names no
+    relation an ordinary KB holds, so the question is declined to the model and
+    never reaches a verified answer to be caveated. Only a KB carrying a
+    relation spelled `기간은 몇 년` could surface it.
+
+    None when the question is not the flat attribute shape; when its label has no
+    measure tail; when the tail carries a counter that names no unit
+    (`몇 개인가?`) or no counter at all (`얼마나 되나요?`); or when what stands in
+    front of the tail does not read as a relation.
+
+    That last condition is what keeps a KB holding a relation literally named
+    `몇 년` out of this rule. There the tail is the whole label, nothing is left
+    in front of it, and `_korean_attribute_label_readings` reads the label whole
+    -- the question is asking *for* that relation, not *in* that unit.
+    """
+    match = _KOREAN_ATTRIBUTE_QUESTION.match(question.strip())
+    if match is None:
+        return None
+    label = " ".join(match.group("label").strip().split())
+    tail = _KOREAN_ATTRIBUTE_LABEL_MEASURE_TAIL.search(label)
+    if tail is None:
+        return None
+    spelling = tail.group("counter")
+    # `.get`, so the two ways there is no unit to ask about -- a counter outside
+    # the table and the `얼마나` branch, which captures no counter at all --
+    # arrive at the same answer without a branch apiece.
+    unit = _MEASUREMENT_UNIT_SPELLINGS.get(spelling)
+    if unit is None:
+        return None
+    if not _label_readings_after_measure(label[: tail.start()].strip()):
+        return None
+    return (spelling, unit)
+
+
+def _value_measure_units(value: str) -> tuple[tuple[str, str], ...]:
+    """The units a value states, as this pattern reads them.
+
+    Each is a (unit, spelling) pair, in the order stated.
+
+    "As this pattern reads them" is load-bearing rather than hedging: `3시간30분`
+    states hours and this returns only minutes, because the lookahead refuses a
+    unit followed by a digit. `korean_measure_unit_mismatch` depends on that
+    being the reporting reading and on a second, looser one deciding
+    suppression.
+
+    Empty for a value stating no quantity, and empty for a value carrying a
+    calendar date -- `_CALENDAR_DATE` records what that costs.
+
+    NFC because a value written in NFD spells `년` as two code points while the
+    alternation is composed, and casefold because the Latin spellings in the
+    table are lower-case. One consequence is worth naming: the spelling handed
+    back is the folded one, so a value stating `3 Weeks` is reported as stating
+    `weeks`.
+    """
+    folded = nfc(value).casefold()
+    if _CALENDAR_DATE.search(folded):
+        return ()
+    return tuple(
+        (_MEASUREMENT_UNIT_SPELLINGS[match.group("unit")], match.group("unit"))
+        for match in _VALUE_MEASUREMENT.finditer(folded)
+    )
+
+
+def korean_measure_unit_mismatch(question: str, value: str) -> tuple[str, str] | None:
+    """The (asked counter, stated unit) a unit caveat should name, or None.
+
+    A mismatch only when the value states a unit in the same family as the one
+    asked for and a second scan finds no quantity in the asked unit itself.
+
+    Both halves are what a pattern reads, not what the value contains, and the
+    sentence has to be put that way round: `_value_states_asked_unit` re-reads
+    the value for the asked unit with the same quantity shape minus the
+    lookahead, and anything that scan cannot see is not suppressed on. It reads
+    `6개월` in `2년 6개월`, so a `몇 개월인가?` is suppressed. It does not read
+    the won in `2천만원 (15,000달러)`, because the quantity shape admits one
+    magnitude word and that number stacks two, so a `몇 원인가?` there is
+    caveated with `달러` beside an answer whose leading figure is won.
+
+    The two halves are read by different patterns, and that is deliberate rather
+    than an oversight. What the value STATES comes from `_value_measure_units`,
+    which refuses a unit run into the next character. Whether the value CARRIES
+    the asked unit comes from `_value_states_asked_unit`, which does not -- with
+    one pattern doing both, the same lookahead that correctly declines to read
+    `2년차` as two years also hid the asked unit in `3시간30분` and `2년6개월`,
+    and the caveat fired on a value whose leading quantity was exactly what the
+    question asked for. Spacing decided it, which no reader would predict.
+
+    The first same-family unit is reported, not the first unit. `30% 완료, 3주`
+    asked in months states a ratio first and a duration second, and the duration
+    is the part the question was about.
+
+    The main causes of an accepted silence, rather than all of them: a value
+    stating no number; a unit run into the next syllable (`2년차`); a value
+    carrying a
+    calendar date; a spelling outside the table; a suffix outside `_UNIT_SUFFIX`;
+    a number that stacks magnitude words (`2천만원`), since the quantity shape
+    admits at most one; and a number written in full-width digits (`３년`), which
+    `[0-9]` does not admit and `nfc` does not fold away. `nfkc` would fold it, but
+    `verinote.text.nfc` is the one normalizer the rest of the codebase compares
+    through, and folding compatibility forms here alone would have this rule read
+    a value differently from every other comparison made on it. A non-breaking
+    space between the number and the unit is fine (`3<NBSP>년` states years), so
+    this silence is specifically the digits. An earlier cross-family quantity
+    does not silence a later same-family one.
+
+    One silence is worth separating from those, because it is the only one where
+    the value did earn a caveat and this rule loses it by misreading rather than
+    by not reading. `_value_states_asked_unit` takes a unit spelling that is a
+    syllable of an unrelated word as the asked unit, so `3분기 실적, 2시간 소요`
+    asked in minutes suppresses as though it stated minutes and its real `시간`
+    caveat is dropped; likewise `1주년 기념, 3개월 준비` asked in weeks and
+    `80년대 후반, 3개월` asked in years. `_VALUE_MEASUREMENT_RELAXED` carries the
+    class and the reason it is accepted.
+
+    Wrong sentences this is known to produce. These are the ones that have been
+    found, not a bound on what exists, and each round of review has added to
+    them; read the list as open. They also have no single cause -- a two-digit
+    year is not a lexical ambiguity and `second` is not Korean -- so do not
+    generalise from it to decide whether some new input is safe.
+
+    * A day of the month separated from its month by anything but whitespace.
+      `_CALENDAR_DATE` reads a digit month and a day with nothing but whitespace
+      between them, so `3월 15일`, `3월  15일` and `3월15일` are dates and
+      `3월 중 15일`, `3월의 15일` and `3월 말 15일` are not, though those have a
+      digit month too. `매월 15일` and `15일 마감` have no digit month at all.
+      Every one of the misses is told it states `일` -- fifteen days rather than
+      the fifteenth. A 정산일 or 마감일 relation holding `매월 N일` is ordinary
+      contract data, which makes this the most reachable one found so far.
+    * A date written with no year. The ISO branch needs two separators, so
+      `03/15일` is not a date to it and is reported as stating `일`.
+    * A value whose asked-unit quantity no pattern here can read, beside a
+      same-family unit that one can. The suppression scan misses the first and
+      the reporting scan finds the second, so the caveat names the second:
+      `2천만원 (15,000달러)` asked in won reports `달러`, `5개년 계획 3주` and
+      `３년 30주` asked in years report `주`, and `6월 및 30주` asked in months
+      reports `주`. Each is a silence cause from the list above turned into a
+      wrong sentence by a readable unit standing next to it.
+    * A time of day. The guard has no time-of-day branch, and `시` is outside the
+      spellings table while `분` is in it, so `3시 30분` and `오후 2시 15분` are
+      reported to `몇 시간인가?` as stating `분` -- thirty minutes rather than
+      half past three. Note that this one needs no strained question: `시간`
+      asked in `몇 시간` is exactly the relation the counter names.
+    * A bare two-digit year. `21년 3월` is read as a date, but `21년` alone is
+      left reading YEAR, so `몇 개월인가?` answered `21년` is told it states
+      years. Twenty-one years is a real duration and nothing here separates the
+      two readings.
+    * An English ordinal. `second` is in the spellings table as a unit, so
+      `2 second review` is reported as stating `second`. The neighbouring
+      `3 secondary reviews` is silent for an unrelated reason -- Latin continues
+      past the spelling and the lookahead refuses it -- which does not reach the
+      spaced form. The row stays, because `30 seconds` answering `몇 분인가?` is
+      a real result and the question side can only ask SECOND through `몇 초`.
+    * `몇 년인가?` answered `100주` (one hundred shares), and `몇 시간인가?`
+      answered `5분` (five people, honorific): Korean spellings that mean two
+      things, read here as the unit. These two also need a question asked in a
+      unit the relation does not really measure.
+
+    None of these is fixed here. #445 asks that a verified answer in another unit
+    be caveated, not that every ambiguous spelling be resolved. The first two
+    want a guard for "a point in time" wider than `_CALENDAR_DATE`, which is a
+    change of its own rather than a widening of this one.
+    """
+    asked = _question_measure_unit(question)
+    if asked is None:
+        return None
+    asked_spelling, asked_unit = asked
+    found = _value_measure_units(value)
+    if _value_states_asked_unit(value, asked_unit):
+        return None
+    asked_family = _MEASUREMENT_FAMILY[asked_unit]
+    for unit, spelling in found:
+        if _MEASUREMENT_FAMILY[unit] == asked_family:
+            return (asked_spelling, spelling)
+    return None
 
 
 def _korean_attribute_label_readings(value: str) -> tuple[str, ...]:
