@@ -1319,8 +1319,12 @@ def test_the_first_same_family_unit_is_reported_not_the_first_unit(
     assert korean_measure_unit_mismatch(question, value) == expected
 
 
-def test_a_calendar_date_silences_the_whole_value():
+def test_a_dated_value_silences_the_units_stated_beside_it():
     """A date is a point in time, not a quantity of it -- at the cost named here.
+
+    Named for dates because that is what its values are; `_TIME_POINT` now
+    covers more than dates, and the rule in its general form is
+    `test_a_point_in_time_silences_the_whole_value`.
 
     `2021년` must not be reported as stating years. The guard is on the whole
     value rather than on the matched span, so a value containing a calendar date
@@ -1409,8 +1413,8 @@ def test_bare_월_is_a_month_of_the_year_and_is_not_read():
 
     `개월` is the counter for a month-count and is in the table; bare `월` is
     deliberately not. `일` is in the table because `3일` is three days far more
-    often than it is the third of the month, and a day-of-month arrives with its
-    month beside it, which `_CALENDAR_DATE` catches.
+    often than it is the third of the month, and a day of the month arrives
+    with a month term in front of it, which `_TIME_POINT` catches.
     """
     from verinote.pipeline.query_intent import (
         _value_measure_units,
@@ -1584,28 +1588,34 @@ def test_a_four_digit_year_run_into_more_digits_is_not_a_calendar_year():
 
 
 @pytest.mark.parametrize(
-    ("value", "branch", "unit_it_would_wrongly_state"),
+    ("question", "value", "branch", "unit_it_would_wrongly_state"),
     [
-        ("3월 15일 착수", "digit month and day", "일"),
-        ("21년 3월 ~ 22년 2월", "year and month", "년"),
-        ("2021년 착수, 총 3주", "four-digit year", "년"),
-        ("2021.03.15 일", "ISO-style date", "일"),
+        ("샘플계약의 기간은 몇 개월인가?", "3월 15일 착수", "day of month", "일"),
+        ("샘플회의의 시간은 몇 시간인가?", "3시 30분", "clock hour", "분"),
+        ("샘플계약의 기간은 몇 개월인가?", "'21년", "apostrophe year", "년"),
+        ("샘플계약의 기간은 몇 개월인가?", "21년 3월 ~ 22년 2월", "year and month", "년"),
+        ("샘플계약의 기간은 몇 개월인가?", "2021년 착수, 총 3주", "four-digit year", "년"),
+        ("샘플계약의 기간은 몇 개월인가?", "2021.03.15 일", "ISO-style date", "일"),
     ],
 )
-def test_each_calendar_date_branch_is_needed_by_one_of_these_values(
-    value, branch, unit_it_would_wrongly_state
+def test_each_time_point_branch_is_needed_by_one_of_these_values(
+    question, value, branch, unit_it_would_wrongly_state
 ):
-    """One value per alternative of `_CALENDAR_DATE`, so no branch rides free.
+    """One value per alternative of `_TIME_POINT`, so no branch rides free.
 
-    A guard with four alternatives needs four killers. Pinning only the
-    four-digit-year branch left the other three deletable with the suite green,
-    which is the same defect as a spellings row with no fixture: one covered
-    alternative makes the whole guard look covered.
+    Every alternative needs its own killer. Pinning only the four-digit-year
+    branch once left the others deletable with the suite green, which is the
+    same defect as a spellings row with no fixture: one covered alternative
+    makes the whole guard look covered. The two member tuples are covered by
+    their own tests, not by this one.
 
     Deleting the branch each value exercises makes exactly that value fire, and
-    only that value -- the deletion matrix over the four branches is a clean
-    diagonal, so none is masking another. The last parameter records what the
-    caveat would then wrongly say the value states.
+    only that value -- the deletion matrix is a clean diagonal, so none is
+    masking another. The last parameter records what the caveat would then
+    wrongly say the value states. The question travels with the value because
+    the clock row has to be asked in `몇 시간`; asked that way it is still safe
+    from the same-unit suppressor, because `_value_states_asked_unit` searches
+    for the spelling `시간` and `3시 30분` does not contain it.
 
     The ISO value is the one that justifies its branch rather than merely
     exercising it. A bare `2021-03-15` states no unit, so the branch does nothing
@@ -1616,7 +1626,7 @@ def test_each_calendar_date_branch_is_needed_by_one_of_these_values(
     """
     from verinote.pipeline.query_intent import korean_measure_unit_mismatch
 
-    assert korean_measure_unit_mismatch("샘플계약의 기간은 몇 개월인가?", value) is None
+    assert korean_measure_unit_mismatch(question, value) is None
 
 
 def test_a_full_width_number_states_no_quantity():
@@ -1641,13 +1651,7 @@ def test_a_full_width_number_states_no_quantity():
 @pytest.mark.parametrize(
     ("question", "value", "wrong_output", "what_the_value_really_says"),
     [
-        ("샘플계약의 정산일은 몇 개월인가?", "매월 15일", ("개월", "일"), "the 15th of each month"),
         ("샘플계약의 마감일은 몇 개월인가?", "15일 마감", ("개월", "일"), "a deadline on the 15th"),
-        ("샘플회의의 시간은 몇 시간인가?", "3시 30분", ("시간", "분"), "half past three"),
-        ("샘플회의의 시간은 몇 시간인가?", "오후 2시 15분", ("시간", "분"), "a quarter past two"),
-        ("샘플계약의 기간은 몇 개월인가?", "3월 중 15일", ("개월", "일"), "the 15th, within March"),
-        ("샘플계약의 기간은 몇 개월인가?", "3월의 15일", ("개월", "일"), "the 15th of March"),
-        ("샘플계약의 기간은 몇 개월인가?", "3월 말 15일", ("개월", "일"), "the 15th, late March"),
         ("샘플계약의 기간은 몇 개월인가?", "03/15일", ("개월", "일"), "March 15th, no year"),
         ("샘플사업의 가격은 몇 원인가?", "2천만원 (15,000달러)", ("원", "달러"), "20 million won"),
         ("샘플사업의 가격은 몇 원인가?", "1억5천만원 및 20,000달러", ("원", "달러"), "150 million won"),
@@ -1666,24 +1670,24 @@ def test_known_false_unit_statements_are_recorded_not_fixed(
     """The caveat is wrong on these, and this records it rather than hiding it.
 
     These are the wrong sentences that have been found, not all the ones that
-    exist -- every round of review on #445 has added to the list, and each
-    addition was a case an earlier round's reasoning had ruled out. So this is a
-    record, not a boundary, and it deliberately claims no shared cause: the
-    two-digit year is not a lexical ambiguity and `second` is not Korean, so any
-    argument of the form "the known ones are all X, therefore a non-X input is
-    safe" is unsound on its face.
+    exist -- every round of review on #445 added to the list, and #450 removed
+    the ones its point-in-time guard reached. So this is a record, not a
+    boundary, and it deliberately claims no shared cause: the two-digit year is
+    not a lexical ambiguity and `second` is not Korean, so any argument of the
+    form "the known ones are all X, therefore a non-X input is safe" is unsound
+    on its face.
 
-    What is true of the individual entries. Day-of-month and time-of-day are
-    points in time, not quantities of time: `_CALENDAR_DATE` reaches a day of the
-    month only through a digit month, so `매월 15일` is not a date to it, and the
-    guard has no time-of-day branch at all -- `시` is outside the spellings table
-    while `분` is in it. Neither needs a strained question; `시간` asked in
-    `몇 시간` is the most on-point relation there is. `21년` is left reading YEAR
-    because twenty-one years is a real duration -- the year+month branch takes
-    `21년 3월`, and nothing here separates the bare form. `2 second review` is an
-    English ordinal sitting on a unit row that pays for itself elsewhere
-    (`30 seconds` asked in `몇 분`). Only `100주` and `5분` need a question asked
-    in a unit the relation does not really measure.
+    What is true of the individual entries. `15일 마감` is a day of the month
+    with no month term in front of it, and `_TIME_POINT` needs one; nothing in
+    the value separates it from `15일 소요`. `03/15일` is a date with one
+    separator where the ISO branch needs two, and a slashed month term was tried
+    for #450 and withdrawn because it also read the numerator of a rate. `21년`
+    is left reading YEAR because twenty-one years is a real duration -- the
+    year+month branch takes `21년 3월` and the apostrophe branch takes `'21년`,
+    and nothing separates the bare form. `2 second review` is an English ordinal
+    sitting on a unit row that pays for itself elsewhere (`30 seconds` asked in
+    `몇 분`). Only `100주` and `5분` need a question asked in a unit the relation
+    does not really measure. `korean_measure_unit_mismatch` carries the rest.
 
     None of this is fixed here; #445 asks that a verified answer in another unit
     be caveated, not that every ambiguity be resolved. Asserting the wrong output
@@ -2002,11 +2006,12 @@ def test_the_suppression_scan_reads_only_one_magnitude_word():
 
 @pytest.mark.parametrize("value", ["3월 15일", "3월  15일", "3월\t15일", "3월15일"])
 def test_whitespace_between_a_digit_month_and_its_day_still_reads_as_a_date(value):
-    """Branch 1 is `\\s*` on both sides, so whitespace does not separate them.
+    """The day branch is `\\s*` on both sides, so whitespace does not separate them.
 
     The bullet describing this said "immediately beside" while its own example
-    carried a space. What ends the match is a word between the two, not a gap:
-    `3월 중 15일` is not a date and is covered in the residue test above.
+    carried a space. Since #450 a month part may stand between the two as well,
+    so `3월 중 15일` is a date now; what still ends the match is a word outside
+    `_MONTH_PART_MEMBERS`, which is pinned separately.
     """
     from verinote.pipeline.query_intent import korean_measure_unit_mismatch
 
@@ -2280,3 +2285,583 @@ def test_a_unit_suffix_would_be_inert_here():
         assert [m.group("unit") for m in _VALUE_MEASUREMENT_RELAXED.finditer(value)] == [
             m.group("unit") for m in without_suffix.finditer(value)
         ], value
+
+
+# --- the point-in-time recogniser (#450) ------------------------------------
+
+_MONTH = "샘플계약의 기간은 몇 개월인가?"
+_HOURS = "샘플회의의 시간은 몇 시간인가?"
+
+_MONTH_WORD_FIXTURES = {
+    "매월": "매월 15일",
+    "매달": "매달 1일",
+    "금월": "금월 15일",
+    "익월": "익월 15일",
+    "내월": "내월 15일",
+    "당월": "당월 15일",
+    "전월": "전월 15일",
+    "차월": "차월 15일",
+    "다음 달": "다음 달 1일",
+    "이번 달": "이번 달 1일",
+    "지난 달": "지난 달 1일",
+    "내달": "내달 15일",
+}
+"""One dated value per member of `_MONTH_WORD_MEMBERS`.
+
+A literal dict plus a set-equality assertion, not a parametrize over the live
+tuple: parametrizing would delete the case along with the member and the test
+would pass vacuously. Same shape as `_ROW_FIXTURES`, for the same reason.
+"""
+
+_MONTH_PART_FIXTURES = {
+    "의": "3월의 15일",
+    "중": "3월 중 15일",
+    "초": "3월 초 5일",
+    "말": "3월 말 15일",
+}
+"""One dated value per member of `_MONTH_PART_MEMBERS`; see above for the shape."""
+
+
+def test_every_month_word_has_a_day_it_reads_as_a_date():
+    """Each month word makes the day beside it a date, and none rides free.
+
+    Dropping any one member leaves its value stating `일`, so a question asked
+    in `몇 개월` is told the verified value states `일` -- reading `매월 15일`
+    as fifteen days rather than as the fifteenth. The set-equality assertion is
+    what stops a member being added without a value exercising it, which is how
+    `금월`, `내월` and `내달` were missing from the first draft.
+    """
+    from verinote.pipeline.query_intent import (
+        _MONTH_WORD_MEMBERS,
+        korean_measure_unit_mismatch,
+    )
+
+    assert set(_MONTH_WORD_FIXTURES) == set(_MONTH_WORD_MEMBERS)
+    for word, value in _MONTH_WORD_FIXTURES.items():
+        assert korean_measure_unit_mismatch(_MONTH, value) is None, (word, value)
+
+
+def test_every_month_part_has_a_date_it_reads():
+    """Each month part still leaves the day attached to its month.
+
+    `3월의 15일` and `3월 중 15일` are the fifteenth of March however the two are
+    joined. Dropping any one member makes its row fire `('개월', '일')`.
+    """
+    from verinote.pipeline.query_intent import (
+        _MONTH_PART_MEMBERS,
+        korean_measure_unit_mismatch,
+    )
+
+    assert set(_MONTH_PART_FIXTURES) == set(_MONTH_PART_MEMBERS)
+    for part, value in _MONTH_PART_FIXTURES.items():
+        assert korean_measure_unit_mismatch(_MONTH, value) is None, (part, value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "3월 내 15일 소요",
+        "3월 후 15일 소요",
+        "매월 약 3일",
+        "전월 대비 3일 단축",
+        "3월 계약 15일 소요",
+        "매월 정기 3일 소요",
+    ],
+)
+def test_a_word_outside_the_month_part_set_leaves_the_duration_readable(value):
+    """What closing `_MONTH_PART_MEMBERS` buys, which the per-member test cannot.
+
+    Every value here states a real duration with a month term standing earlier
+    in it. Widen the part group to any single Hangul syllable and
+    `3월 내 15일 소요`, `3월 후 15일 소요` and `매월 약 3일` go silent; widen it
+    to any one or two syllables and every value here does, `전월 대비 3일 단축`
+    and the two-syllable pair with it. So the closure is the whole precision of
+    the branch rather than a tidiness preference.
+
+    The cost of closing it is named in `_TIME_POINT`: `3월 중 15일 소요` reads as
+    the fifteenth, and that is honestly ambiguous.
+    """
+    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+
+    assert korean_measure_unit_mismatch(_MONTH, value) == ("개월", "일")
+
+
+def test_a_clock_hour_is_a_point_in_time_and_시간_is_a_duration():
+    """Both halves, because the branch and its lookahead fail differently.
+
+    `시` is in neither the spellings table nor the counter list while `시간` is
+    in both, so digits run into `시` can only be a clock. Drop the branch and the
+    clock values fire; drop its `(?![가-힣])` and the durations and the ordinary
+    words go silent instead.
+
+    `3시30분` is here so that tightening the lookahead to `(?![가-힣0-9])` fails:
+    half past three is written without a space as often as with one. The clock
+    values are asked in `몇 시간` because that is the on-point relation, and it
+    is safe from the same-unit suppressor -- that scan looks for the spelling
+    `시간`, which `3시 30분` does not contain.
+    """
+    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+
+    for value in ["3시 30분", "오후 2시 15분", "14시 30분", "3시30분", "3시 30분 20초"]:
+        assert korean_measure_unit_mismatch(_HOURS, value) is None, value
+    for value in ["3시간", "24시간", "3시간 30분", "8시간 근무"]:
+        assert korean_measure_unit_mismatch(_MONTH, value) == ("개월", "시간"), value
+    for value in ["3시그마 3주", "5시리즈 3주"]:
+        assert korean_measure_unit_mismatch(_MONTH, value) == ("개월", "주"), value
+
+
+@pytest.mark.parametrize("value", ["123월 15일", "100월 3일", "1,234월 5일"])
+def test_the_day_of_month_branch_takes_no_left_bound(value):
+    """An absence pinned rather than a bound, because adding one is free.
+
+    The branch this replaced had no `(?<![0-9])`, so `123월 15일` matches on its
+    inner `23월 15일` and says nothing. Adding the bound would make these values
+    newly caveated -- a caveat *gained*, which this guard may not do quietly, and
+    which no before/after sweep catches unless its corpus happens to contain a
+    three-digit month. An earlier revision of this change added the bound, and
+    its own sweep reported no gained caveats -- wrongly, because the corpus had
+    no such value in it.
+
+    So the test exists for the edit a later author makes for free, and it fails
+    in the direction that matters.
+    """
+    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+
+    assert korean_measure_unit_mismatch(_MONTH, value) is None
+
+
+def test_an_apostrophe_year_is_a_year_and_a_bare_two_digit_year_is_not():
+    """The apostrophe is the whole of the difference, and both forms are read.
+
+    `'21년` stands in for an elided century and no duration is written with one,
+    so it is a date; bare `21년` really can be twenty-one years and is left
+    reading YEAR, which `korean_measure_unit_mismatch` discloses.
+
+    Three characters are read -- the straight `'`, the curly `’`, and the
+    opening `‘` a word processor autocorrects a leading straight quote into --
+    and each is pinned on its own, since dropping any one of them leaves the
+    other two passing. `‘` was in the class for a round with no fixture behind
+    it, which is the shape this file keeps having to close: a documented
+    behaviour with no killer.
+    """
+    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+
+    for value in ["'21년", "’21년", "‘21년"]:
+        assert korean_measure_unit_mismatch(_MONTH, value) is None, value
+    for value in ["21년", "21년 계약"]:
+        assert korean_measure_unit_mismatch(_MONTH, value) == ("개월", "년"), value
+
+
+def test_a_point_in_time_silences_the_whole_value():
+    """The total consequence of the whole-value guard, re-derived not quoted.
+
+    `_value_measure_units` reports nothing when `_TIME_POINT` matches anywhere,
+    and a caveat can only name a reported unit, so every duration standing beside
+    a point in time is lost -- all of them, not the ones someone thought to list.
+    The cross-product is built from the live tuples so that totality is derived
+    here; `test_every_month_word_...` and `test_every_month_part_...` are what
+    make the tuples complete, which is why this test depends on them.
+
+    Asserted on the unit list rather than on the caveat, so it is a statement
+    about the mechanism rather than about one question.
+    """
+    from verinote.pipeline.query_intent import (
+        _MONTH_PART_MEMBERS,
+        _MONTH_WORD_MEMBERS,
+        _value_measure_units,
+    )
+
+    composites = [f"{word} 3일 소요" for word in _MONTH_WORD_MEMBERS]
+    composites += [f"3월 {part} 15일 소요" for part in _MONTH_PART_MEMBERS]
+    composites += ["3시 시작, 3주 소요", "2021년 착수, 총 3주"]
+    for value in composites:
+        assert _value_measure_units(value) == (), value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "2년", "6개월", "3주", "3일", "30분", "45초", "3시간", "2년 6개월",
+        "3개월 15일", "12년 6개월", "90일", "24개월", "1년 6개월", "3일간", "2주일",
+        "1.5일", "50/15일", "10/30일",
+    ],
+)
+def test_a_duration_is_still_read_as_a_quantity(value):
+    """The other side of the guard: widening it must not eat ordinary durations.
+
+    Asserted on the reading rather than on the caveat, and that is the point of
+    the test. For `3개월 15일`, `2년 6개월`, `24개월` and `1년 6개월` the answer to
+    `몇 개월인가?` is None either way, so only the unit list distinguishes "the
+    guard ate it" from "the same-unit suppressor silenced it".
+
+    `1.5일`, `50/15일` and `10/30일` are here because a dotted or slashed month
+    term was considered for #450 and withdrawn -- each of these would have
+    stopped being read.
+    """
+    from verinote.pipeline.query_intent import _value_measure_units
+
+    assert _value_measure_units(value) != ()
+
+
+def test_a_month_word_written_without_its_space_is_still_a_month_term():
+    """`다음 달` is joined with `\\s*`, not literally, and that is load-bearing.
+
+    `_MONTH_OF_YEAR`'s comment says the space is relaxed so `다음달 1일` reads
+    like `다음 달 1일`. Join the members literally instead and the unspaced form
+    stops being a date, which nothing else in the suite notices.
+    """
+    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+
+    for value in ["다음달 1일", "다음달 12일", "이번달 1일", "지난달 15일"]:
+        assert korean_measure_unit_mismatch(_MONTH, value) is None, value
+
+
+def test_the_day_number_is_one_or_two_digits_and_that_width_is_load_bearing():
+    """Unlike the month term's width, the day's is not decoration.
+
+    A month term and a clock hour sit at the start of their branch with no left
+    bound, so a longer digit run just matches further in and the quantifier
+    beside them reads the same values whatever it admits. The day number cannot
+    do that -- it has to begin where the month term ended -- so widening it to
+    three digits makes `다음달 123일` a date, and narrowing it to one makes
+    `매월 15일` stop being one.
+    """
+    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+
+    assert korean_measure_unit_mismatch(_MONTH, "다음달 123일") == ("개월", "일")
+    assert korean_measure_unit_mismatch(_MONTH, "매월 15일") is None
+
+
+def test_whitespace_may_stand_between_the_day_number_and_its_일():
+    """The `\\s*` before `일`, which no other fixture exercises.
+
+    `매월 2 일` is spaced the way a value typed with a stray space is, and drops
+    out of the day branch entirely without it.
+    """
+    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+
+    for value in ["매월 2 일", "3월 15 일", "다음 달 1 일"]:
+        assert korean_measure_unit_mismatch(_MONTH, value) is None, value
+
+
+@pytest.mark.parametrize("value", ["1차월 3일 소요", "2차월 15일 소요", "3차월 5일"])
+def test_a_month_word_preceded_by_a_digit_is_not_a_month_term(value):
+    """`1차월` is month one of a programme, not next month.
+
+    The word alternatives carry a `(?<![0-9])` that the digit month must not
+    have. Without it `차월` matches inside `1차월` and the value is read as a
+    point in time, losing a caveat it earned -- and unlike the disclosed losses,
+    there is no point in time anywhere in the value, so the standing
+    "a value that also carries a point in time" rule does not cover it.
+
+    Digits are the only thing the bound excludes. `해당월 15일` and `익익월 15일`
+    keep matching on their tails, which is an accident that happens to land on
+    the right reading; a Hangul bound would give that up, so it is not taken.
+
+    The same narrowness leaves the Sino-Korean numeral spelling out: `일차월`
+    and `이차월` are silenced exactly as `1차월` was, and this test does not
+    reach them. So the class is not closed -- the digit spelling is handled and
+    the numeral one is not, and no bound of this shape can take both without
+    losing `해당월`.
+    """
+    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+
+    assert korean_measure_unit_mismatch(_MONTH, value) == ("개월", "일")
+    assert korean_measure_unit_mismatch(_MONTH, "해당월 15일") is None
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["매월 15일간", "전월 10일간", "다음 달 10일간 휴무", "3월 초 15일간",
+     "이번 달 3일간 점검", "금월 5일간 휴무", "3월 15일간",
+     "매월 15일가량", "3월 15일짜리", "다음 달 3일짜리 점검"],
+)
+def test_a_day_wearing_a_duration_suffix_is_a_duration_not_a_day_of_the_month(value):
+    """A `_DAY_DURATION_SUFFIXES` tail makes `N일...` a duration, not a date.
+
+    `_UNIT_SUFFIX` reads `15일간` as fifteen days -- that is what the suffix is
+    for -- and `15일가량` and `15일짜리` the same. So a value saying `매월 15일간`
+    states a duration and nothing in it is a point in time. Without the day
+    branch's lookahead the branch matched the `15일` inside and silenced the
+    whole value, which is a caveat lost with no point in time to justify it.
+
+    Excluding only `간` would fix a third of the class and leave its siblings
+    failing the same way -- the "narrows one shape and leaves its neighbours"
+    defect #450 exists to stop. But the set is not all of `_UNIT_SUFFIX_MEMBERS`
+    either: `쯤` and `정도` approximate rather than quantify, and the test below
+    is the other half of that partition.
+
+    The rows with a digit month also move relative to #445, not only to #450:
+    the older guard silenced `3월 15일간` too, so this lookahead reaches back
+    past this change's own additions and makes them newly caveated. That is
+    deliberate, and it is the only place anything here gains a caveat rather
+    than losing one. Which rows those are is derived in
+    `test_the_only_caveats_gained_are_a_digit_month_wearing_a_unit_suffix`
+    rather than counted here, because the count depends on how many digit
+    months one chooses to write down and the class does not.
+    """
+    from verinote.pipeline.query_intent import (
+        _DATE_APPROXIMATOR_SUFFIXES,
+        _DAY_DURATION_SUFFIXES,
+        _UNIT_SUFFIX_MEMBERS,
+        _value_measure_units,
+        korean_measure_unit_mismatch,
+    )
+
+    # The tripwire, and it only works because BOTH halves are literal. Derive
+    # either one and this equality holds by construction: with `께` added to
+    # `_UNIT_SUFFIX_MEMBERS` and the approximators computed as the complement,
+    # this assertion and the disjointness below both pass and nothing notices.
+    # A hardcoded copy of `_UNIT_SUFFIX_MEMBERS` would also catch that, but it
+    # duplicates the tuple without saying what the duplicate is for; this says
+    # the two halves must together account for the whole, which is the decision
+    # a new member forces someone to make.
+    assert set(_DAY_DURATION_SUFFIXES) | set(_DATE_APPROXIMATOR_SUFFIXES) == set(
+        _UNIT_SUFFIX_MEMBERS
+    )
+    assert not set(_DAY_DURATION_SUFFIXES) & set(_DATE_APPROXIMATOR_SUFFIXES)
+    assert korean_measure_unit_mismatch(_MONTH, value) == ("개월", "일")
+    assert ("DAY", "일") in _value_measure_units(value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["매월 15일", "3월 중 15일", "3월 말 15일", "다음 달 1일", "3월 초 5일",
+     "3월 15일자", "매월 15일부터", "매월 25일까지 납부",
+     "3월 15일자 계약, 3주 소요", "매월 15일부터 3주간 진행", "3월 15일까지 2주 연장"],
+)
+def test_a_day_of_the_month_without_a_unit_suffix_is_still_a_date(value):
+    """The other side of the lookahead: it must not cost the dates the branch is for.
+
+    Paired with the test above so that a regression in either direction fails,
+    rather than one that silently trades the classes against each other.
+
+    The last three carry a duration as well, and they are what stop the
+    lookahead being widened to any Hangul tail. `3월 15일자` IS a date, so a
+    value holding it reports nothing under this guard's standing bargain;
+    refusing every Hangul tail would read it as not-a-date and caveat the `3주`
+    beside it. Without those three the widened form passes, because a date
+    followed by ordinary Hangul states no unit either way and the difference
+    never shows.
+    """
+    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+
+    assert korean_measure_unit_mismatch(_MONTH, value) is None
+
+
+def test_the_only_caveats_gained_are_a_digit_month_wearing_a_unit_suffix():
+    """The gained class, derived from the live tuples rather than counted.
+
+    #450 is otherwise a change that only removes caveats. The day branch's
+    suffix lookahead is the exception: it reaches back past this change's own
+    additions and makes `3월 15일간` newly caveated, because the guard shipped in
+    #445 silenced that too. This asserts what the exception is, in both
+    directions -- everything gained has a digit month, nothing with a word month
+    or a month part gains, and every gained value is duration-tailed rather than
+    approximator-tailed, which is what makes the added caveat correct.
+
+    The baseline is `e7ac2a7`, and that is why only a digit month can gain: the
+    older guard had no word months, so it never silenced one and has none to
+    stop silencing. Measured instead against this pattern with the lookahead
+    removed, any month term gains. `_TIME_POINT` states both and names which is
+    which; neither reading is the other's contradiction.
+
+    Derived and not counted, deliberately. A count here measures how many digit
+    months the cross-product happens to enumerate, not anything about the code:
+    two digit months and five suffixes give ten, twelve digit months would give
+    sixty, and neither number says more than the shape does. Two earlier
+    attempts at this claim were corpus counts, and the first was wrong because
+    its corpus carried the `간` shape and not the other four.
+
+    The #445 pattern is written out because it is history and cannot drift; the
+    tuples it is compared against are live.
+    """
+    import itertools
+    import re
+
+    from verinote.pipeline.query_intent import (
+        _DATE_APPROXIMATOR_SUFFIXES,
+        _DAY_DURATION_SUFFIXES,
+        _MONTH_PART_MEMBERS,
+        _MONTH_WORD_MEMBERS,
+        _TIME_POINT,
+        _UNIT_SUFFIX_MEMBERS,
+        _value_measure_units,
+    )
+    import verinote.pipeline.query_intent as query_intent
+
+    shipped = re.compile(
+        r"[0-9]{1,2}\s*월\s*[0-9]{1,2}\s*일"
+        r"|(?<![0-9])[0-9]{2,4}\s*년\s*[0-9]{1,2}\s*월"
+        r"|(?<![0-9])[0-9]{4}\s*년(?![0-9])"
+        r"|(?<![0-9])[0-9]{2,4}\s*[-./]\s*[0-9]{1,2}\s*[-./]\s*[0-9]{1,2}"
+    )
+    digit_months = ("3월", "12월")
+    terms = digit_months + tuple(_MONTH_WORD_MEMBERS)
+    values = [
+        " ".join(piece for piece in (term, part, f"15일{suffix}") if piece)
+        for term, part, suffix in itertools.product(
+            terms, ("",) + tuple(_MONTH_PART_MEMBERS), _UNIT_SUFFIX_MEMBERS
+        )
+    ]
+
+    def caveat(pattern, value):
+        original = query_intent._TIME_POINT
+        query_intent._TIME_POINT = pattern
+        try:
+            return query_intent.korean_measure_unit_mismatch(_MONTH, value)
+        finally:
+            query_intent._TIME_POINT = original
+
+    gained = [
+        value for value in values
+        if caveat(shipped, value) is None and caveat(_TIME_POINT, value) is not None
+    ]
+    assert gained, "no gained values means the cross-product missed the shape"
+    # Nothing with a word month or a month part gains. Checked before the
+    # unpack below, because both of those shapes split into three and would
+    # raise ValueError there instead of failing this assertion -- the worse
+    # diagnostic for exactly the regression this guards.
+    assert not [
+        value for value in gained
+        if any(word in value for word in _MONTH_WORD_MEMBERS)
+        or any(part in value.split()[1:-1] for part in _MONTH_PART_MEMBERS)
+    ]
+    for value in gained:
+        term, day = value.split()
+        assert term in digit_months, value
+        # The correctness half, and it has to be falsifiable. Asserting that the
+        # value states DAY cannot fail here: `일` is the only unit anything in
+        # this cross-product contains, so it passed for `3월 15일쯤` too, where
+        # the caveat was wrong. What makes a gained caveat right is the tail
+        # being a duration suffix rather than an approximator, so that is what
+        # is asserted -- and widening the lookahead back over
+        # `_DATE_APPROXIMATOR_SUFFIXES` fails here.
+        assert day.endswith(_DAY_DURATION_SUFFIXES), value
+        assert not day.endswith(_DATE_APPROXIMATOR_SUFFIXES), value
+        assert ("DAY", "일") in _value_measure_units(value), value
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["3월 15일쯤", "매월 15일정도", "매월 15일쯤", "3월 중 15일정도", "다음 달 1일쯤",
+     "3월 15일경", "3월 15일 쯤", "매월 15일 정도"],
+)
+def test_a_day_wearing_an_approximator_is_still_a_date(value):
+    """`_DATE_APPROXIMATOR_SUFFIXES`: the other half of the partition.
+
+    `쯤` and `정도` sit in `_UNIT_SUFFIX_MEMBERS` because they leave a quantity
+    readable -- `15일쯤` reads as days -- but that is the only property that
+    tuple claims. The day branch needs the converse, and an approximated date is
+    still a date, so reading `매월 15일쯤` as fifteen days would un-fix this
+    issue's own headline one particle away from `매월 15일`.
+
+    The file already agrees, and `3월 15일경` is the proof: `경` is the standard
+    date approximator, sits in no tuple, and is read as a date. Two spellings of
+    one meaning must not get two answers.
+
+    `3시경` is deliberately NOT cited here. It is silent, but by stating no unit
+    rather than by being read as a point in time -- `_TIME_POINT` does not match
+    it at all, as the clock paragraph says. Citing it would repeat the exact
+    confusion this module keeps warning against.
+
+    The last two are the same values spaced. `_VALUE_MEASUREMENT` reads `15일쯤`
+    and `15일 쯤` alike, so a lookahead that split them would make a space decide
+    the verdict -- the defect `_VALUE_MEASUREMENT_RELAXED` exists to fix, one
+    branch over.
+    """
+    from verinote.pipeline.query_intent import (
+        _DATE_APPROXIMATOR_SUFFIXES,
+        _UNIT_SUFFIX_MEMBERS,
+        korean_measure_unit_mismatch,
+    )
+
+    assert set(_DATE_APPROXIMATOR_SUFFIXES) < set(_UNIT_SUFFIX_MEMBERS)
+    assert korean_measure_unit_mismatch(_MONTH, value) is None
+
+
+@pytest.mark.parametrize("marker", ["동안", "남짓", "내내", "이상"])
+@pytest.mark.parametrize("month_word", ["매월", "전월", "다음 달"])
+def test_a_free_word_duration_marker_is_not_consulted(month_word, marker):
+    """The boundary, asserted rather than assumed: only bound suffixes count.
+
+    `매월 15일 동안` is fifteen days, and this rule silences it. The day branch
+    reads what is written flush against `일`, and a free word after a space is
+    not consulted, so the value is a day of the month with a word after it.
+
+    Recorded as a cost, not fixed. "Means a duration" is an open lexical class --
+    these, and any other free word implying a span -- so enumerating it would
+    narrow one shape and leave its neighbours, the failure #450 exists to stop.
+    "Is bound to the number" is closed because every candidate is a member of
+    `_UNIT_SUFFIX_MEMBERS`, which is enumerated; `_DAY_DURATION_SUFFIXES` is the
+    part of it that survives both filters, not the set of bound suffixes -- `쯤`
+    is bound and is not in it. That is the trade, and this test is where it is
+    visible instead of implied.
+
+    Every marker here is a free word whose standard spelling is spaced, and each
+    was checked against both dimensions the caveat level cannot see: whether the
+    spaced form is the standard one, and whether it attaches to a point in time
+    (`3시X`). `여` sat here for a round and satisfies neither -- it is a 접미사
+    on the NUMBER, as in `15여 일`, so `매월 15일 여` is not Korean and its
+    silence says nothing about this boundary. `째` fails the same way flush
+    against the counter (`15일째`), and `내외` and `가까이` are spaced but read a
+    clock as readily as a span, which is the `이내` defect. None of them was
+    taken as a replacement; the list is explicitly not exhaustive, so a fifth
+    member has to earn its place rather than fill a slot.
+
+    The values really do state days; the guard is what hides them, which the
+    second assertion shows by asking the same question of the bound spelling.
+
+    Enumerating these in the lookahead would NOT be inert, and the third
+    assertion is here to stop that being claimed again. The guard is
+    whole-value, so excluding the date unblocks every other unit in the value,
+    not only the day: `매월 15일동안 3주` says nothing today and would report its
+    three weeks if the free words were listed.
+
+    But note how that value is spelled. `동안` is a free word and standard
+    orthography spaces it, so `15일동안` is a misspelling, and every caveat
+    enumeration would recover is on one. The correctly spelled `매월 15일 동안 3주`
+    is unreachable from a lookahead sitting flush against `일` whether the free
+    words are listed or not, which is what makes the boundary a boundary rather
+    than a choice. So the cost of declining is bounded: caveats lost on
+    misspelled input, none on correctly spelled input.
+
+    The warrant is therefore that the class is open and what enumeration buys is
+    confined to misspellings -- not that enumeration buys nothing, which is the
+    claim this docstring made for a round and the third assertion now refutes.
+    """
+    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+
+    assert korean_measure_unit_mismatch(_MONTH, f"{month_word} 15일 {marker}") is None
+    assert korean_measure_unit_mismatch(_MONTH, f"{month_word} 15일간") == ("개월", "일")
+    # The whole-value cost, and the killer for "enumerating them is inert".
+    assert korean_measure_unit_mismatch(_MONTH, f"{month_word} 15일{marker} 3주") is None
+
+
+def test_only_a_suffix_bound_to_the_day_changes_the_verdict():
+    """The bound/free split itself, over the live tuple.
+
+    Every `_DAY_DURATION_SUFFIXES` member flush against `일` makes the value a
+    duration; the same member after a space does not. That is a documented
+    boundary rather than an accident: `15일간` is standard orthography and
+    `15일 간` is a misspelling, so the two spellings are not equally admissible
+    and reading them differently is the rule working.
+
+    It is NOT the `3시간30분` defect one branch over. There both spacings are
+    standard, which is what made a space-dependent verdict wrong. The control is
+    `정도`, a free noun whose spaced form is the standard one -- and it shows no
+    flip, because the approximators are not consulted either way.
+    """
+    from verinote.pipeline.query_intent import (
+        _DATE_APPROXIMATOR_SUFFIXES,
+        _DAY_DURATION_SUFFIXES,
+        korean_measure_unit_mismatch,
+    )
+
+    assert _DAY_DURATION_SUFFIXES, "an empty set would make this vacuous"
+    for suffix in _DAY_DURATION_SUFFIXES:
+        assert korean_measure_unit_mismatch(_MONTH, f"매월 15일{suffix}") == ("개월", "일")
+        assert korean_measure_unit_mismatch(_MONTH, f"매월 15일 {suffix}") is None
+    for suffix in _DATE_APPROXIMATOR_SUFFIXES:
+        assert korean_measure_unit_mismatch(_MONTH, f"매월 15일{suffix}") is None
+        assert korean_measure_unit_mismatch(_MONTH, f"매월 15일 {suffix}") is None
