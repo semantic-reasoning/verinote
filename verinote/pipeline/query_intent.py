@@ -718,18 +718,18 @@ the row and the question side goes silent too.
 Absent on purpose, each for its own reason:
 
 * bare `월`. `3월` is March, and `개월` is the counter for a month-count and is
-  present. Nothing here reads `월` as a month of the year either, though: the
+  present. Nothing in THIS table reads `월` as a month of the year either: the
   row is absent, so a `6월` that really did mean six months states no unit this
   rule can see, and is silent for want of any reading rather than by a
-  judgement between two.
-* `일` is present, unlike `월`: `3일` is three days far more often than it is the
-  third of the month. That is a judgement about which reading is commoner, not a
-  guarantee that the other one is caught. `_CALENDAR_DATE` reaches a day of the
-  month only when a digit month stands beside the day with nothing but
-  whitespace between them, so `3월 15일` and `3월15일` are dates while
-  `매월 15일`, `15일 마감`, `3월 중 15일`, `3월의 15일` and `3월 말 15일` are not,
-  and all of those do state `일` -- the last three have the month in digits and
-  are still missed, because a word between the two ends the match. See
+  judgement between two. `_TIME_POINT` does read digits run into `월`, but as a
+  month term inside a longer shape rather than as a unit, so the two do not
+  disagree.
+* `일` is present, unlike `월`: `3일` is three days far more often than it is
+  the third of the month. That is a judgement about which reading is commoner,
+  not a guarantee that the other one is caught. What catches the other reading
+  is `_TIME_POINT`, which needs a month term in front of the day, in the sense
+  that pattern defines: `3월 15일`, `3월 중 15일` and `매월 15일` are dates.
+  `15일 마감` has no month term at all and does state `일`. See
   `korean_measure_unit_mismatch`.
 * `개년`. It fired on `5개년 계획`, which is the name of a plan rather than a
   duration.
@@ -740,13 +740,56 @@ Absent on purpose, each for its own reason:
 """
 
 _UNIT_SUFFIX_MEMBERS = ("간", "가량", "정도", "쯤", "짜리")
-"""The members of `_UNIT_SUFFIX`, named so a test can assert over the live set.
+"""The particles that may follow a quantity and leave it readable as one.
+
+Read by three things now, so the property it claims matters: `_UNIT_SUFFIX`
+builds the value patterns from all of it, and `_TIME_POINT`'s day branch reads a
+subset (`_DAY_DURATION_SUFFIXES`) for the converse property, which two members
+do not have. What this tuple asserts is only the first direction -- a member
+leaves a quantity readable -- and borrowing it for the second is the mistake
+that partition exists to record.
 
 Every member is Hangul, and `_VALUE_MEASUREMENT_RELAXED` is dropped from that
 pattern on exactly that ground. A test that restated the members as its own
 literal would go on passing if a non-Hangul one were added here, which is the
 case the argument does not survive: a digit member makes `3년2주` read as `년`
 alone and a `몇 주인가?` against it answer "the verified value states 주".
+"""
+
+_DAY_DURATION_SUFFIXES = ("간", "가량", "짜리")
+"""The suffixes whose presence proves an `N일` is a duration.
+
+A subset of `_UNIT_SUFFIX_MEMBERS`; `_TIME_POINT`'s day branch consults this and
+not that. The criterion is not "does it mean approximately" -- `가량` does, and
+is here -- but whether the suffix attaches to a point in time as readily as to a
+quantity. The test is whether `3시X` is ordinary Korean: `3시쯤`, `3시 정도` and
+`3시께` are, `3시가량` is not.
+
+That is a lexical judgement about Korean, stated so it can be argued with rather
+than proved from anything here. What the file does supply is `3월 15일경`, where
+the standard date approximator has never been listed and the value reads as a
+date. Reading the same split off the meanings arrives at it independently: `간`
+is "for the duration of", `짜리` is "worth of", and `가량` approximates a
+quantity rather than a point.
+
+Both halves are literal, and neither is derived from the other. An open class
+needs two things, and deriving one half gives only one of them: a safe default,
+so an unclassified member costs a caveat rather than inventing one, and a
+tripwire that refuses to take that default silently. The default here is safety
+-- a suffix in neither tuple is not consulted, so the day stays a date -- and
+the tripwire is the union equality the tests assert, which fails and names the
+decision someone has to make. Derive either half and that equality holds by
+construction: `께` would join `_UNIT_SUFFIX_MEMBERS`, land on a side by
+arithmetic, and say nothing. Under exclusion it landed on this one, which made
+`3월 15일께` a wrong sentence.
+"""
+
+_DATE_APPROXIMATOR_SUFFIXES = ("쯤", "정도")
+"""The `_UNIT_SUFFIX_MEMBERS` that approximate a point in time as readily as a
+quantity, so their presence proves nothing about the day they follow.
+
+Literal rather than the complement of `_DAY_DURATION_SUFFIXES`, for the reason
+given there.
 """
 
 _UNIT_SUFFIX = r"(?:" + "|".join(_UNIT_SUFFIX_MEMBERS) + r")?"
@@ -784,23 +827,193 @@ re-sorting the table by length changes no reading. A spelling extended by
 punctuation would sit outside the class, and there the order would decide.
 """
 
-_CALENDAR_DATE = re.compile(
-    r"[0-9]{1,2}\s*월\s*[0-9]{1,2}\s*일"
+_MONTH_WORD_MEMBERS = (
+    "매월", "매달", "금월", "익월", "내월", "당월", "전월", "차월",
+    "다음 달", "이번 달", "지난 달", "내달",
+)
+"""The month terms this file recognises as words rather than digits.
+
+Like `_UNIT_SUFFIX_MEMBERS`, this exists as a tuple so a test can assert over
+the live set instead of over a copy of it. `_TIME_POINT` states what a month
+term does; this only lists the word forms of one.
+
+The list is the ones that have been found, not the ones that exist -- Korean
+has more ways to name a month than any closed tuple holds, and a word outside
+it puts its value back in `korean_measure_unit_mismatch`'s residue rather than
+into any error. `금월`, `내월` and `내달` were added after the first draft
+shipped without them.
+
+A word list fails in two directions and only one of them is above. The other is
+a member matching inside a longer word, which is why the alternatives carry a
+left bound -- see `_MONTH_OF_YEAR`. That bound is on digits only, so the digit
+spelling `1차월` is excluded and the Sino-Korean numeral spelling `일차월` is
+not; a member that is a common word tail would need more than a bound.
+"""
+
+_MONTH_PART_MEMBERS = ("의", "중", "초", "말")
+"""The parts that may stand between a month term and its day, named for the tests.
+
+Closed on purpose -- see `_TIME_POINT`, which is where the rule lives.
+"""
+
+_MONTH_OF_YEAR = (
+    r"(?:[0-9]{1,2}\s*월|"
+    # The word alternatives carry a left bound the digit one must not have.
+    # Without it `차월` matches inside `1차월`, which is month one of a
+    # programme and not a point in time at all, and `1차월 3일 소요` lost a
+    # caveat it had earned. Digits are the only thing excluded, so `해당월` and
+    # `익익월` keep matching on their tails -- an accident, but one that lands
+    # on the right answer, and a Hangul bound would give it up.
+    + r"(?<![0-9])(?:"
+    # Every member is Hangul plus at most one space, so they join raw -- the
+    # premise `_UNIT_SUFFIX` joins on -- and the space is relaxed so
+    # `다음달 1일` reads like `다음 달 1일`.
+    + "|".join(w.replace(" ", r"\s*") for w in _MONTH_WORD_MEMBERS)
+    + r"))"
+)
+
+_TIME_POINT = re.compile(
+    _MONTH_OF_YEAR
+    + r"\s*(?:" + "|".join(_MONTH_PART_MEMBERS) + r")?\s*[0-9]{1,2}\s*일"
+    # Not a day of the month if what follows proves it is a duration. That is
+    # `_DAY_DURATION_SUFFIXES`, a subset of `_UNIT_SUFFIX_MEMBERS` and not that
+    # tuple -- see the docstring for why the two differ.
+    + r"(?!(?:" + "|".join(_DAY_DURATION_SUFFIXES) + r"))"
+    r"|[0-9]{1,2}\s*시(?![가-힣])"
+    r"|['’‘]\s*[0-9]{2}\s*년"
     r"|(?<![0-9])[0-9]{2,4}\s*년\s*[0-9]{1,2}\s*월"
     r"|(?<![0-9])[0-9]{4}\s*년(?![0-9])"
     r"|(?<![0-9])[0-9]{2,4}\s*[-./]\s*[0-9]{1,2}\s*[-./]\s*[0-9]{1,2}"
 )
 """Shapes that make a value a point in time rather than a quantity of one.
 
-`2021년` is a year, not two thousand and twenty-one years, and a question asking
-`몇 개월인가?` must not be told that value states years. The guard is on the
-whole value rather than on the matched span, so a value containing a calendar
-date reports no units at all, including a genuine mismatch stated elsewhere in
-the same value: `2021년 착수, 총 3주` asked in months, and `2021년 기준 30분`
-asked in hours, are both silent though each states a real same-family mismatch.
+`2021년` is a year, not two thousand and twenty-one years, and a question
+asking `몇 개월인가?` must not be told that value states years.
 
-Four alternatives, each of which some value needs; the tests delete them one at
-a time and every deletion changes an outcome.
+The guard is on the whole value rather than on the matched span, and that has
+one total consequence rather than a list of examples: when any shape below
+matches anywhere, `_value_measure_units` reports no units at all, and
+`korean_measure_unit_mismatch` can only name a unit that was reported, so every
+caveat the value had earned is lost. Say it that way round rather than "a
+guarded value is not read", because the value IS still read:
+`_value_states_asked_unit` does not consult this guard, so
+`_value_states_asked_unit("매월 15일", "DAY")` is True while
+`_value_measure_units("매월 15일")` is empty. What ends the caveat is the empty
+reported list, whatever the suppression scan sees. That is the same two-scan
+asymmetry `korean_measure_unit_mismatch` describes, and a reader who took
+"guarded, therefore unread" as the invariant would have the reasoning change
+under them the moment this guard moved.
+
+So `2021년 착수, 총 3주` and `2021년 기준 30분` each state a real same-family
+mismatch and each says nothing; so do `3시 시작, 3주 소요` and `매월 3일 소요`;
+and so does every member of `_MONTH_WORD_MEMBERS` and every member of
+`_MONTH_PART_MEMBERS` placed in front of a duration, not some of them. Each
+shape added here multiplies that class, which is the standing argument against
+adding one cheaply. #452 tracks making the guard span-local, which is what
+would end it.
+
+Every alternative is needed by some value, and so is every member of the two
+tuples: delete any one of them and some value changes its answer, which is what
+the tests beside this file are built to catch. No count is quoted here -- the
+pattern itself is the list.
+
+A day of the month is a month term, an optional month part, and the day. The
+month term is one or two digits run into `월`, or one of `_MONTH_WORD_MEMBERS`.
+`개월` cannot be reached, because the digits must run straight into `월` with
+only whitespace between -- the same property that keeps `12년 6개월` a duration
+one branch below. This replaced a branch that required the day to stand
+immediately beside a digit month, and with the part group empty it reads
+exactly what that branch read, so no value that was a date stops being one.
+`3월 15일`, `3월 중 15일`, `3월의 15일` and `매월 15일` are now read alike. No
+left bound is placed on the number, and that is deliberate rather than an
+omission: the branch this replaced had none, so `123월 15일` matches on its
+inner `23월 15일` and is silent, and adding a bound would make that value newly
+caveated -- a caveat gained, which this rule may not do quietly. The word
+alternatives are bounded, for the opposite reason given beside them. One
+consequence of the digit month being unbounded is that the width it admits is
+decoration: `[0-9]{1,2}` and `[0-9]` and `[0-9]{1,3}` all read the same values,
+because a longer run simply matches further in. The same is true of the clock
+hour. Only the DAY's width is load-bearing, since the day must start where the
+month term ended.
+
+The day refuses a `_DAY_DURATION_SUFFIXES` tail, for the reason the clock hour
+refuses a Hangul one. `_UNIT_SUFFIX` makes `15일간` fifteen days, `15일가량`
+about fifteen days and `15일짜리` a fifteen-day one, so a day wearing any of
+those cannot be the fifteenth of anything; without the lookahead the branch read
+the `15일` inside and called `매월 15일간` a point in time, losing a caveat on a
+value with no point in time in it at all, which is not a loss this guard's
+bargain covers.
+
+What the branch consults is bounded morphologically, and that is the boundary
+worth stating because it is the one that closes. "Means a duration" is an open
+lexical class -- `간`, `가량`, `짜리`, then `동안`, `남짓`, `내내`, `이상`,
+and every free word that implies a span -- so enumerating it would narrow one
+shape and leave its neighbours, the failure #450 was opened against. "Is bound
+to the number" is closed, and that is all the argument needs: every candidate is a
+member of `_UNIT_SUFFIX_MEMBERS`, which is enumerated, so nothing outside it can
+be consulted. So the rule is consult only what is flush against `일`, and among
+those not one that approximates a point in time as readily as a quantity. A
+free word after a space is not consulted, and `korean_measure_unit_mismatch`
+discloses what that costs.
+
+`_DAY_DURATION_SUFFIXES` is bound and closed, but it is NOT the set of bound
+suffixes, and reading it as one is the mistake this passage has made more than
+once. Two filters stand between them, and each has a member to its name: `정도`
+is dropped for not being bound at all, a 명사 whose standard spelling is spaced;
+`쯤` is bound, written flush, and dropped anyway for approximating a point in
+time. Either filter can take any member, so read the tuple as what survived both
+rather than as a class -- the identity is what keeps going false as members move
+between the two halves.
+
+A space therefore decides the verdict for a bound suffix, and that is the
+boundary rather than the defect `_VALUE_MEASUREMENT_RELAXED` exists to fix. There
+`3시간30분` and `3시간 30분` are both standard and got different answers; here
+`15일간` is standard and `15일 간` is a misspelling. Where the free form is the
+standard one there is no flip: `정도` is a noun, and `매월 15일정도` and
+`매월 15일 정도` are both silent.
+
+`_DAY_DURATION_SUFFIXES` is a subset of `_UNIT_SUFFIX_MEMBERS`, and that is the
+second half of the rule. `_UNIT_SUFFIX` is the set of particles that leave a
+quantity readable as one -- the only property its own docstring claims. The day
+branch needs the converse, that the particle proves its `N일` is not a date, and
+`쯤` and `정도` do not have it: an approximated date is still a date. `3월 15일경`
+is the same idea wearing a suffix this file has never listed, and it reads as a
+date. Taking `쯤` would have given two spellings of one meaning two answers, and
+it un-fixed this issue's own headline -- `매월 15일` a date and `매월 15일쯤` a
+duration, one particle apart.
+
+This is the one place the change makes a value newly caveated rather than newly
+silent, and it does so knowingly: `3월 15일간` was silent before #450 too, so
+the lookahead reaches back past this change's own additions. Which values gain
+depends on the baseline, and both readings are true of different ones: against
+this pattern with the lookahead removed, any month term can gain; against
+`e7ac2a7`, only a digit month can, because the older guard had no word months to
+silence and so nothing to stop silencing. The tests derive each from its own
+baseline rather than restating either here. Every gained value states days, so
+each added caveat is right, and the "may not do quietly" above is the standard
+being met rather than evaded.
+
+`_MONTH_PART_MEMBERS` is closed, and closing it is the whole precision of the
+branch. Admitting any single Hangul syllable instead also takes
+`3월 내 15일 소요`, `3월 후 15일 소요`, `매월 약 3일` and `전월 대비 3일 단축`,
+each of which states a real duration. What the closed set costs is
+`3월 중 15일 소요` and `3월 말 15일 소요`, honestly ambiguous and read here as
+the fifteenth.
+
+A clock hour is a point in time and `시간` is a duration, and the tables are
+what separate them: `시` is in neither `_MEASUREMENT_UNIT_SPELLINGS` nor
+`_KOREAN_MEASURE_COUNTER` while `시간` is in both, so digits running into `시`
+state no unit this file can read and can only be a clock. The lookahead is
+`(?![가-힣])` rather than `(?!간)` because `3시그마` and `5시리즈` are words,
+not times; it is not `(?![가-힣0-9])` because `3시30분` is half past three. A
+clock time with a Hangul tail -- `3시부터`, `3시경`, `3시반` -- falls outside
+and needs nothing, since it states no unit for a caveat to be wrong about.
+
+`'21년` is caught where bare `21년` is not, and the apostrophe is the whole of
+the difference: it stands in for the elided century and no duration is written
+with one. Three characters are read: the straight `'`, the curly `’` that is
+the apostrophe proper, and the opening `‘` that a word processor autocorrects a
+leading straight quote into -- which is how the character usually arrives.
 
 A year followed by a month is a date whatever the year's width, which is the
 branch that reads `21년 3월` and `25년 12월` as dates rather than as twenty-one
@@ -815,7 +1028,8 @@ twelve years and six months and stays a duration, because `개월` is not `월`.
 A bare two-digit year is deliberately NOT caught. `21년` on its own really can be
 twenty-one years, so it is left reading YEAR and disclosed in
 `korean_measure_unit_mismatch` instead. Widening the four-digit branch to
-`[0-9]{2,4}` would silence it, and that is the trade this declines.
+`[0-9]{2,4}` would silence it, and that is the trade this declines. Written with
+an apostrophe it is caught, for the reason given above; bare, it is not.
 
 The four-digit year branch is bounded on both sides, and the two bounds do
 different work. The left-hand `(?<![0-9])` is what stops a genuine `10000년`
@@ -839,7 +1053,9 @@ one branch above was the contradiction that got it widened: `21.03.15일` and
 below at two digits and on the left, so `2.03.15일` and `12021.03.15일` are not
 dates. What the branch still misses is a date with no year at all -- `03/15일`
 needs two separators to be reached and has one -- which is disclosed in
-`korean_measure_unit_mismatch` rather than chased with a fifth alternative.
+`korean_measure_unit_mismatch` rather than chased with an alternative of its
+own. Reading a slashed month term was tried for #450 and withdrawn: it also
+reads the numerator of a small-number rate, and `50/15일` stopped being read.
 
 Widening the year also widened what else looks like a date, and that is a third
 cost on top of the two above: a dotted or dashed numeric triple whose first
@@ -987,7 +1203,7 @@ def _value_measure_units(value: str) -> tuple[tuple[str, str], ...]:
     suppression.
 
     Empty for a value stating no quantity, and empty for a value carrying a
-    calendar date -- `_CALENDAR_DATE` records what that costs.
+    point in time -- `_TIME_POINT` records what that costs.
 
     NFC because a value written in NFD spells `년` as two code points while the
     alternation is composed, and casefold because the Latin spellings in the
@@ -996,7 +1212,7 @@ def _value_measure_units(value: str) -> tuple[tuple[str, str], ...]:
     `weeks`.
     """
     folded = nfc(value).casefold()
-    if _CALENDAR_DATE.search(folded):
+    if _TIME_POINT.search(folded):
         return ()
     return tuple(
         (_MEASUREMENT_UNIT_SPELLINGS[match.group("unit")], match.group("unit"))
@@ -1034,8 +1250,7 @@ def korean_measure_unit_mismatch(question: str, value: str) -> tuple[str, str] |
 
     The main causes of an accepted silence, rather than all of them: a value
     stating no number; a unit run into the next syllable (`2년차`); a value
-    carrying a
-    calendar date; a spelling outside the table; a suffix outside `_UNIT_SUFFIX`;
+    carrying a point in time; a spelling outside the table; a suffix outside `_UNIT_SUFFIX`;
     a number that stacks magnitude words (`2천만원`), since the quantity shape
     admits at most one; and a number written in full-width digits (`３년`), which
     `[0-9]` does not admit and `nfc` does not fold away. `nfkc` would fold it, but
@@ -1061,16 +1276,20 @@ def korean_measure_unit_mismatch(question: str, value: str) -> tuple[str, str] |
     year is not a lexical ambiguity and `second` is not Korean -- so do not
     generalise from it to decide whether some new input is safe.
 
-    * A day of the month separated from its month by anything but whitespace.
-      `_CALENDAR_DATE` reads a digit month and a day with nothing but whitespace
-      between them, so `3월 15일`, `3월  15일` and `3월15일` are dates and
-      `3월 중 15일`, `3월의 15일` and `3월 말 15일` are not, though those have a
-      digit month too. `매월 15일` and `15일 마감` have no digit month at all.
-      Every one of the misses is told it states `일` -- fifteen days rather than
-      the fifteenth. A 정산일 or 마감일 relation holding `매월 N일` is ordinary
+    * A day of the month with no month term in front of it, in the sense
+      `_TIME_POINT` defines one. `15일 마감` is the deadline
+      on the fifteenth and is told it states `일`, fifteen days. Nothing in the
+      value separates it from `15일 소요`, which really is fifteen days -- only
+      the trailing noun does, and that noun does not partition, since `마감`
+      heads both readings. A 마감일 relation holding a bare `N일` is ordinary
       contract data, which makes this the most reachable one found so far.
     * A date written with no year. The ISO branch needs two separators, so
-      `03/15일` is not a date to it and is reported as stating `일`.
+      `03/15일` has one and is reported as stating `일`. Reading a slashed month
+      was tried for #450 and withdrawn: `[0-9]{1,2}\\s*/` also reads the numerator
+      of a small-number rate, so `50/15일` and `10/30일` stopped being read at all
+      and `50/15일 3주` lost a genuine caveat. A dotted form is worse, since
+      `1.5일` is a decimal duration with the same shape, and a dashed one collides
+      with the range `10-15일`.
     * A value whose asked-unit quantity no pattern here can read, beside a
       same-family unit that one can. The suppression scan misses the first and
       the reporting scan finds the second, so the caveat names the second:
@@ -1078,15 +1297,10 @@ def korean_measure_unit_mismatch(question: str, value: str) -> tuple[str, str] |
       `３년 30주` asked in years report `주`, and `6월 및 30주` asked in months
       reports `주`. Each is a silence cause from the list above turned into a
       wrong sentence by a readable unit standing next to it.
-    * A time of day. The guard has no time-of-day branch, and `시` is outside the
-      spellings table while `분` is in it, so `3시 30분` and `오후 2시 15분` are
-      reported to `몇 시간인가?` as stating `분` -- thirty minutes rather than
-      half past three. Note that this one needs no strained question: `시간`
-      asked in `몇 시간` is exactly the relation the counter names.
-    * A bare two-digit year. `21년 3월` is read as a date, but `21년` alone is
-      left reading YEAR, so `몇 개월인가?` answered `21년` is told it states
-      years. Twenty-one years is a real duration and nothing here separates the
-      two readings.
+    * A bare two-digit year. `21년 3월` is read as a date and so is `'21년`, but
+      `21년` alone is left reading YEAR, so `몇 개월인가?` answered `21년` is told
+      it states years. Twenty-one years is a real duration, and without the
+      apostrophe or a month beside it nothing here separates the two readings.
     * An English ordinal. `second` is in the spellings table as a unit, so
       `2 second review` is reported as stating `second`. The neighbouring
       `3 secondary reviews` is silent for an unrelated reason -- Latin continues
@@ -1097,11 +1311,41 @@ def korean_measure_unit_mismatch(question: str, value: str) -> tuple[str, str] |
       answered `5분` (five people, honorific): Korean spellings that mean two
       things, read here as the unit. These two also need a question asked in a
       unit the relation does not really measure.
+    * Every caveat in a value where a free word, rather than a bound suffix,
+      marks the duration. The day branch consults only what is written flush
+      against `일`, so `매월 15일간` is read as a duration while `매월 15일 동안`
+      is a day of the month with a word after it and the whole value is
+      silenced. `남짓`, `내내`, `이상` and any other free word implying a span
+      behave alike, and the class is not bounded by that list -- "means a
+      duration" is open, which is why the branch keys on being bound instead.
+      Because the guard is whole-value, what is lost is not only the day: any
+      other quantity in the value goes with it, so `매월 15일동안 3주` says
+      nothing about its three weeks either. Note the spelling -- `동안` is a
+      free word and standard orthography spaces it, and the misspelling is
+      where the whole of this cost sits. Written correctly,
+      `매월 15일 동안 3주` is out of reach of a lookahead placed against `일`
+      whether or not the free words are listed, so listing them would recover
+      nothing on it. Declining to list them loses caveats on misspelled input
+      and none on correctly spelled input.
+      With a word month this is a regression against #445, which had no month
+      word to silence such a value by; with a digit month #445 silenced it too.
+      #452's span-local guard is what would end it.
+    * Every caveat in a value that also carries a point in time. This one is not
+      an instance but a rule: `_value_measure_units` reports no units at all when
+      `_TIME_POINT` matches anywhere, and a caveat can only name a reported unit,
+      so the loss is total by construction rather than by sampling.
+      `3시 시작, 3주 소요` and `매월 3일 소요` each state a duration the question
+      asked about and each says nothing. #445 accepted this for calendar dates and
+      #450 widened what counts as a point in time, so the class grew with it; #452
+      tracks the span-local guard that would end it.
 
     None of these is fixed here. #445 asks that a verified answer in another unit
-    be caveated, not that every ambiguous spelling be resolved. The first two
-    want a guard for "a point in time" wider than `_CALENDAR_DATE`, which is a
-    change of its own rather than a widening of this one.
+    be caveated, not that every ambiguous spelling be resolved, and #450 added the
+    point-in-time guard an earlier version of this paragraph asked for without
+    changing that. Where a value's notation for a point in time is identical to
+    its notation for a quantity -- a bare `N일`, a bare two-digit year -- no
+    widening of `_TIME_POINT` reaches it, because there is nothing left in the
+    value to read.
     """
     asked = _question_measure_unit(question)
     if asked is None:
