@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: MPL-2.0
+import ast
 import unicodedata
 import os
 import stat
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -1499,3 +1501,61 @@ def test_no_fact_joins_them_needs_evidence_not_merely_an_untruncated_list(tmp_pa
     assert plan.diagnosis is not None
     assert plan.diagnosis.join_search_complete is False
     assert "no confirmed fact joins them" not in _empty_plan_reason(plan, intent)
+
+
+def test_every_provider_failure_exit_reports_the_provider_failed():
+    """Producer-side tripwire for `provider_failed` (#438).
+
+    Ask suppresses its fallback request on this flag, so a handler that builds a
+    `_QueryFlowResult` after an `LLMError` and forgets the keyword silently
+    re-opens the defect: the dataclass defaults it to `False`, and the consumer
+    cannot tell a provider that did not fail from one nobody reported. The
+    consumer half -- that Ask reads the flag and does not condition on status --
+    is pinned in tests/test_ask.py.
+
+    The offender set is re-derived from the AST on every run rather than
+    compared against a list of known sites, so this carries no count and a new
+    module or handler is covered the day it is written. It swept the whole
+    package deliberately: `_QueryFlowResult` lives in one module today, and a
+    second one importing the private name is exactly the drift worth catching.
+
+    What would make this vacuous: no construction inside any `except LLMError:`
+    handler, so the loop finds nothing to judge. The companion assertion below
+    requires the sweep to have examined at least one.
+    """
+    package = Path(__file__).resolve().parent.parent / "verinote"
+    offenders = []
+    examined = []
+    for path in sorted(package.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ExceptHandler):
+                continue
+            caught = node.type
+            names = caught.elts if isinstance(caught, ast.Tuple) else [caught]
+            if not any(getattr(n, "id", getattr(n, "attr", None)) == "LLMError" for n in names):
+                continue
+            for child in ast.walk(node):
+                if not (
+                    isinstance(child, ast.Call)
+                    and getattr(child.func, "id", None) == "_QueryFlowResult"
+                ):
+                    continue
+                examined.append(f"{path.name}:{child.lineno}")
+                flagged = any(
+                    kw.arg == "provider_failed"
+                    and isinstance(kw.value, ast.Constant)
+                    and kw.value.value is True
+                    for kw in child.keywords
+                )
+                if not flagged:
+                    offenders.append(f"{path.name}:{child.lineno}")
+
+    assert examined, (
+        "no `_QueryFlowResult` was built inside an `except LLMError:` handler, so "
+        "this sweep judged nothing -- it has been made vacuous, not satisfied"
+    )
+    assert offenders == [], (
+        "these provider-failure exits build a flow result without "
+        f"provider_failed=True, so Ask cannot tell they failed: {offenders}"
+    )

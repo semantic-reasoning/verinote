@@ -22,7 +22,10 @@ from verinote.engine.wirelog import strip_answer_line_prefix
 from verinote.llm.base import LLMClient, LLMError
 from verinote.pipeline.corroboration import CorroborationPolicyError, store_relation_aliases
 from verinote.pipeline.engine_input import engine_relation_rows
-from verinote.pipeline.query import expand_query_relation_aliases, schema_aware_query_flow
+from verinote.pipeline.query import (
+    _schema_aware_query_flow_result,
+    expand_query_relation_aliases,
+)
 from verinote.pipeline.query_candidate_eval import RELATION_DECL
 from verinote.pipeline.query_intent import korean_measure_unit_mismatch
 from verinote.pipeline.report_trace import trace_query_answers
@@ -35,6 +38,25 @@ MAX_EXCERPTS = 8
 MAX_GROUNDING_FACTS = 8
 _TOKEN = re.compile(r"[A-Za-z0-9_]{2,}|[가-힣一-龥ぁ-んァ-ン]{1,}")
 _RELATION_DECL = ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
+
+# Shown when the flow reports `provider_failed`, so Ask sends no second request.
+#
+# It deliberately does not say the provider failed. `provider_failed` is set by
+# the `except LLMError` handlers around the flow's provider calls, and an
+# `LLMError` also arrives from a request that succeeded: the
+# `"anthropic response contained no tool_use block"` raise sits outside the block
+# that normalises transport errors, so it is reachable only once
+# `messages.create` has returned. On that shape "the provider failed" would be
+# printed directly above a `reason` line reporting the provider's own output as
+# unusable -- the confusion `query_intent.py` refuses to create one level down,
+# where it keeps a local wiring bug out of the parse path rather than let it be
+# reported as "the provider violated the schema".
+#
+# `ask.html` renders the warning slot as text, so this carries no markup.
+_PROVIDER_SKIPPED_WARNING = (
+    "verinote did not get a usable reading of the question from the provider and "
+    "did not send it another request, so no model-composed answer is shown"
+)
 
 
 @dataclass(frozen=True)
@@ -99,7 +121,7 @@ def ask_question(
         )
 
     try:
-        status, query_dl, reason = schema_aware_query_flow(
+        flow = _schema_aware_query_flow_result(
             store,
             client,
             qid=ASK_QID,
@@ -107,6 +129,9 @@ def ask_question(
             llm_error_status="review_required",
         )
     except DuckDBFactTermStoreError as exc:
+        # The flow raised, so it reported nothing -- including no provider
+        # verdict. `provider_skipped` stays False here: a fact-term error is
+        # not a provider failure, and the fallback model is still worth asking.
         return _fallback_answer(
             store,
             client,
@@ -114,6 +139,10 @@ def ask_question(
             question=question,
             reason=f"engine fact-term error: {_short_reason(exc)}",
         )
+    status, query_dl, reason = flow.status, flow.query_dl, flow.reason
+    # Read once, here, rather than re-deriving it per branch: every downstream
+    # `_fallback_answer` gets the same verdict about the same flow.
+    provider_skipped = flow.provider_failed
     if status == "translated" and query_dl:
         report, expanded_query, snapshot = _run_engine_query(store, query_dl)
         if report.engine_available and report.ok and not report.errors:
@@ -135,12 +164,17 @@ def ask_question(
                 if _is_three_hop_answer_query(expanded_query) and not _has_complete_three_hop_trace(
                     answers, traces
                 ):
+                    # Unexercisable today: no _QueryFlowResult pairs
+                    # provider_failed with "translated", and this branch needs
+                    # that status. Wired so a future site that does is
+                    # suppressed by default rather than silently re-requesting.
                     return _fallback_answer(
                         store,
                         client,
                         root=root,
                         question=question,
                         reason="three-hop query source trace is incomplete",
+                        provider_skipped=provider_skipped,
                     )
                 source_facts = tuple(_grounding_facts_from_traces(traces))
                 return AskResult(
@@ -166,7 +200,17 @@ def ask_question(
                 reason="no confirmed facts match",
             )
         reason = _short_reason("; ".join(report.findings) or report.text)
-        return _fallback_answer(store, client, root=root, question=question, reason=reason)
+        # Unexercisable today, for the same reason as the three-hop site above:
+        # reaching here requires status "translated", which no construction
+        # pairs with provider_failed. Wired for the same default-safe reason.
+        return _fallback_answer(
+            store,
+            client,
+            root=root,
+            question=question,
+            reason=reason,
+            provider_skipped=provider_skipped,
+        )
 
     if status == "no_answer":
         return AskResult(
@@ -186,6 +230,7 @@ def ask_question(
         root=root,
         question=question,
         reason=reason or f"deterministic query status: {status}",
+        provider_skipped=provider_skipped,
     )
 
 
@@ -220,8 +265,8 @@ def _engine_answer_warning(
 
     The sentence carries no backticks or other markup: `ask.html` renders this
     slot as text, and no warning text this module writes uses any. (The fallback
-    path also puts a provider error message in this slot; that text is not
-    written here.)
+    path also writes to this slot -- either a provider error message or the
+    provider-skipped notice; neither is written here.)
     """
     if not source_facts:
         return "source trace unavailable for this verified query shape"
@@ -438,18 +483,37 @@ def _fallback_answer(
     root: Path,
     question: str,
     reason: str,
+    provider_skipped: bool = False,
 ) -> AskResult:
+    """Assemble the unverified answer, asking the model unless it just failed.
+
+    `provider_skipped` is the flow's `provider_failed` verdict. When it is set,
+    the provider has already been asked to read this question and produced
+    nothing usable, so asking it again would double the failed requests for one
+    question -- the whole of #438. Everything the page shows apart from the
+    model's prose is built here without a model, which is why the skipped path
+    still returns excerpts, grounding facts, route, label, status and reason.
+
+    Default `False` so a caller that has no verdict cannot accidentally suppress
+    a healthy provider; the callers that do have one pass it explicitly.
+    """
     excerpts = tuple(search_source_excerpts(store, root=root, question=question))
     grounding = tuple(grounding_facts(store, question=question))
-    context = _fallback_context(excerpts, grounding)
-    warning = None
-    try:
-        answer = client.answer_question(question=question, context=context)
-    except LLMError as exc:
-        warning = _short_reason(exc)
+    if provider_skipped:
+        # No context is built: nothing consumes it on this path, and composing a
+        # prompt for a request that is not sent would only invite one later.
+        warning = _PROVIDER_SKIPPED_WARNING
         answer = _fallback_answer_body(excerpts, grounding)
-    if not answer:
-        answer = _fallback_answer_body(excerpts, grounding)
+    else:
+        context = _fallback_context(excerpts, grounding)
+        warning = None
+        try:
+            answer = client.answer_question(question=question, context=context)
+        except LLMError as exc:
+            warning = _short_reason(exc)
+            answer = _fallback_answer_body(excerpts, grounding)
+        if not answer:
+            answer = _fallback_answer_body(excerpts, grounding)
     return AskResult(
         route="fallback",
         label="UNVERIFIED — source exploration",

@@ -5,8 +5,9 @@ import pytest
 import verinote.pipeline.ask as ask_module
 from verinote.llm.base import LLMError
 from verinote.pipeline.ask import ask_question, search_source_excerpts
-from verinote.pipeline.query import query_path
+from verinote.pipeline.query import _QueryFlowResult, query_path
 from verinote.store import Store
+from verinote.store.duckdb_fact_terms import DuckDBFactTermStoreError
 
 
 class DeterministicOnlyClient:
@@ -792,8 +793,8 @@ def test_ask_verified_negative_only_for_explicit_no_answer_flow(tmp_path, monkey
     store.add_fact("샘플인물", "역할", "후보역할", status="candidate")
     monkeypatch.setattr(
         ask_module,
-        "schema_aware_query_flow",
-        lambda *args, **kwargs: (
+        "_schema_aware_query_flow_result",
+        lambda *args, **kwargs: _QueryFlowResult(
             "no_answer",
             'no_answer("no confirmed facts match")',
             "no confirmed facts match",
@@ -1352,3 +1353,254 @@ def test_search_source_excerpts_compares_nothing_from_a_missing_or_undecodable_s
 
     assert [item.path for item in excerpts] == ["sources/readable.txt"]
     assert len(compared) == 1
+
+
+# --- Ask does not re-request a provider that just failed (#438) -------------
+
+
+class RecordingClient:
+    """Records the provider methods it is asked for, in order.
+
+    The suppression under test is invisible to an answer-level assertion: a
+    fallback answer built after a failed `answer_question` and one built without
+    calling it at all can render identically, and `_fallback_answer` swallows
+    `LLMError`. Only the call list distinguishes them, so these tests assert on
+    it rather than on the result.
+    """
+
+    name = "recording"
+
+    def __init__(self, *, intent_error=None, answer_error=None, answer="샘플 모델 답변"):
+        self.calls: list[str] = []
+        self.intent_error = intent_error
+        self.answer_error = answer_error
+        self.answer = answer
+
+    def extract_query_intent(self, *, question: str, schema_hint: str = ""):
+        from verinote.pipeline.query_intent import parse_query_intent
+
+        self.calls.append("extract_query_intent")
+        if self.intent_error is not None:
+            raise self.intent_error
+        return parse_query_intent(
+            {
+                "kind": "unknown_or_unsupported",
+                "subject": None,
+                "relation": None,
+                "object": None,
+                "relation_candidates": None,
+                "operator": None,
+                "value_type": None,
+                "value": None,
+                "reason": "unsupported synthetic question",
+            }
+        )
+
+    def translate_query(self, *, question: str, qid: int, schema_hint: str = "") -> str:
+        self.calls.append("translate_query")
+        raise AssertionError("Ask must not call direct Datalog translation")
+
+    def answer_question(self, *, question: str, context: str) -> str:
+        self.calls.append("answer_question")
+        if self.answer_error is not None:
+            raise self.answer_error
+        return self.answer
+
+
+def _seed_rich(tmp_path):
+    """A confirmed fact whose source text answers the question."""
+    source = tmp_path / "sources" / "sample.txt"
+    source.parent.mkdir()
+    source.write_text(
+        "샘플조직은 샘플서비스를 운영하며 샘플조직의 역할 논의가 진행 중이다.", encoding="utf-8"
+    )
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/sample.txt")
+    store.add_fact("샘플조직", "is_a", "조직", status="confirmed", source_id=source_id)
+    return store
+
+
+def _seed_grounding_only(tmp_path):
+    """A confirmed fact whose source text does not answer the question."""
+    source = tmp_path / "sources" / "sample.txt"
+    source.parent.mkdir()
+    source.write_text("샘플조직은 샘플서비스를 제공한다.", encoding="utf-8")
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/sample.txt")
+    store.add_fact("샘플조직", "is_a", "조직", status="confirmed", source_id=source_id)
+    return store
+
+
+def test_ask_sends_one_request_when_intent_extraction_fails(tmp_path):
+    """T1 -- the shape #438 reports: one failed call, not two.
+
+    The deterministic parser does not support this question, so the flow asks
+    the provider to read it; that call raises, the flow reports
+    `provider_failed`, and Ask must not then ask the same provider to compose an
+    answer. Asserted on the call list because the rendered answer is the same
+    either way.
+    """
+    store = _store(tmp_path)
+    client = RecordingClient(intent_error=LLMError("synthetic outage"))
+
+    result = ask_question(store, client, root=tmp_path, question="지원하지 않는 질문")
+
+    assert client.calls == ["extract_query_intent"]
+    assert result.route == "fallback"
+
+
+def test_ask_sends_one_request_when_reinterpretation_fails_and_keeps_the_evidence(tmp_path):
+    """T2 -- the other reachable site, and the evidence survives the skip.
+
+    Here the deterministic parser supports the question but plans nothing, so
+    the flow asks the provider to re-read it; that is a different construction
+    site from T1's with the same verdict. The excerpts and grounding facts are
+    built without a model, so suppressing the request must not cost them.
+    """
+    store = _seed_rich(tmp_path)
+    client = RecordingClient(intent_error=LLMError("synthetic outage"))
+
+    result = ask_question(store, client, root=tmp_path, question="샘플조직의 역할은 무엇인가?")
+
+    assert client.calls == ["extract_query_intent"]
+    assert result.excerpts
+    assert result.grounding_facts
+
+
+@pytest.mark.parametrize("status", ["review_required", "ambiguous", "translated"])
+def test_ask_suppresses_on_the_flag_and_not_on_the_status(tmp_path, monkeypatch, status):
+    """T3 -- consumer-side tripwire: the guard reads the flag, nothing else.
+
+    Ask suppresses on `provider_failed` alone. Conjoining a status would let a
+    future construction site with a different one fall through to a second
+    request, so these rows inject statuses the flag does not naturally pair
+    with and require the suppression to hold anyway. That is also why they are
+    injected: among the constructions that carry a literal status, the flag
+    pairs only with `review_required` and `translation_failed` today.
+
+    This pins the consumer half only. The producer half -- that every
+    provider-failure exit sets the flag -- is pinned in tests/test_query.py.
+    """
+    store = _store(tmp_path)
+    client = RecordingClient()
+    monkeypatch.setattr(
+        ask_module,
+        "_schema_aware_query_flow_result",
+        lambda *args, **kwargs: _QueryFlowResult(
+            status, None, "llm error: synthetic outage", False, True
+        ),
+    )
+
+    result = ask_question(store, client, root=tmp_path, question="지원하지 않는 질문")
+
+    assert client.calls == []
+    assert result.route == "fallback"
+
+
+def test_ask_says_no_usable_reading_rather_than_that_the_provider_failed(tmp_path):
+    """T4 -- the warning is true on both halves of the flag, and unformatted.
+
+    `provider_failed` covers a request that failed *and* a request that
+    succeeded with an unusable payload, so the notice claims only that no usable
+    reading arrived. The literal is spelled out here rather than imported: a
+    test that imports the constant it asserts cannot fail when the constant is
+    reworded.
+    """
+    store = _store(tmp_path)
+    client = RecordingClient(intent_error=LLMError("synthetic outage"))
+
+    result = ask_question(store, client, root=tmp_path, question="지원하지 않는 질문")
+
+    assert result.warning == (
+        "verinote did not get a usable reading of the question from the provider "
+        "and did not send it another request, so no model-composed answer is shown"
+    )
+    # ask.html renders this slot as text, so the sentence carries no markup.
+    assert "`" not in result.warning
+    assert "*" not in result.warning
+
+
+def test_ask_still_reports_a_consulted_provider_as_consulted(tmp_path):
+    """T5 -- over-reach guard; passes on the parent commit by design.
+
+    Here the provider read the question successfully and only the *answering*
+    call failed, so there is no provider-failure verdict and the fallback model
+    was rightly asked. It exists to fail a suppression that fires too widely,
+    not to demonstrate one: make the skip unconditional and both assertions go.
+    """
+    store = _store(tmp_path)
+    client = RecordingClient(answer_error=LLMError("synthetic outage"))
+
+    result = ask_question(store, client, root=tmp_path, question="지원하지 않는 질문")
+
+    assert client.calls == ["extract_query_intent", "answer_question"]
+    assert result.warning == "synthetic outage"
+
+
+def test_ask_does_not_treat_a_fact_term_error_as_a_provider_failure(tmp_path, monkeypatch):
+    """T6 -- over-reach guard: a flow that raised is not a provider failure.
+
+    When the flow itself raises, it reported nothing at all -- including no
+    verdict about the provider, which was never asked. The fallback model is
+    still worth asking, so this path must keep calling it.
+
+    **There is no parent-commit run of this to compare against**: it patches
+    `_schema_aware_query_flow_result`, the name `ask.py` binds only from this
+    commit, so on the parent the patch target does not exist and the test errors
+    rather than reporting on behaviour. It earns its place against over-reach,
+    not absence -- passing `provider_skipped=True` at this call site is caught
+    here and, measured, nowhere else.
+    """
+    store = _store(tmp_path)
+    client = RecordingClient()
+
+    def _raise(*args, **kwargs):
+        raise DuckDBFactTermStoreError("synthetic fact-term failure")
+
+    monkeypatch.setattr(ask_module, "_schema_aware_query_flow_result", _raise)
+
+    ask_question(store, client, root=tmp_path, question="지원하지 않는 질문")
+
+    assert client.calls == ["answer_question"]
+
+
+def test_ask_names_the_grounding_table_on_the_skipped_path(tmp_path):
+    """T7 -- the body stays true on the shape this fix makes common.
+
+    Suppressing the model makes the no-prose body the usual outcome rather than
+    a rare one, so the sentence commit 1 fixed has to be right here too.
+    """
+    store = _seed_grounding_only(tmp_path)
+    client = RecordingClient(intent_error=LLMError("synthetic outage"))
+
+    result = ask_question(store, client, root=tmp_path, question="샘플조직의 역할은 무엇인가?")
+
+    assert client.calls == ["extract_query_intent"]
+    assert result.excerpts == ()
+    assert result.grounding_facts
+    assert result.answer == (
+        "The deterministic engine could not answer. Verified grounding facts "
+        "are shown below."
+    )
+
+
+def test_ask_keeps_the_provider_error_in_the_reason_when_it_skips(tmp_path):
+    """T8 -- the specific error is still reachable, one line below the notice.
+
+    The notice deliberately does not name the failure, so `reason` is the only
+    place the actual provider error survives; `ask.html` renders it directly
+    beneath the warning.
+
+    **This passes on the parent commit**, and that is not a defect in it: the
+    reason is composed by the flow and is the same whether or not Ask goes on to
+    ask the model, so no assertion about it can separate the two. What it guards
+    is the new branch not substituting something of its own -- measured, it is
+    the only test that catches a constant reason on the skipped path.
+    """
+    store = _store(tmp_path)
+    client = RecordingClient(intent_error=LLMError("synthetic outage"))
+
+    result = ask_question(store, client, root=tmp_path, question="지원하지 않는 질문")
+
+    assert "llm error" in result.reason
+    assert "synthetic outage" in result.reason
