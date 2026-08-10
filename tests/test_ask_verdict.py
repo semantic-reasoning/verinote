@@ -36,7 +36,12 @@ from pathlib import Path
 import pytest
 from jinja2 import ChoiceLoader, DictLoader, Environment, FileSystemLoader
 
-from verinote.pipeline.ask import AskResult
+from verinote.pipeline.ask import (
+    AskExcerpt,
+    AskGroundingFact,
+    AskResult,
+    _fallback_answer_body,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATES = ROOT / "verinote" / "web" / "templates"
@@ -499,3 +504,190 @@ def test_the_answer_body_separates_verified_from_unverified() -> None:
         "an unverified answer body renders like a verified one once the colour is "
         "stripped -- the LLM's excerpt-built answer wears the engine's tone"
     )
+
+
+# --- the fallback body names only sections this page renders (#438) ---------
+#
+# `_fallback_answer_body` reasons about which sections `ask.html` will carry, and
+# a sentence about rendering that drifted from what renders is the defect #438's
+# first commit removes. The tripwire lives here because this module already owns
+# the `ask.html` renders and the overlay they go through; putting it in
+# `tests/test_ask.py` meant a second copy of `TEMPLATES`, `STUB_BASE` and
+# `_render` a few hundred lines away from these.
+
+# The `<h2>` each section renders under, and which of them each sentence
+# `_fallback_answer_body` can return points the reader at. Keyed by the whole
+# sentence, not by a fragment of it: a substring test would read a reworded
+# sentence as naming nothing, which is indistinguishable from the empty case.
+# An unrecognised sentence is an error here rather than an empty set.
+SECTION_HEADINGS = ("Source excerpts", "Verified grounding facts")
+SECTIONS_NAMED_BY_SENTENCE = {
+    "The deterministic engine could not answer. Source excerpts are shown below.": frozenset(
+        {"Source excerpts"}
+    ),
+    "The deterministic engine could not answer. Verified grounding facts "
+    "are shown below.": frozenset({"Verified grounding facts"}),
+    "The deterministic engine could not answer, and no source excerpt or "
+    "verified grounding fact is shown below.": frozenset(),
+}
+
+_EXCERPT = AskExcerpt(
+    path="sources/sample.txt", excerpt="샘플조직은 샘플서비스를 제공한다.", score=1
+)
+_GROUNDING = AskGroundingFact(
+    answer="",
+    subject="샘플조직",
+    relation="is_a",
+    object="조직",
+    source="sources/sample.txt",
+)
+
+# All four evidence shapes a fallback result can carry -- the domain is one
+# boolean per collection, so leaving any row out leaves a quarter of it untested.
+# Each is reachable from `ask_question`, measured: nothing; a grounding fact
+# whose source file yielded no excerpt; an ingested source with nothing yet
+# confirmed; and both.
+BODY_SHAPES = {
+    "none": ((), ()),
+    "grounding-only": ((), (_GROUNDING,)),
+    "excerpt-only": ((_EXCERPT,), ()),
+    "both": ((_EXCERPT,), (_GROUNDING,)),
+}
+BODY_SECTIONS_ON_PAGE = {
+    "none": frozenset(),
+    "grounding-only": frozenset({"Verified grounding facts"}),
+    "excerpt-only": frozenset({"Source excerpts"}),
+    "both": frozenset({"Verified grounding facts", "Source excerpts"}),
+}
+
+
+def _fallback_result(shape: str) -> AskResult:
+    """A fallback `AskResult` whose body is what the shipped helper writes.
+
+    The body is not spelled out here -- it comes from `_fallback_answer_body`
+    itself, so a change to the helper reaches this render. What this cannot see
+    is whether `ask_question` hands the same two collections to the helper and
+    to the result; `tests/test_ask.py` pins that end to end by asserting both
+    the sentence and the collections from real runs.
+    """
+    excerpts, grounding = BODY_SHAPES[shape]
+    return AskResult(
+        route="fallback",
+        label="UNVERIFIED — source exploration",
+        question="샘플조직 설명해줘",
+        status="fallback",
+        answer=_fallback_answer_body(excerpts, grounding),
+        query_dl=None,
+        engine_answers=(),
+        reason="r",
+        excerpts=excerpts,
+        grounding_facts=grounding,
+    )
+
+
+def _heading_match(html: str, name: str) -> re.Match[str] | None:
+    # Attribute-tolerant: `<h2 class="...">` is still that heading, and matching
+    # a bare `<h2>` would report "the section is gone" for a styling change.
+    return re.search(rf"<h2\b[^>]*>\s*{re.escape(name)}\s*</h2>", html)
+
+
+def _sections_on_page(html: str) -> frozenset[str]:
+    return frozenset(name for name in SECTION_HEADINGS if _heading_match(html, name))
+
+
+def _sections_named(answer: str) -> frozenset[str]:
+    assert answer in SECTIONS_NAMED_BY_SENTENCE, (
+        f"`_fallback_answer_body` returned a sentence this test does not know: "
+        f"{answer!r}. Add it to SECTIONS_NAMED_BY_SENTENCE with the sections it "
+        f"names, so a reworded body cannot pass as one that names nothing."
+    )
+    return SECTIONS_NAMED_BY_SENTENCE[answer]
+
+
+@pytest.mark.parametrize("shape", sorted(BODY_SHAPES))
+def test_fallback_body_names_only_sections_the_rendered_page_carries(shape: str) -> None:
+    """Render `ask.html` and compare its `<h2>`s against the body sentence.
+
+    `_fallback_answer_body` reasons about which sections the page will carry.
+    Asserting that reasoning in a docstring is what went wrong before, so this
+    pins it against a real render of the template.
+
+    The rows are the whole domain -- one boolean per collection, four shapes --
+    because a test named for a universal over a domain missing a quarter of
+    itself is worth less than its name promises.
+
+    Six ways this goes red, each checked to fire: gate the excerpts section or
+    the grounding table on something true for an empty collection (the `none`
+    row then finds a heading it must not have); rename either `<h2>` (the page
+    then carries a heading set no row expects, and for the sentence that named
+    the renamed one, it now names a section that is not there); narrow the
+    helper's first branch to `if excerpts and grounding` (the `excerpt-only`
+    row then denies an excerpt the page is rendering); and swap the two blocks
+    in `ask.html` (the `both` row's headings then come in the wrong order).
+    The last two are each invisible to every other test in the suite.
+
+    The order pin is not incidental to this test, and nothing else holds it.
+    Neither `docs/architecture.md:57`'s "Ask output order" nor `README.md:56`'s
+    "The evidence block always comes first" says more than that the answer
+    block precedes everything else. The architecture doc's list of what the
+    answer precedes, "route reasons, query details, source tables, or
+    excerpts", does run in `ask.html`'s page order, but a list of what one
+    block precedes fixes no order among the listed items -- and it omits the
+    warning line, which renders between the answer and the reason. A document
+    setting out the page's sections in order would not leave one out. So
+    nothing states that the grounding table comes before the excerpts, and no
+    other test holds it either; that is why the allowance in the body below
+    cannot rest on it unpinned.
+
+    **There is no parent-commit run of this test to compare against**: it calls
+    `_fallback_answer_body`, which the parent does not have, so the module does
+    not import there. It guards the helper and the template agreeing, not the
+    behaviour change itself. The behaviour change is pinned end to end in
+    `tests/test_ask.py`, where the `none` and `grounding-only` shapes run
+    through `ask_question` and fail on the parent, and `both` runs there and
+    passes.
+
+    What the two excerpt-bearing rows pin, measured against the whole suite
+    rather than asserted: they are its only catchers for a renamed
+    `Source excerpts` heading, and `excerpt-only` is its only catcher for a
+    narrowed first branch. They are unchanged-row pins only in the narrow sense
+    that their sentence was already true before this change -- **they do not
+    catch a swap of the helper's branch order.** On the `both` row that names
+    the grounding table, which is also on the page, so `named <= on_page` holds
+    and the row stays green; on `excerpt-only` grounding is empty, so
+    grounding-first falls through and the sentence does not move at all.
+    Forbidding that needless rewording is
+    `test_ask_fallback_body_still_names_the_excerpts_when_both_render`'s job in
+    `tests/test_ask.py`, and it is the whole suite's only catcher for it.
+    """
+    result = _fallback_result(shape)
+    html = _render(result)
+
+    on_page = _sections_on_page(html)
+
+    assert on_page == BODY_SECTIONS_ON_PAGE[shape]
+    if len(on_page) == 2:
+        # Both sections render, so their order is observable -- pin it. The
+        # allowance below rests on the grounding table coming first, and
+        # nothing else in the suite holds that.
+        #
+        # Anchored on the headings, not on the bare phrase: `Source excerpts`
+        # occurs twice on this page and the earlier hit is the body sentence
+        # inside `<pre>`, above every heading -- so `html.index(...)` compares
+        # the sentence against a heading and is False on correct code.
+        grounding = _heading_match(html, "Verified grounding facts")
+        excerpts = _heading_match(html, "Source excerpts")
+        assert grounding.start() < excerpts.start(), (
+            "ask.html must keep the grounding table above the source excerpts"
+        )
+    named = _sections_named(result.answer)
+    # Never name a section that is not there...
+    assert named <= on_page
+    # ...and name one that is, whenever there is one to name. Equality is
+    # deliberately not demanded. On the both-populated row the sentence names
+    # only the excerpts, and the grounding table renders *above* them (pinned
+    # just above) -- so the unnamed section sits between the answer and the
+    # named one and cannot be missed. The sentence points past it, not away
+    # from it, and the claim the body must not make is a false one, not an
+    # incomplete one.
+    assert bool(named) == bool(on_page)

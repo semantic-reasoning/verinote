@@ -1169,3 +1169,186 @@ def test_ask_warns_on_a_value_whose_case_differs_from_the_rendered_answer(tmp_pa
         "the question's counter is 개월; the verified value states weeks. "
         "verinote shows stored values as recorded and applies no unit conversion"
     )
+
+
+# --- the fallback body names only sections the page renders (#438) ----------
+
+
+def test_ask_fallback_body_promises_nothing_when_there_is_no_evidence(tmp_path):
+    """With neither excerpt nor grounding fact, the body says so.
+
+    `ask.html` gates the `Source excerpts` section on `result.excerpts`, so the
+    old unconditional "Source excerpts are shown below." pointed at a section
+    that was not on the page.
+
+    The assertion is on the whole sentence rather than on the absence of the
+    old one. `"Source excerpts" not in result.answer` would hold here for the
+    right reason, but it would hold just as well on a regression that called
+    the model and got prose back -- a check that cannot tell the fix from the
+    bug. Naming the expected sentence can.
+    """
+    store = _store(tmp_path)
+    client = FallbackClient(error=LLMError("synthetic outage"))
+
+    result = ask_question(store, client, root=tmp_path, question="지원하지 않는 질문")
+
+    assert result.route == "fallback"
+    assert result.excerpts == ()
+    assert result.grounding_facts == ()
+    assert result.answer == (
+        "The deterministic engine could not answer, and no source excerpt or "
+        "verified grounding fact is shown below."
+    )
+
+
+def test_ask_fallback_body_names_the_grounding_table_when_no_excerpt_renders(tmp_path):
+    """Grounding facts and no excerpt -- the row that was false before #438.
+
+    The source row is registered but its file is absent from disk, so
+    `search_source_excerpts` skips it and the page renders the
+    `Verified grounding facts` table with no excerpts section beneath. The body
+    must name the table that is there rather than the section that is not.
+
+    A failed schema-aware re-read (#438) makes the fallback *route* common; it
+    does not make this shape common -- whether an excerpt renders turns on the
+    sources, independently of why the route was taken. What the two together
+    mean is that the route reaches this shape more often, not that the shape
+    follows from the failure.
+    """
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/sample.txt")
+    store.add_fact("샘플조직", "is_a", "조직", status="confirmed", source_id=source_id)
+    client = FallbackClient(error=LLMError("synthetic outage"))
+
+    result = ask_question(store, client, root=tmp_path, question="샘플조직 설명해줘")
+
+    assert result.route == "fallback"
+    assert result.excerpts == ()
+    assert result.grounding_facts
+    assert result.answer == (
+        "The deterministic engine could not answer. Verified grounding facts "
+        "are shown below."
+    )
+
+
+def test_ask_fallback_body_still_names_the_excerpts_when_both_render(tmp_path):
+    """Both collections populated: the sentence this route has always shown.
+
+    Naming one present section is enough, and excerpts win. Swapping the
+    helper's branch order would make this row name the grounding table while
+    the excerpts section renders below it -- true of the page, but a needless
+    change to text that was never false.
+
+    **An unchanged-row pin: this passes on the parent commit by design.** The
+    old sentence was already true wherever an excerpt renders, so this row is
+    here to fail a fix that rewrites text it had no reason to touch, not to
+    demonstrate one. Measured: swapping the helper's branch order fails this
+    test and nothing else in the suite -- the render tripwire in
+    `tests/test_ask_verdict.py` accepts either present section by design.
+    """
+    source = tmp_path / "sources" / "sample.txt"
+    source.parent.mkdir()
+    source.write_text("샘플조직은 샘플서비스를 제공한다.", encoding="utf-8")
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/sample.txt")
+    store.add_fact("샘플조직", "is_a", "조직", status="confirmed", source_id=source_id)
+    client = FallbackClient(error=LLMError("synthetic outage"))
+
+    result = ask_question(store, client, root=tmp_path, question="샘플조직 설명해줘")
+
+    assert result.route == "fallback"
+    assert result.excerpts
+    assert result.grounding_facts
+    assert result.answer == (
+        "The deterministic engine could not answer. Source excerpts are shown below."
+    )
+
+
+def test_ask_fallback_body_names_the_grounding_table_when_the_model_returns_nothing(
+    tmp_path,
+):
+    """The empty-answer guard is a second writer of this sentence.
+
+    `_fallback_answer` substitutes the body twice -- once when
+    `answer_question` raises and once when it returns an empty string. Reverting
+    either call site alone reintroduces the false promise on that site's own
+    population, and only this test covers the empty-string site: here the
+    provider was consulted and answered with nothing, so `warning` stays unset.
+    """
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/sample.txt")
+    store.add_fact("샘플조직", "is_a", "조직", status="confirmed", source_id=source_id)
+    client = FallbackClient(answer="")
+
+    result = ask_question(store, client, root=tmp_path, question="샘플조직 설명해줘")
+
+    assert result.route == "fallback"
+    assert result.warning is None
+    assert result.excerpts == ()
+    assert result.grounding_facts
+    assert result.answer == (
+        "The deterministic engine could not answer. Verified grounding facts "
+        "are shown below."
+    )
+
+
+# The docstring on `_fallback_answer_body` argues from what `ask.html` renders and
+# from what `search_source_excerpts` declines to read. The rendering half is
+# re-derived in tests/test_ask_verdict.py, which already renders `ask.html`; this
+# module keeps the half that needs no template.
+
+
+def test_search_source_excerpts_compares_nothing_from_a_missing_or_undecodable_source(
+    tmp_path, monkeypatch
+):
+    """The absent excerpt in the body's last branch is not a failed comparison.
+
+    `search_source_excerpts` passes over a registered source whose file is gone
+    and one whose bytes are not UTF-8, so `_best_excerpt` -- the only thing that
+    compares source text against the question -- never sees them. That is why
+    the last branch says what the page shows rather than "nothing matched".
+
+    The spy would sit at zero for a vacuous reason if the question produced no
+    patterns, so the control at the end stores the same sentence as UTF-8 and
+    requires exactly one comparison to happen.
+
+    **This is a tripwire on a docstring claim, not coverage of a fix.** It
+    passes on the parent commit by design: it guards `_fallback_answer_body`'s
+    reasoning about *why* an excerpt can be absent, and that reasoning rests on
+    behaviour no change here touches. Read a green run on the parent as the
+    intended result, not as a test that pins nothing.
+
+    It goes red when the skipping stops. Measured: the undecodable half falls to
+    dropping `except UnicodeDecodeError` on its own; the missing-file half needs
+    both the `is_file()` guard and `except OSError` gone, because either one
+    alone still keeps the read away from `_best_excerpt`.
+    """
+    compared: list[str] = []
+    real_best_excerpt = ask_module._best_excerpt
+
+    def spy(text, patterns):
+        compared.append(text)
+        return real_best_excerpt(text, patterns)
+
+    monkeypatch.setattr(ask_module, "_best_excerpt", spy)
+
+    store = _store(tmp_path)
+    (tmp_path / "sources").mkdir()
+    store.add_source("sources/gone.txt")
+    (tmp_path / "sources" / "euckr.txt").write_bytes(
+        "샘플조직은 샘플서비스를 제공한다.".encode("euc-kr")
+    )
+    store.add_source("sources/euckr.txt")
+
+    assert search_source_excerpts(store, root=tmp_path, question="샘플조직 설명해줘") == []
+    assert compared == []
+
+    (tmp_path / "sources" / "readable.txt").write_text(
+        "샘플조직은 샘플서비스를 제공한다.", encoding="utf-8"
+    )
+    store.add_source("sources/readable.txt")
+
+    excerpts = search_source_excerpts(store, root=tmp_path, question="샘플조직 설명해줘")
+
+    assert [item.path for item in excerpts] == ["sources/readable.txt"]
+    assert len(compared) == 1
