@@ -835,8 +835,11 @@ magnitude words, and a unit spelling.
 
 `[만억천조]?` is one character, not a run, so `3만원` is read and `2천만원` is
 not; it is those four and no others, so `2백만원` is not either; and the digits
-are `[0-9]` rather than `\\d`, so `３년` is not. All three bounds are narrower
-than `_VALUE_MEASUREMENT_RELAXED`'s, and the asymmetry has a direction. This
+are `[0-9]` rather than `\\d`, so `３년` is not. All three of those bounds are
+narrower than `_VALUE_MEASUREMENT_RELAXED`'s, which is a statement about the
+NUMBER and not about the two patterns as wholes: since #453 the relaxed one
+carries a refusal of its own in `_UNIT_SHADOW_GUARD`, one this pattern already
+makes through its trailing lookahead. The asymmetry has a direction. This
 pattern decides what a value STATES and its output is put in front of a reader,
 so widening it ADDS sentences and needs a sweep of its own; the relaxed one
 decides only whether to stay silent. #451 widened the relaxed number and left
@@ -985,8 +988,11 @@ still: a component can only cost a caveat if it can be read as a unit, and
 table on purpose, each for a reason given beside it, so no value can be said to
 state them and no span has to reach them. `_VALUE_MEASUREMENT_RELAXED` draws
 from the same table and feeds only `_value_states_asked_unit`, whose one output
-is suppression, so it can spend a caveat but never invent one and does not widen
-the set.
+is suppression, so what it decides is whether a caveat is suppressed and never
+which unit a caveat names, and it does not widen the set. Since #453 it can
+START a caveat, by refusing a spelling it used to read, but the one it starts
+still names a unit `_value_measure_units` reported, so the set is untouched
+either way and this argument is unaffected.
 
 The premise is checkable on both of its sides, and
 `test_a_span_covers_every_component_a_value_could_be_said_to_state` checks them
@@ -1399,8 +1405,61 @@ the old shape from the new one. Naming it is the same remedy
 widened at the same time.
 """
 
+_UNIT_SHADOW_WORDS = ("분기", "주년", "년대", "주주", "secondary")
+"""Words that a unit spelling only BEGINS, refused where they stand complete.
+
+`분기` is a quarter and its first syllable is the spelling for MINUTE; `주년`,
+`년대` and `주주` stand the same way to WEEK, YEAR and WEEK, and `secondary` to
+SECOND. `_VALUE_MEASUREMENT_RELAXED` declines to read a spelling where one of
+these stands complete in its place, which is what gives `3분기 실적, 2시간 소요`
+asked in minutes its `시간` caveat back.
+
+The class is open and takes both things `_DAY_DURATION_SUFFIXES` says an open
+class needs. The DEFAULT is the safe direction: a word left off leaves the
+reading this scan already made, so it costs a lost caveat rather than a new
+sentence, which is what this scan did for every member here before the guard
+existed. The TRIPWIRE is
+`test_a_shadow_word_is_one_the_reporting_scan_already_refuses`, which refuses a
+member whose complete form `_value_measure_units` still reads as a quantity.
+`분간` is the shape it catches: with `일간` listed,
+`korean_measure_unit_mismatch` answers a `몇 일인가?` about `3일간` with
+`('일', '일')`, a caveat naming the asked unit against itself. No count is
+written here; the tuple is the list.
+
+Order inside the guard is free, unlike the `달러`-before-`달` constraint the
+alternation carries, because a negative lookahead asks only whether SOME
+alternative matches where it stands.
+`test_a_word_a_unit_spelling_only_begins_is_not_that_unit` carries one fixture
+per member and fails if a member is added without one.
+"""
+
+_UNIT_SHADOW_GUARD = (
+    r"(?!(?:"
+    + "|".join(re.escape(w) for w in _UNIT_SHADOW_WORDS)
+    + r")(?![가-힣A-Za-z]))"
+)
+"""`_UNIT_SHADOW_WORDS` as a lookahead standing where the spelling would begin.
+
+It consumes nothing, so every match `_VALUE_MEASUREMENT_RELAXED` makes still
+begins at a decimal digit and `_value_states_asked_unit` reads it unchanged.
+
+The inner `(?![가-힣A-Za-z])` is what makes the refusal conditional on the listed
+word standing COMPLETE, and it is the whole of the guard's safety in the other
+direction, since a listed word is also the prefix of longer strings that stand
+in values which do state the asked unit -- `30분기준` is `30분` plus `기준`.
+`_VALUE_MEASUREMENT_RELAXED` argues that and
+`test_the_shadow_bound_admits_a_digit_and_refuses_a_letter` re-derives why the
+class is not `_VALUE_MEASUREMENT`'s `[가-힣0-9A-Za-z]`.
+
+Named rather than inlined because `test_a_unit_suffix_would_be_inert_here` and
+`test_only_the_달러_before_달_constraint_decides_the_suppression_ordering` rebuild
+this pattern, and a copy of a pattern is a claim about the pattern that nothing
+checks -- which is what `_RELAXED_QUANTITY_NUMBER` was named for.
+"""
+
 _VALUE_MEASUREMENT_RELAXED = re.compile(
     _RELAXED_QUANTITY_NUMBER
+    + _UNIT_SHADOW_GUARD
     + r"(?P<unit>"
     + "|".join(
         re.escape(s) for s in sorted(_MEASUREMENT_UNIT_SPELLINGS, key=len, reverse=True)
@@ -1417,8 +1476,14 @@ _VALUE_MEASUREMENT_RELAXED = re.compile(
     # over the live tuple, the moving ends, the unchanged readings -- are
     # re-derived by `test_a_unit_suffix_would_be_inert_here`, not quoted here.
 )
-"""`_VALUE_MEASUREMENT` with a wider number and no trailing lookahead, for the
-suppression test.
+"""The suppression scan: `_VALUE_MEASUREMENT` read for whether a value CARRIES
+the asked unit rather than for what it STATES.
+
+How the two differ, and which way each difference runs, is set out in
+`_value_states_asked_unit` and deliberately not here -- set out, and not counted
+there either. A list in this line is what #453 falsified, by adding a part to
+this pattern; the description belongs next to the code that has to be right
+about it.
 
 The lookahead is right for deciding what a value STATES -- `2년차` is a second
 year of service, not two years -- but wrong for deciding whether the value
@@ -1587,33 +1652,76 @@ partitions the orderings off the live table and asserts both halves instead.
 This is the opposite of `_VALUE_MEASUREMENT`, where the lookahead does the work
 and the order is free.
 
-What no ordering buys, and nothing here does: a unit spelling that is merely a
-syllable of an unrelated Korean word is still read as that unit whenever a digit
-precedes it. `3분기` reads MINUTE, `1주년` reads WEEK, `80년대` reads YEAR,
-`3 secondary` reads SECOND. Each of those suppresses a caveat the value had
-earned, silently -- `몇 분인가?` answered `3분기 실적, 2시간 소요` named `시간`
-before this scan existed and says nothing now, and the same goes for
-`몇 주인가?` on `1주년 기념, 3개월 준비` and `몇 년인가?` on `80년대 후반, 3개월`.
-These are lost caveats, not near-misses, and this is the noisier half of the
-rule. The trade is deliberate: a lost caveat beats the wrong sentence the strict
-reading produced on `3시간30분`. It is still a trade.
+What no ordering buys is a spelling that is only the head of an unrelated word,
+and `_UNIT_SHADOW_WORDS` is the part of that this scan can settle. The rule is
+necessity only:
 
-#451 widened the number and thereby widened this class, and it widened every
-other silence this scan already makes; that is the cost of the change rather
-than a separate defect. What reaches further is not a list of values but the
-three notations named above -- a magnitude run, a sub-myriad magnitude, and a
-non-ASCII decimal digit -- so anything this scan already read wrongly it now
-reads wrongly in those too. Three and not two: the sub-myriad magnitude reaches
-values with ASCII digits and a run of length one, which neither of the other
-two describes, and `3백주 보유, 3개월 준비` asked in weeks is a lost caveat of
-this very class that only that notation explains -- three hundred shares beside
-a genuine three months. `２분기 실적, 2시간 소요` asked in minutes is the
-full-width twin of `3분기`, `１주년 기념, 3개월 준비` and `８０년대 후반, 3개월`
-are the twins of the two named above, and `3백주 보유, 3개월 준비`,
-`2천만주 보유, 3개월 준비` and `3천만 주주, 3개월` asked in weeks are the `100주`
-shares reading at a scale the old number could not spell. A holding really is
-written `2천만주`, so that one is the most reachable. The point-in-time silences
-travel the same way, since this scan does not consult `_TIME_POINT`:
+    this scan reads a spelling as a unit ONLY WHERE the text there does not
+    begin with a word in `_UNIT_SHADOW_WORDS` standing COMPLETE -- complete
+    meaning no Hangul or Latin letter continues it.
+
+`3분기 실적, 2시간 소요` asked in minutes is the witness: it named `시간` before
+this scan existed, said nothing while the guard was absent, and names `시간`
+again.
+
+Complete is the whole of the second half, and dropping it inverts the rule's
+sign, because a listed word is also the prefix of longer strings that a real
+value writes: `30분기준` is `30분` plus `기준`, `10년대출` is `10년` plus `대출`,
+`2주주기` is `2주` plus `주기`. Each has a listed word standing exactly where the
+spelling does and each does state the asked unit, so an unbounded refusal takes
+`30분기준 회의, 2시간 소요`, `10년대출 상환, 3개월 준비` and
+`2주주기로 반복, 3개월` and turns a CORRECT SILENCE into a wrong sentence -- not
+a lost caveat, since a value that states the asked unit had no caveat to lose.
+That is the failure the boundary shapes weighed for this scan were rejected for,
+arrived at from the other side, and it is the opposite direction from the one an
+unlisted word costs.
+
+The class is `[가-힣A-Za-z]` and not `_VALUE_MEASUREMENT`'s `[가-힣0-9A-Za-z]`,
+and the difference is load-bearing rather than an oversight: a digit after a
+listed word begins a new number, it does not continue a word.
+`80년대2000년대 비교, 3개월` asked in years names its `개월` under this class and
+is silent under the other, and the same goes for `3분기4분기 실적, 2시간 소요`.
+The two lookaheads are asking different questions at different positions, and
+`test_the_shadow_bound_admits_a_digit_and_refuses_a_letter` re-derives the cost
+of merging them.
+
+The list is open and takes both things `_DAY_DURATION_SUFFIXES` says an open
+class needs, and the DEFAULT is what decides the shape. A word left off leaves
+the reading this scan already made, which is a lost caveat and not a new
+sentence, so an unlisted member costs nothing new; a boundary placed on the UNIT
+instead has the opposite default, since josa is written flush against the noun
+and `3주의 준비, 2개월 소요` would then be caveated against a value that does
+state three weeks. The tripwire is
+`test_a_shadow_word_is_one_the_reporting_scan_already_refuses`: a member whose
+complete form the reporting scan still reads as a quantity puts the two scans on
+different readings of one value, and `korean_measure_unit_mismatch` then answers
+`('일', '일')`. No count is written here; the tuple is the list.
+
+#451 widened the number and thereby widened every silence this scan already
+makes; that is the cost of the change rather than a separate defect. What
+reaches further is not a list of values but the three notations named above --
+a magnitude run, a sub-myriad magnitude, and a non-ASCII decimal digit -- so
+anything this scan already read wrongly it now reads wrongly in those too. The
+guard above travels with them, because it is placed on the spelling and not on
+the number: `２분기 실적, 2시간 소요`, `１주년 기념, 3개월 준비` and
+`８０년대 후반, 3개월` are the full-width twins of the three Korean witnesses and
+are caveated for the same reason they are. What stays silent is recorded one
+notation at a time: `2천만주 보유, 3개월 준비` needs the run,
+`3백주 보유, 3개월 준비` needs
+the sub-myriad magnitude, and `１００주 보유, 3개월 준비` needs the digit class --
+each silent under the shipped number and firing under exactly the one narrowing
+that names it, which
+`test_caveats_lost_to_the_suppression_scan_are_recorded_not_fixed` re-derives
+rather than taking this sentence for. Those three are the `100주` shares
+reading, which #467 carries, each held silent by a different part of the number
+#451 widened rather than by how large it is. Notation and not quantity:
+`20000000주`, `300주` and `100주` write those same three amounts in plain ASCII
+digits and the pre-#451 number reads the `주` in every one of them, so what the
+diagonal separates is which notation reaches each row and not which row is
+bigger. A holding really is written `2천만주`, so that one is the most
+reachable. The
+point-in-time silences travel the same way, since this scan does not consult
+`_TIME_POINT`:
 `２０２１년 착수, 총 3주` asked in years and `１５일 마감, 3주` asked in days are
 silent now, where their ASCII spellings were already silent, and
 `test_a_point_in_time_silence_travels_into_the_new_notations` holds that half
@@ -1632,18 +1740,44 @@ of the paragraph above this one, reaching a notation it could not before.
 def _value_states_asked_unit(value: str, asked_unit: str) -> bool:
     """Whether the value carries a quantity in the unit the question asked for.
 
-    Read with `_VALUE_MEASUREMENT_RELAXED`, which reads more than
-    `_value_measure_units` does in four ways -- no trailing lookahead, a run of
-    magnitude words rather than one, a wider magnitude class, and any Unicode
-    decimal digit rather than ASCII -- so every unit that function reports is
-    caught here too and this subsumes the plain equality test it replaced.
+    Read with `_VALUE_MEASUREMENT_RELAXED`, which does not read what
+    `_value_measure_units` reads, and the differences run in both directions. No
+    count is written here, because a count is what goes short the next time one
+    is added -- #453 added one. What the differences are is a diff of the two
+    patterns and of the two callers, not a number in this line.
 
-    That it reads MORE and never less is argued from the character sets rather
-    than sampled; the argument is in `_VALUE_MEASUREMENT_RELAXED` and its premise
-    is asserted by `test_the_widened_number_can_only_silence`. It is worth
-    knowing which of the two the tests are doing, because `finditer` resumes
-    from a match's end and a longer match could in principle hide a later one:
-    the premise closes that, and the corpus sweep confirms it.
+    It reads MORE where the NUMBER is wider -- any Unicode decimal digit rather
+    than ASCII, a run of magnitude words rather than one, a wider magnitude class
+    -- and where the trailing lookahead is absent. That those widenings read more
+    and never less is argued from the character sets rather than sampled; the
+    argument is in `_VALUE_MEASUREMENT_RELAXED` and its premise is asserted by
+    `test_the_widened_number_can_only_silence`. It is worth knowing which of the
+    two the tests are doing, because `finditer` resumes from a match's end and a
+    longer match could in principle hide a later one: the premise closes that,
+    and the corpus sweep confirms it.
+
+    It reads LESS where `_UNIT_SHADOW_GUARD` refuses a spelling that a word in
+    `_UNIT_SHADOW_WORDS` stands complete in place of, which is #453.
+
+    And the comparison is with a FUNCTION and not only with that pattern, so it
+    differs where the function does: `_value_measure_units` drops a quantity
+    overlapping a `_TIME_POINT` span and this scan does not consult that guard,
+    so `_value_states_asked_unit("매월 15일 소요", "DAY")` is True where
+    `_value_measure_units("매월 15일 소요")` is empty. `_TIME_POINT` states that
+    difference from its own side.
+
+    Every unit `_value_measure_units` reports is still caught here, so this still
+    subsumes the plain equality test it replaced -- but the narrowing means that
+    no longer follows from the character sets, and it now rests on the criterion
+    a member of `_UNIT_SHADOW_WORDS` has to meet: the member's complete form is
+    one the REPORTING scan reads as no quantity at all, so where the guard
+    refuses there was no reported reading to subsume.
+    `test_a_shadow_word_is_one_the_reporting_scan_already_refuses` is where that
+    criterion is enforced and
+    `test_the_suppression_scan_sees_everything_the_value_scan_sees` is where the
+    subsumption itself is swept. A member breaking the criterion reddens both,
+    which is measured rather than assumed -- `일`, `주`, `일간` and `분간` each
+    do.
     """
     folded = nfc(value).casefold()
     return any(
@@ -1738,8 +1872,8 @@ def korean_measure_unit_mismatch(question: str, value: str) -> tuple[str, str] |
 
     Both halves are what a pattern reads, not what the value contains, and the
     sentence has to be put that way round: `_value_states_asked_unit` re-reads
-    the value for the asked unit with a wider quantity shape and no lookahead,
-    and anything that scan cannot see is not suppressed on. It reads `6개월` in
+    the value for the asked unit with a wider quantity shape and no TRAILING
+    lookahead, and anything that scan cannot see is not suppressed on. It reads `6개월` in
     `2년 6개월`, so a `몇 개월인가?` is suppressed, and since #451 it reads the
     won in `2천만원 (15,000달러)` and `2백만원 (15,000달러)` and the years in
     `３년 30주` as well.
@@ -1770,7 +1904,10 @@ def korean_measure_unit_mismatch(question: str, value: str) -> tuple[str, str] |
     than an oversight. What the value STATES comes from `_value_measure_units`,
     which refuses a unit run into the next character and reads ASCII digits and
     at most one of `[만억천조]`. Whether the value CARRIES the asked unit comes from
-    `_value_states_asked_unit`, which refuses none of those. With one pattern
+    `_value_states_asked_unit`, which differs from it in both directions and
+    sets those differences out. Add a part to either pattern and that is the
+    paragraph to correct: it reads the pattern and sits beside it, which is why
+    the description lives there and not here. With one pattern
     doing both, the same lookahead that correctly declines to read `2년차` as two
     years also hid the asked unit in `3시간30분` and `2년6개월`, and the caveat
     fired on a value whose leading quantity was exactly what the question asked
@@ -1778,11 +1915,22 @@ def korean_measure_unit_mismatch(question: str, value: str) -> tuple[str, str] |
     defect one layer down, where the notation the number was written in decided
     it instead.
 
-    The divergence runs one way and may only run that way. The relaxed pattern
-    feeds a single early return here, so reading more with it ends caveats and
-    cannot start one; `_value_measure_units` is what a reader is shown, so
-    reading more with THAT adds sentences and is a separate change with a sweep
-    of its own.
+    The divergence is permitted in one direction, and the rule is about READING
+    MORE rather than about every change to these patterns. Reading more with the
+    relaxed pattern ends caveats and cannot start one, since it feeds a single
+    early return here; reading more with `_value_measure_units` is what a reader
+    is shown, so it adds sentences and is a separate change with a sweep of its
+    own.
+
+    Reading LESS with the relaxed pattern is the case an unscoped version of that
+    sentence was read as covering, and it runs the other way: it STARTS caveats.
+    `3분기 실적, 2시간 소요` asked in minutes is silent without
+    `_UNIT_SHADOW_GUARD` and names its `시간` with it, which is the whole of #453.
+    So a narrowing here cannot be cleared by a witness -- a witness shows one
+    caveat gained and says nothing about the ones gained beside it -- and what
+    #453 rests on instead is the `CONTINUED` cell of
+    `test_the_shadow_guard_gains_no_caveat_on_a_word_it_only_prefixes` being
+    empty, which is a claim about a population rather than about a value.
 
     The first same-family unit is reported, not the first unit. `30% 완료, 3주`
     asked in months states a ratio first and a duration second, and the duration
@@ -1814,12 +1962,19 @@ def korean_measure_unit_mismatch(question: str, value: str) -> tuple[str, str] |
 
     One silence is worth separating from those, because it is the only one where
     the value did earn a caveat and this rule loses it by misreading rather than
-    by not reading. `_value_states_asked_unit` takes a unit spelling that is a
-    syllable of an unrelated word as the asked unit, so `3분기 실적, 2시간 소요`
-    asked in minutes suppresses as though it stated minutes and its real `시간`
-    caveat is dropped; likewise `1주년 기념, 3개월 준비` asked in weeks and
-    `80년대 후반, 3개월` asked in years. `_VALUE_MEASUREMENT_RELAXED` carries the
-    class and the reason it is accepted.
+    by not reading. `_value_states_asked_unit` refuses a spelling where a word in
+    `_UNIT_SHADOW_WORDS` stands complete in its place, so `3분기 실적, 2시간 소요`
+    asked in minutes names its `시간` again. Three residues are left, and none of
+    them is a remainder of the others. A spelling that means the other thing with
+    NOTHING appended has no longer word to list at all -- `3백주 보유, 3개월 준비`
+    is three hundred shares and is silent still, and #467 is where that half is
+    filed. A longer word the tuple does not hold is reachable and simply absent:
+    `3분야 검토, 2시간 소요` and `3 secondaries, 2 minutes`. And a listed word
+    continued flush by another letter is refused refusal on purpose --
+    `3분기실적, 2시간 소요` stays silent, which is the price of not caveating
+    `30분기준 회의, 2시간 소요` against a value that does state thirty minutes.
+    `_VALUE_MEASUREMENT_RELAXED` carries the rule and the two defaults it rests
+    on.
 
     Wrong sentences this is known to produce. These are the ones that have been
     found, not a bound on what exists, and each round of review has added to
@@ -1945,10 +2100,21 @@ def korean_measure_unit_mismatch(question: str, value: str) -> tuple[str, str] |
       past the spelling and the lookahead refuses it -- which does not reach the
       spaced form. The row stays, because `30 seconds` answering `몇 분인가?` is
       a real result and the question side can only ask SECOND through `몇 초`.
+      Since #453 the suppression scan refuses `secondary` too, so
+      `3 secondary reviews, 2 minutes` asked in `몇 초` names the minutes.
+      `3 secondaries, 2 minutes` does not: `secondary` is not a prefix of
+      `secondaries`, so the word is simply absent from the tuple. The reporting
+      reading of the spaced `2 second review` is untouched, which is what keeps
+      this bullet here.
     * `몇 년인가?` answered `100주` (one hundred shares), and `몇 시간인가?`
       answered `5분` (five people, honorific): Korean spellings that mean two
       things, read here as the unit. These two also need a question asked in a
       unit the relation does not really measure.
+      This is also the residue of the syllable class
+      `_VALUE_MEASUREMENT_RELAXED` records, in its silent form:
+      `3백주 보유, 3개월 준비` and `2천만주 보유, 3개월 준비` asked in weeks are
+      the same shares reading producing a lost caveat instead of a sentence.
+      #467 carries both forms.
     * The day itself, in a value where a free word rather than a bound suffix
       marks the duration. The day branch consults only what is written flush
       against `일`, so `매월 15일간` is read as a duration while `매월 15일 동안`

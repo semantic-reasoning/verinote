@@ -2104,15 +2104,33 @@ def test_the_year_month_branch_is_bounded_above_and_on_the_left():
 def _relaxed_pattern_from(number):
     """The shipped relaxed pattern with its number replaced, for the mutants.
 
-    Built from the live spellings table and the live sort, so a mutant differs
-    from the shipped pattern in its number and in nothing else.
+    Built from the live spellings table, the live sort and the live
+    `_UNIT_SHADOW_GUARD`, so a mutant differs from the shipped pattern in its
+    number and in nothing else. The guard is taken from the module rather than
+    rebuilt here for the same reason: a copy would let a mutant differ in two
+    places at once and the callers below would stop measuring their own subject.
+
+    Reading a part live is not enough on its own -- a part could be dropped from
+    this rebuild entirely and every caller would go on comparing a mutant against
+    a pattern that is no longer the shipped one, quietly.
+    `test_the_pattern_rebuilds_are_still_the_shipped_pattern` is what closes
+    that, and it lives outside these helpers on purpose: the check has to read
+    `_VALUE_MEASUREMENT_RELAXED`, and a caller can be holding that monkeypatched
+    to a mutant at the moment it calls -- the second `monkeypatch.setattr` in
+    `test_the_shadow_guard_gains_no_caveat_on_a_word_it_only_prefixes` evaluates
+    its argument while the first patch is live. One such caller is enough to
+    make an in-helper assert compare the rebuild against a mutant.
     """
     import re
 
-    from verinote.pipeline.query_intent import _MEASUREMENT_UNIT_SPELLINGS
+    from verinote.pipeline.query_intent import (
+        _MEASUREMENT_UNIT_SPELLINGS,
+        _UNIT_SHADOW_GUARD,
+    )
 
     return re.compile(
         number
+        + _UNIT_SHADOW_GUARD
         + r"(?P<unit>"
         + "|".join(
             re.escape(s) for s in sorted(_MEASUREMENT_UNIT_SPELLINGS, key=len, reverse=True)
@@ -2623,58 +2641,99 @@ def test_the_suppression_scan_reads_at_least_the_value_scans_magnitude_word():
     assert korean_measure_unit_mismatch("샘플사업의 가격은 몇 원인가?", "3만 원, 5달러") is None
 
 
+_LOST_CAVEAT_ROWS = [
+    ("샘플사업의 기간은 몇 주인가?", "2천만주 보유, 3개월 준비", "개월", "one magnitude"),
+    ("샘플사업의 기간은 몇 주인가?", "3백주 보유, 3개월 준비", "개월", "no 백"),
+    ("샘플사업의 기간은 몇 주인가?", "１００주 보유, 3개월 준비", "개월", "ASCII digits"),
+    ("샘플사업의 소요는 몇 분인가?", "3분기실적, 2시간 소요", "시간", "no right bound"),
+]
+"""The silences this scan still costs, each with the narrowing that would end it.
+
+The fourth field is what makes the list a diagonal rather than four examples,
+and it is a claim about the whole table: no two rows share a cause. Hoisted out
+of the `parametrize` so the test can read the other rows while checking its own
+column.
+"""
+
+
+def _lost_caveat_narrowings():
+    """The four narrowings `_LOST_CAVEAT_ROWS` is a diagonal against.
+
+    Three replace the number and one replaces the guard, each derived from the
+    live constant and each asserting that its own substitution changed
+    something, so a mutant that quietly stopped being a mutant is loud. Built
+    through `_relaxed_pattern_from` and `_relaxed_pattern_with_guard`, so every
+    part except the one under test is the shipped one.
+    """
+    from verinote.pipeline.query_intent import _RELAXED_QUANTITY_NUMBER
+
+    numbers = {
+        "one magnitude": _RELAXED_QUANTITY_NUMBER.replace(r")*", r")?"),
+        "no 백": _RELAXED_QUANTITY_NUMBER.replace("백", ""),
+        "ASCII digits": _RELAXED_QUANTITY_NUMBER.replace(
+            r"\d[\d,.]*", r"[0-9][0-9,.]*"
+        ),
+    }
+    for name, number in numbers.items():
+        assert number != _RELAXED_QUANTITY_NUMBER, f"{name} did not apply"
+    built = {name: _relaxed_pattern_from(n) for name, n in numbers.items()}
+    # `_unbounded_shadow_guard` asserts its own substitution applied.
+    built["no right bound"] = _relaxed_pattern_with_guard(_unbounded_shadow_guard())
+    return built
+
+
 @pytest.mark.parametrize(
-    ("question", "value", "unit_the_caveat_used_to_name"),
-    [
-        ("샘플사업의 소요는 몇 분인가?", "3분기 실적, 2시간 소요", "시간"),
-        ("샘플사업의 기간은 몇 주인가?", "1주년 기념, 3개월 준비", "개월"),
-        ("샘플사업의 기간은 몇 년인가?", "80년대 후반, 3개월", "개월"),
-        ("샘플사업의 소요는 몇 초인가?", "3 secondary reviews, 2 minutes", "minutes"),
-        ("샘플사업의 소요는 몇 분인가?", "２분기 실적, 2시간 소요", "시간"),
-        ("샘플사업의 기간은 몇 주인가?", "１주년 기념, 3개월 준비", "개월"),
-        ("샘플사업의 기간은 몇 년인가?", "８０년대 후반, 3개월", "개월"),
-        ("샘플사업의 기간은 몇 주인가?", "2천만주 보유, 3개월 준비", "개월"),
-        ("샘플사업의 기간은 몇 주인가?", "3천만 주주, 3개월", "개월"),
-        ("샘플사업의 기간은 몇 주인가?", "3백주 보유, 3개월 준비", "개월"),
-    ],
+    ("question", "value", "unit_the_caveat_used_to_name", "narrowing_that_fires_it"),
+    _LOST_CAVEAT_ROWS,
 )
 def test_caveats_lost_to_the_suppression_scan_are_recorded_not_fixed(
-    question, value, unit_the_caveat_used_to_name
+    question, value, unit_the_caveat_used_to_name, narrowing_that_fires_it, monkeypatch
 ):
-    """What the generous suppression reading costs, priced rather than implied.
+    """What the generous suppression reading still costs, priced rather than implied.
 
-    A unit spelling that is only a syllable of an unrelated word still counts as
-    a quantity in that unit: `3분기` reads MINUTE, `1주년` WEEK, `80년대` YEAR,
-    `3 secondary` SECOND. Each value here states a real same-family mismatch
-    somewhere else and each is silent because of it. The last parameter records
-    the caveat that used to be shown.
+    Two causes, and the second is not the first one narrowed.
+
+    The first three rows are a spelling that means the other thing with NOTHING
+    appended. `주` is the counter for shares, so `3백주` is three hundred shares
+    beside a genuine three months, and there is no longer word for
+    `_UNIT_SHADOW_WORDS` to hold; #467 is where that half is filed.
+
+    The fourth is what `_UNIT_SHADOW_GUARD`'s right bound gives up.
+    `3분기실적` continues its `분기` flush with another Hangul letter, so the
+    guard declines to refuse the spelling there, and that is the same decision
+    that keeps `30분기준 회의, 2시간 소요` -- thirty minutes taken as a basis --
+    from being caveated against a value that really does state thirty minutes.
+
+    Each value here states a real same-family mismatch somewhere else and each is
+    silent because of it. The last parameter records the caveat that used to be
+    shown, and the second assertion re-derives it from `_value_measure_units`
+    rather than taking this docstring for it.
 
     Asserting the silence is deliberate, the same instrument as the wrong-
     sentence record: narrow the suppression scan later and these fail, forcing
-    the paragraph in `_VALUE_MEASUREMENT_RELAXED` to be corrected with the code.
-    The trade is accepted because the alternative was a wrong sentence on
-    `3시간30분`, not because the cost is small.
+    the paragraphs in `_VALUE_MEASUREMENT_RELAXED` to be corrected with the code.
 
-    The last six arrived with #451, which widened the number into three
-    notations: a magnitude RUN, a magnitude CLASS reaching below the myriad, and
-    a non-ASCII decimal digit. Three are the full-width twins of the three
-    Korean rows above them. The rest are the other lost-caveat shape reaching a
-    scale the old number could not spell: `2천만주` is twenty million shares,
-    the `100주` `test_known_false_unit_statements_are_recorded_not_fixed`
-    records, and `3천만 주주` is shareholders, where the `주` is a syllable of a
-    longer word as in the first three.
+    The rows are also a diagonal, one narrowing each, which is what keeps the
+    #451 notation count honest and the bound's cost from being implied: shorten
+    the magnitude run to a single word and `2천만주 보유, 3개월 준비` alone fires;
+    drop `백` from `_SINO_KOREAN_MAGNITUDES` and `3백주 보유, 3개월 준비` alone
+    fires; narrow the number's `\\d` back to `[0-9]` and
+    `１００주 보유, 3개월 준비` alone fires; drop the `(?![가-힣A-Za-z])` from
+    `_UNIT_SHADOW_GUARD` and `3분기실적, 2시간 소요` alone fires. Those four
+    sentences are swept below rather than asserted here, which is the whole
+    reason they can be written down: a sentence saying a test re-derives
+    something is itself a claim about the test, and only the sweep makes it one.
 
-    `3백주 보유, 3개월 준비` is the row that keeps the count of notations honest,
-    and it is here for that and not for variety. Three hundred shares beside a
-    genuine three months, in ASCII digits, with a magnitude run of length one --
-    so neither the run nor the digit class explains it, and a docstring saying
-    "two notations" would price every value except the ones the third reaches.
-    Drop `백` from `_SINO_KOREAN_MAGNITUDES` and this row alone fires.
+    A docstring saying "two notations" would price every value except the ones
+    the third reaches, and `３백주 보유, 3개월 준비` was declined as the digit row
+    because it fires under two of these -- which is the result that would make
+    the sweep below dirty, since a row with two causes fails its own row half.
 
-    Read the list as an illustration of a product and not as a set: every
-    reading this scan already makes now reaches into all three notations, so a
-    count here would be a count of an open class.
+    Read the list as an illustration and not as a set: every reading this scan
+    still makes reaches into all three notations, so a count here would be a
+    count of an open class.
     """
+    import verinote.pipeline.query_intent as query_intent
     from verinote.pipeline.query_intent import (
         _value_measure_units,
         korean_measure_unit_mismatch,
@@ -2685,6 +2744,503 @@ def test_caveats_lost_to_the_suppression_scan_are_recorded_not_fixed(
     assert unit_the_caveat_used_to_name in {
         spelling for _, spelling in _value_measure_units(value)
     }
+
+    # The diagonal, re-derived. Each parametrization takes its own ROW of the
+    # 4x4 -- this value fires under exactly one narrowing, so its cause is
+    # single -- and its own COLUMN -- under that narrowing no other row fires,
+    # which is the "alone" in each sentence above. Four parametrizations cover
+    # the matrix and neither half implies the other.
+    narrowings = _lost_caveat_narrowings()
+    assert narrowing_that_fires_it in narrowings
+
+    def fires(pattern, asked, text):
+        monkeypatch.setattr(query_intent, "_VALUE_MEASUREMENT_RELAXED", pattern)
+        return korean_measure_unit_mismatch(asked, text) is not None
+
+    assert [
+        name for name, pattern in narrowings.items() if fires(pattern, question, value)
+    ] == [narrowing_that_fires_it]
+    assert [
+        other
+        for asked, other, _, _ in _LOST_CAVEAT_ROWS
+        if other != value and fires(narrowings[narrowing_that_fires_it], asked, other)
+    ] == []
+
+
+_SHADOW_WORD_FIXTURES = {
+    "분기": ("샘플사업의 소요는 몇 분인가?", "3분기 실적, 2시간 소요", ("분", "시간")),
+    "주년": ("샘플사업의 기간은 몇 주인가?", "1주년 기념, 3개월 준비", ("주", "개월")),
+    "년대": ("샘플사업의 기간은 몇 년인가?", "80년대 후반, 3개월", ("년", "개월")),
+    "주주": ("샘플사업의 기간은 몇 주인가?", "3천만 주주, 3개월", ("주", "개월")),
+    "secondary": (
+        "샘플사업의 소요는 몇 초인가?",
+        "3 secondary reviews, 2 minutes",
+        ("초", "minutes"),
+    ),
+}
+"""One caveat per member of `_UNIT_SHADOW_WORDS`, with the pair it must name.
+
+A literal dict plus a set-equality assertion, not a parametrize over the live
+tuple: parametrizing would delete the case along with the member and the test
+would pass vacuously. Same shape as `_MONTH_WORD_FIXTURES`, for the same reason.
+
+The last two carry whitespace between the number and the spelling, which is what
+the number's trailing `\\s*` has to cross before the guard is consulted.
+"""
+
+_SHADOW_WORD_NOTATION_TWINS = [
+    ("샘플사업의 소요는 몇 분인가?", "２분기 실적, 2시간 소요", ("분", "시간")),
+    ("샘플사업의 기간은 몇 주인가?", "１주년 기념, 3개월 준비", ("주", "개월")),
+    ("샘플사업의 기간은 몇 년인가?", "８０년대 후반, 3개월", ("년", "개월")),
+]
+"""The full-width twins of the first three fixtures.
+
+`_VALUE_MEASUREMENT_RELAXED` claims the guard travels into the notations #451
+widened the number into, because the guard is placed on the spelling and not on
+the number. These are that claim, re-derived. Without them it would be a
+sentence about the guard's reach that nothing measures.
+"""
+
+
+def test_a_word_a_unit_spelling_only_begins_is_not_that_unit():
+    """#453: a spelling standing at the head of a listed word is not that unit.
+
+    Each of these named its neighbour before the suppression scan existed, went
+    silent once that scan read the spelling standing at the head of a longer
+    word, and names it again. The pairs are exact rather than "not None", so a
+    row cannot pass by the caveat naming some other unit.
+
+    Two failing modes, both run, and the loop comes first so that they stay
+    distinct. Delete a member from `_UNIT_SHADOW_WORDS` and exactly the rows that
+    member reads go silent -- its own, and for the first three the full-width
+    twin of it -- while no OTHER member's row moves; the diagonal was measured,
+    not assumed, so no member is being held up by another. Add a member and the
+    set equality is what fires, naming the fixture nobody wrote.
+    """
+    from verinote.pipeline.query_intent import (
+        _UNIT_SHADOW_WORDS,
+        korean_measure_unit_mismatch,
+    )
+
+    for member, (question, value, expected) in _SHADOW_WORD_FIXTURES.items():
+        assert korean_measure_unit_mismatch(question, value) == expected, member
+    for question, value, expected in _SHADOW_WORD_NOTATION_TWINS:
+        assert korean_measure_unit_mismatch(question, value) == expected, value
+    assert set(_SHADOW_WORD_FIXTURES) == set(_UNIT_SHADOW_WORDS)
+
+
+def test_a_shadow_word_is_one_the_reporting_scan_already_refuses():
+    """The tripwire on `_UNIT_SHADOW_WORDS`, which is an open lexical class.
+
+    The criterion a member has to meet is not a judgement about Korean this test
+    could make. It is that the REPORTING scan already reads the member's complete
+    form as no quantity at all, so listing it puts the two scans on the same
+    reading of that value rather than on different ones.
+
+    The disaster it refuses: `분간` is a real suffix form, `_value_measure_units`
+    reads `3분간` as MINUTE, and with the `일간` shape of it listed
+    `korean_measure_unit_mismatch("...몇 일인가?", "3일간")` returns `('일', '일')`
+    -- a caveat telling the reader the value states the unit the question asked
+    in. Measured, not reasoned: adding any of `일간`, `분간`, `년간`, `주간` or
+    `초간` reddens the loop below.
+
+    What follows the loop is the premise `_VALUE_MEASUREMENT_RELAXED`'s
+    backtracking argument rests on. The number's trailing `\\s*` and magnitude
+    run are greedy and backtrackable, so a match could in principle be retried
+    one character earlier and dodge a guard placed after the number -- it cannot,
+    because no spelling begins with any character the number itself consumes, so
+    there is no earlier start at which the unit group still matches. That is all
+    four classes and not three: `[\\d,.\\s]` plus `_SINO_KOREAN_MAGNITUDES`, and
+    the separators belong there because `1,000년` and `1.5주년` retry inside the
+    digit run rather than before it. Add a spelling opening with any of them and
+    this fails here rather than silently. `180년대`, `1980년대`,
+    `1.5주년`, `2백주주`, `3  분기` and `3\\xa0secondary` are the shapes that
+    argument is about, and they read no unit.
+    """
+    from verinote.pipeline.query_intent import (
+        _MEASUREMENT_UNIT_SPELLINGS,
+        _SINO_KOREAN_MAGNITUDES,
+        _UNIT_SHADOW_WORDS,
+        _VALUE_MEASUREMENT_RELAXED,
+        _value_measure_units,
+    )
+
+    assert _UNIT_SHADOW_WORDS, "an empty tuple would make the loop vacuous"
+    for member in _UNIT_SHADOW_WORDS:
+        assert _value_measure_units(f"3{member}") == (), member
+
+    assert [
+        s
+        for s in _MEASUREMENT_UNIT_SPELLINGS
+        if s[0].isdigit()
+        or s[0].isspace()
+        or s[0] in ",."
+        or s[0] in _SINO_KOREAN_MAGNITUDES
+    ] == []
+    for value in ("180년대", "1980년대", "1.5주년", "2백주주", "3  분기", "3\xa0secondary"):
+        assert [m.group("unit") for m in _VALUE_MEASUREMENT_RELAXED.finditer(value)] == []
+
+
+def _relaxed_pattern_with_guard(guard):
+    """The shipped relaxed pattern with its GUARD replaced, for the mutants.
+
+    The twin of `_relaxed_pattern_from`, which replaces the number instead. Each
+    holds every part it is not replacing live, and
+    `test_the_pattern_rebuilds_are_still_the_shipped_pattern` checks both against
+    the shipped pattern with the replaced part put back.
+    """
+    import re
+
+    from verinote.pipeline.query_intent import (
+        _MEASUREMENT_UNIT_SPELLINGS,
+        _RELAXED_QUANTITY_NUMBER,
+    )
+
+    return re.compile(
+        _RELAXED_QUANTITY_NUMBER
+        + guard
+        + r"(?P<unit>"
+        + "|".join(
+            re.escape(s) for s in sorted(_MEASUREMENT_UNIT_SPELLINGS, key=len, reverse=True)
+        )
+        + r")"
+    )
+
+
+def test_the_pattern_rebuilds_are_still_the_shipped_pattern():
+    """Both mutant factories reproduce `_VALUE_MEASUREMENT_RELAXED` exactly.
+
+    A mutant is only evidence about the part it replaces if everything else in it
+    is the shipped thing. Both helpers read the other parts live, which stops
+    them DRIFTING, but reading live does not stop a part being dropped outright:
+    delete `_UNIT_SHADOW_GUARD` from either factory and every mutant built from
+    it differs from shipped in two places, while nothing else compares a rebuild
+    to the original. Measured, on this suite: with the guard deleted from
+    `_relaxed_pattern_from` and this test absent, everything else passes.
+
+    Put the replaced part back and the rebuild must be the shipped pattern,
+    character for character. Asserted on `.pattern` and `.flags` rather than on
+    readings, and the measurement above is the whole argument for that: no corpus
+    any caller already runs discriminates the two, or deleting the guard would
+    have reddened something.
+
+    The two are not interchangeable, and the direction matters. Readings-equal
+    does NOT imply characters-equal: `reversed-table` and `reverse-alphabetical`
+    both keep `달러` before `달` and read identically to the shipped ordering, on
+    the probes in `test_only_the_달러_before_달_constraint_decides_the_suppression_ordering`
+    and on a wider sweep, while their pattern text differs. Characters-equal plus
+    flags-equal is the same compiled object, so it implies every reading and
+    cannot go blind the way a corpus check can -- which is what a rebuild site
+    needs, since what it must guarantee is what the rebuild IS and not what some
+    corpus happens to see.
+
+    This lives outside the helpers rather than inside them because it has to read
+    `_VALUE_MEASUREMENT_RELAXED`, and a caller can be holding that monkeypatched
+    to a mutant at the moment it calls -- the second `monkeypatch.setattr` in
+    `test_the_shadow_guard_gains_no_caveat_on_a_word_it_only_prefixes` evaluates
+    its argument while the first patch is live, so an in-helper assert compares
+    the rebuild against a mutant and reddens a passing test. One such caller is
+    enough, and that one was found by instrumenting the helpers rather than by
+    reading them.
+    """
+    from verinote.pipeline.query_intent import (
+        _RELAXED_QUANTITY_NUMBER,
+        _UNIT_SHADOW_GUARD,
+        _VALUE_MEASUREMENT_RELAXED,
+    )
+
+    shipped = (_VALUE_MEASUREMENT_RELAXED.pattern, _VALUE_MEASUREMENT_RELAXED.flags)
+    for rebuilt in (
+        _relaxed_pattern_from(_RELAXED_QUANTITY_NUMBER),
+        _relaxed_pattern_with_guard(_UNIT_SHADOW_GUARD),
+    ):
+        assert (rebuilt.pattern, rebuilt.flags) == shipped
+
+
+def _unbounded_shadow_guard():
+    """`_UNIT_SHADOW_GUARD` with its right bound removed, derived from the live one.
+
+    This is the mechanism #453 rejected: it refuses a listed word wherever the
+    word merely BEGINS, which is also wherever a longer STRING beginning with it
+    does. Derived rather than retyped so that changing the bound in the module
+    changes the mutant with it instead of leaving a stale copy to compare against.
+    """
+    from verinote.pipeline.query_intent import _UNIT_SHADOW_GUARD
+
+    unbounded = _UNIT_SHADOW_GUARD.replace(r"(?![가-힣A-Za-z])", "")
+    assert unbounded != _UNIT_SHADOW_GUARD, "the mutation did not apply"
+    return unbounded
+
+
+def test_the_shadow_guard_does_not_narrow_a_quantity_it_only_prefixes(monkeypatch):
+    """The two classes the guard must leave suppressed, and one control.
+
+    The first group is what a right-hand boundary on the UNIT would have cost,
+    and the class that decides it is josa: Korean orthography writes a particle
+    flush against the noun, so `3주의 준비, 2개월 소요` states three weeks with a
+    particle attached and every boundary shape weighed for this scan caveats it
+    against a value that does state the asked unit. Two rows are not that class
+    and are here for their own reasons. `3일간의 일정, 2주 소요` survives one of
+    the three shapes -- a `_UNIT_SUFFIX` member stands between the unit and the
+    Hangul, so it is not the deciding case the file once took it for -- and
+    `3시간30분` survives all three, being the value the trailing lookahead was
+    dropped for in the first place rather than a boundary cost.
+
+    That group is a regression guard against the rejected alternatives coming
+    back rather than a pin on the shipped mechanism, and it does not redden under
+    any single mutation of the guard that was run for #453 -- not dropping the
+    bound, not deleting the guard, not harmonising the bound, not adding or
+    removing a member. It is not inert, though, and the combination that moves it
+    is worth recording, because it shows the two halves of the guard hold it up
+    together: an UNBOUNDED guard with `일` listed caveats `3일은 걸린다, 2주 소요`,
+    `3일째 진행, 2주 소요` and `3일간의 일정, 2주 소요`. The bound rules out one
+    half of that and
+    `test_a_shadow_word_is_one_the_reporting_scan_already_refuses` rules out the
+    other.
+
+    The second group is what the guard's right bound pins, and it does have a
+    live failing mode. Each has a listed word standing exactly where the spelling
+    does, continued flush by another Hangul letter, and each really does state
+    the asked unit -- thirty minutes taken as a basis, a ten-year loan, a
+    two-week cycle. Drop `(?![가-힣A-Za-z])` from `_UNIT_SHADOW_GUARD` and every
+    one of them is caveated. That is asserted below rather than described, so the
+    group cannot go inert without saying so.
+
+    `30분간격, 2시간 소요` is the control, and it is here because a corpus in
+    which even it regressed would be measuring something other than the guard:
+    `간격` does not begin with `기`, so no build of this guard can bite it. It
+    stays `None` on both sides.
+    """
+    import verinote.pipeline.query_intent as query_intent
+    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+
+    boundary_alternative_cost = [
+        ("샘플사업의 기간은 몇 주인가?", "3주의 준비, 2개월 소요"),
+        ("샘플사업의 기간은 몇 일인가?", "3일은 걸린다, 2주 소요"),
+        ("샘플사업의 기간은 몇 개월인가?", "3개월로 연장, 2주 소요"),
+        ("샘플사업의 소요는 몇 시간인가?", "3시간동안 진행, 2주 소요"),
+        ("샘플사업의 기간은 몇 일인가?", "3일째 진행, 2주 소요"),
+        ("샘플사업의 기간은 몇 년인가?", "3년이상 근무, 2개월"),
+        ("샘플사업의 기간은 몇 일인가?", "3일간의 일정, 2주 소요"),
+        ("샘플작업의 소요시간은 몇 시간인가?", "3시간30분"),
+    ]
+    continued_flush = [
+        ("샘플사업의 소요는 몇 분인가?", "30분기준 회의, 2시간 소요"),
+        ("샘플사업의 소요는 몇 분인가?", "30분기록, 2시간 소요"),
+        ("샘플사업의 기간은 몇 년인가?", "10년대출 상환, 3개월 준비"),
+        ("샘플사업의 기간은 몇 년인가?", "3년대비 증가, 2개월"),
+        ("샘플사업의 기간은 몇 주인가?", "2주주기로 반복, 3개월"),
+        ("샘플사업의 기간은 몇 주인가?", "3주주말 근무, 2개월"),
+    ]
+    control = ("샘플사업의 소요는 몇 분인가?", "30분간격, 2시간 소요")
+
+    for question, value in boundary_alternative_cost + continued_flush + [control]:
+        assert korean_measure_unit_mismatch(question, value) is None, value
+
+    # The bound is load-bearing, re-derived: without it the second group is a
+    # wrong sentence apiece and the control is still silent.
+    monkeypatch.setattr(
+        query_intent,
+        "_VALUE_MEASUREMENT_RELAXED",
+        _relaxed_pattern_with_guard(_unbounded_shadow_guard()),
+    )
+    for question, value in continued_flush:
+        assert korean_measure_unit_mismatch(question, value) is not None, value
+    assert korean_measure_unit_mismatch(*control) is None
+
+
+def _shadow_grid():
+    """Values whose tail both continues a unit spelling and carries a neighbour.
+
+    Four kinds, and the point of the partition is that the guard is required to
+    behave differently in each. A tail that only continues a spelling changes no
+    ANSWER, because there is no same-family unit left for a caveat to name; a
+    tail that only carries a neighbour never reaches the guard. A grid built from
+    the product of those two tail sets measures nothing, which is how the first
+    sweep written for #453 came back with ten rows that were all one English
+    shape. Every row here is both at once.
+
+    `개월` is the neighbour throughout, and the assertion beside it re-derives
+    the property that matters: it is never the unit the row asks in, so every row
+    has a caveat available to gain or lose. That it is in the same family as each
+    of them is not asserted here -- it is what the `SHADOW-SPACED` gain measures,
+    and a neighbour outside the family would show up as that cell going empty.
+
+    The continuing letters are not all Korean words, and they do not need to be.
+    What the bound keys on is whether a Hangul or Latin letter stands after the
+    listed word, so the letter is the property under test and the lexicon is not.
+    The real words are witnesses in
+    `test_the_shadow_guard_does_not_narrow_a_quantity_it_only_prefixes`.
+    """
+    import re
+
+    from verinote.pipeline.query_intent import (
+        _MEASUREMENT_UNIT_SPELLINGS,
+        _UNIT_SHADOW_WORDS,
+    )
+
+    neighbour = "개월"
+    rows = []
+    for member in _UNIT_SHADOW_WORDS:
+        latin = member.isascii()
+        for spelling in _MEASUREMENT_UNIT_SPELLINGS:
+            if spelling == member or not member.startswith(spelling):
+                continue
+            unit = _MEASUREMENT_UNIT_SPELLINGS[spelling]
+            assert _MEASUREMENT_UNIT_SPELLINGS[neighbour] != unit, spelling
+            # The counter has to be Korean: `_question_measure_unit` returns
+            # None for `몇 second인가?`, so a Latin one would make every row of
+            # that member silent under every build and the cell inert.
+            counter = next(
+                k
+                for k, v in _MEASUREMENT_UNIT_SPELLINGS.items()
+                if v == unit and re.fullmatch(r"[가-힣]+", k)
+            )
+            head = member[len(spelling) :]
+            noun = "work" if latin else "실적"
+            plains = ("", f" {noun}") + (
+                ("s ready",) if latin else ("의 준비", "간 진행", "째 진행")
+            )
+            continuations = ("ies", "x") if latin else ("준", "록", "출", "비", "말")
+            for number in ("3", "80", "2천만", "１００"):
+                stem = f"{number} {spelling}" if latin else f"{number}{spelling}"
+                tails = (
+                    [("PLAIN", plain) for plain in plains]
+                    + [("SHADOW-SPACED", f"{head} {noun}")]
+                    + [("SHADOW-FLUSH", f"{head}{noun}")]
+                    + [("CONTINUED", f"{head}{c} {noun}") for c in continuations]
+                )
+                for kind, tail in tails:
+                    rows.append((kind, counter, f"{stem}{tail}, 2{neighbour} 소요"))
+    return rows
+
+
+def test_the_shadow_guard_gains_no_caveat_on_a_word_it_only_prefixes(monkeypatch):
+    """The load-bearing cell is `CONTINUED`, and it must be empty.
+
+    A caveat GAINED is not by itself evidence of anything here: this guard can
+    only remove readings from `_value_states_asked_unit`, whose one effect is an
+    early `None`, so it can only ever add caveats and no corpus can show it
+    losing one. "Nothing was lost" is therefore a theorem about the instrument
+    and is deliberately not asserted. What decides whether the change is right is
+    WHICH cell gained -- a gain in `CONTINUED` is a caveat fired against a value
+    that does state the asked unit, which is a wrong sentence in front of a
+    reader.
+
+    Three builds, so that every cell is a comparison and not a reading: the
+    pattern as shipped, no guard at all (what the scan did before #453), and the
+    unbounded guard #453 rejected. The shipped side is swept off the module
+    attribute before anything is patched, and not off a rebuild, so detaching the
+    guard from `_VALUE_MEASUREMENT_RELAXED` reddens this too rather than leaving
+    it measuring a constant nothing uses.
+
+    Failing modes, both run: replacing the shipped guard with the unbounded one
+    fills `CONTINUED` -- which is also this test's non-vacuity check, since a
+    cell that could not have come back dirty is not a check -- and removing the
+    guard from the shipped pattern empties `SHADOW-SPACED`. That gain is
+    re-derived and compared against zero rather than written as a number, because
+    a number in a test rots as quietly as one in a docstring.
+    """
+    import verinote.pipeline.query_intent as query_intent
+    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+
+    grid = _shadow_grid()
+    assert grid, "the grid must not be empty"
+
+    def sweep():
+        return [
+            korean_measure_unit_mismatch(f"샘플사업의 기간은 몇 {counter}인가?", value)
+            for _, counter, value in grid
+        ]
+
+    shipped = sweep()
+    monkeypatch.setattr(
+        query_intent, "_VALUE_MEASUREMENT_RELAXED", _relaxed_pattern_with_guard("")
+    )
+    before = sweep()
+    monkeypatch.setattr(
+        query_intent,
+        "_VALUE_MEASUREMENT_RELAXED",
+        _relaxed_pattern_with_guard(_unbounded_shadow_guard()),
+    )
+    unbounded = sweep()
+
+    def changed(kind, after):
+        return [
+            (value, b, a)
+            for (row_kind, _, value), b, a in zip(grid, before, after)
+            if row_kind == kind and b != a
+        ]
+
+    # The assertion the change stands or falls on.
+    assert changed("CONTINUED", shipped) == []
+    # ... and the proof this cell can come back dirty at all.
+    assert changed("CONTINUED", unbounded) != []
+
+    # A tail that reaches no listed word is untouched by any build.
+    assert changed("PLAIN", shipped) == []
+    assert changed("PLAIN", unbounded) == []
+
+    # What the change buys, re-derived rather than quoted.
+    spaced = changed("SHADOW-SPACED", shipped)
+    assert len(spaced) > 0
+    assert all(b is None and a is not None for _, b, a in spaced)
+
+    # What the bound gives up, recorded here as it is in the record table: a
+    # listed word continued flush stays read, so its caveat stays lost.
+    assert changed("SHADOW-FLUSH", shipped) == []
+    assert changed("SHADOW-FLUSH", unbounded) != []
+
+
+def test_the_shadow_bound_admits_a_digit_and_refuses_a_letter(monkeypatch):
+    """Why `_UNIT_SHADOW_GUARD`'s bound is not `_VALUE_MEASUREMENT`'s lookahead.
+
+    The two character classes differ by `0-9` and harmonising them is the obvious
+    later tidy-up. It is wrong here, and the reason is positional rather than
+    stylistic: `_VALUE_MEASUREMENT`'s lookahead stands AFTER a unit it has read,
+    where a following digit means the unit ran into another number and the
+    reading is doubtful. This bound stands after a word the guard is deciding
+    whether to REFUSE, where a following digit means that word ended and a new
+    number began -- so the word did stand complete and the refusal is right.
+
+    The three values below each state two decades, quarters or anniversaries and
+    no duration in the asked unit, so the caveat naming their `개월` or `시간` is
+    the true answer. Admitting `0-9` into the bound loses all three, which is
+    asserted rather than described.
+
+    The result that would have made this check dirty is the two classes reading
+    these values alike: the harmonised build would then still caveat them and the
+    second loop would fail, which is what says the difference is real rather than
+    a distinction on paper. `3분기실적, 2시간 소요` is the other direction on the
+    same bound -- a Hangul letter after the listed word, where both classes agree
+    the guard must not bite -- so it is silent on both sides and is the row that
+    would catch a mutation flipping the bound's sense rather than its class.
+    """
+    import verinote.pipeline.query_intent as query_intent
+    from verinote.pipeline.query_intent import (
+        _UNIT_SHADOW_GUARD,
+        korean_measure_unit_mismatch,
+    )
+
+    digit_continued = [
+        ("샘플사업의 기간은 몇 년인가?", "80년대2000년대 비교, 3개월", ("년", "개월")),
+        ("샘플사업의 소요는 몇 분인가?", "3분기4분기 실적, 2시간 소요", ("분", "시간")),
+        ("샘플사업의 기간은 몇 주인가?", "1주년2주년 기념, 3개월", ("주", "개월")),
+    ]
+    letter_continued = ("샘플사업의 소요는 몇 분인가?", "3분기실적, 2시간 소요")
+
+    for question, value, expected in digit_continued:
+        assert korean_measure_unit_mismatch(question, value) == expected, value
+    assert korean_measure_unit_mismatch(*letter_continued) is None
+
+    harmonised = _UNIT_SHADOW_GUARD.replace("[가-힣A-Za-z]", "[가-힣0-9A-Za-z]")
+    assert harmonised != _UNIT_SHADOW_GUARD, "the mutation did not apply"
+    monkeypatch.setattr(
+        query_intent, "_VALUE_MEASUREMENT_RELAXED", _relaxed_pattern_with_guard(harmonised)
+    )
+    for question, value, _ in digit_continued:
+        assert korean_measure_unit_mismatch(question, value) is None, value
+    assert korean_measure_unit_mismatch(*letter_continued) is None
 
 
 def test_a_point_in_time_silence_travels_into_the_new_notations():
@@ -2736,12 +3292,23 @@ def test_only_the_달러_before_달_constraint_decides_the_suppression_ordering(
     exactly as the shipped pattern does, and every one that does not reads
     differently. The two non-empty assertions keep it from passing vacuously if
     some future table put every candidate on one side.
+
+    The candidates are rebuilt from the shipped pattern's named parts rather than
+    copied, and each rebuild below drops one of them and asserts the probes
+    notice. That is not tidiness: this test carried a COPY of the number until
+    #451 changed the number under it and nothing here noticed, and when #453
+    added `_UNIT_SHADOW_GUARD` not one of the ten probes could tell a guarded
+    rebuild from a guard-free one, so the comparison had quietly stopped being
+    about the shipped pattern again. The guard has two parts that can go blind
+    separately -- the word list and its right bound -- and `30분기준` is in the
+    probe set because it is the only one of these that sees the bound.
     """
     import re
 
     from verinote.pipeline.query_intent import (
         _MEASUREMENT_UNIT_SPELLINGS,
         _RELAXED_QUANTITY_NUMBER,
+        _UNIT_SHADOW_GUARD,
         _VALUE_MEASUREMENT_RELAXED,
     )
 
@@ -2759,9 +3326,12 @@ def test_only_the_달러_before_달_constraint_decides_the_suppression_ordering(
     # number this test used to carry could not be told apart from the live one
     # and substituting the constant would stop the copy drifting while leaving
     # the probes blind at the level above.
+    # `3분기 실적` through `30분기준` are the range the guard gained in #453, and
+    # the last of the three is the only one of them that tells the shipped
+    # bounded guard from the unbounded one it was chosen over.
     probes = [
         "3달러", "2주일", "3만 원", "1000달러", "3달", "2주", "30 seconds", "5달러 및 3달",
-        "2천만달러 및 3달", "３달러",
+        "2천만달러 및 3달", "３달러", "3분기 실적", "3천만 주주", "30분기준",
     ]
 
     def reads(pattern):
@@ -2770,6 +3340,7 @@ def test_only_the_달러_before_달_constraint_decides_the_suppression_ordering(
     def compiled(order):
         return re.compile(
             _RELAXED_QUANTITY_NUMBER
+            + _UNIT_SHADOW_GUARD
             + r"(?P<unit>"
             + "|".join(re.escape(s) for s in order)
             + r")"
@@ -2777,14 +3348,34 @@ def test_only_the_달러_before_달_constraint_decides_the_suppression_ordering(
 
     shipped = reads(_VALUE_MEASUREMENT_RELAXED)
     # The probes really do exercise the number, and not only the alternation:
-    # the pre-#451 number reads them differently. Without this the two added
-    # probes could be inert and nothing here would say so.
+    # the pre-#451 number reads them differently. The guard is held constant so
+    # that the difference is the number and nothing else.
     before_451 = re.compile(
-        r"[0-9][0-9,.]*\s*[만억천조]?\s*(?P<unit>"
+        r"[0-9][0-9,.]*\s*[만억천조]?\s*"
+        + _UNIT_SHADOW_GUARD
+        + r"(?P<unit>"
         + "|".join(re.escape(s) for s in candidates["longest-first"])
         + r")"
     )
     assert reads(before_451) != shipped, "the probes cannot see the number"
+    # And they exercise the guard, with the number held constant in turn -- both
+    # halves of it, since a probe set that saw the word list but not the bound
+    # would be back where the ten probes were before #453.
+    before_453 = re.compile(
+        _RELAXED_QUANTITY_NUMBER
+        + r"(?P<unit>"
+        + "|".join(re.escape(s) for s in candidates["longest-first"])
+        + r")"
+    )
+    assert reads(before_453) != shipped, "the probes cannot see the shadow guard"
+    unbounded = re.compile(
+        _RELAXED_QUANTITY_NUMBER
+        + _unbounded_shadow_guard()
+        + r"(?P<unit>"
+        + "|".join(re.escape(s) for s in candidates["longest-first"])
+        + r")"
+    )
+    assert reads(unbounded) != shipped, "the probes cannot see the guard's bound"
 
     satisfying = {n: o for n, o in candidates.items() if o.index("달러") < o.index("달")}
     violating = {n: o for n, o in candidates.items() if o.index("달러") > o.index("달")}
@@ -2872,12 +3463,22 @@ def test_a_unit_suffix_would_be_inert_here():
 
     Both halves are asserted, because only the pair is the argument: ends really
     do move, and readings really do not.
+
+    The last loop is the one that has to be kept honest, and it went blind once
+    already: it claims the shipped pattern is the suffix-free rebuild, and when
+    #453 added `_UNIT_SHADOW_GUARD` to the shipped pattern not one of the 6400
+    corpus values could tell the two apart, so the guard could have been deleted
+    with this test green. The tails carrying a listed `_UNIT_SHADOW_WORDS` member
+    are what fixes that, and the discrimination assertion beside the rebuild is
+    what will say so the next time a part is added and the corpus does not
+    follow.
     """
     import re
 
     from verinote.pipeline.query_intent import (
         _MEASUREMENT_UNIT_SPELLINGS,
         _RELAXED_QUANTITY_NUMBER,
+        _UNIT_SHADOW_GUARD,
         _UNIT_SUFFIX,
         _UNIT_SUFFIX_MEMBERS,
         _VALUE_MEASUREMENT_RELAXED,
@@ -2904,16 +3505,19 @@ def test_a_unit_suffix_would_be_inert_here():
     # comparing one suffix against two, the ends would stop moving, and the
     # non-vacuity guard below would fire on a mutation that breaks nothing. The
     # claim is about these character sets, not about today's pattern text.
-    quantity = (
-        _RELAXED_QUANTITY_NUMBER
-        + r"(?P<unit>"
+    unit_group = (
+        r"(?P<unit>"
         + "|".join(
             re.escape(s) for s in sorted(_MEASUREMENT_UNIT_SPELLINGS, key=len, reverse=True)
         )
         + r")"
     )
+    quantity = _RELAXED_QUANTITY_NUMBER + _UNIT_SHADOW_GUARD + unit_group
     without_suffix = re.compile(quantity)
     with_suffix = re.compile(quantity + _UNIT_SUFFIX)
+    # The rebuild that omits the guard, so the corpus can be asked whether it
+    # sees one at all.
+    without_guard = re.compile(_RELAXED_QUANTITY_NUMBER + unit_group)
     corpus = [
         f"{number}{magnitude}{spelling}{tail}"
         # The last three numbers are the three notations #451 added: a
@@ -2923,12 +3527,16 @@ def test_a_unit_suffix_would_be_inert_here():
         for number in ("3", "1000", "2천만", "2백", "３")
         for magnitude in ("", "만")
         for spelling in _MEASUREMENT_UNIT_SPELLINGS
-        # The last four are the distinguishing shape: something follows the
-        # suffix position, so a member that could begin a match would swallow
-        # it. Without them the loop below cannot see a bad member.
+        # `2주` through `5초` are the suffix's distinguishing shape: something
+        # follows the suffix position, so a member that could begin a match
+        # would swallow it. The rest, from `기` on, complete or continue a
+        # member of `_UNIT_SHADOW_WORDS` -- flush, spaced and continued in turn
+        # -- which is the guard's distinguishing shape and #453 added them.
         for tail in (
             "", "간", "가량", "정도", "쯤", "짜리", "차", "의", " ", "5", "s", "러",
             "2주", "간5주", "가량10초", "5초",
+            "기", "기 ", "기준", "년", "년 ", "년대비", "대", "대 ", "대출",
+            "주", "주 ", "주기", "ary", "ary ", "aries",
         )
     ]
     moved = sum(
@@ -2941,6 +3549,16 @@ def test_a_unit_suffix_would_be_inert_here():
         assert [m.group("unit") for m in with_suffix.finditer(value)] == [
             m.group("unit") for m in without_suffix.finditer(value)
         ], value
+
+    # The corpus can tell the shipped pattern from a rebuild missing one of its
+    # parts, which is what the equality below is worth anything for. Written
+    # against the guard because that is the part the corpus was blind to.
+    assert [
+        value
+        for value in corpus
+        if [m.group("unit") for m in without_guard.finditer(value)]
+        != [m.group("unit") for m in without_suffix.finditer(value)]
+    ], "the corpus cannot see the shadow guard, so the equality below is vacuous"
 
     # And the shipped pattern is the suffix-free one, which is what the comment
     # beside it claims. Asserted on readings, not on pattern text, so restoring
