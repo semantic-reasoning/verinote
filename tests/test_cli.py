@@ -419,6 +419,57 @@ def test_sync_total_chunk_failure_exits_nonzero(
     assert "sync complete" not in captured.out
 
 
+def test_sync_total_multi_chunk_wipeout_counts_every_failed_chunk(
+    tmp_path, monkeypatch, capsys
+):
+    """A multi-chunk wipeout must report the real chunk numbers.
+
+    The single-chunk total-failure test above asserts neither the failed count
+    nor the total, and its one-chunk source could not separate a per-chunk count
+    from a per-source one anyway, since both are 1 there. Here a source that
+    splits into several chunks loses every one of them, so both numbers have to
+    be that chunk count. The count is read back off the stub client rather than
+    written down here, so the assertion tracks the split instead of a number
+    that would have to be updated with it.
+    """
+    _env(monkeypatch, tmp_path)
+    monkeypatch.setenv("VERINOTE_EXTRACTION_CHUNK_CHARS", "40")
+    monkeypatch.setenv("VERINOTE_EXTRACTION_CHUNK_OVERLAP_CHARS", "0")
+    src = tmp_path / "note.txt"
+    src.write_text(
+        "alpha beta gamma delta epsilon\n\nzeta eta theta iota kappa\n\n"
+        "lambda mu nu xi omicron\n\npi rho sigma tau upsilon",
+        encoding="utf-8",
+    )
+    assert cli.main(["ingest", str(src)]) == 0
+
+    class _EveryChunkFails:
+        def __init__(self):
+            self.calls = 0
+
+        def extract_facts(self, *, source_text, schema_hint=""):
+            self.calls += 1
+            raise LLMError("provider down")
+
+    client = _EveryChunkFails()
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: client)
+
+    rc = cli.main(["sync"])
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    # Non-vacuity: at one chunk the failed count below stops discriminating.
+    assert client.calls > 1, (
+        f"the source did not split ({client.calls} chunk); a per-source count "
+        "would satisfy the failed count below too"
+    )
+    assert (
+        f"{client.calls} chunk(s) failed, 0/{client.calls} complete" in captured.err
+    )
+    assert "sync failed" in captured.err
+    assert "sync incomplete" not in captured.err
+
+
 def test_sync_partial_chunk_failure_exits_nonzero(tmp_path, monkeypatch, capsys):
     _env(monkeypatch, tmp_path)
     monkeypatch.setenv("VERINOTE_EXTRACTION_CHUNK_CHARS", "40")
