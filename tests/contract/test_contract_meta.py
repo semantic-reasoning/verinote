@@ -2,14 +2,15 @@
 """Meta guards for the #241 contract harness itself — deliberately *not* marked
 ``contract`` so they run in the default suite and stay green.
 
-They catch the ways the harness could rot into a no-op: an unregistered marker
-(so ``-m contract`` silently selects nothing), missing or provenance-less replay
-fixtures, or a contract module that stops declaring any contract-marked test (so
-the opt-in run collects zero guards).
+They catch ways the harness could rot into a no-op: an unregistered marker (so
+``-m contract`` silently selects nothing), missing or provenance-less replay
+fixtures, a contract module that stops declaring any contract-marked test (so
+the opt-in run collects zero guards), and a replay issue #270 promoted slipping
+back out of the default suite.
 
-The last two spawn a real nested pytest to pin the session guard in
-``conftest.py``: asking for contract tests and skipping every one must exit
-non-zero, while a run that never asked must stay green.
+The session guard in ``conftest.py`` is pinned by spawning a real nested pytest:
+asking for contract tests and skipping every one must exit non-zero, while a run
+that never asked must stay green.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from __future__ import annotations
 import ast
 from datetime import date
 import importlib.util
+import inspect
 import json
 import os
 import shutil
@@ -68,12 +70,23 @@ GATE_ONLY_MODULE = "test_sync_rc_contract.py"
 MIXED_MODULE = "test_query_intent_contract.py"
 # A keyword matching exactly one ungated control in this directory and no guard.
 CONTROL_ONLY_KEYWORD = "deterministic_parser"
-REPLAY_ONLY_GATE = "replay"
 REPLAY_ONLY_TARGETS = (
     "tests/contract/test_query_intent_contract.py::test_replay_raw_intent_parses_through_production_boundary",
     "tests/contract/test_query_intent_contract.py::test_claudecli_replay_retains_reason_regression_shape",
     "tests/contract/test_extraction_contract.py::test_replay_founding_relation_normalizes_into_functional_vocab",
 )
+# The same guards, spelled as (module, function) so the promotion #270 made can
+# be asserted at the source level. Listed rather than discovered: a promoted
+# guard that is simply deleted must be as visible as one that is re-gated.
+PROMOTED_REPLAYS = {
+    "test_extraction_contract.py": (
+        "test_replay_founding_relation_normalizes_into_functional_vocab",
+    ),
+    "test_query_intent_contract.py": (
+        "test_replay_raw_intent_parses_through_production_boundary",
+        "test_claudecli_replay_retains_reason_regression_shape",
+    ),
+}
 
 
 def test_contract_marker_is_registered(pytestconfig):
@@ -314,19 +327,76 @@ def test_all_skipped_contract_selection_fails_the_session():
     )
 
 
-def test_replay_only_targets_run_without_a_real_provider():
-    """The documented replay path must not construct a live provider client."""
-    result = _nested_pytest(*REPLAY_ONLY_TARGETS, gate_env={GATE_VAR: REPLAY_ONLY_GATE})
+def test_replay_targets_run_with_no_gate_at_all():
+    """The replays must execute with the gate *unset* — the default suite's case.
+
+    No ``gate_env`` on purpose. Since #270 these carry no ``contract`` marker and
+    no ``require_opt_in``, so an unset gate has to run every one of them. Passing
+    even the inert ``replay`` gate would satisfy a ``require_opt_in`` that crept
+    back onto a single guard: the count below would still read full while that
+    guard skipped in every default run.
+    """
+    result = _nested_pytest(*REPLAY_ONLY_TARGETS)
     assert result.returncode == 0, (
-        "the replay-only command should pass with the non-provider replay gate.\n"
+        "the replay guards should pass with no contract gate set at all.\n"
         f"{result.stdout}\n{result.stderr}"
     )
     expected_count = 2 * len(_valid_live_fixture_pairs()) + 1
     assert f"{expected_count} passed" in result.stdout, (
-        "the replay-only command did not run every discovered provider fixture pair "
+        "the replay guards did not run every discovered provider fixture pair "
         "and the Claude regression assertion.\n"
         f"{result.stdout}\n{result.stderr}"
     )
+
+
+@pytest.mark.parametrize("module_name", sorted(PROMOTED_REPLAYS))
+def test_promoted_replays_carry_neither_the_marker_nor_the_gate(module_name):
+    """#270's promotion must not be undoable without something going red.
+
+    Two of the three reversions read for here cost default-suite coverage
+    outright: ``require_opt_in`` coming back makes the guard skip there, and
+    deleting the guard removes it. The marker is different — a marked test still
+    runs under ``pytest tests`` — but it puts the guard back into the opt-in
+    accounting, where it keeps ``conftest.py``'s all-skipped session guard
+    permanently satisfied. All three are source-level edits, so reading the
+    source catches them without spawning a pytest.
+
+    Not every way is source-readable — let ``LIVE_FIXTURES``' glob stop matching
+    and the parametrized replays collect nothing while their ``def`` still reads
+    correctly here; that one is caught by the count in
+    :func:`test_replay_targets_run_with_no_gate_at_all`.
+
+    ``PROMOTED_REPLAYS`` is written out rather than discovered because of the
+    deletion. A deletion that also tidies away the guard's
+    ``REPLAY_ONLY_TARGETS`` entry and the matching term in
+    :func:`test_replay_targets_run_with_no_gate_at_all`'s count leaves that test
+    green; a second, independent ledger is what still goes red.
+
+    The marker coming back does redden the harness elsewhere, through the meta
+    tests built on an all-skipped run failing. What those report is a run that
+    exited 0 while every guard skipped, or a wrapper that never reached pytest,
+    which points a reader at the gate or at issue #273's wrapper. This test says
+    instead that a promoted replay was re-marked.
+    """
+    module = _load_module(CONTRACT_DIR / module_name)
+    marked = set(_contract_test_names(module))
+    for name in PROMOTED_REPLAYS[module_name]:
+        func = getattr(module, name, None)
+        assert func is not None, (
+            f"{module_name}::{name} is gone; #270 promoted it into the default "
+            "suite, so removing it removes default-suite coverage — drop it from "
+            "PROMOTED_REPLAYS in the same commit if that is deliberate"
+        )
+        assert name not in marked, (
+            f"{module_name}::{name} carries @pytest.mark.contract again. It "
+            "still runs under `pytest tests`, but the marker puts it back into "
+            "the opt-in accounting #270 took it out of, where it keeps "
+            "conftest.py's all-skipped session guard permanently satisfied"
+        )
+        assert "require_opt_in" not in inspect.signature(func).parameters, (
+            f"{module_name}::{name} takes `require_opt_in` again; #270 promoted "
+            "it into the default suite and that fixture skips it there"
+        )
 
 
 def test_targeting_the_contract_directory_fails_when_no_guard_runs():
@@ -500,7 +570,13 @@ def test_documented_api_key_reaches_the_provider_config(monkeypatch, tmp_path):
 
 
 def test_meta_nested_pytest_never_opts_into_a_live_provider():
-    """Default-suite meta tests must not spawn opted-in live contract runs."""
+    """Default-suite meta tests must not spawn opted-in live contract runs.
+
+    Any ``GATE_VAR`` in a ``_nested_pytest`` call is flagged, rather than checked
+    against an allowed value. Until #270 the replay targets were run under an
+    inert ``replay`` gate and had to be exempted; they now need no gate, so no
+    call here sets one and an allow-list would only invite the inert gate back.
+    """
     tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
     live_gate_calls = []
     for node in ast.walk(tree):
@@ -511,24 +587,20 @@ def test_meta_nested_pytest_never_opts_into_a_live_provider():
         for keyword in node.keywords:
             if keyword.arg != "gate_env" or not isinstance(keyword.value, ast.Dict):
                 continue
-            entries = []
-            for key, value in zip(keyword.value.keys, keyword.value.values, strict=True):
+            for key in keyword.value.keys:
                 if isinstance(key, ast.Constant):
                     resolved_key = key.value
                 elif isinstance(key, ast.Name):
                     resolved_key = globals().get(key.id)
                 else:
                     continue
-                if isinstance(value, ast.Constant):
-                    resolved_value = value.value
-                elif isinstance(value, ast.Name):
-                    resolved_value = globals().get(value.id)
-                else:
-                    resolved_value = None
-                entries.append((resolved_key, resolved_value))
-            if any(key == GATE_VAR and value != REPLAY_ONLY_GATE for key, value in entries):
-                live_gate_calls.append(node.lineno)
-    assert live_gate_calls == []
+                if resolved_key == GATE_VAR:
+                    live_gate_calls.append(node.lineno)
+    assert live_gate_calls == [], (
+        f"_nested_pytest at line(s) {live_gate_calls} sets {GATE_VAR}; since "
+        "#270 no meta test needs the contract gate, so any value here is "
+        "flagged rather than checked against an allow-list"
+    )
 
 
 @pytest.mark.parametrize(
