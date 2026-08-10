@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MPL-2.0
-"""Contract guard for issue #238: a founding-date fact the live extractor produces
+"""Contract guards for issue #238: a founding-date fact the extractor produces
 must normalise into the policy's *functional* relation vocabulary, so the
 functional-conflict check can fire when a source states two different dates.
 
@@ -7,9 +7,14 @@ The functional vocabulary is not hard-coded here: it is parsed from
 ``engine.wirelog.DEFAULT_POLICY``'s ``functional("...")`` declarations, the same
 program the verifier runs. A relation the extractor emits (e.g. ``founded`` /
 ``established``) that does not normalise into that set leaves the conflict check
-blind to the contradiction — the #238 failure. On ``origin/main`` (no #238 fix)
-the live and replay assertions are expected to fail; the differential test is a
-positive control that stays green to prove the check itself works.
+blind to the contradiction — the #238 failure.
+
+The #238 fix is merged, so the replay below runs in the **default** suite: it
+parses a response captured from a real provider off disk, which needs no
+provider, no credentials and no network (issue #270). The live guard keeps
+``@pytest.mark.contract`` and the opt-in gate, as does the DuckDB differential
+positive control that proves the conflict machinery the other two rely on is
+real.
 """
 
 from __future__ import annotations
@@ -75,9 +80,8 @@ def test_live_founding_relation_normalizes_into_functional_vocab(require_live_pr
     )
 
 
-@pytest.mark.contract
 @pytest.mark.parametrize("fixture_path", LIVE_FIXTURES, ids=lambda path: path.parent.name)
-def test_replay_founding_relation_normalizes_into_functional_vocab(require_opt_in, fixture_path):
+def test_replay_founding_relation_normalizes_into_functional_vocab(fixture_path):
     fixture = _fixture(fixture_path)
     facts = parse_facts(fixture["raw_response"])
     # Non-vacuity: the capture must actually contain both founding years, or the

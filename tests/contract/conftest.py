@@ -22,12 +22,16 @@ Two gates share it:
   provider is unreachable (e.g. the ``claude`` binary is missing) it *fails*,
   never skips — a provider you asked to exercise but that cannot run is a real
   failure, not an absence of coverage (issue #234).
-* :func:`require_opt_in` gates the guards that build no provider client: the
-  replays, the sync exit-code guard, and the OpenRouter catalogue guard. The
-  first two are deterministic; the last reads a live, unauthenticated HTTP
-  endpoint. What they share is that none of them needs a provider client or a
-  key — and that all of them must stay out of the default suite, so they skip on
-  the same unset gate.
+* :func:`require_opt_in` gates the guards that build no provider client and are
+  nonetheless kept out of the default suite: the #239 sync exit-code guard, the
+  DuckDB functional-conflict positive control
+  (``test_extraction_contract.py::test_functional_conflict_fires_on_two_dates``),
+  and the two OpenRouter catalogue guards. What they share is that none of them
+  needs a provider client or a key — not that they are offline, since the
+  OpenRouter pair reads a live, unauthenticated HTTP endpoint. The replay guards
+  were on this list until issue #270 moved them into the default suite, on the
+  ground that a captured response parsed off disk is as deterministic there as it
+  is here; issue #469 asks the same question of the sync and DuckDB guards.
 
 :func:`pytest_sessionfinish` closes the harness's worst failure mode: asking for
 contract tests and getting a green run that exercised nothing. Whenever a run

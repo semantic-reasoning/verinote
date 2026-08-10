@@ -1,8 +1,9 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
 # Provider contract tests (issue #241)
 
-These tests exercise failures that only surface against a **real LLM provider**,
-or that the deterministic suite would otherwise paper over:
+These tests exercise failures the deterministic suite could not see when each was
+written: output from a **real LLM provider** it stubs, an upstream API it never
+calls, and a sync exit code it did not then check.
 
 | Guard | Issue | What it locks |
 |-------|-------|---------------|
@@ -10,13 +11,15 @@ or that the deterministic suite would otherwise paper over:
 | `test_extraction_contract.py` | #238 | A founding-date fact the extractor produces must normalise into the policy's *functional* relation vocabulary, so a two-date contradiction is catchable. |
 | `test_sync_rc_contract.py` | #239 | `verinote sync` must not report success when every extraction chunk fails. |
 | `test_openrouter_catalogue_contract.py` | — | OpenRouter's model catalogue must still carry the `id` and `supported_parameters` fields the settings Model picker is built from, and still declare `structured_outputs`. Needs no key or client; reads the live endpoint. |
-| `test_contract_meta.py` | — | Meta guards on the harness itself (marker registered, fixtures carry provenance, every module has a guard, the skipped-run guard bites). Runs in the default suite. |
+| `test_contract_meta.py` | — | Meta guards on the harness itself (marker registered, fixtures carry provenance, every module has a guard, the skipped-run guard bites, the promoted replays stayed promoted). Runs in the default suite. |
 
 ## Running
 
-The guards are **opt-in**. They self-skip unless you name a provider, so the
-default `pytest tests` stays green (only the meta tests and the deterministic
-positive controls run there). Any invocation path works:
+The guards carrying `@pytest.mark.contract` are **opt-in**: they self-skip unless
+you name a provider. The default `pytest tests` therefore runs the meta tests,
+the deterministic precondition control in `test_query_intent_contract.py`, and
+the replay guards (issue #270), and never reaches a provider. Any invocation path
+works for the opt-in set:
 
 ```bash
 VN_CONTRACT_PROVIDER=claudecli tests/contract/run.sh
@@ -42,7 +45,7 @@ Two rules keep a green run from meaning nothing:
   or naming a path in this directory (`pytest tests/contract`, including
   `--pyargs tests.contract`). The default suite asks in none of those ways —
   `pytest` and `pytest tests` both target `tests`, a parent of this directory —
-  so it is unaffected and the guards keep self-skipping there.
+  so it is unaffected and the marked guards keep self-skipping there.
 
   Asking is not the same as failing: a run that *excludes* the guards on purpose
   (`pytest tests/contract -k meta`, `-m "not contract"`, `--deselect`) is silent,
@@ -83,28 +86,28 @@ VN_CONTRACT_PROVIDER=openai VN_CONTRACT_MODEL=gpt-4o \
 captured from a real provider (`captured_at` records when). The replay tests feed
 the raw string or structured object back through the production parse boundary
 (`parse_query_intent` / `parse_facts`), so they reproduce a captured failure
-deterministically without a provider — while still gated opt-in so the default
-suite stays green. Each provider directory must contain the query-intent and
-extraction pair. The deterministic `sync_all_chunks_failed.json` artifact is the
-only permitted flat fixture.
+deterministically without a provider. Each provider directory must contain the
+query-intent and extraction pair. The deterministic
+`sync_all_chunks_failed.json` artifact is the only permitted flat fixture.
 
-Run the captured query/extraction replays without a provider, credentials, or
-network access with this exact command:
+Since issue #270 the replays carry no marker and no gate, so `pytest tests` runs
+them. To run just those nodes, set nothing at all:
 
 ```bash
-VN_CONTRACT_PROVIDER=replay .venv/bin/pytest -q \
+.venv/bin/pytest -q \
     tests/contract/test_query_intent_contract.py::test_replay_raw_intent_parses_through_production_boundary \
     tests/contract/test_query_intent_contract.py::test_claudecli_replay_retains_reason_regression_shape \
     tests/contract/test_extraction_contract.py::test_replay_founding_relation_normalizes_into_functional_vocab
 ```
 
-The parametrized nodes discover every valid provider fixture pair: the current
-fixture layout runs 3 tests, and each additional provider pair adds 2 more.
-
-`replay` is intentionally not a real provider. It only satisfies
-`require_opt_in` for these deterministic tests; the explicit node IDs exclude
-the live guards. If a live guard is added to this command by mistake, it fails
-at provider validation before an adapter or network request is created.
+The parametrized nodes discover every valid provider fixture pair, so how many
+tests those three targets collect follows the fixtures on disk rather than
+anything written here. `test_contract_meta.py` runs the same three targets in a
+child process with the gate unset and re-derives the expected count from the
+same fixtures, discovered independently, so a replay that quietly takes the gate
+back skips there and reddens the meta suite; a separate static guard reads the
+source for the marker, for the fixture parameter, and for the guard's
+disappearance.
 
 The capture script sends only the fixed synthetic Acme Robotics question and
 source text in `capture.py`. Do not change those inputs to customer, company,
