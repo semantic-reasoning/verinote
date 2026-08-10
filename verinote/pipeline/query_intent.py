@@ -873,13 +873,21 @@ _MONTH_OF_YEAR = (
 )
 
 _TIME_POINT = re.compile(
-    _MONTH_OF_YEAR
+    # A year in front of the month term belongs to the same date, so the span
+    # reaches back over it. No left bound here, unlike the year+month branch --
+    # see the docstring, where the two bounds are told apart.
+    r"(?:[0-9]{2,4}\s*년\s*)?"
+    + _MONTH_OF_YEAR
     + r"\s*(?:" + "|".join(_MONTH_PART_MEMBERS) + r")?\s*[0-9]{1,2}\s*일"
     # Not a day of the month if what follows proves it is a duration. That is
     # `_DAY_DURATION_SUFFIXES`, a subset of `_UNIT_SUFFIX_MEMBERS` and not that
     # tuple -- see the docstring for why the two differ.
     + r"(?!(?:" + "|".join(_DAY_DURATION_SUFFIXES) + r"))"
-    r"|[0-9]{1,2}\s*시(?![가-힣])"
+    # The minute and the second belong to the same clock time, and each is
+    # optional independently of the other -- nested, `3시 20초` left its `초`
+    # outside. Neither carries a lookahead of its own; the docstring weighs the
+    # two candidates for one.
+    r"|[0-9]{1,2}\s*시(?![가-힣])(?:\s*[0-9]{1,2}\s*분)?(?:\s*[0-9]{1,2}\s*초)?"
     r"|['’‘]\s*[0-9]{2}\s*년"
     r"|(?<![0-9])[0-9]{2,4}\s*년\s*[0-9]{1,2}\s*월"
     r"|(?<![0-9])[0-9]{4}\s*년(?![0-9])"
@@ -890,27 +898,152 @@ _TIME_POINT = re.compile(
 `2021년` is a year, not two thousand and twenty-one years, and a question
 asking `몇 개월인가?` must not be told that value states years.
 
-The guard is on the whole value rather than on the matched span, and that has
-one total consequence rather than a list of examples: when any shape below
-matches anywhere, `_value_measure_units` reports no units at all, and
-`korean_measure_unit_mismatch` can only name a unit that was reported, so every
-caveat the value had earned is lost. Say it that way round rather than "a
-guarded value is not read", because the value IS still read:
+The guard is span-local: `_value_measure_units` drops the quantities that
+overlap a match of this pattern and reports the rest, so a duration standing
+outside every match is still reported. `2021년 착수, 총 3주` and
+`2021년 기준 30분` each state a real same-family mismatch and each now names it;
+so do `3시 시작, 3주 소요`, `2024/01/02 3주`, `2021-03-15 (3일)` and
+`12.5.3 버전, 3주 소요`. #452 is where the whole-value rule that lost all of them
+is recorded, and #450 is where the class it lost had last been widened.
+
+Overlap has two near neighbours and is neither of them, and each difference has
+a witness. Masking the span out of the string would let `_VALUE_MEASUREMENT`'s
+trailing lookahead see the fill character instead of the real neighbour, so
+`3주2021-03-15` would be read as stating weeks -- the lookahead refuses `3주`
+there because a digit follows it, and that refusal is the whole precision the
+fill would spend. Dropping the overlapping match leaves every character where it
+was.
+
+Containment -- dropping only the quantities a span fully covers -- is the nearer
+neighbour, and the one a later simplification reaches, since it reads as a tidier
+way of writing the same rule. It is not the same rule, because a quantity can
+cross a span's boundary in either direction and containment keeps every one that
+does. In `2021-03-15일` the span is (0, 10) and `_VALUE_MEASUREMENT` reads `15일`
+at (8, 11), crossing the right edge; containment keeps it and reports the value
+as stating days, the one reading the ISO branch exists to refuse. In
+`10000년 3월 15일` it is the left edge: the year prefix takes no left bound, so
+the span opens at the inner `0000년` at (1, 13) while the real `10000년` runs
+(0, 6), and containment calls ten thousand years a duration. The arguments below
+that rest on the difference are not only the ISO one, and they are not a fixed
+list either -- any passage whose value is silent because a quantity STRADDLES a
+span is one, since containment would report that quantity. A quantity sitting
+wholly inside a span is dropped by both rules, so `매월 15일`, `3시 30분` and
+`2021년` rest on nothing here. Those found so far:
+`3월 15일쯤` and `매월 15일정도` for the day approximators, `3시 30분간` and its
+siblings for the swallowed clock tail, the two long years for the prefix's
+missing left bound, and `12.5.33주` and `2021-03-153일` for the flush-quantity
+residue two paragraphs down. The clock tail and the long years are visible only
+under this widened pattern, so a probe run against the pre-#452 one
+under-reports the class.
+`test_a_quantity_is_dropped_by_overlap_and_not_by_masking_or_containment`
+recomputes both neighbours and asserts each differs.
+
+What a span COVERS therefore matters in a way it did not before. Under the
+whole-value rule a branch only had to prove the value held a point in time; now
+a component left outside the span is read as a quantity beside it, so each
+branch has to run from the coarsest component of its expression to the finest.
+Two branches below take a component for that reason alone and for no other: the
+day branch takes an optional year, and the clock branch takes an optional minute
+and second.
+
+The set of components that can cost anything is closed, and closed by something
+other than a word list -- it is the calendar and the clock, year, month, day,
+hour, minute, second, which is not a class the next input extends. Narrower
+still: a component can only cost a caveat if it can be read as a unit, and
+`_MEASUREMENT_UNIT_SPELLINGS` decides that. `월` and `시` are absent from that
+table on purpose, each for a reason given beside it, so no value can be said to
+state them and no span has to reach them. `_VALUE_MEASUREMENT_RELAXED` draws
+from the same table and feeds only `_value_states_asked_unit`, whose one output
+is suppression, so it can spend a caveat but never invent one and does not widen
+the set.
+
+The premise is checkable on both of its sides, and
+`test_a_span_covers_every_component_a_value_could_be_said_to_state` checks them
+separately, because only one of them is live in the same sense. It recomputes
+the intersection from `_MEASUREMENT_UNIT_SPELLINGS`, so adding `월` or `시` to
+that table fails it for want of a fixture. There is no list of components to
+recompute the other side from, so that side is pinned from the pattern instead:
+the unit spellings occurring literally in `_TIME_POINT.pattern` are `년`, `달`,
+`분`, `일` and `초`, and a branch naming a sixth -- `주`, say, for a week of the
+month -- fails the test. `달` is on that list only through the members of
+`_MONTH_WORD_MEMBERS` that spell it, each of which puts a Hangul syllable in
+front of it with at most a space between, so a digit run can never reach a `달`
+inside a span and no value can be said to state months there. The test derives
+that from the live tuple rather than taking this sentence for it.
+
+Say the rule as "the quantities overlapping a span are dropped" rather than as
+"a guarded value is not read", because the value IS still read:
 `_value_states_asked_unit` does not consult this guard, so
 `_value_states_asked_unit("매월 15일", "DAY")` is True while
-`_value_measure_units("매월 15일")` is empty. What ends the caveat is the empty
-reported list, whatever the suppression scan sees. That is the same two-scan
-asymmetry `korean_measure_unit_mismatch` describes, and a reader who took
-"guarded, therefore unread" as the invariant would have the reasoning change
-under them the moment this guard moved.
+`_value_measure_units("매월 15일")` is empty. What ends a caveat is the reported
+list, whatever the suppression scan sees. That is the same two-scan asymmetry
+`korean_measure_unit_mismatch` describes.
 
-So `2021년 착수, 총 3주` and `2021년 기준 30분` each state a real same-family
-mismatch and each says nothing; so do `3시 시작, 3주 소요` and `매월 3일 소요`;
-and so does every member of `_MONTH_WORD_MEMBERS` and every member of
-`_MONTH_PART_MEMBERS` placed in front of a duration, not some of them. Each
-shape added here multiplies that class, which is the standing argument against
-adding one cheaply. #452 tracks making the guard span-local, which is what
-would end it.
+What span-local costs is the accidental cover the whole-value rule was giving
+to every quantity standing outside a span. That is a total statement rather
+than a list: the guard used to empty the reported list whenever it matched
+anywhere, so every wrong sentence `korean_measure_unit_mismatch` records was
+silenced whenever some other part of the value happened to be a point in
+time, and span-local withdraws that from all of them at once.
+`2021년 계약, 15일 마감` is now told it states `일`, `2021년 착수, 21년` that
+it states `년`, `2021년 계약, 2 second review` that it states `second`,
+`2021년 기준, 6월 및 30주` that it states `주`, and
+`2021년 계약, 2천만원 (15,000달러)` that it states `달러` -- one witness per
+entry would just be the list of entries again. None of them is a new
+misreading: each value reads the same way standing alone and has since before
+#450. What changed is the reach, and it changed for the whole list rather
+than for the members someone thought to name.
+
+What is total is the WITHDRAWAL, not the outcome, and the two must not be read
+as one. Whether a caveat then names the entry is decided after this guard has
+run, by `korean_measure_unit_mismatch`, and the account below is read off that
+function's three ways of returning nothing rather than collected from examples.
+It returns nothing when the question names no unit at all; when the suppression
+scan finds the asked unit in the head's own notation; and when its loop finds
+nothing to name. That last one is the one with several roads into it: the
+entry's quantity may be covered by a span, or never read at all --
+`_VALUE_MEASUREMENT`'s trailing lookahead is `(?![가-힣0-9A-Za-z])`, so a unit
+run into Hangul, a digit or Latin is refused, and the `15일` in
+`3월 15일과 20일` is never read for that reason, as is the one in
+`매월 15일동안 3주` -- or read, and outside every span, and passed over anyway
+for measuring something else, which is what becomes of a `15일` when the
+question asks in `몇 원인가?`. A fourth thing decides not whether but WHICH:
+only the first same-family quantity is returned, so an earlier one outranks the
+entry's. Those are the exits, so a mechanism not among them would have to live
+somewhere other than this function.
+
+The outcome therefore turns on the question as much as on the head, and the two
+witnesses differ in exactly that way. `3시 5분` is silent whatever it is asked,
+because the `5분` is the clock's own minute and sits inside the span -- this
+guard working, not failing, under every question the rule can put.
+`2021년, 100주` is silent asked in `몇 년인가?`, where `_value_states_asked_unit`
+reads the head's `2021년` as years and returns the answer it gave before this
+change; asked in `몇 개월인가?` the same value now states `주` where it was
+silent before, so it is no counter-example to the withdrawal being total.
+`2021년 계약, 3주 소요, 15일 마감` is the third: its `15일` IS reported and still
+never reached, because the three weeks stand in front of it. So "every entry
+loses the cover" is exact, and "every entry is caveated now" would be false.
+
+Two of them are argued separately below because their prospects differ, not
+because the cost stops at two. #460's residue -- a bare `N일`, a bare
+two-digit year -- is where nothing is left in the value to read. The elided
+second member of a date is where something is.
+
+The reach is widest where the head of a second date is elided, and that is
+ordinary Korean rather than a corner. `3월 15일~20일`,
+`매월 15일, 30일` and `3월 15일 및 20일` each name two days of one month; the
+branch takes the first and the second stands outside every span, so each is now
+told it states `일`. `3시 30분 ~ 45분` is the same shape on the clock and
+`2021년, 22년` on the year. This one is NOT #460's residue, because a month term
+IS left in the value to read -- but nothing measured so far reads it whole. A
+bounded continuation on the day reaches the tilde spelling and none of the
+hyphen, comma, `·`, `및`, `과` or `/` ones, and the separator set is an open
+lexical class of the kind the day branch's own suffix rule exists to refuse.
+Suppressing a leaked quantity whose unit a span already states covers every
+separator, but only where the head's own component survives
+`_VALUE_MEASUREMENT`'s lookahead, so it would fix `3월 15일, 20일` and not
+`3월 15일과 20일`, one particle apart. `korean_measure_unit_mismatch` carries the
+class and the tests record it.
 
 Every alternative is needed by some value, and so is every member of the two
 tuples: delete any one of them and some value changes its answer, which is what
@@ -924,8 +1057,18 @@ only whitespace between -- the same property that keeps `12년 6개월` a durati
 one branch below. This replaced a branch that required the day to stand
 immediately beside a digit month, and with the part group empty it reads
 exactly what that branch read, so no value that was a date stops being one.
-`3월 15일`, `3월 중 15일`, `3월의 15일` and `매월 15일` are now read alike. No
-left bound is placed on the number, and that is deliberate rather than an
+`3월 15일`, `3월 중 15일`, `3월의 15일` and `매월 15일` are now read alike.
+
+A year in front of the month term is part of the same date, and the branch takes
+it as an optional prefix so that the span reaches back over it. Without the
+prefix, `2021년 3월 15일` is matched by the year+month branch, which stops at
+`3월` and leaves a `15일` outside the span to be read as fifteen days -- the day
+branch cannot take it instead, because it must begin at the month term and the
+earlier match has already consumed past it. The prefix is `[0-9]{2,4}` for the
+reason the year+month branch's year is, and the two are written out separately
+rather than shared because their bounds differ, which is two paragraphs down.
+
+No left bound is placed on the number, and that is deliberate rather than an
 omission: the branch this replaced had none, so `123월 15일` matches on its
 inner `23월 15일` and is silent, and adding a bound would make that value newly
 caveated -- a caveat gained, which this rule may not do quietly. The word
@@ -935,6 +1078,19 @@ decoration: `[0-9]{1,2}` and `[0-9]` and `[0-9]{1,3}` all read the same values,
 because a longer run simply matches further in. The same is true of the clock
 hour. Only the DAY's width is load-bearing, since the day must start where the
 month term ended.
+
+The year prefix takes no left bound, and that is the bound the year+month branch
+does take. The two are doing different work. There the year alone is what makes
+the value a date, so a spurious inner match silences a genuine duration and
+`10000년` must not read as `0000년`. Here the month and the day have already
+decided the value is a date; the prefix only chooses how much of it the span
+covers, and a longer span can only remove a caveat. Bounded, `10000년 3월 15일`
+and `12021년 3월 15일` have a leading digit left over and are told they state
+years. A one-digit year is still left outside, so `1년 3월 15일` and
+`2년 3월 15일` have their `1년` and `2년` read as durations and ARE caveated --
+the same judgement the year+month branch makes on `2년 3월`, and the only place
+a component that could belong to the date's own notation is deliberately left
+out of the span.
 
 The day refuses a `_DAY_DURATION_SUFFIXES` tail, for the reason the clock hour
 refuses a Hangul one. `_UNIT_SUFFIX` makes `15일간` fifteen days, `15일가량`
@@ -982,9 +1138,9 @@ date. Taking `쯤` would have given two spellings of one meaning two answers, an
 it un-fixed this issue's own headline -- `매월 15일` a date and `매월 15일쯤` a
 duration, one particle apart.
 
-This is the one place the change makes a value newly caveated rather than newly
-silent, and it does so knowingly: `3월 15일간` was silent before #450 too, so
-the lookahead reaches back past this change's own additions. Which values gain
+This is the one place #450 made a value newly caveated rather than newly silent,
+and it did so knowingly: `3월 15일간` was silent before #450 too, so
+the lookahead reaches back past #450's own additions. Which values gain
 depends on the baseline, and both readings are true of different ones: against
 this pattern with the lookahead removed, any month term can gain; against
 `e7ac2a7`, only a digit month can, because the older guard had no word months to
@@ -1008,6 +1164,70 @@ state no unit this file can read and can only be a clock. The lookahead is
 not times; it is not `(?![가-힣0-9])` because `3시30분` is half past three. A
 clock time with a Hangul tail -- `3시부터`, `3시경`, `3시반` -- falls outside
 and needs nothing, since it states no unit for a caveat to be wrong about.
+
+The minute and the second belong to the same clock time, so the branch takes
+them and the span covers them. `3시 30분` is half past three, and with the span
+ending at `3시` the `30분` outside it reads as thirty minutes, which asked in
+`몇 시간` is a wrong sentence. The two tails are optional and INDEPENDENT, so
+`3시`, `3시 30분`, `3시 20초` and `3시 30분 20초` all match. Nested, the second
+could only follow a minute, and `3시 20초` -- an hour and a second with no
+minute between them -- left its `초` outside the span to be read as twenty
+seconds.
+
+The two silences that buys are not equally comfortable, and the second should
+not be read as the first's twin. `3시 30분` is how a clock time is written, so
+silencing `3시 30분 소요` costs a reading few would have wanted. `3시 20초` is
+not: nobody writes a time as an hour and a second with the minute left out, so
+on that shape the duration reading is the likelier of the two and
+`3시 20초 소요` is the more plausible loss. It is still the right trade, because
+the alternative was not a silence but a definite wrong sentence -- `3시 20초`
+told it states seconds -- and this rule prefers a missing caveat to a false
+one. Recorded as accepted rather than as costless.
+
+That the un-nesting can only cost silences is a property of the shape rather
+than a corpus result, and the difference matters to whoever re-measures it.
+Both tails are optional groups, so removing the nesting can only make a match
+longer, never shorter or absent; a longer span can only drop more of what
+`_VALUE_MEASUREMENT` found, and dropping more can only remove a reported unit.
+So no input exists on which this change adds a caveat -- a measurement showing
+"0 gained" is confirming the shape, not sampling for it. Read a future 0 that
+way, rather than as evidence that the corpus was wide enough.
+
+Only whitespace joins the components,
+and that is what keeps the branch honest: `3시, 30분 소요` ends the clock at the
+comma and the thirty minutes beside it are read as the duration they are.
+
+Neither tail carries a lookahead of its own, and two candidates were weighed
+rather than one. `(?![가-힣])`, the clock hour's own, costs a wrong sentence:
+`3시 30분쯤` then leaves `30분쯤` outside the span, `_UNIT_SUFFIX` reads it as
+thirty minutes, and around half past three is reported as a duration.
+`(?!(?:간|가량|짜리))`, the day's, costs something too, and the cost is a class
+rather than a count: every clock time whose tail wears one of those three
+suffixes, on the minute or on the second, is read differently wherever it
+appears -- what that then costs is a second question, answered below. Both
+tails means both positions the second can take -- `3시 30분간`, `3시 30분가량`
+and `3시 30분짜리` on the minute, `3시 30분 20초간` and its two on a second
+behind a minute, and `3시 20초간` and its two on a second directly behind the
+hour, which only became reachable when the tails stopped being nested.
+
+What it does to them splits in two. Standing alone they gain a caveat where
+they were silent, which this guard's bargain allows. Standing BEFORE another
+duration they gain nothing -- they take the caveat that is already there and
+move it onto the clock's tail, so `3시 30분간 3주` reports `('개월','주')` today
+and would report `('개월','분')`, naming the swallowed tail instead of the three
+weeks the value is about, and `3시 20초간 3주` would report `('개월','초')` the
+same way. Order decides which of the two happens, and not presence:
+`korean_measure_unit_mismatch` reports the FIRST same-family unit it finds, so
+putting the other duration first moves nothing at all -- `3주 후 3시 30분간`
+answers `('개월','주')` either way.
+
+So it is declined on the reading and on that: those tails are likelier to be a
+mangled `3시간 30분X` than a duration bound to a minute already inside a clock
+time, and the day's tuple was chosen by asking whether `3시X` is ordinary
+Korean -- a question about the hour, not about a minute behind one. A swallowed
+tail is an accepted silence of the kind this guard already makes, and the day
+needs its lookahead for the different reason that `매월 15일간` holds no point in
+time at all.
 
 `'21년` is caught where bare `21년` is not, and the apostrophe is the whole of
 the difference: it stands in for the elided century and no duration is written
@@ -1040,11 +1260,22 @@ contrived value reaches (`2021년12개월`).
 The ISO branch earns its place narrowly. An ISO date on its own states no unit,
 so the branch does nothing for `2021-03-15`; what it catches is a date with a
 unit spelling run onto the end of it, `2021.03.15 일` and `2021-03-15일`, which
-without it are read as stating days. It is the worst-paying of the four, because
-the same whole-value suppression costs real caveats elsewhere: `2024/01/02 3주`
-and `2021-03-15 (3일)` state genuine durations and go silent. Kept because a
-false sentence is worse than a missing one, which is this rule's standing
-preference; a span-local guard would take both, and that is a change of its own.
+without it are read as stating days. It used to be the worst-paying of the four,
+because the whole-value rule spent its match on the rest of the value as well
+and `2024/01/02 3주` and `2021-03-15 (3일)` went silent with it. Span-local ends
+that half of the cost: the quantity overlapping the date is dropped and a
+duration standing clear of it is reported, so both are caveated again.
+
+What is left is not the guard's doing but the branch's own reading, and it is
+worth stating rather than counting as ended. A quantity written flush onto the
+end of an ISO date has its digit run begin inside the date -- `2021-03-153일` is
+read by `_VALUE_MEASUREMENT` as `153일`, starting at the date's own `15` -- so
+the quantity overlaps the span, straddling its right edge rather than sitting
+inside it, and overlap is what drops it. `2021-03-153일`,
+`2024/01/023주` and `12.5.33주` say nothing. No reading reports those and still
+keeps `2021-03-15일` off the days side, which is the whole of what the branch is
+for; they were silent before this change too, so it removes that cost neither
+more nor less than it removes any other.
 
 Its year is `[0-9]{2,4}` for the same reason the year+month branch's is, and
 holding it at four digits while arguing two-digit years are ordinary notation
@@ -1057,13 +1288,23 @@ needs two separators to be reached and has one -- which is disclosed in
 own. Reading a slashed month term was tried for #450 and withdrawn: it also
 reads the numerator of a small-number rate, and `50/15일` stopped being read.
 
-Widening the year also widened what else looks like a date, and that is a third
-cost on top of the two above: a dotted or dashed numeric triple whose first
-component is two or three digits now reads as one. `12.5.3 버전, 3주 소요`,
-`10.1.2 릴리스, 3주` and `10.0.0.1 서버, 3주` each state a genuine duration and
-are silent, where before the widening they were caveated. A one-digit first
-component still falls outside, so `1.2.3 버전, 3주` is unaffected -- which is
-luck of the bound rather than a rule about version numbers.
+Widening the year also widened what else looks like a date: a dotted or dashed
+numeric triple whose first component is two or three digits reads as one, so
+`12.5.3`, `10.1.2` and `10.0.0.1` are points in time as far as this pattern is
+concerned. That was a third cost under the whole-value rule, where it silenced
+the duration standing beside the version -- `12.5.3 버전, 3주 소요` and
+`10.1.2 릴리스, 3주` were caveated before the widening and not after. Span-local
+takes the cost back rather than the reading: the triple still matches, and a
+version number states no unit of its own, so a duration standing clear of it
+-- `12.5.3 버전, 3주 소요`, `10.1.2 릴리스, 3주` -- is reported. Written flush
+onto the end of the triple it is not: `12.5.33주` and `10.1.23주` have their
+digit run begin at the version's own first digit, so the whole quantity
+overlaps the span and is dropped. That is the residue the ISO paragraph above
+already records, reached by the same mechanism, and not a second one. A one-digit first component
+still falls outside the branch, and that bound no longer separates any of those
+values -- what it still separates is `1.2.3 일`, which states days where
+`12.5.3 일` does not, and the test re-derives that rather than taking this
+sentence for it.
 
 `1500년` and `2000년간` are read as calendar years; both spellings are really
 used for durations too, so that reading is honestly ambiguous and this rule
@@ -1202,8 +1443,13 @@ def _value_measure_units(value: str) -> tuple[tuple[str, str], ...]:
     being the reporting reading and on a second, looser one deciding
     suppression.
 
-    Empty for a value stating no quantity, and empty for a value carrying a
-    point in time -- `_TIME_POINT` records what that costs.
+    Empty for a value stating no quantity. A value carrying a point in time is
+    read, and the quantities that OVERLAP the point's own span are the ones
+    dropped -- overlap and not containment, which `_TIME_POINT` argues and
+    `2021-03-15일` witnesses, since a quantity can begin inside a span and end
+    outside it. `_value_measure_units("매월 15일 소요")` is empty because the
+    `15일` is the day of the month, while `_value_measure_units("매월 15일, 3주")`
+    reports the three weeks. `_TIME_POINT` states the rule and what it costs.
 
     NFC because a value written in NFD spells `년` as two code points while the
     alternation is composed, and casefold because the Latin spellings in the
@@ -1212,11 +1458,14 @@ def _value_measure_units(value: str) -> tuple[tuple[str, str], ...]:
     `weeks`.
     """
     folded = nfc(value).casefold()
-    if _TIME_POINT.search(folded):
-        return ()
+    points = [point.span() for point in _TIME_POINT.finditer(folded)]
     return tuple(
         (_MEASUREMENT_UNIT_SPELLINGS[match.group("unit")], match.group("unit"))
         for match in _VALUE_MEASUREMENT.finditer(folded)
+        if not any(
+            match.start() < point_end and point_start < match.end()
+            for point_start, point_end in points
+        )
     )
 
 
@@ -1249,8 +1498,9 @@ def korean_measure_unit_mismatch(question: str, value: str) -> tuple[str, str] |
     is the part the question was about.
 
     The main causes of an accepted silence, rather than all of them: a value
-    stating no number; a unit run into the next syllable (`2년차`); a value
-    carrying a point in time; a spelling outside the table; a suffix outside `_UNIT_SUFFIX`;
+    stating no number; a unit run into the next syllable (`2년차`); a quantity
+    that overlaps a point in time (`매월 15일`); a spelling outside the
+    table; a suffix outside `_UNIT_SUFFIX`;
     a number that stacks magnitude words (`2천만원`), since the quantity shape
     admits at most one; and a number written in full-width digits (`３년`), which
     `[0-9]` does not admit and `nfc` does not fold away. `nfkc` would fold it, but
@@ -1282,7 +1532,12 @@ def korean_measure_unit_mismatch(question: str, value: str) -> tuple[str, str] |
       value separates it from `15일 소요`, which really is fifteen days -- only
       the trailing noun does, and that noun does not partition, since `마감`
       heads both readings. A 마감일 relation holding a bare `N일` is ordinary
-      contract data, which makes this the most reachable one found so far.
+      contract data, which makes this the most reachable one found so far. It
+      reaches further since
+      #452: a bare day is a point in time no `_TIME_POINT` branch defines, and
+      the whole-value guard used to silence it whenever anything else in the
+      value happened to be a date, so `2021년 계약, 15일 마감` was silent and now
+      states `일`. The misreading is the same one; only its reach changed.
     * A date written with no year. The ISO branch needs two separators, so
       `03/15일` has one and is reported as stating `일`. Reading a slashed month
       was tried for #450 and withdrawn: `[0-9]{1,2}\\s*/` also reads the numerator
@@ -1301,6 +1556,33 @@ def korean_measure_unit_mismatch(question: str, value: str) -> tuple[str, str] |
       `21년` alone is left reading YEAR, so `몇 개월인가?` answered `21년` is told
       it states years. Twenty-one years is a real duration, and without the
       apostrophe or a month beside it nothing here separates the two readings.
+      As with the bare day above, #452 widened the reach rather than the
+      misreading: `2021년 착수, 21년` was silenced by the four-digit year
+      standing next to it and now states `년`.
+    * The second member of a date or clock list whose head is elided. Korean
+      writes two days of one month as `3월 15일~20일` or `매월 15일, 30일`, and
+      the branch takes the first member only, so the second stands outside every
+      span and is read as a quantity: both of those are told they state `일`, and
+      so are `3월 15일-20일`, `3월 15일·20일`, `3월 15일 및 20일`, `3월 15일과 20일`,
+      `3월 15일 또는 20일`, `3월 15일(월), 20일(토)`, `매월 10일 / 25일`,
+      `다음 달 1일, 15일`, `3월 초 5일, 15일` and `매월 5일, 15일, 25일 지급`.
+      `2021년, 22년` is the same shape on the year and `3시 30분 ~ 45분` on the
+      clock. Each was silent before #452, because the whole-value guard spent
+      its match on the second member as well.
+      `3월 15일부터 20일까지` is silent, and that is a spacing accident rather
+      than a rule -- the trailing lookahead refuses `20일까지`, and the spaced
+      `3월 15일 부터 20일 까지` is caveated.
+      Unlike the bare day above there IS a month term left to read, so this one
+      is reachable in principle and is filed rather than accepted. Two
+      candidates were measured. A bounded tilde continuation on the day reaches
+      `~` and none of the other separators, and that set is an open lexical
+      class. Suppressing a leaked quantity whose unit a span already states
+      reaches every separator, but only where the head's own component survives
+      the trailing lookahead -- `3월 15일, 20일` yes, `3월 15일과 20일` no -- and
+      reaches no ISO or slashed head, whose spans state no unit to repeat. It
+      would also silence `매월 15일 마감, 3일 이내 지급` and `3시 30분 회의, 30분 연장`,
+      which state a genuine duration that happens to share a unit with the date
+      beside it.
     * An English ordinal. `second` is in the spellings table as a unit, so
       `2 second review` is reported as stating `second`. The neighbouring
       `3 secondary reviews` is silent for an unrelated reason -- Latin continues
@@ -1311,41 +1593,48 @@ def korean_measure_unit_mismatch(question: str, value: str) -> tuple[str, str] |
       answered `5분` (five people, honorific): Korean spellings that mean two
       things, read here as the unit. These two also need a question asked in a
       unit the relation does not really measure.
-    * Every caveat in a value where a free word, rather than a bound suffix,
+    * The day itself, in a value where a free word rather than a bound suffix
       marks the duration. The day branch consults only what is written flush
       against `일`, so `매월 15일간` is read as a duration while `매월 15일 동안`
-      is a day of the month with a word after it and the whole value is
-      silenced. `남짓`, `내내`, `이상` and any other free word implying a span
-      behave alike, and the class is not bounded by that list -- "means a
-      duration" is open, which is why the branch keys on being bound instead.
-      Because the guard is whole-value, what is lost is not only the day: any
-      other quantity in the value goes with it, so `매월 15일동안 3주` says
-      nothing about its three weeks either. Note the spelling -- `동안` is a
-      free word and standard orthography spaces it, and the misspelling is
-      where the whole of this cost sits. Written correctly,
-      `매월 15일 동안 3주` is out of reach of a lookahead placed against `일`
-      whether or not the free words are listed, so listing them would recover
-      nothing on it. Declining to list them loses caveats on misspelled input
-      and none on correctly spelled input.
-      With a word month this is a regression against #445, which had no month
-      word to silence such a value by; with a digit month #445 silenced it too.
-      #452's span-local guard is what would end it.
-    * Every caveat in a value that also carries a point in time. This one is not
-      an instance but a rule: `_value_measure_units` reports no units at all when
-      `_TIME_POINT` matches anywhere, and a caveat can only name a reported unit,
-      so the loss is total by construction rather than by sampling.
-      `3시 시작, 3주 소요` and `매월 3일 소요` each state a duration the question
-      asked about and each says nothing. #445 accepted this for calendar dates and
-      #450 widened what counts as a point in time, so the class grew with it; #452
-      tracks the span-local guard that would end it.
+      is a day of the month with a word after it, and the fifteen days it really
+      states are never reported. `남짓`, `내내`, `이상` and any other free word
+      implying a span behave alike, and the class is not bounded by that list --
+      "means a duration" is open, which is why the branch keys on being bound
+      instead. #458 tracks moving the lookahead's position, which is what would
+      reach these; listing the words would not, because standard orthography
+      spaces them.
+      Two mechanisms produce that one silence and they are worth telling apart,
+      since conflating them is what this file keeps having to correct. In
+      `매월 15일 동안` the `15일` IS read by `_VALUE_MEASUREMENT` and is then
+      dropped for overlapping the day's span; in `매월 15일동안` no quantity is
+      read at all, because the trailing lookahead refuses a unit run into
+      Hangul. Same outcome, different cause, and only the first would move if
+      the span moved.
+      What #452 did change is the rest of such a value. The guard used to be
+      whole-value, so a day read as a date silenced every other quantity beside
+      it and `매월 15일동안 3주` said nothing about its three weeks; span-local
+      reports them. The day is still lost either way, so #458 is narrowed rather
+      than closed.
+    * A quantity overlapping a point-in-time expression. `매월 3일 소요` is the
+      third of each month and states no duration this rule can see, so a
+      `몇 주인가?` against it is silent; the same goes for the `15일` in
+      `3월 중 15일` and the `30분` in `3시 30분`. This is the guard working rather
+      than failing, and it is listed here because the reading is a judgement:
+      `매월 3일 소요` can be read as three days a month, and `_TIME_POINT` argues
+      for the other reading. What is no longer true is that the loss spreads --
+      #445 and #450 made it whole-value, so any duration anywhere else in the
+      value went with it, and #452 confined it to the span.
 
     None of these is fixed here. #445 asks that a verified answer in another unit
-    be caveated, not that every ambiguous spelling be resolved, and #450 added the
-    point-in-time guard an earlier version of this paragraph asked for without
-    changing that. Where a value's notation for a point in time is identical to
-    its notation for a quantity -- a bare `N일`, a bare two-digit year -- no
-    widening of `_TIME_POINT` reaches it, because there is nothing left in the
-    value to read.
+    be caveated, not that every ambiguous spelling be resolved; #450 added the
+    point-in-time guard an earlier version of this paragraph asked for, and #452
+    made it span-local, and neither changed that. Two of the entries above are
+    beyond any widening of `_TIME_POINT` for the same reason: in `15일 마감` and
+    in `21년` the notation for a point in time is identical to the notation for a
+    quantity, so there is nothing left in the value to read. Do not generalise
+    that to the rest of the list -- the elided second member has a month term
+    standing right in front of it, and what has stopped it being fixed is that
+    every rule tried so far reaches some spellings and not others.
     """
     asked = _question_measure_unit(question)
     if asked is None:
