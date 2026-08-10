@@ -241,25 +241,6 @@ def classify_query_draft(store: Store, qid: int, query_dl: str) -> tuple[str, st
     return "review_required", f"review_required({_lit(reason)})", reason
 
 
-def schema_aware_query_flow(
-    store: Store,
-    client: LLMClient,
-    *,
-    qid: int,
-    question: str,
-    llm_error_status: str,
-) -> tuple[str, str | None, str]:
-    """Translate one question through intent extraction, planning, and dry-run evaluation."""
-    result = _schema_aware_query_flow_result(
-        store,
-        client,
-        qid=qid,
-        question=question,
-        llm_error_status=llm_error_status,
-    )
-    return result.status, result.query_dl, result.reason
-
-
 def _schema_aware_query_flow_result(
     store: Store,
     client: LLMClient,
@@ -282,7 +263,18 @@ def _schema_aware_query_flow_result(
         except LLMError as exc:
             reason = _short_reason(exc)
             if llm_error_status == "translation_failed":
-                return _QueryFlowResult("translation_failed", None, reason)
+                # Flagged like the sibling exits of this handler even though
+                # nothing reads it here: `translate_questions` is the only
+                # caller that passes this status, and it reads status, query_dl
+                # and reason and never the flag. The invariant is that every
+                # provider-failure exit sets it, and an exemption is exactly the
+                # shape the tripwire in tests/test_query.py exists to forbid.
+                return _QueryFlowResult(
+                    "translation_failed",
+                    None,
+                    reason,
+                    provider_failed=True,
+                )
             reason = _short_reason(f"llm error: {exc}")
             # No fallback here. The direct-Datalog fallback answers "planning
             # reports it cannot support this question"; an LLMError reports
