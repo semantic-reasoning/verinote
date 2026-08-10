@@ -1672,6 +1672,12 @@ def test_a_full_width_number_states_no_quantity():
     The silence is specifically the digits: a non-breaking space between the
     number and the unit is folded by nothing and needs no folding, because
     `\\s` already admits it.
+
+    Since #451 the `[0-9]` sentence is true of `_VALUE_MEASUREMENT` alone. The
+    suppression scan reads `\\d` and does see this number, which is why
+    `３년 30주` no longer names the weeks;
+    `test_the_suppression_scan_reads_any_unicode_decimal_digit` is the other
+    side.
     """
     from verinote.pipeline.query_intent import (
         _value_measure_units,
@@ -1690,10 +1696,15 @@ def test_a_full_width_number_states_no_quantity():
     [
         ("샘플계약의 마감일은 몇 개월인가?", "15일 마감", ("개월", "일"), "a deadline on the 15th"),
         ("샘플계약의 기간은 몇 개월인가?", "03/15일", ("개월", "일"), "March 15th, no year"),
-        ("샘플사업의 가격은 몇 원인가?", "2천만원 (15,000달러)", ("원", "달러"), "20 million won"),
-        ("샘플사업의 가격은 몇 원인가?", "1억5천만원 및 20,000달러", ("원", "달러"), "150 million won"),
+        ("샘플사업의 가격은 몇 원인가?", "이천만원 (15,000달러)", ("원", "달러"),
+         "20 million won, in Sino-Korean numerals"),
+        ("샘플사업의 기간은 몇 년인가?", "20여년 3주", ("년", "주"), "twenty-odd years"),
+        ("샘플사업의 가격은 몇 원인가?", "3만여원 (15,000달러)", ("원", "달러"),
+         "thirty-odd thousand won"),
+        ("샘플작업의 소요시간은 몇 시간인가?", "한 시간 30분", ("시간", "분"),
+         "an hour and a half, in its ordinary spelling"),
+        ("샘플사업의 기간은 몇 년인가?", "반년 3주", ("년", "주"), "half a year"),
         ("샘플사업의 기간은 몇 년인가?", "5개년 계획 3주", ("년", "주"), "a five-year plan"),
-        ("샘플사업의 기간은 몇 년인가?", "３년 30주", ("년", "주"), "three years, full-width"),
         ("샘플사업의 기간은 몇 개월인가?", "6월 및 30주", ("개월", "주"), "June, or six months"),
         ("샘플사업의 기간은 몇 개월인가?", "21년", ("개월", "년"), "the year 2021, or 21 years"),
         ("샘플사업의 소요는 몇 분인가?", "2 second review", ("분", "second"), "a second review"),
@@ -1716,7 +1727,28 @@ def test_known_false_unit_statements_are_recorded_not_fixed(
 
     These are the wrong sentences that have been found, not all the ones that
     exist -- every round of review on #445 added to the list, #450 removed the
-    ones its point-in-time guard reached, and #452 added to it again. So this
+    ones its point-in-time guard reached, #452 added to it again, and #451
+    removed the three whose asked-unit quantity was a number the suppression
+    scan could not spell while adding one it still cannot. What is left of that
+    cause is what `_VALUE_MEASUREMENT_RELAXED` states as a rule rather than a
+    list: SOME decimal digit must stand before the asked unit with nothing
+    between them but digits, separators, class magnitudes and whitespace. Some
+    DIGIT and not every digit -- `1경5천조원` is read on its `5` though its `1`
+    is blocked, so a value is out of reach ON THIS CONDITION only when every
+    digit in it fails -- it may still go unread for one of the two reasons
+    `_VALUE_MEASUREMENT_RELAXED` names, which satisfy the condition and are not
+    this cause. Ranged over
+    occurrences of the spelling instead the same words would be false, which is
+    why the noun is in the sentence and not left to the witness. `이천만원`,
+    `한 시간 30분` and `반년 3주` have no digit before the unit at all -- the
+    last has no numeral in it either, which is why the condition is not "a
+    numeral the scan cannot spell" -- while `20여년` and `3만여원` have one
+    whose gap is blocked. All five are older than #451 and untouched by it;
+    successive drafts of this docstring named one class, then two, and the
+    rows are here so the third cannot be left out silently again. Beside them
+    sit the rows whose asked-unit SPELLING the
+    table excludes on purpose, which is a different cause and is argued in
+    `_MEASUREMENT_UNIT_SPELLINGS`. So this
     is a record, not a boundary, and it deliberately claims no shared cause: the
     two-digit year is not a lexical ambiguity and `second` is not Korean, so any
     argument of the form "the known ones are all X, therefore a non-X input is
@@ -1973,11 +2005,12 @@ def test_the_suppression_scan_sees_everything_the_value_scan_sees():
     )
 
     # The number set carries a magnitude word deliberately. Without one, the
-    # relaxed pattern could lose `[만억천조]?` and this property would still
-    # hold, which is how `3만 원, 5달러` reached `('원', '원')` unnoticed.
+    # relaxed pattern could lose its magnitude run and this property would still
+    # hold, which is how `3만 원, 5달러` reached `('원', '원')` unnoticed. The
+    # last three are the range #451 added to that run and to the digit class.
     values = [
         f"{number}{spelling}{tail}"
-        for number in ("1", "3", "1000", "3만", "1억", "2천")
+        for number in ("1", "3", "1000", "3만", "1억", "2천", "2천만", "2백", "１")
         for spelling in _MEASUREMENT_UNIT_SPELLINGS
         for tail in ("", " ", "차", "5", "의", "간", "러", "s")
     ]
@@ -2068,32 +2101,462 @@ def test_the_year_month_branch_is_bounded_above_and_on_the_left():
     )
 
 
-def test_the_suppression_scan_reads_only_one_magnitude_word():
-    """`2천만원` is invisible to both scans, and that is what turns it wrong.
+def _relaxed_pattern_from(number):
+    """The shipped relaxed pattern with its number replaced, for the mutants.
 
-    `[만억천조]?` is one character rather than a run, so a number stacking
-    magnitudes states nothing either pattern can see. On its own that is a
-    silence. Beside a unit the reporting scan CAN read it becomes a wrong
-    sentence: the caveat names the dollars and the reader's answer leads with
-    won.
+    Built from the live spellings table and the live sort, so a mutant differs
+    from the shipped pattern in its number and in nothing else.
+    """
+    import re
 
-    `1억원` is the control -- one magnitude word, read by both scans, suppressed.
-    Recorded, not fixed: widening to `[만억천조]*` is a coverage change with its
-    own sweep to run, and #445 asks for the caveat rather than for every Korean
-    number format.
+    from verinote.pipeline.query_intent import _MEASUREMENT_UNIT_SPELLINGS
+
+    return re.compile(
+        number
+        + r"(?P<unit>"
+        + "|".join(
+            re.escape(s) for s in sorted(_MEASUREMENT_UNIT_SPELLINGS, key=len, reverse=True)
+        )
+        + r")"
+    )
+
+
+_HEAD_RELAXED_NUMBER = r"[0-9][0-9,.]*\s*[만억천조]?\s*"
+"""The relaxed number as it stood before #451, for the tests that compare.
+
+Written out rather than derived, because what it is for is to be the OTHER
+pattern: deriving it from `_RELAXED_QUANTITY_NUMBER` would make it follow the
+live constant and the comparisons below would compare a thing with itself.
+"""
+
+
+def test_an_unreadable_asked_unit_number_no_longer_names_the_neighbour():
+    """#451: the four witnesses whose asked-unit number the scan could not spell.
+
+    Each was told the value states a neighbouring unit while its own leading
+    figure was exactly what the question asked for. The neighbour assertion is
+    the non-vacuity half: without it a value that stopped stating anything at
+    all -- because the reporting scan went blind rather than because the
+    suppression scan learned to read -- would pass this test.
+
+    `1억원 (15,000달러)` is the control. It was already silent, through the one
+    magnitude word both patterns have always read, so its staying silent shows
+    the fix did not arrive by breaking that path.
     """
     from verinote.pipeline.query_intent import (
+        _value_measure_units,
+        korean_measure_unit_mismatch,
+    )
+
+    for question, value, neighbour in [
+        ("샘플사업의 가격은 몇 원인가?", "2천만원 (15,000달러)", "달러"),
+        ("샘플사업의 가격은 몇 원인가?", "1억5천만원 및 20,000달러", "달러"),
+        ("샘플사업의 가격은 몇 원인가?", "2백만원 (15,000달러)", "달러"),
+        ("샘플사업의 기간은 몇 년인가?", "３년 30주", "주"),
+    ]:
+        assert korean_measure_unit_mismatch(question, value) is None, value
+        assert neighbour in {s for _, s in _value_measure_units(value)}, value
+
+    assert korean_measure_unit_mismatch("샘플사업의 가격은 몇 원인가?", "1억원 (15,000달러)") is None
+
+
+def test_the_suppression_scan_reads_a_run_of_magnitude_words(monkeypatch):
+    """`2천만원` stacks two magnitudes, and the scan reads through both.
+
+    The killer is derived from the live constant rather than retyped: turn the
+    run back into the single optional character it was before #451 and both
+    stacked witnesses name the dollars again.
+
+    Both are asserted because the issue reports both, not because either is an
+    independent killer -- they are not. `1억5천만원` ends in `5천만원`, so no
+    magnitude class or run length separates the two: under every widening
+    tried, they move together. The second row is a record of what #451 was
+    filed on, and the test says so rather than implying a discrimination it
+    does not make.
+
+    The reporting scan is deliberately left where it was, so `2천만원` still
+    STATES nothing -- what changed is only whether the value is read as already
+    carrying the unit that was asked for.
+    """
+    import verinote.pipeline.query_intent as query_intent
+    from verinote.pipeline.query_intent import (
+        _RELAXED_QUANTITY_NUMBER,
         _value_measure_units,
         _value_states_asked_unit,
         korean_measure_unit_mismatch,
     )
 
+    assert _value_states_asked_unit("2천만원", "KRW") is True
+    assert _value_states_asked_unit("1억5천만원", "KRW") is True
     assert _value_measure_units("2천만원") == ()
-    assert _value_states_asked_unit("2천만원", "KRW") is False
-    # One magnitude word is read by both, so this one suppresses.
-    assert _value_measure_units("1억원") == (("KRW", "원"),)
-    assert _value_states_asked_unit("1억원", "KRW") is True
-    assert korean_measure_unit_mismatch("샘플사업의 가격은 몇 원인가?", "1억원 (15,000달러)") is None
+
+    one_magnitude = _RELAXED_QUANTITY_NUMBER.replace(r")*", r")?")
+    assert one_magnitude != _RELAXED_QUANTITY_NUMBER, "the mutation did not apply"
+    monkeypatch.setattr(
+        query_intent, "_VALUE_MEASUREMENT_RELAXED", _relaxed_pattern_from(one_magnitude)
+    )
+    question = "샘플사업의 가격은 몇 원인가?"
+    assert korean_measure_unit_mismatch(question, "2천만원 (15,000달러)") == ("원", "달러")
+    assert korean_measure_unit_mismatch(question, "1억5천만원 및 20,000달러") == ("원", "달러")
+
+
+def test_the_suppression_scan_reads_any_unicode_decimal_digit(monkeypatch):
+    """`３년` is a number, and the suppression scan admits any Unicode decimal digit.
+
+    `\\d` rather than a listed range, which is the claim the Arabic-Indic and
+    Devanagari assertions make -- the first two below: a `[0-9０-９]` would
+    satisfy the full-width witness and fail those. The reporting scan is
+    unchanged and still reads ASCII digits only.
+
+    Decimal digit and not numeral: `\\d` is the Nd category, so `一년` is no more
+    readable here than `이천만원` is, and the numeral axis stays where
+    `korean_measure_unit_mismatch` records it.
+
+    The killer narrows the class back to ASCII, and does it by replacing the
+    head as one substring -- replacing `\\d` alone would leave the nested set
+    `[[0-9],.]` and a `FutureWarning` rather than the pattern intended.
+    """
+    import verinote.pipeline.query_intent as query_intent
+    from verinote.pipeline.query_intent import (
+        _RELAXED_QUANTITY_NUMBER,
+        _value_measure_units,
+        _value_states_asked_unit,
+        korean_measure_unit_mismatch,
+    )
+
+    assert _value_states_asked_unit("٣년", "YEAR") is True
+    assert _value_states_asked_unit("३년", "YEAR") is True
+    assert _value_measure_units("３년") == ()
+
+    ascii_only = _RELAXED_QUANTITY_NUMBER.replace(r"\d[\d,.]*", r"[0-9][0-9,.]*")
+    assert ascii_only != _RELAXED_QUANTITY_NUMBER and "\\d" not in ascii_only
+    monkeypatch.setattr(
+        query_intent, "_VALUE_MEASUREMENT_RELAXED", _relaxed_pattern_from(ascii_only)
+    )
+    assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 년인가?", "３년 30주") == (
+        "년",
+        "주",
+    )
+
+
+def test_the_widened_number_can_only_silence(monkeypatch):
+    """Reading more here ends caveats and cannot start one, premise and outcome.
+
+    The premise is the load-bearing half, and it is a tripwire rather than a
+    sample: `korean_measure_unit_mismatch` returns None when this scan is true
+    and is otherwise a function of `_value_measure_units` alone, so the only way
+    a wider number changes an answer is by reading FEWER units. It cannot,
+    because no unit spelling begins with a character the number itself admits --
+    so no spelling occurrence can start inside a number, no number can extend
+    across one, and at every start where the narrower pattern matched the wider
+    one matches the same span and unit. Add a spelling that opens with a digit,
+    a comma, a dot, whitespace or a magnitude word and the argument fails here
+    rather than silently.
+
+    The premise is asserted in two halves because a literal set cannot state
+    it. `[\\s\\d]` is the number's own two open classes, and neither is
+    enumerable by hand: `\\d` is every Unicode decimal digit rather than the
+    ASCII ten, and `\\s` reaches `\\r`, `\\f`, `\\v` and the non-breaking space,
+    which a hand-typed `" \\t\\n"` would miss. The literal half is the closed
+    part -- the comma, the dot, and the magnitude class read live.
+
+    The outcome half sweeps the two patterns against each other through
+    `_value_states_asked_unit` itself rather than a copy of it. The corpus
+    carries the shapes where a longer match could hide a later one, since
+    `finditer` resumes from a match's end.
+    """
+    import re
+
+    import verinote.pipeline.query_intent as query_intent
+    from verinote.pipeline.query_intent import (
+        _MEASUREMENT_FAMILY,
+        _MEASUREMENT_UNIT_SPELLINGS,
+        _SINO_KOREAN_MAGNITUDES,
+        _value_states_asked_unit,
+    )
+
+    literal_prefix_chars = set(",.") | set(_SINO_KOREAN_MAGNITUDES)
+    assert [
+        s for s in _MEASUREMENT_UNIT_SPELLINGS if s[0] in literal_prefix_chars
+    ] == []
+    assert [
+        s for s in _MEASUREMENT_UNIT_SPELLINGS if re.fullmatch(r"[\s\d]", s[0])
+    ] == []
+
+    corpus = [
+        f"{number}{spelling}{tail}"
+        for number in ("3", "1000", "3만", "2천만", "1억5천만", "2백", "5십", "３", "１，０００")
+        for spelling in _MEASUREMENT_UNIT_SPELLINGS
+        for tail in ("", " ", "차", "5", "의", "간", "러", "s", " 3주", "2주")
+    ] + [
+        # The swallow shapes: a longer match here could end past a unit the
+        # narrower pattern reached on its own.
+        "1억 2주", "3만 5년6주", "2천 3주", "3만 5천원", "1억 2년 3주", "3만 원, 5달러",
+        "1조5천억원 3달러", "2백 3주", "5십 2년", "3천조억만원 2주", "1경5천조원 3달러",
+        "２천만원 (15,000달러)", "1억5천만원 및 20,000달러", "3시간30분", "２분기 실적, 2시간 소요",
+    ]
+    units = sorted(set(_MEASUREMENT_FAMILY))
+
+    def sweep():
+        return [
+            [_value_states_asked_unit(value, unit) for unit in units]
+            for value in corpus
+        ]
+
+    shipped = sweep()
+    monkeypatch.setattr(
+        query_intent,
+        "_VALUE_MEASUREMENT_RELAXED",
+        _relaxed_pattern_from(_HEAD_RELAXED_NUMBER),
+    )
+    head = sweep()
+
+    lost = [
+        (value, unit)
+        for value, head_row, shipped_row in zip(corpus, head, shipped)
+        for unit, before, after in zip(units, head_row, shipped_row)
+        if before and not after
+    ]
+    assert lost == []
+    gained = sum(
+        1
+        for head_row, shipped_row in zip(head, shipped)
+        for before, after in zip(head_row, shipped_row)
+        if after and not before
+    )
+    assert gained > 0, "the shipped scan must read strictly more somewhere"
+
+
+def test_the_magnitude_run_needs_no_inner_digits():
+    """The declined alternative reads the same units, measured rather than assumed.
+
+    `(?:[...]\\s*[\\d,.]*\\s*)*` reads `1억5천만원` from the `1` where the shipped
+    run reads it from the `5`, and both reach the same unit: a stacked number is
+    a digit run, then magnitude words possibly separated by further digit runs,
+    then the unit, so the shipped form starts at the last inner run and the
+    region the longer form swallows holds no unit to hide.
+
+    That last clause is the premise, and it is re-derived from the live table
+    and the live class rather than restated, so adding `경` to
+    `_SINO_KOREAN_MAGNITUDES` re-derives it too. Written with `startswith` and
+    not by indexing, which raises rather than answers if the table ever holds
+    an empty key.
+
+    The two patterns really are different, which the match starts show. Without
+    that check the equality could hold because the mutation did nothing.
+    """
+    from verinote.pipeline.query_intent import (
+        _MEASUREMENT_UNIT_SPELLINGS,
+        _SINO_KOREAN_MAGNITUDES,
+        _VALUE_MEASUREMENT_RELAXED,
+    )
+
+    assert [
+        s
+        for s in _MEASUREMENT_UNIT_SPELLINGS
+        if s.startswith(tuple(_SINO_KOREAN_MAGNITUDES))
+    ] == []
+
+    inner_digits = _relaxed_pattern_from(
+        r"\d[\d,.]*\s*(?:[" + _SINO_KOREAN_MAGNITUDES + r"]\s*[\d,.]*\s*)*"
+    )
+    assert inner_digits.pattern != _VALUE_MEASUREMENT_RELAXED.pattern
+    corpus = [
+        f"{number}{spelling}{tail}"
+        for number in ("1억5천만", "3만 5천", "2억 5,000만", "2백만", "3천5백만", "5백50만", "1경5천조")
+        for spelling in _MEASUREMENT_UNIT_SPELLINGS
+        for tail in ("", " ", " 3주", "5", "차")
+    ]
+    starts_differ = 0
+    for value in corpus:
+        assert [m.group("unit") for m in inner_digits.finditer(value)] == [
+            m.group("unit") for m in _VALUE_MEASUREMENT_RELAXED.finditer(value)
+        ], value
+        if [m.start() for m in inner_digits.finditer(value)] != [
+            m.start() for m in _VALUE_MEASUREMENT_RELAXED.finditer(value)
+        ]:
+            starts_differ += 1
+    assert starts_differ > 0, "the two patterns must differ, or the equality is vacuous"
+
+
+def test_the_magnitude_class_is_a_series_and_this_is_where_it_stops():
+    """The residue of `_SINO_KOREAN_MAGNITUDES`, re-derived rather than restated.
+
+    `백` is in, so `2백만원` and `3천5백만원` suppress -- and note that neither
+    of those demonstrates `십`, which is the pairing this docstring made when it
+    was first written. A stated member illustrated by a value that does not
+    contain it is a member with no evidence behind it, and `십` could be deleted
+    with the whole suite green until the per-member block below was added. Its
+    own values are `5십원` and `2백5십원`.
+
+    `경` is the known next member and is out, so a sum written with it flush
+    against the unit is still told it states the dollars. Add `경` to the class
+    and the `1경원` assertion fails, which is what forces the boundary in that
+    constant's docstring to be corrected with the code -- the tripwire is the
+    whole protection here, because an unrecognised magnitude on this scan leaves
+    a wrong sentence standing rather than costing a caveat.
+
+    The last two rows are what makes the residue statable rather than open, and
+    they are the pair a reader is likeliest to get wrong. The run starts at the
+    LAST digit run and must reach the unit without interruption, so
+    `1경5천조원` is read -- its last digit run is the `5`, and only `천` and `조`
+    follow -- while `1천경원` is not, even though its `천` is in the class. What
+    decides is the whole gap between the final digit and the unit, not whether
+    some member of it is known.
+
+    Every member of the class carries its own row, because a stated member
+    nothing pins is a member that can be deleted with the suite green -- which
+    `십` was until this test was written. The values are chosen so that removing
+    one character from `_SINO_KOREAN_MAGNITUDES` fails a row naming it and no
+    other: `5십원` needs `십` and nothing else, `2백원` needs `백`, `3천원`
+    `천`, `3만원` `만`, `1억원` `억`, `1조원` `조`. Verified as a diagonal, one
+    deletion at a time.
+
+    `2백5십원` is the shape a sum below ten thousand is actually written in, and
+    it is here as a reading rather than as a seventh killer: it is lost by
+    dropping `십` and NOT by dropping `백`, because the run reads from the last
+    magnitude it knows and the `5십` is reachable on its own. That is the same
+    mechanism the `1경5천조원` row above turns on, which is why one value cannot
+    stand for two members.
+    """
+    from verinote.pipeline.query_intent import (
+        _SINO_KOREAN_MAGNITUDES,
+        korean_measure_unit_mismatch,
+    )
+
+    question = "샘플사업의 가격은 몇 원인가?"
+    assert korean_measure_unit_mismatch(question, "2백만원 (15,000달러)") is None
+    assert korean_measure_unit_mismatch(question, "3천5백만원 (15,000달러)") is None
+    assert korean_measure_unit_mismatch(question, "1경원 (15,000달러)") == ("원", "달러")
+    assert korean_measure_unit_mismatch(question, "1경5천조원 (15,000달러)") is None
+    assert korean_measure_unit_mismatch(question, "1천경원 (15,000달러)") == ("원", "달러")
+
+    # One value per member, so no member rides free. Derived from the live
+    # constant rather than listed, so a member added without a value here fails
+    # for want of a fixture instead of passing unpinned.
+    per_member = {
+        "십": "5십원 (15,000달러)",
+        "백": "2백원 (15,000달러)",
+        "천": "3천원 (15,000달러)",
+        "만": "3만원 (15,000달러)",
+        "억": "1억원 (15,000달러)",
+        "조": "1조원 (15,000달러)",
+    }
+    assert set(per_member) == set(_SINO_KOREAN_MAGNITUDES)
+    for member, value in per_member.items():
+        assert korean_measure_unit_mismatch(question, value) is None, member
+    assert korean_measure_unit_mismatch(question, "2백5십원 (15,000달러)") is None
+
+
+def test_the_reporting_scans_magnitude_bound_has_two_halves_and_both_are_pinned():
+    """`[만억천조]?` says "at most one" AND "only these four"; pin each separately.
+
+    `korean_measure_unit_mismatch` states both halves in one sentence, and one
+    fixture cannot hold them. The obvious choice is vacuous: `2백만원` needs the
+    run AND the class, so it stays unreadable under a mutation that supplies
+    only one, and a test resting on it would pass while either half rotted.
+
+    The diagonal below is the whole point. `2천만원` needs only the run, so it
+    moves under the run mutation and not the class one; `2백원` and `5십원` need
+    only the class, so they move under the class mutation and not the run one.
+    Each half therefore has a value that fails for it alone. `2백만원` is
+    asserted too, but as the conjunction it names rather than as a killer.
+
+    #451 sits on the class half: the SUPPRESSION scan gained `십백` and this one
+    did not, which is why `2백원` asked in won is silent here and suppresses
+    there.
+    """
+    import re
+
+    from verinote.pipeline.query_intent import _VALUE_MEASUREMENT, _value_measure_units
+
+    for value in ["2천만원", "2백원", "5십원", "2백5십원", "2백만원"]:
+        assert _value_measure_units(value) == (), value
+    # The control: one magnitude from the four is read, so the silences above
+    # are the bound and not a blind pattern.
+    assert _value_measure_units("3만원") == (("KRW", "원"),)
+
+    live = _VALUE_MEASUREMENT.pattern
+    bound = "[만억천조]?"
+    assert bound in live, "the bound moved; this test hardcodes only its text"
+    wider_class = re.compile(live.replace(bound, "[십백천만억조]?"))
+    longer_run = re.compile(live.replace(bound, "[만억천조]*"))
+
+    def reads(pattern, value):
+        return [m.group("unit") for m in pattern.finditer(value)]
+
+    # Widening the class reaches the sub-myriad values and not the stacked one.
+    assert reads(wider_class, "2백원") == ["원"]
+    assert reads(wider_class, "5십원") == ["원"]
+    assert reads(wider_class, "2천만원") == []
+    # Allowing a run reaches the stacked value and not the sub-myriad ones.
+    assert reads(longer_run, "2천만원") == ["원"]
+    assert reads(longer_run, "2백원") == []
+    assert reads(longer_run, "5십원") == []
+    # And the conjunction really is one: neither mutation alone reads it.
+    assert reads(wider_class, "2백만원") == []
+    assert reads(longer_run, "2백만원") == []
+
+
+def test_a_separator_is_admitted_only_inside_the_leading_digit_run(monkeypatch):
+    """`2천만,년` states nothing, and that is the number's shape, not luck.
+
+    `_RELAXED_QUANTITY_NUMBER` is `\\d[\\d,.]*` followed by a run of magnitude
+    words, so the comma and the dot are admitted inside the leading digit run
+    and nowhere else. A separator standing AFTER a magnitude word ends the
+    match, which is why `2천만,년` is not read as years -- even though a digit
+    stands before the `년` with only digits, separators and magnitudes between
+    them, and so the value satisfies the rule
+    `_VALUE_MEASUREMENT_RELAXED` states.
+
+    That is the whole reason this test exists. That rule is stated as necessary
+    and not sufficient, and it names two classes where the converse fails; this
+    is the second of them. Until this fixture, nothing held it: admitting
+    `[,.]` after the magnitude group left the entire file green, so the
+    disclosure was a reading of the constant rather than a claim anything would
+    notice losing. The other class has
+    `test_달러_is_the_only_prefix_pair_that_crosses_canonical_units`; this is
+    the matching tripwire.
+
+    The killer is derived from the live constant rather than retyped, so it
+    follows the number if the number moves.
+    """
+    import verinote.pipeline.query_intent as query_intent
+    from verinote.pipeline.query_intent import (
+        _RELAXED_QUANTITY_NUMBER,
+        _VALUE_MEASUREMENT_RELAXED,
+        _value_states_asked_unit,
+        korean_measure_unit_mismatch,
+    )
+
+    question = "샘플사업의 기간은 몇 년인가?"
+    assert _value_states_asked_unit("2천만,년", "YEAR") is False
+    assert _value_states_asked_unit("2천만.년", "YEAR") is False
+    assert korean_measure_unit_mismatch(question, "2천만,년 3주") == ("년", "주")
+    # The minimal pair: this differs from the row above it by the comma alone,
+    # so the two together fail when the POSITION moves and not when the value
+    # stops being read for some other cause. On its own the `False` above would
+    # also go green if `년` ever left the spellings table, and the pin would
+    # survive having stopped meaning anything.
+    assert _value_states_asked_unit("2천만년", "YEAR") is True
+    # The control, and the half of the claim that is about POSITION. Asserted on
+    # the match and not on the boolean: drop `[,.]` from the leading run and
+    # `1,000년` is still read, because the scan resumes and finds `000년`, so no
+    # `_value_states_asked_unit` assertion here could notice. The span is what
+    # moves -- `1,000년` becomes `000년`.
+    assert _VALUE_MEASUREMENT_RELAXED.search("1,000년").group(0) == "1,000년"
+    assert _value_states_asked_unit("1,000년", "YEAR") is True
+    assert korean_measure_unit_mismatch(question, "1,000년 3주") is None
+
+    after_magnitudes = _RELAXED_QUANTITY_NUMBER.replace(r"]\s*)*", r"]\s*[,.]*\s*)*")
+    assert after_magnitudes != _RELAXED_QUANTITY_NUMBER, "the mutation did not apply"
+    monkeypatch.setattr(
+        query_intent,
+        "_VALUE_MEASUREMENT_RELAXED",
+        _relaxed_pattern_from(after_magnitudes),
+    )
+    assert _value_states_asked_unit("2천만,년", "YEAR") is True
+    assert korean_measure_unit_mismatch(question, "2천만,년 3주") is None
 
 
 @pytest.mark.parametrize("value", ["3월 15일", "3월  15일", "3월\t15일", "3월15일"])
@@ -2114,8 +2577,11 @@ def test_the_suppression_scan_keeps_the_digit_head_of_the_strict_pattern():
     """The relaxed pattern's twin of "the whole precision of this rule".
 
     `_VALUE_MEASUREMENT`'s leading `[0-9]` is pinned by a 637-pair prose sweep,
-    and the relaxed pattern was built with the same head and nothing guarding
-    it. Drop it there and the bare `원` inside `지원` counts as a quantity in
+    and the relaxed pattern requires a digit in the same position with nothing
+    guarding it. The two heads differ in their digit CLASS and in nothing else,
+    `\\d` there against `[0-9]` here; what differs elsewhere in the two numbers
+    is the magnitude group, which is not what this test is about.
+    Drop the head there and the bare `원` inside `지원` counts as a quantity in
     won, so this value stops warning about its dollars -- the same prose-noise
     hazard, arriving through the suppression side instead.
     """
@@ -2131,15 +2597,20 @@ def test_the_suppression_scan_keeps_the_digit_head_of_the_strict_pattern():
     )
 
 
-def test_the_suppression_scan_reads_the_same_magnitude_word_as_the_value_scan():
-    """The two scans must agree on what a quantity looks like, or the caveat lies.
+def test_the_suppression_scan_reads_at_least_the_value_scans_magnitude_word():
+    """The relaxed scan must read at least what the value scan does, or it lies.
 
-    Drop `[만억천조]?` from the relaxed pattern only, and the two disagree about
-    `3만 원`: the reporting scan reads won, the suppression scan does not, so
-    nothing suppresses and the first same-family unit reported is the won
-    itself. The caveat then renders as "the question's counter is 원; the
-    verified value states 원" -- a sentence that contradicts itself in front of
-    the reader.
+    Since #451 the two do not read the same magnitude word, nor the same
+    magnitude class: the relaxed number is a run over
+    `_SINO_KOREAN_MAGNITUDES` and `_VALUE_MEASUREMENT` still takes one
+    `[만억천조]`. What is required is the inequality, not the equality. Drop the
+    magnitude run from the relaxed pattern and the two disagree about `3만 원`
+    in the unsafe direction: the reporting scan reads won, the suppression scan
+    does not, so nothing suppresses and the first same-family unit reported is
+    the won itself. The caveat then renders as "the question's counter is 원;
+    the verified value states 원" -- a sentence that contradicts itself in front
+    of the reader. The other direction is safe by construction, and
+    `test_the_widened_number_can_only_silence` is where it is argued.
     """
     from verinote.pipeline.query_intent import (
         _value_measure_units,
@@ -2159,6 +2630,12 @@ def test_the_suppression_scan_reads_the_same_magnitude_word_as_the_value_scan():
         ("샘플사업의 기간은 몇 주인가?", "1주년 기념, 3개월 준비", "개월"),
         ("샘플사업의 기간은 몇 년인가?", "80년대 후반, 3개월", "개월"),
         ("샘플사업의 소요는 몇 초인가?", "3 secondary reviews, 2 minutes", "minutes"),
+        ("샘플사업의 소요는 몇 분인가?", "２분기 실적, 2시간 소요", "시간"),
+        ("샘플사업의 기간은 몇 주인가?", "１주년 기념, 3개월 준비", "개월"),
+        ("샘플사업의 기간은 몇 년인가?", "８０년대 후반, 3개월", "개월"),
+        ("샘플사업의 기간은 몇 주인가?", "2천만주 보유, 3개월 준비", "개월"),
+        ("샘플사업의 기간은 몇 주인가?", "3천만 주주, 3개월", "개월"),
+        ("샘플사업의 기간은 몇 주인가?", "3백주 보유, 3개월 준비", "개월"),
     ],
 )
 def test_caveats_lost_to_the_suppression_scan_are_recorded_not_fixed(
@@ -2177,6 +2654,26 @@ def test_caveats_lost_to_the_suppression_scan_are_recorded_not_fixed(
     the paragraph in `_VALUE_MEASUREMENT_RELAXED` to be corrected with the code.
     The trade is accepted because the alternative was a wrong sentence on
     `3시간30분`, not because the cost is small.
+
+    The last six arrived with #451, which widened the number into three
+    notations: a magnitude RUN, a magnitude CLASS reaching below the myriad, and
+    a non-ASCII decimal digit. Three are the full-width twins of the three
+    Korean rows above them. The rest are the other lost-caveat shape reaching a
+    scale the old number could not spell: `2천만주` is twenty million shares,
+    the `100주` `test_known_false_unit_statements_are_recorded_not_fixed`
+    records, and `3천만 주주` is shareholders, where the `주` is a syllable of a
+    longer word as in the first three.
+
+    `3백주 보유, 3개월 준비` is the row that keeps the count of notations honest,
+    and it is here for that and not for variety. Three hundred shares beside a
+    genuine three months, in ASCII digits, with a magnitude run of length one --
+    so neither the run nor the digit class explains it, and a docstring saying
+    "two notations" would price every value except the ones the third reaches.
+    Drop `백` from `_SINO_KOREAN_MAGNITUDES` and this row alone fires.
+
+    Read the list as an illustration of a product and not as a set: every
+    reading this scan already makes now reaches into all three notations, so a
+    count here would be a count of an open class.
     """
     from verinote.pipeline.query_intent import (
         _value_measure_units,
@@ -2188,6 +2685,42 @@ def test_caveats_lost_to_the_suppression_scan_are_recorded_not_fixed(
     assert unit_the_caveat_used_to_name in {
         spelling for _, spelling in _value_measure_units(value)
     }
+
+
+def test_a_point_in_time_silence_travels_into_the_new_notations():
+    """#451's second cost, which is not the lost-caveat class above it.
+
+    `_value_states_asked_unit` does not consult `_TIME_POINT` -- that pattern's
+    own docstring says so -- so a point-in-time component the suppression scan
+    reads as a quantity suppresses in whatever notation it is written. Widening
+    the number therefore carried every point-in-time silence into the new
+    notations too, and filing that under the lost-caveat class would be a false
+    claim about the code: nothing here is a unit spelling hiding inside another
+    word.
+
+    Each row is asserted beside its ASCII twin, which is silent as well. That
+    pairing is what makes this an extension of an accepted silence rather than a
+    new misreading -- and it is also the falsifier, since a row whose twin was
+    caveated would belong somewhere else. These are real losses judged as
+    Korean: `２０２１년 착수, 총 3주` asked in years carries no duration in years
+    and the caveat naming the weeks was true.
+
+    One reading went the other way with them, and it is the defect this scan
+    exists to fix: `３시간30분` asked in hours was told it states minutes.
+    """
+    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+
+    for question, wide, ascii_twin in [
+        ("샘플사업의 기간은 몇 년인가?", "２０２１년 착수, 총 3주", "2021년 착수, 총 3주"),
+        ("샘플계약의 마감일은 몇 일인가?", "１５일 마감, 3주", "15일 마감, 3주"),
+        ("샘플계약의 마감일은 몇 일인가?", "３월 １５일, 3주", "3월 15일, 3주"),
+        ("샘플사업의 소요는 몇 분인가?", "３시 ３０분 회의, 2시간", "3시 30분 회의, 2시간"),
+        ("샘플사업의 기간은 몇 년인가?", "２１년, 3개월", "21년, 3개월"),
+    ]:
+        assert korean_measure_unit_mismatch(question, wide) is None, wide
+        assert korean_measure_unit_mismatch(question, ascii_twin) is None, ascii_twin
+
+    assert korean_measure_unit_mismatch("샘플작업의 소요시간은 몇 시간인가?", "３시간30분") is None
 
 
 def test_only_the_달러_before_달_constraint_decides_the_suppression_ordering():
@@ -2208,6 +2741,7 @@ def test_only_the_달러_before_달_constraint_decides_the_suppression_ordering(
 
     from verinote.pipeline.query_intent import (
         _MEASUREMENT_UNIT_SPELLINGS,
+        _RELAXED_QUANTITY_NUMBER,
         _VALUE_MEASUREMENT_RELAXED,
     )
 
@@ -2220,19 +2754,38 @@ def test_only_the_달러_before_달_constraint_decides_the_suppression_ordering(
         "alphabetical": sorted(spellings),
         "reverse-alphabetical": sorted(spellings, reverse=True),
     }
-    probes = ["3달러", "2주일", "3만 원", "1000달러", "3달", "2주", "30 seconds", "5달러 및 3달"]
+    # The last two probes are the range the number gained in #451. Without them
+    # every probe is ASCII with at most one magnitude word, so the copy of the
+    # number this test used to carry could not be told apart from the live one
+    # and substituting the constant would stop the copy drifting while leaving
+    # the probes blind at the level above.
+    probes = [
+        "3달러", "2주일", "3만 원", "1000달러", "3달", "2주", "30 seconds", "5달러 및 3달",
+        "2천만달러 및 3달", "３달러",
+    ]
 
     def reads(pattern):
         return [[m.group("unit") for m in pattern.finditer(v)] for v in probes]
 
     def compiled(order):
         return re.compile(
-            r"[0-9][0-9,.]*\s*[만억천조]?\s*(?P<unit>"
+            _RELAXED_QUANTITY_NUMBER
+            + r"(?P<unit>"
             + "|".join(re.escape(s) for s in order)
             + r")"
         )
 
     shipped = reads(_VALUE_MEASUREMENT_RELAXED)
+    # The probes really do exercise the number, and not only the alternation:
+    # the pre-#451 number reads them differently. Without this the two added
+    # probes could be inert and nothing here would say so.
+    before_451 = re.compile(
+        r"[0-9][0-9,.]*\s*[만억천조]?\s*(?P<unit>"
+        + "|".join(re.escape(s) for s in candidates["longest-first"])
+        + r")"
+    )
+    assert reads(before_451) != shipped, "the probes cannot see the number"
+
     satisfying = {n: o for n, o in candidates.items() if o.index("달러") < o.index("달")}
     violating = {n: o for n, o in candidates.items() if o.index("달러") > o.index("달")}
     assert satisfying, candidates
@@ -2324,6 +2877,7 @@ def test_a_unit_suffix_would_be_inert_here():
 
     from verinote.pipeline.query_intent import (
         _MEASUREMENT_UNIT_SPELLINGS,
+        _RELAXED_QUANTITY_NUMBER,
         _UNIT_SUFFIX,
         _UNIT_SUFFIX_MEMBERS,
         _VALUE_MEASUREMENT_RELAXED,
@@ -2351,7 +2905,8 @@ def test_a_unit_suffix_would_be_inert_here():
     # non-vacuity guard below would fire on a mutation that breaks nothing. The
     # claim is about these character sets, not about today's pattern text.
     quantity = (
-        r"[0-9][0-9,.]*\s*[만억천조]?\s*(?P<unit>"
+        _RELAXED_QUANTITY_NUMBER
+        + r"(?P<unit>"
         + "|".join(
             re.escape(s) for s in sorted(_MEASUREMENT_UNIT_SPELLINGS, key=len, reverse=True)
         )
@@ -2361,7 +2916,11 @@ def test_a_unit_suffix_would_be_inert_here():
     with_suffix = re.compile(quantity + _UNIT_SUFFIX)
     corpus = [
         f"{number}{magnitude}{spelling}{tail}"
-        for number in ("3", "1000")
+        # The last three numbers are the three notations #451 added: a
+        # magnitude run, a magnitude outside `[만억천조]`, and a non-ASCII
+        # digit. Without them the corpus stays inside the pre-#451 number and
+        # this test cannot see the pattern it is built from.
+        for number in ("3", "1000", "2천만", "2백", "３")
         for magnitude in ("", "만")
         for spelling in _MEASUREMENT_UNIT_SPELLINGS
         # The last four are the distinguishing shape: something follows the
@@ -2961,11 +3520,11 @@ def test_whether_a_withdrawn_cover_becomes_a_caveat_depends_on_the_question():
     # has no negative candidate that could fire -- which is exactly how it went
     # unnoticed while the list was being called complete.
     _MONEY = "샘플사업의 가격은 몇 원인가?"
-    assert korean_measure_unit_mismatch(_MONEY, "2021년, 2천만원 (15,000달러)") == (
+    assert korean_measure_unit_mismatch(_MONEY, "2021년, 15,000달러 계약") == (
         "원",
         "달러",
     )
-    assert korean_measure_unit_mismatch(_MONTH, "2021년, 2천만원 (15,000달러)") is None
+    assert korean_measure_unit_mismatch(_MONTH, "2021년, 15,000달러 계약") is None
     # The reverse pairing, and the witness `_TIME_POINT` cites: a DAY reported
     # and outside every span, passed over because the question asks in won.
     assert korean_measure_unit_mismatch(_MONEY, "2021년, 15일 마감") is None
