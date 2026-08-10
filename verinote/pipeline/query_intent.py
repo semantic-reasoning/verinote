@@ -724,6 +724,18 @@ Absent on purpose, each for its own reason:
   judgement between two. `_TIME_POINT` does read digits run into `월`, but as a
   month term inside a longer shape rather than as a unit, so the two do not
   disagree.
+  The exclusion is live on the suppression scan too, which is what makes
+  `6월 및 30주` asked in months name the weeks. Admitting `월` there was measured
+  against #451 and declined: it silences `3월 15일간`, `3월 내 15일 소요`,
+  `3월 계약 15일 소요` and their siblings, values whose duration other tests
+  assert is caveated, and it reaches the `N월 ..., N주` shape at large, where
+  the `3월` is the month of the year far more often than a count of them.
+  The reach is the DIGIT month only -- `전월 대비 3일 단축` and `매월 15일간`
+  keep their caveats, since the scan needs a digit in front of the `월` --
+  which narrows the cost without
+  changing the verdict. Declining a `월` that falls inside a `_TIME_POINT` span
+  does not rescue the narrower cases either: `2년 3월` and `10000년 3월` match no
+  branch of that pattern.
 * `일` is present, unlike `월`: `3일` is three days far more often than it is
   the third of the month. That is a judgement about which reading is commoner,
   not a guarantee that the other one is caught. What catches the other reading
@@ -733,10 +745,22 @@ Absent on purpose, each for its own reason:
   `korean_measure_unit_mismatch`.
 * `개년`. It fired on `5개년 계획`, which is the name of a plan rather than a
   duration.
+  Live on the suppression scan too, so `5개년 계획 3주` asked in years names the
+  weeks -- a wrong sentence #451 records. Fixing it means reading `5개년` as
+  possibly stating years after all, which is the judgement this row was excluded
+  for, so the two cannot both stand.
 * `$`, `₩`, `€`. Every quantity here begins at a digit, and these precede their
   number, so no row in this table could reach them. `%` is read because it
   follows the number. That asymmetry is by construction; it is not an omission
   a row would restore.
+  What #451 adds is not a reason to restore one but a name for what the
+  omission costs. A symbol-led sum states no unit on either scan, so where a
+  readable same-family unit stands beside it the caveat names that one:
+  `₩20,000,000 (15,000달러)` asked in won reports `달러`, before this change and
+  after. That is the general form `korean_measure_unit_mismatch`'s last bullet
+  states -- an accepted silence with a readable neighbour is a latent wrong
+  sentence -- reached by a cause that is neither the number nor a missing row,
+  but the side the symbol sits on.
 """
 
 _UNIT_SUFFIX_MEMBERS = ("간", "가량", "정도", "쯤", "짜리")
@@ -806,11 +830,18 @@ _VALUE_MEASUREMENT = re.compile(
     + "|".join(re.escape(s) for s in _MEASUREMENT_UNIT_SPELLINGS)
     + r")" + _UNIT_SUFFIX + r"(?![가-힣0-9A-Za-z])"
 )
-"""One quantity stated inside a value: digits, at most one Korean magnitude
-word, and a unit spelling.
+"""One quantity stated inside a value: ASCII digits, at most one of four Korean
+magnitude words, and a unit spelling.
 
 `[만억천조]?` is one character, not a run, so `3만원` is read and `2천만원` is
-not -- a number that stacks magnitudes states nothing this pattern can see.
+not; it is those four and no others, so `2백만원` is not either; and the digits
+are `[0-9]` rather than `\\d`, so `３년` is not. All three bounds are narrower
+than `_VALUE_MEASUREMENT_RELAXED`'s, and the asymmetry has a direction. This
+pattern decides what a value STATES and its output is put in front of a reader,
+so widening it ADDS sentences and needs a sweep of its own; the relaxed one
+decides only whether to stay silent. #451 widened the relaxed number and left
+this one where it was, which is why those three are silent here and suppress
+there.
 
 Requiring the digits is the whole precision of this rule. Ordinary Korean prose
 is full of syllables that are also unit spellings -- `지원`, `내년`, `일정`,
@@ -988,7 +1019,7 @@ time, and span-local withdraws that from all of them at once.
 `2021년 계약, 15일 마감` is now told it states `일`, `2021년 착수, 21년` that
 it states `년`, `2021년 계약, 2 second review` that it states `second`,
 `2021년 기준, 6월 및 30주` that it states `주`, and
-`2021년 계약, 2천만원 (15,000달러)` that it states `달러` -- one witness per
+`2021년 계약, 15,000달러` that it states `달러` -- one witness per
 entry would just be the list of entries again. None of them is a new
 misreading: each value reads the same way standing alone and has since before
 #450. What changed is the reach, and it changed for the whole list rather
@@ -1312,8 +1343,65 @@ picks the date one.
 """
 
 
+_SINO_KOREAN_MAGNITUDES = "십백천만억조"
+"""The magnitude words `_VALUE_MEASUREMENT_RELAXED`'s number may run through.
+
+The Sino-Korean magnitudes as far as documents use them. This is TWO series
+joined, and the join is worth naming because only one of them continues: the
+sub-myriad steps 십 백 천, which are 10^1 to 10^3 and stop there because 10^4
+has its own word, and the myriad steps 만 억 조, which are 10^4, 10^8 and 10^12
+and go on to `경`. Both are enumerable with a defining property rather than
+open lexical classes like `_MONTH_WORD_MEMBERS`, so naming them is one decision
+rather than a list that grows each round. Reading the six as one run is what
+makes the boundary hard to see: it invites looking for a next member after
+`조` by the same step that got from `십` to `백`, when what actually continues
+is the myriad half, at `경`. `경` is out because a sum of 10^16 has not been
+seen in this data; that boundary is stated here so it can be argued with, and
+`test_the_magnitude_class_is_a_series_and_this_is_where_it_stops` re-derives
+what it costs rather than restating this sentence.
+
+What it costs is narrow, and narrow for a structural reason: the run has to
+reach from a digit to the unit without interruption, so it starts at the LAST
+digit run and a number escapes when a magnitude outside the class stands
+anywhere between that run and the unit. `1경5천조원` is read, because its last
+digit run is the `5` and only `천` and `조` stand after it. `1경원`, `1천경원`
+and `1억경원` are not, and the `천` in the second of those is in the class and
+does not help -- what decides is the whole gap, not any one member of it.
+
+`_DAY_DURATION_SUFFIXES` says an open-ended class needs a safe default and a
+tripwire. Only the tripwire is available here, and that is worth saying plainly
+because it inverts the usual argument in this file: on THIS scan an
+unrecognised member does not cost a caveat, it leaves a wrong sentence
+standing, since failing to read the asked unit is what #451 is. There is no
+consolation in the default, so the tripwire carries the whole load.
+
+`[만억천조]` was what shipped for #445 -- the myriad steps plus `천`, which is
+neither a full series nor a closed one -- and `2백만원`, two million won and as
+ordinary in a Korean document as `2천만원`, was told it states `달러` for
+exactly that reason. Adding `십` and `백` is what makes the sub-myriad half
+complete rather than partial, and completing it is the decision; `십` on its
+own buys `5십원` and `2백5십원`, which
+`test_the_magnitude_class_is_a_series_and_this_is_where_it_stops` pins so the
+member cannot be dropped with the suite green.
+"""
+
+_RELAXED_QUANTITY_NUMBER = (
+    r"\d[\d,.]*\s*(?:[" + _SINO_KOREAN_MAGNITUDES + r"]\s*)*"
+)
+"""The number `_VALUE_MEASUREMENT_RELAXED` reads, named so the tests can rebuild
+the pattern instead of restating it.
+
+Two of them opened with a copy of this text, and a copy of a pattern is a claim
+about the pattern that nothing checks: both went on passing when the number
+changed under them for #451, because their probes happened not to distinguish
+the old shape from the new one. Naming it is the same remedy
+`_UNIT_SUFFIX_MEMBERS` and `_MONTH_WORD_MEMBERS` get, and the probes were
+widened at the same time.
+"""
+
 _VALUE_MEASUREMENT_RELAXED = re.compile(
-    r"[0-9][0-9,.]*\s*[만억천조]?\s*(?P<unit>"
+    _RELAXED_QUANTITY_NUMBER
+    + r"(?P<unit>"
     + "|".join(
         re.escape(s) for s in sorted(_MEASUREMENT_UNIT_SPELLINGS, key=len, reverse=True)
     )
@@ -1329,7 +1417,8 @@ _VALUE_MEASUREMENT_RELAXED = re.compile(
     # over the live tuple, the moving ends, the unchanged readings -- are
     # re-derived by `test_a_unit_suffix_would_be_inert_here`, not quoted here.
 )
-"""`_VALUE_MEASUREMENT` without the trailing lookahead, for the suppression test.
+"""`_VALUE_MEASUREMENT` with a wider number and no trailing lookahead, for the
+suppression test.
 
 The lookahead is right for deciding what a value STATES -- `2년차` is a second
 year of service, not two years -- but wrong for deciding whether the value
@@ -1338,6 +1427,140 @@ the caveat fire anyway: `3시간30분` answering `몇 시간인가?` was told th
 states minutes and that no conversion is applied, when the leading quantity is
 exactly the hours asked for. A single space changed the outcome, because
 `3시간 30분` passes the lookahead and `3시간30분` does not.
+
+The number is wider in three ways, and #451 is what made them necessary. They
+are three and not two, which matters below: the magnitude group is a RUN rather
+than one character, its CLASS is `_SINO_KOREAN_MAGNITUDES` rather than
+`[만억천조]`, and these are independent -- `2천만원` needs only the run, `2백원`
+needs only the class, and `2백만원` needs both. So `2천만원`, `1억5천만원`,
+`2백만원` and `2백원` are read -- `X천만원`, `X억Y천만원`, `X백만원` and `X백원`
+are how a Korean document writes a sum, and `원` is a live question counter, so
+a `몇 원인가?` answered any of them was told the value states `달러` beside an
+answer whose leading figure is won. The digit class is `\\d`, every Unicode
+decimal digit rather than a listed range, because naming a range would leave the
+next script out; `verinote.text.nfc` is not `nfkc` and folding compatibility
+forms would have this rule compare a value differently from every other
+comparison made on it, but admitting the characters in a class local to this
+pattern normalizes nothing, so the one-normalizer rule is not in play.
+
+What is still out of reach is stated as a rule and not as a list, because a
+list here has been wrong every time it has been written -- three times, each
+time by leaving out a class the next reader found. The rule is about a unit
+spelling and not about a value, and it is ONE existential condition with two
+ways to fail:
+
+    this scan reads a given unit ONLY WHERE SOME DECIMAL DIGIT stands
+    before that unit's spelling with nothing between them but digits,
+    separators, magnitude words from `_SINO_KOREAN_MAGNITUDES`, and
+    whitespace.
+
+Only where, and not wherever. The condition is what every match must satisfy,
+so failing it at every digit is what puts a value out of reach -- which is the
+whole of the account below, and that direction is exact: every match this
+pattern makes begins at a decimal digit and reaches its spelling through those
+four character classes and nothing else. It does not run the other way.
+`3달러` has a digit before its `달` and an empty gap between them, and is still
+not read as months, because the alternation takes `달러` first.
+`test_only_the_달러_before_달_constraint_decides_the_suppression_ordering` is
+where that constraint lives, and it is the one thing a reader cannot get from
+the condition above.
+
+That is a mechanism with a bound rather than a case that happened to be found,
+and the bound is what keeps this from being a list. A prefix pair can only bite
+when the two spellings CROSS CANONICAL UNITS, because the converse asks whether
+the unit was read and not which spelling read it: `3주일` satisfies the
+condition on its `주` and the alternation takes `주일`, and nothing is lost,
+since both are WEEK. `달`/`달러` is the only cross-family prefix pair in the
+table, and
+`test_달러_is_the_only_prefix_pair_that_crosses_canonical_units` fails the day a
+row creates a second one -- so a new spelling cannot quietly widen this
+exception.
+
+The other way it does not run is narrower and worth a clause rather than a
+paragraph: a separator is admitted only inside the leading digit run and never
+after a magnitude word, so `2천만,년` satisfies the condition as worded and is
+read as nothing. `_RELAXED_QUANTITY_NUMBER` is the shape, and
+`test_a_separator_is_admitted_only_inside_the_leading_digit_run` is the
+tripwire: it was written because admitting `[,.]` after the magnitude group
+left the whole suite green, so this exception was a reading of the constant
+rather than a claim anything would notice losing. Both classes are held now,
+which is what makes naming two of them a bound rather than a count.
+
+SOME DIGIT and not EVERY DIGIT, and the difference is the whole sentence.
+`1경5천조원` qualifies on its `5`, whose gap to the `원` is `천조`, and does not
+qualify on its `1`, whose gap holds the `경`; the scan resumes from the next
+start rather than giving up at the first, so the value is read. A reader who
+takes the gap clause distributively gets that value wrong -- which is the
+mistake an earlier draft of this paragraph made in the code, saying "the FIRST
+digit" while a test in the same commit asserted the `5`. Existential is the
+property; "reads from the last digit run" is a consequence of the run being
+greedy, not the rule.
+
+Say DIGIT and not just "some", because the quantifier has a second axis and
+only one of them is this rule. Ranged over OCCURRENCES OF THE SPELLING it
+would say every `원` in the value must be reachable, and that is false:
+`2천만원 지원 (15,000달러)` holds two, of which only the first is, and the
+value is read. `1경5천조원` cannot catch that mistake -- it has one `원` and
+comes out true either way -- so the witness does not substitute for naming the
+noun. `지원` is this file's own standing example for why the digit requirement
+exists, which is how ordinary the wrong axis is.
+
+Failing that condition at every digit puts a unit out of reach, and the groups
+below are the ways it is failed. Read that direction only: the groups account
+for what the condition excludes, not for everything this scan declines, since
+the two classes above are declined while satisfying it. What the direction does
+buy is the thing four drafts of this paragraph kept getting wrong -- a cause
+that fails the condition needs no new entry here, because the condition already
+covers it.
+
+FAILING THE DIGIT. No decimal digit stands before the asked unit, so there is
+nothing for the scan to start from. A Sino-Korean numeral (`이천만원`) is the
+case this file has recorded longest, but the reachable ones are the native
+Korean numerals -- `한 시간 30분` asked in hours, `두 달 3주`, `이틀 3주` --
+and the quantities that carry no numeral at all: `반년`, `수개월`, `수십억원`,
+`여러 달`. `반년` is why the condition cannot be phrased as "a numeral the scan
+cannot spell": there is no numeral in it to fail to spell. `한 시간 30분` is
+the most reachable of all of them, since `일 시간` is not Korean and an hour
+and a half is ordinarily written that way -- though `1시간 30분` and `1.5시간`
+are read, so what is out of reach is the notation and not the quantity.
+
+FAILING THE GAP. Digits do stand before the unit, and EVERY one of them has
+something in its gap: a magnitude outside the class (`1경원`, and `1천경원`,
+whose in-class `천` does not save it -- there is no later digit to start from),
+or an approximator (`3천만여원`, `20여년`). This is where the quantifier earns
+its keep: one blocked digit proves nothing, since `1경5천조원` has a blocked
+`1` and is read anyway. Position and not vocabulary -- the same `여` AFTER the
+unit spelling never enters a gap, so `3개월여` and `2년여` read normally.
+
+All of these are pre-existing rather than introduced by #451. That change
+widened the gap condition, and it widened the digits themselves from `[0-9]`
+to every Unicode decimal digit; what it left alone is the requirement that
+there be a decimal digit at all, which is the whole of the first group.
+`korean_measure_unit_mismatch` records what they cost.
+
+The run takes no digits between its magnitude words, and that is measured rather
+than assumed. `(?:[...]\\s*[\\d,.]*\\s*)*` reads `1억5천만원` from the `1` where
+this reads it from the `5`, and both report KRW: a stacked number is a digit
+run, then magnitude words possibly separated by further digit runs, then the
+unit, so where there are inner runs this pattern starts at the last of them and
+reaches the same unit. What that rests on is that no spelling in
+`_MEASUREMENT_UNIT_SPELLINGS` begins with a magnitude character, so the region
+the longer form swallows holds no unit to hide.
+`test_the_magnitude_run_needs_no_inner_digits` re-derives the premise from the
+live table and the equality from a corpus, and shows the two patterns really do
+differ, since their match starts do.
+
+Neither widening can put a unit in front of a reader, and that is a theorem
+rather than a corpus result. This pattern's one caller is
+`_value_states_asked_unit`, whose one output is the early return in
+`korean_measure_unit_mismatch`, so the only way a wider number changes an answer
+is by reading FEWER units. It cannot: the number's own language is
+`[\\d,.\\s십백천만억조]` and no spelling begins with a character in it, so no
+spelling can start inside a number and no number can extend across one, and at
+every start where the narrower pattern matched this one matches the same span
+and unit. `test_the_widened_number_can_only_silence` asserts that premise as
+well as the outcome, so the argument degrades loudly rather than silently if the
+table ever gains such a spelling.
 
 Suppression can only ever produce silence, so reading generously here is
 safety-increasing in a way that reading generously in `_value_measure_units`
@@ -1374,15 +1597,53 @@ before this scan existed and says nothing now, and the same goes for
 These are lost caveats, not near-misses, and this is the noisier half of the
 rule. The trade is deliberate: a lost caveat beats the wrong sentence the strict
 reading produced on `3시간30분`. It is still a trade.
+
+#451 widened the number and thereby widened this class, and it widened every
+other silence this scan already makes; that is the cost of the change rather
+than a separate defect. What reaches further is not a list of values but the
+three notations named above -- a magnitude run, a sub-myriad magnitude, and a
+non-ASCII decimal digit -- so anything this scan already read wrongly it now
+reads wrongly in those too. Three and not two: the sub-myriad magnitude reaches
+values with ASCII digits and a run of length one, which neither of the other
+two describes, and `3백주 보유, 3개월 준비` asked in weeks is a lost caveat of
+this very class that only that notation explains -- three hundred shares beside
+a genuine three months. `２분기 실적, 2시간 소요` asked in minutes is the
+full-width twin of `3분기`, `１주년 기념, 3개월 준비` and `８０년대 후반, 3개월`
+are the twins of the two named above, and `3백주 보유, 3개월 준비`,
+`2천만주 보유, 3개월 준비` and `3천만 주주, 3개월` asked in weeks are the `100주`
+shares reading at a scale the old number could not spell. A holding really is
+written `2천만주`, so that one is the most reachable. The point-in-time silences
+travel the same way, since this scan does not consult `_TIME_POINT`:
+`２０２１년 착수, 총 3주` asked in years and `１５일 마감, 3주` asked in days are
+silent now, where their ASCII spellings were already silent, and
+`test_a_point_in_time_silence_travels_into_the_new_notations` holds that half
+because it is not this class. Read none of these as a set. The rule is that the
+three notations join every reading this scan already makes, and a count here
+would be a count of an open class -- which is what the earlier draft of this
+paragraph got wrong by saying two, since a rule that omits a notation prices
+none of the values only that notation reaches.
+
+One reading in the other direction arrived with them: `３시간30분` asked in
+`몇 시간인가?` was told it states minutes and is silent now, which is the defect
+of the paragraph above this one, reaching a notation it could not before.
 """
 
 
 def _value_states_asked_unit(value: str, asked_unit: str) -> bool:
     """Whether the value carries a quantity in the unit the question asked for.
 
-    Read with `_VALUE_MEASUREMENT_RELAXED`, which is a strict superset of what
-    `_value_measure_units` finds, so every unit that function reports is caught
-    here too and this subsumes the plain equality test it replaced.
+    Read with `_VALUE_MEASUREMENT_RELAXED`, which reads more than
+    `_value_measure_units` does in four ways -- no trailing lookahead, a run of
+    magnitude words rather than one, a wider magnitude class, and any Unicode
+    decimal digit rather than ASCII -- so every unit that function reports is
+    caught here too and this subsumes the plain equality test it replaced.
+
+    That it reads MORE and never less is argued from the character sets rather
+    than sampled; the argument is in `_VALUE_MEASUREMENT_RELAXED` and its premise
+    is asserted by `test_the_widened_number_can_only_silence`. It is worth
+    knowing which of the two the tests are doing, because `finditer` resumes
+    from a match's end and a longer match could in principle hide a later one:
+    the premise closes that, and the corpus sweep confirms it.
     """
     folded = nfc(value).casefold()
     return any(
@@ -1477,21 +1738,51 @@ def korean_measure_unit_mismatch(question: str, value: str) -> tuple[str, str] |
 
     Both halves are what a pattern reads, not what the value contains, and the
     sentence has to be put that way round: `_value_states_asked_unit` re-reads
-    the value for the asked unit with the same quantity shape minus the
-    lookahead, and anything that scan cannot see is not suppressed on. It reads
-    `6개월` in `2년 6개월`, so a `몇 개월인가?` is suppressed. It does not read
-    the won in `2천만원 (15,000달러)`, because the quantity shape admits one
-    magnitude word and that number stacks two, so a `몇 원인가?` there is
-    caveated with `달러` beside an answer whose leading figure is won.
+    the value for the asked unit with a wider quantity shape and no lookahead,
+    and anything that scan cannot see is not suppressed on. It reads `6개월` in
+    `2년 6개월`, so a `몇 개월인가?` is suppressed, and since #451 it reads the
+    won in `2천만원 (15,000달러)` and `2백만원 (15,000달러)` and the years in
+    `３년 30주` as well.
+
+    What it still cannot see is given as a rule in
+    `_VALUE_MEASUREMENT_RELAXED`, and the rule is the thing to read, because
+    every attempt to write the residue as a list has left something out. The
+    scan reads a unit ONLY where SOME decimal digit stands before that
+    unit's spelling with nothing between them but digits, separators, class
+    magnitudes and whitespace -- necessary and not sufficient, since the
+    alternation taking `달러` before `달` can refuse a unit that satisfies it.
+    Some DIGIT and not every digit, or `1경5천조원`
+    reads wrong: it qualifies on its `5` and not on its `1`. The noun is worth
+    repeating because ranged over occurrences of the SPELLING the same words
+    say something false -- `2천만원 지원` holds two `원` and is read on the
+    first. So `한 시간 30분` and `반년 3주`
+    fail for want of any digit -- as `이천만원` does, and the native-numeral and
+    no-numeral forms are the reachable members of that class rather than the
+    Sino-Korean one -- while `1경원`, `3천만여원` and `20여년` have digits whose
+    gaps are all blocked. The other half of the residue is a spelling
+    `_MEASUREMENT_UNIT_SPELLINGS` leaves out on purpose: the `개년` in
+    `5개년 계획 3주` and the bare `월` in `6월 및 30주`. #451 widened what may
+    stand in a gap, and widened which characters count as digits; the
+    requirement that there be a digit at all is older than it and survives it,
+    and the bullet below is where the survivors live.
 
     The two halves are read by different patterns, and that is deliberate rather
     than an oversight. What the value STATES comes from `_value_measure_units`,
-    which refuses a unit run into the next character. Whether the value CARRIES
-    the asked unit comes from `_value_states_asked_unit`, which does not -- with
-    one pattern doing both, the same lookahead that correctly declines to read
-    `2년차` as two years also hid the asked unit in `3시간30분` and `2년6개월`,
-    and the caveat fired on a value whose leading quantity was exactly what the
-    question asked for. Spacing decided it, which no reader would predict.
+    which refuses a unit run into the next character and reads ASCII digits and
+    at most one of `[만억천조]`. Whether the value CARRIES the asked unit comes from
+    `_value_states_asked_unit`, which refuses none of those. With one pattern
+    doing both, the same lookahead that correctly declines to read `2년차` as two
+    years also hid the asked unit in `3시간30분` and `2년6개월`, and the caveat
+    fired on a value whose leading quantity was exactly what the question asked
+    for. Spacing decided it, which no reader would predict; #451 was the same
+    defect one layer down, where the notation the number was written in decided
+    it instead.
+
+    The divergence runs one way and may only run that way. The relaxed pattern
+    feeds a single early return here, so reading more with it ends caveats and
+    cannot start one; `_value_measure_units` is what a reader is shown, so
+    reading more with THAT adds sentences and is a separate change with a sweep
+    of its own.
 
     The first same-family unit is reported, not the first unit. `30% 완료, 3주`
     asked in months states a ratio first and a duration second, and the duration
@@ -1501,14 +1792,24 @@ def korean_measure_unit_mismatch(question: str, value: str) -> tuple[str, str] |
     stating no number; a unit run into the next syllable (`2년차`); a quantity
     that overlaps a point in time (`매월 15일`); a spelling outside the
     table; a suffix outside `_UNIT_SUFFIX`;
-    a number that stacks magnitude words (`2천만원`), since the quantity shape
-    admits at most one; and a number written in full-width digits (`３년`), which
-    `[0-9]` does not admit and `nfc` does not fold away. `nfkc` would fold it, but
-    `verinote.text.nfc` is the one normalizer the rest of the codebase compares
-    through, and folding compatibility forms here alone would have this rule read
-    a value differently from every other comparison made on it. A non-breaking
-    space between the number and the unit is fine (`3<NBSP>년` states years), so
-    this silence is specifically the digits. An earlier cross-family quantity
+    a number that stacks magnitude words (`2천만원`) or uses one outside
+    `[만억천조]` (`2백원`), since `_VALUE_MEASUREMENT` admits at most one and
+    only from those four -- `2백만원` needs both allowances and is silent for
+    either reason; and a number written in full-width digits (`３년`),
+    which its `[0-9]` does not admit and `nfc` does not fold away. `nfkc` would
+    fold it, but `verinote.text.nfc` is the one normalizer the rest of the
+    codebase compares through, and folding compatibility forms here alone would
+    have this rule read a value differently from every other comparison made on
+    it. A non-breaking space between the number and the unit is fine
+    (`3<NBSP>년` states years), so
+    this silence is specifically the digits. Those last two are silences on the
+    REPORTING side only since #451. The suppression scan reads all three
+    notations, so where the ASKED unit is the one written that way the whole rule
+    now says nothing instead of naming a neighbour: `2천만원 (15,000달러)` asked
+    in won, `３년 30주` asked in years. Asked in some other unit of the family the
+    quantity is still unreported and a neighbour can still be named --
+    `３년 30주` asked in months says `주` -- which is the reporting silence doing
+    what it has always done. An earlier cross-family quantity
     does not silence a later same-family one.
 
     One silence is worth separating from those, because it is the only one where
@@ -1545,13 +1846,68 @@ def korean_measure_unit_mismatch(question: str, value: str) -> tuple[str, str] |
       and `50/15일 3주` lost a genuine caveat. A dotted form is worse, since
       `1.5일` is a decimal duration with the same shape, and a dashed one collides
       with the range `10-15일`.
-    * A value whose asked-unit quantity no pattern here can read, beside a
-      same-family unit that one can. The suppression scan misses the first and
-      the reporting scan finds the second, so the caveat names the second:
-      `2천만원 (15,000달러)` asked in won reports `달러`, `5개년 계획 3주` and
-      `３년 30주` asked in years report `주`, and `6월 및 30주` asked in months
-      reports `주`. Each is a silence cause from the list above turned into a
-      wrong sentence by a readable unit standing next to it.
+    * A value whose asked-unit quantity the suppression scan cannot read, beside
+      a same-family unit the reporting scan can, so the caveat names the second.
+      What makes the two kinds below worth telling apart is that one is a
+      pattern's reach and the other is a table's contents; the split is not a
+      claim that there are two of anything, and the NUMBER side is itself given
+      as a rule rather than a list, for the reason
+      `_VALUE_MEASUREMENT_RELAXED` gives.
+
+      The NUMBER, in the two ways `_VALUE_MEASUREMENT_RELAXED`'s rule can
+      fail. That rule is existential -- SOME digit before the unit with a clean
+      gap -- so both failures below are failures at every digit, not at one.
+      These are the values the rule EXCLUDES; the rule holds only in that
+      direction, and the two classes it declines while satisfying are recorded
+      with it rather than here.
+
+      No DIGIT at all before the asked unit, so the scan has nothing to start
+      from. `이천만원 (15,000달러)` asked in won reports `달러`, and so do
+      `한 시간 30분` asked in hours, `두 달 3주` and `이틀 3주` asked in their
+      own units, and `반년 3주`, `수개월 3주` and `수십억원 (15,000달러)`,
+      which carry no numeral to spell at all. `한 시간 30분` is the one to
+      weigh: it is the very sentence this scan exists to prevent, on the way an
+      hour and a half is ordinarily written, since `일 시간` is not Korean.
+      Notation and not quantity -- `1시간 30분` and `1.5시간` say the same thing
+      and are both silent -- which is what makes it a spelling defect rather
+      than a limit on what can be asked.
+
+      Something in the GAP between that digit and the unit. A magnitude outside
+      `_SINO_KOREAN_MAGNITUDES` (`1경원 (15,000달러)`), or an approximator
+      (`3천만여원 (15,000달러)`, `20여년 3주`) -- position and not vocabulary,
+      since the same `여` after the unit is harmless.
+
+      #451 moved the gap condition and part of the digit one: it widened what
+      magnitudes may stand in the gap, and widened the digits themselves from
+      `[0-9]` to every Unicode decimal digit. What it did not touch is the
+      requirement that the starting character be a DECIMAL DIGIT at all, which
+      is why the whole first group above is older than #451 and survives it. It
+      retired `2천만원 (15,000달러)` and `３년 30주` from this bullet, which is
+      what it listed before; `1억5천만원 및 20,000달러` was in the test table
+      rather than here, and `2백만원 (15,000달러)` was in neither, since this
+      change is what found it.
+
+      The SPELLING: a row `_MEASUREMENT_UNIT_SPELLINGS` excludes on purpose.
+      `5개년 계획 3주` asked in years reports `주`, and `6월 및 30주` asked in
+      months reports `주`, for the reasons given beside those exclusions.
+      Reading either on the suppression side was measured against #451 and
+      declined. Bare `월` silences `3월 15일간`, `3월 내 15일 소요` and
+      `3월 계약 15일 소요` among others, each of which states a duration some
+      test asserts is caveated -- the word-month forms beside them,
+      `전월 대비 3일 단축` and `매월 15일간`, are untouched, since no digit
+      stands before their `월` -- and declining a `월` inside a `_TIME_POINT`
+      span does not even reach the two
+      the year+month branch's bounds are placed for, since neither `2년 3월` nor
+      `10000년 3월` matches that pattern at all. `개년` silences a `5개년` the
+      table calls the name of a plan rather than a duration, which is the
+      judgement the row was excluded for.
+
+      #451 states the general form these are instances of: an accepted silence
+      here is a latent wrong sentence, and a readable same-family unit standing
+      beside it is what turns it into one. The form reaches past this bullet --
+      `₩20,000,000 (15,000달러)` asked in won reports `달러` for a third reason
+      again, the symbol standing where no row in `_MEASUREMENT_UNIT_SPELLINGS`
+      can reach it.
     * A bare two-digit year. `21년 3월` is read as a date and so is `'21년`, but
       `21년` alone is left reading YEAR, so `몇 개월인가?` answered `21년` is told
       it states years. Twenty-one years is a real duration, and without the
