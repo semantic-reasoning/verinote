@@ -2,8 +2,10 @@
 """Opt-in gate and provider wiring for the issue #241 provider contract tests.
 
 These tests exist to catch failures that *only* show up against a real LLM
-provider (issues #237/#238) or that the deterministic suite would otherwise
-paper over (issue #239).
+provider (issues #237/#238). The #239 sync exit-code guard joined them because
+the deterministic suite papered that failure over at the time; ``7b5ec06`` has
+since pinned the behaviour in ``tests/test_cli.py``, so the guard here is a
+second witness rather than the only one.
 
 The gate lives in a ``VN_CONTRACT_*`` namespace, deliberately *outside* the
 ``VERINOTE_*`` prefix. The root ``tests/conftest.py`` sandbox drops every
