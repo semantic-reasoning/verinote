@@ -389,6 +389,48 @@ def _render_engine_answer_body(
     return "\n".join(strip_answer_line_prefix(line, ASK_QID) for line in answers)
 
 
+def _fallback_answer_body(
+    excerpts: tuple[AskExcerpt, ...],
+    grounding: tuple[AskGroundingFact, ...],
+) -> str:
+    """Describe what this answer has below it, naming only what is there.
+
+    `ask.html` puts the `Source excerpts` section on the page only when
+    `result.excerpts` is non-empty, and the grounding table only when
+    `result.grounding_facts` is, heading that table `Verified grounding facts`
+    on the `fallback` route this helper serves. A body sentence naming a
+    section built from an empty collection therefore points at nothing on the
+    page, which is what the unconditional "Source excerpts are shown below."
+    did on a fallback result carrying grounding facts and no excerpt.
+
+    Each branch points at only the collection it has just found non-empty; the
+    last points at neither and says so. Naming one present section is enough,
+    so a result carrying both keeps the excerpt sentence it has today.
+
+    The last branch reports what the page shows rather than why. An excerpt is
+    also absent when the source file is missing from disk or is not UTF-8:
+    `search_source_excerpts` passes over both before any comparison against the
+    question runs, so "nothing matched the question" would be a claim about
+    text that was never read.
+
+    Neither the rendering claim nor the skipping one is left as prose a later
+    edit could quietly falsify: `tests/test_ask_verdict.py` re-derives the first
+    from a render of `ask.html`, and `tests/test_ask.py` re-derives the second
+    from `search_source_excerpts` itself.
+    """
+    if excerpts:
+        return "The deterministic engine could not answer. Source excerpts are shown below."
+    if grounding:
+        return (
+            "The deterministic engine could not answer. Verified grounding facts "
+            "are shown below."
+        )
+    return (
+        "The deterministic engine could not answer, and no source excerpt or "
+        "verified grounding fact is shown below."
+    )
+
+
 def _fallback_answer(
     store: Store,
     client: LLMClient,
@@ -405,9 +447,9 @@ def _fallback_answer(
         answer = client.answer_question(question=question, context=context)
     except LLMError as exc:
         warning = _short_reason(exc)
-        answer = "The deterministic engine could not answer. Source excerpts are shown below."
+        answer = _fallback_answer_body(excerpts, grounding)
     if not answer:
-        answer = "The deterministic engine could not answer. Source excerpts are shown below."
+        answer = _fallback_answer_body(excerpts, grounding)
     return AskResult(
         route="fallback",
         label="UNVERIFIED — source exploration",
