@@ -53,9 +53,10 @@ def _store(tmp_path) -> Store:
         ("a\x00b", "a�b", 1),
         # Runs and edges, so a count that only looks at the interior fails.
         ("\x00a\x00b\x00c\x00d\x00", "�a�b�c�d�", 5),
-        # The shape from the bug report: `F-13` arrived as `F\x0013`. Deleting
-        # the NUL would silently manufacture the fact `F13`.
-        ("F\x0013", "F�13", 1),
+        # The shape from the bug report, with a placeholder identifier: a hyphen
+        # between two runs of digits arrives as `A\x0001`. Deleting the NUL would
+        # silently manufacture the fact `A01`.
+        ("A\x0001", "A�01", 1),
         # Non-ASCII neighbours: the replacement is per character, not per byte.
         ("가\x00나", "가�나", 1),
         # A replacement character the input already carried is not this
@@ -90,10 +91,11 @@ def test_sanitize_leaves_decomposed_text_decomposed():
     assert result.unreadable_chars == 1
 
 
-# Seven NULs, shaped like the report: a hyphen, a tilde and a run of glyphs the
-# extractor could not map.
-_DIRTY = "F\x0013\nF\x0018\n07/27 \x00 08/02\n가\x00나\x00다\x00라\x00마"
-_CLEAN = "F�13\nF�18\n07/27 � 08/02\n가�나�다�라�마"
+# Seven NULs in the shape the report describes -- a hyphen, a tilde and a run
+# of glyphs the extractor could not map -- over placeholder content. The shape
+# is what the assertions turn on, so nothing is lost by not being the document.
+_DIRTY = "A\x0001\nA\x0002\n01/01 \x00 01/07\n가\x00나\x00다\x00라\x00마"
+_CLEAN = "A�01\nA�02\n01/01 � 01/07\n가�나�다�라�마"
 
 
 def test_every_sink_of_one_ingest_sees_the_same_sanitized_text(tmp_path, nulx):

@@ -11,6 +11,10 @@ The converter table is open: `register_converter('.ext', fn)` adds a format.
 The built-in docx/pdf converters import their (optional) library lazily and
 raise a helpful `IngestError` when it is missing — install with
 `pip install verinote[ingest]`.
+
+A converter returns whatever its library handed it, NULs and all. `store_source`
+is the single place that replaces those with U+FFFD and records how many there
+were (#473), so a new converter neither has to sanitize nor is able to skip it.
 """
 
 from __future__ import annotations
