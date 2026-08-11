@@ -16,6 +16,7 @@ raise a helpful `IngestError` when it is missing — install with
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from typing import Callable
@@ -25,6 +26,14 @@ from verinote.text import nfc
 
 # Stored as-is, no conversion.
 TEXT_SUFFIXES = {".txt", ".md"}
+
+# What an extraction says where it could not say a character. Extractors emit
+# NUL for a glyph they cannot map (pypdf does this for fonts without a
+# ToUnicode map), and a NUL is not "slightly dirty text": it is a value that
+# breaks differently at each downstream boundary -- exec arguments refuse it,
+# SQLite stores it, and the display layer shows nothing at all. U+FFFD is the
+# one character whose job is to say "something was here and could not be read".
+UNREADABLE_CHAR = "�"
 
 
 class IngestError(RuntimeError):
@@ -73,10 +82,34 @@ register_converter(".docx", _convert_docx)
 register_converter(".pdf", _convert_pdf)
 
 
+@dataclass(frozen=True)
+class SanitizedText:
+    """Extraction text with the NULs replaced, and how many there were."""
+
+    text: str
+    unreadable_chars: int
+
+
+def sanitize_extracted_text(text: str) -> SanitizedText:
+    """Replace NULs the extractor could not map with U+FFFD, and count them.
+
+    The count is of NULs *in the input*, not of U+FFFD in the output: text can
+    already contain a legitimate replacement character, and only the NULs are
+    this extraction's loss.
+
+    Only NUL. Not the other control characters -- `\\x0c` in particular is
+    pdftotext's ordinary page separator, and widening this would delete
+    structure nobody reported as broken.
+    """
+    return SanitizedText(text.replace("\x00", UNREADABLE_CHAR), text.count("\x00"))
+
+
 def ingest_bytes(raw: bytes, filename: str) -> tuple[str, str]:
     """Resolve raw upload bytes to ``(text, kind)``; kind is ``text``/``binary``.
 
-    Raises `IngestError` for unsupported suffixes or conversion failures.
+    Returns the converter's text unchanged: sanitizing happens in `store_source`
+    and nowhere else, so every sink sees one value. Raises `IngestError` for
+    unsupported suffixes or conversion failures.
     """
     suffix = Path(filename).suffix.lower()
     if suffix in TEXT_SUFFIXES:
@@ -92,11 +125,17 @@ def ingest_bytes(raw: bytes, filename: str) -> tuple[str, str]:
 def store_source(
     store: Store, root: Path, filename: str, raw: bytes, text: str, kind: str
 ) -> dict:
-    """Persist an original source and its extraction text artifact."""
+    """Persist an original source and its extraction text artifact.
+
+    Sanitizing happens here and nowhere else. The single reassignment below is
+    what makes the digest, the artifact file, and the returned text one value:
+    a second decision point elsewhere would let them drift apart.
+    """
     sources_dir = root / "sources"
     sources_dir.mkdir(parents=True, exist_ok=True)
     name = nfc(Path(filename).name)
-    text = nfc(text)
+    extracted = sanitize_extracted_text(nfc(text))
+    text = extracted.text
     source_path = sources_dir / name
     source_path.write_bytes(raw)
     citation = f"sources/{name}"
@@ -123,6 +162,9 @@ def store_source(
         "source_id": source_id,
         "artifact_id": artifact_id,
         "artifact_path": artifact_relpath,
+        # Always an int, 0 when nothing was lost. NULL means "never measured"
+        # and that is a property of a stored row, not of an ingest that ran.
+        "unreadable_chars": extracted.unreadable_chars,
     }
 
 
