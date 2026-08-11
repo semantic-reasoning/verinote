@@ -317,6 +317,103 @@ def test_padded_base_url_env_does_not_break_the_request_url(tmp_path, monkeypatc
     assert urls == ["https://llm.internal/v1/api/chat"]
 
 
+# --- what the request region normalises, and what it must not claim ---
+
+# One invocation per LLM method. Each method builds and dials its own request,
+# so a single-method test would leave three sites unguarded.
+_INVOCATIONS = {
+    "extract_facts": lambda a: a.extract_facts(source_text="Ada"),
+    "translate_query": lambda a: a.translate_query(question="Who?", qid=1),
+    "extract_query_intent": lambda a: a.extract_query_intent(question="What?"),
+    "answer_question": lambda a: a.answer_question(question="Who?", context="c"),
+}
+
+# The three methods that parse the response *after* the request region closes.
+# `answer_question` stringifies whatever came back and has no parse step, so it
+# has no failure of that kind to mislabel — it is left out rather than given a
+# case that could only ever pass.
+_PARSING_INVOCATIONS = {
+    name: call for name, call in _INVOCATIONS.items() if name != "answer_question"
+}
+
+
+class _RawResponse:
+    """Answer with bytes the adapter has to decode and parse itself.
+
+    `_Response` above always hands back a well-formed envelope built by
+    `json.dumps`, so it can never exercise the decode and parse steps that sit
+    inside the request region. This one can.
+    """
+
+    def __init__(self, raw: bytes):
+        self.raw = raw
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return None
+
+    def read(self):
+        return self.raw
+
+
+def _raw_body(monkeypatch, raw: bytes) -> None:
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, *, timeout: _RawResponse(raw))
+
+
+@pytest.mark.parametrize("method", sorted(_INVOCATIONS))
+def test_a_response_body_that_is_not_json_is_a_normalised_request_failure(
+    tmp_path, monkeypatch, method
+):
+    """A proxy or a captive portal answering HTML is a transport failure the
+    caller already handles, not a `JSONDecodeError` escaping the adapter.
+
+    `json.loads` is inside the guarded region today. Pinning that here means a
+    later edit that folds the four request sites into one helper cannot quietly
+    leave the parse outside it, which would turn this into an unnormalised raise.
+    """
+    _raw_body(monkeypatch, b"not json")
+
+    with pytest.raises(LLMError, match="^ollama request failed"):
+        _INVOCATIONS[method](OllamaAdapter(_cfg(tmp_path)))
+
+
+@pytest.mark.parametrize("method", sorted(_INVOCATIONS))
+def test_a_response_body_that_is_not_utf8_is_a_normalised_request_failure(
+    tmp_path, monkeypatch, method
+):
+    """`.decode("utf-8")` is the other statement in the region that can raise on
+    an otherwise well-formed HTTP response — a server that ignored the content
+    type and sent UTF-16 gets here. Separate from the non-JSON case because the
+    two are different statements, and an edit can move one without the other.
+    """
+    _raw_body(monkeypatch, b"\xff\xfe")
+
+    with pytest.raises(LLMError, match="^ollama request failed"):
+        _INVOCATIONS[method](OllamaAdapter(_cfg(tmp_path)))
+
+
+@pytest.mark.parametrize("method", sorted(_PARSING_INVOCATIONS))
+def test_a_schema_failure_is_not_reported_as_a_request_failure(tmp_path, monkeypatch, method):
+    """The transport succeeded and the server answered valid JSON; the *model's*
+    output did not match the schema. Calling that "request failed" sends the user
+    to check an endpoint that answered fine — the misdirection #474 was reported
+    as, arriving from the other direction.
+
+    This is the boundary the region must NOT swallow, so it is the counterweight
+    to the two cases above: widening the guard until it covers `parse_facts`
+    would make both of those pass and this one fail.
+    """
+    _raw_body(monkeypatch, json.dumps({"message": {"content": "{}"}}).encode("utf-8"))
+
+    with pytest.raises(LLMError) as exc:
+        _PARSING_INVOCATIONS[method](OllamaAdapter(_cfg(tmp_path)))
+
+    assert "request failed" not in str(exc.value)
+    assert "did not match schema" in str(exc.value)
+
+
 # --- list_models: the settings picker's source of truth ---
 
 
