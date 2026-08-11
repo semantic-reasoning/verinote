@@ -8,10 +8,10 @@ THE INVARIANT THESE TESTS PIN:
 
 Stated over the *chunks*, deliberately, and not as "once the job reaches a
 terminal status...". `process_extraction_job` does not write the job row when a
-non-`LLMError` escapes — the web worker's `except Exception` does
-(`web/app.py:1753-1755`), and the CLI does not do it at all. Phrasing the
-invariant over the job would make it a statement about a caller, so the tests
-below that need a job in its post-failure resting state call
+non-`LLMError` escapes — the worker thread's `except Exception` in
+`_start_source_extraction` (`web/app.py`) does, and the CLI does not do it at
+all. Phrasing the invariant over the job would make it a statement about a
+caller, so the tests below that need a job in its post-failure resting state call
 `_worker_marks_job_failed` and say so.
 
 `canceled` is out of scope: it exists in the `schema.sql` CHECK constraint but no
@@ -116,10 +116,11 @@ def _worker_marks_job_failed(store: Store, job_id: int, message: str) -> None:
     """Stand-in for the web worker. NOT the code under test.
 
     `process_extraction_job` leaves the job row alone when a non-`LLMError`
-    escapes; `web/app.py:1753-1755` is what writes `failed`. A test that wants the
-    job in its post-failure resting state has to perform that write itself, so it
-    is spelled out here rather than hidden behind a fixture — nothing in
-    `verinote/pipeline` will do it.
+    escapes; the worker thread's `except Exception` in `_start_source_extraction`
+    (`web/app.py`) is what writes `failed`. A test that wants the job in its
+    post-failure resting state has to perform that write itself, so it is spelled
+    out here rather than hidden behind a fixture — nothing in `verinote/pipeline`
+    will do it.
     """
     store.fail_extraction_job(job_id, message)
 
@@ -199,6 +200,11 @@ def test_no_chunk_stays_claimed_when_mark_chunk_done_raises(tmp_path, monkeypatc
 
     assert _running(s, job_id) == []
     assert _statuses(s, job_id) == ["failed", "pending", "pending"]
+    # Both halves of the cause, so that writing a constant ("failed") or dropping
+    # either half still leaves a chunk whose recorded reason is worth reading.
+    error = s.source_chunks(job_id)[0]["error"]
+    assert "RuntimeError" in error
+    assert "completion write failed" in error
     s.close()
 
 
@@ -375,6 +381,20 @@ def test_a_halted_kb_still_rewinds_the_whole_job_without_failing_the_chunk(
     `rollback_extraction_job`, which returns the in-flight chunk to the queue).
     Releasing it as `failed` here would both double-write and label a healthy
     chunk as broken.
+
+    THE EVENT LOG IS THE LOAD-BEARING ASSERTION, and it has to be, because the
+    end states cannot tell the difference. Delete the `except PolicyMissingError:
+    raise` clause and the broad handler below it fails the chunk — but
+    `rollback_extraction_job` then rewinds `failed` chunks to `pending` along with
+    the `running` one, so the final statuses, the job row and the run summary all
+    come out identical. What does not get rewound is history: the spurious
+    `chunk_failed` event stays in `fact_events`, recording a failure that never
+    happened against a chunk that was fine.
+
+    An `assert` on a monkeypatched `_release_claimed_chunk` would also catch it,
+    but that watches for a named private call rather than for an outcome, and a
+    later refactor that renames or inlines the helper would silently defang it.
+    The spy is kept only as a redundant, non-load-bearing check.
     """
     s = _store(tmp_path)
     _source_id, job_id = _three_chunk_job(s)
@@ -394,7 +414,15 @@ def test_a_halted_kb_still_rewinds_the_whole_job_without_failing_the_chunk(
             job_id=job_id,
         )
 
-    assert released == []
+    event_types = [
+        row["event_type"]
+        for row in s._conn.execute(
+            "SELECT event_type FROM fact_events WHERE job_id = ? ORDER BY id", (job_id,)
+        )
+    ]
+    assert "chunk_failed" not in event_types
+    assert "extraction_job_rolled_back" in event_types
+
     assert _statuses(s, job_id) == ["done", "pending", "pending"]
     assert _running(s, job_id) == []
     job = s.get_extraction_job(job_id)
@@ -402,6 +430,7 @@ def test_a_halted_kb_still_rewinds_the_whole_job_without_failing_the_chunk(
     assert "policy reset --force" in job["message"]
     summaries = [row["summary"] for row in s._conn.execute("SELECT summary FROM runs")]
     assert any("halted because this KB's policy file went missing" in x for x in summaries)
+    assert released == []  # redundant with the event assertion above, not load-bearing
     s.close()
 
 
@@ -418,5 +447,78 @@ def test_an_llm_error_still_fails_only_its_own_chunk_and_the_pass_continues(tmp_
     assert _running(s, job_id) == []
     assert s.source_chunks(job_id)[1]["error"] == "provider down"
     assert (result.completed_chunks, result.failed_chunks) == (2, 1)
-    assert s.get_extraction_job(job_id)["status"] == "failed"
+    job = s.get_extraction_job(job_id)
+    assert job["status"] == "failed"
+    # The job message carries the cause on THIS path and only this one. Running to
+    # completion with a failed chunk is what reaches `finish_extraction_job(final=
+    # True)` -> `_refresh_extraction_job`'s `status == 'failed'` branch, whose
+    # `AND error != ''` lookup copies the first failed chunk's error into the job
+    # message. A non-`LLMError` escape never gets here (nothing calls
+    # `finish_extraction_job`), which is why the sibling tests assert on the chunk
+    # row and the rendered page instead of on this string.
+    assert "provider down" in job["message"]
+    assert "1 chunk(s) failed" in job["message"]
     s.close()
+
+
+# --- The other caller: the CLI ------------------------------------------------
+
+
+def test_cli_sync_leaves_the_job_running_but_never_the_chunk(tmp_path, monkeypatch):
+    """`verinote sync` is why the invariant is stated over chunks, not over jobs.
+
+    DOMAIN NOTE — READ BEFORE REUSING THIS SHAPE. The derived phrasing "once the
+    job reaches a terminal status, no chunk is `running`" does NOT cover this
+    caller, and this test is the proof. `cmd_sync` wraps
+    `process_extraction_job` in a `try` that catches only
+    `ExtractionJobBusyError`, and `cli.main` catches only `KBLocationError` and
+    `DuckDBFactTermStoreLockedError`, so an unmodelled exception unwinds the whole
+    command with the job row untouched: it stays `running` forever. Nothing in the
+    CLI plays the part the web worker's `except Exception` plays. Asserting a
+    terminal job status here would be asserting something no production code does.
+
+    The chunk is a different matter, and that is the point: the release happens
+    inside `process_extraction_job`, below every caller, so it holds even where
+    the job row does not get written.
+
+    THIS ALSO CHANGES BEHAVIOUR, DELIBERATELY. Before the fix the chunk stayed
+    `running` with no failed chunk on the job, so `plan_source_extraction` never
+    saw a retry budget to spend and `verinote sync --recover` would rewind and
+    re-run the same source every single time. Now the chunk is `failed`, the
+    attempt counts up, and after `MAX_CHUNK_ATTEMPTS` the job is surfaced as
+    exhausted and skipped. A repeating sync becoming a terminating one is the
+    intended consequence.
+    """
+    from verinote import cli
+
+    monkeypatch.setenv("VERINOTE_ROOT", str(tmp_path))
+    monkeypatch.setenv("VERINOTE_PROVIDER", "anthropic")
+    monkeypatch.setenv("VERINOTE_EXTRACTION_CHUNK_CHARS", "40")
+    monkeypatch.setenv("VERINOTE_EXTRACTION_CHUNK_OVERLAP_CHARS", "0")
+    src = tmp_path / "note.txt"
+    src.write_text(
+        "alpha beta gamma delta epsilon\n\nzeta eta theta iota kappa",
+        encoding="utf-8",
+    )
+    assert cli.main(["ingest", str(src)]) == 0
+    monkeypatch.setattr(
+        "verinote.llm.get_client",
+        lambda cfg: _ChunkClient(fail_on=1, exc=ValueError("boom")),
+    )
+
+    with pytest.raises(ValueError):
+        cli.main(["sync"])
+
+    store = Store(tmp_path / "kb.sqlite")
+    jobs = list(store._conn.execute("SELECT id, status FROM extraction_jobs"))
+    assert len(jobs) == 1
+    job_id = int(jobs[0]["id"])
+    # (a) the job row is untouched — no CLI code path writes it on this failure
+    assert jobs[0]["status"] == "running"
+    # (b) the chunk is released anyway, which is what the fix guarantees
+    chunks = store.source_chunks(job_id)
+    assert len(chunks) > 1, "the note must split, or 'first chunk' means nothing"
+    assert chunks[0]["status"] == "failed"
+    assert chunks[0]["attempts"] == 1
+    assert [c for c in chunks if c["status"] == "running"] == []
+    store.close()

@@ -1672,6 +1672,76 @@ def test_resumed_job_summary_counts_only_this_run(tmp_path):
     assert "2/3 chunk(s), 1 candidate(s) written by this run" not in summaries[1]
 
 
+class _PolicyVanishingAfterClaimStore(Store):
+    """A Store whose policy disappears once the *second* chunk is already claimed.
+
+    Sibling of `_PolicyVanishingStore` above, aimed one step later in the loop.
+    That one deletes the policy at dequeue, so the pre-claim gate stops the pass
+    before any chunk is claimed. This one deletes it inside `mark_chunk_running`,
+    which puts the halt where the claim is HELD: the LLM call goes out, and the
+    write boundary inside `_extract_chunk` raises `PolicyMissingError` with the
+    chunk sitting at `running`. That is the only arrangement that reaches the
+    chunk-release handling in `process_extraction_job` by way of a halt.
+    """
+
+    def __init__(self, db_path, policy_path):
+        super().__init__(db_path)
+        self.policy_path = policy_path
+        self.claims = []
+
+    def mark_chunk_running(self, chunk_id: int):
+        row = super().mark_chunk_running(chunk_id)
+        self.claims.append(chunk_id)
+        if len(self.claims) == 2:
+            self.policy_path.unlink()
+        return row
+
+
+def test_a_halt_under_a_held_claim_returns_the_chunk_to_the_queue(tmp_path):
+    """The broad chunk-release handler (#475) must not intercept a halt.
+
+    `process_extraction_job` grew an `except Exception` that fails the claimed
+    chunk. A halt has to keep skipping it: `_halt_extraction_job` rewinds the
+    WHOLE job, and returning the in-flight chunk to the queue is part of that
+    rewind — marking it `failed` first would record a failure against a chunk
+    that did nothing wrong.
+
+    THE EVENT ASSERTION IS THE LOAD-BEARING ONE. `rollback_extraction_job` rewinds
+    `failed` chunks to `pending` too, so if the release did fire, every end state
+    checked below would still look right; only the spurious `chunk_failed` row in
+    `fact_events` survives the rollback to give it away.
+    """
+    from verinote.pipeline.extract import process_extraction_job
+
+    path, job_id = _halted_mid_job_kb(tmp_path)
+    store = _PolicyVanishingAfterClaimStore(tmp_path / "kb.sqlite", path)
+    store.init_schema()
+    client = _ChunkClient()
+
+    with pytest.raises(PolicyMissingError):
+        process_extraction_job(store, client, job_id=job_id)
+
+    event_types = [
+        row["event_type"]
+        for row in store._conn.execute(
+            "SELECT event_type FROM fact_events WHERE job_id = ? ORDER BY id", (job_id,)
+        )
+    ]
+    assert "chunk_failed" not in event_types
+    assert "extraction_job_rolled_back" in event_types
+
+    chunks = store.source_chunks(job_id)
+    # chunk 2 was claimed and its LLM call was made before the halt hit the write
+    # boundary — so this really did run with the claim held, unlike the pre-claim
+    # gate case in `test_chunk_is_not_claimed_on_a_kb_that_went_halted`
+    assert store.claims == [int(chunks[0]["id"]), int(chunks[1]["id"])]
+    assert client.calls == 2
+    assert [c["status"] for c in chunks] == ["done", "pending"]
+    assert chunks[1]["error"] == ""
+    assert store.get_extraction_job(job_id)["status"] == "pending"
+    store.close()
+
+
 class _AlwaysEligibleEngine:
     """A recommendation engine that reads no policy and accepts everything.
 

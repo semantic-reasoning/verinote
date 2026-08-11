@@ -442,17 +442,37 @@ def process_extraction_job(
             running = store.mark_chunk_running(int(chunk["id"]))
             if running is None:
                 continue
-            chunk_id = int(running["id"])
             # From here to the end of this block the claim is HELD. Every statement
             # inside — including `mark_chunk_done` — is a write that can fail, and a
             # failure that escapes without releasing leaves the chunk `running`
             # under a job nobody will resume (#475). The `try` therefore starts at
-            # the claim, not at the LLM call.
+            # the claim, not at the LLM call, and nothing sits between the two.
             #
             # `BaseException` (Ctrl-C, `SystemExit`) is deliberately not caught: the
             # job does not reach a terminal status either, and the existing recovery
             # path (`_resume_source_extraction_jobs`) is what reclaims it.
+            #
+            # ONE RESIDUAL WINDOW REMAINS, AND IT CANNOT BE CLOSED HERE. The line
+            # above is two round trips, not one: `mark_chunk_running` commits the
+            # `pending`->`running` UPDATE (autocommit) and then does a *separate*
+            # `get_source_chunk` read-back to return the row (`store/db.py`
+            # `mark_chunk_running`). If that SELECT raises, the claim is already
+            # committed while the caller never binds `running` at all — so there is
+            # no chunk id to release and the chunk is stranded exactly as #475
+            # describes.
+            #
+            # This is a DIFFERENT KIND of gap from the one the `try` below fixes,
+            # and the distinction is why it is left open rather than patched. That
+            # one was reachable code this function could guard with a handler; this
+            # one is unreachable from here in principle — no arrangement of `try`
+            # in this frame can cover a write that completed inside a callee before
+            # the callee returned. Closing it means making the claim atomic with its
+            # own result, i.e. folding the CAS and the read-back into one statement
+            # (`UPDATE ... RETURNING *`), which is a `Store` API change and belongs
+            # to whoever owns that layer. Do not "fix" it here by re-reading the
+            # chunk after the fact: that reintroduces the same two-step race.
             try:
+                chunk_id = int(running["id"])
                 inserted = _extract_chunk(
                     store,
                     client,
