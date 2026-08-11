@@ -442,6 +442,16 @@ def process_extraction_job(
             running = store.mark_chunk_running(int(chunk["id"]))
             if running is None:
                 continue
+            chunk_id = int(running["id"])
+            # From here to the end of this block the claim is HELD. Every statement
+            # inside — including `mark_chunk_done` — is a write that can fail, and a
+            # failure that escapes without releasing leaves the chunk `running`
+            # under a job nobody will resume (#475). The `try` therefore starts at
+            # the claim, not at the LLM call.
+            #
+            # `BaseException` (Ctrl-C, `SystemExit`) is deliberately not caught: the
+            # job does not reach a terminal status either, and the existing recovery
+            # path (`_resume_source_extraction_jobs`) is what reclaims it.
             try:
                 inserted = _extract_chunk(
                     store,
@@ -453,15 +463,28 @@ def process_extraction_job(
                     artifact_id=(
                         int(job["artifact_id"]) if job["artifact_id"] is not None else None
                     ),
-                    chunk_id=int(running["id"]),
+                    chunk_id=chunk_id,
                     schema_hint=schema_hint,
                 )
-            except LLMError as exc:
-                store.mark_chunk_failed(int(running["id"]), str(exc))
+                store.mark_chunk_done(chunk_id, candidates=inserted)
+                candidates += inserted
+                run_chunks += 1
+            except PolicyMissingError:
+                # Not this chunk's failure: the KB went halted. The outer handler
+                # rewinds the WHOLE job (`_halt_extraction_job` ->
+                # `rollback_extraction_job`, which returns this `running` chunk to
+                # the queue). Releasing it as `failed` here would both double-write
+                # and mislabel a healthy chunk.
+                raise
+            except Exception as exc:
+                # The single release point for a held claim. Broad on purpose:
+                # `LLMError` is the only failure this pipeline models, so anything
+                # else is by definition unmodelled and must not be allowed to
+                # strand the claim.
+                _release_claimed_chunk(store, chunk_id, exc)
+                if not isinstance(exc, LLMError):
+                    raise
                 continue
-            candidates += inserted
-            store.mark_chunk_done(int(running["id"]), candidates=inserted)
-            run_chunks += 1
     except PolicyMissingError:
         # The policy vanished mid-job — either before this chunk was claimed (the
         # gate above) or between its LLM call and its first insert (the boundary in
@@ -492,6 +515,29 @@ def process_extraction_job(
         run_candidates=candidates,
         run_chunks=run_chunks,
     )
+
+
+def _release_claimed_chunk(store: Store, chunk_id: int, exc: BaseException) -> None:
+    """Release a chunk claim that is escaping via an exception — iff still held.
+
+    ONE judgement point for "a claimed chunk that will not complete becomes
+    `failed`". The status re-read is not a second decision: it asks whether the
+    claim is still held at all. `mark_chunk_done` writes in several steps and can
+    raise after the chunk is already `done` (its `candidate_count` update or
+    `_refresh_extraction_job` failing), and flipping a completed chunk to `failed`
+    would destroy real work and desync the job counters.
+
+    The message is type-qualified for unmodelled exceptions because `str()` of a
+    bare `ValueError()` is the empty string, and a chunk whose `error` is empty
+    renders as a bare "failed" with no cause (sources.html) — reproducing the
+    `error=''` symptom this fix exists to remove. `LLMError` keeps its own text
+    verbatim: it is already a domain message and existing tests pin the wording.
+    """
+    chunk = store.get_source_chunk(chunk_id)
+    if chunk is None or chunk["status"] != "running":
+        return
+    message = str(exc) if isinstance(exc, LLMError) else f"{type(exc).__name__}: {exc}"
+    store.mark_chunk_failed(chunk_id, message)
 
 
 def _halt_extraction_job(
