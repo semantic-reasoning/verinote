@@ -958,9 +958,13 @@ class Store:
         existing `(source_id, kind, checksum)` is how a count gets filled in
         after the fact: a row left unmeasured -- which is every row written
         before that column existed -- gains the number as soon as something
-        re-ingests the same text and does measure it. The COALESCE is the other
-        direction of that rule, and the reason this is not a plain assignment:
-        a caller that did not measure must not erase a count already recorded.
+        re-ingests the same text and does measure it.
+
+        `COALESCE` keeps a caller that did not measure (NULL) from erasing a
+        count that was measured. It is not a "highest wins" rule: an explicit 0
+        overwrites an explicit 5. In practice the unique key is the checksum of
+        the sanitized text, so the same row always carries the same count -- a
+        convention, not a constraint.
         """
         with self._lock:
             self._conn.execute(
