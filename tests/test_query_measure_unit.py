@@ -81,10 +81,8 @@ def _unit_bearing_counters() -> tuple[str, ...]:
     Derived from the two tables rather than listed, so the sweep below covers
     every counter that can reach the caveat as the table stands.
     """
-    from verinote.pipeline.query_intent import (
-        _KOREAN_MEASURE_COUNTER,
-        _MEASUREMENT_UNIT_SPELLINGS,
-    )
+    from verinote.pipeline.query_intent import _KOREAN_MEASURE_COUNTER
+    from verinote.pipeline.query_measure_unit import _MEASUREMENT_UNIT_SPELLINGS
 
     return tuple(
         counter
@@ -100,7 +98,7 @@ def test_a_measure_question_answered_in_another_unit_names_both_spellings():
     and verified, and that stays true -- this only supplies the pair the caveat
     beside it is worded from.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 개월인가?", "2년") == (
         "개월",
@@ -130,7 +128,7 @@ def test_the_asked_unit_stated_anywhere_in_the_value_suppresses_the_caveat(quest
     *question* side too and the case stays green -- it cannot pin the row. The
     rows are pinned one-sidedly by the test below.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch(question, value) is None
 
@@ -155,7 +153,7 @@ def test_a_spellings_row_is_pinned_by_a_question_asked_in_a_different_row(
     no unit. Every one of the three goes silent, and none of them is masked by
     the same-unit suppression.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch(question, value) == expected
 
@@ -176,7 +174,7 @@ def test_a_tail_naming_no_unit_is_silent(question, value):
     all, so the lookup is handed None. Both land on the same `.get` returning
     None rather than on a branch apiece.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch(question, value) is None
 
@@ -190,10 +188,8 @@ def test_a_relation_literally_named_with_a_counter_is_not_a_measure_question():
     holds one answers it, and telling that reader the value is in the wrong unit
     would be nonsense.
     """
-    from verinote.pipeline.query_intent import (
-        _korean_attribute_label_readings,
-        korean_measure_unit_mismatch,
-    )
+    from verinote.pipeline.query_intent import _korean_attribute_label_readings
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert _korean_attribute_label_readings("몇 년") == ("몇 년",)
     assert korean_measure_unit_mismatch("샘플사업의 몇 년인가?", "24개월") is None
@@ -225,7 +221,7 @@ def test_a_question_or_value_with_nothing_to_compare_is_silent(question, value):
     suppression would silence it even with the digit requirement removed. The
     one-sided case for that requirement is in the test below.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch(question, value) is None
 
@@ -249,8 +245,8 @@ def test_the_digit_requirement_keeps_ordinary_prose_out_of_the_caveat(monkeypatc
     """
     import re
 
-    import verinote.pipeline.query_intent as query_intent
-    from verinote.pipeline.query_intent import (
+    import verinote.pipeline.query_measure_unit as query_intent
+    from verinote.pipeline.query_measure_unit import (
         _VALUE_MEASUREMENT,
         korean_measure_unit_mismatch,
     )
@@ -293,7 +289,7 @@ def test_a_cross_family_unit_is_not_a_unit_mismatch():
     be the wrong thing to say about it. Within a family the caveat is right:
     `1000달러` answering `몇 원인가?` is the same quantity in another currency.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch("샘플사업의 가격은 몇 원인가?", "2년") is None
     assert korean_measure_unit_mismatch("샘플사업의 가격은 몇 원인가?", "1000달러") == (
@@ -321,7 +317,7 @@ def test_the_first_same_family_unit_is_reported_not_the_first_unit(
     first unit makes all three go silent instead, because the ratio is in the
     wrong family.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch(question, value) == expected
 
@@ -345,7 +341,7 @@ def test_a_dated_value_no_longer_silences_the_units_stated_beside_it():
     would silence `2021년 착수, 총 3주` here, since `년` and `주` are both
     durations, so the second assertion is that candidate's killer as well.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 개월인가?", "2021년") is None
     assert korean_measure_unit_mismatch(
@@ -365,7 +361,7 @@ def test_a_longer_digit_run_is_not_read_as_a_calendar_year():
     `2000년간` stay on the date side; both spellings are really used for
     durations too, so that reading is ambiguous and this rule picks the date one.
     """
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _value_measure_units,
         korean_measure_unit_mismatch,
     )
@@ -391,14 +387,14 @@ def test_a_unit_continued_by_another_letter_is_not_read(value):
     asked in a *different* unit of the same family, so none of them is masked by
     the same-unit suppression -- `몇 초인가?` would have masked the last one.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 개월인가?", value) is None
 
 
 def test_a_suffix_inside_the_closed_set_still_reads_the_unit():
     """`2년간` states two years; the suffix does not hide the unit."""
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 개월인가?", "2년간") == (
         "개월",
@@ -415,7 +411,7 @@ def test_a_longer_spelling_is_reached_by_backtracking_past_a_shorter_one():
     what makes these read -- every prefix pair in the table today is extended by
     a Hangul or Latin character, both inside the lookahead's class.
     """
-    from verinote.pipeline.query_intent import _value_measure_units
+    from verinote.pipeline.query_measure_unit import _value_measure_units
 
     assert _value_measure_units("2주일") == (("WEEK", "주일"),)
     assert _value_measure_units("3달러") == (("USD", "달러"),)
@@ -429,7 +425,7 @@ def test_bare_월_is_a_month_of_the_year_and_is_not_read():
     often than it is the third of the month, and a day of the month arrives
     with a month term in front of it, which `_TIME_POINT` catches.
     """
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _value_measure_units,
         korean_measure_unit_mismatch,
     )
@@ -446,7 +442,7 @@ def test_a_prefix_currency_symbol_is_out_of_reach_by_construction():
     no row spelled that way would ever be reached. `%` is read because it follows
     the number.
     """
-    from verinote.pipeline.query_intent import _value_measure_units
+    from verinote.pipeline.query_measure_unit import _value_measure_units
 
     assert _value_measure_units("$1000") == ()
     assert _value_measure_units("₩1000") == ()
@@ -468,7 +464,7 @@ def test_further_rows_report_the_spelling_the_value_used(question, value, expect
     `PERCENT`. A caveat naming the family key would print an English identifier
     to a Korean reader.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch(question, value) == expected
 
@@ -482,7 +478,7 @@ def test_a_value_written_in_nfd_states_its_unit():
     """
     import unicodedata
 
-    from verinote.pipeline.query_intent import _value_measure_units
+    from verinote.pipeline.query_measure_unit import _value_measure_units
 
     decomposed = unicodedata.normalize("NFD", "2년")
     assert len(decomposed) == 4
@@ -526,7 +522,7 @@ def test_every_spellings_row_has_a_value_that_states_it():
     a row added to the table with no value exercising it fails here rather than
     joining silently.
     """
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _MEASUREMENT_UNIT_SPELLINGS,
         _value_measure_units,
     )
@@ -544,7 +540,7 @@ def test_a_korean_magnitude_word_between_the_digits_and_the_unit_is_read():
     Without `[만억천조]?` in `_VALUE_MEASUREMENT` the digits no longer reach the
     unit and the value states nothing.
     """
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _value_measure_units,
         korean_measure_unit_mismatch,
     )
@@ -563,7 +559,7 @@ def test_a_latin_spelling_is_matched_and_reported_casefolded():
     states `weeks` rather than `Weeks`. Reporting the folded spelling is the
     accepted cost of matching a table written in lower case.
     """
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _value_measure_units,
         korean_measure_unit_mismatch,
     )
@@ -599,7 +595,7 @@ def test_a_four_digit_year_run_into_more_digits_is_not_a_calendar_year():
     """
     import re
 
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _TIME_POINT,
         _VALUE_MEASUREMENT,
         _value_measure_units,
@@ -610,7 +606,7 @@ def test_a_four_digit_year_run_into_more_digits_is_not_a_calendar_year():
     without = re.compile(_TIME_POINT.pattern.replace(
         r"|(?<![0-9])[0-9]{4}\s*년(?![0-9])", r"|(?<![0-9])[0-9]{4}\s*년"))
     assert without.pattern != _TIME_POINT.pattern, "the mutation did not apply"
-    import verinote.pipeline.query_intent as query_intent
+    import verinote.pipeline.query_measure_unit as query_intent
     for value in ["2021년12개월", "2021년 12개월", "2021년12주", "2021년1,000원", "2021년"]:
         original = query_intent._TIME_POINT
         query_intent._TIME_POINT = without
@@ -668,7 +664,7 @@ def test_each_time_point_branch_is_needed_by_one_of_these_values(
     date -- and #452 ended that half of the cost by making the guard span-local,
     so the duration standing clear of the date is reported again.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch(question, value) is None
 
@@ -686,7 +682,7 @@ def test_a_full_width_number_states_no_quantity():
     `test_the_suppression_scan_reads_any_unicode_decimal_digit` is the other
     side.
     """
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _value_measure_units,
         korean_measure_unit_mismatch,
     )
@@ -806,7 +802,7 @@ def test_known_false_unit_statements_are_recorded_not_fixed(
     disclosure in `korean_measure_unit_mismatch` has to be corrected with it,
     instead of quietly going stale.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch(question, value) == wrong_output
 
@@ -825,7 +821,7 @@ def test_a_year_followed_by_a_month_is_a_date_at_any_year_width(value):
 
     Delete that branch and every value here fires `(개월, 년)`.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 개월인가?", value) is None
 
@@ -850,7 +846,7 @@ def test_a_year_with_no_month_beside_it_still_reads_as_a_duration(value, expecte
     `10000년` is here for a second reason: it also pins that the year+month
     branch did not acquire a way to match a five-digit run.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 개월인가?", value) == expected
 
@@ -865,7 +861,7 @@ def test_a_duration_written_with_개월_is_not_swallowed_by_the_year_month_branc
     year+month branch had swallowed them they would be silent for the wrong
     reason, which the unit list below the assertion distinguishes.
     """
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _value_measure_units,
         korean_measure_unit_mismatch,
     )
@@ -892,7 +888,7 @@ def test_the_iso_branch_no_longer_silences_the_durations_beside_a_date():
     The branch's other killer is `2021.03.15 일` in
     `test_each_time_point_branch_is_needed_by_one_of_these_values`.
     """
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _value_measure_units,
         korean_measure_unit_mismatch,
     )
@@ -925,7 +921,7 @@ def test_a_single_digit_year_before_a_month_is_left_alone():
     that could belong to the date's own notation is deliberately left out of the
     span.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 개월인가?", "2년 3월") == (
         "개월",
@@ -966,7 +962,7 @@ def test_a_quantity_in_the_asked_unit_suppresses_the_caveat_however_it_is_spaced
     The spaced and unspaced forms are paired deliberately, so a regression that
     reintroduces the asymmetry fails on the pair rather than on a single case.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch(question, value) is None
 
@@ -983,7 +979,7 @@ def test_the_suppression_scan_does_not_read_a_shorter_spelling_inside_a_longer()
     or a per-unit scan with no ordering: the value states dollars and weeks, the
     question asked months, and the weeks caveat must survive.
     """
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _value_states_asked_unit,
         korean_measure_unit_mismatch,
     )
@@ -1005,7 +1001,7 @@ def test_the_suppression_scan_sees_everything_the_value_scan_sees():
     stop suppressing and the caveat would fire on it. Swept over every spelling
     against a set of following characters that exercise the lookahead.
     """
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _MEASUREMENT_UNIT_SPELLINGS,
         _value_measure_units,
         _value_states_asked_unit,
@@ -1035,7 +1031,7 @@ def test_the_iso_branch_reads_a_two_digit_year_like_every_other_branch(value):
     was the same premise accepted in one place and refused in the next, and
     `21.03.15일` was read as fifteen days because of it.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 개월인가?", value) is None
 
@@ -1049,7 +1045,7 @@ def test_the_iso_year_is_bounded_below_and_on_the_left(value):
     value this rule otherwise reads. Both are contrived -- that is the point of
     a bound -- but an unpinned bound is one a later change removes for free.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 개월인가?", value) == (
         "개월",
@@ -1066,7 +1062,7 @@ def test_every_unit_suffix_alternative_has_a_value_that_needs_it(suffix):
     `_ROW_FIXTURES` two tables over -- an unpinned entry licences a silent
     deletion -- and the same remedy.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 년인가?", f"3개월{suffix}") == (
         "년",
@@ -1087,7 +1083,7 @@ def test_the_yen_and_euro_family_rows_are_pinned(value, expected):
     `_value_measure_units` and never consults the family table. Remap either to
     another family and the cross-currency caveat here goes silent.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch("샘플사업의 가격은 몇 원인가?", value) == expected
 
@@ -1100,7 +1096,7 @@ def test_the_year_month_branch_is_bounded_above_and_on_the_left():
     on the inner `0000년 3월`. Either way the value becomes a date and stops
     being read, so one value covers both bounds.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 개월인가?", "10000년 3월") == (
         "개월",
@@ -1130,7 +1126,7 @@ def _relaxed_pattern_from(number):
     """
     import re
 
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _MEASUREMENT_UNIT_SPELLINGS,
         _UNIT_SHADOW_GUARD,
     )
@@ -1168,7 +1164,7 @@ def test_an_unreadable_asked_unit_number_no_longer_names_the_neighbour():
     magnitude word both patterns have always read, so its staying silent shows
     the fix did not arrive by breaking that path.
     """
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _value_measure_units,
         korean_measure_unit_mismatch,
     )
@@ -1203,8 +1199,8 @@ def test_the_suppression_scan_reads_a_run_of_magnitude_words(monkeypatch):
     STATES nothing -- what changed is only whether the value is read as already
     carrying the unit that was asked for.
     """
-    import verinote.pipeline.query_intent as query_intent
-    from verinote.pipeline.query_intent import (
+    import verinote.pipeline.query_measure_unit as query_intent
+    from verinote.pipeline.query_measure_unit import (
         _RELAXED_QUANTITY_NUMBER,
         _value_measure_units,
         _value_states_asked_unit,
@@ -1241,8 +1237,8 @@ def test_the_suppression_scan_reads_any_unicode_decimal_digit(monkeypatch):
     head as one substring -- replacing `\\d` alone would leave the nested set
     `[[0-9],.]` and a `FutureWarning` rather than the pattern intended.
     """
-    import verinote.pipeline.query_intent as query_intent
-    from verinote.pipeline.query_intent import (
+    import verinote.pipeline.query_measure_unit as query_intent
+    from verinote.pipeline.query_measure_unit import (
         _RELAXED_QUANTITY_NUMBER,
         _value_measure_units,
         _value_states_asked_unit,
@@ -1292,8 +1288,8 @@ def test_the_widened_number_can_only_silence(monkeypatch):
     """
     import re
 
-    import verinote.pipeline.query_intent as query_intent
-    from verinote.pipeline.query_intent import (
+    import verinote.pipeline.query_measure_unit as query_intent
+    from verinote.pipeline.query_measure_unit import (
         _MEASUREMENT_FAMILY,
         _MEASUREMENT_UNIT_SPELLINGS,
         _SINO_KOREAN_MAGNITUDES,
@@ -1370,7 +1366,7 @@ def test_the_magnitude_run_needs_no_inner_digits():
     The two patterns really are different, which the match starts show. Without
     that check the equality could hold because the mutation did nothing.
     """
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _MEASUREMENT_UNIT_SPELLINGS,
         _SINO_KOREAN_MAGNITUDES,
         _VALUE_MEASUREMENT_RELAXED,
@@ -1444,7 +1440,7 @@ def test_the_magnitude_class_is_a_series_and_this_is_where_it_stops():
     mechanism the `1경5천조원` row above turns on, which is why one value cannot
     stand for two members.
     """
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _SINO_KOREAN_MAGNITUDES,
         korean_measure_unit_mismatch,
     )
@@ -1493,7 +1489,7 @@ def test_the_reporting_scans_magnitude_bound_has_two_halves_and_both_are_pinned(
     """
     import re
 
-    from verinote.pipeline.query_intent import _VALUE_MEASUREMENT, _value_measure_units
+    from verinote.pipeline.query_measure_unit import _VALUE_MEASUREMENT, _value_measure_units
 
     for value in ["2천만원", "2백원", "5십원", "2백5십원", "2백만원"]:
         assert _value_measure_units(value) == (), value
@@ -1546,8 +1542,8 @@ def test_a_separator_is_admitted_only_inside_the_leading_digit_run(monkeypatch):
     The killer is derived from the live constant rather than retyped, so it
     follows the number if the number moves.
     """
-    import verinote.pipeline.query_intent as query_intent
-    from verinote.pipeline.query_intent import (
+    import verinote.pipeline.query_measure_unit as query_intent
+    from verinote.pipeline.query_measure_unit import (
         _RELAXED_QUANTITY_NUMBER,
         _VALUE_MEASUREMENT_RELAXED,
         _value_states_asked_unit,
@@ -1593,7 +1589,7 @@ def test_whitespace_between_a_digit_month_and_its_day_still_reads_as_a_date(valu
     so `3월 중 15일` is a date now; what still ends the match is a word outside
     `_MONTH_PART_MEMBERS`, which is pinned separately.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch("샘플계약의 기간은 몇 개월인가?", value) is None
 
@@ -1610,7 +1606,7 @@ def test_the_suppression_scan_keeps_the_digit_head_of_the_strict_pattern():
     won, so this value stops warning about its dollars -- the same prose-noise
     hazard, arriving through the suppression side instead.
     """
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _value_states_asked_unit,
         korean_measure_unit_mismatch,
     )
@@ -1637,7 +1633,7 @@ def test_the_suppression_scan_reads_at_least_the_value_scans_magnitude_word():
     of the reader. The other direction is safe by construction, and
     `test_the_widened_number_can_only_silence` is where it is argued.
     """
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _value_measure_units,
         _value_states_asked_unit,
         korean_measure_unit_mismatch,
@@ -1672,7 +1668,7 @@ def _lost_caveat_narrowings():
     through `_relaxed_pattern_from` and `_relaxed_pattern_with_guard`, so every
     part except the one under test is the shipped one.
     """
-    from verinote.pipeline.query_intent import _RELAXED_QUANTITY_NUMBER
+    from verinote.pipeline.query_measure_unit import _RELAXED_QUANTITY_NUMBER
 
     numbers = {
         "one magnitude": _RELAXED_QUANTITY_NUMBER.replace(r")*", r")?"),
@@ -1740,8 +1736,8 @@ def test_caveats_lost_to_the_suppression_scan_are_recorded_not_fixed(
     still makes reaches into all three notations, so a count here would be a
     count of an open class.
     """
-    import verinote.pipeline.query_intent as query_intent
-    from verinote.pipeline.query_intent import (
+    import verinote.pipeline.query_measure_unit as query_intent
+    from verinote.pipeline.query_measure_unit import (
         _value_measure_units,
         korean_measure_unit_mismatch,
     )
@@ -1824,7 +1820,7 @@ def test_a_word_a_unit_spelling_only_begins_is_not_that_unit():
     not assumed, so no member is being held up by another. Add a member and the
     set equality is what fires, naming the fixture nobody wrote.
     """
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _UNIT_SHADOW_WORDS,
         korean_measure_unit_mismatch,
     )
@@ -1864,7 +1860,7 @@ def test_a_shadow_word_is_one_the_reporting_scan_already_refuses():
     `1.5주년`, `2백주주`, `3  분기` and `3\\xa0secondary` are the shapes that
     argument is about, and they read no unit.
     """
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _MEASUREMENT_UNIT_SPELLINGS,
         _SINO_KOREAN_MAGNITUDES,
         _UNIT_SHADOW_WORDS,
@@ -1898,7 +1894,7 @@ def _relaxed_pattern_with_guard(guard):
     """
     import re
 
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _MEASUREMENT_UNIT_SPELLINGS,
         _RELAXED_QUANTITY_NUMBER,
     )
@@ -1950,7 +1946,7 @@ def test_the_pattern_rebuilds_are_still_the_shipped_pattern():
     enough, and that one was found by instrumenting the helpers rather than by
     reading them.
     """
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _RELAXED_QUANTITY_NUMBER,
         _UNIT_SHADOW_GUARD,
         _VALUE_MEASUREMENT_RELAXED,
@@ -1972,7 +1968,7 @@ def _unbounded_shadow_guard():
     does. Derived rather than retyped so that changing the bound in the module
     changes the mutant with it instead of leaving a stale copy to compare against.
     """
-    from verinote.pipeline.query_intent import _UNIT_SHADOW_GUARD
+    from verinote.pipeline.query_measure_unit import _UNIT_SHADOW_GUARD
 
     unbounded = _UNIT_SHADOW_GUARD.replace(r"(?![가-힣A-Za-z])", "")
     assert unbounded != _UNIT_SHADOW_GUARD, "the mutation did not apply"
@@ -2018,8 +2014,8 @@ def test_the_shadow_guard_does_not_narrow_a_quantity_it_only_prefixes(monkeypatc
     `간격` does not begin with `기`, so no build of this guard can bite it. It
     stays `None` on both sides.
     """
-    import verinote.pipeline.query_intent as query_intent
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    import verinote.pipeline.query_measure_unit as query_intent
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     boundary_alternative_cost = [
         ("샘플사업의 기간은 몇 주인가?", "3주의 준비, 2개월 소요"),
@@ -2081,7 +2077,7 @@ def _shadow_grid():
     """
     import re
 
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _MEASUREMENT_UNIT_SPELLINGS,
         _UNIT_SHADOW_WORDS,
     )
@@ -2148,8 +2144,8 @@ def test_the_shadow_guard_gains_no_caveat_on_a_word_it_only_prefixes(monkeypatch
     re-derived and compared against zero rather than written as a number, because
     a number in a test rots as quietly as one in a docstring.
     """
-    import verinote.pipeline.query_intent as query_intent
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    import verinote.pipeline.query_measure_unit as query_intent
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     grid = _shadow_grid()
     assert grid, "the grid must not be empty"
@@ -2223,8 +2219,8 @@ def test_the_shadow_bound_admits_a_digit_and_refuses_a_letter(monkeypatch):
     the guard must not bite -- so it is silent on both sides and is the row that
     would catch a mutation flipping the bound's sense rather than its class.
     """
-    import verinote.pipeline.query_intent as query_intent
-    from verinote.pipeline.query_intent import (
+    import verinote.pipeline.query_measure_unit as query_intent
+    from verinote.pipeline.query_measure_unit import (
         _UNIT_SHADOW_GUARD,
         korean_measure_unit_mismatch,
     )
@@ -2271,7 +2267,7 @@ def test_a_point_in_time_silence_travels_into_the_new_notations():
     One reading went the other way with them, and it is the defect this scan
     exists to fix: `３시간30분` asked in hours was told it states minutes.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     for question, wide, ascii_twin in [
         ("샘플사업의 기간은 몇 년인가?", "２０２１년 착수, 총 3주", "2021년 착수, 총 3주"),
@@ -2312,7 +2308,7 @@ def test_only_the_달러_before_달_constraint_decides_the_suppression_ordering(
     """
     import re
 
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _MEASUREMENT_UNIT_SPELLINGS,
         _RELAXED_QUANTITY_NUMBER,
         _UNIT_SHADOW_GUARD,
@@ -2419,7 +2415,7 @@ def test_a_version_triple_no_longer_swallows_the_duration_beside_it(value):
     fixture holding the bound, which is why it is asserted here rather than left
     to the sentence in `_TIME_POINT` that describes it.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     question = "샘플사업의 기간은 몇 개월인가?"
     assert korean_measure_unit_mismatch(question, value) == ("개월", "주")
@@ -2442,7 +2438,7 @@ def test_달러_is_the_only_prefix_pair_that_crosses_canonical_units():
     Both counts are computed here rather than quoted, for the same reason the
     digit-prefix figure is.
     """
-    from verinote.pipeline.query_intent import _MEASUREMENT_UNIT_SPELLINGS as spellings
+    from verinote.pipeline.query_measure_unit import _MEASUREMENT_UNIT_SPELLINGS as spellings
 
     prefix_pairs = [
         (short, long)
@@ -2482,7 +2478,7 @@ def test_a_unit_suffix_would_be_inert_here():
     """
     import re
 
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _MEASUREMENT_UNIT_SPELLINGS,
         _RELAXED_QUANTITY_NUMBER,
         _UNIT_SHADOW_GUARD,
@@ -2620,7 +2616,7 @@ def test_every_month_word_has_a_day_it_reads_as_a_date():
     what stops a member being added without a value exercising it, which is how
     `금월`, `내월` and `내달` were missing from the first draft.
     """
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _MONTH_WORD_MEMBERS,
         korean_measure_unit_mismatch,
     )
@@ -2636,7 +2632,7 @@ def test_every_month_part_has_a_date_it_reads():
     `3월의 15일` and `3월 중 15일` are the fifteenth of March however the two are
     joined. Dropping any one member makes its row fire `('개월', '일')`.
     """
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _MONTH_PART_MEMBERS,
         korean_measure_unit_mismatch,
     )
@@ -2670,7 +2666,7 @@ def test_a_word_outside_the_month_part_set_leaves_the_duration_readable(value):
     The cost of closing it is named in `_TIME_POINT`: `3월 중 15일 소요` reads as
     the fifteenth, and that is honestly ambiguous.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch(_MONTH, value) == ("개월", "일")
 
@@ -2689,7 +2685,7 @@ def test_a_clock_hour_is_a_point_in_time_and_시간_is_a_duration():
     is safe from the same-unit suppressor -- that scan looks for the spelling
     `시간`, which `3시 30분` does not contain.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     for value in ["3시 30분", "오후 2시 15분", "14시 30분", "3시30분", "3시 30분 20초"]:
         assert korean_measure_unit_mismatch(_HOURS, value) is None, value
@@ -2714,7 +2710,7 @@ def test_the_day_of_month_branch_takes_no_left_bound(value):
     So the test exists for the edit a later author makes for free, and it fails
     in the direction that matters.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch(_MONTH, value) is None
 
@@ -2733,7 +2729,7 @@ def test_an_apostrophe_year_is_a_year_and_a_bare_two_digit_year_is_not():
     it, which is the shape this file keeps having to close: a documented
     behaviour with no killer.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     for value in ["'21년", "’21년", "‘21년"]:
         assert korean_measure_unit_mismatch(_MONTH, value) is None, value
@@ -2758,7 +2754,7 @@ def test_a_point_in_time_silences_only_its_own_span():
     day outside the span and surfaces here as `(("DAY", "일"), ("WEEK", "주"))`
     rather than as the week alone.
     """
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _MONTH_PART_MEMBERS,
         _MONTH_WORD_MEMBERS,
         _value_measure_units,
@@ -2815,7 +2811,7 @@ def test_a_year_in_front_of_a_date_is_inside_the_same_span(value):
     These rows are asked in `몇 개월인가?` rather than `몇 주인가?` because what
     they would wrongly state is years, not days.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch("샘플계약의 기간은 몇 주인가?", value) is None
 
@@ -2828,7 +2824,7 @@ def test_the_year_prefix_takes_no_left_bound(value):
     so they have to be asked in `몇 개월인가?` to be visible at all. The
     reasoning is in that test's docstring and in `_TIME_POINT`.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch(_MONTH, value) is None
 
@@ -2857,7 +2853,7 @@ def test_a_clock_time_carries_its_minute_and_second_inside_one_span():
     `_DAY_DURATION_SUFFIXES` was the candidate weighed and declined: put it on
     the minute and `3시 30분간` is caveated `(시간, 분)` instead of silent.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     for value in ["3시 30분", "3시30분", "오후 2시 15분", "14시 30분", "3시 30분 20초",
                   "3시 5분 30초", "3시 30분쯤", "3시 30분 ~ 5시 45분",
@@ -2925,7 +2921,7 @@ def test_a_quantity_is_dropped_by_overlap_and_not_by_masking_or_containment():
     the shipped one. That is the point of the test: without the differ-assertion
     each half would restate the implementation instead of discriminating it.
     """
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _MEASUREMENT_UNIT_SPELLINGS,
         _TIME_POINT,
         _VALUE_MEASUREMENT,
@@ -3010,7 +3006,7 @@ def test_a_span_covers_every_component_a_value_could_be_said_to_state():
     it is shown to be silent inside it, so a probe the pattern happens to mangle
     cannot pass by stating nothing.
     """
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _MEASUREMENT_UNIT_SPELLINGS,
         _MONTH_WORD_MEMBERS,
         _TIME_POINT,
@@ -3087,7 +3083,7 @@ def test_the_gained_caveats_are_the_ones_standing_outside_a_span():
     it means moving the lookahead's position rather than making the guard
     span-local.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     for value in ["2021년 착수, 총 3주", "2024/01/02 3주", "12.5.3 버전, 3주 소요",
                   "3시 시작, 3주 소요", "'21년 시작, 3주", "다음 달 3일 회의, 3주 소요",
@@ -3124,7 +3120,7 @@ def test_whether_a_withdrawn_cover_becomes_a_caveat_depends_on_the_question():
     head as what decides; a reader who saw only the second would take the
     outcome for uniform.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch("샘플계약의 기간은 몇 년인가?", "2021년, 100주") is None
     assert korean_measure_unit_mismatch(_MONTH, "2021년, 100주") == ("개월", "주")
@@ -3172,7 +3168,7 @@ def test_every_point_in_time_in_a_value_gets_its_own_span():
     value has no bare second and no Hangul-tailed day. Two directions, named,
     rather than a claim about every mutation.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch(_MONTH, "2021년 3월 15일 10시 30분 회의, 3주 소요") == (
         "개월",
@@ -3200,7 +3196,7 @@ def test_a_duration_is_still_read_as_a_quantity(value):
     term was considered for #450 and withdrawn -- each of these would have
     stopped being read.
     """
-    from verinote.pipeline.query_intent import _value_measure_units
+    from verinote.pipeline.query_measure_unit import _value_measure_units
 
     assert _value_measure_units(value) != ()
 
@@ -3212,7 +3208,7 @@ def test_a_month_word_written_without_its_space_is_still_a_month_term():
     like `다음 달 1일`. Join the members literally instead and the unspaced form
     stops being a date, which nothing else in the suite notices.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     for value in ["다음달 1일", "다음달 12일", "이번달 1일", "지난달 15일"]:
         assert korean_measure_unit_mismatch(_MONTH, value) is None, value
@@ -3228,7 +3224,7 @@ def test_the_day_number_is_one_or_two_digits_and_that_width_is_load_bearing():
     three digits makes `다음달 123일` a date, and narrowing it to one makes
     `매월 15일` stop being one.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch(_MONTH, "다음달 123일") == ("개월", "일")
     assert korean_measure_unit_mismatch(_MONTH, "매월 15일") is None
@@ -3240,7 +3236,7 @@ def test_whitespace_may_stand_between_the_day_number_and_its_일():
     `매월 2 일` is spaced the way a value typed with a stray space is, and drops
     out of the day branch entirely without it.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     for value in ["매월 2 일", "3월 15 일", "다음 달 1 일"]:
         assert korean_measure_unit_mismatch(_MONTH, value) is None, value
@@ -3266,7 +3262,7 @@ def test_a_month_word_preceded_by_a_digit_is_not_a_month_term(value):
     the numeral one is not, and no bound of this shape can take both without
     losing `해당월`.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch(_MONTH, value) == ("개월", "일")
     assert korean_measure_unit_mismatch(_MONTH, "해당월 15일") is None
@@ -3307,7 +3303,7 @@ def test_a_day_wearing_a_duration_suffix_is_a_duration_not_a_day_of_the_month(va
     rather than counted here, because the count depends on how many digit
     months one chooses to write down and the class does not.
     """
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _DATE_APPROXIMATOR_SUFFIXES,
         _DAY_DURATION_SUFFIXES,
         _UNIT_SUFFIX_MEMBERS,
@@ -3354,7 +3350,7 @@ def test_a_day_of_the_month_without_a_unit_suffix_is_still_a_date(value):
     `test_a_day_wearing_an_approximator_is_still_a_date`, whose `3월 15일쯤` and
     `매월 15일정도` are caveated `(개월, 일)` under it and silent as written.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch(_MONTH, value) is None
 
@@ -3399,7 +3395,7 @@ def test_the_only_caveats_gained_are_a_digit_month_wearing_a_unit_suffix():
     import itertools
     import re
 
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _DATE_APPROXIMATOR_SUFFIXES,
         _DAY_DURATION_SUFFIXES,
         _MONTH_PART_MEMBERS,
@@ -3408,7 +3404,7 @@ def test_the_only_caveats_gained_are_a_digit_month_wearing_a_unit_suffix():
         _UNIT_SUFFIX_MEMBERS,
         _value_measure_units,
     )
-    import verinote.pipeline.query_intent as query_intent
+    import verinote.pipeline.query_measure_unit as query_intent
 
     shipped = re.compile(
         r"[0-9]{1,2}\s*월\s*[0-9]{1,2}\s*일"
@@ -3490,7 +3486,7 @@ def test_a_day_wearing_an_approximator_is_still_a_date(value):
     the verdict -- the defect `_VALUE_MEASUREMENT_RELAXED` exists to fix, one
     branch over.
     """
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _DATE_APPROXIMATOR_SUFFIXES,
         _UNIT_SUFFIX_MEMBERS,
         korean_measure_unit_mismatch,
@@ -3549,7 +3545,7 @@ def test_a_free_word_duration_marker_is_not_consulted(month_word, marker):
     listing the free words would not buy, since standard orthography spaces
     them and a lookahead flush against `일` cannot reach past a space.
     """
-    from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch(_MONTH, f"{month_word} 15일 {marker}") is None
     assert korean_measure_unit_mismatch(_MONTH, f"{month_word} 15일간") == ("개월", "일")
@@ -3574,7 +3570,7 @@ def test_only_a_suffix_bound_to_the_day_changes_the_verdict():
     `정도`, a free noun whose spaced form is the standard one -- and it shows no
     flip, because the approximators are not consulted either way.
     """
-    from verinote.pipeline.query_intent import (
+    from verinote.pipeline.query_measure_unit import (
         _DATE_APPROXIMATOR_SUFFIXES,
         _DAY_DURATION_SUFFIXES,
         korean_measure_unit_mismatch,

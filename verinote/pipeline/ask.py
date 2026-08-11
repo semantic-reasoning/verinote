@@ -27,7 +27,7 @@ from verinote.pipeline.query import (
     expand_query_relation_aliases,
 )
 from verinote.pipeline.query_candidate_eval import RELATION_DECL
-from verinote.pipeline.query_intent import korean_measure_unit_mismatch
+from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 from verinote.pipeline.report_trace import trace_query_answers
 from verinote.store import Store, engine_statuses
 from verinote.store.duckdb_fact_terms import DuckDBFactTermStoreError
