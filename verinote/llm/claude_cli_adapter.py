@@ -39,6 +39,25 @@ CLI_MODEL_ALIASES = tuple(_MODEL_ALIASES)
 # names ("Opus 4.8", "Claude Opus") are collapsed to an alias.
 _CANONICAL_MODEL_ID = re.compile(r"^claude-[a-z0-9]+(?:-[a-z0-9]+)+$")
 
+# The CLI takes the prompt as an exec ARGUMENT, and an argument cannot carry
+# every str Python can hold. Two kinds fail, both before the process is spawned:
+# a NUL byte, and a surrogate outside the U+DC80..U+DCFF range that `os.fsencode`
+# round-trips (D800..DC7F, DD00..DFFF -- what `json.loads('"\\ud800"')` yields).
+_UNSENDABLE_ARGUMENT = (
+    "claude CLI request failed: the text could not be sent. It contains a "
+    "character that cannot travel in a command-line argument -- a NUL byte, or "
+    "an unpaired surrogate left behind by a bad decode. Remove it from the "
+    "source file and re-ingest that source."
+)
+
+# `text=True` makes subprocess decode the CLI's stdout/stderr as strict UTF-8.
+# This is the CLI's OUTPUT failing, not the source text.
+_UNDECODABLE_OUTPUT = (
+    "claude CLI request failed: the CLI's reply was not valid UTF-8 and could "
+    "not be read. Nothing is wrong with the source text -- re-run the analysis, "
+    "and if it keeps happening check the claude CLI's own version."
+)
+
 
 class ClaudeCliAdapter:
     name = "ClaudeCLI"
@@ -147,6 +166,19 @@ class ClaudeCliAdapter:
                 raise LLMError("claude CLI request timed out") from exc
             except OSError as exc:
                 raise LLMError(f"claude CLI request failed: {exc}") from exc
+            except UnicodeDecodeError as exc:
+                # The CLI's OUTPUT could not be decoded. Do not tell the user to fix
+                # their source. Constant message: this exception's text carries byte
+                # values and offsets from the model's output, which derives from the
+                # user's document.
+                raise LLMError(_UNDECODABLE_OUTPUT) from exc
+            except ValueError as exc:
+                # The ARGUMENT could not be encoded. MUST stay below
+                # UnicodeDecodeError, which is a ValueError subclass.
+                # `ValueError("embedded null byte")` and `UnicodeEncodeError` are
+                # fixed-shape strings carrying no document content, so qualifying
+                # with them preserves the cause without opening an oracle.
+                raise LLMError(f"{_UNSENDABLE_ARGUMENT} ({type(exc).__name__}: {exc})") from exc
         if proc.returncode != 0:
             detail = (proc.stderr or proc.stdout or "").strip()
             raise LLMError(f"claude CLI exited with {proc.returncode}: {detail}")
