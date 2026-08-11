@@ -74,6 +74,17 @@
             <div class="artifact-row">
               <span class="badge">{{ artifact["kind"] }}</span>
               <code class="truncate" title="{{ artifact["path"] }}">{{ artifact["path"] }}</code>
+              {# #473: three states, not two. NULL is an artifact extracted before
+                 anyone counted, and it may well be full of unreadable glyphs --
+                 rendering it the same as a measured 0 would tell the reader it is
+                 clean on the strength of nobody having looked. 0 stays silent
+                 because a measured, lossless extraction has nothing to report. #}
+              {% set unreadable = artifact["unreadable_chars"] %}
+              {% if unreadable is none %}
+                <span class="src">unreadable characters not checked — re-upload to measure</span>
+              {% elif unreadable %}
+                <span class="badge">{{ unreadable }} unreadable character(s)</span>
+              {% endif %}
             </div>
           {% endfor %}
         </div>
