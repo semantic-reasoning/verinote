@@ -8,7 +8,12 @@ from verinote.config import Config
 from verinote.llm.base import LLMError
 from verinote.llm.claude_cli_adapter import ClaudeCliAdapter
 from verinote.llm.factory import get_client
+from verinote.pipeline.extract import (
+    create_chunked_extraction_job,
+    process_extraction_job,
+)
 from verinote.prompts import save_prompt_override
+from verinote.store import Store
 
 
 def _cfg(tmp_path, *, model: str = "", llm_timeout_seconds: float = 600.0) -> Config:
@@ -510,3 +515,68 @@ def test_claude_cli_does_not_swallow_a_programming_error(tmp_path, monkeypatch, 
 
     with pytest.raises(TypeError):
         invoke(ClaudeCliAdapter(_cfg(tmp_path, llm_timeout_seconds="not-a-number")), "Ada")
+
+
+# --- one unsendable chunk must not discard the rest of the job (#474) --------
+
+
+def test_one_unsendable_chunk_fails_alone_and_the_job_keeps_going(tmp_path, monkeypatch):
+    """The whole point of normalising to `LLMError`, exercised end to end.
+
+    `process_extraction_job` catches `LLMError` per chunk, marks that chunk failed
+    and moves on; anything else escapes the loop and takes the job with it. So the
+    NUL goes in chunk *zero* deliberately -- ORDER IS WHAT MAKES THIS TEST MEAN
+    ANYTHING. With it in the last chunk, the earlier chunks would already have been
+    committed before the crash and every assertion below would pass against the
+    unfixed adapter. In chunk zero, the unfixed adapter kills the loop on the first
+    iteration: chunk one is never claimed, no candidate is ever written, and
+    `process_extraction_job` raises instead of returning.
+
+    A real `claude` on PATH, not a stub, for the same reason as the tests above:
+    the `ValueError` has to come from CPython refusing to build the argv.
+    """
+    store = Store(tmp_path / "kb.sqlite")
+    store.init_schema()
+    source_id = store.add_source("doc.txt")
+    # Two paragraphs, each under the chunk size, over it together -> two chunks.
+    # No overlap, or chunk zero's NUL would be copied into chunk one's prefix and
+    # both chunks would fail. Nothing here matches `_ROLE_CUE_RE`: a match would
+    # make the pipeline issue a second, focused extraction call per chunk.
+    text = (
+        "Ada Lovelace was a mathematician.\x00 She wrote notes on the engine.\n\n"
+        "Grace Hopper was a computer scientist. She built early compilers."
+    )
+    job_id = create_chunked_extraction_job(
+        store,
+        source_id=source_id,
+        source_text=text,
+        provider="claudecli",
+        model="",
+        chunk_chars=120,
+        chunk_overlap_chars=0,
+    )
+    assert [c["chunk_index"] for c in store.source_chunks(job_id)] == [0, 1]
+    assert "\x00" in store.source_chunks(job_id)[0]["text"]
+    assert "\x00" not in store.source_chunks(job_id)[1]["text"]
+
+    _fake_claude(tmp_path, monkeypatch, f"printf '%s' '{_FACT_JSON}'")
+
+    # Returns; before the fix the ValueError escaped this call entirely.
+    process_extraction_job(store, ClaudeCliAdapter(_cfg(tmp_path, llm_timeout_seconds=5.0)), job_id=job_id)
+
+    job = store.get_extraction_job(job_id)
+    assert job["status"] == "failed"
+    # The web worker's `except LLMError` branch is what produces this wording; the
+    # generic `except Exception` branch says "analysis failed: <python error>"
+    # instead, which is the symptom #474 was reported as.
+    assert str(job["message"]).startswith("Analysis failed: 1 chunk(s) failed, 1/2 complete")
+
+    chunks = store.source_chunks(job_id)
+    assert chunks[0]["status"] == "failed"
+    assert "cannot travel in a command-line argument" in str(chunks[0]["error"])
+    assert chunks[1]["status"] == "done"  # `pending` before the fix: never reached
+    # The job's candidate tally can only have come from chunk one -- chunk zero
+    # never reached the LLM.
+    assert int(job["candidate_count"]) > 0
+    assert len(store.facts()) >= 1  # zero before the fix
+    store.close()
