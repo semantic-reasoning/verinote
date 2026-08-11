@@ -382,16 +382,22 @@ def test_a_halted_kb_still_rewinds_the_whole_job_without_failing_the_chunk(
     Releasing it as `failed` here would both double-write and label a healthy
     chunk as broken.
 
-    THE EVENT LOG IS THE LOAD-BEARING ASSERTION, and it has to be, because the
-    end states cannot tell the difference. Delete the `except PolicyMissingError:
-    raise` clause and the broad handler below it fails the chunk — but
-    `rollback_extraction_job` then rewinds `failed` chunks to `pending` along with
-    the `running` one, so the final statuses, the job row and the run summary all
-    come out identical. What does not get rewound is history: the spurious
-    `chunk_failed` event stays in `fact_events`, recording a failure that never
-    happened against a chunk that was fine.
+    TWO INDEPENDENT OUTCOMES CATCH THIS, and both assertions below are real.
+    Delete the `except PolicyMissingError: raise` clause and the broad handler
+    releases the chunk as `failed`; then
 
-    An `assert` on a monkeypatched `_release_claimed_chunk` would also catch it,
+    * `fact_events` gains a `chunk_failed` row, and
+    * the chunk is still `failed` at the end. `rollback_extraction_job` rewinds
+      ONLY the in-flight `running` chunk (`store/db.py`: "`failed` chunks keep
+      their error. Only the in-flight `running` chunk is returned to the queue" —
+      its UPDATE is scoped `WHERE job_id = ? AND status = 'running'`), so a chunk
+      the release already failed is not swept back to `pending`.
+
+    The event assertion is written first because it names the thing that must not
+    happen — a release fired — instead of inferring it from a state, not because
+    the status assertion is too weak. Both are load-bearing; keep both.
+
+    An `assert` on a monkeypatched `_release_claimed_chunk` would catch it too,
     but that watches for a named private call rather than for an outcome, and a
     later refactor that renames or inlines the helper would silently defang it.
     The spy is kept only as a redundant, non-load-bearing check.
@@ -481,6 +487,16 @@ def test_cli_sync_leaves_the_job_running_but_never_the_chunk(tmp_path, monkeypat
     inside `process_extraction_job`, below every caller, so it holds even where
     the job row does not get written.
 
+    THE TWO ASSERTIONS BELOW HAVE DIFFERENT STATUSES. (b), the chunk, is a
+    GUARANTEE — it is what #475 fixed and it must not regress. (a), the job left
+    `running`, is a CHARACTERISATION of a defect that is still open as #488: the
+    blanket handler exists only in the web worker, so `verinote sync` strands the
+    job row. Fixing #488 MUST turn (a) red, and the correct response then is to
+    update (a) to whatever terminal status the new handler writes — never to
+    restore the stranded job in order to keep this line green. #488 carries the
+    same instruction from its side, so the test and the issue each point at the
+    other.
+
     THIS ALSO CHANGES BEHAVIOUR, DELIBERATELY. Before the fix the chunk stayed
     `running` with no failed chunk on the job, so `plan_source_extraction` never
     saw a retry budget to spend and `verinote sync --recover` would rewind and
@@ -513,9 +529,11 @@ def test_cli_sync_leaves_the_job_running_but_never_the_chunk(tmp_path, monkeypat
     jobs = list(store._conn.execute("SELECT id, status FROM extraction_jobs"))
     assert len(jobs) == 1
     job_id = int(jobs[0]["id"])
-    # (a) the job row is untouched — no CLI code path writes it on this failure
+    # (a) CHARACTERISATION of open defect #488, not a guarantee: no CLI code path
+    # writes the job row on this failure, so it is stranded `running`. Fixing #488
+    # must turn this line red; update it then, do not restore the defect.
     assert jobs[0]["status"] == "running"
-    # (b) the chunk is released anyway, which is what the fix guarantees
+    # (b) GUARANTEE (#475): the chunk is released regardless of the caller
     chunks = store.source_chunks(job_id)
     assert len(chunks) > 1, "the note must split, or 'first chunk' means nothing"
     assert chunks[0]["status"] == "failed"

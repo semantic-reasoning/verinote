@@ -1706,10 +1706,16 @@ def test_a_halt_under_a_held_claim_returns_the_chunk_to_the_queue(tmp_path):
     rewind — marking it `failed` first would record a failure against a chunk
     that did nothing wrong.
 
-    THE EVENT ASSERTION IS THE LOAD-BEARING ONE. `rollback_extraction_job` rewinds
-    `failed` chunks to `pending` too, so if the release did fire, every end state
-    checked below would still look right; only the spurious `chunk_failed` row in
-    `fact_events` survives the rollback to give it away.
+    THE EVENT LOG AND THE CHUNK STATUS BOTH CATCH IT, independently. If the
+    release did fire, `fact_events` gains a `chunk_failed` row AND the chunk ends
+    `failed` rather than `pending` — `rollback_extraction_job` returns only the
+    in-flight `running` chunk to the queue ("`failed` chunks keep their error",
+    `store/db.py`; the UPDATE is scoped `WHERE job_id = ? AND status =
+    'running'`), so it does not sweep away a chunk the release already failed.
+
+    The event assertion comes first because it says directly that no release
+    happened, rather than inferring it from a resulting state. That is an ordering
+    preference, not a claim that the status assertion is redundant — keep both.
     """
     from verinote.pipeline.extract import process_extraction_job
 
