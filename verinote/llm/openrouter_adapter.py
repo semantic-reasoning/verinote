@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import urllib.request
 
-from verinote.llm.base import LLMError, ModelListing
+from verinote.llm.base import LLMError, ModelListing, base_url_unusable
 from verinote.llm.openai_adapter import OpenAIAdapter
 
 # The endpoint an unset `base_url` resolves to. Named rather than inlined so the
@@ -72,7 +72,14 @@ def list_models(base_url: str | None, timeout: float) -> ModelListing:
     "does not advertise" would report a claim the catalogue never made.
     """
     root = (base_url or OPENROUTER_DEFAULT_BASE_URL).rstrip("/")
-    req = urllib.request.Request(f"{root}/models")
+    # Same reachable path as the Ollama lister: the settings picker dials the
+    # endpoint currently in the Base URL box, so a malformed one arrives here
+    # before it is ever saved. Escaping unnormalised makes that a 500 rather
+    # than the banner the settings page already renders for `LLMError`.
+    try:
+        req = urllib.request.Request(f"{root}/models")
+    except ValueError as exc:
+        raise base_url_unusable("openrouter", exc) from exc
     try:
         with urllib.request.urlopen(  # noqa: S310 - caller-named endpoint, dialled with no key
             req, timeout=timeout

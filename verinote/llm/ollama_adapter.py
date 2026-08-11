@@ -11,7 +11,7 @@ import json
 import urllib.request
 
 from verinote.config import Config
-from verinote.llm.base import ExtractedFact, LLMError, ModelListing
+from verinote.llm.base import ExtractedFact, LLMError, ModelListing, base_url_unusable
 from verinote.llm.schema import (
     FACT_ARRAY_SCHEMA,
     QUERY_INTENT_SCHEMA,
@@ -55,7 +55,14 @@ def list_models(base_url: str | None, timeout: float) -> ModelListing:
     showing an empty picker).
     """
     root = (base_url or OLLAMA_DEFAULT_BASE_URL).rstrip("/")
-    req = urllib.request.Request(f"{root}/api/tags")
+    # The settings picker calls this with whatever is typed in the Base URL box,
+    # unsaved, so a half-typed URL reaches `Request` on every keystroke that
+    # triggers a refresh. Left to escape, that is a 500 from the model-field
+    # endpoint instead of the banner the page already knows how to render.
+    try:
+        req = urllib.request.Request(f"{root}/api/tags")
+    except ValueError as exc:
+        raise base_url_unusable("ollama", exc) from exc
     try:
         with urllib.request.urlopen(  # noqa: S310 - local trusted endpoint
             req, timeout=timeout
@@ -91,15 +98,25 @@ class OllamaAdapter:
         caller's own failure -- is written once instead of four times in
         parallel.
 
-        `Request(...)` sits deliberately OUTSIDE the `try`, exactly where each
-        method had it before the fold. Moving it in would change behaviour, and
-        this extraction changes none; that move is its own commit.
+        `Request(...)` gets its own narrow clause rather than joining the one
+        below: a URL that cannot be built is not a request that failed, and
+        telling a user their server did not answer when nothing was ever dialled
+        sends them to the wrong place (#493).
         """
-        req = urllib.request.Request(
-            f"{self.base_url}/api/chat",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-        )
+        # Hoisted out of the `Request(...)` call, not merely out of the `try`:
+        # as an ARGUMENT it would be evaluated inside the guarded region, so a
+        # `ValueError` from serialising the payload would come back out labelled
+        # "base URL is unusable" — a bug in this file blamed on the user's
+        # setting. The region below must contain nothing but the URL parse.
+        data = json.dumps(payload).encode("utf-8")
+        try:
+            req = urllib.request.Request(
+                f"{self.base_url}/api/chat",
+                data=data,
+                headers={"Content-Type": "application/json"},
+            )
+        except ValueError as exc:
+            raise base_url_unusable(self.name, exc) from exc
         try:
             with urllib.request.urlopen(  # noqa: S310 - local trusted endpoint
                 req, timeout=self.cfg.llm_timeout_seconds

@@ -372,3 +372,47 @@ def test_list_models_raises_on_schema_mismatch(monkeypatch, payload):
 
     with pytest.raises(LLMError, match="did not match schema"):
         list_models(None, 5.0)
+
+
+# The settings-UI typo #493 was reported for. Passed explicitly and never as
+# `None`: an unset base_url resolves to OPENROUTER_DEFAULT_BASE_URL, which is a
+# perfectly good URL, so a `None` here would assert nothing at all.
+_UNUSABLE_BASE_URL = "::::"
+
+
+def test_list_models_normalises_a_base_url_no_request_can_be_built_from(monkeypatch):
+    """`GET /settings/model-field?provider=openrouter&base_url=::::` reaches this
+    with a URL the user has only typed, not saved. Unnormalised the `ValueError`
+    escapes as a 500 from the settings page; `LLMError` is what that endpoint
+    already renders as a banner.
+    """
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: pytest.fail("dialled"))
+
+    with pytest.raises(LLMError, match="^openrouter base URL is unusable"):
+        list_models(_UNUSABLE_BASE_URL, 5.0)
+
+
+def test_list_models_names_openrouter_not_ollama_for_an_unusable_base_url(monkeypatch):
+    """Two listers now share one helper, and the provider name is the only thing
+    distinguishing their messages. It is what the banner shows, so a copy-paste
+    that left "ollama" here would point at a provider the user is not using."""
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: pytest.fail("dialled"))
+
+    with pytest.raises(LLMError) as exc:
+        list_models(_UNUSABLE_BASE_URL, 5.0)
+
+    assert "ollama" not in str(exc.value)
+
+
+def test_list_models_does_not_blame_the_base_url_for_a_non_valueerror(monkeypatch):
+    """The clause catches `ValueError` and nothing wider, so a genuine bug in
+    this statement is not relabelled as the user's configuration mistake."""
+
+    def boom(*args, **kwargs):
+        raise TypeError("Request() got an unexpected keyword argument")
+
+    monkeypatch.setattr("urllib.request.Request", boom)
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: pytest.fail("dialled"))
+
+    with pytest.raises(TypeError):
+        list_models(None, 5.0)
