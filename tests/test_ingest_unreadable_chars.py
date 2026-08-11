@@ -351,3 +351,46 @@ def test_sources_page_separates_measured_loss_from_never_measured(tmp_path, nulx
     assert "unreadable characters not checked" in html
     assert html.count("unreadable character(s)") == 1
     assert html.count("unreadable characters not checked") == 1
+
+
+def _cli_env(monkeypatch, tmp_path):
+    """Point `cli.main` at a fresh KB under tmp_path, as tests/test_cli.py does."""
+    monkeypatch.setenv("VERINOTE_ROOT", str(tmp_path))
+    monkeypatch.setenv("VERINOTE_PROVIDER", "anthropic")
+
+
+def test_cli_ingest_warns_how_many_characters_it_could_not_read(
+    tmp_path, monkeypatch, capsys, nulx
+):
+    from verinote import cli
+
+    _cli_env(monkeypatch, tmp_path)
+    src = tmp_path / "lossy.nulx"
+    src.write_bytes("a\x00b\x00c\x00d".encode("utf-8"))
+
+    rc = cli.main(["ingest", str(src)])
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "3" in captured.err
+    assert "could not be read" in captured.err
+    # The warning is an aside; the citation line stdout already promised stays.
+    assert "ingested" in captured.out and "-> sources/" in captured.out
+
+
+def test_cli_ingest_says_nothing_when_every_character_was_readable(
+    tmp_path, monkeypatch, capsys, nulx
+):
+    """The other half: a warning printed unconditionally would be no warning."""
+    from verinote import cli
+
+    _cli_env(monkeypatch, tmp_path)
+    src = tmp_path / "fine.nulx"
+    src.write_bytes("abcd".encode("utf-8"))
+
+    rc = cli.main(["ingest", str(src)])
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "could not be read" not in captured.err
+    assert "ingested" in captured.out and "-> sources/" in captured.out

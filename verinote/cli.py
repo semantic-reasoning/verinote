@@ -1002,6 +1002,19 @@ def cmd_ingest(cfg: Config, args: argparse.Namespace) -> int:
         store.close()
         return 1
     store.close()
+    unreadable = result["unreadable_chars"]
+    if unreadable:
+        # Not a failure -- the source is ingested and usable -- but the text now
+        # holds U+FFFD where the extractor could not map a glyph, and facts
+        # drawn from it will inherit those gaps. Said on stderr so the citation
+        # line on stdout stays pipeable.
+        print(
+            f"warning: {unreadable} character(s) could not be read from "
+            f"{args.path} and were replaced with U+FFFD; extracting a text "
+            "copy another way (e.g. `pdftotext -layout`) and re-ingesting it "
+            "may recover them",
+            file=sys.stderr,
+        )
     print(f"ingested {args.path} -> {result['citation']} ({result['kind']})")
     print("run `verinote sync` to extract candidate facts from it")
     return 0
