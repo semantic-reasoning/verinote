@@ -16,7 +16,7 @@ recompiled from your questions, and `policy/logic-policy.dl` can be re-scaffolde
 | `kb.sqlite` | facts, sources, questions | it records **every accept/reject decision and the full audit log** |
 | `facts.duckdb` | the canonical logical fact terms | see below — it is **not** rebuildable from `kb.sqlite` |
 | `sources/` | the documents you ingested, byte for byte | verinote never re-downloads them |
-| `artifacts/` | the extracted text of each source | `kb.sqlite` stores only its path and checksum, not the text. Re-derivable by re-ingesting — but only while `sources/` survives |
+| `artifacts/` | the extracted text of each source | `kb.sqlite` stores only its path, its checksum, and how many characters the extractor could not read — not the text. Re-derivable by re-ingesting — but only while `sources/` survives |
 | `policy/logic-policy.dl` | your review rules | scaffolded by `init`; `policy reset` only restores the default, never your edits |
 | `policy/relation-aliases.md` | raw → canonical relation names | written by hand or by the Settings UI |
 | `policy/typed-relations.md` | typed relation declarations | hand-written; nothing in verinote writes it |
