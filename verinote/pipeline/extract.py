@@ -469,8 +469,11 @@ def process_extraction_job(
             # the callee returned. Closing it means making the claim atomic with its
             # own result, i.e. folding the CAS and the read-back into one statement
             # (`UPDATE ... RETURNING *`), which is a `Store` API change and belongs
-            # to whoever owns that layer. Do not "fix" it here by re-reading the
-            # chunk after the fact: that reintroduces the same two-step race.
+            # to whoever owns that layer. That work is #489 — it owns this window
+            # and records the same reasoning from its side, so neither this comment
+            # nor the issue can be read without finding the other. Do not "fix" it
+            # here by re-reading the chunk after the fact: that reintroduces the
+            # same two-step race.
             try:
                 chunk_id = int(running["id"])
                 inserted = _extract_chunk(
