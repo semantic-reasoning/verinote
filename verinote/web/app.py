@@ -1425,13 +1425,22 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             row["artifacts"] = [dict(artifact) for artifact in store.source_artifacts(source_id)]
             row["failed_chunk_details"] = []
             row["pending_chunks"] = 0
+            row["running_chunks"] = 0
             if source["job_id"]:
                 chunks = store.source_chunks(int(source["job_id"]))
                 row["failed_chunk_details"] = [
                     dict(chunk) for chunk in chunks if chunk["status"] == "failed"
                 ]
+                # `pending` and `running` are counted apart. Summed, the page read
+                # "49 pending" for a job holding 48 untouched chunks and one it had
+                # already claimed and sent to the LLM (#475) — which says none of
+                # this has been started. They are different states to anyone who
+                # has to act on them, so they are different numbers here.
                 row["pending_chunks"] = sum(
-                    1 for chunk in chunks if chunk["status"] in {"pending", "running"}
+                    1 for chunk in chunks if chunk["status"] == "pending"
+                )
+                row["running_chunks"] = sum(
+                    1 for chunk in chunks if chunk["status"] == "running"
                 )
             rows.append(row)
         return rows

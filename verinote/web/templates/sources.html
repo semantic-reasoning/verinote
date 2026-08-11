@@ -92,6 +92,12 @@
           {% if s["pending_chunks"] %}
             <span class="warn-inline">{{ s["pending_chunks"] }} pending</span>
           {% endif %}
+          {# A claimed chunk is in flight, not waiting, and saying "pending" about it
+             hid the difference between a job that has not started and one that is
+             mid-call (#475). Its own count, so the two are never summed again. #}
+          {% if s["running_chunks"] %}
+            <span class="warn-inline">{{ s["running_chunks"] }} running</span>
+          {% endif %}
           {# Chunk progress as a bar (#228). `completed_chunks` and `failed_chunks` are
              disjoint counts of the job's chunk rows (db.py `_refresh_extraction_job`
              counts `done` and `failed` separately), so the two segments tile the track
