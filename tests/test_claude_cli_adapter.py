@@ -254,3 +254,27 @@ def test_claude_cli_surfaces_an_unknown_model_id_instead_of_substituting_one(tmp
 
     with pytest.raises(LLMError, match="claude-nonexistent-9"):
         ClaudeCliAdapter(_cfg(tmp_path, model="claude-nonexistent-9")).extract_facts(source_text="x")
+
+
+# --- one subprocess call site, shared by both command shapes ---
+
+
+def test_claude_cli_routes_every_command_shape_through_one_call_site(tmp_path, monkeypatch):
+    """The bug this refactor precedes (#474) was a missing `except` clause that had
+    to be added twice because the body was copy-pasted twice. A shape that skips
+    `_invoke` would keep its own copy of the clauses and drift again."""
+    seen = []
+
+    def recorder(self, cmd):
+        seen.append(cmd)
+        return '{"facts":[]}'
+
+    monkeypatch.setattr(ClaudeCliAdapter, "_invoke", recorder)
+    adapter = ClaudeCliAdapter(_cfg(tmp_path))
+
+    adapter.extract_facts(source_text="x")  # --json-schema path
+    adapter.answer_question(question="Who?", context="c")  # plain-text path
+
+    assert len(seen) == 2
+    assert "--json-schema" in seen[0]
+    assert "--json-schema" not in seen[1]
