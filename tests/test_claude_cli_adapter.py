@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
+import os
+import shlex
 import subprocess
 import tempfile
 from types import SimpleNamespace
@@ -59,14 +61,42 @@ def _no_claude_on_path(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("PATH", str(empty))
 
 
-def _fake_claude(tmp_path, monkeypatch, body: str) -> None:
-    """Put a `claude` on PATH that runs `body` -- a real process, real pipes."""
+def _fake_claude(tmp_path, monkeypatch, reply: bytes) -> None:
+    """Put a `claude` on PATH that writes exactly `reply` -- a real process, real pipes.
+
+    PYTHON WRITES THE BYTES; THE SCRIPT ONLY `cat`s THEM. Nothing the fake emits
+    passes through a shell's escape handling, because that handling is not
+    portable: `printf '\\xff\\xfe'` produces those two bytes under bash and the
+    eight ASCII characters `\\xff\\xfe` under dash. Written that way, the
+    undecodable-reply tests passed on a macOS `/bin/sh` (bash) and, on a CI runner
+    where `/bin/sh` is dash, handed the adapter *valid ASCII* -- so the decode
+    clause was never reached and four tests failed for a reason that had nothing to
+    do with the code under test. `cat` is POSIX-mandated and interprets nothing.
+
+    PATH is PREPENDED, not replaced: the script needs `cat`, and coming first is
+    already enough to shadow a real `claude` on the developer's machine.
+
+    Then the fake is run once and its output checked. A fixture that does not
+    produce `reply` must fail saying *that*, in its own words -- the alternative is
+    what happened above, a broken fixture arriving as a claim about the adapter.
+    """
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
+    payload = tmp_path / "claude-reply.bin"
+    payload.write_bytes(reply)
     script = bindir / "claude"
-    script.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+    script.write_text(f"#!/bin/sh\ncat {shlex.quote(str(payload))}\n", encoding="utf-8")
     script.chmod(0o755)
-    monkeypatch.setenv("PATH", str(bindir))
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+
+    # Resolved through PATH, under the environment the adapter will see, so this
+    # also proves the shadowing works and not merely that the file was written.
+    proof = subprocess.run(["claude"], capture_output=True, check=False)
+    assert (proof.returncode, proof.stdout) == (0, reply), (
+        f"the FIXTURE is broken, not the adapter: the fake `claude` exited "
+        f"{proof.returncode} emitting {proof.stdout!r}, not the {reply!r} this test "
+        f"is about ({proof.stderr!r})"
+    )
 
 
 def test_factory_selects_claude_cli_adapter(tmp_path):
@@ -382,7 +412,7 @@ def test_claude_cli_still_sends_a_surrogate_that_round_trips(tmp_path, monkeypat
     today and must keep reaching it: rejecting it up front -- the tempting
     "validate the string before calling" fix -- would refuse work that succeeds.
     """
-    _fake_claude(tmp_path, monkeypatch, f"printf '%s' '{_FACT_JSON}'")
+    _fake_claude(tmp_path, monkeypatch, _FACT_JSON.encode())
 
     result = invoke(ClaudeCliAdapter(_cfg(tmp_path, llm_timeout_seconds=5.0)), "Ada\udcffLovelace")
 
@@ -426,7 +456,7 @@ def test_claude_cli_undecodable_reply_does_not_blame_the_source(tmp_path, monkey
     interpolates *its* cause (pinned by the test above) precisely because the
     character it names cannot be document content; here it can be.
     """
-    _fake_claude(tmp_path, monkeypatch, r"printf '\xff\xfe'")
+    _fake_claude(tmp_path, monkeypatch, b"\xff\xfe")
 
     with pytest.raises(LLMError) as excinfo:
         invoke(ClaudeCliAdapter(_cfg(tmp_path, llm_timeout_seconds=5.0)), "Ada Lovelace")
@@ -500,7 +530,7 @@ def test_claude_cli_failing_temp_directory_cleanup_is_llm_error(tmp_path, monkey
         def __exit__(self, *exc_info):
             raise OSError(39, "Directory not empty")
 
-    _fake_claude(tmp_path, monkeypatch, f"printf '%s' '{_FACT_JSON}'")
+    _fake_claude(tmp_path, monkeypatch, _FACT_JSON.encode())
     monkeypatch.setattr(tempfile, "TemporaryDirectory", lambda **kwargs: _CleanupFails())
 
     with pytest.raises(LLMError) as excinfo:
@@ -562,7 +592,7 @@ _CAUSES = [
     ),
     pytest.param(_stub(PermissionError(13, "Permission denied")), "Ada", OSError, id="os-error"),
     pytest.param(
-        lambda tmp_path, monkeypatch: _fake_claude(tmp_path, monkeypatch, r"printf '\xff\xfe'"),
+        lambda tmp_path, monkeypatch: _fake_claude(tmp_path, monkeypatch, b"\xff\xfe"),
         "Ada",
         UnicodeDecodeError,
         id="undecodable-reply",
@@ -597,7 +627,7 @@ def test_claude_cli_does_not_swallow_a_programming_error(tmp_path, monkeypatch, 
     user as "your text contains a bad character" and the real defect -- a
     non-numeric setting -- would never be seen.
     """
-    _fake_claude(tmp_path, monkeypatch, f"printf '%s' '{_FACT_JSON}'")
+    _fake_claude(tmp_path, monkeypatch, _FACT_JSON.encode())
 
     with pytest.raises(TypeError):
         invoke(ClaudeCliAdapter(_cfg(tmp_path, llm_timeout_seconds="not-a-number")), "Ada")
@@ -645,7 +675,7 @@ def test_one_unsendable_chunk_fails_alone_and_the_job_keeps_going(tmp_path, monk
     assert "\x00" in store.source_chunks(job_id)[0]["text"]
     assert "\x00" not in store.source_chunks(job_id)[1]["text"]
 
-    _fake_claude(tmp_path, monkeypatch, f"printf '%s' '{_FACT_JSON}'")
+    _fake_claude(tmp_path, monkeypatch, _FACT_JSON.encode())
 
     # Returns; before the fix the ValueError escaped this call entirely.
     process_extraction_job(store, ClaudeCliAdapter(_cfg(tmp_path, llm_timeout_seconds=5.0)), job_id=job_id)
