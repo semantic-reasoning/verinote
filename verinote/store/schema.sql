@@ -39,6 +39,15 @@ CREATE TABLE IF NOT EXISTS source_artifacts (
     content_type TEXT NOT NULL DEFAULT 'text/plain',
     checksum     TEXT NOT NULL DEFAULT '',
     created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    -- How many characters the extraction could not read (#473). Nullable with
+    -- no default on purpose: NULL means "never measured", which is the truth
+    -- about every artifact written before this column existed, and 0 means an
+    -- extraction ran and lost nothing. A DEFAULT 0 would tell those older rows
+    -- they are clean when nobody ever looked. This line keeps the canonical DDL
+    -- honest; the migration for existing KBs is the ALTER in
+    -- `db.py::_ensure_schema_migrations`, since this script only ever CREATEs
+    -- the table on a KB that does not have one.
+    unreadable_chars INTEGER,
     UNIQUE(source_id, kind, checksum)
 );
 

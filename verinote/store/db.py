@@ -949,14 +949,23 @@ class Store:
         path: str,
         content_type: str = "text/plain",
         checksum: str = "",
+        unreadable_chars: int | None = None,
     ) -> int:
+        """Register an artifact row; re-registering the same checksum is a no-op.
+
+        `unreadable_chars` is how many characters the extraction could not read
+        (#473); `None` means the caller did not measure, and the conflict clause
+        keeps a count already on the row rather than erasing it with that None.
+        """
         with self._lock:
             self._conn.execute(
                 "INSERT INTO source_artifacts("
-                "source_id, kind, path, content_type, checksum"
-                ") VALUES(?,?,?,?,?) "
-                "ON CONFLICT(source_id, kind, checksum) DO NOTHING",
-                (source_id, kind, path, content_type, checksum),
+                "source_id, kind, path, content_type, checksum, unreadable_chars"
+                ") VALUES(?,?,?,?,?,?) "
+                "ON CONFLICT(source_id, kind, checksum) DO UPDATE SET "
+                "unreadable_chars = COALESCE("
+                "excluded.unreadable_chars, source_artifacts.unreadable_chars)",
+                (source_id, kind, path, content_type, checksum, unreadable_chars),
             )
             row = self._conn.execute(
                 "SELECT id FROM source_artifacts "
@@ -3069,6 +3078,16 @@ class Store:
         if "checksum" not in artifact_columns:
             self._conn.execute(
                 "ALTER TABLE source_artifacts ADD COLUMN checksum TEXT NOT NULL DEFAULT ''"
+            )
+        if "unreadable_chars" not in artifact_columns:
+            # #473. This ALTER, not the column in schema.sql, is what gives an
+            # existing KB the column: init_schema() runs that script first, and
+            # its CREATE TABLE IF NOT EXISTS does nothing to a table that already
+            # exists. No default, so every row predating this reads back NULL --
+            # "never measured", rather than a fabricated zero claiming the
+            # extraction was checked and clean.
+            self._conn.execute(
+                "ALTER TABLE source_artifacts ADD COLUMN unreadable_chars INTEGER"
             )
         job_columns = {
             row["name"]
