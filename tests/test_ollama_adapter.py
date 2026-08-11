@@ -462,6 +462,105 @@ def test_a_schema_failure_is_not_reported_as_a_request_failure(tmp_path, monkeyp
     assert "did not match schema" in str(exc.value)
 
 
+# --- a base URL no request can be built from ---
+
+# The settings-UI typo #493 was reported for. `urllib.request.Request` rejects
+# it with `ValueError: unknown url type` before any socket is opened.
+_UNUSABLE_BASE_URL = "::::"
+
+
+def _unusable_cfg(tmp_path) -> Config:
+    """A Config whose Base URL cannot be turned into a request at all.
+
+    Built here rather than by widening `_cfg`, so no existing test in this file
+    changes shape for a case only these ones care about.
+    """
+    return Config(
+        root=tmp_path,
+        db_path=tmp_path / "kb.sqlite",
+        provider="ollama",
+        model="qwen3:8b",
+        api_key=None,
+        base_url=_UNUSABLE_BASE_URL,
+    )
+
+
+@pytest.mark.parametrize("method", sorted(_INVOCATIONS))
+def test_an_unusable_base_url_is_normalised_before_anything_is_dialled(
+    tmp_path, monkeypatch, method
+):
+    """A `base_url` typo is a settings-UI input, so this is reachable by typing.
+    Unnormalised it escapes as a bare `ValueError`, which the web worker's
+    generic handler turns into "analysis failed" and the CLI into a traceback.
+
+    `urlopen` is stubbed to fail the test outright: "nothing was dialled" is half
+    of what makes the message honest, and an assertion on the message alone would
+    hold even if the adapter had opened a socket first.
+    """
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *a, **k: pytest.fail("an unbuildable request must not reach the network"),
+    )
+
+    with pytest.raises(LLMError, match="^ollama base URL is unusable"):
+        _INVOCATIONS[method](OllamaAdapter(_unusable_cfg(tmp_path)))
+
+
+@pytest.mark.parametrize("method", sorted(_INVOCATIONS))
+def test_an_unusable_base_url_keeps_the_original_error_as_the_cause(
+    tmp_path, monkeypatch, method
+):
+    """`from exc`, so `unknown url type: '::::/api/chat'` — the part that says
+    which URL and why — survives for a log even though the user-facing message
+    is the shorter one."""
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: pytest.fail("dialled"))
+
+    with pytest.raises(LLMError) as exc:
+        _INVOCATIONS[method](OllamaAdapter(_unusable_cfg(tmp_path)))
+
+    assert isinstance(exc.value.__cause__, ValueError)
+
+
+def test_a_payload_that_cannot_be_serialised_is_not_blamed_on_the_base_url(
+    tmp_path, monkeypatch
+):
+    """`json.dumps(payload).encode(...)` used to be an ARGUMENT to `Request`,
+    which means it would be evaluated inside the guarded region if left there.
+    A `ValueError` raised while serialising is a bug in this file, and reporting
+    it as "base URL is unusable" would send the user to edit a field that is
+    perfectly fine — the same misattribution #474 was reported as.
+    """
+    monkeypatch.setattr(
+        "json.dumps", lambda *a, **k: (_ for _ in ()).throw(ValueError("payload not serialisable"))
+    )
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: pytest.fail("dialled"))
+
+    with pytest.raises(ValueError) as exc:
+        OllamaAdapter(_cfg(tmp_path)).extract_facts(source_text="Ada")
+
+    assert "base URL" not in str(exc.value)
+
+
+def test_a_non_valueerror_from_the_request_constructor_is_not_blamed_on_the_base_url(
+    tmp_path, monkeypatch
+):
+    """The clause catches `ValueError` and nothing wider. `Request` cannot raise
+    a `TypeError` for any value reachable through settings — it stringifies
+    whatever it is handed — so this stubs one in: the point is that widening the
+    clause to `except Exception` would relabel a genuine programming error as a
+    user configuration mistake, and no reachable input can demonstrate that.
+    """
+
+    def boom(*args, **kwargs):
+        raise TypeError("Request() got an unexpected keyword argument")
+
+    monkeypatch.setattr("urllib.request.Request", boom)
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: pytest.fail("dialled"))
+
+    with pytest.raises(TypeError):
+        OllamaAdapter(_cfg(tmp_path)).extract_facts(source_text="Ada")
+
+
 # --- list_models: the settings picker's source of truth ---
 
 
@@ -584,4 +683,31 @@ def test_list_models_raises_on_schema_mismatch(monkeypatch, payload):
     _tags(monkeypatch, payload)
 
     with pytest.raises(LLMError, match="did not match schema"):
+        list_models(None, 5.0)
+
+
+def test_list_models_normalises_a_base_url_no_request_can_be_built_from(monkeypatch):
+    """The worst of the three sites: `GET /settings/model-field?base_url=::::`
+    reaches this with a URL that was never saved, so a user only has to type into
+    the Base URL box to get a 500 out of the settings page. `LLMError` is what
+    that endpoint already knows how to render as a banner.
+    """
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: pytest.fail("dialled"))
+
+    with pytest.raises(LLMError, match="^ollama base URL is unusable"):
+        list_models(_UNUSABLE_BASE_URL, 5.0)
+
+
+def test_list_models_does_not_blame_the_base_url_for_a_non_valueerror(monkeypatch):
+    """The lister's clause is as narrow as the adapter's, for the same reason:
+    `except Exception` here would report every future bug in this statement as
+    the user's typo."""
+
+    def boom(*args, **kwargs):
+        raise TypeError("Request() got an unexpected keyword argument")
+
+    monkeypatch.setattr("urllib.request.Request", boom)
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: pytest.fail("dialled"))
+
+    with pytest.raises(TypeError):
         list_models(None, 5.0)
