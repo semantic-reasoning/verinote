@@ -143,42 +143,64 @@ class ClaudeCliAdapter:
         """Run `cmd` and return its stdout, or raise `LLMError`.
 
         One body, because the two call sites' copy-pasted `except` clauses missing
-        the same case IS this bug (#474). The `with` is OUTSIDE the `try` so the
-        `try` guards exactly one statement: in this repo `ValueError` is also a
-        domain type (`CorroborationPolicyError` subclasses it), and the only reason
-        a broader `except ValueError` is safe here is that nothing else runs inside.
-        Structure, not a comment.
+        the same case IS this bug (#474). The `with` is OUTSIDE the clause block
+        below so that `try` guards exactly one statement: in this repo `ValueError`
+        is also a domain type (`CorroborationPolicyError` subclasses it), and the
+        only reason a broader `except ValueError` is safe here is that nothing else
+        runs inside. Structure, not a comment.
+
+        Which is why the temp directory is not simply left outside the contract.
+        Creating it (ENOSPC, an unwritable TMPDIR) and cleaning it up can each
+        fail, and §10.1 says every failure of an LLM call reaches the caller as
+        `LLMError` -- landing on the web worker's generic `except Exception` as
+        "analysis failed: [Errno 28] ..." is the exact shape #474 was reported as.
+        So creation gets its own clause and one `except OSError` out here covers the
+        rest. That one may be broad where the `ValueError` above may not, for the
+        reason above: `OSError` is not a domain type in this repo.
         """
-        with tempfile.TemporaryDirectory(prefix="verinote-claudecli-") as tmpdir:
-            try:
-                proc = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    check=False,
-                    cwd=tmpdir,
-                    stdin=subprocess.DEVNULL,
-                    text=True,
-                    timeout=self.cfg.llm_timeout_seconds,
-                )
-            except FileNotFoundError as exc:
-                raise LLMError("claude CLI not found; install Claude Code and ensure `claude` is on PATH") from exc
-            except subprocess.TimeoutExpired as exc:
-                raise LLMError("claude CLI request timed out") from exc
-            except OSError as exc:
-                raise LLMError(f"claude CLI request failed: {exc}") from exc
-            except UnicodeDecodeError as exc:
-                # The CLI's OUTPUT could not be decoded. Do not tell the user to fix
-                # their source. Constant message: this exception's text carries byte
-                # values and offsets from the model's output, which derives from the
-                # user's document.
-                raise LLMError(_UNDECODABLE_OUTPUT) from exc
-            except ValueError as exc:
-                # The ARGUMENT could not be encoded. MUST stay below
-                # UnicodeDecodeError, which is a ValueError subclass.
-                # `ValueError("embedded null byte")` and `UnicodeEncodeError` are
-                # fixed-shape strings carrying no document content, so qualifying
-                # with them preserves the cause without opening an oracle.
-                raise LLMError(f"{_UNSENDABLE_ARGUMENT} ({type(exc).__name__}: {exc})") from exc
+        try:
+            tmp = tempfile.TemporaryDirectory(prefix="verinote-claudecli-")
+        except OSError as exc:
+            raise LLMError(f"claude CLI request failed: {exc}") from exc
+        try:
+            with tmp as tmpdir:
+                try:
+                    proc = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        check=False,
+                        cwd=tmpdir,
+                        stdin=subprocess.DEVNULL,
+                        text=True,
+                        timeout=self.cfg.llm_timeout_seconds,
+                    )
+                except FileNotFoundError as exc:
+                    raise LLMError("claude CLI not found; install Claude Code and ensure `claude` is on PATH") from exc
+                except subprocess.TimeoutExpired as exc:
+                    raise LLMError("claude CLI request timed out") from exc
+                except UnicodeDecodeError as exc:
+                    # The CLI's OUTPUT could not be decoded. Do not tell the user to
+                    # fix their source. Constant message: this exception's text
+                    # carries byte values and offsets from the model's output, which
+                    # derives from the user's document.
+                    raise LLMError(_UNDECODABLE_OUTPUT) from exc
+                except ValueError as exc:
+                    # The ARGUMENT could not be encoded. MUST stay below
+                    # UnicodeDecodeError, which is a ValueError subclass. The
+                    # character this names is by definition an unsendable surrogate
+                    # or a NUL, so it is not document content; only a position
+                    # offset leaks, and an offset alone is not an oracle. That is
+                    # what makes qualifying the message with the cause safe here and
+                    # not in the clause above.
+                    raise LLMError(f"{_UNSENDABLE_ARGUMENT} ({type(exc).__name__}: {exc})") from exc
+        except OSError as exc:
+            # Every OSError from the whole region: the spawn's own (a permission
+            # error, a broken pipe -- `FileNotFoundError` is claimed above and does
+            # not reach here) and the directory's cleanup. ONE clause, out here,
+            # because base caught both with one clause and duplicating it inside
+            # buys nothing -- an inner copy is unreachable-by-equivalence, which is
+            # how a handler rots without a single test noticing.
+            raise LLMError(f"claude CLI request failed: {exc}") from exc
         if proc.returncode != 0:
             detail = (proc.stderr or proc.stdout or "").strip()
             raise LLMError(f"claude CLI exited with {proc.returncode}: {detail}")
