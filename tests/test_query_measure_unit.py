@@ -3583,3 +3583,64 @@ def test_only_a_suffix_bound_to_the_day_changes_the_verdict():
     for suffix in _DATE_APPROXIMATOR_SUFFIXES:
         assert korean_measure_unit_mismatch(_MONTH, f"매월 15일{suffix}") is None
         assert korean_measure_unit_mismatch(_MONTH, f"매월 15일 {suffix}") is None
+
+
+# --- the boundary between the two modules (#459) ----------------------------
+
+
+def test_query_intent_never_imports_the_measure_unit_module():
+    """The dependency runs one way, and only a static check can hold it there.
+
+    `query_measure_unit` imports three names from `query_intent`. A re-export
+    added the other way -- `from verinote.pipeline.query_measure_unit import
+    korean_measure_unit_mismatch` in `query_intent`, to spare a caller the new
+    address -- closes the cycle. Measured, mutant applied in place:
+
+    | placement in query_intent.py | entry point                  | observed   |
+    | top, beside the other import | import verinote.pipeline.ask | ImportError|
+    | top                          | import ...query_intent       | ImportError|
+    | top                          | import ...query_measure_unit | ImportError|
+    | bottom, after every def      | import verinote.pipeline.ask | passes     |
+    | bottom                       | import ...query_intent       | passes     |
+    | bottom                       | import ...query_measure_unit | passes     |
+
+    The bottom row is why this test exists rather than a smoke import. Bottom
+    placement passes at every entry point, including this file's -- with the
+    re-export in place `pytest tests/test_query_measure_unit.py` alone was 227
+    passed. It is green because `verinote/pipeline/__init__.py` imports
+    `verinote.pipeline.query`, which imports `query_intent`, so the package
+    initialiser finishes `query_intent` before any submodule body runs and
+    nothing here ever reaches a partially initialised module. No entry point in
+    this layout loads `query_measure_unit` first.
+
+    So a re-export placed at the bottom produces no red anywhere, and a green
+    suite is not evidence that the direction held. That is the whole cost of
+    deleting this test: the cycle it forbids is one an author would only find
+    after the import graph had already grown back the shape #459 cut.
+
+    Parsed rather than imported, so a re-export inside `if TYPE_CHECKING` or
+    behind a function is caught too -- those never execute and so could never
+    fail an import probe.
+    """
+    import ast
+    import pathlib
+
+    from verinote.pipeline import query_intent
+
+    source = pathlib.Path(query_intent.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    offenders = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if (node.module or "").endswith("query_measure_unit"):
+                offenders.append((node.lineno, node.module))
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.endswith("query_measure_unit"):
+                    offenders.append((node.lineno, alias.name))
+
+    assert offenders == [], (
+        "query_intent must not import query_measure_unit; the dependency runs "
+        f"the other way. Found: {offenders}"
+    )
