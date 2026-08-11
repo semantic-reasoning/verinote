@@ -14,9 +14,14 @@ for: the facts are real, carry this run's `run_id`, and are visible on the
 provenance pages, while the job reports `candidate_count = 0`.
 
 The chunk itself is released as `failed` (#475), which is the part that is fixed.
-The counter drift is not, and is left for a follow-up issue. WHEN THAT ISSUE IS
-FIXED THIS TEST GOES RED, and the right response is to update the expectations
-here — not to restore the drift.
+The counter drift is not.
+
+FOLLOW-UP ISSUE: #TBD
+
+That number is written exactly once, on the line above, and nothing else in this
+file refers to it — so filing the issue is a one-token edit. When it is fixed the
+assertions below GO RED, and the right response is to update them to the new,
+correct behaviour rather than to restore the drift.
 """
 
 import pytest
