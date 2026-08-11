@@ -10,6 +10,7 @@ PDF and never a real filename.
 """
 
 import hashlib
+import sqlite3
 import unicodedata
 
 import pytest
@@ -170,3 +171,126 @@ def test_store_source_sanitizes_text_uploads_too(tmp_path):
     # extraction, and the file a fact cites must stay what was uploaded.
     assert (tmp_path / "sources" / "notes.txt").read_bytes() == b"a\x00b"
     store.close()
+
+
+def _artifact_count(store: Store, artifact_id: int):
+    """The stored `unreadable_chars`, read straight off the row.
+
+    Read from the DB rather than the returned dict on purpose: sanitizing the
+    text correctly and never persisting the count is exactly the half-done
+    state the display layer would then be unable to report.
+    """
+    return store.get_source_artifact(artifact_id)["unreadable_chars"]
+
+
+def test_ingest_persists_the_count_on_the_artifact_row(tmp_path, nulx):
+    store = _store(tmp_path)
+    dirty = tmp_path / "dirty.nulx"
+    dirty.write_bytes(_DIRTY.encode("utf-8"))
+    clean = tmp_path / "clean.nulx"
+    clean.write_bytes("all of this is readable".encode("utf-8"))
+
+    dirty_result = ingest_file(store, dirty, root=tmp_path)
+    clean_result = ingest_file(store, clean, root=tmp_path)
+
+    assert _artifact_count(store, int(dirty_result["artifact_id"])) == 7
+    # 0, not NULL: this extraction was measured and lost nothing.
+    assert _artifact_count(store, int(clean_result["artifact_id"])) == 0
+    store.close()
+
+
+def test_an_artifact_registered_without_a_count_stays_unmeasured(tmp_path):
+    """A caller that does not measure must not be recorded as having found zero."""
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/legacy.txt", kind="text")
+
+    artifact_id = store.add_source_artifact(
+        source_id=source_id,
+        kind="extracted_text",
+        path="artifacts/sources/1/abc.txt",
+        checksum="abc",
+    )
+
+    assert _artifact_count(store, artifact_id) is None
+    store.close()
+
+
+def test_re_registering_without_a_count_keeps_the_one_already_recorded(tmp_path):
+    """Re-ingesting identical text must not erase a count with a missing one.
+
+    Same (source, kind, checksum) is the conflict the insert already tolerated;
+    the count now rides along, so the clause has to prefer a real number on
+    either side over the None a non-measuring caller passes.
+    """
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/doc.txt", kind="text")
+    artifact_id = store.add_source_artifact(
+        source_id=source_id,
+        kind="extracted_text",
+        path="artifacts/sources/1/abc.txt",
+        checksum="abc",
+        unreadable_chars=7,
+    )
+
+    again = store.add_source_artifact(
+        source_id=source_id,
+        kind="extracted_text",
+        path="artifacts/sources/1/abc.txt",
+        checksum="abc",
+    )
+
+    assert again == artifact_id
+    assert _artifact_count(store, artifact_id) == 7
+    store.close()
+
+
+def test_a_kb_written_before_the_column_existed_gains_it_on_open(tmp_path):
+    """The only guard on the migration: schema.sql cannot fix an existing table.
+
+    `init_schema()` runs schema.sql before `_ensure_schema_migrations()`, and
+    that script's `CREATE TABLE IF NOT EXISTS` does nothing to a table that is
+    already there. So deleting the column from the canonical DDL would leave
+    this passing, while deleting the ALTER breaks every KB that predates #473.
+
+    Column existence alone is not enough to assert -- a column nothing can read
+    or write is not a migration -- so this also round-trips a value through it.
+    """
+    db_path = tmp_path / "kb.sqlite"
+    store = Store(db_path)
+    store.init_schema()
+    source_id = store.add_source("sources/old.txt", kind="text")
+    legacy_id = store.add_source_artifact(
+        source_id=source_id,
+        kind="extracted_text",
+        path="artifacts/sources/1/old.txt",
+        checksum="old",
+        unreadable_chars=4,
+    )
+    store.close()
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("ALTER TABLE source_artifacts DROP COLUMN unreadable_chars")
+    conn.commit()
+    conn.close()
+
+    reopened = Store(db_path)
+    reopened.init_schema()
+
+    columns = {
+        row["name"]
+        for row in reopened._conn.execute("PRAGMA table_info(source_artifacts)")
+    }
+    assert "unreadable_chars" in columns
+    # The pre-existing row comes back unmeasured, not zero: the count it once
+    # had went with the column, and inventing one here would be a lie.
+    assert _artifact_count(reopened, legacy_id) is None
+
+    fresh_id = reopened.add_source_artifact(
+        source_id=source_id,
+        kind="extracted_text",
+        path="artifacts/sources/1/new.txt",
+        checksum="new",
+        unreadable_chars=3,
+    )
+    assert _artifact_count(reopened, fresh_id) == 3
+    reopened.close()

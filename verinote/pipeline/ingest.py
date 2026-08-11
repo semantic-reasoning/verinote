@@ -154,6 +154,7 @@ def store_source(
         kind="extracted_text",
         path=artifact_relpath,
         checksum=digest,
+        unreadable_chars=extracted.unreadable_chars,
     )
     return {
         "citation": citation,
