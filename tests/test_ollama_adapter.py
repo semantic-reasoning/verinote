@@ -328,6 +328,27 @@ _INVOCATIONS = {
     "answer_question": lambda a: a.answer_question(question="Who?", context="c"),
 }
 
+_DATALOG = 'answer_q1(V) :- relation(V, "is_a", "x").'
+_INTENT = {
+    "kind": "unknown_or_unsupported",
+    "subject": None,
+    "relation": None,
+    "object": None,
+    "relation_candidates": None,
+    "operator": None,
+    "value_type": None,
+    "value": None,
+    "reason": "unsupported",
+}
+
+# What each method's parse accepts, so a stub can answer any of the four.
+_VALID_CONTENT = {
+    "extract_facts": json.dumps({"facts": []}),
+    "translate_query": json.dumps({"datalog": _DATALOG}),
+    "extract_query_intent": json.dumps(_INTENT),
+    "answer_question": "ok",
+}
+
 # The three methods that parse the response *after* the request region closes.
 # `answer_question` stringifies whatever came back and has no parse step, so it
 # has no failure of that kind to mislabel — it is left out rather than given a
@@ -360,6 +381,33 @@ class _RawResponse:
 
 def _raw_body(monkeypatch, raw: bytes) -> None:
     monkeypatch.setattr("urllib.request.urlopen", lambda req, *, timeout: _RawResponse(raw))
+
+
+@pytest.mark.parametrize("method", sorted(_INVOCATIONS))
+def test_every_method_posts_through_the_one_request_site(tmp_path, monkeypatch, method):
+    """All four methods go through `_post_chat`, so the guarded region below is
+    written once and every case pinned here applies to all four.
+
+    A method that grew its own inline `urlopen` again would still talk to a real
+    server and satisfy every other test in this file; this is the one that would
+    notice. `urlopen` is stubbed to fail so such a bypass is caught here instead
+    of quietly passing against an Ollama actually running on the machine.
+    """
+    payloads = []
+
+    def spy(self, payload):
+        payloads.append(payload)
+        return {"message": {"content": _VALID_CONTENT[method]}}
+
+    monkeypatch.setattr(OllamaAdapter, "_post_chat", spy)
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *a, **k: pytest.fail(f"{method} dialled without going through _post_chat"),
+    )
+
+    _INVOCATIONS[method](OllamaAdapter(_cfg(tmp_path)))
+
+    assert [payload["model"] for payload in payloads] == ["qwen3:8b"]
 
 
 @pytest.mark.parametrize("method", sorted(_INVOCATIONS))

@@ -83,6 +83,31 @@ class OllamaAdapter:
         self.cfg = cfg
         self.base_url = (cfg.base_url or OLLAMA_DEFAULT_BASE_URL).rstrip("/")
 
+    def _post_chat(self, payload: dict) -> dict:
+        """POST one chat payload to `/api/chat` and return the decoded body.
+
+        The single request site for all four methods, so which statements count
+        as "the request" -- and which are the caller's own parse, reported as the
+        caller's own failure -- is written once instead of four times in
+        parallel.
+
+        `Request(...)` sits deliberately OUTSIDE the `try`, exactly where each
+        method had it before the fold. Moving it in would change behaviour, and
+        this extraction changes none; that move is its own commit.
+        """
+        req = urllib.request.Request(
+            f"{self.base_url}/api/chat",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(  # noqa: S310 - local trusted endpoint
+                req, timeout=self.cfg.llm_timeout_seconds
+            ) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:  # noqa: BLE001 - normalise provider/transport errors
+            raise LLMError(f"ollama request failed: {exc}") from exc
+
     def extract_facts(self, *, source_text: str, schema_hint: str = "") -> list[ExtractedFact]:
         system = _with_schema_hint(
             _render_prompt(
@@ -106,18 +131,7 @@ class OllamaAdapter:
                 {"role": "user", "content": source_text},
             ],
         }
-        req = urllib.request.Request(
-            f"{self.base_url}/api/chat",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-        )
-        try:
-            with urllib.request.urlopen(  # noqa: S310 - local trusted endpoint
-                req, timeout=self.cfg.llm_timeout_seconds
-            ) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
-        except Exception as exc:  # noqa: BLE001 - normalise provider/transport errors
-            raise LLMError(f"ollama request failed: {exc}") from exc
+        body = self._post_chat(payload)
 
         return parse_facts(body.get("message", {}).get("content", ""))
 
@@ -136,18 +150,7 @@ class OllamaAdapter:
                 {"role": "user", "content": question},
             ],
         }
-        req = urllib.request.Request(
-            f"{self.base_url}/api/chat",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-        )
-        try:
-            with urllib.request.urlopen(  # noqa: S310 - local trusted endpoint
-                req, timeout=self.cfg.llm_timeout_seconds
-            ) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
-        except Exception as exc:  # noqa: BLE001 - normalise provider/transport errors
-            raise LLMError(f"ollama request failed: {exc}") from exc
+        body = self._post_chat(payload)
 
         return parse_query(body.get("message", {}).get("content", ""))
 
@@ -166,18 +169,7 @@ class OllamaAdapter:
                 {"role": "user", "content": question},
             ],
         }
-        req = urllib.request.Request(
-            f"{self.base_url}/api/chat",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-        )
-        try:
-            with urllib.request.urlopen(  # noqa: S310 - local trusted endpoint
-                req, timeout=self.cfg.llm_timeout_seconds
-            ) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
-        except Exception as exc:  # noqa: BLE001 - normalise provider/transport errors
-            raise LLMError(f"ollama request failed: {exc}") from exc
+        body = self._post_chat(payload)
 
         return parse_query_intent(body.get("message", {}).get("content", ""))
 
@@ -195,18 +187,7 @@ class OllamaAdapter:
                 },
             ],
         }
-        req = urllib.request.Request(
-            f"{self.base_url}/api/chat",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-        )
-        try:
-            with urllib.request.urlopen(  # noqa: S310 - local trusted endpoint
-                req, timeout=self.cfg.llm_timeout_seconds
-            ) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
-        except Exception as exc:  # noqa: BLE001 - normalise provider/transport errors
-            raise LLMError(f"ollama request failed: {exc}") from exc
+        body = self._post_chat(payload)
         return str(body.get("message", {}).get("content", "")).strip()
 
 
