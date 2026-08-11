@@ -294,3 +294,60 @@ def test_a_kb_written_before_the_column_existed_gains_it_on_open(tmp_path):
     )
     assert _artifact_count(reopened, fresh_id) == 3
     reopened.close()
+
+
+def _sources_client(tmp_path):
+    """A local TestClient, deliberately not `tests/test_web.py`'s shared `_client`.
+
+    Local so this file's rows cannot collide with another lane's fixtures, and a
+    real client rather than a hand-built dict because `web/app.py:1425` is what
+    turns each artifact row into the mapping the template indexes -- rendering a
+    dict made here would skip exactly that step.
+    """
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from verinote.config import Config
+    from verinote.web import create_app
+
+    cfg = Config(
+        root=tmp_path,
+        db_path=tmp_path / "kb.sqlite",
+        provider="anthropic",
+        model="m",
+        api_key=None,
+        base_url=None,
+    )
+    return TestClient(create_app(cfg))
+
+
+def test_sources_page_separates_measured_loss_from_never_measured(tmp_path, nulx):
+    """Three rows, one GET: a lossy artifact, a clean one, and a legacy NULL one."""
+    client = _sources_client(tmp_path)
+    store = client.app.state.store
+
+    dirty = tmp_path / "dirty.nulx"
+    dirty.write_bytes(_DIRTY.encode("utf-8"))
+    ingest_file(store, dirty, root=tmp_path)
+
+    clean = tmp_path / "clean.nulx"
+    clean.write_bytes("every character here was readable".encode("utf-8"))
+    ingest_file(store, clean, root=tmp_path)
+
+    # A row as an older verinote wrote it: registered without a count.
+    legacy_id = store.add_source("sources/legacy.txt", kind="text")
+    store.add_source_artifact(
+        source_id=legacy_id,
+        kind="extracted_text",
+        path=f"artifacts/sources/{legacy_id}/legacy.txt",
+        checksum="legacy",
+    )
+
+    html = client.get("/sources").text
+
+    # 7 rather than 1: it collides with no other number on the page, so
+    # rendering the artifact count, the source id or a literal all fail here.
+    assert "7 unreadable character(s)" in html
+    assert "unreadable characters not checked" in html
+    assert html.count("unreadable character(s)") == 1
+    assert html.count("unreadable characters not checked") == 1
