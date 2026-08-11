@@ -104,6 +104,10 @@ def sanitize_extracted_text(text: str) -> SanitizedText:
     Only NUL. Not the other control characters -- `\\x0c` in particular is
     pdftotext's ordinary page separator, and widening this would delete
     structure nobody reported as broken.
+
+    Called from exactly one place, `store_source`. Sanitizing in two places
+    would make two decision points about what may enter the KB, and two such
+    points drift apart quietly -- which is how the NULs got in (#473).
     """
     return SanitizedText(text.replace("\x00", UNREADABLE_CHAR), text.count("\x00"))
 

@@ -126,13 +126,20 @@ def test_every_sink_of_one_ingest_sees_the_same_sanitized_text(tmp_path, nulx):
         chunk_overlap_chars=None,
     )
 
+    # Every NUL-absence check below is paired with the exact expected string,
+    # and with the length: replacement preserves it, deletion would lose seven.
+    # NUL-absence on its own passes for `replace("\x00", "")` -- the silent
+    # removal the issue rejected as option (a).
     artifact_text = (tmp_path / result["artifact_path"]).read_text(encoding="utf-8")
     assert "\x00" not in artifact_text
     assert artifact_text == _CLEAN
+    assert len(artifact_text) == len(_DIRTY)
 
     chunks = store.source_chunks(job_id)
-    assert chunks, "the job must have produced chunks for this assertion to mean anything"
-    assert all("\x00" not in chunk["text"] for chunk in chunks)
+    assert [chunk["text"] for chunk in chunks] == [_CLEAN], (
+        "the fixture is far shorter than one chunk, so the chunk table is the "
+        "sanitized text exactly once -- NUL-free is not enough to assert here"
+    )
 
     digest = hashlib.sha256(_CLEAN.encode("utf-8")).hexdigest()
     artifact = store.get_source_artifact(int(result["artifact_id"]))
