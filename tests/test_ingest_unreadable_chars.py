@@ -377,10 +377,11 @@ def test_sources_page_separates_measured_loss_from_never_measured(tmp_path, nulx
     # rendering the artifact count, the source id or a literal all fail here.
     assert "7 unreadable character(s)" in html
     assert "not checked for unreadable characters" in html
-    # Warning colour on the count. Without `.warn-inline` it is the same grey
-    # pill as the `extracted_text` badge beside it, and a real loss would read
-    # lighter than the benign "N pending" further along the row.
-    assert '<span class="badge warn-inline">7 unreadable character(s)</span>' in html
+    # The class is the signal -- colour is how this row grades severity -- so it
+    # is worth coupling to. Bare `.warn-inline`, like the "N pending" span
+    # further along the row: with `.badge` added it would be a chip, the same
+    # shape as the `extracted_text` badge beside it, differing only in hue.
+    assert '<span class="warn-inline">7 unreadable character(s)</span>' in html
     # Neither phrase is a substring of the other -- "unreadable character(s)"
     # carries the parenthesised plural, the note does not -- so these two counts
     # stay independent.
