@@ -103,27 +103,7 @@ class ClaudeCliAdapter:
         model = _cli_model(self.cfg.model)
         if model:
             cmd = ["claude", "--model", model, *cmd[1:]]
-        try:
-            with tempfile.TemporaryDirectory(prefix="verinote-claudecli-") as tmpdir:
-                proc = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    check=False,
-                    cwd=tmpdir,
-                    stdin=subprocess.DEVNULL,
-                    text=True,
-                    timeout=self.cfg.llm_timeout_seconds,
-                )
-        except FileNotFoundError as exc:
-            raise LLMError("claude CLI not found; install Claude Code and ensure `claude` is on PATH") from exc
-        except subprocess.TimeoutExpired as exc:
-            raise LLMError("claude CLI request timed out") from exc
-        except OSError as exc:
-            raise LLMError(f"claude CLI request failed: {exc}") from exc
-        if proc.returncode != 0:
-            detail = (proc.stderr or proc.stdout or "").strip()
-            raise LLMError(f"claude CLI exited with {proc.returncode}: {detail}")
-        return proc.stdout.strip()
+        return self._invoke(cmd)
 
     def _run_text(self, prompt: "_Prompt") -> str:
         cmd = [
@@ -138,8 +118,20 @@ class ClaudeCliAdapter:
         model = _cli_model(self.cfg.model)
         if model:
             cmd = ["claude", "--model", model, *cmd[1:]]
-        try:
-            with tempfile.TemporaryDirectory(prefix="verinote-claudecli-") as tmpdir:
+        return self._invoke(cmd)
+
+    def _invoke(self, cmd: list[str]) -> str:
+        """Run `cmd` and return its stdout, or raise `LLMError`.
+
+        One body, because the two call sites' copy-pasted `except` clauses missing
+        the same case IS this bug (#474). The `with` is OUTSIDE the `try` so the
+        `try` guards exactly one statement: in this repo `ValueError` is also a
+        domain type (`CorroborationPolicyError` subclasses it), and the only reason
+        a broader `except ValueError` is safe here is that nothing else runs inside.
+        Structure, not a comment.
+        """
+        with tempfile.TemporaryDirectory(prefix="verinote-claudecli-") as tmpdir:
+            try:
                 proc = subprocess.run(
                     cmd,
                     capture_output=True,
@@ -149,12 +141,12 @@ class ClaudeCliAdapter:
                     text=True,
                     timeout=self.cfg.llm_timeout_seconds,
                 )
-        except FileNotFoundError as exc:
-            raise LLMError("claude CLI not found; install Claude Code and ensure `claude` is on PATH") from exc
-        except subprocess.TimeoutExpired as exc:
-            raise LLMError("claude CLI request timed out") from exc
-        except OSError as exc:
-            raise LLMError(f"claude CLI request failed: {exc}") from exc
+            except FileNotFoundError as exc:
+                raise LLMError("claude CLI not found; install Claude Code and ensure `claude` is on PATH") from exc
+            except subprocess.TimeoutExpired as exc:
+                raise LLMError("claude CLI request timed out") from exc
+            except OSError as exc:
+                raise LLMError(f"claude CLI request failed: {exc}") from exc
         if proc.returncode != 0:
             detail = (proc.stderr or proc.stdout or "").strip()
             raise LLMError(f"claude CLI exited with {proc.returncode}: {detail}")
