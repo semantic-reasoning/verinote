@@ -16,12 +16,13 @@ provenance pages, while the job reports `candidate_count = 0`.
 The chunk itself is released as `failed` (#475), which is the part that is fixed.
 The counter drift is not.
 
-FOLLOW-UP ISSUE: #TBD
+FOLLOW-UP ISSUE: #482
 
-That number is written exactly once, on the line above, and nothing else in this
-file refers to it — so filing the issue is a one-token edit. When it is fixed the
-assertions below GO RED, and the right response is to update them to the new,
-correct behaviour rather than to restore the drift.
+That issue owns the drift; this file only records it. #482 says in its own text
+that fixing it must turn the assertions below RED, and this docstring says the
+same thing from the other side, so neither can be read without finding the other.
+When they do go red, the correct response is to update them to the new, counted
+behaviour — never to restore the drift in order to keep them green.
 """
 
 import pytest
