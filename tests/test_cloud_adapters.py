@@ -410,5 +410,186 @@ def test_no_key_refuses_instead_of_falling_back_to_the_vendor_env_var(
     adapter_cls = _KEYED_ADAPTERS[provider]
     _raising_sdk(monkeypatch, provider, RuntimeError("unreachable"))
 
-    with pytest.raises(LLMError, match="requires an API key"):
+    # Anchored, and interpolating the provider, because `match` is `re.search`:
+    # an unanchored "requires an API key" also matches
+    # "openai client could not be created: openai requires an API key", which is
+    # exactly what re-inlining `_require_key()` as a constructor argument would
+    # produce. Without the `^` this test passes against that regression.
+    with pytest.raises(LLMError, match=rf"^{provider} requires an API key"):
         adapter_cls(_keyed_cfg(tmp_path, provider, None)).extract_facts(source_text="x")
+
+
+# --- the client could not be built, so nothing was ever dialled (#493) ---
+
+# Long enough for `redact_secret` to act on, unlike the `"key"` most fixtures in
+# this file use. Its role is the opposite of `_LONG_KEY`'s: a key that is present
+# and unremarkable, so the failure under test is the construction and never the
+# key check standing in front of it.
+_CONFIGURED_KEY = "sk-test-CONFIGURED-0001"
+
+# The value #493 was filed for. Measured against the installed SDKs: both
+# `anthropic.Anthropic(base_url="::::")` and `openai.OpenAI(base_url="::::")`
+# raise `httpx.InvalidURL: Relative URLs cannot have a path starting with ':'`.
+_UNUSABLE_BASE_URL = "::::"
+
+
+def _unusable_url_cfg(tmp_path, provider: str) -> Config:
+    """A keyed Config whose Base URL the SDK constructor cannot accept.
+
+    Spelled out rather than left at `base_url=None`, which matters for
+    `openrouter`: its `_base_url()` substitutes a perfectly good default, so a
+    `None` here would hand the SDK a working endpoint and assert nothing.
+    """
+    return Config(
+        root=tmp_path,
+        db_path=tmp_path / "kb.sqlite",
+        provider=provider,
+        model="model",
+        api_key=_CONFIGURED_KEY,
+        base_url=_UNUSABLE_BASE_URL,
+    )
+
+
+def _sdk_failing_to_construct(monkeypatch, provider: str, exc: Exception) -> None:
+    """Stub the vendor SDK so the CONSTRUCTOR raises, before any client exists.
+
+    `_raising_sdk` cannot express this. It stubs the constructor as
+    `lambda **k: client` — a function that always succeeds — and puts the failure
+    on `.create`, so every failure it can produce happens after a client was
+    built. That is precisely the case `_client_failed` is *not* about, which is
+    why this is a second fake rather than a parameter on the first.
+    """
+
+    def _boom(**kwargs):
+        raise exc
+
+    if provider in ("openai", "openrouter"):
+        monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=_boom))
+    else:
+        monkeypatch.setitem(sys.modules, "anthropic", SimpleNamespace(Anthropic=_boom))
+
+
+@pytest.mark.parametrize("method", sorted(_INVOCATIONS))
+@pytest.mark.parametrize("provider", sorted(_KEYED_ADAPTERS))
+def test_a_client_that_cannot_be_built_is_a_normalised_failure(
+    tmp_path, monkeypatch, method, provider
+):
+    """A `base_url` typo is settings-UI input, so this is reachable by typing.
+    Left unnormalised the SDK's `httpx.InvalidURL` escapes the adapter, lands in
+    the web worker's generic handler as "analysis failed" and in the CLI as a
+    traceback — the §10.1 violation #474 fixed from the other direction.
+
+    Anchored at the start of the message. Unanchored it would also pass with
+    `_client()` moved inside each method's own `try`, which double-wraps into
+    "openai request failed: openai client could not be created: ..." — a message
+    claiming a request was made when none was.
+    """
+    _sdk_failing_to_construct(
+        monkeypatch, provider, RuntimeError("Relative URLs cannot have a path starting with ':'")
+    )
+    adapter = _KEYED_ADAPTERS[provider](_unusable_url_cfg(tmp_path, provider))
+
+    with pytest.raises(LLMError, match=rf"^{provider} client could not be created"):
+        _INVOCATIONS[method](adapter)
+
+
+def test_a_client_that_cannot_be_built_keeps_the_sdk_error_as_the_cause(tmp_path, monkeypatch):
+    """`from exc`, so the SDK's own words survive for a log even though the
+    user-facing message is the adapter's."""
+    boom = RuntimeError("Relative URLs cannot have a path starting with ':'")
+    _sdk_failing_to_construct(monkeypatch, "openai", boom)
+
+    with pytest.raises(LLMError) as exc:
+        OpenAIAdapter(_unusable_url_cfg(tmp_path, "openai")).extract_facts(source_text="x")
+
+    assert exc.value.__cause__ is boom
+
+
+@pytest.mark.parametrize("provider", sorted(_KEYED_ADAPTERS))
+def test_a_client_construction_error_never_carries_the_key(tmp_path, monkeypatch, provider):
+    """The second construction site has to redact too, and only a fake can show
+    it: the real `httpx.InvalidURL` this path exists for carries the URL and not
+    the key, so the real-SDK anchors below would stay green with `redact_secret`
+    deleted from `_client_failed`. That asymmetry is why this is written against
+    a stub — a construction error that *does* echo the key (a gateway rejecting
+    it during setup) is possible, and this message reaches `source_chunks.error`
+    like any other.
+    """
+    _sdk_failing_to_construct(monkeypatch, provider, RuntimeError(f"401 {_LONG_KEY}"))
+
+    with pytest.raises(LLMError) as exc:
+        _KEYED_ADAPTERS[provider](_keyed_cfg(tmp_path, provider, _LONG_KEY)).extract_facts(
+            source_text="x"
+        )
+
+    assert _LONG_KEY not in str(exc.value)
+    assert "***" in str(exc.value)
+
+
+@pytest.mark.parametrize("provider", sorted(_KEYED_ADAPTERS))
+def test_a_client_failure_does_not_send_a_user_to_a_field_they_left_blank(
+    tmp_path, monkeypatch, provider
+):
+    """`base_url` unset, and the SDK still fails to construct: measured against
+    both installed SDKs, `SSL_CERT_FILE` naming a missing file does exactly this,
+    and `HTTPS_PROXY='::::'` raises `httpx.InvalidURL` with no `base_url` in
+    sight. Naming the Base URL setting in the message would send those users to
+    edit an empty field — the misdirection #474 was reported as. The urllib
+    adapters DO name it, and correctly; see `base_url_unusable`.
+    """
+    _sdk_failing_to_construct(
+        monkeypatch, provider, FileNotFoundError(2, "No such file or directory")
+    )
+
+    with pytest.raises(LLMError) as exc:
+        _KEYED_ADAPTERS[provider](_keyed_cfg(tmp_path, provider, _CONFIGURED_KEY)).extract_facts(
+            source_text="x"
+        )
+
+    assert "Base URL" not in str(exc.value)
+    assert "base_url" not in str(exc.value)
+
+
+@pytest.mark.parametrize(("provider", "module"), [("anthropic", "anthropic"), ("openai", "openai")])
+def test_a_missing_sdk_still_says_the_sdk_is_missing(tmp_path, monkeypatch, provider, module):
+    """The `ImportError` clause has to stay in front of the construction guard.
+    Folded into it, "install the optional dependency" — an instruction the user
+    can act on — becomes "client could not be created", which is true and useless.
+    """
+    monkeypatch.setitem(sys.modules, module, None)
+
+    with pytest.raises(LLMError, match=rf"^{provider} SDK not installed"):
+        _KEYED_ADAPTERS[provider](_keyed_cfg(tmp_path, provider, _CONFIGURED_KEY)).extract_facts(
+            source_text="x"
+        )
+
+
+def test_the_installed_anthropic_sdk_really_does_reject_an_unusable_base_url(tmp_path):
+    """The stubs above show the adapter normalises whatever the constructor
+    raises; this shows the constructor raises at all for the value #493 was filed
+    with. Without it every test in this section could be green against an SDK
+    that quietly accepted `::::`.
+
+    Skipped where the optional dependency is absent, which includes CI — it
+    installs `.[test,wirelog]` and neither vendor SDK. Local green therefore does
+    not speak for CI on this one axis, which is why the stubs carry the contract.
+    """
+    pytest.importorskip("anthropic")
+
+    with pytest.raises(LLMError, match="^anthropic client could not be created"):
+        AnthropicAdapter(_unusable_url_cfg(tmp_path, "anthropic")).extract_facts(source_text="x")
+
+
+def test_the_installed_openai_sdk_really_does_reject_an_unusable_base_url(tmp_path):
+    """The openai half of the anchor above. #493 could only reason about this SDK
+    by structural analogy because it was not installed when the issue was filed;
+    measured on openai 2.53.0 it raises the same `httpx.InvalidURL` anthropic
+    0.116.0 does.
+
+    No openrouter twin: `OpenRouterAdapter` inherits `_client` unchanged, so a
+    third anchor would dial the same constructor and add only a skip.
+    """
+    pytest.importorskip("openai")
+
+    with pytest.raises(LLMError, match="^openai client could not be created"):
+        OpenAIAdapter(_unusable_url_cfg(tmp_path, "openai")).extract_facts(source_text="x")

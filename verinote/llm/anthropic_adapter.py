@@ -23,13 +23,35 @@ class AnthropicAdapter:
         self.cfg = cfg
 
     def _request_failed(self, exc: Exception) -> LLMError:
-        """One construction site for provider failures, so a raise site somebody
-        forgot cannot let the configured key survive into an error message.
+        """Provider failures from a *request*, redacted.
 
-        It can only redact the key it knows about, which is why `_require_key`
-        refuses to let the SDK authenticate with one this process never saw.
+        One of two construction sites in this class -- `_client_failed` is the
+        other, for failures that happen before any request is made. Both redact,
+        which is the property that matters: a raise site somebody forgot must not
+        let the configured key survive into an error message. Splitting them is
+        what keeps each message able to say something true about *when* it failed.
+
+        Redaction covers only the key this process knows about, which is why
+        `_require_key` refuses to let the SDK authenticate with one it never saw.
         """
         return LLMError(redact_secret(f"{self.name} request failed: {exc}", self.cfg.api_key))
+
+    def _client_failed(self, exc: Exception) -> LLMError:
+        """The client could not be built, so nothing was ever dialled.
+
+        Deliberately does NOT name the Base URL setting. A malformed `base_url`
+        is the reachable cause this exists for (#493), but measured against the
+        installed SDKs it is not the only one: with `base_url` unset entirely,
+        `SSL_CERT_FILE` pointing at a missing file raises `FileNotFoundError`,
+        and `HTTPS_PROXY='::::'` or `OPENAI_BASE_URL='::::'` raise
+        `httpx.InvalidURL`. Telling those users to check a field they left blank
+        sends them to fix something that is not broken -- the misdirection #474
+        was reported as. The urllib adapters can be specific, and are, because
+        `Request(url)` has no second cause; see `base_url_unusable`.
+        """
+        return LLMError(
+            redact_secret(f"{self.name} client could not be created: {exc}", self.cfg.api_key)
+        )
 
     def _require_key(self) -> str:
         """The configured key, or a clear failure instead of a silent fallback.
@@ -63,11 +85,19 @@ class AnthropicAdapter:
             import anthropic
         except ImportError as exc:  # pragma: no cover - optional dep
             raise LLMError("anthropic SDK not installed; `pip install verinote[anthropic]`") from exc
-        return anthropic.Anthropic(
-            api_key=self._require_key(),
-            base_url=self.cfg.base_url,
-            timeout=self.cfg.llm_timeout_seconds,
-        )
+        # Hoisted out of the constructor call, not merely out of the `try`: as an
+        # ARGUMENT it would be evaluated inside the guarded region, and the
+        # `LLMError` it raises for a missing key would come back out relabelled
+        # "client could not be created" -- a config error reported as an SDK
+        # failure. The region below must contain no statement that raises
+        # `LLMError`, and this line is how that stays true.
+        key = self._require_key()
+        try:
+            return anthropic.Anthropic(
+                api_key=key, base_url=self.cfg.base_url, timeout=self.cfg.llm_timeout_seconds
+            )
+        except Exception as exc:  # noqa: BLE001 - normalise SDK construction errors
+            raise self._client_failed(exc) from exc
 
     def extract_facts(self, *, source_text: str, schema_hint: str = "") -> list[ExtractedFact]:
         client = self._client()
