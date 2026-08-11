@@ -82,16 +82,22 @@
                  Re-analyze, which would meet the same characters again. 0 stays
                  silent: a measured, lossless extraction has nothing to report.
 
-                 The count takes `.warn-inline` (colour only, no new CSS) because a
-                 plain `.badge` here is indistinguishable from the `extracted_text`
-                 badge two spans left, which would leave a real loss looking lighter
-                 than the benign, temporary "N pending" further down this row. The
-                 unmeasured note stays `.src`: it is information, not a warning. #}
+                 The count is bare `.warn-inline`, matching the "N pending" signal
+                 further down this row exactly -- same file, same kind of inline
+                 warning, so a chip here and plain text there would be the
+                 inconsistency. Dropping `.badge` also answers what was actually
+                 wrong better: as a chip the count kept the shape of the
+                 `extracted_text` badge two spans left and differed only in hue,
+                 where plain coloured text differs in shape too. And `.warn-inline`
+                 is meant to stay plain text rather than become a chip. The
+                 unmeasured note keeps `.badge src`: a chip is right for
+                 information, and `.artifact-row .badge` already lays one out.
+                 No new CSS either way. #}
               {% set unreadable = artifact["unreadable_chars"] %}
               {% if unreadable is none %}
-                <span class="src">not checked for unreadable characters — some may remain; re-upload to fix</span>
+                <span class="badge src">not checked for unreadable characters — some may remain; re-upload to fix</span>
               {% elif unreadable %}
-                <span class="badge warn-inline">{{ unreadable }} unreadable character(s)</span>
+                <span class="warn-inline">{{ unreadable }} unreadable character(s)</span>
               {% endif %}
             </div>
           {% endfor %}
