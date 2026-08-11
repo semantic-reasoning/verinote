@@ -369,9 +369,16 @@ def test_sources_page_separates_measured_loss_from_never_measured(tmp_path, nulx
     # 7 rather than 1: it collides with no other number on the page, so
     # rendering the artifact count, the source id or a literal all fail here.
     assert "7 unreadable character(s)" in html
-    assert "unreadable characters not checked" in html
+    assert "not checked for unreadable characters" in html
+    # Warning colour on the count. Without `.warn-inline` it is the same grey
+    # pill as the `extracted_text` badge beside it, and a real loss would read
+    # lighter than the benign "N pending" further along the row.
+    assert '<span class="badge warn-inline">7 unreadable character(s)</span>' in html
+    # Neither phrase is a substring of the other -- "unreadable character(s)"
+    # carries the parenthesised plural, the note does not -- so these two counts
+    # stay independent.
     assert html.count("unreadable character(s)") == 1
-    assert html.count("unreadable characters not checked") == 1
+    assert html.count("not checked for unreadable characters") == 1
 
 
 def _cli_env(monkeypatch, tmp_path):

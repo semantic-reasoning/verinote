@@ -77,13 +77,21 @@
               {# #473: three states, not two. NULL is an artifact extracted before
                  anyone counted, and it may well be full of unreadable glyphs --
                  rendering it the same as a measured 0 would tell the reader it is
-                 clean on the strength of nobody having looked. 0 stays silent
-                 because a measured, lossless extraction has nothing to report. #}
+                 clean on the strength of nobody having looked. It also still holds
+                 whatever the extractor produced, so the note names re-upload, not
+                 Re-analyze, which would meet the same characters again. 0 stays
+                 silent: a measured, lossless extraction has nothing to report.
+
+                 The count takes `.warn-inline` (colour only, no new CSS) because a
+                 plain `.badge` here is indistinguishable from the `extracted_text`
+                 badge two spans left, which would leave a real loss looking lighter
+                 than the benign, temporary "N pending" further down this row. The
+                 unmeasured note stays `.src`: it is information, not a warning. #}
               {% set unreadable = artifact["unreadable_chars"] %}
               {% if unreadable is none %}
-                <span class="src">unreadable characters not checked — re-upload to measure</span>
+                <span class="src">not checked for unreadable characters — some may remain; re-upload to fix</span>
               {% elif unreadable %}
-                <span class="badge">{{ unreadable }} unreadable character(s)</span>
+                <span class="badge warn-inline">{{ unreadable }} unreadable character(s)</span>
               {% endif %}
             </div>
           {% endfor %}
