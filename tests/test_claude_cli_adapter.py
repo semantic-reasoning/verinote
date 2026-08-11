@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
 import subprocess
+import tempfile
 from types import SimpleNamespace
 
 import pytest
@@ -415,6 +416,15 @@ def test_claude_cli_undecodable_reply_does_not_blame_the_source(tmp_path, monkey
     family, opposite direction, opposite advice: nothing is wrong with the source
     text here, and telling the user to go edit their document would send them
     hunting for a character that is not there.
+
+    This clause also may not quote its cause, which is why the absence assertions
+    below are as load-bearing as the presence one. `UnicodeDecodeError`'s text is
+    `'utf-8' codec can't decode byte 0xff in position 0: invalid start byte` -- a
+    byte value and an offset read out of the model's reply, which is derived from
+    the user's document. Interpolating it into a message that travels to a job row
+    and the UI turns an error message into a content oracle. The argument clause
+    interpolates *its* cause (pinned by the test above) precisely because the
+    character it names cannot be document content; here it can be.
     """
     _fake_claude(tmp_path, monkeypatch, r"printf '\xff\xfe'")
 
@@ -425,6 +435,9 @@ def test_claude_cli_undecodable_reply_does_not_blame_the_source(tmp_path, monkey
     assert "was not valid UTF-8" in message
     assert "re-ingest" not in message
     assert "Remove it from the source" not in message
+    assert "0xff" not in message  # a byte of the model's output
+    assert "position" not in message  # its offset
+    assert "codec" not in message  # the decoder's own phrasing, i.e. the raw cause
 
 
 @pytest.mark.parametrize("invoke", _INVOCATIONS)
@@ -447,6 +460,79 @@ def test_claude_cli_os_error_is_llm_error(tmp_path, monkeypatch, invoke):
 
     with pytest.raises(LLMError, match="request failed"):
         invoke(ClaudeCliAdapter(_cfg(tmp_path, llm_timeout_seconds=5.0)), "x")
+
+
+@pytest.mark.parametrize("invoke", _INVOCATIONS)
+def test_claude_cli_unusable_temp_directory_is_llm_error(tmp_path, monkeypatch, invoke):
+    """The scratch directory the CLI runs in is part of making the call, so failing
+    to create it (a full disk, an unwritable TMPDIR) is a failed LLM call and must
+    arrive as one.
+
+    Not hypothetical: merging the two call sites moved the `with` out of the `try`,
+    and this `OSError` went from `LLMError` to escaping raw -- straight onto the web
+    worker's generic branch as "analysis failed: [Errno 28] ...", the same shape
+    #474 was reported as.
+    """
+    def boom(**kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", boom)
+
+    with pytest.raises(LLMError) as excinfo:
+        invoke(ClaudeCliAdapter(_cfg(tmp_path, llm_timeout_seconds=5.0)), "Ada")
+
+    assert "request failed" in str(excinfo.value)
+    assert "No space left on device" in str(excinfo.value)
+    assert isinstance(excinfo.value.__cause__, OSError)
+
+
+@pytest.mark.parametrize("invoke", _INVOCATIONS)
+def test_claude_cli_failing_temp_directory_cleanup_is_llm_error(tmp_path, monkeypatch, invoke):
+    """`TemporaryDirectory.__exit__` removes the tree and can fail doing it. The
+    call itself already succeeded, but the exception still comes out of this
+    function, so it is still this function's job to normalise it -- the same reason
+    the creation failure above is caught.
+    """
+    class _CleanupFails:
+        def __enter__(self):
+            return str(tmp_path)
+
+        def __exit__(self, *exc_info):
+            raise OSError(39, "Directory not empty")
+
+    _fake_claude(tmp_path, monkeypatch, f"printf '%s' '{_FACT_JSON}'")
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", lambda **kwargs: _CleanupFails())
+
+    with pytest.raises(LLMError) as excinfo:
+        invoke(ClaudeCliAdapter(_cfg(tmp_path, llm_timeout_seconds=5.0)), "Ada")
+
+    assert "request failed" in str(excinfo.value)
+    assert isinstance(excinfo.value.__cause__, OSError)
+
+
+@pytest.mark.parametrize("invoke", _INVOCATIONS)
+def test_claude_cli_only_blames_the_argument_for_the_argument(tmp_path, monkeypatch, invoke):
+    """`except ValueError` is only safe because it wraps `subprocess.run` ALONE.
+
+    `ValueError` is a domain type in this repo -- `CorroborationPolicyError`
+    subclasses it -- so a clause that says "your text contains a character that
+    cannot be sent" would be lying about any other `ValueError` raised anywhere
+    inside the guarded region. Keeping that region one statement wide is the whole
+    defence, and this pins it: a `ValueError` from a *different* statement (temp
+    directory setup) must come out as itself, not relabelled.
+
+    Without this, moving the `with` back inside the shared `try` is invisible.
+    """
+    def boom(**kwargs):
+        raise ValueError("something else entirely")
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", boom)
+
+    # Not `LLMError`: it subclasses RuntimeError, so this would not match.
+    with pytest.raises(ValueError) as excinfo:
+        invoke(ClaudeCliAdapter(_cfg(tmp_path, llm_timeout_seconds=5.0)), "Ada")
+
+    assert "cannot travel in a command-line argument" not in str(excinfo.value)
 
 
 def _raise(exc):
@@ -566,9 +652,12 @@ def test_one_unsendable_chunk_fails_alone_and_the_job_keeps_going(tmp_path, monk
 
     job = store.get_extraction_job(job_id)
     assert job["status"] == "failed"
-    # The web worker's `except LLMError` branch is what produces this wording; the
-    # generic `except Exception` branch says "analysis failed: <python error>"
-    # instead, which is the symptom #474 was reported as.
+    # Written by `_refresh_extraction_job` (`store/db.py:3336`), NOT by the web
+    # worker: with the fix in place the `LLMError` never leaves
+    # `process_extraction_job` (`extract.py:459-461` swallows it per chunk), so
+    # neither of the worker's branches runs at all. Before the fix the `ValueError`
+    # tore through that loop and the worker's generic `except Exception` wrote
+    # "analysis failed: embedded null byte" -- the symptom #474 was reported as.
     assert str(job["message"]).startswith("Analysis failed: 1 chunk(s) failed, 1/2 complete")
 
     chunks = store.source_chunks(job_id)
