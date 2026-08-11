@@ -215,6 +215,36 @@ def test_an_artifact_registered_without_a_count_stays_unmeasured(tmp_path):
     store.close()
 
 
+def _artifact_key(source_id: int) -> dict:
+    """One (source_id, kind, checksum) — the conflict target of the insert."""
+    return {
+        "source_id": source_id,
+        "kind": "extracted_text",
+        "path": f"artifacts/sources/{source_id}/abc.txt",
+        "checksum": "abc",
+    }
+
+
+def test_re_registering_with_a_count_fills_in_one_never_measured(tmp_path):
+    """An unmeasured row gains its count when something re-ingests and measures.
+
+    This is the direction `DO UPDATE` adds, and the reason the clause changed.
+    The opposite direction -- a missing count leaving an existing one alone --
+    is a property the old `DO NOTHING` had for free, so a suite that asserted
+    only that would stay green with the clause reverted.
+    """
+    store = _store(tmp_path)
+    key = _artifact_key(store.add_source("sources/doc.txt", kind="text"))
+    artifact_id = store.add_source_artifact(**key)
+    assert _artifact_count(store, artifact_id) is None
+
+    again = store.add_source_artifact(**key, unreadable_chars=7)
+
+    assert again == artifact_id
+    assert _artifact_count(store, artifact_id) == 7
+    store.close()
+
+
 def test_re_registering_without_a_count_keeps_the_one_already_recorded(tmp_path):
     """Re-ingesting identical text must not erase a count with a missing one.
 
@@ -223,21 +253,10 @@ def test_re_registering_without_a_count_keeps_the_one_already_recorded(tmp_path)
     either side over the None a non-measuring caller passes.
     """
     store = _store(tmp_path)
-    source_id = store.add_source("sources/doc.txt", kind="text")
-    artifact_id = store.add_source_artifact(
-        source_id=source_id,
-        kind="extracted_text",
-        path="artifacts/sources/1/abc.txt",
-        checksum="abc",
-        unreadable_chars=7,
-    )
+    key = _artifact_key(store.add_source("sources/doc.txt", kind="text"))
+    artifact_id = store.add_source_artifact(**key, unreadable_chars=7)
 
-    again = store.add_source_artifact(
-        source_id=source_id,
-        kind="extracted_text",
-        path="artifacts/sources/1/abc.txt",
-        checksum="abc",
-    )
+    again = store.add_source_artifact(**key)
 
     assert again == artifact_id
     assert _artifact_count(store, artifact_id) == 7
@@ -372,8 +391,11 @@ def test_cli_ingest_warns_how_many_characters_it_could_not_read(
 
     captured = capsys.readouterr()
     assert rc == 0
-    assert "3" in captured.err
-    assert "could not be read" in captured.err
+    # Anchored on both sides of the number. A bare `"3" in err` passes for any
+    # count, or none, because the warning interpolates `args.path` and a pytest
+    # tmp path supplies stray digits; and without the leading `warning: ` the
+    # phrase is still a suffix of a wrong count like "103 character(s)".
+    assert "warning: 3 character(s) could not be read" in captured.err
     # The warning is an aside; the citation line stdout already promised stays.
     assert "ingested" in captured.out and "-> sources/" in captured.out
 

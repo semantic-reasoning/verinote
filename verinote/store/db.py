@@ -951,11 +951,16 @@ class Store:
         checksum: str = "",
         unreadable_chars: int | None = None,
     ) -> int:
-        """Register an artifact row; re-registering the same checksum is a no-op.
+        """Register an artifact row, or update the one this checksum already has.
 
         `unreadable_chars` is how many characters the extraction could not read
-        (#473); `None` means the caller did not measure, and the conflict clause
-        keeps a count already on the row rather than erasing it with that None.
+        (#473), and `None` means the caller did not measure. Re-registering an
+        existing `(source_id, kind, checksum)` is how a count gets filled in
+        after the fact: a row left unmeasured -- which is every row written
+        before that column existed -- gains the number as soon as something
+        re-ingests the same text and does measure it. The COALESCE is the other
+        direction of that rule, and the reason this is not a plain assignment:
+        a caller that did not measure must not erase a count already recorded.
         """
         with self._lock:
             self._conn.execute(
