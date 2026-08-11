@@ -48,6 +48,24 @@ def redact_secret(text: str, secret: str | None) -> str:
     return text.replace(secret, "***")
 
 
+def base_url_unusable(provider: str, exc: Exception) -> LLMError:
+    """The configured endpoint is not something a request can even be built for.
+
+    Nothing was dialled, so "request failed" would name the wrong suspect: the
+    remote never heard from us and may be perfectly healthy. Naming the Base URL
+    setting IS right here, and only here — `urllib.request.Request(url)` takes
+    one caller-supplied string and rejects it for being that string, so there is
+    no second cause to misdirect anyone towards. The cloud adapters' equivalent
+    deliberately does not name the setting, because their SDK constructors read
+    proxy and certificate environment too and a blank field is a live suspect
+    there; see `_client_failed`.
+
+    Returns rather than raises, so the call site keeps `raise ... from exc` and
+    the original stays in the chain — the shape `_request_failed` already uses.
+    """
+    return LLMError(f"{provider} base URL is unusable: {exc} (check the Base URL setting)")
+
+
 @dataclass(frozen=True)
 class ExtractedFact:
     """One candidate fact the extractor proposes from a source.
