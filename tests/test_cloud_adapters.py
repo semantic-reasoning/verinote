@@ -557,10 +557,14 @@ def _client_failed_docstring(adapter) -> str:
     """`_client_failed`'s docstring as the source spells it.
 
     Read out of the AST, not off `__doc__`: under `python -OO` the interpreter
-    strips docstrings, so `adapter._client_failed.__doc__` is `None`. Measured,
-    a `__doc__` version does not go quietly vacuous under that flag -- it raises
-    `TypeError` and both parameterisations fail loudly -- but a guard that
-    cannot run under a supported interpreter flag is still not a guard. And what
+    strips docstrings, so `adapter._client_failed.__doc__` is `None`. A
+    `__doc__` version does not go quietly vacuous under that flag: measured
+    against the body below, it dies on `None.split` with an `AttributeError` and
+    both parameterisations fail loudly. (That exception type is a fact about the
+    body, not about `-OO` -- it has already gone stale once here when the body
+    changed. Re-measure it rather than reasoning about it.) Failing loudly is
+    still failing, and a guard that cannot run under a supported interpreter
+    flag is not a guard. And what
     is being asserted is a property of the source text that ships, so reading
     the source is the direct route as well as the flag-independent one; the
     source-shape guards elsewhere in `tests/` take it for the same reason.
