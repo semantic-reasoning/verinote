@@ -1355,6 +1355,90 @@ def test_search_source_excerpts_compares_nothing_from_a_missing_or_undecodable_s
     assert len(compared) == 1
 
 
+# --- an excerpt means the source matched, not that it was readable (#468) ---
+
+
+_UNRELATED_SOURCE_TEXT = "샘플기관은 샘플절차를 안내한다."
+
+
+def _seed_two_matching_and_one_unrelated_source(tmp_path):
+    """Three registered, readable sources scoring 2, 1 and 0 on one question.
+
+    The question these fixtures are built for is `샘플조직의 역할은 무엇인가?`,
+    whose patterns are `샘플조직의`, `역할은` and `무엇인가`. `roles.txt`
+    carries the first two, `history.txt` only the first, and `unrelated.txt`
+    none of them.
+
+    The file names are load-bearing rather than decorative. `store.sources()`
+    reads `ORDER BY path`, so the two matching sources arrive at the sort as
+    `history.txt` then `roles.txt` -- the reverse of their score order. That is
+    what lets a sort key which has lost `-item.score` show through instead of
+    happening to agree with the right answer. A rename that put the two orders
+    back in step would make the ordering test vacuous, so that test asserts
+    this property rather than trusting this docstring for it.
+    """
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    (sources / "roles.txt").write_text("샘플조직의 역할은 샘플서비스 검토이다.", encoding="utf-8")
+    (sources / "history.txt").write_text("샘플조직의 연혁은 다음과 같다.", encoding="utf-8")
+    (sources / "unrelated.txt").write_text(_UNRELATED_SOURCE_TEXT, encoding="utf-8")
+    store = _store(tmp_path)
+    store.add_source("sources/roles.txt")
+    store.add_source("sources/history.txt")
+    store.add_source("sources/unrelated.txt")
+    return store
+
+
+def test_search_source_excerpts_drops_a_source_it_read_and_matched_nothing_in(
+    tmp_path, monkeypatch
+):
+    """Being readable is not enough: `if score:` drops a source that scored zero.
+
+    `search_source_excerpts` appends a match only when `_best_excerpt` returned
+    a non-zero score. Without that gate a registered, readable source the
+    question never touched still becomes an `AskExcerpt` -- carrying the empty
+    string `_best_excerpt` returns when it found no pattern -- and the page
+    lists that file under a blank excerpt.
+
+    The test above this one makes the neighbouring point in the opposite
+    direction: there the source never reaches `_best_excerpt` at all, because
+    it is missing from disk or is not UTF-8. Here it is read and compared and
+    dropped afterwards. The spy is what makes that difference observable, and
+    it is also what keeps this test from rotting: were the fixture to stop
+    writing `unrelated.txt` or stop registering it, the exclusion below would
+    still hold, for a reason that has nothing to do with the gate. The spy
+    fails in that case instead of passing quietly.
+
+    The set equality is exact for this fixture only. Three sources cannot reach
+    the `MAX_EXCERPTS` truncation, and no two of them resolve to the same path,
+    so the `seen_paths` dedupe never drops one either. Outside those bounds the
+    result is not simply "every registered source that scored".
+
+    Not covered here: the order of what comes back (the next test), the
+    truncation, the dedupe, and the window arithmetic inside `_best_excerpt`.
+    """
+    compared: list[str] = []
+    real_best_excerpt = ask_module._best_excerpt
+
+    def spy(text, patterns):
+        compared.append(text)
+        return real_best_excerpt(text, patterns)
+
+    monkeypatch.setattr(ask_module, "_best_excerpt", spy)
+
+    store = _seed_two_matching_and_one_unrelated_source(tmp_path)
+
+    excerpts = search_source_excerpts(
+        store, root=tmp_path, question="샘플조직의 역할은 무엇인가?"
+    )
+
+    assert _UNRELATED_SOURCE_TEXT in compared
+    assert {item.path for item in excerpts} == {
+        "sources/roles.txt",
+        "sources/history.txt",
+    }
+
+
 # --- Ask does not re-request a provider that just failed (#438) -------------
 
 
