@@ -506,6 +506,11 @@ def test_claude_cli_undecodable_reply_does_not_blame_the_source(tmp_path, monkey
     # over that cap today and loses its last sentence there; this pins that this
     # constant does not. (`verinote/pipeline/ask.py` keeps a second copy of
     # `_short_reason` with the same cap.)
+    #
+    # Only for THIS prefix, though: `query.py:387` composes a much longer one and
+    # does truncate this message -- mid-word, even when the reason it prepends is
+    # empty. That site is over budget on its own and closing it is a separate
+    # change; what is pinned here is that this constant is not what put it there.
     prefixed = f"llm error: {message}"
     assert _short_reason(prefixed) == prefixed
 
