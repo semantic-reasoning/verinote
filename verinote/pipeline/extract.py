@@ -703,12 +703,16 @@ def _back_off_from_locked_sidecar(
     been reclaimed and re-issued to someone else, and this UPDATE is unconditional
     (`WHERE job_id = ? AND status = 'running'`), so it resets that other holder's
     in-flight chunk — undoing, one line later, the thing the CAS declined to do.
-    That is not a gap this function can close and not one it introduces: it is
-    exactly the #242 scope boundary `_resume_source_extraction_jobs` states in
-    `web/app.py` — DB state alone cannot distinguish a crashed zombie from a live
-    owner — and `_halt_extraction_job` reaches the same UPDATE by the same route
-    with the same consequence. Closing it needs a liveness lease, which is that
-    follow-up's business, not this clause's.
+    That overlap follows from reusing `rollback_extraction_job` whole, not from
+    anything this clause is unable to do: a job-only variant that skipped the chunk
+    UPDATE would not have it, the chunk clause having already settled this pass's
+    own claim either way. The paragraph below is why the shared one is taken
+    anyway. What remains is not a regression either — `_halt_extraction_job`
+    reaches the same UPDATE by the same route with the same consequence, and both
+    sit inside the #242 scope boundary `_resume_source_extraction_jobs` states in
+    `web/app.py`: DB state alone cannot distinguish a crashed zombie from a live
+    owner. Closing that belongs to the #242 follow-up, which `web/app.py`
+    describes, not to this clause.
 
     Reused rather than sidestepped because the rest is exactly what is wanted:
     `done` chunks kept, counters left true, a `canceled` job left alone entirely,
