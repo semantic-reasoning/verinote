@@ -1323,7 +1323,16 @@ class Store:
         `running` chunks as it takes a job, and the new owner then claims them
         afresh) would rewind and refund a claim that is no longer its own. Pinning
         the attempt count makes this apply to the caller's own claim or to nothing
-        at all: a stale caller gets `False` and writes nothing.
+        at all: a stale caller gets `False`, and THIS METHOD writes nothing.
+
+        That promise is one statement wide, and it is worth saying where it stops.
+        What the caller does after a `False` is the caller's business, and the
+        pipeline's caller goes on to roll the whole job back — an unconditional
+        requeue of every `running` chunk, which resets the very claim the CAS here
+        declined to touch. `pipeline/extract.py::_back_off_from_locked_sidecar`
+        owns that overlap and records the #242 scope boundary it belongs to; the
+        guarantee to read out of THIS method is narrower: it never rewinds or
+        refunds a claim it cannot prove is the caller's.
 
         THE REFUND IS THE DIFFERENCE from `rollback_extraction_job`, which also
         returns a `running` chunk to the queue but leaves `attempts` alone. Both
@@ -1349,10 +1358,15 @@ class Store:
         one is the reason. `mark_chunk_failed` and the retry claim each leave the
         row somewhere a reader can later find it and ask why — failed carrying an
         error, or requeued after having failed — so the event is what accounts for
-        the residue. This leaves the row bit-for-bit as `next_pending_chunk` first
-        handed it out, so there is nothing left behind for an event to explain:
-        the same ground `claim_pending_extraction_job` stands on when it rewinds
-        stray chunks with a raw update and no event. Nor is the occurrence lost —
+        the residue. This restores `status`, `error` and `attempts` to what
+        `next_pending_chunk` first handed out (`updated_at` moves, as it does on
+        every write here), so there is nothing left behind for an event to
+        explain. `claim_pending_extraction_job` reasons the same way about its
+        stray-chunk rewind, though only up to a point: that UPDATE is by its own
+        account "a defensive no-op" that fires in no real path, whereas this one
+        is a transition that really happens. The shared part is the ground — a
+        row put back exactly as it was needs no history — not the frequency. Nor
+        is the occurrence lost —
         the caller re-raises, its job is rolled back with a message naming the
         cause, and the web worker logs it.
         """
