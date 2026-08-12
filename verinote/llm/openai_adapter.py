@@ -52,14 +52,14 @@ class OpenAIAdapter:
         echoes back a credential verinote never resolved, so `redact_secret` has
         nothing to match. Here the same endpoint echoes the key verinote *did*
         resolve, which `redact_secret` would match, down a path that never calls
-        it. Measured, it survives into `llm/schema.py`'s
-        "malformed fact object {item!r}" with no `***`. `_request_failed` covers
-        that echo when it arrives as an *error*; as a parsable response it never
-        meets a redactor. Pre-existing, and a follow-up rather than a
-        docstring's business. That enumeration is not offered as complete. What it is for is the shape of the claim: "both carriers
-        redact" is true of this class and not of the call graph around it, and
-        stating only the first half is how the sentence this paragraph replaces
-        went wrong.
+        it. Measured, it survives into `llm/schema.py`'s "malformed fact object
+        {item!r}" with no `***`. `_request_failed` covers that echo when it
+        arrives as an *error*; as a parsable response it never meets a redactor.
+        Pre-existing, and a follow-up rather than a docstring's business. That
+        enumeration is not offered as complete. What it is for is the shape of
+        the claim: "both carriers redact" is true of this class and not of the
+        call graph around it, and stating only the first half is how the
+        sentence this paragraph replaces went wrong.
 
         Everything else raising `LLMError` here uses a fixed string and carries
         nothing caught: `_require_key` and the `ImportError` clause in

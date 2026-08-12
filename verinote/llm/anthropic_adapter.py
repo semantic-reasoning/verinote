@@ -38,20 +38,22 @@ class AnthropicAdapter:
         `PromptError` and those messages are fixed strings plus a prompt id,
         placeholder name, or title. The schema helpers each generation method
         calls just past its guarded region -- `parse_facts`, `parse_query`,
-        `parse_query_intent` -- do not redact either, and that one is NOT
-        harmless. What they parse is provider response text, and `_require_key`
-        below already establishes the mechanism that puts a credential there:
-        `base_url` is caller-supplied, so the endpoint dialled is one a user can
-        point anywhere, and what it echoes is persisted. `_require_key` applies
-        that to a key verinote never resolved, which `redact_secret` could not
-        match anyway; the *configured* key arrives the same way and could be
-        matched, but nothing on this path tries. Measured, an echoing 200 body
-        reaches `llm/schema.py`'s
-        "malformed fact object {item!r}" verbatim, with no `***`. What
-        `_request_failed` redacts is that echo arriving as an *error*; arriving
-        as a parsable response it goes around the guard entirely. That predates
-        this change and is a follow-up, not something prose can fix. Neither of
-        the two carrier lists in this paragraph is offered as exhaustive. The
+        `parse_query_intent` -- do not redact either, and none of the three is
+        harmless. What they parse is the provider's response payload, which in
+        this adapter is the already-decoded `tool_use` input rather than a
+        string (`parse_facts(block.input)`), and `_require_key` below already
+        establishes the mechanism that puts a credential in it: `base_url` is
+        caller-supplied, so the endpoint dialled is one a user can point
+        anywhere, and what it echoes is persisted. `_require_key` applies that
+        to a key verinote never resolved, which `redact_secret` could not match
+        anyway; the *configured* key arrives the same way and could be matched,
+        but nothing on this path tries. Measured, an echoing response reaches
+        `llm/schema.py`'s "malformed fact object {item!r}" verbatim, with no
+        `***`. What `_request_failed` redacts is that echo arriving as an
+        *error*; arriving as a parsable response it goes around the guard
+        entirely. That predates this change and is a follow-up, not something
+        prose can fix. Neither of the two carrier lists in this paragraph is
+        offered as exhaustive. The
         point is that "every site carrying a caught exception redacts" stops
         being true the moment you leave this class, and asserting it unqualified
         is the almost-true claim this docstring was rewritten to stop making.
@@ -108,11 +110,11 @@ class AnthropicAdapter:
         `::::` leaves this constructor raising nothing at all. It is named here
         as a non-cause, which is what the guard in `tests/test_cloud_adapters.py`
         allows: it reads the paragraph above -- the one enumerating causes,
-        located by its opening words -- and rejects the other vendor's variable
-        from *that paragraph*, leaving a mention like this one in a later
-        paragraph legal. The other two
-        entries above are not vendor-scoped -- both SDKs read `SSL_CERT_FILE`
-        and `HTTPS_PROXY` -- which is why they are listed unqualified. The
+        found by a marker phrase that paragraph contains -- and rejects the
+        other vendor's variable from *that paragraph*, leaving a mention like
+        this one in a later paragraph legal. The other two entries above are not
+        vendor-scoped -- both SDKs read `SSL_CERT_FILE` and `HTTPS_PROXY` --
+        which is why they are listed unqualified. The
         otherwise identical paragraph in `openai_adapter` therefore has to name
         a different variable: two paragraphs documenting two SDKs, not one
         copied twice.

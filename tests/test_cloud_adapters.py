@@ -605,21 +605,23 @@ def test_each_adapter_names_only_its_own_vendor_base_url_variable(adapter, own, 
     `ANTHROPIC_BASE_URL='::::'` raises `httpx.InvalidURL` for anthropic and
     nothing for openai, and `OPENAI_BASE_URL='::::'` the other way round.
 
-    Scoped by role, not by spelling: only the paragraph opening "Deliberately
-    does NOT name" is read, because that is the one that enumerates causes, and
-    the vendor variable named there has to be the file's own. An earlier version
-    anchored on the `VAR='::::'` spelling every cause happens to use, which got
-    the trade the wrong way round -- it let "A malformed `OPENAI_BASE_URL` does
-    the same, so check that too" into the anthropic cause paragraph, and failed
-    a harmless reflow of that paragraph's own clause.
+    Scoped by role, not by spelling: only the paragraph carrying the marker
+    "Deliberately does NOT name" is read -- matched anywhere in it, though today
+    it is that paragraph's opening phrase -- because that is the paragraph
+    enumerating causes, and the vendor variable named there has to be the file's
+    own. An earlier version anchored on the `VAR='::::'` spelling every cause
+    happens to use, which got the trade the wrong way round: it let "A malformed
+    `OPENAI_BASE_URL` does the same, so check that too" into the anthropic cause
+    paragraph, and failed a harmless reflow of that paragraph's own clause.
 
     Mentions in the other paragraphs stay legal, and the anthropic docstring
     makes one deliberately: that `OPENAI_BASE_URL` does nothing in that
     constructor is a measured fact worth stating, and it is not a misdirection
     because it is not offered as a cause. `len(causes) == 1` is what stops that
-    permissiveness from swallowing the guard -- reword the marker away, or grow
-    a second paragraph carrying it, and this fails rather than quietly checking
-    nothing or checking the wrong half of a split.
+    permissiveness from swallowing the guard: reword the marker away and
+    `causes` is empty, duplicate it into a second paragraph and `causes` has
+    two, and either way this fails instead of quietly checking nothing or
+    checking only one of them.
     """
     paragraphs = [" ".join(p.split()) for p in _client_failed_docstring(adapter).split("\n\n")]
     causes = [p for p in paragraphs if "Deliberately does NOT name" in p]
