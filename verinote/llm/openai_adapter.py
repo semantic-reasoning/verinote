@@ -45,10 +45,18 @@ class OpenAIAdapter:
         reason: it is a module-level function precisely so that no key is in
         scope for it to leak, which its own docstring argues at length. The
         schema helpers called just past each guarded region -- `parse_facts`,
-        `parse_query`, `parse_query_intent` -- are a third kind again: also
-        unredacted, harmless because a parse failure over a provider *response*
-        is not a place configuration appears. That enumeration is not offered as
-        complete. What it is for is the shape of the claim: "both carriers
+        `parse_query`, `parse_query_intent` -- are worse than a third kind: also
+        unredacted, and not harmless. Their input is provider response text, and
+        the threat model is the one `_require_key` sets out below, transposed:
+        there an attacker-influenced endpoint -- `base_url` is caller-supplied --
+        echoes back a credential verinote never resolved, so `redact_secret` has
+        nothing to match. Here the same endpoint echoes the key verinote *did*
+        resolve, which `redact_secret` would match, down a path that never calls
+        it. Measured, it survives into `llm/schema.py`'s
+        "malformed fact object {item!r}" with no `***`. `_request_failed` covers
+        that echo when it arrives as an *error*; as a parsable response it never
+        meets a redactor. Pre-existing, and a follow-up rather than a
+        docstring's business. That enumeration is not offered as complete. What it is for is the shape of the claim: "both carriers
         redact" is true of this class and not of the call graph around it, and
         stating only the first half is how the sentence this paragraph replaces
         went wrong.

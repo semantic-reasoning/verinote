@@ -38,13 +38,23 @@ class AnthropicAdapter:
         `PromptError` and those messages are fixed strings plus a prompt id,
         placeholder name, or title. The schema helpers each generation method
         calls just past its guarded region -- `parse_facts`, `parse_query`,
-        `parse_query_intent` -- do not redact either, and are harmless for a
-        different reason: what they carry is a parse failure over a provider
-        *response*, never over configuration. Neither list is offered as
-        exhaustive. The point is that "every site carrying a caught exception
-        redacts" stops being true the moment you leave this class, and asserting
-        it unqualified is the almost-true claim this docstring was rewritten to
-        stop making.
+        `parse_query_intent` -- do not redact either, and that one is NOT
+        harmless. What they parse is provider response text, and `_require_key`
+        below already establishes the mechanism that puts a credential there:
+        `base_url` is caller-supplied, so the endpoint dialled is one a user can
+        point anywhere, and what it echoes is persisted. `_require_key` applies
+        that to a key verinote never resolved, which `redact_secret` could not
+        match anyway; the *configured* key arrives the same way and could be
+        matched, but nothing on this path tries. Measured, an echoing 200 body
+        reaches `llm/schema.py`'s
+        "malformed fact object {item!r}" verbatim, with no `***`. What
+        `_request_failed` redacts is that echo arriving as an *error*; arriving
+        as a parsable response it goes around the guard entirely. That predates
+        this change and is a follow-up, not something prose can fix. Neither of
+        the two carrier lists in this paragraph is offered as exhaustive. The
+        point is that "every site carrying a caught exception redacts" stops
+        being true the moment you leave this class, and asserting it unqualified
+        is the almost-true claim this docstring was rewritten to stop making.
 
         The remaining raises use fixed strings and carry nothing caught:
         `_require_key`, the `ImportError` clause in `_client`, and the three "no
