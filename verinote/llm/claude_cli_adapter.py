@@ -50,12 +50,18 @@ _UNSENDABLE_ARGUMENT = (
     "source file and re-ingest that source."
 )
 
-# `text=True` makes subprocess decode the CLI's stdout/stderr as strict UTF-8.
-# This is the CLI's OUTPUT failing, not the source text.
+# `text=True` makes subprocess decode the CLI's stdout AND stderr as strict
+# UTF-8, so either stream can land here. What this clause learns is that those
+# bytes did not decode -- not where they came from, and not that the answer
+# itself was lost: a valid JSON reply on stdout is discarded all the same when
+# one byte of the log beside it will not decode. The source text is one place
+# those bytes can come from -- the U+DC80..U+DCFF band above reaches the CLI as
+# raw 0x80-0xFF and can echo back -- so the message names the operation that
+# failed and claims nothing about the source either way.
 _UNDECODABLE_OUTPUT = (
-    "claude CLI request failed: the CLI's reply was not valid UTF-8 and could "
-    "not be read. Nothing is wrong with the source text -- re-run the analysis, "
-    "and if it keeps happening check the claude CLI's own version."
+    "claude CLI request failed: the CLI's output was not valid UTF-8 and could "
+    "not be read. Reading the CLI's output is what failed, not sending your "
+    "text. If it fails the same way again, check the claude CLI's version."
 )
 
 
