@@ -425,6 +425,150 @@ def test_generic_korean_attribute_requires_question_shape():
     assert intent.kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED
 
 
+def test_english_possessive_attribute_question_drops_a_trailing_predicate():
+    """Kill target: the tail group in the possessive pattern.
+
+    Dropping it, or reverting the label to a greedy match, asks the schema for a
+    relation named `owner called`. Both halves are needed: measured, greedy plus
+    the tail group still yields `owner called`, because a greedy label reaches
+    the end of the string before the optional tail is ever tried.
+    """
+    intent = deterministic_query_intent("What is Sample Project's owner called?")
+
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.subject == IntentTarget("entity", "Sample Project")
+    assert intent.relation_candidates == ("owner",)
+
+
+def test_english_of_attribute_question_deliberately_keeps_its_trailing_predicate():
+    """Kill target: `_ENGLISH_ATTRIBUTE_QUESTION_TAIL` appended to the `of` pattern.
+
+    This pins a limitation rather than a fix. In the `of` shape the terminal
+    field is the entity, so the predicate stays in it and this question asks
+    about an entity named `Sample Project called`, which matches nothing.
+
+    Stripping it here is the obvious change and it is the wrong one. Measured
+    through `ask_question` with every provider method raising, against a KB
+    holding facts on both `Company` and `Company Named`:
+    `What is the owner of Company Named?` answers `Company Named, owner, Bob` as
+    the pattern stands, and `Company, owner, Alice` once the tail is appended --
+    both labelled `VERIFIED — engine`, so the truncation turns a correct answer
+    into a wrong one under the system's strongest label, grounded on a fact that
+    does not answer the question. #515 carries the same measurement.
+
+    Leaving the predicate in the entity is the safer failure, because
+    `Sample Project called` matches nothing and the question reaches the model.
+    So this is pinned with its reason, the way the stemless Korean endings are,
+    rather than left looking like an oversight for someone to tidy up.
+    """
+    intent = deterministic_query_intent("What is the owner of Sample Project called?")
+
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.subject == IntentTarget("entity", "Sample Project called")
+    assert intent.relation_candidates == ("owner",)
+
+
+def test_english_attribute_tail_strips_only_a_space_bound_predicate():
+    """Kill target: the tail's `\\s+`, relaxed so it can begin inside a label.
+
+    The label is lazy, so it stops as soon as the remainder can match, and any
+    relaxation that lets the tail start mid-label eats into it. Two relaxations
+    reach different probes here, which is why both are pinned. `\\s*` cuts a
+    relation named `recalled` down to `re` and `unnamed` down to `un`. `\\s*\\b`
+    leaves those two alone -- no word boundary falls inside them -- but the
+    label charset holds `-`, so a boundary does fall after the hyphen and
+    `re-called` is cut to `re-`. All measured. The underscore probe adds no kill
+    against the tail's binding that the `recalled` probe does not already
+    deliver, `\\s*` cutting both and `\\s*\\b` neither; it is here to pin what
+    the docstrings claim about it, that `so_called` tells the two relaxations
+    apart rather than escaping both, `\\s*` cutting it to `so_` while `\\s*\\b`
+    leaves it whole, `_` being a word character. Outside that class it does kill
+    alone: dropping `_` from the label charset, and binding the tail with
+    `[\\s_]+`, are each caught by this probe and no other in the file. This is
+    the English analogue of the hazard `개요` -> `개` that keeps the Korean
+    interrogative suffixes bound to a stem.
+    """
+    recalled = deterministic_query_intent("What is Sample Product's recalled?")
+    unnamed = deterministic_query_intent("What is Sample Org's unnamed?")
+    hyphenated = deterministic_query_intent("What is Sample Product's re-called?")
+    underscored = deterministic_query_intent("What is Sample Product's so_called?")
+
+    assert recalled.relation_candidates == ("recalled",)
+    assert unnamed.relation_candidates == ("unnamed",)
+    assert hyphenated.relation_candidates == ("re-called",)
+    assert underscored.relation_candidates == ("so_called",)
+
+
+def test_english_attribute_label_spelled_like_the_tail_predicate_survives_whole():
+    """Kill target: an empty-preferring label plus a `\\s*(?<=\\s)`-bound tail.
+
+    A relation really named `called` must stay askable. Two properties keep it
+    so, and the kill target is their conjunction because neither alone moves
+    this question: the label must match at least one character, and the tail's
+    `\\s+` has no space left to bind to, `'s\\s+` having already consumed it.
+    Measured, an empty-preferring label still yields `called` while the tail
+    keeps `\\s+`, and the rebound tail still yields `called` while the label
+    keeps its first character; only together do they hand the whole label to the
+    tail and leave the question unclaimed.
+
+    The rebinding is `\\s*(?<=\\s)` and not `\\s*\\b` because `\\b` is not
+    confined to this question -- it also cuts `re-called` to `re-`, which is the
+    space-bound test's probe above, not this one's. A lookbehind for whitespace
+    reaches the label's first position without reaching inside a hyphenated
+    label, so this test's conjunction is falsified on its own terms.
+    """
+    intent = deterministic_query_intent("What is Sample Project's called?")
+
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.relation_candidates == ("called",)
+
+
+def test_english_attribute_tail_strips_a_capitalised_predicate():
+    """Kill target: the `(?i:)` on the tail alternation.
+
+    The label charset admits an uppercase letter anywhere, so a case-sensitive
+    tail does not fail to match -- it leaks, and the question asks the schema for
+    a relation named `model Called`.
+    """
+    intent = deterministic_query_intent("What is Sample Product's model Called?")
+
+    assert intent.relation_candidates == ("model",)
+
+
+def test_english_attribute_tail_leaves_other_trailing_predicates_unstripped():
+    """Kill target: the tail alternation widened past `called|named`.
+
+    `called` and `named` are a sample of the predicates that can trail an
+    attribute question, not the class of them; #511 carries the members left
+    unstripped, including `known as`, and records why `like` was excluded. This
+    pins the current boundary so that widening it is a deliberate edit to this
+    test rather than a silent change of what these questions ask for.
+    """
+    known_as = deterministic_query_intent("What is Sample Project's owner known as?")
+    like = deterministic_query_intent("What is Sample Project's owner like?")
+
+    assert known_as.relation_candidates == ("owner known as",)
+    assert like.relation_candidates == ("owner like",)
+
+
+def test_english_attribute_tail_does_not_spend_the_possessive_label_budget():
+    """Kill target: the tail moved into `_clean_english_attribute_label`.
+
+    Stripping after the match instead of during it makes the predicate compete
+    with the label for the possessive pattern's 41-character label group. Swept
+    over labels of 30 to 45 characters, `main` claimed this shape up to 34 and
+    left it `unknown_or_unsupported` from 35 on, because 34 plus the seven
+    characters of ` called` is exactly that ceiling. 41 is the longest label the
+    group admits at all, so it is the widest gap between stripping inside the
+    pattern and stripping after it.
+    """
+    label = "a" * 41
+    intent = deterministic_query_intent(f"What is Sample Project's {label} called?")
+
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.relation_candidates == (label,)
+
+
 # Built as an actual cross-product rather than a hand-written list, so that
 # every added stem really is pinned against every suffix form the rule admits.
 # A hand-list drifts: with `이에요` written out for one stem only, dropping it

@@ -435,10 +435,79 @@ _KOREAN_ATTRIBUTE_QUESTION = re.compile(
     r'^\s*["“”\']?(?P<entity>[^"“”\'?？\n]{1,100}?)["“”\']?\s*'
     r"(?:의|에\s*대한)\s*(?P<label>[^?？\n]{1,80})\s*[?？]?\s*$"
 )
+_ENGLISH_ATTRIBUTE_QUESTION_TAIL = r"(?:\s+(?i:called|named))?"
+r"""A trailing predicate the possessive attribute question keeps out of its label.
+
+`What is Sample Project's owner called?` asked the schema for a relation named
+`owner called` -- a label no schema holds, so a question naming its relation
+exactly was answered UNVERIFIED.
+
+The group is interpolated into the pattern rather than stripped afterwards in
+`_clean_english_attribute_label` because the label group is capped at 41
+characters, and a predicate removed after the match must first fit inside that
+cap alongside the label it trails. Swept over label lengths 1 to 59,
+`What is X's <label> called?` is claimed up to a 34-character label without this
+group -- 34 plus the seven characters of ` called` is exactly the cap -- and up
+to 41 with it, 41 being the longest label the group admits at all. A label of 35
+to 41 characters is therefore claimed only from the pattern site: a cleaner
+never sees one, because the pattern has already failed to match by the time a
+cleaner would run.
+
+`called` and `named` are a sample of the predicates that can trail an English
+attribute question, not the class of them. #511 lists the ones measured so far
+that this rule leaves unstripped -- `known as`, `titled`, `labelled`,
+`listed as`, `spelled`, `set to` -- and records why `worth` and `like` were
+deliberately excluded there.
+
+The tail binds with `\s+`, and that is the load-bearing safety property: the
+possessive label is lazy and stops as soon as the remainder of the pattern can
+match, so any binding that lets the tail begin inside a label eats into it.
+Measured, `\s*` cuts a relation named `recalled` down to `re` and `unnamed` down
+to `un`; `\s*\b` spares those two but cuts `re-called` down to `re-`, because
+the label charset holds `-` and a word boundary falls after it. `so_called`
+tells the two relaxations apart rather than escaping both -- `\s*` cuts it to
+`so_`, `\s*\b` leaves it whole, `_` being a word character. This is the English
+analogue of `_KOREAN_INTERROGATIVE_TAIL`'s stem binding, which is what keeps
+`개요` from becoming `개`.
+
+One optional group strips one predicate and not a run of them, so
+`What is Sample Project's owner called named?` asks for `owner called`.
+
+The alternation is case-insensitive because the label charset already admits
+`Called`: a case-sensitive tail leaves `What is Sample Product's model Called?`
+asking for a relation named `model Called`.
+
+A label that is itself one of these verbs survives whole --
+`What is Sample Project's called?` still asks for `called` -- because the label
+must match at least one character and the tail must be preceded by a space that
+`'s\s+` has already consumed.
+
+`_ENGLISH_OF_ATTRIBUTE_QUESTION` has the same defect in its entity, which is the
+terminal field in that shape, and deliberately keeps it:
+`What is the owner of Sample Project called?` still asks about an entity named
+`Sample Project called`. This constant is interpolated into one pattern and not
+both because appending it there truncates an entity whose own name ends in one
+of these verbs, and that is not a worse parse but a worse failure. Measured end
+to end through `ask_question` against a client raising on every provider method,
+so that no answer can have come from a model: with facts held on both `Company`
+and `Company Named`, `What is the owner of Company Named?` answers
+`VERIFIED — engine` / `Company Named, owner, Bob` as the pattern stands, and
+`VERIFIED — engine` / `Company, owner, Alice` with the tail appended -- the same
+strongest label the system has, now carrying the wrong fact as its grounding.
+
+The wrong answer needs the truncated name to exist in the KB and to hold the
+relation asked for. With only `Company Named` present, the truncated subject
+plans empty and the question reaches the model instead, which is why this shows
+up as a silent wrong answer rather than as a failure. #515 carries the same
+measurement and what a real fix would have to do, which is to consult the KB at
+parse time -- something no pattern here can do.
+"""
+
 _ENGLISH_POSSESSIVE_ATTRIBUTE_QUESTION = re.compile(
     r"^\s*(?i:what\s+is|what\s+was|find|show)\s+(?:the\s+)?"
     r"(?P<entity>[A-Z][^?]{0,100}?)'s\s+"
-    r"(?P<label>[A-Za-z][A-Za-z0-9 _-]{0,40})\s*\??\s*$"
+    r"(?P<label>[A-Za-z][A-Za-z0-9 _-]{0,40}?)"
+    rf"{_ENGLISH_ATTRIBUTE_QUESTION_TAIL}\s*\??\s*$"
 )
 _ENGLISH_OF_ATTRIBUTE_QUESTION = re.compile(
     r"^\s*(?i:what\s+is|what\s+was|find|show)\s+(?:the\s+)?"
