@@ -59,7 +59,14 @@ class AnthropicAdapter:
         `get_prompt` reads an override with `read_text`, so a hand-edited
         non-UTF-8 file raises `UnicodeDecodeError`, which `_render_prompt`'s
         `except PromptError` does not catch and no caller's `except LLMError`
-        catches either. Today the guarded region absorbs it.
+        catches either. Today the guarded region absorbs it. Nor would that
+        escape be loud: `pipeline/extract.py` guards its chunk loop with
+        `except LLMError` alone, so the chunk is left `running`, and the web
+        worker's job-level `except Exception` files the whole job as "analysis
+        failed" and spends the retry budget -- content blamed for a config
+        error. That is not a guess about the backstop: a sibling handler in that
+        worker exists in order not to fall through to it, and its comment names
+        those same two costs.
 
         Redaction covers only the key this process knows about, which is why
         `_require_key` refuses to let the SDK authenticate with one it never saw.
