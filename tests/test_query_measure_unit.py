@@ -3591,26 +3591,44 @@ def test_only_a_suffix_bound_to_the_day_changes_the_verdict():
 def _measure_unit_imports(source: str) -> list[tuple[int, str]]:
     """Every import statement in `source` that names `query_measure_unit`.
 
+    A module is named by an `ImportFrom`'s module -- `from ...query_measure_unit
+    import x` -- or by a name it binds -- `from verinote.pipeline import
+    query_measure_unit` -- or by an `Import` alias. All three are checked, and
+    all three the same way: the last dotted segment, compared exactly. Matching
+    on a suffix instead would read `legacy_query_measure_unit` as the forbidden
+    module, and matching the bound names loosely would read
+    `query_measure_unit_helpers` as it.
+
     Reported as `(line number, spelling as written)` so a failure says where to
     look; relative spellings keep their leading dots.
     """
     import ast
 
+    forbidden = "query_measure_unit"
     found: list[tuple[int, str]] = []
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.ImportFrom):
             origin = "." * node.level + (node.module or "")
-            if (node.module or "").endswith("query_measure_unit"):
+            if (node.module or "").rpartition(".")[2] == forbidden:
                 found.append((node.lineno, origin))
+            prefix = origin if origin.endswith(".") else f"{origin}."
+            for alias in node.names:
+                if alias.name.rpartition(".")[2] == forbidden:
+                    found.append((node.lineno, prefix + alias.name))
         elif isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name.endswith("query_measure_unit"):
+                if alias.name.rpartition(".")[2] == forbidden:
                     found.append((node.lineno, alias.name))
     return found
 
 
 def test_query_intent_never_imports_the_measure_unit_module():
     """The dependency runs one way, and only a static check can hold it there.
+
+    Import statements only, despite the name. A dynamic
+    `importlib.import_module("verinote.pipeline.query_measure_unit")` closes
+    the same cycle and passes this; nothing under `verinote/` reaches for a
+    module that way, so the statement forms are the whole surface today.
 
     `query_measure_unit` imports three names from `query_intent`. A re-export
     added the other way -- `from verinote.pipeline.query_measure_unit import
@@ -3654,3 +3672,79 @@ def test_query_intent_never_imports_the_measure_unit_module():
         "query_intent must not import query_measure_unit; the dependency runs "
         f"the other way. Found: {offenders}"
     )
+
+    # The assertion above is green on a file that imports nothing at all, which
+    # is every file it will ever be handed -- so on its own it cannot tell this
+    # scan from one that returns [] whatever it is given. The sweeps below are
+    # short synthetic snippets and would not notice either: a scan that bailed
+    # on anything file-sized would pass all of them. So re-run it over this same
+    # text with one forbidden line appended -- real source, real length, real
+    # line numbers -- and pin what comes back, not just that something did.
+    probe = source + "\nfrom verinote.pipeline import query_measure_unit\n"
+    assert _measure_unit_imports(probe) == [
+        (len(probe.splitlines()), "verinote.pipeline.query_measure_unit")
+    ]
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "import verinote.pipeline.query_measure_unit",
+        "from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch",
+        "from .query_measure_unit import korean_measure_unit_mismatch",
+        "from verinote.pipeline import query_measure_unit",
+        "from . import query_measure_unit",
+        "from verinote.pipeline import query_measure_unit as qmu",
+        "from verinote.pipeline import query_intent, query_measure_unit",
+    ],
+)
+def test_every_spelling_of_the_forbidden_import_is_caught(statement):
+    """The tripwire above reads one file, which today spells nothing this way.
+
+    So the spellings it would catch are measured here instead. The last four
+    name the module as a bound name rather than as the module imported from,
+    and `node.module` is `verinote.pipeline` or `None` for all of them -- the
+    check on it never sees the word. They are caught by the check on
+    `node.names`, and before that check existed a re-export written
+    `from verinote.pipeline import query_measure_unit` -- the form this
+    codebase already writes three times under `verinote/`, once for a sibling
+    in the same package (`from verinote.store import db`, in `store/tiers.py`)
+    -- closed the cycle in silence.
+
+    The two relative spellings need no separate handling: `from
+    .query_measure_unit import x` puts the word in `node.module`, and `from .
+    import query_measure_unit` puts it in `node.names`, so each falls to a
+    check that was going to run anyway. A gate on `node.level` would only
+    re-decide what these two already decide.
+    """
+    assert _measure_unit_imports(statement) != []
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "from verinote.pipeline import query_intent",
+        "from verinote.pipeline import query_measure_unit_helpers",
+        "from verinote.pipeline.query_measure_unit_helpers import spell",
+        "import verinote.pipeline.query_measure_unit_helpers",
+        "from verinote.pipeline import legacy_query_measure_unit",
+        "from verinote.pipeline.legacy_query_measure_unit import spell",
+        "import verinote.pipeline.legacy_query_measure_unit",
+    ],
+)
+def test_a_module_merely_spelled_like_it_is_not_the_forbidden_import(statement):
+    """A near miss in either direction is a different module, and allowed.
+
+    Suffixed (`query_measure_unit_helpers`) and prefixed
+    (`legacy_query_measure_unit`), each in all three places a module can be
+    named, and each held out by exactly one of the three checks -- an
+    `ImportFrom`'s module, a name it binds, an `Import` alias. What holds it is
+    that the last dotted segment is compared exactly: loosen one check to
+    `endswith` and that position's prefixed spelling turns red, loosen the same
+    check to `startswith` and its suffixed one does. Measured one loosening at
+    a time, all six of them: each reddens its own case and no other.
+
+    `query_intent` is the seventh case because the file under test really does
+    import it, and a scan that fired on any sibling would be no guard at all.
+    """
+    assert _measure_unit_imports(statement) == []
