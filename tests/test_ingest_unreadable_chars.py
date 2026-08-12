@@ -11,6 +11,7 @@ PDF and never a real filename.
 
 import hashlib
 import sqlite3
+import threading
 import unicodedata
 
 import pytest
@@ -483,6 +484,124 @@ def test_sources_page_separates_measured_loss_from_never_measured(tmp_path, nulx
     # stay independent.
     assert html.count("unreadable character(s)") == 1
     assert html.count("not checked for unreadable characters") == 1
+
+
+_UNMEASURED_NOTE = (
+    '<span class="badge src">not checked for unreadable characters — some may '
+    "remain; delete the source and upload it again to fix</span>"
+)
+
+
+def _block_the_extraction_worker(monkeypatch) -> list[int]:
+    """Let the upload route queue its job, and let no worker touch the KB.
+
+    `ExtractionJobBusyError` is the one outcome the worker answers by writing
+    nothing at all -- every other exit runs `fail_extraction_job` -- so raising
+    it keeps a background thread from racing the assertions below over the same
+    sqlite file. `get_client` is patched too because it runs FIRST: left real,
+    it would raise on this key-less config and reach the generic handler, which
+    does write. Returns the list of job ids the worker was asked for.
+    """
+    from verinote.pipeline import ExtractionJobBusyError
+    from verinote.web import app as webapp
+
+    asked: list[int] = []
+
+    def refuse(_store, _client, *, job_id, **_kwargs):
+        asked.append(job_id)
+        raise ExtractionJobBusyError(f"job {job_id} is not analysed in this test")
+
+    monkeypatch.setattr(webapp, "get_client", lambda _cfg: object())
+    monkeypatch.setattr(webapp, "process_extraction_job", refuse)
+    return asked
+
+
+def _join_extraction_workers() -> None:
+    """Wait out the threads the upload route starts, by their given name.
+
+    The thread is started synchronously inside the POST, so by the time the
+    response is in hand it is already enumerable -- no window to miss one.
+    Joining rather than sleeping is what makes the row assertions deterministic.
+    """
+    for thread in threading.enumerate():
+        if thread.name.startswith("verinote-source-extract-"):
+            thread.join(timeout=5.0)
+            assert not thread.is_alive(), f"{thread.name} outlived its join"
+
+
+def test_the_sources_page_names_an_action_that_actually_clears_the_unmeasured_note(
+    tmp_path, monkeypatch, nulx
+):
+    """The note has to name something that works, so all three legs run for real.
+
+    A note reading "re-upload to fix" was wrong: an unmeasured row's checksum is
+    over unsanitized text, so the upload adds a measured row instead of filling
+    that one in, and the page keeps rendering both. Leg 2 performs the old
+    wording and shows the note surviving it; leg 3 performs the new one and
+    shows the note gone. Asserting the rendered string alone would not tell
+    those two apart -- either wording renders fine.
+    """
+    asked = _block_the_extraction_worker(monkeypatch)
+    client = _sources_client(tmp_path)
+    store = client.app.state.store
+
+    # A source as a pre-#473 verinote left it: the original file, an artifact
+    # hashed over text that still holds its NULs, and no count.
+    upload = {"file": ("plan.nulx", _DIRTY.encode("utf-8"), "application/octet-stream")}
+    source_dir = tmp_path / "sources"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    (source_dir / "plan.nulx").write_bytes(_DIRTY.encode("utf-8"))
+    legacy_digest = _legacy_text_artifact(
+        store, tmp_path, "sources/plan.nulx", _DIRTY
+    )
+    source_id = int(store.get_source_by_path("sources/plan.nulx")["id"])
+    legacy_file = tmp_path / f"artifacts/sources/{source_id}/{legacy_digest}.txt"
+
+    # Leg 1: the wording, whole, as the browser receives it. The `.badge src`
+    # class and the em dash are inside the assertion because the reviewer's
+    # earlier assertions couple to them; a substring of the sentence would let
+    # the chip quietly become plain text.
+    html = client.get("/sources").text
+    assert _UNMEASURED_NOTE in html
+    assert "; re-upload to fix" not in html
+    assert html.count("not checked for unreadable characters") == 1
+
+    # Leg 2: do exactly what the old wording asked -- upload the same bytes
+    # again -- and watch it fail to clear anything.
+    response = client.post("/sources", files=upload, follow_redirects=False)
+    assert response.status_code == 303
+    _join_extraction_workers()
+
+    rows = store.source_artifacts(source_id)
+    assert [row["unreadable_chars"] for row in rows] == [None, 7], (
+        "the re-upload sanitized, so it hashed differently and INSERTed; the "
+        "unmeasured row is untouched"
+    )
+    html = client.get("/sources").text
+    assert html.count("not checked for unreadable characters") == 1
+    assert "7 unreadable character(s)" in html, (
+        "both rows render: this is the side-by-side state the comment warns is "
+        "a trap, the stale note above a correct count"
+    )
+
+    # Leg 3: do what the new wording asks. Delete takes the row and its file,
+    # and the upload that follows leaves one measured artifact behind.
+    # Asserted before as well as after: `not exists()` is true of a path that
+    # was never right, and would pass this leg without a delete happening.
+    assert legacy_file.exists()
+    response = client.post(f"/sources/{source_id}/delete", follow_redirects=False)
+    assert response.status_code == 303
+    assert not legacy_file.exists()
+    response = client.post("/sources", files=upload, follow_redirects=False)
+    assert response.status_code == 303
+    _join_extraction_workers()
+
+    html = client.get("/sources").text
+    assert "not checked for unreadable characters" not in html
+    assert "7 unreadable character(s)" in html
+    # Both uploads queued a job and neither was analysed, so nothing above came
+    # from a worker write -- and the stub really did stand in the way.
+    assert len(asked) == 2
 
 
 def _cli_env(monkeypatch, tmp_path):
