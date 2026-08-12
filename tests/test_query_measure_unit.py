@@ -3619,8 +3619,12 @@ def _measure_unit_imports(source: str) -> list[tuple[int, str]]:
     module, and matching the bound names loosely would read
     `query_measure_unit_helpers` as it.
 
-    Reported as `(line number, spelling as written)` so a failure says where to
-    look; relative spellings keep their leading dots.
+    Reported as `(line number, the module's dotted name as the statement
+    addresses it)` so a failure says where to look. That is the text as
+    written for the two positions that spell the module out, and a join of the
+    two halves for the third: `from verinote.pipeline import
+    query_measure_unit` reports `verinote.pipeline.query_measure_unit`, which
+    no line of the file contains. Relative spellings keep their leading dots.
     """
     import ast
 
@@ -3695,13 +3699,14 @@ def test_query_intent_never_imports_the_measure_unit_module():
         f"the other way. Found: {offenders}"
     )
 
-    # The assertion above is green on a file that imports nothing at all, which
-    # is every file it will ever be handed -- so on its own it cannot tell this
-    # scan from one that returns [] whatever it is given. The sweeps below are
-    # short synthetic snippets and would not notice either: a scan that bailed
-    # on anything file-sized would pass all of them. So re-run it over this same
-    # text with one forbidden line appended -- real source, real length, real
-    # line numbers -- and pin what comes back, not just that something did.
+    # The assertion above is green on a file that imports nothing forbidden,
+    # which is every file it will ever be handed -- so on its own it cannot
+    # tell this scan from one that returns [] whatever it is given. The sweeps
+    # below are short synthetic snippets and would not notice either: a scan
+    # that bailed on anything file-sized would pass all of them. So re-run it
+    # over this same text with one forbidden line appended -- real source, real
+    # length, real line numbers -- and pin what comes back, not just that
+    # something did.
     probe = source + "\nfrom verinote.pipeline import query_measure_unit\n"
     assert _measure_unit_imports(probe) == [
         (len(probe.splitlines()), "verinote.pipeline.query_measure_unit")
@@ -3782,7 +3787,12 @@ def test_a_module_merely_spelled_like_it_is_not_the_forbidden_import(statement):
     check to `startswith` and its suffixed one does. Measured one loosening at
     a time, all six of them: each reddens its own case and no other.
 
-    `query_intent` is the seventh case because the file under test really does
-    import it, and a scan that fired on any sibling would be no guard at all.
+    `query_intent` is the seventh case because a sibling import is one this
+    pair of modules really does make -- in another spelling: every one of the
+    eight imports of `query_intent` under `verinote/` names it in the module
+    position, `query_measure_unit.py:8` among them, and none in the bound-name
+    position swept here. A scan that fired on a sibling would be no guard at
+    all in either spelling, so it is the spelling not otherwise covered that is
+    worth a case.
     """
     assert _measure_unit_imports(statement) == []
