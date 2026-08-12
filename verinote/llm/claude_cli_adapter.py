@@ -50,18 +50,26 @@ _UNSENDABLE_ARGUMENT = (
     "source file and re-ingest that source."
 )
 
-# `text=True` makes subprocess decode the CLI's stdout AND stderr as strict
-# UTF-8, so either stream can land here. What this clause learns is that those
-# bytes did not decode -- not where they came from, and not that the answer
-# itself was lost: a valid JSON reply on stdout is discarded all the same when
-# one byte of the log beside it will not decode. The source text is one place
-# those bytes can come from -- the U+DC80..U+DCFF band above reaches the CLI as
-# raw 0x80-0xFF and can echo back -- so the message names the operation that
-# failed and claims nothing about the source either way.
+# `text=True` makes subprocess decode BOTH of the CLI's streams in the
+# interpreter's locale encoding -- UTF-8 wherever this runs today, so a bad byte
+# on stdout or on stderr can land here. (Under a latin-1 locale nothing fails to
+# decode at all and this clause goes unreachable; pinning `encoding=` so that
+# stops being true is left to the follow-up that owns it.) What this clause
+# learns is that those bytes did not decode -- not which stream carried them,
+# and not that the answer itself was lost: a valid JSON reply on stdout is
+# discarded all the same when one byte of the log beside it will not decode. The
+# source text is one place those bytes can come from -- the U+DC80..U+DCFF band
+# above reaches the CLI as raw 0x80-0xFF and can echo back.
+#
+# So the message names the operation that failed, then states the one thing this
+# code did establish -- the argv was accepted, i.e. the text got as far as the
+# CLI -- and points at the version. It deliberately does NOT say the send
+# succeeded: the CLI may have failed to relay the text onward and be reporting
+# exactly that in the bytes that will not decode.
 _UNDECODABLE_OUTPUT = (
     "claude CLI request failed: the CLI's output was not valid UTF-8 and could "
-    "not be read. Reading the CLI's output is what failed, not sending your "
-    "text. If it fails the same way again, check the claude CLI's version."
+    "not be read. The text reached the CLI; it is the CLI's output that could "
+    "not be read. Check the claude CLI's version if it recurs."
 )
 
 
