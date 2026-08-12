@@ -404,6 +404,19 @@ def test_list_models_names_openrouter_not_ollama_for_an_unusable_base_url(monkey
     assert "ollama" not in str(exc.value)
 
 
+def test_list_models_puts_the_refused_url_in_the_message(monkeypatch):
+    """`Request` answers an unclosed IPv6 literal with a bare `Invalid IPv6 URL`
+    — no URL in it anywhere — so unlike `::::` this value cannot be green against
+    a call site that forgot to pass the URL on. The `/models` suffix is part of
+    it: that is the string `Request` was handed."""
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: pytest.fail("dialled"))
+
+    with pytest.raises(LLMError) as exc:
+        list_models("http://[", 5.0)
+
+    assert "http://[/models" in str(exc.value)
+
+
 def test_list_models_does_not_blame_the_base_url_for_a_non_valueerror(monkeypatch):
     """The clause catches `ValueError` and nothing wider, so a genuine bug in
     this statement is not relabelled as the user's configuration mistake."""

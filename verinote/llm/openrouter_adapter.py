@@ -76,10 +76,11 @@ def list_models(base_url: str | None, timeout: float) -> ModelListing:
     # endpoint currently in the Base URL box, so a malformed one arrives here
     # before it is ever saved. Escaping unnormalised makes that a 500 rather
     # than the banner the settings page already renders for `LLMError`.
+    url = f"{root}/models"
     try:
-        req = urllib.request.Request(f"{root}/models")
+        req = urllib.request.Request(url)
     except ValueError as exc:
-        raise base_url_unusable("openrouter", exc) from exc
+        raise base_url_unusable("openrouter", url, exc) from exc
     try:
         with urllib.request.urlopen(  # noqa: S310 - caller-named endpoint, dialled with no key
             req, timeout=timeout

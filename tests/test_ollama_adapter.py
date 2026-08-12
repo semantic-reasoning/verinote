@@ -521,6 +521,36 @@ def test_an_unusable_base_url_keeps_the_original_error_as_the_cause(
     assert isinstance(exc.value.__cause__, ValueError)
 
 
+# A Base URL whose rejection message says nothing about it: `Request` answers an
+# unclosed IPv6 literal with a bare `Invalid IPv6 URL`. Distinct from `::::`,
+# whose `unknown url type: '::::/api/chat'` quotes the URL for free — against
+# that value alone, a call site that passed the wrong URL, or no URL at all,
+# would look identical.
+_SILENTLY_REFUSED_BASE_URL = "http://["
+
+
+def test_the_url_reaches_the_message_even_when_the_exception_omits_it(tmp_path, monkeypatch):
+    """What the user has to be given back is the string that was refused. The
+    exception cannot supply it here, so `_post_chat` passes it — including the
+    `/api/chat` this call appended, which is the URL `Request` actually saw.
+    """
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: pytest.fail("dialled"))
+    cfg = Config(
+        root=tmp_path,
+        db_path=tmp_path / "kb.sqlite",
+        provider="ollama",
+        model="qwen3:8b",
+        api_key=None,
+        base_url=_SILENTLY_REFUSED_BASE_URL,
+    )
+
+    with pytest.raises(LLMError) as exc:
+        OllamaAdapter(cfg).extract_facts(source_text="Ada")
+
+    assert "Invalid IPv6 URL" in str(exc.value)
+    assert "http://[/api/chat" in str(exc.value)
+
+
 def test_a_payload_that_cannot_be_serialised_is_not_blamed_on_the_base_url(
     tmp_path, monkeypatch
 ):
@@ -696,6 +726,19 @@ def test_list_models_normalises_a_base_url_no_request_can_be_built_from(monkeypa
 
     with pytest.raises(LLMError, match="^ollama base URL is unusable"):
         list_models(_UNUSABLE_BASE_URL, 5.0)
+
+
+def test_list_models_puts_the_refused_url_in_the_message(monkeypatch):
+    """The lister's own call site, not the adapter's: it appends `/api/tags` and
+    has to hand that same string over. `Invalid IPv6 URL` carries nothing, so a
+    lister that forgot would leave the settings banner naming a field without
+    ever saying what is in it."""
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: pytest.fail("dialled"))
+
+    with pytest.raises(LLMError) as exc:
+        list_models(_SILENTLY_REFUSED_BASE_URL, 5.0)
+
+    assert "http://[/api/tags" in str(exc.value)
 
 
 def test_list_models_does_not_blame_the_base_url_for_a_non_valueerror(monkeypatch):
