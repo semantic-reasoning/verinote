@@ -23,13 +23,41 @@ class OpenAIAdapter:
         self.cfg = cfg
 
     def _request_failed(self, exc: Exception) -> LLMError:
-        """Provider failures from a *request*, redacted.
+        """Failures from a `client.chat.completions.create` call, redacted.
 
-        One of two construction sites in this class -- `_client_failed` is the
-        other, for failures that happen before any request is made. Both redact,
-        which is the property that matters: a raise site somebody forgot must not
-        let the configured key survive into an error message. Splitting them is
-        what keeps each message able to say something true about *when* it failed.
+        What has to hold is redaction, not the two-way split. Exactly two sites
+        in this class hand a *caught* exception to `LLMError`: this one and
+        `_client_failed`. Both redact, which is what keeps a forgotten raise
+        site from persisting the configured key into `source_chunks.error`.
+        `OpenRouterAdapter` adds no third and overrides neither, so it inherits
+        the guarantee whole; what it does change is `name`, which only alters
+        which provider the message blames.
+
+        Redaction is not universal in this file, though. Module-level
+        `_render_prompt` builds `LLMError(str(exc))` with no redaction, a third
+        carrier of caught text. It is harmless as written, because the only
+        thing it catches is `PromptError` and those messages are fixed strings
+        plus a prompt id, placeholder name, or title. Claiming the two sites
+        above are all of them would be true of the class and false of the file.
+
+        Everything else raising `LLMError` here uses a fixed string and carries
+        nothing caught: `_require_key` and the `ImportError` clause in
+        `_client`. Both fail before anything is dialled and neither is
+        `_client_failed` -- which is the point of the hoist comment in
+        `_client`, and the reason "before the request" cannot be the line
+        between these two messages.
+
+        Nor does this name promise timing. The prompt render is an ARGUMENT to
+        the SDK call and so is evaluated inside the guarded region: an override
+        missing a required placeholder surfaces as "openai request failed"
+        without a request (measured). The honest reading is "the SDK call
+        yielded no result"; `_client_failed` is the message that can speak about
+        when. The imprecision predates this change and belongs to a follow-up,
+        not to a hoist: pulling the render out would let a hand-edited non-UTF-8
+        override -- read by `get_prompt` as `read_text`, so a
+        `UnicodeDecodeError` rather than the `PromptError` that `_render_prompt`
+        guards for -- leave the adapter raw, past every caller's
+        `except LLMError`. The guarded region is what absorbs it today.
 
         Redaction covers only the key this process knows about, which is why
         `_require_key` refuses to let the SDK authenticate with one it never saw.
