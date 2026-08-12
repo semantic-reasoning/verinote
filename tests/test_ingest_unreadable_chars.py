@@ -499,12 +499,22 @@ _RE_UPLOAD_ONLY_NOTE = "; re-upload to fix</span>"
 def _block_the_extraction_worker(monkeypatch) -> list[int]:
     """Let the upload route queue its job, and let no worker touch the KB.
 
-    `ExtractionJobBusyError` is the one outcome the worker answers by writing
-    nothing at all -- every other exit runs `fail_extraction_job` -- so raising
-    it keeps a background thread from racing the assertions below over the same
-    sqlite file. `get_client` is patched too because it runs FIRST: left real,
-    it would raise on this key-less config and reach the generic handler, which
-    does write. Returns the list of job ids the worker was asked for.
+    `ExtractionJobBusyError` is the exit that fits a test stub. It is not the
+    only silent one -- `PolicyMissingError` and the corrupt-config pair write
+    nothing either, and a job that simply succeeds writes no failure -- but it
+    is the only one meaning "another worker owns this", so it leaves behind
+    neither a KB write nor a logged fault. `fail_extraction_job` is reached
+    from `LLMError` and the generic handler, and those are what a stub has to
+    stay out of.
+
+    Patching `get_client` is defence, not necessity: measured, this file's web
+    tests pass without it, because `get_client` on this config returns an
+    adapter rather than raising -- constructing one needs no key. It stays so
+    that a provider which does demand a key, or a future check placed ahead of
+    the worker's call, yields a stub client here instead of a real
+    `fail_extraction_job` write.
+
+    Returns the list of job ids the worker was asked for.
     """
     from verinote.pipeline import ExtractionJobBusyError
     from verinote.web import app as webapp
@@ -520,17 +530,27 @@ def _block_the_extraction_worker(monkeypatch) -> list[int]:
     return asked
 
 
-def _join_extraction_workers() -> None:
-    """Wait out the threads the upload route starts, by their given name.
+def _join_extraction_worker(store: Store) -> None:
+    """Wait out the worker thread belonging to the job the last upload queued.
 
-    The thread is started synchronously inside the POST, so by the time the
-    response is in hand it is already enumerable -- no window to miss one.
-    Joining rather than sleeping is what makes the row assertions deterministic.
+    Scoped to one job id, read from the store, rather than to every live
+    `verinote-source-extract-*` thread: with a name prefix, a thread another
+    test leaked would be joined here and, if it outlasted the timeout, fail
+    THIS test for it. The id comes from the store and not from the stub's
+    record because the stub runs inside the thread -- reading its list from
+    here would race the very thread being waited for.
+
+    Defence rather than a load-bearing step, and measured as such: with both
+    calls removed the assertions still pass 10/10, since the stub raises before
+    touching anything. It earns its keep the moment that stub does real work.
     """
+    jobs = store.source_extraction_jobs()
+    assert jobs, "the upload queued no extraction job, so nothing was stubbed out"
+    name = f"verinote-source-extract-{int(jobs[0]['id'])}"
     for thread in threading.enumerate():
-        if thread.name.startswith("verinote-source-extract-"):
+        if thread.name == name:
             thread.join(timeout=5.0)
-            assert not thread.is_alive(), f"{thread.name} outlived its join"
+            assert not thread.is_alive(), f"{name} outlived its join"
 
 
 def test_the_sources_page_names_an_action_that_actually_clears_the_unmeasured_note(
@@ -582,7 +602,7 @@ def test_the_sources_page_names_an_action_that_actually_clears_the_unmeasured_no
     # watch it fail to clear anything for THIS population.
     response = client.post("/sources", files=upload, follow_redirects=False)
     assert response.status_code == 303
-    _join_extraction_workers()
+    _join_extraction_worker(store)
 
     rows = store.source_artifacts(source_id)
     assert [row["unreadable_chars"] for row in rows] == [None, 7], (
@@ -608,7 +628,7 @@ def test_the_sources_page_names_an_action_that_actually_clears_the_unmeasured_no
     assert not legacy_file.exists()
     response = client.post("/sources", files=upload, follow_redirects=False)
     assert response.status_code == 303
-    _join_extraction_workers()
+    _join_extraction_worker(store)
 
     html = client.get("/sources").text
     assert "not checked for unreadable characters" not in html
@@ -657,7 +677,7 @@ def test_a_re_upload_clears_the_note_when_the_old_extraction_held_no_nul(
         follow_redirects=False,
     )
     assert response.status_code == 303
-    _join_extraction_workers()
+    _join_extraction_worker(store)
 
     # One row, not two: the digest was reproducible, so the upload updated this
     # artifact instead of sitting a measured sibling next to it.
