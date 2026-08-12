@@ -544,9 +544,11 @@ def process_extraction_job(
                 # this pipeline models. Name the modelled set and it is plainly
                 # larger: `PolicyMissingError` and `DuckDBFactTermStoreLockedError`
                 # (the two clauses above) and `ExtractionJobBusyError` at the
-                # ownership claim, plus, inside `_extract_chunk` and the helpers it
-                # calls, `LLMError`, `PromptError`, `CorroborationPolicyError` and
-                # `TermParseError`.
+                # ownership claim, plus `LLMError` from `_extract_chunk` — which is
+                # also how `PromptError`, `CorroborationPolicyError` and
+                # `TermParseError` arrive, each normalised to `LLMError` before it
+                # leaves the helper, so none of those three reaches this clause
+                # under its own name.
                 #
                 # What justifies the breadth is that the set is OPEN. It has grown
                 # with every subsystem extraction learned to talk to, and each new
@@ -694,12 +696,23 @@ def _back_off_from_locked_sidecar(
     which the documented remedy ("stop the other process, then retry") actually
     works.
 
-    `rollback_extraction_job` also returns any `running` chunk to the queue, but by
-    the time we get here the chunk clause has already rewound the one claim this
-    pass held, so that part is a no-op. It is reused rather than sidestepped
-    because the rest is exactly what is wanted: `done` chunks kept, counters left
-    true, a `canceled` job left alone entirely, and the rollback recorded as an
-    event.
+    `rollback_extraction_job` also returns any `running` chunk to the queue. WHEN
+    THE CHUNK CLAUSE'S CAS SUCCEEDED — the ordinary case, and the only one this
+    pass can bring about by itself — that part is a no-op: the claim this pass
+    held is already `pending`. WHEN IT FAILED, it did so because the chunk had
+    been reclaimed and re-issued to someone else, and this UPDATE is unconditional
+    (`WHERE job_id = ? AND status = 'running'`), so it resets that other holder's
+    in-flight chunk — undoing, one line later, the thing the CAS declined to do.
+    That is not a gap this function can close and not one it introduces: it is
+    exactly the #242 scope boundary `_resume_source_extraction_jobs` states in
+    `web/app.py` — DB state alone cannot distinguish a crashed zombie from a live
+    owner — and `_halt_extraction_job` reaches the same UPDATE by the same route
+    with the same consequence. Closing it needs a liveness lease, which is that
+    follow-up's business, not this clause's.
+
+    Reused rather than sidestepped because the rest is exactly what is wanted:
+    `done` chunks kept, counters left true, a `canceled` job left alone entirely,
+    and the rollback recorded as an event.
 
     THE ONE ASYMMETRY WITH THE HALT PATH is the attempt refund, and it belongs to
     the chunk clause rather than here (see `Store.requeue_chunk_claim`): a halted
