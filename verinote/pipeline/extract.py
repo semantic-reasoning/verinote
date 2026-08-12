@@ -24,6 +24,7 @@ from verinote.pipeline.normalize import normalize_for_extraction
 from verinote.pipeline.policy_state import PolicyMissingError, assert_writable
 from verinote.prompts import PromptError, render_prompt
 from verinote.store import Store
+from verinote.store.duckdb_fact_terms import DuckDBFactTermStoreLockedError
 from verinote.store.fact_input import nfc_term, structural_term
 from verinote.text import nfc
 
@@ -201,10 +202,15 @@ def is_live_extraction_job(job, latest_job_ids: dict[int, int]) -> bool:
 
 
 # The total attempt budget for a single chunk before its job gives up. `attempts`
-# counts every `mark_chunk_running` — the initial pass plus each auto-retry — so a
-# chunk with `attempts >= MAX_CHUNK_ATTEMPTS` has spent the whole budget and its
-# job is surfaced as exhausted rather than retried forever (#323). The web retry
-# button is a human override and ignores this cap (`max_attempts=None`).
+# counts the attempts a chunk has SPENT ON ITS OWN CONTENT — the initial pass plus
+# each auto-retry — so a chunk with `attempts >= MAX_CHUNK_ATTEMPTS` has spent the
+# whole budget and its job is surfaced as exhausted rather than retried forever
+# (#323). Not the same as "every `mark_chunk_running`": a claim released because
+# the fact-term sidecar was locked is refunded (`Store.requeue_chunk_claim`), so a
+# chunk claimed six times can still sit at one attempt if five of those stopped on
+# a peer process rather than on this chunk. That is the point of the refund — an
+# availability condition must not spend a content budget. The web retry button is
+# a human override and ignores this cap (`max_attempts=None`).
 MAX_CHUNK_ATTEMPTS = 3
 
 
@@ -468,14 +474,23 @@ def process_extraction_job(
             # in this frame can cover a write that completed inside a callee before
             # the callee returned. Closing it means making the claim atomic with its
             # own result, i.e. folding the CAS and the read-back into one statement
-            # (`UPDATE ... RETURNING *`), which is a `Store` API change and belongs
-            # to whoever owns that layer. That work is #489 — it owns this window
+            # (`UPDATE ... RETURNING *`). That is a change to how the claim itself
+            # is issued, and it is deferred on its own merits, not because this
+            # change refuses to touch the `Store`: it does — `requeue_chunk_claim`
+            # is new here. Rewriting `mark_chunk_running`'s contract, though, would
+            # put every existing caller of the claim under review in a change about
+            # releasing one, and the window it closes is unreachable from this
+            # frame either way. That work is #489 — it owns this window
             # and records the same reasoning from its side, so neither this comment
             # nor the issue can be read without finding the other. Do not "fix" it
             # here by re-reading the chunk after the fact: that reintroduces the
             # same two-step race.
             try:
                 chunk_id = int(running["id"])
+                # Read back from our own claim, for `requeue_chunk_claim`'s CAS:
+                # it releases this claim only while the row still carries the
+                # attempt count this claim put on it.
+                claimed_attempts = int(running["attempts"])
                 inserted = _extract_chunk(
                     store,
                     client,
@@ -499,14 +514,39 @@ def process_extraction_job(
                 # the queue). Releasing it as `failed` here would both double-write
                 # and mislabel a healthy chunk.
                 raise
+            except DuckDBFactTermStoreLockedError:
+                # Not this chunk's failure either: another process holds the
+                # fact-term sidecar. The error text itself says so and tells the
+                # reader to wait and retry — so recording it as this chunk's
+                # failure would charge a retry attempt for a peer's timing, and
+                # `MAX_CHUNK_ATTEMPTS` of them would give up on the source for
+                # good over a condition that clears by itself. `web/app.py` made
+                # the same call one layer up for a corrupt config (#269): a
+                # host/environment condition is not content-attributable and must
+                # not consume the content's budget.
+                #
+                # So the claim is REWOUND rather than released as failed —
+                # `pending` with the attempt refunded, which is exactly the row
+                # `next_pending_chunk` handed out — and the outer handler then
+                # rewinds the job around it, the same two-level shape the halt
+                # path uses. Must sit ABOVE the broad clause:
+                # `DuckDBFactTermStoreLockedError` is a `ValueError` subclass.
+                store.requeue_chunk_claim(chunk_id, attempts=claimed_attempts)
+                raise
             except Exception as exc:
-                # The single release point for a held claim. Broad on purpose —
-                # but NOT because `LLMError` is the only failure this pipeline
-                # models. Name the modelled set and it is plainly larger:
-                # `PolicyMissingError` (the clause directly above) and
-                # `ExtractionJobBusyError` at the ownership claim, plus, inside
-                # `_extract_chunk` and the helpers it calls, `LLMError`,
-                # `PromptError`, `CorroborationPolicyError` and `TermParseError`.
+                # The release point for a claim whose failure IS this chunk's own.
+                # No longer the only release: the sidecar clause above rewinds a
+                # claim instead, for a cause the chunk did not commit. This is the
+                # last one, though — nothing below it releases anything, so every
+                # exception that is not named above leaves through here.
+                #
+                # Broad on purpose, but NOT because `LLMError` is the only failure
+                # this pipeline models. Name the modelled set and it is plainly
+                # larger: `PolicyMissingError` and `DuckDBFactTermStoreLockedError`
+                # (the two clauses above) and `ExtractionJobBusyError` at the
+                # ownership claim, plus, inside `_extract_chunk` and the helpers it
+                # calls, `LLMError`, `PromptError`, `CorroborationPolicyError` and
+                # `TermParseError`.
                 #
                 # What justifies the breadth is that the set is OPEN. It has grown
                 # with every subsystem extraction learned to talk to, and each new
@@ -523,6 +563,24 @@ def process_extraction_job(
         # gate above) or between its LLM call and its first insert (the boundary in
         # `_extract_chunk`). Rewind so the KB is recoverable, then let the error out.
         _halt_extraction_job(
+            store,
+            job_id=job_id,
+            run_id=run_id,
+            source_path=str(source["path"]),
+            run_candidates=candidates,
+            run_chunks=run_chunks,
+        )
+        raise
+    except DuckDBFactTermStoreLockedError:
+        # The sidecar was held by another process while this chunk was writing.
+        # The chunk clause above already rewound its own claim; this rewinds the
+        # JOB around it, and the pairing is not optional. Leave the job `running`
+        # and the web worker's blanket handler writes `failed` over it, at which
+        # point the job has a `failed` status with zero failed chunks — an edge
+        # state `plan_source_extraction` reads as "rebuild fresh", throwing away
+        # the chunks this pass already finished and re-sending them to the LLM.
+        # Rolling back to `pending` is what makes the next pass a resume.
+        _back_off_from_locked_sidecar(
             store,
             job_id=job_id,
             run_id=run_id,
@@ -614,6 +672,62 @@ def _halt_extraction_job(
         f"{source_path}: halted because this KB's policy file went missing; "
         f"job rolled back to pending at job progress {completed}/{total} chunk(s); "
         f"this run wrote {run_candidates} candidate(s) from {run_chunks} chunk(s)",
+    )
+
+
+def _back_off_from_locked_sidecar(
+    store: Store,
+    *,
+    job_id: int,
+    run_id: int,
+    source_path: str,
+    run_candidates: int,
+    run_chunks: int,
+) -> None:
+    """Rewind a job that stopped because another process holds the fact-term sidecar.
+
+    The availability sibling of `_halt_extraction_job`, and deliberately the same
+    shape: rewind to `pending` through `rollback_extraction_job`, then record what
+    this run really did. The reasons carry over unchanged — a job left `running`
+    that nothing is running is a KB lying about its own state, and `failed` would
+    mislabel chunks that never ran — and `pending` is again the one status from
+    which the documented remedy ("stop the other process, then retry") actually
+    works.
+
+    `rollback_extraction_job` also returns any `running` chunk to the queue, but by
+    the time we get here the chunk clause has already rewound the one claim this
+    pass held, so that part is a no-op. It is reused rather than sidestepped
+    because the rest is exactly what is wanted: `done` chunks kept, counters left
+    true, a `canceled` job left alone entirely, and the rollback recorded as an
+    event.
+
+    THE ONE ASYMMETRY WITH THE HALT PATH is the attempt refund, and it belongs to
+    the chunk clause rather than here (see `Store.requeue_chunk_claim`): a halted
+    KB is closed to writes, so nobody is waiting on a chunk's retry budget, while
+    a locked sidecar clears on its own and the next pass must find that budget
+    intact.
+
+    The counts are read back from the KB for the same reason `_halt_extraction_job`
+    reads them back, and the two scopes stay apart in the sentence: `completed`/
+    `total` are the job's progress across every pass, `run_chunks`/`run_candidates`
+    are this run's.
+    """
+    job = store.get_extraction_job(job_id)
+    completed = int(job["completed_chunks"]) if job is not None else 0
+    total = int(job["total_chunks"]) if job is not None else 0
+    store.rollback_extraction_job(
+        job_id,
+        f"Paused: another process is holding this KB's fact-term store. Rolled "
+        f"back to pending at {completed}/{total} chunk(s). Stop that process (most "
+        f"likely another `verinote ui` or `verinote sync` on this KB), or wait for "
+        f"it to finish, then re-run the analysis.",
+    )
+    store.set_run_summary(
+        run_id,
+        f"{source_path}: paused because another process holds this KB's fact-term "
+        f"store; job rolled back to pending at job progress {completed}/{total} "
+        f"chunk(s); this run wrote {run_candidates} candidate(s) from "
+        f"{run_chunks} chunk(s)",
     )
 
 

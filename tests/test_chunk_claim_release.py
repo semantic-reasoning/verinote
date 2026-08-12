@@ -340,9 +340,16 @@ def test_a_released_job_is_retried_rather_than_rebuilt_from_scratch(tmp_path):
 
     Compared as a whole `ExtractionJobPlan` on purpose: `retry_job_id` alone would
     also be satisfied if `resume_job_id`/`exhausted_job_id`/`busy_job_id` came
-    along with it. Release the chunk any other way — rewind it to `pending`, or
-    mark it `done` — and the job's `failed_chunks` drops to zero, planning falls
-    through to "rebuild fresh", and chunk 0's completed work is paid for twice.
+    along with it. Release the chunk any other way while leaving the job to be
+    written `failed` — rewind the chunk to `pending`, or mark it `done` — and the
+    job's `failed_chunks` drops to zero, planning falls through to "rebuild
+    fresh", and chunk 0's completed work is paid for twice.
+
+    The qualifier is load-bearing, because one release DOES rewind the chunk to
+    `pending`: a locked fact-term sidecar (`test_chunk_claim_sidecar_lock.py`).
+    That path is safe from this trap precisely because it does not stop at the
+    chunk — it rolls the JOB back to `pending` too, and a `pending` job with
+    unfinished chunks is a resume, which needs no failed chunk to be planned.
     """
     s = _store(tmp_path)
     source_id, job_id = _three_chunk_job(s)
