@@ -1181,6 +1181,73 @@ def test_sync_gives_a_clean_halt_diagnosis_instead_of_a_traceback(tmp_path, monk
     assert not policy.exists()  # the evidence of the loss is intact
 
 
+def test_a_mid_job_halt_rewinds_the_chunked_cli_job_to_pending(
+    tmp_path, monkeypatch, capsys
+):
+    """The halt leaves the chunked CLI job `pending`, and writes no failure over it.
+
+    The test above drives the LEGACY `sync_sources` path, which has no job row at
+    all. This one drives the CHUNKED path — a registered source, so `cmd_sync`
+    reaches `process_extraction_job` — and the job row is the whole point:
+    `_halt_extraction_job` rolls it back to `pending` so the next sync RESUMES it.
+    A halt is not a failure of the source, and nothing in `cmd_sync` may write
+    `failed` over that rewind: a `failed` job with zero failed chunks reads to
+    `plan_source_extraction` as an edge state, which rebuilds from scratch and
+    re-sends every finished chunk to the LLM.
+
+    WHAT PINS WHAT. `status == "pending"` and the event order are the assertions
+    that distinguish the rewind from a burial; `rc == 2` and the absent traceback
+    are #246's contract, and they are kept by `cmd_sync`'s own
+    `except PolicyMissingError` (further down the function) and by `main`, not by
+    anything at the job-owning call.
+
+    THIS IS NOT THE ONLY GUARD ON THIS BEHAVIOUR, and it does not claim to be:
+    `tests/test_job_resume.py` builds its whole fixture on a real mid-job halt
+    (`_halted_job`), so several tests there go red if the rewind stops surviving.
+    What is written down only here is the job's status and the event sequence at
+    the moment the halt escapes the CLI.
+    """
+    _env(monkeypatch, tmp_path)
+    monkeypatch.setenv("VERINOTE_EXTRACTION_CHUNK_CHARS", "40")
+    monkeypatch.setenv("VERINOTE_EXTRACTION_CHUNK_OVERLAP_CHARS", "0")
+    assert cli.main(["init"]) == 0
+    policy = tmp_path / POLICY_RELPATH
+    source = tmp_path / "note.txt"
+    source.write_text(
+        "alpha beta gamma delta epsilon\n\nzeta eta theta iota kappa",
+        encoding="utf-8",
+    )
+    assert cli.main(["ingest", str(source)]) == 0
+    monkeypatch.setattr(
+        "verinote.llm.get_client", lambda cfg: _PolicyDeletingClient(policy)
+    )
+
+    rc = cli.main(["sync"])
+
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "policy file" in err and "missing" in err
+    assert "Traceback" not in err
+
+    store = Store(tmp_path / "kb.sqlite")
+    jobs = list(store.source_extraction_jobs())
+    assert len(jobs) == 1
+    job_id = int(jobs[0]["id"])
+    # THE ASSERTION THIS TEST EXISTS FOR: rewound, not buried.
+    assert jobs[0]["status"] == "pending"
+    assert int(jobs[0]["completed_chunks"]) == 1  # the first chunk's work survives
+    events = [
+        row["event_type"]
+        for row in store._conn.execute(
+            "SELECT event_type FROM fact_events WHERE job_id = ? ORDER BY id", (job_id,)
+        )
+    ]
+    assert "extraction_job_rolled_back" in events
+    # and nothing came along afterwards to overwrite the rewind
+    assert "extraction_job_failed" not in events
+    store.close()
+
+
 # --- #194: the three holes left in the halt --------------------------------
 # --- (a) the CLI's diagnostic surface never said the KB was halted ----------
 

@@ -41,6 +41,7 @@ import time
 
 import pytest
 
+import verinote.cli as cli
 from verinote.llm.base import ExtractedFact
 from verinote.pipeline.extract import (
     ExtractionJobPlan,
@@ -429,3 +430,94 @@ def test_a_real_peer_process_holding_the_sidecar_requeues_the_chunk(tmp_path, mo
         if client.holder is not None:
             _terminate(client.holder)
         s.close()
+
+
+# --- the same rewind, seen through `verinote sync` -----------------------------
+
+
+class _SidecarLockedForEveryStore:
+    """Stands in for the `DuckDBFactTermStore` CLASS, not for one instance.
+
+    `_lock_the_sidecar_on_put` reaches into a `Store` the test is holding.
+    `cmd_sync` builds its own and never hands it out, so the injection has to
+    happen where the sidecar is CONSTRUCTED: `Store.fact_terms` imports
+    `DuckDBFactTermStore` at call time, which is what makes replacing the module
+    attribute enough. Everything except `for_root` is delegated to the real class.
+    """
+
+    def __init__(self, inner_cls, *, lock_on: int):
+        self._inner_cls = inner_cls
+        self._lock_on = lock_on
+        self.wrappers: list[_LocksOnPut] = []
+
+    def for_root(self, *args, **kwargs):
+        wrapper = _LocksOnPut(
+            self._inner_cls.for_root(*args, **kwargs), lock_on=self._lock_on
+        )
+        self.wrappers.append(wrapper)
+        return wrapper
+
+    def __getattr__(self, name):
+        return getattr(self._inner_cls, name)
+
+
+def test_cli_sync_leaves_a_sidecar_locked_job_pending(tmp_path, monkeypatch, capsys):
+    """`verinote sync` must not write anything over the rewind either.
+
+    The tests above hold `process_extraction_job` to its half of the bargain: the
+    chunk goes back to `pending` with its attempt refunded and the JOB is rolled
+    back around it, so the next pass resumes. That bargain is only kept if the
+    CALLER also writes nothing — and `cmd_sync` has a job-level failure handler,
+    so "writes nothing here" is now a property of the CLI, not an absence of code.
+    `web/app.py` states the same requirement from its side, and for the same
+    reason: `failed` over a job with zero failed chunks is the edge state
+    `plan_source_extraction` rebuilds from scratch.
+
+    `status == "pending"` IS THE ONLY DISCRIMINATING ASSERTION. `rc == 1` is what
+    `main`'s central `except DuckDBFactTermStoreLockedError` returns whether or not
+    `cmd_sync` wrote the job row first, so it distinguishes nothing on its own; it
+    is asserted to keep #246's contract (a clean message, not a traceback) in view.
+
+    The injected stub is enough here. What is under test is the CLI's reaction to
+    the exception, and
+    `test_a_real_peer_process_holding_the_sidecar_requeues_the_chunk` above is what
+    keeps "this exception really reaches a chunk write" honest for the whole
+    module.
+    """
+    monkeypatch.setenv("VERINOTE_ROOT", str(tmp_path))
+    monkeypatch.setenv("VERINOTE_PROVIDER", PROVIDER)
+    monkeypatch.setenv("VERINOTE_MODEL", MODEL)
+    monkeypatch.setenv("VERINOTE_EXTRACTION_CHUNK_CHARS", "40")
+    monkeypatch.setenv("VERINOTE_EXTRACTION_CHUNK_OVERLAP_CHARS", "0")
+    assert cli.main(["init"]) == 0
+    source = tmp_path / "note.txt"
+    source.write_text(
+        "alpha beta gamma delta epsilon\n\nzeta eta theta iota kappa",
+        encoding="utf-8",
+    )
+    assert cli.main(["ingest", str(source)]) == 0
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: _ChunkClient())
+    # chunk 0 lands; the sidecar is locked under chunk 1's write
+    monkeypatch.setattr(
+        duckdb_fact_terms,
+        "DuckDBFactTermStore",
+        _SidecarLockedForEveryStore(duckdb_fact_terms.DuckDBFactTermStore, lock_on=2),
+    )
+
+    rc = cli.main(["sync"])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "fact-term store" in err
+    assert "Traceback" not in err
+
+    s = Store(tmp_path / "kb.sqlite")
+    jobs = list(s.source_extraction_jobs())
+    assert len(jobs) == 1
+    job_id = int(jobs[0]["id"])
+    # THE ASSERTION THIS TEST EXISTS FOR
+    assert jobs[0]["status"] == "pending"
+    # and the chunk kept its refund: `pending` with nothing charged
+    assert _chunk_states(s, job_id) == [("done", 1), ("pending", 0)]
+    assert s.source_chunks(job_id)[1]["error"] == ""
+    s.close()
