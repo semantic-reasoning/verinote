@@ -24,6 +24,7 @@ from verinote.pipeline.ingest import (
     store_source,
 )
 from verinote.store import Store
+from verinote.text import nfc
 
 
 @pytest.fixture
@@ -106,7 +107,7 @@ def test_every_sink_of_one_ingest_sees_the_same_sanitized_text(tmp_path, nulx):
     it, or the chunks fed to a provider would still carry NUL while the file on
     disk looked clean.
 
-    The job call mirrors `verinote/web/app.py:1937-1946` -- same function, same
+    The job call mirrors `verinote/web/app.py:1936-1945` -- same function, same
     argument order, `source_text=result["text"]` -- so the chunk assertion is
     about the path the uploader actually takes.
     """
@@ -269,6 +270,101 @@ def test_re_registering_without_a_count_keeps_the_one_already_recorded(tmp_path)
 
     assert again == artifact_id
     assert _artifact_count(store, artifact_id) == 7
+    store.close()
+
+
+def _legacy_text_artifact(store: Store, root, citation: str, text: str) -> str:
+    """A row as a pre-#473 verinote left it: no count, digest of raw text.
+
+    The digest is the load-bearing part. Back then nothing sanitized, so the
+    checksum names the text the extractor produced -- NUL and all -- which is
+    what decides whether a later measuring ingest conflicts with this row or
+    sits down beside it. Returns the checksum.
+    """
+    source_id = store.add_source(citation, kind="binary")
+    digest = hashlib.sha256(nfc(text).encode("utf-8")).hexdigest()
+    relpath = f"artifacts/sources/{source_id}/{digest}.txt"
+    artifact_file = root / relpath
+    artifact_file.parent.mkdir(parents=True, exist_ok=True)
+    artifact_file.write_text(text, encoding="utf-8")
+    store.add_source_artifact(
+        source_id=source_id,
+        kind="extracted_text",
+        path=relpath,
+        checksum=digest,
+    )
+    return digest
+
+
+def test_a_pre_column_row_that_held_nul_gains_a_second_row_not_a_backfill(
+    tmp_path, nulx
+):
+    """The narrow precondition on that backfill, made executable.
+
+    Re-registering fills in a missing count only for the SAME checksum, and a
+    pre-column row was hashed from unsanitized text. Where that text held NUL,
+    sanitizing moves the digest, so the measuring re-ingest never reaches the
+    conflict target: it INSERTs a second row with the count and the first keeps
+    its NULL for good.
+
+    Documentation that runs, not a mutation guard, and it does not claim to be
+    one: the change it accompanies is prose, and this stays green under
+    `DO UPDATE` -> `DO NOTHING` because nothing here ever conflicts.
+    `test_re_registering_with_a_count_fills_in_one_never_measured` owns that
+    kill, and `test_every_sink_of_one_ingest_sees_the_same_sanitized_text` owns
+    the one for hashing before sanitizing. Its worth is that the claim in
+    `Store.add_source_artifact`'s docstring is now checked by something that
+    executes, instead of by a reader.
+    """
+    store = _store(tmp_path)
+    legacy_digest = _legacy_text_artifact(
+        store, tmp_path, "sources/plan.nulx", _DIRTY
+    )
+    src = tmp_path / "plan.nulx"
+    src.write_bytes(_DIRTY.encode("utf-8"))
+
+    result = ingest_file(store, src, root=tmp_path)
+
+    # Same source: it is the one path, re-ingested, so this is the row the
+    # count would have to land on for a backfill to be possible at all.
+    source_id = int(result["source_id"])
+    rows = store.source_artifacts(source_id)
+    assert len(rows) == 2
+    assert [row["unreadable_chars"] for row in rows] == [None, 7]
+    # The mechanism, spelled out: the digests differ because one is taken over
+    # the NULs and the other over their replacements.
+    clean_digest = hashlib.sha256(_CLEAN.encode("utf-8")).hexdigest()
+    assert legacy_digest != clean_digest
+    assert [row["checksum"] for row in rows] == [legacy_digest, clean_digest]
+    assert int(result["artifact_id"]) == int(rows[1]["id"])
+    store.close()
+
+
+def test_a_pre_column_row_that_held_no_nul_is_backfilled_by_a_re_ingest(
+    tmp_path, nulx
+):
+    """The other side of that precondition: nothing to sanitize, digest holds.
+
+    An unmeasured row over text with no NUL is the case the backfill does
+    reach, and the count it gains is 0 -- the only count such a row could ever
+    have had. Same standing as the test above: it pins the docstring's claim,
+    not a clause, and shares its kills with the re-registration tests.
+    """
+    store = _store(tmp_path)
+    readable = "every character here was readable"
+    legacy_digest = _legacy_text_artifact(
+        store, tmp_path, "sources/plan.nulx", readable
+    )
+    src = tmp_path / "plan.nulx"
+    src.write_bytes(readable.encode("utf-8"))
+
+    result = ingest_file(store, src, root=tmp_path)
+
+    rows = store.source_artifacts(int(result["source_id"]))
+    assert len(rows) == 1, "the digest is unchanged, so this is an update"
+    assert rows[0]["checksum"] == legacy_digest
+    # 0 rather than None: the re-ingest measured, and found nothing lost.
+    assert rows[0]["unreadable_chars"] == 0
     store.close()
 
 

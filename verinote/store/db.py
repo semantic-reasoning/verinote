@@ -956,9 +956,17 @@ class Store:
         `unreadable_chars` is how many characters the extraction could not read
         (#473), and `None` means the caller did not measure. Re-registering an
         existing `(source_id, kind, checksum)` is how a count gets filled in
-        after the fact: a row left unmeasured -- which is every row written
-        before that column existed -- gains the number as soon as something
-        re-ingests the same text and does measure it.
+        after the fact: an unmeasured row gains the number as soon as something
+        re-ingests text that hashes to the SAME checksum and does measure it.
+
+        The same checksum is the whole precondition, and for a row written
+        before this column existed it is a narrow one. That row's checksum is
+        the digest of UNSANITIZED text, so a re-ingest reproduces it only when
+        sanitizing changes nothing -- which is exactly the case where the count
+        is 0. A pre-column extraction that did contain NUL hashes differently
+        once sanitized: the re-ingest INSERTs a second row carrying the count
+        and leaves the original NULL, permanently. Deleting the source is what
+        clears it.
 
         `COALESCE` keeps a caller that did not measure (NULL) from erasing a
         count that was measured. It is not a "highest wins" rule: an explicit 0
