@@ -94,7 +94,14 @@
                  `store.source_artifacts` returns -- the note survives, beside
                  the new count. That is the "if this note stays" branch, and
                  `store.delete_source`, with the file sweep beside it in the
-                 delete route, is the only thing that ends it.
+                 delete route, is the only thing THIS PAGE offers that ends it.
+                 One other code path reaches the row:
+                 `Store._apply_source_identity_group` DELETEs a retired
+                 source's artifact when the retained source already holds the
+                 same (kind, checksum), so repairing a duplicate citation can
+                 take an unmeasured row with it. That is a CLI repair, over
+                 citations that resolve to one file -- not an action offered
+                 here, and not one to name in a badge.
 
                  Re-analyze is not a third option, and the predicate deciding
                  that is MAX(id) -- LATEST, not only. `reanalyze_source` feeds
