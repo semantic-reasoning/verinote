@@ -97,8 +97,10 @@ class AnthropicAdapter:
         *base-URL* variable: measured, `OPENAI_BASE_URL` carrying that same
         `::::` leaves this constructor raising nothing at all. It is named here
         as a non-cause, which is what the guard in `tests/test_cloud_adapters.py`
-        allows: that guard rejects the other vendor's variable from the cause
-        list above and permits a mention like this one. The other two
+        allows: it reads the paragraph above -- the one enumerating causes,
+        located by its opening words -- and rejects the other vendor's variable
+        from *that paragraph*, leaving a mention like this one in a later
+        paragraph legal. The other two
         entries above are not vendor-scoped -- both SDKs read `SSL_CERT_FILE`
         and `HTTPS_PROXY` -- which is why they are listed unqualified. The
         otherwise identical paragraph in `openai_adapter` therefore has to name
