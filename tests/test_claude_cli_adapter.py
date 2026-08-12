@@ -401,9 +401,12 @@ def test_claude_cli_unpaired_surrogate_in_the_text_is_llm_error(tmp_path, monkey
     from the same call, which the same clause has to cover.
 
     U+D800 specifically, because it is outside the U+DC80..U+DCFF band that
-    surrogateescape round-trips to bytes. `\\udcff` and friends encode fine and
-    would make this test pass against a NUL-only fix (see the test below, which
-    pins that they keep working).
+    surrogateescape round-trips to bytes. A character from inside that band cannot
+    stand in for it: `\\udcff` raises no encoding error at all, so the call runs on
+    and dies at the absent binary `_no_claude_on_path` leaves behind, reporting
+    `claude CLI not found` -- which makes both assertions below false, the second
+    of them by naming the very message it forbids. Round-tripping text is the
+    subject of the test after this one, which pins that it still reaches the CLI.
     """
     _no_claude_on_path(tmp_path, monkeypatch)
 
