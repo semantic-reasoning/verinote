@@ -3588,6 +3588,27 @@ def test_only_a_suffix_bound_to_the_day_changes_the_verdict():
 # --- the boundary between the two modules (#459) ----------------------------
 
 
+def _measure_unit_imports(source: str) -> list[tuple[int, str]]:
+    """Every import statement in `source` that names `query_measure_unit`.
+
+    Reported as `(line number, spelling as written)` so a failure says where to
+    look; relative spellings keep their leading dots.
+    """
+    import ast
+
+    found: list[tuple[int, str]] = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom):
+            origin = "." * node.level + (node.module or "")
+            if (node.module or "").endswith("query_measure_unit"):
+                found.append((node.lineno, origin))
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.endswith("query_measure_unit"):
+                    found.append((node.lineno, alias.name))
+    return found
+
+
 def test_query_intent_never_imports_the_measure_unit_module():
     """The dependency runs one way, and only a static check can hold it there.
 
@@ -3622,23 +3643,12 @@ def test_query_intent_never_imports_the_measure_unit_module():
     behind a function is caught too -- those never execute and so could never
     fail an import probe.
     """
-    import ast
     import pathlib
 
     from verinote.pipeline import query_intent
 
     source = pathlib.Path(query_intent.__file__).read_text(encoding="utf-8")
-    tree = ast.parse(source)
-
-    offenders = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            if (node.module or "").endswith("query_measure_unit"):
-                offenders.append((node.lineno, node.module))
-        elif isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name.endswith("query_measure_unit"):
-                    offenders.append((node.lineno, alias.name))
+    offenders = _measure_unit_imports(source)
 
     assert offenders == [], (
         "query_intent must not import query_measure_unit; the dependency runs "
