@@ -441,11 +441,14 @@ def test_claude_cli_unsendable_text_says_what_to_do_about_it(tmp_path, monkeypat
 
 @pytest.mark.parametrize("invoke", _INVOCATIONS)
 def test_claude_cli_undecodable_reply_does_not_blame_the_source(tmp_path, monkeypatch, invoke):
-    """`text=True` decodes the CLI's stdout as strict UTF-8, so a mangled *reply*
-    also surfaces as a `ValueError` (`UnicodeDecodeError` is one). Same exception
-    family, opposite direction, opposite advice: nothing is wrong with the source
-    text here, and telling the user to go edit their document would send them
-    hunting for a character that is not there.
+    """`text=True` decodes the CLI's stdout AND its stderr as strict UTF-8, so a
+    mangled byte on *either* stream surfaces as a `ValueError` (`UnicodeDecodeError`
+    is one). Same exception family as the argument clause, opposite direction, and
+    the advice cannot be the argument clause's: this says nothing about which stream
+    carried the bytes, so "go edit your document" would be a claim the code never
+    made. It cannot even promise the answer was lost -- a valid JSON reply on stdout
+    is thrown away just the same when one byte of the log beside it will not decode
+    -- so the message names the operation that failed and stops there.
 
     This clause also may not quote its cause, which is why the absence assertions
     below are as load-bearing as the presence one. `UnicodeDecodeError`'s text is
@@ -468,6 +471,15 @@ def test_claude_cli_undecodable_reply_does_not_blame_the_source(tmp_path, monkey
     assert "0xff" not in message  # a byte of the model's output
     assert "position" not in message  # its offset
     assert "codec" not in message  # the decoder's own phrasing, i.e. the raw cause
+
+    # Pinned in full, not by substring: the failure mode this clause has already
+    # shown is a sentence drifting into a claim the code never made. Any edit to
+    # the wording turns this red and makes someone read it again.
+    assert message == (
+        "claude CLI request failed: the CLI's output was not valid UTF-8 and could "
+        "not be read. Reading the CLI's output is what failed, not sending your "
+        "text. If it fails the same way again, check the claude CLI's version."
+    )
 
 
 @pytest.mark.parametrize("invoke", _INVOCATIONS)
