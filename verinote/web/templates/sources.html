@@ -96,13 +96,17 @@
                  `store.delete_source`, with the file sweep beside it in the
                  delete route, is the only thing that ends it.
 
-                 Re-analyze is worth naming only while this row is the source's
-                 ONLY text artifact: `reanalyze_source` feeds the chunk job with
-                 the artifact file it names, so it re-reads that unsanitized text
-                 and meets the same characters again. Once a re-upload has landed,
-                 `latest_source_text_artifact` and `source_text_inputs` both pick
-                 by MAX(id), so Re-analyze reads the new clean text -- correct
-                 output, with the stale note still on screen above it.
+                 Re-analyze is not a third option, and the predicate deciding
+                 that is MAX(id) -- LATEST, not only. `reanalyze_source` feeds
+                 the chunk job whatever `latest_source_text_artifact` returns,
+                 so while the highest-id text artifact is a pre-#473 one it
+                 re-reads unsanitized text and meets the same characters again;
+                 a legacy KB holding two such rows for one source is still in
+                 that state, which "the source's only artifact" would have got
+                 wrong. Only once a sanitized row lands, taking the highest id,
+                 does Re-analyze -- and `source_text_inputs`, same MAX(id) --
+                 read clean text: correct output, with this stale note still on
+                 screen above it.
 
                  Order matters because the second branch is destructive and the
                  badge has no room to price it: `store.delete_source` drops every
