@@ -761,3 +761,62 @@ def test_a_prompt_that_cannot_be_read_leaves_the_untouched_job_pending(
     assert [c["status"] for c in chunks] == ["pending"] * len(chunks)
     assert [c["attempts"] for c in chunks] == [0] * len(chunks)
     store.close()
+
+
+def test_a_job_that_already_finished_is_not_buried_by_a_later_failure(
+    tmp_path, monkeypatch
+):
+    """The status re-read, and the regression it exists to prevent.
+
+    `mark_chunk_done` writes the job to `done` once the last chunk lands, and
+    `finish_extraction_job` runs AFTER that. So an error there — a sqlite/WAL-class
+    failure, no LLM involved — escapes `process_extraction_job` with the job
+    already `done`, every chunk complete, and the candidates committed.
+
+    A broad clause that wrote unconditionally would record that as
+    `failed: analysis failed`. It is the same hazard `_release_claimed_chunk`
+    names one layer down (`mark_chunk_done` can raise after the chunk is `done`),
+    and the same answer: re-read the status and write only a job this call still
+    owns. Without the re-read the fix is a pure regression on this path — before
+    #488 nothing wrote the job row here at all, so it stayed `done`.
+
+    `web/app.py` needs no equivalent because its sweep and auto-accept guards
+    contain the errors that would otherwise reach its own broad clause after a
+    `done` job; this is `cmd_sync`'s version of that requirement.
+    """
+    from verinote import cli
+
+    monkeypatch.setenv("VERINOTE_ROOT", str(tmp_path))
+    monkeypatch.setenv("VERINOTE_PROVIDER", "anthropic")
+    monkeypatch.setenv("VERINOTE_EXTRACTION_CHUNK_CHARS", "40")
+    monkeypatch.setenv("VERINOTE_EXTRACTION_CHUNK_OVERLAP_CHARS", "0")
+    src = tmp_path / "note.txt"
+    src.write_text(
+        "alpha beta gamma delta epsilon\n\nzeta eta theta iota kappa",
+        encoding="utf-8",
+    )
+    assert cli.main(["ingest", str(src)]) == 0
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: _ChunkClient())
+
+    def _boom(self, job_id):
+        raise ValueError("the job row is already done by the time we get here")
+
+    monkeypatch.setattr(Store, "finish_extraction_job", _boom)
+
+    with pytest.raises(ValueError):
+        cli.main(["sync"])
+
+    store = Store(tmp_path / "kb.sqlite")
+    jobs = list(store._conn.execute("SELECT id, status, message FROM extraction_jobs"))
+    assert len(jobs) == 1
+    job_id = int(jobs[0]["id"])
+    # THE ASSERTION THIS TEST EXISTS FOR: the finished run was not overwritten.
+    assert jobs[0]["status"] == "done"
+    assert "analysis failed" not in jobs[0]["message"]
+    assert _statuses(store, job_id) == ["done", "done"]
+    # both chunks' candidates are committed — a `failed` here would be a lie
+    assert [f["subject"] for f in store.facts()] == [
+        "alpha beta gamma delta epsilon",
+        "zeta eta theta iota kappa",
+    ]
+    store.close()

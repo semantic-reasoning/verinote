@@ -833,14 +833,21 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     )
                     continue
                 except PolicyMissingError:
-                    # ORDER IS LOAD-BEARING — above `except Exception`, which would
-                    # otherwise write `failed` over a job `_halt_extraction_job`
-                    # has just rewound to `pending` for the next pass to resume.
-                    # The KB is halted; this handler must not write to it at all
-                    # (#194). `PolicyEmptyError` is a `PolicyMissingError`
-                    # subclass, so it needs no clause of its own. The clean rc=2
-                    # diagnosis is `cmd_sync`'s own `except PolicyMissingError`
-                    # further down, which this re-raise reaches.
+                    # A halted KB is not written to, at all (#194).
+                    # `PolicyEmptyError` is a `PolicyMissingError` subclass, so it
+                    # needs no clause of its own; the clean rc=2 diagnosis is
+                    # `cmd_sync`'s own `except PolicyMissingError` further down,
+                    # which this re-raise reaches.
+                    #
+                    # ABOVE `except Exception` because that is where it would land
+                    # otherwise — but MEASURED, deleting this clause changes no
+                    # test: `_halt_extraction_job` has already rewound the job to
+                    # `pending`, and the broad clause writes only a job still
+                    # `running`. So this states the rule rather than being the sole
+                    # thing enforcing it, and that is the point. The rule must not
+                    # be contingent on the rewind still being there; a future halt
+                    # path that raised with the job `running` would otherwise be
+                    # buried as "analysis failed".
                     raise
                 except (ConfigCorruptError, CredentialsCorruptError):
                     # ORDER IS LOAD-BEARING — above `except Exception`. Mirrors the
@@ -851,19 +858,26 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     # nothing under `verinote/pipeline` reads `Config` again. If
                     # that changes, a corrupt config is a host condition, not a
                     # property of the source: it must not be charged to the
-                    # content as "analysis failed" (#269).
+                    # content as "analysis failed" (#269). Unlike the two clauses
+                    # around it, nothing rewinds the job on this path, so if it
+                    # ever did become reachable the broad clause below would find
+                    # the job `running` and bury it.
                     raise
                 except DuckDBFactTermStoreLockedError:
-                    # ORDER IS LOAD-BEARING — above `except Exception`
-                    # (`DuckDBFactTermStoreLockedError` is a `ValueError`
-                    # subclass, so the broad clause would otherwise take it).
-                    # Another process holds the fact-term sidecar, and
-                    # `process_extraction_job` has already rolled this job back to
-                    # `pending` so the next pass RESUMES it. Writing `failed` over
-                    # that gives planning a `failed` job with zero failed chunks —
-                    # an edge state it rebuilds from scratch, paying the LLM again
-                    # for every chunk this pass finished. `main` turns it into a
-                    # clean rc=1 message.
+                    # Another process holds the fact-term sidecar — a host
+                    # condition that clears by itself, and one
+                    # `process_extraction_job` has already rolled the job back to
+                    # `pending` for, so the next pass RESUMES it. `failed` over
+                    # that rewind gives planning a `failed` job with zero failed
+                    # chunks: an edge state it rebuilds from scratch, paying the
+                    # LLM again for every chunk this pass finished. `main` turns
+                    # the error itself into a clean rc=1 message.
+                    #
+                    # ABOVE `except Exception` because it is a `ValueError`
+                    # subclass and nothing else here would take it. As with the
+                    # halt clause, deleting it changes no test today (measured) —
+                    # the rewind means the broad clause declines anyway. It is
+                    # here so the rule survives the rewind moving.
                     raise
                 except Exception as exc:
                     # THE JOB-LEVEL FLOOR (#488), sibling to the chunk-level one in
