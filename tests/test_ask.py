@@ -1439,6 +1439,71 @@ def test_search_source_excerpts_drops_a_source_it_read_and_matched_nothing_in(
     }
 
 
+def test_search_source_excerpts_puts_the_stronger_match_first(tmp_path):
+    """Two matches come back best-first, not in the order the store read them.
+
+    `sorted(matches, key=lambda item: (-item.score, item.path))` is the whole
+    of that promise. Drop `-item.score` from the key, or the `sorted` call, or
+    flip the sign, and what shows through is `store.sources()`' own
+    `ORDER BY path`, which this fixture deliberately arranges to be the
+    reverse.
+
+    The assertion above the ordering one is that arrangement, not decoration:
+    it re-derives from the returned scores that path order and score order
+    still disagree. Renaming these files so the two agree -- `a_roles.txt`,
+    `z_history.txt` -- would leave the ordering assertion passing under a
+    broken key, and the premise fails there instead, on the shipped code as
+    much as on a mutant.
+
+    Two mutations of that same key survive both of these tests and the rest of
+    the suite, and are named here so the gap is on the record rather than
+    implied away: shortening the key to `(-item.score,)`, whose `item.path`
+    tie-break needs two sources of *equal* score before anything can pin it,
+    and deleting the `[:limit]` slice, which needs more matching sources than
+    `MAX_EXCERPTS`. Neither is covered anywhere in the suite today.
+    """
+    store = _seed_two_matching_and_one_unrelated_source(tmp_path)
+
+    excerpts = search_source_excerpts(
+        store, root=tmp_path, question="샘플조직의 역할은 무엇인가?"
+    )
+
+    by_path = sorted(excerpts, key=lambda item: item.path)
+    assert by_path[0].score < by_path[-1].score
+    assert [item.path for item in excerpts] == [
+        "sources/roles.txt",
+        "sources/history.txt",
+    ]
+
+
+def test_ask_hands_the_page_the_excerpts_already_ordered(tmp_path):
+    """The order has to survive into `AskResult.excerpts` to reach a reader.
+
+    `ask.html` loops over `result.excerpts` as it receives them, so nothing
+    downstream re-sorts and nothing upstream of this tuple is visible on the
+    page. `_fallback_answer` makes its own call to `search_source_excerpts`;
+    the test above cannot see a caller that re-collected the result on the way
+    out, and this one runs the assembled route end to end instead.
+
+    Same fixture, same premise: the two matching sources are named so that
+    their path order is the reverse of their score order.
+    """
+    store = _seed_two_matching_and_one_unrelated_source(tmp_path)
+    client = FallbackClient(error=LLMError("synthetic outage"))
+
+    result = ask_question(
+        store, client, root=tmp_path, question="샘플조직의 역할은 무엇인가?"
+    )
+
+    assert result.route == "fallback"
+    by_path = sorted(result.excerpts, key=lambda item: item.path)
+    assert by_path[0].score < by_path[-1].score
+    assert [item.path for item in result.excerpts] == [
+        "sources/roles.txt",
+        "sources/history.txt",
+    ]
+
+
 # --- Ask does not re-request a provider that just failed (#438) -------------
 
 
