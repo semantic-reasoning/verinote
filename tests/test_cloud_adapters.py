@@ -583,7 +583,7 @@ def test_the_installed_anthropic_sdk_really_does_reject_an_unusable_base_url(tmp
 def test_the_installed_openai_sdk_really_does_reject_an_unusable_base_url(tmp_path):
     """The openai half of the anchor above. #493 could only reason about this SDK
     by structural analogy because it was not installed when the issue was filed;
-    measured on openai 2.53.0 it raises the same `httpx.InvalidURL` anthropic
+    measured on openai 2.54.0 it raises the same `httpx.InvalidURL` anthropic
     0.116.0 does.
 
     No openrouter twin: `OpenRouterAdapter` inherits `_client` unchanged, so a

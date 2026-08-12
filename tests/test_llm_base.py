@@ -15,11 +15,16 @@ from verinote.llm.base import LLMError, base_url_unusable
 
 # Every URL the three call sites can be made to refuse, as a user could type it.
 # `Invalid IPv6 URL` is the one that earns the `url` parameter: alone among these
-# it comes back from `Request` with no trace of what was handed in.
+# it comes back from `Request` with no trace of what was handed in. The tab is
+# the one that earns comparing on `repr`: `unknown url type` quotes the URL with
+# `!r`, so a URL containing anything `repr` escapes is present in the exception
+# in escaped form and absent in raw form. Every URL here is ASCII except that
+# one, and an all-ASCII fixture cannot see the difference.
 _REFUSED_URLS = [
     "::::/api/tags",  # the settings-UI typo #493 was reported for
     "http://[/api/tags",  # an unclosed IPv6 literal
     "/api/tags",  # a path pasted where a URL was wanted
+    "lo\tcal/api/chat",  # whitespace `repr` escapes, as a paste can carry
 ]
 
 
@@ -84,10 +89,27 @@ def test_the_refused_url_is_in_the_message_however_the_exception_words_itself(ur
     """The message names the Base URL setting, so it has to quote what is in it.
     Held for every refusable URL and not just the reported one, because which of
     these a user types is not something this code gets to choose.
+
+    Asserted on `repr(url)`, which is how the URL reaches the message from either
+    branch: `unknown url type: {url!r}` is the exception's own wording, and the
+    appended clause matches it deliberately. A raw-substring assertion would be
+    false for a URL containing a tab even when the message displays it perfectly.
     """
     err, _ = _refused(url)
 
-    assert url in str(err)
+    assert f"{url!r}" in str(err)
+
+
+@pytest.mark.parametrize("url", _REFUSED_URLS)
+def test_the_refused_url_is_printed_once_and_not_twice(url):
+    """Which branch the helper takes is a presentation choice; that the URL is
+    named exactly once is the contract. Parametrised over every refusable URL
+    rather than asserted for the reported one alone, because the branch is chosen
+    by testing the exception's text and each of these words itself differently.
+    """
+    err, _ = _refused(url)
+
+    assert str(err).count(f"{url!r}") == 1
 
 
 def test_an_exception_that_omits_the_url_is_why_the_url_is_a_parameter():
@@ -113,4 +135,19 @@ def test_a_url_the_exception_already_quotes_is_not_repeated():
     err, _ = _refused(url)
 
     assert str(err).count(url) == 1
+    assert "tried" not in str(err)
+
+
+def test_a_url_the_exception_quotes_in_escaped_form_is_not_repeated_either():
+    """The gap a raw-substring test leaves open. `repr` escapes the tab, so the
+    exception carries `'lo\\tcal/api/chat'` while the URL itself contains a real
+    tab — a containment test on the raw string finds nothing, decides the
+    exception never mentioned it, and appends a second copy. Pasted URLs pick up
+    invisible characters (ZWSP, BOM) all the time, and `base_url` is settings-UI
+    input, so this is reachable by pasting.
+    """
+    url = "lo\tcal/api/chat"
+    err, _ = _refused(url)
+
+    assert str(err).count(f"{url!r}") == 1
     assert "tried" not in str(err)
