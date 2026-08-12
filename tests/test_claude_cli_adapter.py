@@ -18,6 +18,7 @@ from verinote.pipeline.extract import (
     create_chunked_extraction_job,
     process_extraction_job,
 )
+from verinote.pipeline.query import _short_reason
 from verinote.prompts import save_prompt_override
 from verinote.store import Store
 
@@ -454,14 +455,20 @@ def test_claude_cli_unsendable_text_says_what_to_do_about_it(tmp_path, monkeypat
 
 @pytest.mark.parametrize("invoke", _INVOCATIONS)
 def test_claude_cli_undecodable_reply_does_not_blame_the_source(tmp_path, monkeypatch, invoke):
-    """`text=True` decodes the CLI's stdout AND its stderr as strict UTF-8, so a
-    mangled byte on *either* stream surfaces as a `ValueError` (`UnicodeDecodeError`
-    is one). Same exception family as the argument clause, opposite direction, and
-    the advice cannot be the argument clause's: this says nothing about which stream
-    carried the bytes, so "go edit your document" would be a claim the code never
-    made. It cannot even promise the answer was lost -- a valid JSON reply on stdout
-    is thrown away just the same when one byte of the log beside it will not decode
-    -- so the message names the operation that failed and stops there.
+    """`text=True` decodes BOTH of the CLI's streams in the interpreter's locale
+    encoding -- UTF-8 wherever this runs today -- so a mangled byte on *either* one
+    surfaces as a `ValueError` (`UnicodeDecodeError` is one). Same exception family
+    as the argument clause, opposite direction, and the advice cannot be the
+    argument clause's: this says nothing about which stream carried the bytes, so
+    "go edit your document" would be a claim the code never made. It cannot even
+    promise the answer was lost -- a valid JSON reply on stdout is thrown away just
+    the same when one byte of the log beside it will not decode.
+
+    What is left to say is the little this clause does know. The literal pinned
+    below names the failed operation, states that the argv was accepted so the text
+    got as far as the CLI, and points at the CLI's version. It stops short of "your
+    text was sent": the CLI may have failed to relay it onward and be reporting that
+    in the very bytes that will not decode.
 
     This clause also may not quote its cause, which is why the absence assertions
     below are as load-bearing as the presence one. `UnicodeDecodeError`'s text is
@@ -490,9 +497,17 @@ def test_claude_cli_undecodable_reply_does_not_blame_the_source(tmp_path, monkey
     # the wording turns this red and makes someone read it again.
     assert message == (
         "claude CLI request failed: the CLI's output was not valid UTF-8 and could "
-        "not be read. Reading the CLI's output is what failed, not sending your "
-        "text. If it fails the same way again, check the claude CLI's version."
+        "not be read. The text reached the CLI; it is the CLI's output that could "
+        "not be read. Check the claude CLI's version if it recurs."
     )
+
+    # The reason that reaches a job row goes through `_short_reason`'s 240-char
+    # cap with an `llm error: ` prefix already on it. `_UNSENDABLE_ARGUMENT` is
+    # over that cap today and loses its last sentence there; this pins that this
+    # constant does not. (`verinote/pipeline/ask.py` keeps a second copy of
+    # `_short_reason` with the same cap.)
+    prefixed = f"llm error: {message}"
+    assert _short_reason(prefixed) == prefixed
 
 
 @pytest.mark.parametrize("invoke", _INVOCATIONS)
@@ -644,6 +659,8 @@ def test_claude_cli_cause_table_mirrors_every_except_clause_in_source():
     `except OSError` -- because it is the clause list this has to line up with.
     """
     source = textwrap.dedent(inspect.getsource(ClaudeCliAdapter._invoke))
+    # `ast.walk` descends into any nested function too, so a helper defined inside
+    # `_invoke` would contribute its clauses here. There is none today.
     handlers = sorted(
         (node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.ExceptHandler)),
         key=lambda node: node.lineno,
