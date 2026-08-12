@@ -245,7 +245,7 @@ def test_the_digit_requirement_keeps_ordinary_prose_out_of_the_caveat(monkeypatc
     """
     import re
 
-    import verinote.pipeline.query_measure_unit as query_intent
+    import verinote.pipeline.query_measure_unit as qmu
     from verinote.pipeline.query_measure_unit import (
         _VALUE_MEASUREMENT,
         korean_measure_unit_mismatch,
@@ -274,7 +274,7 @@ def test_the_digit_requirement_keeps_ordinary_prose_out_of_the_caveat(monkeypatc
     digit_head = r"[0-9][0-9,.]*"
     assert _VALUE_MEASUREMENT.pattern.startswith(digit_head)
     without_digits = re.compile(_VALUE_MEASUREMENT.pattern[len(digit_head):])
-    monkeypatch.setattr(query_intent, "_VALUE_MEASUREMENT", without_digits)
+    monkeypatch.setattr(qmu, "_VALUE_MEASUREMENT", without_digits)
     fires = sum(
         1 for question, value in pairs
         if korean_measure_unit_mismatch(question, value) is not None
@@ -606,14 +606,14 @@ def test_a_four_digit_year_run_into_more_digits_is_not_a_calendar_year():
     without = re.compile(_TIME_POINT.pattern.replace(
         r"|(?<![0-9])[0-9]{4}\s*년(?![0-9])", r"|(?<![0-9])[0-9]{4}\s*년"))
     assert without.pattern != _TIME_POINT.pattern, "the mutation did not apply"
-    import verinote.pipeline.query_measure_unit as query_intent
+    import verinote.pipeline.query_measure_unit as qmu
     for value in ["2021년12개월", "2021년 12개월", "2021년12주", "2021년1,000원", "2021년"]:
-        original = query_intent._TIME_POINT
-        query_intent._TIME_POINT = without
+        original = qmu._TIME_POINT
+        qmu._TIME_POINT = without
         try:
-            relaxed = query_intent._value_measure_units(value)
+            relaxed = qmu._value_measure_units(value)
         finally:
-            query_intent._TIME_POINT = original
+            qmu._TIME_POINT = original
         assert _value_measure_units(value) == relaxed, value
 
     # And the property that makes it inert: the year is not read as a quantity
@@ -1199,7 +1199,7 @@ def test_the_suppression_scan_reads_a_run_of_magnitude_words(monkeypatch):
     STATES nothing -- what changed is only whether the value is read as already
     carrying the unit that was asked for.
     """
-    import verinote.pipeline.query_measure_unit as query_intent
+    import verinote.pipeline.query_measure_unit as qmu
     from verinote.pipeline.query_measure_unit import (
         _RELAXED_QUANTITY_NUMBER,
         _value_measure_units,
@@ -1214,7 +1214,7 @@ def test_the_suppression_scan_reads_a_run_of_magnitude_words(monkeypatch):
     one_magnitude = _RELAXED_QUANTITY_NUMBER.replace(r")*", r")?")
     assert one_magnitude != _RELAXED_QUANTITY_NUMBER, "the mutation did not apply"
     monkeypatch.setattr(
-        query_intent, "_VALUE_MEASUREMENT_RELAXED", _relaxed_pattern_from(one_magnitude)
+        qmu, "_VALUE_MEASUREMENT_RELAXED", _relaxed_pattern_from(one_magnitude)
     )
     question = "샘플사업의 가격은 몇 원인가?"
     assert korean_measure_unit_mismatch(question, "2천만원 (15,000달러)") == ("원", "달러")
@@ -1237,7 +1237,7 @@ def test_the_suppression_scan_reads_any_unicode_decimal_digit(monkeypatch):
     head as one substring -- replacing `\\d` alone would leave the nested set
     `[[0-9],.]` and a `FutureWarning` rather than the pattern intended.
     """
-    import verinote.pipeline.query_measure_unit as query_intent
+    import verinote.pipeline.query_measure_unit as qmu
     from verinote.pipeline.query_measure_unit import (
         _RELAXED_QUANTITY_NUMBER,
         _value_measure_units,
@@ -1252,7 +1252,7 @@ def test_the_suppression_scan_reads_any_unicode_decimal_digit(monkeypatch):
     ascii_only = _RELAXED_QUANTITY_NUMBER.replace(r"\d[\d,.]*", r"[0-9][0-9,.]*")
     assert ascii_only != _RELAXED_QUANTITY_NUMBER and "\\d" not in ascii_only
     monkeypatch.setattr(
-        query_intent, "_VALUE_MEASUREMENT_RELAXED", _relaxed_pattern_from(ascii_only)
+        qmu, "_VALUE_MEASUREMENT_RELAXED", _relaxed_pattern_from(ascii_only)
     )
     assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 년인가?", "３년 30주") == (
         "년",
@@ -1288,7 +1288,7 @@ def test_the_widened_number_can_only_silence(monkeypatch):
     """
     import re
 
-    import verinote.pipeline.query_measure_unit as query_intent
+    import verinote.pipeline.query_measure_unit as qmu
     from verinote.pipeline.query_measure_unit import (
         _MEASUREMENT_FAMILY,
         _MEASUREMENT_UNIT_SPELLINGS,
@@ -1326,7 +1326,7 @@ def test_the_widened_number_can_only_silence(monkeypatch):
 
     shipped = sweep()
     monkeypatch.setattr(
-        query_intent,
+        qmu,
         "_VALUE_MEASUREMENT_RELAXED",
         _relaxed_pattern_from(_HEAD_RELAXED_NUMBER),
     )
@@ -1542,7 +1542,7 @@ def test_a_separator_is_admitted_only_inside_the_leading_digit_run(monkeypatch):
     The killer is derived from the live constant rather than retyped, so it
     follows the number if the number moves.
     """
-    import verinote.pipeline.query_measure_unit as query_intent
+    import verinote.pipeline.query_measure_unit as qmu
     from verinote.pipeline.query_measure_unit import (
         _RELAXED_QUANTITY_NUMBER,
         _VALUE_MEASUREMENT_RELAXED,
@@ -1572,7 +1572,7 @@ def test_a_separator_is_admitted_only_inside_the_leading_digit_run(monkeypatch):
     after_magnitudes = _RELAXED_QUANTITY_NUMBER.replace(r"]\s*)*", r"]\s*[,.]*\s*)*")
     assert after_magnitudes != _RELAXED_QUANTITY_NUMBER, "the mutation did not apply"
     monkeypatch.setattr(
-        query_intent,
+        qmu,
         "_VALUE_MEASUREMENT_RELAXED",
         _relaxed_pattern_from(after_magnitudes),
     )
@@ -1736,7 +1736,7 @@ def test_caveats_lost_to_the_suppression_scan_are_recorded_not_fixed(
     still makes reaches into all three notations, so a count here would be a
     count of an open class.
     """
-    import verinote.pipeline.query_measure_unit as query_intent
+    import verinote.pipeline.query_measure_unit as qmu
     from verinote.pipeline.query_measure_unit import (
         _value_measure_units,
         korean_measure_unit_mismatch,
@@ -1757,7 +1757,7 @@ def test_caveats_lost_to_the_suppression_scan_are_recorded_not_fixed(
     assert narrowing_that_fires_it in narrowings
 
     def fires(pattern, asked, text):
-        monkeypatch.setattr(query_intent, "_VALUE_MEASUREMENT_RELAXED", pattern)
+        monkeypatch.setattr(qmu, "_VALUE_MEASUREMENT_RELAXED", pattern)
         return korean_measure_unit_mismatch(asked, text) is not None
 
     assert [
@@ -2014,7 +2014,7 @@ def test_the_shadow_guard_does_not_narrow_a_quantity_it_only_prefixes(monkeypatc
     `간격` does not begin with `기`, so no build of this guard can bite it. It
     stays `None` on both sides.
     """
-    import verinote.pipeline.query_measure_unit as query_intent
+    import verinote.pipeline.query_measure_unit as qmu
     from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     boundary_alternative_cost = [
@@ -2043,7 +2043,7 @@ def test_the_shadow_guard_does_not_narrow_a_quantity_it_only_prefixes(monkeypatc
     # The bound is load-bearing, re-derived: without it the second group is a
     # wrong sentence apiece and the control is still silent.
     monkeypatch.setattr(
-        query_intent,
+        qmu,
         "_VALUE_MEASUREMENT_RELAXED",
         _relaxed_pattern_with_guard(_unbounded_shadow_guard()),
     )
@@ -2144,7 +2144,7 @@ def test_the_shadow_guard_gains_no_caveat_on_a_word_it_only_prefixes(monkeypatch
     re-derived and compared against zero rather than written as a number, because
     a number in a test rots as quietly as one in a docstring.
     """
-    import verinote.pipeline.query_measure_unit as query_intent
+    import verinote.pipeline.query_measure_unit as qmu
     from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     grid = _shadow_grid()
@@ -2158,11 +2158,11 @@ def test_the_shadow_guard_gains_no_caveat_on_a_word_it_only_prefixes(monkeypatch
 
     shipped = sweep()
     monkeypatch.setattr(
-        query_intent, "_VALUE_MEASUREMENT_RELAXED", _relaxed_pattern_with_guard("")
+        qmu, "_VALUE_MEASUREMENT_RELAXED", _relaxed_pattern_with_guard("")
     )
     before = sweep()
     monkeypatch.setattr(
-        query_intent,
+        qmu,
         "_VALUE_MEASUREMENT_RELAXED",
         _relaxed_pattern_with_guard(_unbounded_shadow_guard()),
     )
@@ -2219,7 +2219,7 @@ def test_the_shadow_bound_admits_a_digit_and_refuses_a_letter(monkeypatch):
     the guard must not bite -- so it is silent on both sides and is the row that
     would catch a mutation flipping the bound's sense rather than its class.
     """
-    import verinote.pipeline.query_measure_unit as query_intent
+    import verinote.pipeline.query_measure_unit as qmu
     from verinote.pipeline.query_measure_unit import (
         _UNIT_SHADOW_GUARD,
         korean_measure_unit_mismatch,
@@ -2239,7 +2239,7 @@ def test_the_shadow_bound_admits_a_digit_and_refuses_a_letter(monkeypatch):
     harmonised = _UNIT_SHADOW_GUARD.replace("[가-힣A-Za-z]", "[가-힣0-9A-Za-z]")
     assert harmonised != _UNIT_SHADOW_GUARD, "the mutation did not apply"
     monkeypatch.setattr(
-        query_intent, "_VALUE_MEASUREMENT_RELAXED", _relaxed_pattern_with_guard(harmonised)
+        qmu, "_VALUE_MEASUREMENT_RELAXED", _relaxed_pattern_with_guard(harmonised)
     )
     for question, value, _ in digit_continued:
         assert korean_measure_unit_mismatch(question, value) is None, value
@@ -3404,7 +3404,7 @@ def test_the_only_caveats_gained_are_a_digit_month_wearing_a_unit_suffix():
         _UNIT_SUFFIX_MEMBERS,
         _value_measure_units,
     )
-    import verinote.pipeline.query_measure_unit as query_intent
+    import verinote.pipeline.query_measure_unit as qmu
 
     shipped = re.compile(
         r"[0-9]{1,2}\s*월\s*[0-9]{1,2}\s*일"
@@ -3422,12 +3422,12 @@ def test_the_only_caveats_gained_are_a_digit_month_wearing_a_unit_suffix():
     ]
 
     def caveat(pattern, value):
-        original = query_intent._TIME_POINT
-        query_intent._TIME_POINT = pattern
+        original = qmu._TIME_POINT
+        qmu._TIME_POINT = pattern
         try:
-            return query_intent.korean_measure_unit_mismatch(_MONTH, value)
+            return qmu.korean_measure_unit_mismatch(_MONTH, value)
         finally:
-            query_intent._TIME_POINT = original
+            qmu._TIME_POINT = original
 
     gained = [
         value for value in values
