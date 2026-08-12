@@ -1357,9 +1357,10 @@ def test_claim_extraction_job_for_retry_resets_only_under_cap_chunks_in_a_mixed_
 def test_claim_extraction_job_for_retry_reclaims_a_stray_running_chunk_on_a_failed_job(
     tmp_path,
 ):
-    """A non-LLMError crash mid-chunk can leave a stray `running` chunk on a job the
-    web worker then marks `failed` — a state the pending-claim path never sees. The
-    retry claim reclaims it to `pending` under the same lock that takes ownership."""
+    """A non-LLMError crash mid-chunk can leave a stray `running` chunk on a job its
+    caller then marks `failed` (the web worker, or `cmd_sync` since #488) — a state
+    the pending-claim path never sees. The retry claim reclaims it to `pending`
+    under the same lock that takes ownership."""
     s = _store(tmp_path)
     sid = s.add_source("sources/a.txt")
     job_id = s.create_extraction_job(
@@ -1368,7 +1369,7 @@ def test_claim_extraction_job_for_retry_reclaims_a_stray_running_chunk_on_a_fail
     chunk_id = s.add_source_chunks(job_id=job_id, source_id=sid, chunks=["a"])[0]
     s.mark_extraction_job_running(job_id)
     s.mark_chunk_running(chunk_id)  # 'running', attempts = 1
-    # The job fails while its chunk is still in flight (a crash the worker's
+    # The job fails while its chunk is still in flight (a crash a caller's
     # `except Exception` reported), leaving a stray `running` chunk on a `failed` job.
     s._conn.execute(
         "UPDATE extraction_jobs SET status = 'failed' WHERE id = ?", (job_id,)

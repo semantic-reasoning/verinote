@@ -651,6 +651,7 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
         process_extraction_job,
         sync_sources,
     )
+    from verinote.config import ConfigCorruptError, CredentialsCorruptError
     from verinote.pipeline.policy_state import assert_writable, PolicyMissingError
     from verinote.prompts import PromptError
 
@@ -831,6 +832,70 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                         file=sys.stderr,
                     )
                     continue
+                except PolicyMissingError:
+                    # ORDER IS LOAD-BEARING — above `except Exception`, which would
+                    # otherwise write `failed` over a job `_halt_extraction_job`
+                    # has just rewound to `pending` for the next pass to resume.
+                    # The KB is halted; this handler must not write to it at all
+                    # (#194). `PolicyEmptyError` is a `PolicyMissingError`
+                    # subclass, so it needs no clause of its own. The clean rc=2
+                    # diagnosis is `cmd_sync`'s own `except PolicyMissingError`
+                    # further down, which this re-raise reaches.
+                    raise
+                except (ConfigCorruptError, CredentialsCorruptError):
+                    # ORDER IS LOAD-BEARING — above `except Exception`. Mirrors the
+                    # clause `web/app.py` keeps in the same position, and for the
+                    # same stated reason: defense-in-depth, NOT a currently
+                    # reachable path. `cmd_sync` builds its client from a `cfg`
+                    # already validated by `main`'s corrupt-config refusal, and
+                    # nothing under `verinote/pipeline` reads `Config` again. If
+                    # that changes, a corrupt config is a host condition, not a
+                    # property of the source: it must not be charged to the
+                    # content as "analysis failed" (#269).
+                    raise
+                except DuckDBFactTermStoreLockedError:
+                    # ORDER IS LOAD-BEARING — above `except Exception`
+                    # (`DuckDBFactTermStoreLockedError` is a `ValueError`
+                    # subclass, so the broad clause would otherwise take it).
+                    # Another process holds the fact-term sidecar, and
+                    # `process_extraction_job` has already rolled this job back to
+                    # `pending` so the next pass RESUMES it. Writing `failed` over
+                    # that gives planning a `failed` job with zero failed chunks —
+                    # an edge state it rebuilds from scratch, paying the LLM again
+                    # for every chunk this pass finished. `main` turns it into a
+                    # clean rc=1 message.
+                    raise
+                except Exception as exc:
+                    # THE JOB-LEVEL FLOOR (#488), sibling to the chunk-level one in
+                    # `_release_claimed_chunk`. Every clause above names a
+                    # condition that is not the source's failure and rewinds
+                    # itself; what is left is an unmodelled exception out of the
+                    # one call that owns this job, and without this the row stayed
+                    # `running` forever — no chunk to retry, no terminal status, and
+                    # every later `sync` skipping the source as busy.
+                    #
+                    # THE STATUS RE-READ IS NOT A SECOND DECISION, exactly as
+                    # `_release_claimed_chunk` says of its own: it asks whether this
+                    # call still owns the job. `process_extraction_job` can raise
+                    # after the job is already `done` (`finish_extraction_job`
+                    # writes in several steps), and it rewinds the job to `pending`
+                    # itself on the paths above — flipping either of those to
+                    # `failed` would destroy real work or turn a resume into a
+                    # rebuild.
+                    #
+                    # The exception is re-raised, not swallowed: recording the
+                    # failure is not the same as handling it, and #246's contract
+                    # for what the user sees is kept by the handlers below and in
+                    # `main`, which this re-raise reaches. `LLMError` is not
+                    # exempted from the breadth here — it is a `RuntimeError` — and
+                    # the re-raise still delivers it to `cmd_sync`'s own
+                    # `except LLMError` below, which is what shapes the message.
+                    job_now = store.get_extraction_job(job_id)
+                    if job_now is not None and job_now["status"] == "running":
+                        store.fail_extraction_job(
+                            job_id, f"analysis failed: {type(exc).__name__}: {exc}"
+                        )
+                    raise
                 # The job message is already the bounded honest failure line
                 # ("Analysis failed: N chunk(s) failed, D/T complete: <error>");
                 # carry it verbatim rather than re-deriving it, and only when this
@@ -847,8 +912,12 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                 # the fast path, and a partial run must never sweep. The sweep is a
                 # SIBLING of `process_extraction_job` (separation of concerns:
                 # extraction stays a pure primitive, while the demoted count is
-                # needed here for the per-source line); unlike the web worker, this
-                # try has no `fail_extraction_job` path, so no local guard is owed.
+                # needed here for the per-source line). The web worker guards its
+                # sweep locally because its sweep sits INSIDE the try its
+                # `except Exception -> fail_extraction_job` belongs to; this sweep
+                # sits OUTSIDE the try above, so a sweep error cannot reach the
+                # job-level handler and no local guard is owed. Do not move it
+                # inside — that is what would make one necessary.
                 # `assert_writable` first so a policy lost post-completion routes to
                 # the PolicyMissingError handler below rather than demoting facts
                 # against a halted KB (#194) — the store trusts its caller for this.

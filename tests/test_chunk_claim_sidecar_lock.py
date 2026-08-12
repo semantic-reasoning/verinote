@@ -256,11 +256,12 @@ def _chunk_states(store: Store, job_id: int) -> list[tuple[str, int]]:
 
 
 def _worker_marks_job_failed(store: Store, job_id: int, message: str) -> None:
-    """Stand-in for the web worker's `except Exception`. NOT code under test.
+    """Stand-in for a caller's `except Exception`. NOT code under test.
 
     `process_extraction_job` does not write the job row when a non-`LLMError`
-    escapes; `_start_source_extraction` (`web/app.py`) does. A test that needs a
-    job in its post-failure resting state performs that write itself.
+    escapes; its callers do — `_start_source_extraction` (`web/app.py`), and
+    `cmd_sync` (`cli.py`) since #488. A test that needs a job in its post-failure
+    resting state performs that write itself.
     """
     store.fail_extraction_job(job_id, message)
 
@@ -273,9 +274,9 @@ def test_a_locked_sidecar_requeues_the_chunk_and_rewinds_the_job(tmp_path):
 
     The `resume_job_id` assertion is the one that catches a half-fix. Rewind the
     chunk without rewinding the job and every state below still looks reasonable
-    in isolation — until the worker writes `failed` over a job with no failed
-    chunk, planning calls that an edge state, and the finished chunk is extracted
-    a second time.
+    in isolation — until a caller's broad clause writes `failed` over a job with
+    no failed chunk, planning calls that an edge state, and the finished chunk is
+    extracted a second time.
     """
     s = _store(tmp_path)
     source_id, job_id = _three_chunk_job(s)

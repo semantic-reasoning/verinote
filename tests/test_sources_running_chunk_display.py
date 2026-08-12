@@ -14,9 +14,10 @@ WHAT THAT CHOICE MUST NOT BE READ AS. A job in a terminal status can still have 
   `verinote/pipeline/extract.py::process_extraction_job` releases a claim through
   `_release_claimed_chunk`, which calls `mark_chunk_failed`; if THAT write is the
   one that raises, the exception leaves `process_extraction_job` with the chunk
-  still `running`. The web worker's blanket handler then writes the job `failed`
-  (`verinote/web/app.py`), and `fail_extraction_job` writes no `source_chunks`
-  row — nothing puts the chunk back;
+  still `running`. The caller's blanket handler then writes the job `failed` —
+  the web worker's (`verinote/web/app.py`), or `cmd_sync`'s since #488
+  (`verinote/cli.py`) — and `fail_extraction_job` writes no `source_chunks` row,
+  so nothing puts the chunk back;
 * chunks already stranded by the bug this change fixes. Existing KBs carry them,
   and they render here beside whatever status their job came to rest in.
 
