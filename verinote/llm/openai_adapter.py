@@ -55,7 +55,7 @@ class OpenAIAdapter:
         it. Measured, it survives into `llm/schema.py`'s "malformed fact object
         {item!r}" with no `***`. `_request_failed` covers that echo when it
         arrives as an *error*; as a parsable response it never meets a redactor.
-        Pre-existing, and a follow-up rather than a docstring's business. That
+        Pre-existing, and #514 rather than a docstring's business. That
         enumeration is not offered as complete. What it is for is the shape of
         the claim: "both carriers redact" is true of this class and not of the
         call graph around it, and stating only the first half is how the

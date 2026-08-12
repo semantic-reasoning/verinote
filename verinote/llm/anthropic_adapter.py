@@ -51,12 +51,12 @@ class AnthropicAdapter:
         `llm/schema.py`'s "malformed fact object {item!r}" verbatim, with no
         `***`. What `_request_failed` redacts is that echo arriving as an
         *error*; arriving as a parsable response it goes around the guard
-        entirely. That predates this change and is a follow-up, not something
-        prose can fix. Neither of the two carrier lists in this paragraph is
-        offered as exhaustive. The
-        point is that "every site carrying a caught exception redacts" stops
-        being true the moment you leave this class, and asserting it unqualified
-        is the almost-true claim this docstring was rewritten to stop making.
+        entirely. That predates this change and is tracked as #514, not
+        something prose can fix. Neither of the two carrier lists in this
+        paragraph is offered as exhaustive. The point is that "every site
+        carrying a caught exception redacts" stops being true the moment you
+        leave this class, and asserting it unqualified is the almost-true claim
+        this docstring was rewritten to stop making.
 
         The remaining raises use fixed strings and carry nothing caught:
         `_require_key`, the `ImportError` clause in `_client`, and the three "no
