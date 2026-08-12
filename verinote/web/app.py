@@ -127,7 +127,10 @@ from verinote.store import (
     is_engine_input,
     review_statuses,
 )
-from verinote.store.duckdb_fact_terms import DuckDBFactTermStoreError
+from verinote.store.duckdb_fact_terms import (
+    DuckDBFactTermStoreError,
+    DuckDBFactTermStoreLockedError,
+)
 from verinote.store.fact_input import nfc_term, structural_term, term_input_kind
 from verinote.text import nfc
 
@@ -1752,6 +1755,28 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 # unrelated to the source content (#269).
                 logger.warning(
                     "extraction job %s halted (%s): %s", job_id, type(exc).__name__, exc
+                )
+            except DuckDBFactTermStoreLockedError as exc:
+                # ORDER IS LOAD-BEARING — above `except Exception`
+                # (`DuckDBFactTermStoreLockedError` is a `ValueError` subclass, so
+                # only the generic clause would otherwise take it). Another process
+                # holds this KB's fact-term sidecar: a host/environment condition
+                # that clears when that process lets go, exactly the category the
+                # ConfigCorrupt clause above refuses to charge to the content.
+                #
+                # This handler writes NOTHING, and here that is not merely
+                # conservative — `process_extraction_job` has already rolled the job
+                # back to `pending` so the next pass RESUMES it, and
+                # `fail_extraction_job` would overwrite that with `failed`. A
+                # `failed` job whose chunks are all `pending`/`done` has no failed
+                # chunk for planning to retry, so `plan_source_extraction` reads it
+                # as an edge state and rebuilds from scratch, paying the LLM again
+                # for every chunk this pass finished. Log and leave it.
+                logger.warning(
+                    "extraction job %s paused (fact-term store locked by another "
+                    "process): %s",
+                    job_id,
+                    exc,
                 )
             except LLMError as e:
                 with Store(cfg.db_path) as worker_store:

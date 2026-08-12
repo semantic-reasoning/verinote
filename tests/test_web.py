@@ -49,7 +49,10 @@ from verinote.pipeline.query import query_path  # noqa: E402
 from verinote.pipeline.query_intent import parse_query_intent  # noqa: E402
 from verinote.store import Store  # noqa: E402
 from verinote.store import db as store_db  # noqa: E402
-from verinote.store.duckdb_fact_terms import fact_terms_path  # noqa: E402
+from verinote.store.duckdb_fact_terms import (  # noqa: E402
+    DuckDBFactTermStoreLockedError,
+    fact_terms_path,
+)
 from verinote.store.fact_input import structural_term  # noqa: E402
 from verinote.web import create_app  # noqa: E402
 
@@ -4622,6 +4625,45 @@ def test_worker_config_corrupt_does_not_mark_the_job_failed(tmp_path, monkeypatc
     time.sleep(0.2)  # let a (wrong) fail_extraction_job land, if the order regressed
     job = _job_row(cfg, job_id)
     assert job["status"] == "pending", "a corrupt-config race buried the job in `failed`"
+    assert "analysis failed" not in (job["message"] or "")
+    assert "extraction_job_failed" not in _job_event_types(cfg, job_id)
+
+
+def test_worker_sidecar_lock_does_not_overwrite_the_rollback(tmp_path, monkeypatch, fake_client):
+    """`except DuckDBFactTermStoreLockedError` must stay ABOVE `except Exception`.
+
+    It is a `ValueError` subclass, so without a clause of its own the generic
+    handler takes it and calls `fail_extraction_job`. That is worse here than in
+    the sibling cases: `process_extraction_job` has ALREADY rolled the job back to
+    `pending` so the next pass resumes it, and the `failed` write lands on top of
+    that rollback. The result is a `failed` job with no failed chunk, which
+    `plan_source_extraction` treats as an edge state and rebuilds from scratch —
+    every chunk the pass finished is sent to the LLM again.
+
+    The stand-in raises after rewinding the job, which is the state the real
+    pipeline hands the worker (`_back_off_from_locked_sidecar`).
+    """
+    cfg, job_id, _ = _job_kb(tmp_path, with_policy=True)
+    monkeypatch.setattr(
+        webapp,
+        "get_client",
+        lambda cfg: fake_client([ExtractedFact("X", "is_a", "Y", 0.9)]),
+    )
+    called = threading.Event()
+
+    def locked(store, *args, **kwargs):
+        store.rollback_extraction_job(job_id, "Paused: another process is holding it.")
+        called.set()
+        raise DuckDBFactTermStoreLockedError("the fact-term store is locked")
+
+    monkeypatch.setattr(webapp, "process_extraction_job", locked)
+
+    create_app(cfg)
+
+    assert called.wait(timeout=2.0)
+    time.sleep(0.2)  # let a (wrong) fail_extraction_job land, if the order regressed
+    job = _job_row(cfg, job_id)
+    assert job["status"] == "pending", "the rollback was overwritten by a `failed` write"
     assert "analysis failed" not in (job["message"] or "")
     assert "extraction_job_failed" not in _job_event_types(cfg, job_id)
 

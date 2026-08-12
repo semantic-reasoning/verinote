@@ -1304,6 +1304,67 @@ class Store:
                 return None
             return self.get_source_chunk(chunk_id)
 
+    def requeue_chunk_claim(self, chunk_id: int, *, attempts: int) -> bool:
+        """Undo one `mark_chunk_running`: back to `pending`, attempt refunded.
+
+        The exact inverse of the claim — `pending`->`running` with `attempts + 1`
+        becomes `running`->`pending` with `attempts - 1` — for a caller that took
+        a chunk and then hit a condition that is neither the chunk's failure nor
+        attributable to its content (the fact-term sidecar held by another
+        process). `mark_chunk_failed` is the wrong release for that class: it
+        spends a retry attempt on a peer's timing, and `MAX_CHUNK_ATTEMPTS` of
+        those give up on the source permanently.
+
+        `attempts` is the value the caller read back from its own claim, and it is
+        in the WHERE clause as a compare-and-set. `status = 'running'` alone would
+        establish only that SOMEBODY holds the chunk — there is no owner column on
+        the row — so a caller whose claim had meanwhile been reclaimed and
+        re-issued to someone else (`claim_pending_extraction_job` rewinds stray
+        `running` chunks as it takes a job, and the new owner then claims them
+        afresh) would rewind and refund a claim that is no longer its own. Pinning
+        the attempt count makes this apply to the caller's own claim or to nothing
+        at all: a stale caller gets `False` and writes nothing.
+
+        THE REFUND IS THE DIFFERENCE from `rollback_extraction_job`, which also
+        returns a `running` chunk to the queue but leaves `attempts` alone. Both
+        are right for their own case. A halt freezes the whole KB against writes,
+        so nothing is queued up behind that counter — restoring the policy file is
+        the only way forward, and the count is not what stands in the way. A
+        locked sidecar clears the moment the other process lets go, and the very
+        next pass should find the budget it started with.
+
+        WHO READS `attempts`. Planning reads it in exactly two places,
+        `failed_chunk_attempt_status` and `claim_extraction_job_for_retry`, and
+        both are scoped `WHERE status = 'failed'` — so a refunded `pending` chunk
+        is invisible to them, and the refund reaches planning only later, if this
+        chunk goes on to fail for real. There is a third reader, and it is not
+        scoped: `_chunk_event_payload` carries `attempts` into every
+        `chunk_failed`/`chunk_retried` payload in `fact_events`, so a refund does
+        change the number a subsequent chunk event records. That is the intended
+        reading rather than a cost — the history should say a chunk has spent one
+        attempt when it has spent one, not two because a peer process happened to
+        be holding a file at the time.
+
+        NO EVENT OF ITS OWN, and the asymmetry with the transitions that do record
+        one is the reason. `mark_chunk_failed` and the retry claim each leave the
+        row somewhere a reader can later find it and ask why — failed carrying an
+        error, or requeued after having failed — so the event is what accounts for
+        the residue. This leaves the row bit-for-bit as `next_pending_chunk` first
+        handed it out, so there is nothing left behind for an event to explain:
+        the same ground `claim_pending_extraction_job` stands on when it rewinds
+        stray chunks with a raw update and no event. Nor is the occurrence lost —
+        the caller re-raises, its job is rolled back with a message naming the
+        cause, and the web worker logs it.
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE source_chunks SET status = 'pending', error = '', "
+                "attempts = attempts - 1, updated_at = datetime('now') "
+                "WHERE id = ? AND status = 'running' AND attempts = ?",
+                (chunk_id, attempts),
+            )
+            return cur.rowcount == 1
+
     def mark_chunk_done(self, chunk_id: int, *, candidates: int = 0) -> None:
         with self._lock:
             chunk = self.get_source_chunk(chunk_id)
