@@ -288,9 +288,10 @@ def test_the_counter_table_is_the_size_the_comment_names():
     The overlap pinned above is an intersection, so it does not move for a
     counter that names no unit: adding `마리` leaves it at 13 and reaches
     nothing else in this file. The comment beside the table in `query_intent.py`
-    quotes both figures and points here for both, so this counts the table
-    itself -- otherwise a widening that touches no unit lands unremarked, and
-    the figure in that comment is one no assertion holds.
+    quotes both figures, points at this file for both, and names this test for
+    the 29, so this counts the table itself -- otherwise a widening that touches
+    no unit lands unremarked, and the figure in that comment is one no assertion
+    holds.
 
     Its own test rather than a line beside the overlap: the 13 is what that
     sweep is built from, while this is a documentation guard, and an author who
