@@ -80,17 +80,21 @@
                  clean on the strength of nobody having looked. 0 stays silent: a
                  measured, lossless extraction has nothing to report.
 
-                 The note names deleting the source because re-uploading does not
-                 clear this row. `store_source` hashes the SANITIZED text, and an
-                 unmeasured row was hashed before anything sanitized, so where the
-                 old extraction held NUL the digests differ: the upload INSERTs a
-                 second, measured artifact rather than filling this one in (see
-                 `Store.add_source_artifact`). `_source_inspector_rows` renders
-                 every row `store.source_artifacts` returns, so afterwards the
-                 note and the new "N unreadable character(s)" sit side by side
-                 and the note is there for good. Only `store.delete_source` --
-                 and the file sweep in the delete route beside it -- takes the
-                 row away.
+                 NULL is two populations, so the note names an action for each,
+                 the cheap one first. Re-uploading suffices whenever the old
+                 digest is reproducible: `store_source` hashes the SANITIZED
+                 text, and an unmeasured row was hashed before anything
+                 sanitized, so for an extraction that held no NUL the two agree,
+                 the upload backfills THIS row with 0, and the note goes away.
+                 That is most sources -- most documents contain no NUL at all.
+                 Where the old extraction did hold NUL the digests differ, so the
+                 upload INSERTs a second, measured artifact instead of filling
+                 this one in (see `Store.add_source_artifact`), and
+                 `_source_inspector_rows` renders every row
+                 `store.source_artifacts` returns -- the note survives, beside
+                 the new count. That is the "if this note stays" branch, and
+                 `store.delete_source`, with the file sweep beside it in the
+                 delete route, is the only thing that ends it.
 
                  Re-analyze is worth naming only while this row is the source's
                  ONLY text artifact: `reanalyze_source` feeds the chunk job with
@@ -100,15 +104,17 @@
                  by MAX(id), so Re-analyze reads the new clean text -- correct
                  output, with the stale note still on screen above it.
 
-                 The named action is not free, and the badge does not have room to
-                 say so: `store.delete_source` drops every fact from this source,
-                 and unlike `clear_source_analysis` it does not spare `confirmed`
-                 or `accepted` ones. After a re-upload that is a trap -- the note
-                 and the measured count are adjacent, so a reader following the
-                 note deletes facts a human had already confirmed against the
-                 clean re-extraction. Naming an action that works beats naming one
-                 that does not; sizing that warning is a UX question this comment
-                 is only recording, not settling.
+                 Order matters because the second branch is destructive and the
+                 badge has no room to price it: `store.delete_source` drops every
+                 fact from this source and, unlike `clear_source_analysis`, does
+                 not spare `confirmed` or `accepted` ones -- and the Delete
+                 button in the Actions cell submits straight away, with no
+                 confirmation step. Naming re-upload first keeps every reader it
+                 does work for away from that entirely. For the rest it is still
+                 a sharp edge: by then this note sits next to a measured count
+                 taken from a clean re-extraction, so deleting can cost facts a
+                 human already confirmed against it. Sizing that warning is a UX
+                 question this comment records rather than settles.
 
                  The count is bare `.warn-inline`, matching the "N pending" signal
                  further down this row exactly -- same file, same kind of inline
@@ -123,7 +129,7 @@
                  No new CSS either way. #}
               {% set unreadable = artifact["unreadable_chars"] %}
               {% if unreadable is none %}
-                <span class="badge src">not checked for unreadable characters — some may remain; delete the source and upload it again to fix</span>
+                <span class="badge src">not checked for unreadable characters — some may remain; re-upload to fix, or delete the source and upload it again if this note stays</span>
               {% elif unreadable %}
                 <span class="warn-inline">{{ unreadable }} unreadable character(s)</span>
               {% endif %}

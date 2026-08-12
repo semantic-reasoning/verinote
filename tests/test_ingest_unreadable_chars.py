@@ -318,9 +318,7 @@ def test_a_pre_column_row_that_held_nul_gains_a_second_row_not_a_backfill(
     executes, instead of by a reader.
     """
     store = _store(tmp_path)
-    legacy_digest = _legacy_text_artifact(
-        store, tmp_path, "sources/plan.nulx", _DIRTY
-    )
+    legacy_digest = _legacy_text_artifact(store, tmp_path, "sources/plan.nulx", _DIRTY)
     src = tmp_path / "plan.nulx"
     src.write_bytes(_DIRTY.encode("utf-8"))
 
@@ -341,9 +339,7 @@ def test_a_pre_column_row_that_held_nul_gains_a_second_row_not_a_backfill(
     store.close()
 
 
-def test_a_pre_column_row_that_held_no_nul_is_backfilled_by_a_re_ingest(
-    tmp_path, nulx
-):
+def test_a_pre_column_row_that_held_no_nul_is_backfilled_by_a_re_ingest(tmp_path, nulx):
     """The other side of that precondition: nothing to sanitize, digest holds.
 
     An unmeasured row over text with no NUL is the case the backfill does
@@ -488,8 +484,16 @@ def test_sources_page_separates_measured_loss_from_never_measured(tmp_path, nulx
 
 _UNMEASURED_NOTE = (
     '<span class="badge src">not checked for unreadable characters — some may '
-    "remain; delete the source and upload it again to fix</span>"
+    "remain; re-upload to fix, or delete the source and upload it again if "
+    "this note stays</span>"
 )
+
+# The wording this replaced, which told every unmeasured row to delete its
+# source -- destructive, and unnecessary for the majority whose extraction held
+# no NUL. `"; re-upload to fix"` on its own is no longer a regression guard: the
+# new note opens with that clause. The closing tag is what pins the old one.
+_DESTRUCTIVE_FIRST_NOTE = "; delete the source and upload it again to fix</span>"
+_RE_UPLOAD_ONLY_NOTE = "; re-upload to fix</span>"
 
 
 def _block_the_extraction_worker(monkeypatch) -> list[int]:
@@ -532,14 +536,19 @@ def _join_extraction_workers() -> None:
 def test_the_sources_page_names_an_action_that_actually_clears_the_unmeasured_note(
     tmp_path, monkeypatch, nulx
 ):
-    """The note has to name something that works, so all three legs run for real.
+    """This source is the note's harder population, and both of its clauses run.
 
-    A note reading "re-upload to fix" was wrong: an unmeasured row's checksum is
-    over unsanitized text, so the upload adds a measured row instead of filling
-    that one in, and the page keeps rendering both. Leg 2 performs the old
-    wording and shows the note surviving it; leg 3 performs the new one and
-    shows the note gone. Asserting the rendered string alone would not tell
-    those two apart -- either wording renders fine.
+    The note offers re-upload first and deleting the source only "if this note
+    stays". For an artifact whose unsanitized text held NUL, staying is exactly
+    what it does: the sanitized upload hashes differently, INSERTs a measured
+    row rather than filling this one in, and the page renders both. So leg 2
+    performs the first clause and shows it is not enough here, which is what
+    makes the second clause reachable rather than gratuitous; leg 3 performs
+    the second and shows the note gone. Rendering assertions alone would not
+    separate those -- any wording renders.
+
+    `test_a_re_upload_clears_the_note_when_the_old_extraction_held_no_nul`
+    carries the other population, where the first clause is the whole answer.
     """
     asked = _block_the_extraction_worker(monkeypatch)
     client = _sources_client(tmp_path)
@@ -551,9 +560,7 @@ def test_the_sources_page_names_an_action_that_actually_clears_the_unmeasured_no
     source_dir = tmp_path / "sources"
     source_dir.mkdir(parents=True, exist_ok=True)
     (source_dir / "plan.nulx").write_bytes(_DIRTY.encode("utf-8"))
-    legacy_digest = _legacy_text_artifact(
-        store, tmp_path, "sources/plan.nulx", _DIRTY
-    )
+    legacy_digest = _legacy_text_artifact(store, tmp_path, "sources/plan.nulx", _DIRTY)
     source_id = int(store.get_source_by_path("sources/plan.nulx")["id"])
     legacy_file = tmp_path / f"artifacts/sources/{source_id}/{legacy_digest}.txt"
 
@@ -563,11 +570,16 @@ def test_the_sources_page_names_an_action_that_actually_clears_the_unmeasured_no
     # the chip quietly become plain text.
     html = client.get("/sources").text
     assert _UNMEASURED_NOTE in html
-    assert "; re-upload to fix" not in html
+    # Both discarded wordings, pinned by their closing tag. A bare
+    # `"; re-upload to fix"` would match the current note's first clause and
+    # guard nothing; ending at `</span>` is what makes each of these the whole
+    # of a note rather than a prefix of one.
+    assert _RE_UPLOAD_ONLY_NOTE not in html
+    assert _DESTRUCTIVE_FIRST_NOTE not in html
     assert html.count("not checked for unreadable characters") == 1
 
-    # Leg 2: do exactly what the old wording asked -- upload the same bytes
-    # again -- and watch it fail to clear anything.
+    # Leg 2: do what the note says first -- upload the same bytes again -- and
+    # watch it fail to clear anything for THIS population.
     response = client.post("/sources", files=upload, follow_redirects=False)
     assert response.status_code == 303
     _join_extraction_workers()
@@ -578,14 +590,16 @@ def test_the_sources_page_names_an_action_that_actually_clears_the_unmeasured_no
         "unmeasured row is untouched"
     )
     html = client.get("/sources").text
-    assert html.count("not checked for unreadable characters") == 1
+    assert html.count("not checked for unreadable characters") == 1, (
+        "the note stayed, which is the condition its second clause names"
+    )
     assert "7 unreadable character(s)" in html, (
         "both rows render: this is the side-by-side state the comment warns is "
-        "a trap, the stale note above a correct count"
+        "a sharp edge, the stale note above a correct count"
     )
 
-    # Leg 3: do what the new wording asks. Delete takes the row and its file,
-    # and the upload that follows leaves one measured artifact behind.
+    # Leg 3: the note stayed, so follow its second clause. Delete takes the row
+    # and its file, and the upload after it leaves one measured artifact.
     # Asserted before as well as after: `not exists()` is true of a path that
     # was never right, and would pass this leg without a delete happening.
     assert legacy_file.exists()
@@ -602,6 +616,58 @@ def test_the_sources_page_names_an_action_that_actually_clears_the_unmeasured_no
     # Both uploads queued a job and neither was analysed, so nothing above came
     # from a worker write -- and the stub really did stand in the way.
     assert len(asked) == 2
+
+
+def test_a_re_upload_clears_the_note_when_the_old_extraction_held_no_nul(
+    tmp_path, monkeypatch, nulx
+):
+    """The note's first clause, on the page, for the population it is meant for.
+
+    Most documents contain no NUL, so most unmeasured rows hash the same before
+    and after sanitizing: the re-upload the note asks for first backfills the
+    row with 0 and the note disappears. That is what makes offering the
+    destructive action second, and only conditionally, honest -- these readers
+    never reach it.
+
+    `test_a_pre_column_row_that_held_no_nul_is_backfilled_by_a_re_ingest` shows
+    the same backfill one layer down. This one is at the layer the wording
+    makes a promise about: the reader sees a note, does what it says, and the
+    note is gone.
+    """
+    _block_the_extraction_worker(monkeypatch)
+    client = _sources_client(tmp_path)
+    store = client.app.state.store
+
+    readable = "every character here was readable"
+    source_dir = tmp_path / "sources"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    (source_dir / "plan.nulx").write_bytes(readable.encode("utf-8"))
+    _legacy_text_artifact(store, tmp_path, "sources/plan.nulx", readable)
+    source_id = int(store.get_source_by_path("sources/plan.nulx")["id"])
+
+    # Asserted before as well as after: "the note is gone" is also true of a
+    # page that never rendered one, which would pass this while proving nothing.
+    assert _UNMEASURED_NOTE in client.get("/sources").text
+
+    response = client.post(
+        "/sources",
+        files={
+            "file": ("plan.nulx", readable.encode("utf-8"), "application/octet-stream")
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    _join_extraction_workers()
+
+    # One row, not two: the digest was reproducible, so the upload updated this
+    # artifact instead of sitting a measured sibling next to it.
+    rows = store.source_artifacts(source_id)
+    assert [row["unreadable_chars"] for row in rows] == [0]
+    html = client.get("/sources").text
+    assert "not checked for unreadable characters" not in html
+    # And nothing took its place: 0 is measured and lossless, so this row now
+    # reports neither state. A note swapped for a count would not be a fix.
+    assert "unreadable character(s)" not in html
 
 
 def _cli_env(monkeypatch, tmp_path):
