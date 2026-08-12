@@ -1504,6 +1504,47 @@ def test_ask_hands_the_page_the_excerpts_already_ordered(tmp_path):
     ]
 
 
+def test_ask_body_promises_nothing_when_the_only_source_matched_nothing(tmp_path):
+    """The body's last branch, reached through a source the gate dropped.
+
+    The other runs that land on this branch each get there without the gate:
+    `..._promises_nothing_when_there_is_no_evidence` registers no source at
+    all, `..._names_the_grounding_table_when_no_excerpt_renders` registers one
+    whose file is not on disk so `is_file()` turns it away first, and the body
+    rows in `tests/test_ask_verdict.py` build their `AskExcerpt` values by hand
+    and never run `search_source_excerpts`. This row is the assembled pipeline
+    reaching the branch the remaining way: a source that was registered, found,
+    read, compared against the question, and kept out by `if score:` alone.
+
+    That is the distinction the helper's own docstring turns on -- it says the
+    branch reports what the page shows rather than why, *because* an excerpt
+    can be absent from text that was never read. This row supplies the other
+    half, where the text was read.
+
+    No fact is confirmed here, so the grounding table is empty too and the
+    sentence has to promise neither section.
+    """
+    (tmp_path / "sources").mkdir()
+    (tmp_path / "sources" / "unrelated.txt").write_text(
+        _UNRELATED_SOURCE_TEXT, encoding="utf-8"
+    )
+    store = _store(tmp_path)
+    store.add_source("sources/unrelated.txt")
+    client = FallbackClient(error=LLMError("synthetic outage"))
+
+    result = ask_question(
+        store, client, root=tmp_path, question="샘플조직의 역할은 무엇인가?"
+    )
+
+    assert result.route == "fallback"
+    assert result.excerpts == ()
+    assert result.grounding_facts == ()
+    assert result.answer == (
+        "The deterministic engine could not answer, and no source excerpt or "
+        "verified grounding fact is shown below."
+    )
+
+
 # --- Ask does not re-request a provider that just failed (#438) -------------
 
 
