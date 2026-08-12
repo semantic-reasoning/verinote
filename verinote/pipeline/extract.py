@@ -584,12 +584,15 @@ def process_extraction_job(
     except DuckDBFactTermStoreLockedError:
         # The sidecar was held by another process while this chunk was writing.
         # The chunk clause above already rewound its own claim; this rewinds the
-        # JOB around it, and the pairing is not optional. Leave the job `running`
-        # and the web worker's blanket handler writes `failed` over it, at which
-        # point the job has a `failed` status with zero failed chunks — an edge
-        # state `plan_source_extraction` reads as "rebuild fresh", throwing away
-        # the chunks this pass already finished and re-sending them to the LLM.
-        # Rolling back to `pending` is what makes the next pass a resume.
+        # JOB around it, and the pairing is not optional. A job left `running`
+        # here is one the caller has to resolve, and the broad clause each caller
+        # ends with (`web/app.py`; `cli.py` since #488) resolves it by writing
+        # `failed` — at which point the job has a `failed` status with zero failed
+        # chunks, an edge state `plan_source_extraction` reads as "rebuild fresh",
+        # throwing away the chunks this pass already finished and re-sending them
+        # to the LLM. Rolling back to `pending` is what makes the next pass a
+        # resume, and it is why both callers can afford a dedicated clause for
+        # this error that writes nothing at all.
         _back_off_from_locked_sidecar(
             store,
             job_id=job_id,

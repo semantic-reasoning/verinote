@@ -9,11 +9,14 @@ THE INVARIANT THESE TESTS PIN:
 
 Stated over the *chunks*, deliberately, and not as "once the job reaches a
 terminal status...". `process_extraction_job` does not write the job row when a
-non-`LLMError` escapes — the worker thread's `except Exception` in
-`_start_source_extraction` (`web/app.py`) does, and the CLI does not do it at
-all. Phrasing the invariant over the job would make it a statement about a
-caller, so the tests below that need a job in its post-failure resting state call
-`_worker_marks_job_failed` and say so.
+non-`LLMError` escapes; its CALLERS do — the worker thread's `except Exception`
+in `_start_source_extraction` (`web/app.py`), and since #488 the matching clause
+in `cmd_sync` (`cli.py`). Phrasing the invariant over the job would therefore
+make it a statement about callers rather than about this function, so the tests
+below that need a job in its post-failure resting state call
+`_worker_marks_job_failed` and say so. It would also be false where no caller
+writes at all: `BaseException` escapes both clauses, and a call that loses the
+ownership CAS writes nothing by design (both cases are pinned below).
 
 Scoped to THIS CALL'S CLAIMS, equally deliberately, because a broader reading is
 false and `extract.py` says so in two places:
@@ -142,11 +145,12 @@ def _worker_marks_job_failed(store: Store, job_id: int, message: str) -> None:
     """Stand-in for the web worker. NOT the code under test.
 
     `process_extraction_job` leaves the job row alone when a non-`LLMError`
-    escapes; the worker thread's `except Exception` in `_start_source_extraction`
-    (`web/app.py`) is what writes `failed`. A test that wants the job in its
-    post-failure resting state has to perform that write itself, so it is spelled
-    out here rather than hidden behind a fixture — nothing in `verinote/pipeline`
-    will do it.
+    escapes; a caller's broad clause is what writes `failed` — the worker thread's
+    in `_start_source_extraction` (`web/app.py`), or `cmd_sync`'s (`cli.py`,
+    #488). A test that wants the job in its post-failure resting state has to
+    perform that write itself, so it is spelled out here rather than hidden behind
+    a fixture — nothing in `verinote/pipeline` will do it, which is why the tests
+    below call `process_extraction_job` directly and then this.
     """
     store.fail_extraction_job(job_id, message)
 
@@ -572,40 +576,40 @@ def test_a_keyboard_interrupt_leaves_the_claim_to_the_resume_path(tmp_path):
 # --- The other caller: the CLI ------------------------------------------------
 
 
-def test_cli_sync_leaves_the_job_running_but_never_the_chunk(tmp_path, monkeypatch):
-    """`verinote sync` is why the invariant is stated over chunks, not over jobs.
+def test_cli_sync_fails_the_job_and_never_leaves_the_chunk_claimed(
+    tmp_path, monkeypatch
+):
+    """`verinote sync` writes the job row too now, and the chunk still holds.
 
-    DOMAIN NOTE — READ BEFORE REUSING THIS SHAPE. The derived phrasing "once the
-    job reaches a terminal status, no chunk is `running`" does NOT cover this
-    caller, and this test is the proof. `cmd_sync` wraps
-    `process_extraction_job` in a `try` that catches only
-    `ExtractionJobBusyError`, and `cli.main` catches only `KBLocationError` and
-    `DuckDBFactTermStoreLockedError`, so an unmodelled exception unwinds the whole
-    command with the job row untouched: it stays `running` forever. Nothing in the
-    CLI plays the part the web worker's `except Exception` plays. Asserting a
-    terminal job status here would be asserting something no production code does.
+    DOMAIN NOTE — READ BEFORE REUSING THIS SHAPE. The invariant this module pins
+    is still stated over CHUNKS, and this test is still why: the release happens
+    inside `process_extraction_job`, below every caller, so it holds no matter
+    what the caller does with the job row. The job row is a caller's business,
+    and the two callers now agree about it — `_start_source_extraction`
+    (`web/app.py`) and `cmd_sync` each end with a broad clause that writes
+    `failed`. That agreement is a fact about two call sites, not something the
+    invariant may be re-phrased over: `BaseException` and a lost ownership CAS
+    still leave a job in no terminal status at all (see the two tests above).
 
-    The chunk is a different matter, and that is the point: the release happens
-    inside `process_extraction_job`, below every caller, so it holds even where
-    the job row does not get written.
+    (a) WAS A CHARACTERISATION AND IS NOW A GUARANTEE. It used to read `running`
+    and carried #488's instruction to turn it red; #488 is that fix, and this is
+    the update it asked for. The stranded row it described — no terminal status,
+    so every later `sync` skipped the source as busy — is what the new clause
+    ends. (b), the chunk, was a guarantee all along (#475) and is unchanged.
 
-    THE TWO ASSERTIONS BELOW HAVE DIFFERENT STATUSES. (b), the chunk, is a
-    GUARANTEE — it is what #475 fixed and it must not regress. (a), the job left
-    `running`, is a CHARACTERISATION of a defect that is still open as #488: the
-    blanket handler exists only in the web worker, so `verinote sync` strands the
-    job row. Fixing #488 MUST turn (a) red, and the correct response then is to
-    update (a) to whatever terminal status the new handler writes — never to
-    restore the stranded job in order to keep this line green. #488 carries the
-    same instruction from its side, so the test and the issue each point at the
-    other.
+    THE MESSAGE IS PART OF THE ASSERTION. `str()` of a bare `ValueError()` is the
+    empty string, so the handler type-qualifies the cause for the same reason
+    `_release_claimed_chunk` does one layer down: a job whose `message` says only
+    "analysis failed" names nothing a reader can act on.
 
-    THIS ALSO CHANGES BEHAVIOUR, DELIBERATELY. Before the fix the chunk stayed
-    `running` with no failed chunk on the job, so `plan_source_extraction` never
-    saw a retry budget to spend and `verinote sync --recover` would rewind and
-    re-run the same source every single time. Now the chunk is `failed`, the
+    THIS ALSO CHANGES BEHAVIOUR, DELIBERATELY, and #475 already changed it once:
+    before #475 the chunk stayed `running` with no failed chunk on the job, so
+    `plan_source_extraction` never saw a retry budget and `verinote sync
+    --recover` re-ran the same source every time. Now the chunk is `failed`, the
     attempt counts up, and after `MAX_CHUNK_ATTEMPTS` the job is surfaced as
-    exhausted and skipped. A repeating sync becoming a terminating one is the
-    intended consequence.
+    exhausted and skipped. What #488 adds on top is that the job reaches a
+    terminal status at all, so the NEXT ordinary `sync` retries this source
+    instead of skipping it — `tests/test_job_resume.py` measures that end to end.
     """
     from verinote import cli
 
@@ -628,13 +632,15 @@ def test_cli_sync_leaves_the_job_running_but_never_the_chunk(tmp_path, monkeypat
         cli.main(["sync"])
 
     store = Store(tmp_path / "kb.sqlite")
-    jobs = list(store._conn.execute("SELECT id, status FROM extraction_jobs"))
+    jobs = list(store._conn.execute("SELECT id, status, message FROM extraction_jobs"))
     assert len(jobs) == 1
     job_id = int(jobs[0]["id"])
-    # (a) CHARACTERISATION of open defect #488, not a guarantee: no CLI code path
-    # writes the job row on this failure, so it is stranded `running`. Fixing #488
-    # must turn this line red; update it then, do not restore the defect.
-    assert jobs[0]["status"] == "running"
+    # (a) GUARANTEE (#488): `cmd_sync`'s broad clause writes the job row before
+    # letting the exception out, so the source is not stranded behind a `running`
+    # job no later sync will touch.
+    assert jobs[0]["status"] == "failed"
+    assert "ValueError" in jobs[0]["message"]  # the type, since str() would be ""
+    assert "boom" in jobs[0]["message"]
     # (b) GUARANTEE (#475): the chunk is released regardless of the caller
     chunks = store.source_chunks(job_id)
     assert len(chunks) > 1, "the note must split, or 'first chunk' means nothing"
