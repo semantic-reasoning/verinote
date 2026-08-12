@@ -799,12 +799,24 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                         chunk_chars=cfg.extraction_chunk_chars,
                         chunk_overlap_chars=cfg.extraction_chunk_overlap_chars,
                     )
+                # Resolved BEFORE the `try`, and the reason is the `try`'s scope,
+                # not this call's cost: an argument expression evaluates inside
+                # whatever `try` encloses the call, so leaving it inline puts
+                # prompt resolution — which reads `policy/prompts/*` off disk —
+                # under a handler whose whole subject is "the call that owns this
+                # job". `extraction_schema_hint` wraps only `PromptError`, so a
+                # prompt override that is not valid UTF-8 leaves it as the
+                # `UnicodeDecodeError` `read_text` raised. It stays INSIDE the
+                # per-source loop: hoisting it out of the loop as well would
+                # change how many times it runs and when, which is not this
+                # line's business.
+                schema_hint = extraction_schema_hint()
                 try:
                     outcome = process_extraction_job(
                         store,
                         client,
                         job_id=job_id,
-                        schema_hint=extraction_schema_hint(),
+                        schema_hint=schema_hint,
                         retry=retry,
                         retry_max_attempts=MAX_CHUNK_ATTEMPTS if retry else None,
                     )
