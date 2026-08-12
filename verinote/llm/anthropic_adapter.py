@@ -41,13 +41,20 @@ class AnthropicAdapter:
 
         Deliberately does NOT name the Base URL setting. A malformed `base_url`
         is the reachable cause this exists for (#493), but measured against the
-        installed SDKs it is not the only one: with `base_url` unset entirely,
-        `SSL_CERT_FILE` pointing at a missing file raises `FileNotFoundError`,
-        and `HTTPS_PROXY='::::'` or `OPENAI_BASE_URL='::::'` raise
-        `httpx.InvalidURL`. Telling those users to check a field they left blank
-        sends them to fix something that is not broken -- the misdirection #474
-        was reported as. The urllib adapters can be specific, and are, because
-        `Request(url)` has no second cause; see `base_url_unusable`.
+        installed `anthropic` SDK it is not the only one: with `base_url` unset
+        entirely, `SSL_CERT_FILE` pointing at a missing file raises
+        `FileNotFoundError`, and `HTTPS_PROXY='::::'` or
+        `ANTHROPIC_BASE_URL='::::'` raise `httpx.InvalidURL`. Telling those users
+        to check a field they left blank sends them to fix something that is not
+        broken -- the misdirection #474 was reported as. The urllib adapters can
+        be specific, and are, because `Request(url)` has no second cause; see
+        `base_url_unusable`.
+
+        Singular SDK, and its own variable, because each SDK reads only its own:
+        measured, the same `::::` in the *other* vendor's base-URL variable
+        leaves this constructor raising nothing at all. The otherwise identical
+        paragraph in `openai_adapter` therefore has to name a different variable
+        -- two paragraphs documenting two SDKs, not one copied twice.
         """
         return LLMError(
             redact_secret(f"{self.name} client could not be created: {exc}", self.cfg.api_key)

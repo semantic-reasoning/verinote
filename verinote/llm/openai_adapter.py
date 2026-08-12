@@ -41,13 +41,21 @@ class OpenAIAdapter:
 
         Deliberately does NOT name the Base URL setting. A malformed `base_url`
         is the reachable cause this exists for (#493), but measured against the
-        installed SDKs it is not the only one: with `base_url` unset entirely,
-        `SSL_CERT_FILE` pointing at a missing file raises `FileNotFoundError`,
-        and `HTTPS_PROXY='::::'` or `OPENAI_BASE_URL='::::'` raise
-        `httpx.InvalidURL`. Telling those users to check a field they left blank
-        sends them to fix something that is not broken -- the misdirection #474
-        was reported as. The urllib adapters can be specific, and are, because
-        `Request(url)` has no second cause; see `base_url_unusable`.
+        installed `openai` SDK it is not the only one: with `base_url` unset
+        entirely, `SSL_CERT_FILE` pointing at a missing file raises
+        `FileNotFoundError`, and `HTTPS_PROXY='::::'` or `OPENAI_BASE_URL='::::'`
+        raise `httpx.InvalidURL`. Telling those users to check a field they left
+        blank sends them to fix something that is not broken -- the misdirection
+        #474 was reported as. The urllib adapters can be specific, and are,
+        because `Request(url)` has no second cause; see `base_url_unusable`.
+
+        `OpenRouterAdapter` inherits this, and one clause above cannot reach it:
+        its `_base_url()` substitutes `OPENROUTER_DEFAULT_BASE_URL` for a blank
+        field, so `base_url` is never unset there and the SDK's
+        `OPENAI_BASE_URL` fallback is never consulted -- measured, the `::::`
+        that raises with `base_url=None` raises nothing once that default is
+        supplied. `SSL_CERT_FILE` and `HTTPS_PROXY` still do reach it, so the
+        conclusion -- do not name the Base URL setting -- holds there too.
         """
         return LLMError(
             redact_secret(f"{self.name} client could not be created: {exc}", self.cfg.api_key)
