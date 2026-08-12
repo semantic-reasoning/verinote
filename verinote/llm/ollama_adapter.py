@@ -59,10 +59,11 @@ def list_models(base_url: str | None, timeout: float) -> ModelListing:
     # unsaved, so a half-typed URL reaches `Request` on every keystroke that
     # triggers a refresh. Left to escape, that is a 500 from the model-field
     # endpoint instead of the banner the page already knows how to render.
+    url = f"{root}/api/tags"
     try:
-        req = urllib.request.Request(f"{root}/api/tags")
+        req = urllib.request.Request(url)
     except ValueError as exc:
-        raise base_url_unusable("ollama", exc) from exc
+        raise base_url_unusable("ollama", url, exc) from exc
     try:
         with urllib.request.urlopen(  # noqa: S310 - local trusted endpoint
             req, timeout=timeout
@@ -109,14 +110,15 @@ class OllamaAdapter:
         # "base URL is unusable" — a bug in this file blamed on the user's
         # setting. The region below must contain nothing but the URL parse.
         data = json.dumps(payload).encode("utf-8")
+        url = f"{self.base_url}/api/chat"
         try:
             req = urllib.request.Request(
-                f"{self.base_url}/api/chat",
+                url,
                 data=data,
                 headers={"Content-Type": "application/json"},
             )
         except ValueError as exc:
-            raise base_url_unusable(self.name, exc) from exc
+            raise base_url_unusable(self.name, url, exc) from exc
         try:
             with urllib.request.urlopen(  # noqa: S310 - local trusted endpoint
                 req, timeout=self.cfg.llm_timeout_seconds

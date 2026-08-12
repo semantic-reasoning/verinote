@@ -48,7 +48,7 @@ def redact_secret(text: str, secret: str | None) -> str:
     return text.replace(secret, "***")
 
 
-def base_url_unusable(provider: str, exc: Exception) -> LLMError:
+def base_url_unusable(provider: str, url: str, exc: Exception) -> LLMError:
     """The configured endpoint is not something a request can even be built for.
 
     Nothing was dialled, so "request failed" would name the wrong suspect: the
@@ -60,10 +60,30 @@ def base_url_unusable(provider: str, exc: Exception) -> LLMError:
     proxy and certificate environment too and a blank field is a live suspect
     there; see `_client_failed`.
 
+    `url` is the string `Request` was actually handed — the configured base URL
+    with this call's path already on it — and it is a parameter rather than
+    something read back out of `exc` because the exception carries it only
+    sometimes. Measured against `urllib.request.Request`:
+
+        '::::/api/tags'     -> ValueError: unknown url type: '::::/api/tags'
+        'http://[/api/tags' -> ValueError: Invalid IPv6 URL
+        ''                  -> ValueError: unknown url type: ''
+
+    The middle one is the whole argument for this parameter: told only "Invalid
+    IPv6 URL", a user cannot see which of their settings produced it, and the
+    message names a field without ever quoting what is in it.
+
+    The URL is appended only where the exception has not already quoted it, so
+    the ordinary case stays one sentence instead of saying the same string
+    twice.
+
     Returns rather than raises, so the call site keeps `raise ... from exc` and
     the original stays in the chain — the shape `_request_failed` already uses.
     """
-    return LLMError(f"{provider} base URL is unusable: {exc} (check the Base URL setting)")
+    hint = "check the Base URL setting"
+    if url not in str(exc):
+        hint = f"tried {url!r}; {hint}"
+    return LLMError(f"{provider} base URL is unusable: {exc} ({hint})")
 
 
 @dataclass(frozen=True)
