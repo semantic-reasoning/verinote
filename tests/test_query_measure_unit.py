@@ -246,6 +246,7 @@ def test_the_digit_requirement_keeps_ordinary_prose_out_of_the_caveat(monkeypatc
     import re
 
     import verinote.pipeline.query_measure_unit as qmu
+    from verinote.pipeline.query_intent import _KOREAN_MEASURE_COUNTER
     from verinote.pipeline.query_measure_unit import (
         _VALUE_MEASUREMENT,
         korean_measure_unit_mismatch,
@@ -253,6 +254,11 @@ def test_the_digit_requirement_keeps_ordinary_prose_out_of_the_caveat(monkeypatc
 
     counters = _unit_bearing_counters()
     assert len(counters) == 13
+    # The 13 is an intersection, so it stays 13 when a counter that names no
+    # unit is added to the table -- `마리` widens the table and reaches nothing
+    # here. query_intent.py's comment points at this test for the size of the
+    # table too, so the table is counted here as well or that figure is unheld.
+    assert len(_KOREAN_MEASURE_COUNTER.split("|")) == 29
     questions = [f"샘플대상의 지표는 몇 {counter}인가?" for counter in counters]
     pairs = [(question, value) for question in questions for value in _PROSE_VALUES]
     assert len(pairs) == len(counters) * len(_PROSE_VALUES)
