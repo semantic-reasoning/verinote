@@ -3,8 +3,9 @@
 
 THE INVARIANT THESE TESTS PIN:
 
-    Whether `process_extraction_job` returns or escapes by exception, immediately
-    after the call none of that job's chunks are `running`.
+    Whether `process_extraction_job` returns or escapes by exception, no chunk
+    THAT CALL CLAIMED is left `running`. Every claim it took has reached a resting
+    place by the time the call is over.
 
 Stated over the *chunks*, deliberately, and not as "once the job reaches a
 terminal status...". `process_extraction_job` does not write the job row when a
@@ -13,6 +14,30 @@ non-`LLMError` escapes — the worker thread's `except Exception` in
 all. Phrasing the invariant over the job would make it a statement about a
 caller, so the tests below that need a job in its post-failure resting state call
 `_worker_marks_job_failed` and say so.
+
+Scoped to THIS CALL'S CLAIMS, equally deliberately, because a broader reading is
+false and `extract.py` says so in two places:
+
+* A CALL THAT NEVER TOOK THE JOB promises nothing about that job's chunks. Lose
+  the ownership CAS and `process_extraction_job` raises `ExtractionJobBusyError`
+  having touched nothing — the comment on that raise (`extract.py`) is explicit
+  that the owner "may have a chunk in flight, so we must NOT reset its chunks"
+  (#240). A `running` chunk therefore survives such a call, and must. This needs
+  no concurrency to see: one call against a KB carrying a zombie `running` job
+  does it, and `test_a_busy_job_is_left_entirely_to_its_owner` is that call.
+* `BaseException` IS NOT COVERED, by the same design. `extract.py` states that
+  Ctrl-C and `SystemExit` are "deliberately not caught", because the job does not
+  reach a terminal status on that path either and the startup resume
+  (`_resume_source_extraction_jobs` -> `rollback_extraction_job`) is what reclaims
+  the chunk. `test_a_keyboard_interrupt_leaves_the_claim_to_the_resume_path` pins
+  both halves: the claim survives the interrupt, and the resume path clears it.
+
+THREE RESTING PLACES, not two. A claim ends as `done`, or as `failed` carrying its
+cause, or — when the release is for a condition the chunk did not cause, i.e. the
+fact-term sidecar being held by another process — back at `pending` with its
+attempt refunded and the job rolled back around it. That third one has its own
+module, `test_chunk_claim_sidecar_lock.py`, because what matters there is what the
+release COSTS rather than that it happened.
 
 `canceled` is out of scope: it exists in the `schema.sql` CHECK constraint but no
 production code sets it.
@@ -33,6 +58,7 @@ import pytest
 from verinote.llm.base import ExtractedFact, LLMError
 import verinote.pipeline.extract as extract_mod
 from verinote.pipeline.extract import (
+    ExtractionJobBusyError,
     ExtractionJobPlan,
     MAX_CHUNK_ATTEMPTS,
     create_chunked_extraction_job,
@@ -471,6 +497,75 @@ def test_an_llm_error_still_fails_only_its_own_chunk_and_the_pass_continues(tmp_
     # row and the rendered page instead of on this string.
     assert "provider down" in job["message"]
     assert "1 chunk(s) failed" in job["message"]
+    s.close()
+
+
+# --- The two escapes the invariant cannot cover --------------------------------
+
+
+def test_a_busy_job_is_left_entirely_to_its_owner(tmp_path):
+    """A call that loses the ownership CAS promises nothing about that job's chunks.
+
+    This is the exclusion the module docstring names first, and it is why the
+    invariant is scoped to the claims a call TOOK. The setup is a KB in the state
+    a live owner (or a crashed one) leaves behind: job `running`, chunk 0 claimed.
+    A second pass must back off having written nothing — resetting that chunk is
+    precisely the #240 bug, the same chunk sent to the LLM twice.
+
+    No second thread is needed to reach it: the state is a property of the rows,
+    not of the timing, so one call against those rows reproduces it exactly.
+
+    The `client.calls` assertion is the one that says "nothing happened" rather
+    than "nothing changed": a pass that claimed a chunk and then rewound it would
+    leave the same statuses behind but would already have spent an LLM call.
+    """
+    s = _store(tmp_path)
+    _source_id, job_id = _three_chunk_job(s)
+    assert s.claim_pending_extraction_job(job_id) is True  # the owner takes it
+    chunk_id = int(s.next_pending_chunk(job_id)["id"])
+    assert s.mark_chunk_running(chunk_id) is not None  # ...and puts one in flight
+    before = [(c["status"], c["attempts"]) for c in s.source_chunks(job_id)]
+    client = _ChunkClient()
+
+    with pytest.raises(ExtractionJobBusyError):
+        process_extraction_job(s, client, job_id=job_id)
+
+    assert _statuses(s, job_id) == ["running", "pending", "pending"]
+    assert _running(s, job_id) == [chunk_id]  # the owner's claim, untouched
+    assert [(c["status"], c["attempts"]) for c in s.source_chunks(job_id)] == before
+    assert client.calls == []
+    s.close()
+
+
+def test_a_keyboard_interrupt_leaves_the_claim_to_the_resume_path(tmp_path):
+    """Ctrl-C is not caught, on purpose — and something else is responsible for it.
+
+    The second exclusion. `extract.py` says `BaseException` is "deliberately not
+    caught" because the job does not reach a terminal status on that path either;
+    the claim outlives the process and the startup resume is what reclaims it.
+    Prose alone would leave that as an intention, so both halves are pinned here:
+    the interrupt really does strand the claim, AND the named recovery really does
+    clear it.
+
+    The second half calls `rollback_extraction_job` directly — the same call
+    `_resume_source_extraction_jobs` (`web/app.py`) makes on a job left `running`.
+    It is a stand-in for that loop, not the code under test.
+    """
+    s = _store(tmp_path)
+    _source_id, job_id = _three_chunk_job(s)
+
+    with pytest.raises(KeyboardInterrupt):
+        process_extraction_job(
+            s, _ChunkClient(fail_on=2, exc=KeyboardInterrupt()), job_id=job_id
+        )
+
+    # chunk 0 finished, chunk 1's claim is still held: nothing released it
+    assert _statuses(s, job_id) == ["done", "running", "pending"]
+
+    s.rollback_extraction_job(job_id, "rewound at startup after an interrupted run")
+
+    assert _statuses(s, job_id) == ["done", "pending", "pending"]
+    assert _running(s, job_id) == []
     s.close()
 
 
