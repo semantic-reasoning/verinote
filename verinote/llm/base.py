@@ -75,13 +75,17 @@ def base_url_unusable(provider: str, url: str, exc: Exception) -> LLMError:
 
     The URL is appended only where the exception has not already quoted it, so
     the ordinary case stays one sentence instead of saying the same string
-    twice.
+    twice. The test is on `repr(url)`, not on `url`: `unknown url type` quotes
+    with `!r`, so a URL holding anything `repr` escapes — a tab, a newline, a
+    zero-width space or BOM carried along by a paste — is in that message in
+    escaped form and not in raw form. Comparing raw would read "not mentioned"
+    and append a second copy of a URL already on the line.
 
     Returns rather than raises, so the call site keeps `raise ... from exc` and
     the original stays in the chain — the shape `_request_failed` already uses.
     """
     hint = "check the Base URL setting"
-    if url not in str(exc):
+    if f"{url!r}" not in str(exc):
         hint = f"tried {url!r}; {hint}"
     return LLMError(f"{provider} base URL is unusable: {exc} ({hint})")
 
