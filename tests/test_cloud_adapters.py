@@ -1,5 +1,8 @@
 # SPDX-License-Identifier: MPL-2.0
+import ast
+import inspect
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -548,6 +551,60 @@ def test_a_client_failure_does_not_send_a_user_to_a_field_they_left_blank(
 
     assert "Base URL" not in str(exc.value)
     assert "base_url" not in str(exc.value)
+
+
+def _client_failed_docstring(adapter) -> str:
+    """`_client_failed`'s docstring as the source spells it.
+
+    Read out of the AST, not off `__doc__`: under `python -OO` the interpreter
+    strips docstrings, so `adapter._client_failed.__doc__` is `None` and every
+    assertion below would collapse into a claim about the empty case. Parsing
+    the file is indifferent to that, and it is what the other source-shape
+    guards in this suite already do.
+    """
+    tree = ast.parse(Path(inspect.getfile(adapter)).read_text(encoding="utf-8"))
+    cls = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == adapter.__name__
+    )
+    method = next(
+        node
+        for node in cls.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_client_failed"
+    )
+    doc = ast.get_docstring(method)
+    assert doc is not None, f"{adapter.__name__}._client_failed has no docstring to check"
+    return doc
+
+
+@pytest.mark.parametrize(
+    ("adapter", "own", "foreign"),
+    [
+        (AnthropicAdapter, "ANTHROPIC_BASE_URL", "OPENAI_BASE_URL"),
+        (OpenAIAdapter, "OPENAI_BASE_URL", "ANTHROPIC_BASE_URL"),
+    ],
+    ids=["anthropic", "openai"],
+)
+def test_each_adapter_names_only_its_own_vendor_base_url_variable(adapter, own, foreign):
+    """These two docstrings are near-identical prose about two different SDKs,
+    and the anthropic one shipped naming `OPENAI_BASE_URL` — a variable measured
+    to do nothing in `anthropic.Anthropic(...)`. That is the misdirection the
+    docstring itself argues against, one indirection out: a user handed a name
+    their SDK never reads goes looking for a setting that cannot be their cause.
+
+    Measured with each variable set alone in an `env -i` environment, against
+    anthropic 0.116.0 / openai 2.44.0 / httpx 0.28.1, with `base_url=None`:
+    `ANTHROPIC_BASE_URL='::::'` raises `httpx.InvalidURL` for anthropic and
+    nothing for openai, and `OPENAI_BASE_URL='::::'` the other way round.
+
+    Absence is the half that fails today; presence is here so that satisfying
+    it by deleting the sentence is not a way out.
+    """
+    doc = _client_failed_docstring(adapter)
+
+    assert own in doc
+    assert foreign not in doc
 
 
 @pytest.mark.parametrize(("provider", "module"), [("anthropic", "anthropic"), ("openai", "openai")])
