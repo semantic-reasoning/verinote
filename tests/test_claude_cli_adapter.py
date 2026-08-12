@@ -507,10 +507,13 @@ def test_claude_cli_undecodable_reply_does_not_blame_the_source(tmp_path, monkey
     # constant does not. (`verinote/pipeline/ask.py` keeps a second copy of
     # `_short_reason` with the same cap.)
     #
-    # Only for THIS prefix, though: `query.py:387` composes a much longer one and
-    # does truncate this message -- mid-word, even when the reason it prepends is
-    # empty. That site is over budget on its own and closing it is a separate
-    # change; what is pinned here is that this constant is not what put it there.
+    # Only for THIS prefix, though. `query.py:387` puts a variable reason and a
+    # much longer fixed clause in front of the message before the same cap
+    # applies, so the message's share of the room there is far smaller than it is
+    # here -- too small for this constant even when that reason is empty, and the
+    # tail goes mid-word. The reason and the message share that room between them;
+    # which of the two gives is a separate change. What the assertion below pins
+    # is only that this message arrives whole on the `llm error: ` path.
     prefixed = f"llm error: {message}"
     assert _short_reason(prefixed) == prefixed
 
