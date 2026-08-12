@@ -23,13 +23,43 @@ class AnthropicAdapter:
         self.cfg = cfg
 
     def _request_failed(self, exc: Exception) -> LLMError:
-        """Provider failures from a *request*, redacted.
+        """Failures from a `client.messages.create` call, redacted.
 
-        One of two construction sites in this class -- `_client_failed` is the
-        other, for failures that happen before any request is made. Both redact,
-        which is the property that matters: a raise site somebody forgot must not
-        let the configured key survive into an error message. Splitting them is
-        what keeps each message able to say something true about *when* it failed.
+        Redaction is the property that matters, not the split. Two sites in this
+        class put a *caught* exception into an `LLMError` -- this one and
+        `_client_failed` -- and both redact, so a raise site somebody forgot
+        cannot let the configured key survive into a message that is persisted
+        to `source_chunks.error`. Those two are the whole of the safety
+        argument; the class's other `LLMError`s are a different kind.
+
+        A third carrier lives outside the class: module-level `_render_prompt`
+        builds `LLMError(str(exc))` and does NOT redact. Nothing leaks through
+        it today, because it catches only `PromptError` and those messages are
+        fixed strings plus a prompt id, placeholder name, or title. But "every
+        site carrying a caught exception redacts" is false of this *file*, and
+        asserting it unqualified is the sort of almost-true claim this docstring
+        was rewritten to stop making.
+
+        The remaining raises use fixed strings and carry nothing caught:
+        `_require_key`, the `ImportError` clause in `_client`, and the three "no
+        tool_use block" raises in the generation methods. `_require_key` is the
+        instructive one -- it fails before anything is dialled and is
+        deliberately NOT `_client_failed`, which is what the hoist comment in
+        `_client` is protecting. "Before the request" is therefore not what
+        separates these messages.
+
+        Timing is not what this name promises, either. Prompt rendering is an
+        ARGUMENT to `client.messages.create`, so it is evaluated inside the
+        guarded region: an override missing a required placeholder is reported
+        as "anthropic request failed" with nothing dialled (measured). Read this
+        message as "the SDK call yielded no result", not "the provider
+        answered"; `_client_failed` is the one entitled to speak about when.
+        That imprecision predates this change and is left to a follow-up rather
+        than fixed by hoisting the render out, because hoisting it opens a gap:
+        `get_prompt` reads an override with `read_text`, so a hand-edited
+        non-UTF-8 file raises `UnicodeDecodeError`, which `_render_prompt`'s
+        `except PromptError` does not catch and no caller's `except LLMError`
+        catches either. Today the guarded region absorbs it.
 
         Redaction covers only the key this process knows about, which is why
         `_require_key` refuses to let the SDK authenticate with one it never saw.
