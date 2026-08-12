@@ -500,10 +500,20 @@ def process_extraction_job(
                 # and mislabel a healthy chunk.
                 raise
             except Exception as exc:
-                # The single release point for a held claim. Broad on purpose:
-                # `LLMError` is the only failure this pipeline models, so anything
-                # else is by definition unmodelled and must not be allowed to
-                # strand the claim.
+                # The single release point for a held claim. Broad on purpose —
+                # but NOT because `LLMError` is the only failure this pipeline
+                # models. Name the modelled set and it is plainly larger:
+                # `PolicyMissingError` (the clause directly above) and
+                # `ExtractionJobBusyError` at the ownership claim, plus, inside
+                # `_extract_chunk` and the helpers it calls, `LLMError`,
+                # `PromptError`, `CorroborationPolicyError` and `TermParseError`.
+                #
+                # What justifies the breadth is that the set is OPEN. It has grown
+                # with every subsystem extraction learned to talk to, and each new
+                # member arrives as an exception type that reaches this loop before
+                # anyone writes it a clause of its own. The broad clause is the
+                # floor under that list — it keeps the NEXT unmodelled type from
+                # stranding a claim — not an assertion that the list is empty.
                 _release_claimed_chunk(store, chunk_id, exc)
                 if not isinstance(exc, LLMError):
                     raise
