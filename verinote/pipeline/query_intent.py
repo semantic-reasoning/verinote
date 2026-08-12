@@ -606,12 +606,13 @@ _KOREAN_ATTRIBUTE_LABEL_TAIL = re.compile(
 )
 _KOREAN_ATTRIBUTE_LABEL_JOSA = re.compile(r"(?:은|는|이|가)\s*$")
 
-# tests/test_query_measure_unit.py, now a module away, pins this string twice in
-# test_the_digit_requirement_keeps_ordinary_prose_out_of_the_caveat: its overlap
-# with _MEASUREMENT_UNIT_SPELLINGS at 13, and its own alternatives at 29. The
-# overlap is an intersection, so it does not move for a counter that names no
-# unit -- `마리`, say; the count of 29 is what notices that one. Either way the
-# red lands in that file, not in this one's.
+# tests/test_query_measure_unit.py, now a module away, pins this string twice.
+# test_the_digit_requirement_keeps_ordinary_prose_out_of_the_caveat pins its
+# overlap with _MEASUREMENT_UNIT_SPELLINGS at 13, and
+# test_the_counter_table_is_the_size_the_comment_names pins its own alternatives
+# at 29. The overlap is an intersection, so it does not move for a counter that
+# names no unit -- `마리`, say; the count of 29 is what notices that one. Either
+# way the red lands in that file, not in this one's.
 _KOREAN_MEASURE_COUNTER = (
     r"살|명|개|건|년|개월|달|주|일|시간|분|초|번|회|차|가지|종류|종|"
     r"퍼센트|프로|원|점|위|권|장|쪽|편|배|층"

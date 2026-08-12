@@ -246,7 +246,6 @@ def test_the_digit_requirement_keeps_ordinary_prose_out_of_the_caveat(monkeypatc
     import re
 
     import verinote.pipeline.query_measure_unit as qmu
-    from verinote.pipeline.query_intent import _KOREAN_MEASURE_COUNTER
     from verinote.pipeline.query_measure_unit import (
         _VALUE_MEASUREMENT,
         korean_measure_unit_mismatch,
@@ -254,11 +253,6 @@ def test_the_digit_requirement_keeps_ordinary_prose_out_of_the_caveat(monkeypatc
 
     counters = _unit_bearing_counters()
     assert len(counters) == 13
-    # The 13 is an intersection, so it stays 13 when a counter that names no
-    # unit is added to the table -- `마리` widens the table and reaches nothing
-    # here. query_intent.py's comment points at this test for the size of the
-    # table too, so the table is counted here as well or that figure is unheld.
-    assert len(_KOREAN_MEASURE_COUNTER.split("|")) == 29
     questions = [f"샘플대상의 지표는 몇 {counter}인가?" for counter in counters]
     pairs = [(question, value) for question in questions for value in _PROSE_VALUES]
     assert len(pairs) == len(counters) * len(_PROSE_VALUES)
@@ -286,6 +280,26 @@ def test_the_digit_requirement_keeps_ordinary_prose_out_of_the_caveat(monkeypatc
         if korean_measure_unit_mismatch(question, value) is not None
     )
     assert fires == 68
+
+
+def test_the_counter_table_is_the_size_the_comment_names():
+    """29 alternatives in `_KOREAN_MEASURE_COUNTER`, and nothing else counts them.
+
+    The overlap pinned above is an intersection, so it does not move for a
+    counter that names no unit: adding `마리` leaves it at 13 and reaches
+    nothing else in this file. The comment beside the table in `query_intent.py`
+    quotes both figures and points here for both, so this counts the table
+    itself -- otherwise a widening that touches no unit lands unremarked, and
+    the figure in that comment is one no assertion holds.
+
+    Its own test rather than a line beside the overlap: the 13 is what that
+    sweep is built from, while this is a documentation guard, and an author who
+    widens the table should be told that by name and not by a failure in a
+    test about the digit requirement.
+    """
+    from verinote.pipeline.query_intent import _KOREAN_MEASURE_COUNTER
+
+    assert len(_KOREAN_MEASURE_COUNTER.split("|")) == 29
 
 
 def test_a_cross_family_unit_is_not_a_unit_mismatch():
@@ -3665,7 +3679,9 @@ def test_query_intent_never_imports_the_measure_unit_module():
 
     Parsed rather than imported, so a re-export inside `if TYPE_CHECKING` or
     behind a function is caught too -- those never execute and so could never
-    fail an import probe.
+    fail an import probe. Both of those are swept below rather than only
+    claimed here: this file spells neither, so nothing the live arm reads can
+    tell a scan that walks the tree from one that reads its top level.
     """
     import pathlib
 
@@ -3702,15 +3718,23 @@ def test_query_intent_never_imports_the_measure_unit_module():
         "from . import query_measure_unit",
         "from verinote.pipeline import query_measure_unit as qmu",
         "from verinote.pipeline import query_intent, query_measure_unit",
+        "def _rexport():\n"
+        "    from verinote.pipeline import query_measure_unit\n"
+        "\n"
+        "    return query_measure_unit\n",
+        "if TYPE_CHECKING:\n"
+        "    from .query_measure_unit import korean_measure_unit_mismatch\n"
+        "\n"
+        "_ELSEWHERE = 1\n",
     ],
 )
 def test_every_spelling_of_the_forbidden_import_is_caught(statement):
     """The tripwire above reads one file, which today spells nothing this way.
 
-    So the spellings it would catch are measured here instead. The last four
-    name the module as a bound name rather than as the module imported from,
-    and `node.module` is `verinote.pipeline` or `None` for all of them -- the
-    check on it never sees the word. They are caught by the check on
+    So the spellings it would catch are measured here instead. Four of the flat
+    ones name the module as a bound name rather than as the module imported
+    from, and `node.module` is `verinote.pipeline` or `None` for all of them --
+    the check on it never sees the word. They are caught by the check on
     `node.names`, and before that check existed a re-export written
     `from verinote.pipeline import query_measure_unit` -- the form this
     codebase already writes three times under `verinote/`, once for a sibling
@@ -3722,6 +3746,14 @@ def test_every_spelling_of_the_forbidden_import_is_caught(statement):
     import query_measure_unit` puts it in `node.names`, so each falls to a
     check that was going to run anyway. A gate on `node.level` would only
     re-decide what these two already decide.
+
+    The last two are indented -- one inside a function, one under `if
+    TYPE_CHECKING` -- and they are what holds the tripwire's claim to catch
+    both of those. Nothing else here does: every other case is a single
+    top-level statement, and so is the line the live arm appends, so a scan
+    narrowed to `ast.parse(source).body` passed all of them. Each also has a
+    line after the import, which a scan narrowed to the last line it was
+    handed does not survive.
     """
     assert _measure_unit_imports(statement) != []
 
