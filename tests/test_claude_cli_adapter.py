@@ -1,8 +1,11 @@
 # SPDX-License-Identifier: MPL-2.0
+import ast
+import inspect
 import os
 import shlex
 import subprocess
 import tempfile
+import textwrap
 from types import SimpleNamespace
 
 import pytest
@@ -97,6 +100,13 @@ def _fake_claude(tmp_path, monkeypatch, reply: bytes) -> None:
         f"{proof.returncode} emitting {proof.stdout!r}, not the {reply!r} this test "
         f"is about ({proof.stderr!r})"
     )
+
+
+def _unusable_temp_directory(tmp_path, monkeypatch) -> None:
+    def boom(**kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", boom)
 
 
 def test_factory_selects_claude_cli_adapter(tmp_path):
@@ -515,10 +525,7 @@ def test_claude_cli_unusable_temp_directory_is_llm_error(tmp_path, monkeypatch, 
     worker's generic branch as "analysis failed: [Errno 28] ...", the same shape
     #474 was reported as.
     """
-    def boom(**kwargs):
-        raise OSError(28, "No space left on device")
-
-    monkeypatch.setattr(tempfile, "TemporaryDirectory", boom)
+    _unusable_temp_directory(tmp_path, monkeypatch)
 
     with pytest.raises(LLMError) as excinfo:
         invoke(ClaudeCliAdapter(_cfg(tmp_path, llm_timeout_seconds=5.0)), "Ada")
@@ -591,10 +598,13 @@ def _stub(exc):
     return setup
 
 
-# One entry per `except` clause in `_invoke`, each with text that reaches it: the
-# argument clause needs a NUL, the rest must NOT have one or they would trip that
-# clause first.
+# One entry per `except` clause in `_invoke`, in the order the clauses appear, each
+# with text that reaches it: the argument clause needs a NUL, the rest must NOT have
+# one or they would trip that clause first. Neither the count nor the order is
+# maintained by hand -- the test below reads both off `_invoke`'s source and fails
+# when this list stops matching it.
 _CAUSES = [
+    pytest.param(_unusable_temp_directory, "Ada", OSError, id="temp-directory-creation"),
     pytest.param(_stub(FileNotFoundError()), "Ada", FileNotFoundError, id="missing-binary"),
     pytest.param(
         _stub(subprocess.TimeoutExpired(["claude"], 5.0)),
@@ -602,7 +612,6 @@ _CAUSES = [
         subprocess.TimeoutExpired,
         id="timeout",
     ),
-    pytest.param(_stub(PermissionError(13, "Permission denied")), "Ada", OSError, id="os-error"),
     pytest.param(
         lambda tmp_path, monkeypatch: _fake_claude(tmp_path, monkeypatch, b"\xff\xfe"),
         "Ada",
@@ -610,7 +619,40 @@ _CAUSES = [
         id="undecodable-reply",
     ),
     pytest.param(_no_claude_on_path, "Ada\x00Lovelace", ValueError, id="unsendable-argument"),
+    pytest.param(_stub(PermissionError(13, "Permission denied")), "Ada", OSError, id="os-error"),
 ]
+
+
+def test_claude_cli_cause_table_mirrors_every_except_clause_in_source():
+    """`_CAUSES` claims one entry per `except` clause in `_invoke`. That claim was
+    hand-counted once and went stale two commits later, when the temp directory's
+    creation clause was added and the table was not. So it is read off the function
+    instead of retyped.
+
+    MIRRORS, not covers. This holds the table to the source's clause list and
+    nothing more. A clause that no input can reach -- say a `ValueError` subclass
+    placed below the `ValueError` clause -- passes here with an entry that never
+    fires, and the two `OSError` entries could swap places unnoticed because the
+    comparison is by name. Reachability is what the parametrised tests below and
+    mutation runs are for.
+
+    `expected_cause` names the clause's *declared* type, not necessarily the type
+    its setup raises -- the `os-error` entry raises `PermissionError` into
+    `except OSError` -- because it is the clause list this has to line up with.
+    """
+    source = textwrap.dedent(inspect.getsource(ClaudeCliAdapter._invoke))
+    handlers = sorted(
+        (node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.ExceptHandler)),
+        key=lambda node: node.lineno,
+    )
+    # Not vacuous if `_invoke` is ever refactored so the clauses live elsewhere.
+    assert handlers
+    # A bare `except:` would be a defect of its own, and would silently drop out
+    # of the comparison below rather than failing it.
+    assert all(handler.type is not None for handler in handlers)
+    clauses = [ast.unparse(handler.type).rsplit(".", 1)[-1] for handler in handlers]
+
+    assert clauses == [param.values[2].__name__ for param in _CAUSES]
 
 
 @pytest.mark.parametrize("invoke", _INVOCATIONS)
