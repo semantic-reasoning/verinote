@@ -77,10 +77,38 @@
               {# #473: three states, not two. NULL is an artifact extracted before
                  anyone counted, and it may well be full of unreadable glyphs --
                  rendering it the same as a measured 0 would tell the reader it is
-                 clean on the strength of nobody having looked. It also still holds
-                 whatever the extractor produced, so the note names re-upload, not
-                 Re-analyze, which would meet the same characters again. 0 stays
-                 silent: a measured, lossless extraction has nothing to report.
+                 clean on the strength of nobody having looked. 0 stays silent: a
+                 measured, lossless extraction has nothing to report.
+
+                 The note names deleting the source because re-uploading does not
+                 clear this row. `store_source` hashes the SANITIZED text, and an
+                 unmeasured row was hashed before anything sanitized, so where the
+                 old extraction held NUL the digests differ: the upload INSERTs a
+                 second, measured artifact rather than filling this one in (see
+                 `Store.add_source_artifact`). `_source_inspector_rows` renders
+                 every row `store.source_artifacts` returns, so afterwards the
+                 note and the new "N unreadable character(s)" sit side by side
+                 and the note is there for good. Only `store.delete_source` --
+                 and the file sweep in the delete route beside it -- takes the
+                 row away.
+
+                 Re-analyze is worth naming only while this row is the source's
+                 ONLY text artifact: `reanalyze_source` feeds the chunk job with
+                 the artifact file it names, so it re-reads that unsanitized text
+                 and meets the same characters again. Once a re-upload has landed,
+                 `latest_source_text_artifact` and `source_text_inputs` both pick
+                 by MAX(id), so Re-analyze reads the new clean text -- correct
+                 output, with the stale note still on screen above it.
+
+                 The named action is not free, and the badge does not have room to
+                 say so: `store.delete_source` drops every fact from this source,
+                 and unlike `clear_source_analysis` it does not spare `confirmed`
+                 or `accepted` ones. After a re-upload that is a trap -- the note
+                 and the measured count are adjacent, so a reader following the
+                 note deletes facts a human had already confirmed against the
+                 clean re-extraction. Naming an action that works beats naming one
+                 that does not; sizing that warning is a UX question this comment
+                 is only recording, not settling.
 
                  The count is bare `.warn-inline`, matching the "N pending" signal
                  further down this row exactly -- same file, same kind of inline
@@ -95,7 +123,7 @@
                  No new CSS either way. #}
               {% set unreadable = artifact["unreadable_chars"] %}
               {% if unreadable is none %}
-                <span class="badge src">not checked for unreadable characters — some may remain; re-upload to fix</span>
+                <span class="badge src">not checked for unreadable characters — some may remain; delete the source and upload it again to fix</span>
               {% elif unreadable %}
                 <span class="warn-inline">{{ unreadable }} unreadable character(s)</span>
               {% endif %}
