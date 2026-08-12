@@ -2,12 +2,25 @@
 """The Sources page counts a claimed chunk as running, not pending (#475).
 
 DOMAIN NOTE — this is deliberately tested on a LIVE job, and that is a different
-domain from the rest of #475's tests. Those pin that a chunk is never left
-`running` once a job pass ends; with that fixed, a job in a terminal status can
-no longer have a `running` chunk to display, so the display can only be exercised
-while a job is genuinely in flight. The reported symptom (a `failed` job showing
-"49 pending" for 48 untouched chunks plus one claimed) is the same miscount seen
-in a state that no longer occurs.
+domain from the rest of #475's tests. Those pin that a claim this pipeline took is
+never left `running` once the pass ends, which makes an in-flight job the
+straightforward way to get a `running` chunk onto the page: the state arrives by
+ordinary progress instead of by arranging a failure to produce it.
+
+WHAT THAT CHOICE MUST NOT BE READ AS. A job in a terminal status can still have a
+`running` chunk, by at least two routes, and this same change documents both:
+
+* the read-back window at the claim, described in `verinote/pipeline/extract.py`
+  and owned by #489 — `mark_chunk_running` commits the claim and then reads the
+  row back in a separate statement, so a failure in that read strands a chunk
+  whose id the caller never received, after which the web worker's blanket
+  handler writes the job `failed`;
+* chunks already stranded by the bug this change fixes. Existing KBs carry them,
+  and they render here beside whatever status their job came to rest in.
+
+The reported symptom (a `failed` job showing "49 pending" for 48 untouched chunks
+plus one claimed) is therefore a state that still occurs. A live job is simply the
+cheapest way to render the same miscount.
 
 What is asserted is the rendered page, through `create_app` + `TestClient`, so
 the `_source_inspector_rows` -> `sources.html` path is the thing under test
