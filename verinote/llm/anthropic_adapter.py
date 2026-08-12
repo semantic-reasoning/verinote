@@ -32,13 +32,19 @@ class AnthropicAdapter:
         to `source_chunks.error`. Those two are the whole of the safety
         argument; the class's other `LLMError`s are a different kind.
 
-        A third carrier lives outside the class: module-level `_render_prompt`
-        builds `LLMError(str(exc))` and does NOT redact. Nothing leaks through
-        it today, because it catches only `PromptError` and those messages are
-        fixed strings plus a prompt id, placeholder name, or title. But "every
-        site carrying a caught exception redacts" is false of this *file*, and
-        asserting it unqualified is the sort of almost-true claim this docstring
-        was rewritten to stop making.
+        Carriers outside the class are not covered by that, and there is more
+        than one. Module-level `_render_prompt` builds `LLMError(str(exc))` and
+        does NOT redact; nothing leaks through it today, because it catches only
+        `PromptError` and those messages are fixed strings plus a prompt id,
+        placeholder name, or title. The schema helpers each generation method
+        calls just past its guarded region -- `parse_facts`, `parse_query`,
+        `parse_query_intent` -- do not redact either, and are harmless for a
+        different reason: what they carry is a parse failure over a provider
+        *response*, never over configuration. Neither list is offered as
+        exhaustive. The point is that "every site carrying a caught exception
+        redacts" stops being true the moment you leave this class, and asserting
+        it unqualified is the almost-true claim this docstring was rewritten to
+        stop making.
 
         The remaining raises use fixed strings and carry nothing caught:
         `_require_key`, the `ImportError` clause in `_client`, and the three "no
@@ -90,7 +96,9 @@ class AnthropicAdapter:
         Singular SDK, and its own variable, because each SDK reads only its own
         *base-URL* variable: measured, `OPENAI_BASE_URL` carrying that same
         `::::` leaves this constructor raising nothing at all. It is named here
-        as a non-cause, which is the one thing it may be named as. The other two
+        as a non-cause, which is what the guard in `tests/test_cloud_adapters.py`
+        allows: that guard rejects the other vendor's variable from the cause
+        list above and permits a mention like this one. The other two
         entries above are not vendor-scoped -- both SDKs read `SSL_CERT_FILE`
         and `HTTPS_PROXY` -- which is why they are listed unqualified. The
         otherwise identical paragraph in `openai_adapter` therefore has to name

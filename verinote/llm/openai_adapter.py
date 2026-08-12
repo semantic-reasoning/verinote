@@ -43,10 +43,15 @@ class OpenAIAdapter:
         `LLMError(f"openrouter request failed: {exc}")`, in a module that
         imports no `redact_secret` at all -- and is harmless for a different
         reason: it is a module-level function precisely so that no key is in
-        scope for it to leak, which its own docstring argues at length. So
-        "both carriers redact" is true of this class and false of everything a
-        user of it runs, and stating only the first half is how the sentence
-        this paragraph replaces went wrong.
+        scope for it to leak, which its own docstring argues at length. The
+        schema helpers called just past each guarded region -- `parse_facts`,
+        `parse_query`, `parse_query_intent` -- are a third kind again: also
+        unredacted, harmless because a parse failure over a provider *response*
+        is not a place configuration appears. That enumeration is not offered as
+        complete. What it is for is the shape of the claim: "both carriers
+        redact" is true of this class and not of the call graph around it, and
+        stating only the first half is how the sentence this paragraph replaces
+        went wrong.
 
         Everything else raising `LLMError` here uses a fixed string and carries
         nothing caught: `_require_key` and the `ImportError` clause in
