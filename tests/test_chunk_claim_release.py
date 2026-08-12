@@ -648,3 +648,116 @@ def test_cli_sync_fails_the_job_and_never_leaves_the_chunk_claimed(
     assert chunks[0]["attempts"] == 1
     assert [c for c in chunks if c["status"] == "running"] == []
     store.close()
+
+
+def test_a_source_that_crashes_does_not_bury_a_sibling_job_that_finished(
+    tmp_path, monkeypatch
+):
+    """The handler writes the job it was handling, and no other.
+
+    Two sources, one job each; the first finishes, the second crashes. The
+    per-source loop is the reason this needs saying at all: a handler placed
+    around the LOOP instead of around the call would hold the last `job_id` the
+    loop bound and could only ever write that one — but a handler that reached
+    for "the job" without owning it, or a rollback of the batch, would take the
+    finished source down with the crashed one. Extraction is per-source and so is
+    its resting state.
+
+    THE SIBLING'S CANDIDATE IS ASSERTED TOO, not just its job status. A `done` job
+    whose facts were rolled back is not a survivor.
+    """
+    from verinote import cli
+
+    monkeypatch.setenv("VERINOTE_ROOT", str(tmp_path))
+    monkeypatch.setenv("VERINOTE_PROVIDER", "anthropic")
+    monkeypatch.setenv("VERINOTE_EXTRACTION_CHUNK_CHARS", "200")
+    monkeypatch.setenv("VERINOTE_EXTRACTION_CHUNK_OVERLAP_CHARS", "0")
+    first = tmp_path / "a.txt"
+    first.write_text("alpha beta gamma", encoding="utf-8")
+    second = tmp_path / "b.txt"
+    second.write_text("bravo delta epsilon", encoding="utf-8")
+    assert cli.main(["ingest", str(first)]) == 0
+    assert cli.main(["ingest", str(second)]) == 0
+
+    class _CrashesOnTheSecondSource:
+        name = "stub"
+
+        def __init__(self):
+            self.seen: list[str] = []
+
+        def extract_facts(self, *, source_text: str, schema_hint: str = ""):
+            self.seen.append(source_text.split()[0])
+            if source_text.startswith("bravo"):
+                raise ValueError("boom")
+            return [ExtractedFact(source_text.split()[0], "seen_in", "source", 0.9)]
+
+    client = _CrashesOnTheSecondSource()
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: client)
+
+    with pytest.raises(ValueError):
+        cli.main(["sync"])
+
+    assert client.seen == ["alpha", "bravo"], "a.txt must be the one that finished"
+    store = Store(tmp_path / "kb.sqlite")
+    rows = list(
+        store._conn.execute(
+            "SELECT s.path AS path, j.status AS status FROM extraction_jobs j "
+            "JOIN sources s ON s.id = j.source_id ORDER BY j.id"
+        )
+    )
+    assert [(r["path"], r["status"]) for r in rows] == [
+        ("sources/a.txt", "done"),
+        ("sources/b.txt", "failed"),
+    ]
+    assert [f["subject"] for f in store.facts()] == ["alpha"]
+    store.close()
+
+
+def test_a_prompt_that_cannot_be_read_leaves_the_untouched_job_pending(
+    tmp_path, monkeypatch
+):
+    """A failure BEFORE the job-owning call must not write the job row.
+
+    `cmd_sync` creates the job row and then resolves the extraction schema hint,
+    which reads `policy/prompts/` off disk. `extraction_schema_hint` wraps
+    `PromptError` and nothing else, so an override that is not valid UTF-8 escapes
+    as the `UnicodeDecodeError` `Path.read_text` raised — a real path, and one
+    that reaches this line before `process_extraction_job` is entered. The job is
+    still `pending`: no chunk was claimed, nothing was attempted, and fixing the
+    file must let the next sync pick it up untouched.
+
+    TWO THINGS KEEP THAT TRUE and this test does not distinguish them, deliberately
+    — it asserts the outcome both are there for. The hint is resolved OUTSIDE the
+    `try`, so the handler never sees this exception; and the handler re-reads the
+    job's status before writing, so it would decline a `pending` job anyway. Belt
+    and braces on a row that must not be buried before it has done anything.
+    """
+    from verinote import cli
+    from verinote.prompts.library import prompt_override_path
+
+    monkeypatch.setenv("VERINOTE_ROOT", str(tmp_path))
+    monkeypatch.setenv("VERINOTE_PROVIDER", "anthropic")
+    monkeypatch.setenv("VERINOTE_EXTRACTION_CHUNK_CHARS", "40")
+    monkeypatch.setenv("VERINOTE_EXTRACTION_CHUNK_OVERLAP_CHARS", "0")
+    src = tmp_path / "note.txt"
+    src.write_text("alpha beta gamma delta epsilon", encoding="utf-8")
+    assert cli.main(["ingest", str(src)]) == 0
+    override = prompt_override_path(tmp_path, "extraction-limit-hint")
+    override.parent.mkdir(parents=True, exist_ok=True)
+    override.write_bytes(b"at most {max_facts} facts \xff\xfe and a bad byte")
+    monkeypatch.setattr(
+        "verinote.llm.get_client",
+        lambda cfg: _ChunkClient(),  # must never be reached
+    )
+
+    with pytest.raises(UnicodeDecodeError):
+        cli.main(["sync"])
+
+    store = Store(tmp_path / "kb.sqlite")
+    jobs = list(store._conn.execute("SELECT id, status FROM extraction_jobs"))
+    assert len(jobs) == 1  # the row was created before the read failed
+    assert jobs[0]["status"] == "pending"
+    chunks = store.source_chunks(int(jobs[0]["id"]))
+    assert [c["status"] for c in chunks] == ["pending"] * len(chunks)
+    assert [c["attempts"] for c in chunks] == [0] * len(chunks)
+    store.close()

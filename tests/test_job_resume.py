@@ -64,11 +64,13 @@ class _RecordingClient:
         delete_policy_on_call: int | None = None,
         policy_path=None,
         fail_on_call: int | None = None,
+        crash_on_call: int | None = None,
     ):
         self.seen: list[str] = []
         self._delete_on = delete_policy_on_call
         self._policy_path = policy_path
         self._fail_on = fail_on_call
+        self._crash_on = crash_on_call
 
     @property
     def markers(self) -> list[str]:
@@ -76,6 +78,11 @@ class _RecordingClient:
 
     def extract_facts(self, *, source_text: str, schema_hint: str = ""):
         self.seen.append(source_text)
+        if self._crash_on is not None and len(self.seen) == self._crash_on:
+            # NOT an `LLMError`: unmodelled, so it leaves the whole pass rather
+            # than failing one chunk and continuing. A plain builtin on purpose —
+            # the point is a type the pipeline has no clause for.
+            raise ValueError("boom")
         if self._fail_on is not None and len(self.seen) == self._fail_on:
             raise LLMError("provider down")  # transient: the chunk goes `failed`
         if self._delete_on is not None and len(self.seen) == self._delete_on:
@@ -733,3 +740,78 @@ def test_sync_gives_up_on_a_permanently_failing_chunk(tmp_path, monkeypatch, cap
     assert "giving up on sources/doc.txt" in err
     assert _run_count(tmp_path) == runs_before  # no spurious empty run
     assert [int(job["id"]) for job in _jobs(tmp_path)] == [job_id]
+
+
+# --- I: a crash is resumed by the next ORDINARY sync, with no flag (#488) -----
+
+
+def test_a_crashed_sync_is_resumed_by_the_next_plain_sync(tmp_path, monkeypatch, capsys):
+    """The whole point of writing the job row: `verinote sync`, and nothing else.
+
+    An unmodelled exception used to leave the job `running`, and a `running` job
+    is indistinguishable from one a live worker owns — so every later `sync`
+    printed "already running" and skipped the source forever. The chunk was
+    `failed` and retryable; nothing would ever reach it. `verinote sync --recover`
+    could rewind it by hand. There is no `--retry` flag, and there never was.
+
+    Now the job comes to rest `failed` with a failed chunk, which is exactly the
+    state `plan_source_extraction` calls a RETRY: the next ordinary sync claims
+    the same job and spends one of `MAX_CHUNK_ATTEMPTS` on the chunk that failed.
+    Two honest consequences of that, both measured below:
+
+    * the failed chunk IS re-sent to the LLM. That is what a retry is. If it keeps
+      failing, the third attempt exhausts the budget and the source is given up on
+      (`test_a_failed_job_is_retried_until_its_chunk_runs_out_of_attempts` above).
+    * chunks already `done` are NOT re-sent. The crash is on the THIRD chunk here
+      precisely so that this is visible: two finished chunks stay finished.
+
+    WHY `rc == 0` IS NOT THE ASSERTION. Before the fix the second sync also
+    returned 0 — it skipped the source and reported "0 candidate(s) from 0
+    source(s)", which is a successful run that did nothing. The marker lists are
+    what tell a resume from a skip, and from a rebuild.
+    """
+    _ingest(tmp_path, monkeypatch)
+    crashing = _RecordingClient(crash_on_call=3)
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: crashing)
+
+    with pytest.raises(ValueError):
+        cli.main(["sync"])
+
+    assert crashing.markers == ["alpha", "bravo", "charlie"]
+    jobs = _jobs(tmp_path)
+    assert len(jobs) == 1
+    job_id = int(jobs[0]["id"])
+    assert jobs[0]["status"] == "failed"  # #488: a terminal status, not `running`
+    assert "ValueError" in jobs[0]["message"] and "boom" in jobs[0]["message"]
+    store = _store(tmp_path)
+    assert [c["status"] for c in store.source_chunks(job_id)] == [
+        "done",
+        "done",
+        "failed",
+        "pending",
+        "pending",
+        "pending",
+    ]
+    store.close()
+    capsys.readouterr()  # drop the crashed run's output
+
+    # ...and now an ordinary sync. No `--recover`, no flags at all.
+    healthy = _RecordingClient()
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: healthy)
+
+    assert cli.main(["sync"]) == 0
+
+    # THE ASSERTION THIS TEST EXISTS FOR: the finished chunks were not re-sent,
+    # and the source was not skipped.
+    assert healthy.markers == ["charlie", "delta", "echo", "foxtrot"]
+    jobs = _jobs(tmp_path)
+    assert [int(job["id"]) for job in jobs] == [job_id]  # resumed, not rebuilt
+    assert jobs[0]["status"] == "done"
+
+    store = _store(tmp_path)
+    assert [f["subject"] for f in store.facts()] == list(MARKERS)
+    store.close()
+
+    out = capsys.readouterr().out
+    assert "4 candidate(s) this run" in out
+    assert f"resumed job #{job_id}: 6 candidate(s) in total" in out
