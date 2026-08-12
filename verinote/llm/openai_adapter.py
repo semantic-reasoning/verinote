@@ -65,7 +65,15 @@ class OpenAIAdapter:
         override -- read by `get_prompt` as `read_text`, so a
         `UnicodeDecodeError` rather than the `PromptError` that `_render_prompt`
         guards for -- leave the adapter raw, past every caller's
-        `except LLMError`. The guarded region is what absorbs it today.
+        `except LLMError`. The guarded region is what absorbs it today. "Raw"
+        overstates how visible that would be, and the real outcome is the
+        stronger argument: the chunk loop in `pipeline/extract.py` catches only
+        `LLMError`, so the chunk stays `running` and the escape is swept up by
+        the web worker's job-level `except Exception`, which records "analysis
+        failed" against the source and consumes the retry budget for a cause
+        that has nothing to do with the source. The worker already treats that
+        as a bad outcome: another handler there is ordered above the backstop
+        specifically to avoid falling through to it.
 
         Redaction covers only the key this process knows about, which is why
         `_require_key` refuses to let the SDK authenticate with one it never saw.
