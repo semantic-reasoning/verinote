@@ -80,11 +80,15 @@ class AnthropicAdapter:
         be specific, and are, because `Request(url)` has no second cause; see
         `base_url_unusable`.
 
-        Singular SDK, and its own variable, because each SDK reads only its own:
-        measured, the same `::::` in the *other* vendor's base-URL variable
-        leaves this constructor raising nothing at all. The otherwise identical
-        paragraph in `openai_adapter` therefore has to name a different variable
-        -- two paragraphs documenting two SDKs, not one copied twice.
+        Singular SDK, and its own variable, because each SDK reads only its own
+        *base-URL* variable: measured, `OPENAI_BASE_URL` carrying that same
+        `::::` leaves this constructor raising nothing at all. It is named here
+        as a non-cause, which is the one thing it may be named as. The other two
+        entries above are not vendor-scoped -- both SDKs read `SSL_CERT_FILE`
+        and `HTTPS_PROXY` -- which is why they are listed unqualified. The
+        otherwise identical paragraph in `openai_adapter` therefore has to name
+        a different variable: two paragraphs documenting two SDKs, not one
+        copied twice.
         """
         return LLMError(
             redact_secret(f"{self.name} client could not be created: {exc}", self.cfg.api_key)

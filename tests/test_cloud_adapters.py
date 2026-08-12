@@ -598,13 +598,23 @@ def test_each_adapter_names_only_its_own_vendor_base_url_variable(adapter, own, 
     `ANTHROPIC_BASE_URL='::::'` raises `httpx.InvalidURL` for anthropic and
     nothing for openai, and `OPENAI_BASE_URL='::::'` the other way round.
 
-    Absence is the half that fails today; presence is here so that satisfying
-    it by deleting the sentence is not a way out.
-    """
-    doc = _client_failed_docstring(adapter)
+    Anchored on the `VAR='::::'` spelling that every cause in those paragraphs
+    uses, which is what scopes this to the defect: the variable named as a
+    *cause* has to be the file's own. A bare mention of the other vendor's
+    stays legal, and the anthropic docstring makes one deliberately -- that
+    `OPENAI_BASE_URL` does nothing in that constructor is a measured fact worth
+    stating, and it is not a misdirection because it is not offered as a cause.
 
-    assert own in doc
-    assert foreign not in doc
+    Both halves earn their keep under that anchor: deleting the cause clause
+    fails the first assertion, and naming the wrong vendor in it fails the
+    second. An unanchored `own in doc` would not -- the OpenRouter paragraph
+    further down `openai_adapter` mentions `OPENAI_BASE_URL` again, so the
+    presence half would survive gutting the paragraph this is about.
+    """
+    flat = " ".join(_client_failed_docstring(adapter).split())
+
+    assert f"{own}='::::'" in flat
+    assert f"{foreign}='::::'" not in flat
 
 
 @pytest.mark.parametrize(("provider", "module"), [("anthropic", "anthropic"), ("openai", "openai")])
