@@ -29,16 +29,24 @@ class OpenAIAdapter:
         in this class hand a *caught* exception to `LLMError`: this one and
         `_client_failed`. Both redact, which is what keeps a forgotten raise
         site from persisting the configured key into `source_chunks.error`.
-        `OpenRouterAdapter` adds no third and overrides neither, so it inherits
-        the guarantee whole; what it does change is `name`, which only alters
-        which provider the message blames.
+        `OpenRouterAdapter` overrides neither and adds no third, so both
+        carriers reach it unchanged. What it does override is `name` and
+        `_base_url` -- the latter being what the `_client_failed` note below
+        turns on, so this is not a subclass that merely renames things.
 
-        Redaction is not universal in this file, though. Module-level
-        `_render_prompt` builds `LLMError(str(exc))` with no redaction, a third
-        carrier of caught text. It is harmless as written, because the only
-        thing it catches is `PromptError` and those messages are fixed strings
-        plus a prompt id, placeholder name, or title. Claiming the two sites
-        above are all of them would be true of the class and false of the file.
+        Redaction is not universal outside that class boundary, though.
+        Module-level `_render_prompt` in this file builds `LLMError(str(exc))`
+        with no redaction, a third carrier of caught text; it is harmless as
+        written, because the only thing it catches is `PromptError` and those
+        messages are fixed strings plus a prompt id, placeholder name, or title.
+        `openrouter_adapter.list_models` is the same shape -- a bare
+        `LLMError(f"openrouter request failed: {exc}")`, in a module that
+        imports no `redact_secret` at all -- and is harmless for a different
+        reason: it is a module-level function precisely so that no key is in
+        scope for it to leak, which its own docstring argues at length. So
+        "both carriers redact" is true of this class and false of everything a
+        user of it runs, and stating only the first half is how the sentence
+        this paragraph replaces went wrong.
 
         Everything else raising `LLMError` here uses a fixed string and carries
         nothing caught: `_require_key` and the `ImportError` clause in
