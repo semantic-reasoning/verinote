@@ -673,8 +673,14 @@ def test_a_source_that_crashes_does_not_bury_a_sibling_job_that_finished(
     `job_id` at crash time is the crashing source's either way, and the status
     re-read declines the finished one. What does catch that move is
     `test_a_halt_never_provokes_a_write_even_if_the_job_is_left_running`, for an
-    unrelated reason: a loop-level clause also sits outside the re-raise clauses
+    unrelated reason: a loop-level BROAD clause sits outside the re-raise clauses
     above, so it swallows their `raise` and writes to a halted KB.
+
+    AND ONLY THAT MOVE. Carry the re-raise clauses out to loop level along with
+    the broad one and nothing in the suite distinguishes the two placements
+    (measured: 135 passed). "The suite covers where the handler is attached" is
+    therefore false however it is phrased; what it covers is one specific way of
+    getting the attachment wrong.
 
     THE SIBLING'S CANDIDATE IS ASSERTED TOO, not just its job status. A `done` job
     whose facts were rolled back is not a survivor.
@@ -889,9 +895,15 @@ def test_a_halt_never_provokes_a_write_even_if_the_job_is_left_running(
     monkeypatch.setattr("verinote.llm.get_client", lambda cfg: _ChunkClient())
 
     def _halts_without_rewinding(store, client, *, job_id, **kwargs):
-        # Takes the job exactly as the real one does, then halts WITHOUT the
-        # rollback. `cmd_sync` imports this name from `verinote.pipeline` inside
-        # the function body, so that is the attribute to replace.
+        # Leaves the job in the state the real call leaves it in — `running`,
+        # message "Analyzing chunks...", one `extraction_job_started` event — and
+        # then halts WITHOUT the rollback. It is NOT the real claim: production
+        # takes the job through `claim_pending_extraction_job`, an atomic CAS on
+        # `status = 'pending'` that also reclaims stray chunks. None of that
+        # affects what is asserted below, but the line is a stand-in, not a
+        # reproduction. `cmd_sync` imports `process_extraction_job` from
+        # `verinote.pipeline` inside the function body, so that is the attribute
+        # to replace.
         store.mark_extraction_job_running(job_id)
         raise PolicyMissingError("the KB policy file is missing")
 
