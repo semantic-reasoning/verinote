@@ -458,38 +458,46 @@ def process_extraction_job(
             # job does not reach a terminal status either, and the existing recovery
             # path (`_resume_source_extraction_jobs`) is what reclaims it.
             #
-            # ONE RESIDUAL WINDOW REMAINS, AND IT CANNOT BE CLOSED HERE. The line
-            # above is two round trips, not one: `mark_chunk_running` commits the
-            # `pending`->`running` UPDATE (autocommit) and then does a *separate*
-            # `get_source_chunk` read-back to return the row (`store/db.py`
-            # `mark_chunk_running`). If that SELECT raises, the claim is already
-            # committed while the caller never binds `running` at all — so there is
-            # no chunk id to release and the chunk is stranded exactly as #475
-            # describes.
+            # THE READ-BACK WINDOW AT THE CLAIM IS NOW ONE STEP, NOT TWO
+            # STATEMENTS (#489). The line above used to be an `UPDATE` that
+            # committed on an autocommit connection followed by a *separate*
+            # `get_source_chunk`; a failure in that second statement left the chunk
+            # `running` while this frame never bound `running` at all, so there was
+            # no chunk id to release. `mark_chunk_running` is a single
+            # `UPDATE ... RETURNING *` now, and the CAS travels with the row it
+            # wrote.
             #
-            # This is a DIFFERENT KIND of gap from the one the `try` below fixes,
-            # and the distinction is why it is left open rather than patched. That
-            # one was reachable code this function could guard with a handler; this
-            # one is unreachable from here in principle — no arrangement of `try`
-            # in this frame can cover a write that completed inside a callee before
-            # the callee returned. Closing it means making the claim atomic with its
-            # own result, i.e. folding the CAS and the read-back into one statement
-            # (`UPDATE ... RETURNING *`). That is a change to how the claim itself
-            # is issued, and it is deferred on its own merits, not because this
-            # change refuses to touch the `Store`: it does — `requeue_chunk_claim`
-            # is new here. Rewriting `mark_chunk_running`'s contract, though, would
-            # put every existing caller of the claim under review in a change about
-            # releasing one, and the window it closes is unreachable from this
-            # frame either way. That work is #489 — it owns this window
-            # and records the same reasoning from its side, so neither this comment
-            # nor the issue can be read without finding the other. Do not "fix" it
-            # here by re-reading the chunk after the fact: that reintroduces the
-            # same two-step race.
+            # WHAT IS LEFT IS THE CARVE-OUT DIRECTLY ABOVE, not a second kind of
+            # gap. The statement still steps twice — the commit happens in the
+            # `fetchone()`, not the `execute()` (`store/db.py`
+            # `mark_chunk_running`) — so an interruption arriving between them
+            # commits a claim this frame never receives. The interruption named
+            # for that is a `BaseException`, and the `BaseException` paragraph
+            # above already says what happens then and who recovers it. Two
+            # statements became one step, and the remainder is the same class of
+            # thing this loop was already living with.
+            #
+            # It stayed open here as long as it did because it was never fixable
+            # from this frame: no arrangement of `try` can cover a write that
+            # completed inside a callee before the callee returned, which is what
+            # made it a different kind of gap from the one the `try` below closes.
+            # Do not "fix" what remains here by re-reading the chunk after the
+            # fact: that puts the two-step race back.
             try:
                 chunk_id = int(running["id"])
-                # Read back from our own claim, for `requeue_chunk_claim`'s CAS:
-                # it releases this claim only while the row still carries the
-                # attempt count this claim put on it.
+                # The attempt count for `requeue_chunk_claim`'s CAS, which releases
+                # this claim only while the row still carries the count this claim
+                # put on it. It comes out of the claim's own post-image now, not
+                # out of a later read of the row (#489) — and that shuts a second
+                # window incidentally rather than by aim. While the claim was two
+                # statements, a peer's resume loop could rewind and re-take this
+                # chunk in between, and the read-back then handed this frame the
+                # PEER's count, which the CAS in the sidecar clause below would
+                # spend rewinding a claim that was no longer ours. It needed that
+                # landing and then the sidecar-locked path to matter, so it was
+                # unlikely twice over. What makes it possible at all is that a
+                # chunk carries no owner and a job carries no liveness lease
+                # (#242); one statement here shuts in a symptom, not the cause.
                 claimed_attempts = int(running["attempts"])
                 inserted = _extract_chunk(
                     store,
