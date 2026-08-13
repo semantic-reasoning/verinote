@@ -44,13 +44,25 @@ release COSTS rather than that it happened.
 
 `canceled` is out of scope, and not as a resting place this module declines to
 cover — A CHUNK CANNOT BE `canceled` AT ALL. `source_chunks`'s CHECK constraint is
-`('pending','running','done','failed')` (`schema.sql`); the extra value belongs to
-`extraction_jobs`, whose CHECK does list it. Even there, no production code writes
-it. Two places name the value and both refuse to touch such a job:
-`mark_extraction_job_running` (`... AND status != 'canceled'`) and
-`rollback_extraction_job` (an early return). The retry claim refuses one too but
-never names it — its CAS is an allowlist, `status IN ('pending','failed')`. The
-only writers are tests setting the status by hand.
+`('pending','running','done','failed')` (`schema.sql`), and writing the value to a
+chunk raises `IntegrityError`. It belongs to `extraction_jobs`, whose CHECK does
+list it, and even there no production code writes it. The two sites that NAME the
+value do not behave alike, so they are worth keeping apart:
+
+* `rollback_extraction_job` returns early, ahead of every write, and does not
+  touch such a job at all;
+* `mark_extraction_job_running` excludes the value from its UPDATE
+  (`... AND status != 'canceled'`), so the status survives — but its
+  `extraction_job_started` event row is written anyway, because that write is not
+  conditioned on the UPDATE having matched. A `canceled` job therefore collects an
+  event saying it started, with `before == after == canceled`. Out of scope here
+  and unreachable today; it is #526, whose point is that `test_store.py` holds
+  `rollback_extraction_job` to the standard this one misses.
+
+Two further sites refuse such a job WITHOUT naming it — the two claim CASes,
+`claim_pending_extraction_job` (`status = 'pending'`) and
+`claim_extraction_job_for_retry` (`status IN ('pending','failed')`); both return
+False. The only writers are tests setting the status by hand.
 
 The failure this guards is real and observed: a chunk claimed (`status='running'`,
 one attempt burned, `error=''`) and then abandoned when an exception that was not
