@@ -1356,8 +1356,11 @@ class Store:
         spends a retry attempt on a peer's timing, and `MAX_CHUNK_ATTEMPTS` of
         those give up on the source permanently.
 
-        `attempts` is the value the caller read back from its own claim, and it is
-        in the WHERE clause as a compare-and-set. `status = 'running'` alone would
+        `attempts` is the value the claim itself returned — `mark_chunk_running`
+        is one `UPDATE ... RETURNING *`, so the number a caller holds is the one
+        its own claim wrote rather than whatever a later read of the row found
+        (#489) — and it is in the WHERE clause as a compare-and-set.
+        `status = 'running'` alone would
         establish only that SOMEBODY holds the chunk — there is no owner column on
         the row — so a caller whose claim had meanwhile been reclaimed and
         re-issued to someone else (`claim_pending_extraction_job` rewinds stray
