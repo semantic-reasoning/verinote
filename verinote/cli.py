@@ -840,14 +840,21 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     # which this re-raise reaches.
                     #
                     # ABOVE `except Exception` because that is where it would land
-                    # otherwise — but MEASURED, deleting this clause changes no
-                    # test: `_halt_extraction_job` has already rewound the job to
-                    # `pending`, and the broad clause writes only a job still
-                    # `running`. So this states the rule rather than being the sole
-                    # thing enforcing it, and that is the point. The rule must not
-                    # be contingent on the rewind still being there; a future halt
-                    # path that raised with the job `running` would otherwise be
-                    # buried as "analysis failed".
+                    # otherwise. On the halt path production takes today it cannot
+                    # be caught doing its job: `_halt_extraction_job` has already
+                    # rewound the job to `pending`, and the broad clause writes
+                    # only a job still `running`, so deleting this clause changes
+                    # that path's outcome not at all.
+                    #
+                    # THE REWIND IS A PROPERTY OF `extract.py`, NOT OF THIS CALL
+                    # SITE, and #194's rule must not be contingent on it. A halt
+                    # raised anywhere that does not rewind leaves the job
+                    # `running`, and the broad clause would then bury a halted KB's
+                    # job as "analysis failed" — a WRITE to the KB the halt exists
+                    # to protect.
+                    # `test_a_halt_never_provokes_a_write_even_if_the_job_is_left_running`
+                    # removes the rewind precisely so this clause has a guard of
+                    # its own; without the clause, that test is red.
                     raise
                 except (ConfigCorruptError, CredentialsCorruptError):
                     # ORDER IS LOAD-BEARING — above `except Exception`. Mirrors the
@@ -874,10 +881,14 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     # the error itself into a clean rc=1 message.
                     #
                     # ABOVE `except Exception` because it is a `ValueError`
-                    # subclass and nothing else here would take it. As with the
-                    # halt clause, deleting it changes no test today (measured) —
-                    # the rewind means the broad clause declines anyway. It is
-                    # here so the rule survives the rewind moving.
+                    # subclass and nothing else here would take it. Same shape as
+                    # the halt clause above: today's rewind means the broad
+                    # clause's re-read declines anyway, so no test distinguishes
+                    # deleting this one (measured) — the sibling halt test is what
+                    # documents why the pair is kept regardless. If the sidecar
+                    # error ever reached here with the job still `running`, the
+                    # broad clause would charge a peer process's timing to the
+                    # source as "analysis failed".
                     raise
                 except Exception as exc:
                     # THE JOB-LEVEL FLOOR (#488), sibling to the chunk-level one in
@@ -904,6 +915,21 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     # exempted from the breadth here — it is a `RuntimeError` — and
                     # the re-raise still delivers it to `cmd_sync`'s own
                     # `except LLMError` below, which is what shapes the message.
+                    #
+                    # TWO HONEST LIMITS. (1) `fail_extraction_job` is itself a
+                    # write and can raise — the broad clause's likeliest catch is
+                    # sqlite/WAL-class, so this is not exotic — and the store error
+                    # then replaces the escaping exception, with the original
+                    # hanging off `__context__`. The job row is USUALLY all that
+                    # differs from before this handler existed; on that path what
+                    # the user sees differs too. (2) The message is type-qualified
+                    # here and is not in `web/app.py`, whose `f"analysis failed:
+                    # {e}"` renders a bare `ValueError()` as "analysis failed: "
+                    # with no cause — the same empty-cause symptom
+                    # `_release_claimed_chunk` type-qualifies against, still open
+                    # there (#525). So this clause is the web clause's counterpart,
+                    # not its mirror. Neither bounds the message length; the store
+                    # takes `str(exc)` whole, exactly as the web one does.
                     job_now = store.get_extraction_job(job_id)
                     if job_now is not None and job_now["status"] == "running":
                         store.fail_extraction_job(
@@ -926,12 +952,14 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                 # the fast path, and a partial run must never sweep. The sweep is a
                 # SIBLING of `process_extraction_job` (separation of concerns:
                 # extraction stays a pure primitive, while the demoted count is
-                # needed here for the per-source line). The web worker guards its
-                # sweep locally because its sweep sits INSIDE the try its
-                # `except Exception -> fail_extraction_job` belongs to; this sweep
-                # sits OUTSIDE the try above, so a sweep error cannot reach the
-                # job-level handler and no local guard is owed. Do not move it
-                # inside — that is what would make one necessary.
+                # needed here for the per-source line). No local guard is owed, and
+                # MEASURED, placement is not the reason: moving this sweep inside
+                # the try above leaves the job `done` just the same, because the
+                # sweep runs only after `process_extraction_job` returned and the
+                # broad clause's status re-read declines to write a `done` job.
+                # Outside is scope narrowing, not a safety property. The web
+                # worker's local sweep guard IS load-bearing for it, because its
+                # broad clause has no such re-read (#525).
                 # `assert_writable` first so a policy lost post-completion routes to
                 # the PolicyMissingError handler below rather than demoting facts
                 # against a halted KB (#194) — the store trusts its caller for this.
