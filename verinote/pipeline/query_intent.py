@@ -606,6 +606,94 @@ _KOREAN_ATTRIBUTE_LABEL_TAIL = re.compile(
 )
 _KOREAN_ATTRIBUTE_LABEL_JOSA = re.compile(r"(?:은|는|이|가)\s*$")
 
+_ENGLISH_ATTRIBUTE_TAIL_PREDICATE_MEMBERS = (
+    "called",
+    "named",
+    "titled",
+    "labelled",
+    "labeled",
+    "spelled",
+    "spelt",
+    "known as",
+    "listed as",
+    "set to",
+)
+"""The predicates an English attribute question may trail after what it asks for.
+
+`What is Sample Project's owner known as?` asks for `owner`; the tail says how
+the asking is phrased. Before this rule *no* member was stripped -- neither
+these nor `called`/`named`, which #511 reports as already handled and are not:
+`_clean_english_attribute_label` normalised whitespace and dropped a leading
+`the ` and nothing else. So every member here is new, and each one carried a
+relation candidate no schema holds.
+
+Not exhaustive, and cannot be: `referred to as`, `recorded as`, `written as`
+and their kin belong to the same class and are absent. A tail outside this
+tuple is left in the field exactly as it was, which sends the question to the
+LLM rather than to a wrong answer -- the same cost the unstripped members paid
+before, not a new one.
+
+Two words that end questions of this shape are deliberately out, both from
+#511. `worth` is part of the measure, and `stock worth` is a plausible relation
+name on its own. `like` asks for a description rather than for the object of a
+relation, so stripping it would answer a different question.
+
+`known as`, `listed as` and `set to` carry their particle. Dropping it and
+matching the participle alone would cut `publicly listed`, `well known` and
+`data set` -- ordinary relation names whose last word is a member's first.
+"""
+
+_ENGLISH_ATTRIBUTE_TAIL_ADVERB_MEMBERS = (
+    "also",
+    "otherwise",
+    "formerly",
+    "previously",
+    "originally",
+    "currently",
+    "commonly",
+    "officially",
+)
+"""The adverbs that may stand between the label and its trailing predicate.
+
+`owner also known as` is `owner known as` with one word inserted, and without
+this slot the strip stops at `owner also`. The slot only ever extends a cut the
+predicate alternation already makes: it is not an alternative of its own, so a
+label ending in a bare `formerly` keeps it.
+
+Also not exhaustive -- `widely`, `popularly` and `variously` read the same way
+and are absent, with the same LLM fallback as any other unlisted tail.
+"""
+
+_ENGLISH_ATTRIBUTE_TRAILING_PREDICATE = re.compile(
+    # One alternation against one `$`, deliberately not a sequence of `sub`
+    # calls. Splitting the adverb off into its own pass would strip it with no
+    # predicate behind it, taking `owner formerly` down to `owner`; splitting
+    # the particle off would leave the participle to match alone and cut
+    # `publicly listed` to `publicly`. Backtracking across the whole tail at
+    # once is what lets `owner listed as` reach `owner` while those stay whole.
+    r"\s+(?:(?:"
+    + "|".join(_ENGLISH_ATTRIBUTE_TAIL_ADVERB_MEMBERS)
+    + r")\s+)?(?:"
+    # Every member is ASCII letters plus at most one space, so they join raw and
+    # the space is relaxed to `\s+`; the callers normalise runs of whitespace,
+    # but the entity field is only `.strip()`ed, so `Sample Project known  as`
+    # reaches this. Alternation order is inert here -- unlike
+    # `_MEASUREMENT_UNIT_SPELLINGS`, which has no anchor to backtrack against --
+    # because `$` forces every alternative to be tried at the same end.
+    + "|".join(
+        m.replace(" ", r"\s+") for m in _ENGLISH_ATTRIBUTE_TAIL_PREDICATE_MEMBERS
+    )
+    + r")\s*$"
+    # No flags. Case matters: names ending in this exact tail in title case are
+    # real -- `Sample Project Formerly Known As` stands in for them here -- and
+    # `re.IGNORECASE` would take an entity spelled that way apart, adverb
+    # included. The leading `\s+` is the other half of the guard
+    # and is not relaxable -- `\s*` reads `recalled` as `re`, and `\s*\b` spares
+    # that but still reads `re-called` as `re-`, because `-` is not a word
+    # character. Both relaxations are pinned as mutants in
+    # tests/test_query_intent.py.
+)
+
 # tests/test_query_measure_unit.py, now a module away, pins this string twice.
 # test_the_digit_requirement_keeps_ordinary_prose_out_of_the_caveat pins its
 # overlap with _MEASUREMENT_UNIT_SPELLINGS at 13, and
@@ -794,8 +882,61 @@ def _looks_like_korean_attribute_question(raw_label: str, question: str) -> bool
 
 
 def _clean_english_attribute_label(value: str) -> str:
+    """Normalise the label, drop a leading article, then drop a trailing predicate.
+
+    The article strip goes first, and the order changes the answer for exactly
+    one population: a label that is an article followed straight by the tail.
+    Measured on `the called` -- article first gives `called`, tail first gives
+    `the`, because the `\\s` in front of `called` is all the pattern needs, and
+    `removeprefix("the ")` then finds no prefix left to drop. Swept over the
+    label shapes this parser admits, that population is 90 labels and every one
+    of them is `the ` plus a member or `the ` plus an adverb and a member; 80
+    of the 90 carry the adverb, which is why the article has to be followed by
+    the *tail* and not merely by a predicate.
+
+    `the the called` is not in that population, though it reads as if it should
+    be: tail first cuts it to `the the`, and `removeprefix` then takes that to
+    `the`, which is exactly what article first gives. Both orders agree, and
+    only a single article makes them differ.
+
+    Neither reading of `the called` is a relation any schema is expected to
+    hold, so the order decides nothing between a right and a wrong answer. What
+    the chosen one buys is that the word carrying the content survives instead
+    of the article. That narrowness is visible in the mutant: swapping the two
+    lines reddens `test_the_strip_cannot_leave_the_field_empty` and nothing
+    else.
+
+    Emptying is impossible rather than merely unobserved: both fields are
+    stripped before the pattern is applied, so position 0 is not whitespace,
+    and the pattern consumes at least one leading `\\s`, so at least one
+    character always survives. That is an argument about the pattern, not about
+    which members the tuple happens to hold.
+
+    It says nothing about the residue being *useful*, and what the residue
+    costs depends on what the schema holds -- in both directions, where an
+    earlier draft of this docstring gave only one. Measured end to end against
+    a KB, for a question whose label this shortens:
+
+    - schema holds the cut name and not the spelled one: the question goes from
+      `review_required` plus a provider call to `translated` with none.
+      `date labeled` is then answered with `date` -- what the date *is*, for a
+      question asking what it is labeled.
+    - schema holds the spelled name and not the cut one: the move is the other
+      way, and it is the more expensive one. `translated` with no provider call
+      becomes `review_required` with one, giving up a correct deterministic
+      answer the parser used to produce. `also known as` is a real attribute
+      name, so this direction is not hypothetical.
+    - schema holds both: `translated` either way, but the relation that answers
+      silently changes from the spelled name to the cut one, with no change of
+      status to show for it.
+
+    So this is not priced in provider calls alone. `also` and `so` are the
+    harmless end of it, and they are pinned with the rest at the end of
+    `test_the_strip_cannot_leave_the_field_empty`.
+    """
     label = " ".join(value.strip().split())
-    return label.removeprefix("the ").strip()
+    label = label.removeprefix("the ").strip()
+    return _ENGLISH_ATTRIBUTE_TRAILING_PREDICATE.sub("", label).strip()
 
 
 def _korean_attribute_relation_candidates(raw_label: str) -> tuple[str, ...]:

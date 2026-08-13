@@ -993,3 +993,303 @@ def test_a_label_that_is_only_a_josa_is_not_claimed():
     boundary = deterministic_query_intent("샘플조직의 이는?")
     assert boundary.kind == QueryIntentKind.LOOKUP_OBJECT
     assert boundary.relation_candidates == ("이", "이는")
+
+
+_ENGLISH_TAIL_PREDICATE_FIXTURES = {
+    "called": "What is Sample Project's owner called?",
+    "named": "What is Sample Project's owner named?",
+    "titled": "What is Sample Project's owner titled?",
+    "labelled": "What is Sample Project's owner labelled?",
+    "labeled": "What is Sample Project's owner labeled?",
+    "spelled": "What is Sample Project's owner spelled?",
+    "spelt": "What is Sample Project's owner spelt?",
+    "known as": "What is Sample Project's owner known as?",
+    "listed as": "What is Sample Project's owner listed as?",
+    "set to": "What is Sample Project's owner set to?",
+}
+"""One question per member of `_ENGLISH_ATTRIBUTE_TAIL_PREDICATE_MEMBERS`.
+
+A literal dict plus a set-equality assertion, not a parametrize over the live
+tuple: parametrizing would delete the case along with the member and the test
+would pass vacuously. Reconstructing the questions from the tuple would be the
+same hole one step further away -- an unchecked re-implementation of the rule.
+Same shape as `_MONTH_WORD_FIXTURES` in tests/test_query_measure_unit.py, for
+the same reason.
+
+The possessive spelling, which is the one this commit reaches. The `of`
+spelling puts the same tail on the entity instead of on the label, where the
+label cleaner cannot see it; the commit that cleans the entity widens each
+value to both spellings.
+"""
+
+_ENGLISH_TAIL_ADVERB_FIXTURES = {
+    "also": "What is Sample Project's owner also known as?",
+    "otherwise": "What is Sample Project's owner otherwise called?",
+    "formerly": "What is Sample Project's owner formerly named?",
+    "previously": "What is Sample Project's owner previously titled?",
+    "originally": "What is Sample Project's owner originally labelled?",
+    "currently": "What is Sample Project's owner currently listed as?",
+    "commonly": "What is Sample Project's owner commonly spelled?",
+    "officially": "What is Sample Project's owner officially set to?",
+}
+"""One question per member of `_ENGLISH_ATTRIBUTE_TAIL_ADVERB_MEMBERS`.
+
+Literal for the reason above. Each adverb sits in front of a different
+predicate so that a member surviving only in front of one predicate cannot hide
+behind a uniform pairing.
+"""
+
+
+def test_every_trailing_naming_predicate_is_read_as_a_predicate():
+    """A tail that says how the asking is phrased is not part of what is asked for.
+
+    Before this rule the parser stripped none of these -- #511 reads the tree as
+    already handling `called` and `named`, and it does not:
+    `_clean_english_attribute_label` normalised whitespace and dropped a leading
+    `the ` and nothing else. So `What is Sample Project's owner called?` asked
+    for a relation literally named `owner called`, which no schema holds, and
+    the question was planned empty.
+
+    The set-equality assertion is what stops a member being added to the tuple
+    without a question exercising it.
+    """
+    from verinote.pipeline.query_intent import (
+        _ENGLISH_ATTRIBUTE_TAIL_PREDICATE_MEMBERS,
+    )
+
+    assert set(_ENGLISH_TAIL_PREDICATE_FIXTURES) == set(
+        _ENGLISH_ATTRIBUTE_TAIL_PREDICATE_MEMBERS
+    )
+    for member, question in _ENGLISH_TAIL_PREDICATE_FIXTURES.items():
+        intent = deterministic_query_intent(question)
+
+        assert intent.kind == QueryIntentKind.LOOKUP_OBJECT, member
+        assert intent.subject == IntentTarget("entity", "Sample Project"), member
+        assert intent.relation_candidates == ("owner",), member
+
+
+def test_every_tail_adverb_is_read_with_the_predicate():
+    """`owner also known as` asks for `owner`, not for `owner also`.
+
+    The adverb slot only ever extends a cut the predicate alternation already
+    makes, so dropping a member here leaves its question stopping one word
+    short: `('owner also',)` instead of `('owner',)`. That is still a relation
+    no schema holds, so the failure is silent without this test.
+    """
+    from verinote.pipeline.query_intent import _ENGLISH_ATTRIBUTE_TAIL_ADVERB_MEMBERS
+
+    assert set(_ENGLISH_TAIL_ADVERB_FIXTURES) == set(
+        _ENGLISH_ATTRIBUTE_TAIL_ADVERB_MEMBERS
+    )
+    for adverb, question in _ENGLISH_TAIL_ADVERB_FIXTURES.items():
+        intent = deterministic_query_intent(question)
+
+        assert intent.kind == QueryIntentKind.LOOKUP_OBJECT, adverb
+        assert intent.subject == IntentTarget("entity", "Sample Project"), adverb
+        assert intent.relation_candidates == ("owner",), adverb
+
+
+def test_a_word_a_predicate_only_ends_is_left_alone():
+    """The tail binds with `\\s+`, so a member inside a longer word is not a tail.
+
+    These eight are chosen against the two known relaxations of that binding,
+    which are not the same one and are not caught by the same witness:
+
+    - `\\s*` has no boundary requirement at all and cuts every word below --
+      `recalled` to `re`, `nicknamed` to `nick`, `untitled` to `un`. A corpus of
+      `dataset`/`offset`/`blacklisted` would not notice: those end in `set` and
+      `listed`, which are the *first* words of `set to` and `listed as` and are
+      not members on their own, so the `\\s*` mutant leaves them whole and the
+      test passes vacuously against it.
+    - `\\s*\\b` spares all eight, because `_` and every letter are word
+      characters, and still cuts `re-called` to `re-`, because `-` is not.
+
+    So `re-called` is the witness that tells the second relaxation from the
+    first, and the eight are what make the first one red at all.
+    """
+    for label in (
+        "recalled",
+        "unnamed",
+        "renamed",
+        "entitled",
+        "misspelled",
+        "nicknamed",
+        "subtitled",
+        "untitled",
+        "so_called",
+        "re-called",
+    ):
+        intent = deterministic_query_intent(f"What is Sample Project's {label}?")
+
+        assert intent.kind == QueryIntentKind.LOOKUP_OBJECT, label
+        assert intent.relation_candidates == (label,), label
+
+
+def test_a_past_participle_relation_name_survives():
+    """A relation name whose last word is a past participle is not a tail.
+
+    Column headers are full of them, and none is a member. This is the test that
+    refuses the tempting generalisation -- `\\s+[A-Za-z]+(?:ed|en)(?:\\s+(?:as|to))?$`
+    instead of an enumerated list -- which cuts `date created` to `date`,
+    `last modified` to `last` and `amount owed` to `amount`. That mutant fails
+    in the other direction too: it misses `known as`, `set to` and `spelt`,
+    none of which is a participle ending in `ed`/`en` followed by a particle.
+    """
+    for label in (
+        "date created",
+        "last modified",
+        "last updated",
+        "tasks completed",
+        "issues closed",
+        "amount owed",
+        "budget approved",
+        "seats reserved",
+        "hours logged",
+        "items shipped",
+        "invoices paid",
+        "features shipped",
+        "date resolved",
+        "units sold",
+        "records seen",
+    ):
+        intent = deterministic_query_intent(f"What is Sample Project's {label}?")
+
+        assert intent.kind == QueryIntentKind.LOOKUP_OBJECT, label
+        assert intent.relation_candidates == (label,), label
+
+
+def test_a_multiword_predicate_is_not_cut_to_its_last_word():
+    """`known as`, `listed as` and `set to` are members only with their particle.
+
+    Matching the participle alone would be the cheaper pattern and it takes
+    ordinary relation names apart: `data set` becomes `data`, `well known`
+    becomes `well`, `publicly listed` becomes `publicly`. The same holds for
+    splitting the strip into two `sub` calls -- one for the particle, one for
+    the participle -- which is why the rule is a single alternation against a
+    single `$`.
+
+    The last row is the positive that stops this test from being satisfiable by
+    simply dropping the three multi-word members.
+    """
+    for label in (
+        "data set",
+        "target set",
+        "character set",
+        "test set",
+        "result set",
+        "publicly listed",
+        "well known",
+        "widely known",
+    ):
+        intent = deterministic_query_intent(f"What is Sample Project's {label}?")
+
+        assert intent.kind == QueryIntentKind.LOOKUP_OBJECT, label
+        assert intent.relation_candidates == (label,), label
+
+    cut = deterministic_query_intent("What is Sample Project's status set to?")
+    assert cut.relation_candidates == ("status",)
+
+
+def test_worth_and_like_stay_in_the_label():
+    """#511's two deliberate exclusions, pinned as exclusions.
+
+    `stock worth` is a plausible relation name whose last word belongs to the
+    measure, and `owner like` asks for a description rather than for the object
+    of `owner`, so stripping either would answer a different question.
+
+    Spelled as `What is ...`, not as the issue's `How much is Sample Product's
+    stock worth?`: that spelling is not one the possessive pattern claims at
+    all, so a test written on it would report `unknown_or_unsupported` whatever
+    the tuple holds, and would stay green with `worth` added as a member.
+    """
+    worth = deterministic_query_intent("What is Sample Product's stock worth?")
+    assert worth.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert worth.relation_candidates == ("stock worth",)
+
+    like = deterministic_query_intent("What is Sample Project's owner like?")
+    assert like.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert like.relation_candidates == ("owner like",)
+
+
+def test_the_strip_cannot_leave_the_field_empty():
+    """A question whose whole label is a predicate keeps a label.
+
+    The invariant is a property of the pattern, not of the tuple: both fields
+    are `.strip()`ed before the pattern is applied, so position 0 is never
+    whitespace, and the pattern must consume at least one leading `\\s`, so at
+    least one character always survives. "No member empties itself" would be the
+    same claim resting on today's list, and it would stop holding the day a
+    member is added that a caller can hand over whole.
+
+    Not empty is not the same as not rubbish, and the rows below are the
+    difference: `the the called` comes back as `the`, a relation name no schema
+    is expected to hold. The accepted-cost block at the end carries the rest of
+    that population, including the rows where the residue is *not* harmless.
+    """
+    for question, expected in (
+        ("What is Sample Project's called?", "called"),
+        ("What is Sample Project's known as?", "known as"),
+        ("What is Sample Project's set to?", "set to"),
+        ("What is Sample Project's the called?", "called"),
+        ("What is Sample Project's the listed as?", "listed as"),
+        ("What is Sample Project's the the called?", "the"),
+    ):
+        intent = deterministic_query_intent(question)
+
+        assert intent.kind == QueryIntentKind.LOOKUP_OBJECT, question
+        assert intent.subject == IntentTarget("entity", "Sample Project"), question
+        assert intent.relation_candidates == (expected,), question
+
+    # The rule's accepted cost, pinned so that it reads as measured rather than
+    # as overlooked. `also known as` is a real attribute name and the strip
+    # takes it to `also`; `so called` is the same shape. These are read *worse*
+    # than before the rule.
+    #
+    # The last three rows are the sharper half of that cost and they are not
+    # interchangeable with the first two. `also` and `so` are relation names no
+    # schema is expected to hold, so those questions still decline, just one
+    # word further along -- unless the schema holds the name the question
+    # actually spells, `also known as`, in which case the answer that used to
+    # be free is given up instead. `date`, `user` and `hand` are relation names
+    # a schema may really hold, and where it does the question stops declining:
+    # measured against a KB carrying a `date` relation, `date labeled` moves
+    # from `review_required` plus one provider call to `translated` with none,
+    # answering what the date is for a question asking what it is labeled.
+    # `date labeled` differs by one word from the `date created` that
+    # `test_a_past_participle_relation_name_survives` protects.
+    #
+    # So this block, not just the possessive-entity test, is where the change
+    # admits it can promote a question rather than only shorten a label.
+    # Anyone narrowing the rule to recover these should expect this red.
+    for question, expected in (
+        ("What is Sample Person's also known as?", "also"),
+        ("What is the also known as of Sample Person?", "also"),
+        ("What is Sample Project's so called?", "so"),
+        ("What is Sample Dataset's date labeled?", "date"),
+        ("What is Sample Record's user named?", "user"),
+        ("What is Sample Dataset's hand labeled?", "hand"),
+    ):
+        intent = deterministic_query_intent(question)
+
+        assert intent.kind == QueryIntentKind.LOOKUP_OBJECT, question
+        assert intent.relation_candidates == (expected,), question
+
+
+def test_a_shortened_label_re_enters_the_purpose_synonyms():
+    """The strip changes which questions reach the synonym table, not only labels.
+
+    `purpose titled` is not a key in `_attribute_relation_candidates`, so before
+    this rule the question asked for exactly one relation candidate. Cleaned to
+    `purpose`, it is a key, and the same question now asks for all five. So
+    "the rule only shortens a label, the result set is unchanged" is false, and
+    this is the measurement that says so.
+    """
+    for question in (
+        "What is Sample Project's purpose titled?",
+        "What is Sample Project's goal known as?",
+        "What is Sample Project's objective called?",
+    ):
+        intent = deterministic_query_intent(question)
+
+        assert intent.kind == QueryIntentKind.LOOKUP_OBJECT, question
+        assert intent.relation_candidates == PURPOSE_RELATION_CANDIDATES, question
