@@ -36,21 +36,22 @@ class AnthropicAdapter:
         than one. Module-level `_render_prompt` builds `LLMError(str(exc))` and
         does NOT redact; nothing leaks through it today, because it catches only
         `PromptError` and those messages are fixed strings plus a prompt id,
-        placeholder name, or title. The schema helpers each generation method
-        calls just past its guarded region -- `parse_facts`, `parse_query`,
-        `parse_query_intent` -- do not redact either, and none of the three is
-        harmless. What they parse is the provider's response payload, which in
-        this adapter is the already-decoded `tool_use` input rather than a
-        string (`parse_facts(block.input)`), and `_require_key` below already
-        establishes the mechanism that puts a credential in it: `base_url` is
-        caller-supplied, so the endpoint dialled is one a user can point
-        anywhere, and what it echoes is persisted. `_require_key` applies that
-        to a key verinote never resolved, which `redact_secret` could not match
-        anyway; the *configured* key arrives the same way and could be matched,
-        but nothing on this path tries. Measured, an echoing response reaches
-        `llm/schema.py`'s "malformed fact object {item!r}" verbatim, with no
-        `***`. What `_request_failed` redacts is that echo arriving as an
-        *error*; arriving as a parsable response it goes around the guard
+        placeholder name, or title. The schema helpers three of the four
+        generation methods call just past their guarded region -- `parse_facts`,
+        `parse_query`, `parse_query_intent`; `answer_question` calls none, it
+        joins the stripped text blocks -- do not redact either, and none of the
+        three is harmless. What they parse is the provider's response payload,
+        which in this adapter is the already-decoded `tool_use` input rather
+        than a string (`parse_facts(block.input)`), and `_require_key` below
+        already establishes the mechanism that puts a credential in it:
+        `base_url` is caller-supplied, so the endpoint dialled is one a user can
+        point anywhere, and what it echoes is persisted. `_require_key` applies
+        that to a key verinote never resolved, which `redact_secret` could not
+        match anyway; the *configured* key arrives the same way and could be
+        matched, but nothing on this path tries. Measured, an echoing response
+        reaches `llm/schema.py`'s "malformed fact object {item!r}" verbatim,
+        with no `***`. What `_request_failed` redacts is that echo arriving as
+        an *error*; arriving as a parsable response it goes around the guard
         entirely. That predates this change and is tracked as #514, not
         something prose can fix. Neither of the two carrier lists in this
         paragraph is offered as exhaustive. The point is that "every site
