@@ -1455,12 +1455,12 @@ def test_search_source_excerpts_puts_the_stronger_match_first(tmp_path):
     broken key, and the premise fails there instead, on the shipped code as
     much as on a mutant.
 
-    Two mutations of that same key survive both of these tests and the rest of
-    the suite, and are named here so the gap is on the record rather than
-    implied away: shortening the key to `(-item.score,)`, whose `item.path`
-    tie-break needs two sources of *equal* score before anything can pin it,
-    and deleting the `[:limit]` slice, which needs more matching sources than
-    `MAX_EXCERPTS`. Neither is covered anywhere in the suite today.
+    Mutations of that same key survive these tests, and the gap is named here
+    rather than implied away: the tie-break beyond `-item.score` is unpinned,
+    since pinning it needs two sources of *equal* score and this fixture has
+    none, and so is the `[:limit]` slice, which needs more matching sources
+    than `MAX_EXCERPTS`. What these assertions hold down is the sign on the
+    score, not the whole key.
     """
     store = _seed_two_matching_and_one_unrelated_source(tmp_path)
 
