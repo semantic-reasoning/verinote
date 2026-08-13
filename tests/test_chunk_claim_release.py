@@ -655,13 +655,19 @@ def test_a_source_that_crashes_does_not_bury_a_sibling_job_that_finished(
 ):
     """The handler writes the job it was handling, and no other.
 
-    Two sources, one job each; the first finishes, the second crashes. The
-    per-source loop is the reason this needs saying at all: a handler placed
-    around the LOOP instead of around the call would hold the last `job_id` the
-    loop bound and could only ever write that one — but a handler that reached
-    for "the job" without owning it, or a rollback of the batch, would take the
-    finished source down with the crashed one. Extraction is per-source and so is
-    its resting state.
+    Two sources, one job each; the first finishes, the second crashes. Extraction
+    is per-source and so is its resting state: a handler that reached for "the
+    job" without owning it, or a rollback of the batch, would take the finished
+    source down with the crashed one.
+
+    IT DOES NOT DISTINGUISH WHERE THE HANDLER IS ATTACHED, and it should not be
+    read as doing so. Measured: move the broad clause out to wrap the whole
+    `for source in registered:` loop and this test still passes — the loop-bound
+    `job_id` at crash time is the crashing source's either way, and the status
+    re-read declines the finished one. What does catch that move is
+    `test_a_halt_never_provokes_a_write_even_if_the_job_is_left_running`, for an
+    unrelated reason: a loop-level clause also sits outside the re-raise clauses
+    above, so it swallows their `raise` and writes to a halted KB.
 
     THE SIBLING'S CANDIDATE IS ASSERTED TOO, not just its job status. A `done` job
     whose facts were rolled back is not a survivor.
@@ -780,9 +786,14 @@ def test_a_job_that_already_finished_is_not_buried_by_a_later_failure(
     owns. Without the re-read the fix is a pure regression on this path — before
     #488 nothing wrote the job row here at all, so it stayed `done`.
 
-    `web/app.py` needs no equivalent because its sweep and auto-accept guards
-    contain the errors that would otherwise reach its own broad clause after a
-    `done` job; this is `cmd_sync`'s version of that requirement.
+    `web/app.py` HAS NO EQUIVALENT, AND BURIES THE JOB ON THIS PATH. Its two local
+    guards wrap the stale-citation sweep and auto-accept only; `process_extraction_job`
+    itself sits bare inside the worker's try, and the worker's broad clause calls
+    `fail_extraction_job` with no status re-read at all. Driven through a real
+    worker, this same scenario leaves `failed: analysis failed: ...` over a job
+    that is `done` with its chunk complete. Not this change's doing and not its
+    scope — it is #525 — but nothing here should be read as saying the web path is
+    already safe.
     """
     from verinote import cli
 
@@ -819,4 +830,80 @@ def test_a_job_that_already_finished_is_not_buried_by_a_later_failure(
         "alpha beta gamma delta epsilon",
         "zeta eta theta iota kappa",
     ]
+    store.close()
+
+
+def test_a_halt_never_provokes_a_write_even_if_the_job_is_left_running(
+    tmp_path, monkeypatch
+):
+    """The re-raise clauses, on the only shape that can distinguish them.
+
+    #194's rule is that a halted KB is not written to. `cmd_sync`'s
+    `except PolicyMissingError` is what keeps that rule at this call site — and
+    on the halt path production actually takes, it cannot be caught doing it:
+    `process_extraction_job` rewinds the job to `pending` before raising, so the
+    broad clause's status re-read declines to write and the outcome is the same
+    with the clause deleted. Measured, and the reason this test does not use a
+    real halt: with a real one, deleting the clause changes nothing.
+
+    THAT REWIND IS A PROPERTY OF `extract.py`, NOT OF THIS FILE'S SUBJECT. The
+    rule here has to hold without it, so the stub below removes it: the job is
+    left `running` — the state a halt raised anywhere that does not rewind would
+    produce — and the assertion is that `cmd_sync` still writes nothing. Delete
+    the clause and the broad one finds a `running` job and buries the halted KB's
+    job as "analysis failed", which is the #194 violation with an
+    `extraction_job_failed` row to prove it.
+
+    THIS IS ORTHOGONAL TO THE STATUS RE-READ, and both are needed.
+    `test_a_job_that_already_finished_is_not_buried_by_a_later_failure` covers the
+    re-read: do not bury a job that finished. This one covers the clauses: a halt
+    must not provoke a write at all, whatever state the job is in. Neither
+    substitutes for the other — with the re-read in place and the clauses gone,
+    only this test goes red.
+
+    The same argument covers `except DuckDBFactTermStoreLockedError`, which sits
+    beside it for the same reason and is likewise invisible on today's rewinding
+    path. `PolicyMissingError` is the one exercised here because #194 states the
+    rule in the strongest terms.
+    """
+    from verinote import cli
+    import verinote.pipeline as pipeline
+
+    monkeypatch.setenv("VERINOTE_ROOT", str(tmp_path))
+    monkeypatch.setenv("VERINOTE_PROVIDER", "anthropic")
+    monkeypatch.setenv("VERINOTE_EXTRACTION_CHUNK_CHARS", "40")
+    monkeypatch.setenv("VERINOTE_EXTRACTION_CHUNK_OVERLAP_CHARS", "0")
+    src = tmp_path / "note.txt"
+    src.write_text(
+        "alpha beta gamma delta epsilon\n\nzeta eta theta iota kappa",
+        encoding="utf-8",
+    )
+    assert cli.main(["ingest", str(src)]) == 0
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: _ChunkClient())
+
+    def _halts_without_rewinding(store, client, *, job_id, **kwargs):
+        # Takes the job exactly as the real one does, then halts WITHOUT the
+        # rollback. `cmd_sync` imports this name from `verinote.pipeline` inside
+        # the function body, so that is the attribute to replace.
+        store.mark_extraction_job_running(job_id)
+        raise PolicyMissingError("the KB policy file is missing")
+
+    monkeypatch.setattr(pipeline, "process_extraction_job", _halts_without_rewinding)
+
+    assert cli.main(["sync"]) == 2  # the halt diagnosis, unchanged by any of this
+
+    store = Store(tmp_path / "kb.sqlite")
+    jobs = list(store._conn.execute("SELECT id, status, message FROM extraction_jobs"))
+    assert len(jobs) == 1
+    job_id = int(jobs[0]["id"])
+    # THE ASSERTIONS THIS TEST EXISTS FOR: nothing was written to the halted KB.
+    assert jobs[0]["status"] == "running"
+    assert "analysis failed" not in jobs[0]["message"]
+    events = [
+        row["event_type"]
+        for row in store._conn.execute(
+            "SELECT event_type FROM fact_events WHERE job_id = ? ORDER BY id", (job_id,)
+        )
+    ]
+    assert "extraction_job_failed" not in events
     store.close()
