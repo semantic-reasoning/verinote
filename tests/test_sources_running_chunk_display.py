@@ -8,15 +8,23 @@ straightforward way to get a `running` chunk onto the page: the state arrives by
 ordinary progress instead of by arranging a failure to produce it.
 
 WHAT THAT CHOICE MUST NOT BE READ AS. A job in a terminal status can still have a
-`running` chunk, by at least two routes, and this same change documents both:
+`running` chunk, by at least two routes:
 
-* the read-back window at the claim, described in `verinote/pipeline/extract.py`
-  and owned by #489 — `mark_chunk_running` commits the claim and then reads the
-  row back in a separate statement, so a failure in that read strands a chunk
-  whose id the caller never received, after which the web worker's blanket
-  handler writes the job `failed`;
+* the release write itself failing. The broad clause in
+  `verinote/pipeline/extract.py::process_extraction_job` releases a claim through
+  `_release_claimed_chunk`, which calls `mark_chunk_failed`; if THAT write is the
+  one that raises, the exception leaves `process_extraction_job` with the chunk
+  still `running`. The web worker's blanket handler then writes the job `failed`
+  (`verinote/web/app.py`), and `fail_extraction_job` writes no `source_chunks`
+  row — nothing puts the chunk back;
 * chunks already stranded by the bug this change fixes. Existing KBs carry them,
   and they render here beside whatever status their job came to rest in.
+
+The read-back window at the claim used to head that list, and #489 took it off:
+the claim is one `UPDATE ... RETURNING *` now, and the interruption named for the
+step still left inside it is a `BaseException` — which, by `pipeline/extract.py`'s
+own account at the claim, leaves the job short of a terminal status too. So that
+route no longer produces the pairing this note is about.
 
 The reported symptom (a `failed` job showing "49 pending" for 48 untouched chunks
 plus one claimed) is therefore a state that still occurs. A live job is simply the
