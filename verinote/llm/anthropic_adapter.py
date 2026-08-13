@@ -72,8 +72,8 @@ class AnthropicAdapter:
         as "anthropic request failed" with nothing dialled (measured). Read this
         message as "the SDK call yielded no result", not "the provider
         answered"; `_client_failed` is the one entitled to speak about when.
-        That imprecision predates this change and is left to a follow-up rather
-        than fixed by hoisting the render out, because hoisting it opens a gap:
+        That imprecision predates this change and is left to #500 rather than
+        fixed by hoisting the render out, because hoisting it opens a gap:
         `get_prompt` reads an override with `read_text`, so a hand-edited
         non-UTF-8 file raises `UnicodeDecodeError`, which `_render_prompt`'s
         `except PromptError` does not catch and no caller's `except LLMError`
