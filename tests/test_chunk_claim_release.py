@@ -42,8 +42,15 @@ attempt refunded and the job rolled back around it. That third one has its own
 module, `test_chunk_claim_sidecar_lock.py`, because what matters there is what the
 release COSTS rather than that it happened.
 
-`canceled` is out of scope: it exists in the `schema.sql` CHECK constraint but no
-production code sets it.
+`canceled` is out of scope, and not as a resting place this module declines to
+cover — A CHUNK CANNOT BE `canceled` AT ALL. `source_chunks`'s CHECK constraint is
+`('pending','running','done','failed')` (`schema.sql`); the extra value belongs to
+`extraction_jobs`, whose CHECK does list it. Even there, no production code writes
+it. Two places name the value and both refuse to touch such a job:
+`mark_extraction_job_running` (`... AND status != 'canceled'`) and
+`rollback_extraction_job` (an early return). The retry claim refuses one too but
+never names it — its CAS is an allowlist, `status IN ('pending','failed')`. The
+only writers are tests setting the status by hand.
 
 The failure this guards is real and observed: a chunk claimed (`status='running'`,
 one attempt burned, `error=''`) and then abandoned when an exception that was not
