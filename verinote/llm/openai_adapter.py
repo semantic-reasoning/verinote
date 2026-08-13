@@ -73,20 +73,20 @@ class OpenAIAdapter:
         missing a required placeholder surfaces as "openai request failed"
         without a request (measured). The honest reading is "the SDK call
         yielded no result"; `_client_failed` is the message that can speak about
-        when. The imprecision predates this change and belongs to #500, not to a
-        hoist: pulling the render out would let a hand-edited non-UTF-8
-        override -- read by `get_prompt` as `read_text`, so a
-        `UnicodeDecodeError` rather than the `PromptError` that `_render_prompt`
-        guards for -- leave the adapter raw, past every caller's
-        `except LLMError`. The guarded region is what absorbs it today. "Raw"
-        overstates how visible that would be, and the real outcome is the
-        stronger argument: the chunk loop in `pipeline/extract.py` catches only
-        `LLMError`, so the chunk stays `running` and the escape is swept up by
-        the web worker's job-level `except Exception`, which records "analysis
-        failed" against the source and consumes the retry budget for a cause
-        that has nothing to do with the source. The worker already treats that
-        as a bad outcome: another handler there is ordered above the backstop
-        specifically to avoid falling through to it.
+        when. The imprecision predates this change and is #500's, which
+        prescribes pulling the render out of the `try` so that only the SDK call
+        is left inside -- four methods here, plus `OpenRouterAdapter` by
+        inheritance. Two things follow from doing that, and only the first is in
+        the issue. A template error stops being announced as a request failure,
+        which is the outcome #500 is written to get. The second was measured
+        while writing this: a hand-edited non-UTF-8 override -- read by
+        `get_prompt` as `read_text`, so a `UnicodeDecodeError` and not the
+        `PromptError` that `_render_prompt` converts -- has nothing left to
+        catch it once the render sits outside, and leaves this adapter
+        unnormalised. §10.1 is that an LLM failure reaches its caller as an
+        `LLMError`; this change is closing that hole at the constructor, and a
+        bare hoist would open it again at the render. So the hoist belongs with
+        the rest of the render's failures normalised, not on its own.
 
         Redaction covers only the key this process knows about, which is why
         `_require_key` refuses to let the SDK authenticate with one it never saw.
