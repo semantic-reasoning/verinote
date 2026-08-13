@@ -1293,16 +1293,57 @@ class Store:
             return True
 
     def mark_chunk_running(self, chunk_id: int) -> sqlite3.Row | None:
+        """Claim a `pending` chunk and hand back the row that claim produced.
+
+        ONE PREPARED STATEMENT, WHERE THERE WERE TWO. The compare-and-set
+        (`WHERE status = 'pending'`) and the post-image the caller needs are the
+        same statement, so the caller's row is the row this claim wrote rather
+        than whatever a later read happens to find. The form this replaces was an
+        `UPDATE` followed by a separate `get_source_chunk`: on an autocommit
+        connection the claim was committed by the time the second statement ran,
+        so a failure there left the chunk `running` while the caller never bound
+        anything to release it by (#489; `pipeline/extract.py` describes the same
+        window from the claim site).
+
+        `None` MEANS THE CAS MATCHED NOTHING — no such chunk, or one that is no
+        longer `pending`: somebody else holds it, or it has already gone `done` or
+        `failed`. The absent row is the whole verdict; there is no `rowcount`
+        check any more, and putting one back would be a bug rather than a
+        redundancy. `rowcount` on a `RETURNING` cursor reads `0` until the
+        rows are consumed and only then becomes `1`, so a `rowcount != 1` guard
+        placed in front of the fetch returns `None` while the write lands anyway
+        as the cursor is discarded on the way out — which is exactly the stranded
+        chunk this method exists to stop producing.
+
+        THE CURSOR MUST BE CONSUMED BEFORE THIS RETURNS, and the `fetchone()` is
+        what consumes it. `UPDATE ... RETURNING` holds the write lock until the
+        statement finishes stepping, and the commit happens inside `fetchone()`,
+        not inside `execute()`. Measured on this connection's own settings
+        (autocommit; in WAL, which is what `store/schema.sql` sets for a real KB,
+        and again on the rollback journal, with the same result both ways): with
+        the cursor left alive and unfetched, another PROCESS reads the row as
+        `pending` and its write fails `database is locked`; after the `fetchone()`
+        it reads `running` and writes fine. `in_transaction` reports `False` the
+        whole time and will not warn anyone who gets this wrong. So no early
+        return, no branch, and nothing that can raise belongs between `execute`
+        and the fetch.
+
+        WHAT REMAINS IS ONE STEP, NOT ZERO. An interruption arriving after
+        `execute()` returns and before `fetchone()`'s result is bound still leaves
+        a committed claim nobody received — a cursor dropped without being fetched
+        commits, measured the same way as above. The interruption this code can
+        name for that is a `BaseException` (`KeyboardInterrupt`, `SystemExit`),
+        which is the carve-out `pipeline/extract.py` already declares at the claim
+        for the same reason. The window narrowed from two statements to one step.
+        It is not gone.
+        """
         with self._lock:
-            cur = self._conn.execute(
+            return self._conn.execute(
                 "UPDATE source_chunks SET status = 'running', attempts = attempts + 1, "
                 "error = '', updated_at = datetime('now') "
-                "WHERE id = ? AND status = 'pending'",
+                "WHERE id = ? AND status = 'pending' RETURNING *",
                 (chunk_id,),
-            )
-            if cur.rowcount != 1:
-                return None
-            return self.get_source_chunk(chunk_id)
+            ).fetchone()
 
     def requeue_chunk_claim(self, chunk_id: int, *, attempts: int) -> bool:
         """Undo one `mark_chunk_running`: back to `pending`, attempt refunded.
