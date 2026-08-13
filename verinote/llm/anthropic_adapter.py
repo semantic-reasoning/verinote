@@ -72,19 +72,21 @@ class AnthropicAdapter:
         as "anthropic request failed" with nothing dialled (measured). Read this
         message as "the SDK call yielded no result", not "the provider
         answered"; `_client_failed` is the one entitled to speak about when.
-        That imprecision predates this change and is left to #500 rather than
-        fixed by hoisting the render out, because hoisting it opens a gap:
-        `get_prompt` reads an override with `read_text`, so a hand-edited
-        non-UTF-8 file raises `UnicodeDecodeError`, which `_render_prompt`'s
-        `except PromptError` does not catch and no caller's `except LLMError`
-        catches either. Today the guarded region absorbs it. Nor would that
-        escape be loud: `pipeline/extract.py` guards its chunk loop with
-        `except LLMError` alone, so the chunk is left `running`, and the web
-        worker's job-level `except Exception` files the whole job as "analysis
-        failed" and spends the retry budget -- content blamed for a config
-        error. That is not a guess about the backstop: a sibling handler in that
-        worker exists in order not to fall through to it, and its comment names
-        those same two costs.
+        That imprecision predates this change and is #500's. Its stated fix is
+        to hoist the render out of the `try` and leave only the SDK call inside
+        -- the shape `key = self._require_key()` already has in `_client`. Done
+        bare, that satisfies what #500 asks for: measured, the same broken
+        override then reports "Datalog translation prompt must include required
+        placeholder {qid}", with no "request failed" in front of it. Something
+        it also does is not in the issue, and is measured here. `get_prompt`
+        reads an override with `read_text`, so a hand-edited non-UTF-8 file
+        raises `UnicodeDecodeError`, which `_render_prompt`'s
+        `except PromptError` does not convert. Inside the guarded region that is
+        normalised like every other failure; hoisted out, it leaves this adapter
+        as itself -- an LLM failure that is not an `LLMError`, which is the
+        §10.1 violation this change closes at the client-construction site,
+        reopened at the render. So the hoist wants the render's other failures
+        normalised along with it.
 
         Redaction covers only the key this process knows about, which is why
         `_require_key` refuses to let the SDK authenticate with one it never saw.
