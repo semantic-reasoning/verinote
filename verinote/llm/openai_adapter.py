@@ -73,8 +73,8 @@ class OpenAIAdapter:
         missing a required placeholder surfaces as "openai request failed"
         without a request (measured). The honest reading is "the SDK call
         yielded no result"; `_client_failed` is the message that can speak about
-        when. The imprecision predates this change and belongs to a follow-up,
-        not to a hoist: pulling the render out would let a hand-edited non-UTF-8
+        when. The imprecision predates this change and belongs to #500, not to a
+        hoist: pulling the render out would let a hand-edited non-UTF-8
         override -- read by `get_prompt` as `read_text`, so a
         `UnicodeDecodeError` rather than the `PromptError` that `_render_prompt`
         guards for -- leave the adapter raw, past every caller's
