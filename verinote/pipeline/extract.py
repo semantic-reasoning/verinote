@@ -306,11 +306,13 @@ def plan_source_extraction(
 
     THAT SECOND RETRY HAS NO EXHAUSTION GATE ABOVE IT, and the asymmetry is
     deliberate rather than an oversight. The gate exists because an all-exhausted
-    job can never make progress, so re-offering it is pure loss. This branch
-    usually DOES make progress, because what terminalises a job from outside the
-    chunk accounting is typically a condition of the host that clears by itself.
-    And where it does not, the alternative is worse, not better: rebuilding burns
-    the same empty run AND pays the LLM for every finished chunk on top of it. So
+    job can never make progress, so re-offering it is pure loss. Re-offering here
+    is never loss. Where the condition has cleared, the pass finishes the job;
+    where it reproduces, the alternative is strictly worse rather than better,
+    because rebuilding burns the same run row and the same two job events AND pays
+    the LLM for every finished chunk on top of them — measured over four syncs of
+    a reproducing fault on a six-chunk source, 2/4/6/8 cumulative calls rebuilding
+    against 2/2/2/2 continuing, with the run rows at 1/2/3/4 either way. So
     the branch is offered unguarded, with one honest residue — a fault that
     reproduces below the chunk accounting is re-offered every sync and spends no
     budget doing it, because `failed_chunk_attempt_status` counts `failed` chunks
