@@ -44,22 +44,28 @@ class OpenAIAdapter:
         imports no `redact_secret` at all -- and is harmless for a different
         reason: it is a module-level function precisely so that no key is in
         scope for it to leak, which its own docstring argues at length. The
-        schema helpers called just past each guarded region -- `parse_facts`,
-        `parse_query`, `parse_query_intent` -- are worse than a third kind: also
-        unredacted, and not harmless. Their input is provider response text, and
-        the threat model is the one `_require_key` sets out below, transposed:
-        there an attacker-influenced endpoint -- `base_url` is caller-supplied --
-        echoes back a credential verinote never resolved, so `redact_secret` has
-        nothing to match. Here the same endpoint echoes the key verinote *did*
-        resolve, which `redact_secret` would match, down a path that never calls
-        it. Measured, it survives into `llm/schema.py`'s "malformed fact object
-        {item!r}" with no `***`. `_request_failed` covers that echo when it
-        arrives as an *error*; as a parsable response it never meets a redactor.
-        Pre-existing, and #514 rather than a docstring's business. That
-        enumeration is not offered as complete. What it is for is the shape of
-        the claim: "both carriers redact" is true of this class and not of the
-        call graph around it, and stating only the first half is how the
-        sentence this paragraph replaces went wrong.
+        schema helpers three of the four generation methods call just past their
+        guarded region -- `parse_facts`, `parse_query`, `parse_query_intent`;
+        `answer_question` calls none, it strips the message text and returns --
+        are unredacted too, and two of them are worse than a third kind.
+        Measured, `parse_facts` and `parse_query_intent` copy what they were
+        handed into the message they raise. `parse_query` does not: its two
+        raise sites can carry a missing key name, a builtin `TypeError` phrase,
+        or a JSON position, which puts it beside `_render_prompt` above --
+        unredacted but bounded. For the other two the input is provider response
+        text, and the threat model is the one `_require_key` sets out below,
+        transposed: there an attacker-influenced endpoint -- `base_url` is
+        caller-supplied -- echoes back a credential verinote never resolved, so
+        `redact_secret` has nothing to match. Here the same endpoint echoes the
+        key verinote *did* resolve, which `redact_secret` would match, down a
+        path that never calls it. Measured, it survives into `llm/schema.py`'s
+        "malformed fact object {item!r}" with no `***`. `_request_failed` covers
+        that echo when it arrives as an *error*; as a parsable response it never
+        meets a redactor. Pre-existing, and #514 rather than a docstring's
+        business. That enumeration is not offered as complete. What it is for is
+        the shape of the claim: "both carriers redact" is true of this class and
+        not of the call graph around it, and stating only the first half is how
+        the sentence this paragraph replaces went wrong.
 
         Everything else raising `LLMError` here uses a fixed string and carries
         nothing caught: `_require_key` and the `ImportError` clause in
