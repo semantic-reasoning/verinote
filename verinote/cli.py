@@ -931,13 +931,18 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     # the re-raise still delivers it to `cmd_sync`'s own
                     # `except LLMError` below, which is what shapes the message.
                     #
-                    # TWO HONEST LIMITS. (1) `fail_extraction_job` is itself a
+                    # THREE HONEST LIMITS. (1) `fail_extraction_job` is itself a
                     # write and can raise — the broad clause's likeliest catch is
                     # sqlite/WAL-class, so this is not exotic — and the store error
                     # then replaces the escaping exception, with the original
-                    # hanging off `__context__`. The job row is USUALLY all that
-                    # differs from before this handler existed; on that path what
-                    # the user sees differs too. (2) The message is type-qualified
+                    # hanging off `__context__`. What this clause writes when it
+                    # succeeds is TWO rows, not one: `fail_extraction_job` updates
+                    # the `extraction_jobs` row AND appends an
+                    # `extraction_job_failed` row to `fact_events`
+                    # (`store/db.py`). Usually that pair is the whole difference in
+                    # what gets WRITTEN from before this handler existed; on the
+                    # path where the store write itself raises, what the user sees
+                    # differs too. (2) The message is type-qualified
                     # here and is not in `web/app.py`, whose `f"analysis failed:
                     # {e}"` renders a bare `ValueError()` as "analysis failed: "
                     # with no cause — the same empty-cause symptom
@@ -945,6 +950,14 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     # there (#525). So this clause is the web clause's counterpart,
                     # not its mirror. Neither bounds the message length; the store
                     # takes `str(exc)` whole, exactly as the web one does.
+                    # (3) When the escaping exception came from outside chunk
+                    # accounting, that pair is a `failed` job with zero failed
+                    # chunks — the edge state `plan_source_extraction` rebuilds
+                    # from scratch. What that costs depends on how far the pass
+                    # got: chunks it had already finished are re-sent to the LLM,
+                    # and that discarded work is what #524 tracks. A pass that
+                    # finished none is rebuilt just as fully, but has nothing to
+                    # throw away, so #524 leaves it alone.
                     job_now = store.get_extraction_job(job_id)
                     if job_now is not None and job_now["status"] == "running":
                         store.fail_extraction_job(
