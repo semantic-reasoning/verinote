@@ -1361,30 +1361,40 @@ def test_search_source_excerpts_compares_nothing_from_a_missing_or_undecodable_s
 _UNRELATED_SOURCE_TEXT = "샘플기관은 샘플절차를 안내한다."
 
 
-def _seed_two_matching_and_one_unrelated_source(tmp_path):
-    """Three registered, readable sources scoring 2, 1 and 0 on one question.
+def _seed_three_matching_and_one_unrelated_source(tmp_path):
+    """Four registered, readable sources scoring 2, 1, 1 and 0 on one question.
 
     The question these fixtures are built for is `샘플조직의 역할은 무엇인가?`,
     whose patterns are `샘플조직의`, `역할은` and `무엇인가`. `roles.txt`
-    carries the first two, `history.txt` only the first, and `unrelated.txt`
-    none of them.
+    carries the first two, `history.txt` and `notice.txt` only the first, and
+    `unrelated.txt` none of them.
 
-    The file names are load-bearing rather than decorative. `store.sources()`
-    reads `ORDER BY path`, so the two matching sources arrive at the sort as
-    `history.txt` then `roles.txt` -- the reverse of their score order. That is
-    what lets a sort key which has lost `-item.score` show through instead of
-    happening to agree with the right answer. A rename that put the two orders
-    back in step would make the ordering test vacuous, so that test asserts
-    this property rather than trusting this docstring for it.
+    The file names and the texts are load-bearing rather than decorative.
+    `store.sources()` reads `ORDER BY path`, so the three matching sources
+    arrive at the sort as `history.txt`, `notice.txt`, `roles.txt`, which
+    disagrees with their score order of `roles.txt`, `history.txt`,
+    `notice.txt` -- and is not the reverse of it either, so reading the paths
+    backwards does not recover the right answer any more than reading them
+    forwards does. `notice.txt` is the long one for the same reason: its
+    excerpt outruns `roles.txt`'s, so ranking by excerpt length instead of by
+    score does not recover it either. A rename, or a rewrite that shortened
+    that text, would put one of those orders back in step and make the
+    ordering test vacuous, so that test asserts these properties rather than
+    trusting this docstring for them.
     """
     sources = tmp_path / "sources"
     sources.mkdir()
     (sources / "roles.txt").write_text("샘플조직의 역할은 샘플서비스 검토이다.", encoding="utf-8")
     (sources / "history.txt").write_text("샘플조직의 연혁은 다음과 같다.", encoding="utf-8")
+    (sources / "notice.txt").write_text(
+        "샘플조직의 안내문은 여러 항목으로 나뉘어 있으며 자세한 내용은 별도 문서에 있다.",
+        encoding="utf-8",
+    )
     (sources / "unrelated.txt").write_text(_UNRELATED_SOURCE_TEXT, encoding="utf-8")
     store = _store(tmp_path)
     store.add_source("sources/roles.txt")
     store.add_source("sources/history.txt")
+    store.add_source("sources/notice.txt")
     store.add_source("sources/unrelated.txt")
     return store
 
@@ -1409,7 +1419,7 @@ def test_search_source_excerpts_drops_a_source_it_read_and_matched_nothing_in(
     still hold, for a reason that has nothing to do with the gate. The spy
     fails in that case instead of passing quietly.
 
-    The set equality is exact for this fixture only. Three sources cannot reach
+    The set equality is exact for this fixture only. Four sources cannot reach
     the `MAX_EXCERPTS` truncation, and no two of them resolve to the same path,
     so the `seen_paths` dedupe never drops one either. Outside those bounds the
     result is not simply "every registered source that scored".
@@ -1426,7 +1436,7 @@ def test_search_source_excerpts_drops_a_source_it_read_and_matched_nothing_in(
 
     monkeypatch.setattr(ask_module, "_best_excerpt", spy)
 
-    store = _seed_two_matching_and_one_unrelated_source(tmp_path)
+    store = _seed_three_matching_and_one_unrelated_source(tmp_path)
 
     excerpts = search_source_excerpts(
         store, root=tmp_path, question="샘플조직의 역할은 무엇인가?"
@@ -1436,43 +1446,54 @@ def test_search_source_excerpts_drops_a_source_it_read_and_matched_nothing_in(
     assert {item.path for item in excerpts} == {
         "sources/roles.txt",
         "sources/history.txt",
+        "sources/notice.txt",
     }
 
 
 def test_search_source_excerpts_puts_the_stronger_match_first(tmp_path):
-    """Two matches come back best-first, not in the order the store read them.
+    """Three matches come back best-first, not in the order the store read them.
 
     `sorted(matches, key=lambda item: (-item.score, item.path))` is the whole
     of that promise. Drop `-item.score` from the key, or the `sorted` call, or
     flip the sign, and what shows through is `store.sources()`' own
-    `ORDER BY path`, which this fixture deliberately arranges to be the
-    reverse.
+    `ORDER BY path`, which this fixture deliberately arranges to disagree with
+    the score order.
 
-    The assertion above the ordering one is that arrangement, not decoration:
-    it re-derives from the returned scores that path order and score order
-    still disagree. Renaming these files so the two agree -- `a_roles.txt`,
-    `z_history.txt` -- would leave the ordering assertion passing under a
-    broken key, and the premise fails there instead, on the shipped code as
-    much as on a mutant.
+    The three assertions above the ordering one are that arrangement, not
+    decoration, and they read no score at all. Each takes a cheaper key the
+    ordering assertion would otherwise be satisfied by -- paths ascending,
+    paths descending, excerpt length descending -- and holds that it produces
+    some other list. A rename that put one of those keys back in step
+    (`a_roles.txt`, `notice.txt`, `z_history.txt`), or a shorter notice text,
+    would leave the ordering assertion passing under a broken key, and a
+    premise fails there instead, on the shipped code as much as on a mutant.
 
-    Mutations of that same key survive these tests, and the gap is named here
-    rather than implied away: the tie-break beyond `-item.score` is unpinned,
-    since pinning it needs two sources of *equal* score and this fixture has
-    none, and so is the `[:limit]` slice, which needs more matching sources
-    than `MAX_EXCERPTS`. What these assertions hold down is the sign on the
-    score, not the whole key.
+    Two mutations of that same key survive these tests, and the gap is named
+    here rather than implied away. Dropping the `item.path` tie-break to
+    `key=(-item.score,)` changes nothing even though two of these sources do
+    score equally: `store.sources()` reads `ORDER BY path`, so equal scores
+    arrive already in path order and a stable sort leaves them there whether
+    or not the key says so. The `[:limit]` slice is likewise unpinned, since
+    showing it needs more matching sources than `MAX_EXCERPTS`. Both are
+    tracked in #533 rather than left as a claim here that goes quietly stale
+    the day someone pins one of them.
     """
-    store = _seed_two_matching_and_one_unrelated_source(tmp_path)
+    store = _seed_three_matching_and_one_unrelated_source(tmp_path)
 
     excerpts = search_source_excerpts(
         store, root=tmp_path, question="샘플조직의 역할은 무엇인가?"
     )
 
+    order = [item.path for item in excerpts]
     by_path = sorted(excerpts, key=lambda item: item.path)
-    assert by_path[0].score < by_path[-1].score
-    assert [item.path for item in excerpts] == [
+    by_length = sorted(excerpts, key=lambda item: (-len(item.excerpt), item.path))
+    assert [item.path for item in by_path] != order
+    assert [item.path for item in reversed(by_path)] != order
+    assert [item.path for item in by_length] != order
+    assert order == [
         "sources/roles.txt",
         "sources/history.txt",
+        "sources/notice.txt",
     ]
 
 
@@ -1485,10 +1506,11 @@ def test_ask_hands_the_page_the_excerpts_already_ordered(tmp_path):
     the test above cannot see a caller that re-collected the result on the way
     out, and this one runs the assembled route end to end instead.
 
-    Same fixture, same premise: the two matching sources are named so that
-    their path order is the reverse of their score order.
+    Same fixture, same three premises: the matching sources are named, and
+    their texts sized, so that neither path order nor excerpt length can
+    reproduce the list the scores ask for.
     """
-    store = _seed_two_matching_and_one_unrelated_source(tmp_path)
+    store = _seed_three_matching_and_one_unrelated_source(tmp_path)
     client = FallbackClient(error=LLMError("synthetic outage"))
 
     result = ask_question(
@@ -1496,11 +1518,16 @@ def test_ask_hands_the_page_the_excerpts_already_ordered(tmp_path):
     )
 
     assert result.route == "fallback"
+    order = [item.path for item in result.excerpts]
     by_path = sorted(result.excerpts, key=lambda item: item.path)
-    assert by_path[0].score < by_path[-1].score
-    assert [item.path for item in result.excerpts] == [
+    by_length = sorted(result.excerpts, key=lambda item: (-len(item.excerpt), item.path))
+    assert [item.path for item in by_path] != order
+    assert [item.path for item in reversed(by_path)] != order
+    assert [item.path for item in by_length] != order
+    assert order == [
         "sources/roles.txt",
         "sources/history.txt",
+        "sources/notice.txt",
     ]
 
 
