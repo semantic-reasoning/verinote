@@ -331,7 +331,7 @@ def plan_source_extraction(
     production path reaches it today — #489 closed the read-back window that could
     leave a chunk `running`, and the chunk loop settles its claim to `failed` or
     `pending` or leaves the job `running`, which plans as `busy` — so the branch
-    is still worth offering, and this belongs to the same follow-up as the
+    is still worth offering, and this belongs to the same follow-up (#536) as the
     termination residue below.
 
     So the branch is offered unguarded, with one honest residue — a fault that
@@ -339,8 +339,8 @@ def plan_source_extraction(
     budget doing it, because `failed_chunk_attempt_status` counts `failed` chunks
     and this state has none. The LLM calls stop after the first pass; the run row
     and the two job events do not. Closing that needs a failure counter the chunk
-    rows cannot carry, so it is deliberately left to a follow-up rather than
-    charged to a chunk that did nothing wrong.
+    rows cannot carry, so it is deliberately left to a follow-up (#536) rather
+    than charged to a chunk that did nothing wrong.
 
     A `running` job is neither resumed nor replaced. It may belong to a live UI
     worker, and resuming would have `claim_pending_extraction_job`'s reclaim yank
