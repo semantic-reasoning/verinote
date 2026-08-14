@@ -1424,6 +1424,23 @@ def test_search_source_excerpts_drops_a_source_it_read_and_matched_nothing_in(
     so the `seen_paths` dedupe never drops one either. Outside those bounds the
     result is not simply "every registered source that scored".
 
+    The neighbouring mutant `if excerpt:` is equivalent rather than uncaught,
+    and the reason is a property of `_TOKEN` (`verinote/pipeline/ask.py:39`)
+    rather than of this fixture. A falsy `score` means `best_pos < 0` and the
+    early `return "", 0`, so only the other direction is open: a truthy score
+    carrying an empty excerpt needs `text` to be entirely whitespace while
+    some pattern is still found in `_fold(text)`. Neither half is reachable.
+    All 29 whitespace code points, and every pair and triple of them, keep
+    `_fold(s)` whitespace -- their combining classes are zero so nothing
+    composes across them, none of them is the target of a composition,
+    casefold maps none of them, and the two that NFC does rewrite (`U+2000`,
+    `U+2001`) go to other whitespace. And each of the 32,303 code points
+    `_TOKEN` can match folds to something non-empty and non-whitespace both
+    alone and doubled, so no token, whatever its length, folds to something an
+    all-whitespace `folded` could contain. A widened `_TOKEN` -- `\\S+`, say --
+    would split the two gates apart, and what it would let through is exactly
+    #468's defect: an `AskExcerpt` carrying an empty excerpt string.
+
     Not covered here: the order of what comes back (the next test), the
     truncation, the dedupe, and the window arithmetic inside `_best_excerpt`.
     """
