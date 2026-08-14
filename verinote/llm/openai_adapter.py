@@ -35,15 +35,18 @@ class OpenAIAdapter:
         turns on, so this is not a subclass that merely renames things.
 
         Redaction is not universal outside that class boundary, though.
-        Module-level `_render_prompt` in this file builds `LLMError(str(exc))`
-        with no redaction, a third carrier of caught text; it is harmless as
-        written, because the only thing it catches is `PromptError` and those
-        messages are fixed strings plus a prompt id, placeholder name, or title.
+        Module-level `_render_prompt` in this file builds an `LLMError` around
+        a caught exception with no redaction, a third carrier of caught text; it
+        is harmless, but not for the reason the sentence this replaces gave.
+        #500 widened its second clause, so what it carries is whatever the
+        render raised. What holds instead is the shape of the function:
+        module-level, taking a root path and a prompt id, so no key is in scope
+        for it to put in a message, and a render dials nothing, so no provider
+        response can arrive in it either.
         `openrouter_adapter.list_models` is the same shape -- a bare
         `LLMError(f"openrouter request failed: {exc}")`, in a module that
-        imports no `redact_secret` at all -- and is harmless for a different
-        reason: it is a module-level function precisely so that no key is in
-        scope for it to leak, which its own docstring argues at length. The
+        imports no `redact_secret` at all -- and rests on the first half of that
+        same argument, which its own docstring makes at length. The
         schema helpers three of the four generation methods call just past their
         guarded region -- `parse_facts`, `parse_query`, `parse_query_intent`;
         `answer_question` calls none, it strips the message text and returns --
@@ -51,8 +54,8 @@ class OpenAIAdapter:
         Measured, `parse_facts` and `parse_query_intent` copy what they were
         handed into the message they raise. `parse_query` does not: its two
         raise sites can carry a missing key name, a builtin `TypeError` phrase,
-        or a JSON position, which puts it beside `_render_prompt` above --
-        unredacted but bounded. For the other two the input is provider response
+        or a JSON position -- unredacted, and bounded in a way `_render_prompt`
+        above no longer is. For the other two the input is provider response
         text, and the threat model is the one `_require_key` sets out below,
         transposed: there an attacker-influenced endpoint -- `base_url` is
         caller-supplied -- echoes back a credential verinote never resolved, so
@@ -294,7 +297,38 @@ def _with_schema_hint(prompt: str, schema_hint: str) -> str:
 
 
 def _render_prompt(root, prompt_id: str, **values: object) -> str:
+    """Render `prompt_id` under `root`, or raise `LLMError`.
+
+    Two clauses, and their order is the design. `PromptError` is the prompt
+    contract stated back to the user -- a required placeholder their override
+    left out -- so it goes out as the library wrote it, with nothing in front
+    of it. The clause below names the operation first, because what that one
+    catches is not always a sentence a user can act on.
+
+    Being that wide relabels a genuine programming error as something that
+    reads like a broken file: `prompt <id> could not be loaded` points at
+    `policy/prompts/<id>.md`, and for a `TypeError` raised inside
+    `render_prompt` that file is fine. It is the same widening
+    `test_a_non_valueerror_from_the_request_constructor_is_not_blamed_on_the_base_url`
+    in `tests/test_ollama_adapter.py` refuses for `Request()` -- refused there
+    for a reason that does not hold here. `Request()` has one reachable
+    failure, so a type tells a real cause and a bug apart. `render_prompt`
+    reads two files, the packaged default and the override, and the `OSError`
+    family those reads can raise is not closed by a list; #500's reviewer
+    rejected enumerating it. §10.1 -- every LLM failure reaches its caller as
+    an `LLMError` -- wins that trade at the adapter seam, because what the
+    narrow clause alone lets past is a `UnicodeDecodeError` from a hand-edited
+    override or a `PermissionError` from a mode bit, escaping as itself.
+    `claude_cli_adapter._invoke`'s `except OSError` is the precedent for a
+    clause this wide: "ONE clause, out here", justified by what the caught type
+    is rather than by a list of the values it can carry. `from exc` pays for
+    the trade -- the original exception stays on `__cause__` for a log.
+
+    `except Exception` reaches neither `KeyboardInterrupt` nor `SystemExit`.
+    """
     try:
         return render_prompt(root, prompt_id, **values)
     except PromptError as exc:
         raise LLMError(str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - normalise every render failure
+        raise LLMError(f"prompt {prompt_id} could not be loaded: {exc}") from exc
