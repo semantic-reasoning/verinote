@@ -161,7 +161,7 @@ def _plan(store: Store, source_id: int) -> ExtractionJobPlan:
 
 
 def _worker_marks_job_failed(store: Store, job_id: int, message: str) -> None:
-    """Stand-in for the web worker. NOT the code under test.
+    """Stand-in for a caller's `except Exception`. NOT the code under test.
 
     `process_extraction_job` leaves the job row alone when a non-`LLMError`
     escapes; a caller's broad clause is what writes `failed` — the worker thread's
@@ -207,9 +207,10 @@ def test_no_chunk_stays_claimed_when_a_chunk_raises_a_non_llm_error(tmp_path, ex
 def test_terminal_job_has_no_running_chunk_after_a_non_llm_error(tmp_path):
     """T1's invariant restated the way an operator sees it, once the job is `failed`.
 
-    The `fail_extraction_job` call below is the web worker's write, performed here
-    by the harness because `process_extraction_job` does not do it. It is a
-    stand-in, not production code under test.
+    The `fail_extraction_job` call below stands in for a caller's broad clause —
+    the web worker's, or `cmd_sync`'s since #488 — performed here by the harness
+    because `process_extraction_job` does not do it. It is a stand-in, not
+    production code under test.
     """
     s = _store(tmp_path)
     _source_id, job_id = _three_chunk_job(s)
