@@ -39,11 +39,16 @@ class AnthropicAdapter:
         placeholder name, or title. The schema helpers three of the four
         generation methods call just past their guarded region -- `parse_facts`,
         `parse_query`, `parse_query_intent`; `answer_question` calls none, it
-        joins the stripped text blocks -- do not redact either, and none of the
-        three is harmless. What they parse is the provider's response payload,
-        which in this adapter is the already-decoded `tool_use` input rather
-        than a string (`parse_facts(block.input)`), and `_require_key` below
-        already establishes the mechanism that puts a credential in it:
+        joins the stripped text blocks -- do not redact either, and two of the
+        three are not harmless. Measured, `parse_facts` and `parse_query_intent`
+        put what they were handed into the message they raise; `parse_query`
+        cannot, and sits in the bounded column with `_render_prompt` above --
+        its two raise sites carry a missing key name, a builtin `TypeError`
+        phrase, or a JSON position, and nothing of the payload. What those two
+        parse is the provider's response payload, which in this adapter is the
+        already-decoded `tool_use` input rather than a string
+        (`parse_facts(block.input)`), and `_require_key` below already
+        establishes the mechanism that puts a credential in it:
         `base_url` is caller-supplied, so the endpoint dialled is one a user can
         point anywhere, and what it echoes is persisted. `_require_key` applies
         that to a key verinote never resolved, which `redact_secret` could not
