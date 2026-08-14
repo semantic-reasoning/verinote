@@ -1093,20 +1093,21 @@ def test_every_tail_adverb_is_read_with_the_predicate():
 def test_a_word_a_predicate_only_ends_is_left_alone():
     """The tail binds with `\\s+`, so a member inside a longer word is not a tail.
 
-    These eight are chosen against the two known relaxations of that binding,
+    These ten are chosen against the two known relaxations of that binding,
     which are not the same one and are not caught by the same witness:
 
-    - `\\s*` has no boundary requirement at all and cuts every word below --
+    - `\\s*` has no boundary requirement at all and cuts all ten below --
       `recalled` to `re`, `nicknamed` to `nick`, `untitled` to `un`. A corpus of
       `dataset`/`offset`/`blacklisted` would not notice: those end in `set` and
       `listed`, which are the *first* words of `set to` and `listed as` and are
       not members on their own, so the `\\s*` mutant leaves them whole and the
       test passes vacuously against it.
-    - `\\s*\\b` spares all eight, because `_` and every letter are word
-      characters, and still cuts `re-called` to `re-`, because `-` is not.
+    - `\\s*\\b` spares nine of them, because `_` and every letter are word
+      characters -- `so_called` is the row that needs the `_` -- and still cuts
+      `re-called` to `re-`, because `-` is not.
 
     So `re-called` is the witness that tells the second relaxation from the
-    first, and the eight are what make the first one red at all.
+    first, and the other nine are what make the first one red at all.
     """
     for label in (
         "recalled",
