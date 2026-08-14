@@ -783,9 +783,11 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     )
                     continue
                 # A resume picks a rolled-back job back up; a retry re-runs a failed
-                # job through the atomic claim, which resets its failed chunks under
-                # the same lock that takes ownership. Both continue an existing job;
-                # neither means build a fresh one.
+                # job through the atomic claim, which resets whatever failed chunks
+                # it has under the same lock that takes ownership — since #524 that
+                # may be none, and the claim is then only the lock, taking the job
+                # over so the chunks it already finished are not rebuilt away. Both
+                # continue an existing job; neither means build a fresh one.
                 continued_job_id = plan.resume_job_id or plan.retry_job_id
                 retry = plan.retry_job_id is not None
                 job_id = continued_job_id
