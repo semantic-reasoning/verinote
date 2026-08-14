@@ -4636,9 +4636,13 @@ def test_worker_sidecar_lock_does_not_overwrite_the_rollback(tmp_path, monkeypat
     handler takes it and calls `fail_extraction_job`. That is worse here than in
     the sibling cases: `process_extraction_job` has ALREADY rolled the job back to
     `pending` so the next pass resumes it, and the `failed` write lands on top of
-    that rollback. The result is a `failed` job with no failed chunk, which
-    `plan_source_extraction` treats as an edge state and rebuilds from scratch —
-    every chunk the pass finished is sent to the LLM again.
+    that rollback. The result is a `failed` job with no failed chunk. Since #524
+    `plan_source_extraction` continues such a job on the strength of the chunks it
+    finished rather than rebuilding from scratch, so those chunks are no longer
+    sent to the LLM again; what the overwrite still does is file a condition of
+    the host as this job's own failure — in the job row, in the
+    `extraction_job_failed` event, and on the Sources page — for a pause that
+    clears when the other process lets go.
 
     The stand-in raises after rewinding the job, which is the state the real
     pipeline hands the worker (`_back_off_from_locked_sidecar`).
