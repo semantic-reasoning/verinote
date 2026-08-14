@@ -222,8 +222,9 @@ class ExtractionJobPlan:
     back up where it left off; `retry_job_id` re-runs a `failed` job whose chunks
     are still worth continuing — either it has failed chunks with retry budget
     left, which the atomic claim resets under the lock that takes ownership, or it
-    has no failed chunk at all and the claim resets nothing, taking ownership so
-    the chunks it already finished are not thrown away (#524);
+    has no failed chunk to reset and the claim is taken for the ownership alone —
+    it still rewinds any stray `running` chunk — so the chunks it already finished
+    are not thrown away (#524);
     `exhausted_job_id` names a `failed` job that has given up — a chunk has failed
     every attempt, so the pass skips it instead of spinning the same dead chunk
     every sync (#323); `busy_job_id` says another process owns it and this pass must
@@ -299,21 +300,41 @@ def plan_source_extraction(
     chunk accounting: a caller's broad `except` writing `failed` over a crash that
     happened below the chunk loop, or a human resetting the rows out of band. When
     any chunk is `done`, rebuilding throws that finished work away and pays the LLM
-    for it again, so the job goes through the same retry claim — with nothing to
-    reset, the claim is only the lock that takes ownership, and the pass carries on
-    from the chunks left `pending`. When NO chunk is `done` there is no finished
-    work to lose and the two routes cost the same, so it still rebuilds.
+    for it again, so the job goes through the same retry claim — with no failed
+    chunk to reset, what the claim contributes is the ownership, plus a rewind of
+    any stray `running` chunk, and the pass carries on from the chunks left
+    `pending`. When NO chunk is `done` there is no finished work to lose and the
+    two routes cost the same, so it still rebuilds.
 
     THAT SECOND RETRY HAS NO EXHAUSTION GATE ABOVE IT, and the asymmetry is
     deliberate rather than an oversight. The gate exists because an all-exhausted
-    job can never make progress, so re-offering it is pure loss. Re-offering here
-    is never loss. Where the condition has cleared, the pass finishes the job;
-    where it reproduces, the alternative is strictly worse rather than better,
-    because rebuilding burns the same run row and the same two job events AND pays
-    the LLM for every finished chunk on top of them — measured over four syncs of
-    a reproducing fault on a six-chunk source, 2/4/6/8 cumulative calls rebuilding
-    against 2/2/2/2 continuing, with the run rows at 1/2/3/4 either way. So
-    the branch is offered unguarded, with one honest residue — a fault that
+    job can never make progress, so re-offering it is pure loss. For the chunk set
+    this state carries in practice — `done` and `pending`, nothing charged to any
+    chunk — re-offering is never loss. Where the condition has cleared the pass
+    finishes the job; where it reproduces, rebuilding burns the same run row and
+    the same two job events AND pays the LLM for every finished chunk on top of
+    them: measured over four syncs of a reproducing fault on a six-chunk source,
+    2/4/6/8 cumulative calls rebuilding against 2/2/2/2 continuing, with the run
+    rows at 1/2/3/4 either way.
+
+    A `running` chunk is the case that argument does NOT cover, and the code does
+    not exclude one. The retry claim rewinds a stray `running` chunk to `pending`
+    but does not refund the attempt it already spent (`store/db.py`,
+    `claim_extraction_job_for_retry`), so a host condition that keeps recurring
+    accumulates a CONTENT budget. Measured with the claim committing and the frame
+    then dying, four such passes leave the chunk at `attempts = 4` here against
+    `attempts = 1` under a rebuild, and one genuine content failure after that
+    takes it to 5 — past `max_chunk_attempts`, so the source is given up for good
+    (rc 1, five of six facts) exactly where the rebuild recovers it (rc 0, six of
+    six). That is this file's own rule about `MAX_CHUNK_ATTEMPTS` coming out the
+    wrong way: an availability condition must not spend a content budget. No
+    production path reaches it today — #489 closed the read-back window that could
+    leave a chunk `running`, and the chunk loop settles its claim to `failed` or
+    `pending` or leaves the job `running`, which plans as `busy` — so the branch
+    is still worth offering, and this belongs to the same follow-up as the
+    termination residue below.
+
+    So the branch is offered unguarded, with one honest residue — a fault that
     reproduces below the chunk accounting is re-offered every sync and spends no
     budget doing it, because `failed_chunk_attempt_status` counts `failed` chunks
     and this state has none. The LLM calls stop after the first pass; the run row
