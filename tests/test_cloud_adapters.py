@@ -674,3 +674,240 @@ def test_the_installed_openai_sdk_really_does_reject_an_unusable_base_url(tmp_pa
 
     with pytest.raises(LLMError, match="^openai client could not be created"):
         OpenAIAdapter(_unusable_url_cfg(tmp_path, "openai")).extract_facts(source_text="x")
+
+
+# --- a broken prompt template is not the provider's fault (#500) ---
+
+# Which template each method renders. The three cloud adapters share it:
+# `OpenRouterAdapter` inherits the four methods unchanged, and the anthropic
+# copies name the same four ids.
+_PROMPT_ID = {
+    "extract_facts": "extraction",
+    "translate_query": "query-translation",
+    "extract_query_intent": "query-intent",
+    "answer_question": "ask-fallback",
+}
+
+
+def _undecodable_override(tmp_path, prompt_id: str):
+    """An override the render cannot decode, written as bytes.
+
+    `save_prompt_override` validates and writes UTF-8, so it cannot produce this
+    file. The break has to be one that works for every prompt id: only
+    `query-translation` among these four declares a `required_placeholder`, so an
+    override "missing a placeholder" is not a break at all for the other three --
+    `_validate_prompt_text` passes it and the SDK is reached with a perfectly
+    usable prompt. Nine of the twelve cells below would assert nothing. The
+    missing-placeholder case gets its own test, on the one method where it bites.
+    """
+    path = tmp_path / "policy" / "prompts" / f"{prompt_id}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\xff\xfe not utf-8\n")
+    return path
+
+
+@pytest.mark.parametrize("method", sorted(_INVOCATIONS))
+@pytest.mark.parametrize("provider", sorted(_KEYED_ADAPTERS))
+def test_a_prompt_that_cannot_be_read_is_not_a_request_failure(
+    tmp_path, monkeypatch, method, provider
+):
+    """The render used to sit in argument position inside the `try`, so a
+    template the user broke came back as "<provider> request failed" -- their own
+    file, reported as the provider's outage (#500). All four methods, because the
+    hoist is four separate edits per file and one left behind is one method still
+    lying; `openrouter` explicitly, because it inherits the four from
+    `OpenAIAdapter` and a reader should not have to know that to see it covered.
+
+    The SDK raises "dialled" if it is reached at all, so the assertions also say
+    nothing was sent.
+    """
+    _undecodable_override(tmp_path, _PROMPT_ID[method])
+    _raising_sdk(monkeypatch, provider, RuntimeError("dialled"))
+    adapter = _KEYED_ADAPTERS[provider](_cfg(tmp_path, provider=provider))
+
+    with pytest.raises(
+        LLMError, match=rf"^prompt {_PROMPT_ID[method]} could not be loaded"
+    ) as exc:
+        _INVOCATIONS[method](adapter)
+
+    assert "request failed" not in str(exc.value)
+    assert "dialled" not in str(exc.value)
+
+
+@pytest.mark.parametrize("provider", sorted(_KEYED_ADAPTERS))
+def test_a_missing_placeholder_keeps_the_library_s_own_words(tmp_path, monkeypatch, provider):
+    """`translate_query` is the one method here whose prompt declares a required
+    placeholder, and this is the exact string #500 quotes.
+
+    Anchored at both ends, which is the whole test. `_render_prompt` keeps
+    `except PromptError` above its catch-all so a prompt-contract violation --
+    something the user can read as an instruction and act on -- goes out as the
+    library wrote it. Delete that clause and the catch-all absorbs the case with
+    "prompt query-translation could not be loaded: " in front; put the render
+    back inside the `try` and "openai request failed: " goes in front. The `$`
+    kills the first, the `^` the second. The older
+    `test_*_prompt_validation_error_is_llm_error` pair above matches on `{qid}`
+    alone and survives both.
+    """
+    path = tmp_path / "policy" / "prompts" / "query-translation.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("Missing qid placeholder.\n", encoding="utf-8")
+    _raising_sdk(monkeypatch, provider, RuntimeError("dialled"))
+    adapter = _KEYED_ADAPTERS[provider](_cfg(tmp_path, provider=provider))
+
+    with pytest.raises(
+        LLMError,
+        match=r"^Datalog translation prompt must include required placeholder \{qid\}$",
+    ):
+        adapter.translate_query(question="Who?", qid=3)
+
+
+@pytest.mark.parametrize("provider", sorted(_KEYED_ADAPTERS))
+def test_an_unreadable_prompt_override_is_still_an_llm_error(tmp_path, monkeypatch, provider):
+    """The cheaper trigger, and a second way in through the same clause.
+
+    A non-UTF-8 override takes a hand-edited file; this takes one mode bit, which
+    a backup tool or an umask can set without anybody meaning to. `read_text`
+    raises `PermissionError`, which is not a `PromptError` either, so it arrives
+    at the same catch-all -- the reachability half of the argument that the
+    render's failures cannot be enumerated by type.
+
+    Carries T1's anchors rather than a bare `pytest.raises(LLMError)`. Bare, this
+    passes before the change too: inside the `try` the `PermissionError` was
+    still wrapped, just wrapped as the provider's fault.
+    """
+    path = tmp_path / "policy" / "prompts" / "extraction.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("Custom extraction prompt.\n", encoding="utf-8")
+    path.chmod(0o000)
+    try:
+        try:
+            path.read_text(encoding="utf-8")
+        except PermissionError:
+            pass
+        else:
+            pytest.skip("this user reads straight through mode 0o000")
+
+        _raising_sdk(monkeypatch, provider, RuntimeError("dialled"))
+        adapter = _KEYED_ADAPTERS[provider](_cfg(tmp_path, provider=provider))
+
+        with pytest.raises(LLMError, match=r"^prompt extraction could not be loaded") as exc:
+            adapter.extract_facts(source_text="x")
+
+        assert "request failed" not in str(exc.value)
+        assert "dialled" not in str(exc.value)
+    finally:
+        path.chmod(0o600)
+
+
+@pytest.mark.parametrize(
+    ("provider", "adapter_cls", "module"),
+    [
+        ("anthropic", AnthropicAdapter, "verinote.llm.anthropic_adapter"),
+        ("openai", OpenAIAdapter, "verinote.llm.openai_adapter"),
+    ],
+)
+def test_a_render_failure_of_a_kind_nobody_enumerated_is_still_an_llm_error(
+    tmp_path, monkeypatch, provider, adapter_cls, module
+):
+    """The guard that does not depend on a list of types.
+
+    `UnicodeDecodeError` and `PermissionError` are what the two tests above can
+    reach through a file, and #500's reviewer refused to treat that pair as
+    complete: `render_prompt` reads the packaged default and the override, and
+    the `OSError` family those two reads can raise is open. Narrow the clause
+    back to `except (UnicodeDecodeError, PermissionError)` and both of those stay
+    green while this one fails.
+    """
+
+    class _Unlisted(Exception):
+        pass
+
+    def boom(*args, **kwargs):
+        raise _Unlisted("nobody enumerated this")
+
+    monkeypatch.setattr(f"{module}.render_prompt", boom)
+    _raising_sdk(monkeypatch, provider, RuntimeError("dialled"))
+
+    with pytest.raises(LLMError, match=r"^prompt extraction could not be loaded") as exc:
+        adapter_cls(_cfg(tmp_path, provider=provider)).extract_facts(source_text="x")
+
+    assert "request failed" not in str(exc.value)
+
+
+def test_a_programming_error_in_the_render_is_deliberately_an_llm_error(tmp_path, monkeypatch):
+    """The cost of the catch-all, pinned so it cannot be quietly repaid.
+
+    A `TypeError` from inside `render_prompt` is a bug in this repo, and
+    "prompt extraction could not be loaded" points the reader at
+    `policy/prompts/extraction.md`, which is fine. That is the relabelling
+    `test_a_non_valueerror_from_the_request_constructor_is_not_blamed_on_the_base_url`
+    in `tests/test_ollama_adapter.py` refuses for `Request()` -- and it is
+    accepted here, deliberately, because unlike `Request()` the render has more
+    than one reachable failure and no type separates a bug from a broken file.
+    §10.1 wins the trade at the adapter seam.
+
+    Without this test the trade looks like an oversight, and the next reader
+    narrows the clause to let programming errors through -- reopening §10.1 for
+    every `OSError` nobody listed. `_Unlisted` above cannot carry that: a test
+    exception class says "not enumerated", not "a bug in this file too".
+    """
+
+    def boom(*args, **kwargs):
+        raise TypeError("render_prompt() got an unexpected keyword argument")
+
+    monkeypatch.setattr("verinote.llm.openai_adapter.render_prompt", boom)
+    _raising_sdk(monkeypatch, "openai", RuntimeError("dialled"))
+
+    with pytest.raises(LLMError, match=r"^prompt extraction could not be loaded"):
+        OpenAIAdapter(_cfg(tmp_path, provider="openai")).extract_facts(source_text="x")
+
+
+def test_a_render_failure_keeps_the_original_error_as_the_cause(tmp_path, monkeypatch):
+    """`from exc` on the catch-all, which is what pays for the test above.
+
+    Relabelling a programming error as a load failure is only tolerable if the
+    original survives for a log. `_client_failed` has this guard already
+    (`test_a_client_that_cannot_be_built_keeps_the_sdk_error_as_the_cause`); the
+    render path did not, and the docstring now argues from it.
+    """
+    boom = TypeError("render_prompt() got an unexpected keyword argument")
+
+    def raiser(*args, **kwargs):
+        raise boom
+
+    monkeypatch.setattr("verinote.llm.openai_adapter.render_prompt", raiser)
+    _raising_sdk(monkeypatch, "openai", RuntimeError("dialled"))
+
+    with pytest.raises(LLMError) as exc:
+        OpenAIAdapter(_cfg(tmp_path, provider="openai")).extract_facts(source_text="x")
+
+    assert exc.value.__cause__ is boom
+
+
+@pytest.mark.parametrize("provider", sorted(_KEYED_ADAPTERS))
+def test_a_broken_template_does_not_outrank_a_missing_key(tmp_path, monkeypatch, provider):
+    """Order: `client = self._client()` first, then the render, then the `try`.
+
+    Hoisting the render above `_client()` would also satisfy #500 and would
+    change which of two simultaneous problems a user is told about. A KB with no
+    key configured and a broken template has one blocking problem and one that
+    only matters afterwards, and the shipped order reports the blocking one. This
+    fails if the render moves up.
+
+    The two halves are one test on purpose. The first `raises` passes with no
+    override written at all, so on its own it would keep passing if the fixture
+    ever stopped breaking the template -- for instance if `extract_facts` came to
+    render a different id. The second half re-runs the identical setup with a key
+    and requires the template to be broken, so the setup cannot go inert
+    unnoticed.
+    """
+    _undecodable_override(tmp_path, "extraction")
+    _raising_sdk(monkeypatch, provider, RuntimeError("dialled"))
+    adapter_cls = _KEYED_ADAPTERS[provider]
+
+    with pytest.raises(LLMError, match=rf"^{provider} requires an API key"):
+        adapter_cls(_keyed_cfg(tmp_path, provider, None)).extract_facts(source_text="x")
+
+    with pytest.raises(LLMError, match=r"^prompt extraction could not be loaded"):
+        adapter_cls(_keyed_cfg(tmp_path, provider, "key")).extract_facts(source_text="x")

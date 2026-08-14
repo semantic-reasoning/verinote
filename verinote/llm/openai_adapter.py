@@ -77,25 +77,39 @@ class OpenAIAdapter:
         `_client`, and the reason "before the request" cannot be the line
         between these two messages.
 
-        Nor does this name promise timing. The prompt render is an ARGUMENT to
-        the SDK call and so is evaluated inside the guarded region: an override
-        missing a required placeholder surfaces as "openai request failed"
-        without a request (measured). The honest reading is "the SDK call
-        yielded no result"; `_client_failed` is the message that can speak about
-        when. The imprecision predates this change and is #500's, which
-        prescribes pulling the render out of the `try` so that only the SDK call
-        is left inside -- four methods here, plus `OpenRouterAdapter` by
-        inheritance. Two things follow from doing that, and only the first is in
-        the issue. A template error stops being announced as a request failure,
-        which is the outcome #500 is written to get. The second was measured
-        while writing this: a hand-edited non-UTF-8 override -- read by
-        `get_prompt` as `read_text`, so a `UnicodeDecodeError` and not the
-        `PromptError` that `_render_prompt` converts -- has nothing left to
-        catch it once the render sits outside, and leaves this adapter
-        unnormalised. §10.1 is that an LLM failure reaches its caller as an
-        `LLMError`; this change is closing that hole at the constructor, and a
-        bare hoist would open it again at the render. So the hoist belongs with
-        the rest of the render's failures normalised, not on its own.
+        Nor does this name promise timing, and it used to promise less. The
+        prompt render was an ARGUMENT to the SDK call, evaluated inside the
+        guarded region, so an override missing a required placeholder surfaced
+        as "openai request failed" without a request (measured). #500 lifted it
+        into a statement of its own -- below `client = self._client()`, above
+        the `try` -- in the four methods here, and in `OpenRouterAdapter` by
+        inheritance, which leaves the guarded region holding the SDK call and
+        nothing else. Measured, the same broken override now reports "Datalog
+        translation prompt must include required placeholder {qid}", with no
+        "request failed" in front of it.
+
+        What is left still reads as "the SDK call yielded no result" rather than
+        "the provider answered"; `_client_failed` is the message that can speak
+        about when. That is asserted here from the structure and from stubs,
+        which is all this file is entitled to: the openai SDK is an optional
+        dependency, absent in CI and in some development environments, so the
+        vendor-behaviour measurement behind this claim lives in the anthropic
+        twin of this paragraph and is not restated as if it had been taken here.
+        What the hoist did change is that the prompt error -- the one measured
+        case of this message covering something that never dialled -- no longer
+        arrives.
+
+        Rendering outside the guard is the shape `ollama_adapter` and
+        `claude_cli_adapter` were already in, and it carries a hole this `try`
+        was covering. `get_prompt` reads an override with `read_text`, so a
+        hand-edited non-UTF-8 file raises `UnicodeDecodeError` and a mode bit
+        raises `PermissionError`, and `_render_prompt`'s `except PromptError`
+        converted neither. Measured on those two adapters before this change,
+        that is sixteen method-and-condition pairs leaving the adapter as
+        something that is not an `LLMError` -- §10.1 broken in the tree already,
+        not by the hoist. So the hoist ships with the second clause added to
+        `_render_prompt` in the same PR, which normalises the render's failures
+        wherever the render sits.
 
         Redaction covers only the key this process knows about, which is why
         `_require_key` refuses to let the SDK authenticate with one it never saw.
@@ -191,16 +205,12 @@ class OpenAIAdapter:
 
     def extract_facts(self, *, source_text: str, schema_hint: str = "") -> list[ExtractedFact]:
         client = self._client()
+        system = _with_schema_hint(_render_prompt(self.cfg.root, "extraction"), schema_hint)
         try:
             resp = client.chat.completions.create(
                 model=self.cfg.model,
                 messages=[
-                    {
-                        "role": "system",
-                        "content": _with_schema_hint(
-                            _render_prompt(self.cfg.root, "extraction"), schema_hint
-                        ),
-                    },
+                    {"role": "system", "content": system},
                     {"role": "user", "content": source_text},
                 ],
                 response_format={
@@ -215,19 +225,14 @@ class OpenAIAdapter:
 
     def translate_query(self, *, question: str, qid: int, schema_hint: str = "") -> str:
         client = self._client()
+        system = _with_schema_hint(
+            _render_prompt(self.cfg.root, "query-translation", qid=qid), schema_hint
+        )
         try:
             resp = client.chat.completions.create(
                 model=self.cfg.model,
                 messages=[
-                    {
-                        "role": "system",
-                        "content": _with_schema_hint(
-                            _render_prompt(
-                                self.cfg.root, "query-translation", qid=qid
-                            ),
-                            schema_hint,
-                        ),
-                    },
+                    {"role": "system", "content": system},
                     {"role": "user", "content": question},
                 ],
                 response_format={
@@ -242,17 +247,12 @@ class OpenAIAdapter:
 
     def extract_query_intent(self, *, question: str, schema_hint: str = "") -> QueryIntent:
         client = self._client()
+        system = _with_schema_hint(_render_prompt(self.cfg.root, "query-intent"), schema_hint)
         try:
             resp = client.chat.completions.create(
                 model=self.cfg.model,
                 messages=[
-                    {
-                        "role": "system",
-                        "content": _with_schema_hint(
-                            _render_prompt(self.cfg.root, "query-intent"),
-                            schema_hint,
-                        ),
-                    },
+                    {"role": "system", "content": system},
                     {"role": "user", "content": question},
                 ],
                 response_format={
@@ -271,14 +271,12 @@ class OpenAIAdapter:
 
     def answer_question(self, *, question: str, context: str) -> str:
         client = self._client()
+        system = _render_prompt(self.cfg.root, "ask-fallback")
         try:
             resp = client.chat.completions.create(
                 model=self.cfg.model,
                 messages=[
-                    {
-                        "role": "system",
-                        "content": _render_prompt(self.cfg.root, "ask-fallback"),
-                    },
+                    {"role": "system", "content": system},
                     {
                         "role": "user",
                         "content": f"Question:\n{question}\n\nContext:\n{context}",

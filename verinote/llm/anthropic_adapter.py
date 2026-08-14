@@ -77,27 +77,38 @@ class AnthropicAdapter:
         `_client` is protecting. "Before the request" is therefore not what
         separates these messages.
 
-        Timing is not what this name promises, either. Prompt rendering is an
-        ARGUMENT to `client.messages.create`, so it is evaluated inside the
-        guarded region: an override missing a required placeholder is reported
-        as "anthropic request failed" with nothing dialled (measured). Read this
-        message as "the SDK call yielded no result", not "the provider
-        answered"; `_client_failed` is the one entitled to speak about when.
-        That imprecision predates this change and is #500's. Its stated fix is
-        to hoist the render out of the `try` and leave only the SDK call inside
-        -- the shape `key = self._require_key()` already has in `_client`. Done
-        bare, that satisfies what #500 asks for: measured, the same broken
-        override then reports "Datalog translation prompt must include required
-        placeholder {qid}", with no "request failed" in front of it. Something
-        it also does is not in the issue, and is measured here. `get_prompt`
-        reads an override with `read_text`, so a hand-edited non-UTF-8 file
-        raises `UnicodeDecodeError`, which `_render_prompt`'s
-        `except PromptError` does not convert. Inside the guarded region that is
-        normalised like every other failure; hoisted out, it leaves this adapter
-        as itself -- an LLM failure that is not an `LLMError`, which is the
-        §10.1 violation this change closes at the client-construction site,
-        reopened at the render. So the hoist wants the render's other failures
-        normalised along with it.
+        Timing is not what this name promises, either, and it used to be worse.
+        Prompt rendering was an ARGUMENT to `client.messages.create`, evaluated
+        inside the guarded region, so an override missing a required placeholder
+        came back as "anthropic request failed" with nothing dialled (measured).
+        #500 lifted the render into a statement of its own -- below
+        `client = self._client()`, above the `try`, the shape
+        `key = self._require_key()` already has in `_client` -- leaving the
+        guarded region holding the SDK call and nothing else. Measured, the same
+        broken override now reports "Datalog translation prompt must include
+        required placeholder {qid}", with no "request failed" in front of it.
+
+        What that does not buy is a message that can speak about when. Measured
+        against anthropic 0.116.0 with `base_url` on a closed port,
+        `messages.create(max_tokens="x")` and `messages="hi"` both come back as
+        `APIConnectionError`, exactly as a well-formed call does: this SDK holds
+        nothing back locally. So the reading stays "the SDK call yielded no
+        result" rather than "the provider answered", and `_client_failed` is
+        still the one entitled to say when. What the hoist changed is that the
+        prompt error -- the one measured case of this message being worn by
+        something that never dialled -- no longer arrives here.
+
+        Rendering outside the guard is the shape `ollama_adapter` and
+        `claude_cli_adapter` were already in, and it carries a hole this `try`
+        was covering. `get_prompt` reads an override with `read_text`, so a
+        hand-edited non-UTF-8 file raises `UnicodeDecodeError` and a mode bit
+        raises `PermissionError`, and `_render_prompt`'s `except PromptError`
+        converted neither. Measured on those two adapters before this change,
+        that is sixteen method-and-condition pairs leaving the adapter as
+        something that is not an `LLMError` -- §10.1 broken in the tree already,
+        not by the hoist. So the hoist ships with the second clause added to
+        `_render_prompt` in the same PR, which normalises the render's failures
+        wherever the render sits.
 
         Redaction covers only the key this process knows about, which is why
         `_require_key` refuses to let the SDK authenticate with one it never saw.
@@ -189,13 +200,12 @@ class AnthropicAdapter:
             "description": "Return the extracted facts.",
             "input_schema": FACT_ARRAY_SCHEMA,
         }
+        system = _with_schema_hint(_render_prompt(self.cfg.root, "extraction"), schema_hint)
         try:
             msg = client.messages.create(
                 model=self.cfg.model,
                 max_tokens=4096,
-                system=_with_schema_hint(
-                    _render_prompt(self.cfg.root, "extraction"), schema_hint
-                ),
+                system=system,
                 tools=[tool],
                 tool_choice={"type": "tool", "name": "emit_facts"},
                 messages=[{"role": "user", "content": source_text}],
@@ -215,14 +225,14 @@ class AnthropicAdapter:
             "description": "Return the Datalog query line.",
             "input_schema": QUERY_SCHEMA,
         }
+        system = _with_schema_hint(
+            _render_prompt(self.cfg.root, "query-translation", qid=qid), schema_hint
+        )
         try:
             msg = client.messages.create(
                 model=self.cfg.model,
                 max_tokens=1024,
-                system=_with_schema_hint(
-                    _render_prompt(self.cfg.root, "query-translation", qid=qid),
-                    schema_hint,
-                ),
+                system=system,
                 tools=[tool],
                 tool_choice={"type": "tool", "name": "emit_query"},
                 messages=[{"role": "user", "content": question}],
@@ -242,13 +252,12 @@ class AnthropicAdapter:
             "description": "Return the structured query intent.",
             "input_schema": QUERY_INTENT_SCHEMA,
         }
+        system = _with_schema_hint(_render_prompt(self.cfg.root, "query-intent"), schema_hint)
         try:
             msg = client.messages.create(
                 model=self.cfg.model,
                 max_tokens=1024,
-                system=_with_schema_hint(
-                    _render_prompt(self.cfg.root, "query-intent"), schema_hint
-                ),
+                system=system,
                 tools=[tool],
                 tool_choice={"type": "tool", "name": "emit_query_intent"},
                 messages=[{"role": "user", "content": question}],
@@ -263,11 +272,12 @@ class AnthropicAdapter:
 
     def answer_question(self, *, question: str, context: str) -> str:
         client = self._client()
+        system = _render_prompt(self.cfg.root, "ask-fallback")
         try:
             msg = client.messages.create(
                 model=self.cfg.model,
                 max_tokens=1200,
-                system=_render_prompt(self.cfg.root, "ask-fallback"),
+                system=system,
                 messages=[
                     {
                         "role": "user",
