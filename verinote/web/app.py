@@ -1767,11 +1767,17 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 # This handler writes NOTHING, and here that is not merely
                 # conservative — `process_extraction_job` has already rolled the job
                 # back to `pending` so the next pass RESUMES it, and
-                # `fail_extraction_job` would overwrite that with `failed`. A
-                # `failed` job whose chunks are all `pending`/`done` has no failed
-                # chunk for planning to retry, so `plan_source_extraction` reads it
-                # as an edge state and rebuilds from scratch, paying the LLM again
-                # for every chunk this pass finished. Log and leave it.
+                # `fail_extraction_job` would overwrite that with `failed`. That
+                # overwrite no longer costs what it used to: a `failed` job whose
+                # chunks are all `pending`/`done` has no failed chunk for planning
+                # to retry, and planning now continues it on the strength of the
+                # chunks it finished instead of rebuilding from scratch (#524), so
+                # the LLM is not paid twice for them. What the overwrite still
+                # costs is the truth. `pending` is what this job is — nothing is
+                # running and nothing failed the content — while `failed` files a
+                # condition of the host as this job's own failure, in the job row,
+                # in the `extraction_job_failed` event beside it, and on the
+                # Sources page that reads them. Log and leave it.
                 logger.warning(
                     "extraction job %s paused (fact-term store locked by another "
                     "process): %s",
