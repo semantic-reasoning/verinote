@@ -1604,3 +1604,39 @@ def test_ask_keeps_the_provider_error_in_the_reason_when_it_skips(tmp_path):
 
     assert "llm error" in result.reason
     assert "synthetic outage" in result.reason
+
+
+def test_a_shortened_label_reaches_a_synonym_the_spelled_one_missed(tmp_path):
+    """The label strip can promote a question through the synonym set, not only
+    through what the schema literally spells.
+
+    `_clean_english_attribute_label`'s docstring counts four schema cases for
+    what shortening a label costs. Three turn on whether the schema holds the
+    cut name, the spelled name or both. This is the fourth, and it is the only
+    one where the schema holds *neither*: with `goal` as its one relation, the
+    KB below has no `purpose titled` and no `purpose`. The cut label re-enters
+    `PURPOSE_RELATION_CANDIDATES`, `goal` is in that set, and the question is
+    answered.
+
+    `test_a_shortened_label_re_enters_the_purpose_synonyms` pins the candidate
+    tuple growing from one to five. That is the parse, and a parse cannot show
+    that the verdict moved. Measured on `origin/main` at e032738 this question
+    reaches the model; here it does not, and `DeterministicOnlyClient` is what
+    says so -- it raises rather than answering, so any provider call is the red.
+
+    Refs #511
+    """
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/sample.txt")
+    store.add_fact("Sample Dataset", "goal", "V0", status="confirmed", source_id=source_id)
+
+    result = ask_question(
+        store,
+        DeterministicOnlyClient(),
+        root=tmp_path,
+        question="What is Sample Dataset's purpose titled?",
+    )
+
+    assert result.route == "engine"
+    assert result.label == "VERIFIED — engine"
+    assert "V0" in result.answer
