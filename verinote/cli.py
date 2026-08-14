@@ -893,20 +893,35 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                 except Exception as exc:
                     # THE JOB-LEVEL FLOOR (#488), sibling to the chunk-level one in
                     # `_release_claimed_chunk`. Every clause above names a
-                    # condition that is not the source's failure and rewinds
-                    # itself; what is left is an unmodelled exception out of the
-                    # one call that owns this job, and without this the row stayed
-                    # `running` forever — no chunk to retry, no terminal status, and
-                    # every later `sync` skipping the source as busy.
+                    # condition that is not the source's failure, and they do not
+                    # all leave the job in the same place: on the paths production
+                    # takes today the halt and the locked sidecar reach their
+                    # clause only after `process_extraction_job` has rewound the
+                    # job to `pending` — a property of `extract.py`, not of this
+                    # call site, as both clauses above say — a busy job belongs to
+                    # another worker and its clause leaves the row exactly as it
+                    # found it, and the corrupt-config path rewinds nothing at all
+                    # (its own comment above says so). What is left for this
+                    # clause is an unmodelled exception out of the one call that
+                    # owns this job, and without it the row stayed `running`
+                    # forever. The failed chunk is still there and still
+                    # retryable — a crash inside `_extract_chunk` has already
+                    # written it `failed` and spent one of its attempts
+                    # (`_release_claimed_chunk`) — but no ordinary pass reaches
+                    # it: `plan_source_extraction` answers a `running` job with
+                    # `busy_job_id`, so every later `sync` short of `--recover`
+                    # skips the source instead of planning the retry the chunk is
+                    # already eligible for. Reviving such a job costs attempt
+                    # budget that is already partly spent.
                     #
                     # THE STATUS RE-READ IS NOT A SECOND DECISION, exactly as
                     # `_release_claimed_chunk` says of its own: it asks whether this
                     # call still owns the job. `process_extraction_job` can raise
                     # after the job is already `done` (`finish_extraction_job`
-                    # writes in several steps), and it rewinds the job to `pending`
-                    # itself on the paths above — flipping either of those to
-                    # `failed` would destroy real work or turn a resume into a
-                    # rebuild.
+                    # writes in several steps), and on the routes production takes
+                    # today it rewinds the job to `pending` itself on the paths
+                    # above — flipping either of those to `failed` would destroy
+                    # real work or turn a resume into a rebuild.
                     #
                     # The exception is re-raised, not swallowed: recording the
                     # failure is not the same as handling it, and #246's contract
