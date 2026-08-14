@@ -1047,8 +1047,8 @@ def test_every_trailing_naming_predicate_is_read_as_a_predicate():
     already handling `called` and `named`, and it does not:
     `_clean_english_attribute_label` normalised whitespace and dropped a leading
     `the ` and nothing else. So `What is Sample Project's owner called?` asked
-    for a relation literally named `owner called`, which no schema holds, and
-    the question was planned empty.
+    for a relation literally named `owner called`, which no schema is expected
+    to hold, and the question was planned empty.
 
     The set-equality assertion is what stops a member being added to the tuple
     without a question exercising it.
@@ -1074,7 +1074,7 @@ def test_every_tail_adverb_is_read_with_the_predicate():
     The adverb slot only ever extends a cut the predicate alternation already
     makes, so dropping a member here leaves its question stopping one word
     short: `('owner also',)` instead of `('owner',)`. That is still a relation
-    no schema holds, so the failure is silent without this test.
+    no schema is expected to hold, so the failure is silent without this test.
     """
     from verinote.pipeline.query_intent import _ENGLISH_ATTRIBUTE_TAIL_ADVERB_MEMBERS
 
