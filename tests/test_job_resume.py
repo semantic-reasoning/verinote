@@ -818,3 +818,571 @@ def test_a_crashed_sync_is_resumed_by_the_next_plain_sync(tmp_path, monkeypatch,
     out = capsys.readouterr().out
     assert "4 candidate(s) this run" in out
     assert f"resumed job #{job_id}: 6 candidate(s) in total" in out
+
+
+# --- J: a `failed` job that finished chunks is continued, not rebuilt (#524) --
+
+J_MARKERS = MARKERS[:3]
+J_CHUNK_CHARS = 60
+
+
+def _worker_marks_job_failed(store: Store, job_id: int, message: str) -> None:
+    """Stand-in for the caller's broad `except`. NOT the code under test.
+
+    A crash below the chunk loop gives `process_extraction_job` nothing to say
+    about the job row, so it leaves the job `running`; the broad `except` a caller
+    ends with is what writes `failed` over it. In this tree only `web/app.py` has
+    one, so a CLI-driven test has to perform that write itself. Spelled out here
+    rather than hidden behind a fixture, the idiom
+    `test_chunk_claim_release.py::_worker_marks_job_failed` uses for the same
+    reason — nothing in `verinote/pipeline` will do it.
+
+    DELETE THIS WHEN #488 LANDS. PR #523 gives `cmd_sync` the same broad clause,
+    at which point the sync below terminalises the job by itself and the correct
+    change is to drop the call and assert the `failed` row with zero failed chunks
+    that the CLI wrote — never to keep the stand-in so these lines stay green.
+    """
+    store.fail_extraction_job(job_id, message)
+
+
+class _CrashBelowChunkAccounting:
+    """Fail a pass where no chunk row can record that it happened.
+
+    THE INJECTION POINT IS THE WHOLE POINT, not the exception. Failing the client
+    puts the crash inside `_extract_chunk`, which marks the chunk `failed`; the
+    job then reaches the planner's failed-chunk branch, which already resumes.
+    `next_pending_chunk` raises before any claim, so no chunk changes status and
+    no `attempts` is spent — the job terminalises as `failed` with `failed_chunks`
+    zero while holding finished chunks, which is the state #524 is about.
+    """
+
+    def __init__(self, monkeypatch, *, before_chunk: int):
+        self._before_chunk = before_chunk
+        self.armed = True
+        real = Store.next_pending_chunk
+
+        def crashing(store, job_id):
+            row = real(store, job_id)
+            if self.armed and row is not None and int(row["chunk_index"]) == before_chunk:
+                raise RuntimeError("crash below chunk accounting")
+            return row
+
+        monkeypatch.setattr(Store, "next_pending_chunk", crashing)
+
+    def heal(self) -> None:
+        self.armed = False
+
+
+def _crashed_below_chunk_accounting(tmp_path, monkeypatch, *, before_chunk: int = 2):
+    """Drive a real sync that dies below the chunk accounting and terminalise it.
+
+    Built by the production pass rather than hand-written rows, so the fixture
+    cannot drift away from the state a real crash leaves.
+    """
+    _ingest(tmp_path, monkeypatch)
+    crash = _CrashBelowChunkAccounting(monkeypatch, before_chunk=before_chunk)
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: _RecordingClient())
+
+    with pytest.raises(RuntimeError):
+        cli.main(["sync"])
+
+    jobs = _jobs(tmp_path)
+    assert len(jobs) == 1
+    job_id = int(jobs[0]["id"])
+    store = _store(tmp_path)
+    _worker_marks_job_failed(store, job_id, "analysis failed: RuntimeError: crash")
+    # The edge state, asserted rather than assumed: `failed`, nothing charged to a
+    # chunk, and finished chunks a rebuild would throw away.
+    job = store.get_extraction_job(job_id)
+    assert job["status"] == "failed"
+    assert int(job["failed_chunks"]) == 0
+    assert [c["status"] for c in store.source_chunks(job_id)] == (
+        ["done"] * before_chunk + ["pending"] * (len(MARKERS) - before_chunk)
+    )
+    store.close()
+    return job_id, crash
+
+
+def _edge_state_job(tmp_path, *, done: int = 1):
+    """A KB whose newest job is `failed`, has NO failed chunk, and `done` finished.
+
+    The unit-level twin of `_crashed_below_chunk_accounting`. Everything the
+    planner compares — artifact (`None`), provider, model, chunk text — matches
+    what `_plan_edge` hands it below, so only the chunk rows decide.
+    """
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/a.txt")
+    job_id = create_chunked_extraction_job(
+        store,
+        source_id=source_id,
+        artifact_id=None,
+        source_text=_body(J_MARKERS),
+        provider="fake",
+        model="m",
+        chunk_chars=J_CHUNK_CHARS,
+        chunk_overlap_chars=0,
+    )
+    assert len(store.source_chunks(job_id)) == len(J_MARKERS)
+    store.mark_extraction_job_running(job_id)
+    for row in store.source_chunks(job_id)[:done]:
+        store.mark_chunk_running(int(row["id"]))
+        store.mark_chunk_done(int(row["id"]), candidates=1)
+    _worker_marks_job_failed(store, job_id, "analysis failed: RuntimeError: crash")
+    assert int(store.get_extraction_job(job_id)["failed_chunks"]) == 0
+    return store, source_id, job_id
+
+
+def _plan_edge(store, source_id, **overrides):
+    kwargs = {
+        "source_id": source_id,
+        "artifact_id": None,
+        "source_text": _body(J_MARKERS),
+        "provider": "fake",
+        "model": "m",
+        "chunk_chars": J_CHUNK_CHARS,
+        "chunk_overlap_chars": 0,
+    }
+    kwargs.update(overrides)
+    return plan_source_extraction(store, **kwargs)
+
+
+def test_sync_resumes_a_failed_job_whose_crash_never_reached_a_chunk(
+    tmp_path, monkeypatch
+):
+    """THE #524 ASSERTION: the finished chunks are not sent to the LLM a second time.
+
+    A crash below the chunk accounting leaves `failed` with zero failed chunks, and
+    planning used to read that as "rebuild fresh" — a new job whose first act is to
+    re-extract every chunk the crashed pass had already paid for.
+    """
+    job_id, crash = _crashed_below_chunk_accounting(tmp_path, monkeypatch)
+    crash.heal()
+    healthy = _RecordingClient()
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: healthy)
+
+    assert cli.main(["sync"]) == 0
+
+    # The load-bearing line: `alpha`/`bravo` are absent, so the two chunks the
+    # crashed pass finished were kept rather than re-sent.
+    assert healthy.markers == list(MARKERS[2:])
+    jobs = _jobs(tmp_path)
+    assert [int(job["id"]) for job in jobs] == [job_id]  # continued, not replaced
+    assert jobs[0]["status"] == "done"
+
+    store = _store(tmp_path)
+    assert [f["subject"] for f in store.facts()] == list(MARKERS)
+    store.close()
+
+
+def test_sync_reports_the_continued_job_rather_than_a_fresh_one(
+    tmp_path, monkeypatch, capsys
+):
+    """The stdout a user sees for the resumed pass, pinned.
+
+    Not the guard against the branch regressing — the tests either side of this
+    one catch that from the chunk text.
+
+    WHAT SEPARATES THE TWO PASSES IS THE PARENTHETICAL, NOT THE NUMBER. Run this
+    same scenario with the branch removed and the rebuild sends all six chunks to
+    the LLM and still prints a flat `sources/doc.txt: 4 candidate(s)` — the same
+    count this pass prints. `run_candidates` counts the candidates a run produced,
+    and the two re-sent chunks produce none, because their facts already exist and
+    dedupe away. That identity is why the re-send is silent, which is the issue's
+    second complaint, and it is the reason a test that pinned only the number
+    would pin nothing. Only the continued pass states the two scopes apart —
+    `4 candidate(s) this run (resumed job #1: 6 candidate(s) in total)` — so the
+    clause in parentheses is the whole visible difference and the only part worth
+    holding.
+    """
+    job_id, crash = _crashed_below_chunk_accounting(tmp_path, monkeypatch)
+    crash.heal()
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: _RecordingClient())
+    capsys.readouterr()  # drop the crashed pass's output
+
+    assert cli.main(["sync"]) == 0
+
+    out = capsys.readouterr().out
+    assert "4 candidate(s) this run" in out
+    assert f"resumed job #{job_id}: 6 candidate(s) in total" in out
+
+
+def test_plan_retries_a_failed_job_that_holds_a_finished_chunk(tmp_path):
+    """Compared as a whole `ExtractionJobPlan` on purpose: asserting `retry_job_id`
+    alone would also pass if `resume_job_id`/`exhausted_job_id`/`busy_job_id` came
+    along with it, and each of those means something different to `cmd_sync`.
+
+    `retry_job_id` and not `resume_job_id`, which is what the issue's wording
+    suggests: `claim_pending_extraction_job`'s CAS is `WHERE status = 'pending'`,
+    so on a `failed` job it matches nothing, raises `ExtractionJobBusyError`, and
+    `cmd_sync` skips the source with "already running" and returns 0 — forever.
+    """
+    store, source_id, job_id = _edge_state_job(tmp_path, done=1)
+    plan = _plan_edge(store, source_id)
+    store.close()
+    assert plan == ExtractionJobPlan(retry_job_id=job_id)
+
+
+def test_plan_rebuilds_a_failed_job_that_finished_no_chunk(tmp_path):
+    """The branch is scoped to the harm the issue names, and no wider.
+
+    With nothing `done` there is no finished work for a rebuild to discard, and
+    both routes cost the same number of LLM calls, so this stays a rebuild.
+    """
+    store, source_id, _ = _edge_state_job(tmp_path, done=0)
+    plan = _plan_edge(store, source_id)
+    store.close()
+    assert plan == ExtractionJobPlan()
+
+
+def test_plan_reads_the_chunk_rows_not_the_job_counter(tmp_path):
+    """Pins WHICH source of truth decides, by injecting a disagreement.
+
+    The desync below is hypothetical: `completed_chunks` is written by
+    `_refresh_extraction_job` on every `mark_chunk_done`, and no production path
+    leaves it lower than the `done` rows. The reason to read the rows is not that
+    the counter lies — it is that the text gate above already read the rows, so
+    the decision costs no second query and cannot straddle two snapshots, and that
+    the sibling counter on the same row IS documented as untrustworthy after a
+    job-level failure (`store/db.py`, `surface_stale_engine_facts`). Believing one
+    counter and not the other in the same function would be the odd choice.
+    """
+    store, source_id, job_id = _edge_state_job(tmp_path, done=1)
+    store._conn.execute(
+        "UPDATE extraction_jobs SET completed_chunks = 0 WHERE id = ?", (job_id,)
+    )
+    plan = _plan_edge(store, source_id)
+    store.close()
+    assert plan == ExtractionJobPlan(retry_job_id=job_id)
+
+
+def test_plan_still_gives_up_when_an_exhausted_chunk_sits_beside_a_finished_one(
+    tmp_path,
+):
+    """ORDER IS LOAD-BEARING: the new branch lives BELOW the failed-chunk branch.
+
+    Hoist it above and a job whose chunk has spent every attempt would be offered
+    for retry again the moment any other chunk had finished — the give-up gate
+    bypassed and #323's empty-run loop back, on the sources most likely to hit it.
+    """
+    store, source_id, job_id = _edge_state_job(tmp_path, done=1)
+    failed_chunk = store.source_chunks(job_id)[1]
+    store.mark_chunk_running(int(failed_chunk["id"]))
+    store.mark_chunk_failed(int(failed_chunk["id"]), "provider down")
+    store._conn.execute(
+        "UPDATE source_chunks SET attempts = ? WHERE id = ?",
+        (MAX_CHUNK_ATTEMPTS, int(failed_chunk["id"])),
+    )
+    # Without this the fixture could silently fail to produce a failed chunk and
+    # the assertion below would pass through the new branch instead of the gate.
+    assert int(store.get_extraction_job(job_id)["failed_chunks"]) == 1
+
+    plan = _plan_edge(store, source_id)
+    store.close()
+    assert plan == ExtractionJobPlan(exhausted_job_id=job_id)
+
+
+def _cancel(store, job_id):
+    store._conn.execute(
+        "UPDATE extraction_jobs SET status = 'canceled' WHERE id = ?", (job_id,)
+    )
+
+
+def _make_running(store, job_id):
+    store._conn.execute(
+        "UPDATE extraction_jobs SET status = 'running' WHERE id = ?", (job_id,)
+    )
+
+
+@pytest.mark.parametrize(
+    ("case", "mutate", "overrides", "expected"),
+    [
+        ("canceled job", _cancel, {}, "empty"),
+        ("running job", _make_running, {}, "busy"),
+        ("artifact changed", None, {"artifact_id": 4242}, "empty"),
+        ("body changed", None, {"source_text": _body(SECOND_MARKERS[:3])}, "empty"),
+        ("chunk size changed", None, {"chunk_chars": 400}, "empty"),
+        ("model changed", None, {"model": "another-model"}, "empty"),
+    ],
+)
+def test_plan_does_not_continue_a_finished_chunk_job_that_is_stale_or_owned(
+    tmp_path, case, mutate, overrides, expected
+):
+    """The new branch is fenced by every gate that already fenced the others.
+
+    One condition is broken per case against the same fixture that
+    `test_plan_retries_a_failed_job_that_holds_a_finished_chunk` proves returns
+    `retry_job_id` — that test is this one's positive control, without which
+    "returns an empty plan" could mean the fixture never built the edge state.
+
+    A `done` job needs no case here: `test_sync_re_extracts_a_source_whose_job_
+    already_finished` above already covers a finished job being rebuilt, and it
+    goes red if the branch is hoisted to the top of the function.
+    """
+    store, source_id, job_id = _edge_state_job(tmp_path, done=1)
+    if mutate is not None:
+        mutate(store, job_id)
+    plan = _plan_edge(store, source_id, **overrides)
+    store.close()
+    if expected == "busy":
+        assert plan == ExtractionJobPlan(busy_job_id=job_id)
+    else:
+        assert plan == ExtractionJobPlan()
+
+
+def test_a_reproducing_crash_below_chunk_accounting_stops_paying_the_llm(
+    tmp_path, monkeypatch
+):
+    """The cost of a fault that keeps happening, measured over repeated syncs.
+
+    Rebuilding also reset the attempt budget, so the same source paid for the same
+    finished chunks on EVERY sync — 2, 4, 6 LLM calls over three passes on a
+    six-chunk source. Continuing the job pays once.
+
+    THE RUN COUNT BELOW IS A CHARACTERISATION, NOT A GUARANTEE. Nothing here
+    terminates: this state charges no chunk, `failed_chunk_attempt_status` counts
+    only `failed` chunks, and so the job is offered again every sync and burns an
+    empty run doing it — at exactly the rate it burned one before this fix, which
+    is why it is no regression and is out of scope for #524. Giving it an end
+    needs a job-level failure count (#536), and when that lands `runs` will stop
+    growing and this line MUST go red. Update it to the new ceiling then; do not
+    restore the growth to keep it green.
+    """
+    job_id, crash = _crashed_below_chunk_accounting(tmp_path, monkeypatch)
+    client = _RecordingClient()
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: client)
+    runs = []
+    for _ in range(3):
+        with pytest.raises(RuntimeError):
+            cli.main(["sync"])
+        # Each pass leaves the job `running` and each pass's caller terminalises
+        # it, the same write `_crashed_below_chunk_accounting` made — so the state
+        # under test recurs rather than being reached once.
+        store = _store(tmp_path)
+        _worker_marks_job_failed(store, job_id, "analysis failed: RuntimeError: crash")
+        store.close()
+        runs.append(_run_count(tmp_path))
+
+    # Not one further chunk reached the LLM across three more passes.
+    assert client.markers == []
+    assert [int(job["id"]) for job in _jobs(tmp_path)] == [job_id]
+    assert runs == [2, 3, 4]  # CHARACTERISATION — see the docstring
+
+
+def test_a_failed_job_that_finished_everything_terminalises_without_the_llm(
+    tmp_path, monkeypatch
+):
+    """The edge state can also arrive with nothing left to do, and it must settle.
+
+    A broad `except` that fires AFTER the chunk loop writes `failed` over a job
+    whose chunks are all `done`. Continuing it claims the job, finds no pending
+    chunk, and finishes: no LLM call, and the empty run it opens is opened ONCE,
+    unlike the rebuild it replaces, which re-extracted every chunk.
+    """
+    _ingest(tmp_path, monkeypatch, body=_body(J_MARKERS))
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: _RecordingClient())
+    assert cli.main(["sync"]) == 0
+
+    jobs = _jobs(tmp_path)
+    job_id = int(jobs[0]["id"])
+    assert jobs[0]["status"] == "done"
+    store = _store(tmp_path)
+    _worker_marks_job_failed(store, job_id, "analysis failed: RuntimeError: crash")
+    assert [c["status"] for c in store.source_chunks(job_id)] == ["done"] * len(J_MARKERS)
+    store.close()
+    runs_before = _run_count(tmp_path)
+
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: _RefusingClient())
+    assert cli.main(["sync"]) == 0
+
+    jobs = _jobs(tmp_path)
+    assert [int(job["id"]) for job in jobs] == [job_id]
+    assert jobs[0]["status"] == "done"
+    assert _run_count(tmp_path) == runs_before + 1  # exactly one, then settled
+
+
+# --- J2: the same state with a `running` chunk in it, and what it may cost ----
+
+
+class _FailsOneChunk:
+    """A provider that is down for exactly one chunk, named by its marker.
+
+    `_RecordingClient(fail_on_call=N)` counts calls, which makes "the same chunk
+    fails again" depend on how many chunks a pass happens to reach — and the
+    passes below reach different numbers. Keying on the chunk's own text keeps
+    the fault attached to the chunk across every pass, and `down` is what a
+    recovered provider looks like.
+    """
+
+    name = "fake"
+
+    def __init__(self, marker: str):
+        self.marker = marker
+        self.down = True
+        self.seen: list[str] = []
+
+    @property
+    def markers(self) -> list[str]:
+        return [text.split()[0] for text in self.seen]
+
+    def extract_facts(self, *, source_text: str, schema_hint: str = ""):
+        self.seen.append(source_text)
+        if self.down and source_text.startswith(self.marker):
+            raise LLMError("provider down")
+        return [ExtractedFact(source_text.split()[0], "seen_in", "source", 0.9)]
+
+
+class _ReleaseWriteFails:
+    """Lose the write that settles a claim, leaving the chunk `running`.
+
+    THE INJECTION POINT IS THE WHOLE POINT, one layer below
+    `_CrashBelowChunkAccounting`. The chunk's own LLM call fails, so
+    `process_extraction_job`'s broad clause reaches its release point,
+    `_release_claimed_chunk` — which settles the claim through
+    `Store.mark_chunk_failed`. Failing THAT write is what leaves a chunk `running`
+    under a job that then comes to rest: the store error escapes the pipeline
+    without the chunk ever being settled, and the caller's broad `except` writes
+    the job `failed`. `tests/test_sources_running_chunk_display.py` names the same
+    route on a live KB. So the state reached here is the edge state of section J
+    WITH a `running` chunk in it, which is the case the branch's cost argument has
+    to answer for.
+    """
+
+    def __init__(self, monkeypatch):
+        # Imported here, not in the module's import block: this section is the
+        # only reader of it, and the class it needs is the error the store raises.
+        import sqlite3
+
+        self.error = sqlite3.OperationalError
+        self.armed = True
+        real = Store.mark_chunk_failed
+
+        def failing(store, chunk_id, error):
+            if self.armed:
+                raise self.error("database is locked")
+            return real(store, chunk_id, error)
+
+        monkeypatch.setattr(Store, "mark_chunk_failed", failing)
+
+    def heal(self) -> None:
+        self.armed = False
+
+
+def _j_chunk_states(store, job_id) -> list[tuple[str, int]]:
+    return [(str(row["status"]), int(row["attempts"])) for row in store.source_chunks(job_id)]
+
+
+def _pass_that_loses_the_release(tmp_path, release) -> int:
+    """One sync that cannot record its chunk failure, terminalised by its caller.
+
+    The `failed` write is `_worker_marks_job_failed`, for the reason recorded
+    there: nothing in `verinote/pipeline` writes it, and today only `web/app.py`
+    has the broad clause that does.
+    """
+    with pytest.raises(release.error):
+        cli.main(["sync"])
+    jobs = _jobs(tmp_path)
+    assert len(jobs) == 1  # the job is continued, never rebuilt beside itself
+    job_id = int(jobs[0]["id"])
+    store = _store(tmp_path)
+    _worker_marks_job_failed(
+        store, job_id, "analysis failed: OperationalError: database is locked"
+    )
+    store.close()
+    return job_id
+
+
+def _release_write_failed(tmp_path, monkeypatch):
+    """A KB whose newest job is the edge state, with a `running` chunk in it."""
+    _ingest(tmp_path, monkeypatch, body=_body(J_MARKERS))
+    release = _ReleaseWriteFails(monkeypatch)
+    client = _FailsOneChunk(J_MARKERS[1])
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: client)
+    job_id = _pass_that_loses_the_release(tmp_path, release)
+    return job_id, client, release
+
+
+def test_plan_continues_a_finished_chunk_job_that_also_holds_a_running_one(tmp_path):
+    """A `running` chunk does NOT keep the job out of the new branch.
+
+    The unit-level half of the pair: `_edge_state_job` is the same fixture
+    `test_plan_retries_a_failed_job_that_holds_a_finished_chunk` uses, with one
+    chunk claimed and never settled — the row a lost release leaves.
+    `test_a_recurring_lost_release_does_not_spend_the_chunks_attempt_budget` below
+    is what says a real pass produces this state rather than only this fixture.
+
+    The branch is deliberately unguarded against `running`, and what pays for that
+    is the refund in the claim, not an exclusion here: excluding it would send the
+    job back to being rebuilt, throwing the finished chunk away again.
+    """
+    store, source_id, job_id = _edge_state_job(tmp_path, done=1)
+    claimed = store.source_chunks(job_id)[1]
+    store.mark_chunk_running(int(claimed["id"]))
+    assert _j_chunk_states(store, job_id) == [("done", 1), ("running", 1), ("pending", 0)]
+    assert int(store.get_extraction_job(job_id)["failed_chunks"]) == 0
+
+    plan = _plan_edge(store, source_id)
+    store.close()
+
+    assert plan == ExtractionJobPlan(retry_job_id=job_id)
+
+
+def test_a_recurring_lost_release_does_not_spend_the_chunks_attempt_budget(
+    tmp_path, monkeypatch
+):
+    """THE COST OF THE `running` CASE: a lost release must not give up on a source.
+
+    The claim rewinds a stray `running` chunk as it takes the job, and it refunds
+    the attempt while doing so (`Store.claim_extraction_job_for_retry`). Keep the
+    attempt instead and this exact sequence walks the chunk to `attempts` 1/2/3/4
+    over four passes of a condition that is not the chunk's content; the first
+    genuine content failure after the write heals then takes it to 5, past
+    `MAX_CHUNK_ATTEMPTS`, and planning gives up on the source FOR GOOD — where the
+    rebuild this branch replaced recovered it as soon as the provider came back.
+    That is what the second half of this test buys: the budget assertion alone
+    would still pass a fix that stopped counting but left the source stranded.
+
+    The finished chunk's marker appearing exactly once across every pass is the
+    #524 property holding in this state too — the reason the fix is the refund and
+    not excluding `running` chunks from the branch, which recovers the source by
+    rebuilding and pays the LLM for `alpha` on all four passes.
+    """
+    job_id, client, release = _release_write_failed(tmp_path, monkeypatch)
+    budget = []
+    for _ in range(3):
+        assert _pass_that_loses_the_release(tmp_path, release) == job_id
+        store = _store(tmp_path)
+        budget.append(_j_chunk_states(store, job_id)[1][1])
+        store.close()
+
+    # Four passes of a host condition, no content budget spent on any of them.
+    assert budget == [1, 1, 1]
+    store = _store(tmp_path)
+    assert _j_chunk_states(store, job_id) == [("done", 1), ("running", 1), ("pending", 0)]
+    store.close()
+    # The finished chunk was never re-sent, and only the failing one was retried.
+    assert client.markers == [J_MARKERS[0]] + [J_MARKERS[1]] * 4
+
+    # The write heals while the provider is still down: NOW the chunk fails for
+    # real, and the failure it records is its first.
+    release.heal()
+    assert cli.main(["sync"]) == 1
+    store = _store(tmp_path)
+    assert _j_chunk_states(store, job_id) == [("done", 1), ("failed", 1), ("done", 1)]
+    store.close()
+
+    # And the provider comes back. The source is recovered, not given up on.
+    client.down = False
+    assert cli.main(["sync"]) == 0
+    store = _store(tmp_path)
+    assert _j_chunk_states(store, job_id) == [("done", 1), ("done", 2), ("done", 1)]
+    store.close()
+    assert [int(job["id"]) for job in _jobs(tmp_path)] == [job_id]
+    assert sorted(_facts(tmp_path)) == sorted(J_MARKERS)
+
+
+def _facts(tmp_path) -> list[str]:
+    store = _store(tmp_path)
+    try:
+        return [str(fact["subject"]) for fact in store.facts()]
+    finally:
+        store.close()

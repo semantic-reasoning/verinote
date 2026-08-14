@@ -219,8 +219,11 @@ class ExtractionJobPlan:
     """What a sync pass should do about one source's newest extraction job.
 
     At most one field is set. `resume_job_id` picks a rolled-back `pending` job
-    back up where it left off; `retry_job_id` re-runs a `failed` job that still has
-    retry budget, resetting its failed chunks through the atomic claim;
+    back up where it left off; `retry_job_id` re-runs a `failed` job whose chunks
+    are still worth continuing — either it has failed chunks with retry budget
+    left, which the atomic claim resets under the lock that takes ownership, or it
+    has no failed chunk at all and the claim resets nothing, taking ownership so
+    the chunks it already finished are not thrown away (#524);
     `exhausted_job_id` names a `failed` job that has given up — a chunk has failed
     every attempt, so the pass skips it instead of spinning the same dead chunk
     every sync (#323); `busy_job_id` says another process owns it and this pass must
@@ -271,24 +274,50 @@ def plan_source_extraction(
     * its provider and model match the ones this run would use. Resume across a
       model change and the job row ends up mis-describing its own output.
 
-    These staleness gates guard the retry branch too, not just resume: a human can
-    fix the source text, chunk config, or model between one sync and the next, and
-    re-running a `failed` job against content it no longer describes is exactly as
-    wrong as resuming a `pending` one — either way the job is stale and rebuilt
-    fresh, which is why the gates run before the failed-chunk handling below.
+    These staleness gates guard both retry branches too, not just resume: a human
+    can fix the source text, chunk config, or model between one sync and the next,
+    and re-running a `failed` job against content it no longer describes is exactly
+    as wrong as resuming a `pending` one — either way the job is stale and rebuilt
+    fresh, which is why the gates run before all of the chunk handling below.
 
-    A `failed` job that is NOT stale is decided by its failed chunks. A failed
+    A `failed` job that is NOT stale is decided by its chunks: first the failed
+    ones, then — if it has none — the finished ones. A failed
     chunk is invisible to resume (`claim_pending_extraction_job`'s reclaim
     rewinds only `running`, `next_pending_chunk` claims only `pending`), so the
     job is re-run through the
     atomic retry claim, which resets the failed chunks under the same lock that
     takes ownership. But the moment ANY failed chunk has spent its whole attempt
     budget (`attempts >= max_chunk_attempts`) the job has given up: it is surfaced
-    as `exhausted` so the pass SKIPS it. Checking exhaustion BEFORE offering a
+    as `exhausted` so the pass SKIPS it. Checking exhaustion BEFORE offering THAT
     retry is the anti-spurious-run gate — retrying an all-exhausted job would claim
     it, reset nothing, and burn an empty run every sync, which is exactly the loop
     #323 exists to break. The web retry button stays the human escape hatch: it
     resets every failed chunk regardless of attempt count.
+
+    A `failed` job with NO failed chunk is decided by its finished chunks (#524).
+    Nothing charged the content, so the job was terminalised from outside the
+    chunk accounting: a caller's broad `except` writing `failed` over a crash that
+    happened below the chunk loop, or a human resetting the rows out of band. When
+    any chunk is `done`, rebuilding throws that finished work away and pays the LLM
+    for it again, so the job goes through the same retry claim — with nothing to
+    reset, the claim is only the lock that takes ownership, and the pass carries on
+    from the chunks left `pending`. When NO chunk is `done` there is no finished
+    work to lose and the two routes cost the same, so it still rebuilds.
+
+    THAT SECOND RETRY HAS NO EXHAUSTION GATE ABOVE IT, and the asymmetry is
+    deliberate rather than an oversight. The gate exists because an all-exhausted
+    job can never make progress, so re-offering it is pure loss. This branch
+    usually DOES make progress, because what terminalises a job from outside the
+    chunk accounting is typically a condition of the host that clears by itself.
+    And where it does not, the alternative is worse, not better: rebuilding burns
+    the same empty run AND pays the LLM for every finished chunk on top of it. So
+    the branch is offered unguarded, with one honest residue — a fault that
+    reproduces below the chunk accounting is re-offered every sync and spends no
+    budget doing it, because `failed_chunk_attempt_status` counts `failed` chunks
+    and this state has none. The LLM calls stop after the first pass; the run row
+    and the two job events do not. Closing that needs a failure counter the chunk
+    rows cannot carry, so it is deliberately left to a follow-up rather than
+    charged to a chunk that did nothing wrong.
 
     A `running` job is neither resumed nor replaced. It may belong to a live UI
     worker, and resuming would have `claim_pending_extraction_job`'s reclaim yank
@@ -312,7 +341,10 @@ def plan_source_extraction(
         return ExtractionJobPlan()
     if (job["provider"], job["model"]) != (provider, model):
         return ExtractionJobPlan()
-    persisted = [str(row["text"]) for row in store.source_chunks(latest_id)]
+    # One read, reused below: the text gate and the chunk-status decision then run
+    # on the same snapshot, so no chunk can change status between them.
+    chunk_rows = store.source_chunks(latest_id)
+    persisted = [str(row["text"]) for row in chunk_rows]
     current = _chunks_for(
         source_text,
         chunk_chars=chunk_chars,
@@ -328,8 +360,16 @@ def plan_source_extraction(
             return ExtractionJobPlan(exhausted_job_id=latest_id)
         return ExtractionJobPlan(retry_job_id=latest_id)
     if job["status"] != "pending":
-        # `failed` with no chunk currently failed is an edge state (e.g. a human
-        # reset them out of band) — nothing to resume or retry, so rebuild fresh.
+        # `failed` with no chunk currently failed: the job was terminalised from
+        # outside the chunk accounting. The chunk ROWS decide, not the job's
+        # `completed_chunks` counter — they are the authority the gate above
+        # already read, on the one snapshot.
+        if any(str(row["status"]) == "done" for row in chunk_rows):
+            # Finished chunks to lose, so continue the job rather than rebuild it.
+            # The retry claim has no failed chunk to reset here; it is being used
+            # for the ownership half of what it does (#524).
+            return ExtractionJobPlan(retry_job_id=latest_id)
+        # Nothing finished, so rebuilding discards nothing and costs the same.
         return ExtractionJobPlan()
     return ExtractionJobPlan(resume_job_id=latest_id)
 
