@@ -625,18 +625,36 @@ the asking is phrased. Before this rule *no* member was stripped -- neither
 these nor `called`/`named`, which #511 reports as already handled and are not:
 `_clean_english_attribute_label` normalised whitespace and dropped a leading
 `the ` and nothing else. So every member here is new, and each one carried a
-relation candidate no schema holds.
+relation candidate no schema is expected to hold.
 
 Not exhaustive, and cannot be: `referred to as`, `recorded as`, `written as`
-and their kin belong to the same class and are absent. A tail outside this
-tuple is left in the field exactly as it was, which sends the question to the
-LLM rather than to a wrong answer -- the same cost the unstripped members paid
-before, not a new one.
+and their kin belong to the same class and are absent. A tail whose predicate
+is outside this tuple keeps whatever the question spelled, which is the cost
+that spelling paid before this rule rather than a new one. It is not the same
+as reaching the LLM, and which of the two it is depends on the schema. Where
+no schema holds the spelled name -- the ordinary case -- the plan is empty and
+the model is reached. Where a schema does hold it, the unstripped tail is
+answered outright, with no provider call.
 
 Two words that end questions of this shape are deliberately out, both from
-#511. `worth` is part of the measure, and `stock worth` is a plausible relation
-name on its own. `like` asks for a description rather than for the object of a
-relation, so stripping it would answer a different question.
+#511, and it is that second branch they are held out to preserve. `worth` is
+part of the measure, and `stock worth` is a plausible relation name on its
+own: measured against a schema holding `stock worth`, `What is Sample Stock's
+stock worth?` is `VERIFIED — engine` with no provider call, and a member
+`worth` would take that away. `like` asks for a description rather than for
+the object of a relation, so stripping it would answer a different question.
+
+Adding a member is therefore not free either, though the cost lands narrowly.
+It cannot reach a label that *is* the predicate, because the leading `\\s` has
+nothing to match at position 0: `referred to as` stays whole with or without
+the member. What it moves is the labels carrying a word in front of the
+predicate. Measured against a schema holding `name referred to as`, that
+question is `VERIFIED — engine` with no provider call here and reaches the
+model once the member is added.
+
+An adverb outside `_ENGLISH_ATTRIBUTE_TAIL_ADVERB_MEMBERS` standing in front
+of a listed predicate is a third case, and leaves the field neither stripped
+nor whole: `owner widely known as` comes out as `owner widely`.
 
 `known as`, `listed as` and `set to` carry their particle. Dropping it and
 matching the participle alone would cut `publicly listed`, `well known` and
@@ -661,7 +679,11 @@ predicate alternation already makes: it is not an alternative of its own, so a
 label ending in a bare `formerly` keeps it.
 
 Also not exhaustive -- `widely`, `popularly` and `variously` read the same way
-and are absent, with the same LLM fallback as any other unlisted tail.
+and are absent. An unlisted adverb does not spare the predicate it introduces:
+that predicate is still a member, so `owner widely known as` is cut to
+`owner widely` rather than left whole. What the residue then costs is the
+conditional the predicate tuple records -- a relation candidate no schema is
+expected to hold, and the model reached, unless the schema happens to hold it.
 """
 
 _ENGLISH_ATTRIBUTE_TRAILING_PREDICATE = re.compile(
