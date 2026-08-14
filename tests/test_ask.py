@@ -1437,7 +1437,7 @@ def test_search_source_excerpts_drops_a_source_it_read_and_matched_nothing_in(
     `U+2001`) go to other whitespace. And each of the 32,303 code points
     `_TOKEN` can match folds to something non-empty and non-whitespace both
     alone and doubled, so no token, whatever its length, folds to something an
-    all-whitespace `folded` could contain. A widened `_TOKEN` -- `\\S+`, say --
+    all-whitespace `folded` could contain. A widened `_TOKEN` -- `.+`, say --
     would split the two gates apart, and what it would let through is exactly
     #468's defect: an `AskExcerpt` carrying an empty excerpt string.
 
