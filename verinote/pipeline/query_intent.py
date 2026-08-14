@@ -696,12 +696,21 @@ _ENGLISH_ATTRIBUTE_TRAILING_PREDICATE = re.compile(
     r"\s+(?:(?:"
     + "|".join(_ENGLISH_ATTRIBUTE_TAIL_ADVERB_MEMBERS)
     + r")\s+)?(?:"
-    # Every member is ASCII letters plus at most one space, so they join raw and
-    # the space is relaxed to `\s+`; the callers normalise runs of whitespace,
-    # but the entity field is only `.strip()`ed, so `Sample Project known  as`
-    # reaches this. Alternation order is inert here -- unlike
-    # `_MEASUREMENT_UNIT_SPELLINGS`, which has no anchor to backtrack against --
-    # because `$` forces every alternative to be tried at the same end.
+    # Every member is ASCII letters plus at most one space, so they join raw
+    # and the space is relaxed to `\s+`. Nothing exercises that relaxation
+    # today: the only caller is `_clean_english_attribute_label`, which folds
+    # runs of whitespace on its first line, so a member always arrives with
+    # exactly one space in it. Measured -- replacing the relaxation with a
+    # literal space passes the whole suite, so no mutant can prove this line
+    # necessary. `What is the owner of Sample Project known  as?` does not
+    # reach it either: the `of` shape puts that tail on the entity, which this
+    # rule does not clean. It stays because the unreachability is a property
+    # of the caller and not of the pattern -- a caller handing over a field
+    # that is only `.strip()`ed, which is what an entity-site fix under #515
+    # would be, exercises it immediately. Alternation order is inert here --
+    # unlike `_MEASUREMENT_UNIT_SPELLINGS`, which has no anchor to backtrack
+    # against -- because `$` forces every alternative to be tried at the same
+    # end.
     + "|".join(
         m.replace(" ", r"\s+") for m in _ENGLISH_ATTRIBUTE_TAIL_PREDICATE_MEMBERS
     )

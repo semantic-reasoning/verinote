@@ -1016,10 +1016,11 @@ same hole one step further away -- an unchecked re-implementation of the rule.
 Same shape as `_MONTH_WORD_FIXTURES` in tests/test_query_measure_unit.py, for
 the same reason.
 
-The possessive spelling, which is the one this commit reaches. The `of`
-spelling puts the same tail on the entity instead of on the label, where the
-label cleaner cannot see it; the commit that cleans the entity widens each
-value to both spellings.
+The possessive spelling, which is the one this rule reaches. The `of` spelling
+puts the same tail on the entity instead of on the label, where the label
+cleaner cannot see it, and this rule deliberately leaves it there. Refs #515,
+and `tests/test_ask.py::test_the_of_shape_entity_keeps_its_trailing_predicate_at_the_answer`
+pins that at the answer.
 """
 
 _ENGLISH_TAIL_ADVERB_FIXTURES = {
