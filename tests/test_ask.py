@@ -1507,14 +1507,19 @@ def test_ask_hands_the_page_the_excerpts_already_ordered(tmp_path):
 def test_ask_body_promises_nothing_when_the_only_source_matched_nothing(tmp_path):
     """The body's last branch, reached through a source the gate dropped.
 
-    The other runs that land on this branch each get there without the gate:
-    `..._promises_nothing_when_there_is_no_evidence` registers no source at
-    all, `..._names_the_grounding_table_when_no_excerpt_renders` registers one
-    whose file is not on disk so `is_file()` turns it away first, and the body
-    rows in `tests/test_ask_verdict.py` build their `AskExcerpt` values by hand
-    and never run `search_source_excerpts`. This row is the assembled pipeline
+    Reaching it takes both collections empty, and every other run that lands
+    there lands there without reading a source at all: wrap
+    `_fallback_answer_body` and `_best_excerpt` for one full suite run,
+    resetting the read count per test, and this is the only run that arrives
+    at the branch with a read behind it. The rest leave `excerpts` empty
+    because no source text was ever compared against the question, so the gate
+    is not what emptied it for them. This row is the assembled pipeline
     reaching the branch the remaining way: a source that was registered, found,
     read, compared against the question, and kept out by `if score:` alone.
+
+    A list of those runs grows with the file and says nothing about the one
+    that gets added next; the property does, and the measurement above is how
+    a reader checks whether it still holds.
 
     That is the distinction the helper's own docstring turns on -- it says the
     branch reports what the page shows rather than why, *because* an excerpt
