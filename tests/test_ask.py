@@ -1640,3 +1640,56 @@ def test_a_shortened_label_reaches_a_synonym_the_spelled_one_missed(tmp_path):
     assert result.route == "engine"
     assert result.label == "VERIFIED — engine"
     assert "V0" in result.answer
+
+
+def test_the_of_shape_entity_keeps_its_trailing_predicate_at_the_answer(tmp_path):
+    """A name that really ends in a naming predicate still answers for itself.
+
+    This rule cleans the label. It deliberately does not clean the entity of
+    the `of` spelling, where the tail lands on the entity instead, because that
+    field is terminal: `Company named` is both a plausible entity whose name
+    ends in `named` and a plausible `Company` with a trailing predicate, and
+    nothing at parse time separates them. Cutting it answers a *different*
+    subject, and the KB below is where that shows -- both readings resolve, so
+    the cut plan is not empty and `_reinterpret_empty_plan` never runs. The
+    failure mode is a wrong answer under a top-level label, not a lost one, and
+    that is why this is pinned at the answer and not at the parse.
+
+    Both spellings of the question are asserted, because the defect this
+    forbids is also an inconsistency: one KB, one question, two phrasings, and
+    an entity strip would make them return different subjects with the same
+    `VERIFIED — engine` on both.
+
+    Refs #515, which records the two-entity KB as the case that separates a fix
+    from a regression. The scope here is narrower than that issue's fixture.
+    #515 spells the second entity `Company Named` in title case, and this
+    pattern carries no flags, so `Named` never matches the member `named` and
+    the title-case spelling is safe under every spelling of this rule -- pinning
+    it would pin nothing. The lower-case spelling below is the one where a strip
+    would actually fire, so it is the one that can observe the regression. This
+    test does not implement what #515 asks for, which is a store lookup or a
+    refusal of the shape; it holds today's safe behaviour still.
+
+    Refs #511
+    """
+    for shape, question in (
+        ("of", "What is the owner of Company named?"),
+        ("possessive", "What is Company named's owner?"),
+    ):
+        root = tmp_path / shape
+        root.mkdir()
+        store = _store(root)
+        source_id = store.add_source("sources/sample.txt")
+        store.add_fact("Company", "owner", "Alice", status="confirmed", source_id=source_id)
+        store.add_fact(
+            "Company named", "owner", "Bob", status="confirmed", source_id=source_id
+        )
+
+        result = ask_question(
+            store, DeterministicOnlyClient(), root=root, question=question
+        )
+
+        assert result.route == "engine", question
+        assert result.label == "VERIFIED — engine", question
+        assert "Bob" in result.answer, question
+        assert "Alice" not in result.answer, question
