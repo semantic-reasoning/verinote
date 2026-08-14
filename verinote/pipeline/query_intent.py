@@ -706,14 +706,17 @@ _ENGLISH_ATTRIBUTE_TRAILING_PREDICATE = re.compile(
         m.replace(" ", r"\s+") for m in _ENGLISH_ATTRIBUTE_TAIL_PREDICATE_MEMBERS
     )
     + r")\s*$"
-    # No flags. Case matters: names ending in this exact tail in title case are
-    # real -- `Sample Project Formerly Known As` stands in for them here -- and
-    # `re.IGNORECASE` would take an entity spelled that way apart, adverb
-    # included. The leading `\s+` is the other half of the guard
-    # and is not relaxable -- `\s*` reads `recalled` as `re`, and `\s*\b` spares
-    # that but still reads `re-called` as `re-`, because `-` is not a word
-    # character. Both relaxations are pinned as mutants in
-    # tests/test_query_intent.py.
+    # No flags. Case matters because a schema may spell an attribute name in
+    # title case: `Also Known As` is real, and `re.IGNORECASE` cuts it to
+    # `Also`, which no schema is expected to hold, so a question answered here
+    # with no provider call reaches the model instead. That is the more
+    # expensive of the two directions this rule can move a question, and it is
+    # pinned end to end in tests/test_ask.py by
+    # test_a_title_case_tail_in_the_label_is_left_alone. The leading `\s+` is
+    # the other half of the guard and is not relaxable -- `\s*` reads
+    # `recalled` as `re`, and `\s*\b` spares that but still reads `re-called`
+    # as `re-`, because `-` is not a word character. Both relaxations are
+    # pinned as mutants in tests/test_query_intent.py.
 )
 
 # tests/test_query_measure_unit.py, now a module away, pins this string twice.

@@ -1693,3 +1693,46 @@ def test_the_of_shape_entity_keeps_its_trailing_predicate_at_the_answer(tmp_path
         assert result.label == "VERIFIED — engine", question
         assert "Bob" in result.answer, question
         assert "Alice" not in result.answer, question
+
+
+def test_a_title_case_tail_in_the_label_is_left_alone(tmp_path):
+    """The pattern carries no flags, and that costs something it also buys.
+
+    `Also Known As` is a real attribute name and a schema may spell it in title
+    case. Case sensitivity is what keeps this question deterministic: the tail
+    matches only the lower-case members, so the label survives whole and the
+    relation is found.
+
+    Adding `re.IGNORECASE` cuts it to `Also`, which the schema does not hold,
+    and the question reaches the model instead -- measured on this tree, one
+    provider call where there were none. That is the direction
+    `_clean_english_attribute_label` names as the more expensive of the two:
+    giving up a correct deterministic answer rather than inventing one.
+
+    PR #527 proposes a case-insensitive alternation for the label site: its
+    diff carries `(?i:called|named)` on the possessive pattern. The argument
+    that case sensitivity is only load-bearing for the entity site this rule
+    does not touch is not in that PR -- its author makes it in the review of
+    this one. It is true of the entity site and false here, and the
+    measurement above is the counterexample. This test is the place that
+    argument now lives, so widening the flags reddens it rather than passing
+    silently.
+
+    Refs #511
+    """
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/sample.txt")
+    store.add_fact(
+        "Sample Project", "Also Known As", "Ada", status="confirmed", source_id=source_id
+    )
+
+    result = ask_question(
+        store,
+        DeterministicOnlyClient(),
+        root=tmp_path,
+        question="What is Sample Project's Also Known As?",
+    )
+
+    assert result.route == "engine"
+    assert result.label == "VERIFIED — engine"
+    assert "Ada" in result.answer
