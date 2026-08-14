@@ -951,6 +951,14 @@ def _clean_english_attribute_label(value: str) -> str:
     - schema holds both: `translated` either way, but the relation that answers
       silently changes from the spelled name to the cut one, with no change of
       status to show for it.
+    - schema holds neither, but holds a *synonym* of the cut name: the first
+      move again, by a route the first three do not name. Measured against a KB
+      whose only relation is `goal`, `What is Sample Dataset's purpose titled?`
+      reaches the model with a provider call before this rule and answers
+      `Sample Dataset, goal, V0` under `VERIFIED — engine` with none after. The
+      cut label re-enters `PURPOSE_RELATION_CANDIDATES`, which the spelled one
+      could not, so what the schema literally spells is not the only thing
+      deciding this -- the synonym set is the third.
 
     So this is not priced in provider calls alone. `also` and `so` are the
     harmless end of it, and they are pinned with the rest at the end of

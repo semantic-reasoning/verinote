@@ -1261,6 +1261,12 @@ def test_the_strip_cannot_leave_the_field_empty():
     # So this block, not just the possessive-entity test, is where the change
     # admits it can promote a question rather than only shorten a label.
     # Anyone narrowing the rule to recover these should expect this red.
+    #
+    # The six rows are witnesses, not the population. `self titled` -> `self`
+    # and `correctly spelled` -> `correctly` are the same class as
+    # `also known as` -> `also` and `hand labeled` -> `hand`, and neither is
+    # listed here. The population is every label whose last word or two is a
+    # member, which is open by construction because the tuple is.
     for question, expected in (
         ("What is Sample Person's also known as?", "also"),
         ("What is the also known as of Sample Person?", "also"),
