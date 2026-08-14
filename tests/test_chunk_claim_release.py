@@ -395,10 +395,21 @@ def test_a_released_job_is_retried_rather_than_rebuilt_from_scratch(tmp_path):
 
     Compared as a whole `ExtractionJobPlan` on purpose: `retry_job_id` alone would
     also be satisfied if `resume_job_id`/`exhausted_job_id`/`busy_job_id` came
-    along with it. Release the chunk any other way while leaving the job to be
+    along with it.
+
+    WHAT THE COUNTERFACTUALS COST HAS CHANGED, and what survives is smaller but
+    still real. Release the chunk any other way while leaving the job to be
     written `failed` — rewind the chunk to `pending`, or mark it `done` — and the
-    job's `failed_chunks` drops to zero, planning falls through to "rebuild
-    fresh", and chunk 0's completed work is paid for twice.
+    job's `failed_chunks` drops to zero. That used to fall through to "rebuild
+    fresh" and pay for chunk 0 twice; since #524, planning continues a `failed`
+    job that holds a finished chunk, so this three-chunk job reaches
+    `retry_job_id` either way and the plan alone no longer separates them. The
+    chunk row still separates them. A chunk left `pending` is invisible to the
+    give-up gate — `failed_chunk_attempt_status` counts `failed` rows only — so
+    one that keeps failing never exhausts the budget
+    `test_a_released_chunk_burns_exactly_one_attempt` above pins, and marking it
+    `done` records an extraction that did not happen. Of the three, only
+    release-as-`failed` says something true about chunk 1.
 
     The qualifier is load-bearing, because one release DOES rewind the chunk to
     `pending`: a locked fact-term sidecar (`test_chunk_claim_sidecar_lock.py`).

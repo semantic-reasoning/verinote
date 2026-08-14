@@ -14,9 +14,13 @@ So this release has its own shape, and all of it is load-bearing:
 
 * the CHUNK goes back to `pending` with its attempt refunded — the row exactly as
   `next_pending_chunk` handed it out;
-* the JOB is rolled back to `pending` too, without which a `failed` job with zero
-  failed chunks reads to planning as "rebuild fresh" and every finished chunk is
-  re-sent to the LLM;
+* the JOB is rolled back to `pending` too, because `pending` is what it is —
+  nothing is running, and nothing failed the content. Leave it for a caller's
+  broad clause to write `failed` over and planning used to read that as "rebuild
+  fresh" and re-send every finished chunk to the LLM; since #524 it continues the
+  job instead, and what the `failed` write still costs is a condition of the host
+  recorded as this job's own failure, in the row, in the `extraction_job_failed`
+  event, and on the Sources page;
 * the exception still propagates, so no caller mistakes this for a completed pass.
 
 THREE OUTCOMES MUST STAY APART, and the tests below separate them on purpose:
