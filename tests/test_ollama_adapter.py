@@ -754,3 +754,61 @@ def test_list_models_does_not_blame_the_base_url_for_a_non_valueerror(monkeypatc
 
     with pytest.raises(TypeError):
         list_models(None, 5.0)
+
+
+# --- a prompt that cannot be rendered is still an `LLMError` (#500) ---
+
+
+def _unreadable_override(tmp_path, prompt_id: str) -> None:
+    """An override the render cannot decode.
+
+    Bytes, not `save_prompt_override`: that helper validates and writes UTF-8, so
+    it cannot produce this file. A missing required placeholder would be the
+    cheaper break, but `ollama-extraction` is the only prompt on this adapter's
+    `extract_facts` path with one, and a non-UTF-8 override breaks every prompt
+    id regardless -- see the #500 section in `tests/test_cloud_adapters.py`,
+    which parametrizes over four of them.
+    """
+    path = tmp_path / "policy" / "prompts" / f"{prompt_id}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\xff\xfe not utf-8\n")
+
+
+def test_a_prompt_that_cannot_be_read_is_a_normalised_failure(tmp_path, monkeypatch):
+    """This hole is not one #500's hoist opens -- it is already open here.
+
+    This adapter has always rendered outside its `try`, which is the shape #500
+    asks the cloud adapters to adopt. So the `UnicodeDecodeError` that
+    `_render_prompt`'s `except PromptError` does not convert leaves the adapter
+    as itself, and §10.1 -- every LLM failure reaches its caller as an
+    `LLMError` -- is violated here today, with nothing dialled. The cloud
+    adapters were only hiding the same hole behind an argument-position render.
+    """
+    _unreadable_override(tmp_path, "ollama-extraction")
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: pytest.fail("dialled"))
+
+    with pytest.raises(LLMError, match="^prompt ollama-extraction could not be loaded"):
+        OllamaAdapter(_cfg(tmp_path)).extract_facts(source_text="Ada")
+
+
+def test_an_unlisted_render_failure_is_a_normalised_failure(tmp_path, monkeypatch):
+    """Coverage that does not depend on an enumeration.
+
+    The two failures reachable through a file today are `UnicodeDecodeError` and
+    `PermissionError`, and #500's reviewer refused to treat that pair as
+    complete: `render_prompt` reads two files and the `OSError` family they can
+    raise is open. A clause narrowed back to a list of types passes the test
+    above and fails this one.
+    """
+
+    class _Unlisted(Exception):
+        pass
+
+    def boom(*args, **kwargs):
+        raise _Unlisted("nobody enumerated this")
+
+    monkeypatch.setattr("verinote.llm.ollama_adapter.render_prompt", boom)
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: pytest.fail("dialled"))
+
+    with pytest.raises(LLMError, match="^prompt ollama-extraction could not be loaded"):
+        OllamaAdapter(_cfg(tmp_path)).extract_facts(source_text="Ada")

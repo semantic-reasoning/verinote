@@ -781,3 +781,74 @@ def test_one_unsendable_chunk_fails_alone_and_the_job_keeps_going(tmp_path, monk
     assert int(job["candidate_count"]) > 0
     assert len(store.facts()) >= 1  # zero before the fix
     store.close()
+
+
+# --- a prompt that cannot be rendered is still an `LLMError` (#500) ---
+
+
+def _unreadable_override(tmp_path, prompt_id: str) -> None:
+    """An override the render cannot decode.
+
+    Bytes, not `save_prompt_override`: that helper validates and writes UTF-8, so
+    it cannot produce this file. It also breaks every prompt id, where a missing
+    required placeholder only breaks the two that declare one -- see the #500
+    section in `tests/test_cloud_adapters.py`.
+    """
+    path = tmp_path / "policy" / "prompts" / f"{prompt_id}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\xff\xfe not utf-8\n")
+
+
+def test_a_prompt_that_cannot_be_read_is_a_normalised_failure(tmp_path, monkeypatch):
+    """This hole is not one #500's hoist opens -- it is already open here.
+
+    This adapter builds its prompt before `_run` is called, which is the shape
+    #500 asks the cloud adapters to adopt, so the `UnicodeDecodeError` that
+    `_render_prompt`'s `except PromptError` does not convert leaves the adapter
+    as itself and §10.1 is violated with nothing spawned. `_invoke` already
+    reached that conclusion for its own temp directory; this is the same rule
+    applied one statement earlier.
+    """
+    _unreadable_override(tmp_path, "extraction")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("spawned"))
+
+    with pytest.raises(LLMError, match="^prompt extraction could not be loaded"):
+        ClaudeCliAdapter(_cfg(tmp_path)).extract_facts(source_text="Ada")
+
+
+def test_the_json_wrapper_render_is_normalised_too(tmp_path, monkeypatch):
+    """`_prompt` renders a second template the four methods never name.
+
+    `claude-json-wrapper` is this adapter's own, rendered inside `_prompt` after
+    the caller's system prompt is already in hand, and it is on three of the four
+    methods (`answer_question` builds its `_Prompt` directly). A fix applied only
+    to the prompt ids the methods spell out would leave this one escaping.
+    """
+    _unreadable_override(tmp_path, "claude-json-wrapper")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("spawned"))
+
+    with pytest.raises(LLMError, match="^prompt claude-json-wrapper could not be loaded"):
+        ClaudeCliAdapter(_cfg(tmp_path)).extract_facts(source_text="Ada")
+
+
+def test_an_unlisted_render_failure_is_a_normalised_failure(tmp_path, monkeypatch):
+    """Coverage that does not depend on an enumeration.
+
+    The two failures reachable through a file today are `UnicodeDecodeError` and
+    `PermissionError`, and #500's reviewer refused to treat that pair as
+    complete: `render_prompt` reads two files and the `OSError` family they can
+    raise is open. A clause narrowed back to a list of types passes the tests
+    above and fails this one.
+    """
+
+    class _Unlisted(Exception):
+        pass
+
+    def boom(*args, **kwargs):
+        raise _Unlisted("nobody enumerated this")
+
+    monkeypatch.setattr("verinote.llm.claude_cli_adapter.render_prompt", boom)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("spawned"))
+
+    with pytest.raises(LLMError, match="^prompt extraction could not be loaded"):
+        ClaudeCliAdapter(_cfg(tmp_path)).extract_facts(source_text="Ada")
