@@ -904,15 +904,15 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     # (its own comment above says so). What is left for this
                     # clause is an unmodelled exception out of the one call that
                     # owns this job, and without it the row stayed `running`
-                    # forever. The failed chunk is still there and still
-                    # retryable — a crash inside `_extract_chunk` has already
-                    # written it `failed` and spent one of its attempts
-                    # (`_release_claimed_chunk`) — but no ordinary pass reaches
-                    # it: `plan_source_extraction` answers a `running` job with
-                    # `busy_job_id`, so every later `sync` short of `--recover`
-                    # skips the source instead of planning the retry the chunk is
-                    # already eligible for. Reviving such a job costs attempt
-                    # budget that is already partly spent.
+                    # forever. On the crash this change is named for the failed
+                    # chunk is still there and still retryable — a crash inside
+                    # `_extract_chunk` has already written it `failed` and spent
+                    # one of its attempts (`_release_claimed_chunk`) — but no
+                    # ordinary pass reaches it: `plan_source_extraction` answers
+                    # a `running` job with `busy_job_id`, so every later `sync`
+                    # short of `--recover` skips the source instead of planning
+                    # the retry the chunk is already eligible for. Reviving such
+                    # a job costs attempt budget that is already partly spent.
                     #
                     # THE STATUS RE-READ IS NOT A SECOND DECISION, exactly as
                     # `_release_claimed_chunk` says of its own: it asks whether this
@@ -951,13 +951,14 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     # not its mirror. Neither bounds the message length; the store
                     # takes `str(exc)` whole, exactly as the web one does.
                     # (3) When the escaping exception came from outside chunk
-                    # accounting, that pair is a `failed` job with zero failed
-                    # chunks — the edge state `plan_source_extraction` rebuilds
-                    # from scratch. What that costs depends on how far the pass
-                    # got: chunks it had already finished are re-sent to the LLM,
-                    # and that discarded work is what #524 tracks. A pass that
-                    # finished none is rebuilt just as fully, but has nothing to
-                    # throw away, so #524 leaves it alone.
+                    # accounting and no chunk of this pass had already failed,
+                    # that pair is a `failed` job with zero failed chunks — the
+                    # edge state `plan_source_extraction` rebuilds from scratch.
+                    # What that costs depends on how far the pass got: chunks it
+                    # had already finished are re-sent to the LLM, and that
+                    # discarded work is what #524 tracks. A pass that finished
+                    # none is rebuilt just as fully, but has nothing to throw
+                    # away, so #524 leaves it alone.
                     job_now = store.get_extraction_job(job_id)
                     if job_now is not None and job_now["status"] == "running":
                         store.fail_extraction_job(
