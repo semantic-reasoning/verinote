@@ -4,7 +4,12 @@
 from __future__ import annotations
 
 from verinote.config import Config
-from verinote.llm.base import ExtractedFact, LLMError, redact_secret
+from verinote.llm.base import (
+    ExtractedFact,
+    LLMError,
+    parsed_under_redaction,
+    redact_secret,
+)
 from verinote.llm.schema import (
     FACT_ARRAY_SCHEMA,
     QUERY_INTENT_SCHEMA,
@@ -275,7 +280,9 @@ class OpenAIAdapter:
         except Exception as exc:  # noqa: BLE001 - normalise provider errors
             raise self._request_failed(exc) from exc
 
-        return parse_facts(resp.choices[0].message.content or "")
+        return parsed_under_redaction(
+            parse_facts, resp.choices[0].message.content or "", self.cfg.api_key
+        )
 
     def translate_query(self, *, question: str, qid: int, schema_hint: str = "") -> str:
         client = self._client()
@@ -297,7 +304,9 @@ class OpenAIAdapter:
         except Exception as exc:  # noqa: BLE001 - normalise provider errors
             raise self._request_failed(exc) from exc
 
-        return parse_query(resp.choices[0].message.content or "")
+        return parsed_under_redaction(
+            parse_query, resp.choices[0].message.content or "", self.cfg.api_key
+        )
 
     def extract_query_intent(self, *, question: str, schema_hint: str = "") -> QueryIntent:
         client = self._client()
@@ -321,7 +330,9 @@ class OpenAIAdapter:
         except Exception as exc:  # noqa: BLE001 - normalise provider errors
             raise self._request_failed(exc) from exc
 
-        return parse_query_intent(resp.choices[0].message.content or "")
+        return parsed_under_redaction(
+            parse_query_intent, resp.choices[0].message.content or "", self.cfg.api_key
+        )
 
     def answer_question(self, *, question: str, context: str) -> str:
         client = self._client()

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
 import ast
+import json
 import inspect
 import sys
 from pathlib import Path
@@ -982,3 +983,103 @@ def test_a_render_failure_never_carries_the_key(tmp_path, monkeypatch, method, p
         assert "***" in str(exc.value)
     finally:
         path.chmod(0o600)
+
+
+# --- the parse path: a 200 body that echoes the key (#514) --------------------
+
+#: The parsers that can put the payload they rejected into their own message,
+#: with a body shape that makes each one do it. Measured, not assumed:
+#: `schema.parse_facts` interpolates the offending object with `{item!r}`, and
+#: `parse_query_intent` interpolates the caller's `kind` string. `parse_query`
+#: is deliberately absent -- across a body that is not JSON, one missing
+#: `datalog`, a non-string `datalog` and a top-level list, its raise sites carried
+#: a JSON position, a missing key name and a builtin `TypeError` phrase and never
+#: the payload, which is what `_request_failed`'s docstring already says of it. It
+#: still goes through `parsed_under_redaction`, because that is a property of
+#: today's raise sites rather than a guarantee about them.
+_LEAKING_PARSE_INVOCATIONS = {
+    "extract_facts": (
+        lambda a: a.extract_facts(source_text="x"),
+        lambda key: {"facts": [{"subject": key, "oops": 1}]},
+    ),
+    "extract_query_intent": (
+        lambda a: a.extract_query_intent(question="What?"),
+        lambda key: {"kind": key},
+    ),
+}
+
+
+def _echoing_sdk(monkeypatch, provider: str, body: dict) -> None:
+    """Stub a 200 response whose BODY carries the configured key.
+
+    Not a 401 echo -- that path goes through `_request_failed`, which redacts and
+    is pinned by `test_provider_error_never_carries_the_key`. This is the other
+    one: a well-formed HTTP success whose payload is off-schema, which the parsers
+    reject by interpolating what they were handed. `base_url` is caller-supplied,
+    so a body under someone else's control reaches here (#514).
+    """
+
+    class _Responds:
+        def create(self, **kwargs):
+            if provider == "anthropic":
+                return SimpleNamespace(
+                    content=[SimpleNamespace(type="tool_use", name="emit", input=body)]
+                )
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(body)))]
+            )
+
+    if provider == "anthropic":
+        monkeypatch.setattr(
+            AnthropicAdapter, "_client", lambda self: SimpleNamespace(messages=_Responds())
+        )
+    else:
+        cls = OpenRouterAdapter if provider == "openrouter" else OpenAIAdapter
+        monkeypatch.setattr(
+            cls,
+            "_client",
+            lambda self: SimpleNamespace(chat=SimpleNamespace(completions=_Responds())),
+        )
+
+
+@pytest.mark.parametrize("method", sorted(_LEAKING_PARSE_INVOCATIONS))
+@pytest.mark.parametrize("provider", sorted(_KEYED_ADAPTERS))
+def test_a_parse_failure_never_carries_the_key(tmp_path, monkeypatch, method, provider):
+    """The parse path's half of `test_provider_error_never_carries_the_key`.
+
+    That test says "each raise site is its own chance to bypass the redacting
+    constructor". The parsers are raise sites the adapters reach just PAST the
+    `try`, so `_request_failed` never sees them, and two of the three interpolate
+    the payload they rejected. Measured before `parsed_under_redaction`: every
+    cell here printed `sk-test-DEADBEEFDEADBEEF` into the message that
+    `pipeline/extract.py` stores as `source_chunks.error` and `sources.html`
+    renders (#514).
+
+    Both halves are asserted. Absence alone passes when the message stops
+    carrying the payload for some unrelated reason, at which point it has stopped
+    being about redaction.
+    """
+    invoke, body_for = _LEAKING_PARSE_INVOCATIONS[method]
+    _echoing_sdk(monkeypatch, provider, body_for(_LONG_KEY))
+
+    with pytest.raises(LLMError) as exc:
+        invoke(_KEYED_ADAPTERS[provider](_keyed_cfg(tmp_path, provider, _LONG_KEY)))
+
+    assert _LONG_KEY not in str(exc.value)
+    assert "***" in str(exc.value)
+
+
+def test_a_parse_failure_keeps_the_original_error_as_the_cause(tmp_path, monkeypatch):
+    """Redacting must not cost the cause the parsers already chain.
+
+    `schema.parse_facts` raises `... from exc` with the `KeyError` that named the
+    missing field. `parsed_under_redaction` re-raises `from exc.__cause__`, so the
+    original survives for a log rather than being buried behind the wrapper's own
+    `LLMError`. Re-raising `from exc` instead is the way to make this fail.
+    """
+    _echoing_sdk(monkeypatch, "openai", {"facts": [{"subject": _LONG_KEY, "oops": 1}]})
+
+    with pytest.raises(LLMError) as exc:
+        OpenAIAdapter(_keyed_cfg(tmp_path, "openai", _LONG_KEY)).extract_facts(source_text="x")
+
+    assert isinstance(exc.value.__cause__, KeyError)

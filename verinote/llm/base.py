@@ -48,6 +48,39 @@ def redact_secret(text: str, secret: str | None) -> str:
     return text.replace(secret, "***")
 
 
+def parsed_under_redaction(parse, payload, secret):
+    """Run a response parser, and put what it raises under `redact_secret`.
+
+    The parsers live below the adapters and take a payload, not a `Config`, so
+    they cannot reach the key -- and they interpolate what they caught:
+    `schema.parse_facts` puts the offending object in with `{item!r}`, which on
+    a malformed response IS the response. `redact_secret` says the secret should
+    never enter an `LLMError` in the first place; this is the construction site
+    that has to call it for that to hold on the parse path.
+
+    NOT inside the adapters' request `try`. Moving the parse in there would fix
+    the redaction and break the attribution, reporting a schema failure as
+    "request failed" -- the misattribution #500 took out of this very region.
+    A separate wrapper redacts without moving the blame, the shape `_rendered`
+    already has for the render.
+
+    `from exc.__cause__`, not `from exc`. Every parser raises `... from exc`
+    with the `json`/`Key`/`Type` error that caused it, so the original is
+    already on `__cause__`; re-raising `from exc` would bury it behind this
+    wrapper's own `LLMError`. Where a parser raised with no cause at all
+    (`query translation was empty`), `__cause__` is `None` and the re-raise
+    carries none either, which is what it had.
+
+    ONLY `LLMError` is caught. A parser that fails some other way is a bug in
+    this repo rather than a message about the provider's payload, and it is not
+    this function's business to relabel it.
+    """
+    try:
+        return parse(payload)
+    except LLMError as exc:
+        raise LLMError(redact_secret(str(exc), secret)) from exc.__cause__
+
+
 def base_url_unusable(provider: str, url: str, exc: Exception) -> LLMError:
     """The configured endpoint is not something a request can even be built for.
 
