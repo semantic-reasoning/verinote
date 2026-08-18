@@ -21,6 +21,8 @@ real usage shape is a policy rule, covered by
 `test_a_policy_rule_written_about_the_superclass_is_the_real_usage_shape`.
 """
 
+from pathlib import Path
+
 import pytest
 
 from verinote.engine import DEFAULT_POLICY, validate_query
@@ -28,6 +30,22 @@ from verinote.engine.duckdb_backend import run_check_duckdb
 
 _BEGIN_MARKER = "// ── BEGIN class vocabulary ──"
 _END_MARKER = "// ── END class vocabulary ──"
+
+#: Resolved from this file so the check holds in a linked worktree and in CI,
+#: wherever pytest was invoked from. `tests/` sits at the repo root.
+_CONFIGURATION_DOC = Path(__file__).resolve().parents[1] / "docs" / "configuration.md"
+
+#: The third-level remedy, one rule per derivation path. Asserted to be verbatim
+#: in the policy comment and in the docs before being run, so that the advice and
+#: the behaviour cannot drift apart — dropping the second line from either copy
+#: is otherwise a silent one-line regression.
+_THIRD_LEVEL_BY_FACT = (
+    'is_a(E, T) :- relation(E, "is_a", C), subclass_of(C, S), subclass_of(S, T).'
+)
+_THIRD_LEVEL_BY_DOMAIN = (
+    'is_a(S, T) :- relation(S, R, O), domain_of(R, C), subclass_of(C, S2),'
+    " subclass_of(S2, T)."
+)
 
 
 def enabled_class_vocabulary_policy() -> str:
@@ -65,7 +83,12 @@ def enabled_class_vocabulary_policy() -> str:
                 f"already partly live: {line!r}"
             )
     enabled = "\n".join(uncommented).strip()
-    assert "is_a(" in enabled, f"the uncommented block derives no is_a: {enabled!r}"
+    # Rules, not just a mention of `is_a`: a block reduced to its `.decl` lines
+    # still contains "is_a(" and would sail past a laxer check, leaving every
+    # caller asserting against a policy that derives nothing.
+    assert [line for line in enabled.splitlines() if ":-" in line], (
+        f"the uncommented block contains no derivation rules: {enabled!r}"
+    )
     return DEFAULT_POLICY + "\n" + enabled + "\n"
 
 
@@ -295,6 +318,28 @@ def test_is_a_cannot_be_asked_as_a_question():
     assert reason == "unknown predicate: is_a"
 
 
+def test_the_documented_third_level_rules_are_quoted_verbatim_in_both_places():
+    """The remedy is prose in two files, so the pair has to be checked as a pair.
+
+    Dropping the second rule from either copy is a one-line edit that restores
+    the asymmetry the fourth shipped rule exists to prevent, and the suite would
+    not notice: the deepening test below would carry its own copy of the strings
+    and keep passing. Asserting those same strings against both files is what
+    ties the tested behaviour to the advice a reader is given.
+    """
+    assert _THIRD_LEVEL_BY_FACT in DEFAULT_POLICY
+    assert _THIRD_LEVEL_BY_DOMAIN in DEFAULT_POLICY, (
+        "the policy comment no longer gives the domain_of third-level rule, so it "
+        "now tells a reader to deepen one path and leave the other a level short"
+    )
+    assert _CONFIGURATION_DOC.is_file(), f"missing {_CONFIGURATION_DOC}"
+    docs = _CONFIGURATION_DOC.read_text(encoding="utf-8")
+    assert _THIRD_LEVEL_BY_FACT in docs
+    assert _THIRD_LEVEL_BY_DOMAIN in docs, (
+        f"{_CONFIGURATION_DOC.name} no longer gives the domain_of third-level rule"
+    )
+
+
 def test_the_documented_third_level_rules_deepen_both_paths_together():
     """Finding: a one-rule third level deepens only the `is_a`-fact path.
 
@@ -302,13 +347,11 @@ def test_the_documented_third_level_rules_deepen_both_paths_together():
     both paths, so the remedy they give has to lift both. Adding only the first
     rule leaves the `domain_of` path at two levels — exactly the mismatch the
     fourth shipped rule exists to prevent, reintroduced by the instructions.
+
+    Runs the strings the test above proves are the documented ones.
     """
     _duckdb()
-    both_rules = (
-        '\nis_a(E, T) :- relation(E, "is_a", C), subclass_of(C, S), subclass_of(S, T).\n'
-        "is_a(S, T) :- relation(S, R, O), domain_of(R, C), subclass_of(C, S2),"
-        " subclass_of(S2, T).\n"
-    )
+    both_rules = f"\n{_THIRD_LEVEL_BY_FACT}\n{_THIRD_LEVEL_BY_DOMAIN}\n"
     chain = '\nsubclass_of("Widget", "Gadget").\nsubclass_of("Gadget", "Thing").\n'
     facts = [
         {"subject": "Ada", "relation": "is_a", "object": "Widget"},
