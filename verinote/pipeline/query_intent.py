@@ -626,15 +626,18 @@ these nor `called`/`named`, which #511 reports as already handled and are not:
 `_clean_english_attribute_label` normalised whitespace and dropped a leading
 `the ` and nothing else. So every member here is new: `What is Sample
 Project's owner called?` asked for a relation literally named `owner called`,
-and with any member of this tuple in place of `called` it is the same shape --
-a name no schema is expected to hold.
+and each of the other nine reads the same way -- measured at e032738, all ten
+`What is Sample Project's owner <member>?` questions parse to
+`('owner <member>',)` and to no other candidate, and none of those ten is a
+name a schema is expected to hold.
 
 What stands in front of the member decides that, though, and not the member.
 With `also` in front of `known as` the question asked for `also known as`,
 which is a real attribute name: measured at e032738 against a KB holding it,
 `What is Sample Person's also known as?` is `VERIFIED — engine` with no
 provider call, and this rule takes that same question to
-`UNVERIFIED — source exploration` with one. So the shape above is claimed for
+`UNVERIFIED — source exploration` and to a recorded
+`['extract_query_intent', 'answer_question']`. So the shape above is claimed for
 the `owner ` witnesses, not for every label a member can follow; the
 accepted-cost rows at the end of `test_the_strip_cannot_leave_the_field_empty`
 are where the rest of that population is pinned.
@@ -650,8 +653,9 @@ empty and the model is reached -- including where the schema does hold that
 relation for some *other* subject, because `all_relation_labels` is KB-wide
 (`query_schema.py`: "Every relation surface in the KB") and a plan is not.
 Measured with `Other Stock/stock worth/V9` beside `Sample Stock/price/V0`,
-`What is Sample Stock's stock worth?` is `UNVERIFIED — source exploration`
-with one provider call. `verinote/pipeline/query.py` already names that
+`What is Sample Stock's stock worth?` is `UNVERIFIED — source exploration`,
+recording `['extract_query_intent', 'answer_question']` where the answered
+branch records nothing. `verinote/pipeline/query.py` already names that
 population where it calls `_reinterpret_empty_plan` -- "a subject with no fact
 for an otherwise real relation is re-read too, and pays a provider call to
 arrive back at the same place".
@@ -741,7 +745,8 @@ _ENGLISH_ATTRIBUTE_TRAILING_PREDICATE = re.compile(
     # against the other: measured end to end, it moves questions in both.
     # `Also Known As` is a real attribute name a schema may spell in title
     # case, and the flag cuts it to `Also` -- `VERIFIED — engine` with no
-    # provider call here, the model with one under the flag. It also cuts
+    # provider call here, `UNVERIFIED — source exploration` and a re-read
+    # under the flag. It also cuts
     # `Date Labeled` to `Date` and `User Named` to `User`, which is the
     # opposite move: against a KB holding `Date`, `What is Sample Dataset's
     # Date Labeled?` reaches the model here and answers
@@ -1006,9 +1011,12 @@ def _clean_english_attribute_label(value: str) -> str:
 
     Each row is measured with the queried subject holding the fact, which is
     what the branch actually turns on. Where the schema holds the name for some
-    *other* subject the plan is empty either way and the model is reached with
-    a provider call, before this rule and after -- the case
-    `_ENGLISH_ATTRIBUTE_TAIL_PREDICATE_MEMBERS` records.
+    *other* subject the plan is empty either way and the model is reached both
+    before this rule and after: with `Other Dataset/date/2020-01-01` beside
+    `Sample Dataset/size/3`, `What is Sample Dataset's date labeled?` is
+    `UNVERIFIED — source exploration` recording
+    `['extract_query_intent', 'answer_question']` at e032738 and the same here.
+    That is the case `_ENGLISH_ATTRIBUTE_TAIL_PREDICATE_MEMBERS` records.
 
     These rows are not ranked against each other, and an earlier draft of this
     list ranked them: it called the second the more expensive direction. That
