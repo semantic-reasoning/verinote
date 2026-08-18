@@ -54,13 +54,24 @@ _DEAD_FUNCTIONAL = [
     "but no engine fact uses that relation",
 ]
 
-#: Quoted verbatim by the DEFAULT_POLICY comment and by docs/configuration.md.
-#: `test_the_is_a_warning_is_quoted_verbatim_where_it_is_explained` is what makes
-#: that a guarded fact rather than a hope.
-_DEAD_IS_A = (
-    'dead_rule: policy declares relation("is_a") '
-    "but no engine fact uses that relation"
+#: A minimal policy whose one dead rule is the `is_a` one — used to ask the
+#: engine what it prints instead of restating it.
+_IS_A_PROBE_POLICY = (
+    ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
+    ".decl is_a(entity: symbol, cls: symbol)\n"
+    'is_a(E, C) :- relation(E, "is_a", C).\n'
 )
+
+#: Taken FROM THE ENGINE rather than written out, and that is the whole point.
+#: This string has three corners: what the detector prints, what the policy
+#: comment tells a reader to expect, and what docs/configuration.md documents. A
+#: literal here would only ever tie the two prose corners together — reword
+#: `dead_rule_warnings` and the literal would sit here agreeing with both copies
+#: while the engine printed something else, which is the drift this is for.
+#:
+#: `_DEAD_FUNCTIONAL` above stays a literal on purpose: those assertions are what
+#: pin the detector's wording. Deriving both would leave nothing checking it.
+_DEAD_IS_A = dead_rule_warnings(_IS_A_PROBE_POLICY, {"born_on"})[0]
 
 #: Resolved from this file so the check holds in a linked worktree and in CI,
 #: wherever pytest was invoked from. `tests/` sits at the repo root.
@@ -88,14 +99,16 @@ def test_the_shipped_policy_names_no_relation_beyond_the_functional_three():
 
 
 def test_the_is_a_warning_is_quoted_verbatim_where_it_is_explained():
-    """The warning text is a three-way contract, so all three sides are checked.
+    """The warning text is a three-way contract, so all three corners are checked.
 
-    The test above pins what the detector emits. That alone lets the two places
-    that *explain* the warning rot: the policy comment tells a reader how to
-    clear it and docs/configuration.md documents it as expected output, and both
-    quote the string. Change the wording in `dead_rule_warnings` and the pinned
-    constant moves with it — this is what stops the prose from being left behind
-    saying something the engine no longer prints.
+    Two places *explain* this warning: the policy comment tells a reader how to
+    clear it, and docs/configuration.md documents it as expected output. Both
+    quote it verbatim, so both rot silently when the detector is reworded.
+
+    `_DEAD_IS_A` comes from `dead_rule_warnings` itself, which is what makes this
+    catch that. Reword the detector and the constant follows, leaving the two
+    prose copies behind — here, not somewhere a developer can satisfy by editing
+    a different assertion.
 
     A missing docs file fails rather than skips: a guard that quietly stops
     running is the failure it was written to prevent.
