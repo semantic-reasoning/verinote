@@ -372,8 +372,9 @@ that never recorded a policy of its own is verified against it at runtime. A liv
 is_a Person* start deriving that Ada is a Party, a class nobody declared —
 harmless if your "Party" means what ours does, wrong and silent if it is a
 political party. And a live `is_a` rule names the `is_a` relation in its body, so
-every KB without a hierarchy would carry a dead-rule warning about a rule its
-owner never wrote. A new KB's first check is quiet, and this keeps it that way.
+every KB that has facts but no hierarchy would carry a dead-rule warning about a
+rule its owner never wrote. A KB with no facts yet is quiet either way; the
+warning starts once it has facts and no `is_a` among them.
 
 Once enabled, note the difference in how the two declarations are policed:
 
@@ -389,8 +390,8 @@ Once enabled, note the difference in how the two declarations are policed:
 
 ### The `is_a` warning you will see once it is on
 
-With the block enabled, a KB whose facts never use the `is_a` relation reports
-this on every check:
+With the block enabled, a KB that has facts but none using the `is_a` relation
+reports this on every check:
 
 ```
 dead_rule: policy declares relation("is_a") but no engine fact uses that relation

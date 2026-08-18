@@ -27,7 +27,7 @@ def test_parse_and_validate_default_policy():
     # `.decl` moves the declaration list, and a fact or rule without its `.decl`
     # fails validation outright. What a full list adds is a line *swapped* rather
     # than added — replacing `functional("died_on")` leaves the count at three,
-    # and only the fact list notices.
+    # which a length assertion cannot see.
     assert [decl.name for decl in program.declarations] == [
         "relation",
         "functional",
