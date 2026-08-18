@@ -40,19 +40,26 @@ class AnthropicAdapter:
         to be narrowed rather than un-hedged. What it carries is now whatever
         the render raised, `str(exc)` and no filter, and that set is open: an
         `OSError` from the override read puts the KB's absolute path in the
-        message in full, `cfg.root` and all (measured). What survives is
-        narrower and is about the configured key and the provider response, and
-        only those. The function is module-level and takes a root path and a
-        prompt id -- the argument `ollama_adapter.list_models` makes about
-        itself -- so no `cfg` and no key are in scope for it to name, and a
-        render dials nothing, so a provider response cannot arrive in it either.
-        Mind the modality: `redact_secret` is not unnecessary here, it is
-        unreachable -- this function has nothing to hand it. That is not free.
-        A key spelled into a KB directory name arrives as a substring of the
-        path, and `redact_secret` is substring replacement, so it would have
-        masked it there; nothing on this path calls it. Both halves measured.
-        Lifting these four copies somewhere a redactor can be reached is the
-        follow-up that residue belongs to.
+        message in full, `cfg.root` and all (measured), and a key a user spelled
+        into a KB directory name is part of that path.
+
+        Which is why nothing in this class calls it directly. `_rendered` above
+        wraps it, and that wrapper is a member of the class precisely so it can
+        hand `self.cfg.api_key` to `redact_secret` -- the four generation
+        methods reach the render only through it. Measured on this branch, the
+        twelve cells that carry a path (this adapter, `openai`, `openrouter`,
+        four methods each, an unreadable override) come out `.../kb-***/...`
+        again, which is what `759eac0` did before the hoist and what the hoist
+        alone stopped doing. Whether `_render_prompt` itself redacts is
+        therefore not the question here; it does not, and it is not called from
+        anywhere in this file that a key can reach.
+
+        `ollama_adapter` and `claude_cli_adapter` are the other story. They call
+        their copies of `_render_prompt` bare, they import no `redact_secret`,
+        and they never masked this -- on `759eac0` the same override left them
+        as a raw `PermissionError` with the key in it, and they leak it as an
+        `LLMError` now. That is untouched residue rather than anything this
+        change moved, and it is what the consolidation follow-up is for.
 
         The schema helpers three of the four generation methods call just past
         their guarded region -- `parse_facts`, `parse_query`,
@@ -212,6 +219,43 @@ class AnthropicAdapter:
         except Exception as exc:  # noqa: BLE001 - normalise SDK construction errors
             raise self._client_failed(exc) from exc
 
+    def _rendered(self, prompt_id: str, **values: object) -> str:
+        """Render a prompt, and put the result under the redacting constructor.
+
+        Two layers, and they are not the same job. Module-level `_render_prompt`
+        normalises: every render failure leaves it as an `LLMError`, which is
+        §10.1, and all four adapters need it. This wraps that in the one thing a
+        module-level function cannot do -- reach `self.cfg.api_key` -- and it
+        exists only here and in `openai_adapter`, because those are the two
+        classes that redact at all. Nothing else changes: no new exception type,
+        no new message shape, only whether a configured key survives in the text.
+
+        It is here because #500 took it away. Before the hoist the render was an
+        ARGUMENT to the SDK call, so a `PermissionError` on the override went
+        through `_request_failed`, which redacts (measured on `759eac0`: the KB
+        path came out as `.../kb-***/policy/prompts/extraction.md`). Lifting the
+        render above the `try` moved that raise site out from under the redactor
+        while `_render_prompt` gained a message that carries `str(exc)` whole --
+        and an `OSError` from the override read spells out `cfg.root`. A key a
+        user put in their KB directory name then rode into
+        `source_chunks.error`. Twelve cells: three adapters, four methods, and
+        the conditions whose exception text carries a path. A non-UTF-8 override
+        is not one of them -- `UnicodeDecodeError` names a byte offset and no
+        file -- so the fix is not "the render leaks", it is that these twelve
+        stopped being redacted and are redacted again.
+
+        `from exc.__cause__`, not `from exc`. `_render_prompt` already hung the
+        original failure there, and
+        `test_a_render_failure_keeps_the_original_error_as_the_cause` asserts on
+        it; re-raising `from exc` would bury that behind this wrapper's own
+        `LLMError` and break it. Tidying this to `from exc` is the way to make
+        that test fail.
+        """
+        try:
+            return _render_prompt(self.cfg.root, prompt_id, **values)
+        except LLMError as exc:
+            raise LLMError(redact_secret(str(exc), self.cfg.api_key)) from exc.__cause__
+
     def extract_facts(self, *, source_text: str, schema_hint: str = "") -> list[ExtractedFact]:
         client = self._client()
         tool = {
@@ -219,7 +263,7 @@ class AnthropicAdapter:
             "description": "Return the extracted facts.",
             "input_schema": FACT_ARRAY_SCHEMA,
         }
-        system = _with_schema_hint(_render_prompt(self.cfg.root, "extraction"), schema_hint)
+        system = _with_schema_hint(self._rendered("extraction"), schema_hint)
         try:
             msg = client.messages.create(
                 model=self.cfg.model,
@@ -245,7 +289,7 @@ class AnthropicAdapter:
             "input_schema": QUERY_SCHEMA,
         }
         system = _with_schema_hint(
-            _render_prompt(self.cfg.root, "query-translation", qid=qid), schema_hint
+            self._rendered("query-translation", qid=qid), schema_hint
         )
         try:
             msg = client.messages.create(
@@ -271,7 +315,7 @@ class AnthropicAdapter:
             "description": "Return the structured query intent.",
             "input_schema": QUERY_INTENT_SCHEMA,
         }
-        system = _with_schema_hint(_render_prompt(self.cfg.root, "query-intent"), schema_hint)
+        system = _with_schema_hint(self._rendered("query-intent"), schema_hint)
         try:
             msg = client.messages.create(
                 model=self.cfg.model,
@@ -291,7 +335,7 @@ class AnthropicAdapter:
 
     def answer_question(self, *, question: str, context: str) -> str:
         client = self._client()
-        system = _render_prompt(self.cfg.root, "ask-fallback")
+        system = self._rendered("ask-fallback")
         try:
             msg = client.messages.create(
                 model=self.cfg.model,

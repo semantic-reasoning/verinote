@@ -39,20 +39,25 @@ class OpenAIAdapter:
         a caught exception with no redaction, a third carrier of caught text.
         The sentence this replaces called it harmless *as written*, because the
         only thing it caught was `PromptError`; #500 widened its second clause,
-        so that qualifier has to be replaced with a narrower claim rather than
-        dropped. It now carries `str(exc)` of whatever the render raised, an
-        open set -- an `OSError` from the override read arrives with the KB's
-        absolute path spelled out in full (measured). What is still true is
-        about the configured key and the provider, and only those: the function
-        is module-level and takes a root path and a prompt id, so no `cfg` and
-        no key are in scope for it to name, and a render dials nothing, so no
-        provider response can arrive in it either. `redact_secret` is for
-        exactly those two, and the accurate word is not that it is unneeded but
-        that it is out of reach -- there is nothing here to hand it. What that
-        costs shows up in the path: spell the key into a KB directory name and
-        it rides into the message inside `cfg.root`, where `redact_secret`,
-        being substring replacement, would have masked it. Both halves measured.
-        Consolidating these four copies is where that residue can be addressed.
+        so that qualifier has to be replaced rather than dropped. It now carries
+        `str(exc)` of whatever the render raised, an open set -- an `OSError`
+        from the override read arrives with the KB's absolute path spelled out
+        in full (measured), key included if the user named a directory after
+        one.
+
+        So the four generation methods do not call it. They go through
+        `_rendered` above, which is a method rather than a module-level function
+        for the single reason that a method can pass `self.cfg.api_key` to
+        `redact_secret`. `OpenRouterAdapter` inherits it and redacts with its
+        own key. Measured: the twelve cells that carry a path -- this adapter,
+        `openrouter`, `anthropic`, four methods each, an unreadable override --
+        mask again, as they did on `759eac0` before the render was hoisted out
+        of the `try` that used to redact them.
+
+        `ollama_adapter` and `claude_cli_adapter` call their copies bare and
+        import no `redact_secret` at all; they never masked this and still do
+        not. That residue is theirs and predates #500, and consolidating the
+        four copies somewhere a key can be passed is the follow-up for it.
         `openrouter_adapter.list_models` is the same shape -- a bare
         `LLMError(f"openrouter request failed: {exc}")`, in a module that
         imports no `redact_secret` at all -- and rests on the first half of that
@@ -215,9 +220,46 @@ class OpenAIAdapter:
         """
         return self.cfg.base_url
 
+    def _rendered(self, prompt_id: str, **values: object) -> str:
+        """Render a prompt, and put the result under the redacting constructor.
+
+        Two layers, and they are not the same job. Module-level `_render_prompt`
+        normalises: every render failure leaves it as an `LLMError`, which is
+        §10.1, and all four adapters need it. This wraps that in the one thing a
+        module-level function cannot do -- reach `self.cfg.api_key` -- and it
+        exists only here and in `openai_adapter`, because those are the two
+        classes that redact at all. Nothing else changes: no new exception type,
+        no new message shape, only whether a configured key survives in the text.
+
+        It is here because #500 took it away. Before the hoist the render was an
+        ARGUMENT to the SDK call, so a `PermissionError` on the override went
+        through `_request_failed`, which redacts (measured on `759eac0`: the KB
+        path came out as `.../kb-***/policy/prompts/extraction.md`). Lifting the
+        render above the `try` moved that raise site out from under the redactor
+        while `_render_prompt` gained a message that carries `str(exc)` whole --
+        and an `OSError` from the override read spells out `cfg.root`. A key a
+        user put in their KB directory name then rode into
+        `source_chunks.error`. Twelve cells: three adapters, four methods, and
+        the conditions whose exception text carries a path. A non-UTF-8 override
+        is not one of them -- `UnicodeDecodeError` names a byte offset and no
+        file -- so the fix is not "the render leaks", it is that these twelve
+        stopped being redacted and are redacted again.
+
+        `from exc.__cause__`, not `from exc`. `_render_prompt` already hung the
+        original failure there, and
+        `test_a_render_failure_keeps_the_original_error_as_the_cause` asserts on
+        it; re-raising `from exc` would bury that behind this wrapper's own
+        `LLMError` and break it. Tidying this to `from exc` is the way to make
+        that test fail.
+        """
+        try:
+            return _render_prompt(self.cfg.root, prompt_id, **values)
+        except LLMError as exc:
+            raise LLMError(redact_secret(str(exc), self.cfg.api_key)) from exc.__cause__
+
     def extract_facts(self, *, source_text: str, schema_hint: str = "") -> list[ExtractedFact]:
         client = self._client()
-        system = _with_schema_hint(_render_prompt(self.cfg.root, "extraction"), schema_hint)
+        system = _with_schema_hint(self._rendered("extraction"), schema_hint)
         try:
             resp = client.chat.completions.create(
                 model=self.cfg.model,
@@ -238,7 +280,7 @@ class OpenAIAdapter:
     def translate_query(self, *, question: str, qid: int, schema_hint: str = "") -> str:
         client = self._client()
         system = _with_schema_hint(
-            _render_prompt(self.cfg.root, "query-translation", qid=qid), schema_hint
+            self._rendered("query-translation", qid=qid), schema_hint
         )
         try:
             resp = client.chat.completions.create(
@@ -259,7 +301,7 @@ class OpenAIAdapter:
 
     def extract_query_intent(self, *, question: str, schema_hint: str = "") -> QueryIntent:
         client = self._client()
-        system = _with_schema_hint(_render_prompt(self.cfg.root, "query-intent"), schema_hint)
+        system = _with_schema_hint(self._rendered("query-intent"), schema_hint)
         try:
             resp = client.chat.completions.create(
                 model=self.cfg.model,
@@ -283,7 +325,7 @@ class OpenAIAdapter:
 
     def answer_question(self, *, question: str, context: str) -> str:
         client = self._client()
-        system = _render_prompt(self.cfg.root, "ask-fallback")
+        system = self._rendered("ask-fallback")
         try:
             resp = client.chat.completions.create(
                 model=self.cfg.model,

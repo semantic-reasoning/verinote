@@ -914,3 +914,54 @@ def test_a_broken_template_does_not_outrank_a_missing_key(tmp_path, monkeypatch,
 
     with pytest.raises(LLMError, match=r"^prompt extraction could not be loaded"):
         adapter_cls(_keyed_cfg(tmp_path, provider, "key")).extract_facts(source_text="x")
+
+
+@pytest.mark.parametrize("method", sorted(_INVOCATIONS))
+@pytest.mark.parametrize("provider", sorted(_KEYED_ADAPTERS))
+def test_a_render_failure_never_carries_the_key(tmp_path, monkeypatch, method, provider):
+    """The render path's half of `test_provider_error_never_carries_the_key`.
+
+    That test says "each raise site is its own chance to bypass the redacting
+    constructor", and #500 added a raise site to each of these eight methods:
+    hoisting the render above the `try` took it out from under
+    `_request_failed`. On `759eac0` this same setup produced
+    `anthropic request failed: [Errno 13] Permission denied: '.../kb-***/...'`;
+    between the hoist and this test it produced the key. `self._rendered` puts
+    the render back under a redactor and this is what holds it there.
+
+    Twelve cells, not twenty-four. The other break this section uses -- a
+    non-UTF-8 override -- cannot exercise redaction at all, because
+    `UnicodeDecodeError` names a byte offset and no path, so there is nothing
+    for the key to ride in on. An `OSError` from the override read spells out
+    `cfg.root`, which is why the unreadable file is the one that reaches this.
+    `openrouter` is in the parametrization rather than assumed: it inherits the
+    four methods and `_rendered` from `OpenAIAdapter` and redacts with its own
+    key.
+
+    The SDK raises with the key in it too, so a fix that reached only the render
+    and lost `_request_failed` would fail here as well.
+    """
+    root = tmp_path / f"kb-{_LONG_KEY}"
+    path = root / "policy" / "prompts" / _PROMPT_ID[method]
+    path = path.with_suffix(".md")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("Custom prompt.\n", encoding="utf-8")
+    path.chmod(0o000)
+    try:
+        try:
+            path.read_text(encoding="utf-8")
+        except PermissionError:
+            pass
+        else:
+            pytest.skip("this user reads straight through mode 0o000")
+
+        _raising_sdk(monkeypatch, provider, RuntimeError(f"401 invalid key {_LONG_KEY}"))
+        adapter = _KEYED_ADAPTERS[provider](_keyed_cfg(root, provider, _LONG_KEY))
+
+        with pytest.raises(LLMError) as exc:
+            _INVOCATIONS[method](adapter)
+
+        assert _LONG_KEY not in str(exc.value)
+        assert "***" in str(exc.value)
+    finally:
+        path.chmod(0o600)
