@@ -622,7 +622,8 @@ _ENGLISH_ATTRIBUTE_TAIL_PREDICATE_MEMBERS = (
 
 `What is Sample Project's owner known as?` asks for `owner`; the tail says how
 the asking is phrased. Before this rule *no* member was stripped -- neither
-these nor `called`/`named`, which #511 reports as already handled and are not:
+these nor `called`/`named`, which #511's title reports as already handled and
+which `main` never stripped:
 `_clean_english_attribute_label` normalised whitespace and dropped a leading
 `the ` and nothing else. So every member here is new: `What is Sample
 Project's owner called?` asked for a relation literally named `owner called`,
@@ -633,14 +634,14 @@ name a schema is expected to hold.
 
 What stands in front of the member decides that, though, and not the member.
 With `also` in front of `known as` the question asked for `also known as`,
-which is a real attribute name: measured at e032738 against a KB holding it,
-`What is Sample Person's also known as?` is `VERIFIED — engine` with no
-provider call, and this rule takes that same question to
-`UNVERIFIED — source exploration` and to a recorded
-`['extract_query_intent', 'answer_question']`. So the shape above is claimed for
-the `owner ` witnesses, not for every label a member can follow; the
+which is a real attribute name: measured at e032738 against a KB where
+`Sample Person` holds it, `What is Sample Person's also known as?` is
+`VERIFIED — engine` with no provider call, and this rule takes that same
+question to `UNVERIFIED — source exploration` and to a recorded
+`['extract_query_intent', 'answer_question']`. So the shape above is claimed
+for the `owner ` witnesses, not for every label a member can follow; the
 accepted-cost rows at the end of `test_the_strip_cannot_leave_the_field_empty`
-are where the rest of that population is pinned.
+record the rest of that population, witnesses rather than the whole of it.
 
 Not exhaustive, and cannot be: `referred to as`, `recorded as`, `written as`
 and their kin belong to the same class and are absent. A tail whose predicate
@@ -748,14 +749,14 @@ _ENGLISH_ATTRIBUTE_TRAILING_PREDICATE = re.compile(
     # provider call here, `UNVERIFIED — source exploration` and a re-read
     # under the flag. It also cuts
     # `Date Labeled` to `Date` and `User Named` to `User`, which is the
-    # opposite move: against a KB holding `Date`, `What is Sample Dataset's
-    # Date Labeled?` reaches the model here and answers
+    # opposite move: against a KB where `Sample Dataset` holds `Date`,
+    # `What is Sample Dataset's Date Labeled?` reaches the model here and answers
     # `Sample Dataset, Date, 2020-01-01` under `VERIFIED — engine` with no
     # provider call under the flag, for a question that asked what the date is
     # *labeled*. So the choice does not rest on ranking those two against each
     # other. What it does give up is a gain: `owner Called` cuts to `owner`,
-    # and against a KB holding `owner` that question is answered
-    # deterministically under the flag and reaches the model here. A forgone
+    # and against a KB where `Sample Project` holds `owner` that question is
+    # answered deterministically under the flag and reaches the model here. A forgone
     # gain, not a wrong answer. The first row is pinned end to end in
     # tests/test_ask.py by
     # test_a_title_case_tail_in_the_label_is_left_alone. The leading `\s+` is
@@ -1009,14 +1010,16 @@ def _clean_english_attribute_label(value: str) -> str:
       could not, so what the schema literally spells is not the only thing
       deciding this -- the synonym set is the third.
 
-    Each row is measured with the queried subject holding the fact, which is
-    what the branch actually turns on. Where the schema holds the name for some
+    Each row is measured with the queried subject holding a fact under one of
+    the label's candidates -- the fourth row's KB holds only the synonym --
+    which is what the branch actually turns on. Where the name is held for some
     *other* subject the plan is empty either way and the model is reached both
     before this rule and after: with `Other Dataset/date/2020-01-01` beside
     `Sample Dataset/size/3`, `What is Sample Dataset's date labeled?` is
-    `UNVERIFIED — source exploration` recording
-    `['extract_query_intent', 'answer_question']` at e032738 and the same here.
-    That is the case `_ENGLISH_ATTRIBUTE_TAIL_PREDICATE_MEMBERS` records.
+    `review_required` with one provider call at e032738 and the same here.
+    That is the case `_ENGLISH_ATTRIBUTE_TAIL_PREDICATE_MEMBERS` records, and
+    `test_the_strip_cannot_leave_the_field_empty` carries the same pair of
+    measurements at its accepted-cost rows.
 
     These rows are not ranked against each other, and an earlier draft of this
     list ranked them: it called the second the more expensive direction. That
