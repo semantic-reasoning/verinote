@@ -54,7 +54,8 @@ def enabled_class_vocabulary_policy() -> str:
     This performs the edit the policy's own instructions describe, so the thing
     under test is the shipped text rather than a copy of it. It refuses to
     produce a degenerate result: a missing marker, an unexpectedly-shaped line,
-    or an empty block raises instead of quietly returning the policy unchanged.
+    an empty block, or a block left with no derivation rule raises instead of
+    quietly returning the policy unchanged.
     Without that, deleting the block would leave every caller asserting against
     a policy with no class rules in it and passing for the wrong reason.
     """
