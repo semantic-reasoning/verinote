@@ -170,6 +170,11 @@ def _worker_marks_job_failed(store: Store, job_id: int, message: str) -> None:
     perform that write itself, so it is spelled out here rather than hidden behind
     a fixture — nothing in `verinote/pipeline` will do it, which is why the tests
     below call `process_extraction_job` directly and then this.
+
+    #524's branch carries a copy of this stand-in marked "DELETE THIS WHEN #488
+    LANDS" — correct for that copy, whose caller is a `verinote sync` that will
+    write the row itself once this PR lands. THIS copy stays either way: the tests
+    below call `process_extraction_job` directly, and it never writes that row.
     """
     store.fail_extraction_job(job_id, message)
 
