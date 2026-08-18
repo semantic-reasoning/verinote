@@ -1504,13 +1504,16 @@ class Store:
         spend a content budget, and `requeue_chunk_claim` is the same refund for
         the sidecar case.
 
-        NO GATE THAT WAS OPERATING IS WEAKENED, and where the give-up gate reads
-        is why. `failed_chunk_attempt_status` is scoped `WHERE status = 'failed'`
-        and planning consults it only under `failed_chunks > 0`, so the attempts
-        on a chunk sitting `running` gate nothing while it sits there; every
-        attempt that ended in a recorded `failed` is still counted, and the
-        un-refunded count never stopped a spin — it only ever surfaced later, as
-        the over-charge above. What the refund does move is WHEN exhaustion
+        EXHAUSTION IS STILL REACHED; WHAT MOVES IS WHEN. Where the give-up gate
+        reads is why. `failed_chunk_attempt_status` is scoped
+        `WHERE status = 'failed'` and planning consults it only under
+        `failed_chunks > 0`, so the attempts on a chunk sitting `running` gate
+        nothing while it sits there; every attempt that ended in a recorded
+        `failed` is still counted. The un-refunded count did stop spins, just
+        earlier than the content justified — measured at the cap of 3, it gave
+        up two passes and two LLM calls sooner in both patterns below, on one
+        and two recorded failures rather than three. Being early IS the
+        over-charge above, not a second property. What the refund does move is WHEN exhaustion
         arrives for a chunk that both fails for real and loses frames: it now
         always takes `MAX_CHUNK_ATTEMPTS` recorded failures however many frames
         died, where the charged rewind reached the cap on fewer — measured at the
@@ -1525,16 +1528,28 @@ class Store:
         `mark_chunk_running` put there (>= 1); this one sweeps every `running` row
         on the job, including rows reset out of band, and a `running` row carrying
         `attempts = 0` would otherwise go negative. THE OTHER THING THAT CAS
-        BUYS — never refunding a claim that is somebody else's — is bought here by
-        the job CAS a few lines above instead: it matches only `pending`/`failed`,
-        and a live worker holds its job `running` for the whole pass (#337). The
-        one path that writes a job `pending` under a live chunk,
-        `rollback_extraction_job`, rewinds that chunk itself under the same lock.
+        BUYS — never refunding a claim that is somebody else's — is bought on the
+        ordinary paths by the job CAS a few lines above: it matches only
+        `pending`/`failed`, and a live worker holds its job `running` for the
+        whole pass (#337). It is NOT bought in the window #242 already names.
+        `self._lock` is a `threading.RLock`, so it fences nothing across
+        processes, and `rollback_extraction_job` rewinds only the chunks that
+        are `running` when it runs — a worker that keeps going claims its NEXT
+        chunk afterwards, under a job another process may then write `failed`.
+        Measured with two live connections in separate processes: this claim
+        rewound and refunded a chunk the other process was holding.
+        `web/app.py` states the same boundary for the rollback itself ("in that
+        rare case this rollback still resets that live job's in-flight chunk"),
+        and `cli.py`'s `sync --recover` records that there is no liveness check.
+        Closing it is that follow-up, not this one; the refund's direction here
+        is toward retrying again, not toward giving up early.
 
         THE TWO REWINDS THAT DO NOT REFUND stay that way, one for a reason and one
         as residue. `claim_pending_extraction_job`'s sweep is this one minus the
-        refund, and by its own account "a defensive no-op" that fires in no real
-        path — there is no charge to give back. `rollback_extraction_job` is the
+        refund. Its own comment calls it "a defensive no-op", and on the
+        ordinary paths it is; in the same #242 window as above it does fire, and
+        the row it sweeps carries the attempt `mark_chunk_running` charged
+        (measured, two processes). Refunding there belongs with the window. `rollback_extraction_job` is the
         one with a live gap: the reason `requeue_chunk_claim` records for it — a
         halt freezes the whole KB against writes, so the count is not what stands
         in the way — covers its two halt callers (`_halt_extraction_job` and the
