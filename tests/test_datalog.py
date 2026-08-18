@@ -21,10 +21,13 @@ from verinote.engine.terms import Atom, Compound, StringLit, Var
 def test_parse_and_validate_default_policy():
     program = parse_and_validate_program(DEFAULT_POLICY)
 
-    # Full lists rather than lengths, on all three. The class-vocabulary block
-    # (#537) lives in this policy as commented-out text, and these are what catch
-    # any of it going live: a stray uncommented `.decl`, example fact, or `is_a`
-    # rule lands in exactly one of these lists, and nothing else would notice.
+    # Full lists rather than lengths on the facts and rules; the declarations
+    # were already a list. The class-vocabulary block (#537) lives in this policy
+    # as commented-out text. Uncommenting part of it was already caught: a stray
+    # `.decl` moves the declaration list, and a fact or rule without its `.decl`
+    # fails validation outright. What a full list adds is a line *swapped* rather
+    # than added — replacing `functional("died_on")` leaves the count at three,
+    # and only the fact list notices.
     assert [decl.name for decl in program.declarations] == [
         "relation",
         "functional",

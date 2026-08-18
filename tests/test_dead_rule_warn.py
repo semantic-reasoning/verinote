@@ -62,12 +62,15 @@ _IS_A_PROBE_POLICY = (
     'is_a(E, C) :- relation(E, "is_a", C).\n'
 )
 
-#: `_DEAD_FUNCTIONAL` above stays a literal on purpose: those assertions are what
-#: pin the detector's wording, and deriving both would leave nothing in this file
-#: checking it. Three other files pin the same wording as literals
-#: (test_duckdb_backend, test_inference_cache, test_policy_class_vocabulary), so
-#: the wording is not unguarded either way — but this is the file a reader opens
-#: to find out what the detector says, so the check belongs here too.
+#: `_DEAD_FUNCTIONAL` above stays a literal on purpose: it is what pins the
+#: detector's wording for the *shipped* policy. The wording is not unguarded
+#: either way — three tests below spell the full string out inline
+#: (`test_a_live_domain_of_is_flagged_because_its_column_is_named_rel`,
+#: `test_rule_body_string_literal_relation_is_detected`,
+#: `test_dead_body_relation_still_detected_alongside_a_live_finding_head`), and
+#: three other files pin it as literals (test_duckdb_backend,
+#: test_inference_cache, test_policy_class_vocabulary) — but this is the file a
+#: reader opens to find out what the detector says, so the check belongs here too.
 
 #: Resolved from this file so the check holds in a linked worktree and in CI,
 #: wherever pytest was invoked from. `tests/` sits at the repo root.
@@ -77,10 +80,10 @@ _CONFIGURATION_DOC = Path(__file__).resolve().parents[1] / "docs" / "configurati
 def test_the_shipped_policy_warns_about_nothing_it_ships():
     """A KB that uses every relation the shipped policy names sees a clean report.
 
-    This is the promise `verinote init` makes: a new KB's first check is quiet.
-    Adding class vocabulary to the *live* policy would break it — every KB
-    without an `is_a` fact would carry a dead-rule warning from day one — so
-    this is the guard that keeps the block commented out.
+    This is the promise the policy `verinote init` scaffolds makes. Adding class
+    vocabulary to the *live* policy would break it — every KB with facts but no
+    `is_a` fact would carry a dead-rule warning, this one included — so this is
+    the guard that keeps the block commented out.
     """
     assert dead_rule_warnings(DEFAULT_POLICY, {"established_on", "born_on", "died_on"}) == []
 
