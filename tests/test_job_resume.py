@@ -827,21 +827,20 @@ J_MARKERS = MARKERS[:3]
 J_CHUNK_CHARS = 60
 
 
-def _worker_marks_job_failed(store: Store, job_id: int, message: str) -> None:
-    """Stand-in for the caller's broad `except`. NOT the code under test.
+def _put_job_in_the_edge_state(store: Store, job_id: int, message: str) -> None:
+    """Write the `failed` row directly, where no pass is being run to write it.
 
-    A crash below the chunk loop gives `process_extraction_job` nothing to say
-    about the job row, so it leaves the job `running`; the broad `except` a caller
-    ends with is what writes `failed` over it. In this tree only `web/app.py` has
-    one, so a CLI-driven test has to perform that write itself. Spelled out here
-    rather than hidden behind a fixture, the idiom
-    `test_chunk_claim_release.py::_worker_marks_job_failed` uses for the same
-    reason — nothing in `verinote/pipeline` will do it.
+    #488 landed, so both callers now end with a broad `except` that terminalises
+    the job (`web/app.py`; `cli.py` since then), and the tests below that DRIVE a
+    crash through `cli.main(["sync"])` get that row from the CLI itself — they no
+    longer call anything here. What is left are the two fixtures that build the
+    edge state without running a pass at all: there is no caller in play to do
+    the write, so they do it themselves.
 
-    DELETE THIS WHEN #488 LANDS. PR #523 gives `cmd_sync` the same broad clause,
-    at which point the sync below terminalises the job by itself and the correct
-    change is to drop the call and assert the `failed` row with zero failed chunks
-    that the CLI wrote — never to keep the stand-in so these lines stay green.
+    NOT the code under test either way. Nothing in `verinote/pipeline` writes the
+    job row on this path; that is the invariant `test_chunk_claim_release.py`
+    states, and the reason this write is spelled out rather than hidden behind a
+    fixture.
     """
     store.fail_extraction_job(job_id, message)
 
@@ -891,9 +890,9 @@ def _crashed_below_chunk_accounting(tmp_path, monkeypatch, *, before_chunk: int 
     assert len(jobs) == 1
     job_id = int(jobs[0]["id"])
     store = _store(tmp_path)
-    _worker_marks_job_failed(store, job_id, "analysis failed: RuntimeError: crash")
-    # The edge state, asserted rather than assumed: `failed`, nothing charged to a
-    # chunk, and finished chunks a rebuild would throw away.
+    # The edge state, asserted rather than assumed, and written by `cmd_sync`'s own
+    # broad clause since #488 rather than staged here: `failed`, nothing charged to
+    # a chunk, and finished chunks a rebuild would throw away.
     job = store.get_extraction_job(job_id)
     assert job["status"] == "failed"
     assert int(job["failed_chunks"]) == 0
@@ -928,7 +927,7 @@ def _edge_state_job(tmp_path, *, done: int = 1):
     for row in store.source_chunks(job_id)[:done]:
         store.mark_chunk_running(int(row["id"]))
         store.mark_chunk_done(int(row["id"]), candidates=1)
-    _worker_marks_job_failed(store, job_id, "analysis failed: RuntimeError: crash")
+    _put_job_in_the_edge_state(store, job_id, "analysis failed: RuntimeError: crash")
     assert int(store.get_extraction_job(job_id)["failed_chunks"]) == 0
     return store, source_id, job_id
 
@@ -1159,7 +1158,6 @@ def test_a_reproducing_crash_below_chunk_accounting_stops_paying_the_llm(
         # it, the same write `_crashed_below_chunk_accounting` made — so the state
         # under test recurs rather than being reached once.
         store = _store(tmp_path)
-        _worker_marks_job_failed(store, job_id, "analysis failed: RuntimeError: crash")
         store.close()
         runs.append(_run_count(tmp_path))
 
@@ -1187,7 +1185,7 @@ def test_a_failed_job_that_finished_everything_terminalises_without_the_llm(
     job_id = int(jobs[0]["id"])
     assert jobs[0]["status"] == "done"
     store = _store(tmp_path)
-    _worker_marks_job_failed(store, job_id, "analysis failed: RuntimeError: crash")
+    _put_job_in_the_edge_state(store, job_id, "analysis failed: RuntimeError: crash")
     assert [c["status"] for c in store.source_chunks(job_id)] == ["done"] * len(J_MARKERS)
     store.close()
     runs_before = _run_count(tmp_path)
@@ -1275,20 +1273,16 @@ def _j_chunk_states(store, job_id) -> list[tuple[str, int]]:
 def _pass_that_loses_the_release(tmp_path, release) -> int:
     """One sync that cannot record its chunk failure, terminalised by its caller.
 
-    The `failed` write is `_worker_marks_job_failed`, for the reason recorded
-    there: nothing in `verinote/pipeline` writes it, and today only `web/app.py`
-    has the broad clause that does.
+    The `failed` row is written by `cmd_sync`'s own broad clause since #488 —
+    nothing in `verinote/pipeline` writes it, and this test asserts the row that
+    clause left rather than staging one.
     """
     with pytest.raises(release.error):
         cli.main(["sync"])
     jobs = _jobs(tmp_path)
     assert len(jobs) == 1  # the job is continued, never rebuilt beside itself
     job_id = int(jobs[0]["id"])
-    store = _store(tmp_path)
-    _worker_marks_job_failed(
-        store, job_id, "analysis failed: OperationalError: database is locked"
-    )
-    store.close()
+    assert str(jobs[0]["status"]) == "failed"  # written by cmd_sync, not staged
     return job_id
 
 
