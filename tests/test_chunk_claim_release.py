@@ -14,7 +14,7 @@ in `_start_source_extraction` (`web/app.py`), and since #488 the matching clause
 in `cmd_sync` (`cli.py`). Phrasing the invariant over the job would therefore
 make it a statement about callers rather than about this function, so the tests
 below that need a job in its post-failure resting state call
-`_worker_marks_job_failed` and say so. It would also be false where no caller
+`_caller_marks_job_failed` and say so. It would also be false where no caller
 writes at all: `BaseException` escapes both clauses, and a call that loses the
 ownership CAS writes nothing by design (both cases are pinned below).
 
@@ -160,7 +160,7 @@ def _plan(store: Store, source_id: int) -> ExtractionJobPlan:
     )
 
 
-def _worker_marks_job_failed(store: Store, job_id: int, message: str) -> None:
+def _caller_marks_job_failed(store: Store, job_id: int, message: str) -> None:
     """Stand-in for a caller's `except Exception`. NOT the code under test.
 
     `process_extraction_job` leaves the job row alone when a non-`LLMError`
@@ -222,7 +222,7 @@ def test_terminal_job_has_no_running_chunk_after_a_non_llm_error(tmp_path):
 
     with pytest.raises(ValueError):
         process_extraction_job(s, _ChunkClient(fail_on=2, exc=ValueError("boom")), job_id=job_id)
-    _worker_marks_job_failed(s, job_id, "analysis failed: boom")
+    _caller_marks_job_failed(s, job_id, "analysis failed: boom")
 
     job = s.get_extraction_job(job_id)
     assert job["status"] == "failed"
@@ -342,7 +342,7 @@ def test_the_recorded_cause_reaches_the_sources_page(tmp_path):
         process_extraction_job(
             store, _ChunkClient(fail_on=2, exc=ValueError()), job_id=job_id
         )
-    _worker_marks_job_failed(store, job_id, "analysis failed: ")  # worker stand-in
+    _caller_marks_job_failed(store, job_id, "analysis failed: ")  # caller stand-in
 
     html = TestClient(app).get("/sources").text
 
@@ -365,7 +365,7 @@ def test_a_released_chunk_burns_exactly_one_attempt(tmp_path):
 
     with pytest.raises(ValueError):
         process_extraction_job(s, _ChunkClient(fail_on=1, exc=ValueError("boom")), job_id=job_id)
-    _worker_marks_job_failed(s, job_id, "analysis failed: boom")
+    _caller_marks_job_failed(s, job_id, "analysis failed: boom")
 
     assert s.source_chunks(job_id)[0]["attempts"] == 1
     assert _plan(s, source_id) == ExtractionJobPlan(retry_job_id=job_id)
@@ -382,7 +382,7 @@ def test_a_released_chunk_burns_exactly_one_attempt(tmp_path):
                 retry=True,
                 retry_max_attempts=MAX_CHUNK_ATTEMPTS,
             )
-        _worker_marks_job_failed(s, job_id, "analysis failed: boom")
+        _caller_marks_job_failed(s, job_id, "analysis failed: boom")
         assert s.source_chunks(job_id)[0]["attempts"] == expected_attempts
         assert _running(s, job_id) == []
         assert _plan(s, source_id) == expected_plan
@@ -413,7 +413,7 @@ def test_a_released_job_is_retried_rather_than_rebuilt_from_scratch(tmp_path):
         process_extraction_job(
             s, _ChunkClient(fail_on=2, exc=RuntimeError("boom")), job_id=job_id
         )
-    _worker_marks_job_failed(s, job_id, "analysis failed: boom")
+    _caller_marks_job_failed(s, job_id, "analysis failed: boom")
 
     assert _plan(s, source_id) == ExtractionJobPlan(retry_job_id=job_id)
 

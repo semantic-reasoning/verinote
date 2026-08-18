@@ -255,7 +255,7 @@ def _chunk_states(store: Store, job_id: int) -> list[tuple[str, int]]:
     return [(c["status"], int(c["attempts"])) for c in store.source_chunks(job_id)]
 
 
-def _worker_marks_job_failed(store: Store, job_id: int, message: str) -> None:
+def _caller_marks_job_failed(store: Store, job_id: int, message: str) -> None:
     """Stand-in for a caller's `except Exception`. NOT code under test.
 
     `process_extraction_job` does not write the job row when a non-`LLMError`
@@ -363,7 +363,7 @@ def test_a_locked_sidecar_leaves_the_whole_retry_budget_for_a_real_failure(tmp_p
                 retry=expected_attempts > 1,
                 retry_max_attempts=MAX_CHUNK_ATTEMPTS if expected_attempts > 1 else None,
             )
-        _worker_marks_job_failed(s, job_id, "analysis failed: boom")
+        _caller_marks_job_failed(s, job_id, "analysis failed: boom")
         assert _chunk_states(s, job_id)[0] == ("failed", expected_attempts)
         assert _plan(s, source_id) == expected_plan
 
