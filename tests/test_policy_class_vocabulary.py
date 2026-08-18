@@ -371,7 +371,7 @@ def test_enabling_the_block_produces_the_warnings_the_policy_promises():
     """The cost of switching it on, documented in the policy and in the docs.
 
     The `is_a` warning is why the block ships inactive: it would otherwise land
-    on every KB created by `verinote init`. The `domain_of` one is why the
+    on every KB that has facts but no `is_a` fact. The `domain_of` one is why the
     example is labelled as something to replace.
     """
     _duckdb()
