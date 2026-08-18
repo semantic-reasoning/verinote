@@ -120,43 +120,54 @@ functional("died_on").
 {FUNCTIONAL_CONFLICT_RULE}(S, R) :-
     relation(S, R, A), relation(S, R, B), functional(R), A != B.
 
-// ── Class vocabulary ─────────────────────────────────────────────────────────
-// `functional` constrains a *relation*. These say what a *subject* is, so one
-// rule written about a superclass covers every subclass instead of listing them.
-// Declared here and not extracted into `facts`: what your words mean is your
-// declaration, not an observation some document made.
+// ── Class vocabulary (inactive) ──────────────────────────────────────────────
+// `functional` constrains a *relation*. The block below lets you say what a
+// *subject* is, so one rule written about a superclass covers every subclass
+// instead of naming each one. It is a declaration of what your words mean, not
+// an observation extracted from a document — which is why it belongs in this
+// file and not in the reviewed `facts` table.
 //
-// Both are extensional — write your own the way you write `functional(...)`:
-//   subclass_of("Person", "Party").
-//   subclass_of("Organization", "Party").
-//   domain_of("hasSubscription", "Party").
-// They ship commented out on purpose. A new KB has neither those relations nor
-// those classes, and a live `subclass_of("Person", "Party")` would make the
-// engine derive `is_a(Ada, "Party")` — a class you never declared — the moment
-// any fact says Ada is_a Person.
-.decl subclass_of(sub: symbol, super: symbol)
-.decl domain_of(rel: symbol, cls: symbol)
-
-// What the engine derives from them. `is_a` is derived, never asserted here.
-.decl is_a(entity: symbol, cls: symbol)
-is_a(E, C) :- relation(E, "is_a", C).
-is_a(E, S) :- relation(E, "is_a", C), subclass_of(C, S).
-is_a(S, C) :- relation(S, R, O), domain_of(R, C).
-is_a(S, P) :- relation(S, R, O), domain_of(R, C), subclass_of(C, P).
+// It ships inactive, and every line is commented. A new KB has none of these
+// relations or classes, so switching it on by default would derive classes you
+// never declared and report a rule you never wrote as dead.
 //
-// DEPTH CEILING: one superclass hop, on both paths. The backend refuses
-// recursive rules, so the hierarchy reaches exactly as far as the rules above
+// TO ENABLE: uncomment every line between BEGIN and END, then replace the
+// example vocabulary with your own. Nothing outside the block has to change.
+//
+// ── BEGIN class vocabulary ──
+// .decl subclass_of(sub: symbol, super: symbol)
+// .decl domain_of(rel: symbol, cls: symbol)
+// subclass_of("Person", "Party").
+// subclass_of("Organization", "Party").
+// domain_of("hasSubscription", "Party").
+//
+// .decl is_a(entity: symbol, cls: symbol)
+// is_a(E, C) :- relation(E, "is_a", C).
+// is_a(E, S) :- relation(E, "is_a", C), subclass_of(C, S).
+// is_a(S, C) :- relation(S, R, O), domain_of(R, C).
+// is_a(S, P) :- relation(S, R, O), domain_of(R, C), subclass_of(C, P).
+// ── END class vocabulary ──
+//
+// `is_a` is derived, never asserted. It is there for *policy rules* to read:
+//   warn_party_without_subscription(E) :- is_a(E, "Party"), ...
+// A question cannot use it. `/ask` queries may only reference relation/3, so
+// `is_a` is a vocabulary for this file, not for the Ask box.
+//
+// DEPTH CEILING: one superclass hop, on both derivation paths. The backend
+// refuses recursive rules, so the hierarchy reaches exactly as far as the rules
 // spell out. Declare Person -> Party -> Agent and a Person derives Person and
-// Party but NOT Agent — silently, with no warning. For a third level, add the
-// rule that spells it out:
+// Party but NOT Agent — silently, with no warning. A third level needs BOTH of
+// these, one per path, or the `domain_of` path stays a level short:
 //   is_a(E, T) :- relation(E, "is_a", C), subclass_of(C, S), subclass_of(S, T).
+//   is_a(S, T) :- relation(S, R, O), domain_of(R, C), subclass_of(C, S2), subclass_of(S2, T).
 //
-// EXPECTED WARNING: a KB with facts but no `is_a` relation gets
+// ONCE ENABLED, a KB with facts but no `is_a` relation gets
 //   dead_rule: policy declares relation("is_a") but no engine fact uses that relation
-// on every check. It means the class machinery above is inert for this KB. The
-// rule bodies name the relation, so no edit to the examples clears it — delete
+// on every check. It means the class machinery is inert for this KB. The rule
+// bodies name the relation, so no edit to the examples clears it — re-comment
 // the `is_a` rules if your KB has no hierarchy, as you would delete an unused
-// functional("born_on").
+// functional("born_on"). The `domain_of` example reports itself the same way
+// until you replace it with a relation your KB actually uses.
 """
 
 
