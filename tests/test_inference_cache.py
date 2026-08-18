@@ -33,15 +33,11 @@ def _warn_dead_functional(relation: str) -> str:
 
 # The conflict facts use only established_on, so the default policy's other two
 # functional decls (born_on/died_on) are unused dead rules that surface as
-# non-blocking WARNs beside the real conflict (issue #286). They use no `is_a`
-# relation either, so the shipped class-vocabulary rules report themselves dead
-# the same way (issue #537).
+# non-blocking WARNs beside the real conflict (issue #286).
 _CONFLICT_FINDINGS = [
     "ERROR functional_conflict: Org established_on",
     _warn_dead_functional("born_on"),
     _warn_dead_functional("died_on"),
-    'WARN dead_rule: policy declares relation("is_a") '
-    "but no engine fact uses that relation",
 ]
 
 

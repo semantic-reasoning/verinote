@@ -30,10 +30,7 @@ def test_default_policy_flags_unused_functional_relations():
 
 
 def test_no_warnings_when_every_referenced_relation_is_present():
-    # `is_a` belongs in the present set because the shipped class-vocabulary
-    # rules read `relation(E, "is_a", C)`: it is a relation the policy names by
-    # literal, exactly like the three functional decls.
-    present = {"established_on", "born_on", "died_on", "is_a"}
+    present = {"established_on", "born_on", "died_on"}
     assert dead_rule_warnings(DEFAULT_POLICY, present) == []
 
 
@@ -43,9 +40,10 @@ def test_empty_fact_set_is_never_flagged():
 
 
 # --- The shipped class vocabulary (#537) --------------------------------------
-# `subclass_of`/`domain_of` are declared in the policy file the way `functional`
-# is, so what the dead-rule detector does and does not see about them is part of
-# the shipped policy's behaviour, not an implementation detail.
+# The class-vocabulary block ships commented out, so from the detector's point of
+# view the shipped policy is unchanged. These pin that it stayed that way. What
+# happens once a KB enables the block lives in tests/test_policy_class_vocabulary.py,
+# next to the helper that performs the enabling.
 
 _DEAD_FUNCTIONAL = [
     'dead_rule: policy declares functional("born_on") '
@@ -69,25 +67,24 @@ _DEAD_IS_A = (
 _CONFIGURATION_DOC = Path(__file__).resolve().parents[1] / "docs" / "configuration.md"
 
 
-def test_shipped_class_vocabulary_adds_no_dead_rule_of_its_own():
-    """A KB that uses `is_a` sees exactly the pre-existing functional warnings.
+def test_the_shipped_policy_warns_about_nothing_it_ships():
+    """A KB that uses every relation the shipped policy names sees a clean report.
 
-    The full list, not a "subclass_of is absent from it" check: a negative
-    substring assertion also passes when the detector is broken and returns
-    nothing at all.
+    This is the promise `verinote init` makes: a new KB's first check is quiet.
+    Adding class vocabulary to the *live* policy would break it — every KB
+    without an `is_a` fact would carry a dead-rule warning from day one — so
+    this is the guard that keeps the block commented out.
     """
-    assert dead_rule_warnings(DEFAULT_POLICY, {"is_a"}) == _DEAD_FUNCTIONAL
+    assert dead_rule_warnings(DEFAULT_POLICY, {"established_on", "born_on", "died_on"}) == []
 
 
-def test_a_kb_without_an_is_a_relation_is_told_the_class_rules_are_inert():
-    """The permanent warning the policy comment and the docs both promise.
+def test_the_shipped_policy_names_no_relation_beyond_the_functional_three():
+    """The full warning list for a KB that uses none of them.
 
-    The rule bodies name `is_a`, so this is what a KB with no hierarchy sees on
-    every check until it deletes those rules.
+    Exact equality rather than "`is_a` is absent": a negative substring check
+    also passes when the detector is broken and returns nothing at all.
     """
-    assert dead_rule_warnings(DEFAULT_POLICY, {"established_on", "born_on", "died_on"}) == [
-        _DEAD_IS_A
-    ]
+    assert dead_rule_warnings(DEFAULT_POLICY, {"unrelated"}) == _DEAD_FUNCTIONAL
 
 
 def test_the_is_a_warning_is_quoted_verbatim_where_it_is_explained():
@@ -114,38 +111,48 @@ def test_the_is_a_warning_is_quoted_verbatim_where_it_is_explained():
     )
 
 
-def test_a_live_domain_of_example_would_be_flagged():
-    """Why the `domain_of` example ships commented out.
+def test_a_live_domain_of_is_flagged_because_its_column_is_named_rel():
+    """`domain_of`'s first column is `rel`, so the detector reaches it.
 
-    Its first column is named `rel`, so the detector reads it as a relation the
-    policy names, and a scaffolded KB that has no `hasSubscription` fact would
-    carry this warning from its first check onward.
+    Written against a standalone policy rather than the shipped one: the class
+    vocabulary is commented out in `DEFAULT_POLICY`, and this is a fact about
+    the detector, not about what verinote ships.
     """
-    warnings = dead_rule_warnings(
-        DEFAULT_POLICY + '\ndomain_of("hasSubscription", "Party").\n', {"is_a"}
+    policy = (
+        ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
+        ".decl domain_of(rel: symbol, cls: symbol)\n"
+        ".decl is_a(entity: symbol, cls: symbol)\n"
+        'domain_of("hasSubscription", "Party").\n'
+        "is_a(S, C) :- relation(S, R, O), domain_of(R, C).\n"
     )
 
-    assert warnings == sorted(
-        _DEAD_FUNCTIONAL
-        + [
-            'dead_rule: policy declares domain_of("hasSubscription") '
-            "but no engine fact uses that relation"
-        ]
-    )
+    assert dead_rule_warnings(policy, {"born_on"}) == [
+        'dead_rule: policy declares domain_of("hasSubscription") '
+        "but no engine fact uses that relation"
+    ]
 
 
 def test_a_live_subclass_of_is_invisible_to_the_detector():
     """`subclass_of` names classes, not relations, so nothing here can flag it.
 
-    Documented as a blind spot rather than a feature: a misspelled or unused
-    `subclass_of` is silent, which is half the reason the example ships
-    commented out — the other half being that a live one changes what an
-    un-migrated KB derives.
+    A characterization test: it records what the detector does today, not what it
+    ought to do. An unused or misspelled `subclass_of` is silent, and a user has
+    to be told that because nothing will tell them at runtime.
+
+    IF YOU MADE THIS RED by teaching the detector to read class columns, deleting
+    this test is the correct repair — not reverting your change. The blind spot
+    is a limitation being recorded, not a behaviour anything depends on. The
+    matching warning in docs/configuration.md should go at the same time.
     """
-    assert (
-        dead_rule_warnings(DEFAULT_POLICY + '\nsubclass_of("Nope", "Nada").\n', {"is_a"})
-        == _DEAD_FUNCTIONAL
+    policy = (
+        ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
+        ".decl subclass_of(sub: symbol, super: symbol)\n"
+        ".decl is_a(entity: symbol, cls: symbol)\n"
+        'subclass_of("Nope", "Nada").\n'
+        'is_a(E, S) :- relation(E, "is_a", C), subclass_of(C, S).\n'
     )
+
+    assert dead_rule_warnings(policy, {"is_a"}) == []
 
 
 def test_rule_body_string_literal_relation_is_detected():
@@ -265,27 +272,27 @@ def test_duckdb_production_path_surfaces_dead_rule_with_consistent_count():
     assert f"warnings: {rep.warnings}  facts:" in rep.text
 
 
-def test_duckdb_production_path_reports_the_inert_class_rules():
-    """The #537 warning on the path a real report takes, not just the helper.
+def test_duckdb_production_path_stays_silent_on_a_kb_that_uses_every_decl():
+    """A clean bill of health from the shipped policy, on the real report path.
 
-    The full finding list, so that the class rules cannot start or stop being
-    reported without this failing. These facts use no `is_a` relation, which is
-    exactly the KB the policy comment describes.
+    The class vocabulary added no live rule, so a KB using all three functional
+    relations still reports nothing at all. Exact equality on the empty list: the
+    #537 rework exists because an earlier draft put one warning here, on every KB
+    `verinote init` creates.
     """
     pytest.importorskip("duckdb")
     rep = run_check_duckdb(
-        [{"subject": "Org", "relation": "established_on", "object": "2020"}],
+        [
+            {"subject": "Org", "relation": "established_on", "object": "2020"},
+            {"subject": "Ada", "relation": "born_on", "object": "1815"},
+            {"subject": "Ada", "relation": "died_on", "object": "1852"},
+        ],
         policy_dl=DEFAULT_POLICY,
     )
 
     assert rep.ok is True
-    assert rep.findings == [
-        'WARN dead_rule: policy declares functional("born_on") '
-        "but no engine fact uses that relation",
-        'WARN dead_rule: policy declares functional("died_on") '
-        "but no engine fact uses that relation",
-        f"WARN {_DEAD_IS_A}",
-    ]
+    assert rep.findings == []
+    assert "no findings — knowledge base is consistent." in rep.text
 
 
 def test_verify_end_to_end_surfaces_dead_rule_for_recorded_policy(tmp_path):

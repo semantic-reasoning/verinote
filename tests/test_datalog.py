@@ -21,17 +21,15 @@ from verinote.engine.terms import Atom, Compound, StringLit, Var
 def test_parse_and_validate_default_policy():
     program = parse_and_validate_program(DEFAULT_POLICY)
 
+    # Full lists rather than lengths, on all three. The class-vocabulary block
+    # (#537) lives in this policy as commented-out text, and these are what catch
+    # any of it going live: a stray uncommented `.decl`, example fact, or `is_a`
+    # rule lands in exactly one of these lists, and nothing else would notice.
     assert [decl.name for decl in program.declarations] == [
         "relation",
         "functional",
         "error_functional_conflict",
-        "subclass_of",
-        "domain_of",
-        "is_a",
     ]
-    # The full list, not its length: the class vocabulary ships as `.decl` plus
-    # rules with every example commented out, so a live `subclass_of(...)` or
-    # `domain_of(...)` sneaking into the shipped policy has to show up here.
     assert list(program.facts) == [
         Fact(AtomExpr("functional", (StringLit("established_on"),))),
         Fact(AtomExpr("functional", (StringLit("born_on"),))),
@@ -39,10 +37,6 @@ def test_parse_and_validate_default_policy():
     ]
     assert [rule.head.predicate for rule in program.rules] == [
         "error_functional_conflict",
-        "is_a",
-        "is_a",
-        "is_a",
-        "is_a",
     ]
     rule = program.rules[0]
     assert rule.head == AtomExpr("error_functional_conflict", (Var("S"), Var("R")))
