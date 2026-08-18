@@ -205,11 +205,14 @@ def is_live_extraction_job(job, latest_job_ids: dict[int, int]) -> bool:
 # counts the attempts a chunk has SPENT ON ITS OWN CONTENT — the initial pass plus
 # each auto-retry — so a chunk with `attempts >= MAX_CHUNK_ATTEMPTS` has spent the
 # whole budget and its job is surfaced as exhausted rather than retried forever
-# (#323). Not the same as "every `mark_chunk_running`": a claim released because
-# the fact-term sidecar was locked is refunded (`Store.requeue_chunk_claim`), so a
-# chunk claimed six times can still sit at one attempt if five of those stopped on
-# a peer process rather than on this chunk. That is the point of the refund — an
-# availability condition must not spend a content budget. The web retry button is
+# (#323). Not the same as "every `mark_chunk_running`": two releases refund the
+# claim instead of charging it — a chunk released because the fact-term sidecar
+# was locked (`Store.requeue_chunk_claim`), and a chunk a dead frame left
+# `running` for the retry claim to rewind (`Store.claim_extraction_job_for_retry`,
+# #524) — so a chunk claimed six times can still sit at one attempt if five of
+# those stopped on a peer process or a lost frame rather than on this chunk. That
+# is the point of the refund — an availability condition must not spend a content
+# budget. The web retry button is
 # a human override and ignores this cap (`max_attempts=None`).
 MAX_CHUNK_ATTEMPTS = 3
 
@@ -223,8 +226,8 @@ class ExtractionJobPlan:
     are still worth continuing — either it has failed chunks with retry budget
     left, which the atomic claim resets under the lock that takes ownership, or it
     has no failed chunk to reset and the claim is taken for the ownership alone —
-    it still rewinds any stray `running` chunk — so the chunks it already finished
-    are not thrown away (#524);
+    it still rewinds any stray `running` chunk, refunding its attempt — so the
+    chunks it already finished are not thrown away (#524);
     `exhausted_job_id` names a `failed` job that has given up — a chunk has failed
     every attempt, so the pass skips it instead of spinning the same dead chunk
     every sync (#323); `busy_job_id` says another process owns it and this pass must
@@ -301,38 +304,48 @@ def plan_source_extraction(
     happened below the chunk loop, or a human resetting the rows out of band. When
     any chunk is `done`, rebuilding throws that finished work away and pays the LLM
     for it again, so the job goes through the same retry claim — with no failed
-    chunk to reset, what the claim contributes is the ownership, plus a rewind of
-    any stray `running` chunk, and the pass carries on from the chunks left
-    `pending`. When NO chunk is `done` there is no finished work to lose and the
+    chunk to reset, what the claim contributes is the ownership, plus a refunding
+    rewind of any stray `running` chunk, and the pass carries on from the chunks
+    left `pending`. When NO chunk is `done` there is no finished work to lose and the
     two routes cost the same, so it still rebuilds.
 
     THAT SECOND RETRY HAS NO EXHAUSTION GATE ABOVE IT, and the asymmetry is
     deliberate rather than an oversight. The gate exists because an all-exhausted
-    job can never make progress, so re-offering it is pure loss. For the chunk set
-    this state carries in practice — `done` and `pending`, nothing charged to any
-    chunk — re-offering is never loss. Where the condition has cleared the pass
+    job can never make progress, so re-offering it is pure loss. Nothing in the
+    chunk set this state carries can be exhausted: its statuses are `done`,
+    `pending` and `running`, while the give-up gate counts `failed` chunks
+    (`failed_chunk_attempt_status` is scoped to them) and this state has none by
+    the branch it arrived through. A `done` chunk does carry an attempt of its own
+    — the pass that finished it spent one — but no chunk here carries a FAILURE
+    for the gate to count, so re-offering is never loss. Where the condition has
+    cleared the pass
     finishes the job; where it reproduces, rebuilding burns the same run row and
     the same two job events AND pays the LLM for every finished chunk on top of
     them: measured over four syncs of a reproducing fault on a six-chunk source,
     2/4/6/8 cumulative calls rebuilding against 2/2/2/2 continuing, with the run
     rows at 1/2/3/4 either way.
 
-    A `running` chunk is the case that argument does NOT cover, and the code does
-    not exclude one. The retry claim rewinds a stray `running` chunk to `pending`
-    but does not refund the attempt it already spent (`store/db.py`,
-    `claim_extraction_job_for_retry`), so a host condition that keeps recurring
-    accumulates a CONTENT budget. Measured with the claim committing and the frame
-    then dying, four such passes leave the chunk at `attempts = 4` here against
-    `attempts = 1` under a rebuild, and one genuine content failure after that
-    takes it to 5 — past `max_chunk_attempts`, so the source is given up for good
-    (rc 1, five of six facts) exactly where the rebuild recovers it (rc 0, six of
-    six). That is this file's own rule about `MAX_CHUNK_ATTEMPTS` coming out the
-    wrong way: an availability condition must not spend a content budget. No
-    production path reaches it today — #489 closed the read-back window that could
-    leave a chunk `running`, and the chunk loop settles its claim to `failed` or
-    `pending` or leaves the job `running`, which plans as `busy` — so the branch
-    is still worth offering, and this belongs to the same follow-up (#536) as the
-    termination residue below.
+    A `running` CHUNK reaches this branch, and the attempt it spent is refunded as
+    the claim rewinds it. The route is the release write itself failing:
+    `_release_claimed_chunk` settles the loop's last claim through
+    `Store.mark_chunk_failed`, and when THAT write raises, the chunk stays
+    `running`, the store error leaves `process_extraction_job`, and the caller's
+    broad `except` writes the job `failed` — this state, with a `running` chunk in
+    it (`tests/test_sources_running_chunk_display.py` names the same route). The
+    endings that settle the claim to `failed` or `pending`, and the caller with no
+    broad clause that leaves the job `running` to plan as `busy`, are the other
+    ways the loop can end, not the only ones. Keeping the attempt would make each
+    such pass spend a CONTENT budget on a condition of the host, which is this
+    file's own `MAX_CHUNK_ATTEMPTS` rule coming out the wrong way: measured on a
+    three-chunk source whose release write always fails, four passes put the chunk
+    at `attempts` 1/2/3/4 and the first genuine content failure after the write
+    heals takes it to 5 — past `max_chunk_attempts` — so the source is given up
+    for good at two facts of three, where a rebuild recovers all three. So the
+    retry claim refunds as it rewinds (`store/db.py`,
+    `claim_extraction_job_for_retry`), the inverse `requeue_chunk_claim` already
+    performs for the sidecar case: the same measurement then holds at `attempts`
+    1/1/1/1 and recovers all three facts, at the continuing pass's price of 2/3/4/5
+    cumulative LLM calls against a rebuild's 2/4/6/8.
 
     So the branch is offered unguarded, with one honest residue — a fault that
     reproduces below the chunk accounting is re-offered every sync and spends no
@@ -390,7 +403,8 @@ def plan_source_extraction(
         if any(str(row["status"]) == "done" for row in chunk_rows):
             # Finished chunks to lose, so continue the job rather than rebuild it.
             # The retry claim has no failed chunk to reset here; it is being used
-            # for the ownership half of what it does (#524).
+            # for the ownership half of what it does, and for the refunding rewind
+            # of a chunk a dead frame left `running` (#524).
             return ExtractionJobPlan(retry_job_id=latest_id)
         # Nothing finished, so rebuilding discards nothing and costs the same.
         return ExtractionJobPlan()
@@ -653,11 +667,13 @@ def process_extraction_job(
         # above its broad one and both write nothing (`web/app.py`; `cli.py` too
         # since #488). Take that pair away and the broad `except Exception` under
         # them would file a condition of the host as this job's own failure, in
-        # the job row and in the `extraction_job_failed` event beside it, and cost
-        # the chunks this pass finished for as long as planning reads such a job
-        # as "rebuild fresh" (#524) — measured with this rewind disabled: the job
-        # is left `running` and no `extraction_job_failed` event is written. The
-        # rewind is what keeps the next pass on this job and the record true.
+        # the job row and in the `extraction_job_failed` event beside it —
+        # measured with this rewind disabled: the job is left `running` and no
+        # `extraction_job_failed` event is written. Since #524 that write no
+        # longer costs the chunks this pass finished on top of that: a `failed`
+        # job holding finished chunks is continued through the retry claim
+        # rather than rebuilt, so the LLM is not paid for them a second time.
+        # The rewind is what keeps the next pass on this job and the record true.
         _back_off_from_locked_sidecar(
             store,
             job_id=job_id,

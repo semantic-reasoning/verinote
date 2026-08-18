@@ -1482,6 +1482,52 @@ class Store:
         can surface the job as given up. Raw SQL, never `_refresh_extraction_job`:
         the status is ours by the CAS above and stays `running` for the whole owned
         pass (#337), so re-deriving it from the chunks here would only be redundant.
+
+        THE STRAY `running` REWIND REFUNDS ITS ATTEMPT (#524). A chunk left
+        `running` under a job that came to rest `failed` is a claim that never
+        reached a verdict — the frame holding it died without recording `done` or
+        `failed`. The live route is the release write itself failing:
+        `process_extraction_job`'s broad clause releases through
+        `mark_chunk_failed`, and when THAT write raises, the chunk stays `running`,
+        the error leaves the pipeline, and the caller's own broad `except` writes
+        the job `failed` (`tests/test_sources_running_chunk_display.py` names the
+        same route). Planning routes such a job here now instead of rebuilding it,
+        so charging the claim would let a condition of the host spend the content
+        budget `MAX_CHUNK_ATTEMPTS` guards: four passes of a recurring one leave
+        the chunk at `attempts = 4`, and the first genuine content failure after
+        that takes it past the cap and gives up on the source for good — where the
+        rebuild used to recover it as soon as the condition cleared.
+        `pipeline/extract.py` states the rule an availability condition must not
+        spend a content budget, and `requeue_chunk_claim` is the same refund for
+        the sidecar case.
+
+        NOTHING IS UN-GATED BY THE REFUND, and where the give-up gate reads is
+        why. `failed_chunk_attempt_status` is scoped `WHERE status = 'failed'` and
+        planning consults it only under `failed_chunks > 0`, so the attempts on a
+        chunk sitting `running` gate nothing while it sits there; every attempt
+        that ended in a recorded `failed` is still counted, and the un-refunded
+        count never stopped a spin — it only ever surfaced later, as the
+        over-charge above. The one behavioural edge is a chunk that alternates
+        between failing for real and dying with the frame: it now needs one more
+        RECORDED failure to exhaust. That is the intended reading of `attempts` —
+        a claim that reached no verdict left no evidence about the content.
+
+        `MAX(attempts - 1, 0)` rather than a bare `attempts - 1` because this
+        UPDATE has no compare-and-set. `requeue_chunk_claim` pins the count its
+        own claim wrote, so it can only ever decrement a value
+        `mark_chunk_running` put there (>= 1); this one sweeps every `running` row
+        on the job, including rows reset out of band, and a `running` row carrying
+        `attempts = 0` would otherwise go negative.
+
+        THE TWO REWINDS THAT DO NOT REFUND stay that way for their own reasons.
+        `claim_pending_extraction_job`'s identical sweep is by its own account "a
+        defensive no-op" that fires in no real path — there is no charge to give
+        back. `rollback_extraction_job` leaves `attempts` alone deliberately, for
+        the reason `requeue_chunk_claim` records: a halt freezes the whole KB
+        against writes, so the count is not what stands in the way. What #536 still
+        owns is the residue no chunk row can carry — a fault reproducing below the
+        chunk accounting burns a run row and two job events every pass, and this
+        refund does not touch that.
         """
         with self._lock:
             before = self.get_extraction_job(job_id)
@@ -1511,12 +1557,15 @@ class Store:
                 f"updated_at = datetime('now') WHERE {where}",
                 params,
             )
-            # Reclaim any stray `running` chunk a crashed run left behind, exactly
-            # as `claim_pending_extraction_job` does — raw update, no event, no
-            # refresh; a claimed job has no legitimate `running` chunk here.
+            # Reclaim any stray `running` chunk a crashed run left behind — raw
+            # update, no event, no refresh, as `claim_pending_extraction_job`
+            # does; a claimed job has no legitimate `running` chunk here. The
+            # attempt goes back with it: that claim reached no verdict, and the
+            # docstring above says why keeping it gives up on the source (#524).
             self._conn.execute(
                 "UPDATE source_chunks SET status = 'pending', error = '', "
-                "updated_at = datetime('now') WHERE job_id = ? AND status = 'running'",
+                "attempts = MAX(attempts - 1, 0), updated_at = datetime('now') "
+                "WHERE job_id = ? AND status = 'running'",
                 (job_id,),
             )
             for chunk in failed_chunks:
