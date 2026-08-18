@@ -17,7 +17,9 @@ WHAT THAT CHOICE MUST NOT BE READ AS. A job in a terminal status can still have 
   still `running`. The caller's blanket handler then writes the job `failed` —
   the web worker's (`verinote/web/app.py`), or `cmd_sync`'s since #488
   (`verinote/cli.py`) — and `fail_extraction_job` writes no `source_chunks` row,
-  so nothing puts the chunk back;
+  so the pass that stranded it does not put it back. The next pass planned as a
+  retry does: `claim_extraction_job_for_retry` rewinds stray `running` chunks.
+  Until one is planned, the page renders this chunk beside a terminal job;
 * chunks already stranded by the bug this change fixes. Existing KBs carry them,
   and they render here beside whatever status their job came to rest in.
 

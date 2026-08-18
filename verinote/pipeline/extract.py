@@ -585,17 +585,14 @@ def process_extraction_job(
         # The sidecar was held by another process while this chunk was writing.
         # The chunk clause above already rewound its own claim; this rewinds the
         # JOB around it, and the pairing is not optional. A job left `running`
-        # here is one the caller has to resolve, and the broad clause each caller
-        # ends with (`web/app.py`; `cli.py` since #488) resolves it by writing
-        # `failed`. What that costs turns on the job row's `failed_chunks`
-        # counter, which is what `plan_source_extraction` branches on: at 0 — the
-        # value it holds on a pass no chunk has failed in — a `failed` job is the
-        # edge state planning reads as "rebuild fresh", throwing away the chunks
-        # this pass already finished and re-sending them to the LLM; above 0
-        # planning answers `retry_job_id` and those chunks survive. Rolling back
-        # to `pending` is what makes the zero case a resume instead, and it is why
-        # both callers can afford a dedicated clause for this error that writes
-        # nothing at all.
+        # here is one the caller has to resolve, and the broad clause a caller
+        # ends with (`web/app.py`; `cli.py` too since #488) resolves it by writing
+        # `failed` — filing a condition of the host as this job's own failure, in
+        # the job row and in the `extraction_job_failed` event beside it, and
+        # costing the chunks this pass finished for as long as planning reads such
+        # a job as "rebuild fresh" (#524). Rolling back to `pending` keeps the
+        # next pass on this job and the record true, and it is why a caller can
+        # afford a dedicated clause for this error that writes nothing at all.
         _back_off_from_locked_sidecar(
             store,
             job_id=job_id,

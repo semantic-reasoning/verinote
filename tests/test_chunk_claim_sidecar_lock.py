@@ -275,8 +275,9 @@ def test_a_locked_sidecar_requeues_the_chunk_and_rewinds_the_job(tmp_path):
     The `resume_job_id` assertion is the one that catches a half-fix. Rewind the
     chunk without rewinding the job and every state below still looks reasonable
     in isolation — until a caller's broad clause writes `failed` over a job with
-    no failed chunk, planning calls that an edge state, and the finished chunk is
-    extracted a second time.
+    no failed chunk, filing a condition of the host as the job's own failure and,
+    on this tree, sending planning to a rebuild that extracts the finished chunk
+    a second time (#524).
     """
     s = _store(tmp_path)
     source_id, job_id = _three_chunk_job(s)
@@ -471,8 +472,9 @@ def test_cli_sync_leaves_a_sidecar_locked_job_pending(tmp_path, monkeypatch, cap
     CALLER also writes nothing — and `cmd_sync` has a job-level failure handler,
     so "writes nothing here" is now a property of the CLI, not an absence of code.
     `web/app.py` states the same requirement from its side, and for the same
-    reason: `failed` over a job with zero failed chunks is the edge state
-    `plan_source_extraction` rebuilds from scratch.
+    reason: `failed` over a job with zero failed chunks misfiles a host condition
+    as the job's own failure, and on this tree planning rebuilds such a job from
+    scratch (#524).
 
     `status == "pending"` IS THE ONLY DISCRIMINATING ASSERTION. `rc == 1` is what
     `main`'s central `except DuckDBFactTermStoreLockedError` returns whether or not
