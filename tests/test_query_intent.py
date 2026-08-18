@@ -1107,7 +1107,9 @@ def test_a_word_a_predicate_only_ends_is_left_alone():
       `re-called` to `re-`, because `-` is not.
 
     So `re-called` is the witness that tells the second relaxation from the
-    first, and the other nine are what make the first one red at all.
+    first, and the other nine are what make the first one red without it. They
+    are not needed for that red: the first relaxation cuts all ten, `re-called`
+    included, so any one row would catch it.
     """
     for label in (
         "recalled",
@@ -1250,15 +1252,27 @@ def test_the_strip_cannot_leave_the_field_empty():
     # The last three rows are the sharper half of that cost and they are not
     # interchangeable with the first two. `also` and `so` are relation names no
     # schema is expected to hold, so those questions still decline, just one
-    # word further along -- unless the schema holds the name the question
-    # actually spells, `also known as`, in which case the answer that used to
-    # be free is given up instead. `date`, `user` and `hand` are relation names
-    # a schema may really hold, and where it does the question stops declining:
-    # measured against a KB carrying a `date` relation, `date labeled` moves
-    # from `review_required` plus one provider call to `translated` with none,
-    # answering what the date is for a question asking what it is labeled.
-    # `date labeled` differs by one word from the `date created` that
-    # `test_a_past_participle_relation_name_survives` protects.
+    # word further along -- unless the *queried subject* holds a fact under the
+    # name the question actually spells, `also known as`, in which case the
+    # answer that used to be free is given up instead: measured with
+    # `Sample Person` holding `also known as`, that question moves from
+    # `translated` with no provider call to `review_required` with one.
+    # `date`, `user` and `hand` are relation names a schema may really hold,
+    # and where the queried subject holds a fact under one of them the question
+    # stops declining: measured with `Sample Dataset` holding `date`,
+    # `date labeled` moves from `review_required` plus one provider call to
+    # `translated` with none, answering what the date is for a question asking
+    # what it is labeled. `date labeled` differs by one word from the
+    # `date created` that `test_a_past_participle_relation_name_survives`
+    # protects.
+    #
+    # The subject is what the branch turns on, not the schema, and both rows
+    # were measured the other way round too: with `Other Dataset` holding
+    # `date` and `Other Person` holding `also known as`, the questions are
+    # `review_required` with one provider call before this rule and after, so
+    # nothing is promoted and nothing is given up. That is the population
+    # `_ENGLISH_ATTRIBUTE_TAIL_PREDICATE_MEMBERS` records, and
+    # `_clean_english_attribute_label`'s four rows are keyed the same way.
     #
     # So this block is where the change admits it can promote a question
     # rather than only shorten a label. The entity sites are not a second such

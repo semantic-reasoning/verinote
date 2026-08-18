@@ -1620,8 +1620,8 @@ def test_a_shortened_label_reaches_a_synonym_the_spelled_one_missed(tmp_path):
 
     `test_a_shortened_label_re_enters_the_purpose_synonyms` pins the candidate
     tuple growing from one to five. That is the parse, and a parse cannot show
-    that the verdict moved. Measured on `origin/main` at e032738 this question
-    reaches the model; here it does not, and `DeterministicOnlyClient` is what
+    that the verdict moved. Measured at e032738 this question reaches the
+    model; here it does not, and `DeterministicOnlyClient` is what
     says so -- it raises rather than answering, so any provider call is the red.
 
     Refs #511
@@ -1663,17 +1663,25 @@ def test_the_of_shape_entity_keeps_its_trailing_predicate_at_the_answer(tmp_path
     both entity sites is consistent and still wrong: measured the same way,
     both spellings come back `Company, owner, Alice`. So agreement between the
     two phrasings is not the test of a fix here, and each row is load-bearing
-    on its own -- a one-site mutant reddens that site's row, and a two-site
-    mutant reddens both.
+    on its own -- a one-site mutant violates that site's row and leaves the
+    other passing, and a two-site mutant violates both, though pytest stops at
+    the first and reports one failure either way.
 
     Refs #515, which records the two-entity KB as the case that separates a fix
     from a regression. The scope here is narrower than that issue's fixture.
     #515 spells the second entity `Company Named` in title case, and this
-    pattern carries no flags, so `Named` never matches the member `named` and
-    the title-case spelling is safe under every spelling of this rule -- pinning
-    it would pin nothing. The lower-case spelling below is the one where a strip
-    would actually fire, so it is the one that can observe the regression. This
-    test does not implement what #515 asks for, which is a store lookup or a
+    pattern carries no flags, so `Named` never matches the member `named`
+    here. That is not safety under every spelling of this rule: an entity strip
+    under `re.IGNORECASE` does cut it, and measured on #515's own fixture both
+    phrasings then come back `Company, owner, Alice`, which is the regression
+    that issue records. Pinning the title-case spelling would still buy no
+    kill, because that same mutant makes the lower-case rows below come back
+    `Company, owner, Alice` too -- across both entity-strip spellings measured
+    here, with the flag and without, a title-case row is never red unless a
+    lower-case row is red with it. The lower-case spelling below is the one a
+    flagless strip fires on, so it is the one that can observe the regression
+    on its own. This test does not implement what #515 asks for, which is a
+    store lookup or a
     refusal of the shape; it holds today's safe behaviour still.
 
     Refs #511
@@ -1713,21 +1721,23 @@ def test_a_title_case_tail_in_the_label_is_left_alone(tmp_path):
     and the question reaches the model instead -- measured on this tree, one
     provider call where there were none. That is one of the two directions the
     flag moves questions, not the dearer of them: measured the same way, it
-    also cuts `Date Labeled` to `Date`, so a KB holding `Date` answers
-    `Sample Dataset, Date, 2020-01-01` under `VERIFIED — engine` with no
+    also cuts `Date Labeled` to `Date`, so a KB where `Sample Dataset` holds
+    `Date` answers `Sample Dataset, Date, 2020-01-01` under
+    `VERIFIED — engine` with no
     provider call for a question that asked what the date is *labeled*; on
     this tree that question reaches the model. This test pins the first row;
     the flag comment on `_ENGLISH_ATTRIBUTE_TRAILING_PREDICATE` carries both,
     and the gain the choice forgoes with them.
 
-    PR #527 proposes a case-insensitive alternation for the label site: its
-    diff carries `(?i:called|named)` on the possessive pattern. The argument
-    that case sensitivity is only load-bearing for the entity site this rule
-    does not touch is not in that PR -- its author makes it in the review of
-    this one. It is true of the entity site and false here, and the
-    measurement above is the counterexample. This test is the place that
-    argument now lives, so widening the flags reddens it rather than passing
-    silently.
+    The case-insensitive spelling has been written before. PR #527, closed on
+    2026-08-14, carries `_ENGLISH_ATTRIBUTE_QUESTION_TAIL =
+    r"(?:\\s+(?i:called|named))?"` appended to
+    `_ENGLISH_POSSESSIVE_ATTRIBUTE_QUESTION`. The reasoning that makes such a
+    spelling look free is that case sensitivity is load-bearing only for the
+    entity site, which this rule does not touch. That is true of the entity
+    site and false here: the measurement above is the counterexample, and this
+    test is where it lives, so widening the flags reddens it rather than
+    passing silently.
 
     Refs #511
     """
