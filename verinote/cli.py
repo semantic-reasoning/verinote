@@ -874,11 +874,16 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     # Another process holds the fact-term sidecar — a host
                     # condition that clears by itself, and one
                     # `process_extraction_job` has already rolled the job back to
-                    # `pending` for, so the next pass RESUMES it. `failed` over
-                    # that rewind gives planning a `failed` job with zero failed
-                    # chunks: an edge state it rebuilds from scratch, paying the
-                    # LLM again for every chunk this pass finished. `main` turns
-                    # the error itself into a clean rc=1 message.
+                    # `pending` for, so the next pass CONTINUES it. What `failed`
+                    # over that rewind costs depends on the job row's
+                    # `failed_chunks` counter, which is what planning branches on:
+                    # at 0 — a pass no chunk has failed in — the pair is an edge
+                    # state planning rebuilds from scratch, paying the LLM again
+                    # for every chunk this pass finished; above 0 planning answers
+                    # `retry_job_id` either way and the finished chunks survive
+                    # (both measured). The rewind is what makes the zero case a
+                    # plain resume. `main` turns the error itself into a clean
+                    # rc=1 message.
                     #
                     # ABOVE `except Exception` because it is a `ValueError`
                     # subclass and nothing else here would take it. Same shape as
@@ -894,34 +899,89 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     # THE JOB-LEVEL FLOOR (#488), sibling to the chunk-level one in
                     # `_release_claimed_chunk`. Every clause above names a
                     # condition that is not the source's failure, and they do not
-                    # all leave the job in the same place: on the paths production
-                    # takes today the halt and the locked sidecar reach their
-                    # clause only after `process_extraction_job` has rewound the
-                    # job to `pending` — a property of `extract.py`, not of this
-                    # call site, as both clauses above say — a busy job belongs to
+                    # all leave the job in the same place: a mid-run halt and a
+                    # locked sidecar reach their clause after
+                    # `process_extraction_job` has rewound the job to `pending` —
+                    # a property of `extract.py`, not of this call site, as both
+                    # clauses above say — while a halt from the entry gate
+                    # (`assert_writable`, outside that `try`) raises before
+                    # anything is claimed and leaves the job `pending` and
+                    # untouched instead, rewinding nothing because there is
+                    # nothing to rewind (measured: status still `pending`, every
+                    # chunk `pending`, no rollback event). A busy job belongs to
                     # another worker and its clause leaves the row exactly as it
                     # found it, and the corrupt-config path rewinds nothing at all
-                    # (its own comment above says so). What is left for this
-                    # clause is an unmodelled exception out of the one call that
-                    # owns this job, and without it the row stayed `running`
-                    # forever. On the crash this change is named for the failed
-                    # chunk is still there and still retryable — a crash inside
-                    # `_extract_chunk` has already written it `failed` and spent
-                    # one of its attempts (`_release_claimed_chunk`) — but no
-                    # ordinary pass reaches it: `plan_source_extraction` answers
-                    # a `running` job with `busy_job_id`, so every later `sync`
-                    # short of `--recover` skips the source instead of planning
-                    # the retry the chunk is already eligible for. Reviving such
-                    # a job costs attempt budget that is already partly spent.
+                    # (its own comment above says so).
                     #
-                    # THE STATUS RE-READ IS NOT A SECOND DECISION, exactly as
-                    # `_release_claimed_chunk` says of its own: it asks whether this
-                    # call still owns the job. `process_extraction_job` can raise
-                    # after the job is already `done` (`finish_extraction_job`
-                    # writes in several steps), and on the routes production takes
-                    # today it rewinds the job to `pending` itself on the paths
-                    # above — flipping either of those to `failed` would destroy
-                    # real work or turn a resume into a rebuild.
+                    # What is left for it is an unmodelled exception out of the
+                    # one call that owns this job. Without it the row stays
+                    # `running` until something rewinds it, and no plain
+                    # `verinote sync` is that something:
+                    # `plan_source_extraction` answers a `running` job with
+                    # `busy_job_id`, so every later pass skips the source. TWO
+                    # THINGS DO REWIND IT, and this function's own skip message
+                    # above names both — `verinote sync --recover`, and
+                    # `verinote ui`, whose `_resume_source_extraction_jobs` runs
+                    # at `create_app()` time on a KB it is allowed to write to
+                    # (measured: one boot, zero HTTP requests,
+                    # `rollback_extraction_job` -> `pending`, "Resuming analysis
+                    # interrupted by a restart."). Two, checkably:
+                    # `rollback_extraction_job` has four call sites and the other
+                    # two are the in-pass rewinds above (`_halt_extraction_job`,
+                    # `_back_off_from_locked_sidecar`), which by construction
+                    # cannot reach a row left behind by a pass that is over. So
+                    # the row was never a permanent zombie; it was a row that
+                    # misreported itself to every plain pass until a user reached
+                    # for a flag or the UI, and what this clause buys is that the
+                    # plain pass no longer needs either of them to stop the lie.
+                    #
+                    # WHAT THE NEXT PASS CAN DO WITH THE CHUNK IS A QUESTION OF
+                    # ATTEMPT BUDGET, and this clause restores none of it. When
+                    # the crash came out of `_extract_chunk` and the release that
+                    # follows it went through, the chunk is `failed` with one more
+                    # attempt spent (`_release_claimed_chunk`).
+                    # `claim_extraction_job_for_retry` resets such a chunk's
+                    # `status` and `error` but NOT its `attempts`, so they
+                    # accumulate across retry passes (measured 1 -> 2 -> 3).
+                    # Below `MAX_CHUNK_ATTEMPTS` the chunk is retryable and
+                    # planning says so as soon as the row stops being `running`;
+                    # a crash on the last attempt leaves it exhausted, and
+                    # planning then answers `exhausted_job_id` whether the job is
+                    # `failed` as written here or rolled back by `--recover`
+                    # (both measured) — a source `cmd_sync` reports as given up.
+                    # THAT JOB is revived only by the web retry button, the one
+                    # caller that passes `retry_max_attempts=None` and so resets
+                    # every failed chunk regardless of budget; the SOURCE gets
+                    # another pass whenever planning stops recognising the job at
+                    # all — a changed source text, artifact, provider or model
+                    # each do that — and that is a rebuild, not a revival.
+                    #
+                    # WHEN THE RELEASE IS WHAT FAILED, the chunk is not `failed`
+                    # at all. `mark_chunk_failed` raising — an
+                    # `sqlite3.OperationalError` is neither a `PolicyMissingError`
+                    # nor a `ValueError` subclass, so it reaches this clause —
+                    # leaves the chunk `running` under the job this clause then
+                    # writes `failed`, and planning declines that pair entirely
+                    # (measured: no resume, no retry, no exhausted, no busy), so
+                    # the next pass builds a fresh job beside it and that row stays
+                    # put. `cmd_sync` joins the web worker as a producer of that
+                    # pair — `fail_extraction_job` has three call sites and they
+                    # are these two callers' clauses — and neither this clause nor
+                    # `_release_claimed_chunk` can clear a row whose write is the
+                    # thing that is failing.
+                    #
+                    # THE STATUS RE-READ IS NOT A SECOND DECISION, in the sense
+                    # `_release_claimed_chunk` means it of its own: it does not
+                    # re-judge whether this pass failed, it declines to write a
+                    # job that was not `running` when the read ran.
+                    # `process_extraction_job` can raise after the job is already
+                    # `done` (`finish_extraction_job` writes in several steps),
+                    # and on the paths above it rewinds the job to `pending`
+                    # itself — flipping either of those to `failed` would destroy
+                    # real work or turn a resume into a rebuild. What the read
+                    # cannot do is establish OWNERSHIP: it is a check and the
+                    # write is a separate act, and limit (4) below is what that
+                    # costs.
                     #
                     # The exception is re-raised, not swallowed: recording the
                     # failure is not the same as handling it, and #246's contract
@@ -931,12 +991,13 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     # the re-raise still delivers it to `cmd_sync`'s own
                     # `except LLMError` below, which is what shapes the message.
                     #
-                    # THREE HONEST LIMITS. (1) `fail_extraction_job` is itself a
+                    # FOUR HONEST LIMITS. (1) `fail_extraction_job` is itself a
                     # write and can raise — the broad clause's likeliest catch is
                     # sqlite/WAL-class, so this is not exotic — and the store error
                     # then replaces the escaping exception, with the original
                     # hanging off `__context__`. What this clause writes when it
-                    # succeeds is TWO rows, not one: `fail_extraction_job` updates
+                    # succeeds touches TWO rows, not one — one updated in place,
+                    # one appended: `fail_extraction_job` updates
                     # the `extraction_jobs` row AND appends an
                     # `extraction_job_failed` row to `fact_events`
                     # (`store/db.py`). Usually that pair is the whole difference in
@@ -950,15 +1011,48 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     # there (#525). So this clause is the web clause's counterpart,
                     # not its mirror. Neither bounds the message length; the store
                     # takes `str(exc)` whole, exactly as the web one does.
-                    # (3) When the escaping exception came from outside chunk
-                    # accounting and no chunk of this pass had already failed,
-                    # that pair is a `failed` job with zero failed chunks — the
-                    # edge state `plan_source_extraction` rebuilds from scratch.
-                    # What that costs depends on how far the pass got: chunks it
-                    # had already finished are re-sent to the LLM, and that
-                    # discarded work is what #524 tracks. A pass that finished
-                    # none is rebuilt just as fully, but has nothing to throw
-                    # away, so #524 leaves it alone.
+                    # (3) When the job row's `failed_chunks` COUNTER reads 0 at
+                    # the moment this clause writes, that pair is a `failed` job
+                    # with zero failed chunks — the edge state
+                    # `plan_source_extraction` rebuilds from scratch. The counter,
+                    # not a count of the chunks, because the counter is what
+                    # planning branches on, and the two come apart:
+                    # `claim_extraction_job_for_retry` resets the failed chunks
+                    # and leaves the counter at its pre-retry value ("Raw SQL,
+                    # never `_refresh_extraction_job`"), so a retry pass that
+                    # escapes before its first chunk lands has zero failed chunks
+                    # and a non-zero counter, and planning answers `retry_job_id`
+                    # instead of rebuilding (measured). `mark_chunk_done` and
+                    # `mark_chunk_failed` recompute the counter from the chunks,
+                    # so the first chunk to land in that pass replaces the stale
+                    # value (measured: back to 0) and this reads true again.
+                    # Where the exception came from does not enter into it:
+                    # one raised from INSIDE chunk accounting, after
+                    # `mark_chunk_done` had written the chunk `done`, leaves the
+                    # counter at 0 as well (measured) —
+                    # `test_a_chunk_already_written_done_is_not_flipped_to_failed`
+                    # builds that state. What the rebuild costs depends on how far
+                    # the pass got: chunks it had already finished are re-sent to
+                    # the LLM, and that discarded work is what #524 tracks. A pass
+                    # that finished none is rebuilt just as fully but has nothing
+                    # to throw away, so there is no discarded work to track there.
+                    #
+                    # (4) The re-read and the write are two statements on an
+                    # autocommit connection, and `fail_extraction_job` updates
+                    # `WHERE id = ?` with no status predicate. So the guard holds
+                    # against a job that was ALREADY terminal or ALREADY rewound
+                    # when the read ran, and not against a peer that rewinds in
+                    # the window between the two statements — measured with the
+                    # peer in a separate OS process on its own connection: its
+                    # rollback to `pending` was overwritten with `failed` and
+                    # planning then answered rebuild-fresh, the very outcome the
+                    # re-read declines when the rewind lands first. Closing the
+                    # window means moving the predicate into the SQL (`AND status
+                    # = 'running'`), the shape this store's three ownership
+                    # handshakes already have (`claim_pending_extraction_job`,
+                    # `claim_extraction_job_for_retry`, `mark_chunk_running`);
+                    # that is a store change and is not made here.
+                    # `_release_claimed_chunk` carries the same window.
                     job_now = store.get_extraction_job(job_id)
                     if job_now is not None and job_now["status"] == "running":
                         store.fail_extraction_job(
