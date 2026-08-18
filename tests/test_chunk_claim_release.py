@@ -755,18 +755,21 @@ def test_a_prompt_that_cannot_be_read_leaves_the_untouched_job_pending(
 ):
     """A failure BEFORE the job-owning call must not write the job row.
 
-    `cmd_sync` creates the job row and then resolves the extraction schema hint,
-    which reads `policy/prompts/` off disk. `extraction_schema_hint` wraps
-    `PromptError` and nothing else, so an override that is not valid UTF-8 escapes
-    as the `UnicodeDecodeError` `Path.read_text` raised — a real path, and one
-    that reaches this line before `process_extraction_job` is entered. The job is
-    still `pending`: no chunk was claimed, nothing was attempted, and fixing the
-    file must let the next sync pick it up untouched.
+    `cmd_sync` creates the job row — this source has none to continue — and then
+    resolves the extraction schema hint, which reads `policy/prompts/` off disk.
+    `extraction_schema_hint` wraps `PromptError` and nothing else, so an override
+    that is not valid UTF-8 escapes as the `UnicodeDecodeError` `Path.read_text`
+    raised — a real path, and one that reaches this line before
+    `process_extraction_job` is entered. The job is left exactly as planning found
+    it — `pending` here, `failed` on a retry pass (both measured): no chunk was
+    claimed, nothing was attempted, and fixing the file must let the next sync
+    pick it up untouched.
 
     TWO THINGS KEEP THAT TRUE and this test does not distinguish them, deliberately
     — it asserts the outcome both are there for. The hint is resolved OUTSIDE the
     `try`, so the handler never sees this exception; and the handler re-reads the
-    job's status before writing, so it would decline a `pending` job anyway. Belt
+    job's status before writing, so it would decline a job that is not `running`,
+    which this one is not. Belt
     and braces on a row that must not be buried before it has done anything.
     """
     from verinote import cli
