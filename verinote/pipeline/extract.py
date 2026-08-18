@@ -587,12 +587,15 @@ def process_extraction_job(
         # JOB around it, and the pairing is not optional. A job left `running`
         # here is one the caller has to resolve, and the broad clause each caller
         # ends with (`web/app.py`; `cli.py` since #488) resolves it by writing
-        # `failed` — at which point the job has a `failed` status with zero failed
-        # chunks, an edge state `plan_source_extraction` reads as "rebuild fresh",
-        # throwing away the chunks this pass already finished and re-sending them
-        # to the LLM. Rolling back to `pending` is what makes the next pass a
-        # resume, and it is why both callers can afford a dedicated clause for
-        # this error that writes nothing at all.
+        # `failed`. What that costs turns on the job row's `failed_chunks`
+        # counter, which is what `plan_source_extraction` branches on: at 0 — the
+        # value it holds on a pass no chunk has failed in — a `failed` job is the
+        # edge state planning reads as "rebuild fresh", throwing away the chunks
+        # this pass already finished and re-sending them to the LLM; above 0
+        # planning answers `retry_job_id` and those chunks survive. Rolling back
+        # to `pending` is what makes the zero case a resume instead, and it is why
+        # both callers can afford a dedicated clause for this error that writes
+        # nothing at all.
         _back_off_from_locked_sidecar(
             store,
             job_id=job_id,
