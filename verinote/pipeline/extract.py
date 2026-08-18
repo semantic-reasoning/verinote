@@ -212,8 +212,8 @@ def is_live_extraction_job(job, latest_job_ids: dict[int, int]) -> bool:
 # #524) — so a chunk claimed six times can still sit at one attempt if five of
 # those stopped on a peer process or a lost frame rather than on this chunk. That
 # is the point of the refund — an availability condition must not spend a content
-# budget. The web retry button is
-# a human override and ignores this cap (`max_attempts=None`).
+# budget. The web retry button is a human override and ignores this cap
+# (`max_attempts=None`).
 MAX_CHUNK_ATTEMPTS = 3
 
 
@@ -311,19 +311,26 @@ def plan_source_extraction(
 
     THAT SECOND RETRY HAS NO EXHAUSTION GATE ABOVE IT, and the asymmetry is
     deliberate rather than an oversight. The gate exists because an all-exhausted
-    job can never make progress, so re-offering it is pure loss. Nothing in the
-    chunk set this state carries can be exhausted: its statuses are `done`,
-    `pending` and `running`, while the give-up gate counts `failed` chunks
-    (`failed_chunk_attempt_status` is scoped to them) and this state has none by
-    the branch it arrived through. A `done` chunk does carry an attempt of its own
-    — the pass that finished it spent one — but no chunk here carries a FAILURE
-    for the gate to count, so re-offering is never loss. Where the condition has
-    cleared the pass
-    finishes the job; where it reproduces, rebuilding burns the same run row and
-    the same two job events AND pays the LLM for every finished chunk on top of
-    them: measured over four syncs of a reproducing fault on a six-chunk source,
-    2/4/6/8 cumulative calls rebuilding against 2/2/2/2 continuing, with the run
-    rows at 1/2/3/4 either way.
+    job can never make progress, so re-offering it is pure loss. Ordinarily
+    nothing here can be exhausted: what this branch passed is the job's
+    `failed_chunks` counter at zero, `mark_chunk_failed` keeps that counter in
+    step with the rows it writes, and the give-up gate counts `failed` rows
+    (`failed_chunk_attempt_status` is scoped to them). A `done` chunk does carry
+    an attempt of its own — the pass that finished it spent one — but a chunk that
+    spent its BUDGET carries a `failed` row, and the counter would have routed the
+    job to the gate above instead. The exception is the out-of-band reset named in
+    the paragraph above, which moves rows without the counter: a stale zero can
+    carry an exhausted `failed` row into this branch, and it costs one extra pass
+    — the pass's own `_refresh_extraction_job` puts the counter back and the next
+    plan answers `exhausted_job_id` (measured: counter 0 beside a `('failed', 99)`
+    row plans as `retry_job_id`, then `exhausted_job_id`).
+
+    Where the condition has cleared the pass finishes the job; where it
+    reproduces, rebuilding burns the same run row and the same two job events AND
+    pays the LLM for every finished chunk on top of them: measured over four syncs
+    of a reproducing fault on a six-chunk source, 2/4/6/8 cumulative calls
+    rebuilding against 2/2/2/2 continuing, with the run rows at 1/2/3/4 either
+    way.
 
     A `running` CHUNK reaches this branch, and the attempt it spent is refunded as
     the claim rewinds it. The route is the release write itself failing:
