@@ -36,13 +36,23 @@ class OpenAIAdapter:
 
         Redaction is not universal outside that class boundary, though.
         Module-level `_render_prompt` in this file builds an `LLMError` around
-        a caught exception with no redaction, a third carrier of caught text; it
-        is harmless, but not for the reason the sentence this replaces gave.
-        #500 widened its second clause, so what it carries is whatever the
-        render raised. What holds instead is the shape of the function:
-        module-level, taking a root path and a prompt id, so no key is in scope
-        for it to put in a message, and a render dials nothing, so no provider
-        response can arrive in it either.
+        a caught exception with no redaction, a third carrier of caught text.
+        The sentence this replaces called it harmless *as written*, because the
+        only thing it caught was `PromptError`; #500 widened its second clause,
+        so that qualifier has to be replaced with a narrower claim rather than
+        dropped. It now carries `str(exc)` of whatever the render raised, an
+        open set -- an `OSError` from the override read arrives with the KB's
+        absolute path spelled out in full (measured). What is still true is
+        about the configured key and the provider, and only those: the function
+        is module-level and takes a root path and a prompt id, so no `cfg` and
+        no key are in scope for it to name, and a render dials nothing, so no
+        provider response can arrive in it either. `redact_secret` is for
+        exactly those two, and the accurate word is not that it is unneeded but
+        that it is out of reach -- there is nothing here to hand it. What that
+        costs shows up in the path: spell the key into a KB directory name and
+        it rides into the message inside `cfg.root`, where `redact_secret`,
+        being substring replacement, would have masked it. Both halves measured.
+        Consolidating these four copies is where that residue can be addressed.
         `openrouter_adapter.list_models` is the same shape -- a bare
         `LLMError(f"openrouter request failed: {exc}")`, in a module that
         imports no `redact_secret` at all -- and rests on the first half of that
@@ -93,8 +103,7 @@ class OpenAIAdapter:
         about when. That is asserted here from the structure and from stubs,
         which is all this file is entitled to: the openai SDK is an optional
         extra, absent from the `ci.yml` pytest job -- which installs
-        `.[test,wirelog]`, so `provider-contract.yml` is the only workflow that
-        has it -- and from some development environments, so the
+        `.[test,wirelog]` -- and from some development environments, so the
         vendor-behaviour measurement behind this claim lives in the anthropic
         twin of this paragraph and is not restated as if it had been taken here.
         What the hoist did change is that the prompt error -- the one measured
@@ -107,9 +116,10 @@ class OpenAIAdapter:
         hand-edited non-UTF-8 file raises `UnicodeDecodeError` and a mode bit
         raises `PermissionError`, and `_render_prompt`'s `except PromptError`
         converted neither. Measured on those two adapters before this change,
-        that is sixteen method-and-condition pairs leaving the adapter as
-        something that is not an `LLMError` -- §10.1 broken in the tree already,
-        not by the hoist. So the hoist ships with the second clause added to
+        that is eight method-and-condition pairs on each of them -- sixteen
+        cells -- leaving the adapter as something that is not an `LLMError`,
+        which is §10.1 broken in the tree already and not by the hoist. So the
+        hoist ships with the second clause added to
         `_render_prompt` in the same PR, which normalises the render's failures
         wherever the render sits.
 
@@ -299,11 +309,15 @@ def _with_schema_hint(prompt: str, schema_hint: str) -> str:
 def _render_prompt(root, prompt_id: str, **values: object) -> str:
     """Render `prompt_id` under `root`, or raise `LLMError`.
 
-    Two clauses, and their order is the design. `PromptError` is the prompt
-    contract stated back to the user -- a required placeholder their override
-    left out -- so it goes out as the library wrote it, with nothing in front
-    of it. The clause below names the operation first, because what that one
-    catches is not always a sentence a user can act on.
+    Two clauses, and their order is the design. `PromptError` is whatever the
+    prompt library states in its own words -- a required placeholder the
+    override left out, an id nothing defines (`unknown prompt: extractoin`), a
+    value the caller never passed (`missing prompt value: qid`) -- so it goes
+    out as written, with nothing in front of it. Only the first of those three
+    is the user's doing; the other two are measured, and they reach the user
+    through the narrow clause with no operation named at all. The clause below
+    names the operation because what *it* catches is further still from a
+    sentence anybody can act on.
 
     Being that wide relabels a genuine programming error as something that
     reads like a broken file: `prompt <id> could not be loaded` points at
@@ -314,15 +328,18 @@ def _render_prompt(root, prompt_id: str, **values: object) -> str:
     for a reason that does not hold here. `Request()` has one reachable
     failure, so a type tells a real cause and a bug apart. `render_prompt`
     reads two files, the packaged default and the override, and the `OSError`
-    family those reads can raise is not closed by a list; #500's reviewer
-    rejected enumerating it. §10.1 -- every LLM failure reaches its caller as
-    an `LLMError` -- wins that trade at the adapter seam, because what the
-    narrow clause alone lets past is a `UnicodeDecodeError` from a hand-edited
-    override or a `PermissionError` from a mode bit, escaping as itself.
-    `claude_cli_adapter._invoke`'s `except OSError` is the precedent for a
-    clause this wide: "ONE clause, out here", justified by what the caught type
-    is rather than by a list of the values it can carry. `from exc` pays for
-    the trade -- the original exception stays on `__cause__` for a log.
+    family those reads can raise is not closed by a list; #500's reviewer said
+    normalising the region is safer than enumerating it, and offered no list as
+    complete. §10.1 -- every LLM failure reaches its caller as an `LLMError` --
+    wins that trade at the adapter seam, because what the narrow clause alone
+    lets past is a `UnicodeDecodeError` from a hand-edited override or a
+    `PermissionError` from a mode bit, escaping as itself.
+    `claude_cli_adapter._invoke` is the nearest precedent, and only for the
+    *form*: one `except OSError` "out here" rather than a copy per call site,
+    broad "where the `ValueError` above may not". Its reason does not carry
+    over -- `OSError` is not a domain type in this repo, and `except Exception`
+    catches every domain type there is. `from exc` pays for the trade -- the
+    original exception stays on `__cause__` for a log.
 
     `except Exception` reaches neither `KeyboardInterrupt` nor `SystemExit`.
     """

@@ -217,11 +217,15 @@ def _with_schema_hint(prompt: str, schema_hint: str) -> str:
 def _render_prompt(root, prompt_id: str, **values: object) -> str:
     """Render `prompt_id` under `root`, or raise `LLMError`.
 
-    Two clauses, and their order is the design. `PromptError` is the prompt
-    contract stated back to the user -- a required placeholder their override
-    left out -- so it goes out as the library wrote it, with nothing in front
-    of it. The clause below names the operation first, because what that one
-    catches is not always a sentence a user can act on.
+    Two clauses, and their order is the design. `PromptError` is whatever the
+    prompt library states in its own words -- a required placeholder the
+    override left out, an id nothing defines (`unknown prompt: extractoin`), a
+    value the caller never passed (`missing prompt value: qid`) -- so it goes
+    out as written, with nothing in front of it. Only the first of those three
+    is the user's doing; the other two are measured, and they reach the user
+    through the narrow clause with no operation named at all. The clause below
+    names the operation because what *it* catches is further still from a
+    sentence anybody can act on.
 
     Being that wide relabels a genuine programming error as something that
     reads like a broken file: `prompt <id> could not be loaded` points at
@@ -232,15 +236,18 @@ def _render_prompt(root, prompt_id: str, **values: object) -> str:
     for a reason that does not hold here. `Request()` has one reachable
     failure, so a type tells a real cause and a bug apart. `render_prompt`
     reads two files, the packaged default and the override, and the `OSError`
-    family those reads can raise is not closed by a list; #500's reviewer
-    rejected enumerating it. §10.1 -- every LLM failure reaches its caller as
-    an `LLMError` -- wins that trade at the adapter seam, because what the
-    narrow clause alone lets past is a `UnicodeDecodeError` from a hand-edited
-    override or a `PermissionError` from a mode bit, escaping as itself.
-    `claude_cli_adapter._invoke`'s `except OSError` is the precedent for a
-    clause this wide: "ONE clause, out here", justified by what the caught type
-    is rather than by a list of the values it can carry. `from exc` pays for
-    the trade -- the original exception stays on `__cause__` for a log.
+    family those reads can raise is not closed by a list; #500's reviewer said
+    normalising the region is safer than enumerating it, and offered no list as
+    complete. §10.1 -- every LLM failure reaches its caller as an `LLMError` --
+    wins that trade at the adapter seam, because what the narrow clause alone
+    lets past is a `UnicodeDecodeError` from a hand-edited override or a
+    `PermissionError` from a mode bit, escaping as itself.
+    `claude_cli_adapter._invoke` is the nearest precedent, and only for the
+    *form*: one `except OSError` "out here" rather than a copy per call site,
+    broad "where the `ValueError` above may not". Its reason does not carry
+    over -- `OSError` is not a domain type in this repo, and `except Exception`
+    catches every domain type there is. `from exc` pays for the trade -- the
+    original exception stays on `__cause__` for a log.
 
     `except Exception` reaches neither `KeyboardInterrupt` nor `SystemExit`.
     """
