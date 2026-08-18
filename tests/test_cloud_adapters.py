@@ -866,24 +866,38 @@ def test_a_programming_error_in_the_render_is_deliberately_an_llm_error(tmp_path
         OpenAIAdapter(_cfg(tmp_path, provider="openai")).extract_facts(source_text="x")
 
 
-def test_a_render_failure_keeps_the_original_error_as_the_cause(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("provider", "adapter_cls", "module"),
+    [
+        ("anthropic", AnthropicAdapter, "verinote.llm.anthropic_adapter"),
+        ("openai", OpenAIAdapter, "verinote.llm.openai_adapter"),
+    ],
+)
+def test_a_render_failure_keeps_the_original_error_as_the_cause(
+    tmp_path, monkeypatch, provider, adapter_cls, module
+):
     """`from exc` on the catch-all, which is what pays for the test above.
 
     Relabelling a programming error as a load failure is only tolerable if the
     original survives for a log. `_client_failed` has this guard already
     (`test_a_client_that_cannot_be_built_keeps_the_sdk_error_as_the_cause`); the
     render path did not, and the docstring now argues from it.
+
+    BOTH adapters, because each carries its own `_rendered` and each re-raises
+    `from exc.__cause__` in its own copy of that line. Covering one left the
+    other's unpinned while its docstring named this test as what pins it —
+    change either copy to `from exc` and the matching case here fails.
     """
     boom = TypeError("render_prompt() got an unexpected keyword argument")
 
     def raiser(*args, **kwargs):
         raise boom
 
-    monkeypatch.setattr("verinote.llm.openai_adapter.render_prompt", raiser)
-    _raising_sdk(monkeypatch, "openai", RuntimeError("dialled"))
+    monkeypatch.setattr(f"{module}.render_prompt", raiser)
+    _raising_sdk(monkeypatch, provider, RuntimeError("dialled"))
 
     with pytest.raises(LLMError) as exc:
-        OpenAIAdapter(_cfg(tmp_path, provider="openai")).extract_facts(source_text="x")
+        adapter_cls(_cfg(tmp_path, provider=provider)).extract_facts(source_text="x")
 
     assert exc.value.__cause__ is boom
 
@@ -938,8 +952,11 @@ def test_a_render_failure_never_carries_the_key(tmp_path, monkeypatch, method, p
     four methods and `_rendered` from `OpenAIAdapter` and redacts with its own
     key.
 
-    The SDK raises with the key in it too, so a fix that reached only the render
-    and lost `_request_failed` would fail here as well.
+    The SDK is never dialled on this path -- the render raises just after
+    `self._client()` and before the `try` -- so `_request_failed` is not what
+    these cells exercise; `test_provider_error_never_carries_the_key` keeps that
+    half. `_raising_sdk` is still armed so that a regression which let the call
+    through would surface as a dialled request rather than a quiet pass.
     """
     root = tmp_path / f"kb-{_LONG_KEY}"
     path = root / "policy" / "prompts" / _PROMPT_ID[method]
