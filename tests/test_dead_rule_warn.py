@@ -62,16 +62,12 @@ _IS_A_PROBE_POLICY = (
     'is_a(E, C) :- relation(E, "is_a", C).\n'
 )
 
-#: Taken FROM THE ENGINE rather than written out, and that is the whole point.
-#: This string has three corners: what the detector prints, what the policy
-#: comment tells a reader to expect, and what docs/configuration.md documents. A
-#: literal here would only ever tie the two prose corners together — reword
-#: `dead_rule_warnings` and the literal would sit here agreeing with both copies
-#: while the engine printed something else, which is the drift this is for.
-#:
 #: `_DEAD_FUNCTIONAL` above stays a literal on purpose: those assertions are what
-#: pin the detector's wording. Deriving both would leave nothing checking it.
-_DEAD_IS_A = dead_rule_warnings(_IS_A_PROBE_POLICY, {"born_on"})[0]
+#: pin the detector's wording, and deriving both would leave nothing in this file
+#: checking it. Three other files pin the same wording as literals
+#: (test_duckdb_backend, test_inference_cache, test_policy_class_vocabulary), so
+#: the wording is not unguarded either way — but this is the file a reader opens
+#: to find out what the detector says, so the check belongs here too.
 
 #: Resolved from this file so the check holds in a linked worktree and in CI,
 #: wherever pytest was invoked from. `tests/` sits at the repo root.
@@ -105,20 +101,34 @@ def test_the_is_a_warning_is_quoted_verbatim_where_it_is_explained():
     clear it, and docs/configuration.md documents it as expected output. Both
     quote it verbatim, so both rot silently when the detector is reworded.
 
-    `_DEAD_IS_A` comes from `dead_rule_warnings` itself, which is what makes this
-    catch that. Reword the detector and the constant follows, leaving the two
+    The expected string comes from `dead_rule_warnings` itself, which is what
+    makes this catch that. Reword the detector and it follows, leaving the two
     prose copies behind — here, not somewhere a developer can satisfy by editing
     a different assertion.
+
+    It is derived inside the test rather than at module scope on purpose. At
+    module scope an empty result aborts collection, which takes down every
+    assertion in this file — the ones that pin the detector's wording — and hides
+    the rest of the session's failures behind a collection error. Here the file
+    still collects, the other tests still run and still report, and this one
+    failure names its own cause.
 
     A missing docs file fails rather than skips: a guard that quietly stops
     running is the failure it was written to prevent.
     """
-    assert _DEAD_IS_A in DEFAULT_POLICY, (
+    warnings = dead_rule_warnings(_IS_A_PROBE_POLICY, {"born_on"})
+    assert warnings, (
+        "the probe policy no longer produces a dead-rule warning, so dead-rule "
+        "detection is broken or its inputs changed"
+    )
+    dead_is_a = warnings[0]
+
+    assert dead_is_a in DEFAULT_POLICY, (
         "the shipped policy no longer quotes the warning it tells the reader to "
         "expect; update the DEFAULT_POLICY comment in verinote/engine/wirelog.py"
     )
     assert _CONFIGURATION_DOC.is_file(), f"missing {_CONFIGURATION_DOC}"
-    assert _DEAD_IS_A in _CONFIGURATION_DOC.read_text(encoding="utf-8"), (
+    assert dead_is_a in _CONFIGURATION_DOC.read_text(encoding="utf-8"), (
         f"{_CONFIGURATION_DOC.name} no longer quotes the warning it documents as "
         "expected output; update the 'Logic policy vocabulary' section"
     )
