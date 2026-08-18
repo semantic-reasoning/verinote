@@ -329,9 +329,12 @@ is_a(S, C) :- relation(S, R, O), domain_of(R, C).                            // 
 is_a(S, P) :- relation(S, R, O), domain_of(R, C), subclass_of(C, P).         // ...and one hop from there
 ```
 
-**`is_a` is for rules in this file, not for questions.** A query may only
-reference `relation/3`, so asking about `is_a` from the Ask box is rejected with
-`unknown predicate: is_a`. The way you use it is a policy rule:
+**`is_a` is for rules in this file, not for questions.** The Ask box takes plain
+language; what runs is the query the planner generates from it, and a generated
+query may only reference `relation/3`. One that reaches for `is_a` fails
+validation (`unknown predicate: is_a`) and is discarded before it runs, so
+`is_a` is not a predicate a question can reach. The way you use it is a policy
+rule:
 
 ```
 .decl warn_party_without_subscription(entity: symbol)
