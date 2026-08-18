@@ -5,6 +5,8 @@ These unit tests target the pure `dead_rule_warnings` helper, so they run in CI
 without the optional pyrewire engine installed.
 """
 
+from pathlib import Path
+
 import pytest
 
 from verinote.engine import DEFAULT_POLICY, compile_dl, run_check
@@ -54,12 +56,17 @@ _DEAD_FUNCTIONAL = [
     "but no engine fact uses that relation",
 ]
 
-#: Quoted verbatim by the DEFAULT_POLICY comment and by docs/configuration.md,
-#: so drift in either direction has to fail here.
+#: Quoted verbatim by the DEFAULT_POLICY comment and by docs/configuration.md.
+#: `test_the_is_a_warning_is_quoted_verbatim_where_it_is_explained` is what makes
+#: that a guarded fact rather than a hope.
 _DEAD_IS_A = (
     'dead_rule: policy declares relation("is_a") '
     "but no engine fact uses that relation"
 )
+
+#: Resolved from this file so the check holds in a linked worktree and in CI,
+#: wherever pytest was invoked from. `tests/` sits at the repo root.
+_CONFIGURATION_DOC = Path(__file__).resolve().parents[1] / "docs" / "configuration.md"
 
 
 def test_shipped_class_vocabulary_adds_no_dead_rule_of_its_own():
@@ -81,6 +88,30 @@ def test_a_kb_without_an_is_a_relation_is_told_the_class_rules_are_inert():
     assert dead_rule_warnings(DEFAULT_POLICY, {"established_on", "born_on", "died_on"}) == [
         _DEAD_IS_A
     ]
+
+
+def test_the_is_a_warning_is_quoted_verbatim_where_it_is_explained():
+    """The warning text is a three-way contract, so all three sides are checked.
+
+    The test above pins what the detector emits. That alone lets the two places
+    that *explain* the warning rot: the policy comment tells a reader how to
+    clear it and docs/configuration.md documents it as expected output, and both
+    quote the string. Change the wording in `dead_rule_warnings` and the pinned
+    constant moves with it — this is what stops the prose from being left behind
+    saying something the engine no longer prints.
+
+    A missing docs file fails rather than skips: a guard that quietly stops
+    running is the failure it was written to prevent.
+    """
+    assert _DEAD_IS_A in DEFAULT_POLICY, (
+        "the shipped policy no longer quotes the warning it tells the reader to "
+        "expect; update the DEFAULT_POLICY comment in verinote/engine/wirelog.py"
+    )
+    assert _CONFIGURATION_DOC.is_file(), f"missing {_CONFIGURATION_DOC}"
+    assert _DEAD_IS_A in _CONFIGURATION_DOC.read_text(encoding="utf-8"), (
+        f"{_CONFIGURATION_DOC.name} no longer quotes the warning it documents as "
+        "expected output; update the 'Logic policy vocabulary' section"
+    )
 
 
 def test_a_live_domain_of_example_would_be_flagged():
