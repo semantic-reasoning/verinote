@@ -585,14 +585,16 @@ def process_extraction_job(
         # The sidecar was held by another process while this chunk was writing.
         # The chunk clause above already rewound its own claim; this rewinds the
         # JOB around it, and the pairing is not optional. A job left `running`
-        # here is one the caller has to resolve, and the broad clause a caller
-        # ends with (`web/app.py`; `cli.py` too since #488) resolves it by writing
-        # `failed` — filing a condition of the host as this job's own failure, in
-        # the job row and in the `extraction_job_failed` event beside it, and
-        # costing the chunks this pass finished for as long as planning reads such
-        # a job as "rebuild fresh" (#524). Rolling back to `pending` keeps the
-        # next pass on this job and the record true, and it is why a caller can
-        # afford a dedicated clause for this error that writes nothing at all.
+        # here is one the caller has to resolve, and no caller resolves it by
+        # writing `failed` today: each keeps a dedicated clause for THIS error
+        # above its broad one and both write nothing (`web/app.py`; `cli.py` too
+        # since #488). Take that pair away and the broad `except Exception` under
+        # them would file a condition of the host as this job's own failure, in
+        # the job row and in the `extraction_job_failed` event beside it, and cost
+        # the chunks this pass finished for as long as planning reads such a job
+        # as "rebuild fresh" (#524) — measured with this rewind disabled: the job
+        # is left `running` and no `extraction_job_failed` event is written. The
+        # rewind is what keeps the next pass on this job and the record true.
         _back_off_from_locked_sidecar(
             store,
             job_id=job_id,

@@ -807,10 +807,12 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                 # under a handler whose whole subject is "the call that owns this
                 # job". SCOPE ONLY, and measured so: against the inline shape
                 # the outcome is identical — same escaping `UnicodeDecodeError`
-                # (`extraction_schema_hint` wraps only `PromptError`), job still
-                # `pending`, no event — because the job is not `running` yet and
-                # the broad clause's re-read declines either way. That is why no
-                # test pins this line. It stays INSIDE the per-source loop:
+                # (`extraction_schema_hint` wraps only `PromptError`), the job
+                # left exactly as planning found it (`pending` on a fresh or
+                # resumed job, `failed` on a retry pass; both measured), no event
+                # — because the job is not `running` yet and the broad clause's
+                # re-read declines either way. That is why no test pins this
+                # line. It stays INSIDE the per-source loop:
                 # hoisting it out of the loop too would change how many times it
                 # runs, which is not this line's business.
                 schema_hint = extraction_schema_hint()
@@ -878,9 +880,9 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     # `process_extraction_job` has already rolled the job back to
                     # `pending` for, so the next pass CONTINUES it. Writing
                     # `failed` over that rewind files a condition of the host as
-                    # this job's own failure — the job row, the
-                    # `extraction_job_failed` event beside it, the Sources page
-                    # that reads them — and can cost the chunks this pass
+                    # this job's own failure — the job row, and the
+                    # `extraction_job_failed` event beside it — and can cost the
+                    # chunks this pass
                     # finished on top of that, for as long as planning reads such
                     # a job as "rebuild fresh" (#524). `main` turns the error
                     # itself into a clean rc=1 message.
@@ -914,8 +916,7 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     # request. Two and not more: `rollback_extraction_job` has
                     # four production call sites, and the other two are the
                     # in-pass rewinds above, which cannot reach a row left behind
-                    # by a pass that is over. What this clause buys is that the
-                    # plain pass stops needing either of them.
+                    # by a pass that is over.
                     #
                     # WHAT THE NEXT PASS CAN DO WITH THE CHUNK IS A QUESTION OF
                     # ATTEMPT BUDGET, and this clause restores none of it.
@@ -929,7 +930,7 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     # `--recover` (both measured), which `cmd_sync` reports as
                     # giving up. Only the web retry button revives THAT job: the
                     # one caller passing `retry_max_attempts=None` WITH
-                    # `retry=True`, the only combination the value is read in.
+                    # `retry=True`, the only combination that value is read in.
                     #
                     # WHEN THE RELEASE IS WHAT FAILED the chunk is not `failed`
                     # at all: `mark_chunk_failed` raising (an
@@ -995,9 +996,7 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     # failed and a non-zero counter, and one escaping after a
                     # chunk lands has it recomputed (measured, both). Where the
                     # exception came from does not enter into it. On this tree a
-                    # counter of 0 sends planning to the rebuild #524 is about,
-                    # and the chunks such a rebuild re-sends are the work that
-                    # issue tracks.
+                    # counter of 0 sends planning to the rebuild #524 is about.
                     #
                     # (4) The re-read and the write are two statements on an
                     # autocommit connection, and `fail_extraction_job` updates
@@ -1015,7 +1014,7 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     # `claim_extraction_job_for_retry`, `mark_chunk_running`); the
                     # repair path's pair goes further still, fencing by
                     # `owner_token` and `lease_until` — the liveness lease #242
-                    # says these jobs lack. A store change, not made here;
+                    # says the extraction jobs lack. A store change, not made here;
                     # `_release_claimed_chunk` carries the same window.
                     job_now = store.get_extraction_job(job_id)
                     if job_now is not None and job_now["status"] == "running":
