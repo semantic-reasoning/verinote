@@ -372,9 +372,8 @@ that never recorded a policy of its own is verified against it at runtime. A liv
 is_a Person* start deriving that Ada is a Party, a class nobody declared —
 harmless if your "Party" means what ours does, wrong and silent if it is a
 political party. And a live `is_a` rule names the `is_a` relation in its body, so
-every KB that has facts but no hierarchy would carry a dead-rule warning about a
-rule its owner never wrote. A KB with no facts yet is quiet either way; the
-warning starts once it has facts and no `is_a` among them.
+every KB that has facts but no `is_a` fact would carry a dead-rule warning about
+a rule its owner never wrote. A KB with no facts yet is quiet either way.
 
 Once enabled, note the difference in how the two declarations are policed:
 
@@ -397,10 +396,18 @@ reports this on every check:
 dead_rule: policy declares relation("is_a") but no engine fact uses that relation
 ```
 
-This is expected output, not a bug. It means the class machinery is inert for
-this KB. Editing or deleting the examples will not clear it — the rule bodies
-themselves name the relation. To clear it, comment the `is_a` rules back out, the
-same move as deleting a `functional("born_on")` your KB never uses.
+This is expected output, not a bug. It means the two rules that read `is_a`
+*facts* have nothing to read; the `domain_of` rules are untouched by it and go on
+classifying. Editing or deleting the examples will not clear it — the rule bodies
+themselves name the relation.
+
+To clear it, comment back out the two rules whose bodies read
+`relation(E, "is_a", C)`, the same move as deleting a `functional("born_on")`
+your KB never uses. Leave the `domain_of` rules alone: a KB classified through
+them derives exactly what it did before, warning or no warning. Commenting out
+all four instead is what silently ends that classification. Keep the two rules if
+you expect `is_a` facts later — the warning is then the standing cost of a rule
+waiting for input.
 
 ## Optional extras
 
