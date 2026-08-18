@@ -303,8 +303,10 @@ def test_duckdb_production_path_stays_silent_on_a_kb_that_uses_every_decl():
 
     The class vocabulary added no live rule, so a KB using all three functional
     relations still reports nothing at all. Exact equality on the empty list: the
-    #537 rework exists because an earlier draft put one warning here, on every KB
-    `verinote init` creates.
+    #537 rework exists because an earlier draft put a warning here, on every KB
+    that has facts but none using `is_a`. A KB with no facts yet is quiet under
+    any draft -- `dead_rule_warnings` returns `[]` before it looks at the policy
+    (`test_empty_fact_set_is_never_flagged` above pins that).
     """
     pytest.importorskip("duckdb")
     rep = run_check_duckdb(

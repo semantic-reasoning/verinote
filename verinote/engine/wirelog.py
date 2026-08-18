@@ -161,13 +161,19 @@ functional("died_on").
 //   is_a(E, T) :- relation(E, "is_a", C), subclass_of(C, S), subclass_of(S, T).
 //   is_a(S, T) :- relation(S, R, O), domain_of(R, C), subclass_of(C, S2), subclass_of(S2, T).
 //
-// ONCE ENABLED, a KB with facts but no `is_a` relation gets
+// ONCE ENABLED, a KB that has facts but none using the `is_a` relation gets
 //   dead_rule: policy declares relation("is_a") but no engine fact uses that relation
-// on every check. It means the class machinery is inert for this KB. The rule
-// bodies name the relation, so no edit to the examples clears it — re-comment
-// the `is_a` rules if your KB has no hierarchy, as you would delete an unused
-// functional("born_on"). The `domain_of` example reports itself the same way
-// until you replace it with a relation your KB actually uses.
+// on every check. It means the two rules that read `is_a` FACTS have nothing to
+// read; the `domain_of` rules are untouched by it and go on classifying. The
+// rule bodies name the relation, so no edit to the examples clears it.
+//
+// To clear it, re-comment the two rules whose bodies read
+// relation(E, "is_a", C), as you would delete an unused functional("born_on").
+// Leave the `domain_of` rules alone: a KB classified through them derives
+// exactly what it did before, warning or no warning, and re-commenting all four
+// is what silently ends that classification. The `domain_of` example reports
+// itself the same way until you replace it with a relation your KB actually
+// uses.
 """
 
 
