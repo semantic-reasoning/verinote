@@ -749,10 +749,13 @@ def test_a_crashed_sync_is_resumed_by_the_next_plain_sync(tmp_path, monkeypatch,
     """The whole point of writing the job row: `verinote sync`, and nothing else.
 
     An unmodelled exception used to leave the job `running`, and a `running` job
-    is indistinguishable from one a live worker owns — so every later `sync`
-    printed "already running" and skipped the source forever. The chunk was
-    `failed` and retryable; nothing would ever reach it. `verinote sync --recover`
-    could rewind it by hand. There is no `--retry` flag, and there never was.
+    is indistinguishable from one a live worker owns — so every later plain
+    `sync` printed "already running" and skipped the source. The chunk was
+    `failed` and, below `MAX_CHUNK_ATTEMPTS`, retryable; what could not reach it
+    was the plain pass. Two things could still rewind that row, and neither is a
+    plain sync: `verinote sync --recover`, and one `verinote ui` boot, whose
+    `_resume_source_extraction_jobs` rolls a `running` job back to `pending`.
+    There is no `--retry` flag, and there never was.
 
     Now the job comes to rest `failed` with a failed chunk, which is exactly the
     state `plan_source_extraction` calls a RETRY: the next ordinary sync claims
