@@ -1451,7 +1451,8 @@ def test_search_source_excerpts_drops_a_source_it_read_and_matched_nothing_in(
     those code points on the way there, since none of the 32,303 can be the
     right-hand side of a composition and no canonical decomposition of one
     begins with something that can (11,222 do carry such a code point further
-    in, the jamo inside a Hangul syllable, but never in front). The finite
+    in -- the jamo inside a Hangul syllable for 11,172 of them, the voicing
+    mark inside a kana for the other 50 -- but never in front). The finite
     sweeps behind those lemmas did come back clean -- every pair and triple of
     the 29, every one of the 32,303 alone and doubled -- but they are not what
     closes this: doubling cannot fail where the single code point passed,
