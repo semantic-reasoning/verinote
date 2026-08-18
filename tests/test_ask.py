@@ -1430,23 +1430,33 @@ def test_search_source_excerpts_drops_a_source_it_read_and_matched_nothing_in(
     early `return "", 0`, so only the other direction is open: a truthy score
     carrying an empty excerpt needs `text` to be entirely whitespace while
     some pattern is still found in `_fold(text)`. Neither half is reachable,
-    and because `_fold` is `casefold(NFC(...))` neither answer turns on how
-    long the string is. Whitespace stays whitespace: each of the 29 whitespace
-    code points decomposes to whitespace only, none of them appears on either
-    side of the 941 pairs that compose under NFC, so nothing composes across
-    them, and casefold maps none of them -- the two NFC does rewrite
-    (`U+2000`, `U+2001`) go to other whitespace. Tokens stay non-whitespace:
-    none of the 32,303 code points `_TOKEN` can match is whitespace, no
-    non-whitespace code point in Unicode decomposes to anything containing
-    whitespace, no composition target is whitespace, and no non-whitespace
-    code point casefolds to whitespace or to nothing. So a token of any length
-    folds to a non-empty string carrying a non-whitespace character, which an
-    all-whitespace `folded` cannot contain. The finite sweeps behind those
-    lemmas did come back clean -- every pair and triple of the 29, every one
-    of the 32,303 alone and doubled -- but they are not what closes this:
-    doubling cannot fail where the single code point passed, since
-    `_fold(c*2)` is `_fold(c)*2` for all 32,303, and a sweep that stops at
-    three characters says nothing about the fourth. A widened `_TOKEN` --
+    and neither turns on how long the string is. `_fold` is
+    `casefold(NFC(...))`, and NFC is the half that could have made length
+    matter -- casefold works a code point at a time, NFC composes across
+    neighbours -- so what closes it is that the lemmas below are quantified
+    over every code point and every composition rather than over a sample.
+    Whitespace stays whitespace: each of the 29 whitespace code points
+    canonically decomposes to whitespace only, none of the 29 is either side
+    or the target of any NFC composition -- there are 12,113 of those, the 941
+    pairs the decomposition table carries plus the 11,172 Hangul syllables NFC
+    composes algorithmically, which have no table entry to be found by -- and
+    casefold maps none of them; the two NFC does rewrite (`U+2000`, `U+2001`)
+    go to other whitespace. Tokens stay non-whitespace: none of the 32,303
+    code points `_TOKEN` can match is whitespace, no non-whitespace code point
+    in Unicode canonically decomposes to anything containing whitespace, no
+    composition target is whitespace, and no non-whitespace code point
+    casefolds to whitespace or to nothing. So a token of any length folds to a
+    non-empty string carrying a non-whitespace character, which an
+    all-whitespace `folded` cannot contain -- and nothing merges across two of
+    those code points on the way there, since none of the 32,303 can be the
+    right-hand side of a composition and no canonical decomposition of one
+    begins with something that can (11,222 do carry such a code point further
+    in, the jamo inside a Hangul syllable, but never in front). The finite
+    sweeps behind those lemmas did come back clean -- every pair and triple of
+    the 29, every one of the 32,303 alone and doubled -- but they are not what
+    closes this: doubling cannot fail where the single code point passed,
+    since `_fold(c*2)` is `_fold(c)*2` for all 32,303, and a sweep that stops
+    at three characters says nothing about the fourth. A widened `_TOKEN` --
     `.+`, say -- would split the two gates apart, and what it would let
     through is exactly #468's defect: an `AskExcerpt` carrying an empty
     excerpt string.
@@ -1508,13 +1518,15 @@ def test_search_source_excerpts_puts_the_stronger_match_first(tmp_path):
     equal-score paths are already in that order (`sources/history.txt` at 19
     characters ahead of `sources/notice.txt` at 18). Rename `notice.txt`
     throughout to a name both longer than `history.txt` and sorting after it
-    (`notification.txt`, say) and that mutant fails where the shipped key
-    still passes. Longer alone will not do it: `announcement.txt` is longer
-    but sorts ahead of `history.txt`, so the shipped result reorders and the
-    expected lists have to be reordered with it -- after which both keys agree
-    again and the mutant is back to passing. Showing the `[:limit]` slice needs more matching sources
-    than `MAX_EXCERPTS`. Both gaps are tracked in #533 rather than left as a
-    claim here that goes quietly stale the day someone pins one of them.
+    (`notification.txt`, say) and that mutant fails -- on the reversed-path
+    premise first, its own output having become that reversal -- where the
+    shipped key still passes. Longer alone will not do it: `announcement.txt`
+    is longer but sorts ahead of `history.txt`, so the shipped result reorders
+    and the expected lists have to be reordered with it, after which both keys
+    agree again and the mutant is back to passing. Showing the `[:limit]`
+    slice needs more matching sources than `MAX_EXCERPTS`. Both gaps are
+    tracked in #533 rather than left as a claim here that goes quietly stale
+    the day someone pins one of them.
     """
     store = _seed_three_matching_and_one_unrelated_source(tmp_path)
 
