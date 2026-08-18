@@ -26,6 +26,7 @@ from verinote.engine import DEFAULT_POLICY
 from verinote.llm.base import ExtractedFact, LLMError
 from verinote.pipeline import (
     MAX_CHUNK_ATTEMPTS,
+    ExtractionJobPlan,
     create_chunked_extraction_job,
     plan_source_extraction,
 )
