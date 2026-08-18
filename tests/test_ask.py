@@ -1485,15 +1485,21 @@ def test_search_source_excerpts_puts_the_stronger_match_first(tmp_path):
     would leave the ordering assertion passing under a broken key, and a
     premise fails there instead, on the shipped code as much as on a mutant.
 
-    Two mutations of that same key survive these tests, and the gap is named
-    here rather than implied away. Dropping the `item.path` tie-break to
-    `key=(-item.score,)` changes nothing even though two of these sources do
-    score equally: `store.sources()` reads `ORDER BY path`, so equal scores
-    arrive already in path order and a stable sort leaves them there whether
-    or not the key says so. The `[:limit]` slice is likewise unpinned, since
-    showing it needs more matching sources than `MAX_EXCERPTS`. Both are
-    tracked in #533 rather than left as a claim here that goes quietly stale
-    the day someone pins one of them.
+    Two gaps are named here rather than implied away: these assertions do not
+    pin the tie-break beyond `-item.score` to `item.path`, and they do not pin
+    the `[:limit]` slice. Dropping the tie-break to `key=(-item.score,)`
+    changes nothing even though two of these sources do score equally:
+    `store.sources()` reads `ORDER BY path`, so equal scores arrive already in
+    path order and a stable sort leaves them there whether or not the key says
+    so. Nor is dropping it the only shape that gap has: replacing it with
+    `-len(item.path)` orders ties by descending path length, which is not path
+    order, and survives here only because this fixture's two equal-score paths
+    are already in that order (`sources/history.txt` at 19 characters ahead of
+    `sources/notice.txt` at 18). Rename `notice.txt` throughout to something
+    longer than `history.txt` and that mutant fails where the shipped key
+    still passes. Showing the `[:limit]` slice needs more matching sources
+    than `MAX_EXCERPTS`. Both gaps are tracked in #533 rather than left as a
+    claim here that goes quietly stale the day someone pins one of them.
     """
     store = _seed_three_matching_and_one_unrelated_source(tmp_path)
 
