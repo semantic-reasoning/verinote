@@ -227,7 +227,7 @@ class OpenAIAdapter:
         normalises: every render failure leaves it as an `LLMError`, which is
         §10.1, and all four adapters need it. This wraps that in the one thing a
         module-level function cannot do -- reach `self.cfg.api_key` -- and it
-        exists only here and in `openai_adapter`, because those are the two
+        exists only here and in `anthropic_adapter`, because those are the two
         classes that redact at all. Nothing else changes: no new exception type,
         no new message shape, only whether a configured key survives in the text.
 
