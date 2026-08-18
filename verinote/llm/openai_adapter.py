@@ -92,7 +92,9 @@ class OpenAIAdapter:
         "the provider answered"; `_client_failed` is the message that can speak
         about when. That is asserted here from the structure and from stubs,
         which is all this file is entitled to: the openai SDK is an optional
-        dependency, absent in CI and in some development environments, so the
+        extra, absent from the `ci.yml` pytest job -- which installs
+        `.[test,wirelog]`, so `provider-contract.yml` is the only workflow that
+        has it -- and from some development environments, so the
         vendor-behaviour measurement behind this claim lives in the anthropic
         twin of this paragraph and is not restated as if it had been taken here.
         What the hoist did change is that the prompt error -- the one measured
