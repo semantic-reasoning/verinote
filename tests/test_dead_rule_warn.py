@@ -40,6 +40,83 @@ def test_empty_fact_set_is_never_flagged():
     assert dead_rule_warnings(DEFAULT_POLICY, set()) == []
 
 
+# --- The shipped class vocabulary (#537) --------------------------------------
+# `subclass_of`/`domain_of` are declared in the policy file the way `functional`
+# is, so what the dead-rule detector does and does not see about them is part of
+# the shipped policy's behaviour, not an implementation detail.
+
+_DEAD_FUNCTIONAL = [
+    'dead_rule: policy declares functional("born_on") '
+    "but no engine fact uses that relation",
+    'dead_rule: policy declares functional("died_on") '
+    "but no engine fact uses that relation",
+    'dead_rule: policy declares functional("established_on") '
+    "but no engine fact uses that relation",
+]
+
+#: Quoted verbatim by the DEFAULT_POLICY comment and by docs/configuration.md,
+#: so drift in either direction has to fail here.
+_DEAD_IS_A = (
+    'dead_rule: policy declares relation("is_a") '
+    "but no engine fact uses that relation"
+)
+
+
+def test_shipped_class_vocabulary_adds_no_dead_rule_of_its_own():
+    """A KB that uses `is_a` sees exactly the pre-existing functional warnings.
+
+    The full list, not a "subclass_of is absent from it" check: a negative
+    substring assertion also passes when the detector is broken and returns
+    nothing at all.
+    """
+    assert dead_rule_warnings(DEFAULT_POLICY, {"is_a"}) == _DEAD_FUNCTIONAL
+
+
+def test_a_kb_without_an_is_a_relation_is_told_the_class_rules_are_inert():
+    """The permanent warning the policy comment and the docs both promise.
+
+    The rule bodies name `is_a`, so this is what a KB with no hierarchy sees on
+    every check until it deletes those rules.
+    """
+    assert dead_rule_warnings(DEFAULT_POLICY, {"established_on", "born_on", "died_on"}) == [
+        _DEAD_IS_A
+    ]
+
+
+def test_a_live_domain_of_example_would_be_flagged():
+    """Why the `domain_of` example ships commented out.
+
+    Its first column is named `rel`, so the detector reads it as a relation the
+    policy names, and a scaffolded KB that has no `hasSubscription` fact would
+    carry this warning from its first check onward.
+    """
+    warnings = dead_rule_warnings(
+        DEFAULT_POLICY + '\ndomain_of("hasSubscription", "Party").\n', {"is_a"}
+    )
+
+    assert warnings == sorted(
+        _DEAD_FUNCTIONAL
+        + [
+            'dead_rule: policy declares domain_of("hasSubscription") '
+            "but no engine fact uses that relation"
+        ]
+    )
+
+
+def test_a_live_subclass_of_is_invisible_to_the_detector():
+    """`subclass_of` names classes, not relations, so nothing here can flag it.
+
+    Documented as a blind spot rather than a feature: a misspelled or unused
+    `subclass_of` is silent, which is half the reason the example ships
+    commented out — the other half being that a live one changes what an
+    un-migrated KB derives.
+    """
+    assert (
+        dead_rule_warnings(DEFAULT_POLICY + '\nsubclass_of("Nope", "Nada").\n', {"is_a"})
+        == _DEAD_FUNCTIONAL
+    )
+
+
 def test_rule_body_string_literal_relation_is_detected():
     policy = (
         ".decl relation(subject: symbol, rel: symbol, object: symbol)\n"
@@ -155,6 +232,29 @@ def test_duckdb_production_path_surfaces_dead_rule_with_consistent_count():
     assert rep.warnings >= 1
     assert any("WARN dead_rule" in f for f in rep.findings)
     assert f"warnings: {rep.warnings}  facts:" in rep.text
+
+
+def test_duckdb_production_path_reports_the_inert_class_rules():
+    """The #537 warning on the path a real report takes, not just the helper.
+
+    The full finding list, so that the class rules cannot start or stop being
+    reported without this failing. These facts use no `is_a` relation, which is
+    exactly the KB the policy comment describes.
+    """
+    pytest.importorskip("duckdb")
+    rep = run_check_duckdb(
+        [{"subject": "Org", "relation": "established_on", "object": "2020"}],
+        policy_dl=DEFAULT_POLICY,
+    )
+
+    assert rep.ok is True
+    assert rep.findings == [
+        'WARN dead_rule: policy declares functional("born_on") '
+        "but no engine fact uses that relation",
+        'WARN dead_rule: policy declares functional("died_on") '
+        "but no engine fact uses that relation",
+        f"WARN {_DEAD_IS_A}",
+    ]
 
 
 def test_verify_end_to_end_surfaces_dead_rule_for_recorded_policy(tmp_path):
