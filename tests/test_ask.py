@@ -1377,10 +1377,10 @@ def _seed_three_matching_and_one_unrelated_source(tmp_path):
     backwards does not recover the right answer any more than reading them
     forwards does. `notice.txt` is the long one for the same reason: its
     excerpt outruns `roles.txt`'s, so ranking by excerpt length instead of by
-    score does not recover it either. A rename, or a rewrite that shortened
-    that text, would put one of those orders back in step and make the
-    ordering test vacuous, so that test asserts these properties rather than
-    trusting this docstring for them.
+    score does not recover it either. A rename that sorted the paths back into
+    step, or a rewrite that cut that excerpt to `history.txt`'s 17 characters
+    or fewer, would make the ordering test vacuous, so that test asserts these
+    properties rather than trusting this docstring for them.
     """
     sources = tmp_path / "sources"
     sources.mkdir()
@@ -1429,17 +1429,27 @@ def test_search_source_excerpts_drops_a_source_it_read_and_matched_nothing_in(
     rather than of this fixture. A falsy `score` means `best_pos < 0` and the
     early `return "", 0`, so only the other direction is open: a truthy score
     carrying an empty excerpt needs `text` to be entirely whitespace while
-    some pattern is still found in `_fold(text)`. Neither half is reachable.
-    All 29 whitespace code points, and every pair and triple of them, keep
-    `_fold(s)` whitespace -- their combining classes are zero so nothing
-    composes across them, none of them is the target of a composition,
-    casefold maps none of them, and the two that NFC does rewrite (`U+2000`,
-    `U+2001`) go to other whitespace. And each of the 32,303 code points
-    `_TOKEN` can match folds to something non-empty and non-whitespace both
-    alone and doubled, so no token, whatever its length, folds to something an
-    all-whitespace `folded` could contain. A widened `_TOKEN` -- `.+`, say --
-    would split the two gates apart, and what it would let through is exactly
-    #468's defect: an `AskExcerpt` carrying an empty excerpt string.
+    some pattern is still found in `_fold(text)`. Neither half is reachable,
+    and because `_fold` is `casefold(NFC(...))` neither answer turns on how
+    long the string is. Whitespace stays whitespace: each of the 29 whitespace
+    code points decomposes to whitespace only, none of them appears on either
+    side of the 941 pairs that compose under NFC, so nothing composes across
+    them, and casefold maps none of them -- the two NFC does rewrite
+    (`U+2000`, `U+2001`) go to other whitespace. Tokens stay non-whitespace:
+    none of the 32,303 code points `_TOKEN` can match is whitespace, no
+    non-whitespace code point in Unicode decomposes to anything containing
+    whitespace, no composition target is whitespace, and no non-whitespace
+    code point casefolds to whitespace or to nothing. So a token of any length
+    folds to a non-empty string carrying a non-whitespace character, which an
+    all-whitespace `folded` cannot contain. The finite sweeps behind those
+    lemmas did come back clean -- every pair and triple of the 29, every one
+    of the 32,303 alone and doubled -- but they are not what closes this:
+    doubling cannot fail where the single code point passed, since
+    `_fold(c*2)` is `_fold(c)*2` for all 32,303, and a sweep that stops at
+    three characters says nothing about the fourth. A widened `_TOKEN` --
+    `.+`, say -- would split the two gates apart, and what it would let
+    through is exactly #468's defect: an `AskExcerpt` carrying an empty
+    excerpt string.
 
     Not covered here: the order of what comes back (the next test), the
     truncation, the dedupe, and the window arithmetic inside `_best_excerpt`.
@@ -1481,23 +1491,28 @@ def test_search_source_excerpts_puts_the_stronger_match_first(tmp_path):
     ordering assertion would otherwise be satisfied by -- paths ascending,
     paths descending, excerpt length descending -- and holds that it produces
     some other list. A rename that put one of those keys back in step
-    (`a_roles.txt`, `notice.txt`, `z_history.txt`), or a shorter notice text,
-    would leave the ordering assertion passing under a broken key, and a
-    premise fails there instead, on the shipped code as much as on a mutant.
+    (`a_roles.txt`, `notice.txt`, `z_history.txt`), or a notice excerpt cut to
+    `history.txt`'s 17 characters or fewer, would leave the ordering assertion
+    passing under a broken key, and a premise fails there instead, on the
+    shipped code as much as on a mutant.
 
     Two gaps are named here rather than implied away: these assertions do not
     pin the tie-break beyond `-item.score` to `item.path`, and they do not pin
     the `[:limit]` slice. Dropping the tie-break to `key=(-item.score,)`
     changes nothing even though two of these sources do score equally:
-    `store.sources()` reads `ORDER BY path`, so equal scores arrive already in
-    path order and a stable sort leaves them there whether or not the key says
-    so. Nor is dropping it the only shape that gap has: replacing it with
-    `-len(item.path)` orders ties by descending path length, which is not path
-    order, and survives here only because this fixture's two equal-score paths
-    are already in that order (`sources/history.txt` at 19 characters ahead of
-    `sources/notice.txt` at 18). Rename `notice.txt` throughout to something
-    longer than `history.txt` and that mutant fails where the shipped key
-    still passes. Showing the `[:limit]` slice needs more matching sources
+    `store.sources()` reads `ORDER BY path`, so these three arrive at the sort
+    in path order and a stable sort leaves the equal pair there whether or not
+    the key says so. Nor is dropping it the only shape that gap has: replacing
+    it with `-len(item.path)` orders ties by descending path length, which is
+    not path order, and survives here only because this fixture's two
+    equal-score paths are already in that order (`sources/history.txt` at 19
+    characters ahead of `sources/notice.txt` at 18). Rename `notice.txt`
+    throughout to a name both longer than `history.txt` and sorting after it
+    (`notification.txt`, say) and that mutant fails where the shipped key
+    still passes. Longer alone will not do it: `announcement.txt` is longer
+    but sorts ahead of `history.txt`, so the shipped result reorders and the
+    expected lists have to be reordered with it -- after which both keys agree
+    again and the mutant is back to passing. Showing the `[:limit]` slice needs more matching sources
     than `MAX_EXCERPTS`. Both gaps are tracked in #533 rather than left as a
     claim here that goes quietly stale the day someone pins one of them.
     """
