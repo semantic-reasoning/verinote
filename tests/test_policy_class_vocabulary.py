@@ -127,8 +127,13 @@ def test_the_shipped_policy_runs_no_class_machinery_at_all():
 
     `DEFAULT_POLICY` is not scaffolding-only: a KB that never recorded a policy
     is verified against it at runtime, so anything live here is imposed on KBs
-    whose owners never asked for it. Uncomment any rule in the shipped text and
+    whose owners never asked for it. Uncomment the block's `.decl is_a` line and
     this goes red — `is_a` becomes a declared predicate the query can reach.
+
+    A rule uncommented *without* that declaration leaves this green for the wrong
+    reason: the policy then fails validation, and the error it fails with happens
+    to be the same `unknown predicate: is_a` string asserted below. The `.decl` is
+    what this catches.
     """
     _duckdb()
     rep = run_check_duckdb(
