@@ -1386,10 +1386,13 @@ class Store:
         locked sidecar clears the moment the other process lets go, and the very
         next pass should find the budget it started with.
 
-        WHO READS `attempts`. Planning reads it in exactly two places,
-        `failed_chunk_attempt_status` and `claim_extraction_job_for_retry`, and
-        both are scoped `WHERE status = 'failed'` — so a refunded `pending` chunk
-        is invisible to them, and the refund reaches planning only later, if this
+        WHO READS `attempts`. Planning reads it in exactly two places, and both
+        READINGS are scoped to `failed` chunks: `failed_chunk_attempt_status`
+        (`WHERE status = 'failed'`) and `claim_extraction_job_for_retry`, whose
+        `attempts < max_attempts` reset carries the same scope. That second method
+        also WRITES `attempts` outside it — its stray rewind refunds `running`
+        rows (#524) — but it reads none. So a refunded `pending` chunk is
+        invisible to both, and the refund reaches planning only later, if this
         chunk goes on to fail for real. There is a third reader, and it is not
         scoped: `_chunk_event_payload` carries `attempts` into every
         `chunk_failed`/`chunk_retried` payload in `fact_events`, so a refund does
@@ -1501,33 +1504,50 @@ class Store:
         spend a content budget, and `requeue_chunk_claim` is the same refund for
         the sidecar case.
 
-        NOTHING IS UN-GATED BY THE REFUND, and where the give-up gate reads is
-        why. `failed_chunk_attempt_status` is scoped `WHERE status = 'failed'` and
-        planning consults it only under `failed_chunks > 0`, so the attempts on a
-        chunk sitting `running` gate nothing while it sits there; every attempt
-        that ended in a recorded `failed` is still counted, and the un-refunded
-        count never stopped a spin — it only ever surfaced later, as the
-        over-charge above. The one behavioural edge is a chunk that alternates
-        between failing for real and dying with the frame: it now needs one more
-        RECORDED failure to exhaust. That is the intended reading of `attempts` —
-        a claim that reached no verdict left no evidence about the content.
+        NO GATE THAT WAS OPERATING IS WEAKENED, and where the give-up gate reads
+        is why. `failed_chunk_attempt_status` is scoped `WHERE status = 'failed'`
+        and planning consults it only under `failed_chunks > 0`, so the attempts
+        on a chunk sitting `running` gate nothing while it sits there; every
+        attempt that ended in a recorded `failed` is still counted, and the
+        un-refunded count never stopped a spin — it only ever surfaced later, as
+        the over-charge above. What the refund does move is WHEN exhaustion
+        arrives for a chunk that both fails for real and loses frames: it now
+        always takes `MAX_CHUNK_ATTEMPTS` recorded failures however many frames
+        died, where the charged rewind reached the cap on fewer — measured at the
+        cap of 3, two recorded failures when a death alternates with each failure
+        and one when two deaths land ahead of the first — because it counted the
+        deaths as if the content had failed. The cap's own number is the right
+        one: a claim that reached no verdict left no evidence about the content.
 
         `MAX(attempts - 1, 0)` rather than a bare `attempts - 1` because this
         UPDATE has no compare-and-set. `requeue_chunk_claim` pins the count its
         own claim wrote, so it can only ever decrement a value
         `mark_chunk_running` put there (>= 1); this one sweeps every `running` row
         on the job, including rows reset out of band, and a `running` row carrying
-        `attempts = 0` would otherwise go negative.
+        `attempts = 0` would otherwise go negative. THE OTHER THING THAT CAS
+        BUYS — never refunding a claim that is somebody else's — is bought here by
+        the job CAS a few lines above instead: it matches only `pending`/`failed`,
+        and a live worker holds its job `running` for the whole pass (#337). The
+        one path that writes a job `pending` under a live chunk,
+        `rollback_extraction_job`, rewinds that chunk itself under the same lock.
 
-        THE TWO REWINDS THAT DO NOT REFUND stay that way for their own reasons.
-        `claim_pending_extraction_job`'s identical sweep is by its own account "a
-        defensive no-op" that fires in no real path — there is no charge to give
-        back. `rollback_extraction_job` leaves `attempts` alone deliberately, for
-        the reason `requeue_chunk_claim` records: a halt freezes the whole KB
-        against writes, so the count is not what stands in the way. What #536 still
-        owns is the residue no chunk row can carry — a fault reproducing below the
-        chunk accounting burns a run row and two job events every pass, and this
-        refund does not touch that.
+        THE TWO REWINDS THAT DO NOT REFUND stay that way, one for a reason and one
+        as residue. `claim_pending_extraction_job`'s sweep is this one minus the
+        refund, and by its own account "a defensive no-op" that fires in no real
+        path — there is no charge to give back. `rollback_extraction_job` is the
+        one with a live gap: the reason `requeue_chunk_claim` records for it — a
+        halt freezes the whole KB against writes, so the count is not what stands
+        in the way — covers its two halt callers (`_halt_extraction_job` and the
+        sidecar back-off, both `pipeline/extract.py`) and NOT its other two, which
+        are crash recovery rather than halts (`web/app.py`'s restart resume,
+        `cli.py`'s `sync --recover`). The `running` chunk those two rewind is the
+        very class this refund is about, and its attempt stays charged there — the
+        same over-charge reached by a different path. Pre-existing, outside #524,
+        and named here rather than covered: it is not the residue #536 owns
+        either, and wants a ticket of its own. What #536 does own is the residue no
+        chunk row can carry — a fault reproducing below the chunk accounting burns
+        a run row and two job events every pass, and this refund does not touch
+        that.
         """
         with self._lock:
             before = self.get_extraction_job(job_id)

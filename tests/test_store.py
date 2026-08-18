@@ -1394,7 +1394,13 @@ def test_claim_extraction_job_for_retry_refunds_the_stray_running_chunks_attempt
     up on the source permanently, which is what `pipeline/extract.py` means by an
     availability condition not spending a content budget.
 
-    The second chunk pins the clamp. This rewind has no compare-and-set, unlike
+    THREE ROWS, because "inverse of the claim" says more than "back to zero" and
+    a fixture of first claims cannot tell the two apart. The first chunk is on its
+    first claim (`attempts` 1 -> 0). The second is on its SECOND (2 -> 1): give
+    back one attempt, not the whole count — a rewind that reset instead would
+    hand a chunk that has really failed once a fresh budget, and one that
+    subtracted two would take back an attempt the chunk did spend on its content.
+    The third pins the clamp: this rewind has no compare-and-set, unlike
     `requeue_chunk_claim`, so it sweeps rows nothing here claimed — including one
     reset out of band to `running` at `attempts = 0`, which a bare `attempts - 1`
     would drive negative.
@@ -1402,13 +1408,22 @@ def test_claim_extraction_job_for_retry_refunds_the_stray_running_chunks_attempt
     s = _store(tmp_path)
     sid = s.add_source("sources/a.txt")
     job_id = s.create_extraction_job(
-        source_id=sid, provider="fake", model="m", total_chunks=2
+        source_id=sid, provider="fake", model="m", total_chunks=3
     )
-    claimed, out_of_band = s.add_source_chunks(
-        job_id=job_id, source_id=sid, chunks=["a", "b"]
+    claimed, retried, out_of_band = s.add_source_chunks(
+        job_id=job_id, source_id=sid, chunks=["a", "b", "c"]
     )
     s.mark_extraction_job_running(job_id)
     s.mark_chunk_running(claimed)  # 'running', attempts = 1
+    # The second chunk failed once for real and was retried, so the claim this
+    # rewind is undoing is its second. Raw SQL for the requeue half: the method
+    # under test must not be what builds its own fixture.
+    s.mark_chunk_running(retried)
+    s.mark_chunk_failed(retried, "provider down")
+    s._conn.execute(
+        "UPDATE source_chunks SET status = 'pending' WHERE id = ?", (retried,)
+    )
+    s.mark_chunk_running(retried)  # 'running', attempts = 2
     s._conn.execute(
         "UPDATE source_chunks SET status = 'running' WHERE id = ?", (out_of_band,)
     )
@@ -1417,14 +1432,16 @@ def test_claim_extraction_job_for_retry_refunds_the_stray_running_chunks_attempt
     )
     assert [(c["status"], c["attempts"]) for c in s.source_chunks(job_id)] == [
         ("running", 1),
+        ("running", 2),
         ("running", 0),
     ]
 
     assert s.claim_extraction_job_for_retry(job_id, max_attempts=3) is True
 
-    # Back exactly as `next_pending_chunk` first handed them out, and no negatives.
+    # Back exactly as each row was before its last claim, and no negatives.
     assert [(c["status"], c["attempts"]) for c in s.source_chunks(job_id)] == [
         ("pending", 0),
+        ("pending", 1),
         ("pending", 0),
     ]
 
