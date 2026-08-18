@@ -25,12 +25,25 @@ def test_parse_and_validate_default_policy():
         "relation",
         "functional",
         "error_functional_conflict",
+        "subclass_of",
+        "domain_of",
+        "is_a",
     ]
-    assert len(program.facts) == 3
-    assert program.facts[0] == Fact(
-        AtomExpr("functional", (StringLit("established_on"),))
-    )
-    assert len(program.rules) == 1
+    # The full list, not its length: the class vocabulary ships as `.decl` plus
+    # rules with every example commented out, so a live `subclass_of(...)` or
+    # `domain_of(...)` sneaking into the shipped policy has to show up here.
+    assert list(program.facts) == [
+        Fact(AtomExpr("functional", (StringLit("established_on"),))),
+        Fact(AtomExpr("functional", (StringLit("born_on"),))),
+        Fact(AtomExpr("functional", (StringLit("died_on"),))),
+    ]
+    assert [rule.head.predicate for rule in program.rules] == [
+        "error_functional_conflict",
+        "is_a",
+        "is_a",
+        "is_a",
+        "is_a",
+    ]
     rule = program.rules[0]
     assert rule.head == AtomExpr("error_functional_conflict", (Var("S"), Var("R")))
     assert isinstance(rule.body[-1], Comparison)

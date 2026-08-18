@@ -24,6 +24,14 @@ def _warn_dead_functional(relation: str) -> str:
     )
 
 
+#: The default policy's class-vocabulary rules read `relation(E, "is_a", C)`, so
+#: a KB with facts but no `is_a` relation reports them dead (issue #537).
+_WARN_DEAD_IS_A = (
+    'WARN dead_rule: policy declares relation("is_a") '
+    "but no engine fact uses that relation"
+)
+
+
 def test_duckdb_backend_missing_duckdb_is_blocking(monkeypatch):
     real_import = builtins.__import__
 
@@ -110,11 +118,14 @@ def test_duckdb_backend_compares_equivalent_atom_string_and_number_terms():
     assert rep.ok is False
     # born_on is used (the conflict is real and collapses to one ERROR); the
     # default policy's other functional decls, established_on/died_on, are unused
-    # dead rules and surface as non-blocking WARNs (issue #286).
+    # dead rules and surface as non-blocking WARNs (issue #286). These facts use
+    # no `is_a` relation either, so the shipped class-vocabulary rules are inert
+    # here and report themselves the same way (issue #537).
     assert rep.findings == [
         "ERROR functional_conflict: ada born_on",
         _warn_dead_functional("died_on"),
         _warn_dead_functional("established_on"),
+        _WARN_DEAD_IS_A,
     ]
 
 
