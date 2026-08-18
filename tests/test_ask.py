@@ -1655,10 +1655,16 @@ def test_the_of_shape_entity_keeps_its_trailing_predicate_at_the_answer(tmp_path
     failure mode is a wrong answer under a top-level label, not a lost one, and
     that is why this is pinned at the answer and not at the parse.
 
-    Both spellings of the question are asserted, because the defect this
-    forbids is also an inconsistency: one KB, one question, two phrasings, and
-    an entity strip would make them return different subjects with the same
-    `VERIFIED — engine` on both.
+    Both spellings of the question are asserted, and what that catches depends
+    on how wide the strip is. A strip at the `of` site only -- the shape of the
+    commit this PR dropped -- is also an inconsistency: measured on this KB,
+    `of` comes back `Company, owner, Alice` and the possessive comes back
+    `Company named, owner, Bob`, both under `VERIFIED — engine`. A strip at
+    both entity sites is consistent and still wrong: measured the same way,
+    both spellings come back `Company, owner, Alice`. So agreement between the
+    two phrasings is not the test of a fix here, and each row is load-bearing
+    on its own -- a one-site mutant reddens that site's row, and a two-site
+    mutant reddens both.
 
     Refs #515, which records the two-entity KB as the case that separates a fix
     from a regression. The scope here is narrower than that issue's fixture.
@@ -1705,9 +1711,14 @@ def test_a_title_case_tail_in_the_label_is_left_alone(tmp_path):
 
     Adding `re.IGNORECASE` cuts it to `Also`, which the schema does not hold,
     and the question reaches the model instead -- measured on this tree, one
-    provider call where there were none. That is the direction
-    `_clean_english_attribute_label` names as the more expensive of the two:
-    giving up a correct deterministic answer rather than inventing one.
+    provider call where there were none. That is one of the two directions the
+    flag moves questions, not the dearer of them: measured the same way, it
+    also cuts `Date Labeled` to `Date`, so a KB holding `Date` answers
+    `Sample Dataset, Date, 2020-01-01` under `VERIFIED — engine` with no
+    provider call for a question that asked what the date is *labeled*; on
+    this tree that question reaches the model. This test pins the first row;
+    the flag comment on `_ENGLISH_ATTRIBUTE_TRAILING_PREDICATE` carries both,
+    and the gain the choice forgoes with them.
 
     PR #527 proposes a case-insensitive alternation for the label site: its
     diff carries `(?i:called|named)` on the possessive pattern. The argument

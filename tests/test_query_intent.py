@@ -1260,9 +1260,12 @@ def test_the_strip_cannot_leave_the_field_empty():
     # `date labeled` differs by one word from the `date created` that
     # `test_a_past_participle_relation_name_survives` protects.
     #
-    # So this block, not just the possessive-entity test, is where the change
-    # admits it can promote a question rather than only shorten a label.
-    # Anyone narrowing the rule to recover these should expect this red.
+    # So this block is where the change admits it can promote a question
+    # rather than only shorten a label. The entity sites are not a second such
+    # place: this rule does not clean them, and
+    # `test_the_of_shape_entity_keeps_its_trailing_predicate_at_the_answer`
+    # holds them where they are. Anyone narrowing the rule to recover these
+    # rows should expect this red.
     #
     # The six rows are witnesses, not the population. `self titled` -> `self`
     # and `correctly spelled` -> `correctly` are the same class as

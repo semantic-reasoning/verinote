@@ -624,33 +624,54 @@ _ENGLISH_ATTRIBUTE_TAIL_PREDICATE_MEMBERS = (
 the asking is phrased. Before this rule *no* member was stripped -- neither
 these nor `called`/`named`, which #511 reports as already handled and are not:
 `_clean_english_attribute_label` normalised whitespace and dropped a leading
-`the ` and nothing else. So every member here is new, and each one carried a
-relation candidate no schema is expected to hold.
+`the ` and nothing else. So every member here is new: `What is Sample
+Project's owner called?` asked for a relation literally named `owner called`,
+and with any member of this tuple in place of `called` it is the same shape --
+a name no schema is expected to hold.
+
+What stands in front of the member decides that, though, and not the member.
+With `also` in front of `known as` the question asked for `also known as`,
+which is a real attribute name: measured at e032738 against a KB holding it,
+`What is Sample Person's also known as?` is `VERIFIED — engine` with no
+provider call, and this rule takes that same question to
+`UNVERIFIED — source exploration` with one. So the shape above is claimed for
+the `owner ` witnesses, not for every label a member can follow; the
+accepted-cost rows at the end of `test_the_strip_cannot_leave_the_field_empty`
+are where the rest of that population is pinned.
 
 Not exhaustive, and cannot be: `referred to as`, `recorded as`, `written as`
 and their kin belong to the same class and are absent. A tail whose predicate
 is outside this tuple keeps whatever the question spelled, which is the cost
 that spelling paid before this rule rather than a new one. It is not the same
-as reaching the LLM, and which of the two it is depends on the schema. Where
-no schema holds the spelled name -- the ordinary case -- the plan is empty and
-the model is reached. Where a schema does hold it, the unstripped tail is
-answered outright, with no provider call.
+as reaching the LLM, and what separates the two is not the schema but whether
+the queried subject holds a fact under the spelled name. Where it does, the
+question is answered with no provider call. Where it does not, the plan is
+empty and the model is reached -- including where the schema does hold that
+relation for some *other* subject, because `all_relation_labels` is KB-wide
+(`query_schema.py`: "Every relation surface in the KB") and a plan is not.
+Measured with `Other Stock/stock worth/V9` beside `Sample Stock/price/V0`,
+`What is Sample Stock's stock worth?` is `UNVERIFIED — source exploration`
+with one provider call. `verinote/pipeline/query.py` already names that
+population where it calls `_reinterpret_empty_plan` -- "a subject with no fact
+for an otherwise real relation is re-read too, and pays a provider call to
+arrive back at the same place".
 
 Two words that end questions of this shape are deliberately out, both from
-#511, and it is that second branch they are held out to preserve. `worth` is
+#511, and it is the answered branch they are held out to preserve. `worth` is
 part of the measure, and `stock worth` is a plausible relation name on its
-own: measured against a schema holding `stock worth`, `What is Sample Stock's
-stock worth?` is `VERIFIED — engine` with no provider call, and a member
-`worth` would take that away. `like` asks for a description rather than for
-the object of a relation, so stripping it would answer a different question.
+own: measured against a KB where `Sample Stock` holds `stock worth`, `What is
+Sample Stock's stock worth?` is `VERIFIED — engine` with no provider call, and
+a member `worth` would take that away. `like` asks for a description rather
+than for the object of a relation, so stripping it would answer a different
+question.
 
 Adding a member is therefore not free either, though the cost lands narrowly.
 It cannot reach a label that *is* the predicate, because the leading `\\s` has
 nothing to match at position 0: `referred to as` stays whole with or without
 the member. What it moves is the labels carrying a word in front of the
-predicate. Measured against a schema holding `name referred to as`, that
-question is `VERIFIED — engine` with no provider call here and reaches the
-model once the member is added.
+predicate. Measured against a KB where `Sample Project` holds `name referred
+to as`, that question is `VERIFIED — engine` with no provider call here and
+reaches the model once the member is added.
 
 An adverb outside `_ENGLISH_ATTRIBUTE_TAIL_ADVERB_MEMBERS` standing in front
 of a listed predicate is a third case, and leaves the field neither stripped
@@ -683,7 +704,8 @@ and are absent. An unlisted adverb does not spare the predicate it introduces:
 that predicate is still a member, so `owner widely known as` is cut to
 `owner widely` rather than left whole. What the residue then costs is the
 conditional the predicate tuple records -- a relation candidate no schema is
-expected to hold, and the model reached, unless the schema happens to hold it.
+expected to hold, and the model reached, unless the queried subject happens to
+hold a fact under that residue.
 """
 
 _ENGLISH_ATTRIBUTE_TRAILING_PREDICATE = re.compile(
@@ -715,12 +737,22 @@ _ENGLISH_ATTRIBUTE_TRAILING_PREDICATE = re.compile(
         m.replace(" ", r"\s+") for m in _ENGLISH_ATTRIBUTE_TAIL_PREDICATE_MEMBERS
     )
     + r")\s*$"
-    # No flags. Case matters because a schema may spell an attribute name in
-    # title case: `Also Known As` is real, and `re.IGNORECASE` cuts it to
-    # `Also`, which no schema is expected to hold, so a question answered here
-    # with no provider call reaches the model instead. That is the more
-    # expensive of the two directions this rule can move a question, and it is
-    # pinned end to end in tests/test_ask.py by
+    # No flags. `re.IGNORECASE` is not a trade of one direction of this rule
+    # against the other: measured end to end, it moves questions in both.
+    # `Also Known As` is a real attribute name a schema may spell in title
+    # case, and the flag cuts it to `Also` -- `VERIFIED — engine` with no
+    # provider call here, the model with one under the flag. It also cuts
+    # `Date Labeled` to `Date` and `User Named` to `User`, which is the
+    # opposite move: against a KB holding `Date`, `What is Sample Dataset's
+    # Date Labeled?` reaches the model here and answers
+    # `Sample Dataset, Date, 2020-01-01` under `VERIFIED — engine` with no
+    # provider call under the flag, for a question that asked what the date is
+    # *labeled*. So the choice does not rest on ranking those two against each
+    # other. What it does give up is a gain: `owner Called` cuts to `owner`,
+    # and against a KB holding `owner` that question is answered
+    # deterministically under the flag and reaches the model here. A forgone
+    # gain, not a wrong answer. The first row is pinned end to end in
+    # tests/test_ask.py by
     # test_a_title_case_tail_in_the_label_is_left_alone. The leading `\s+` is
     # the other half of the guard and is not relaxable -- `\s*` reads
     # `recalled` as `re`, and `\s*\b` spares that but still reads `re-called`
@@ -956,10 +988,10 @@ def _clean_english_attribute_label(value: str) -> str:
       `date labeled` is then answered with `date` -- what the date *is*, for a
       question asking what it is labeled.
     - schema holds the spelled name and not the cut one: the move is the other
-      way, and it is the more expensive one. `translated` with no provider call
-      becomes `review_required` with one, giving up a correct deterministic
-      answer the parser used to produce. `also known as` is a real attribute
-      name, so this direction is not hypothetical.
+      way. `translated` with no provider call becomes `review_required` with
+      one, giving up a correct deterministic answer the parser used to
+      produce. `also known as` is a real attribute name, so this direction is
+      not hypothetical.
     - schema holds both: `translated` either way, but the relation that answers
       silently changes from the spelled name to the cut one, with no change of
       status to show for it.
@@ -971,6 +1003,23 @@ def _clean_english_attribute_label(value: str) -> str:
       cut label re-enters `PURPOSE_RELATION_CANDIDATES`, which the spelled one
       could not, so what the schema literally spells is not the only thing
       deciding this -- the synonym set is the third.
+
+    Each row is measured with the queried subject holding the fact, which is
+    what the branch actually turns on. Where the schema holds the name for some
+    *other* subject the plan is empty either way and the model is reached with
+    a provider call, before this rule and after -- the case
+    `_ENGLISH_ATTRIBUTE_TAIL_PREDICATE_MEMBERS` records.
+
+    These rows are not ranked against each other, and an earlier draft of this
+    list ranked them: it called the second the more expensive direction. That
+    ranking is withdrawn rather than quietly dropped, because it is the one the
+    rest of the repository refuses -- `verinote/store/tiers.py` ("A crash is
+    cheaper than a quiet wrong answer") and `verinote/store/db.py` ("the silent
+    wrong answer this filter exists to prevent") both price a quiet wrong
+    answer above a lost one, and the first and third rows are that shape.
+    Nothing in this rule's spelling rests on either ranking; the flag comment
+    on `_ENGLISH_ATTRIBUTE_TRAILING_PREDICATE` measures both directions and
+    reads them together.
 
     So this is not priced in provider calls alone. `also` and `so` are the
     harmless end of it, and they are pinned with the rest at the end of
