@@ -279,9 +279,10 @@ def test_a_locked_sidecar_requeues_the_chunk_and_rewinds_the_job(tmp_path):
     The `resume_job_id` assertion is the one that catches a half-fix. Rewind the
     chunk without rewinding the job and every state below still looks reasonable
     in isolation — until something writes `failed` over a job with no failed
-    chunk, filing a condition of the host as the job's own failure and, on this
-    tree, sending planning to a rebuild that extracts the finished chunk a second
-    time (#524). Today each caller's dedicated clause for this error is what
+    chunk. Since #524 that no longer sends the finished chunk to the LLM a
+    second time; what it costs is the record — a condition of the host filed as
+    this job's own failure, in the job row and in the `extraction_job_failed`
+    event beside it. Today each caller's dedicated clause for this error is what
     stops that write; this test is why the job rewind must not lean on it.
     """
     s = _store(tmp_path)

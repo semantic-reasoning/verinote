@@ -1382,6 +1382,53 @@ def test_claim_extraction_job_for_retry_reclaims_a_stray_running_chunk_on_a_fail
     assert s.get_source_chunk(chunk_id)["status"] == "pending"  # stray reclaimed
 
 
+def test_claim_extraction_job_for_retry_refunds_the_stray_running_chunks_attempt(
+    tmp_path,
+):
+    """The stray rewind is the whole inverse of the claim, `attempts` included (#524).
+
+    A chunk left `running` under a job that came to rest `failed` is a claim that
+    reached no verdict — the frame died before it could record `done` or `failed`
+    — so the attempt was spent on the frame, not on the chunk's content. Keeping
+    it lets a condition of the host walk a chunk to `MAX_CHUNK_ATTEMPTS` and give
+    up on the source permanently, which is what `pipeline/extract.py` means by an
+    availability condition not spending a content budget.
+
+    The second chunk pins the clamp. This rewind has no compare-and-set, unlike
+    `requeue_chunk_claim`, so it sweeps rows nothing here claimed — including one
+    reset out of band to `running` at `attempts = 0`, which a bare `attempts - 1`
+    would drive negative.
+    """
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    job_id = s.create_extraction_job(
+        source_id=sid, provider="fake", model="m", total_chunks=2
+    )
+    claimed, out_of_band = s.add_source_chunks(
+        job_id=job_id, source_id=sid, chunks=["a", "b"]
+    )
+    s.mark_extraction_job_running(job_id)
+    s.mark_chunk_running(claimed)  # 'running', attempts = 1
+    s._conn.execute(
+        "UPDATE source_chunks SET status = 'running' WHERE id = ?", (out_of_band,)
+    )
+    s._conn.execute(
+        "UPDATE extraction_jobs SET status = 'failed' WHERE id = ?", (job_id,)
+    )
+    assert [(c["status"], c["attempts"]) for c in s.source_chunks(job_id)] == [
+        ("running", 1),
+        ("running", 0),
+    ]
+
+    assert s.claim_extraction_job_for_retry(job_id, max_attempts=3) is True
+
+    # Back exactly as `next_pending_chunk` first handed them out, and no negatives.
+    assert [(c["status"], c["attempts"]) for c in s.source_chunks(job_id)] == [
+        ("pending", 0),
+        ("pending", 0),
+    ]
+
+
 def test_mark_chunk_done_keeps_an_owned_job_running_against_a_second_claim(tmp_path):
     """W1 (#337): a chunk finishing mid-run must not drop an owned job to `pending`
     where a second connection's pending-claim could steal it.
