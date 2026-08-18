@@ -273,12 +273,16 @@ Set it in the Settings UI, in `config.json`, or via
 fact against whatever it says, so the policy file is the one place review rules
 live. Four predicates make up the vocabulary a KB declares there.
 
-| Predicate | Declared or derived | What it says |
-|---|---|---|
-| `functional(rel)` | declared | this relation holds at most one object per subject |
-| `subclass_of(sub, super)` | declared | every `sub` is also a `super` |
-| `domain_of(rel, cls)` | declared | using this relation as a subject makes you a `cls` |
-| `is_a(entity, cls)` | **derived** | what the engine concludes from the three above |
+| Predicate | Kind | Active by default | What it says |
+|---|---|---|---|
+| `functional(rel)` | declared | yes | this relation holds at most one object per subject |
+| `subclass_of(sub, super)` | declared | no | every `sub` is also a `super` |
+| `domain_of(rel, cls)` | declared | no | using this relation as a subject makes you a `cls` |
+| `is_a(entity, cls)` | **derived** | no | what the engine concludes from the three above |
+
+Only `functional` runs out of the box. The three class predicates ship as a
+commented-out block you switch on — see
+[The block ships switched off](#the-block-ships-switched-off).
 
 ### `functional`
 
@@ -303,6 +307,9 @@ subclass_of("Organization", "Party").
 domain_of("hasSubscription", "Party").
 ```
 
+These are the examples your policy file ships, commented out; replace them with
+your own vocabulary when you enable the block.
+
 **This lives in the policy file and not in the `facts` table**, and that is not
 an implementation convenience. A `subclass_of` line is not an observation
 extracted from a document — it is your declaration of what your words mean.
@@ -313,7 +320,7 @@ policy file for exactly this reason; these are the same kind of statement.
 
 ### `is_a`, and how far it reaches
 
-`is_a` is derived, never written by hand. The shipped rules derive it four ways:
+`is_a` is derived, never written by hand. The block derives it four ways:
 
 ```
 is_a(E, C) :- relation(E, "is_a", C).                                        // stated directly
@@ -322,49 +329,73 @@ is_a(S, C) :- relation(S, R, O), domain_of(R, C).                            // 
 is_a(S, P) :- relation(S, R, O), domain_of(R, C), subclass_of(C, P).         // ...and one hop from there
 ```
 
+**`is_a` is for rules in this file, not for questions.** A query may only
+reference `relation/3`, so asking about `is_a` from the Ask box is rejected with
+`unknown predicate: is_a`. The way you use it is a policy rule:
+
+```
+.decl warn_party_without_subscription(entity: symbol)
+warn_party_without_subscription(E) :- is_a(E, "Party"), ...
+```
+
+That is the payoff the vocabulary exists for: one rule, written about `Party`
+alone, that reaches every kind of Party without naming them.
+
 **The ceiling is one superclass hop, on both paths.** The DuckDB backend refuses
 recursive rules, so the hierarchy reaches exactly as far as the rules spell out
 and no further. Declare `Person` → `Party` → `Agent` and a Person derives
 `Person` and `Party` but **not** `Agent` — silently, with no warning, because a
-missing derivation is indistinguishable from one you never wanted. If you need a
-third level, add the rule that spells it out:
+missing derivation is indistinguishable from one you never wanted.
+
+A third level needs **both** of these, one per derivation path. Adding only the
+first leaves anything classified through `domain_of` a level short, which is the
+silent mismatch the fourth rule above exists to avoid:
 
 ```
 is_a(E, T) :- relation(E, "is_a", C), subclass_of(C, S), subclass_of(S, T).
+is_a(S, T) :- relation(S, R, O), domain_of(R, C), subclass_of(C, S2), subclass_of(S2, T).
 ```
 
-### What ships, and what ships commented out
+### The block ships switched off
 
-Every example above ships **commented out**. Only the `.decl` lines and the four
-rules are live. A new KB has neither those relations nor those classes, and the
-default policy is not scaffolding-only — a KB that never recorded a policy of its
-own is verified against it at runtime. A live `subclass_of("Person", "Party")`
-would therefore make an untouched KB that says only *Ada is_a Person* start
-deriving that Ada is a Party, a class nobody declared. Harmless if your "Party"
-means what ours does; wrong and silent if it is a political party.
+**Everything in this section ships commented out** — the `.decl` lines and the
+four rules as well as the examples. Your copy carries the block as text with a
+`TO ENABLE` note; uncomment every line between its `BEGIN` and `END` markers to
+switch it on, then replace the example vocabulary with your own.
 
-Uncomment what your KB actually means, and note the difference in how the two
-predicates are policed:
+It is off by default because the default policy is not scaffolding-only: a KB
+that never recorded a policy of its own is verified against it at runtime. A live
+`subclass_of("Person", "Party")` would make an untouched KB that says only *Ada
+is_a Person* start deriving that Ada is a Party, a class nobody declared —
+harmless if your "Party" means what ours does, wrong and silent if it is a
+political party. And a live `is_a` rule names the `is_a` relation in its body, so
+every KB without a hierarchy would carry a dead-rule warning about a rule its
+owner never wrote. A new KB's first check is quiet, and this keeps it that way.
+
+Once enabled, note the difference in how the two declarations are policed:
 
 - a live `domain_of` naming a relation your KB has no fact for is reported as a
   dead rule, the same as an unused `functional`
-  ([#245](https://github.com/semantic-reasoning/verinote/issues/245));
+  ([#245](https://github.com/semantic-reasoning/verinote/issues/245)). The
+  shipped `domain_of("hasSubscription", "Party")` example does exactly this until
+  you replace it;
 - a live `subclass_of` naming a class nothing uses is **not** reported. Dead-rule
   detection reads columns named `rel`, and `subclass_of`'s columns are `sub` and
   `super`, so a misspelled or obsolete `subclass_of` line is silent. Nothing will
   tell you about it.
 
-### The `is_a` warning you will see
+### The `is_a` warning you will see once it is on
 
-A KB with facts but no `is_a` relation reports this on every check:
+With the block enabled, a KB whose facts never use the `is_a` relation reports
+this on every check:
 
 ```
 dead_rule: policy declares relation("is_a") but no engine fact uses that relation
 ```
 
 This is expected output, not a bug. It means the class machinery is inert for
-this KB. Editing or deleting the commented examples will not clear it — the rule
-bodies themselves name the relation. To clear it, delete the `is_a` rules, the
+this KB. Editing or deleting the examples will not clear it — the rule bodies
+themselves name the relation. To clear it, comment the `is_a` rules back out, the
 same move as deleting a `functional("born_on")` your KB never uses.
 
 ## Optional extras
