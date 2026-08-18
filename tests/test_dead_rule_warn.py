@@ -28,7 +28,10 @@ def test_default_policy_flags_unused_functional_relations():
 
 
 def test_no_warnings_when_every_referenced_relation_is_present():
-    present = {"established_on", "born_on", "died_on"}
+    # `is_a` belongs in the present set because the shipped class-vocabulary
+    # rules read `relation(E, "is_a", C)`: it is a relation the policy names by
+    # literal, exactly like the three functional decls.
+    present = {"established_on", "born_on", "died_on", "is_a"}
     assert dead_rule_warnings(DEFAULT_POLICY, present) == []
 
 

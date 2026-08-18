@@ -119,6 +119,44 @@ functional("died_on").
 {FUNCTIONAL_CONFLICT_DECL}
 {FUNCTIONAL_CONFLICT_RULE}(S, R) :-
     relation(S, R, A), relation(S, R, B), functional(R), A != B.
+
+// ── Class vocabulary ─────────────────────────────────────────────────────────
+// `functional` constrains a *relation*. These say what a *subject* is, so one
+// rule written about a superclass covers every subclass instead of listing them.
+// Declared here and not extracted into `facts`: what your words mean is your
+// declaration, not an observation some document made.
+//
+// Both are extensional — write your own the way you write `functional(...)`:
+//   subclass_of("Person", "Party").
+//   subclass_of("Organization", "Party").
+//   domain_of("hasSubscription", "Party").
+// They ship commented out on purpose. A new KB has neither those relations nor
+// those classes, and a live `subclass_of("Person", "Party")` would make the
+// engine derive `is_a(Ada, "Party")` — a class you never declared — the moment
+// any fact says Ada is_a Person.
+.decl subclass_of(sub: symbol, super: symbol)
+.decl domain_of(rel: symbol, cls: symbol)
+
+// What the engine derives from them. `is_a` is derived, never asserted here.
+.decl is_a(entity: symbol, cls: symbol)
+is_a(E, C) :- relation(E, "is_a", C).
+is_a(E, S) :- relation(E, "is_a", C), subclass_of(C, S).
+is_a(S, C) :- relation(S, R, O), domain_of(R, C).
+is_a(S, P) :- relation(S, R, O), domain_of(R, C), subclass_of(C, P).
+//
+// DEPTH CEILING: one superclass hop, on both paths. The backend refuses
+// recursive rules, so the hierarchy reaches exactly as far as the rules above
+// spell out. Declare Person -> Party -> Agent and a Person derives Person and
+// Party but NOT Agent — silently, with no warning. For a third level, add the
+// rule that spells it out:
+//   is_a(E, T) :- relation(E, "is_a", C), subclass_of(C, S), subclass_of(S, T).
+//
+// EXPECTED WARNING: a KB with facts but no `is_a` relation gets
+//   dead_rule: policy declares relation("is_a") but no engine fact uses that relation
+// on every check. It means the class machinery above is inert for this KB. The
+// rule bodies name the relation, so no edit to the examples clears it — delete
+// the `is_a` rules if your KB has no hierarchy, as you would delete an unused
+// functional("born_on").
 """
 
 
