@@ -266,6 +266,107 @@ person behind every accepted fact.
 Set it in the Settings UI, in `config.json`, or via
 `VERINOTE_AUTO_ACCEPT_RECOMMENDATIONS`.
 
+## Logic policy vocabulary
+
+`verinote init` writes the shipped default policy to
+`<root>/policy/logic-policy.dl`. That copy is yours: the engine re-checks every
+fact against whatever it says, so the policy file is the one place review rules
+live. Four predicates make up the vocabulary a KB declares there.
+
+| Predicate | Declared or derived | What it says |
+|---|---|---|
+| `functional(rel)` | declared | this relation holds at most one object per subject |
+| `subclass_of(sub, super)` | declared | every `sub` is also a `super` |
+| `domain_of(rel, cls)` | declared | using this relation as a subject makes you a `cls` |
+| `is_a(entity, cls)` | **derived** | what the engine concludes from the three above |
+
+### `functional`
+
+```
+functional("established_on").
+```
+
+Two different objects for one subject on a functional relation is a blocking
+`error_functional_conflict`. The shipped policy declares `established_on`,
+`born_on`, and `died_on`; add and remove lines freely.
+
+### `subclass_of` and `domain_of`
+
+These say what a *subject* is, rather than how a relation behaves. Declare that
+`Person` and `Organization` are both `Party` and one rule written about `Party`
+covers both — and a third kind of Party is one new line, not an edit to every
+rule that enumerated the kinds by hand.
+
+```
+subclass_of("Person", "Party").
+subclass_of("Organization", "Party").
+domain_of("hasSubscription", "Party").
+```
+
+**This lives in the policy file and not in the `facts` table**, and that is not
+an implementation convenience. A `subclass_of` line is not an observation
+extracted from a document — it is your declaration of what your words mean.
+Routing it through the review gate would ask a person to approve their own
+vocabulary as though an LLM had proposed it, and would demand a source document
+for a statement no source ever made. `functional("established_on")` is in the
+policy file for exactly this reason; these are the same kind of statement.
+
+### `is_a`, and how far it reaches
+
+`is_a` is derived, never written by hand. The shipped rules derive it four ways:
+
+```
+is_a(E, C) :- relation(E, "is_a", C).                                        // stated directly
+is_a(E, S) :- relation(E, "is_a", C), subclass_of(C, S).                     // one superclass hop
+is_a(S, C) :- relation(S, R, O), domain_of(R, C).                            // from using a relation
+is_a(S, P) :- relation(S, R, O), domain_of(R, C), subclass_of(C, P).         // ...and one hop from there
+```
+
+**The ceiling is one superclass hop, on both paths.** The DuckDB backend refuses
+recursive rules, so the hierarchy reaches exactly as far as the rules spell out
+and no further. Declare `Person` → `Party` → `Agent` and a Person derives
+`Person` and `Party` but **not** `Agent` — silently, with no warning, because a
+missing derivation is indistinguishable from one you never wanted. If you need a
+third level, add the rule that spells it out:
+
+```
+is_a(E, T) :- relation(E, "is_a", C), subclass_of(C, S), subclass_of(S, T).
+```
+
+### What ships, and what ships commented out
+
+Every example above ships **commented out**. Only the `.decl` lines and the four
+rules are live. A new KB has neither those relations nor those classes, and the
+default policy is not scaffolding-only — a KB that never recorded a policy of its
+own is verified against it at runtime. A live `subclass_of("Person", "Party")`
+would therefore make an untouched KB that says only *Ada is_a Person* start
+deriving that Ada is a Party, a class nobody declared. Harmless if your "Party"
+means what ours does; wrong and silent if it is a political party.
+
+Uncomment what your KB actually means, and note the difference in how the two
+predicates are policed:
+
+- a live `domain_of` naming a relation your KB has no fact for is reported as a
+  dead rule, the same as an unused `functional`
+  ([#245](https://github.com/semantic-reasoning/verinote/issues/245));
+- a live `subclass_of` naming a class nothing uses is **not** reported. Dead-rule
+  detection reads columns named `rel`, and `subclass_of`'s columns are `sub` and
+  `super`, so a misspelled or obsolete `subclass_of` line is silent. Nothing will
+  tell you about it.
+
+### The `is_a` warning you will see
+
+A KB with facts but no `is_a` relation reports this on every check:
+
+```
+dead_rule: policy declares relation("is_a") but no engine fact uses that relation
+```
+
+This is expected output, not a bug. It means the class machinery is inert for
+this KB. Editing or deleting the commented examples will not clear it — the rule
+bodies themselves name the relation. To clear it, delete the `is_a` rules, the
+same move as deleting a `functional("born_on")` your KB never uses.
+
 ## Optional extras
 
 | Extra | What it installs |
