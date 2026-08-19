@@ -4,7 +4,12 @@
 from __future__ import annotations
 
 from verinote.config import Config
-from verinote.llm.base import ExtractedFact, LLMError, redact_secret
+from verinote.llm.base import (
+    ExtractedFact,
+    LLMError,
+    parsed_under_redaction,
+    redact_secret,
+)
 from verinote.llm.schema import (
     FACT_ARRAY_SCHEMA,
     QUERY_INTENT_SCHEMA,
@@ -278,7 +283,9 @@ class AnthropicAdapter:
 
         for block in msg.content:
             if getattr(block, "type", None) == "tool_use":
-                return parse_facts(block.input)
+                return parsed_under_redaction(
+                    parse_facts, block.input, self.cfg.api_key
+                )
         raise LLMError("anthropic response contained no tool_use block")
 
     def translate_query(self, *, question: str, qid: int, schema_hint: str = "") -> str:
@@ -305,7 +312,9 @@ class AnthropicAdapter:
 
         for block in msg.content:
             if getattr(block, "type", None) == "tool_use":
-                return parse_query(block.input)
+                return parsed_under_redaction(
+                    parse_query, block.input, self.cfg.api_key
+                )
         raise LLMError("anthropic response contained no tool_use block")
 
     def extract_query_intent(self, *, question: str, schema_hint: str = "") -> QueryIntent:
@@ -330,7 +339,9 @@ class AnthropicAdapter:
 
         for block in msg.content:
             if getattr(block, "type", None) == "tool_use":
-                return parse_query_intent(block.input)
+                return parsed_under_redaction(
+                    parse_query_intent, block.input, self.cfg.api_key
+                )
         raise LLMError("anthropic response contained no tool_use block")
 
     def answer_question(self, *, question: str, context: str) -> str:
