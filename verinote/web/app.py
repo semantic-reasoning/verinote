@@ -112,6 +112,7 @@ from verinote.prompts import (
     delete_prompt_override,
     get_prompt,
     list_prompts,
+    prompt_override_path,
     save_prompt_override,
 )
 from verinote.engine.terms import StringLit, render_term
@@ -1032,6 +1033,15 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             return cfg.extraction_schema_hint()
         except PromptError as exc:
             raise LLMError(str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 - normalise every render failure
+            # This call is an argument expression inside the extraction worker's
+            # `try`, so without this clause an unreadable override lands on the
+            # generic handler and the job says `analysis failed` — a diagnosis of
+            # the provider for a file on this machine. Name the prompt:
+            # `str(UnicodeDecodeError)` names no file at all.
+            raise LLMError(
+                f"prompt extraction-limit-hint could not be loaded: {exc}"
+            ) from exc
 
     def _relation_aliases_path() -> Path:
         return _active_cfg().root / RELATION_ALIASES_RELPATH
@@ -1059,6 +1069,47 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         )
         return f"{text.rstrip()}\n\n# Default aliases not yet saved in this KB\n{missing_text}\n"
 
+    def _override_is_unreadable(path: Path) -> bool:
+        """Is the KB's override for this prompt the file that could not be read?
+
+        `get_prompt` reads TWO files — the packaged default and this override —
+        so a failed load does not by itself say which one broke, and Reset
+        deletes only this one. Measured on a damaged install (packaged default
+        at `0o000`) with a healthy override beside it: resetting destroyed the
+        user's file and left the page exactly as broken. So the destructive
+        control is offered only when the override path is one this process could
+        not read. A missing override reads as False — there is nothing there to
+        delete, and nothing a reset could fix.
+
+        `is_file()` FIRST, mirroring `get_prompt`, which opens the override only
+        behind the same guard, and narrowing this to what `unlink()` can act on:
+        without it a directory at that path reads as "unreadable" (measured) and
+        the page offers to delete something the loader never opened and
+        `unlink()` cannot remove. It sits inside the `try` rather than above it
+        because `Path.is_file()` propagates a `PermissionError` from an
+        unreadable parent directory (measured), and this whole function runs
+        inside the handler that renders the error page — a raise here would take
+        that page down instead of the load failure it exists to report.
+
+        This costs an extra `stat` of the override, and a read of it only when
+        that `stat` says it is a regular file — a second read when `get_prompt`
+        had already reached it, the first when the packaged default is what
+        failed. Going back to the disk at all is a stand-in: the exception
+        `get_prompt` raises need not say which of the two files it was reading —
+        the `PermissionError` from an unreadable one names its path, the
+        `UnicodeDecodeError` from a non-UTF-8 one names no file at all
+        (measured) — and its text is not a contract to parse.
+        """
+        try:
+            if not path.is_file():
+                return False
+            path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return False
+        except Exception:  # noqa: BLE001 - unreadable by any means is the point
+            return True
+        return False
+
     def _prompts_page(
         request: Request,
         *,
@@ -1084,8 +1135,66 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                     "prompt_text": prompt_text,
                     "message": message,
                     "error": str(exc),
+                    "reset_only": False,
+                    "override_path": None,
                 },
                 status_code=400,
+            )
+        except Exception as exc:  # noqa: BLE001 - the page that repairs a broken override
+            # `get_prompt` reads the override off disk, so a file the user saved
+            # here and then made unreadable took this page down with it. Diagnose
+            # it in the banner instead: `str(UnicodeDecodeError)` names no file at
+            # all (measured — it names a byte offset).
+            #
+            # NOT the 409 the corrupt-file pages use (`sidecar_unreadable.html`,
+            # `config_corrupt.html`, `credentials_corrupt.html`): each of those
+            # REPLACES the page the caller asked for with a refusal template and
+            # ends there. This one is still a working page: the selector routes
+            # to every other prompt, the banner names the prompt that failed,
+            # and where the override is itself what cannot be read `reset_only`
+            # adds the control that deletes it — `delete_prompt_override` only
+            # `unlink()`s, so that repair survives a file this process could not
+            # read (measured: 303, the override gone, the page healthy again, in
+            # both modes the tests cover). What the page does NOT carry is the
+            # broken prompt's own text or its Save form: `prompt=None` collapses
+            # the editor, and seeding the textarea with the default would invite
+            # overwriting a file this process could not read. So it is a
+            # delivered page, not a refused one, and #539's non-regression
+            # condition asks for 200 in as many words.
+            #
+            # `status_code` rather than a literal 200 because
+            # `save_prompt_route`/`reset_prompt_route` render this page with 400
+            # for a POST they refused; that refusal is still the truth about
+            # their request. Their `error` is composed with, not replaced by, the
+            # load diagnosis, so such a caller is still told why the save was
+            # rejected.
+            load_error = f"prompt {prompt_id} could not be loaded: {exc}"
+            override_path = prompt_override_path(cfg.root, prompt_id)
+            return templates.TemplateResponse(
+                request,
+                "prompts.html",
+                {
+                    "prompts": list_prompts(),
+                    "prompt": None,
+                    "selected_prompt": prompt_id,
+                    "prompt_text": prompt_text,
+                    "message": message,
+                    "error": load_error if error is None else f"{error}; {load_error}",
+                    # The only branch that can set this True; the other two
+                    # returns of this function pass `False` rather than leaving
+                    # it undefined, and those three are every renderer of
+                    # `prompts.html` there is (grep). NOT `prompt is None`: the
+                    # `except PromptError` branch above renders that way too,
+                    # and `unknown prompt: <id>` is one of the things it catches
+                    # — no definition, no file, nothing a reset could act on. It
+                    # also catches a readable override that fails validation,
+                    # where a reset WOULD repair the page and none is offered
+                    # (measured); that gap is a follow-up, not this change,
+                    # whose subject is an override that cannot be READ.
+                    "reset_only": _override_is_unreadable(override_path),
+                    "override_path": override_path,
+                },
+                status_code=status_code,
             )
         return templates.TemplateResponse(
             request,
@@ -1097,6 +1206,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 "prompt_text": prompt.text if prompt_text is None else prompt_text,
                 "message": message,
                 "error": error,
+                "reset_only": False,
+                "override_path": None,
             },
             status_code=status_code,
         )

@@ -660,6 +660,14 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
             return cfg.extraction_schema_hint()
         except PromptError as exc:
             raise LLMError(str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 - normalise every render failure
+            # `render_prompt` reads `policy/prompts/*` off disk, so an override the
+            # user saved and then made unreadable arrives here as whatever
+            # `Path.read_text` raised. Name the prompt: `str(UnicodeDecodeError)`
+            # names no file at all.
+            raise LLMError(
+                f"prompt extraction-limit-hint could not be loaded: {exc}"
+            ) from exc
 
     # `--recover` rewinds a stuck `running` extraction job so this run can resume
     # it, and those jobs exist only for registered sources: the path branch of
@@ -809,13 +817,13 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                 # prompt resolution — which reads `policy/prompts/*` off disk —
                 # under a handler whose whole subject is "the call that owns this
                 # job". SCOPE ONLY, and measured so: against the inline shape
-                # the outcome is identical — same escaping `UnicodeDecodeError`
-                # (`extraction_schema_hint` wraps only `PromptError`), the job
-                # left exactly as planning found it (`pending` on a fresh or
-                # resumed job, `failed` on a retry pass; both measured), no event
-                # — because the job is not `running` yet and the broad clause's
-                # re-read declines either way. That is why no test pins this
-                # line. It stays INSIDE the per-source loop:
+                # the outcome is identical — the same escaping `LLMError`, which
+                # is what `extraction_schema_hint` turns an unreadable override
+                # into (#539), the job left exactly as planning found it
+                # (`pending` on a fresh or resumed job, `failed` on a retry pass;
+                # both measured), no event — because the job is not `running` yet
+                # and the broad clause's re-read declines either way. That is why
+                # no test pins this line. It stays INSIDE the per-source loop:
                 # hoisting it out of the loop too would change how many times it
                 # runs, which is not this line's business.
                 schema_hint = extraction_schema_hint()

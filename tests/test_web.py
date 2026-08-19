@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
 import builtins
+from contextlib import contextmanager
 from dataclasses import replace
 import functools
 import importlib.resources
@@ -7,6 +8,7 @@ import importlib.util
 import inspect
 import json
 import logging
+from pathlib import Path
 import re
 import sqlite3
 import sys
@@ -6347,3 +6349,395 @@ def test_the_module_body_runs_the_clearing_provider_check(monkeypatch):
 
     with pytest.raises(RuntimeError, match="clears the Base URL"):
         spec.loader.exec_module(module)
+
+
+@contextmanager
+def _broken_override(path: Path, mode: str):
+    """Make a saved prompt override unreadable, the two ways these tests use.
+
+    Copy per test file rather than a shared import: the repo keeps its chmod
+    probe local (`tests/test_cloud_adapters.py`). The skip is a RUNTIME one after
+    an actual read attempt, not a `geteuid` marker, so it also covers a
+    filesystem that ignores the mode bit.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if mode == "non_utf8":
+        path.write_bytes(b"at most {max_facts} facts \xff\xfe and a bad byte")
+        yield
+        return
+    path.write_text("at most {max_facts} facts\n", encoding="utf-8")
+    path.chmod(0o000)
+    try:
+        try:
+            path.read_text(encoding="utf-8")
+        except PermissionError:
+            pass
+        else:
+            pytest.skip("this user reads straight through mode 0o000")
+        yield
+    finally:
+        # `exists()` because a caller may legitimately REMOVE the file inside
+        # the block (`tests/test_web.py`'s reset test does).
+        if path.exists():
+            path.chmod(0o600)
+
+
+def _prompts_client(tmp_path) -> TestClient:
+    """`_client`'s app, but surfacing a server error as a status, not a raise.
+
+    `_client` builds `TestClient(app)`, i.e. `raise_server_exceptions=True`, under
+    which an unhandled render failure comes back as the exception itself rather
+    than the 500 these tests are about. That would make a mutant look like an
+    error instead of a status regression.
+    """
+    cfg = Config(
+        root=tmp_path, db_path=tmp_path / "kb.sqlite",
+        provider="anthropic", model="m", api_key=None, base_url=None,
+    )
+    return TestClient(create_app(cfg), raise_server_exceptions=False)
+
+
+@pytest.mark.parametrize("mode", ["non_utf8", "chmod"])
+def test_a_broken_extraction_limit_hint_is_extraction_failed_not_analysis_failed(
+    tmp_path, monkeypatch, fake_client, mode
+):
+    """An unreadable override is this machine's condition, not the provider's.
+
+    `_extraction_schema_hint(cfg)` is an argument expression inside the worker's
+    `try`, so without #539's clause the read failure lands on the generic handler
+    and the job says `analysis failed` — blaming the analysis for a file the user
+    saved here. Measured without the clause, the message is `analysis failed: `
+    plus whatever the read raised: the codec error under `non_utf8`,
+    `[Errno 13] Permission denied: <the override>` under `chmod`. Neither of the
+    two assertions at the end of this test holds of such a string (the
+    `startswith` one aborts first, so only it is observed failing; the `not in`
+    one is false of the same message). The `not in` one is spelled out because
+    the misattribution, not the wording, is what #539 and #474 are about.
+    """
+    from verinote.prompts.library import prompt_override_path
+
+    monkeypatch.setattr(
+        webapp,
+        "get_client",
+        lambda cfg: fake_client([ExtractedFact("X", "is_a", "Y", 0.9)]),
+    )
+    c = _client(tmp_path)
+
+    with _broken_override(prompt_override_path(tmp_path, "extraction-limit-hint"), mode):
+        upload = c.post(
+            "/sources",
+            files={"file": ("note.txt", b"some text", "text/plain")},
+            follow_redirects=False,
+        )
+        assert upload.status_code == 303
+
+        def failed():
+            jobs = c.app.state.store.source_extraction_jobs()
+            assert jobs and jobs[0]["status"] == "failed"
+
+        _wait_for(failed)
+        message = c.app.state.store.source_extraction_jobs()[0]["message"]
+
+    assert message.startswith(
+        "extraction failed: prompt extraction-limit-hint could not be loaded"
+    )
+    assert "analysis failed" not in message
+
+
+@pytest.mark.parametrize("mode", ["non_utf8", "chmod"])
+def test_the_prompts_page_survives_the_override_it_exists_to_repair(tmp_path, mode):
+    """The page you go to in order to fix a broken override must open (#539).
+
+    200 and not the 409 of `sidecar_unreadable.html`, `config_corrupt.html` and
+    `credentials_corrupt.html`: those three replace the page the caller asked
+    for with a refusal template and end there, while this one is still a working
+    page. The selector and reset assertions are what that distinction turns on,
+    so they are pinned here rather than left implied by the status: the selector
+    still routes to the other prompts, and the broken prompt itself still
+    carries a control that repairs it. What the page does not carry is that
+    prompt's text or its Save form — see
+    `test_a_broken_override_page_offers_no_editor_to_overwrite_it_with`.
+    """
+    from verinote.prompts.library import prompt_override_path
+
+    c = _prompts_client(tmp_path)
+
+    with _broken_override(prompt_override_path(tmp_path, "extraction"), mode):
+        for url in ("/prompts", "/prompts?prompt=extraction"):
+            r = c.get(url)
+            assert r.status_code == 200, url
+            assert "prompt extraction could not be loaded" in r.text, url
+            # Still a delivered page: the selector lists the other prompts, so the
+            # user can reach one that works and see which file is broken.
+            assert 'value="query-translation"' in r.text, url
+            assert 'value="ask-fallback"' in r.text, url
+            # And it can still be repaired from here: `delete_prompt_override`
+            # only `unlink()`s, so reset survives a file this process could not
+            # read.
+            assert "Reset to default" in r.text, url
+            assert 'action="/prompts/reset"' in r.text, url
+            assert 'name="prompt_id" value="extraction"' in r.text, url
+            # The copy says the button "deletes the override file named above",
+            # so the page has to name it. Measured: deleting that span reddens
+            # this assertion for `non_utf8` and not for `chmod`, because the
+            # codec error in the banner carries no path while the
+            # `PermissionError` does. So for a non-UTF-8 user the span is the
+            # whole of what tells them which file they are about to destroy.
+            assert str(prompt_override_path(tmp_path, "extraction")) in r.text, url
+
+
+def test_a_broken_override_does_not_blank_the_other_prompts(tmp_path):
+    """The new clause must not swallow the page, nor the `unknown prompt` 400.
+
+    Green before #539 as well — this row pins what must NOT change. The
+    mutations these assertions exist for: a `_prompts_page` that returned
+    `prompt=None` on the SUCCESS path too would blank the editor; folding the
+    existing `except PromptError` into the new clause would turn `unknown
+    prompt: nope` from 400 into 200; gating the reset control on `prompt is
+    None` instead of on `reset_only` would offer to reset `nope`, an id
+    `prompt_definition` has already rejected.
+    """
+    from verinote.prompts.library import prompt_override_path
+
+    c = _prompts_client(tmp_path)
+
+    with _broken_override(prompt_override_path(tmp_path, "extraction"), "non_utf8"):
+        good = c.get("/prompts?prompt=query-translation")
+
+        assert good.status_code == 200
+        assert 'name="prompt_text"' in good.text  # the editor is still there
+        # The query parameter is `prompt` (not `prompt_id`), and it is honoured:
+        # this is query-translation's own text, not the broken default's.
+        assert "<code>query-translation</code>" in good.text
+        assert "You translate a natural-language question" in good.text
+        assert "You are a fact extractor" not in good.text
+
+        unknown = c.get("/prompts?prompt=nope")
+
+        assert unknown.status_code == 400
+        assert "unknown prompt: nope" in unknown.text
+        # `prompt is None` for `nope` too, and for `nope` there is nothing to
+        # reset — no definition and no file. The reset affordance keys off
+        # `reset_only`, not off `prompt`, which is what keeps them apart.
+        assert 'action="/prompts/reset"' not in unknown.text
+
+
+@pytest.mark.parametrize("mode", ["non_utf8", "chmod"])
+def test_a_refused_save_keeps_its_400_and_still_says_why(tmp_path, mode):
+    """The load banner is composed with the caller's, and does not relabel a 400.
+
+    Two independent properties, one per mutation (measured). A hardcoded 200 in
+    the new clause would answer 200 to a request the app declined to perform,
+    while the banner still says "prompt text is required". A clause that
+    ASSIGNED `error` instead of composing it keeps the 400 and drops that
+    string, telling the user the wrong reason their save failed.
+    """
+    from verinote.prompts.library import prompt_override_path
+
+    c = _prompts_client(tmp_path)
+
+    with _broken_override(prompt_override_path(tmp_path, "extraction"), mode):
+        r = c.post(
+            "/prompts",
+            data={"prompt_id": "extraction", "prompt_text": ""},
+            follow_redirects=False,
+        )
+
+    assert r.status_code == 400
+    assert "prompt text is required" in r.text
+    assert "prompt extraction could not be loaded" in r.text
+
+
+@pytest.mark.parametrize("mode", ["non_utf8", "chmod"])
+def test_a_broken_override_can_be_reset_from_the_page_that_names_it(tmp_path, mode):
+    """#539's opening symptom: no way out of a broken override from inside the UI.
+
+    Serving 200 with a banner answers the issue's non-regression list but not
+    that complaint — a page that names the broken file and offers nothing that
+    acts on it is still a dead end. Reset survives an unreadable override —
+    `delete_prompt_override` only `unlink()`s and never reads it — so reset is
+    the repair this page carries.
+    """
+    from verinote.prompts.library import prompt_override_path
+
+    c = _prompts_client(tmp_path)
+    override = prompt_override_path(tmp_path, "extraction")
+
+    with _broken_override(override, mode):
+        broken = c.get("/prompts?prompt=extraction")
+        assert broken.status_code == 200
+        assert 'action="/prompts/reset"' in broken.text
+
+        reset = c.post(
+            "/prompts/reset",
+            data={"prompt_id": "extraction"},
+            follow_redirects=False,
+        )
+
+        assert reset.status_code == 303
+        assert not override.exists()
+
+    healthy = c.get("/prompts?prompt=extraction")
+
+    assert healthy.status_code == 200
+    assert "could not be loaded" not in healthy.text
+    assert 'name="prompt_text"' in healthy.text  # the editor is back
+    assert "You are a fact extractor" in healthy.text  # showing the default again
+
+
+@pytest.mark.parametrize("mode", ["non_utf8", "chmod"])
+def test_a_broken_override_page_offers_no_editor_to_overwrite_it_with(tmp_path, mode):
+    """Reset, deliberately, and NOT a textarea seeded with the default.
+
+    A Save form pre-filled with default text turns one careless click into a
+    silent overwrite of a file this process could not read — the user's own
+    customisation, gone, with nothing having displayed it. So the broken
+    prompt's page carries the reset control and no editor, and the opening line
+    of the default text is not in the response.
+    """
+    from verinote.prompts.library import prompt_override_path
+
+    c = _prompts_client(tmp_path)
+
+    with _broken_override(prompt_override_path(tmp_path, "extraction"), mode):
+        r = c.get("/prompts?prompt=extraction")
+
+    assert r.status_code == 200
+    assert 'name="prompt_text"' not in r.text
+    assert "Save prompt" not in r.text
+    assert "You are a fact extractor" not in r.text
+
+
+@pytest.mark.parametrize("kind", ["non_utf8", "chmod"])
+def test_no_reset_is_offered_when_the_override_is_not_what_failed(
+    tmp_path, monkeypatch, kind
+):
+    """This page's one destructive control must not be offered on a guess.
+
+    `get_prompt` reads the packaged default as well as the KB override, and the
+    clause above it is deliberately broad, so a load failure does not by itself
+    say which file broke. Both states below were driven against a REAL damaged
+    install (packaged `defaults/extraction.md` at `0o000`) before the gate
+    existed: with nothing saved the page offered a Reset that deleted nothing
+    and fixed nothing, and with a healthy override beside it the same button
+    destroyed the user's file and left the page just as broken. The exception is
+    raised here rather than by corrupting the installed package, because what is
+    under test is the gate, which reads the disk and not the exception.
+    """
+    from verinote.prompts import library
+    from verinote.prompts.library import prompt_override_path
+
+    # The state this stands in for exists because `get_prompt` reads the
+    # packaged default too: `prompts/library.py` calls `default_prompt_text`
+    # before it looks at the override. (It is not the only way into the clause —
+    # see `test_an_unreadable_prompts_directory_still_renders_the_page` — but it
+    # is the one this test describes.) Couple the two, so this test cannot
+    # quietly outlive that read.
+    reached = []
+    real_default_text = library.default_prompt_text
+
+    def spy_default_text(prompt_id):
+        reached.append(prompt_id)
+        return real_default_text(prompt_id)
+
+    monkeypatch.setattr(library, "default_prompt_text", spy_default_text)
+    library.get_prompt(tmp_path, "extraction")
+
+    assert reached == ["extraction"]
+
+    if kind == "non_utf8":
+        exc = UnicodeDecodeError("utf-8", b"\xff\xfe", 0, 1, "invalid start byte")
+    else:
+        exc = PermissionError(13, "Permission denied")
+
+    c = _prompts_client(tmp_path)
+    override = prompt_override_path(tmp_path, "extraction")
+
+    def raise_it(root, prompt_id):
+        raise exc
+
+    monkeypatch.setattr(webapp, "get_prompt", raise_it)
+
+    nothing_saved = c.get("/prompts?prompt=extraction")
+
+    assert nothing_saved.status_code == 200
+    assert "prompt extraction could not be loaded" in nothing_saved.text
+    assert 'action="/prompts/reset"' not in nothing_saved.text
+
+    override.parent.mkdir(parents=True, exist_ok=True)
+    override.write_text("My own extraction prompt.\n", encoding="utf-8")
+
+    healthy_override = c.get("/prompts?prompt=extraction")
+
+    assert healthy_override.status_code == 200
+    assert 'action="/prompts/reset"' not in healthy_override.text
+    assert override.read_text(encoding="utf-8") == "My own extraction prompt.\n"
+
+
+def test_no_reset_is_offered_for_a_directory_at_the_override_path(tmp_path, monkeypatch):
+    """The gate answers about a file `get_prompt` would open, not about any path.
+
+    `get_prompt` opens the override only behind `override_path.is_file()`, so a
+    directory there is not something it ever read, and `delete_prompt_override`
+    could not remove it either — `unlink()` on a directory raises. Without the
+    same guard on the gate the read fails, the page takes that for "unreadable",
+    and it offers a Reset whose POST is a bare 500.
+    """
+    from verinote.prompts.library import prompt_override_path
+
+    c = _prompts_client(tmp_path)
+    override = prompt_override_path(tmp_path, "extraction")
+    override.mkdir(parents=True)
+
+    def raise_it(root, prompt_id):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(webapp, "get_prompt", raise_it)
+
+    r = c.get("/prompts?prompt=extraction")
+
+    assert r.status_code == 200
+    assert "prompt extraction could not be loaded" in r.text
+    assert 'action="/prompts/reset"' not in r.text
+    assert override.is_dir()  # the GET left it alone
+
+
+def test_an_unreadable_prompts_directory_still_renders_the_page(tmp_path):
+    """The gate must not raise: it runs inside the handler that builds this page.
+
+    `Path.is_file()` propagates a `PermissionError` from an unreadable parent
+    directory rather than answering False, and `get_prompt` reaches it too — it
+    guards its own read with `is_file()` — so this state gets to the load
+    failure clause with no corrupt file and no damaged install. The clause then
+    calls the gate, from a line inside no `try` of its own. Hoisting the gate's
+    `is_file()` guard above its `try` makes the raise escape both, and
+    `GET /prompts` answers 500: the page #539 exists to keep alive, killed by
+    the guard added to make its Reset control honest. Measured over every test
+    in this file, nothing else catches that mutation, which is why this test is
+    here.
+
+    The POST is a different matter and is not asserted: `delete_prompt_override`
+    calls `path.exists()`, which raises the same way. What is pinned here is the
+    GET, and 200 is what it answers today.
+    """
+    from verinote.prompts.library import prompt_override_path
+
+    c = _prompts_client(tmp_path)
+    prompts_dir = prompt_override_path(tmp_path, "extraction").parent
+    prompts_dir.mkdir(parents=True, exist_ok=True)
+    prompts_dir.chmod(0o000)
+    try:
+        try:
+            (prompts_dir / "extraction.md").is_file()
+        except PermissionError:
+            pass
+        else:
+            pytest.skip("this user stats straight through mode 0o000")
+
+        r = c.get("/prompts?prompt=extraction")
+
+        assert r.status_code == 200
+        assert "prompt extraction could not be loaded" in r.text
+        assert 'value="query-translation"' in r.text  # the selector still routes away
+    finally:
+        prompts_dir.chmod(0o700)

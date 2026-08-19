@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: MPL-2.0
+from contextlib import contextmanager
 import sqlite3
 import sys
 import unicodedata
@@ -2766,3 +2767,65 @@ def test_ui_is_exempt_from_corrupt_config(tmp_path, monkeypatch, capsys):
 
     assert cli.main(["ui", "--no-browser"]) == 0
     assert started == [True]  # dispatch reached cmd_ui, not the refusal
+
+
+@contextmanager
+def _broken_override(path: Path, mode: str):
+    """Make a saved prompt override unreadable, the two ways these tests use.
+
+    Copy per test file rather than a shared import: the repo keeps its chmod
+    probe local (`tests/test_cloud_adapters.py`). The skip is a RUNTIME one after
+    an actual read attempt, not a `geteuid` marker, so it also covers a
+    filesystem that ignores the mode bit.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if mode == "non_utf8":
+        path.write_bytes(b"at most {max_facts} facts \xff\xfe and a bad byte")
+        yield
+        return
+    path.write_text("at most {max_facts} facts\n", encoding="utf-8")
+    path.chmod(0o000)
+    try:
+        try:
+            path.read_text(encoding="utf-8")
+        except PermissionError:
+            pass
+        else:
+            pytest.skip("this user reads straight through mode 0o000")
+        yield
+    finally:
+        # `exists()` because a caller may legitimately REMOVE the file inside
+        # the block (`tests/test_web.py`'s reset test does).
+        if path.exists():
+            path.chmod(0o600)
+
+
+@pytest.mark.parametrize("mode", ["non_utf8", "chmod"])
+def test_an_unreadable_extraction_limit_hint_is_still_an_llm_error(
+    tmp_path, monkeypatch, capsys, fake_client, mode
+):
+    """An unreadable override reaches the user as `extraction failed:` (#539).
+
+    Separate from the sibling in `test_chunk_claim_release.py` rather than a
+    parametrisation of it: that test's subject is the job row, and a host that
+    skips the `chmod` cell must not leave that subject conditionally unproven.
+    This one takes a path argument, so it runs `sync`'s legacy branch — the same
+    observable, reached a second way.
+    """
+    from verinote.prompts.library import prompt_override_path
+
+    _env(monkeypatch, tmp_path)
+    src = tmp_path / "note.txt"
+    src.write_text("Ada was born in London.\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "verinote.llm.get_client",
+        lambda cfg: fake_client([ExtractedFact("Ada", "born_in", "London", 0.9)]),
+    )
+
+    with _broken_override(prompt_override_path(tmp_path, "extraction-limit-hint"), mode):
+        assert cli.main(["sync", str(src)]) == 1
+
+    assert (
+        "extraction failed: prompt extraction-limit-hint could not be loaded"
+        in capsys.readouterr().err
+    )

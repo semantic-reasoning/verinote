@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
+from contextlib import contextmanager
 import json
+from pathlib import Path
 
 import pytest
 
@@ -11,7 +13,11 @@ from verinote.pipeline import (
     process_extraction_job,
     sync_sources,
 )
-from verinote.pipeline.extract import _canonical_fact
+from verinote.pipeline.extract import (
+    _canonical_fact,
+    _extract_chunk_facts,
+    _focused_role_schema_hint,
+)
 from verinote.pipeline.query import query_path
 from verinote.pipeline.verify import verify
 from verinote.policy_defaults import RELATION_ALIASES_RELPATH
@@ -1516,3 +1522,60 @@ def test_multi_source_demotes_only_the_edited_source_and_a_witness_still_answers
     assert s.get_fact(b_fact["id"])["status"] == "confirmed"  # the witness is untouched
     # The engine still answers London -- through B, the live witness.
     assert verify(s).answers == ["q1: London"]
+
+
+@contextmanager
+def _broken_override(path: Path, mode: str):
+    """Make a saved prompt override unreadable, the two ways these tests use.
+
+    Copy per test file rather than a shared import: the repo keeps its chmod
+    probe local (`tests/test_cloud_adapters.py`). The skip is a RUNTIME one after
+    an actual read attempt, not a `geteuid` marker, so it also covers a
+    filesystem that ignores the mode bit.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if mode == "non_utf8":
+        path.write_bytes(b"at most {max_facts} facts \xff\xfe and a bad byte")
+        yield
+        return
+    path.write_text("at most {max_facts} facts\n", encoding="utf-8")
+    path.chmod(0o000)
+    try:
+        try:
+            path.read_text(encoding="utf-8")
+        except PermissionError:
+            pass
+        else:
+            pytest.skip("this user reads straight through mode 0o000")
+        yield
+    finally:
+        # `exists()` because a caller may legitimately REMOVE the file inside
+        # the block (`tests/test_web.py`'s reset test does).
+        if path.exists():
+            path.chmod(0o600)
+
+
+@pytest.mark.parametrize("mode", ["non_utf8", "chmod"])
+def test_a_broken_focused_role_override_is_an_llm_error(tmp_path, fake_client, mode):
+    """An unreadable focused-role override is named, not raised raw (#539).
+
+    The second half is about PLACEMENT, not normalisation: the hint is resolved
+    OUTSIDE the `except LLMError: pass` that guards the focused second pass, so
+    a broken override still reaches the caller. Move the resolution inside that
+    `try` and this assertion goes red — which it could not do before #539,
+    because what the read raised was not an `LLMError` for that clause to
+    swallow.
+    """
+    path = tmp_path / "policy" / "prompts" / "focused-role-extraction.md"
+    named = r"^prompt focused-role-extraction could not be loaded"
+
+    with _broken_override(path, mode):
+        with pytest.raises(LLMError, match=named):
+            _focused_role_schema_hint("", root=tmp_path)
+
+        with pytest.raises(LLMError, match=named):
+            _extract_chunk_facts(
+                fake_client([ExtractedFact("Ada", "role", "CTO", 0.9)]),
+                source_text="Ada는 이 회사의 CTO다.",
+                root=tmp_path,
+            )
