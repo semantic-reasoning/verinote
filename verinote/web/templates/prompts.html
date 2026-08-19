@@ -48,4 +48,19 @@
   {% endif %}
 </section>
 {% endif %}
+
+{% if reset_only %}
+<section class="prompt-editor">
+  <div class="prompt-meta">
+    <span class="badge">Could not load</span>
+    <span><code>{{ selected_prompt }}</code></span>
+    <span>{{ override_path }}</span>
+  </div>
+  <p class="muted">This prompt's text is not shown and cannot be edited here. Reset to default deletes the override file named above; this prompt then falls back to the built-in default.</p>
+  <form class="prompt-reset" action="/prompts/reset" method="post">
+    <input type="hidden" name="prompt_id" value="{{ selected_prompt }}">
+    <button class="btn ghost" type="submit">Reset to default</button>
+  </form>
+</section>
+{% endif %}
 {% endblock %}

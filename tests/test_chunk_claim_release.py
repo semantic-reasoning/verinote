@@ -762,19 +762,24 @@ def test_a_source_that_crashes_does_not_bury_a_sibling_job_that_finished(
 
 
 def test_a_prompt_that_cannot_be_read_leaves_the_untouched_job_pending(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, capsys
 ):
     """A failure BEFORE the job-owning call must not write the job row.
 
     `cmd_sync` creates the job row — this source has none to continue — and then
     resolves the extraction schema hint, which reads `policy/prompts/` off disk.
-    `extraction_schema_hint` wraps `PromptError` and nothing else, so an override
-    that is not valid UTF-8 escapes as the `UnicodeDecodeError` `Path.read_text`
-    raised — a real path, and one that reaches this line before
-    `process_extraction_job` is entered. The job is left exactly as planning found
-    it — `pending` here, `failed` on a retry pass (both measured): no chunk was
+    An override that is not valid UTF-8 makes `Path.read_text` raise, and
+    `extraction_schema_hint`'s second clause turns that into an `LLMError` naming
+    the prompt (#539); before #539 the `UnicodeDecodeError` escaped `cli.main`
+    itself. Either way it is a real path, and one that reaches this line before
+    `process_extraction_job` is entered. What this test is about is what the job
+    row does, and that did not move: the job is left exactly as planning found it
+    — `pending` here, `failed` on a retry pass (both measured): no chunk was
     claimed, nothing was attempted, and fixing the file must let the next sync
-    pick it up untouched.
+    pick it up untouched. The exit path changed with the type — `cmd_sync`'s own
+    `except LLMError` prints `extraction failed: …` and returns 1 (measured) —
+    which is why the assertion below is an exit code and a message rather than a
+    `pytest.raises`.
 
     TWO THINGS KEEP THAT TRUE and this test does not distinguish them, deliberately
     — it asserts the outcome both are there for. The hint is resolved OUTSIDE the
@@ -801,8 +806,11 @@ def test_a_prompt_that_cannot_be_read_leaves_the_untouched_job_pending(
         lambda cfg: _ChunkClient(),  # must never be reached
     )
 
-    with pytest.raises(UnicodeDecodeError):
-        cli.main(["sync"])
+    assert cli.main(["sync"]) == 1
+    # Not decoration: a bare `== 1` is a proposition an unrelated failure path
+    # could satisfy, and this test's client is deliberately unreachable, so a
+    # silent behaviour change could turn it green for the wrong reason.
+    assert "prompt extraction-limit-hint could not be loaded" in capsys.readouterr().err
 
     store = Store(tmp_path / "kb.sqlite")
     jobs = list(store._conn.execute("SELECT id, status FROM extraction_jobs"))

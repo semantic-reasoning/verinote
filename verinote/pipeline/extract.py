@@ -940,6 +940,10 @@ def _focused_role_schema_hint(schema_hint: str, *, root=None) -> str:
         focused_role_prompt = render_prompt(root, "focused-role-extraction")
     except PromptError as exc:
         raise LLMError(str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - normalise every render failure
+        raise LLMError(
+            f"prompt focused-role-extraction could not be loaded: {exc}"
+        ) from exc
     if not schema_hint:
         return focused_role_prompt
     return f"{schema_hint}\n{focused_role_prompt}"
