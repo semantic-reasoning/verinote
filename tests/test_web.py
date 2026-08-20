@@ -1871,6 +1871,197 @@ def test_worker_busy_does_not_mark_the_job_failed(tmp_path, monkeypatch, fake_cl
     assert "extraction_job_failed" not in _job_event_types(cfg, job_id)
 
 
+# --- #525: the worker's terminal clauses re-read before they write ------------
+
+
+def _join_worker(job_id, *, timeout: float = 5.0) -> None:
+    """Wait for THE worker thread, not for a clock.
+
+    `_wait_for(status == "done")` is useless as a settle point here: on the broken
+    tree `mark_chunk_done` has ALREADY written `done` before `finish_extraction_job`
+    runs, so it returns immediately and the whole verdict falls back onto whatever
+    sleep follows it. `_start_source_extraction` names its thread, so the test can
+    join the actual worker and know the handler has run — or find it already gone,
+    which is the same guarantee.
+    """
+    name = f"verinote-source-extract-{job_id}"
+    for thread in threading.enumerate():
+        if thread.name == name:
+            thread.join(timeout=timeout)
+            assert not thread.is_alive(), "the worker thread did not finish"
+
+
+def _fail_job_spy(monkeypatch):
+    """Count `fail_extraction_job` calls, so "declined" is a POSITIVE assertion.
+
+    `_join_worker` already rules out the "the write has not landed yet" reading of a
+    still-`done` row, so this is not about timing. It distinguishes a guard that
+    DECLINED from one that wrote a `failed` row some later step happened to restore:
+    the row and the event tell you the end state, and only the call count tells you
+    the write never happened.
+    """
+    calls = []
+    real = store_db.Store.fail_extraction_job
+
+    def spy(self, job_id, message):
+        calls.append((job_id, message))
+        return real(self, job_id, message)
+
+    monkeypatch.setattr(store_db.Store, "fail_extraction_job", spy)
+    return calls
+
+
+def _raise_on_finish(monkeypatch, exc):
+    """Make `finish_extraction_job` raise AFTER `mark_chunk_done` wrote `done`.
+
+    This is the reachable shape of #525 and needs no invention: the chunk loop marks
+    the last chunk `done` (which writes the JOB `done` too), and only then does
+    `process_extraction_job` call `finish_extraction_job`. Anything raised there
+    escapes with the job already complete.
+    """
+
+    def boom(self, job_id):
+        raise exc
+
+    monkeypatch.setattr(store_db.Store, "finish_extraction_job", boom)
+
+
+def test_worker_leaves_a_done_job_done_when_finishing_it_raises(
+    tmp_path, monkeypatch, fake_client, caplog
+):
+    """The regression #525 is about: a completed job buried by a later failure.
+
+    Measured on the tree before the fix, driving the real worker: the job came to
+    rest `failed` with 'analysis failed: post-done store error', its chunk `done`,
+    and an `extraction_job_failed` event appended beside it. Every chunk had
+    completed and its candidate facts were committed — the KB reporting a run it
+    finished as one that failed (#194/#239).
+
+    The event assertion is not redundant with the status one: the row could read
+    `done` while `fail_extraction_job` had appended the event anyway.
+    """
+    cfg, job_id, _ = _job_kb(tmp_path, with_policy=True)
+    monkeypatch.setattr(
+        webapp,
+        "get_client",
+        lambda cfg: fake_client([ExtractedFact("X", "is_a", "Y", 0.9)]),
+    )
+    failures = _fail_job_spy(monkeypatch)
+    _raise_on_finish(monkeypatch, RuntimeError("post-done store error"))
+
+    with caplog.at_level(logging.WARNING, logger="verinote.web.app"):
+        create_app(cfg)
+        _join_worker(job_id)
+
+    job = _job_row(cfg, job_id)
+    assert job["status"] == "done", "a completed job was buried by a post-`done` error"
+    # the real completion message, not merely the absence of a failure one: a guard
+    # that declined the write but cleared the message would pass the weaker check.
+    assert job["message"] == "Analysis complete: 1/1 chunk(s)"
+    assert "extraction_job_failed" not in _job_event_types(cfg, job_id)
+    assert failures == [], "the terminal clause wrote over a job it no longer owned"
+    # DECLINING IS NOT DROPPING. Nothing else records this error — the job keeps the
+    # `done` row `mark_chunk_done` wrote, and `finish_extraction_job` raised before
+    # its own completion event and before the run summary — so if the guard did not
+    # log, a real sqlite/WAL-class failure would leave no trace anywhere at all.
+    assert "not recording on the job row" in caplog.text
+    assert "post-done store error" in caplog.text
+    # `exc_info` specifically, not just the message: the web message is NOT
+    # type-qualified, so for a bare `ValueError()` it degrades to "analysis failed: "
+    # and the traceback is the only thing left naming what was raised. Asserting the
+    # message text alone does not pin it — that string is in the message too.
+    assert "RuntimeError" in caplog.text
+    assert caplog.records[-1].exc_info is not None
+    # nothing else recorded this run either, which is why the log line above is the
+    # whole of the record: `finish_extraction_job` raised before its own event.
+    assert "extraction_job_completed" not in _job_event_types(cfg, job_id)
+    with Store(cfg.db_path) as store:
+        store.init_schema()
+        assert [r["status"] for r in store.source_chunks(job_id)] == ["done"]
+
+
+def test_worker_leaves_a_done_job_done_when_finishing_it_raises_an_llm_error(
+    tmp_path, monkeypatch, fake_client, caplog
+):
+    """The `except LLMError` half of the same guard. CHARACTERISATION, not a scenario.
+
+    No production path raises an `LLMError` with the job already `done`: the chunk
+    loop swallows `LLMError` through `_release_claimed_chunk` and continues, the two
+    calls after `process_extraction_job` returns carry their own guards, and
+    `finish_extraction_job` raises no `LLMError` of its own. The exception is
+    injected here. What the test pins is that the guard on that clause is the same
+    guard — "does this call still own this job?" is not a question the exception
+    TYPE answers — so the two clauses cannot drift apart.
+
+    The clause ITSELF is live, and this test says nothing against that: an
+    unreadable prompt override reaches it through `_extraction_schema_hint` (#539),
+    and `process_extraction_job` raises `LLMError` for a missing job or source. On
+    all of those the job is still `pending` and the guard correctly permits the
+    write — which is what `test_a_broken_extraction_limit_hint_is_extraction_failed
+    _not_analysis_failed` pins.
+    """
+    cfg, job_id, _ = _job_kb(tmp_path, with_policy=True)
+    monkeypatch.setattr(
+        webapp,
+        "get_client",
+        lambda cfg: fake_client([ExtractedFact("X", "is_a", "Y", 0.9)]),
+    )
+    failures = _fail_job_spy(monkeypatch)
+    _raise_on_finish(monkeypatch, LLMError("post-done llm error"))
+
+    with caplog.at_level(logging.WARNING, logger="verinote.web.app"):
+        create_app(cfg)
+        _join_worker(job_id)
+
+    job = _job_row(cfg, job_id)
+    assert job["status"] == "done"
+    assert job["message"] == "Analysis complete: 1/1 chunk(s)"
+    assert "extraction_job_failed" not in _job_event_types(cfg, job_id)
+    assert failures == []
+    assert "not recording on the job row" in caplog.text
+    assert "post-done llm error" in caplog.text
+    assert "LLMError" in caplog.text
+    assert caplog.records[-1].exc_info is not None
+    assert "extraction_job_completed" not in _job_event_types(cfg, job_id)
+
+
+def test_worker_still_fails_a_claimed_job_whose_chunk_crashed(
+    tmp_path, monkeypatch, fake_client
+):
+    """The other side of the predicate: `running` must still be written `failed`.
+
+    THIS IS THE TEST THAT CONSTRAINS THE GUARD FROM BELOW, and the reason the
+    predicate is "refuse `done`" rather than anything broader. Every other test
+    around it reaches the terminal clauses with the job `pending` (stubbed before
+    the claim) or `done` (finished, then broken). None drives the ordinary case: a
+    job this worker genuinely claimed, whose chunk then failed for a non-`LLMError`
+    reason. `process_extraction_job` releases the claim and re-raises, and
+    `_refresh_extraction_job` deliberately keeps an owned job `running` across that
+    (#337), so the exception arrives with the job `running` and MUST be recorded.
+
+    Widen the refusal set to `{"done", "running"}`, or invert the predicate, and
+    every other test in this file still passes while the failure the clause exists
+    to report is silently swallowed. This one goes red.
+
+    No stub stands in for `process_extraction_job`: the real one runs, so the status
+    the clause sees is the one production would produce.
+    """
+    cfg, job_id, _ = _job_kb(tmp_path, with_policy=True)
+    monkeypatch.setattr(
+        webapp,
+        "get_client",
+        lambda cfg: fake_client(error=RuntimeError("chunk exploded")),
+    )
+
+    create_app(cfg)
+    _join_worker(job_id)
+
+    job = _job_row(cfg, job_id)
+    assert job["status"] == "failed", "a claimed job whose chunk crashed was not recorded"
+    assert "chunk exploded" in job["message"], "the cause was dropped from the job row"
+    assert "extraction_job_failed" in _job_event_types(cfg, job_id)
+
+
 def test_startup_revives_a_job_left_running_by_a_crash(tmp_path, monkeypatch, fake_client):
     """A job a crash left `running` (with a `running` chunk) is revived to `done` (#242).
 
@@ -2035,12 +2226,16 @@ def test_worker_leaves_a_done_job_done_when_auto_accept_raises(
     tmp_path, monkeypatch, fake_client
 ):
     # #340 exception-safety, the sibling of the #329 sweep guard directly above it:
-    # auto-accept is a call inside the worker's try/except, so WITHOUT the local
-    # guard an auto-accept error would reach the outer `except Exception ->
-    # fail_extraction_job` and retroactively flip an already-`done` extraction to
-    # `failed` — the KB lying about its own run state (#194/#239). The extraction
-    # genuinely succeeded and its facts are already committed, so the guard must
-    # keep the job `done`.
+    # auto-accept is a call inside the worker's try/except, so it USED TO BE that
+    # without the local guard an auto-accept error reached the outer `except
+    # Exception -> fail_extraction_job` and retroactively flipped an already-`done`
+    # extraction to `failed` — the KB lying about its own run state (#194/#239).
+    # Since #525 the outer clause re-reads and declines a `done` job, so this test
+    # no longer distinguishes the local guard: MEASURED, removing that guard leaves
+    # it green. What it still pins is that the job SURVIVES an auto-accept error,
+    # whichever layer contains it — the extraction genuinely succeeded and its
+    # facts are already committed. `test_worker_leaves_a_done_job_done_when_
+    # finishing_it_raises` is what now pins the outer re-read itself.
     cfg, job_id, _ = _auto_accept_kb(tmp_path)  # auto-accept on, policy present
     monkeypatch.setattr(
         webapp,
@@ -4313,10 +4508,16 @@ def test_worker_leaves_a_done_job_done_when_the_stale_sweep_raises(
     tmp_path, monkeypatch, fake_client
 ):
     # #329 exception-safety: the sweep is a sibling call inside the worker's
-    # try/except, so WITHOUT the local guard a sweep error would reach the outer
-    # `except Exception -> fail_extraction_job` and retroactively flip a completed
-    # extraction to `failed` (the "KB lies about its own run state" class #194/#239
-    # closed). The local guard must keep an already-`done` job `done`.
+    # try/except, so it USED TO BE that without the local guard a sweep error
+    # reached the outer `except Exception -> fail_extraction_job` and retroactively
+    # flipped a completed extraction to `failed` (the "KB lies about its own run
+    # state" class #194/#239 closed). Since #525 the outer clause re-reads and
+    # declines a `done` job, so this test no longer distinguishes the local guard:
+    # MEASURED, removing that guard leaves it green. What it still pins is that a
+    # sweep error leaves the completed job `done`, whichever layer contains it.
+    # Note the Config below leaves `auto_accept_recommendations` at its `False`
+    # default, so this fixture does NOT exercise the sweep guard's one remaining
+    # effect — letting auto-accept run after a failed sweep.
     cfg = Config(
         root=tmp_path,
         db_path=tmp_path / "kb.sqlite",

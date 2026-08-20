@@ -263,9 +263,11 @@ def _caller_marks_job_failed(store: Store, job_id: int, message: str) -> None:
     """Stand-in for a caller's `except Exception`. NOT code under test.
 
     `process_extraction_job` does not write the job row when a non-`LLMError`
-    escapes; its callers do — `_start_source_extraction` (`web/app.py`), and
-    `cmd_sync` (`cli.py`) since #488. A test that needs a job in its post-failure
-    resting state performs that write itself.
+    escapes; its callers do — `_start_source_extraction` (`web/app.py`, #525), and
+    `cmd_sync` (`cli.py`) since #488 — when their status re-read permits. Both
+    re-read now, so neither writes over a job it no longer owns; this stand-in
+    stands in for the path where the write does happen. A test that needs a job in
+    its post-failure resting state performs that write itself.
     """
     store.fail_extraction_job(job_id, message)
 
