@@ -926,7 +926,7 @@ def _edge_state_job(tmp_path, *, done: int = 1):
     store.mark_extraction_job_running(job_id)
     for row in store.source_chunks(job_id)[:done]:
         store.mark_chunk_running(int(row["id"]))
-        store.mark_chunk_done(int(row["id"]), candidates=1)
+        store.mark_chunk_done(int(row["id"]))
     _put_job_in_the_edge_state(store, job_id, "analysis failed: RuntimeError: crash")
     assert int(store.get_extraction_job(job_id)["failed_chunks"]) == 0
     return store, source_id, job_id

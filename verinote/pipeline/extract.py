@@ -257,8 +257,9 @@ def plan_source_extraction(
     A job rolled back to `pending` (see `_halt_extraction_job`) still holds every
     chunk it finished, and the machinery to carry on already works —
     `next_pending_chunk` skips `done` chunks, `claim_pending_extraction_job`
-    reclaims any in-flight one as it takes ownership, `candidate_count`
-    accumulates. What was missing was anyone
+    reclaims any in-flight one as it takes ownership, `candidate_count` is
+    recounted from the fact rows (#482 -- it accumulated when this was written,
+    which is precisely what made it driftable). What was missing was anyone
     asking for it, so every sync started from chunk zero and paid for the same
     LLM calls twice.
 
@@ -459,6 +460,15 @@ class ChunkedExtractionResult:
     are what *this* call did. Once a job can be resumed the two diverge, and a
     caller that prints the job total as "this run extracted N candidates" is
     reporting work it did not do.
+
+    BOTH CANDIDATE NUMBERS ARE COUNTED FROM THE FACT ROWS, NOT ACCUMULATED (#482).
+    `candidates` is the job column, recomputed from `facts.job_id` whenever
+    `Store._refresh_extraction_job` runs; `run_candidates` is counted from
+    `facts.run_id` at the moment this result is built. Neither can drift from the
+    KB the way the old `candidates += inserted` accumulator did when a chunk's
+    insert loop died with facts already written. The scope distinction above is
+    unchanged -- it is now enforced by which column each count is keyed on rather
+    than by remembering to add to the right variable.
     """
 
     job_id: int
@@ -521,7 +531,16 @@ def process_extraction_job(
         raise ExtractionJobBusyError(job_id)
     run_id = store.add_run(provider=job["provider"], model=job["model"])
 
-    candidates = 0
+    # `run_chunks` still accumulates; the candidate tally deliberately does not.
+    # It used to sit beside this as `candidates = 0` / `candidates += inserted`,
+    # and that accumulator was wrong in exactly the way #482 describes: a chunk
+    # whose insert loop raised part-way had already put facts in the KB, but the
+    # `+=` was below the call and never ran, so every number derived from it
+    # under-reported the KB. `store.run_candidate_count(job_id=..., run_id=...)`
+    # counts the rows this run actually wrote for this job, at the moment each
+    # report needs it. Chunk COUNTS have no such failure: a chunk is `done` or it
+    # is not, and `run_chunks` is incremented on the same line that records the
+    # completion.
     run_chunks = 0
     try:
         while chunk := store.next_pending_chunk(job_id):
@@ -583,7 +602,7 @@ def process_extraction_job(
                 # chunk carries no owner and a job carries no liveness lease
                 # (#242); one statement here shuts in a symptom, not the cause.
                 claimed_attempts = int(running["attempts"])
-                inserted = _extract_chunk(
+                _extract_chunk(
                     store,
                     client,
                     source_id=int(source["id"]),
@@ -596,8 +615,7 @@ def process_extraction_job(
                     chunk_id=chunk_id,
                     schema_hint=schema_hint,
                 )
-                store.mark_chunk_done(chunk_id, candidates=inserted)
-                candidates += inserted
+                store.mark_chunk_done(chunk_id)
                 run_chunks += 1
             except PolicyMissingError:
                 # Not this chunk's failure: the KB went halted. The outer handler
@@ -661,7 +679,7 @@ def process_extraction_job(
             job_id=job_id,
             run_id=run_id,
             source_path=str(source["path"]),
-            run_candidates=candidates,
+            run_candidates=store.run_candidate_count(job_id=job_id, run_id=run_id),
             run_chunks=run_chunks,
         )
         raise
@@ -686,7 +704,7 @@ def process_extraction_job(
             job_id=job_id,
             run_id=run_id,
             source_path=str(source["path"]),
-            run_candidates=candidates,
+            run_candidates=store.run_candidate_count(job_id=job_id, run_id=run_id),
             run_chunks=run_chunks,
         )
         raise
@@ -704,7 +722,7 @@ def process_extraction_job(
         candidates=int(final["candidate_count"]),
         completed_chunks=int(final["completed_chunks"]),
         failed_chunks=int(final["failed_chunks"]),
-        run_candidates=candidates,
+        run_candidates=store.run_candidate_count(job_id=job_id, run_id=run_id),
         run_chunks=run_chunks,
     )
 
@@ -715,9 +733,11 @@ def _release_claimed_chunk(store: Store, chunk_id: int, exc: BaseException) -> N
     ONE judgement point for "a claimed chunk that will not complete becomes
     `failed`". The status re-read is not a second decision: it asks whether the
     claim is still held at all. `mark_chunk_done` writes in several steps and can
-    raise after the chunk is already `done` (its `candidate_count` update or
-    `_refresh_extraction_job` failing), and flipping a completed chunk to `failed`
-    would destroy real work and desync the job counters.
+    raise after the chunk is already `done` (`_refresh_extraction_job` failing --
+    which since #482 is also where the `candidate_count` update lives, the separate
+    increment this used to name having been folded into it), and flipping a
+    completed chunk to `failed` would destroy real work and desync the job
+    counters.
 
     The message is type-qualified for unmodelled exceptions because `str()` of a
     bare `ValueError()` is the empty string, and a chunk whose `error` is empty
@@ -858,7 +878,19 @@ def _extract_chunk(
     artifact_id: int | None = None,
     chunk_id: int | None = None,
     schema_hint: str = "",
-) -> int:
+) -> None:
+    """Write one chunk's candidate facts. Returns nothing, and that is the point.
+
+    It used to return the number it inserted, and `process_extraction_job` carried
+    that number into `mark_chunk_done` and into a per-run accumulator. Both are
+    gone (#482): a return value describes what this call BELIEVES it did, and the
+    two counters that consumed it needed what the KB actually HOLDS. The gap
+    between those is the whole defect -- when this loop raises part-way, the facts
+    it already wrote are real and the count it never returned was zero. Both
+    tallies are now counted from `facts` (`Store._refresh_extraction_job` over
+    `job_id`, `Store.run_candidate_count` over the (job_id, run_id) pair), so
+    there is nothing left for a return value to be right or wrong about.
+    """
     facts = _extract_chunk_facts(
         client,
         source_text=source_text,
@@ -872,7 +904,6 @@ def _extract_chunk(
     assert_writable(store)
     aliases = _relation_aliases_or_error(store)
     rows = _candidate_rows(facts, source_text, relation_aliases=aliases)
-    inserted = 0
     for subject, relation, obj, f in rows:
         result = store.reconcile_fact(
             subject,
@@ -910,8 +941,6 @@ def _extract_chunk(
             locator="chunk",
             snippet=source_text,
         )
-        inserted += 1
-    return inserted
 
 
 def _extract_chunk_facts(

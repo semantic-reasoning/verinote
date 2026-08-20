@@ -1426,7 +1426,28 @@ class Store:
             )
             return cur.rowcount == 1
 
-    def mark_chunk_done(self, chunk_id: int, *, candidates: int = 0) -> None:
+    def mark_chunk_done(self, chunk_id: int) -> None:
+        """Mark one chunk `done`; the job's candidate tally follows from the facts.
+
+        THE `candidates` PARAMETER IS GONE (#482), and its absence is the fix. It
+        used to carry the chunk's insert count into
+        `candidate_count = candidate_count + ?` right here, which made the counter
+        an accumulation of what the pipeline *reported* rather than a statement
+        about what the KB *holds*. Those two diverge the moment
+        `_extract_chunk`'s insert loop raises part-way: the facts it already wrote
+        stay, this method never runs, and nothing counts them. Worse, the
+        divergence was permanent -- on retry `reconcile_fact` dedupes those same
+        facts (`if not result.created`), so the second pass returns a SHORT count
+        and records the short number for good. Measured on the pre-fix code: three
+        facts, a failure on the second, one retry, and the job came to rest `done`
+        holding three fact rows while reporting `candidate_count = 2`.
+
+        Keeping the parameter and ignoring it was the other option and is rejected:
+        an argument a caller can still pass, that silently decides nothing, is the
+        same species of falsehood as the counter it fed. `_refresh_extraction_job`
+        below now recounts the column from `facts.job_id`, so every caller's number
+        was already redundant -- deleting it makes each call site say so.
+        """
         with self._lock:
             chunk = self.get_source_chunk(chunk_id)
             if chunk is None:
@@ -1436,12 +1457,42 @@ class Store:
                 "updated_at = datetime('now') WHERE id = ?",
                 (chunk_id,),
             )
-            self._conn.execute(
-                "UPDATE extraction_jobs SET candidate_count = candidate_count + ?, "
-                "updated_at = datetime('now') WHERE id = ?",
-                (candidates, chunk["job_id"]),
-            )
             self._refresh_extraction_job(int(chunk["job_id"]))
+
+    def run_candidate_count(self, *, job_id: int, run_id: int) -> int:
+        """How many candidate facts THIS run actually put in the KB for THIS job.
+
+        The per-run sibling of the `candidate_count` derivation in
+        `_refresh_extraction_job`, and it exists for the same reason: the pipeline
+        used to accumulate this number as `candidates += inserted` and so lost it
+        whenever an insert loop died part-way. That accumulator fed the run
+        summaries written by `pipeline/extract.py::_halt_extraction_job` and
+        `::_back_off_from_locked_sidecar`, whose docstrings both promise the
+        numbers are "read back from the KB rather than assumed" -- and one of them
+        was not. Measured on the pre-fix code: two facts, the fact-term sidecar
+        locked on the second, and the run summary read "this run wrote 0
+        candidate(s) from 0 chunk(s)" while a fact carrying that very `run_id` sat
+        in the KB. `run_id` is minted once per `process_extraction_job` call, so
+        this count is exactly that invocation's own contribution and never a
+        resumed job's cumulative total.
+
+        KEYED ON BOTH COLUMNS THOUGH `run_id` ALONE WOULD DO TODAY. Verified in
+        this tree: `add_run` is called in exactly one place on this path
+        (`pipeline/extract.py::process_extraction_job`), once per invocation, and
+        that invocation drives exactly one `job_id` -- so every fact carrying this
+        `run_id` already carries this `job_id` and the second predicate selects
+        nothing extra. It is here because the QUESTION this method answers is
+        "what did this run contribute to this job", and a key that states the
+        whole question stays correct if a later change ever lets one run span
+        jobs. The cost is nothing: `idx_facts_run` still drives the lookup.
+
+        Not filtered by status, for the reason `_refresh_extraction_job` gives.
+        """
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM facts WHERE job_id = ? AND run_id = ?",
+            (job_id, run_id),
+        ).fetchone()
+        return int(row["n"]) if row is not None else 0
 
     def mark_chunk_failed(self, chunk_id: int, error: str) -> None:
         with self._lock:
@@ -1693,12 +1744,49 @@ class Store:
 
         Chunks already `done` stay `done` (their candidate facts are real, and
         re-extracting them would just re-do work), and `failed` chunks keep their
-        error. Only the in-flight `running` chunk is returned to the queue, which is
-        safe: it was rolled back *before* any of its facts were written.
+        error. Only the in-flight `running` chunk is returned to the queue.
 
-        Counters are untouched on purpose — `completed_chunks`/`failed_chunks`/
-        `candidate_count` count `done`/`failed` chunks, and this method changes
-        neither, so they stay true.
+        THAT USED TO BE JUSTIFIED HERE BY THE CLAIM THAT THE CHUNK "was rolled back
+        *before* any of its facts were written", AND THAT CLAIM WAS FALSE (#482).
+        It holds only for `LLMError`, whose three raise sites in `_extract_chunk`
+        all sit ahead of the insert loop. Anything raised INSIDE that loop -- a
+        `ValueError` out of slot validation, a `sqlite3` error, or the fact-term
+        sidecar going locked mid-loop -- leaves the facts written so far in the KB
+        while this method hands the chunk back to the queue. Requeueing is still
+        the right move (`pending` is the only status the documented remedy works
+        from), so what changed is the reasoning, not the behaviour: the requeued
+        chunk may well have facts behind it, and the counters are what must cope.
+
+        THE CHUNK COUNTERS are untouched on purpose --
+        `completed_chunks`/`failed_chunks` count `done`/`failed` chunks and this
+        method changes neither, so they stay true. `candidate_count` IS rewritten
+        here, and that is new in #482. Since a requeued chunk may have facts behind
+        it, this is the one rewind path a partially-inserted chunk reaches without
+        passing `_refresh_extraction_job`; leaving it alone would strand the column
+        until some later chunk completed, and permanently for a job nobody resumes.
+        `_refresh_job_candidate_count` is used rather than the full refresh
+        precisely so that `status` is NOT recomputed: this runs while the job's
+        owner still holds it, and re-deriving status there is the #337 regression.
+
+        The run-scoped number the user is shown on this path
+        (`pipeline/extract.py::_halt_extraction_job` and
+        `::_back_off_from_locked_sidecar`) comes from `Store.run_candidate_count`,
+        which counts at the moment of use and so is true independently of this.
+
+        WHY THE COUNTER IS DERIVED RATHER THAN THE CHUNK MADE TRANSACTIONAL. The
+        other way to make the premise above true again was to wrap the whole insert
+        loop in one transaction, so a mid-loop failure took its facts with it. That
+        was rejected. `add_fact` already opens its own `BEGIN`/`COMMIT` per fact on
+        this autocommit connection, and a nested `BEGIN` raises
+        `sqlite3.OperationalError: cannot start a transaction within a transaction`
+        -- so the chunk-wide transaction would have to hoist transaction ownership
+        out of the one function every fact-writing path shares. Even granting that,
+        `add_fact` writes the DuckDB fact-term sidecar inside that same transaction
+        with a single-fact compensation, and a SQLite `ROLLBACK` cannot reach
+        DuckDB: the chunk-wide version needs a chunk-wide compensation, which is
+        the sidecar write-ordering contract of #169/#170/#173 reopened. Deriving
+        the count touches none of that, and unlike the transaction it also repairs
+        KBs that have ALREADY drifted, since the next refresh recounts them.
 
         A `canceled` job is left alone ENTIRELY — job row, chunks and history. A
         human took it out of the queue, and reviving its in-flight chunk would put
@@ -1725,6 +1813,16 @@ class Store:
                 "updated_at = datetime('now') WHERE id = ?",
                 (message, job_id),
             )
+            # The requeued chunk may have facts behind it (see the docstring): a
+            # non-`LLMError` raised inside `_extract_chunk`'s insert loop leaves
+            # what it already wrote. This is the one rewind a partially-inserted
+            # chunk reaches without passing `_refresh_extraction_job`, so without
+            # this line the column would sit stale until some later chunk
+            # completed -- and for a job that is never resumed, permanently.
+            # Count only; recomputing `status` here would drop an owned job out
+            # from under its owner (#337). Placed AFTER the `canceled` early
+            # return above, which must write nothing at all.
+            self._refresh_job_candidate_count(job_id)
             after = self.get_extraction_job(job_id)
             if after is not None:
                 self._add_fact_event(
@@ -3339,6 +3437,23 @@ class Store:
             "CREATE INDEX IF NOT EXISTS idx_facts_source_term_token "
             "ON facts(source_id, term_token)"
         )
+        # Here for exactly the reason above, and it is not a theoretical one:
+        # putting these in schema.sql raised `sqlite3.OperationalError: no such
+        # column: job_id` on the legacy fixture in
+        # `tests/test_store.py::test_migration_adds_the_stale_column_to_a_legacy_facts_table`,
+        # because that script runs before the `ADD COLUMN job_id` above.
+        #
+        # #482 made `candidate_count` a COUNT over `facts.job_id`, recomputed on
+        # every chunk completion, and the run tally a COUNT over the
+        # (job_id, run_id) pair. Unindexed each is a table scan per chunk. The
+        # gap is about two orders of magnitude: over a synthetic 200k-row `facts`
+        # table, `COUNT(*) ... WHERE job_id = ?` ran ~200x slower without an index
+        # here than with one (single run, 200 calls averaged, one host — enough to
+        # settle whether the index is needed, not a portable benchmark figure).
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_facts_job ON facts(job_id)")
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_facts_run ON facts(run_id, job_id)"
+        )
         # #311: superseded is terminal on the content axis too, and for the same
         # reason it is terminal on the status axis. A reject is a judgment about
         # a *specific claim*; rewriting the body afterwards leaves the audit
@@ -3522,7 +3637,68 @@ class Store:
             self._rollback_quietly()
             raise
 
+    def _refresh_job_candidate_count(self, job_id: int) -> None:
+        """Recount `candidate_count` from the fact rows, and touch nothing else.
+
+        The narrow half of `_refresh_extraction_job`, split out so that
+        `rollback_extraction_job` can correct the count WITHOUT recomputing
+        `status`. That distinction is the whole reason this exists: a rollback
+        happens while the job's owner is still holding it, and re-deriving status
+        underneath the owner is the #337 regression that
+        `_refresh_extraction_job`'s `current_status == "running"` branch was
+        written to prevent. Counting facts carries no such hazard -- it reads
+        `facts` and writes one integer.
+
+        Caller holds `self._lock`. `updated_at` is deliberately not stamped here:
+        every caller already stamps it in its own UPDATE, and a second write would
+        only move the clock twice for one logical change.
+        """
+        self._conn.execute(
+            "UPDATE extraction_jobs SET candidate_count = "
+            "(SELECT COUNT(*) FROM facts WHERE job_id = ?) WHERE id = ?",
+            (job_id, job_id),
+        )
+
     def _refresh_extraction_job(self, job_id: int, *, final: bool = False) -> None:
+        """Re-derive the job row from the rows that are actually there.
+
+        `completed_chunks`/`failed_chunks`/`status`/`message` were always computed
+        from `source_chunks` here. `candidate_count` JOINED THEM IN #482; before
+        that it was the one number on this row that was accumulated instead --
+        `mark_chunk_done` added each chunk's reported insert count to it -- and so
+        the one that could drift away from the KB it claims to describe. It did:
+        when `_extract_chunk`'s insert loop raised part-way, its already-written
+        facts were counted by nobody, and a retry made the shortfall permanent
+        because `reconcile_fact` deduped those facts and returned a smaller number
+        the second time. Counting rows cannot drift; an accumulator always can.
+
+        NOT FILTERED BY `status`. The column counts what this job CREATED, and it
+        has never been decremented as a fact moves candidate -> confirmed ->
+        accepted, or is superseded by a reviewer. Adding `AND status = 'candidate'`
+        would look like a tightening and would instead make a finished job's
+        candidate count fall as humans work through the review queue -- a change of
+        meaning wearing a bugfix's clothes. `job_id` alone is the whole predicate.
+
+        Hard deletes cannot desync it either: both paths that delete fact rows
+        (`DELETE FROM facts WHERE source_id = ?` at the source purge, and the
+        status-scoped reset below it) take the source's `extraction_jobs` with
+        them, directly or by `ON DELETE CASCADE` with `PRAGMA foreign_keys = ON`,
+        so no surviving job row is left to under-report.
+
+        WHAT THIS DOES NOT REACH are the paths that rewind a job WITHOUT routing
+        through here, and they are handled rather than ignored.
+        `rollback_extraction_job` is the one a partially-inserted chunk actually
+        arrives at, and it calls `_refresh_job_candidate_count` itself -- the
+        count-only half, deliberately not this method, because recomputing
+        `status` for a job whose owner still holds it is the #337 regression the
+        `current_status == "running"` branch below exists to prevent.
+        `fail_extraction_job` writes the job row directly and
+        `claim_extraction_job_for_retry` uses raw SQL on purpose (#337); neither
+        recounts, so a job failed with a part-written chunk carries a stale column
+        until it is retried and a chunk completes. The run-scoped number the user
+        is shown meanwhile is `Store.run_candidate_count`, counted at the moment of
+        use and therefore true even while this column lags.
+        """
         counts = self._conn.execute(
             "SELECT "
             "COALESCE(SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END), 0) AS done, "
@@ -3582,9 +3758,11 @@ class Store:
 
         self._conn.execute(
             "UPDATE extraction_jobs SET status = ?, completed_chunks = ?, "
-            "failed_chunks = ?, message = ?, updated_at = datetime('now') "
+            "failed_chunks = ?, candidate_count = "
+            "(SELECT COUNT(*) FROM facts WHERE job_id = ?), "
+            "message = ?, updated_at = datetime('now') "
             "WHERE id = ?",
-            (status, done, failed, message, job_id),
+            (status, done, failed, job_id, message, job_id),
         )
 
 

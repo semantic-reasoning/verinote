@@ -61,7 +61,7 @@ def _done_job(store: Store, source_id: int) -> int:
     )[0]
     store.mark_extraction_job_running(job_id)
     store.mark_chunk_running(chunk_id)
-    store.mark_chunk_done(chunk_id, candidates=1)
+    store.mark_chunk_done(chunk_id)
     store.finish_extraction_job(job_id)
     return job_id
 

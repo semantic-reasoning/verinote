@@ -1,28 +1,32 @@
 # SPDX-License-Identifier: MPL-2.0
-"""Characterisation: what the job counters say when a chunk dies mid-insert.
+"""What the job counters say when a chunk dies mid-insert. Now a guard, not a note.
 
-CHARACTERISATION, NOT A GUARANTEE. This file records current behaviour so that a
-later change to it is visible, and it describes a known defect. It makes no claim
-that the behaviour below is correct and must not be read as a no-regression
-guard.
-
-`_extract_chunk` writes its candidate facts one at a time and only returns the
-count once every one of them has landed; `mark_chunk_done` — which adds that
-count to the job's `candidate_count` — runs after it. So a chunk that raises
-part-way through its insert loop leaves facts in the KB that no counter accounts
-for: the facts are real, carry this run's `run_id`, and are visible on the
-provenance pages, while the job reports `candidate_count = 0`.
-
-The chunk itself is released as `failed` (#475), which is the part that is fixed.
-The counter drift is not.
-
-FOLLOW-UP ISSUE: #482
-
-That issue owns the drift; this file only records it. #482 says in its own text
-that fixing it must turn the assertions below RED, and this docstring says the
-same thing from the other side, so neither can be read without finding the other.
-When they do go red, the correct response is to update them to the new, counted
+THIS FILE CHANGED SIDES IN #482, DELIBERATELY. It arrived with #475 as a
+CHARACTERISATION test: it recorded that a chunk which raised part-way through its
+insert loop left facts in the KB that no counter accounted for, asserted
+`candidate_count == 0`, and said in its own docstring that this described a defect
+rather than a guarantee. It also said that fixing #482 must turn those assertions
+RED, and that the correct response then was to update them to the counted
 behaviour — never to restore the drift in order to keep them green.
+
+That is what happened here. `mark_chunk_done` no longer accumulates the column;
+`Store._refresh_extraction_job` recomputes it as
+`SELECT COUNT(*) FROM facts WHERE job_id = ?`, so the fact this chunk wrote before
+it died is counted the moment the chunk is released as `failed`. The assertion
+below is `== 1` where it was `== 0`, and the file is now a NO-REGRESSION GUARD: it
+fails if the counter ever goes back to being accumulated from what the pipeline
+reports instead of counted from what the KB holds.
+
+WHAT DID NOT CHANGE is `completed_chunks == 0`, and keeping it is the point. The
+chunk genuinely did not complete. "Its facts are counted" and "it failed" are two
+independent statements, both true; the old behaviour made them look like one by
+letting the failure suppress the count.
+
+The wider scenarios — the retry that used to make the shortfall permanent, the
+locked fact-term sidecar, and the guard against someone adding a `status` filter
+to the count — live in `tests/test_job_candidate_count_is_derived.py`. This file
+keeps the narrow case #475 first noticed, so the two records stay findable from
+each other.
 """
 
 import pytest
@@ -44,7 +48,7 @@ class _TwoFactClient:
         ]
 
 
-def test_facts_written_before_a_mid_chunk_failure_are_not_counted(tmp_path):
+def test_facts_written_before_a_mid_chunk_failure_are_counted(tmp_path):
     s = Store(tmp_path / "kb.sqlite")
     s.init_schema()
     source_id = s.add_source("sources/a.txt")
@@ -69,9 +73,10 @@ def test_facts_written_before_a_mid_chunk_failure_are_not_counted(tmp_path):
 
     # The first fact is in the KB, with evidence, attributed to this run.
     assert [f["subject"] for f in s.facts()] == ["alpha"]
-    # ...and no counter knows about it. This is the defect being characterised.
+    # ...and the job counts it now. This assertion read `== 0` before #482.
     job = s.get_extraction_job(job_id)
-    assert job["candidate_count"] == 0
+    assert job["candidate_count"] == 1
+    # The chunk still did not complete: counting its facts does not finish it.
     assert job["completed_chunks"] == 0
     # The claim, by contrast, is released — that part is #475's fix.
     chunk = s.source_chunks(job_id)[0]

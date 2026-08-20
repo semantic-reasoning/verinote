@@ -808,11 +808,11 @@ def test_review_shows_accept_recommendation(tmp_path):
     chunk_b = store.add_source_chunks(job_id=job_b, source_id=source_b, chunks=["b"])[0]
     store.mark_extraction_job_running(job_a)
     store.mark_chunk_running(chunk_a)
-    store.mark_chunk_done(chunk_a, candidates=1)
+    store.mark_chunk_done(chunk_a)
     store.finish_extraction_job(job_a)
     store.mark_extraction_job_running(job_b)
     store.mark_chunk_running(chunk_b)
-    store.mark_chunk_done(chunk_b, candidates=1)
+    store.mark_chunk_done(chunk_b)
     store.finish_extraction_job(job_b)
     store.add_fact(
         "Sample Report",
@@ -1061,7 +1061,7 @@ def test_sources_page_lists_sources(tmp_path):
     chunks = store.add_source_chunks(job_id=job_id, source_id=sid, chunks=["a", "b"])
     store.mark_extraction_job_running(job_id)
     store.mark_chunk_running(chunks[0])
-    store.mark_chunk_done(chunks[0], candidates=1)
+    store.mark_chunk_done(chunks[0])
     store.mark_chunk_running(chunks[1])
     store.mark_chunk_failed(chunks[1], "provider down")
 
@@ -1188,7 +1188,7 @@ def test_sources_page_shows_trust_counts_and_evidence_snippets(tmp_path, monkeyp
     )[0]
     store.mark_extraction_job_running(job_id)
     store.mark_chunk_running(chunk_id)
-    store.mark_chunk_done(chunk_id, candidates=1)
+    store.mark_chunk_done(chunk_id)
     fact_id = store.add_fact(
         "Sample Report",
         "published_year",
@@ -1311,7 +1311,7 @@ def test_reanalyze_source_reuses_artifact_and_replaces_extracted_facts(
     )[0]
     store.mark_extraction_job_running(old_job)
     store.mark_chunk_running(old_chunk)
-    store.mark_chunk_done(old_chunk, candidates=1)
+    store.mark_chunk_done(old_chunk)
 
     body = c.get("/sources").text
     assert "Re-analyze" in body
@@ -1764,9 +1764,9 @@ def test_resume_polls_to_done_not_just_to_fact_visibility(tmp_path, monkeypatch,
     )
     real_mark = Store.mark_chunk_done
 
-    def slow_mark(self, chunk_id, *, candidates=0):
+    def slow_mark(self, chunk_id):
         time.sleep(0.3)
-        return real_mark(self, chunk_id, candidates=candidates)
+        return real_mark(self, chunk_id)
 
     monkeypatch.setattr(Store, "mark_chunk_done", slow_mark)
 
@@ -1935,7 +1935,7 @@ def _auto_accept_kb(tmp_path):
         )[0]
         store.mark_extraction_job_running(done_job)
         store.mark_chunk_running(chunk)
-        store.mark_chunk_done(chunk, candidates=1)
+        store.mark_chunk_done(chunk)
         store.finish_extraction_job(done_job)
         store.add_fact(
             "X", "is_a", "Y", status="candidate", source_id=corroborating, job_id=done_job
@@ -3047,7 +3047,7 @@ def test_provenance_renders_trust_dossier_sections(tmp_path):
     )[0]
     store.mark_extraction_job_running(job_id)
     store.mark_chunk_running(chunk_id)
-    store.mark_chunk_done(chunk_id, candidates=1)
+    store.mark_chunk_done(chunk_id)
     run_id = store.add_run(provider="fake", model="sample-model", summary="sample run")
     fact_id = store.add_fact(
         "Sample Report",
@@ -4241,7 +4241,7 @@ def test_worker_demotes_a_stale_fact_and_does_not_re_promote_it_same_request(
         )[0]
         store.mark_extraction_job_running(old_job)
         store.mark_chunk_running(oc)
-        store.mark_chunk_done(oc, candidates=1)
+        store.mark_chunk_done(oc)
         store.finish_extraction_job(old_job)
         london_a = store.add_fact(
             "Ada", "born_in", "London",
@@ -4260,7 +4260,7 @@ def test_worker_demotes_a_stale_fact_and_does_not_re_promote_it_same_request(
             wc = store.add_source_chunks(job_id=wj, source_id=witness, chunks=["x"])[0]
             store.mark_extraction_job_running(wj)
             store.mark_chunk_running(wc)
-            store.mark_chunk_done(wc, candidates=1)
+            store.mark_chunk_done(wc)
             store.finish_extraction_job(wj)
             store.add_fact(
                 "Ada", "born_in", "London",

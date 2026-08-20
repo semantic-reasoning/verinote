@@ -125,6 +125,9 @@ CREATE TABLE IF NOT EXISTS facts (
 CREATE INDEX IF NOT EXISTS idx_facts_status ON facts(status);
 CREATE INDEX IF NOT EXISTS idx_facts_review_status_id ON facts(status, id);
 CREATE INDEX IF NOT EXISTS idx_facts_triple ON facts(subject, relation, object);
+-- idx_facts_job and idx_facts_run (#482) are created in
+-- Store._ensure_schema_migrations for the same reason as the line below: a
+-- legacy facts table has no job_id column when this script runs.
 -- idx_facts_source_term_token is created in Store._ensure_schema_migrations,
 -- not here: on a legacy DB this script runs before term_token is added, so an
 -- index over that column here would fail on the very DBs that most need it.
