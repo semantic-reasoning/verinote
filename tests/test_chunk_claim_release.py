@@ -245,7 +245,7 @@ def test_no_chunk_stays_claimed_when_mark_chunk_done_raises(tmp_path, monkeypatc
     s = _store(tmp_path)
     _source_id, job_id = _three_chunk_job(s)
 
-    def _boom(chunk_id, *, candidates=0):
+    def _boom(chunk_id):
         raise RuntimeError("completion write failed")
 
     monkeypatch.setattr(s, "mark_chunk_done", _boom)
@@ -275,7 +275,7 @@ def test_a_chunk_already_written_done_is_not_flipped_to_failed(tmp_path, monkeyp
     s = _store(tmp_path)
     _source_id, job_id = _three_chunk_job(s)
 
-    def _done_then_boom(chunk_id, *, candidates=0):
+    def _done_then_boom(chunk_id):
         s._conn.execute(
             "UPDATE source_chunks SET status = 'done' WHERE id = ?", (chunk_id,)
         )

@@ -2081,6 +2081,14 @@ def test_read_only_commands_still_accept_a_kb_predating_the_job_id_column(
     store.init_schema()
     store.close()
     conn = sqlite3.connect(root / "kb.sqlite")
+    # The indexes go first, and that is part of rolling the schema back rather than
+    # a workaround. Both are created by `_ensure_schema_migrations` (#482) AFTER
+    # the columns they cover are added -- `idx_facts_job` on `job_id`,
+    # `idx_facts_run` on `(run_id, job_id)` -- so a KB genuinely predating `job_id`
+    # carries neither. Dropping the column while an index still references it is a
+    # state no verinote KB has ever been in, and SQLite rejects it outright.
+    conn.execute("DROP INDEX IF EXISTS idx_facts_job")
+    conn.execute("DROP INDEX IF EXISTS idx_facts_run")
     conn.execute("ALTER TABLE facts DROP COLUMN job_id")
     conn.commit()
     conn.close()
