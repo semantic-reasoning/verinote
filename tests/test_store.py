@@ -17,6 +17,26 @@ def _store(tmp_path) -> Store:
     return s
 
 
+def _write_job_facts(s, *, job_id, source_id, n, prefix="F"):
+    """Give a job `n` real candidate facts, so its candidate_count means something.
+
+    Since #482 `candidate_count` is COUNTED from `facts.job_id` rather than
+    accumulated from what `mark_chunk_done` was told, so a fixture that wanted a
+    job to report N candidates has to actually write N of them. Several fixtures
+    here used to pass `candidates=N` to `mark_chunk_done` with no fact behind it
+    and assert the number back; that asserted the arithmetic of a counter rather
+    than any property of the KB, and it is why those assertions survive this
+    change verbatim while their setup grew these rows.
+    """
+    return [
+        s.add_fact(
+            f"{prefix}{i}", "seen_in", "source", status="candidate",
+            source_id=source_id, job_id=job_id,
+        )
+        for i in range(n)
+    ]
+
+
 def _unicode_source_paths() -> tuple[str, str]:
     nfd_name = unicodedata.normalize("NFD", "caf\u00e9.txt")
     nfc_name = unicodedata.normalize("NFC", nfd_name)
@@ -879,7 +899,7 @@ def test_sources_with_counts_includes_latest_analysis_summary(tmp_path):
     old_chunk = s.add_source_chunks(job_id=old_job, source_id=sid, chunks=["old"])[0]
     s.mark_extraction_job_running(old_job)
     s.mark_chunk_running(old_chunk)
-    s.mark_chunk_done(old_chunk, candidates=1)
+    s.mark_chunk_done(old_chunk)
     job_id = s.create_extraction_job(
         source_id=sid,
         artifact_id=artifact_id,
@@ -890,7 +910,8 @@ def test_sources_with_counts_includes_latest_analysis_summary(tmp_path):
     chunks = s.add_source_chunks(job_id=job_id, source_id=sid, chunks=["a", "b"])
     s.mark_extraction_job_running(job_id)
     s.mark_chunk_running(chunks[0])
-    s.mark_chunk_done(chunks[0], candidates=3)
+    _write_job_facts(s, job_id=job_id, source_id=sid, n=3)
+    s.mark_chunk_done(chunks[0])
     s.mark_chunk_running(chunks[1])
     s.mark_chunk_failed(chunks[1], "provider down")
     s.finish_extraction_job(job_id)  # terminalise to `failed` (#337)
@@ -1087,7 +1108,8 @@ def test_extraction_job_tracks_chunk_progress_and_retry(tmp_path):
 
     s.mark_extraction_job_running(job_id)
     assert s.mark_chunk_running(chunk_ids[0])["attempts"] == 1
-    s.mark_chunk_done(chunk_ids[0], candidates=2)
+    _write_job_facts(s, job_id=job_id, source_id=sid, n=2)
+    s.mark_chunk_done(chunk_ids[0])
     s.mark_chunk_running(chunk_ids[1])
     s.mark_chunk_failed(chunk_ids[1], "provider down")
 
@@ -1469,7 +1491,7 @@ def test_mark_chunk_done_keeps_an_owned_job_running_against_a_second_claim(tmp_p
 
     assert store_a.claim_pending_extraction_job(job_id) is True
     store_a.mark_chunk_running(chunk_ids[0])
-    store_a.mark_chunk_done(chunk_ids[0], candidates=1)
+    store_a.mark_chunk_done(chunk_ids[0])
 
     # Zero chunks `running` now, but the job is still owned: it stays `running`.
     assert store_a.get_extraction_job(job_id)["status"] == "running"
@@ -1534,7 +1556,7 @@ def test_finish_extraction_job_terminalises_a_running_job(tmp_path):
     mixed_chunks = s.add_source_chunks(job_id=mixed, source_id=sid, chunks=["a", "b"])
     s.mark_extraction_job_running(mixed)
     s.mark_chunk_running(mixed_chunks[0])
-    s.mark_chunk_done(mixed_chunks[0], candidates=1)
+    s.mark_chunk_done(mixed_chunks[0])
     s.mark_chunk_running(mixed_chunks[1])
     s.mark_chunk_failed(mixed_chunks[1], "provider down")
     # owned and mid-run, so still `running` even though a chunk has failed
@@ -1549,7 +1571,7 @@ def test_finish_extraction_job_terminalises_a_running_job(tmp_path):
     s.mark_extraction_job_running(clean)
     for cid in clean_chunks:
         s.mark_chunk_running(cid)
-        s.mark_chunk_done(cid, candidates=1)
+        s.mark_chunk_done(cid)
     s.finish_extraction_job(clean)
     assert s.get_extraction_job(clean)["status"] == "done"
 
@@ -1562,7 +1584,10 @@ def _job_with_mixed_chunks(s, sid):
     chunks = s.add_source_chunks(job_id=job_id, source_id=sid, chunks=["a", "b", "c"])
     s.mark_extraction_job_running(job_id)
     s.mark_chunk_running(chunks[0])
-    s.mark_chunk_done(chunks[0], candidates=2)
+    # `rollback_extraction_job`'s docstring says a done chunk's "candidate facts
+    # are real"; this fixture never made them real until #482 required it.
+    _write_job_facts(s, job_id=job_id, source_id=sid, n=2)
+    s.mark_chunk_done(chunks[0])
     s.mark_chunk_running(chunks[1])
     s.mark_chunk_failed(chunks[1], "provider down")
     s.mark_chunk_running(chunks[2])
@@ -1835,7 +1860,7 @@ def test_extraction_job_records_lifecycle_events(tmp_path):
     )[0]
     s.mark_extraction_job_running(done_job)
     s.mark_chunk_running(done_chunk)
-    s.mark_chunk_done(done_chunk, candidates=1)
+    s.mark_chunk_done(done_chunk)
     s.finish_extraction_job(done_job)
 
     events = list(
