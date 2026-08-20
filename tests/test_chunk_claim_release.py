@@ -165,8 +165,12 @@ def _caller_marks_job_failed(store: Store, job_id: int, message: str) -> None:
 
     `process_extraction_job` leaves the job row alone when a non-`LLMError`
     escapes; a caller's broad clause is what writes `failed` — the worker thread's
-    in `_start_source_extraction` (`web/app.py`), or `cmd_sync`'s (`cli.py`,
-    #488). A test that wants the job in its post-failure resting state has to
+    in `_start_source_extraction` (`web/app.py`, #525), or `cmd_sync`'s (`cli.py`,
+    #488) — WHEN its status re-read permits. Both re-read now, and neither writes
+    over a job it no longer owns, so this stand-in reproduces the resting state of
+    the path where the re-read does permit the write: the job still `running` with
+    a chunk that failed for a non-`LLMError` reason. A test that wants the job in
+    its post-failure resting state has to
     perform that write itself, so it is spelled out here rather than hidden behind
     a fixture — nothing in `verinote/pipeline` will do it, which is why the tests
     below call `process_extraction_job` directly and then this.
@@ -621,11 +625,16 @@ def test_cli_sync_fails_the_job_and_never_leaves_the_chunk_claimed(
     is still stated over CHUNKS, and this test is still why: the release happens
     inside `process_extraction_job`, below every caller, so it holds no matter
     what the caller does with the job row. The job row is a caller's business,
-    and the two callers now agree about it — `_start_source_extraction`
+    and the two callers agree only so far — `_start_source_extraction`
     (`web/app.py`) and `cmd_sync` each end with a broad clause that writes
-    `failed`. That agreement is a fact about two call sites, not something the
-    invariant may be re-phrased over: `BaseException` and a lost ownership CAS
-    still leave a job in no terminal status at all (see the two tests above).
+    `failed` after re-reading the job status, but on DIFFERENT predicates. The
+    `cmd_sync` clause wraps `process_extraction_job` alone, so the claim is always
+    held and `running` is the right question; the web clause also wraps
+    `get_client` and its schema hint, where a pre-claim failure is still `pending`
+    and must be recorded, so it refuses `done` only (#525). That partial agreement
+    is a fact about two call sites, not something the invariant may be re-phrased
+    over: `BaseException` and a lost ownership CAS still leave a job in no terminal
+    status at all (see the two tests above).
 
     (a) WAS A CHARACTERISATION AND IS NOW A GUARANTEE. It used to read `running`
     and carried #488's instruction to turn it red; #488 is that fix, and this is
@@ -839,14 +848,16 @@ def test_a_job_that_already_finished_is_not_buried_by_a_later_failure(
     owns. Without the re-read the fix is a pure regression on this path — before
     #488 nothing wrote the job row here at all, so it stayed `done`.
 
-    `web/app.py` HAS NO EQUIVALENT, AND BURIES THE JOB ON THIS PATH. Its two local
-    guards wrap the stale-citation sweep and auto-accept only; `process_extraction_job`
-    itself sits bare inside the worker's try, and the worker's broad clause calls
-    `fail_extraction_job` with no status re-read at all. Driven through a real
-    worker, this same scenario leaves `failed: analysis failed: ...` over a job
-    that is `done` with its chunk complete. Not this change's doing and not its
-    scope — it is #525 — but nothing here should be read as saying the web path is
-    already safe.
+    `web/app.py` HAS AN EQUIVALENT SINCE #525, ON A DIFFERENT PREDICATE. It used to
+    have none: its two local guards wrap the stale-citation sweep and auto-accept
+    only, `process_extraction_job` sat bare inside the worker's try, and the broad
+    clause called `fail_extraction_job` with no re-read — driven through a real
+    worker, this same scenario left `failed: analysis failed: ...` over a job that
+    was `done` with its chunk complete. `_fail_job_unless_done` now makes the same
+    read. It refuses `done` and nothing else, where this clause requires `running`,
+    because the worker's try also spans `get_client` and its schema hint: a failure
+    there is still `pending` and must be recorded, so the predicates cannot be
+    swapped between the two files.
     """
     from verinote import cli
 

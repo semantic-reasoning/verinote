@@ -993,7 +993,8 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     # {e}"` renders a bare `ValueError()` as "analysis failed: "
                     # with no cause — the same empty-cause symptom
                     # `_release_claimed_chunk` type-qualifies against, still open
-                    # there (#525). So this clause is the web clause's counterpart,
+                    # there and outside the scope of the #525 re-read that clause
+                    # has since grown. So this clause is the web clause's counterpart,
                     # not its mirror. Neither bounds the message length; the store
                     # takes `str(exc)` whole, exactly as the web one does.
                     # (3) What this clause hands planning is a `failed` job whose
@@ -1054,9 +1055,14 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                 # the try above leaves the job `done` just the same, because the
                 # sweep runs only after `process_extraction_job` returned and the
                 # broad clause's status re-read declines to write a `done` job.
-                # Outside is scope narrowing, not a safety property. The web
-                # worker's local sweep guard IS load-bearing for it, because its
-                # broad clause has no such re-read (#525).
+                # Outside is scope narrowing, not a safety property. The web worker's
+                # local sweep guard is now in the same position for the same reason:
+                # since #525 its broad clause re-reads too, so that guard stopped
+                # being what keeps a `done` job `done` and is likewise scope
+                # narrowing. The two re-reads do NOT share a predicate — this one
+                # requires `running`, the web one only refuses `done` — because that
+                # clause also wraps `get_client` and its schema hint, where a
+                # pre-claim failure is still `pending` and must be recorded.
                 # `assert_writable` first so a policy lost post-completion routes to
                 # the PolicyMissingError handler below rather than demoting facts
                 # against a halted KB (#194) — the store trusts its caller for this.

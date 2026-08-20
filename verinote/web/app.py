@@ -1743,6 +1743,129 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         assert_settings_intact(cfg)
         assert_credentials_intact(cfg)
 
+        def _fail_job_unless_done(message: str) -> None:
+            """Record a worker-level failure — iff this call still owns the job.
+
+            THE JOB-LEVEL FLOOR FOR THE WEB WORKER (#525), and the third of three
+            siblings that all ask one question: `_release_claimed_chunk`
+            (`pipeline/extract.py`) asks it of a chunk, `cmd_sync`'s job-level
+            clause (`cli.py`, #488) asks it of a CLI job. As in theirs, the status
+            re-read is not a second decision about whether this pass failed. It
+            declines to write a job this call no longer owns. `mark_chunk_done`
+            writes the job `done` when the last chunk lands and
+            `finish_extraction_job` runs AFTER that, so a raise there escapes with
+            the job already `done`, every chunk complete and the candidates
+            committed — measured, and without this guard recorded as
+            `failed: analysis failed: ...` with an `extraction_job_failed` event
+            beside it.
+
+            IT ONLY REFUSES `done`, AND THAT IS NOT THE CLI'S PREDICATE. `cmd_sync`
+            writes only a `running` job, and copying that here would not tighten
+            this clause but silently gut it: this worker's `try` also spans
+            `get_client(cfg)` and the `_extraction_schema_hint(cfg)` argument
+            expression, BOTH evaluated before `process_extraction_job` claims the
+            job. Measured — the row read from inside the raising callable is
+            `pending` — and measured again through the suite: a `running` predicate
+            on these two clauses fails
+            `test_worker_still_fails_the_job_on_an_ordinary_error` and
+            `test_a_broken_extraction_limit_hint_is_extraction_failed_not_analysis_failed`,
+            because a pre-claim failure would stop being recorded at all. The CLI
+            clause wraps `process_extraction_job` ALONE, so its claim is always held
+            by the time it runs. The predicates differ because the scopes do.
+
+            REFUSING ONLY `done` ALSO KEEPS THE CLAUSE-ORDER TESTS HONEST.
+            `test_worker_halt_does_not_mark_the_job_failed` and
+            `test_worker_busy_does_not_mark_the_job_failed` both leave the job
+            `pending`, so this guard still WRITES on their paths and the clauses
+            above remain the only thing between a halted or foreign-owned job and a
+            `failed` row. Under a `running` predicate both would pass with those
+            clauses deleted, the way `cli.py` records its own pair going
+            non-distinguishing.
+
+            AND `running` MUST STILL BE WRITTEN, which is the other end of the same
+            decision. A chunk failing for a non-`LLMError` reason leaves the job
+            `running` — `_refresh_extraction_job` deliberately keeps an owned job
+            `running` across the release (#337) — and that is the ordinary failure
+            these clauses exist to report. Widening the refusal to
+            `{"done", "running"}` is caught by exactly ONE test, measured:
+            `test_worker_still_fails_a_claimed_job_whose_chunk_crashed` goes red
+            while the other thirteen `test_worker_*` tests stay green. Do not widen
+            this without reading that test.
+
+            WHAT IT DOES NOT COVER — each bullet says which status it leaves the job
+            in and how close to reachable it is; they do not share an answer:
+            - A FUTURE REWINDING PATH. The two paths that rewind a job to `pending`
+              (`_halt_extraction_job`, `_back_off_from_locked_sidecar`) re-raise
+              types the `PolicyMissingError` and `DuckDBFactTermStoreLockedError`
+              clauses take ABOVE these two, so no rewind reaches here. A new one
+              that did would arrive `pending` and be buried, since `done` is the
+              only status this refuses. A new rewinding path in this worker
+              therefore needs its own clause above `except LLMError`; it cannot
+              lean on this guard.
+            - A PEER THAT REWINDS IN THE WINDOW. The re-read and the write are two
+              statements on an autocommit connection, and `fail_extraction_job`
+              updates `WHERE id = ?` with no status predicate, so this holds against
+              a job that was already `done` when the read ran, not against one
+              rewound between the two. `_resume_source_extraction_jobs` rolls
+              `running` jobs back to `pending` at `create_app()` time and cannot
+              tell a crashed zombie from a live owner (#242), so for a web app a
+              second boot against the same KB is the concrete shape of that peer.
+              Closing it means moving the predicate into the SQL, as the extraction
+              path's ownership handshakes already do — a store change, not made here.
+            - AN ALREADY-`failed` JOB, whose detailed per-chunk message this can
+              still overwrite. Unmeasured, but nameable: `finish_extraction_job`
+              runs on an autocommit connection, so its `_refresh_extraction_job(
+              final=True)` UPDATE commits BEFORE its `extraction_job_completed`
+              event is appended. A raise at that last step therefore leaves whatever
+              `final=True` computed — `failed` when a chunk failed — and this guard
+              permits the write over it.
+            - A JOB WHOSE SOURCE WAS DELETED, read back as `None`. The write goes
+              ahead and is a no-op: `fail_extraction_job` matches no row and appends
+              no event. Branching on it would be untested dead code.
+
+            DECLINING IS NOT DROPPING. The error that brought us here is real — on
+            the #525 path it is a genuine sqlite/WAL-class failure — and refusing the
+            job row must not also refuse the record. Nothing else records it: the
+            job keeps a `done` row, and because `finish_extraction_job` raised
+            part-way there is no `extraction_job_completed` event and no run summary
+            either. So the decline logs, exactly as the four write-nothing clauses
+            above it do
+            (`PolicyMissingError`, `ExtractionJobBusyError`, the ConfigCorrupt pair,
+            `DuckDBFactTermStoreLockedError`). The CLI counterpart does not go quiet
+            on its own decline either — it re-raises, and `main` surfaces it — but a
+            daemon worker thread has nowhere to re-raise TO, so the log is the whole
+            of the record.
+
+            AND THE READ CARRIES A WRITE'S WORTH OF RISK. Both clauses already
+            opened a fresh `Store` and ran `init_schema()` inside the handler before
+            this helper existed, so a store error replacing the escaping exception
+            (the original left on `__context__`) is not new; this adds one SELECT to
+            that surface. It is deliberately NOT wrapped in a `try`: a raise here
+            reaches the thread excepthook, and the job state it leaves is the same
+            one a declining guard leaves — nothing written. Silence would be worse.
+            """
+            with Store(cfg.db_path) as worker_store:
+                worker_store.init_schema()
+                job_now = worker_store.get_extraction_job(job_id)
+                if job_now is not None and job_now["status"] == "done":
+                    # The status is interpolated rather than spelled "already done":
+                    # it is the second place the predicate would otherwise be
+                    # encoded in prose, and a widened refusal set would silently
+                    # make a hardcoded reason lie. `exc_info` is not decoration —
+                    # the web message is deliberately not type-qualified, so for a
+                    # bare `ValueError()` the formatted text degrades to
+                    # "analysis failed: " and the traceback is the only surviving
+                    # record of what was raised.
+                    logger.warning(
+                        "extraction job %s is %s; not recording on the job row: %s",
+                        job_id,
+                        job_now["status"],
+                        message,
+                        exc_info=True,
+                    )
+                    return
+                worker_store.fail_extraction_job(job_id, message)
+
         def run() -> None:
             try:
                 with Store(cfg.db_path) as worker_store:
@@ -1762,11 +1885,21 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                     # inside it, for separation of concerns: extraction stays a pure
                     # primitive, while the sweep's return value (the demoted fact
                     # ids) is needed HERE to thread into `exclude_fact_ids` below.
-                    # Sibling placement does not by itself avoid the outer `except
-                    # Exception -> fail_extraction_job` — this call still sits in the
-                    # same try — so the local guard below is what actually keeps a
-                    # sweep error from retroactively flipping an already-`done` job
-                    # to `failed`. `assert_writable` runs first (and OUTSIDE that
+                    # Sibling placement does not by itself keep this call out of the
+                    # outer clauses — it still sits in the same try. Since #525 it no
+                    # longer has to: `_fail_job_unless_done` re-reads the status and
+                    # declines to write an already-`done` job, so a sweep error can
+                    # no longer flip a completed run to `failed` whether the guard
+                    # below catches it or not. MEASURED: with that guard removed the
+                    # worker/sweep/auto-accept tests all still pass, so no test
+                    # distinguishes deleting it. What it still buys is narrower and
+                    # currently untested — auto-accept below RUNS after a failed
+                    # sweep instead of being skipped with it — and untested because
+                    # the one fixture that raises here builds a Config leaving
+                    # `auto_accept_recommendations` at its `False` default. Kept as
+                    # defence in depth and as that scope narrowing, not as the thing
+                    # standing between a `done` job and a `failed` row.
+                    # `assert_writable` runs first (and OUTSIDE that
                     # guard) so a policy that vanished post-completion routes to the
                     # PolicyMissingError handler instead of demoting facts against a
                     # halted KB (#194) — the store layer trusts its caller for this,
@@ -1782,9 +1915,11 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                         except Exception:  # noqa: BLE001 - a sweep error must not fail a done job
                             # The sweep does no LLM/network I/O, so a raise here is a
                             # rare sqlite/WAL-lock-class error. Contain it: the
-                            # extraction genuinely succeeded, so leave the job `done`
-                            # and take no demotions this pass rather than letting the
-                            # outer handler bury a completed run as `failed`.
+                            # extraction genuinely succeeded, so take no demotions
+                            # this pass and carry on to auto-accept. Since #525 the
+                            # job staying `done` is no longer this clause's doing —
+                            # the outer handler re-reads and declines — so what is
+                            # contained here is the SKIP, not the burial.
                             logger.warning(
                                 "stale-citation sweep failed for job %s; leaving it done",
                                 job_id,
@@ -1811,10 +1946,16 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                         except Exception:  # noqa: BLE001 - an auto-accept error must not fail a done job
                             # Auto-accept does no LLM/network I/O, so a raise here is
                             # a rare sqlite/WAL-lock-class error. The extraction
-                            # genuinely succeeded and its facts are already
-                            # committed; leave the job `done` rather than letting the
-                            # outer handler bury a completed run as `failed` (#340;
-                            # sibling of the #329 sweep guard directly above).
+                            # genuinely succeeded and its facts are already committed
+                            # (#340; sibling of the #329 sweep guard directly above).
+                            # Since #525 this clause is no longer what leaves the job
+                            # `done` either — and being the LAST statement in the try,
+                            # it buys even less than the sweep guard does: MEASURED,
+                            # removing it leaves the same worker/sweep/auto-accept
+                            # tests green, because the error would reach the outer
+                            # handler and be declined there. What survives is the
+                            # targeted log line below, and the `raise` above it that
+                            # keeps a #194 halt on the halt path.
                             logger.warning(
                                 "auto-accept failed for job %s; leaving it done",
                                 job_id,
@@ -1896,13 +2037,25 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                     exc,
                 )
             except LLMError as e:
-                with Store(cfg.db_path) as worker_store:
-                    worker_store.init_schema()
-                    worker_store.fail_extraction_job(job_id, f"extraction failed: {e}")
-            except Exception as e:  # noqa: BLE001 - keep background failures visible in UI
-                with Store(cfg.db_path) as worker_store:
-                    worker_store.init_schema()
-                    worker_store.fail_extraction_job(job_id, f"analysis failed: {e}")
+                # GUARDED LIKE THE CLAUSE BELOW, though only that one is known to
+                # need it. This clause is live — `_extraction_schema_hint(cfg)`
+                # turns an unreadable prompt override into an `LLMError` (#539),
+                # and `process_extraction_job` raises one for a missing job or
+                # source — but on every such path the job is still `pending`, so
+                # the guard permits the write and changes nothing. No production
+                # path raises an `LLMError` with the job already `done`: the chunk
+                # loop swallows `LLMError` through `_release_claimed_chunk`, and
+                # the two calls that run after `process_extraction_job` returns
+                # carry their own guards. It is guarded anyway because "does this
+                # call still own this job?" is not a question the exception TYPE
+                # answers, and these two clauses are one decision in two halves —
+                # `LLMError` is a `RuntimeError` subclass, so they are adjacent,
+                # not alternatives.
+                _fail_job_unless_done(f"extraction failed: {e}")
+            # Keep background failures visible: on the job row when this call still
+            # owns the job, in the log when it does not.
+            except Exception as e:  # noqa: BLE001
+                _fail_job_unless_done(f"analysis failed: {e}")
 
         threading.Thread(
             target=run,
