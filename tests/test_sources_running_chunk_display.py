@@ -68,7 +68,7 @@ def test_an_in_flight_job_shows_its_claimed_chunk_apart_from_the_waiting_ones(tm
     # A job mid-pass: one chunk finished, one claimed and out at the LLM, two still
     # in the queue.
     store.mark_extraction_job_running(job_id)
-    store.mark_chunk_done(chunk_ids[0], candidates=1)
+    store.mark_chunk_done(chunk_ids[0])
     assert store.mark_chunk_running(chunk_ids[1]) is not None
 
     html = TestClient(app).get("/sources").text

@@ -58,7 +58,7 @@ def test_fact_trust_summary_includes_source_run_job_evidence_and_audit(tmp_path)
     )[0]
     s.mark_extraction_job_running(job_id)
     s.mark_chunk_running(chunk_id)
-    s.mark_chunk_done(chunk_id, candidates=1)
+    s.mark_chunk_done(chunk_id)
     run_id = s.add_run(provider="fake", model="sample-model", summary="sample run")
     fact_id = s.add_fact(
         "Sample Company",
