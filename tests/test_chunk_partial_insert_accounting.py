@@ -17,6 +17,17 @@ below is `== 1` where it was `== 0`, and the file is now a NO-REGRESSION GUARD: 
 fails if the counter ever goes back to being accumulated from what the pipeline
 reports instead of counted from what the KB holds.
 
+THE "INSTEAD OF" IS LOAD-BEARING, and this file's reach stops there. What it
+catches is the count being REPLACED by an accumulator: neutralise
+`Store._refresh_extraction_job`'s `candidate_count` subquery and the assertion
+below goes red (measured in this tree, along with others elsewhere in the suite).
+What it does NOT catch is an accumulator re-added BENEATH the surviving recount --
+an `UPDATE ... SET candidate_count = candidate_count + 1` inserted into
+`mark_chunk_done` ahead of its `_refresh_extraction_job` call left the entire suite
+green (measured, same tree), because the recount runs last and overwrites the `+=`.
+That variant is harmless while the recount survives; it is dead code, and nothing
+here would report it.
+
 WHAT DID NOT CHANGE is `completed_chunks == 0`, and keeping it is the point. The
 chunk genuinely did not complete. "Its facts are counted" and "it failed" are two
 independent statements, both true; the old behaviour made them look like one by
