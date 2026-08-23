@@ -1848,7 +1848,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
               written over, and `canceled` is one of them. That contradicts what
               the store itself does with such a job:
               `Store.rollback_extraction_job` treats `canceled` as sacred and
-              returns above BOTH of its UPDATEs and its event append rather than
+              returns above every write it would otherwise make rather than
               touch it, while this guard would put `failed` on that row with an
               `extraction_job_failed` event beside it. Unreachable today — no
               production code under `verinote/` writes `'canceled'` at all — which
