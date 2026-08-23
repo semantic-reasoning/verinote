@@ -1983,8 +1983,11 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                             # removing it leaves the same worker/sweep/auto-accept
                             # tests green, because the error would reach the outer
                             # handler and be declined there. What survives is the
-                            # targeted log line below, and the `raise` above it that
-                            # keeps a #194 halt on the halt path.
+                            # targeted log line below — the `raise` above it is not
+                            # something THIS clause buys: it exists only to keep
+                            # this clause off the halt path, and deleting the whole
+                            # inner try/except lets a #194 halt reach the outer
+                            # handler unaided.
                             logger.warning(
                                 "auto-accept failed for job %s; leaving it done",
                                 job_id,
