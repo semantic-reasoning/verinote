@@ -1748,8 +1748,14 @@ class Store:
 
         THAT USED TO BE JUSTIFIED HERE BY THE CLAIM THAT THE CHUNK "was rolled back
         *before* any of its facts were written", AND THAT CLAIM WAS FALSE (#482).
-        It holds only for `LLMError`, whose three raise sites in `_extract_chunk`
-        all sit ahead of the insert loop. Anything raised INSIDE that loop -- a
+        It holds for whatever is raised AHEAD of `_extract_chunk`'s insert loop,
+        which is more than `LLMError`. The noun matters too: `_extract_chunk`
+        contains no `raise LLMError` statement at all. What it has is three CALL
+        SITES that can raise one -- `_extract_chunk_facts`,
+        `_relation_aliases_or_error` and `_candidate_rows` -- and all three sit
+        ahead of that loop, as does `assert_writable`, which raises
+        `PolicyMissingError`/`PolicyEmptyError` rather than an `LLMError`.
+        Anything raised INSIDE that loop -- a
         `ValueError` out of slot validation, a `sqlite3` error, or the fact-term
         sidecar going locked mid-loop -- leaves the facts written so far in the KB
         while this method hands the chunk back to the queue. Requeueing is still
