@@ -22,6 +22,7 @@ from verinote.pipeline.corroboration import (
 )
 from verinote.pipeline.normalize import normalize_for_extraction
 from verinote.pipeline.policy_state import PolicyMissingError, assert_writable
+from verinote.policy_defaults import RELATION_ALIASES_RELPATH
 from verinote.prompts import PromptError, render_prompt
 from verinote.store import Store
 from verinote.store.duckdb_fact_terms import DuckDBFactTermStoreLockedError
@@ -1012,6 +1013,38 @@ def _relation_aliases_or_error(store: Store) -> dict[str, str]:
         return store_relation_aliases(store)
     except CorroborationPolicyError as exc:
         raise LLMError(str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - normalise every alias-read failure
+        # `store_relation_aliases` READS A HAND-EDITED FILE, so it fails in ways
+        # the clause above does not name. `UnicodeDecodeError` (a file saved as
+        # cp949) descends from `ValueError` as `CorroborationPolicyError` does
+        # but is no subclass of it -- its own base is `UnicodeError`;
+        # `PermissionError` is not a `ValueError` at all. Both used to leave here
+        # unnormalised, and `_extract_chunk` is called from a loop whose broad
+        # clause re-raises anything that is not an `LLMError`
+        # (`process_extraction_job`) -- so the job was left `running` with no
+        # terminal event. Measured, same KB, cp949 alias file: `running`
+        # and `['extraction_job_started', 'chunk_failed']` before this clause;
+        # `failed` and a third `extraction_job_completed` event after it (#553).
+        #
+        # BROAD, NOT A TYPE LIST. Those two types are what the tests reach
+        # through a real file; the clause is here for the member nobody has named
+        # yet, and `test_an_unlisted_alias_read_failure_still_ends_the_job` is
+        # what stops it being narrowed back to a list of them -- the shape
+        # `tests/test_cloud_adapters.py` uses for the same reason.
+        #
+        # NAME THE FILE. `str(UnicodeDecodeError)` is a byte offset and no path,
+        # so the chunk's recorded error read as a bare codec complaint about
+        # nothing in particular. Same move, and the same reason, as
+        # `web/app.py::_extraction_schema_hint` (#539).
+        #
+        # BELOW the clause above, not before it: a malformed-but-readable file
+        # already produces a message that begins with the file name
+        # (`relation-aliases.md:1: expected ...` is the case the tests pin; some
+        # of the others carry no line number), and prefixing that would say the
+        # file twice.
+        raise LLMError(
+            f"{RELATION_ALIASES_RELPATH} could not be read: {exc}"
+        ) from exc
 
 
 def _candidate_rows(
