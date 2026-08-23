@@ -22,6 +22,8 @@ meaning; that test is what stops it.
 Fixtures are synthetic throughout (AGENTS.md): `s_alpha`/`s_beta`/`s_gamma`.
 """
 
+import json
+
 import pytest
 
 from verinote.llm.base import ExtractedFact
@@ -148,6 +150,17 @@ def test_a_sidecar_lock_mid_chunk_leaves_the_job_count_true(tmp_path):
     assert job["status"] == "pending"
     assert job["candidate_count"] == 1
     assert job["candidate_count"] == _fact_rows_for_job(s, job_id)
+
+    after_json = json.loads(
+        s._conn.execute(
+            "SELECT after_json FROM fact_events WHERE job_id = ? "
+            "AND event_type = 'extraction_job_rolled_back' ORDER BY id DESC LIMIT 1",
+            (job_id,),
+        ).fetchone()["after_json"]
+    )
+    # the recount runs BEFORE the `after` read, so the history event carries the
+    # corrected count rather than the stale one the row had on entry
+    assert after_json["candidate_count"] == 1
     s.close()
 
 
