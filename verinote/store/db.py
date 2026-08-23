@@ -3470,6 +3470,17 @@ class Store:
         # table, `COUNT(*) ... WHERE job_id = ?` ran ~200x slower without an index
         # here than with one (single run, 200 calls averaged, one host — enough to
         # settle whether the index is needed, not a portable benchmark figure).
+        #
+        # THE OTHER QUESTION THIS DIFF RAISES is what the derived count costs at
+        # all, since the write it replaced — `candidate_count = candidate_count + ?`
+        # — was constant work. It is no longer constant: with these indexes in place
+        # each recount is an index range scan, linear in the rows THIS job (or this
+        # run) created rather than in `facts` as a whole. `EXPLAIN QUERY PLAN` on
+        # both statements in this tree: `SEARCH facts USING COVERING INDEX
+        # idx_facts_job (job_id=?)` and `... idx_facts_run (run_id=? AND job_id=?)`
+        # — covering, so neither touches the table. It is paid once per chunk
+        # completion, beside that chunk's own provider call, which is why the
+        # affordability of it needs no number here.
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_facts_job ON facts(job_id)")
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_facts_run ON facts(run_id, job_id)"
