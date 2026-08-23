@@ -201,4 +201,12 @@ def test_a_reviewed_fact_does_not_shrink_the_count(tmp_path):
 
     s._refresh_extraction_job(job_id)
     assert s.get_extraction_job(job_id)["candidate_count"] == before
+
+    # The same absence, in the other two copies of the predicate: the count-only
+    # refresh `rollback_extraction_job` uses, and the per-run tally. Measured: a
+    # `status` filter added to either was caught by no test before these lines.
+    s._refresh_job_candidate_count(job_id)
+    assert s.get_extraction_job(job_id)["candidate_count"] == before
+    run_id = int(s.facts()[0]["run_id"])
+    assert s.run_candidate_count(job_id=job_id, run_id=run_id) == before
     s.close()
