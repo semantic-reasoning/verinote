@@ -1125,6 +1125,27 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         try:
             prompt = get_prompt(cfg.root, prompt_id)
         except PromptError as exc:
+            # Compose the caller's `error` with the load complaint, and honour
+            # the caller's status, in the shape of the branch below — with the
+            # two departures the paragraphs beneath explain: the
+            # `error == load_error` guard, and promoting a caller's 200 to 400
+            # rather than passing it through.
+            # Replacing them threw away the diagnosis a POST had composed: over
+            # a readable-but-invalid override (someone hand-edited the file and
+            # dropped a required placeholder), a save that failed to WRITE was
+            # reported as "your text must include {qid}" when the user's text
+            # did include it, and the caller's status went with it.
+            #
+            # `error == load_error` and not a bare `error is None`: an unknown
+            # `prompt_id` raises the SAME `PromptError` here that the route
+            # already caught from its own library call, and composing a string
+            # with itself printed `unknown prompt: nope; unknown prompt: nope`.
+            #
+            # `400 if status_code == 200 else status_code` and not a bare
+            # `status_code`: a GET of `/prompts?prompt=nope` passes the default
+            # 200 and must still answer 400
+            # (`test_a_broken_override_does_not_blank_the_other_prompts`).
+            load_error = str(exc)
             return templates.TemplateResponse(
                 request,
                 "prompts.html",
@@ -1134,11 +1155,15 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                     "selected_prompt": prompt_id,
                     "prompt_text": prompt_text,
                     "message": message,
-                    "error": str(exc),
+                    "error": (
+                        load_error
+                        if error is None or error == load_error
+                        else f"{error}; {load_error}"
+                    ),
                     "reset_only": False,
                     "override_path": None,
                 },
-                status_code=400,
+                status_code=400 if status_code == 200 else status_code,
             )
         except Exception as exc:  # noqa: BLE001 - the page that repairs a broken override
             # `get_prompt` reads the override off disk, so a file the user saved
@@ -1156,9 +1181,14 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             # `unlink()`s, so that repair survives a file this process could not
             # read (measured: 303, the override gone, the page healthy again, in
             # both modes the tests cover). What the page does NOT carry is the
-            # broken prompt's own text or its Save form: `prompt=None` collapses
-            # the editor, and seeding the textarea with the default would invite
-            # overwriting a file this process could not read. So it is a
+            # broken prompt's SAVED text or an editor seeded from the default:
+            # `prompt=None` collapses the editor, and seeding the textarea with
+            # the default would invite overwriting a file this process could not
+            # read. A refused save POST is the exception, and it seeds
+            # nothing: `prompts.html` echoes back the bytes that very request
+            # carried, so such a save keeps the user's own typing (#545). Both
+            # of the other callers — a GET, and a reset POST — pass no
+            # `prompt_text`, so neither is offered an editor at all. So it is a
             # delivered page, not a refused one, and #539's non-regression
             # condition asks for 200 in as many words.
             #
@@ -2944,6 +2974,56 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 error=str(exc),
                 status_code=400,
             )
+        except Exception as exc:  # noqa: BLE001 - a KB tree the user can chmod fails in ways PromptError does not name
+            # `save_prompt_override` does filesystem work — `mkdir` then
+            # `write_text` — and the `OSError` family that raises is outside
+            # `PromptError`'s hierarchy, so a write the operator's own mode bits
+            # refused left this handler as an unhandled exception: a bare error
+            # response, no page, and nothing saying which file or why (#545).
+            #
+            # Broad rather than a type list, per the house form of
+            # `_prompts_page` above and of
+            # `verinote/pipeline/extract.py::_relation_aliases_or_error`: the
+            # ways a directory the user can chmod fails are not a set this route
+            # can enumerate, and every member of it is better answered with a
+            # page that names the file than with a traceback. `Exception` and
+            # never `BaseException`, so `KeyboardInterrupt`, `SystemExit` and
+            # `CancelledError` still travel.
+            #
+            # BELOW the narrow `except PromptError`, which keeps its 400: empty
+            # text, a missing required placeholder and an unknown `prompt_id`
+            # are refusals of the request, not failures of the disk, and folding
+            # them in here would relabel all three. Read
+            # `verinote/prompts/library.py`: in `save_prompt_override`,
+            # `prompt_definition`, the empty check and `_validate_prompt_text`
+            # all run BEFORE `mkdir`, and nothing after it raises `PromptError`
+            # — so the narrow clause above cannot today take a write failure and
+            # report it as a validation refusal. That is a property of the
+            # current library, not a guarantee: add a `PromptError` after the
+            # write and this ordering needs revisiting.
+            #
+            # 500 rather than 400: the user's text was accepted and the disk
+            # said no, so repeating the identical request once the mode bits are
+            # fixed is exactly the right thing to do — which is what 4xx denies.
+            #
+            # `cfg = _active_cfg()` stays ABOVE the `try`, and the body stays
+            # the single library call. Its `RuntimeError("no active KB")` is an
+            # application-state bug; caught here it would render as "could not
+            # be saved to …: no active KB", blaming the filesystem for it.
+            #
+            # The path is named here rather than left to `str(exc)`: a failing
+            # `mkdir` names only the directory, and an exception outside
+            # `OSError` names nothing at all.
+            return _prompts_page(
+                request,
+                prompt_id=prompt_id,
+                prompt_text=prompt_text,
+                error=(
+                    f"prompt {prompt_id} could not be saved to "
+                    f"{prompt_override_path(cfg.root, prompt_id)}: {exc}"
+                ),
+                status_code=500,
+            )
         return RedirectResponse(f"/prompts?{urlencode({'prompt': prompt_id})}", status_code=303)
 
     @app.post("/prompts/reset", response_class=HTMLResponse)
@@ -2957,6 +3037,52 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 prompt_id=prompt_id,
                 error=str(exc),
                 status_code=400,
+            )
+        except Exception as exc:  # noqa: BLE001 - `exists()`/`unlink()` fail the ways a save does
+            # The same clause and the same reasoning as `save_prompt_route`'s
+            # above: why it is broad, why it sits below the narrow one, why the
+            # status is what it is, why `_active_cfg()` stays outside the `try`,
+            # and why the path is named rather than left to `str(exc)`.
+            #
+            # Reset is not the working half of this pair. `delete_prompt_override`
+            # calls `path.exists()` before `path.unlink()`, and under a directory
+            # the operator restricted BOTH raise — `Path.exists()` propagates
+            # `EACCES` rather than answering False, which is what took the reset
+            # POST down from a `0o000` prompts directory.
+            #
+            # No `prompt_text`: this route carries none, so what its failure
+            # page can carry is decided by what `get_prompt` makes of the
+            # override, and that has three outcomes, not two. Loads: the full
+            # editor, banner above it. Cannot be READ: `reset_only` renders the
+            # section that deletes it, banner above it. Reads but fails
+            # VALIDATION: `_prompts_page` takes its `except PromptError` branch,
+            # where `prompt` is None and that branch passes `reset_only=False`
+            # outright — `_override_is_unreadable` is the `except Exception`
+            # branch's gate and is never consulted here — so the page is the
+            # banner and the prompt selector and no control at all.
+            # `test_a_reset_that_cannot_unlink_is_a_page_not_a_crash` pins the
+            # first two shapes, one per param;
+            # `test_a_failed_reset_over_an_invalid_override_offers_no_control`
+            # pins the third.
+            #
+            # That third page is deliberately left short of a repair control.
+            # Offering one for a readable-but-invalid override is #546's whole
+            # subject, and the line it has to change is that hardcoded
+            # `reset_only=False` — not this clause, and not the predicate. What
+            # it cannot do is flip that literal to True, because `get_prompt`
+            # raises the same `PromptError` when the PACKAGED default is what
+            # fails validation, where a reset would delete the user's file and
+            # fix nothing. What this change does deliver there is the diagnosis:
+            # measured against `2c96317`, the same request answered a bare 500
+            # carrying no page, no banner and not even the selector.
+            return _prompts_page(
+                request,
+                prompt_id=prompt_id,
+                error=(
+                    f"prompt {prompt_id} override could not be deleted from "
+                    f"{prompt_override_path(cfg.root, prompt_id)}: {exc}"
+                ),
+                status_code=500,
             )
         return RedirectResponse(f"/prompts?{urlencode({'prompt': prompt_id})}", status_code=303)
 
