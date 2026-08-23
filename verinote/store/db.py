@@ -1822,6 +1822,15 @@ class Store:
             # Count only; recomputing `status` here would drop an owned job out
             # from under its owner (#337). Placed AFTER the `canceled` early
             # return above, which must write nothing at all.
+            #
+            # THAT CARE IS ONE-SIDED. `_refresh_extraction_job` has no `canceled`
+            # branch in its status ladder and no status predicate on its UPDATE
+            # (`WHERE id = ?`), so a canceled job whose chunk is touched has its
+            # `candidate_count` rewritten there regardless -- since #482, a further
+            # column on #526's item 2, which until then was about `status` and
+            # `message` alone. Latent today: nothing under `verinote/` writes
+            # `'canceled'` -- on `grep -rn "canceled" verinote/` every occurrence is
+            # a guard, the CHECK at `store/schema.sql:71`, or prose.
             self._refresh_job_candidate_count(job_id)
             after = self.get_extraction_job(job_id)
             if after is not None:
