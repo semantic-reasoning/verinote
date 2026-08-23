@@ -992,8 +992,8 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     # here and is not in `web/app.py`, whose `f"analysis failed:
                     # {e}"` renders a bare `ValueError()` as "analysis failed: "
                     # with no cause — the same empty-cause symptom
-                    # `_release_claimed_chunk` type-qualifies against, still open
-                    # there and outside the scope of the #525 re-read that clause
+                    # `_release_claimed_chunk` type-qualifies against, open there as
+                    # #551 and outside the scope of the #525 re-read that clause
                     # has since grown. So this clause is the web clause's counterpart,
                     # not its mirror. Neither bounds the message length; the store
                     # takes `str(exc)` whole, exactly as the web one does.
