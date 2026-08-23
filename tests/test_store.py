@@ -1675,8 +1675,8 @@ def test_rollback_extraction_job_does_not_revive_a_canceled_job(tmp_path):
     sid = s.add_source("sources/a.txt")
     job_id, _ = _job_with_mixed_chunks(s, sid)
     s._conn.execute(
-        "UPDATE extraction_jobs SET status = 'canceled', message = 'canceled by user' "
-        "WHERE id = ?",
+        "UPDATE extraction_jobs SET status = 'canceled', message = 'canceled by user', "
+        "candidate_count = 99 WHERE id = ?",
         (job_id,),
     )
 
@@ -1685,6 +1685,10 @@ def test_rollback_extraction_job_does_not_revive_a_canceled_job(tmp_path):
     job = s.get_extraction_job(job_id)
     assert job["status"] == "canceled"
     assert job["message"] == "canceled by user"
+    # the recount is placed AFTER the early return, so a canceled job's column is
+    # not rewritten either: the fixture holds 2 real facts, so a recount would
+    # make this 2.
+    assert job["candidate_count"] == 99
     # the in-flight chunk stays `running`: it is not back in the queue
     assert [row["status"] for row in s.source_chunks(job_id)] == ["done", "failed", "running"]
     assert s.next_pending_chunk(job_id) is None
