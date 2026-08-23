@@ -419,6 +419,123 @@ def test_generic_attribute_questions_become_lookup_object_intents():
     assert english_of.subject == IntentTarget("entity", "Sample Project")
 
 
+def test_the_of_shape_splits_where_the_greedy_label_stops():
+    """The `of` label is greedy, so it takes the most it can and the entity gets the rest.
+
+    The `of` label and the possessive label are each spelled `{0,40}` on this tree,
+    and the `of` one has never been anything else. Making it lazy is a behaviour
+    change and not a tidy-up: it moves the first row's subject to
+    `Department of Sample Org` and its candidate to `head`, and it reddens nothing
+    else in the suite, which is why this test exists. `head of Department` is a
+    plausible relation name and `Department of Sample Org` a plausible entity, so
+    this records the choice rather than defending it.
+
+    The greed is not bounded by "the last ` of `". The rows below exercise three of
+    its bounds -- the entity's `[A-Z]`, the label group's 41-character ceiling, and
+    the label's character class. This test does not enumerate the bounds.
+
+    The lowercase row is refused by `[A-Z]`, so the split falls back to the first
+    ` of `; it reddens the `[A-Za-z]` mutant, which
+    `tests/test_query.py::test_review_required_question_is_flagged_not_in_draft`
+    already pins. The ceiling rows differ by one letter across 41 characters --
+    `[A-Za-z]` plus `{0,40}` -- and they pin it from both sides: narrowing the cap
+    to `{0,39}` moves the 41-character row, widening it to `{0,41}` moves the
+    42-character row, and nothing else in the suite catches either. The last row's
+    label stops at a `.`, which the character class refuses, with the ceiling
+    nowhere near -- raising the cap does not move it.
+
+    This test is a tripwire for the split point itself. The downstream edits I
+    could build -- widening either head alternation (#433, which #520 argues
+    against) and appending a trailing-predicate tail to the `of` entity (#515) --
+    both leave it green.
+
+    Refs #517. The same pattern is what #521 reads as a proper name, though not the
+    same case: #521's `What is the Bank of America?` has a single ` of `, where
+    greedy and lazy agree.
+    """
+    intent = deterministic_query_intent("What is the head of Department of Sample Org?")
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.subject == IntentTarget("entity", "Sample Org")                    # row 1
+    assert intent.relation_candidates == ("head of Department",)
+
+    # the entity's `[A-Z]`
+    intent = deterministic_query_intent("What is the head of Department of sample org?")
+    assert intent.subject == IntentTarget("entity", "Department of sample org")      # row 2
+    assert intent.relation_candidates == ("head",)
+
+    # the label group's 41-character ceiling, from both sides
+    intent = deterministic_query_intent(
+        "What is the primary contact email addresses of Region of Sample Org?"
+    )
+    assert intent.subject == IntentTarget("entity", "Sample Org")                    # row 3
+    assert intent.relation_candidates == ("primary contact email addresses of Region",)
+    intent = deterministic_query_intent(
+        "What is the primary contact email addresses of Regions of Sample Org?"
+    )
+    assert intent.subject == IntentTarget("entity", "Regions of Sample Org")         # row 4
+    assert intent.relation_candidates == ("primary contact email addresses",)
+
+    # the label's character class
+    intent = deterministic_query_intent("What is the head of Dept.1 of Sample Org?")
+    assert intent.subject == IntentTarget("entity", "Dept.1 of Sample Org")          # row 5
+    assert intent.relation_candidates == ("head",)
+
+
+def test_the_possessive_shape_splits_at_the_last_possessive():
+    """The possessive label class excludes `'`, so the split lands at the last apostrophe.
+
+    A split at an earlier `'s` would leave an apostrophe inside the label, which
+    `[A-Za-z0-9 _-]` cannot match, so no such split matches.
+
+    Where that fails -- a trailing `'` that is not `'s`, or a remainder past the
+    label's ceiling -- this pattern does not match at some other apostrophe; it does
+    not match at all. What the question then parses as is decided by the branches
+    after this one, and the `of` shape claims some of them:
+    `What is Head of Sample Org's Alice' Ltd?` is read as a lookup on
+    `Sample Org's Alice' Ltd`. Admitting `'` to the class reddens the row below
+    instead: the subject becomes `Sample Project` and the candidate
+    `owner's manager`.
+
+    `tests/test_ask.py` already states this behaviour in prose -- "the regex takes
+    `Sample Project's owner` as the **entity** and leaves a clean `manager` label"
+    -- over this very question, and asserts none of it: its assertions are on the
+    end-to-end result, which is the same by either route. This test is that
+    sentence's warrant, which is why it borrows its witness.
+
+    The exclusion is also what makes the entity's own `{0,100}?` unobservable.
+    That is a derivation, not a sample: lazy walks forward to the last apostrophe
+    and greedy walks back to it, so the two preferences find the same unique match
+    or both fail. Flipping it leaves the suite green. Admit `'` to the label class
+    *and* make the entity greedy, and the answer returns to the row asserted here
+    -- so the quantifier begins deciding the parse exactly when this exclusion is
+    lifted.
+
+    #517 lists four captured-field quantifiers: the possessive label and entity,
+    and the `of` label and entity. The possessive entity's is not the only one of
+    them that cannot be pinned -- the `of` entity's `{0,100}?` and the possessive
+    label's `{0,40}` are unobservable too, for a plainer reason: each is the last
+    group in its pattern, with only an optional `?` and surrounding whitespace
+    after it, and neither class admits `?`, so greed can extend it over trailing
+    whitespace and nothing else, which the caller strips (`.strip()` at
+    `query_intent.py:507`, `_clean_english_attribute_label` at `:1039`). Of those
+    four, only the `of` label's greed is observable, and
+    `test_the_of_shape_splits_where_the_greedy_label_stops` is what pins it -- so
+    #517's "Making the `of` entity greedy instead of lazy likewise changes
+    behaviour" does not hold here.
+
+    This test is a tripwire for the split point itself. The downstream edits I
+    could build -- widening either head alternation (#433, which #520 argues
+    against) and appending a trailing-predicate tail to the `of` entity (#515) --
+    both leave it green.
+
+    Refs #517.
+    """
+    intent = deterministic_query_intent("What is Sample Project's owner's manager?")
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.subject == IntentTarget("entity", "Sample Project's owner")
+    assert intent.relation_candidates == ("manager",)
+
+
 def test_generic_korean_attribute_requires_question_shape():
     intent = deterministic_query_intent("샘플프로젝트의 목적")
 
