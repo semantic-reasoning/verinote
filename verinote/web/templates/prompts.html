@@ -49,6 +49,43 @@
 </section>
 {% endif %}
 
+{# Gated on `prompt_text is not none`, NOT on truthiness and NOT on `not prompt`
+   alone: `save_prompt_route` declares `prompt_text: str = Form("")`, so a save
+   always passes a string, `reset_prompt_route` passes none, and a GET passes
+   none. So this renders only for a save POST that came back as a page with the
+   prompt unloadable — the state where `{% if prompt %}` above collapses the
+   editor and takes the user's typing with it (#545). It seeds nothing: the only
+   text it can show is the text that very request carried, which is why it does
+   not re-open the overwrite hazard a default-seeded editor would.
+
+   The membership test is what keeps the Save button off an id
+   `prompt_definition` has already rejected: an unknown `prompt_id` also reaches
+   this page with `prompt` None and a `prompt_text`, and without it the form
+   comes back carrying `nope` in its hidden field, so every click on it
+   reproduces the same 400. That is the rule
+   `test_a_broken_override_does_not_blank_the_other_prompts` states for the
+   sibling reset control — an id with no definition has nothing for a control to
+   act on. The banner still says `unknown prompt: nope`. #}
+{% if not prompt and prompt_text is not none and selected_prompt in prompts|map(attribute="id")|list %}
+<section class="prompt-editor">
+  <div class="prompt-meta">
+    <span class="badge">Not saved</span>
+    <span><code>{{ selected_prompt }}</code></span>
+  </div>
+  <p class="muted">This is the text you submitted. It was not written to disk — the banner above says why.</p>
+  <form class="settings prompt-form" action="/prompts" method="post">
+    <input type="hidden" name="prompt_id" value="{{ selected_prompt }}">
+    <label>Prompt text
+      <textarea name="prompt_text" rows="24" spellcheck="false">{{ prompt_text }}</textarea>
+    </label>
+    <div class="prompt-actions">
+      <button class="btn" type="submit">Save prompt</button>
+      <a class="btn ghost" href="/settings">Back to settings</a>
+    </div>
+  </form>
+</section>
+{% endif %}
+
 {% if reset_only %}
 <section class="prompt-editor">
   <div class="prompt-meta">
@@ -56,7 +93,7 @@
     <span><code>{{ selected_prompt }}</code></span>
     <span>{{ override_path }}</span>
   </div>
-  <p class="muted">This prompt's text is not shown and cannot be edited here. Reset to default deletes the override file named above; this prompt then falls back to the built-in default.</p>
+  <p class="muted">This prompt's saved text could not be read and is not shown. Reset to default deletes the override file named above; this prompt then falls back to the built-in default.</p>
   <form class="prompt-reset" action="/prompts/reset" method="post">
     <input type="hidden" name="prompt_id" value="{{ selected_prompt }}">
     <button class="btn ghost" type="submit">Reset to default</button>
