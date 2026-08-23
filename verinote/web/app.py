@@ -1765,11 +1765,19 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             `get_client(cfg)` and the `_extraction_schema_hint(cfg)` argument
             expression, BOTH evaluated before `process_extraction_job` claims the
             job. Measured — the row read from inside the raising callable is
-            `pending` — and measured again through the suite: a `running` predicate
-            on these two clauses fails
-            `test_worker_still_fails_the_job_on_an_ordinary_error` and
+            `pending` — and measured again through the suite: substituting
+            `cmd_sync`'s `running` predicate on these two clauses reddens
+            `test_worker_still_fails_the_job_on_an_ordinary_error`, both
+            parametrizations of
             `test_a_broken_extraction_limit_hint_is_extraction_failed_not_analysis_failed`,
-            because a pre-claim failure would stop being recorded at all. The CLI
+            and `test_worker_writes_nothing_when_the_job_row_is_gone` — whose row is
+            gone, so no status matches and the write is declined instead of being
+            the no-op the bullet below describes. Measured: those four are the whole
+            red set in the suite. The two `done` tests reach these clauses too and
+            stay green — a `done` job is declined under either predicate — so being
+            not `running` is not by itself what reddens a test; requiring the write
+            is. The point is that a pre-claim failure would stop being recorded at
+            all. The CLI
             clause's `try` contains no pre-claim code of its own — `client` and
             `schema_hint` are both computed above it (`cli.py`), and none of the
             call's argument expressions is itself a call. The predicates differ
@@ -1850,7 +1858,11 @@ def create_app(cfg: Config | None = None) -> FastAPI:
               still ship this guard writing over the cancellation.
             - A JOB WHOSE SOURCE WAS DELETED, read back as `None`. The write goes
               ahead and is a no-op: `fail_extraction_job` matches no row and appends
-              no event. Branching on it would be untested dead code.
+              no event. Branching on it would be dead code, and no longer UNtested
+              dead code: `test_worker_writes_nothing_when_the_job_row_is_gone` asserts
+              the call is made, so an `if job_now is None: return` added here reddens
+              it. Measured both ways — that branch is green on the tree before that
+              test existed and red with it.
 
             DECLINING IS NOT DROPPING. The error that brought us here is real — on
             the #525 path it is a genuine sqlite/WAL-class failure — and refusing the
