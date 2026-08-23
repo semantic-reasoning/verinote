@@ -1835,6 +1835,19 @@ def create_app(cfg: Config | None = None) -> FastAPI:
               refusing `failed` would leave a retry that dies pre-claim showing the
               old message and recording nothing on the job row. Nothing pins either
               behaviour; #552 tracks it.
+            - A `canceled` JOB. This guard refuses `done` BY NAME, so every other
+              status the CHECK on `extraction_jobs.status` admits (`schema.sql`) is
+              written over, and `canceled` is one of them. That contradicts what
+              the store itself does with such a job:
+              `Store.rollback_extraction_job` treats `canceled` as sacred and
+              returns above BOTH of its UPDATEs and its event append rather than
+              touch it, while this guard would put `failed` on that row with an
+              `extraction_job_failed` event beside it. Unreachable today — no
+              production code under `verinote/` writes `'canceled'` at all — which
+              makes it a third latent site for #526. That issue's two items are
+              `mark_extraction_job_running` and `_refresh_extraction_job`; neither
+              names this one, so a cancel feature that fixed #526 as written would
+              still ship this guard writing over the cancellation.
             - A JOB WHOSE SOURCE WAS DELETED, read back as `None`. The write goes
               ahead and is a no-op: `fail_extraction_job` matches no row and appends
               no event. Branching on it would be untested dead code.
