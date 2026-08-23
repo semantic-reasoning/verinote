@@ -271,10 +271,11 @@ def test_a_chunk_already_written_done_is_not_flipped_to_failed(tmp_path, monkeyp
     """The release asks whether the claim is still held — it does not re-decide.
 
     `mark_chunk_done` writes in several steps and can raise *after* the chunk row
-    already says `done` (the job's `candidate_count` update, or
-    `_refresh_extraction_job`). Overwriting that with `failed` would destroy real
-    work. Counters are deliberately not asserted here: the stand-in aborts
-    part-way through `mark_chunk_done`, so they are mid-write by construction.
+    already says `done` (`_refresh_extraction_job`, which since #482 is where the
+    job's `candidate_count` update lives). Overwriting that with `failed` would
+    destroy real work. Counters are deliberately not asserted here: the stand-in
+    aborts part-way through `mark_chunk_done`, so they are mid-write by
+    construction.
     """
     s = _store(tmp_path)
     _source_id, job_id = _three_chunk_job(s)
@@ -283,7 +284,7 @@ def test_a_chunk_already_written_done_is_not_flipped_to_failed(tmp_path, monkeyp
         s._conn.execute(
             "UPDATE source_chunks SET status = 'done' WHERE id = ?", (chunk_id,)
         )
-        raise RuntimeError("counter update failed")
+        raise RuntimeError("refresh failed after the chunk row said done")
 
     monkeypatch.setattr(s, "mark_chunk_done", _done_then_boom)
 
