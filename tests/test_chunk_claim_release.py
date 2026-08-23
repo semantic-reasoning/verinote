@@ -628,13 +628,13 @@ def test_cli_sync_fails_the_job_and_never_leaves_the_chunk_claimed(
     and the two callers agree only so far — `_start_source_extraction`
     (`web/app.py`) and `cmd_sync` each end with a broad clause that writes
     `failed` after re-reading the job status, but on DIFFERENT predicates. The
-    `cmd_sync` clause wraps `process_extraction_job` alone, so the claim is always
-    held and `running` is the right question; the web clause also wraps
-    `get_client` and its schema hint, where a pre-claim failure is still `pending`
-    and must be recorded, so it refuses `done` only (#525). That partial agreement
-    is a fact about two call sites, not something the invariant may be re-phrased
-    over: `BaseException` and a lost ownership CAS still leave a job in no terminal
-    status at all (see the two tests above).
+    `cmd_sync` clause wraps `process_extraction_job` alone, with no pre-claim code
+    of its own; the web clause also wraps `get_client` and its schema hint, where
+    a pre-claim failure is still `pending` and must be recorded, so it refuses
+    `done` only (#525). That partial agreement is a fact about two call sites, not
+    something the invariant may be re-phrased over: `BaseException` and a lost
+    ownership CAS still leave a job in no terminal status at all (see the two tests
+    above).
 
     (a) WAS A CHARACTERISATION AND IS NOW A GUARANTEE. It used to read `running`
     and carried #488's instruction to turn it red; #488 is that fix, and this is
