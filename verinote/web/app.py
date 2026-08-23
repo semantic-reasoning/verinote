@@ -1791,8 +1791,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             these clauses exist to report. Widening the refusal to
             `{"done", "running"}` is caught by exactly ONE test, measured:
             `test_worker_still_fails_a_claimed_job_whose_chunk_crashed` goes red
-            while the other thirteen `test_worker_*` tests stay green. Do not widen
-            this without reading that test.
+            while no other `test_worker_*` test does. Do not widen this without
+            reading that test.
 
             WHAT IT DOES NOT COVER — each bullet says which status it leaves the job
             in and how close to reachable it is; they do not share an answer:
@@ -1815,12 +1815,26 @@ def create_app(cfg: Config | None = None) -> FastAPI:
               Closing it means moving the predicate into the SQL, as the extraction
               path's ownership handshakes already do — a store change, not made here.
             - AN ALREADY-`failed` JOB, whose detailed per-chunk message this can
-              still overwrite. Unmeasured, but nameable: `finish_extraction_job`
-              runs on an autocommit connection, so its `_refresh_extraction_job(
-              final=True)` UPDATE commits BEFORE its `extraction_job_completed`
-              event is appended. A raise at that last step therefore leaves whatever
-              `final=True` computed — `failed` when a chunk failed — and this guard
-              permits the write over it.
+              still overwrite. `finish_extraction_job` runs on an autocommit
+              connection, so its `_refresh_extraction_job(final=True)` UPDATE
+              commits BEFORE its `extraction_job_completed` event is appended. A
+              raise at that last step therefore leaves whatever `final=True`
+              computed — `failed` when a chunk failed — and this guard permits the
+              write over it. MEASURED, driving the real worker on a 2-chunk job
+              whose first chunk raised `LLMError` and whose
+              `extraction_job_completed` append was forced to raise: the job comes
+              to rest `failed` with "analysis failed: post-final event append
+              failed" and a second `extraction_job_failed` event beside the
+              `chunk_failed` one, where a refusal set widened to
+              `("done", "failed")` keeps "Analysis failed: 1 chunk(s) failed, 1/2
+              complete: chunk one llm failure" and appends no second failure event.
+              Widening is still not the fix: the retry button's worker evaluates
+              `get_client(cfg)` and `_extraction_schema_hint(cfg)` while the job is
+              STILL the previous run's `failed` — the status only moves inside
+              `process_extraction_job`, at `claim_extraction_job_for_retry` — so
+              refusing `failed` would leave a retry that dies pre-claim showing the
+              old message and recording nothing on the job row. Nothing pins either
+              behaviour; #552 tracks it.
             - A JOB WHOSE SOURCE WAS DELETED, read back as `None`. The write goes
               ahead and is a no-op: `fail_extraction_job` matches no row and appends
               no event. Branching on it would be untested dead code.
