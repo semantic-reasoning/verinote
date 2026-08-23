@@ -1770,8 +1770,10 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             `test_worker_still_fails_the_job_on_an_ordinary_error` and
             `test_a_broken_extraction_limit_hint_is_extraction_failed_not_analysis_failed`,
             because a pre-claim failure would stop being recorded at all. The CLI
-            clause wraps `process_extraction_job` ALONE, so its claim is always held
-            by the time it runs. The predicates differ because the scopes do.
+            clause's `try` contains no pre-claim code of its own — `client` and
+            `schema_hint` are both computed above it (`cli.py`), and none of the
+            call's argument expressions is itself a call. The predicates differ
+            because the scopes do.
 
             REFUSING ONLY `done` ALSO KEEPS THE CLAUSE-ORDER TESTS HONEST.
             `test_worker_halt_does_not_mark_the_job_failed` and
