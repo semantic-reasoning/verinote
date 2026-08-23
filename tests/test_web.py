@@ -1971,7 +1971,10 @@ def test_worker_leaves_a_done_job_done_when_finishing_it_raises(
     # and the traceback is the only thing left naming what was raised. Asserting the
     # message text alone does not pin it — that string is in the message too.
     assert "RuntimeError" in caplog.text
-    assert caplog.records[-1].exc_info is not None
+    declined = next(
+        r for r in caplog.records if "not recording on the job row" in r.getMessage()
+    )
+    assert declined.exc_info is not None
     # nothing else recorded this run either, which is why the log line above is the
     # whole of the record: `finish_extraction_job` raised before its own event.
     assert "extraction_job_completed" not in _job_event_types(cfg, job_id)
@@ -2021,7 +2024,10 @@ def test_worker_leaves_a_done_job_done_when_finishing_it_raises_an_llm_error(
     assert "not recording on the job row" in caplog.text
     assert "post-done llm error" in caplog.text
     assert "LLMError" in caplog.text
-    assert caplog.records[-1].exc_info is not None
+    declined = next(
+        r for r in caplog.records if "not recording on the job row" in r.getMessage()
+    )
+    assert declined.exc_info is not None
     assert "extraction_job_completed" not in _job_event_types(cfg, job_id)
 
 
