@@ -831,11 +831,11 @@ def _put_job_in_the_edge_state(store: Store, job_id: int, message: str) -> None:
     """Write the `failed` row directly, where no pass is being run to write it.
 
     #488 landed, so both callers now end with a broad `except` that terminalises
-    the job (`web/app.py`; `cli.py` since then), and the tests below that DRIVE a
-    crash through `cli.main(["sync"])` get that row from the CLI itself — they no
-    longer call anything here. What is left are the two fixtures that build the
-    edge state without running a pass at all: there is no caller in play to do
-    the write, so they do it themselves.
+    the job when the re-read permits (`web/app.py`; `cli.py` since then), and the
+    tests below that DRIVE a crash through `cli.main(["sync"])` get that row from
+    the CLI itself — they no longer call anything here. What is left are the two
+    fixtures that build the edge state without running a pass at all: there is no
+    caller in play to do the write, so they do it themselves.
 
     NOT the code under test either way. Nothing in `verinote/pipeline` writes the
     job row on this path; that is the invariant `test_chunk_claim_release.py`
@@ -1172,10 +1172,13 @@ def test_a_failed_job_that_finished_everything_terminalises_without_the_llm(
 ):
     """The edge state can also arrive with nothing left to do, and it must settle.
 
-    A broad `except` that fires AFTER the chunk loop writes `failed` over a job
-    whose chunks are all `done`. Continuing it claims the job, finds no pending
-    chunk, and finishes: no LLM call, and the empty run it opens is opened ONCE,
-    unlike the rebuild it replaces, which re-extracted every chunk.
+    A broad `except` that fired after the chunk loop used to write `failed` over a
+    job whose chunks are all `done` — the web worker's, until #525; `cmd_sync`'s
+    could not since #488, because it requires `running`. Both re-read now, so this
+    fixture stages the row directly rather than driving a pass that produces it.
+    Continuing it claims the job, finds no pending chunk, and finishes: no LLM
+    call, and the empty run it opens is opened ONCE, unlike the rebuild it
+    replaces, which re-extracted every chunk.
     """
     _ingest(tmp_path, monkeypatch, body=_body(J_MARKERS))
     monkeypatch.setattr("verinote.llm.get_client", lambda cfg: _RecordingClient())
