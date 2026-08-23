@@ -1481,7 +1481,12 @@ class Store:
         (`pipeline/extract.py::process_extraction_job`), once per invocation, and
         that invocation drives exactly one `job_id` -- so every fact carrying this
         `run_id` already carries this `job_id` and the second predicate selects
-        nothing extra. It is here because the QUESTION this method answers is
+        nothing extra. `grep -n "add_run(" verinote/pipeline/extract.py` finds one
+        sibling off this path, `sync_sources`, and it cannot make this method
+        miscount either: the facts under its run are written by `extract_source`,
+        whose `reconcile_fact` call passes `run_id` and no `job_id`, so they carry a
+        NULL `job_id` and match no `job_id = ?` predicate here. It is here because
+        the QUESTION this method answers is
         "what did this run contribute to this job", and a key that states the
         whole question stays correct if a later change ever lets one run span
         jobs. The cost is nothing: `idx_facts_run` still drives the lookup.
