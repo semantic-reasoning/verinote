@@ -154,9 +154,10 @@ def test_a_sidecar_lock_mid_chunk_leaves_the_job_count_true(tmp_path):
 def test_a_sidecar_lock_summary_counts_the_fact_it_wrote(tmp_path):
     """The run summary must not say "0 candidate(s)" over a fact it just wrote.
 
-    `_back_off_from_locked_sidecar`'s sibling `_halt_extraction_job` promises
-    "every number below is read back from the KB rather than assumed"; the
-    per-run tally was the one that was assumed, via `candidates += inserted`.
+    `_back_off_from_locked_sidecar`'s sibling `_halt_extraction_job` promises the
+    numbers in its summary are "read back from the KB rather than assumed", and
+    names `run_chunks` as its one exception; the per-run CANDIDATE tally is not
+    that exception, and was assumed all the same, via `candidates += inserted`.
     Measured pre-fix: this summary read "this run wrote 0 candidate(s) from 0
     chunk(s)" while one fact carrying that `run_id` sat in the KB.
     """

@@ -466,9 +466,11 @@ class ChunkedExtractionResult:
     `Store._refresh_extraction_job` runs; `run_candidates` is counted from
     `facts.run_id` at the moment this result is built. Neither can drift from the
     KB the way the old `candidates += inserted` accumulator did when a chunk's
-    insert loop died with facts already written. The scope distinction above is
-    unchanged -- it is now enforced by which column each count is keyed on rather
-    than by remembering to add to the right variable.
+    insert loop died with facts already written. For these two the scope
+    distinction above is no longer kept by remembering to add to the right
+    variable: it follows from which column each one is keyed on. `run_chunks` is
+    the exception and still accumulates, for the reason `process_extraction_job`
+    gives where it is declared.
     """
 
     job_id: int
@@ -538,9 +540,29 @@ def process_extraction_job(
     # `+=` was below the call and never ran, so every number derived from it
     # under-reported the KB. `store.run_candidate_count(job_id=..., run_id=...)`
     # counts the rows this run actually wrote for this job, at the moment each
-    # report needs it. Chunk COUNTS have no such failure: a chunk is `done` or it
-    # is not, and `run_chunks` is incremented on the same line that records the
-    # completion.
+    # report needs it. `run_chunks` has the SAME shape and is not saved by
+    # atomicity: `mark_chunk_done` can raise after the chunk row is already `done`
+    # (`_refresh_extraction_job` failing -- see `_release_claimed_chunk`), and the
+    # `+= 1` below is the NEXT statement, not the same one. What keeps it from
+    # being observably wrong is exception-type ROUTING. Three types are singled
+    # out by the clauses below: `PolicyMissingError` and
+    # `DuckDBFactTermStoreLockedError` reach an outer handler that writes a run
+    # summary carrying this number, and `LLMError` is the one the chunk clause
+    # swallows to keep the loop going. `mark_chunk_done` raises none of the three
+    # -- it is a SQLite read and `UPDATE` plus `_refresh_extraction_job`, with no
+    # policy gate, no sidecar call and no LLM call -- so a raise there leaves
+    # `process_extraction_job` through the chunk clause's own `raise`, before any
+    # summary is written. Measured with `_refresh_extraction_job` forced to raise
+    # `sqlite3.OperationalError` after the first chunk's UPDATE: the chunk is
+    # `done`, `run_chunks` is 0, the error escapes, and `runs.summary` is still
+    # `''`. The success path carries the number out as well
+    # (`ChunkedExtractionResult.run_chunks` -> `cli.py`), but only where nothing
+    # escaped the loop.
+    #
+    # It also cannot be re-derived the way the candidate tally was:
+    # `source_chunks` carries `job_id` and no `run_id` (`store/schema.sql`), so
+    # the KB cannot answer "how many chunks did THIS run finish". That is why only
+    # one of the two accumulators became a count.
     run_chunks = 0
     try:
         while chunk := store.next_pending_chunk(job_id):
@@ -769,7 +791,13 @@ def _halt_extraction_job(
     `run_id` pointing at *this* run, and the provenance page would then tell the
     user that the run which produced the facts in front of them wrote nothing. A
     change that exists to stop the KB lying about its state must not plant a new
-    lie, so every number below is read back from the KB rather than assumed.
+    lie, so the numbers below are read back from the KB rather than assumed:
+    `completed`/`total` from the job row here, `run_candidates` from `facts` via
+    `Store.run_candidate_count` in the caller. `run_chunks` is the one exception,
+    and not by choice -- `source_chunks` carries no `run_id`
+    (`store/schema.sql`), so no table can answer "how many chunks did this run
+    finish" and the caller's accumulator is the only source there (see
+    `process_extraction_job`, where it is declared).
 
     TWO DIFFERENT SCOPES, AND THEY MUST STAY GRAMMATICALLY APART. `completed`/
     `total` are the *job's* progress, cumulative across every resume; `run_chunks`
@@ -844,9 +872,10 @@ def _back_off_from_locked_sidecar(
     intact.
 
     The counts are read back from the KB for the same reason `_halt_extraction_job`
-    reads them back, and the two scopes stay apart in the sentence: `completed`/
-    `total` are the job's progress across every pass, `run_chunks`/`run_candidates`
-    are this run's.
+    reads them back -- and with the same exception, `run_chunks`, which no table
+    can answer because `source_chunks` carries no `run_id`. The two scopes stay
+    apart in the sentence: `completed`/`total` are the job's progress across every
+    pass, `run_chunks`/`run_candidates` are this run's.
     """
     job = store.get_extraction_job(job_id)
     completed = int(job["completed_chunks"]) if job is not None else 0
