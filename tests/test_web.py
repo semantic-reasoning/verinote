@@ -2031,6 +2031,65 @@ def test_worker_leaves_a_done_job_done_when_finishing_it_raises_an_llm_error(
     assert "extraction_job_completed" not in _job_event_types(cfg, job_id)
 
 
+def test_worker_writes_nothing_when_the_job_row_is_gone(tmp_path, monkeypatch, fake_client):
+    """The `is not None` half of the guard, which nothing else reaches.
+
+    The docstring's own bullet says a deleted source reads back as `None` and the
+    write is then a no-op. Nothing measured that: with the conjunct removed the
+    guard raises `TypeError` on `None["status"]` before reaching the write, so the
+    decline and the no-op write are indistinguishable to every other test here.
+    """
+    cfg, job_id, _ = _job_kb(tmp_path, with_policy=True)
+    monkeypatch.setattr(
+        webapp,
+        "get_client",
+        lambda cfg: fake_client([ExtractedFact("X", "is_a", "Y", 0.9)]),
+    )
+    failures = _fail_job_spy(monkeypatch)
+
+    def delete_the_source_then_raise(self, job_id):
+        # `PRAGMA foreign_keys = ON` is set per connection (`store/db.py`) and
+        # `extraction_jobs.source_id` is `ON DELETE CASCADE` (`schema.sql`), so the
+        # job row goes with the source and the guard's re-read sees `None`.
+        self._conn.execute(
+            "DELETE FROM sources WHERE id = "
+            "(SELECT source_id FROM extraction_jobs WHERE id = ?)",
+            (job_id,),
+        )
+        raise RuntimeError("post-done store error")
+
+    monkeypatch.setattr(
+        store_db.Store, "finish_extraction_job", delete_the_source_then_raise
+    )
+
+    create_app(cfg)
+    _join_worker(job_id)
+
+    # FIRST, for the diagnosis rather than against a vacuous pass: this test cannot
+    # go green with the cascade not firing — the job row would survive as `done`,
+    # the guard would decline, and the write assertion below would fail anyway.
+    # MEASURED, both `PRAGMA foreign_keys` sites flipped to OFF: without these three
+    # lines it fails at the write assertion with a bare `[] != [(1, ...)]`, naming
+    # nothing; with them it fails here instead, saying which half broke.
+    with Store(cfg.db_path) as s:
+        s.init_schema()
+        assert s.get_extraction_job(job_id) is None
+    # The guard fell THROUGH to the write rather than raising on `None["status"]`.
+    # This is the assertion the conjunct owns, and it observes the CALL, nothing more.
+    # What the write then did is a separate fact, read off the store rather than
+    # measured here: `fail_extraction_job` is `UPDATE ... WHERE id = ?` (`store/db.py`)
+    # over a row the assertion above already read back as gone — that read happens
+    # after `_join_worker`, so after the write — and its event append sits behind
+    # `if after is not None`. Do not "strengthen" this with `_job_event_types`: TWO
+    # separate things empty it, and neither is about the guard. `fact_events.job_id`
+    # is `ON DELETE SET NULL` (`schema.sql`), so the events this run really did write
+    # drop out of a `WHERE job_id = ?` query; and `fail_extraction_job` appends
+    # nothing anyway once the row is gone. Probed with the write allowed: the table
+    # holds [('extraction_job_started', None), ('candidate_created', None)] and zero
+    # `extraction_job_failed` rows counted table-wide.
+    assert failures == [(job_id, "analysis failed: post-done store error")]
+
+
 def test_worker_still_fails_a_claimed_job_whose_chunk_crashed(
     tmp_path, monkeypatch, fake_client
 ):
@@ -2039,15 +2098,26 @@ def test_worker_still_fails_a_claimed_job_whose_chunk_crashed(
     THIS IS THE TEST THAT CONSTRAINS THE GUARD FROM BELOW, and the reason the
     predicate is "refuse `done`" rather than anything broader. Every other test
     around it reaches the terminal clauses with the job `pending` (stubbed before
-    the claim) or `done` (finished, then broken). None drives the ordinary case: a
+    the claim), `done` (finished, then broken), or gone altogether
+    (`test_worker_writes_nothing_when_the_job_row_is_gone`, whose source is deleted
+    from inside the raising callable). None drives the ordinary case: a
     job this worker genuinely claimed, whose chunk then failed for a non-`LLMError`
     reason. `process_extraction_job` releases the claim and re-raises, and
     `_refresh_extraction_job` deliberately keeps an owned job `running` across that
     (#337), so the exception arrives with the job `running` and MUST be recorded.
 
-    Widen the refusal set to `{"done", "running"}`, or invert the predicate, and
-    every other test in this file still passes while the failure the clause exists
-    to report is silently swallowed. This one goes red.
+    Widen the refusal set to `{"done", "running"}` and every other test in this file
+    still passes while the failure the clause exists to report is silently swallowed.
+    This one goes red — measured, and it is the only red in the whole suite.
+
+    OF THE THREE WAYS OF GETTING THIS PREDICATE WRONG NAMED HERE, THE WIDENING IS
+    THE ONE THIS TEST ISOLATES — the sentence used to say "or invert the predicate"
+    as if that were a second one. Measured, it is not: swapping
+    in `cmd_sync`'s `running` predicate leaves THIS test green (a `running` job is
+    exactly what it writes) and reddens the pre-claim tests instead, while inverting
+    to `!= "done"` reddens this test, both `done` tests and the pre-claim ones all
+    together. Either would be caught by something; only the widening is caught by
+    this test and nothing else.
 
     No stub stands in for `process_extraction_job`: the real one runs, so the status
     the clause sees is the one production would produce.
