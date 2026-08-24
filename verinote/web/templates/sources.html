@@ -5,6 +5,11 @@
 <p class="muted">Review uploaded sources, analysis progress, fact counts, and next actions.</p>
 
 {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+{% if alias_error %}
+<p class="error" role="alert">{{ alias_error }} Per-source trust counts below are not
+  shown, because they would be computed under different alias rules than this KB's
+  file specifies. Fix it on <a href="/settings">Settings</a>.</p>
+{% endif %}
 
 <form class="upload" action="/sources" method="post" enctype="multipart/form-data">
   <label>Add a source
@@ -241,11 +246,17 @@
         {# Derived from ENGINE_STATUSES, which already includes `accepted`:
            label it by what it means (the engine reads it), not by one status. #}
         {% if s["engine_count"] %}<br>{{ s["engine_count"] }} engine input{% endif %}
+        {% if s.get("trust_unavailable") %}
+        <div class="source-trust">
+          <span class="badge muted">trust not computed</span>
+        </div>
+        {% else %}
         <div class="source-trust">
           <span class="badge trust-unsupported">{{ s["unsupported_count"] }} unsupported</span>
           <span class="badge trust-conflicted">{{ s["conflicted_count"] }} conflicted</span>
           <span class="badge trust-corroborated">{{ s["corroborated_count"] }} corroborated</span>
         </div>
+        {% endif %}
       </td>
       <td class="evidence-cell" id="evidence-{{ s["id"] }}">
         {% if s["evidence_snippets"] %}

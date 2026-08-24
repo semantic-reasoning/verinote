@@ -4,6 +4,13 @@
 <h1>Knowledge base</h1>
 <p class="muted">KB <code>{{ root }}</code> · provider <strong>{{ provider_label }}</strong> · model <code>{{ model }}</code></p>
 
+{% if alias_error %}
+<p class="error" role="alert">{{ alias_error }} Every count on this page marked
+  <span class="badge muted">not computed</span> is withheld for that reason — it would
+  have been computed under different alias rules than this KB's file specifies. Fix it
+  on <a href="/settings">Settings</a>.</p>
+{% endif %}
+
 <section class="cards">
   <div class="card"><div class="num">{{ sources|length }}</div><div class="lbl">sources</div></div>
   <div class="card"><div class="num">{{ total }}</div><div class="lbl">facts</div></div>
@@ -21,8 +28,14 @@
         <strong>{{ queue.label }}</strong>
         <div class="src">{{ queue.detail }}</div>
       </td>
-      <td class="conf">{{ queue.count }}</td>
-      <td><a class="btn ghost" href="{{ queue.href }}">Open</a></td>
+      <td class="conf">{% if queue.count is none %}<span class="badge muted">not computed</span>{% else %}{{ queue.count }}{% endif %}</td>
+      <td>
+        {% if queue.count is none %}
+        <span class="muted" title="Not offered while its count is not computed — see the alias-file notice above.">—</span>
+        {% else %}
+        <a class="btn ghost" href="{{ queue.href }}">Open</a>
+        {% endif %}
+      </td>
     </tr>
     {% endfor %}
   </tbody>
@@ -62,7 +75,9 @@
 {% endif %}
 
 <h2>Source corroboration <span class="muted">- engine-input facts only</span></h2>
-{% if corroboration %}
+{% if corroboration is none %}
+<p class="muted">Not computed — see the alias-file notice above.</p>
+{% elif corroboration %}
 <table class="counts">
   <thead><tr><th>Fact</th><th>Sources</th></tr></thead>
   <tbody>
@@ -82,7 +97,9 @@
 {% endif %}
 
 <h2>Single-valued conflicts <span class="muted">- source support by value</span></h2>
-{% if single_valued_conflicts %}
+{% if single_valued_conflicts is none %}
+<p class="muted">Not computed — see the alias-file notice above.</p>
+{% elif single_valued_conflicts %}
 <table class="counts">
   <thead><tr><th>Subject / relation</th><th>Competing values</th></tr></thead>
   <tbody>

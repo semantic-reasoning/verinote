@@ -172,7 +172,25 @@
 <p><a class="btn ghost" href="/prompts">Manage prompts</a></p>
 
 <h2>Relation aliases</h2>
+{% if relation_aliases_error %}<p class="error" role="alert">{{ relation_aliases_error }}</p>{% endif %}
+{% if relation_aliases_unreadable %}
+{# Two remedies, because they cover different failures: pasting corrected
+   content here succeeds even against a file this process cannot itself read or
+   write (`os.replace` only needs write access to the containing DIRECTORY, not
+   to the file it replaces -- measured, #555 REV-3/4), so a `chmod 000` file is
+   NOT the case that needs the second remedy. A read-only DIRECTORY is: there
+   the save itself fails (400, "could not be written", file untouched) and only
+   an outside fix -- permissions on the directory, or a genuine encoding repair
+   -- helps. #}
+<p class="warn" role="alert">The box below is empty because the file above could not be
+  read. Submitting it empty is refused here, so it will not delete the file — paste
+  corrected contents here before saving, or repair the file outside the app
+  (permissions, encoding) and reload this page.</p>
+{% endif %}
 <form class="settings" action="/settings/relation-aliases" method="post">
+  {% if relation_aliases_unreadable %}
+  <input type="hidden" name="relation_aliases_rendered_unreadable" value="1">
+  {% endif %}
   <label>Aliases
     <textarea name="relation_aliases_text" rows="8"
               placeholder="- `역할` -> `role`">{{ relation_aliases }}</textarea>
