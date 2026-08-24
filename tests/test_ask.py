@@ -1,5 +1,8 @@
 # SPDX-License-Identifier: MPL-2.0
 
+import sys
+import unicodedata
+
 import pytest
 
 import verinote.pipeline.ask as ask_module
@@ -2030,3 +2033,282 @@ def test_a_title_case_tail_in_the_label_is_left_alone(tmp_path):
     assert result.route == "engine"
     assert result.label == "VERIFIED — engine"
     assert "Ada" in result.answer
+
+
+# --- #516: `_best_excerpt` slices the NFC form it found the match in, not `text` ---
+
+_EXCERPT_BODY = "샘플조직의 역할은 샘플서비스 운영이다."
+_EXCERPT_PATTERNS = ("샘플조직의", "역할은", "무엇인가")
+
+
+def test_an_excerpt_still_carries_the_match_when_a_fold_expands_ahead_of_it():
+    """500 `ß` (each casefolds to `ss`) sit ahead of the match in `folded`.
+
+    `folded` position 1000 -- where the match starts -- is 500 characters past
+    `normalized` position 500, where the match actually starts, because each
+    `ß` contributes 2 folded characters for 1 `normalized` character. Cutting
+    the window at the `folded` position (the parent's bug) lands past the
+    match entirely; `_unfold_offset` walks the 500 `ß` back to `normalized`
+    position 500, which is where the match is.
+
+    Reddened by dropping guard A alone (`anchor = best_pos` unconditionally,
+    the parent's arithmetic): on the parent, this fixture's excerpt is the
+    bare string `"..."` -- zero characters of what it scored -- which is why
+    `score == 2` is asserted alongside membership rather than either alone.
+    Not reddened by dropping guard C: `ß` is already NFC, so `normalized` and
+    `text` are the same string here and slicing either gives the same answer.
+    """
+    text = "ß" * 500 + _EXCERPT_BODY
+
+    excerpt, score = ask_module._best_excerpt(text, _EXCERPT_PATTERNS)
+
+    assert "샘플조직의" in excerpt
+    assert score == 2
+
+
+def test_an_nfd_source_reaches_the_answer_holding_what_its_score_was_for(tmp_path):
+    """End to end through `search_source_excerpts`, the path #516 is about.
+
+    The source text is `NFD("각" * 100) + "ß" * 700 + BODY`: raw 1021
+    characters, NFC 821, folded 1521 -- both directions of drift (NFD
+    contraction ahead of the match, `ß` expansion also ahead of it) are
+    present in the same fixture, net +500 folded characters past where the
+    excerpt window (240 before / 420 after `anchor`) would still reach the
+    match if the offset were left untranslated.
+
+    Asserts on the `AskExcerpt` handed back to `ask_question`'s fallback
+    context, not on `_best_excerpt` directly, because that is the object the
+    model would have received carrying an excerpt with none of the text it
+    was scored on.
+
+    Reddened by dropping guard A and by dropping guard C, and by the parent
+    unmodified.
+    """
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    text = unicodedata.normalize("NFD", "각" * 100) + "ß" * 700 + _EXCERPT_BODY
+    (sources / "drift.txt").write_text(text, encoding="utf-8")
+    store = _store(tmp_path)
+    store.add_source("sources/drift.txt")
+
+    excerpts = search_source_excerpts(
+        store, root=tmp_path, question="샘플조직의 역할은 무엇인가?"
+    )
+
+    assert len(excerpts) == 1
+    assert excerpts[0].score == 2
+    assert "샘플조직의" in excerpts[0].excerpt
+
+
+def test_text_whose_fold_keeps_its_length_is_not_walked_a_character_at_a_time(
+    monkeypatch,
+):
+    """Guard B skips the `_unfold_offset` walk when casefold changed nothing.
+
+    Spies on `ask_module._unfold_offset`, the same technique
+    `test_search_source_excerpts_drops_a_source_it_read_and_matched_nothing_in`
+    already uses on `ask_module._best_excerpt`.
+
+    Two assertions, not one: for plain NFC text the spy is called zero times,
+    *and*, in the same test, for a `ß`-carrying text (where `folded` is
+    longer than `normalized`) the spy is called at least once. The second
+    assertion is what stops the first from being vacuous -- without it,
+    "zero calls" would be indistinguishable from "nothing ever calls this
+    function", which is also true if guard A is deleted (`anchor = best_pos`
+    unconditionally removes `_unfold_offset`'s only call site). Reddened by
+    dropping guard B alone (always walk): the zero-calls half turns red.
+    """
+    real_unfold_offset = ask_module._unfold_offset
+    calls: list[int] = []
+
+    def spy(normalized, index):
+        calls.append(1)
+        return real_unfold_offset(normalized, index)
+
+    monkeypatch.setattr(ask_module, "_unfold_offset", spy)
+
+    excerpt, _score = ask_module._best_excerpt(_EXCERPT_BODY, _EXCERPT_PATTERNS)
+    assert calls == []
+    assert excerpt != ""
+
+    calls.clear()
+    ask_module._best_excerpt("ß" * 5 + _EXCERPT_BODY, _EXCERPT_PATTERNS)
+    assert calls != []
+
+
+def test_an_excerpt_quotes_the_composed_form_of_a_source_stored_decomposed():
+    """A source stored NFD is quoted NFC -- canonically equivalent, not a copy.
+
+    Text is `NFD("각" * 5) + " ID42 " + BODY`, a fixture that separates the
+    two things guard C could be checked against: `is_normalized("NFC",
+    excerpt)` is reddened by dropping guard C (`text[start:end]` again)
+    alone, while `"샘플조직의" in excerpt` and `"ID42" in excerpt` are not --
+    the drift here (10 characters) is small enough that the parent's
+    untranslated arithmetic still lands inside the match, so a fixture that
+    only checked membership would not tell guard C's contribution apart from
+    guard A's. `ID42` is ASCII and passes through NFC unchanged either way;
+    it is here to show the window still reaches text on the far side of the
+    NFD run, not only the NFD run itself.
+    """
+    text = unicodedata.normalize("NFD", "각" * 5) + " ID42 " + _EXCERPT_BODY
+
+    excerpt, _score = ask_module._best_excerpt(text, _EXCERPT_PATTERNS)
+
+    assert unicodedata.is_normalized("NFC", excerpt)
+    assert "샘플조직의" in excerpt
+    assert "ID42" in excerpt
+
+
+def test_an_excerpt_that_reaches_the_end_of_an_nfd_source_does_not_claim_more_follows():
+    """The trailing `"..."` is honest about `normalized`'s length.
+
+    Text is `NFD("각" * 400) + " 샘플조직의 역할은 끝이다."`: raw 1215
+    characters, NFC 415, and the excerpt window (420 after `anchor`) reaches
+    the true end of `normalized` well before it would reach the end of the
+    unnormalized `text`. Bounding and comparing against `len(text)` (the
+    parent's other arithmetic, guard D's target) would report `end < len(text)`
+    as true here and append a lying `"..."`, even though nothing follows the
+    excerpt in the source. Reddened by dropping guard D alone.
+
+    This is not a general claim that the truncation marker is now honest --
+    `" ".join(text[start:end].split())` can still strip trailing whitespace
+    out of a slice that ends exactly at `normalized`'s length, leaving a
+    `"..."` appended after the true last visible character; that condition is
+    unrelated to normalization and is not exercised by this fixture.
+    """
+    text = unicodedata.normalize("NFD", "각" * 400) + " 샘플조직의 역할은 끝이다."
+
+    excerpt, score = ask_module._best_excerpt(text, _EXCERPT_PATTERNS)
+
+    assert score == 2
+    assert excerpt != ""
+    assert not excerpt.endswith("...")
+
+
+def test_casefold_is_the_concatenation_of_its_characters_folds():
+    """Tripwire, not a guard pin: no mutation in this change reddens it.
+
+    `_unfold_offset`'s walk is sound only if `s.casefold()` always equals the
+    concatenation of each of `s`'s characters' folds -- CPython's casefold has
+    no context-dependent rule (unlike `str.lower()`'s final sigma), so this is
+    expected to hold, but it is a property of an external Unicode data table
+    rather than something the walk's own code proves. This test re-measures
+    it on every run instead of leaving it as a docstring claim that could rot
+    silently if a future Unicode or CPython release changed the table.
+
+    Two sweeps: the entire repertoire (all 1,114,112 code points) as one
+    string, compared against the same code points folded one at a time and
+    joined; and, for every ordered pair drawn from an alphabet built as
+    (every code point with a multi-character casefold) union (every code
+    point with a nonzero canonical combining class) union (the Greek sigma
+    and iota code points, whose casefold has context-sensitive counterparts
+    in `str.lower()` that casefold itself does not carry), whether folding
+    the two-character string equals folding each character and
+    concatenating. The alphabet size is computed, not hard-coded, so the
+    pair count is whatever it actually is on this Unicode data table.
+    """
+    codepoints = range(sys.maxunicode + 1)
+
+    whole = "".join(chr(cp) for cp in codepoints)
+    per_character = "".join(chr(cp).casefold() for cp in codepoints)
+    assert whole.casefold() == per_character
+
+    multi_fold = {cp for cp in codepoints if len(chr(cp).casefold()) > 1}
+    combining_marks = {cp for cp in codepoints if unicodedata.combining(chr(cp)) != 0}
+    sigma_iota = {0x03A3, 0x03C3, 0x03C2, 0x0399, 0x03B9}
+    alphabet = [chr(cp) for cp in sorted(multi_fold | combining_marks | sigma_iota)]
+    assert len(alphabet) > 100  # a real, nontrivial alphabet, not an empty sweep
+
+    for first in alphabet:
+        first_fold = first.casefold()
+        for second in alphabet:
+            assert (first + second).casefold() == first_fold + second.casefold()
+
+
+def test_no_code_point_casefolds_to_nothing():
+    """Tripwire: casefold never contracts, which is what makes guard B sound.
+
+    Exhaustive over all 1,114,112 code points. If some code point folded to
+    the empty string, `len(folded) == len(normalized)` could hold even though
+    that code point's position needs translating, and guard B's shortcut
+    would return a wrong offset silently instead of taking the walk.
+    """
+    for codepoint in range(sys.maxunicode + 1):
+        assert len(chr(codepoint).casefold()) >= 1
+
+
+def test_no_code_point_casefold_exceeds_three_characters():
+    """Tripwire: pins the fold-width bound `_best_excerpt`'s docstring cites.
+
+    Exhaustive over all 1,114,112 code points. `_best_excerpt`'s docstring
+    argues the trailing-side score/excerpt window gap is zero because 420
+    (the excerpt's trailing window) exceeds 300 (the score's) by more than a
+    single fold's maximum width -- a number that was, before this test,
+    stated in prose and measured nowhere in the suite. This pins it: the
+    widest fold in the repertoire is 3 characters, e.g. `'ΐ'` (U+0390) --
+    not the only code point at that width, so the count sharing it is
+    asserted too rather than implying uniqueness.
+    """
+    widths = [len(chr(codepoint).casefold()) for codepoint in range(sys.maxunicode + 1)]
+    assert max(widths) == 3
+    assert widths.count(3) == 16
+
+
+def test_no_whitespace_code_point_casefolds_to_a_non_whitespace_one():
+    """Tripwire behind `_best_excerpt`'s first-character guarantee.
+
+    `_best_excerpt` argues `" ".join(...split())` cannot strip the source
+    character behind a non-whitespace pattern's first folded character,
+    because no whitespace code point's casefold contains a non-whitespace
+    character. Swept exhaustively over every code point `str.isspace()`
+    accepts (29 on this Python/Unicode build), checking every character of
+    each one's casefold.
+    """
+    whitespace = [chr(cp) for cp in range(sys.maxunicode + 1) if chr(cp).isspace()]
+    assert len(whitespace) == 29
+
+    for char in whitespace:
+        assert all(folded_char.isspace() for folded_char in char.casefold())
+
+
+def test_a_length_coincidence_with_text_does_not_fool_the_shortcut():
+    """Guard B compares `len(folded)` against `len(normalized)`, not `len(text)`.
+
+    `NFD("각") * 200 + "ß" * 400 + BODY` is built so `len(text) == len(folded)`
+    by coincidence -- the NFD run's raw-to-NFC contraction and the `ß` run's
+    casefold expansion land on the same total -- while `len(normalized)`
+    stays strictly smaller. Measured: `len(text) == 1021`,
+    `len(folded) == 1021`, `len(normalized) == 621`.
+
+    A version of guard B that compared `len(folded) == len(text)` would take
+    the no-walk shortcut on this fixture even though `folded` and
+    `normalized` disagree on the match's position, silently reproducing
+    #516's defect (the excerpt would be `_unfold_offset`-less and land past
+    the match, as guard A's own fixture demonstrates on the parent). No other
+    test in this suite reddens that mutant: what matters is not whether
+    `len(text) == len(folded)` coincides elsewhere, but whether that mutant's
+    comparison ever *disagrees* with the real one, `len(normalized) ==
+    len(folded)`, in the direction that changes the anchor. On the other
+    fixtures in this file where the two comparisons do disagree (an
+    NFD-only fixture, where `len(text) > len(normalized) == len(folded)`),
+    the mutant only wrongly *declines* the shortcut and falls through to
+    `_unfold_offset` -- which, walking a string whose fold is already 1:1,
+    returns the same position the shortcut would have, so the anchor is
+    unchanged. Only a fixture where `len(text) == len(folded)` while
+    `len(normalized) != len(folded)` makes the mutant wrongly *take* the
+    shortcut, which is what this one is built to do.
+
+    This test does not mutate the source; it runs the fixture through the
+    real `_best_excerpt` and asserts the match survives, which only holds if
+    guard B's comparison is against `len(normalized)`.
+    """
+    text = unicodedata.normalize("NFD", "각") * 200 + "ß" * 400 + _EXCERPT_BODY
+    normalized = unicodedata.normalize("NFC", text)
+    folded = normalized.casefold()
+    assert len(text) == len(folded)
+    assert len(text) != len(normalized)
+
+    excerpt, score = ask_module._best_excerpt(text, _EXCERPT_PATTERNS)
+
+    assert score == 2
+    assert "샘플조직의" in excerpt
