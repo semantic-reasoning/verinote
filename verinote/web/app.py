@@ -14,6 +14,7 @@ import logging
 import os
 from pathlib import Path
 import sqlite3
+import tempfile
 import threading
 from threading import Lock
 import unicodedata
@@ -1046,15 +1047,100 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     def _relation_aliases_path() -> Path:
         return _active_cfg().root / RELATION_ALIASES_RELPATH
 
-    def _relation_aliases_text() -> str:
+    def _relation_alias_failure(store: Store) -> str | None:
+        """Why this KB's alias file cannot be applied, or None when it can.
+
+        Calls `store_relation_aliases` — the function the routes' own failures
+        come out of — rather than re-reading the file here. `store_relation_aliases`
+        resolves `store.db_path.parent / RELATION_ALIASES_RELPATH`, which agrees
+        with `_relation_aliases_path()` (`_active_cfg().root / …`) for every
+        `Config.for_root`, but the two are independent `Config` fields, so a guard
+        that re-derived the path could clear one file while the route read the
+        other and still 500 (#555).
+
+        This call's own read happens chronologically FIRST (measured: it runs
+        before any pipeline function does, since the route calls it before
+        computing anything alias-dependent) — but it is not the ONLY read. When
+        the file is healthy, the route's own pipeline functions
+        (`store_corroboration`, `trust_workbench`, `fact_trust_summary`, …) each
+        call `store_relation_aliases` again themselves; this call does not
+        replace those reads or cache the result for them, and it is not a fix
+        for the check-then-use gap that leaves: a rewrite between this call and
+        the route's own reads still 500s. Freezing one read and threading it
+        through every alias-dependent pipeline function would change signatures
+        shared with the CLI, and is a separate refactor.
+
+        The broad clause below wraps EXACTLY ONE CALL, not a route body, and that
+        call touches no database: `store_relation_aliases` reads `store.db_path` as
+        an attribute, stats the file, and parses it. So the only thing this can
+        swallow is a failure to read or parse that one file.
+        """
+        try:
+            store_relation_aliases(store)
+        except CorroborationPolicyError as exc:
+            # G1. Already normalised, and its message already begins with the
+            # file name (`relation-aliases.md:1: expected …`). Prefixing it below
+            # would say the file twice, AND would misstate what happened — the
+            # file WAS read; it parsed and failed. That is a false claim about the
+            # system's own state on a user-facing page. Must stay ABOVE G2.
+            return str(exc)
+        except Exception as exc:  # noqa: BLE001 - normalise every alias-read failure
+            # G2. BROAD, NOT A TYPE LIST. `UnicodeDecodeError` (a file saved as
+            # cp949) descends from `ValueError` as `CorroborationPolicyError`
+            # does but is no subclass of it; `PermissionError` is not a
+            # `ValueError` at all. Same reasoning, and the same shape, as
+            # `extract.py::_relation_aliases_or_error` (#553).
+            #
+            # NAME THE FILE: `str(UnicodeDecodeError)` is a byte offset and no
+            # path, so an unprefixed message put a bare codec complaint about
+            # nothing in particular on the page.
+            return f"{RELATION_ALIASES_RELPATH} could not be read: {exc}"
+        return None
+
+    def _relation_aliases_context() -> dict[str, object]:
+        """The Settings page's own read of the alias file, plus its own guard.
+
+        Deliberately NOT `_relation_alias_failure` + `store_relation_aliases`:
+        this route never calls `store_relation_aliases` (it reads the file
+        straight from `_relation_aliases_path()`, which resolves from
+        `cfg.root` rather than `store.db_path.parent` — see
+        `_relation_alias_failure`'s docstring), so it needs its own read and its
+        own broad `except Exception` around that one `read_text` call (same G2
+        rationale: no database access, only a stat and a read of this file).
+        """
         path = _relation_aliases_path()
         if not path.is_file():
-            return DEFAULT_RELATION_ALIASES
-        text = path.read_text(encoding="utf-8")
+            return {
+                "relation_aliases": DEFAULT_RELATION_ALIASES,
+                "relation_aliases_error": None,
+                "relation_aliases_unreadable": False,
+            }
+        try:
+            text = path.read_text(encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001 - normalise every alias-read failure
+            # BROAD, not just `UnicodeDecodeError`: `PermissionError`,
+            # `IsADirectoryError`, and other `OSError`s reach this too (measured,
+            # #555 BLOCKER-3), so the flag and the message say "read", never
+            # "decoded" — "decoded" was true only for the one mode among several
+            # this clause actually catches, and was a false claim about the
+            # system's own state for the others (e.g. a `chmod 000` file).
+            return {
+                "relation_aliases": "",
+                "relation_aliases_error": f"{RELATION_ALIASES_RELPATH} could not be read: {exc}",
+                "relation_aliases_unreadable": True,
+            }
         try:
             existing = relation_aliases(text)
-        except CorroborationPolicyError:
-            return text
+        except CorroborationPolicyError as exc:
+            # The file WAS read; it parsed and failed. Keep the parser's own
+            # message (already file-and-line-prefixed) rather than wrapping it —
+            # wrapping would say the file twice and misstate that it could not be
+            # read at all (same reasoning as G1 above).
+            return {
+                "relation_aliases": text,
+                "relation_aliases_error": str(exc),
+                "relation_aliases_unreadable": False,
+            }
         merged = merge_default_relation_aliases(existing)
         missing_defaults = {
             alias: canonical
@@ -1062,12 +1148,135 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             if alias not in existing
         }
         if not missing_defaults:
-            return text
+            return {
+                "relation_aliases": text,
+                "relation_aliases_error": None,
+                "relation_aliases_unreadable": False,
+            }
         missing_text = "\n".join(
             f"- `{alias}` -> `{canonical}`"
             for alias, canonical in sorted(missing_defaults.items())
         )
-        return f"{text.rstrip()}\n\n# Default aliases not yet saved in this KB\n{missing_text}\n"
+        return {
+            "relation_aliases": (
+                f"{text.rstrip()}\n\n# Default aliases not yet saved in this KB\n{missing_text}\n"
+            ),
+            "relation_aliases_error": None,
+            "relation_aliases_unreadable": False,
+        }
+
+    def _write_relation_aliases_atomic(path: Path, text: str) -> None:
+        """Replace `path` with `text`, or leave it exactly as it was.
+
+        Follows `config.py::_write_json_atomic`'s shape — mkstemp beside the
+        target, `fsync` before `os.replace` — rather than
+        `query.py::write_query_file`'s fuller one (which also fsyncs the
+        parent directory and threads a `BaseException` handler around an
+        `os.fdopen`-wrapped fd). These are two INDEPENDENT differences, not one
+        choice: the parent-directory fsync is decided below, on durability
+        grounds. The fd-ownership handling is not a separate decision here —
+        this function inherits `_write_json_atomic`'s exact shape for it,
+        `fd`/`tmp` included, so it has the same gap `query.py` closes and
+        `config.py` does not: if `os.fchmod` or `os.fdopen` itself raises
+        (before the `with` block owns the fd), the raw `fd` from `mkstemp` is
+        never explicitly closed — `tmp` is still unlinked below regardless,
+        and the process still reclaims the fd at exit, but it is a real,
+        measured leak in the interim (#555 gate rev-6), not a durability
+        question at all.
+
+        PARENT-DIRECTORY FSYNC, deliberately skipped. Not explaining WHY
+        `write_query_file` fsyncs its parent and this one doesn't —
+        `query.py` never says why it needs that stronger guarantee, and two
+        earlier rounds of this docstring each guessed a different reason and
+        were each wrong ("paired with a database commit"; "a snapshot it must
+        not outlive" — neither is stated anywhere in `query.py`). The fact
+        both guesses were reaching for does hold, checked directly rather
+        than reasoned from either: that transaction commits no database
+        write, on any path reachable in the tree today, including through its
+        one caller-supplied guard — and that enumeration is CLOSED, not just
+        long: `Store.immediate_transaction` has exactly one definition and no
+        subclass overrides it anywhere in the tree. The derivation is not
+        repeated here — three rounds running, it has been the part that goes
+        stale, not the one-line result. What IS checkable: this route
+        publishes one file and returns a redirect, so the guarantee bought by
+        `fsync`-before-`replace` alone ("never torn", not
+        "committed before we return" — `_write_json_atomic`'s own phrase) is
+        complete for what it does. `write_query_file` makes a strictly
+        stronger guarantee than that; this docstring does not claim to know
+        why.
+
+        `write_text` (the prior implementation) truncates in place, so a write
+        that fails partway through — full disk, a killed process, two
+        processes saving at once — can leave the file empty or half-written.
+        Measured end-to-end on a full filesystem (#555, gate REV-3): the alias
+        file was left truncated to `b""` while the page reported "Nothing was
+        saved", which was then false. `mkstemp` + `os.replace` means a failed
+        write leaves `path` untouched — the reader (`_relation_aliases_path()`
+        callers) always sees either the whole old file or the whole new one.
+
+        MODE. Uses a FIXED `0o644`, like `_write_json_atomic` uses a fixed
+        mode, rather than deriving one from the existing file the way
+        `write_query_file` does — deliberately NOT reused here even though
+        this route replaces an existing file more often than `write_query_file`
+        does. `write_query_file` derives its mode to preserve a KB's chosen
+        permissions across regenerations of a machine-written file. This
+        route's very reason to write is often "the existing file was unusable"
+        (`relation_aliases_unreadable`, e.g. a `chmod 000` file) — deriving the
+        new file's mode from that SAME file would carry the broken permissions
+        onto its own replacement. Measured: with the derive-from-existing
+        shape, a POST that successfully rewrote a `chmod 000` alias file with
+        valid content still 303'd, but the new file was ALSO mode 0o000, so
+        the very next `GET /settings` showed "could not be read" again — a
+        "successful" save the user could not then read back.
+
+        `0o644` is NOT equivalent to what `write_text` produced. `write_text`
+        PRESERVES an existing file's mode (measured: a `chmod 0o600` file
+        stays `0o600` after `write_text` rewrites it) and only applies the
+        umask-derived default when CREATING a new file. This writer always
+        applies `0o644`, on existing files too — mirroring the exact hazard
+        `_write_json_atomic`'s own docstring names for `app.json` ("switching
+        to this writer silently tightened `app.json` … on existing files
+        too"), except in the opposite direction: a hand-written `0o600` alias
+        file (e.g. under `umask 077` — `docs/operations.md`'s
+        `policy/relation-aliases.md` row says it is "written by hand or by
+        the Settings UI") becomes world-readable `0o644` after one
+        Settings-UI save. That widening is accepted, not fixed here
+        — the alternative (reading the current umask to replicate
+        `write_text`'s create-time behaviour) needs a racy
+        `os.umask(0); os.umask(old)` get-and-set in a threaded web process,
+        and this route does not have a KB-scoped permissions policy worth
+        deriving from the file it is about to replace (the paragraph above).
+        The mode is also set via `fchmod` on the temp file's descriptor, which
+        ignores the process umask entirely — under `umask 077`, this writer
+        still produces `0o644` where a fresh `write_text` would have produced
+        `0o600`.
+        """
+        path.parent.mkdir(parents=True, exist_ok=True)
+        mode = 0o644
+        fd, tmp_name = tempfile.mkstemp(
+            dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+        )
+        tmp = Path(tmp_name)
+        try:
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, mode)
+            else:
+                os.chmod(tmp, mode)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, path)
+            # `os.replace` MUST be the LAST statement in this `try` (#555 gate
+            # rev-8). `save_relation_aliases`'s "Nothing was saved" on any
+            # exception out of this function is true only because nothing
+            # after a successful rename can still raise — a statement added
+            # here, after the rename, would raise into the SAME broad
+            # `except Exception` over a file that HAD already changed, and
+            # the caller's message would then be false.
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
 
     def _override_is_unreadable(path: Path) -> bool:
         """Is the KB's override for this prompt the file that could not be read?
@@ -1551,20 +1760,36 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             sort=page_data.sort,
         )
 
-    def _source_inspector_rows(store: Store) -> list[dict[str, object]]:
+    def _source_inspector_rows(
+        store: Store, *, alias_error: str | None
+    ) -> list[dict[str, object]]:
         facts = store.facts()
-        trust_rollup = _source_trust_rollup(store, facts)
+        # Compute the rollup only when the alias file is usable — an alias_error
+        # means `_source_trust_rollup` would 500 the same way this route used to
+        # (#555). One `store.facts()` scan either way: passing `alias_error` in and
+        # branching here, rather than a caller-side `None if alias_error else
+        # _source_trust_rollup(store, store.facts())`, avoids a second full scan on
+        # every healthy request.
+        trust_rollup = None if alias_error else _source_trust_rollup(store, facts)
         rows = []
         for source in store.sources_with_counts():
             row = dict(source)
             source_id = int(source["id"])
-            counts = trust_rollup.get(
-                source_id,
-                {"unsupported": 0, "conflicted": 0, "corroborated": 0},
-            )
-            row["unsupported_count"] = counts["unsupported"]
-            row["conflicted_count"] = counts["conflicted"]
-            row["corroborated_count"] = counts["corroborated"]
+            if trust_rollup is None:
+                # Leave the count keys unset rather than zeroing them: a template
+                # that forgot this branch renders a blank badge (Jinja's default
+                # `Undefined` renders '', it does not raise), which is still
+                # honest — a false "0 unsupported" on a KB that was never checked
+                # is not.
+                row["trust_unavailable"] = True
+            else:
+                counts = trust_rollup.get(
+                    source_id,
+                    {"unsupported": 0, "conflicted": 0, "corroborated": 0},
+                )
+                row["unsupported_count"] = counts["unsupported"]
+                row["conflicted_count"] = counts["conflicted"]
+                row["corroborated_count"] = counts["corroborated"]
             row["evidence_snippets"] = store.source_evidence_snippets(source_id)
             row["artifacts"] = [dict(artifact) for artifact in store.source_artifacts(source_id)]
             row["failed_chunk_details"] = []
@@ -1649,31 +1874,53 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 return ("scalar", scalar)
         return ("raw", obj)
 
-    def _dashboard_queues(store: Store) -> list[dict[str, object]]:
-        review_summaries = [
-            fact_trust_summary(store, int(fact["id"])) for fact in store.review_queue()
-        ]
-        review_summaries = [summary for summary in review_summaries if summary is not None]
+    def _dashboard_queues(
+        store: Store, *, alias_error: str | None
+    ) -> list[dict[str, object]]:
+        # `jobs` and `recent_lifecycle` are alias-independent (measured, #555 M5) and
+        # keep their real counts either way. The other four rows depend on
+        # `fact_trust_summary`, `trust_workbench`, or `store_corroboration` — all
+        # alias-dependent — so when the file cannot be applied they show `None`
+        # (rendered as "not computed" by the template) rather than a count computed
+        # under rules the user did not configure, or a false `0`.
         jobs = store.source_extraction_jobs()
-        workbench = trust_workbench(store)
-        corroboration = store_corroboration(store)
         recent_lifecycle = store.count_facts_with_events(("amended", "reanalyzed"))
+        if alias_error is None:
+            review_summaries = [
+                fact_trust_summary(store, int(fact["id"])) for fact in store.review_queue()
+            ]
+            review_summaries = [summary for summary in review_summaries if summary is not None]
+            workbench = trust_workbench(store)
+            corroboration = store_corroboration(store)
+            unsupported_count = sum(
+                1 for summary in review_summaries if "unsupported" in summary.trust_labels
+            )
+            corroborated_review_count = sum(
+                1 for summary in review_summaries if "corroborated" in summary.trust_labels
+            )
+            conflicts_count = len(workbench.conflicts)
+            engine_facts_count = len(corroboration)
+        else:
+            unsupported_count = None
+            corroborated_review_count = None
+            conflicts_count = None
+            engine_facts_count = None
         return [
             {
                 "label": "Unsupported review items",
-                "count": sum(1 for summary in review_summaries if "unsupported" in summary.trust_labels),
+                "count": unsupported_count,
                 "href": "/review?filter=unsupported",
                 "detail": "candidate facts without deterministic source support",
             },
             {
                 "label": "Corroborated review targets",
-                "count": sum(1 for summary in review_summaries if "corroborated" in summary.trust_labels),
+                "count": corroborated_review_count,
                 "href": "/review?filter=corroborated",
                 "detail": "review items backed by repeated source support",
             },
             {
                 "label": "Single-valued conflicts",
-                "count": len(workbench.conflicts),
+                "count": conflicts_count,
                 "href": "/workbench",
                 "detail": "accepted/confirmed values competing under functional rules",
             },
@@ -1691,7 +1938,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             },
             {
                 "label": "Source-backed engine facts",
-                "count": len(corroboration),
+                "count": engine_facts_count,
                 "href": "/workbench",
                 "detail": "accepted/confirmed facts with source support",
             },
@@ -1704,7 +1951,22 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             return _kb_select(request, error=error, status_code=status_code)
         store = _active_store()
         cfg = _active_cfg()
+        alias_error = _relation_alias_failure(store)
         counts = store.status_counts()
+        # `counts`, `total`, `engine_input`, `sources`, `coverage` are all
+        # alias-independent (measured, #555 M5) and keep their real values even
+        # when the alias file is broken. `corroboration` and
+        # `single_valued_conflicts` are alias-dependent; `None` (not `[]`) so the
+        # template can tell "not computed" apart from "computed, and empty" —
+        # `[]` would render the same "No source-backed …" prose a healthy KB with
+        # nothing to show gets, which is a false statement about a KB that was
+        # never analysed.
+        if alias_error is None:
+            corroboration = store_corroboration(store)
+            single_valued_conflicts = store_single_valued_conflicts(store)
+        else:
+            corroboration = None
+            single_valued_conflicts = None
         return templates.TemplateResponse(
             request,
             "dashboard.html",
@@ -1718,9 +1980,10 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 "all_fact_statuses": fact_status_order(),
                 "sources": store.sources(),
                 "coverage": coverage(store, root=cfg.root),
-                "corroboration": store_corroboration(store),
-                "single_valued_conflicts": store_single_valued_conflicts(store),
-                "queues": _dashboard_queues(store),
+                "corroboration": corroboration,
+                "single_valued_conflicts": single_valued_conflicts,
+                "queues": _dashboard_queues(store, alias_error=alias_error),
+                "alias_error": alias_error,
                 "provider": app.state.cfg.provider,
                 "provider_label": PROVIDER_LABELS.get(
                     app.state.cfg.provider, app.state.cfg.provider
@@ -1736,6 +1999,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         if app.state.store is None:
             return _kb_select(request, error=error, status_code=status_code)
         store = _active_store()
+        alias_error = _relation_alias_failure(store)
         jobs = store.source_extraction_jobs()
         latest_job_ids = latest_source_job_ids(jobs)
         # A superseded `pending` row is dead work, and counting it here is what
@@ -1746,10 +2010,11 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             request,
             "sources.html",
             {
-                "sources": _source_inspector_rows(store),
+                "sources": _source_inspector_rows(store, alias_error=alias_error),
                 "suffixes": ", ".join(sorted(supported_suffixes())),
                 "accept": ",".join(sorted(supported_suffixes())),
                 "error": error,
+                "alias_error": alias_error,
                 "jobs": jobs,
                 "has_running_jobs": has_running_jobs,
                 "chunk_chars": app.state.cfg.extraction_chunk_chars,
@@ -2882,7 +3147,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 **_credentials_context(c.provider),
                 "credentials_editable": credentials_editable,
                 "connection_test_enabled": c.provider in TESTABLE_PROVIDERS,
-                "relation_aliases": _relation_aliases_text(),
+                **_relation_aliases_context(),
                 # The Model field starts as the plain text input and, for a
                 # model-enumerable provider, lazily swaps itself for the picker
                 # (`hx-trigger="load"`). Enumerating eagerly here would put a
@@ -3184,18 +3449,139 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         return RedirectResponse("/settings", status_code=303)
 
     @app.post("/settings/relation-aliases", response_class=HTMLResponse)
-    def save_relation_aliases(request: Request, relation_aliases_text: str = Form("")):
+    def save_relation_aliases(
+        request: Request,
+        relation_aliases_text: str = Form(""),
+        relation_aliases_rendered_unreadable: str | None = Form(None),
+    ):
         text = relation_aliases_text.strip()
+        if not text and relation_aliases_rendered_unreadable:
+            # #555 BLOCKER-2/MUST-FIX-1: `relation_aliases("")` parses cleanly
+            # (returns {}), so nothing below would otherwise refuse this submit,
+            # and it would reach the `path.exists(): path.unlink()` branch further
+            # down. That branch exists for "the user deliberately cleared their
+            # aliases" — a real choice when the box started full and readable.
+            # But `_relation_aliases_context` (unit C) puts an EMPTY box on the
+            # page when the on-disk file could not be read at all (cp949,
+            # permission-denied, …) — there the empty box is not a choice, it is
+            # the only thing the page could show, and the same submit would
+            # delete the user's only copy of their aliases.
+            #
+            # `relation_aliases_rendered_unreadable` is a hidden field the
+            # template only emits when THIS render's box was empty for that
+            # reason (settings.html), and the refusal below keys on it rather
+            # than re-deriving `_relation_aliases_context()` here. Re-deriving
+            # was the original (broken) shape: measured end-to-end, it let a
+            # STALE tab that rendered while the file was unreadable send its
+            # empty box after someone repaired the file on disk in the
+            # meantime — the re-derived check then saw a readable file, did not
+            # refuse, and deleted the just-repaired file. Binding the refusal to
+            # what THIS render actually showed, instead of to the file's state
+            # at submit time, closes that race in the destructive direction; the
+            # genuine-clear path (rendered from a readable file, so no hidden
+            # field) is unaffected either way.
+            #
+            # Truthy, not `== "1"` (#555 gate rev-2): the template only ever
+            # sends `"1"`, but a destructive-path guard should not silently
+            # disarm on a value that merely drifted from that literal — any
+            # non-empty value here means the same thing (this render's box was
+            # empty because the file was unreadable). Falsiness, not `is None`:
+            # an ABSENT field (`None`, the default) and a PRESENT-but-empty one
+            # (`""`, e.g. a forged submit with the field but no value) both take
+            # the non-refusal path below, and both are correct there — the
+            # template itself only ever omits the field or sends `"1"`, never an
+            # empty string, so this is generous rather than load-bearing.
+            return _settings(
+                request,
+                error=(
+                    f"Nothing was saved. This box was empty because "
+                    f"{RELATION_ALIASES_RELPATH} could not be read when this page "
+                    "was loaded, and saving it as submitted would have deleted the "
+                    "file instead of fixing it. Paste corrected contents here before "
+                    "saving."
+                ),
+                status_code=400,
+            )
         try:
             relation_aliases(text)
         except CorroborationPolicyError as e:
             return _settings(request, error=str(e), status_code=400)
         path = _relation_aliases_path()
-        if text:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text + "\n", encoding="utf-8")
-        elif path.exists():
-            path.unlink()
+        try:
+            if text:
+                _write_relation_aliases_atomic(path, text + "\n")
+            elif path.exists():
+                # No truncate-before-fail risk here: `unlink` either removes the
+                # whole file or, on failure, leaves it exactly as it was — unlike
+                # `write_text`'s open(mode='w'), there is no partial-content state
+                # for this branch to land in, so it needs no atomic treatment.
+                path.unlink()
+        except Exception as exc:  # noqa: BLE001 - same house form as save_prompt_route/reset_prompt_route above
+            # #555 BLOCKER-3: previously unguarded, so a write against a file this
+            # process cannot write to (e.g. permission-denied) 500'd instead of
+            # reporting the failure. Newly reachable now that this page no longer
+            # 500s on GET for that same file — before this PR the form was
+            # unreachable for a KB in that state.
+            #
+            # `_write_relation_aliases_atomic` leaves `path` byte-identical to
+            # before on any failure (mkstemp + os.replace, never `write_text`'s
+            # in-place truncate — #555 gate REV-3), so "Nothing was saved" below
+            # is true of a write failure now, not just of the unlink branch.
+            #
+            # BROAD, matching `save_prompt_route`/`reset_prompt_route`'s stated
+            # reasoning rather than the narrower `except OSError` an earlier
+            # round of this fix used (#555 gate rev-2, Critic N7): both routes
+            # do plain filesystem calls (`mkdir`/`write_text`/`unlink` there,
+            # `mkstemp`/`fchmod`/`write`/`fsync`/`os.replace` here) that raise
+            # `OSError` in every case anyone has produced, but this file's own
+            # precedent (`save_prompt_route`'s comment) declines to trust that
+            # as a closed set — "the ways a directory the user can chmod fails
+            # are not a set this route can enumerate" — and this route has no
+            # narrower a claim to make about its own filesystem calls than that
+            # one does about its. One rule, not two.
+            #
+            # STATUS IS 500, MATCHING `save_prompt_route`/`reset_prompt_route`,
+            # NOT 400 (#555 gate rev-7 — an earlier round of this comment kept
+            # 400 here and argued the retry consideration was neutral because
+            # this route, like those two, is a plain `<form method="post">`
+            # with no `hx-post` (checked — `prompts.html` has zero `hx-post`
+            # occurrences too). That premise is true but was applied wrong:
+            # it is equally true of the routes this one is being compared
+            # AGAINST, so it cannot be the reason to diverge from them. It
+            # shows only that no CLIENT BEHAVIOUR keys on the split here —
+            # not that the argument for 500 does not apply. `save_prompt_route`'s
+            # own reasoning ("the user's text was accepted and the disk said
+            # no, so repeating the identical request once the mode bits are
+            # fixed is exactly the right thing to do — which is what 4xx
+            # denies") is a claim about MEANING, not about what a browser
+            # does next, and it applies here word for word. `tests/test_web.py`
+            # pins 500 for exactly this failure class on the sibling routes,
+            # six times: "the write did not happen" (×4), "the delete did not
+            # happen" (×2).
+            #
+            # The decisive reason, independent of any of that: a status code is
+            # not only a retry hint, it is a machine-readable claim about WHO
+            # was at fault. `relation_aliases(text)` has already succeeded by
+            # the time this `try` is entered, so the request itself was valid
+            # — the failure below is the server's filesystem, not the client's
+            # submission. A 4xx here would be a false attribution of fault, in
+            # the one part of the response a machine reads, the same class of
+            # defect as a docstring that misstates what the code does. The
+            # empty-submit refusal and the parse-error branch above stay at
+            # 400 — both are refusals the client can correct by what it sends
+            # next (paste valid aliases; paste the file's actual contents
+            # rather than the empty box the server itself rendered).
+            #
+            # The verb names the operation that actually ran, not always
+            # "written" (measured, #555 gate rev-2: a directory sitting at the
+            # alias path made the `unlink()` branch raise, and "could not be
+            # written" named an operation — writing — that never happened).
+            action = "written" if text else "removed"
+            return _settings(
+                request,
+                error=f"Nothing was saved. {RELATION_ALIASES_RELPATH} could not be {action}: {exc}",
+                status_code=500,
+            )
         return RedirectResponse("/settings", status_code=303)
 
     @app.post("/settings/root", response_class=HTMLResponse)
