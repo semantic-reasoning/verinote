@@ -7,7 +7,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 import re
-import unicodedata
 
 from verinote.engine.datalog import (
     AtomExpr,
@@ -31,6 +30,7 @@ from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 from verinote.pipeline.report_trace import trace_query_answers
 from verinote.store import Store, engine_statuses
 from verinote.store.duckdb_fact_terms import DuckDBFactTermStoreError
+from verinote.text import nfc
 
 ASK_QID = 0
 MAX_CONTEXT_CHARS = 12000
@@ -604,7 +604,66 @@ def _question_patterns(question: str) -> tuple[str, ...]:
 
 
 def _best_excerpt(text: str, patterns: tuple[str, ...]) -> tuple[str, int]:
-    folded = _fold(text)
+    """Find the best-scoring pattern in `text` and quote a window around it.
+
+    The match position is found in `folded`, the casefold of `normalized`
+    (`nfc(text)`). The excerpt window is cut from `normalized` -- the same
+    string `folded` was derived from -- rather than from `text`, which makes
+    the two coordinate systems reconcilable (not identical: a `folded`
+    position and a `normalized` position can still name different offsets,
+    which is exactly why `_unfold_offset`, below, exists). `folded` is not
+    itself guaranteed to be NFC-normalized; only `normalized` is.
+
+    `folded` and `normalized` can differ in length: casefold can expand one
+    character into several (`ß` to `ss`, `ﬄ` to `ffl`) but never contracts one
+    away or into fewer characters, a property `test_no_code_point_casefolds_to_nothing`
+    sweeps exhaustively over every code point. When the lengths agree, every
+    character folded 1:1 and a `folded` position is already a `normalized`
+    position, so `best_pos` is used as-is -- `test_a_length_coincidence_with_text_does_not_fool_the_shortcut`
+    pins that this comparison is against `len(normalized)`, not `len(text)`,
+    which can coincidentally equal `len(folded)` even when `len(normalized)`
+    does not. When the lengths differ, `_unfold_offset` walks `normalized` to
+    translate; this rests on `s.casefold()` being the concatenation of each of
+    `s`'s characters' folds, a property `test_casefold_is_the_concatenation_of_its_characters_folds`
+    checks over the entire repertoire as one string and over ordered pairs
+    drawn from every code point with a multi-character fold, every code point
+    with a nonzero canonical combining class, and the Greek sigma/iota code
+    points.
+
+    Consequence: a source stored decomposed (NFD) is quoted composed (NFC) --
+    canonically equivalent to what is stored, not a byte-for-byte copy of it.
+
+    Given patterns containing no whitespace -- true of every pattern
+    `_question_patterns` can produce, since `_TOKEN`'s character classes
+    contain none -- the excerpt contains the source character whose fold
+    covers the best-scoring match's first folded character: `anchor` is
+    always a valid index into `normalized`, so the window always extends past
+    it, and `" ".join(...split())` cannot strip that character, because no
+    whitespace code point casefolds to a non-whitespace one
+    (`test_no_whitespace_code_point_casefolds_to_a_non_whitespace_one`). This
+    is a claim about the source character behind the match, not about the
+    pattern text itself -- when a fold expands (`ß` to `ss`), the character
+    the excerpt carries is `ß`, not `s`.
+
+    The trailing "..." reports whether `normalized` continues past the
+    window, not whether `text` does -- honest about `normalized`'s length,
+    not a general guarantee. In particular, trailing whitespace already
+    dropped by `" ".join(...split())` can leave an appended "..." after the
+    true last visible character; this is a pre-existing condition, unrelated
+    to normalization, and not addressed here.
+
+    The score above is measured on a +/-300-character window of `folded`,
+    which is not the same window this function quotes below (240 characters
+    before `anchor` / 420 after, in `normalized` characters) -- the two
+    windows were different sizes before this function's fix as well as after.
+    On the leading side, 240 < 300, so up to `300 - 240 = 60` folded
+    characters counted toward the score can fall outside the excerpt. On the
+    trailing side, 420 exceeds 300 by more than a single fold's maximum width
+    (3, pinned by `test_no_code_point_casefold_exceeds_three_characters`), so
+    nothing counted toward the score falls outside the excerpt on that side.
+    """
+    normalized = nfc(text)
+    folded = normalized.casefold()
     best_pos = -1
     best_score = 0
     for pattern in patterns:
@@ -617,12 +676,13 @@ def _best_excerpt(text: str, patterns: tuple[str, ...]) -> tuple[str, int]:
             best_pos = pos
     if best_pos < 0:
         return "", 0
-    start = max(0, best_pos - 240)
-    end = min(len(text), best_pos + 420)
-    excerpt = " ".join(text[start:end].split())
+    anchor = best_pos if len(folded) == len(normalized) else _unfold_offset(normalized, best_pos)
+    start = max(0, anchor - 240)
+    end = min(len(normalized), anchor + 420)
+    excerpt = " ".join(normalized[start:end].split())
     if start:
         excerpt = "..." + excerpt
-    if end < len(text):
+    if end < len(normalized):
         excerpt += "..."
     return excerpt, best_score
 
@@ -648,7 +708,35 @@ def _fallback_context(
 
 
 def _fold(value: str) -> str:
-    return unicodedata.normalize("NFC", value).casefold()
+    return nfc(value).casefold()
+
+
+def _unfold_offset(normalized: str, index: int) -> int:
+    """Map `index`, a position in `normalized.casefold()`, back into `normalized`.
+
+    Walks `normalized` one character at a time, accumulating each character's
+    casefolded width, and returns the position of the character whose fold
+    covers `index`. Sound because casefold is decomposable per character --
+    `s.casefold()` equals the concatenation of each of `s`'s characters'
+    folds, checked by `test_casefold_is_the_concatenation_of_its_characters_folds`
+    (exhaustively over every code point as a whole-repertoire string; over
+    ordered pairs for a curated alphabet, not the full repertoire) -- and
+    never contracts a character to nothing or to fewer characters than it
+    started with, swept exhaustively over every code point by
+    `test_no_code_point_casefolds_to_nothing`.
+
+    If `index >= len(normalized.casefold())`, falls through to
+    `len(normalized)`, which is not a character position -- unreachable from
+    this module's only call site, where `index` is always a `str.find` hit
+    inside `folded`, but callers outside that guarantee must check for it.
+    """
+    consumed = 0
+    for position, char in enumerate(normalized):
+        width = len(char.casefold())
+        if consumed + width > index:
+            return position
+        consumed += width
+    return len(normalized)
 
 
 def _short_reason(value: object) -> str:
