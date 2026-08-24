@@ -137,10 +137,22 @@
                  is meant to stay plain text rather than become a chip. The
                  unmeasured note keeps `.badge src`: a chip is right for
                  information, and `.artifact-row .badge` already lays one out.
-                 No new CSS either way. #}
+                 No new CSS either way.
+
+                 #494's scan (`verinote sources scan-unreadable`) reads the
+                 stored artifact files and chunk rows and records nothing, so
+                 this row's state is genuinely unchanged by running it and this
+                 note is genuinely still true afterwards. The copy says so
+                 rather than leaving the page to send a user who scanned and
+                 got a clean answer back to run the scan again. Re-upload is
+                 stated unconditionally for the same reason it is stated first
+                 above: a pre-#473 artifact that held no NUL still needs it to
+                 clear this note, and that is the majority. Plain text, no
+                 nested `<code>` -- `policy_halted.html` names a CLI command in
+                 a `<p>`, not inside a `.badge`. #}
               {% set unreadable = artifact["unreadable_chars"] %}
               {% if unreadable is none %}
-                <span class="badge src">not checked for unreadable characters — some may remain; re-upload to fix, or delete the source and upload it again if this note stays</span>
+                <span class="badge src">not checked for unreadable characters — this records that the extraction never measured, not what the file holds, so it stays after a scan; run verinote sources scan-unreadable to see what is stored. Re-upload to fix, or delete the source and upload it again if this note stays</span>
               {% elif unreadable %}
                 <span class="warn-inline">{{ unreadable }} unreadable character(s)</span>
               {% endif %}

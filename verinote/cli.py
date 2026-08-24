@@ -1280,6 +1280,292 @@ def cmd_sources_repair_identities(cfg: Config, args: argparse.Namespace) -> int:
         store.close()
 
 
+def cmd_sources_scan_unreadable(cfg: Config, args: argparse.Namespace) -> int:
+    """Report the NULs still stored in extraction artifacts and chunks (#494).
+
+    Reports; it does not repair. Nothing is rewritten, re-chunked or recorded --
+    the KBs this is for predate #473's sanitizer, and telling their owner what
+    is there is the whole job.
+    """
+    refusal = _require_existing_kb(cfg)
+    if refusal is not None:
+        return refusal
+    # `Store(...)` without `init_schema()`, like `cmd_sources_repair_identities`
+    # in its dry-run mode. Migrating here would ALTER in the very
+    # `unreadable_chars` column `scan_unreadable_text` is built to work without,
+    # so the command written for unmigrated KBs would be the one that migrates
+    # them.
+    store = Store(cfg.db_path)
+    try:
+        return _scan_unreadable(store)
+    except (sqlite3.DatabaseError, TypeError, ValueError) as exc:
+        # `cmd_coverage`'s floor. `scan_unreadable_text`'s probes answer the
+        # schema drift we know about; this answers the next column someone
+        # forgets, because per `_unusable_kb` a command whose whole job is to
+        # report on a KB must not answer with a traceback.
+        return _unusable_kb(cfg, exc)
+    finally:
+        store.close()
+
+
+def _scan_unreadable(store: Store) -> int:
+    scan = store.scan_unreadable_text()
+    for note in _scan_schema_notes(scan):
+        print(note)
+
+    current = superseded = unknown = unscannable = unscanned = 0
+    for source in scan.sources:
+        if source.status == "no_stored_text":
+            unscanned += 1
+            print(f"{source.path}: no stored extraction text — not scanned")
+            continue
+        verdict = _source_scan_verdict(source)
+        if verdict == "current":
+            current += 1
+        elif verdict == "superseded":
+            superseded += 1
+        elif verdict == "unknown":
+            unknown += 1
+        if _unscannable_artifacts(source):
+            unscannable += 1
+        print(_source_scan_line(source, verdict))
+
+    # `unknown` has a bucket of its own so a reader can count the sources the
+    # scan could not answer for instead of inferring them. `clean` has none: it
+    # is the residue, and a bucket for it would imply these add up.
+    #
+    # THEY ARE NOT BUILT AS A PARTITION, deliberately, and need not add up to
+    # the source count. `current`, `superseded` and `unknown` are verdicts from
+    # `_source_scan_verdict`;
+    # `unscanned` is not a verdict at all, but the `no_stored_text` branch
+    # above, which `continue`s before a verdict is asked for; and `unscannable`
+    # answers a different question -- did ANY artifact of this source fail to be
+    # read -- so a `current` source with one bad superseded row is counted under
+    # it as well. No clause claims a total, and making them partition would mean
+    # dropping either a verdict or the caveat.
+    #
+    # The artifact and chunk totals stay apart for the reason
+    # `scan_unreadable_text` refuses to add them: a NUL inside a chunk overlap
+    # window is stored twice, so their sum counts a set with no meaning.
+    #
+    # `fact_evidence.snippet` is out of scope and can hold NULs copied from a
+    # chunk, so the first clause names what was looked at rather than letting a
+    # clean result read as "this KB holds no NULs anywhere".
+    print(
+        f"scanned {scan.artifacts_scanned} extraction-text artifact(s) and "
+        f"{scan.chunks_scanned} analysis chunk(s) across {len(scan.sources)} "
+        f"source(s): {current} with unreadable characters in current rows, "
+        f"{superseded} in superseded rows only, {unknown} whose latest stored "
+        f"text could not be read, {unscanned} with no stored text; "
+        f"separately, {unscannable} source(s) had an artifact that could not be read"
+    )
+    return 0
+
+
+def _scan_schema_notes(scan) -> list[str]:
+    """KB-level facts about what was there to scan. Said once, about the KB."""
+    notes = []
+    if not scan.artifacts_table_present:
+        notes.append(
+            "this KB has no source_artifacts table, so no extraction-text "
+            "artifact was scanned"
+        )
+    if not scan.chunks_table_present:
+        notes.append(
+            "this KB has no source_chunks table, so no analysis chunk was scanned"
+        )
+    if scan.artifacts_table_present and not scan.unreadable_chars_column_present:
+        notes.append(
+            "this KB predates the unreadable_chars column, so no extraction "
+            "here ever measured what it could not read"
+        )
+    if scan.chunks_table_present and not scan.jobs_table_present:
+        notes.append(
+            "this KB has no extraction_jobs table, so a chunk finding cannot be "
+            "told apart from one in a superseded job"
+        )
+    return notes
+
+
+def _unscannable_artifacts(source) -> list:
+    return [a for a in source.artifacts if a.status not in {"clean", "found"}]
+
+
+def _source_scan_verdict(source) -> str:
+    """`current`, `unknown`, `superseded` or `clean` for one scanned source.
+
+    A verdict picks a headline in `_source_scan_line` and increments a summary
+    bucket in `_scan_unreadable`. A fifth verdict has to be given both, and the
+    two go wrong differently. Miss the bucket and it prints uncounted -- the trap
+    `clean` sits in on purpose, for the reason the comment beside those buckets
+    gives. Miss the HEADLINE and it falls to that function's `else`, which is
+    the clean one, so the line denies the findings printed beside it on the same
+    line.
+
+    That second one is caught only where some headline assertion tells the new
+    verdict's headline apart from `clean`'s. Measured: a fifth verdict for the
+    underivable-job-recency case, bucket wired and headline forgotten, reddens
+    `test_unknown_chunk_recency_is_not_reported_as_reassurance` and prints the
+    offending line in the failure.
+
+    A carve-out from `clean` escapes that however well tested `clean` is,
+    because the `else` prints `clean`'s own headline -- the new verdict and
+    `clean` are then indistinguishable by construction, not by coverage.
+    Measured too: `return "clean"` -> `return "pristine"` leaves the suite
+    unchanged. `clean` is the residue, which makes it the likeliest donor for a
+    fifth verdict and the one to be most careful with. A carve-out from a state
+    no test exercises escapes it as well. Write the headline with the branch.
+
+    Neither consumer asks the user to do anything: these lines report what the
+    scan found, and even the `superseded` headline's mention of re-upload is
+    there to say it is not called for. So what a verdict is chosen for is
+    whether its headline would be TRUE of the source -- not what it would tell
+    anyone to do.
+
+    `current` means at least one finding sits where something will read it
+    again -- the latest text artifact, or a chunk of the newest job. Its
+    headline asserts that unreadable characters are still stored, so it is
+    reached only from a finding the scan actually made; reached any other way it
+    would report one that does not exist.
+
+    Two different things can be unknown, and they do not get the same answer.
+    When a chunk's job recency could not be derived, the NULs are still stored
+    -- the scan read them -- and only their liveness is in doubt, so the verdict
+    is `current`: its headline is true either way, and what the source must not
+    get is the superseded headline's reassurance about a job nothing identified.
+    When the LATEST artifact's file could not be read, it is the finding itself
+    that is unknown, and then an absence and a presence would both be asserting
+    something about a file nobody opened. `unknown` asserts neither.
+    `_scan_artifact_file` names the first half of that rule -- "we could not
+    look" must never round down to "there is nothing there" -- and `current` is
+    what it must not round up to.
+
+    `superseded` therefore needs a finding the scan DID read, on a row nothing
+    will read again, and `clean` needs a scan that read everything it needed to.
+    """
+    if any(a.status == "found" and a.is_latest for a in source.artifacts):
+        return "current"
+    if any(c.is_latest_job is not False for c in source.chunks):
+        return "current"
+    if any(a.is_latest and a.status not in {"clean", "found"} for a in source.artifacts):
+        return "unknown"
+    if any(a.status == "found" for a in source.artifacts):
+        return "superseded"
+    if source.chunks:
+        return "superseded"
+    return "clean"
+
+
+def _source_scan_line(source, verdict: str) -> str:
+    segments = []
+    artifact_segment = _artifact_scan_segment(source)
+    if artifact_segment:
+        segments.append(artifact_segment)
+    chunk_segment = _chunk_scan_segment(source)
+    if chunk_segment:
+        segments.append(chunk_segment)
+    unscannable = _unscannable_artifacts(source)
+    if unscannable:
+        detail = ", ".join(f"{a.status}: {a.path}" for a in unscannable)
+        segments.append(f"could not scan {len(unscannable)} artifact(s) — {detail}")
+    recorded = _recorded_clause(source)
+    if recorded:
+        segments.append(recorded)
+
+    if verdict == "current":
+        headline = "unreadable characters still stored"
+    elif verdict == "unknown":
+        headline = "could not tell whether unreadable characters are still stored"
+    elif verdict == "superseded":
+        headline = (
+            "unreadable characters in superseded rows only — nothing re-analysis "
+            "will read again, so no re-upload is called for"
+        )
+    else:
+        headline = "no unreadable characters still stored"
+    if not segments:
+        return f"{source.path}: {headline}"
+    return f"{source.path}: {headline} — " + "; ".join(segments)
+
+
+def _artifact_scan_segment(source) -> str | None:
+    found = [a for a in source.artifacts if a.status == "found"]
+    if not found:
+        return None
+    latest = [a for a in found if a.is_latest]
+    superseded = [a for a in found if not a.is_latest]
+    bits = []
+    if latest:
+        bits.append(
+            f"{sum(a.nuls for a in latest)} in the latest of "
+            f"{len(source.artifacts)} artifact row(s)"
+        )
+    if superseded:
+        bits.append(
+            f"{sum(a.nuls for a in superseded)} in {len(superseded)} superseded "
+            f"of {len(source.artifacts)} artifact row(s)"
+        )
+    return "artifacts: " + "; ".join(bits)
+
+
+def _chunk_scan_segment(source) -> str | None:
+    if not source.chunks:
+        return None
+    live = [c for c in source.chunks if c.is_latest_job is True]
+    superseded = [c for c in source.chunks if c.is_latest_job is False]
+    unknown = [c for c in source.chunks if c.is_latest_job is None]
+    bits = []
+    if live:
+        bits.append(
+            f"{sum(c.nuls for c in live)} in {len(live)} chunk(s) of the latest job"
+        )
+    if superseded:
+        bits.append(
+            f"{sum(c.nuls for c in superseded)} in {len(superseded)} chunk(s) of "
+            "a superseded job"
+        )
+    if unknown:
+        bits.append(
+            f"{sum(c.nuls for c in unknown)} in {len(unknown)} chunk(s) whose job "
+            "recency is unknown"
+        )
+    return (
+        "chunks: " + "; ".join(bits) + f" (of {source.chunks_scanned} chunk(s) scanned)"
+    )
+
+
+def _recorded_clause(source) -> str | None:
+    """What ingest said it replaced, kept apart from what the scan found.
+
+    Two different sentences share the word "unreadable": ingest's
+    `unreadable_chars` counts characters it REPLACED with U+FFFD, and this scan
+    counts NULs STILL STORED. A source whose extraction replaced 71 and stores
+    none reads as a bare "no unreadable characters still stored", which the
+    reader cannot help but over-read as "this PDF lost nothing".
+
+    Whether the clause prints turns on whether the LINE reports a finding, not
+    on which headline the line got. Beside a finding the row's number always
+    prints, 0 included, so "measured 0" stays distinguishable from "never
+    measured". Keying this on the verdict name instead is a bug that hides until
+    someone adds a verdict, because the new one inherits silence it was never
+    considered for -- which is what happened when `unknown` was added and a line
+    reporting superseded NULs quietly lost its recorded number.
+
+    With no finding to sit beside, the clause prints only when the extraction
+    actually replaced something. A measured, lossless source stays quiet: it has
+    nothing to report.
+    """
+    values = [a.recorded for a in source.artifacts if a.recorded is not None]
+    if not values:
+        return None
+    reports_a_finding = any(a.status == "found" for a in source.artifacts) or bool(
+        source.chunks
+    )
+    if not reports_a_finding and not any(values):
+        return None
+    return f"extraction recorded {sum(values)} replaced at ingest"
+
+
 def cmd_query(cfg: Config, args: argparse.Namespace) -> int:
     from verinote.llm import LLMError, get_client
     from verinote.pipeline import translate_questions, write_query_file
@@ -1792,6 +2078,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="confirm repair of groups whose paths are samefile-verified",
     )
     repair_identities.set_defaults(func=cmd_sources_repair_identities, halt_safe=False)
+
+    scan_unreadable = sources_sub.add_parser(
+        "scan-unreadable",
+        parents=[root_option],
+        help="report NUL characters still stored in extraction artifacts and analysis chunks",
+    )
+    # Static, not the dynamic clause `repair-identities` needs in `main`: that
+    # clause exists because one parser hosts both a dry run and a write, and this
+    # command has no write mode to condition on. The reason the flag matters at
+    # all is `_refuse_on_halted_kb`, which opens a Store and calls
+    # `init_schema()` on it -- so `halt_safe=False` would migrate the KB before
+    # a read-only scan of it ran, and the unmigrated KB is exactly the one this
+    # command exists for. The flag also skips `_refuse_on_corrupt_config`, which
+    # `main` runs first: harmless here, since the scan resolves no provider and
+    # reads no credentials, so #269's "a corrupt config must not silently
+    # resolve to the cloud default" has nothing to bite on.
+    scan_unreadable.set_defaults(func=cmd_sources_scan_unreadable, halt_safe=True)
 
     query = sub.add_parser(
         "query", parents=[root_option], help="translate pending NL questions to Datalog queries"

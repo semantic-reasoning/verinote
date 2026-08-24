@@ -483,8 +483,10 @@ def test_sources_page_separates_measured_loss_from_never_measured(tmp_path, nulx
 
 
 _UNMEASURED_NOTE = (
-    '<span class="badge src">not checked for unreadable characters — some may '
-    "remain; re-upload to fix, or delete the source and upload it again if "
+    '<span class="badge src">not checked for unreadable characters — this '
+    "records that the extraction never measured, not what the file holds, so "
+    "it stays after a scan; run verinote sources scan-unreadable to see what "
+    "is stored. Re-upload to fix, or delete the source and upload it again if "
     "this note stays</span>"
 )
 
@@ -494,6 +496,15 @@ _UNMEASURED_NOTE = (
 # new note opens with that clause. The closing tag is what pins the old one.
 _DESTRUCTIVE_FIRST_NOTE = "; delete the source and upload it again to fix</span>"
 _RE_UPLOAD_ONLY_NOTE = "; re-upload to fix</span>"
+
+# The wording #494 replaced, which told the reader the note might mean the file
+# still holds unreadable characters and offered no way to find out. The rule
+# above cannot anchor this one: the new note ends in the same
+# `...if this note stays</span>` the old one did, so the closing tag does not
+# discriminate. The clause that vanished does, so it is the guard -- and it is
+# quoted here whole rather than trimmed to a prefix, because a prefix of it is
+# also a prefix of the current note.
+_NO_SCAN_POINTER_NOTE = "unreadable characters — some may remain; re-upload to fix,"
 
 
 def _block_the_extraction_worker(monkeypatch) -> list[int]:
@@ -596,6 +607,7 @@ def test_the_sources_page_names_an_action_that_actually_clears_the_unmeasured_no
     # of a note rather than a prefix of one.
     assert _RE_UPLOAD_ONLY_NOTE not in html
     assert _DESTRUCTIVE_FIRST_NOTE not in html
+    assert _NO_SCAN_POINTER_NOTE not in html
     assert html.count("not checked for unreadable characters") == 1
 
     # Leg 2: do what the note says first -- upload the same bytes again -- and
