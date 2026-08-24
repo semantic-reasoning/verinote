@@ -199,6 +199,69 @@ class SourceIdentityRepairResult:
     groups: tuple[SourceIdentityRepairGroup, ...]
 
 
+@dataclass(frozen=True)
+class UnreadableArtifactScan:
+    """What one stored extraction-text artifact file holds, right now (#494)."""
+
+    artifact_id: int
+    path: str  # as stored, relative to the KB root
+    # clean | found | file_missing | file_unreadable | file_undecodable
+    status: str
+    nuls: int  # 0 unless status == "found"
+    # `source_artifacts.unreadable_chars` verbatim. None means nobody measured,
+    # which covers a NULL value AND a KB whose schema has no such column.
+    recorded: int | None
+    is_latest: bool  # what `latest_source_text_artifact` would return
+
+
+@dataclass(frozen=True)
+class UnreadableChunkScan:
+    """One stored analysis chunk that still holds NULs (#494).
+
+    Clean chunks are not listed; `UnreadableSourceScan.chunks_scanned` is how
+    many rows were read.
+    """
+
+    chunk_id: int
+    job_id: int
+    chunk_index: int
+    nuls: int  # always > 0
+    # Is `job_id` this source's newest job, per `latest_source_job_ids` over the
+    # `extraction_jobs` rows. None when that table is absent, so recency could
+    # not be derived at all -- which is not the same as "superseded".
+    is_latest_job: bool | None
+
+
+@dataclass(frozen=True)
+class UnreadableSourceScan:
+    """One source's findings, or the fact that it had nothing to scan (#494)."""
+
+    source_id: int
+    path: str
+    status: str  # scanned | no_stored_text
+    artifacts: tuple[UnreadableArtifactScan, ...]
+    chunks: tuple[UnreadableChunkScan, ...]
+    chunks_scanned: int  # this source's chunk rows, clean ones included
+
+
+@dataclass(frozen=True)
+class UnreadableTextScan:
+    """A whole KB's stored-NUL scan, plus what of its schema was there to scan.
+
+    The three `*_present` flags are not diagnostics about verinote: a KB written
+    before the table or column existed is the population #494 is about, and the
+    report has to be able to say "not scanned" rather than imply "clean".
+    """
+
+    sources: tuple[UnreadableSourceScan, ...]
+    artifacts_scanned: int
+    chunks_scanned: int
+    artifacts_table_present: bool
+    jobs_table_present: bool
+    chunks_table_present: bool
+    unreadable_chars_column_present: bool
+
+
 REVIEW_PAGE_SIZES = (25, 50, 100)
 DEFAULT_REVIEW_PAGE_SIZE = 50
 DEFAULT_REVIEW_SORT = "newest"
@@ -677,6 +740,209 @@ class Store:
         return self._conn.execute(
             "SELECT * FROM sources WHERE path = ?", (path,)
         ).fetchone()
+
+    def scan_unreadable_text(self) -> UnreadableTextScan:
+        """Report the NULs still stored in artifacts and analysis chunks (#494).
+
+        Read-only in the strong sense: SELECTs and PRAGMAs only, no UPDATE, and
+        no `init_schema()`. That last one is the point rather than tidiness. A
+        KB written before #473 has no `unreadable_chars` column, and
+        `init_schema()` is what ALTERs it in -- so a scan that opened the KB the
+        ordinary way would migrate the very KBs it exists to diagnose, and then
+        report `recorded = 0` rows it had just created. Nothing here records
+        what it finds, either: `unreadable_chars` means "how many characters
+        this extraction replaced", and in a row this scan finds NULs in nothing
+        was replaced.
+
+        Every table is probed through `sqlite_master` first --
+        `source_artifacts`, `extraction_jobs`, `source_chunks` -- and
+        `unreadable_chars` through `PRAGMA table_info`. `cli.py`'s
+        `_KB_CORE_TABLES` comment records that all three tables arrived by
+        migration, so a file can pass `_require_existing_kb` and still lack
+        them. A missing table contributes zero scanned rows and a flag the
+        caller can name in its report, not an `OperationalError`.
+
+        `recorded is None` says nobody measured. It covers a NULL value and a
+        KB with no such column, because those are the same sentence about the
+        row: `schema.sql` gives the column no default precisely so the older
+        rows do not read as clean.
+
+        THE TWO COUNTS ARE NOT SUMMABLE, and this method never adds them.
+        `chunk_text` prepends the previous chunk's tail to each later chunk, so
+        one NUL inside that overlap window is stored twice; `_base_chunks` also
+        re-splits on paragraphs and strips, so chunk text is not a partition of
+        artifact text. Neither total can be derived from the other in either
+        direction, and a headline over both would be a number with no referent.
+
+        `UnicodeDecodeError` is caught per artifact, here, and reported as that
+        one file's `file_undecodable`. It is a `ValueError` and not an
+        `OSError`, so a caller wrapping this in `cmd_coverage`'s
+        `(sqlite3.DatabaseError, TypeError, ValueError)` floor would otherwise
+        turn one unreadable file into a verdict about the whole KB.
+        """
+        # Local because the dependency runs the other way: `verinote.pipeline`
+        # imports `verinote.store` at module level (`extract.py:27`,
+        # `ingest.py:28`), so a module-level import here would be circular.
+        from verinote.pipeline.extract import latest_source_job_ids
+        from verinote.pipeline.ingest import count_nuls
+
+        artifacts_table_present = self._has_table("source_artifacts")
+        jobs_table_present = self._has_table("extraction_jobs")
+        chunks_table_present = self._has_table("source_chunks")
+        column_present = artifacts_table_present and any(
+            str(row["name"]) == "unreadable_chars"
+            for row in self._conn.execute("PRAGMA table_info(source_artifacts)")
+        )
+
+        artifact_rows: dict[int, list[sqlite3.Row]] = {}
+        if artifacts_table_present:
+            columns = "id, source_id, path"
+            if column_present:
+                columns += ", unreadable_chars"
+            for row in self._conn.execute(
+                f"SELECT {columns} FROM source_artifacts "
+                "WHERE kind IN ('original_text','extracted_text') "
+                "ORDER BY source_id, id"
+            ):
+                artifact_rows.setdefault(int(row["source_id"]), []).append(row)
+
+        # Derived from the `extraction_jobs` rows, NOT from MAX(job_id) over the
+        # chunk rows the loop below is already streaming. A job can own no chunk
+        # rows at all -- `create_chunked_extraction_job` finishes one straight
+        # away when the text chunks to nothing -- and then the newest job is
+        # invisible in `source_chunks` while a superseded job's dirty chunks
+        # carry the highest job_id present. The chunk-row reading would call
+        # those chunks live, and the report's remedy is delete-and-re-upload,
+        # which drops confirmed facts. So the shortcut's cost is telling a user
+        # whose current job is clean to destroy human decisions.
+        latest_job_by_source: dict[int, int] = {}
+        if jobs_table_present:
+            latest_job_by_source = latest_source_job_ids(
+                self._conn.execute("SELECT id, source_id FROM extraction_jobs")
+            )
+
+        chunk_findings: dict[int, list[UnreadableChunkScan]] = {}
+        chunks_per_source: dict[int, int] = {}
+        chunks_scanned = 0
+        if chunks_table_present:
+            # Streamed row by row, never fetchall(): a chunk row is atomic, so
+            # there is no partial-count question, and memory stays bounded by
+            # the widest single chunk rather than by the KB.
+            for row in self._conn.execute(
+                "SELECT id, source_id, job_id, chunk_index, text FROM source_chunks "
+                "ORDER BY source_id, job_id, chunk_index"
+            ):
+                chunks_scanned += 1
+                source_id = int(row["source_id"])
+                chunks_per_source[source_id] = chunks_per_source.get(source_id, 0) + 1
+                nuls = count_nuls(str(row["text"]))
+                if not nuls:
+                    continue
+                job_id = int(row["job_id"])
+                chunk_findings.setdefault(source_id, []).append(
+                    UnreadableChunkScan(
+                        chunk_id=int(row["id"]),
+                        job_id=job_id,
+                        chunk_index=int(row["chunk_index"]),
+                        nuls=nuls,
+                        is_latest_job=(
+                            latest_job_by_source.get(source_id) == job_id
+                            if jobs_table_present
+                            else None
+                        ),
+                    )
+                )
+
+        sources: list[UnreadableSourceScan] = []
+        artifacts_scanned = 0
+        for source_row in self._conn.execute("SELECT id, path FROM sources ORDER BY path"):
+            source_id = int(source_row["id"])
+            rows = artifact_rows.get(source_id, [])
+            # MAX(id) over the same two kinds, which is what
+            # `latest_source_text_artifact` and `source_text_inputs` both read.
+            latest_artifact_id = max((int(row["id"]) for row in rows), default=None)
+            artifacts: list[UnreadableArtifactScan] = []
+            for row in rows:
+                artifacts_scanned += 1
+                status, nuls = self._scan_artifact_file(str(row["path"]))
+                recorded = None
+                if column_present and row["unreadable_chars"] is not None:
+                    recorded = int(row["unreadable_chars"])
+                artifacts.append(
+                    UnreadableArtifactScan(
+                        artifact_id=int(row["id"]),
+                        path=str(row["path"]),
+                        status=status,
+                        nuls=nuls,
+                        recorded=recorded,
+                        is_latest=int(row["id"]) == latest_artifact_id,
+                    )
+                )
+            chunks = chunk_findings.get(source_id, [])
+            scanned_here = chunks_per_source.get(source_id, 0)
+            sources.append(
+                UnreadableSourceScan(
+                    source_id=source_id,
+                    path=str(source_row["path"]),
+                    # "no stored text" and "scanned, clean" are different
+                    # answers and the report must not merge them.
+                    status="scanned" if rows or scanned_here else "no_stored_text",
+                    artifacts=tuple(artifacts),
+                    chunks=tuple(chunks),
+                    chunks_scanned=scanned_here,
+                )
+            )
+
+        return UnreadableTextScan(
+            sources=tuple(sources),
+            artifacts_scanned=artifacts_scanned,
+            chunks_scanned=chunks_scanned,
+            artifacts_table_present=artifacts_table_present,
+            jobs_table_present=jobs_table_present,
+            chunks_table_present=chunks_table_present,
+            unreadable_chars_column_present=column_present,
+        )
+
+    def _has_table(self, name: str) -> bool:
+        """Is `name` a table in this KB, per `sqlite_master`.
+
+        The `_source_identity_has_active_job` probe (below) in general form. A
+        read-only diagnosis has to ask before it queries, because the tables it
+        reads all arrived by migration and it must not run the migration.
+        """
+        return (
+            self._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (name,),
+            ).fetchone()
+            is not None
+        )
+
+    def _scan_artifact_file(self, path: str) -> tuple[str, int]:
+        """`(status, nuls)` for one stored artifact file. Never raises.
+
+        Read whole, with `Path.read_text`, which is how production already
+        reads these same artifact files, so the scan inherits a memory ceiling
+        the product accepts rather than inventing a new one -- and there is then
+        no partially-read count that could be mistaken for a total.
+
+        Three failure statuses, and `nuls` is 0 in all three. NONE of them may
+        be reported as `clean`: "we could not look" is the one answer a
+        diagnosis must never round down to "there is nothing there".
+        """
+        from verinote.pipeline.ingest import count_nuls
+
+        resolved = self.db_path.parent / path
+        try:
+            text = resolved.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return "file_missing", 0
+        except UnicodeDecodeError:
+            return "file_undecodable", 0
+        except OSError:
+            return "file_unreadable", 0
+        nuls = count_nuls(text)
+        return ("found" if nuls else "clean"), nuls
 
     def plan_source_identity_repairs(self) -> SourceIdentityRepairPlan:
         """Read-only plan for merging same-file NFC/NFD duplicate sources.

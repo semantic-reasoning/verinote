@@ -94,6 +94,25 @@ class SanitizedText:
     unreadable_chars: int
 
 
+def count_nuls(text: str) -> int:
+    """How many NULs `text` holds -- the one definition of "unreadable character".
+
+    Only NUL. Not the other control characters -- `\\x0c` in particular is
+    pdftotext's ordinary page separator, and widening this would delete
+    structure nobody reported as broken. That paragraph used to sit on
+    `sanitize_extracted_text`; it decides *what counts*, so it belongs wherever
+    the counting is done.
+
+    Callers with opposite jobs share it: `sanitize_extracted_text` replaces what
+    it counts as text enters the KB, while the #494 scan
+    (`Store.scan_unreadable_text` and its `_scan_artifact_file` helper) only
+    counts what is already stored. Sharing the definition is the point -- a scan
+    that disagreed with the sanitizer about what an unreadable character is
+    would report a problem no re-ingest could clear, or miss one it could.
+    """
+    return text.count("\x00")
+
+
 def sanitize_extracted_text(text: str) -> SanitizedText:
     """Replace NULs the extractor could not map with U+FFFD, and count them.
 
@@ -101,15 +120,15 @@ def sanitize_extracted_text(text: str) -> SanitizedText:
     already contain a legitimate replacement character, and only the NULs are
     this extraction's loss.
 
-    Only NUL. Not the other control characters -- `\\x0c` in particular is
-    pdftotext's ordinary page separator, and widening this would delete
-    structure nobody reported as broken.
+    What counts as unreadable is `count_nuls`'s decision, not this function's.
 
     Called from exactly one place, `store_source`. Sanitizing in two places
     would make two decision points about what may enter the KB, and two such
-    points drift apart quietly -- which is how the NULs got in (#473).
+    points drift apart quietly -- which is how the NULs got in (#473). Counting
+    is not sanitizing: `count_nuls` has a second caller and replaces nothing,
+    so that sentence stays true.
     """
-    return SanitizedText(text.replace("\x00", UNREADABLE_CHAR), text.count("\x00"))
+    return SanitizedText(text.replace("\x00", UNREADABLE_CHAR), count_nuls(text))
 
 
 def ingest_bytes(raw: bytes, filename: str) -> tuple[str, str]:
