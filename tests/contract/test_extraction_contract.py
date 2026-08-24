@@ -11,10 +11,11 @@ blind to the contradiction — the #238 failure.
 
 The #238 fix is merged, so the replay below runs in the **default** suite: it
 parses a response captured from a real provider off disk, which needs no
-provider, no credentials and no network (issue #270). The live guard keeps
-``@pytest.mark.contract`` and the opt-in gate, as does the DuckDB differential
-positive control that proves the conflict machinery the other two rely on is
-real.
+provider, no credentials and no network (issue #270). The DuckDB differential
+positive control, which proves the conflict machinery the other two rely on is
+real, needs none of those either and was promoted into the default suite the
+same way by issue #469. The live guard keeps ``@pytest.mark.contract`` and the
+opt-in gate.
 """
 
 from __future__ import annotations
@@ -96,8 +97,7 @@ def test_replay_founding_relation_normalizes_into_functional_vocab(fixture_path)
     )
 
 
-@pytest.mark.contract
-def test_functional_conflict_fires_on_two_dates(require_opt_in):
+def test_functional_conflict_fires_on_two_dates():
     """Positive control: once a founding relation is functional, two dates conflict.
 
     Differential — feeds normalised facts to the real DuckDB verifier. A
