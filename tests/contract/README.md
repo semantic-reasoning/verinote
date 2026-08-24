@@ -9,17 +9,23 @@ calls, and a sync exit code it did not then check.
 |-------|-------|---------------|
 | `test_query_intent_contract.py` | #237 | A role question the deterministic parser hands off must yield a valid intent through the live provider and the production parse boundary. |
 | `test_extraction_contract.py` | #238 | A founding-date fact the extractor produces must normalise into the policy's *functional* relation vocabulary, so a two-date contradiction is catchable. |
-| `test_sync_rc_contract.py` | #239 | `verinote sync` must not report success when every extraction chunk fails. |
+| `test_sync_rc_contract.py` | #239 | `verinote sync` must not report success when every extraction chunk fails. Drives the real CLI with a stub client, so it needs no provider; runs in the default suite since #469. |
 | `test_openrouter_catalogue_contract.py` | — | OpenRouter's model catalogue must still carry the `id` and `supported_parameters` fields the settings Model picker is built from, and still declare `structured_outputs`. Needs no key or client; reads the live endpoint. |
-| `test_contract_meta.py` | — | Meta guards on the harness itself (marker registered, fixtures carry provenance, every module has a guard, the skipped-run guard bites, the promoted replays stayed promoted). Runs in the default suite. |
+| `test_contract_meta.py` | — | Meta guards on the harness itself (marker registered, fixtures carry provenance, every module here but this one declares a guard or is on record as promoted, the skipped-run guard bites, the guards on the promotion ledger stayed promoted). Runs in the default suite. |
+
+The rows are modules, not gating classes: `@pytest.mark.contract` is applied per
+test, so a module here can hold both an opt-in guard and a test that runs in the
+default suite. **Running** below says which is which.
 
 ## Running
 
 The guards carrying `@pytest.mark.contract` are **opt-in**: they self-skip unless
 you name a provider. The default `pytest tests` therefore runs the meta tests,
-the deterministic precondition control in `test_query_intent_contract.py`, and
-the replay guards (issue #270), and never reaches a provider. Any invocation path
-works for the opt-in set:
+the deterministic precondition control in `test_query_intent_contract.py`, the
+replay guards (issue #270), and the two guards issue #469 promoted — the DuckDB
+functional-conflict control in `test_extraction_contract.py` and the #239 sync
+exit-code guard in `test_sync_rc_contract.py` — and never reaches a provider.
+Any invocation path works for the opt-in set:
 
 ```bash
 VN_CONTRACT_PROVIDER=claudecli tests/contract/run.sh
@@ -105,9 +111,11 @@ tests those three targets collect follows the fixtures on disk rather than
 anything written here. `test_contract_meta.py` runs the same three targets in a
 child process with the gate unset and re-derives the expected count from the
 same fixtures, discovered independently, so a replay that quietly takes the gate
-back skips there and reddens the meta suite; a separate static guard reads the
-source for the marker, for the fixture parameter, and for the guard's
-disappearance.
+back skips there and reddens the meta suite. A separate static guard reads the
+source for the marker, for the gate fixture parameter, and for the guard's
+disappearance; that one is not replay-scoped — it covers every guard listed in
+`PROMOTED_GUARDS`, which since issue #469 includes guards that were never
+replays.
 
 The capture script sends only the fixed synthetic Acme Robotics question and
 source text in `capture.py`. Do not change those inputs to customer, company,

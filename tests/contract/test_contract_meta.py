@@ -4,9 +4,10 @@
 
 They catch ways the harness could rot into a no-op: an unregistered marker (so
 ``-m contract`` silently selects nothing), missing or provenance-less replay
-fixtures, a contract module that stops declaring any contract-marked test (so
-the opt-in run collects zero guards), and a replay issue #270 promoted slipping
-back out of the default suite.
+fixtures, a module in ``CONTRACT_MODULES`` that stops declaring a
+contract-marked test (so the opt-in run loses that module's guards, and collects
+none at all if it was the last), a module that appears here on neither list, and
+a guard the promotion ledger names slipping back out of the default suite.
 
 The session guard in ``conftest.py`` is pinned by spawning a real nested pytest:
 asking for contract tests and skipping every one must exit non-zero, while a run
@@ -21,6 +22,7 @@ import importlib.util
 import inspect
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -59,12 +61,17 @@ LIVE_FIXTURE_NAMES = {
 CONTRACT_MODULES = (
     "test_query_intent_contract.py",
     "test_extraction_contract.py",
-    "test_sync_rc_contract.py",
     "test_openrouter_catalogue_contract.py",
 )
-# A module whose contract tests are *all* gated, so an ungated run executes none
-# of them.
-GATE_ONLY_MODULE = "test_sync_rc_contract.py"
+# A module inside this directory, for the `test_skip_guard_arming_boundary`
+# rows that need one named. Any path under this directory serves:
+# `arms_skip_guard` resolves the argument and compares it against this directory
+# without ever opening it, so the module an argument names need not exist — that
+# is what the row spelling out a module that does not exist is there to pin. The
+# name says no more than "inside the directory" because that is all those rows
+# need; the constant it replaced claimed its module's tests were *all* gated, a
+# property every promotion can take away and no code reads.
+MODULE_INSIDE_DIR = "test_sync_rc_contract.py"
 # A module holding both a contract guard and an ungated control, so a run that
 # deselects the guards still has something to execute.
 MIXED_MODULE = "test_query_intent_contract.py"
@@ -75,18 +82,32 @@ REPLAY_ONLY_TARGETS = (
     "tests/contract/test_query_intent_contract.py::test_claudecli_replay_retains_reason_regression_shape",
     "tests/contract/test_extraction_contract.py::test_replay_founding_relation_normalizes_into_functional_vocab",
 )
-# The same guards, spelled as (module, function) so the promotion #270 made can
-# be asserted at the source level. Listed rather than discovered: a promoted
-# guard that is simply deleted must be as visible as one that is re-gated.
-PROMOTED_REPLAYS = {
+# Guards a promotion moved into the default suite by taking away their marker
+# and their gate, spelled as (module, function) so the promotion can be asserted
+# at the source level. Listed rather than discovered: a promoted guard that is
+# simply deleted must be as visible as one that is re-gated.
+PROMOTED_GUARDS = {
     "test_extraction_contract.py": (
         "test_replay_founding_relation_normalizes_into_functional_vocab",
+        "test_functional_conflict_fires_on_two_dates",
     ),
     "test_query_intent_contract.py": (
         "test_replay_raw_intent_parses_through_production_boundary",
         "test_claudecli_replay_retains_reason_regression_shape",
     ),
+    "test_sync_rc_contract.py": ("test_sync_fails_when_every_chunk_fails",),
 }
+# The promoted guards `REPLAY_ONLY_TARGETS` does not already name, matched on
+# the function name, as node ids. Derived from the ledger above rather than
+# listed again, so a promotion recorded there cannot be left out of the run
+# below by forgetting a second list.
+_REPLAY_NAMES = frozenset(target.rsplit("::", 1)[1] for target in REPLAY_ONLY_TARGETS)
+DETERMINISTIC_PROMOTED_TARGETS = tuple(
+    f"tests/contract/{module_name}::{name}"
+    for module_name in sorted(PROMOTED_GUARDS)
+    for name in PROMOTED_GUARDS[module_name]
+    if name not in _REPLAY_NAMES
+)
 
 
 def test_contract_marker_is_registered(pytestconfig):
@@ -282,6 +303,64 @@ def _contract_test_names(module) -> list[str]:
     return names
 
 
+def test_every_module_in_the_directory_is_accounted_for():
+    """Every test module in this directory but this one is on a list above.
+
+    `CONTRACT_MODULES` is hand-written and no other code reads this directory's
+    listing, so dropping a module from it can look exactly like an accident: the
+    parametrized check below stops running that case, and the module's guards
+    can then be unmarked with nothing going red. What this assertion buys is one
+    half of that. A module dropped from `CONTRACT_MODULES` and *not* recorded in
+    `PROMOTED_GUARDS` fails here — that is the edit this change makes to
+    `test_sync_rc_contract.py`, legal only because the same commit records the
+    promotion.
+
+    The other half it does not buy, and the summary line is the whole claim:
+    `accounted` is a **union**, so a module with a guard named under it in
+    `PROMOTED_GUARDS` satisfies it whether or not `CONTRACT_MODULES` still lists
+    it. Dropping such a module from `CONTRACT_MODULES` and unmarking its
+    remaining guards was measured silent across this directory.
+
+    Closing that does not need the ledger derived from source. A listing rule —
+    a module `CONTRACT_MODULES` does not name must have every `test_*` in it on
+    the ledger — is green on this tree and does fail that edit; both measured.
+    What stops it is the bill it sends the next promotion. Promoting
+    `test_query_intent_contract.py`'s live guard strips that module's only
+    marker, so the parametrized check below forces it out of `CONTRACT_MODULES`,
+    and the rule then demands every remaining `test_*` there be entered under
+    `PROMOTED_GUARDS` — including
+    `test_deterministic_parser_does_not_resolve_the_role_question`, a control
+    that was never gated and so was never promoted. Measured: the rule names
+    that control alongside the guard actually being promoted. Entering it would
+    be a false claim written into a data structure to satisfy an assertion.
+
+    Against the listing on disk the equality does hold both ways: a module that
+    appears without being listed fails, and a listed module that is not on disk
+    fails.
+
+    A module counts as promoted only when `PROMOTED_GUARDS` names at least one
+    guard under it. Keying on membership alone would accept an empty tuple,
+    which also parametrizes
+    :func:`test_promoted_guards_carry_neither_the_marker_nor_the_gate` over no
+    names: one line would then satisfy this assertion and empty that ledger at
+    the same time, and it is the cheapest way to answer the message below.
+    """
+    on_disk = {path.name for path in CONTRACT_DIR.glob("test_*.py")}
+    accounted = (
+        set(CONTRACT_MODULES)
+        | {name for name, guards in PROMOTED_GUARDS.items() if guards}
+        | {Path(__file__).name}
+    )
+    assert on_disk == accounted, (
+        "every test module in tests/contract must either declare a contract "
+        "guard (CONTRACT_MODULES) or name a guard deliberately promoted into "
+        "the default suite (PROMOTED_GUARDS, with the guard spelled out); this "
+        "meta module is the one exception.\n"
+        f"on disk but on neither list: {sorted(on_disk - accounted)}\n"
+        f"listed but not on disk: {sorted(accounted - on_disk)}"
+    )
+
+
 @pytest.mark.parametrize("module_name", CONTRACT_MODULES)
 def test_each_contract_module_is_collectable_and_has_a_guard(module_name):
     path = CONTRACT_DIR / module_name
@@ -349,9 +428,58 @@ def test_replay_targets_run_with_no_gate_at_all():
     )
 
 
-@pytest.mark.parametrize("module_name", sorted(PROMOTED_REPLAYS))
-def test_promoted_replays_carry_neither_the_marker_nor_the_gate(module_name):
-    """#270's promotion must not be undoable without something going red.
+def test_deterministic_promoted_guards_run_with_no_gate_at_all():
+    """A promoted guard whose name no replay target uses must run with no gate.
+
+    :func:`test_promoted_guards_carry_neither_the_marker_nor_the_gate` reads the
+    source, and a guard can skip for a reason the source still reads as correct.
+    ``pytest.importorskip`` in the body is such a reason: the ``def`` says
+    promoted, the run says skipped, and nothing is red. This executes those
+    guards instead of reading them.
+
+    No ``gate_env``, for the same reason as the replay targets above: any gate
+    value would satisfy a ``require_opt_in`` that crept back onto one of these,
+    and the count below would still read full while that guard skipped in every
+    default run.
+
+    The targets come from ``PROMOTED_GUARDS`` minus what
+    ``REPLAY_ONLY_TARGETS`` already covers, and the expected count is the length
+    of the list actually handed to the child, so there is no written number here
+    to go stale. That subtraction can reach empty, and an empty list of node ids
+    is not a smaller run — the assertion below refuses to spawn one, and comes
+    before the ``importorskip`` because an empty ledger is a fact about the tree
+    rather than about the environment.
+
+    ``pytest.importorskip`` guards this test too. ``duckdb`` is a core
+    dependency, and ``tests/test_analytics.py`` records the convention that a
+    missing one is a broken or minimal environment to skip on rather than fail
+    on; the guard checked here follows it. Without the same line, this pin would
+    make ``duckdb`` a requirement for a green default suite — a change to the
+    suite's environmental contract that no promotion asked for.
+    """
+    assert DETERMINISTIC_PROMOTED_TARGETS, (
+        "PROMOTED_GUARDS no longer names a guard that REPLAY_ONLY_TARGETS does "
+        "not also name, so this test has nothing to run. Handing pytest no node "
+        "id at all is not a smaller run: the child would collect the whole suite "
+        "from the repo root, this module included, and re-enter this test."
+    )
+    pytest.importorskip("duckdb")
+    result = _nested_pytest(*DETERMINISTIC_PROMOTED_TARGETS)
+    assert result.returncode == 0, (
+        "the promoted deterministic guards should pass with no contract gate "
+        f"set at all.\n{result.stdout}\n{result.stderr}"
+    )
+    assert f"{len(DETERMINISTIC_PROMOTED_TARGETS)} passed" in result.stdout, (
+        "the run with no gate set did not report "
+        f"{len(DETERMINISTIC_PROMOTED_TARGETS)} passed: either a promoted guard "
+        "did not execute, or one of these node ids now collects more than one "
+        f"test, as `@pytest.mark.parametrize` does.\n{result.stdout}\n{result.stderr}"
+    )
+
+
+@pytest.mark.parametrize("module_name", sorted(PROMOTED_GUARDS))
+def test_promoted_guards_carry_neither_the_marker_nor_the_gate(module_name):
+    """A guard this ledger names still exists, without the marker or the opt-in gate.
 
     Two of the three reversions read for here cost default-suite coverage
     outright: ``require_opt_in`` coming back makes the guard skip there, and
@@ -364,38 +492,63 @@ def test_promoted_replays_carry_neither_the_marker_nor_the_gate(module_name):
     Not every way is source-readable — let ``LIVE_FIXTURES``' glob stop matching
     and the parametrized replays collect nothing while their ``def`` still reads
     correctly here; that one is caught by the count in
-    :func:`test_replay_targets_run_with_no_gate_at_all`.
+    :func:`test_replay_targets_run_with_no_gate_at_all`. A ``pytest.importorskip``
+    inside the body is another: the ``def`` goes on reading as promoted while the
+    guard skips in every default run, which is what the count in
+    :func:`test_deterministic_promoted_guards_run_with_no_gate_at_all` catches.
 
-    ``PROMOTED_REPLAYS`` is written out rather than discovered because of the
-    deletion. A deletion that also tidies away the guard's
-    ``REPLAY_ONLY_TARGETS`` entry and the matching term in
+    Being source-readable is not enough either. The three assertions below are
+    the whole of what this test reads, so an un-promotion it does not read still
+    passes: taking the sibling gate ``require_live_provider`` instead of
+    ``require_opt_in``, and ``@pytest.mark.skip``, both leave it green. Both
+    were measured to be caught only by that same count — which begins with
+    ``pytest.importorskip("duckdb")``, so where duckdb is missing neither is
+    caught at all.
+
+    ``PROMOTED_GUARDS`` is written out rather than discovered because of the
+    deletion: a guard that no longer exists cannot be discovered from source
+    that no longer mentions it. For a guard ``REPLAY_ONLY_TARGETS`` also names,
+    a deletion that tidies away that entry and the matching term in
     :func:`test_replay_targets_run_with_no_gate_at_all`'s count leaves that test
-    green; a second, independent ledger is what still goes red.
+    green, and this is the second, independent ledger that still goes red. For a
+    guard named only here there is no first ledger — this is the record that the
+    promotion happened, and the assertions below are what read the source for
+    its reversal.
 
     The marker coming back does redden the harness elsewhere, through the meta
     tests built on an all-skipped run failing. What those report is a run that
     exited 0 while every guard skipped, or a wrapper that never reached pytest,
     which points a reader at the gate or at issue #273's wrapper. This test says
-    instead that a promoted replay was re-marked.
+    instead that a promoted guard was re-marked.
+
+    What it cannot see is its own record going away: a commit that removes a
+    name from ``PROMOTED_GUARDS`` and re-gates that guard in the same edit
+    leaves this test nothing to read. Whether anything else catches that turns
+    on one thing. A module ``CONTRACT_MODULES`` does not list —
+    ``test_sync_rc_contract.py`` today — has only its ledger entry holding it in
+    :func:`test_every_module_in_the_directory_is_accounted_for`'s union, so
+    removing that entry fails there. A module ``CONTRACT_MODULES`` still lists
+    satisfies that union either way, and the same edit on the DuckDB control was
+    measured to leave the directory green.
     """
     module = _load_module(CONTRACT_DIR / module_name)
     marked = set(_contract_test_names(module))
-    for name in PROMOTED_REPLAYS[module_name]:
+    for name in PROMOTED_GUARDS[module_name]:
         func = getattr(module, name, None)
         assert func is not None, (
-            f"{module_name}::{name} is gone; #270 promoted it into the default "
+            f"{module_name}::{name} is gone; it was promoted into the default "
             "suite, so removing it removes default-suite coverage — drop it from "
-            "PROMOTED_REPLAYS in the same commit if that is deliberate"
+            "PROMOTED_GUARDS in the same commit if that is deliberate"
         )
         assert name not in marked, (
             f"{module_name}::{name} carries @pytest.mark.contract again. It "
             "still runs under `pytest tests`, but the marker puts it back into "
-            "the opt-in accounting #270 took it out of, where it keeps "
+            "the opt-in accounting its promotion took it out of, where it keeps "
             "conftest.py's all-skipped session guard permanently satisfied"
         )
         assert "require_opt_in" not in inspect.signature(func).parameters, (
-            f"{module_name}::{name} takes `require_opt_in` again; #270 promoted "
-            "it into the default suite and that fixture skips it there"
+            f"{module_name}::{name} takes `require_opt_in` again; it was "
+            "promoted into the default suite and that fixture skips it there"
         )
 
 
@@ -403,9 +556,14 @@ def test_targeting_the_contract_directory_fails_when_no_guard_runs():
     """`pytest tests/contract` with no gate must not be a green no-op either.
 
     The marker is not the only way to ask for these guards: naming the directory
-    is the spelling a developer reaches for first. Left unarmed it reports
-    "18 passed, 7 skipped" and exits 0 — the passing meta tests make it look
-    especially green — while not one guard ran.
+    is the spelling a developer reaches for first. What the child below reports
+    is the shape of the false green this arming prevents: gated guards skipping
+    inside a run whose other tests pass, which is what makes an unarmed run look
+    especially green. Both halves of that shape are re-derived from the child's
+    own summary line below rather than quoted here, so no number in this
+    docstring can go stale, and the test stops passing if the run stops being
+    that shape — were every ungated test in this directory to disappear, the
+    guards would still skip but nothing would pass alongside them.
 
     This module is deselected in the child run: it is what spawns the child, so
     running it there would recurse. The directory stays the positional argument,
@@ -419,6 +577,15 @@ def test_targeting_the_contract_directory_fails_when_no_guard_runs():
     )
     assert "no guard executed" in result.stdout, (
         f"the session failed without saying why:\n{result.stdout}\n{result.stderr}"
+    )
+    tallies = {
+        outcome: int(count)
+        for count, outcome in re.findall(r"(\d+) (passed|skipped)", result.stdout)
+    }
+    assert tallies.get("skipped") and tallies.get("passed"), (
+        "this child run is no longer the false-green scenario the docstring "
+        "describes — it needs both skipped guards and passing tests around "
+        f"them, and reported {tallies}.\n{result.stdout}\n{result.stderr}"
     )
 
 
@@ -501,10 +668,11 @@ def test_collect_only_is_not_failed_by_the_skip_guard():
         ("", "not contract", ["tests"], True, "conservative: keyword mentions it; selection count decides"),
         ("", "", ["tests/contract"], True, "the directory is named"),
         ("", "", [str(CONTRACT_DIR)], True, "the directory is named absolutely"),
-        ("", "", [f"tests/contract/{GATE_ONLY_MODULE}"], True, "a module inside it is named"),
-        ("", "", [f"tests/contract/{GATE_ONLY_MODULE}::test_x"], True, "a single test inside it is named"),
+        ("", "", [f"tests/contract/{MODULE_INSIDE_DIR}"], True, "a module inside it is named"),
+        ("", "", [f"tests/contract/{MODULE_INSIDE_DIR}::test_x"], True, "a single test inside it is named"),
+        ("", "", ["tests/contract/test_does_not_exist_at_all.py"], True, "a module inside it need not exist"),
         ("", "", ["tests.contract"], True, "--pyargs names it as a dotted module"),
-        ("", "", [f"tests.contract.{GATE_ONLY_MODULE.removesuffix('.py')}"], True, "--pyargs names a module inside"),
+        ("", "", [f"tests.contract.{MODULE_INSIDE_DIR.removesuffix('.py')}"], True, "--pyargs names a module inside"),
         ("", "", ["tests"], False, "the default suite: a parent, not a path inside"),
         ("", "", [], False, "bare pytest before testpaths expands"),
         ("", "meta", ["tests"], False, "an unrelated keyword"),

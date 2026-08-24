@@ -6,17 +6,15 @@ Deterministic and provider-free — it drives the real chunked-extraction CLI pa
 with a stub client that raises on each chunk, so it needs no live provider. It
 was written against the unfixed code, where the chunked path swallowed every
 per-chunk ``LLMError`` and `cmd_sync` returned 0; ``7b5ec06`` fixed that, and the
-guard passes against the CLI as it stands. It stays behind ``require_opt_in``
-for scope reasons only — nothing here needs a provider, a key or the network —
-so promoting it into the default suite is tracked as issue #469.
+guard passes against the CLI as it stands. Nothing here needs a provider, a key
+or the network, so issue #469 took it out from behind ``require_opt_in`` and it
+runs in the default suite.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-
-import pytest
 
 import verinote.cli as cli
 from verinote.llm.base import ExtractedFact, LLMError
@@ -61,8 +59,7 @@ def _prepare_kb(tmp_path, monkeypatch) -> Path:
     return src
 
 
-@pytest.mark.contract
-def test_sync_fails_when_every_chunk_fails(tmp_path, monkeypatch, capsys, require_opt_in):
+def test_sync_fails_when_every_chunk_fails(tmp_path, monkeypatch, capsys):
     reason = _fixture()["failure_reason"]
     assert reason, "fixture is missing the recorded chunk failure reason"
     _prepare_kb(tmp_path, monkeypatch)

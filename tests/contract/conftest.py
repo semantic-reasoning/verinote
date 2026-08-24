@@ -23,15 +23,15 @@ Two gates share it:
   never skips — a provider you asked to exercise but that cannot run is a real
   failure, not an absence of coverage (issue #234).
 * :func:`require_opt_in` gates the guards that build no provider client and are
-  nonetheless kept out of the default suite: the #239 sync exit-code guard, the
-  DuckDB functional-conflict positive control
-  (``test_extraction_contract.py::test_functional_conflict_fires_on_two_dates``),
-  and the two OpenRouter catalogue guards. What they share is that none of them
-  needs a provider client or a key — not that they are offline, since the
-  OpenRouter pair reads a live, unauthenticated HTTP endpoint. The replay guards
-  were on this list until issue #270 moved them into the default suite, on the
-  ground that a captured response parsed off disk is as deterministic there as it
-  is here; issue #469 asks the same question of the sync and DuckDB guards.
+  nonetheless kept out of the default suite. Building no client and needing no
+  key is not the same as being offline — a guard can sit on this gate because it
+  reads a live, unauthenticated HTTP endpoint. Who is on it changes as guards
+  are promoted off it: the replay guards left in issue #270, on the ground that
+  a captured response parsed off disk is as deterministic in the default suite
+  as it is here, and the #239 sync exit-code guard and the DuckDB
+  functional-conflict positive control left in issue #469, neither of them
+  touching a provider, a key or the network. Read the fixture's callers for who
+  is on it now; the list that used to stand here is what went stale in #469.
 
 :func:`pytest_sessionfinish` closes the harness's worst failure mode: asking for
 contract tests and getting a green run that exercised nothing. Whenever a run
@@ -178,8 +178,9 @@ def arms_skip_guard(markexpr: str, keyword: str, args: list[str], invocation_dir
     Three spellings mean "I want the contract guards", and each must arm the
     skipped-run guard: naming the marker (`-m contract`), naming a path in this
     directory (`pytest tests/contract`), and naming it by keyword
-    (`pytest -k contract`). Miss any one and it reports "N passed, 7 skipped",
-    exits 0, and guards nothing — the false green this harness exists to prevent.
+    (`pytest -k contract`). Miss any one and it reports the guards as skipped
+    inside an otherwise passing run, exits 0, and guards nothing — the false
+    green this harness exists to prevent.
 
     `-k contract` selects everything here for the same reason the guard once
     mis-counted `report.keywords`: this directory is a package *named* contract,
