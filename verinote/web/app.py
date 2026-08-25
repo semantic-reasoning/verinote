@@ -2767,16 +2767,67 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     ):
         store = _active_store()
         active_filter = _active_review_filter(filter)
-        page_data = _review_page(store, active_filter, page, page_size, sort)
-        recommendations = accept_recommendations_for(
-            store, [int(f["id"]) for f in page_data.rows]
-        )
-        # `/review` itself is NOT guarded here: `_review_page` and
-        # `accept_recommendations_for` above both read the alias file and both
-        # still raise, so a broken file 500s this route before it reaches this
-        # line. What this call must not do is assert `alias_error=None` — a
-        # claim about a file nothing on this path has read.
         alias_error = _relation_alias_failure(store)
+        if alias_error is not None and active_filter != "needs-human-decision":
+            # #570. Every filter but `needs-human-decision` — `unsupported`,
+            # `single-source`, `corroborated`, `conflicted` — selects facts BY the value that
+            # could not be computed: `_review_page` runs `fact_trust_summary`
+            # over the whole queue and keeps the ids whose labels match. So the
+            # row set, the total and the pager are themselves alias-derived, not
+            # just the badges. There is no degraded list to show. Falling back
+            # to the default filter would answer a question the user did not
+            # ask; rendering an empty one would be a false statement about which
+            # facts carry this label.
+            #
+            # This RETURNS rather than setting a flag the code below reads. With
+            # `page_data = None` the `[int(f["id"]) for f in page_data.rows]`
+            # argument to `accept_recommendations_for` raises `AttributeError` —
+            # a 500 with nothing to do with the alias file.
+            #
+            # The filter nav is how the user gets back to a page that works, so
+            # it survives — and its hrefs must carry the sort and page size the
+            # user already chose, normalized exactly as a healthy render
+            # normalizes them. `ReviewQueuePage.from_rows` is that normalizer and
+            # it is pure arithmetic over the query string; re-deriving the two
+            # values here would let this nav drift from the healthy one.
+            nav = ReviewQueuePage.from_rows(
+                rows=[], total=0, page=page, page_size=page_size, sort=sort
+            )
+            return templates.TemplateResponse(
+                request,
+                "review.html",
+                {
+                    "queue": None,
+                    "active_filter": active_filter,
+                    "filters": _review_filter_links(
+                        active_filter, nav.sort, nav.page_size
+                    ),
+                    "pager": None,
+                    "alias_error": alias_error,
+                },
+            )
+        page_data = _review_page(store, active_filter, page, page_size, sort)
+        # #570. On the default filter the ROWS are real: `store.review_queue_page`
+        # reads no policy file. Measured by spying every module that binds
+        # `store_relation_aliases` — a healthy `/review` reads it from
+        # `_relation_alias_failure` (this route's own guard, above),
+        # `acceptance._engine`, `trust.fact_trust_summary` and
+        # `corroboration.store_single_valued_conflicts`, and from nowhere else.
+        # The readers are named rather than counted on purpose: the count moves
+        # whenever a guard is added — the guard above is itself the fourth — and
+        # what this comment needs to say is that the QUEUE QUERY is not among
+        # them. So the queue is the KB's own and only its trust signals are
+        # withheld.
+        # `accept_recommendations_for` is the opposite: it builds its engine off
+        # the alias file before it looks at a single id, so it raises even for an
+        # empty id list. Skipping it and passing `{}` is what keeps this route up.
+        recommendations = (
+            {}
+            if alias_error is not None
+            else accept_recommendations_for(
+                store, [int(f["id"]) for f in page_data.rows]
+            )
+        )
         rows = [
             _fact_row_context(f, recommendations, alias_error=alias_error)
             for f in page_data.rows
@@ -2791,15 +2842,28 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                     active_filter, page_data.sort, page_data.page_size
                 ),
                 "pager": _review_pager(active_filter, page_data),
+                "alias_error": alias_error,
             },
         )
 
     @app.get("/workbench", response_class=HTMLResponse)
     def workbench(request: Request):
+        # #570. `trust_workbench` reads the alias file in its first statement,
+        # and its whole return value is the page. `None` rather than an empty
+        # workbench: `{% if workbench.corroborated %}` is falsy either way, so an
+        # empty value renders "No facts are corroborated by multiple distinct
+        # sources." and "No source-backed single-valued conflicts." — two claims
+        # about a KB nothing analysed. Only `None` lets the template tell "not
+        # computed" from "computed, and empty".
+        store = _active_store()
+        alias_error = _relation_alias_failure(store)
         return templates.TemplateResponse(
             request,
             "workbench.html",
-            {"workbench": trust_workbench(_active_store())},
+            {
+                "workbench": None if alias_error is not None else trust_workbench(store),
+                "alias_error": alias_error,
+            },
         )
 
     @app.post("/facts/{fact_id}/toggle", response_class=HTMLResponse)

@@ -5,6 +5,21 @@
 <p class="muted">Facts awaiting the human gate (<code>candidate</code> / <code>needs_review</code>).
   Toggle promotes to <code>confirmed</code>; accept/reject decide directly.</p>
 
+{# #570. A GUARD, not decoration. On the trust-label-filter pages the queue is
+   `None`, so the `{% include %}` below never runs and the fact-row fragment's own
+   reason line renders nowhere -- this banner is the only thing on the page that
+   says why. Deleting it leaves a 200 that explains nothing. #}
+{% if alias_error %}
+<p class="error" role="alert">{{ alias_error }} Trust signals and accept recommendations on this
+  page are withheld, because they would have been computed under different alias rules than this
+  KB's file specifies. Fix it on <a href="/settings">Settings</a>.</p>
+{% endif %}
+
+{# The filter nav stays on every degraded render: it is built from static labels,
+   reads nothing alias-derived, and is how the user gets back to a queue that
+   works. It also sits above every guard below, which is what lets a test assert
+   the route survived without that assertion being reddened by a template
+   deletion. #}
 <nav class="filters" aria-label="review filters">
   {% for item in filters %}
     <a class="badge {% if item.active %}active{% endif %}"
@@ -13,6 +28,26 @@
   {% endfor %}
 </nav>
 
+{# #570. Everything in this block reads `pager`, which is `None` when the queue
+   could not be built. Jinja does NOT raise on that: `{{ pager.start }}` renders
+   '' and `{% for item in pager.pages %}` renders nothing, so without this guard
+   the page comes back 200 saying "Showing 0 of 0 review facts" over empty
+   Sort/Page-size selects and greyed Previous/Next -- three statements about a
+   queue nobody counted, none of them visible to a status assertion.
+
+   The block renders nothing of its own when suppressed. The sentence explaining
+   why belongs to the queue block below, which is what it is about; saying it
+   here too would print it twice and, worse, would leave it present when either
+   block alone is deleted.
+
+   ONE GUARD SPANNING TWO SITES -- this block, and the two
+   `{% if pager %}{{ review_pages(pager) }}{% endif %}` calls further down. They
+   cannot be one contiguous `{% if %}` because the `review_pages` macro
+   definition sits between them. Both halves are load-bearing and the test
+   asserts a string from each, so neither deletion is silent; but no test tells
+   them apart, and they are recorded as one guard rather than two the matrix
+   would show as indistinguishable. #}
+{% if pager %}
 <form class="review-toolbar" action="/review" method="get">
   <input type="hidden" name="filter" value="{{ active_filter }}">
   <input type="hidden" name="page" value="1">
@@ -42,6 +77,7 @@
     Showing 0 of 0 review facts
   {% endif %}
 </div>
+{% endif %}
 
 {% macro review_pages(pager) -%}
 <nav class="pagination" aria-label="Review pages">
@@ -67,9 +103,20 @@
 </nav>
 {%- endmacro %}
 
-{{ review_pages(pager) }}
+{# Part of the same guard as the toolbar above: `review_pages(None)` renders a
+   pagination nav with greyed Previous/Next and no page items -- controls for a
+   queue that was never built. #}
+{% if pager %}{{ review_pages(pager) }}{% endif %}
 
-{% if queue %}
+{% if queue is none %}
+{# #570, and this sentence belongs to THIS block and to nothing else. It is a
+   statement about the queue, so it lives where the queue would be. Putting it in
+   the pager block as well would print it twice and would leave it on the page
+   when either block alone is deleted -- at which point neither block could be
+   told from the other. #}
+<p class="muted">This filter selects facts by trust label, which is not computed — see the
+  notice above. <a href="/review">Show the facts awaiting a decision</a> instead.</p>
+{% elif queue %}
 <table class="facts">
   <thead>
     <tr><th>Fact</th><th>Trust signals</th><th>Evidence</th><th>Decision</th></tr>
@@ -96,5 +143,5 @@
   {% endif %}
 </div>
 {% endif %}
-{{ review_pages(pager) }}
+{% if pager %}{{ review_pages(pager) }}{% endif %}
 {% endblock %}
