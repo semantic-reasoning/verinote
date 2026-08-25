@@ -62,20 +62,44 @@ and the clause is `except Exception`, matching this file's own house form at
 `save_prompt_route`/`reset_prompt_route`, not `except OSError`
 (`test_settings_save_catches_a_non_oserror_write_failure`).
 
-SCOPE. Only the three routes issue #555 names: `/`, `/sources`, `/settings`.
-`/review` and `/workbench` have the same defect (and `/review` has a second,
-independent alias-read site the naive fix misses — see plan555.md M10 and
-critique555.md BLOCK-1, which also found `POST /facts/{id}/{accept,reject,toggle}`
-and `GET /facts/{id}/{row,provenance}` broken the same way) but are deliberately
-NOT touched here; they are registered as a follow-up issue instead of being
-silently dropped. `store_typed_relations` (`policy/typed-relations.md`) is also
-untouched — `_source_trust_rollup` still calls it alongside
-`store_relation_aliases`, so `/sources` can still 500 on a broken
-`typed-relations.md` after this change. The dashboard's degraded queue rows
-still link to `/review` and `/workbench` for their OTHER (non-degraded) rows,
-and those two routes can still 500 under a broken alias file (#570, also out of
-scope) -- `test_dashboard_offers_no_open_button_into_a_not_computed_queue_row`
-pins that the degraded rows themselves do not offer that button.
+SCOPE. Two issues' worth of routes live here, and the seam matters when reading
+a failure. #555 covers `/`, `/sources` and `/settings`. #570 adds the fact-row
+surface, in the Unit D section at the bottom: `GET /facts/{id}/row`,
+`GET /facts/{id}/provenance`, `POST /facts/{id}/{toggle,accept,reject,amend}`
+and `POST /sources/{id}/accept-all`. That last one is the violation #555 itself
+shipped: `/sources` has rendered its `Accept all` form at 200 under both broken
+inputs since `ef4b404`, over a POST that 500s whenever
+`auto_accept_recommendations` is on — a default of False is the only reason a
+single-configuration sweep read it as clean.
+
+`/review` and `/workbench` are NOT covered here and are measured to 500 under
+both broken inputs on this commit. `/review` in particular reaches more
+alias-read sites than its traceback names, and for every filter but the default
+the row set itself is alias-derived, since those filters select facts BY trust
+label (#570). That is also why
+`test_dashboard_offers_no_open_button_into_a_not_computed_queue_row` still pins
+the suppressed Open buttons: the `/review?filter=…` and `/workbench` targets it
+names really do still crash under this same file.
+
+`store_typed_relations` (`policy/typed-relations.md`) is untouched by both
+issues, and its blast radius grew with #570 rather than staying put:
+`_source_trust_rollup` calls it alongside `store_relation_aliases`, and so does
+`fact_trust_summary` on the line after ITS alias read. So `/sources` and every
+fact-row route above can still 500 on a broken `typed-relations.md`. Tracked as
+#585.
+
+Do not read that as "the same endpoints, one file over", and do not reuse this
+file's route list to guard it: the two files' affected sets differ in BOTH
+directions, and #585 forbids copying #570's. Measured here, healthy alias file
+plus a cp949 `typed-relations.md`: `/` and `/sources` — guarded above for the
+ALIAS file since #555 — return 500, while `/settings` stays 200. #585 carries
+the enumeration; this paragraph deliberately carries no count, because the
+number is #585's to keep current.
+
+(#571, which an earlier draft of this paragraph cited for the typed-relations
+hole, is a different defect in a different file: an unusable PATH at
+`policy/relation-aliases.md` — a directory, a symlink loop — read as an absent
+one.)
 """
 
 import stat
@@ -666,3 +690,594 @@ def test_a_missing_alias_file_is_not_treated_as_a_failure(absent_client):
         assert r.status_code == 200
         assert 'class="error"' not in r.text
         assert 'class="warn"' not in r.text
+
+
+# ---------------------------------------------------------------------------
+# Unit D (#570) -- the fact-row surface: GET /facts/{id}/row,
+# GET /facts/{id}/provenance, POST /facts/{id}/{toggle,accept,reject,amend}
+# and POST /sources/{id}/accept-all.
+# ---------------------------------------------------------------------------
+
+# The row's "not computed" marker, and the verdict it must NOT borrow.
+# `trust unavailable` is a MEASURED claim about the fact (it has no trust
+# summary); the marker below means nobody measured. Keeping them distinct is
+# what stops a broken alias file from being reported as a property of the fact.
+ROW_NOT_COMPUTED = '<span class="badge muted">trust not computed</span>'
+ROW_TRUST_UNAVAILABLE = "trust unavailable"
+EVIDENCE_NOT_COMPUTED = '<span class="muted">not computed</span>'
+NO_EVIDENCE_ANCHOR = "No evidence anchor"
+# One of this fixture's `recommendation.reasons` caution chips -- the
+# `{% for reason in recommendation.reasons[:2] %}` loop in `fact_row.html`,
+# named by symbol rather than by line because this same diff moves that file.
+# It is the only string on a fact row that moves when the accept
+# RECOMMENDATION is withheld but the trust summary is not.
+RECOMMENDATION_REASON = "insufficient distinct source support"
+DOSSIER_NOT_COMPUTED = "Not computed — see the alias-file notice above."
+# The lifecycle timeline's own wording. Deliberately not the shared marker:
+# it is the only withheld section with no distinctive sentence, so under the
+# shared one it could be pinned only by counting occurrences.
+TIMELINE_NOT_COMPUTED = (
+    "Extraction and review events not computed — see the alias-file notice above."
+)
+
+# (alias bytes, message that must be present, message that must be absent).
+# The "absent" half is #555's G1 pin, not decoration: deleting the narrow
+# `except CorroborationPolicyError` leaves every status at 200 and only swaps
+# the bare parser message for the "could not be read" wrapper.
+BROKEN_INPUTS = [
+    pytest.param(MALFORMED_BYTES, PARSER_MSG, NAMED, id="malformed"),
+    pytest.param(CP949_BYTES, NAMED, PARSER_MSG, id="cp949"),
+]
+
+AMEND_FORM = {
+    # `*_kind="string"` deliberately: `_fact_input` accepts only "string" and
+    # "term" and rejects anything else at `app.py` before a line of
+    # alias-dependent code runs, so a form sending `kind="entity"` measures a
+    # 400 and proves nothing about this guard. A7 asserts its own healthy
+    # baseline is 200 for the same reason.
+    "subject": "C",
+    "relation": "소속",
+    "object": "D2",
+    "subject_kind": "string",
+    "relation_kind": "string",
+    "object_kind": "string",
+    "note": "",
+}
+
+
+def _done_job(store, source_id: int) -> int:
+    """A completed extraction job, so its source's facts clear the
+    `source_analysis_incomplete` bar in `accept_recommendations`."""
+    job_id = store.create_extraction_job(
+        source_id=source_id, provider="fake", model="m", total_chunks=1
+    )
+    chunk_id = store.add_source_chunks(
+        job_id=job_id, source_id=source_id, chunks=["body"]
+    )[0]
+    store.mark_extraction_job_running(job_id)
+    store.mark_chunk_running(chunk_id)
+    store.mark_chunk_done(chunk_id)
+    store.finish_extraction_job(job_id)
+    return job_id
+
+
+def _auto_accept_client(tmp_path: Path, alias_bytes: bytes | None):
+    """A KB on which the auto-accept rule really promotes a fact, and promotes it
+    BECAUSE of the user's own alias file.
+
+    `_open_app`'s KB cannot be used here, and not for want of a config flag:
+    `apply_auto_accept_recommendations` promotes only review-tier rows
+    (`accept_recommendations` iterates `store.facts(statuses=review_statuses())`),
+    and that KB's only non-review fact is `confirmed` — engine tier, which the
+    rule never touches. Its one review-tier fact is the one the request decides,
+    which the rule excludes. So "the other fact was not promoted" holds there on
+    a healthy file too, and asserts nothing.
+
+    Here fact 2 (`A 소속 B`, needs_review, `a.txt`) is corroborated by fact 1
+    (`A member_of B`, confirmed, `b.txt`) ONLY because `소속 -> member_of` makes
+    them one canonical triple. Measured: healthy -> fact 2 becomes `accepted`;
+    with no alias file at all -> it stays `needs_review`. Both sources carry a
+    completed job or the recommendation is blocked by
+    `source_analysis_incomplete` before corroboration is even weighed.
+    """
+    root = _make_kb(tmp_path)
+    cfg = Config(
+        root=root,
+        db_path=root / "kb.sqlite",
+        provider="anthropic",
+        model="m",
+        api_key=None,
+        base_url=None,
+        auto_accept_recommendations=True,
+    )
+    app = create_app(cfg)
+    store = app.state.store
+    source_a = store.add_source("sources/a.txt")
+    job_a = _done_job(store, source_a)
+    source_b = store.add_source("sources/b.txt")
+    job_b = _done_job(store, source_b)
+    store.add_fact(
+        "A", "member_of", "B", status="confirmed", confidence=0.9,
+        source_id=source_b, job_id=job_b,
+    )
+    store.add_fact(
+        "A", "소속", "B", status="needs_review", confidence=0.5,
+        source_id=source_a, job_id=job_a,
+    )
+    store.add_fact(
+        "C", "소속", "D", status="needs_review", confidence=0.5,
+        source_id=source_a, job_id=job_a,
+    )
+    if alias_bytes is not None:
+        path = root / RELATION_ALIASES_RELPATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(alias_bytes)
+    return TestClient(app, raise_server_exceptions=False), app
+
+
+# --- GET /facts/{id}/row ---------------------------------------------------
+
+
+def test_a_degraded_fact_row_still_renders_the_fact_and_its_actions(malformed_client):
+    """Withholding trust must not withhold the fact (#570 AC-2).
+
+    This is the route guard's own test: `_fact_row_context`'s deletion 500s the
+    request, which has no body at all, while either TEMPLATE branch's deletion
+    leaves this green — the row is still 200 and still carries every string
+    below. toggle/accept/reject/edit are pure store writes and work fine under a
+    broken alias file, so removing them (the shape #555 used for the dashboard's
+    Open button, where the TARGET was down) would be the wrong fix here.
+    """
+    r = malformed_client.get("/facts/2/row")
+    assert r.status_code == 200
+    assert 'id="fact-2"' in r.text
+    assert '<span class="subj term-string">&#34;C&#34;' in r.text
+    assert '<span class="obj term-string">&#34;D&#34;' in r.text
+    assert '<span class="badge badge-needs_review verdict">needs_review</span>' in r.text
+    for control in (
+        'hx-post="/facts/2/toggle"',
+        'hx-post="/facts/2/accept"',
+        'hx-post="/facts/2/reject"',
+        'hx-get="/facts/2/edit"',
+        'href="/facts/2/provenance"',
+    ):
+        assert control in r.text
+
+
+def test_fact_row_survives_a_malformed_alias_file_and_keeps_the_parser_message(
+    malformed_client,
+):
+    r = malformed_client.get("/facts/2/row")
+    assert r.status_code == 200
+    assert PARSER_MSG in r.text
+    assert NAMED not in r.text
+
+
+def test_fact_row_survives_a_cp949_alias_file_and_names_the_file(cp949_client):
+    r = cp949_client.get("/facts/2/row")
+    assert r.status_code == 200
+    assert NAMED in r.text
+
+
+def test_the_signals_cell_withholds_trust_rather_than_calling_it_unavailable(
+    malformed_client,
+):
+    """The signals-cell branch's own test. Reverting it to `{% if trust %}` sends
+    `trust=None` to the existing `{% else %}`, which prints the
+    `trust unavailable` verdict — a healthy KB's sentence for a fact that has no
+    trust summary — over a fact whose summary was never computed. The evidence
+    cell's branch is not involved either way.
+
+    ASSERTED ON `GET /facts/{id}/row`, AND THAT IS LOAD-BEARING. `review.html`
+    includes this same partial, so the identical branch also sits behind
+    `/review`'s own route guard. Asserting it there would give this test a
+    SECOND outer guard whose deletion reddens it, and the signals cell would
+    stop being independently falsifiable. Do not move it to `/review` for
+    convenience.
+    """
+    r = malformed_client.get("/facts/2/row")
+    assert ROW_NOT_COMPUTED in r.text
+    assert ROW_TRUST_UNAVAILABLE not in r.text
+
+
+def test_the_evidence_cell_claims_no_anchor_it_did_not_look_for(malformed_client):
+    """The evidence-cell branch's own test, and it is a different cell from the
+    one above: the anchor is read off `trust.evidence`, so with no summary the
+    existing `{% else %}` asserts `No evidence anchor` about a fact nobody
+    checked.
+
+    On `GET /facts/{id}/row` for the same reason as the test above: this partial
+    is also included by `review.html`, and asserting there would put a second
+    outer guard behind this one.
+    """
+    r = malformed_client.get("/facts/2/row")
+    assert NO_EVIDENCE_ANCHOR not in r.text
+    assert EVIDENCE_NOT_COMPUTED in r.text
+
+
+def test_a_healthy_alias_file_still_shows_the_fact_row_trust_badges(healthy_client):
+    """Anti-vacuity control for the degraded fact-row tests above: the identity
+    test, both message tests, and the signals- and evidence-cell tests.
+
+    The last assertion is what makes the evidence-cell test non-vacuous:
+    `No evidence anchor` is present on a HEALTHY row for this fixture's
+    anchor-less fact (measured), so its absence under a broken file is a real
+    change and not a string that was never there.
+    """
+    r = healthy_client.get("/facts/2/row")
+    assert r.status_code == 200
+    assert ROW_NOT_COMPUTED not in r.text
+    assert EVIDENCE_NOT_COMPUTED not in r.text
+    assert PARSER_MSG not in r.text
+    assert NAMED not in r.text
+    assert '<span class="badge chip">unsupported</span>' in r.text
+    assert NO_EVIDENCE_ANCHOR in r.text
+
+
+def test_a_healthy_fact_row_still_carries_its_accept_recommendation_reasons(
+    healthy_client,
+):
+    """The fact-row guard's RECOMMENDATION half, on the axis its deletion test
+    cannot reach.
+
+    That guard does two things when the alias file is broken: it withholds
+    `trust` AND it withholds `recommendation`. Over-applying the second —
+    setting `recommendation = None` unconditionally, so recommendations are
+    never computed at all — is invisible to every other test in this file. The
+    healthy control above pins the `unsupported` chip, which comes off
+    `trust.trust_labels`, not off the recommendation; the degraded tests pin
+    strings that are absent either way.
+
+    NOT a duplicate of the equivalent `/review` control. The two pages take
+    their recommendations from DIFFERENT calls — `/review` from
+    `accept_recommendations_for`, this row from the `accept_recommendations`
+    fallback inside `_fact_row_context` — so each mutation is invisible to the
+    other page's test. Measured on this healthy fixture:
+
+        build                              /review  /facts/2/row
+        correct                            present  present
+        accept_recommendations_for -> {}   ABSENT   present
+        accept_recommendations     -> {}   present  ABSENT
+        fact_trust_summary         -> None ABSENT   ABSENT
+
+    Scope of what this string proves, because it is narrower than the test name
+    suggests: the caution chips are rendered inside the `{% elif trust %}` arm
+    of `fact_row.html`, so its presence means trust AND recommendations were
+    computed. That holds on a healthy fixture and is why one assertion can carry
+    both. A refactor that moves those chips out of that arm drops the trust half
+    of the implication without reddening anything — at which point the trust
+    half needs a pin of its own.
+    """
+    r = healthy_client.get("/facts/2/row")
+    assert r.status_code == 200
+    assert RECOMMENDATION_REASON in r.text
+
+
+# --- the decision POSTs ----------------------------------------------------
+
+
+@pytest.mark.parametrize("alias_bytes, present, absent", BROKEN_INPUTS)
+def test_accept_survives_a_broken_alias_file(tmp_path, alias_bytes, present, absent):
+    client = _client(tmp_path, alias_bytes)
+    r = client.post("/facts/2/accept")
+    assert r.status_code == 200
+    assert present in r.text
+    assert absent not in r.text
+
+
+@pytest.mark.parametrize("route", ["toggle", "reject"])
+@pytest.mark.parametrize("alias_bytes, present, absent", BROKEN_INPUTS)
+def test_toggle_and_reject_survive_a_broken_alias_file(
+    tmp_path, route, alias_bytes, present, absent
+):
+    client = _client(tmp_path, alias_bytes)
+    r = client.post(f"/facts/2/{route}")
+    assert r.status_code == 200
+    assert present in r.text
+    assert absent not in r.text
+
+
+@pytest.mark.parametrize("alias_bytes, present, absent", BROKEN_INPUTS)
+def test_amend_survives_a_broken_alias_file(
+    tmp_path, healthy_client, alias_bytes, present, absent
+):
+    """`POST /facts/{id}/amend` — the endpoint #570's original table omits. It
+    reaches the same `_fact_row_context` -> `fact_trust_summary` stack as
+    accept/reject/toggle, through `_row_after_decision`.
+
+    The healthy baseline is asserted here, not assumed: this form 400s on a
+    rejected kind before any alias-dependent code runs, and a 400 baseline would
+    make the broken-input assertion below measure an early return rather than
+    this guard.
+    """
+    baseline = healthy_client.post("/facts/2/amend", data=AMEND_FORM)
+    assert baseline.status_code == 200
+
+    # `healthy_client` already built a KB under `tmp_path`; the broken one needs
+    # its own root.
+    broken_root = tmp_path / "broken"
+    broken_root.mkdir()
+    client = _client(broken_root, alias_bytes)
+    r = client.post("/facts/2/amend", data=AMEND_FORM)
+    assert r.status_code == 200
+    assert present in r.text
+    assert absent not in r.text
+
+
+def _superseded_amend(tmp_path: Path, monkeypatch, alias_bytes: bytes):
+    """Drive `amend_fact`'s `except TerminalFactError` exit. See the two tests
+    below for what this patch neutralises and what it therefore costs."""
+    client = _client(tmp_path, alias_bytes)
+    assert client.post("/facts/2/reject").status_code == 200
+    monkeypatch.setattr(
+        "verinote.web.app.is_actionable_fact_status", lambda _status: True
+    )
+    return client.post("/facts/2/amend", data=AMEND_FORM)
+
+
+@pytest.mark.parametrize("alias_bytes, present, absent", BROKEN_INPUTS)
+def test_a_superseded_amend_also_survives_a_broken_alias_file(
+    tmp_path, monkeypatch, alias_bytes, present, absent
+):
+    """`amend_fact` has TWO row-rendering exits and this one is not the success
+    path: `except TerminalFactError` re-renders the read-only row directly
+    through `_row`, bypassing `_row_after_decision` entirely. Guarding only the
+    success path leaves this exit 500ing while the test above passes.
+
+    HOW THIS REACHES THAT EXIT, AND WHAT THE PATCH COSTS. In production the exit
+    is reachable only through a TOCTOU window: a reject landing between
+    `amend_fact`'s `_actionable_fact_or_error` pre-check and its
+    `store.amend_fact` call. It is NOT reachable from a stale edit form — the
+    pre-check reads the fact's CURRENT status on this request, so a form left
+    open while someone else rejects the fact just gets a plain 400 (measured:
+    reject-then-amend is 400 on every input, healthy included).
+
+    Simulating that window by monkeypatching the module-level
+    `is_actionable_fact_status` neutralises MORE than the pre-check.
+    `verinote.web.app` binds that name once and TWO callers read it: the
+    pre-check, and `_fact_row_context`'s own `actionable` computation. So the
+    row rendered below carries a `superseded` badge together with live
+    accept/reject/toggle buttons and no `rejected — no further action` text — a
+    combination the real race cannot produce, because there `_fact_row_context`
+    re-reads the row, sees `superseded`, and renders the read-only form. Both
+    sides of that were measured.
+
+    Which is why every assertion here is `actionable`-INDEPENDENT: the status,
+    the alias message, the row id, the withheld-trust marker. Do not add an
+    assertion about the action buttons or the no-further-action text; it would
+    pin a state production cannot reach. Only the `TerminalFactError` is
+    genuine — raised by the real store on a real superseded row, with the
+    handler and the row render running unmodified.
+    """
+    r = _superseded_amend(tmp_path, monkeypatch, alias_bytes)
+    assert r.status_code == 200
+    assert present in r.text
+    assert absent not in r.text
+    assert ROW_NOT_COMPUTED in r.text
+
+
+@pytest.mark.parametrize("alias_bytes, present, absent", BROKEN_INPUTS)
+def test_a_superseded_amend_still_renders_a_row_at_all(
+    tmp_path, monkeypatch, alias_bytes, present, absent
+):
+    """The SEPARATING test for `amend_fact`'s second-exit threading, and the
+    reason it is split off from the message test above.
+
+    Status and row identity are the only observations of this exit that survive
+    a template guard's deletion. Delete the signals-cell branch and this request
+    is still 200 with `id="fact-2"`, losing only the marker and the parser
+    message — so the message test above is reddened by a TEMPLATE guard and
+    cannot be this route-level guard's own evidence. This one can.
+
+    The reddening population, ENUMERATED over every deletable unit in this
+    change rather than quantified over an unnamed set. Exactly three deletions
+    redden this test. Two 500 the amend response itself: this exit's own
+    `alias_error` read, and `_fact_row_context`'s withholding branch, which
+    every fact-row render passes through. The third is `_row_after_decision`'s
+    read, and it fails EARLIER than the exit under test — `_superseded_amend`'s
+    `assert client.post(...reject...).status_code == 200` precondition 500s
+    before the amend is ever sent. Every template guard in this change leaves it
+    green — the fact-row signals and evidence cells, and on `provenance.html`
+    the alias banner and the Trust-summary, Evidence-summary, Conflict, Timeline
+    and Source-evidence branches. Named, not counted: splitting one more dossier
+    section, which is exactly what this change did to the timeline, would make a
+    bare number here wrong without reddening anything. That green-under-all
+    property is the one the split exists for.
+
+    Keep the two assertions below to status and identity. Adding the message or
+    the marker here would merge this test back into the one above and undo the
+    split.
+    """
+    del present, absent
+    r = _superseded_amend(tmp_path, monkeypatch, alias_bytes)
+    assert r.status_code == 200
+    assert 'id="fact-2"' in r.text
+
+
+# --- GET /facts/{id}/provenance -------------------------------------------
+
+
+def test_provenance_survives_a_malformed_alias_file_and_keeps_the_parser_message(
+    malformed_client,
+):
+    r = malformed_client.get("/facts/2/provenance")
+    assert r.status_code == 200
+    assert PARSER_MSG in r.text
+    assert NAMED not in r.text
+
+
+def test_provenance_survives_a_cp949_alias_file_and_names_the_file(cp949_client):
+    r = cp949_client.get("/facts/2/provenance")
+    assert r.status_code == 200
+    assert NAMED in r.text
+
+
+def test_provenance_withholds_the_dossier_but_keeps_the_fact_identity(
+    malformed_client,
+):
+    """`provenance` calls `fact_trust_summary` DIRECTLY, so no `alias_error`
+    threaded through `_fact_row_context` reaches it (#570 trap 1) — and its
+    route guard and template branches are ONE guard, because
+    `{{ trust.support.source_count }}` is a two-deep attribute of `None` and
+    Jinja raises `UndefinedError` on that: withholding `trust` without the
+    template branches swaps one 500 for another.
+
+    The three sentences asserted absent are not `trust.` references — they are
+    `{% else %}` prose that renders happily on `trust=None` and states, in
+    order, that a conflict search found nothing, that no evidence anchors are
+    recorded, and that the fact was seeded or hand-entered. None of the three
+    was measured on this KB.
+    """
+    r = malformed_client.get("/facts/2/provenance")
+    assert "canonical relation" not in r.text
+    assert '<span class="badge chip">unsupported</span>' not in r.text
+    # One marker per withheld section that shares the standard wording: trust
+    # summary, evidence summary, conflict summary, source evidence. The
+    # timeline's withheld middle has its own sentence and its own test.
+    assert r.text.count(DOSSIER_NOT_COMPUTED) == 4
+    # The identity is not withheld with the dossier.
+    assert "Trust dossier — fact #2" in r.text
+    assert '<span class="subj term-string">&#34;C&#34;' in r.text
+    assert '<span class="obj term-string">&#34;D&#34;' in r.text
+    assert '<span class="badge badge-needs_review">needs_review</span>' in r.text
+
+
+# The sections below are asserted one test each, not folded into the test
+# above. Each is a separately deletable `{% if %}` in `provenance.html`, and
+# with all of them asserted in one test every one of those deletions reddens
+# the same single test — which makes them indistinguishable in the
+# falsifiability matrix even though each is a place the code can get this wrong
+# on its own. No count here on purpose: `provenance.html` carries guards beyond
+# these sections (the alias banner, the Trust-summary wrapper), so a bare number
+# would be both wrong now and staler after the next split.
+
+
+def test_the_dossier_does_not_deny_a_conflict_it_never_searched_for(
+    malformed_client,
+):
+    """`{% if trust.conflict %}`'s `{% else %}` renders happily on `trust=None`
+    (Jinja: `None.conflict` is falsy Undefined, it does not raise) and states
+    that this fact has no single-valued conflict — over a search that never
+    ran."""
+    r = malformed_client.get("/facts/2/provenance")
+    assert "No deterministic single-valued conflict for this fact." not in r.text
+
+
+def test_the_dossier_does_not_deny_evidence_anchors_it_never_looked_for(
+    malformed_client,
+):
+    """Same shape, Source-evidence section: the `{% else %}` claims no anchors
+    are recorded for a fact whose anchors were never read."""
+    r = malformed_client.get("/facts/2/provenance")
+    assert "No source evidence anchors recorded for this fact." not in r.text
+
+
+def test_the_dossier_does_not_call_an_uncomputed_origin_hand_entered(
+    malformed_client,
+):
+    """Evidence-summary section. Its run row falls through to
+    `— (seeded or hand-entered)`, which is a positive claim about where the
+    fact came from, asserted about an origin nobody looked up."""
+    r = malformed_client.get("/facts/2/provenance")
+    assert "(seeded or hand-entered)" not in r.text
+
+
+def test_the_degraded_timeline_says_its_middle_is_missing(malformed_client):
+    """The Lifecycle timeline keeps `created` and `updated` (both off `f`) and
+    loses everything between them, which is read out of the trust summary. With
+    no row of its own it would close silently and read as a fact nothing ever
+    happened to.
+
+    This section is why the marker here has its own wording: it is the only
+    withheld section with no distinctive sentence, so under the shared marker it
+    was pinned by an occurrence COUNT alone — and a count reddens for whichever
+    section went missing, naming none of them.
+    """
+    r = malformed_client.get("/facts/2/provenance")
+    assert TIMELINE_NOT_COMPUTED in r.text
+
+
+def test_a_healthy_alias_file_still_shows_the_trust_dossier(healthy_client):
+    """Anti-vacuity control for the degraded-dossier tests: each string they
+    assert ABSENT under a broken alias file is asserted present here, so every
+    one of those absences is a real change rather than a string this page never
+    had. Paired by name, since a positional reference does not survive a split:
+
+      `canonical relation`                 <- ..._withholds_the_dossier_but_keeps_the_fact_identity
+      `No deterministic single-valued ...` <- ..._does_not_deny_a_conflict_it_never_searched_for
+      `No source evidence anchors ...`     <- ..._does_not_deny_evidence_anchors_it_never_looked_for
+      `(seeded or hand-entered)`           <- ..._does_not_call_an_uncomputed_origin_hand_entered
+
+    The two not-computed markers go the other way: they must not appear on a
+    healthy page at all, and `..._degraded_timeline_says_its_middle_is_missing`
+    asserts the timeline one present when the file is broken.
+
+    (An earlier version of this docstring said "the test above". Splitting the
+    degraded assertions into one test per section silently invalidated that,
+    without reddening anything — hence the names.)
+    """
+    r = healthy_client.get("/facts/2/provenance")
+    assert r.status_code == 200
+    assert DOSSIER_NOT_COMPUTED not in r.text
+    assert TIMELINE_NOT_COMPUTED not in r.text
+    assert "canonical relation" in r.text
+    assert "No deterministic single-valued conflict for this fact." in r.text
+    assert "No source evidence anchors recorded for this fact." in r.text
+    assert "(seeded or hand-entered)" in r.text
+
+
+# --- the auto-accept write path -------------------------------------------
+
+
+@pytest.mark.parametrize("alias_bytes, present, absent", BROKEN_INPUTS)
+def test_accept_all_source_facts_survives_a_broken_alias_file_when_auto_accept_is_on(
+    tmp_path, alias_bytes, present, absent
+):
+    """#555 shipped this one broken: `/sources` has rendered
+    `action="/sources/1/accept-all"` at 200 under both broken inputs since
+    `ef4b404`, over a POST that 500s whenever `auto_accept_recommendations` is
+    on. `auto_accept_recommendations` defaults to False, which is why a
+    single-configuration sweep reads this endpoint as clean.
+
+    This route never enters `_fact_row_context`, so the fact-row guard's
+    deletion leaves it at 303 — it is the auto-accept guard's own test.
+    """
+    del present, absent  # a 303 carries no body to assert a message on
+    client, _app = _auto_accept_client(tmp_path, alias_bytes)
+    r = client.post("/sources/1/accept-all", follow_redirects=False)
+    assert r.status_code == 303
+
+
+@pytest.mark.parametrize("alias_bytes, present, absent", BROKEN_INPUTS)
+def test_a_broken_alias_file_stops_the_auto_accept_pass_rather_than_running_it_on_defaults(
+    tmp_path, alias_bytes, present, absent
+):
+    """The strongest form of #570 AC-2, because this one is a WRITE.
+    `apply_auto_accept_recommendations` promotes facts to `accepted` and retracts
+    lapsed ones, and it decides which by reading the alias file. A badge computed
+    on the wrong rules is re-rendered next request; a status transition is
+    committed and audited.
+
+    Fact 2 is promoted here only because the user's `소속 -> member_of` line
+    makes it corroborated by two distinct sources — the healthy half below is
+    what proves this fixture can see a promotion at all.
+
+    Stated limit: "fact 2 is still needs_review" is also what a pass run under
+    bare defaults produces (measured with no alias file present). That mode is
+    not reachable at this site, because `store_relation_aliases` RAISES on both
+    of these inputs rather than returning defaults, so there is no third build
+    to tell apart. This test's falsifying build is the guard's deletion, which
+    500s the request.
+    """
+    del present, absent
+
+    (tmp_path / "healthy").mkdir()
+    (tmp_path / "broken").mkdir()
+    healthy, healthy_app = _auto_accept_client(tmp_path / "healthy", HEALTHY_BYTES)
+    assert healthy.post("/facts/3/accept").status_code == 200
+    assert healthy_app.state.store.get_fact(2)["status"] == "accepted"
+
+    client, app = _auto_accept_client(tmp_path / "broken", alias_bytes)
+    r = client.post("/facts/3/accept")
+    assert r.status_code == 200
+    assert app.state.store.get_fact(2)["status"] == "needs_review"
