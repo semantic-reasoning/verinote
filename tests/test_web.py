@@ -28,6 +28,7 @@ import verinote.web.app as webapp  # noqa: E402
 from verinote.config import (  # noqa: E402
     Config,
     ConfigCorruptError,
+    CredentialsCorruptError,
     app_config_path,
     read_app_config,
     save_settings,
@@ -1836,7 +1837,92 @@ def test_worker_still_fails_the_job_on_an_ordinary_error(tmp_path, monkeypatch, 
         assert _job_row(cfg, job_id)["status"] == "failed"
 
     _wait_for(failed)
-    assert "boom" in _job_row(cfg, job_id)["message"]
+    # Exact equality, not `"boom" in message`: the weaker form does not pin the
+    # no-op property of `_error_cause` (#551) — that a message-bearing exception
+    # passes through unchanged rather than being type-qualified.
+    assert _job_row(cfg, job_id)["message"] == "analysis failed: boom"
+
+
+def test_worker_names_the_type_when_the_generic_error_has_no_message(
+    tmp_path, monkeypatch, fake_client
+):
+    """#551: a bare `ValueError()` must not leave the job row reading "analysis
+    failed: " with nothing after the colon. `_error_cause` names the exception's
+    type when `str(exc)` is blank."""
+    cfg, job_id, _ = _job_kb(tmp_path, with_policy=True)
+    monkeypatch.setattr(
+        webapp,
+        "get_client",
+        lambda cfg: fake_client([ExtractedFact("X", "is_a", "Y", 0.9)]),
+    )
+
+    def boom(*args, **kwargs):
+        raise ValueError()
+
+    monkeypatch.setattr(webapp, "process_extraction_job", boom)
+
+    create_app(cfg)
+
+    def failed():
+        assert _job_row(cfg, job_id)["status"] == "failed"
+
+    _wait_for(failed)
+    assert _job_row(cfg, job_id)["message"] == "analysis failed: ValueError"
+
+
+def test_worker_names_the_type_when_the_llm_error_has_no_message(
+    tmp_path, monkeypatch, fake_client
+):
+    """#551: the `except LLMError` clause has the same blank-cause symptom as the
+    generic one — a bare `LLMError("")` must not leave "extraction failed: "."""
+    cfg, job_id, _ = _job_kb(tmp_path, with_policy=True)
+
+    def raise_blank_llm_error(cfg):
+        raise LLMError("")
+
+    monkeypatch.setattr(webapp, "get_client", raise_blank_llm_error)
+
+    create_app(cfg)
+
+    def failed():
+        assert _job_row(cfg, job_id)["status"] == "failed"
+
+    _wait_for(failed)
+    assert _job_row(cfg, job_id)["message"] == "extraction failed: LLMError"
+
+
+def test_worker_leaves_a_message_bearing_error_unbounded_on_the_job_row(
+    tmp_path, monkeypatch, fake_client
+):
+    """Truncation stays out of `_error_cause`. #551's own scope declaration
+    ("범위 밖" / out of scope in the issue) names message-length bounding as
+    something neither of the two job-level clauses it discusses — the CLI's
+    `fail_extraction_job` call and the web worker's generic clause — has,
+    and something this issue does not add: it covers cause notation only.
+    The extraction worker's two direct sites (S1/S2) are unbounded for that
+    reason, unlike `_short_error` and S6's own inline normalisation, which
+    both bound their reason to 240 characters. A 300-character message must
+    survive on the job row whole."""
+    cfg, job_id, _ = _job_kb(tmp_path, with_policy=True)
+    monkeypatch.setattr(
+        webapp,
+        "get_client",
+        lambda cfg: fake_client([ExtractedFact("X", "is_a", "Y", 0.9)]),
+    )
+    long_message = "x" * 300
+
+    def boom(*args, **kwargs):
+        raise RuntimeError(long_message)
+
+    monkeypatch.setattr(webapp, "process_extraction_job", boom)
+
+    create_app(cfg)
+
+    def failed():
+        assert _job_row(cfg, job_id)["status"] == "failed"
+
+    _wait_for(failed)
+    assert _job_row(cfg, job_id)["message"] == f"analysis failed: {long_message}"
 
 
 def test_worker_busy_does_not_mark_the_job_failed(tmp_path, monkeypatch, fake_client):
@@ -1966,9 +2052,10 @@ def test_worker_leaves_a_done_job_done_when_finishing_it_raises(
     # log, a real sqlite/WAL-class failure would leave no trace anywhere at all.
     assert "not recording on the job row" in caplog.text
     assert "post-done store error" in caplog.text
-    # `exc_info` specifically, not just the message: the web message is NOT
-    # type-qualified, so for a bare `ValueError()` it degrades to "analysis failed: "
-    # and the traceback is the only thing left naming what was raised. Asserting the
+    # `exc_info` specifically, not just the message: the row would be type-qualified
+    # only when the message is blank (`_error_cause`, #551), so a bare `ValueError()`
+    # here would read "analysis failed: ValueError" and the traceback would still
+    # be the only thing naming anything more specific than that. Asserting the
     # message text alone does not pin it — that string is in the message too.
     assert "RuntimeError" in caplog.text
     declined = next(
@@ -3736,6 +3823,72 @@ def test_translate_persists_get_client_failure_reason(tmp_path, monkeypatch):
     assert "missing provider credentials" in page
 
 
+def test_translate_leaves_the_reason_blank_when_the_llm_error_has_no_message(
+    tmp_path, monkeypatch
+):
+    """`_fail_pending_translations` (S6) is deliberately OUT of #551's scope: its
+    `reason` is a standalone column, not interpolated after a separator, and
+    `question_outcome_view` already renders a per-status default sentence when it
+    is blank — there is no dangling colon here to fix. Naming the exception's type
+    at this site would REPLACE that sentence ("The provider output could not be
+    used.") with a bare class name, which is a regression, not an improvement.
+    This pins the unchanged behavior so nothing re-routes this site through
+    `_error_cause` later."""
+
+    def raise_blank_llm_error(cfg):
+        raise LLMError("")
+
+    monkeypatch.setattr(webapp, "get_client", raise_blank_llm_error)
+    c = _client(tmp_path)
+    c.app.state.store.add_question("What is the sample answer?")
+    r = c.post("/questions/translate", follow_redirects=False)
+
+    assert r.status_code == 303
+    q = c.app.state.store.questions()[0]
+    assert q["status"] == "translation_failed"
+    assert q["reason"] == ""
+    page = c.get("/questions").text
+    assert "The provider output could not be used." in page
+
+
+def test_translate_collapses_whitespace_and_bounds_the_reason_to_240_chars(
+    tmp_path, monkeypatch
+):
+    """S6's inline normalisation (`" ".join(str(exc).split())[:240]`) is a bare
+    expression, not a named helper, since #551 cut this site off from
+    `_short_error` — easier to lose a piece of by accident than a helper call
+    would be. `questions.reason` is unbounded `TEXT`, written for every pending
+    question at once, so both halves need a test: the internal-whitespace
+    collapse, and the 240-character bound.
+
+    Message built so the expected result can be computed by direct slicing,
+    not by re-deriving the production logic: 100 `a`s, an irregular whitespace
+    run that must collapse to one space, then 200 `b`s. Collapsed that is 301
+    characters (100 + 1 + 200); truncated to 240 it is 100 `a`s, one space, and
+    139 `b`s — one message that exercises both the collapse and the
+    truncation boundary.
+    """
+    message = "a" * 100 + "  \n\t  " + "b" * 200
+    collapsed = "a" * 100 + " " + "b" * 200
+    assert len(collapsed) == 301
+    expected_reason = collapsed[:240]
+    assert expected_reason == "a" * 100 + " " + "b" * 139
+
+    def raise_long_llm_error(cfg):
+        raise LLMError(message)
+
+    monkeypatch.setattr(webapp, "get_client", raise_long_llm_error)
+    c = _client(tmp_path)
+    c.app.state.store.add_question("What is the sample answer?")
+    r = c.post("/questions/translate", follow_redirects=False)
+
+    assert r.status_code == 303
+    q = c.app.state.store.questions()[0]
+    assert q["status"] == "translation_failed"
+    assert q["reason"] == expected_reason
+    assert len(q["reason"]) == 240
+
+
 def test_translate_shows_invalid_model_output_reason_in_question_row(
     tmp_path, monkeypatch
 ):
@@ -3905,6 +4058,119 @@ def test_repair_post_enqueues_without_constructing_a_client(tmp_path, monkeypatc
     assert response.status_code == 303
     assert recorder.started == ["verinote-question-repair-1"]
     assert store.latest_repair_job()["status"] == "pending"
+
+
+def _repair_kb(tmp_path) -> tuple[TestClient, "Store"]:
+    """A KB with one `review_required` question, ready to be repaired."""
+    c = _client(tmp_path)
+    store = c.app.state.store
+    qid = store.add_question("What is synthetic?")
+    store.set_question_query(qid, 'review_required("synthetic")', "review_required")
+    return c, store
+
+
+def test_repair_worker_names_the_type_when_the_config_error_has_no_message(
+    tmp_path, monkeypatch
+):
+    """#551, site S3: `except (ConfigCorruptError, CredentialsCorruptError)` in the
+    repair worker's `run()` must not leave "repair failed: " with nothing after
+    the colon for a blank exception.
+
+    `assert_writable` is called on the worker's OWN `Store`, while every request
+    (including this test's own POST) calls it only on `app.state.store` — so the
+    patch is keyed on store identity, not on call order, to reach the worker
+    without disturbing the route.
+    """
+    c, store = _repair_kb(tmp_path)
+    real_assert_writable = webapp.assert_writable
+
+    def boom(store_arg):
+        if store_arg is not c.app.state.store:
+            raise CredentialsCorruptError("")
+        return real_assert_writable(store_arg)
+
+    monkeypatch.setattr(webapp, "assert_writable", boom)
+
+    response = c.post("/questions/repair", follow_redirects=False)
+    assert response.status_code == 303
+
+    def failed():
+        job = store.latest_repair_job()
+        assert job is not None and job["status"] == "failed"
+
+    _wait_for(failed)
+    assert store.latest_repair_job()["message"] == "repair failed: CredentialsCorruptError"
+
+
+def test_repair_worker_names_the_type_when_the_llm_error_has_no_message(
+    tmp_path, monkeypatch
+):
+    """#551, site S4: `except LLMError` in the repair worker has the same
+    blank-cause symptom as the config/credentials clause beside it."""
+    c, store = _repair_kb(tmp_path)
+
+    def raise_blank_llm_error(cfg):
+        raise LLMError("")
+
+    monkeypatch.setattr(webapp, "get_client", raise_blank_llm_error)
+
+    response = c.post("/questions/repair", follow_redirects=False)
+    assert response.status_code == 303
+
+    def failed():
+        job = store.latest_repair_job()
+        assert job is not None and job["status"] == "failed"
+
+    _wait_for(failed)
+    assert store.latest_repair_job()["message"] == "repair failed: LLMError"
+
+
+def test_repair_worker_names_the_type_when_the_generic_error_has_no_message(
+    tmp_path, monkeypatch
+):
+    """#551, site S5: the repair worker's broad `except Exception` clause already
+    composes `_short_error`, which now routes through `_error_cause` — a bare
+    `ValueError()` must not leave "repair failed: "."""
+    c, store = _repair_kb(tmp_path)
+
+    def boom(*args, **kwargs):
+        raise ValueError()
+
+    monkeypatch.setattr(webapp, "process_repair_job", boom)
+
+    response = c.post("/questions/repair", follow_redirects=False)
+    assert response.status_code == 303
+
+    def failed():
+        job = store.latest_repair_job()
+        assert job is not None and job["status"] == "failed"
+
+    _wait_for(failed)
+    assert store.latest_repair_job()["message"] == "repair failed: ValueError"
+
+
+def test_repair_worker_names_the_type_when_the_generic_error_has_only_whitespace(
+    tmp_path, monkeypatch
+):
+    """`.strip()`, not truthiness. `ValueError("   ")` has a truthy `str()`, so
+    without `.strip()` in `_error_cause` this still degrades to
+    "repair failed: " with a trailing space and no cause."""
+    c, store = _repair_kb(tmp_path)
+
+    def boom(*args, **kwargs):
+        raise ValueError("   ")
+
+    monkeypatch.setattr(webapp, "process_repair_job", boom)
+
+    response = c.post("/questions/repair", follow_redirects=False)
+    assert response.status_code == 303
+
+    def failed():
+        job = store.latest_repair_job()
+        assert job is not None and job["status"] == "failed"
+
+    _wait_for(failed)
+    assert store.latest_repair_job()["message"] == "repair failed: ValueError"
 
 
 def test_questions_page_shows_live_repair_progress_and_terminal_failure(tmp_path):

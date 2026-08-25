@@ -1020,11 +1020,20 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             raise RuntimeError("no active KB")
         return cfg
 
+    def _error_cause(exc: BaseException) -> str:
+        """The exception's own message, or its type name when that message is blank."""
+        text = str(exc)
+        return text if text.strip() else type(exc).__name__
+
     def _short_error(exc: BaseException) -> str:
-        return " ".join(str(exc).split())[:240]
+        return " ".join(_error_cause(exc).split())[:240]
 
     def _fail_pending_translations(store: Store, cfg: Config, exc: LLMError) -> None:
-        reason = _short_error(exc)
+        # Not `_short_error`: this reason is a standalone column, not interpolated
+        # into a separator, and `question_outcome_view` renders a per-status
+        # sentence when it is blank. Substituting a type name here replaces that
+        # sentence, it does not rescue a dangling colon.
+        reason = " ".join(str(exc).split())[:240]
         for q in store.questions(pending_only=True):
             store.set_question_query(q["id"], None, "translation_failed", reason)
         write_query_file(store, cfg.root)
@@ -2188,10 +2197,11 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                     # it is the second place the predicate would otherwise be
                     # encoded in prose, and a widened refusal set would silently
                     # make a hardcoded reason lie. `exc_info` is not decoration —
-                    # the web message is deliberately not type-qualified, so for a
-                    # bare `ValueError()` the formatted text degrades to
-                    # "analysis failed: " and the traceback is the only surviving
-                    # record of what was raised.
+                    # the row would gain only the exception's TYPE when its message
+                    # is blank (`_error_cause`, #551), never the traceback, so for a
+                    # bare `ValueError()` the formatted text would read "analysis
+                    # failed: ValueError" and the traceback here is still the only
+                    # surviving record of anything more specific than that.
                     logger.warning(
                         "extraction job %s is %s; not recording on the job row: %s",
                         job_id,
@@ -2390,11 +2400,11 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 # answers, and these two clauses are one decision in two halves —
                 # `LLMError` is a `RuntimeError` subclass, so they are adjacent,
                 # not alternatives.
-                _fail_job_unless_done(f"extraction failed: {e}")
+                _fail_job_unless_done(f"extraction failed: {_error_cause(e)}")
             # Keep background failures visible: on the job row when this call still
             # owns the job, in the log when it does not.
             except Exception as e:  # noqa: BLE001
-                _fail_job_unless_done(f"analysis failed: {e}")
+                _fail_job_unless_done(f"analysis failed: {_error_cause(e)}")
 
         threading.Thread(
             target=run,
@@ -2500,11 +2510,15 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             except (ConfigCorruptError, CredentialsCorruptError) as exc:
                 with Store(cfg.db_path) as worker_store:
                     worker_store.init_schema()
-                    worker_store.fail_pending_repair_job(job_id, f"repair failed: {exc}")
+                    worker_store.fail_pending_repair_job(
+                        job_id, f"repair failed: {_error_cause(exc)}"
+                    )
             except LLMError as exc:
                 with Store(cfg.db_path) as worker_store:
                     worker_store.init_schema()
-                    worker_store.fail_pending_repair_job(job_id, f"repair failed: {exc}")
+                    worker_store.fail_pending_repair_job(
+                        job_id, f"repair failed: {_error_cause(exc)}"
+                    )
             except Exception as exc:  # noqa: BLE001 - durable UI-visible worker error
                 logger.exception("repair job %s failed", job_id)
                 with Store(cfg.db_path) as worker_store:

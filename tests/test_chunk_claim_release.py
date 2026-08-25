@@ -347,7 +347,13 @@ def test_the_recorded_cause_reaches_the_sources_page(tmp_path):
         process_extraction_job(
             store, _ChunkClient(fail_on=2, exc=ValueError()), job_id=job_id
         )
-    _caller_marks_job_failed(store, job_id, "analysis failed: ")  # caller stand-in
+    # Caller stand-in: `_start_source_extraction`'s generic clause (`web/app.py`)
+    # would write this for the injected bare `ValueError()` post-#551 —
+    # `_error_cause` names the type when `str(exc)` is blank, so the stand-in is
+    # "analysis failed: ValueError", not a bare "analysis failed: ". The
+    # assertion below is about the CHUNK message, not this job-level string;
+    # kept accurate anyway so the stand-in still stands in for a real caller.
+    _caller_marks_job_failed(store, job_id, "analysis failed: ValueError")
 
     html = TestClient(app).get("/sources").text
 
