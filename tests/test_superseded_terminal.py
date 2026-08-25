@@ -414,8 +414,11 @@ def test_edit_route_still_serves_a_form_for_a_live_fact(tmp_path):
 
 def test_amend_route_rejects_a_superseded_fact_without_mutating_it(tmp_path):
     # The store raises TerminalFactError, which is a ValueError; unhandled it
-    # would be a 500. Reachable from a form that was already open when someone
-    # else rejected the fact, so it has to answer cleanly.
+    # would be a 500. Reachable through a TOCTOU window -- a reject landing
+    # between the route's `_actionable_fact_or_error` pre-check and
+    # `store.amend_fact` -- and not from a stale edit form, which that pre-check
+    # answers with a plain 400 (measured). Either way the route owes a clean
+    # answer rather than a 500.
     #
     client, store = _client(tmp_path)
     fact_id = _rejected_fact(store)

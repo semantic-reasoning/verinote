@@ -6,8 +6,23 @@
 {% else %}
 <h1>Trust dossier — fact #{{ f["id"] }}</h1>
 
+{# #570. Every section below whose contents come off `trust` is withheld when
+   this KB's alias file cannot be read, because `store_relation_aliases` merges
+   the user's entries over the defaults -- so a dossier computed without their
+   file is a dossier about a different KB, printed in the same tables a healthy
+   one uses. The route and this template are ONE guard: withholding `trust`
+   without these branches replaces the 500 with a different 500, because
+   `{{ trust.support.source_count }}` is a two-deep attribute of `None` and
+   Jinja raises `UndefinedError` on that (measured). #}
+{% if alias_error %}
+<p class="error" role="alert">{{ alias_error }} The trust dossier below is withheld, because it
+  would have been computed under different alias rules than this KB's file specifies. Fix it on
+  <a href="/settings">Settings</a>.</p>
+{% endif %}
+
 <section class="trust-block">
   <h2>Trust summary</h2>
+  {% if trust %}
   {# role=list, not a bare div: a div is role=generic, which is name-prohibited, so
      the aria-label below would have been free to go unannounced (#294). list does
      permit an author name -- and it owns listitems, hence the role on each badge. #}
@@ -46,6 +61,9 @@
       {% endif %}
     </tbody>
   </table>
+  {% else %}
+  <p class="muted">Not computed — see the alias-file notice above.</p>
+  {% endif %}
 </section>
 
 <section class="trust-block">
@@ -59,7 +77,10 @@
     <span class="obj term-{{ f['object_kind'] }}">{{ f["object_display"] }}<span class="visually-hidden">&nbsp;({{ f['object_kind'] }})</span></span>
     <span class="badge badge-{{ f['status'] }}">{{ f["status"] }}</span>
   </p>
-  {% if trust.canonical_terms %}
+  {# The triple, its term kinds and the status badge above come off `f` and stay:
+     withholding the trust dossier must not withhold the fact's own identity. Only
+     the CANONICAL rendering of it is alias-derived (#570). #}
+  {% if trust and trust.canonical_terms %}
   <table class="counts">
     <tbody>
       <tr><td>canonical subject</td><td><code>{{ trust.canonical_terms.subject }}</code></td></tr>
@@ -72,6 +93,11 @@
 
 <section class="trust-block">
   <h2>Evidence summary</h2>
+  {# Every row here reads `trust`, not the route's own `run`/`job`, so the whole
+     table is withheld rather than left to render its "—" and
+     "— (seeded or hand-entered)" fallbacks, which would be claims about an
+     origin nobody looked up (#570). #}
+  {% if trust %}
   <table class="counts">
     <tbody>
       <tr><td>source</td><td>{% if trust.source %}<code>{{ trust.source.path }}</code> <span class="badge">{{ trust.source.kind }}</span>{% else %}—{% endif %}</td></tr>
@@ -89,11 +115,19 @@
       </td></tr>
     </tbody>
   </table>
+  {% else %}
+  <p class="muted">Not computed — see the alias-file notice above.</p>
+  {% endif %}
 </section>
 
 <section class="trust-block">
   <h2>Conflict summary</h2>
-  {% if trust.conflict %}
+  {# `trust is none` first: falling through to the `{% else %}` below would print
+     "No deterministic single-valued conflict for this fact." over a conflict
+     search that never ran (#570). #}
+  {% if trust is none %}
+  <p class="muted">Not computed — see the alias-file notice above.</p>
+  {% elif trust.conflict %}
   <table class="counts">
     <thead><tr><th>value</th><th>sources</th></tr></thead>
     <tbody>
@@ -115,6 +149,20 @@
   <table class="counts">
     <tbody>
       <tr><td class="src">{{ f["created_at"] }}</td><td><span class="badge">created</span></td></tr>
+      {# `created_at`/`updated_at` come off `f` and stay. Everything between them
+         is read out of the trust summary, so when that is withheld the timeline
+         says so rather than closing the gap silently and reading as a fact
+         nothing ever happened to (#570).
+
+         Its own wording, not the shared "Not computed" marker the other
+         sections use: this row is the only withheld section with no distinctive
+         sentence of its own, so a shared marker leaves it pinnable only by
+         counting occurrences — and a count cannot say WHICH section went
+         missing. The words also carry more here, since what is withheld is
+         specifically the extraction job and the audit events. #}
+      {% if trust is none %}
+      <tr><td class="src">—</td><td><span class="muted">Extraction and review events not computed — see the alias-file notice above.</span></td></tr>
+      {% endif %}
       {% if trust.job %}
       <tr><td class="src">—</td><td><span class="badge">extracted</span> job #{{ trust.job.id }} · {{ trust.job.status }}</td></tr>
       {% endif %}
@@ -134,7 +182,12 @@
 
 <section class="trust-block">
   <h2>Source evidence</h2>
-  {% if trust.evidence %}
+  {# Same shape as Conflict summary: the `{% else %}` prose below would claim
+     "No source evidence anchors recorded for this fact." about anchors nobody
+     looked for (#570). #}
+  {% if trust is none %}
+  <p class="muted">Not computed — see the alias-file notice above.</p>
+  {% elif trust.evidence %}
     {% for e in trust.evidence %}
     <div class="evidence">
       <div>

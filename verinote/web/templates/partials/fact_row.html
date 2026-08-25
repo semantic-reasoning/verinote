@@ -42,9 +42,25 @@
        (_trust_labels derives the label from that very summary), so they collapse
        into this one verdict rather than two badges.
 
-       Every branch below stays inside `{% if trust %}` and reads only `f`, `trust`
-       and `recommendation` -- the whole context a lone HTMX row swap gets. #}
-    {% if trust %}
+       Every branch of that ladder stays inside the `{% elif trust %}` arm below and
+       reads only `f`, `trust` and `recommendation` -- the whole context a lone HTMX
+       row swap gets, plus the `alias_error` the arm above it adds (#570). #}
+    {# `alias_error` comes FIRST, ahead of the ladder and ahead of the
+       `trust unavailable` fallback (#570). Those two say different things and
+       must keep saying different things: `trust unavailable` is a measured
+       verdict on the fact (it has no trust summary), while this branch means
+       nobody measured -- the KB's alias file could not be read, and computing
+       the ladder on `merge_default_relation_aliases(...)` would put a number
+       about a KB nobody has into the same badges a healthy KB uses.
+
+       The reason line lives INSIDE the fragment rather than only in a page
+       banner because an HTMX decision swaps this one <tr> and the user may
+       never see a banner. That is the difference between a row that degrades
+       honestly and one that just goes grey. #}
+    {% if alias_error %}
+      <span class="badge muted">trust not computed</span>
+      <div class="src">{{ alias_error }} Trust signals and accept recommendations are withheld until this file can be read. Fix it on <a href="/settings">Settings</a>.</div>
+    {% elif trust %}
       {% if trust.conflict or 'conflicted' in trust.trust_labels %}
         {% set verdict_label, verdict_class, verdict_text, verdict_risk = 'conflicted', 'trust-conflicted', 'conflicted', true %}
       {% elif 'evidence_missing' in trust.trust_labels %}
@@ -108,7 +124,14 @@
     {% endif %}
   </td>
   <td class="evidence-cell">
-    {% if trust and trust.evidence %}
+    {# Same rule as the signals cell, one cell over (#570). The anchor comes off
+       `trust.evidence`, so with no trust summary the `{% else %}` below would
+       assert `No evidence anchor` -- a claim about the fact that nobody
+       measured, and one a healthy row makes too, which would leave the degraded
+       row and the healthy row indistinguishable on that string. #}
+    {% if alias_error %}
+      <span class="muted">not computed</span>
+    {% elif trust and trust.evidence %}
       {% set e = trust.evidence[0] %}
       <div><span class="badge chip">{{ e.evidence_kind }}</span> <code>{{ e.source_path }}</code></div>
       <div class="src">

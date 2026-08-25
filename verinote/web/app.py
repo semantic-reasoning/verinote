@@ -1524,17 +1524,40 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             view[f"{field}_kind"] = term_input_kind(term)
         return view
 
-    def _fact_row_context(fact, recommendations=None):
+    def _fact_row_context(fact, recommendations=None, *, alias_error: str | None):
+        """Row context. `alias_error` withholds every alias-derived signal (#570).
+
+        `alias_error` is REQUIRED and keyword-only on purpose. The recurring
+        defect here is a caller that reaches an alias read without guarding it
+        (#570 trap 1): a defaulted parameter turns the next such caller into a
+        silent 500 in production, a required one turns it into a `TypeError` at
+        the call site.
+
+        When it is set, `trust` and `recommendation` are `None` rather than
+        computed anyway. `store_relation_aliases` returns
+        `merge_default_relation_aliases(user_aliases)`, so the delta between the
+        user's file and the defaults is exactly their custom entries — i.e. the
+        only reason the file exists. A badge computed without them is a number
+        about a KB nobody has, rendered in the same badges a healthy KB uses.
+        `None` is also what lets `fact_row.html` say "not computed" instead of
+        borrowing the `trust unavailable` verdict below it, which means
+        something else and something measured: this fact has no trust summary.
+        """
         view = _fact_view(fact)
-        trust = fact_trust_summary(_active_store(), int(fact["id"])) if fact else None
-        if fact and recommendations is None:
-            recommendations = accept_recommendations(_active_store())
-        recommendation = recommendations.get(int(fact["id"])) if fact else None
+        if alias_error is None:
+            trust = fact_trust_summary(_active_store(), int(fact["id"])) if fact else None
+            if fact and recommendations is None:
+                recommendations = accept_recommendations(_active_store())
+            recommendation = recommendations.get(int(fact["id"])) if fact else None
+        else:
+            trust = None
+            recommendation = None
         return {
             "f": view,
             "trust": trust,
             "recommendation": recommendation,
             "actionable": bool(fact and is_actionable_fact_status(fact["status"])),
+            "alias_error": alias_error,
         }
 
     def _actionable_fact_or_error(fact_id: int):
@@ -1545,17 +1568,36 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="fact is not actionable")
         return fact
 
-    def _maybe_apply_auto_accept(exclude_fact_ids: tuple[int, ...] = ()) -> list:
+    def _maybe_apply_auto_accept(
+        exclude_fact_ids: tuple[int, ...] = (), *, alias_error: str | None
+    ) -> list:
+        """Run the auto-accept pass, unless the alias file cannot be read (#570).
+
+        The only guard in this change that stops a WRITE.
+        `apply_auto_accept_recommendations` promotes facts to `accepted` and
+        retracts lapsed ones, and it decides which by reading the alias file. A
+        pass run while that file is unreadable would rewrite the KB's review
+        state under `merge_default_relation_aliases(...)` — rules the user did
+        not configure. A badge computed on the wrong rules is re-rendered on the
+        next request; a status transition is committed and audited.
+
+        `alias_error` is required and keyword-only for the same reason as on
+        `_fact_row_context`.
+        """
+        if alias_error is not None:
+            return []
         if _active_cfg().auto_accept_recommendations:
             return apply_auto_accept_recommendations(
                 _active_store(), exclude_fact_ids=exclude_fact_ids
             )
         return []
 
-    def _row(request: Request, fact):
+    def _row(request: Request, fact, *, alias_error: str | None):
         # Starlette's current API is TemplateResponse(request, name, context).
         return templates.TemplateResponse(
-            request, "partials/fact_row.html", _fact_row_context(fact)
+            request,
+            "partials/fact_row.html",
+            _fact_row_context(fact, alias_error=alias_error),
         )
 
     def _row_after_decision(
@@ -1588,13 +1630,18 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         letting it promote everything else — for the one decision that parks a
         fact back in the tier auto-accept harvests from (see `toggle`).
         """
+        # One alias read per decision POST, threaded into both the auto-accept
+        # pass and the row render, rather than one per consumer (#570).
+        alias_error = _relation_alias_failure(_active_store())
         excluded = () if rule_may_act or acted_fact_id is None else (acted_fact_id,)
-        applied = _maybe_apply_auto_accept(excluded) if decided else []
+        applied = (
+            _maybe_apply_auto_accept(excluded, alias_error=alias_error) if decided else []
+        )
         if acted_fact_id is not None:
             refreshed = _active_store().get_fact(acted_fact_id)
             if refreshed is not None:
                 fact = refreshed
-        response = _row(request, fact)
+        response = _row(request, fact, alias_error=alias_error)
         if any(rec.fact_id != acted_fact_id for rec in applied):
             response.headers["HX-Refresh"] = "true"
         return response
@@ -2672,14 +2719,18 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.post("/sources/{source_id}/accept-all", response_class=HTMLResponse)
     def accept_all_source_facts(request: Request, source_id: int):
-        accepted = _active_store().accept_review_facts_for_source(source_id)
+        store = _active_store()
+        accepted = store.accept_review_facts_for_source(source_id)
         # Bulk-confirming a source can corroborate facts elsewhere; the redirect
         # reloads the page so no HX-Refresh header is needed here. `accepted` is
         # the same transition test the single-fact routes apply: a source with
         # nothing left in the review tier confirms nothing, so the POST decided
         # nothing and the rule stays out of it.
         if accepted:
-            _maybe_apply_auto_accept()
+            # The alias file is read here rather than at the top of the route:
+            # a source with nothing left in the review tier never runs the pass,
+            # so it owes no read (#570).
+            _maybe_apply_auto_accept(alias_error=_relation_alias_failure(store))
         return RedirectResponse("/sources", status_code=303)
 
     @app.post("/sources/{source_id}/delete", response_class=HTMLResponse)
@@ -2720,7 +2771,16 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         recommendations = accept_recommendations_for(
             store, [int(f["id"]) for f in page_data.rows]
         )
-        rows = [_fact_row_context(f, recommendations) for f in page_data.rows]
+        # `/review` itself is NOT guarded here: `_review_page` and
+        # `accept_recommendations_for` above both read the alias file and both
+        # still raise, so a broken file 500s this route before it reaches this
+        # line. What this call must not do is assert `alias_error=None` — a
+        # claim about a file nothing on this path has read.
+        alias_error = _relation_alias_failure(store)
+        rows = [
+            _fact_row_context(f, recommendations, alias_error=alias_error)
+            for f in page_data.rows
+        ]
         return templates.TemplateResponse(
             request,
             "review.html",
@@ -2797,7 +2857,12 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     @app.get("/facts/{fact_id}/row", response_class=HTMLResponse)
     def fact_row(request: Request, fact_id: int):
         # Re-render the read-only row (used to cancel an inline edit).
-        return _row(request, _active_store().get_fact(fact_id))
+        store = _active_store()
+        return _row(
+            request,
+            store.get_fact(fact_id),
+            alias_error=_relation_alias_failure(store),
+        )
 
     @app.post("/facts/{fact_id}/amend", response_class=HTMLResponse)
     def amend_fact(
@@ -2833,7 +2898,13 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             )
         except TerminalFactError:
             # #311: the fact was rejected, so its content is frozen. Reachable
-            # from a form that was already open when someone else rejected it.
+            # through a TOCTOU window -- a reject landing between this route's
+            # `_actionable_fact_or_error` pre-check and the `store.amend_fact`
+            # call above -- and NOT from a stale edit form: that pre-check reads
+            # the fact's status on THIS request, so a form left open while
+            # someone else rejects it gets a plain 400 (measured). The sentence
+            # this replaces predates `_actionable_fact_or_error` and was true
+            # until it landed.
             # Re-render the read-only row at 200 rather than an error at 4xx:
             # htmx's default responseHandling does not swap 4xx, so an error
             # status would leave the stale edit form on screen still offering a
@@ -2844,7 +2915,17 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             # re-renders the edit form at 400, does not swap either and so shows
             # the user nothing. That predates this change and is left alone here
             # rather than fixed in passing, but it is the same bug.
-            return _row(request, _active_store().get_fact(fact_id))
+            #
+            # This is `amend_fact`'s SECOND row-rendering exit; the success path
+            # below renders through `_row_after_decision`, which reads the alias
+            # file itself. Guarding only that one leaves this path 500ing on a
+            # broken alias file while a naive amend test passes (#570).
+            store = _active_store()
+            return _row(
+                request,
+                store.get_fact(fact_id),
+                alias_error=_relation_alias_failure(store),
+            )
         # The rule may act on the amended fact itself, unlike a toggle demotion.
         # An amend decides the fact's content, not its tier: correcting a term so
         # it finally matches a second source's wording *is* corroboration
@@ -2857,7 +2938,16 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     def provenance(request: Request, fact_id: int):
         store = _active_store()
         fact = store.get_fact(fact_id)
-        trust = fact_trust_summary(store, fact_id) if fact else None
+        # This route calls `fact_trust_summary` DIRECTLY — it does not go
+        # through `_fact_row_context`, so the `alias_error` threaded through
+        # that helper never reaches here and this route computes its own (#570
+        # trap 1). Withholding `trust` here is inseparable from the
+        # `{% if trust %}` blocks in `provenance.html`: that template writes
+        # `trust.support.source_count`, and Jinja raises `UndefinedError` on a
+        # two-deep attribute of `None`, so guarding this line alone turns one
+        # 500 into a different 500. Route and template are one guard.
+        alias_error = _relation_alias_failure(store)
+        trust = fact_trust_summary(store, fact_id) if fact and alias_error is None else None
         run = store.get_run(fact["run_id"]) if fact and fact["run_id"] else None
         job = (
             store.get_extraction_job_detail(fact["job_id"])
@@ -2870,6 +2960,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             {
                 "f": _fact_view(fact),
                 "trust": trust,
+                "alias_error": alias_error,
                 "run": run,
                 "job": job,
                 "log": store.fact_log(fact_id) if fact else [],
