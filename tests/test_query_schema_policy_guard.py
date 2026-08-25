@@ -48,12 +48,15 @@ WHAT THIS CHANGE DOES NOT DELIVER, stated so its absence is not read as an
 oversight. `POST /questions/translate` answers 303 and redirects to
 `GET /questions`, and the guard deliberately writes nothing to the question rows
 (see below), so that page has nothing to display about the failure. Rendering
-the page from the translate route instead of redirecting would surface it for
-the malformed and typed inputs and turn the cp949 input from 303 into 500,
-because `GET /questions` itself still fails on a cp949 alias file -- measured
-here, and that route is #590's. So the diagnosis reaches `POST /ask` and
-`verinote query` in this change, and reaching the translate landing page waits
-on #590.
+the page from the translate route instead of redirecting would have turned the
+cp949 input from 303 into 500, because `GET /questions` itself failed on a cp949
+alias file when this was written. **#590 has since fixed that** -- `GET /questions`
+answers 200 on both broken-alias entries in `BROKEN_INPUTS` below
+(`alias-malformed` and `alias-cp949`; the third has a healthy alias) -- so the
+500 half of this obstacle is gone. What remains is the other half: this guard
+deliberately writes nothing to the question rows, so the landing page still has
+no per-question record to render. Delivering the diagnosis needs the message
+carried from the POST to the render, which is neither issue's.
 
 WHY THE QUESTION ROWS STAY `pending`. `translate_questions` reports the policy
 failure per question but does not write it. The justification is comparative and
@@ -236,9 +239,15 @@ def test_a_typod_typed_file_is_not_a_broken_input(tmp_path):
 def test_translate_survives_each_broken_policy_file(
     tmp_path, alias_bytes, typed_bytes, message
 ):
-    """The POST itself, not the redirect target: `GET /questions` still fails on
-    a cp949 alias file (#590), so following the redirect would measure that
-    route rather than this one."""
+    """The POST itself, not the redirect target.
+
+    When this was written the reason was that `GET /questions` 500ed on a cp949
+    alias file, so following the redirect measured that route instead of this
+    one. #590 fixed that and the reason changed rather than disappearing: the
+    redirect target is a different route with its own guard and its own tests,
+    so asserting on it here would attribute #590's behaviour to #591's guard.
+    The 303 is what this test owns.
+    """
     del message
     client, _ = _client(tmp_path, alias_bytes, typed_bytes)
     r = client.post("/questions/translate", follow_redirects=False)

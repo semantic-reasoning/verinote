@@ -2,6 +2,11 @@
 {% block title %}Report — verinote{% endblock %}
 {% block content %}
 <h1>Logic check report</h1>
+{% if policy_error %}
+<p class="error" role="alert">{{ policy_error }} The report and its traceability are
+  withheld, because both would have been computed under different rules than this KB's
+  alias file specifies.</p>
+{% endif %}
 {% if not rep.engine_available %}
 <p class="warn">DuckDB verification backend is not available.</p>
 {% endif %}
@@ -71,6 +76,11 @@
     {% endfor %}
   </tbody>
 </table>
+{% elif policy_error %}
+{# #590. Without this arm the empty trace prints "no traces are available for
+   these report rows", which reads as a searched-and-found-nothing verdict on a
+   search that never ran. #}
+<p class="muted">Not computed — see the policy-file notice above.</p>
 {% else %}
 <p class="muted">No direct relation fact traces are available for these report rows.</p>
 {% endif %}

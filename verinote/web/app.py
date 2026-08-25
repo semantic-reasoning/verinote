@@ -104,6 +104,7 @@ from verinote.pipeline.corroboration import (
     RELATION_ALIASES_RELPATH,
     relation_aliases,
     store_corroboration,
+    policy_file_failure,
     store_relation_aliases,
     store_single_valued_conflicts,
     store_typed_relations,
@@ -1149,7 +1150,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         `cfg.root` rather than `store.db_path.parent` — see
         `_trust_policy_failure`'s docstring), so it needs its own read and its
         own broad `except Exception` around that one `read_text` call (the same
-        rationale as G2 in `pipeline/query_schema.py::_policy_file_failure`: no
+        rationale as G2 in `corroboration.py::policy_file_failure`: no
         database access, only a stat and a read of this file).
         """
         path = _relation_aliases_path()
@@ -1180,8 +1181,10 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             # message (already file-and-line-prefixed) rather than wrapping it —
             # wrapping would say the file twice and misstate that it could not be
             # read at all -- the same reasoning as G1 in
-            # `pipeline/query_schema.py::_policy_file_failure`, which is where
-            # that clause lives since #591 hoisted it out of this file.
+            # `corroboration.py::policy_file_failure`, which is where that
+            # clause lives. Cited by symbol rather than by path: #591 hoisted it
+            # out of this file and #590 moved it again, breaking this reference
+            # both times, and a symbol survives the next move.
             return {
                 "relation_aliases": text,
                 "relation_aliases_error": str(exc),
@@ -3092,7 +3095,25 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             return _kb_select(request, error=error, status_code=status_code)
         store = _active_store()
         rep = verify(store)
+        # #590. `answers` is alias-derived: `engine_relation_rows` canonicalizes
+        # each fact's relation through this file, and `load_query` expands the
+        # draft's `relation/3` atoms through it. When the file cannot be read,
+        # `verify()` returns before the engine runs, so `rep.answers` is `[]` --
+        # and rendering `[]` prints "No engine answers yet", a measured claim
+        # about a run that never happened. `None` is what lets the template say
+        # "not computed" instead. The queue and the repair job come from the
+        # store, read no policy file, and stay: this is `/review`'s shape.
+        #
+        # ALIAS ONLY. THIS page never reads `policy/typed-relations.md` -- it
+        # does not call `report_trace` -- so a broken one leaves it at 200 and
+        # unwithheld (measured). `/report` is not in that position: see #595.
+        policy_failure = policy_file_failure(
+            lambda: store_relation_aliases(store), RELATION_ALIASES_RELPATH
+        )
+        answers = None if policy_failure is not None else rep.answers
         page_error = error
+        if page_error is None and policy_failure is not None:
+            page_error = f"policy error: {policy_failure}"
         if page_error is None:
             # Ask the thing that owns the answer, never the report's prose: a
             # finding string is human-readable output, not a state field. (The
@@ -3107,7 +3128,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             "questions.html",
             {
                 "questions": [question_outcome_view(q) for q in store.questions()],
-                "answers": rep.answers,
+                "answers": answers,
                 "error": page_error,
                 "repair_job": store.latest_repair_job(),
             },
@@ -3191,6 +3212,15 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     def report(request: Request):
         store = _active_store()
         rep = verify(store)
+        # #590. BOTH `rep` and `trace` are alias-derived here -- this is
+        # `/workbench`'s shape, not `/review`'s: there is no half of this page
+        # that survives the file being unreadable. Without this the page renders
+        # a report with no findings of its own and a traceability section
+        # reading "No direct relation fact traces are available", which together
+        # are a positive claim that the KB checked clean.
+        policy_failure = policy_file_failure(
+            lambda: store_relation_aliases(store), RELATION_ALIASES_RELPATH
+        )
         try:
             trace = report_trace(store)
         except PolicyMissingError:
@@ -3202,7 +3232,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         return templates.TemplateResponse(
             request,
             "report.html",
-            {"rep": rep, "trace": trace},
+            {"rep": rep, "trace": trace, "policy_error": policy_failure},
         )
 
     @app.get("/analytics", response_class=HTMLResponse)

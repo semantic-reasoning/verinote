@@ -12,7 +12,12 @@ from __future__ import annotations
 
 from verinote.engine import NO_FINDINGS_TEXT, CheckReport, FindingDetail
 from verinote.engine.wirelog import review_rule_count
-from verinote.pipeline.corroboration import CorroborationPolicyError
+from verinote.pipeline.corroboration import (
+    CorroborationPolicyError,
+    RELATION_ALIASES_RELPATH,
+    policy_file_failure,
+    store_relation_aliases,
+)
 from verinote.pipeline.engine_input import (
     annotate_source_labels,
     compatible_finding_details,
@@ -113,6 +118,43 @@ def verify(store: Store) -> CheckReport:
             text=f"backend: DuckDB\n\npolicy error: {message}",
             findings=[finding],
             finding_details=[FindingDetail(finding, "error", "policy_empty")],
+        )
+
+    # #590. `engine_relation_rows` and `load_query` below both read
+    # `policy/relation-aliases.md`, and the two narrow clauses guarding them
+    # catch only `CorroborationPolicyError` -- the PARSE class. A file saved as
+    # cp949 raises `UnicodeDecodeError`, and one at mode 0o000 raises
+    # `PermissionError`; neither is a `CorroborationPolicyError` and neither is
+    # even a `ValueError`, so both escaped every clause and 500ed `GET /questions`
+    # and `GET /report`. Measured on `c0dd1cc`: those two routes and no others.
+    #
+    # ALIAS FILE ONLY, not `query_schema_policy_failure`. THIS MODULE never
+    # reads `policy/typed-relations.md` -- `store_typed_relations` appears
+    # nowhere in it -- so widening the check here would withhold a report for a
+    # file this function never read. Do not generalise that to the routes:
+    # `/report` also calls `report_trace`, which reaches `fact_trust_summary`
+    # and DOES read the typed file, so a broken one 500s `/report` on a KB with
+    # a traceable answer. That is #595 and it predates this guard.
+    #
+    # The clauses below STAY. They are not made dead by this: `query.py`'s alias
+    # expansion cap raises `CorroborationPolicyError` from `load_query` on a KB
+    # whose policy files BOTH parse, so deleting them would turn a valid
+    # configuration into a 500.
+    policy_failure = policy_file_failure(
+        lambda: store_relation_aliases(store), RELATION_ALIASES_RELPATH
+    )
+    if policy_failure is not None:
+        # Deliberately the same shape, code and message the narrow clause below
+        # already returns, so the parse classes it still catches render exactly
+        # as they do today and only the two escaping classes change outcome.
+        finding = f"ERROR policy error: {policy_failure}"
+        return CheckReport(
+            ok=False,
+            errors=1,
+            warnings=0,
+            text=f"backend: DuckDB\n\npolicy/error: {policy_failure}",
+            findings=[finding],
+            finding_details=[FindingDetail(finding, "error", "policy_error")],
         )
 
     try:

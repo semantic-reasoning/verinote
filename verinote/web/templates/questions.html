@@ -62,7 +62,14 @@
 {% endif %}
 
 <h2>Answers</h2>
-{% if answers %}
+{# #590. `is none` FIRST, and it is not the same test as the `{% else %}` below.
+   `None` and `[]` are both falsy, so without this branch an unreadable alias
+   file prints the "No engine answers yet" prose -- a measured claim about an
+   engine run that never happened, on a page that otherwise looks healthy. The
+   banner above carries the reason; this says which value it cost. #}
+{% if answers is none %}
+<p class="muted">Not computed — see the policy-file notice above.</p>
+{% elif answers %}
 <ul class="findings">{% for a in answers %}<li>{{ a }}</li>{% endfor %}</ul>
 {% else %}
 <p class="muted">No engine answers yet. Check each question outcome above for translation, review, ambiguity, or no-answer details.</p>
