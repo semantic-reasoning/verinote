@@ -2814,10 +2814,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         # `acceptance._engine`, `trust.fact_trust_summary` and
         # `corroboration.store_single_valued_conflicts`, and from nowhere else.
         # The readers are named rather than counted on purpose: the count moves
-        # whenever a guard is added — the guard above is itself the fourth — and
-        # what this comment needs to say is that the QUEUE QUERY is not among
-        # them. So the queue is the KB's own and only its trust signals are
-        # withheld.
+        # whenever a guard is added, and what this comment needs to say is that
+        # the QUEUE QUERY is not among them. So the queue is the KB's own and
+        # only its trust signals are withheld.
         # `accept_recommendations_for` is the opposite: it builds its engine off
         # the alias file before it looks at a single id, so it raises even for an
         # empty id list. Skipping it and passing `{}` is what keeps this route up.
