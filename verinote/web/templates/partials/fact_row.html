@@ -44,22 +44,25 @@
 
        Every branch of that ladder stays inside the `{% elif trust %}` arm below and
        reads only `f`, `trust` and `recommendation` -- the whole context a lone HTMX
-       row swap gets, plus the `alias_error` the arm above it adds (#570). #}
-    {# `alias_error` comes FIRST, ahead of the ladder and ahead of the
+       row swap gets, plus the `policy_error` the arm above it adds (#570). #}
+    {# `policy_error` comes FIRST, ahead of the ladder and ahead of the
        `trust unavailable` fallback (#570). Those two say different things and
        must keep saying different things: `trust unavailable` is a measured
        verdict on the fact (it has no trust summary), while this branch means
-       nobody measured -- the KB's alias file could not be read, and computing
-       the ladder on `merge_default_relation_aliases(...)` would put a number
-       about a KB nobody has into the same badges a healthy KB uses.
+       nobody measured -- one of the KB's two trust-policy files could not be
+       read. Computing the ladder on `merge_default_relation_aliases(...)`
+       would put a number about a KB nobody has into the same badges a healthy
+       KB uses; computing it on the `{}` a failed `store_typed_relations` falls
+       back to would put a number that is indistinguishable from a correct one
+       there instead (#585). The message names whichever file failed.
 
        The reason line lives INSIDE the fragment rather than only in a page
        banner because an HTMX decision swaps this one <tr> and the user may
        never see a banner. That is the difference between a row that degrades
        honestly and one that just goes grey. #}
-    {% if alias_error %}
+    {% if policy_error %}
       <span class="badge muted">trust not computed</span>
-      <div class="src">{{ alias_error }} Trust signals and accept recommendations are withheld until this file can be read. Fix it on <a href="/settings">Settings</a>.</div>
+      <div class="src">{{ policy_error }} Trust signals and accept recommendations are withheld until this file can be read.</div>
     {% elif trust %}
       {% if trust.conflict or 'conflicted' in trust.trust_labels %}
         {% set verdict_label, verdict_class, verdict_text, verdict_risk = 'conflicted', 'trust-conflicted', 'conflicted', true %}
@@ -129,7 +132,7 @@
        assert `No evidence anchor` -- a claim about the fact that nobody
        measured, and one a healthy row makes too, which would leave the degraded
        row and the healthy row indistinguishable on that string. #}
-    {% if alias_error %}
+    {% if policy_error %}
       <span class="muted">not computed</span>
     {% elif trust and trust.evidence %}
       {% set e = trust.evidence[0] %}

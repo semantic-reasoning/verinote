@@ -4,11 +4,10 @@
 <h1>Knowledge base</h1>
 <p class="muted">KB <code>{{ root }}</code> · provider <strong>{{ provider_label }}</strong> · model <code>{{ model }}</code></p>
 
-{% if alias_error %}
-<p class="error" role="alert">{{ alias_error }} Every count on this page marked
+{% if policy_error %}
+<p class="error" role="alert">{{ policy_error }} Every count on this page marked
   <span class="badge muted">not computed</span> is withheld for that reason — it would
-  have been computed under different alias rules than this KB's file specifies. Fix it
-  on <a href="/settings">Settings</a>.</p>
+  have been computed under different rules than this KB's policy files specify.</p>
 {% endif %}
 
 <section class="cards">
@@ -31,7 +30,7 @@
       <td class="conf">{% if queue.count is none %}<span class="badge muted">not computed</span>{% else %}{{ queue.count }}{% endif %}</td>
       <td>
         {% if queue.count is none %}
-        <span class="muted" title="Not offered while its count is not computed — see the alias-file notice above.">—</span>
+        <span class="muted" title="Not offered while its count is not computed — see the policy-file notice above.">—</span>
         {% else %}
         <a class="btn ghost" href="{{ queue.href }}">Open</a>
         {% endif %}
@@ -76,7 +75,7 @@
 
 <h2>Source corroboration <span class="muted">- engine-input facts only</span></h2>
 {% if corroboration is none %}
-<p class="muted">Not computed — see the alias-file notice above.</p>
+<p class="muted">Not computed — see the policy-file notice above.</p>
 {% elif corroboration %}
 <table class="counts">
   <thead><tr><th>Fact</th><th>Sources</th></tr></thead>
@@ -98,7 +97,7 @@
 
 <h2>Single-valued conflicts <span class="muted">- source support by value</span></h2>
 {% if single_valued_conflicts is none %}
-<p class="muted">Not computed — see the alias-file notice above.</p>
+<p class="muted">Not computed — see the policy-file notice above.</p>
 {% elif single_valued_conflicts %}
 <table class="counts">
   <thead><tr><th>Subject / relation</th><th>Competing values</th></tr></thead>

@@ -3,7 +3,7 @@ r"""A broken `policy/relation-aliases.md` degrades `/`, `/sources`, `/settings`
 instead of 500ing them (#555).
 
 WHY THE MALFORMED TESTS ASSERT THE MESSAGE, NOT THE STATUS. Deleting the narrow
-`except CorroborationPolicyError` clause (G1) inside `_relation_alias_failure`
+`except CorroborationPolicyError` clause (G1) inside `_trust_policy_failure`
 does NOT turn any route back into a 500: the malformed case falls through to the
 broad `except Exception` clause (G2) underneath, which also returns a string, so
 every affected route still renders 200 (measured — see plan555.md §2.2/M9,
@@ -90,20 +90,24 @@ both its tables — so a button from a "not computed" dashboard row into any of
 them lands on a page that cannot answer the question the row poses. The button
 is still not offered, now for a measured reason rather than an inherited one.
 
-`store_typed_relations` (`policy/typed-relations.md`) is untouched by both
-issues, and its blast radius grew with #570 rather than staying put:
-`_source_trust_rollup` calls it alongside `store_relation_aliases`, and so does
-`fact_trust_summary` on the line after ITS alias read. So `/sources` and every
-fact-row route above can still 500 on a broken `typed-relations.md`. Tracked as
-#585.
+`store_typed_relations` (`policy/typed-relations.md`) was untouched by both
+issues and is now covered by #585, in
+`tests/test_typed_relations_web_guard.py`. The guard is SHARED rather than
+duplicated: `_relation_alias_failure` became `_trust_policy_failure`, which
+checks the alias file first and the typed file second and returns the first
+failure, and every `alias_error` in this file's routes and templates became
+`policy_error`. That rename is why the assertions here read "policy-file
+notice" rather than "alias-file notice" and why no banner ends "Fix it on
+Settings" any more — `settings.html` has an editor for the alias file and none
+for the typed one.
 
-Do not read that as "the same endpoints, one file over", and do not reuse this
-file's route list to guard it: the two files' affected sets differ in BOTH
-directions, and #585 forbids copying #570's. Measured here, healthy alias file
-plus a cp949 `typed-relations.md`: `/` and `/sources` — guarded above for the
-ALIAS file since #555 — return 500, while `/settings` stays 200. #585 carries
-the enumeration; this paragraph deliberately carries no count, because the
-number is #585's to keep current.
+Do not read the two files as parametrizations of each other. Their affected
+route sets differ in BOTH directions, their malformed INPUT classes differ (a
+line `typed_relations` cannot parse is silently skipped, not raised), and an
+absent typed file degrades to `{}` — the same value a healthy KB with no typed
+declarations produces — so #585's guard cannot pin itself on the rendered value
+the way this file's can. The sibling file's docstring carries all three
+measurements.
 
 (#571, which an earlier draft of this paragraph cited for the typed-relations
 hole, is a different defect in a different file: an unusable PATH at
@@ -270,7 +274,7 @@ def test_dashboard_does_not_claim_there_are_no_corroborated_facts(malformed_clie
     r = malformed_client.get("/")
     assert "No source-backed engine-input facts yet." not in r.text
     assert "No source-backed single-valued conflicts." not in r.text
-    assert r.text.count("Not computed — see the alias-file notice above.") == 2
+    assert r.text.count("Not computed — see the policy-file notice above.") == 2
     # The four alias-dependent queue rows show the not-computed marker, not a
     # digit -- plus one more occurrence inside the banner's own sentence, which
     # names the marker it is pointing at (MUST-FIX-3, #555 fix-round gate).
@@ -282,7 +286,7 @@ def test_a_healthy_alias_file_still_shows_the_dashboard_corroboration_table(
 ):
     r = healthy_client.get("/")
     assert r.status_code == 200
-    assert "Not computed — see the alias-file notice above." not in r.text
+    assert "Not computed — see the policy-file notice above." not in r.text
     assert '<span class="badge muted">not computed</span>' not in r.text
     # The healthy KB's one confirmed, source-backed fact appears in the table.
     assert "<code>A</code>" in r.text
@@ -733,12 +737,12 @@ NO_EVIDENCE_ANCHOR = "No evidence anchor"
 # It is the only string on a fact row that moves when the accept
 # RECOMMENDATION is withheld but the trust summary is not.
 RECOMMENDATION_REASON = "insufficient distinct source support"
-DOSSIER_NOT_COMPUTED = "Not computed — see the alias-file notice above."
+DOSSIER_NOT_COMPUTED = "Not computed — see the policy-file notice above."
 # The lifecycle timeline's own wording. Deliberately not the shared marker:
 # it is the only withheld section with no distinctive sentence, so under the
 # shared one it could be pinned only by counting occurrences.
 TIMELINE_NOT_COMPUTED = (
-    "Extraction and review events not computed — see the alias-file notice above."
+    "Extraction and review events not computed — see the policy-file notice above."
 )
 
 # (alias bytes, message that must be present, message that must be absent).
@@ -1093,7 +1097,7 @@ def test_a_superseded_amend_still_renders_a_row_at_all(
     The reddening population, ENUMERATED over every deletable unit in this
     change rather than quantified over an unnamed set. Exactly three deletions
     redden this test. Two 500 the amend response itself: this exit's own
-    `alias_error` read, and `_fact_row_context`'s withholding branch, which
+    `policy_error` read, and `_fact_row_context`'s withholding branch, which
     every fact-row render passes through. The third is `_row_after_decision`'s
     read, and it fails EARLIER than the exit under test — `_superseded_amend`'s
     `assert client.post(...reject...).status_code == 200` precondition 500s
@@ -1136,7 +1140,7 @@ def test_provenance_survives_a_cp949_alias_file_and_names_the_file(cp949_client)
 def test_provenance_withholds_the_dossier_but_keeps_the_fact_identity(
     malformed_client,
 ):
-    """`provenance` calls `fact_trust_summary` DIRECTLY, so no `alias_error`
+    """`provenance` calls `fact_trust_summary` DIRECTLY, so no `policy_error`
     threaded through `_fact_row_context` reaches it (#570 trap 1) — and its
     route guard and template branches are ONE guard, because
     `{{ trust.support.source_count }}` is a two-deep attribute of `None` and

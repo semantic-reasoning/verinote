@@ -9,14 +9,14 @@
    `None`, so the `{% include %}` below never runs and the fact-row fragment's own
    reason line renders nowhere -- this banner is the only thing on the page that
    says why. Deleting it leaves a 200 that explains nothing. #}
-{% if alias_error %}
-<p class="error" role="alert">{{ alias_error }} Trust signals and accept recommendations on this
-  page are withheld, because they would have been computed under different alias rules than this
-  KB's file specifies. Fix it on <a href="/settings">Settings</a>.</p>
+{% if policy_error %}
+<p class="error" role="alert">{{ policy_error }} Trust signals and accept recommendations on this
+  page are withheld, because they would have been computed under different rules than this KB's
+  policy files specify.</p>
 {% endif %}
 
 {# The filter nav stays on every degraded render: it is built from static labels,
-   reads nothing alias-derived, and is how the user gets back to a queue that
+   reads nothing policy-derived, and is how the user gets back to a queue that
    works. It also sits above every guard below, which is what lets a test assert
    the route survived without that assertion being reddened by a template
    deletion. #}
