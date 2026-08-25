@@ -39,6 +39,7 @@ from verinote.pipeline.query_planner import plan_query_candidates
 from verinote.pipeline.query_schema import (
     QuerySchemaSnapshot,
     build_query_schema_snapshot,
+    query_schema_policy_failure,
 )
 from verinote.store import Store
 
@@ -70,6 +71,11 @@ class _QueryFlowResult:
     # Repair-only eligibility: ordinary translation is always schema-only.
     allow_direct_datalog_fallback: bool = False
     provider_failed: bool = False
+    # Set only by the trust-policy guard below. `translate_questions` keys its
+    # write suppression on THIS, not on a read of its own: the status alone
+    # cannot carry it, because a missing API key produces `translation_failed`
+    # too and that one IS meant to be written to the row (#591).
+    policy_failed: bool = False
 
 
 def query_path(root: Path) -> Path:
@@ -249,6 +255,29 @@ def _schema_aware_query_flow_result(
     question: str,
     llm_error_status: str,
 ) -> _QueryFlowResult:
+    # G1 (#591). `build_query_schema_snapshot` reads both trust-policy files in
+    # its first two statements, so an unreadable one raised straight out of this
+    # function -- a 500 on `POST /ask` and `POST /questions/translate`, and an
+    # unhandled traceback from `verinote query`. All three entry points
+    # (`ask.py`, `translate_questions`, `repair.py`) funnel through here, and the
+    # other two `build_query_schema_snapshot` calls in this module are downstream
+    # of this one, so this is the single upstream point for all of them.
+    #
+    # `translation_failed`, NOT `review_required`: `repair.py` falls through to
+    # `_translate_direct_datalog_fallback` exactly on `review_required`, which
+    # would call `build_query_schema_snapshot` again and re-raise the thing this
+    # guard just caught. It is also already in `QUESTION_STATUSES` and in the
+    # `questions.status` CHECK constraint, so this needs no schema migration --
+    # a dedicated `policy_error` status would be more precise and would cost one.
+    #
+    # `provider_failed` stays False on purpose: no provider was asked. The
+    # producer-side tripwire in tests/test_query.py judges only constructions
+    # inside an `except LLMError:` handler, and this is not one.
+    policy_failure = query_schema_policy_failure(store)
+    if policy_failure is not None:
+        return _QueryFlowResult(
+            "translation_failed", None, _short_reason(policy_failure), policy_failed=True
+        )
     snapshot = build_query_schema_snapshot(store)
     intent = deterministic_query_intent(question)
     deterministic_intent_supported = (
@@ -681,7 +710,40 @@ def translate_questions(
             llm_error_status="translation_failed",
         )
         status, query_dl, reason = flow.status, flow.query_dl, flow.reason
-        store.set_question_query(q["id"], query_dl, status, reason)
+        # G2 (#591). Report the policy failure, but do NOT write it to the row.
+        # The justification is comparative, not a principle: today's unhandled
+        # exception leaves every pending question `pending`, so a guard that
+        # wrote `translation_failed` to each of them would leave the KB in a
+        # worse state than the bug it replaces -- a durable, audited claim that
+        # each question failed translation, when translation was never attempted
+        # and nothing about the questions is wrong. Repairing the file and
+        # re-running then translates them, with no intervening state for the
+        # user to notice and undo.
+        #
+        # This is NOT a rule that an environment fault may never be recorded on a
+        # question row. `web/app.py::_fail_pending_translations` and `cli.py`'s
+        # own missing-credential path both do exactly that, deliberately, and
+        # this change leaves both alone. The inconsistency that leaves --
+        # credentials mark the rows, an unreadable policy file does not -- is
+        # real and is tracked as #592; it is a contract question across three
+        # call sites, not this guard's to settle.
+        #
+        # ONE VERDICT GOVERNS BOTH DECISIONS, and an earlier revision of this
+        # guard got that wrong in the one direction that matters. It read the
+        # policy files once before this loop and suppressed on THAT, while the
+        # flow above re-read them per question. With the files healthy at the
+        # pre-loop read and broken before a question's flow ran, the fresh
+        # verdict said "failed" -- so `translation_failed` and the policy
+        # message went into `status` and `reason` -- while the stale verdict
+        # said "healthy", so the write was not suppressed. Measured: the parent
+        # raised and wrote NOTHING; that revision wrote the failure to every
+        # row. Keying on `flow.policy_failed` is what makes the value written
+        # and the decision to write it come from the same read.
+        #
+        # The result dict is still appended, so the CLI and the web report
+        # normally and no caller's contract changes.
+        if not flow.policy_failed:
+            store.set_question_query(q["id"], query_dl, status, reason)
         results.append(
             {"id": q["id"], "status": status, "query_dl": query_dl, "reason": reason}
         )

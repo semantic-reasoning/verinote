@@ -87,6 +87,7 @@ from verinote.pipeline.policy_state import (
     write_default_policy,
 )
 from verinote.pipeline.query import load_query
+from verinote.pipeline.query_schema import query_schema_policy_failure
 from verinote.pipeline.question_outcome import question_outcome_view
 from verinote.pipeline.ask import ask_question
 from verinote.pipeline.acceptance import (
@@ -106,7 +107,6 @@ from verinote.pipeline.corroboration import (
     store_relation_aliases,
     store_single_valued_conflicts,
     store_typed_relations,
-    TYPED_RELATIONS_RELPATH,
 )
 from verinote.pipeline.workbench import trust_workbench
 from verinote.prompts import (
@@ -1057,41 +1057,6 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     def _relation_aliases_path() -> Path:
         return _active_cfg().root / RELATION_ALIASES_RELPATH
 
-    def _policy_file_failure(read, relpath: str) -> str | None:
-        """Normalise ONE trust-policy file read into a message, or None.
-
-        Shared by both legs of `_trust_policy_failure` because the two files
-        fail the same two ways and must be reported the same two ways. `read` is
-        a zero-argument callable so the try wraps EXACTLY ONE CALL, not a route
-        body, and that call touches no database: `store_relation_aliases` and
-        `store_typed_relations` each read `store.db_path` as an attribute, stat
-        their file, and parse it. So the only thing this can swallow is a
-        failure to read or parse that one file.
-        """
-        try:
-            read()
-        except CorroborationPolicyError as exc:
-            # G1. Already normalised, and its message already begins with the
-            # file's own name (`relation-aliases.md:1: expected …`,
-            # `typed-relations.md: alias 'x' used for both …`). Prefixing it
-            # below would say the file twice, AND would misstate what happened —
-            # the file WAS read; it parsed and failed. That is a false claim
-            # about the system's own state on a user-facing page. Must stay
-            # ABOVE G2.
-            return str(exc)
-        except Exception as exc:  # noqa: BLE001 - normalise every policy-read failure
-            # G2. BROAD, NOT A TYPE LIST. `UnicodeDecodeError` (a file saved as
-            # cp949) descends from `ValueError` as `CorroborationPolicyError`
-            # does but is no subclass of it; `PermissionError` is not a
-            # `ValueError` at all. Same reasoning, and the same shape, as
-            # `extract.py::_relation_aliases_or_error` (#553).
-            #
-            # NAME THE FILE: `str(UnicodeDecodeError)` is a byte offset and no
-            # path, so an unprefixed message put a bare codec complaint about
-            # nothing in particular on the page.
-            return f"{relpath} could not be read: {exc}"
-        return None
-
     def _trust_policy_failure(store: Store) -> str | None:
         """Why this KB's trust policy cannot be applied, or None when it can.
 
@@ -1151,27 +1116,29 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         policy-dependent pipeline function would change signatures shared with
         the CLI, and is a separate refactor.
 
-        NOT EVERY POLICY-DEPENDENT ROUTE CALLS THIS. `POST /ask` and
+        THE LOGIC LIVES IN THE PIPELINE, AND THIS IS A NAME FOR IT. The body
+        was once a copy of `query_schema_policy_failure`; measured, the two were
+        the same function under two names, and the helper each called was
+        AST-identical across the two files. So this delegates rather than
+        repeating, and there is one implementation to keep correct instead of
+        two that can drift. The name and this docstring stay because they are
+        what the web layer's nine call sites read, and because the ordering
+        contract below is a promise those call sites depend on. (Nine is the
+        AST call count, unchanged since `b4dea1b`. An earlier draft said
+        thirteen, which is how many times the identifier appears -- nine calls,
+        this definition, and three mentions in prose.)
+
+        WHY THE IMPLEMENTATION IS OVER THERE RATHER THAN HERE. `POST /ask` and
         `POST /questions/translate` fail for BOTH files inside
         `build_query_schema_snapshot` (`query_schema.py`), which
-        `verinote/cli.py` reaches too, and they have no guard here for either
-        file. `POST /ask` is therefore also the one route where the ordering
-        rule above has nothing upstream of it: everywhere else a tripped guard
-        returns before the typed read can run at all (measured). Both are
-        deferred to #570's follow-up, which already owes their alias half.
+        `verinote/cli.py` reaches too (#591). A guard defined in this module
+        could not reach the CLI; one defined beside the failing statement
+        reaches all three entry points and this one. `POST /ask` is also the one
+        route with no upstream guard of its own: everywhere else a tripped guard
+        returns before the typed read can run at all (measured). #570 is where
+        the deferral was recorded.
         """
-        alias_failure = _policy_file_failure(
-            lambda: store_relation_aliases(store), RELATION_ALIASES_RELPATH
-        )
-        if alias_failure is not None:
-            return alias_failure
-        # Explicit `is not None` rather than `or`: an exception with no args
-        # stringifies to "", which is falsy, and an `or` chain would silently
-        # step past a real alias failure to read a file the user cannot act on
-        # yet.
-        return _policy_file_failure(
-            lambda: store_typed_relations(store), TYPED_RELATIONS_RELPATH
-        )
+        return query_schema_policy_failure(store)
 
     def _relation_aliases_context() -> dict[str, object]:
         """The Settings page's own read of the alias file, plus its own guard.
@@ -1181,8 +1148,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         straight from `_relation_aliases_path()`, which resolves from
         `cfg.root` rather than `store.db_path.parent` — see
         `_trust_policy_failure`'s docstring), so it needs its own read and its
-        own broad `except Exception` around that one `read_text` call (same G2
-        rationale: no database access, only a stat and a read of this file).
+        own broad `except Exception` around that one `read_text` call (the same
+        rationale as G2 in `pipeline/query_schema.py::_policy_file_failure`: no
+        database access, only a stat and a read of this file).
         """
         path = _relation_aliases_path()
         if not path.is_file():
@@ -1211,7 +1179,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             # The file WAS read; it parsed and failed. Keep the parser's own
             # message (already file-and-line-prefixed) rather than wrapping it —
             # wrapping would say the file twice and misstate that it could not be
-            # read at all (same reasoning as G1 above).
+            # read at all -- the same reasoning as G1 in
+            # `pipeline/query_schema.py::_policy_file_failure`, which is where
+            # that clause lives since #591 hoisted it out of this file.
             return {
                 "relation_aliases": text,
                 "relation_aliases_error": str(exc),

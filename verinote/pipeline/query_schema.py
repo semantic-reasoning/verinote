@@ -23,6 +23,9 @@ from verinote.engine.terms import (
     render_term,
 )
 from verinote.pipeline.corroboration import (
+    CorroborationPolicyError,
+    RELATION_ALIASES_RELPATH,
+    TYPED_RELATIONS_RELPATH,
     TypedRelationSpec,
     canonical_relation,
     store_relation_aliases,
@@ -160,6 +163,85 @@ class _Fact:
     relation: TermRef
     object: TermRef
     status: str
+
+
+def _policy_file_failure(read, relpath: str) -> str | None:
+    """Normalise ONE trust-policy file read into a message, or None.
+
+    `read` is a zero-argument callable so the try wraps EXACTLY ONE CALL, and
+    that call touches no database: `store_relation_aliases` and
+    `store_typed_relations` each read `store.db_path` as an attribute, stat
+    their file, and parse it. So the only thing this can swallow is a failure to
+    read or parse that one file.
+
+    THE ONLY COPY. #585 wrote this helper nested inside `create_app`, and #591
+    added a second copy here on the stated ground that the first was "closed
+    over the request context" and so could not be imported. That was false --
+    measured with the symbol table, it closed over nothing; nesting was where it
+    had been typed, not a constraint. The web copy is gone and
+    `web/app.py::_trust_policy_failure` delegates here, so there is no second
+    implementation to keep in step. Do not reintroduce one: the argument for
+    doing so has already been wrong once.
+    """
+    try:
+        read()
+    except CorroborationPolicyError as exc:
+        # G1. Already normalised, and its message already begins with the file's
+        # own name (`relation-aliases.md:1: expected …`, `typed-relations.md:
+        # alias 'x' used for both …`). Prefixing it below would say the file
+        # twice AND would misstate what happened -- the file WAS read; it parsed
+        # and failed. Must stay ABOVE G2.
+        return str(exc)
+    except Exception as exc:  # noqa: BLE001 - normalise every policy-read failure
+        # G2. BROAD, NOT A TYPE LIST. `UnicodeDecodeError` (a file saved as
+        # cp949) descends from `ValueError` as `CorroborationPolicyError` does
+        # but is no subclass of it; `PermissionError` is not a `ValueError` at
+        # all. NAME THE FILE: `str(UnicodeDecodeError)` is a byte offset and no
+        # path.
+        return f"{relpath} could not be read: {exc}"
+    return None
+
+
+def query_schema_policy_failure(store: Store) -> str | None:
+    """Why this KB's trust policy cannot be applied, or None when it can.
+
+    THE NAME RECORDS WHERE THIS LIVES, NOT WHAT MAY USE IT. The question it
+    answers -- can this KB's two trust-policy files be read and parsed? -- is
+    not specific to a schema snapshot, and `web/app.py::_trust_policy_failure`
+    delegates straight to it for the web banners. It is defined here because
+    `build_query_schema_snapshot` reads `policy/relation-aliases.md` and
+    `policy/typed-relations.md` in its first two statements, and either being
+    unreadable raises out of it; three entry points share that statement --
+    `POST /ask`, `POST /questions/translate` and `verinote query` -- and a guard
+    defined in the web layer could not reach the CLI (#591). Renaming it to drop
+    the `query_schema_` prefix would fit its callers better and is deliberately
+    left alone here rather than folded into a fix for something else.
+
+    A plain diagnostic string, not a banner: the return value crosses into
+    `verinote/cli.py`, which has no HTTP vocabulary. Each parser's message
+    already names its own file, so the string carries its own attribution.
+
+    ORDER. Aliases first, typed second, first failure returned. The web banner
+    and the CLI name the same file on a KB with both files broken, and that is
+    now an identity rather than a convention two copies had to keep: there is
+    one implementation. The message says nothing about the file it does not
+    name; it is not a claim that the other file is healthy.
+
+    CHECK-THEN-USE, inherited and not fixed here: this reads the files, then
+    `build_query_schema_snapshot` reads them again. A rewrite in that window
+    still raises. Do not claim atomicity.
+    """
+    alias_failure = _policy_file_failure(
+        lambda: store_relation_aliases(store), RELATION_ALIASES_RELPATH
+    )
+    if alias_failure is not None:
+        return alias_failure
+    # Explicit `is not None` rather than `or`: an exception raised with no
+    # arguments stringifies to "", which is falsy, and an `or` chain would step
+    # past a real alias failure.
+    return _policy_file_failure(
+        lambda: store_typed_relations(store), TYPED_RELATIONS_RELPATH
+    )
 
 
 def build_query_schema_snapshot(

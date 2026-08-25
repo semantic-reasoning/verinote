@@ -3,7 +3,8 @@ r"""A broken `policy/relation-aliases.md` degrades `/`, `/sources`, `/settings`
 instead of 500ing them (#555).
 
 WHY THE MALFORMED TESTS ASSERT THE MESSAGE, NOT THE STATUS. Deleting the narrow
-`except CorroborationPolicyError` clause (G1) inside `_trust_policy_failure`
+`except CorroborationPolicyError` clause (G1) inside
+`verinote/pipeline/query_schema.py::_policy_file_failure`
 does NOT turn any route back into a 500: the malformed case falls through to the
 broad `except Exception` clause (G2) underneath, which also returns a string, so
 every affected route still renders 200 (measured — see plan555.md §2.2/M9,
