@@ -72,14 +72,23 @@ inputs since `ef4b404`, over a POST that 500s whenever
 `auto_accept_recommendations` is on — a default of False is the only reason a
 single-configuration sweep read it as clean.
 
-`/review` and `/workbench` are NOT covered here and are measured to 500 under
-both broken inputs on this commit. `/review` in particular reaches more
-alias-read sites than its traceback names, and for every filter but the default
-the row set itself is alias-derived, since those filters select facts BY trust
-label (#570). That is also why
+`/review` and `/workbench` are covered too, in the Unit E section. `/review`
+degrades TWO different ways and the seam is the filter: on the default filter
+the queue is real (`store.review_queue_page` reads no policy file) and only each
+row's trust signals are withheld, while every other filter — `unsupported`,
+`single-source`, `corroborated`, `conflicted` — selects facts BY the value that
+could not be computed — so the row set, the total and
+the pager are all alias-derived and the route refuses the question instead of
+answering it emptily.
+
+That refusal is why
 `test_dashboard_offers_no_open_button_into_a_not_computed_queue_row` still pins
-the suppressed Open buttons: the `/review?filter=…` and `/workbench` targets it
-names really do still crash under this same file.
+the suppressed Open buttons, on a justification that has changed: those targets
+no longer crash. `/review?filter=unsupported` and `/review?filter=corroborated`
+are two of the filters the route refuses, and `/workbench` withholds
+both its tables — so a button from a "not computed" dashboard row into any of
+them lands on a page that cannot answer the question the row poses. The button
+is still not offered, now for a measured reason rather than an inherited one.
 
 `store_typed_relations` (`policy/typed-relations.md`) is untouched by both
 issues, and its blast radius grew with #570 rather than staying put:
@@ -282,11 +291,23 @@ def test_a_healthy_alias_file_still_shows_the_dashboard_corroboration_table(
 def test_dashboard_offers_no_open_button_into_a_not_computed_queue_row(
     malformed_client,
 ):
-    """MUST-FIX-2 (#555 fix-round gate). Before this, a degraded row still
-    carried a live `Open` button into `/review?filter=…` or `/workbench`, which
-    are measured to 500 under this same broken alias file (#570). The banner
-    explains the degradation; a live button into a crash from that same page is
-    the "looks healthy, isn't" shape criterion 3 exists to prevent."""
+    """MUST-FIX-2 (#555 fix-round gate). Before #555, a degraded row still
+    carried a live `Open` button into `/review?filter=…` or `/workbench`.
+
+    THE REASON HAS CHANGED AND THE TEST HAS NOT. When this was written those two
+    targets 500ed, and a live button into a crash is the "looks healthy, isn't"
+    shape criterion 3 exists to prevent. #570 guarded them, so they are now 200
+    — and the suppression still stands, for a reason that is now measured rather
+    than inherited: `unsupported` and `corroborated` are both filters `/review`
+    REFUSES under a broken alias file, because each selects facts by a
+    trust label that was not computed, and `/workbench` withholds both its
+    tables. A button from a "not computed" row into any of the three would land
+    on a page that cannot answer the question that row poses.
+
+    The two alias-INDEPENDENT rows keep their buttons, and one of them is the
+    check that this is not a blanket suppression: `/review` (unfiltered) is
+    offered here and, since #570, answers at 200 with its real queue.
+    """
     r = malformed_client.get("/")
     for href in ("/review?filter=unsupported", "/review?filter=corroborated", "/workbench"):
         assert f'<a class="btn ghost" href="{href}">Open</a>' not in r.text
@@ -1281,3 +1302,381 @@ def test_a_broken_alias_file_stops_the_auto_accept_pass_rather_than_running_it_o
     r = client.post("/facts/3/accept")
     assert r.status_code == 200
     assert app.state.store.get_fact(2)["status"] == "needs_review"
+
+
+# ---------------------------------------------------------------------------
+# Unit E (#570) -- the review surface: GET /review, on the default filter and
+# on each trust-label filter, and GET /workbench.
+# ---------------------------------------------------------------------------
+
+REVIEW_FILTER_NAV = '<nav class="filters"'
+WORKBENCH_H1 = "<h1>Trust workbench</h1>"
+REVIEW_SHOWING_NONE = "Showing 0 of 0 review facts"
+REVIEW_NO_MATCH = "No facts match this filter."
+REVIEW_PAGINATION = '<nav class="pagination"'
+REVIEW_FILTER_REFUSAL = (
+    "This filter selects facts by trust label, which is not computed"
+)
+WORKBENCH_NO_CORROBORATION = (
+    "No facts are corroborated by multiple distinct sources."
+)
+WORKBENCH_NO_CONFLICTS = "No source-backed single-valued conflicts."
+
+
+def _empty_queue_client(tmp_path: Path, alias_bytes: bytes | None) -> TestClient:
+    """A `/review` whose queue is deliberately empty -- see the test that uses it
+    for why that is an instrument rather than an oversight."""
+    root = _make_kb(tmp_path)
+    cfg = Config(
+        root=root,
+        db_path=root / "kb.sqlite",
+        provider="anthropic",
+        model="m",
+        api_key=None,
+        base_url=None,
+    )
+    app = create_app(cfg)
+    store = app.state.store
+    source_id = store.add_source("sources/a.txt")
+    store.add_fact(
+        "A", "소속", "B", status="confirmed", confidence=0.9, source_id=source_id
+    )
+    if alias_bytes is not None:
+        path = root / RELATION_ALIASES_RELPATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(alias_bytes)
+    return TestClient(app, raise_server_exceptions=False)
+
+
+@pytest.fixture
+def corroborated_client(tmp_path: Path) -> TestClient:
+    """A KB whose `/workbench` renders a real corroboration table on a healthy
+    alias file.
+
+    `_open_app`'s KB cannot serve as the workbench anti-vacuity control: it has
+    one source, so nothing is corroborated by two distinct sources and a healthy
+    `/workbench` shows the same empty-state prose a withheld one would have to
+    avoid (measured). Here `A/소속/B` from `a.txt` and `A/member_of/B` from
+    `b.txt` are one canonical triple *because of the user's alias line*, which is
+    what puts a `<table class="counts">` on the healthy page.
+    """
+    root = _make_kb(tmp_path)
+    app = create_app(
+        Config(
+            root=root,
+            db_path=root / "kb.sqlite",
+            provider="anthropic",
+            model="m",
+            api_key=None,
+            base_url=None,
+        )
+    )
+    store = app.state.store
+    source_a = store.add_source("sources/a.txt")
+    source_b = store.add_source("sources/b.txt")
+    store.add_fact(
+        "A", "소속", "B", status="confirmed", confidence=0.9, source_id=source_a
+    )
+    store.add_fact(
+        "A", "member_of", "B", status="confirmed", confidence=0.9, source_id=source_b
+    )
+    store.add_fact(
+        "C", "소속", "D", status="needs_review", confidence=0.5, source_id=source_a
+    )
+    path = root / RELATION_ALIASES_RELPATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(HEALTHY_BYTES)
+    return TestClient(app, raise_server_exceptions=False)
+
+
+# --- GET /review, default filter -------------------------------------------
+
+
+def test_review_survives_a_malformed_alias_file_and_keeps_the_parser_message(
+    malformed_client,
+):
+    r = malformed_client.get("/review")
+    assert r.status_code == 200
+    assert PARSER_MSG in r.text
+    assert NAMED not in r.text
+
+
+def test_review_survives_a_cp949_alias_file_and_names_the_file(cp949_client):
+    r = cp949_client.get("/review")
+    assert r.status_code == 200
+    assert NAMED in r.text
+
+
+def test_review_stays_up_with_an_empty_queue_under_a_broken_alias_file(tmp_path):
+    """The `/review` route guard's own test, and the ONLY fixture in which its
+    failure is observable.
+
+    STATUS-ONLY, PERMANENTLY. Do not add a message or banner assertion here.
+    The banner is a separate guard, and asserting its text would make this test
+    redden when the banner is deleted too — which is exactly the uniqueness this
+    test exists to have. Assert the status and nothing else.
+
+    THIS FIXTURE IS DELIBERATELY EMPTY -- one `confirmed` fact and no
+    `needs_review` fact -- and adding a `needs_review` fact destroys what the
+    test pins, silently, without reddening anything. AC-4 (every `/review`
+    fixture must contain a `needs_review` fact) has been ruled by its own author
+    NOT to govern this test: AC-4 exists to stop a *degradation* assertion
+    passing vacuously on a queue that never reaches `_fact_row_context`, and this
+    test asserts no degradation. It asserts that the route survives at all, and a
+    populated queue provably cannot pin that. The carve-out is this one test
+    wide; AC-4 still governs every other `/review` test in this file.
+
+    The measurement, verbatim, because someone re-deriving this in six months
+    needs the evidence rather than the conclusion:
+
+        A-G1 deleted, B-G1 intact, queue populated=True   -> GET /review = 500
+        A-G1 deleted, B-G1 intact, queue populated=False  -> GET /review = 200
+
+    On a populated queue the fact-row guard's site (`fact_trust_summary`, via
+    `_fact_row_context`) is reached and its deletion 500s the page, so every
+    populated-queue `/review` test is reddened by that guard too. On an empty
+    queue that site is never reached, while this route's own site
+    (`accept_recommendations_for`, which builds its engine off the alias file
+    before it looks at a single id) still is.
+    """
+    client = _empty_queue_client(tmp_path, MALFORMED_BYTES)
+    assert client.get("/review").status_code == 200
+
+
+def test_review_still_lists_the_queue_rows_and_withholds_only_their_trust(
+    malformed_client,
+):
+    """`store.review_queue_page` reads no policy file, so the rows on the default
+    filter are the KB's real ones — only the trust signals on them are withheld.
+    A guard that dropped the queue as well would pass every status assertion and
+    tell the user their review queue was empty."""
+    r = malformed_client.get("/review")
+    assert 'id="fact-2"' in r.text
+    assert ROW_NOT_COMPUTED in r.text
+
+
+def test_the_review_fixture_actually_reaches_a_fact_row(healthy_client):
+    """AC-4's control, paired with the test above: a `/review` whose queue never
+    reaches the row partial would pass the degradation tests against a half-fix.
+    Asserted on the HEALTHY client so it measures the fixture, not the guard."""
+    r = healthy_client.get("/review")
+    assert r.status_code == 200
+    assert 'id="fact-2"' in r.text
+    assert "Showing 1-1 of 1" in r.text
+
+
+# --- GET /review, the trust-label filters ----------------------------------
+
+
+def test_a_trust_label_filter_stays_up_and_keeps_its_filter_nav(malformed_client):
+    """The filter-refusal guard's own test, and the assertion is chosen so that
+    no template deletion can redden it.
+
+    The filter nav sits above the banner, the toolbar, the status line, both
+    pagination calls and the queue block, and is built from static labels — so it
+    renders on every degraded page and survives the deletion of every template
+    guard on it — the banner, the pager block and the queue block. It is also green under the fact-row guard's
+    deletion, because with `queue = None` no row context is ever built. That
+    leaves the route's own refusal as the only deletion that reddens it.
+    """
+    r = malformed_client.get("/review?filter=unsupported")
+    assert r.status_code == 200
+    assert REVIEW_FILTER_NAV in r.text
+
+
+def test_the_filtered_page_reports_no_total_it_did_not_compute(malformed_client):
+    """The pager guard's own test. With `pager = None` and no guard, Jinja
+    renders `{{ pager.start }}` as '' and iterates `pager.pages` as empty without
+    raising, so the page comes back 200 saying it is showing 0 of 0 review facts
+    — a count of a queue nobody built — with a pagination nav offering Previous
+    and Next through it.
+
+    Both strings are asserted because the guard has two halves (the
+    toolbar-and-status block, and the two `review_pages(pager)` calls) and
+    deleting either alone would otherwise be silent.
+    """
+    r = malformed_client.get("/review?filter=unsupported")
+    assert REVIEW_SHOWING_NONE not in r.text
+    assert REVIEW_PAGINATION not in r.text
+
+
+def test_the_filtered_page_does_not_claim_the_filter_matched_nothing(
+    malformed_client,
+):
+    """The queue guard's own test. `{% if queue %}` alone cannot tell `None` from
+    an empty list, so it falls through to "No facts match this filter." — a claim
+    about which facts carry this trust label, made about a label that was never
+    computed.
+
+    The refusal sentence lives in this block and only in this block, so it is
+    asserted here and nowhere else; putting it in the pager block too would leave
+    it on the page when either block alone is deleted.
+    """
+    r = malformed_client.get("/review?filter=unsupported")
+    assert REVIEW_NO_MATCH not in r.text
+    assert REVIEW_FILTER_REFUSAL in r.text
+
+
+@pytest.mark.parametrize("alias_bytes, present, absent", BROKEN_INPUTS)
+def test_the_filtered_page_names_the_alias_failure(
+    tmp_path, alias_bytes, present, absent
+):
+    """The review banner's own test. On this page the banner is the sole carrier
+    of the reason: `review.html`'s only `{% include "partials/fact_row.html" %}`
+    sits inside `{% for row in queue %}`, and with `queue = None` that loop never
+    runs, so the fragment's own reason line renders nowhere."""
+    client = _client(tmp_path, alias_bytes)
+    r = client.get("/review?filter=unsupported")
+    assert r.status_code == 200
+    assert present in r.text
+    assert absent not in r.text
+
+
+def test_a_healthy_alias_file_still_filters_the_review_queue_by_trust_label(
+    healthy_client,
+):
+    """Anti-vacuity control for the filter tests above: a route that refused the
+    filter unconditionally would pass all of them.
+
+    `unsupported` is the only non-vacuous choice on this fixture. `single-source`,
+    `corroborated` and `conflicted` each render `Showing 0 of 0` *and* "No facts
+    match this filter." on a HEALTHY file (measured, each of the four named here),
+    so swapping the
+    filter here would make this control itself vacuous.
+    """
+    r = healthy_client.get("/review?filter=unsupported")
+    assert r.status_code == 200
+    assert 'id="fact-2"' in r.text
+    assert "Showing 1-1 of 1" in r.text
+
+
+def test_a_healthy_review_page_still_carries_its_accept_recommendations(
+    healthy_client,
+):
+    """The review guard's RECOMMENDATION half, on the over-application axis its
+    deletion test cannot reach.
+
+    That guard does two things when the file is broken: it withholds the accept
+    recommendations and it withholds each row's trust. Mutating it to "never
+    compute recommendations at all" is invisible to every other test here — the
+    healthy control above pins the queue and the total, both of which are
+    alias-independent, and the degraded tests pin strings that are absent either
+    way.
+
+    Same conjunction caveat as the fact-row equivalent: the caution chips are
+    rendered inside the trust arm of `fact_row.html`, so this asserts that trust
+    AND recommendations were computed, not recommendations alone.
+    """
+    r = healthy_client.get("/review")
+    assert r.status_code == 200
+    assert RECOMMENDATION_REASON in r.text
+
+
+# --- GET /workbench ---------------------------------------------------------
+
+
+@pytest.mark.parametrize("alias_bytes, present, absent", BROKEN_INPUTS)
+def test_workbench_stays_up_under_a_broken_alias_file(
+    tmp_path, alias_bytes, present, absent
+):
+    """The workbench route guard's own test, and like the filter nav the
+    assertion is chosen to be above every template guard: the `<h1>` precedes
+    the banner, the corroborated-table branch and the conflicts-table branch, so
+    no template deletion can redden it.
+
+    Parametrized over both inputs deliberately. This is the only place either
+    input's *status* on `/workbench` is asserted — the banner test below asserts
+    the message, and a message assertion only implies a 200 rather than pinning
+    it.
+    """
+    del present, absent
+    client = _client(tmp_path, alias_bytes)
+    r = client.get("/workbench")
+    assert r.status_code == 200
+    assert WORKBENCH_H1 in r.text
+
+
+@pytest.mark.parametrize("alias_bytes, present, absent", BROKEN_INPUTS)
+def test_workbench_names_the_alias_failure(tmp_path, alias_bytes, present, absent):
+    """The workbench banner's own test. `workbench.html` contains no
+    `{% include %}` at all, so unlike the review queue there is no fragment that
+    could carry the reason instead — the banner is its only possible source."""
+    client = _client(tmp_path, alias_bytes)
+    r = client.get("/workbench")
+    assert present in r.text
+    assert absent not in r.text
+
+
+# The two tables below get one test each, not one test asserting both. They are
+# separately deletable `{% if workbench is none %}` branches, and folded into a
+# single test each deletion reddens the same one — which leaves the two
+# indistinguishable in the falsifiability matrix even though either can be got
+# wrong on its own. The occurrence count keeps its own test for the same reason:
+# it reddens under both, so holding it alongside either table's assertion would
+# take that table's uniqueness away again.
+
+
+def test_the_workbench_does_not_deny_corroboration_it_never_computed(
+    malformed_client,
+):
+    """`workbench.corroborated` on a `None` workbench is falsy Undefined rather
+    than a raise, so without its `is none` branch the page renders 200 asserting
+    that no fact is corroborated by multiple distinct sources — over a KB whose
+    corroboration was never computed. One of the exact falsehoods #555 removed
+    from the dashboard."""
+    r = malformed_client.get("/workbench")
+    assert WORKBENCH_NO_CORROBORATION not in r.text
+
+
+def test_the_workbench_does_not_deny_conflicts_it_never_searched_for(
+    malformed_client,
+):
+    """The same shape one table down, and a separate deletion: the conflicts
+    section's `{% else %}` claims there are no source-backed single-valued
+    conflicts, about a search that never ran."""
+    r = malformed_client.get("/workbench")
+    assert WORKBENCH_NO_CONFLICTS not in r.text
+
+
+def test_both_withheld_workbench_tables_say_they_were_not_computed(
+    malformed_client,
+):
+    """The positive half of the corroboration and conflicts tests above: each
+    withheld table must say so
+    rather than silently rendering nothing, which would read as a page with no
+    findings."""
+    r = malformed_client.get("/workbench")
+    assert r.text.count(DOSSIER_NOT_COMPUTED) == 2
+
+
+def test_a_healthy_alias_file_still_shows_the_workbench_tables(corroborated_client):
+    """Anti-vacuity control for the test above: a route that withheld the tables
+    unconditionally would also pass it. Uses the two-source fixture, because on a
+    single-source KB the healthy page shows the same empty-state prose the
+    degraded page must avoid."""
+    r = corroborated_client.get("/workbench")
+    assert r.status_code == 200
+    assert '<table class="counts">' in r.text
+    assert WORKBENCH_NO_CORROBORATION not in r.text
+    assert DOSSIER_NOT_COMPUTED not in r.text
+
+
+# --- AC-3: the control on a guarded page must not lead to a crash -----------
+
+
+def test_the_dashboard_open_button_into_the_review_queue_reaches_a_working_page(
+    malformed_client,
+):
+    """AC-3, asserted as a path rather than as two independent facts.
+
+    #555 guarded `/` and left this Open button live over a `/review` that 500ed:
+    the dashboard rendered honestly at 200 and its own control crashed. Every
+    other test here requests `/review` directly, which cannot see that — a route
+    can be non-500 on a direct request while the page that links to it never
+    offers the link, and it could equally be offered while broken. This walks the
+    one step: read the button off the dashboard, then follow it.
+    """
+    dashboard = malformed_client.get("/")
+    assert dashboard.status_code == 200
+    assert '<a class="btn ghost" href="/review">Open</a>' in dashboard.text
+    assert malformed_client.get("/review").status_code == 200

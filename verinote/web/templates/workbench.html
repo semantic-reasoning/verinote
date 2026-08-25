@@ -4,8 +4,24 @@
 <h1>Trust workbench</h1>
 <p class="muted">Source-backed corroboration and single-valued conflicts for reviewed engine-input facts.</p>
 
+{# #570. A GUARD, and this template's ONLY possible carrier of the reason: it
+   contains no `{% include %}` at all, so unlike the review queue there is no
+   fragment that could say it instead. Deleting this leaves a page that withholds
+   both tables and never says why. #}
+{% if alias_error %}
+<p class="error" role="alert">{{ alias_error }} Both tables below are withheld, because they
+  would have been computed under different alias rules than this KB's file specifies. Fix it on
+  <a href="/settings">Settings</a>.</p>
+{% endif %}
+
 <h2>Corroborated facts <span class="muted">- grouped by normalized SPO</span></h2>
-{% if workbench.corroborated %}
+{# `is none` first, and it is not the same test as the `{% else %}` below.
+   `workbench.corroborated` on a `None` workbench is falsy Undefined rather than a
+   raise, so without this branch the page renders the empty-state prose -- a
+   measured claim about corroboration over a KB nothing analysed. #}
+{% if workbench is none %}
+<p class="muted">Not computed — see the alias-file notice above.</p>
+{% elif workbench.corroborated %}
 <table class="counts">
   <thead><tr><th>Normalized fact</th><th>Source support</th><th>Facts</th></tr></thead>
   <tbody>
@@ -52,7 +68,11 @@
 {% endif %}
 
 <h2>Single-valued conflicts <span class="muted">- engine-input facts only</span></h2>
-{% if workbench.conflicts %}
+{# Same shape, second table: its `{% else %}` claims there are no source-backed
+   single-valued conflicts, over a search that never ran. #}
+{% if workbench is none %}
+<p class="muted">Not computed — see the alias-file notice above.</p>
+{% elif workbench.conflicts %}
 <table class="counts">
   <thead><tr><th>Subject / relation</th><th>Competing values</th><th>Related candidates</th></tr></thead>
   <tbody>
