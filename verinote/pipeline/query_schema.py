@@ -23,7 +23,7 @@ from verinote.engine.terms import (
     render_term,
 )
 from verinote.pipeline.corroboration import (
-    CorroborationPolicyError,
+    policy_file_failure,
     RELATION_ALIASES_RELPATH,
     TYPED_RELATIONS_RELPATH,
     TypedRelationSpec,
@@ -165,43 +165,6 @@ class _Fact:
     status: str
 
 
-def _policy_file_failure(read, relpath: str) -> str | None:
-    """Normalise ONE trust-policy file read into a message, or None.
-
-    `read` is a zero-argument callable so the try wraps EXACTLY ONE CALL, and
-    that call touches no database: `store_relation_aliases` and
-    `store_typed_relations` each read `store.db_path` as an attribute, stat
-    their file, and parse it. So the only thing this can swallow is a failure to
-    read or parse that one file.
-
-    THE ONLY COPY. #585 wrote this helper nested inside `create_app`, and #591
-    added a second copy here on the stated ground that the first was "closed
-    over the request context" and so could not be imported. That was false --
-    measured with the symbol table, it closed over nothing; nesting was where it
-    had been typed, not a constraint. The web copy is gone and
-    `web/app.py::_trust_policy_failure` delegates here, so there is no second
-    implementation to keep in step. Do not reintroduce one: the argument for
-    doing so has already been wrong once.
-    """
-    try:
-        read()
-    except CorroborationPolicyError as exc:
-        # G1. Already normalised, and its message already begins with the file's
-        # own name (`relation-aliases.md:1: expected …`, `typed-relations.md:
-        # alias 'x' used for both …`). Prefixing it below would say the file
-        # twice AND would misstate what happened -- the file WAS read; it parsed
-        # and failed. Must stay ABOVE G2.
-        return str(exc)
-    except Exception as exc:  # noqa: BLE001 - normalise every policy-read failure
-        # G2. BROAD, NOT A TYPE LIST. `UnicodeDecodeError` (a file saved as
-        # cp949) descends from `ValueError` as `CorroborationPolicyError` does
-        # but is no subclass of it; `PermissionError` is not a `ValueError` at
-        # all. NAME THE FILE: `str(UnicodeDecodeError)` is a byte offset and no
-        # path.
-        return f"{relpath} could not be read: {exc}"
-    return None
-
-
 def query_schema_policy_failure(store: Store) -> str | None:
     """Why this KB's trust policy cannot be applied, or None when it can.
 
@@ -231,7 +194,7 @@ def query_schema_policy_failure(store: Store) -> str | None:
     `build_query_schema_snapshot` reads them again. A rewrite in that window
     still raises. Do not claim atomicity.
     """
-    alias_failure = _policy_file_failure(
+    alias_failure = policy_file_failure(
         lambda: store_relation_aliases(store), RELATION_ALIASES_RELPATH
     )
     if alias_failure is not None:
@@ -239,7 +202,7 @@ def query_schema_policy_failure(store: Store) -> str | None:
     # Explicit `is not None` rather than `or`: an exception raised with no
     # arguments stringifies to "", which is falsy, and an `or` chain would step
     # past a real alias failure.
-    return _policy_file_failure(
+    return policy_file_failure(
         lambda: store_typed_relations(store), TYPED_RELATIONS_RELPATH
     )
 

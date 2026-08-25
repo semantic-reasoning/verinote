@@ -23,7 +23,12 @@ from verinote.engine.terms import (
     terms_equal,
 )
 from verinote.engine.wirelog import answer_bucket_sort_key, answer_qid
-from verinote.pipeline.corroboration import CorroborationPolicyError
+from verinote.pipeline.corroboration import (
+    CorroborationPolicyError,
+    RELATION_ALIASES_RELPATH,
+    policy_file_failure,
+    store_relation_aliases,
+)
 from verinote.pipeline.engine_input import engine_relation_rows
 from verinote.pipeline.query import load_query
 from verinote.pipeline.trust import fact_trust_summary
@@ -119,6 +124,32 @@ def _excluded_by_status(store: Store) -> tuple[tuple[str, int], ...]:
 def report_trace(store: Store) -> ReportTrace:
     by_status = _excluded_by_status(store)
     excluded = sum(count for _, count in by_status)
+    # #590. `/report` calls this independently of `verify()`, so it needs the
+    # same pre-flight: `load_query` reads the alias file, and the narrow clause
+    # below catches only the parse class. Returns exactly what that clause's
+    # fallback returns -- the store-derived exclusion counts survive, because
+    # they read no policy file and are true either way.
+    #
+    # THE ALIAS READER ONLY, and NOT because this module is innocent of the
+    # typed file -- it is not. `_trace_fact` calls `fact_trust_summary`, which
+    # reads BOTH policy files, so on a KB whose report has a traceable answer a
+    # broken `typed-relations.md` raises out of here. That is #595, it predates
+    # this guard (measured identically on `c0dd1cc`), and widening this
+    # pre-flight would REPLACE the 500 with a silent false negative rather than
+    # fix it: the page then answers 200, still renders the answer, and prints
+    # "No direct relation fact traces are available for these report rows" --
+    # with no banner, no "Not computed", and no mention of the file that failed.
+    # That is the searched-and-found-nothing verdict the `{% elif policy_error %}`
+    # arm in `report.html` exists to prevent, reached from the other side.
+    # The alias file is what this guard is for; the typed read is #595's.
+    if policy_file_failure(
+        lambda: store_relation_aliases(store), RELATION_ALIASES_RELPATH
+    ) is not None:
+        return ReportTrace(
+            answers=(),
+            excluded_review_count=excluded,
+            excluded_by_status=by_status,
+        )
     try:
         query = load_query(store)
     except CorroborationPolicyError:
