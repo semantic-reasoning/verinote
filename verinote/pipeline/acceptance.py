@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Iterable
-import unicodedata
 
 from verinote.pipeline.corroboration import (
     canonical_relation,
@@ -13,6 +12,7 @@ from verinote.pipeline.corroboration import (
     store_functional_relations,
     store_relation_aliases,
     store_typed_relations,
+    typed_spec_for_canonical,
     TypedRelationSpec,
 )
 from verinote.pipeline.policy_state import assert_writable
@@ -372,7 +372,7 @@ def _view_fact(
 ) -> _FactView:
     relation = str(row["relation"])
     canonical = canonical_relation(relation, aliases)
-    spec = _typed_spec(canonical, typed)
+    spec = _typed_spec(canonical, typed, aliases)
     object_key, typed_normalization = _object_key(str(row["object"]), spec)
     return _FactView(
         id=int(row["id"]),
@@ -390,9 +390,9 @@ def _view_fact(
 
 
 def _typed_spec(
-    relation: str, typed: dict[str, TypedRelationSpec]
+    relation: str, typed: dict[str, TypedRelationSpec], aliases: dict[str, str]
 ) -> TypedRelationSpec | None:
-    return typed.get(relation) or typed.get(unicodedata.normalize("NFC", relation))
+    return typed_spec_for_canonical(typed, relation, aliases)
 
 
 def _object_key(

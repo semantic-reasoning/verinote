@@ -7,82 +7,86 @@ are deliberately NOT parametrizations of each other. Read the four paragraphs
 below before adding to either: three of them are measurements that make an
 "obvious" simplification of this file silently stop proving anything.
 
-WHY THE MALFORMED INPUT IS A DUPLICATE ALIAS AND NOT A SYNTAX ERROR.
-`relation_aliases` raises on the first line it cannot parse. `typed_relations`
-does the opposite: a line that does not match `_TYPED_REL_RE`, or whose type tag
-is outside `_TYPED_TYPES = {date, number, ordinal, amount}`, hits `continue` --
-no error, no 500, the declaration is just dropped. Measured on this tree by
-calling the parser directly:
+WHY THE MALFORMED INPUT IS A DUPLICATE ALIAS, AND WHY THE REASON HAS CHANGED.
+When this file was written `typed_relations` was the opposite of its sibling: a
+line that did not match `_TYPED_REL_RE`, or whose type tag was outside
+`_TYPED_TYPES = {date, number, ordinal, amount}`, hit `continue` and the
+declaration was dropped with no error and no 500. So a test that planted the
+alias file's malformed bytes here saw 200, passed, and pinned NOTHING -- the
+file had parsed cleanly to `{}`. `TYPED_DUP_ALIAS` below is a duplicate alias
+for that reason.
 
-    "- 소속 member_of"            (the alias file's MALFORMED_BYTES)  -> {}
-    "- 설립일: colour as founded" (unknown type tag)                  -> {}
-    "- 자본금: amount as capital
-     - 자산: amount as capital"   (duplicate alias)                   -> RAISES
+#589 closed that path. A line that is neither blank nor a `#` comment must now
+parse, which is `relation_aliases`' rule adopted rather than re-invented.
+SEVEN conditions raise, and this list is not maintained by hand --
+`test_the_raise_conditions_are_derived_from_the_source_not_listed_by_hand`
+derives them from `corroboration.py` by AST and fails if this paragraph stops
+naming one of them:
 
-Exactly four SEMANTIC conditions raise: a duplicate alias, units on a non-amount
-type, a unit pair with no `=`, and a non-numeric unit value. So a test that
-plants the alias file's malformed bytes here sees 200, passes, and pins
-NOTHING -- the file parsed cleanly to `{}`. `TYPED_DUP_ALIAS` below is a
-duplicate alias for that reason, and
-`test_a_typo_in_typed_relations_is_silently_ignored_rather_than_reported`
-pins the distinction so a later edit cannot quietly promote the typo case into
-the malformed slot and make this whole file vacuous.
+    unparseable line, unknown type tag, duplicate alias, units on a
+    non-`amount` type, malformed unit pair, non-numeric unit value,
+    invalid unit mapping
 
-WHY THE FIXTURE IS AN `amount` DECLARATION ON AN UNALIASED RELATION NAME.
-Two separate constraints, and the second one is the trap.
+Blanks, `#` comments and `##` markdown headings are still tolerated -- headings
+survive because they begin with `#`.
 
+THE COUNT HAS BEEN WRONG TWICE AND BOTH TIMES IT WAS WRONG WHEN WRITTEN, not
+stale. #585 said "exactly four SEMANTIC conditions"; five raised on the tree it
+described. #589 replaced it with six; seven raised. The omission was the same
+one both times -- `invalid unit mapping`, which `_parse_amount_units` raises on
+an empty unit name, a non-integral value, or a value <= 0. A hand-written list
+rots exactly the way a count does, which is why one is derived now instead.
+
+So the hazard that shaped this file is gone: no non-comment input degrades
+silently to `{}` any more, and the malformed slot cannot be quietly filled with
+something vacuous. What still needs pinning is narrower, and
+`test_the_parser_reports_a_typo_instead_of_dropping_it` carries it: the
+duplicate-alias message differs from the unparseable-line message, so asserting
+the MESSAGE keeps `TYPED_DUP_ALIAS` tied to the condition it is named for
+rather than to "something raised".
+
+WHY THE FIXTURE IS AN `amount` DECLARATION.
 The TYPE has to be `amount` because it is the only one of the four that makes
 this fixture's two objects one value: `normalize_typed_value` maps both `1억`
 and `100000000원` to `100000000`, while `date`, `number` and `ordinal` each
 return `None` for BOTH of them, leaving two unrelated raw keys. Every
 corroboration control below rests on that merge.
 
-The declared NAME has to be one the alias table leaves alone, and this part is
-type-independent. `typed_relations()` keys its dict on the RAW name written in
-the file, but `fact_trust_summary` canonicalizes before looking it up --
-`relation = canonical_relation(display.relation, aliases)`, then
-`_typed_spec(typed, relation)`. A declaration whose name appears in the alias
-table is therefore stored under a key it is never read back by, and is dropped
-without a word. Each row below fixes a type AND an object and varies only the
-declared name, so the two results in a row differ in exactly one thing. The
-object is named in every row because the result depends on it as much as on the
-type and the name; a row giving only a type and a name is not a controlled
-comparison, which is the defect an earlier draft of this table carried. The
-objects differ between rows because each row's object is one its own type
-normalizes: `'2020.03.01'` as a date, `'1억'` as an amount, `'3'` as a number,
-`'3위'` as an ordinal. Every `None` in the aliased column is the same `None`:
-`fact_trust_summary` found no declaration under `established_on`, so there is
-no typed summary at all, rather than a summary carrying a null value. A
-declaration on `설립일` is stored under key `설립일` and looked up under
-`established_on`; one on `자본금` is stored and looked up under `자본금`:
+THE DECLARED NAME NO LONGER MATTERS, AND RETIRING THAT RULE IS #589's POINT.
+Until #589 the name also had to be one the alias table leaves alone.
+`typed_relations()` keys its dict on the RAW name written in the file, while
+every consumer canonicalizes before looking it up, so a declaration whose name
+appears in the alias table was stored under a key it was never read back by and
+was dropped without a word. This paragraph carried a four-row table of `None`s
+showing exactly that. #589 made every consumer resolve through the alias table,
+so the two columns now agree -- re-derived here, declaration and fact sharing
+the name in each column:
 
-    type     object         on '설립일' (aliased)  on '자본금' (unaliased)
-    date     '2020.03.01'   None                  20200301
-    amount   '1억'           None                  100000000
-    number   '3'            None                  3000
-    ordinal  '3위'           None                  3
+    type     object         declared on 설립일   declared on 자본금
+    date     '2020.03.01'   20200301             20200301
+    amount   '1억'          100000000            100000000
+    number   '3'            3000                 3000
+    ordinal  '3위'          3                    3
 
-Declaring `date` on the canonical `established_on`, with the fact's relation
-still `설립일` and the object still `'2020.03.01'`, yields 20200301 -- the
-mechanism, not merely the absence.
+Declaring `date` on the canonical `established_on` while the fact's relation is
+still `설립일` also yields 20200301, as it did before -- that path was never the
+broken one.
 
-`설립일` is `DEFAULT_RELATION_ALIASES`' own mapping to `established_on`, so this
-bites a KB with NO alias file too: an absent file yields the packaged defaults,
-not an empty table. The declaration under test below is on `자본금`, which is
-absent from those 36 entries, and that absence is the only reason it observes
-anything at all -- a declaration on any label the table does name would be
-dropped instead, whatever its type.
+So the prohibition that stood here -- do not "simplify" the fixture to a
+relation name `DEFAULT_RELATION_ALIASES` canonicalizes -- is RETIRED, not
+relaxed. The configuration it forbade now works, and a warning left standing
+would send the next reader hunting a defect that is fixed. The `amount`
+constraint above is the one that still binds, and it is unaffected: it is about
+which type merges two objects, not about which names resolve.
 
 An earlier draft of this paragraph said `date` never surfaces a `typed_value`
 and blamed the type. It had measured only `설립일` declarations, so it read the
 alias mismatch as a property of `date`; `date` in fact normalizes every
 well-formed input that draft listed -- `2020.03.01`, `2020-03-01`, `2020/3/1`,
-`date(2020,3,1)` and `2020.03`, each to 20200301. So do not "simplify" the fixture
-to a relation name `DEFAULT_RELATION_ALIASES` canonicalizes -- of ANY type --
-or every healthy control and every AC-2 control here silently stops proving
-anything. The silent drop is itself a state-honesty defect with no 500 attached,
-out of #585's scope and tracked as #589, which treats it and the unparseable-line
-drop above as one defect.
+`date(2020,3,1)` and `2020.03`, each to 20200301. That record is kept because
+the lesson outlived the bug it was about: the variable that draft failed to hold
+constant was the LABEL, not the type, and the same confound produced the wrong
+severity story in #589's own plan two revisions running.
 
 WHY THE GUARD HAS TO CARRY ITS OWN MARKER, AND CANNOT PIN ITSELF ON THE VALUE.
 `policy_defaults.py` defines `DEFAULT_RELATION_ALIASES` and no
@@ -136,13 +140,22 @@ rule in `_trust_policy_failure` has nothing above it there.
 import re
 from pathlib import Path
 
+import ast
+import inspect
+import pathlib
+
 import pytest
 
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
 from verinote.config import Config
-from verinote.pipeline.corroboration import typed_relations
+from verinote.pipeline import corroboration
+from verinote.store import Store
+from verinote.pipeline.corroboration import (
+    CorroborationPolicyError,
+    typed_relations,
+)
 from verinote.policy_defaults import RELATION_ALIASES_RELPATH, TYPED_RELATIONS_RELPATH
 from verinote.web import create_app
 
@@ -156,12 +169,18 @@ TYPED_PARSER_MSG = "typed-relations.md: alias"
 TYPED_NAMED = f"{TYPED_RELATIONS_RELPATH} could not be read"
 
 TYPED_HEALTHY = "- 자본금: amount as capital\n".encode()
-# Raises `CorroborationPolicyError`. See the module docstring: the alias file's
-# malformed input parses to `{}` here and would prove nothing.
+# Raises `CorroborationPolicyError`. See the module docstring: this input was
+# chosen when it was the ONLY class that raised here. Since #589 the alias
+# file's malformed bytes raise too, so what keeps this fixture honest is the
+# MESSAGE its tests assert, not the fact that it raises at all.
 TYPED_DUP_ALIAS = "- 자본금: amount as capital\n- 자산: amount as capital\n".encode()
 TYPED_CP949 = "- 자본금: amount as capital\n".encode("cp949")
-# Parses to `{}` -- used ONLY by the silent-skip test, never as a broken input.
+# Parsed to `{}` until #589; now raises with the unparseable-line message, which
+# is a DIFFERENT string from `TYPED_DUP_ALIAS`'. Kept out of `BROKEN_INPUTS` on
+# purpose: the tests below use it to pin that the two conditions stay
+# distinguishable, which is the job the old silent-skip test used to do.
 TYPED_TYPO = "- 소속 member_of\n".encode()
+TYPED_TYPO_MSG = "typed-relations.md:1: expected"
 ALIAS_HEALTHY = "- 소속 -> member_of\n".encode()
 
 # (typed bytes, message that must be present, message that must be absent).
@@ -378,34 +397,144 @@ def test_an_absent_typed_relations_file_is_not_treated_as_a_failure(
     assert 'class="error"' not in r.text
 
 
-def test_a_typo_in_typed_relations_is_silently_ignored_rather_than_reported():
-    """C-1, at the parser, so the reason this file's malformed input is a
-    duplicate alias is recorded next to the evidence for it.
+def test_the_parser_reports_a_typo_instead_of_dropping_it():
+    """C-1, at the parser. INVERTED BY #589 -- this test asserted the opposite.
 
-    A later edit that "simplifies" `TYPED_DUP_ALIAS` to the alias file's
-    malformed bytes would leave every test above green and pinning nothing.
-    This test fails the moment those two inputs stop being different classes.
+    It used to assert `typed_relations(TYPED_TYPO) == {}`, and its job was to
+    keep `TYPED_DUP_ALIAS` from being "simplified" into a silent input that
+    would leave the whole file vacuous. That hazard no longer exists: nothing
+    non-comment degrades to `{}`.
+
+    The job that remains is to keep the two conditions DISTINGUISHABLE, because
+    "both raise" is now the weaker fact. Each is pinned on its own message, so
+    swapping one fixture for the other still reddens something.
     """
-    assert typed_relations(TYPED_TYPO.decode()) == {}
-    assert typed_relations("- 설립일: colour as founded_on\n") == {}
-    with pytest.raises(Exception) as excinfo:
+    with pytest.raises(CorroborationPolicyError) as typo:
+        typed_relations(TYPED_TYPO.decode())
+    assert TYPED_TYPO_MSG in str(typo.value)
+
+    with pytest.raises(CorroborationPolicyError) as duplicate:
         typed_relations(TYPED_DUP_ALIAS.decode())
-    assert "used for both" in str(excinfo.value)
+    assert "used for both" in str(duplicate.value)
+
+    assert TYPED_TYPO_MSG not in str(duplicate.value)
+
+
+RAISE_CONDITIONS = {
+    "unparseable line":       ("- 소속 member_of\n",              "expected `- name : type as alias`"),
+    "unknown type tag":       ("- x: colour as y\n",              "unknown type"),
+    "duplicate alias":        ("- 자본금: amount as capital\n- 자산: amount as capital\n", "used for both"),
+    "units on a non-`amount` type": ("- x: date as y (원=1)\n",   "units are only valid for amount"),
+    "malformed unit pair":    ("- x: amount as y (원)\n",         "malformed unit pair"),
+    "non-numeric unit value": ("- x: amount as y (원=abc)\n",     "non-numeric unit value"),
+    "invalid unit mapping":   ("- x: amount as y (=5)\n",         "invalid unit mapping"),
+}
+
+
+def _parser_raise_sites() -> list[tuple[str, int]]:
+    """Every `raise` reachable from `typed_relations`, transitively, from source.
+
+    Transitive rather than a scan of one function, so a raise added in a NEW
+    helper is still counted. Scoped by reachability rather than by grepping the
+    filename: `_refuse_canonical_collisions` raises a message beginning
+    `typed-relations.md` too, but it is called from `store_typed_relations` and
+    is not a parse condition, so a filename grep returns eight and this returns
+    the seven that belong to the parser.
+    """
+    source = inspect.getsource(corroboration)
+    tree = ast.parse(source)
+    functions = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    seen: set[str] = set()
+    stack = ["typed_relations"]
+    sites: list[tuple[str, int]] = []
+    while stack:
+        name = stack.pop()
+        if name in seen or name not in functions:
+            continue
+        seen.add(name)
+        for node in ast.walk(functions[name]):
+            if isinstance(node, ast.Raise):
+                sites.append((name, node.lineno))
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                stack.append(node.func.id)
+    return sorted(sites, key=lambda site: site[1])
+
+
+def test_the_raise_conditions_are_derived_from_the_source_not_listed_by_hand():
+    """THE TRIPWIRE UNDER THIS FILE'S ENUMERATION, and the reason it exists.
+
+    The count in the module docstring has been wrong twice, and both times it
+    was wrong WHEN WRITTEN rather than having gone stale: #585 said four when
+    five raised, #589 said six when seven did, omitting `invalid unit mapping`
+    both times. Three gates read that paragraph across eight revisions without
+    catching it. So the list is not trusted -- it is checked against the source.
+
+    Adding a raise to the parser without adding a case here reddens the count
+    assertion; adding a case without naming it in the module docstring reddens
+    the last one. That is the closed property underneath an open-looking set:
+    the raise SITES are derivable even though the conditions are not.
+    """
+    sites = _parser_raise_sites()
+    assert len(sites) == len(RAISE_CONDITIONS), (
+        f"{len(sites)} raise sites reachable from `typed_relations` but "
+        f"{len(RAISE_CONDITIONS)} conditions listed here: {sites}"
+    )
+    # Whitespace-normalised: the docstring wraps the list across lines, and the
+    # claim under test is that it NAMES each condition, not how it wraps them.
+    prose = " ".join(__doc__.split())
+    for label, (text, needle) in RAISE_CONDITIONS.items():
+        with pytest.raises(CorroborationPolicyError) as excinfo:
+            typed_relations(text)
+        assert needle in str(excinfo.value), label
+        assert label in prose, f"the module docstring no longer names {label!r}"
+
+
+def test_an_unknown_type_tag_is_reported_not_skipped():
+    """#589's SECOND raise, pinned apart from the first on purpose.
+
+    `- x: colour as y` MATCHES `_TYPED_REL_RE`; only the type tag is wrong. So
+    it is refused by a different branch than an unparseable line, and reverting
+    either branch alone leaves the other one raising. Asserted in its own test
+    because the matrix showed that folding it in with the unparseable case left
+    this branch pinned by nothing: every test that covered it covered the other
+    branch too, so deleting this raise reddened only tests that would have gone
+    red anyway.
+
+    Matching the shape is also why refusing it is safe: a line this close to a
+    declaration cannot be mistaken for prose the user never meant as one.
+    """
+    with pytest.raises(CorroborationPolicyError) as excinfo:
+        typed_relations("- 설립일: colour as founded_on\n")
+    message = str(excinfo.value)
+    assert "unknown type 'colour'" in message
+    assert TYPED_TYPO_MSG not in message
+
+
+def test_comments_and_blanks_and_markdown_headings_still_parse():
+    """The tolerance half of #589's rule, which is what makes it the SIBLING's
+    rule rather than a stricter one invented here. A parser that raised on
+    these would break every policy file with a heading in it."""
+    assert typed_relations("## Types\n\n# a note\n") == {}
+    assert typed_relations("- 자본금: amount as capital  # trailing note\n") != {}
 
 
 @pytest.mark.parametrize("method, path, kwargs", BODY_ENDPOINTS)
-def test_a_typod_declaration_renders_no_banner_because_nothing_failed(
+def test_a_typod_declaration_now_renders_the_banner_it_used_to_suppress(
     tmp_path, method, path, kwargs
 ):
-    """The page half of the test above. A dropped declaration is a real
-    state-honesty defect -- trust is computed under rules the user believes they
-    configured -- but it is not this issue's, and reporting it through THIS
-    guard would mean claiming a file that was read and parsed could not be. It
-    is one of the two silent-drop paths #589 tracks."""
+    """The page half, INVERTED BY #589 -- it asserted no banner on every page.
+
+    The old rationale was that reporting a dropped declaration through THIS
+    guard would mean claiming a file that was read and parsed could not be read.
+    #589 removed the premise rather than the objection: the file no longer
+    parses, so the banner is not a false claim about it -- it names a line the
+    parser refused. The page still answers 200, which is the part of #585's
+    guarantee that must survive a change like this.
+    """
     r = _request(_client(tmp_path, TYPED_TYPO), method, path, kwargs)
     assert r.status_code == 200
-    assert TYPED_RELATIONS_RELPATH not in r.text
-    assert 'class="error"' not in r.text
+    assert TYPED_TYPO_MSG in r.text
+    assert TYPED_NAMED not in r.text
 
 
 # ---------------------------------------------------------------------------
@@ -667,8 +796,15 @@ def test_the_sources_post_redirects_land_on_a_page_that_survives(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "alias_bytes, alias_marker",
+    [
+        pytest.param("- 소속 member_of\n".encode(), "relation-aliases.md:1:", id="alias-malformed"),
+        pytest.param("- 소속 -> member_of\n".encode("cp949"), RELATION_ALIASES_RELPATH, id="alias-cp949"),
+    ],
+)
 def test_both_policy_files_broken_names_one_and_claims_nothing_about_the_other(
-    tmp_path,
+    tmp_path, alias_bytes, alias_marker
 ):
     """`_trust_policy_failure` checks the alias file first and returns on the
     first failure, so with both files broken the page names
@@ -679,13 +815,134 @@ def test_both_policy_files_broken_names_one_and_claims_nothing_about_the_other(
     exist -- the banners said the values "would have been computed under
     different ALIAS RULES than this KB's file specifies", which on a KB with two
     broken files named the wrong cause.
+
+    THE CP949 ARM COVERS THE ORDERING, NOT THE TOLERANCE CLAUSE -- and saying so
+    matters, because it was added believing it did the latter. Both arms pass
+    whether `store_typed_relations`' alias-read tolerance catches one exception
+    class or all of them, MEASURED by narrowing it back and re-running: 99
+    passed either way. The reason is this route: `_trust_policy_failure` reads
+    the alias file FIRST and returns, so the page never reaches
+    `store_typed_relations` at all. Every page-level probe inherits that
+    pre-check, so no test driven through a route can pin what happens when the
+    typed guard runs without it. `test_the_typed_guard_never_names_its_own_file_for_an_alias_failure`
+    below is the pin that can, and it is deliberately NOT a route test.
     """
-    body = _build(
-        tmp_path, TYPED_DUP_ALIAS, alias_bytes="- 소속 member_of\n".encode()
-    )[0].get("/sources").text
-    assert "relation-aliases.md:1:" in body
+    body = _build(tmp_path, TYPED_DUP_ALIAS, alias_bytes=alias_bytes)[0].get("/sources").text
+    assert alias_marker in body
     assert TYPED_RELATIONS_RELPATH not in body
     assert "alias rules" not in body
+
+
+def _own_calls(node: ast.AST, name: str) -> list[int]:
+    """Calls to ``name`` in this function's OWN body, excluding nested ``def``s.
+
+    Excluding the nested spans is the whole point. `ast.walk` descends into
+    inner functions, so a scan that does not exclude them credits an OUTER
+    function with its inner one's calls -- which is exactly how the comment
+    this test replaces came to say eight callers when there are seven. The
+    eighth was `create_app`, which does not call it; `_source_trust_rollup`,
+    nested inside it, does.
+
+    A `lambda` is deliberately NOT excluded, and the distinction is load-bearing
+    here rather than pedantic: `query_schema_policy_failure` passes
+    `lambda: store_typed_relations(store)` to the guard, and that lambda runs in
+    its enclosing function's scope, on that function's alias read. Crediting it
+    to the enclosing `def` is what makes the property mean what it says. A
+    nested `def` is a separate callable that could be invoked from anywhere, so
+    it is counted on its own.
+    """
+    nested = [
+        (inner.lineno, inner.end_lineno)
+        for inner in ast.walk(node)
+        if isinstance(inner, (ast.FunctionDef, ast.AsyncFunctionDef)) and inner is not node
+    ]
+    return [
+        sub.lineno
+        for sub in ast.walk(node)
+        if isinstance(sub, ast.Call)
+        and getattr(sub.func, "id", None) == name
+        and not any(start <= sub.lineno <= end for start, end in nested)
+    ]
+
+
+def test_every_typed_reader_reads_the_alias_file_itself():
+    """#589. The property that licenses `store_typed_relations`' broad `except`.
+
+    That function reads the alias file to refuse canonical collisions, and
+    swallows ANY failure of that read rather than reporting the alias file's
+    problem under the typed file's name. Swallowing is safe only because every
+    caller reads the alias file itself and will report the failure against the
+    right file -- so this checks that, rather than trusting a sentence.
+
+    Derived, not listed: the caller set comes from the source, so a NEW caller
+    that skipped the alias read reddens here instead of quietly making the
+    comment in `corroboration.py` false.
+    """
+    package = pathlib.Path(corroboration.__file__).parent.parent
+    callers: list[tuple[str, bool]] = []
+    for path in sorted(package.rglob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        if "store_typed_relations(" not in source:
+            continue
+        for node in ast.walk(ast.parse(source)):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if node.name == "store_typed_relations":
+                continue
+            if not _own_calls(node, "store_typed_relations"):
+                continue
+            callers.append(
+                (f"{path.relative_to(package)}::{node.name}",
+                 bool(_own_calls(node, "store_relation_aliases")))
+            )
+
+    assert callers, "no callers found -- the derivation itself is broken"
+    offenders = [name for name, reads_alias in callers if not reads_alias]
+    assert not offenders, (
+        "these read the typed file without reading the alias file, so a "
+        f"swallowed alias failure would go unreported: {offenders}"
+    )
+
+
+def test_the_typed_guard_never_names_its_own_file_for_an_alias_failure(tmp_path):
+    """#589. The typed guard applied WITHOUT an alias pre-check ahead of it.
+
+    `store_typed_relations` reads the alias file since #589, to refuse two
+    declarations that canonicalise to one relation. So it can now fail for a
+    reason that belongs to the OTHER file, and a guard wrapping it would name
+    `typed-relations.md` for an alias problem -- with a byte offset from a file
+    it is not talking about.
+
+    ITS TOLERANCE CLAUSE MUST CATCH EVERY CLASS, not just the policy one. A
+    malformed alias file raises `CorroborationPolicyError`; a cp949 one raises
+    `UnicodeDecodeError`, a SIBLING of `ValueError` and not a policy error at
+    all. The narrow form let the second through, and this test reddens on the
+    cp949 row under it -- measured, which is the whole reason it exists rather
+    than a parametrized arm on a route test: every route reads the alias file
+    first, so no page can reach this.
+
+    The healthy row is the anti-vacuity control: it proves the guard returns
+    `None` because nothing failed, not because the assertion cannot fire.
+    """
+    for label, alias_bytes in (
+        ("malformed", "- 소속 member_of\n".encode()),
+        ("cp949", "- 소속 -> member_of\n".encode("cp949")),
+        ("healthy", "- 소속 -> member_of\n".encode()),
+    ):
+        root = tmp_path / label
+        policy = root / "policy"
+        policy.mkdir(parents=True)
+        (policy / "relation-aliases.md").write_bytes(alias_bytes)
+        (policy / TYPED_RELATIONS_RELPATH.split("/")[-1]).write_text(
+            "- 자본금 : amount as capital\n", encoding="utf-8"
+        )
+        store = Store(root / "kb.sqlite")
+        store.init_schema()
+        failure = corroboration.policy_file_failure(
+            lambda: corroboration.store_typed_relations(store),
+            TYPED_RELATIONS_RELPATH,
+        )
+        assert failure is None, f"{label}: typed guard reported {failure!r}"
 
 
 def test_repairing_the_alias_file_reveals_the_typed_failure_without_a_500(tmp_path):
