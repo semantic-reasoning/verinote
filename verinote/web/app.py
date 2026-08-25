@@ -106,6 +106,7 @@ from verinote.pipeline.corroboration import (
     store_relation_aliases,
     store_single_valued_conflicts,
     store_typed_relations,
+    TYPED_RELATIONS_RELPATH,
 )
 from verinote.pipeline.workbench import trust_workbench
 from verinote.prompts import (
@@ -1056,44 +1057,29 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     def _relation_aliases_path() -> Path:
         return _active_cfg().root / RELATION_ALIASES_RELPATH
 
-    def _relation_alias_failure(store: Store) -> str | None:
-        """Why this KB's alias file cannot be applied, or None when it can.
+    def _policy_file_failure(read, relpath: str) -> str | None:
+        """Normalise ONE trust-policy file read into a message, or None.
 
-        Calls `store_relation_aliases` — the function the routes' own failures
-        come out of — rather than re-reading the file here. `store_relation_aliases`
-        resolves `store.db_path.parent / RELATION_ALIASES_RELPATH`, which agrees
-        with `_relation_aliases_path()` (`_active_cfg().root / …`) for every
-        `Config.for_root`, but the two are independent `Config` fields, so a guard
-        that re-derived the path could clear one file while the route read the
-        other and still 500 (#555).
-
-        This call's own read happens chronologically FIRST (measured: it runs
-        before any pipeline function does, since the route calls it before
-        computing anything alias-dependent) — but it is not the ONLY read. When
-        the file is healthy, the route's own pipeline functions
-        (`store_corroboration`, `trust_workbench`, `fact_trust_summary`, …) each
-        call `store_relation_aliases` again themselves; this call does not
-        replace those reads or cache the result for them, and it is not a fix
-        for the check-then-use gap that leaves: a rewrite between this call and
-        the route's own reads still 500s. Freezing one read and threading it
-        through every alias-dependent pipeline function would change signatures
-        shared with the CLI, and is a separate refactor.
-
-        The broad clause below wraps EXACTLY ONE CALL, not a route body, and that
-        call touches no database: `store_relation_aliases` reads `store.db_path` as
-        an attribute, stats the file, and parses it. So the only thing this can
-        swallow is a failure to read or parse that one file.
+        Shared by both legs of `_trust_policy_failure` because the two files
+        fail the same two ways and must be reported the same two ways. `read` is
+        a zero-argument callable so the try wraps EXACTLY ONE CALL, not a route
+        body, and that call touches no database: `store_relation_aliases` and
+        `store_typed_relations` each read `store.db_path` as an attribute, stat
+        their file, and parse it. So the only thing this can swallow is a
+        failure to read or parse that one file.
         """
         try:
-            store_relation_aliases(store)
+            read()
         except CorroborationPolicyError as exc:
             # G1. Already normalised, and its message already begins with the
-            # file name (`relation-aliases.md:1: expected …`). Prefixing it below
-            # would say the file twice, AND would misstate what happened — the
-            # file WAS read; it parsed and failed. That is a false claim about the
-            # system's own state on a user-facing page. Must stay ABOVE G2.
+            # file's own name (`relation-aliases.md:1: expected …`,
+            # `typed-relations.md: alias 'x' used for both …`). Prefixing it
+            # below would say the file twice, AND would misstate what happened —
+            # the file WAS read; it parsed and failed. That is a false claim
+            # about the system's own state on a user-facing page. Must stay
+            # ABOVE G2.
             return str(exc)
-        except Exception as exc:  # noqa: BLE001 - normalise every alias-read failure
+        except Exception as exc:  # noqa: BLE001 - normalise every policy-read failure
             # G2. BROAD, NOT A TYPE LIST. `UnicodeDecodeError` (a file saved as
             # cp949) descends from `ValueError` as `CorroborationPolicyError`
             # does but is no subclass of it; `PermissionError` is not a
@@ -1103,17 +1089,98 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             # NAME THE FILE: `str(UnicodeDecodeError)` is a byte offset and no
             # path, so an unprefixed message put a bare codec complaint about
             # nothing in particular on the page.
-            return f"{RELATION_ALIASES_RELPATH} could not be read: {exc}"
+            return f"{relpath} could not be read: {exc}"
         return None
+
+    def _trust_policy_failure(store: Store) -> str | None:
+        """Why this KB's trust policy cannot be applied, or None when it can.
+
+        TWO FILES, ONE SIGNAL. `fact_trust_summary`, `_source_trust_rollup`,
+        `trust_workbench` and `store_single_valued_conflicts` each read BOTH
+        `policy/relation-aliases.md` and `policy/typed-relations.md`, and either
+        one being unreadable 500s them identically. (`store_corroboration` is
+        the one trust function that reads only the alias file — which is why
+        this is a guard on the callers, not a claim that every trust-derived
+        value depends on both files.) The question every caller asks is the same
+        ("can this KB's trust policy be applied?") and the consequence is the
+        same (withhold every trust-derived value), so it is one string rather
+        than two flags. Each parser's message already names its own file, so the
+        returned string carries the attribution without a second value to
+        thread (#585).
+
+        ORDER, AND WHAT THE MESSAGE DOES NOT SAY. Aliases are checked first,
+        typed relations second, and the FIRST failure is what comes back. So
+        when both files are broken the page names the alias file and says
+        nothing at all about the typed one — not that it is healthy. Callers
+        and templates must not turn "the message names one file" into "the
+        other file is fine": repairing the named file can surface a second
+        failure on a page that had been answering 200. That is not a defect
+        being hidden, it is the only ordering available without reading a file
+        the first failure already made irrelevant, and it is why no banner this
+        value feeds claims any file is readable.
+
+        WHY THIS GUARD CARRIES ITS OWN MARKER RATHER THAN CHECKING THE VALUE.
+        On the alias side, degrading means computing under
+        `DEFAULT_RELATION_ALIASES` — a value the user demonstrably does not
+        have, because the delta from the defaults is the only reason their file
+        exists. There is no `DEFAULT_TYPED_RELATIONS`: `store_typed_relations`
+        returns `{}` when the file is absent, which is the normal state of most
+        KBs. So a typed failure degraded to `{}` renders BYTE-IDENTICALLY to a
+        healthy KB that declares no typed relations, and no assertion on the
+        rendered value could tell them apart. The withheld state has to be
+        signalled by this value being non-None, never inferred from the numbers
+        (#585).
+
+        Both calls resolve their file as `store.db_path.parent / <relpath>`,
+        which agrees with `_relation_aliases_path()` (`_active_cfg().root / …`)
+        for every `Config.for_root`, but the two are independent `Config`
+        fields, so a guard that re-derived the path could clear one file while
+        the route read the other and still 500 (#555). Calling the pipeline
+        functions the routes' own failures come out of is what keeps them
+        agreeing.
+
+        These reads happen chronologically FIRST (measured: they run before any
+        pipeline function does, since the route calls this before computing
+        anything policy-dependent) — but they are not the ONLY reads. When the
+        files are healthy, the route's own pipeline functions
+        (`store_corroboration`, `trust_workbench`, `fact_trust_summary`, …) read
+        both files again themselves; this call does not replace those reads or
+        cache the result for them, and it is not a fix for the check-then-use
+        gap that leaves: a rewrite between this call and the route's own reads
+        still 500s. Freezing one read and threading it through every
+        policy-dependent pipeline function would change signatures shared with
+        the CLI, and is a separate refactor.
+
+        NOT EVERY POLICY-DEPENDENT ROUTE CALLS THIS. `POST /ask` and
+        `POST /questions/translate` fail for BOTH files inside
+        `build_query_schema_snapshot` (`query_schema.py`), which
+        `verinote/cli.py` reaches too, and they have no guard here for either
+        file. `POST /ask` is therefore also the one route where the ordering
+        rule above has nothing upstream of it: everywhere else a tripped guard
+        returns before the typed read can run at all (measured). Both are
+        deferred to #570's follow-up, which already owes their alias half.
+        """
+        alias_failure = _policy_file_failure(
+            lambda: store_relation_aliases(store), RELATION_ALIASES_RELPATH
+        )
+        if alias_failure is not None:
+            return alias_failure
+        # Explicit `is not None` rather than `or`: an exception with no args
+        # stringifies to "", which is falsy, and an `or` chain would silently
+        # step past a real alias failure to read a file the user cannot act on
+        # yet.
+        return _policy_file_failure(
+            lambda: store_typed_relations(store), TYPED_RELATIONS_RELPATH
+        )
 
     def _relation_aliases_context() -> dict[str, object]:
         """The Settings page's own read of the alias file, plus its own guard.
 
-        Deliberately NOT `_relation_alias_failure` + `store_relation_aliases`:
+        Deliberately NOT `_trust_policy_failure` + `store_relation_aliases`:
         this route never calls `store_relation_aliases` (it reads the file
         straight from `_relation_aliases_path()`, which resolves from
         `cfg.root` rather than `store.db_path.parent` — see
-        `_relation_alias_failure`'s docstring), so it needs its own read and its
+        `_trust_policy_failure`'s docstring), so it needs its own read and its
         own broad `except Exception` around that one `read_text` call (same G2
         rationale: no database access, only a stat and a read of this file).
         """
@@ -1524,27 +1591,34 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             view[f"{field}_kind"] = term_input_kind(term)
         return view
 
-    def _fact_row_context(fact, recommendations=None, *, alias_error: str | None):
-        """Row context. `alias_error` withholds every alias-derived signal (#570).
+    def _fact_row_context(fact, recommendations=None, *, policy_error: str | None):
+        """Row context. `policy_error` withholds every trust-derived signal (#570).
 
-        `alias_error` is REQUIRED and keyword-only on purpose. The recurring
-        defect here is a caller that reaches an alias read without guarding it
-        (#570 trap 1): a defaulted parameter turns the next such caller into a
+        `policy_error` is REQUIRED and keyword-only on purpose. The recurring
+        defect here is a caller that reaches a policy-file read without guarding
+        it (#570 trap 1): a defaulted parameter turns the next such caller into a
         silent 500 in production, a required one turns it into a `TypeError` at
         the call site.
 
         When it is set, `trust` and `recommendation` are `None` rather than
-        computed anyway. `store_relation_aliases` returns
+        computed anyway, and the two files reach that conclusion by different
+        routes. `store_relation_aliases` returns
         `merge_default_relation_aliases(user_aliases)`, so the delta between the
         user's file and the defaults is exactly their custom entries — i.e. the
         only reason the file exists. A badge computed without them is a number
         about a KB nobody has, rendered in the same badges a healthy KB uses.
+        `store_typed_relations` has no defaults to fall back to: it degrades to
+        `{}`, which is exactly what a KB with no typed declarations returns, so
+        a badge computed without that file is INDISTINGUISHABLE from a healthy
+        one and nothing in the render could give it away (#585). Either way the
+        answer is to withhold, not to approximate.
+
         `None` is also what lets `fact_row.html` say "not computed" instead of
         borrowing the `trust unavailable` verdict below it, which means
         something else and something measured: this fact has no trust summary.
         """
         view = _fact_view(fact)
-        if alias_error is None:
+        if policy_error is None:
             trust = fact_trust_summary(_active_store(), int(fact["id"])) if fact else None
             if fact and recommendations is None:
                 recommendations = accept_recommendations(_active_store())
@@ -1557,7 +1631,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             "trust": trust,
             "recommendation": recommendation,
             "actionable": bool(fact and is_actionable_fact_status(fact["status"])),
-            "alias_error": alias_error,
+            "policy_error": policy_error,
         }
 
     def _actionable_fact_or_error(fact_id: int):
@@ -1569,22 +1643,24 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         return fact
 
     def _maybe_apply_auto_accept(
-        exclude_fact_ids: tuple[int, ...] = (), *, alias_error: str | None
+        exclude_fact_ids: tuple[int, ...] = (), *, policy_error: str | None
     ) -> list:
-        """Run the auto-accept pass, unless the alias file cannot be read (#570).
+        """Run the auto-accept pass, unless a trust-policy file cannot be read.
 
-        The only guard in this change that stops a WRITE.
+        The only guard in this change that stops a WRITE (#570).
         `apply_auto_accept_recommendations` promotes facts to `accepted` and
-        retracts lapsed ones, and it decides which by reading the alias file. A
-        pass run while that file is unreadable would rewrite the KB's review
-        state under `merge_default_relation_aliases(...)` — rules the user did
-        not configure. A badge computed on the wrong rules is re-rendered on the
-        next request; a status transition is committed and audited.
+        retracts lapsed ones, and it decides which by reading BOTH policy files
+        (`acceptance.py::_engine` reads the alias file and the typed file on
+        consecutive lines). A pass run while either is unreadable would rewrite
+        the KB's review state under rules the user did not configure — the
+        packaged alias defaults, or no typed declarations at all. A badge
+        computed on the wrong rules is re-rendered on the next request; a status
+        transition is committed and audited.
 
-        `alias_error` is required and keyword-only for the same reason as on
+        `policy_error` is required and keyword-only for the same reason as on
         `_fact_row_context`.
         """
-        if alias_error is not None:
+        if policy_error is not None:
             return []
         if _active_cfg().auto_accept_recommendations:
             return apply_auto_accept_recommendations(
@@ -1592,12 +1668,12 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             )
         return []
 
-    def _row(request: Request, fact, *, alias_error: str | None):
+    def _row(request: Request, fact, *, policy_error: str | None):
         # Starlette's current API is TemplateResponse(request, name, context).
         return templates.TemplateResponse(
             request,
             "partials/fact_row.html",
-            _fact_row_context(fact, alias_error=alias_error),
+            _fact_row_context(fact, policy_error=policy_error),
         )
 
     def _row_after_decision(
@@ -1630,18 +1706,19 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         letting it promote everything else — for the one decision that parks a
         fact back in the tier auto-accept harvests from (see `toggle`).
         """
-        # One alias read per decision POST, threaded into both the auto-accept
-        # pass and the row render, rather than one per consumer (#570).
-        alias_error = _relation_alias_failure(_active_store())
+        # One policy-file check per decision POST, threaded into both the
+        # auto-accept pass and the row render, rather than one per consumer
+        # (#570).
+        policy_error = _trust_policy_failure(_active_store())
         excluded = () if rule_may_act or acted_fact_id is None else (acted_fact_id,)
         applied = (
-            _maybe_apply_auto_accept(excluded, alias_error=alias_error) if decided else []
+            _maybe_apply_auto_accept(excluded, policy_error=policy_error) if decided else []
         )
         if acted_fact_id is not None:
             refreshed = _active_store().get_fact(acted_fact_id)
             if refreshed is not None:
                 fact = refreshed
-        response = _row(request, fact, alias_error=alias_error)
+        response = _row(request, fact, policy_error=policy_error)
         if any(rec.fact_id != acted_fact_id for rec in applied):
             response.headers["HX-Refresh"] = "true"
         return response
@@ -1817,16 +1894,18 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         )
 
     def _source_inspector_rows(
-        store: Store, *, alias_error: str | None
+        store: Store, *, policy_error: str | None
     ) -> list[dict[str, object]]:
         facts = store.facts()
-        # Compute the rollup only when the alias file is usable — an alias_error
-        # means `_source_trust_rollup` would 500 the same way this route used to
-        # (#555). One `store.facts()` scan either way: passing `alias_error` in and
-        # branching here, rather than a caller-side `None if alias_error else
+        # Compute the rollup only when both trust-policy files are usable — a
+        # `policy_error` means `_source_trust_rollup` would 500 the same way this
+        # route used to (#555 for the alias file, #585 for the typed one, which
+        # it reads on the next line).
+        # One `store.facts()` scan either way: passing `policy_error` in and
+        # branching here, rather than a caller-side `None if policy_error else
         # _source_trust_rollup(store, store.facts())`, avoids a second full scan on
         # every healthy request.
-        trust_rollup = None if alias_error else _source_trust_rollup(store, facts)
+        trust_rollup = None if policy_error else _source_trust_rollup(store, facts)
         rows = []
         for source in store.sources_with_counts():
             row = dict(source)
@@ -1931,17 +2010,19 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         return ("raw", obj)
 
     def _dashboard_queues(
-        store: Store, *, alias_error: str | None
+        store: Store, *, policy_error: str | None
     ) -> list[dict[str, object]]:
-        # `jobs` and `recent_lifecycle` are alias-independent (measured, #555 M5) and
-        # keep their real counts either way. The other four rows depend on
-        # `fact_trust_summary`, `trust_workbench`, or `store_corroboration` — all
-        # alias-dependent — so when the file cannot be applied they show `None`
+        # `jobs` and `recent_lifecycle` are policy-file-independent (measured,
+        # #555 M5) and keep their real counts either way. The other four rows
+        # depend on `fact_trust_summary`, `trust_workbench`, or
+        # `store_corroboration` — every one of which reads the alias file, and
+        # the first two the typed file as well — so when either file cannot be
+        # applied they show `None`
         # (rendered as "not computed" by the template) rather than a count computed
         # under rules the user did not configure, or a false `0`.
         jobs = store.source_extraction_jobs()
         recent_lifecycle = store.count_facts_with_events(("amended", "reanalyzed"))
-        if alias_error is None:
+        if policy_error is None:
             review_summaries = [
                 fact_trust_summary(store, int(fact["id"])) for fact in store.review_queue()
             ]
@@ -2007,17 +2088,17 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             return _kb_select(request, error=error, status_code=status_code)
         store = _active_store()
         cfg = _active_cfg()
-        alias_error = _relation_alias_failure(store)
+        policy_error = _trust_policy_failure(store)
         counts = store.status_counts()
         # `counts`, `total`, `engine_input`, `sources`, `coverage` are all
-        # alias-independent (measured, #555 M5) and keep their real values even
-        # when the alias file is broken. `corroboration` and
-        # `single_valued_conflicts` are alias-dependent; `None` (not `[]`) so the
+        # policy-file-independent (measured, #555 M5) and keep their real values
+        # even when a policy file is broken. `corroboration` reads the alias
+        # file and `single_valued_conflicts` reads both; `None` (not `[]`) so the
         # template can tell "not computed" apart from "computed, and empty" —
         # `[]` would render the same "No source-backed …" prose a healthy KB with
         # nothing to show gets, which is a false statement about a KB that was
         # never analysed.
-        if alias_error is None:
+        if policy_error is None:
             corroboration = store_corroboration(store)
             single_valued_conflicts = store_single_valued_conflicts(store)
         else:
@@ -2038,8 +2119,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 "coverage": coverage(store, root=cfg.root),
                 "corroboration": corroboration,
                 "single_valued_conflicts": single_valued_conflicts,
-                "queues": _dashboard_queues(store, alias_error=alias_error),
-                "alias_error": alias_error,
+                "queues": _dashboard_queues(store, policy_error=policy_error),
+                "policy_error": policy_error,
                 "provider": app.state.cfg.provider,
                 "provider_label": PROVIDER_LABELS.get(
                     app.state.cfg.provider, app.state.cfg.provider
@@ -2055,7 +2136,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         if app.state.store is None:
             return _kb_select(request, error=error, status_code=status_code)
         store = _active_store()
-        alias_error = _relation_alias_failure(store)
+        policy_error = _trust_policy_failure(store)
         jobs = store.source_extraction_jobs()
         latest_job_ids = latest_source_job_ids(jobs)
         # A superseded `pending` row is dead work, and counting it here is what
@@ -2066,11 +2147,11 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             request,
             "sources.html",
             {
-                "sources": _source_inspector_rows(store, alias_error=alias_error),
+                "sources": _source_inspector_rows(store, policy_error=policy_error),
                 "suffixes": ", ".join(sorted(supported_suffixes())),
                 "accept": ",".join(sorted(supported_suffixes())),
                 "error": error,
-                "alias_error": alias_error,
+                "policy_error": policy_error,
                 "jobs": jobs,
                 "has_running_jobs": has_running_jobs,
                 "chunk_chars": app.state.cfg.extraction_chunk_chars,
@@ -2727,10 +2808,10 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         # nothing left in the review tier confirms nothing, so the POST decided
         # nothing and the rule stays out of it.
         if accepted:
-            # The alias file is read here rather than at the top of the route:
-            # a source with nothing left in the review tier never runs the pass,
-            # so it owes no read (#570).
-            _maybe_apply_auto_accept(alias_error=_relation_alias_failure(store))
+            # The policy files are read here rather than at the top of the
+            # route: a source with nothing left in the review tier never runs
+            # the pass, so it owes no read (#570).
+            _maybe_apply_auto_accept(policy_error=_trust_policy_failure(store))
         return RedirectResponse("/sources", status_code=303)
 
     @app.post("/sources/{source_id}/delete", response_class=HTMLResponse)
@@ -2767,13 +2848,13 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     ):
         store = _active_store()
         active_filter = _active_review_filter(filter)
-        alias_error = _relation_alias_failure(store)
-        if alias_error is not None and active_filter != "needs-human-decision":
+        policy_error = _trust_policy_failure(store)
+        if policy_error is not None and active_filter != "needs-human-decision":
             # #570. Every filter but `needs-human-decision` — `unsupported`,
             # `single-source`, `corroborated`, `conflicted` — selects facts BY the value that
             # could not be computed: `_review_page` runs `fact_trust_summary`
             # over the whole queue and keeps the ids whose labels match. So the
-            # row set, the total and the pager are themselves alias-derived, not
+            # row set, the total and the pager are themselves trust-derived, not
             # just the badges. There is no degraded list to show. Falling back
             # to the default filter would answer a question the user did not
             # ask; rendering an empty one would be a false statement about which
@@ -2782,7 +2863,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             # This RETURNS rather than setting a flag the code below reads. With
             # `page_data = None` the `[int(f["id"]) for f in page_data.rows]`
             # argument to `accept_recommendations_for` raises `AttributeError` —
-            # a 500 with nothing to do with the alias file.
+            # a 500 with nothing to do with the policy files.
             #
             # The filter nav is how the user gets back to a page that works, so
             # it survives — and its hrefs must carry the sort and page size the
@@ -2803,32 +2884,36 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                         active_filter, nav.sort, nav.page_size
                     ),
                     "pager": None,
-                    "alias_error": alias_error,
+                    "policy_error": policy_error,
                 },
             )
         page_data = _review_page(store, active_filter, page, page_size, sort)
         # #570. On the default filter the ROWS are real: `store.review_queue_page`
         # reads no policy file. Measured by spying every module that binds
         # `store_relation_aliases` — a healthy `/review` reads it from
-        # `_relation_alias_failure` (this route's own guard, above),
+        # `_trust_policy_failure` (this route's own guard, above),
         # `acceptance._engine`, `trust.fact_trust_summary` and
         # `corroboration.store_single_valued_conflicts`, and from nowhere else.
         # The readers are named rather than counted on purpose: the count moves
         # whenever a guard is added, and what this comment needs to say is that
         # the QUEUE QUERY is not among them. So the queue is the KB's own and
-        # only its trust signals are withheld.
+        # only its trust signals are withheld. `store_typed_relations` is bound
+        # in the same modules and read by the last three of those four, so #585
+        # broadening this route's guard does not widen what is withheld — the
+        # queue query reads neither file.
         # `accept_recommendations_for` is the opposite: it builds its engine off
-        # the alias file before it looks at a single id, so it raises even for an
-        # empty id list. Skipping it and passing `{}` is what keeps this route up.
+        # both policy files before it looks at a single id, so it raises even for
+        # an empty id list. Skipping it and passing `{}` is what keeps this route
+        # up.
         recommendations = (
             {}
-            if alias_error is not None
+            if policy_error is not None
             else accept_recommendations_for(
                 store, [int(f["id"]) for f in page_data.rows]
             )
         )
         rows = [
-            _fact_row_context(f, recommendations, alias_error=alias_error)
+            _fact_row_context(f, recommendations, policy_error=policy_error)
             for f in page_data.rows
         ]
         return templates.TemplateResponse(
@@ -2841,27 +2926,28 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                     active_filter, page_data.sort, page_data.page_size
                 ),
                 "pager": _review_pager(active_filter, page_data),
-                "alias_error": alias_error,
+                "policy_error": policy_error,
             },
         )
 
     @app.get("/workbench", response_class=HTMLResponse)
     def workbench(request: Request):
-        # #570. `trust_workbench` reads the alias file in its first statement,
-        # and its whole return value is the page. `None` rather than an empty
+        # #570. `trust_workbench` reads the alias file in its first statement
+        # and the typed file in its second, and its whole return value is the
+        # page. `None` rather than an empty
         # workbench: `{% if workbench.corroborated %}` is falsy either way, so an
         # empty value renders "No facts are corroborated by multiple distinct
         # sources." and "No source-backed single-valued conflicts." — two claims
         # about a KB nothing analysed. Only `None` lets the template tell "not
         # computed" from "computed, and empty".
         store = _active_store()
-        alias_error = _relation_alias_failure(store)
+        policy_error = _trust_policy_failure(store)
         return templates.TemplateResponse(
             request,
             "workbench.html",
             {
-                "workbench": None if alias_error is not None else trust_workbench(store),
-                "alias_error": alias_error,
+                "workbench": None if policy_error is not None else trust_workbench(store),
+                "policy_error": policy_error,
             },
         )
 
@@ -2924,7 +3010,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         return _row(
             request,
             store.get_fact(fact_id),
-            alias_error=_relation_alias_failure(store),
+            policy_error=_trust_policy_failure(store),
         )
 
     @app.post("/facts/{fact_id}/amend", response_class=HTMLResponse)
@@ -2980,14 +3066,15 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             # rather than fixed in passing, but it is the same bug.
             #
             # This is `amend_fact`'s SECOND row-rendering exit; the success path
-            # below renders through `_row_after_decision`, which reads the alias
-            # file itself. Guarding only that one leaves this path 500ing on a
-            # broken alias file while a naive amend test passes (#570).
+            # below renders through `_row_after_decision`, which checks the
+            # policy files itself. Guarding only that one leaves this path
+            # 500ing on a broken policy file while a naive amend test passes
+            # (#570).
             store = _active_store()
             return _row(
                 request,
                 store.get_fact(fact_id),
-                alias_error=_relation_alias_failure(store),
+                policy_error=_trust_policy_failure(store),
             )
         # The rule may act on the amended fact itself, unlike a toggle demotion.
         # An amend decides the fact's content, not its tier: correcting a term so
@@ -3002,15 +3089,15 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         store = _active_store()
         fact = store.get_fact(fact_id)
         # This route calls `fact_trust_summary` DIRECTLY — it does not go
-        # through `_fact_row_context`, so the `alias_error` threaded through
+        # through `_fact_row_context`, so the `policy_error` threaded through
         # that helper never reaches here and this route computes its own (#570
         # trap 1). Withholding `trust` here is inseparable from the
         # `{% if trust %}` blocks in `provenance.html`: that template writes
         # `trust.support.source_count`, and Jinja raises `UndefinedError` on a
         # two-deep attribute of `None`, so guarding this line alone turns one
         # 500 into a different 500. Route and template are one guard.
-        alias_error = _relation_alias_failure(store)
-        trust = fact_trust_summary(store, fact_id) if fact and alias_error is None else None
+        policy_error = _trust_policy_failure(store)
+        trust = fact_trust_summary(store, fact_id) if fact and policy_error is None else None
         run = store.get_run(fact["run_id"]) if fact and fact["run_id"] else None
         job = (
             store.get_extraction_job_detail(fact["job_id"])
@@ -3023,7 +3110,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             {
                 "f": _fact_view(fact),
                 "trust": trust,
-                "alias_error": alias_error,
+                "policy_error": policy_error,
                 "run": run,
                 "job": job,
                 "log": store.fact_log(fact_id) if fact else [],

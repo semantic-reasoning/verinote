@@ -5,10 +5,10 @@
 <p class="muted">Review uploaded sources, analysis progress, fact counts, and next actions.</p>
 
 {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
-{% if alias_error %}
-<p class="error" role="alert">{{ alias_error }} Per-source trust counts below are not
-  shown, because they would be computed under different alias rules than this KB's
-  file specifies. Fix it on <a href="/settings">Settings</a>.</p>
+{% if policy_error %}
+<p class="error" role="alert">{{ policy_error }} Per-source trust counts below are not
+  shown, because they would be computed under different rules than this KB's policy
+  files specify.</p>
 {% endif %}
 
 <form class="upload" action="/sources" method="post" enctype="multipart/form-data">

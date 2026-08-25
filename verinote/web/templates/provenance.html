@@ -6,18 +6,21 @@
 {% else %}
 <h1>Trust dossier — fact #{{ f["id"] }}</h1>
 
-{# #570. Every section below whose contents come off `trust` is withheld when
-   this KB's alias file cannot be read, because `store_relation_aliases` merges
-   the user's entries over the defaults -- so a dossier computed without their
-   file is a dossier about a different KB, printed in the same tables a healthy
-   one uses. The route and this template are ONE guard: withholding `trust`
-   without these branches replaces the 500 with a different 500, because
-   `{{ trust.support.source_count }}` is a two-deep attribute of `None` and
-   Jinja raises `UndefinedError` on that (measured). #}
-{% if alias_error %}
-<p class="error" role="alert">{{ alias_error }} The trust dossier below is withheld, because it
-  would have been computed under different alias rules than this KB's file specifies. Fix it on
-  <a href="/settings">Settings</a>.</p>
+{# #570, broadened by #585. Every section below whose contents come off `trust`
+   is withheld when EITHER of this KB's two trust-policy files cannot be read.
+   For `policy/relation-aliases.md`, `store_relation_aliases` merges the user's
+   entries over the defaults, so a dossier computed without their file is a
+   dossier about a different KB, printed in the same tables a healthy one uses.
+   For `policy/typed-relations.md` there are no defaults and the degraded value
+   is `{}` -- byte-identical to a KB that declares no typed relations -- so the
+   dossier would look right and be wrong, and nothing in it could give that away.
+   Both reasons end in the same place: withhold. The route and this template are
+   ONE guard: withholding `trust` without these branches replaces the 500 with a
+   different 500, because `{{ trust.support.source_count }}` is a two-deep
+   attribute of `None` and Jinja raises `UndefinedError` on that (measured). #}
+{% if policy_error %}
+<p class="error" role="alert">{{ policy_error }} The trust dossier below is withheld, because it
+  would have been computed under different rules than this KB's policy files specify.</p>
 {% endif %}
 
 <section class="trust-block">
@@ -62,7 +65,7 @@
     </tbody>
   </table>
   {% else %}
-  <p class="muted">Not computed — see the alias-file notice above.</p>
+  <p class="muted">Not computed — see the policy-file notice above.</p>
   {% endif %}
 </section>
 
@@ -79,7 +82,7 @@
   </p>
   {# The triple, its term kinds and the status badge above come off `f` and stay:
      withholding the trust dossier must not withhold the fact's own identity. Only
-     the CANONICAL rendering of it is alias-derived (#570). #}
+     the CANONICAL rendering of it is policy-derived (#570). #}
   {% if trust and trust.canonical_terms %}
   <table class="counts">
     <tbody>
@@ -116,7 +119,7 @@
     </tbody>
   </table>
   {% else %}
-  <p class="muted">Not computed — see the alias-file notice above.</p>
+  <p class="muted">Not computed — see the policy-file notice above.</p>
   {% endif %}
 </section>
 
@@ -126,7 +129,7 @@
      "No deterministic single-valued conflict for this fact." over a conflict
      search that never ran (#570). #}
   {% if trust is none %}
-  <p class="muted">Not computed — see the alias-file notice above.</p>
+  <p class="muted">Not computed — see the policy-file notice above.</p>
   {% elif trust.conflict %}
   <table class="counts">
     <thead><tr><th>value</th><th>sources</th></tr></thead>
@@ -161,7 +164,7 @@
          missing. The words also carry more here, since what is withheld is
          specifically the extraction job and the audit events. #}
       {% if trust is none %}
-      <tr><td class="src">—</td><td><span class="muted">Extraction and review events not computed — see the alias-file notice above.</span></td></tr>
+      <tr><td class="src">—</td><td><span class="muted">Extraction and review events not computed — see the policy-file notice above.</span></td></tr>
       {% endif %}
       {% if trust.job %}
       <tr><td class="src">—</td><td><span class="badge">extracted</span> job #{{ trust.job.id }} · {{ trust.job.status }}</td></tr>
@@ -186,7 +189,7 @@
      "No source evidence anchors recorded for this fact." about anchors nobody
      looked for (#570). #}
   {% if trust is none %}
-  <p class="muted">Not computed — see the alias-file notice above.</p>
+  <p class="muted">Not computed — see the policy-file notice above.</p>
   {% elif trust.evidence %}
     {% for e in trust.evidence %}
     <div class="evidence">
