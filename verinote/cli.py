@@ -988,15 +988,20 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     # (`store/db.py`). Usually that pair is the whole difference in
                     # what gets WRITTEN from before this handler existed; on the
                     # path where the store write itself raises, what the user sees
-                    # differs too. (2) The message is type-qualified
-                    # here and is not in `web/app.py`, whose `f"analysis failed:
-                    # {e}"` renders a bare `ValueError()` as "analysis failed: "
-                    # with no cause — the same empty-cause symptom
-                    # `_release_claimed_chunk` type-qualifies against, open there as
-                    # #551 and outside the scope of the #525 re-read that clause
-                    # has since grown. So this clause is the web clause's counterpart,
-                    # not its mirror. Neither bounds the message length; the store
-                    # takes `str(exc)` whole, exactly as the web one does.
+                    # differs too. (2) This clause type-qualifies unconditionally:
+                    # `f"analysis failed: {type(exc).__name__}: {exc}"`. The web
+                    # extraction worker's own generic clause now reads
+                    # `f"analysis failed: {_error_cause(e)}"` — #551 landed a fix
+                    # there that names the type only when `str(exc)` is blank, so a
+                    # message-bearing `OSError` still differs between the two
+                    # ("analysis failed: OSError: no space" here, "analysis failed:
+                    # no space" there). The same empty-cause symptom
+                    # `_release_claimed_chunk` type-qualifies against is outside the
+                    # scope of the #525 re-read that clause has since grown. So this
+                    # clause is the web clause's counterpart, not its mirror.
+                    # Neither bounds the message length; the store takes `str(exc)`
+                    # whole here, and `_error_cause(exc)` whole there — equal to
+                    # `str(exc)` except when it is blank.
                     # (3) What this clause hands planning is a `failed` job whose
                     # `failed_chunks` COUNTER is whatever `mark_chunk_done` or
                     # `mark_chunk_failed` last computed — the counter, because
