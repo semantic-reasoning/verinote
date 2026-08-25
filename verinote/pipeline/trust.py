@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import unicodedata
 from typing import Any
 
 from verinote.engine.terms import render_term
@@ -15,6 +14,7 @@ from verinote.pipeline.corroboration import (
     store_relation_aliases,
     store_single_valued_conflicts,
     store_typed_relations,
+    typed_spec_for_canonical,
     TypedRelationSpec,
 )
 from verinote.store import Store, engine_statuses, is_engine_input, is_review_eligible
@@ -163,7 +163,7 @@ def fact_trust_summary(store: Store, fact_id: int) -> FactTrustSummary | None:
     relation = canonical_relation(display.relation, aliases)
     support = _support_summary(store, display, aliases, typed)
     conflict = _conflict_summary(store, display.subject, relation)
-    typed_value = _typed_value_summary(typed, relation, display.object)
+    typed_value = _typed_value_summary(typed, relation, display.object, aliases)
     evidence = tuple(_evidence_anchor(row) for row in store.fact_evidence(fact_id))
     status = str(fact["status"])
 
@@ -213,7 +213,7 @@ def _support_summary(
     typed: dict[str, TypedRelationSpec],
 ) -> SupportSummary:
     relation = canonical_relation(display.relation, aliases)
-    object_key = _object_key(relation, display.object, typed)
+    object_key = _object_key(relation, display.object, typed, aliases)
     sources: set[str] = set()
     for row in store.facts(statuses=engine_statuses()):
         if str(row["subject"]) != display.subject:
@@ -221,7 +221,7 @@ def _support_summary(
         row_relation = canonical_relation(str(row["relation"]), aliases)
         if row_relation != relation:
             continue
-        if _object_key(row_relation, str(row["object"]), typed) != object_key:
+        if _object_key(row_relation, str(row["object"]), typed, aliases) != object_key:
             continue
         source_path = str(row["source_path"] or "").strip()
         if source_path:
@@ -251,9 +251,9 @@ def _conflict_value(value: CompetingValue) -> ConflictValueSummary:
 
 
 def _typed_value_summary(
-    typed: dict[str, Any], relation: str, obj: str
+    typed: dict[str, Any], relation: str, obj: str, aliases: dict[str, str]
 ) -> TypedValueSummary | None:
-    spec = _typed_spec(typed, relation)
+    spec = _typed_spec(typed, relation, aliases)
     if spec is None:
         return None
     return TypedValueSummary(
@@ -265,9 +265,12 @@ def _typed_value_summary(
 
 
 def _object_key(
-    relation: str, obj: str, typed: dict[str, TypedRelationSpec]
+    relation: str,
+    obj: str,
+    typed: dict[str, TypedRelationSpec],
+    aliases: dict[str, str],
 ) -> tuple[str, object]:
-    spec = _typed_spec(typed, relation)
+    spec = _typed_spec(typed, relation, aliases)
     if spec is not None:
         scalar = normalize_typed_value(spec.type, obj, spec.units)
         if scalar is not None:
@@ -276,9 +279,13 @@ def _object_key(
 
 
 def _typed_spec(
-    typed: dict[str, TypedRelationSpec], relation: str
+    typed: dict[str, TypedRelationSpec],
+    relation: str,
+    aliases: dict[str, str],
 ) -> TypedRelationSpec | None:
-    return typed.get(relation) or typed.get(unicodedata.normalize("NFC", relation))
+    # #589. `relation` is already canonical at both call sites; the declaration
+    # it must match may be written under any label that canonicalises to it.
+    return typed_spec_for_canonical(typed, relation, aliases)
 
 
 def _canonical_terms(store: Store, fact_id: int) -> FactTriple | None:

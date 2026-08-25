@@ -14,11 +14,27 @@ well: this call site has no narrow `except CorroborationPolicyError` in front of
 it, unlike `verify.py`, so it does not survive the malformed case the way
 `GET /questions` and `GET /report` do.
 
-`TYPED_TYPO` IS NOT A BROKEN INPUT and must never be used as one here. #585
-measured that `typed_relations` silently skips lines it cannot parse, so a
-typo'd typed file parses to `{}` and fails nothing -- measured again on this
-tree: `POST /ask` 200 and `POST /questions/translate` 303 under it, exactly as
-under a healthy file. A test planting it sees green because nothing broke.
+`TYPED_TYPO` BECAME A BROKEN INPUT IN #589, and this paragraph used to say the
+opposite. #585 measured that `typed_relations` silently skipped lines it could
+not parse, so a typo'd typed file parsed to `{}` and failed nothing. #589 made
+that line raise, so the guard now fires on it and `POST /ask` names the typed
+file in its body.
+
+The STATUS codes did not move -- `POST /ask` is still 200 and
+`POST /questions/translate` still 303, because this guard degrades rather than
+500s -- which is why the test below kept passing after the behaviour inverted:
+`ALL_MESSAGES` had been enumerated when the only typed-file message was the
+duplicate-alias one, so the unparseable-line message #589 added was not in it.
+It IS in it now -- the set gained `TYPED_TYPO_MSG` in the same change that
+found the gap, and both consuming loops picked it up without being touched.
+A message set that lists the conditions known at the time silently stops
+covering a condition added later; the test below asserts the message that IS
+produced, rather than that no known message appears.
+
+Promoting `TYPED_TYPO` into `BROKEN_INPUTS` would now be correct and would give
+every parametrized test above a fourth real input. It is deliberately NOT done
+here, because that is coverage this issue did not set out to add and belongs to
+whoever next works this file.
 
 THE EMPTY-QUEUE TRAP. `POST /questions/translate` returns 303 when there are no
 pending questions, under a broken policy file just as under a healthy one.
@@ -88,12 +104,20 @@ from verinote.store import Store
 from verinote.web import create_app
 
 # The alias parser raises on the FIRST line it cannot parse, so a missing arrow
-# is a real failure here -- unlike the typed parser, which skips such a line.
+# is a real failure here. Since #589 the typed parser has the same rule, so this
+# input is a real failure in BOTH files -- it used to be a real failure only in
+# this one.
 ALIAS_MALFORMED = "- 소속 member_of\n".encode()
 ALIAS_CP949 = "- 소속 -> member_of\n".encode("cp949")
 ALIAS_HEALTHY = "- 소속 -> member_of\n".encode()
-# A duplicate alias: one of the four SEMANTIC conditions `typed_relations`
-# raises on. See this file's docstring for why a typo is not one of them.
+# A duplicate alias: one of the conditions `typed_relations` raises on. They are
+# enumerated in `test_typed_relations_web_guard.py`'s module docstring and
+# DERIVED from the source by
+# `test_the_raise_conditions_are_derived_from_the_source_not_listed_by_hand`,
+# which reddens if that list stops matching the parser. Cited rather than
+# counted or copied here: this comment said "four" and an earlier repair said
+# the parser's own docstring enumerated them, and all three were wrong -- the
+# count twice, and the pointer at a docstring that lists no condition at all.
 TYPED_DUP_ALIAS = "- 자본금: amount as capital\n- 자산: amount as capital\n".encode()
 TYPED_HEALTHY = "- 자본금: amount as capital\n".encode()
 TYPED_TYPO = "- 소속 member_of\n".encode()
@@ -101,6 +125,9 @@ TYPED_TYPO = "- 소속 member_of\n".encode()
 ALIAS_PARSER_MSG = "relation-aliases.md:"
 ALIAS_NAMED = f"{RELATION_ALIASES_RELPATH} could not be read"
 TYPED_PARSER_MSG = "typed-relations.md: alias"
+# #589's unparseable-line message. A DIFFERENT string from the one above, which
+# is exactly why `ALL_MESSAGES` did not catch it.
+TYPED_TYPO_MSG = "typed-relations.md:1: expected"
 
 # (alias bytes, typed bytes, the message that must appear). Three inputs.
 BROKEN_INPUTS = [
@@ -108,7 +135,13 @@ BROKEN_INPUTS = [
     pytest.param(ALIAS_CP949, TYPED_HEALTHY, ALIAS_NAMED, id="alias-cp949"),
     pytest.param(ALIAS_HEALTHY, TYPED_DUP_ALIAS, TYPED_PARSER_MSG, id="typed-duplicate-alias"),
 ]
-ALL_MESSAGES = (ALIAS_PARSER_MSG, ALIAS_NAMED, TYPED_PARSER_MSG)
+# Every policy-file message a guarded route can render. `TYPED_TYPO_MSG` is a
+# member because #589 made the typed parser strict: a false-positive parse error
+# on a VALID file is newly possible, and the healthy-KB controls that consume
+# this tuple are what would catch it. Add to this tuple, never to its consumers
+# -- both surviving loops read it, and the previous member added to one of them
+# instead is why a test kept passing after its behaviour inverted.
+ALL_MESSAGES = (ALIAS_PARSER_MSG, ALIAS_NAMED, TYPED_PARSER_MSG, TYPED_TYPO_MSG)
 
 # Resolved by `deterministic_query_intent`, so the provider is never asked and
 # the healthy exit code is 0 without credentials. `NoProviderClient` enforces it.
@@ -220,14 +253,28 @@ def test_a_healthy_policy_pair_still_answers_and_says_nothing_about_policy(tmp_p
         assert message not in r.text
 
 
-def test_a_typod_typed_file_is_not_a_broken_input(tmp_path):
-    """Pins this file's docstring claim, so a later edit cannot promote the typo
-    case into `BROKEN_INPUTS` and make every parametrized test above vacuous."""
+def test_a_typod_typed_file_is_reported_since_589(tmp_path):
+    """INVERTED BY #589, which is why the assertion is on the MESSAGE.
+
+    This asserted that no member of `ALL_MESSAGES` appeared, and it kept passing
+    that way after the behaviour inverted: the set had been enumerated when the
+    only typed-file message was the duplicate-alias one, so the unparseable-line
+    message #589 added slipped straight through it, and the status is 200 either
+    way. Nothing about the old form could fail.
+
+    Both halves have since been fixed and they are independent. The set gained
+    `TYPED_TYPO_MSG`, so the old form would now FAIL here -- measured, that
+    message is in the body. And this test no longer uses the old form: asserting
+    the message that IS produced is what tells the two eras apart regardless of
+    what the set happens to contain.
+    """
     client, _ = _client(tmp_path, ALIAS_HEALTHY, TYPED_TYPO)
     r = client.post("/ask", data={"question": QUESTION})
     assert r.status_code == 200
-    for message in ALL_MESSAGES:
-        assert message not in r.text
+    assert TYPED_TYPO_MSG in r.text
+    # Still not the OTHER file's failure, and still not a read failure.
+    assert ALIAS_PARSER_MSG not in r.text
+    assert ALIAS_NAMED not in r.text
 
 
 # ---------------------------------------------------------------------------

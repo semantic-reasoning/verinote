@@ -17,7 +17,6 @@ import sqlite3
 import tempfile
 import threading
 from threading import Lock
-import unicodedata
 from urllib.parse import urlencode, urlsplit
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
@@ -108,6 +107,7 @@ from verinote.pipeline.corroboration import (
     store_relation_aliases,
     store_single_valued_conflicts,
     store_typed_relations,
+    typed_spec_for_canonical,
 )
 from verinote.pipeline.workbench import trust_workbench
 from verinote.prompts import (
@@ -1937,7 +1937,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 (
                     str(fact["subject"]),
                     relation,
-                    _source_object_key(relation, str(fact["object"]), typed),
+                    _source_object_key(relation, str(fact["object"]), typed, aliases),
                 ),
                 set(),
             ).add(source_path)
@@ -1961,7 +1961,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                     (
                         str(fact["subject"]),
                         relation,
-                        _source_object_key(relation, str(fact["object"]), typed),
+                        _source_object_key(relation, str(fact["object"]), typed, aliases),
                     ),
                     set(),
                 )
@@ -1974,8 +1974,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 bucket["conflicted"] += 1
         return counts
 
-    def _source_object_key(relation: str, obj: str, typed) -> tuple[str, object]:
-        spec = typed.get(relation) or typed.get(unicodedata.normalize("NFC", relation))
+    def _source_object_key(relation: str, obj: str, typed, aliases) -> tuple[str, object]:
+        spec = typed_spec_for_canonical(typed, relation, aliases)
         if spec is not None:
             scalar = normalize_typed_value(spec.type, obj, spec.units)
             if scalar is not None:

@@ -245,24 +245,48 @@ def merge_default_relation_aliases(user_aliases: dict[str, str]) -> dict[str, st
 
 
 def typed_relations(text: str) -> dict[str, TypedRelationSpec]:
-    """Parse factlog-style ``policy/typed-relations.md`` declarations."""
+    """Parse factlog-style ``policy/typed-relations.md`` declarations.
+
+    A line that is neither blank nor a ``#`` comment MUST parse (#589). This is
+    `relation_aliases`'s rule, adopted rather than invented -- the two files are
+    siblings and a user has no way to know why one would forgive a typo the
+    other refuses. Markdown headings survive because they begin with ``#``.
+
+    Before this, anything the shape did not match was skipped and the function
+    returned whatever else it found. One mistyped line silently voided one
+    declaration with no error, no warning, and -- because `{}` is also the
+    normal state of a KB with no typed file -- nothing distinguishable in any
+    rendered value. That is why the report has to happen HERE, at the parse, and
+    cannot be inferred downstream.
+
+    Raising is safe now and was not before #585: `store_typed_relations`'s
+    callers degrade on a `CorroborationPolicyError` instead of returning 500.
+    """
     specs: dict[str, TypedRelationSpec] = {}
     aliases: dict[str, str] = {}
-    for line in text.splitlines():
+    for line_no, line in enumerate(text.splitlines(), start=1):
         stripped = re.sub(r"^\s*[-*]\s+", "", line.strip()).strip()
         if not stripped or stripped.startswith("#"):
             continue
         stripped = re.sub(r"\s*#.*$", "", stripped).strip()
         match = _TYPED_REL_RE.match(stripped)
         if match is None:
-            continue
+            raise CorroborationPolicyError(
+                f"typed-relations.md:{line_no}: expected "
+                f"`- name : type as alias`, got {stripped!r}"
+            )
         name = unicodedata.normalize(
             "NFC", (match.group("qname") or match.group("name")).strip()
         )
         type_tag = match.group("type").strip()
         alias = match.group("alias").strip()
         if type_tag not in _TYPED_TYPES:
-            continue
+            # Matched the declaration shape, so it is unambiguously an intended
+            # declaration -- reporting it cannot be mistaken for prose.
+            raise CorroborationPolicyError(
+                f"typed-relations.md:{line_no}: unknown type {type_tag!r} for "
+                f"{name!r}; known types are {', '.join(sorted(_TYPED_TYPES))}"
+            )
         if alias in aliases and aliases[alias] != name:
             raise CorroborationPolicyError(
                 f"typed-relations.md: alias {alias!r} used for both "
@@ -284,7 +308,117 @@ def store_typed_relations(store: Store) -> dict[str, TypedRelationSpec]:
     path = store.db_path.parent / TYPED_RELATIONS_RELPATH
     if not path.is_file():
         return {}
-    return typed_relations(path.read_text(encoding="utf-8"))
+    specs = typed_relations(path.read_text(encoding="utf-8"))
+    try:
+        aliases = store_relation_aliases(store)
+    except Exception:  # noqa: BLE001 - ANY alias-read failure, not one class
+        # The alias file has its own guard and its own message. A typed-file
+        # reader that reported the ALIAS file's failure would name the wrong
+        # file, so the collision check is skipped and the alias guard speaks.
+        #
+        # `except Exception` and not `except CorroborationPolicyError`, matching
+        # `policy_file_failure`'s G2 clause above: a cp949 alias file raises
+        # `UnicodeDecodeError`, a SIBLING of `ValueError` and not a subclass of
+        # the policy error, so the narrow form let it through and the typed
+        # guard wrapped it as "policy/typed-relations.md could not be read" --
+        # naming the wrong file, with a byte offset from the alias file.
+        # Nothing is lost by catching broadly, and the reason is a PROPERTY
+        # rather than a count: EVERY caller of this function reads the alias
+        # file itself, so a swallowed alias failure is reported by that caller
+        # against the right file, and the worst case is the behaviour this
+        # function had before #589.
+        #
+        # `test_every_typed_reader_reads_the_alias_file_itself` derives the
+        # caller set from the source and checks that property, so a new caller
+        # that skipped the alias read would redden rather than silently make
+        # this comment false. An earlier draft said "all eight, checked" -- it
+        # is seven; the eighth was `create_app`, counted because
+        # `_source_trust_rollup` is nested inside it. That number licensed
+        # nothing the property does not, and it was wrong.
+        return specs
+    _refuse_canonical_collisions(specs, aliases)
+    return specs
+
+
+def _refuse_canonical_collisions(
+    typed: dict[str, TypedRelationSpec], aliases: dict[str, str]
+) -> None:
+    """Refuse two declarations that canonicalise to one relation (#589).
+
+    WHY HERE AND NOT IN THE RESOLVER. Before this change the two were separate
+    keys and both were ignored, so there was nothing to disambiguate; resolving
+    them makes dict order decide which declaration takes effect, which is the
+    defect class #589 exists to remove. But refusing it inside the resolver made
+    the error a NEW raiser, below every guard the trust path has: measured, six
+    of eight routes answered 500, while this file's existing duplicate-alias
+    refusal -- raised from `typed_relations`, one frame up from here -- leaves
+    all eight at 200. Raising from the file read inherits those guards instead
+    of needing new ones.
+
+    The WHOLE table is checked rather than the queried relation, so the verdict
+    depends on the file alone and not on which facts a page happens to touch.
+    """
+    seen: dict[str, str] = {}
+    for declared in typed:
+        key = unicodedata.normalize("NFC", canonical_relation(declared, aliases))
+        if key in seen:
+            raise CorroborationPolicyError(
+                f"typed-relations.md: {seen[key]!r} and {declared!r} "
+                f"both declare a type for the relation {key!r}"
+            )
+        seen[key] = declared
+
+
+def typed_spec_for_canonical(
+    typed: dict[str, TypedRelationSpec],
+    canonical: str,
+    aliases: dict[str, str],
+) -> TypedRelationSpec | None:
+    """Resolve a typed declaration for ``canonical``, through the alias table.
+
+    THE ONLY COPY OF THIS LOOKUP -- scoped deliberately, because it is not the
+    only place in the package that knows this rule. Every consumer that had
+    `typed.get(relation)` open-coded now calls this, because `typed_relations`
+    keys the dict by the label the user WROTE while every consumer looks up the
+    CANONICAL label -- so a declaration on any label the alias table rewrites
+    was stored under a key nobody queries and silently did nothing (#589).
+
+    Two other resolvers exist and BOTH are deliberate, so a reader who finds
+    them does not have to guess whether they were missed.
+    `query_planner._typed_specs_for_canonical_relation` already resolved this
+    way and is the prior art this follows. `query_schema._typed_for_relation`
+    is NOT converted: it tries `display`, NFC(display), `canonical` and
+    NFC(canonical), which resolves a declaration written under the label the
+    fact itself uses but not one under a DIFFERENT raw label sharing the same
+    canonical. That residual gap is measured and tracked as #597, left out of
+    #589 on purpose because that snapshot feeds the LLM planner's prompts.
+
+    The keys stay as written on purpose, and for ONE reason rather than the two
+    an earlier draft of this docstring gave. It said canonicalising them inside
+    `store_typed_relations` would also need the alias table in a signature the
+    CLI and the schema snapshot share; that stopped being true when the
+    collision check moved there -- it reads the alias table now, and needed no
+    signature change, because that function already takes the `Store`. The
+    reason that survives is the other one: canonical keys would leave the stored
+    dict disagreeing with the user's file, so a diagnostic could no longer quote
+    their own line back to them.
+
+    THIS FUNCTION DOES NOT RAISE, and that is load-bearing rather than
+    incidental. Ambiguity -- two labels canonicalising to one relation -- is
+    refused, but by `_refuse_canonical_collisions` at the point the FILE is
+    read. Refusing it here instead raised a `CorroborationPolicyError` from a
+    NEW raiser, one that every existing guard sits above rather than below:
+    measured, six of eight routes answered 500 where the file's own
+    duplicate-alias refusal leaves all eight at 200. Raising from
+    `store_typed_relations` inherits the guards that already exist for that
+    refusal; raising from here would have needed a sixth guard rollout to
+    reach the same place.
+    """
+    want = unicodedata.normalize("NFC", canonical)
+    for declared, spec in typed.items():
+        if unicodedata.normalize("NFC", canonical_relation(declared, aliases)) == want:
+            return spec
+    return None
 
 
 def corroboration(
@@ -334,7 +468,9 @@ def single_valued_conflicts(
         relation = _canonical_relation(str(row["relation"]), aliases)
         if relation not in canonical_single_valued:
             continue
-        spec = typed.get(relation) or typed.get(unicodedata.normalize("NFC", relation))
+        # #589. This site produces the conflict count -- and the /sources
+        # `conflicted` badge through `store_single_valued_conflicts`.
+        spec = typed_spec_for_canonical(typed, relation, aliases)
         source = _source_ref(row)
         if not source:
             continue

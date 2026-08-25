@@ -104,12 +104,15 @@ Settings" any more — `settings.html` has an editor for the alias file and none
 for the typed one.
 
 Do not read the two files as parametrizations of each other. Their affected
-route sets differ in BOTH directions, their malformed INPUT classes differ (a
-line `typed_relations` cannot parse is silently skipped, not raised), and an
-absent typed file degrades to `{}` — the same value a healthy KB with no typed
-declarations produces — so #585's guard cannot pin itself on the rendered value
-the way this file's can. The sibling file's docstring carries all three
-measurements.
+route sets differ in BOTH directions, and an absent typed file degrades to `{}`
+— the same value a healthy KB with no typed declarations produces — so #585's
+guard cannot pin itself on the rendered value the way this file's can. The
+sibling file's docstring carries both measurements.
+
+A third difference used to be listed here and is GONE: a line `typed_relations`
+could not parse was silently skipped rather than raised. #589 gave that parser
+this one's rule, so both now raise on any line that is neither blank nor a `#`
+comment. The two remaining differences are the ones that still matter.
 
 (#571, which an earlier draft of this paragraph cited for the typed-relations
 hole, is a different defect in a different file: an unusable PATH at

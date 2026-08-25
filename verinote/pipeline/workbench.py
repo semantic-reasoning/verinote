@@ -12,6 +12,7 @@ from verinote.pipeline.corroboration import (
     store_functional_relations,
     store_relation_aliases,
     store_typed_relations,
+    typed_spec_for_canonical,
     TypedRelationSpec,
 )
 from verinote.store import Store, is_engine_input, is_review_eligible
@@ -92,7 +93,7 @@ def trust_workbench(store: Store) -> TrustWorkbench:
         relation = str(row["relation"])
         obj = str(row["object"])
         canonical = canonical_relation(relation, aliases)
-        spec = _typed_spec(canonical, typed)
+        spec = _typed_spec(canonical, typed, aliases)
         object_key, normalization = _normalized_object_key(obj, spec)
         fact = WorkbenchFact(
             id=int(row["id"]),
@@ -177,9 +178,11 @@ def trust_workbench(store: Store) -> TrustWorkbench:
 
 
 def _typed_spec(
-    relation: str, typed: dict[str, TypedRelationSpec]
+    relation: str, typed: dict[str, TypedRelationSpec], aliases: dict[str, str]
 ) -> TypedRelationSpec | None:
-    return typed.get(relation) or typed.get(unicodedata.normalize("NFC", relation))
+    # #589. This site forms `corroborated`; it was one of the two the fix's own
+    # severity measurement turns on, and neither was in the plan's site list.
+    return typed_spec_for_canonical(typed, relation, aliases)
 
 
 def _normalized_object_key(
