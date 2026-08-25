@@ -123,12 +123,14 @@ that only ever landed on 500 by redirecting into `GET /sources`; they are fixed
 by guarding that page and have no guard of their own
 (`test_the_sources_post_redirects_land_on_a_page_that_survives`).
 
-`POST /ask` and `POST /questions/translate` are NOT fixed here. Both files fail
-for them at the same statement in `query_schema.build_query_schema_snapshot`,
-which `verinote/cli.py` reaches too, and the ALIAS half of that same statement
-is already owed to #570's follow-up. `POST /ask` is also the one route in the
-population with no upstream guard of any kind, which is why the ordering rule in
-`_trust_policy_failure` has nothing above it there.
+`POST /ask` and `POST /questions/translate` are not fixed by THIS file's guard.
+Both files fail for them at the same statement in
+`query_schema.build_query_schema_snapshot`, which `verinote/cli.py` reaches too,
+so they are guarded by `query_schema_policy_failure` beside that statement
+instead (#591, which #570 deferred); their tests live in
+`tests/test_query_schema_policy_guard.py`. `POST /ask` is also the one route in
+the population with no upstream guard of any kind, which is why the ordering
+rule in `_trust_policy_failure` has nothing above it there.
 """
 
 import re
