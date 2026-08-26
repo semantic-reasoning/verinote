@@ -151,24 +151,37 @@ def parsed_under_redaction(parse, payload, secret):
     made to, it does not leave this function; one of the same KIND carrying the
     redacted text does.
 
-    WHAT IT DOES NOT COVER, ENUMERATED RATHER THAN CLAIMED AWAY. The check reads
-    what `str(exc)` returns at the moment it runs, so it covers exactly what a
-    reader of `str(exc)` afterwards would see -- and no more. Four shapes are
-    outside it, each measured on this tree:
+    WHAT IT COVERS IS A CHANNEL AND AN INSTANT, not a list of shapes. It reads
+    `str(exc)` ONCE, immediately after mutating `args`, and compares it against
+    the text it wrote. So it covers exactly one rendering channel, sampled at
+    one moment. Everything outside that pair is outside the guard -- which is
+    the honest way to say it, because enumerating shapes is how the three
+    previous revisions each closed the case they had just been shown and left
+    the class open. The shapes below ILLUSTRATE the boundary; they do not
+    constitute it, and a shape nobody has thought of is outside it too if it
+    renders through another channel or changes after the sample.
 
-      1. a `__str__` whose value CHANGES after the check -- it can return the
-         redacted text once and the original afterwards, and the guard reads
-         once. "What the exception will show" is measured, not guaranteed.
-      2. `__repr__` -- a subclass rendering its own message there leaks through
-         `repr()`, which `args` never reaches.
-      3. a message the subclass also stored on an ordinary attribute; no general
-         mechanism reaches an arbitrary attribute.
-      4. `__cause__`, and this one needs no custom subclass at all. The chained
-         exception is never redacted, so a payload that makes a parser raise
-         `ValueError: could not convert string to float: '<key>'` puts the key
-         in `traceback.format_exception` above the redacted message. Measured
-         through the shipped `parse_facts`. It predates this guard and is not
-         narrowed by it.
+      ANOTHER CHANNEL. `args` feeds `str()`, and nothing else. A subclass
+      overriding `__format__` renders its own text through `f"{exc}"` --
+      68 such sites under `verinote/`, including `cli.py`'s four
+      `print(f"error: {exc}", file=sys.stderr)` -- and passes this guard
+      untouched, because `str(exc)` is clean and the original is re-raised.
+      That is the most reachable of these. `__repr__` is the same defect
+      through `repr()`, and is LESS reachable: zero `{exc!r}` sites exist.
+      An ordinary attribute is the same again, with no general mechanism able
+      to reach it.
+
+      ANOTHER INSTANT. A `__str__` whose value changes after the sample can
+      return the redacted text once and the original afterwards. "What the
+      exception will show" is measured here, not guaranteed.
+
+      AND `__cause__`, which needs no custom subclass at all: the chained
+      exception is never redacted, so a payload that makes a parser raise
+      `ValueError: could not convert string to float: '<key>'` puts the key in
+      `traceback.format_exception` above the redacted message. Measured through
+      the shipped `parse_facts`. It predates this guard and is not narrowed by
+      it -- the guard stops `__cause__` from ESCAPING unhandled, which is a
+      different property from redacting what it says.
 
     `__notes__` (PEP 678) IS covered -- redacted alongside `args` below, because
     it reaches `traceback.format_exception` and the rebuild used to drop it.
@@ -191,30 +204,46 @@ def parsed_under_redaction(parse, payload, secret):
         # `LLMError` into "the provider answered", which is the inverse of the
         # type destruction this function was changed to stop.
         kind = LLMOutputError if isinstance(exc, LLMOutputError) else LLMError
+        # THE CLOSED PROPERTY, stated once instead of enumerated shape by shape:
+        # NO EXIT PATH READS ANYTHING OFF THE CAUGHT OBJECT. Three revisions
+        # each fixed the last unprotected read and were shown a new one -- first
+        # `exc.args`, then `exc.__notes__`, then `exc.__cause__` on the guard's
+        # own replacement exit -- because the fix enumerated shapes instead of
+        # naming the property. Everything that touches `exc` is inside this
+        # `try`, INCLUDING the raises, so a failure anywhere in it leaves as a
+        # clean replacement rather than as whatever the object threw.
+        redacted = "provider output could not be read"
+        replacement = None
+        cause = None
         try:
             redacted = redact_secret(str(exc), secret)
-        except Exception:
-            # Its own `__str__` failed, so there is no text to redact and no way
-            # to know what it would print. `from None` suppresses the context so
-            # the unreadable original is not rendered underneath.
-            raise kind("provider output could not be read") from None
-        # EVERY MUTATING LINE IS INSIDE THE GUARD, because a guard placed after
-        # the lines it guards is skipped by a failure in them. Measured before
-        # this: a subclass whose `args` setter raises, or whose `__notes__` is a
-        # read-only property, took an `AttributeError` straight out of this
-        # function, past every `except LLMError` downstream -- carrying the key
-        # whenever the text that failed to be redacted still held it.
-        try:
             exc.args = (redacted,)
             notes = getattr(exc, "__notes__", None)
             if notes:
                 exc.__notes__ = [redact_secret(str(note), secret) for note in notes]
-            settled = str(exc) == redacted
+            if str(exc) != redacted:
+                # The object will not show what was redacted, so it will not
+                # leave; one of the same kind, carrying that text, will.
+                replacement = kind(redacted)
+                cause = exc.__cause__
+                if not isinstance(cause, BaseException):
+                    # `raise ... from` rejects a non-exception with a TypeError
+                    # that would escape this function entirely.
+                    cause = None
         except Exception:
-            settled = False
-        if not settled:
-            # The object will not show what was redacted, so it does not leave.
-            raise kind(redacted) from exc.__cause__
+            # Anything the object threw on the way: a setter that refused, a
+            # `__str__` or a `redact_secret` that raised, a `__cause__` property
+            # that raised. `except Exception` covers an `LLMError` raised from
+            # inside those reads too, which an `except LLMError: raise` arm
+            # would have let straight through.
+            replacement = kind(redacted)
+            cause = None
+        # NEITHER EXIT READS `exc`. `cause` was validated above, inside the
+        # guard; `replacement` was built there. That is the property, and it is
+        # what the three previous revisions kept re-establishing one attribute
+        # at a time.
+        if replacement is not None:
+            raise replacement from cause
         raise
 
 

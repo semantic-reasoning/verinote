@@ -302,10 +302,15 @@ def test_a_subclass_that_hides_the_redaction_does_not_leave_this_function():
     named through an import alias, a class built by `type()`, `__str__` assigned
     after the class body, or a `__str__` nested in an `if` inside it -- each
     measured -- and it could never see a subclass defined outside the package at
-    all. The check here does not enumerate shapes: it compares what the
-    exception WILL SHOW against what was redacted, so a shape nobody thought of
-    is covered by construction. The cost is the subclass identity, and only in
-    the case the sweep used to forbid outright.
+    all. The check here does not enumerate shapes, but it does not cover all of
+    them either: it compares ONE rendering channel -- `str(exc)` -- at ONE
+    instant, right after `args` is rewritten. A subclass that renders through
+    `__format__` or `__repr__`, or whose `__str__` changes value after the
+    sample, is outside it, and `llm/base.py` says so where the guard lives. What
+    the sweep could not do and this can is cover a shape it was never told
+    about, PROVIDED that shape shows itself through the sampled channel. The
+    cost is the subclass identity, and only in the case the sweep used to forbid
+    outright.
     """
     secret = "sk-ant-SECRETVALUE0123456789"
 
@@ -382,6 +387,97 @@ def test_a_failure_in_the_lines_the_guard_guards_cannot_skip_it():
                 type(excinfo.value), excinfo.value, excinfo.value.__traceback__
             )
         )
+        assert secret not in rendered, cls.__name__
+
+
+def test_nothing_the_exit_path_reads_can_escape_the_guard():
+    """THE CLOSED PROPERTY: no exit path reads anything off the caught object.
+
+    Three revisions each protected the last attribute they had been shown --
+    `args`, then `__notes__`, then `__cause__` on the guard's own replacement
+    exit -- because each fix enumerated shapes instead of naming the property.
+    `raise replacement from exc.__cause__` reads the object ON THE WAY OUT, so
+    an object that misbehaves there defeats the guard no matter how well the
+    lines above it are wrapped.
+
+    Two shapes make that read fail, and neither needs the message to be hidden
+    in any new way. Measured on the revision before this one: a `__cause__`
+    property that raises escaped as that exception, and a `__cause__` that is
+    not a `BaseException` escaped as `TypeError: exception causes must derive
+    from BaseException` -- both non-`LLMError`, both out of `cli.main`, and
+    `traceback.format_exception` could not even render the first one, because
+    it reads `__cause__` again.
+
+    A third shape is here because it is the one an `except LLMError: raise` arm
+    would have let through: a `__cause__` property raising an `LLMError`, which
+    such an arm would re-raise as if it were the intended replacement.
+    """
+    secret = "sk-ant-SECRETVALUE0123456789"
+
+    class _CauseRaises(LLMOutputError):
+        def __init__(self, message):
+            super().__init__(message)
+            self._cached = message
+
+        def __str__(self):
+            return self._cached
+
+        @property
+        def __cause__(self):
+            raise RuntimeError("cause explodes")
+
+    class _CauseIsNotAnException(LLMOutputError):
+        def __init__(self, message):
+            super().__init__(message)
+            self._cached = message
+
+        def __str__(self):
+            return self._cached
+
+        @property
+        def __cause__(self):
+            return "not an exception"
+
+    class _CauseRaisesAnLLMError(LLMOutputError):
+        def __init__(self, message):
+            super().__init__(message)
+            self._cached = message
+
+        def __str__(self):
+            return self._cached
+
+        @property
+        def __cause__(self):
+            raise LLMError(f"cause carries {secret}")
+
+    for cls in (_CauseRaises, _CauseIsNotAnException, _CauseRaisesAnLLMError):
+        def parse(_payload, _cls=cls):
+            raise _cls(f"upstream refused {secret}")
+
+        # NOT `pytest.raises`, and that is the point rather than a style choice.
+        # If the guard regresses, what escapes is an object whose `__cause__`
+        # raises -- and pytest formats an escaping exception, so it reads
+        # `__cause__` and the property explodes INSIDE the reporter. Measured:
+        # that is an `INTERNALERROR` which kills the whole session, so a real
+        # regression would abort the run instead of failing this test, and every
+        # test after it would go unrun. The facts are captured here and asserted
+        # after the object is out of scope, so a failure is an ordinary
+        # `AssertionError` that names the shape.
+        escaped_kind, is_llm_error, shown, rendered = None, None, "", ""
+        try:
+            parsed_under_redaction(parse, "payload", secret)
+        except BaseException as exc:  # noqa: BLE001 - the shape under test
+            escaped_kind = type(exc).__name__
+            is_llm_error = isinstance(exc, LLMError)
+            if is_llm_error:
+                shown = str(exc)
+                rendered = "".join(
+                    traceback.format_exception(type(exc), exc, exc.__traceback__)
+                )
+
+        assert escaped_kind is not None, f"{cls.__name__}: nothing was raised"
+        assert is_llm_error, f"{cls.__name__} escaped as {escaped_kind}"
+        assert secret not in shown, cls.__name__
         assert secret not in rendered, cls.__name__
 
 
