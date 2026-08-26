@@ -904,6 +904,53 @@ def test_query_relation_discovery_prints_public_lifecycle_outcomes(
     assert query_dl == ""
 
 
+def test_query_does_not_count_an_unreachable_provider_as_a_review_verdict(
+    tmp_path, monkeypatch, capsys, fake_client
+):
+    """THE SUMMARY LINE IS ABOUT ROWS, and this exit is the one that broke it.
+
+    `_reinterpret_empty_plan` is the only path returning `review_required` with
+    `infrastructure_fault=True`: the deterministic planner earns the verdict
+    before any request is made, the provider is then asked to re-read the
+    question, and it cannot be reached. Counting that dict in `for_review`
+    printed "1 for review" over a row left `pending` -- and the comment above
+    the count called those verdicts "durable" and "not a broken run", both false
+    of it. The row half of the same exit was pinned two revisions ago; the
+    COMMAND that reports it was not, which is the same gap one layer up.
+
+    rc is 1 here and was 0 before. With no row written, the exit code is the
+    only durable report the command still has, so a run that translated nothing
+    must not look finished to a script.
+    """
+    _env(monkeypatch, tmp_path)
+    store = Store(tmp_path / "kb.sqlite")
+    store.init_schema()
+    store.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
+    store.close()
+    monkeypatch.setattr(
+        "verinote.llm.get_client",
+        lambda cfg: fake_client(error=LLMError("synthetic outage")),
+    )
+
+    rc = cli.main(["query", "What is Sample Person's birth place?"])
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    # The count that was false: "for review" claims a durable verdict on a row.
+    assert "for review" not in captured.out
+    assert "translated 0 question(s), 1 not translated" in captured.out
+    # The deterministic diagnosis still reaches the user -- it is the actionable
+    # half, and it is what the row would have carried.
+    assert "is not in the schema or its aliases" in captured.out
+    assert "(row unchanged)" in captured.out
+    assert "synthetic outage" in captured.err
+    s = Store(tmp_path / "kb.sqlite")
+    q = s.questions()[0]
+    assert q["status"] == "pending"
+    assert not q["reason"]
+    s.close()
+
+
 def test_query_reports_a_provider_failure_without_recording_it(tmp_path, monkeypatch, capsys, fake_client):
     """#592 inverted the row half of this test, AND the one line that named it.
 

@@ -1637,7 +1637,7 @@ def cmd_query(cfg: Config, args: argparse.Namespace) -> int:
             # was deliberately not written, so passing it through printed
             # `q1: translation_failed` over a row this command had just left
             # `pending`. Measured with VERINOTE_PROVIDER=nosuchprovider. The
-            # run is still reported -- `failures` below counts this dict, the
+            # run is still reported -- the summary below counts this dict, the
             # reason goes to stderr and rc is 1 -- it simply stops claiming to
             # be a row.
             print(f"  q{r['id']}: not translated - {r['reason']} (row unchanged)")
@@ -1645,27 +1645,54 @@ def cmd_query(cfg: Config, args: argparse.Namespace) -> int:
             print(f"  {format_question_outcome(r)}")
     translated = sum(1 for r in results if r["status"] == "translated")
     failures = [r for r in results if r["status"] == "translation_failed"]
+    # #592. EVERY COUNT BELOW IS ABOUT ROWS, so every one of them has to exclude
+    # the dicts whose row was deliberately not written. `infrastructure_fault`
+    # is the only thing that says so -- `status` cannot, because the suppressed
+    # and the recorded cases both report a status.
+    unrecorded = [r for r in results if r["infrastructure_fault"]]
     # review_required/no_answer/ambiguous are durable review verdicts, not
     # failures (#296): a question legitimately ending there is not a broken run.
     # They count as neither translated nor failed — but surface their number, so
     # a run made only of them does not read as a silent "translated 0" success.
+    #
+    # AND ONLY WHEN THE ROW ACTUALLY HOLDS ONE. `_reinterpret_empty_plan` reports
+    # `review_required` with `infrastructure_fault=True`: the deterministic
+    # planner earned that verdict, the provider was then unreachable, and no row
+    # was written. Counting it here printed "1 for review" over zero rows for
+    # review -- durable was false of it, and so was "not a broken run". It is
+    # counted with the other unrecorded runs instead.
     for_review = sum(
-        1 for r in results if r["status"] in {"review_required", "no_answer", "ambiguous"}
+        1
+        for r in results
+        if r["status"] in {"review_required", "no_answer", "ambiguous"}
+        and not r["infrastructure_fault"]
     )
+    # The unrecorded runs already counted as failures are not counted twice: a
+    # `translation_failed` fault is reported as a failure, which is what it is.
+    not_translated = [r for r in unrecorded if r["status"] != "translation_failed"]
     # "translated {n} question(s)" is preserved verbatim as the prefix (callers
     # and tests read it); n is the count that genuinely translated, not the total.
     summary = f"translated {translated} question(s)"
     if failures:
         summary += f", {len(failures)} failed"
+    if not_translated:
+        summary += f", {len(not_translated)} not translated"
     if for_review:
         summary += f", {for_review} for review"
     summary += f" -> {cfg.root / 'facts' / 'query.dl'}"
     print(summary)
     print("run the check to see answers (`verinote ui` → Report)")
-    if failures:
+    # #592 WIDENED WHAT EXITS NONZERO, and the widening is the point of the rule.
+    # A run that could not reach the provider wrote nothing and answered nothing;
+    # `main` returned 0 for it because the row it wrote made the run look
+    # finished. There is no row now, so the exit code is the only durable report
+    # left and it has to carry the fault -- otherwise `verinote query` in a
+    # script reports success for a run that translated nothing.
+    reported = failures + not_translated
+    if reported:
         # Any translation_failed is a hard failure (#243): exit rc 1 and put the
         # first failure's bounded reason on stderr so a non-web user sees why.
-        print(failures[0]["reason"], file=sys.stderr)
+        print(reported[0]["reason"], file=sys.stderr)
         store.close()
         return 1
     store.close()

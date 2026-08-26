@@ -91,6 +91,25 @@ class _QueryFlowResult:
     # `translation_failed`.
     policy_failed: bool = False
 
+    @property
+    def infrastructure_fault(self) -> bool:
+        """Is this a fault the question row must NOT record (#592)?
+
+        THE RULE IS SPELLED ONCE, HERE. It was written out twice -- in
+        `translate_questions` and again in `_prepare_repair_question` -- which is
+        two independent spellings of the one rule #592 exists to establish, in
+        the two modules whose divergence IS the issue. Each copy was pinned, so
+        neither could rot silently; nothing pinned them EQUAL, so a change to one
+        was invisible in the other.
+
+        BOTH DISJUNCTS ARE NEEDED. `policy_failed` marks the exit where no
+        request was sent at all. `provider_failed` is set on EVERY `LLMError`
+        exit, including one carrying an answer that arrived unusable, so it is
+        too wide alone -- `output_unusable` subtracts exactly that case back out,
+        and that subtraction is the half of the rule that keeps it non-vacuous.
+        """
+        return self.policy_failed or (self.provider_failed and not self.output_unusable)
+
 
 def query_path(root: Path) -> Path:
     return root / QUERY_RELPATH
@@ -818,9 +837,7 @@ def translate_questions(
         # The web banner and the CLI's per-question line both need the half that
         # was NOT written, so the flag travels with the dict rather than being
         # re-derived downstream from something that cannot express it.
-        infrastructure_fault = flow.policy_failed or (
-            flow.provider_failed and not flow.output_unusable
-        )
+        infrastructure_fault = flow.infrastructure_fault
         if not infrastructure_fault:
             store.set_question_query(q["id"], query_dl, status, reason)
         results.append(
