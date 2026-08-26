@@ -48,7 +48,7 @@ class _PreparedRepair:
     # never reached, or a policy file could not be read so translation was never
     # attempted. Both repair writers key their write suppression on this.
     # `result.provider_failed` alone is not enough: it does not cover the policy
-    # fault, which is the case that reaches this module most often.
+    # fault, where no provider is asked at all and so nothing sets that flag.
     infrastructure_fault: bool = False
 
 

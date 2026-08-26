@@ -1073,9 +1073,10 @@ def test_a_parse_failure_keeps_the_original_error_as_the_cause(tmp_path, monkeyp
     """Redacting must not cost the cause the parsers already chain.
 
     `schema.parse_facts` raises `... from exc` with the `KeyError` that named the
-    missing field. `parsed_under_redaction` re-raises `from exc.__cause__`, so the
-    original survives for a log rather than being buried behind the wrapper's own
-    `LLMError`. Re-raising `from exc` instead is the way to make this fail.
+    missing field. `parsed_under_redaction` re-raises THAT SAME EXCEPTION after
+    rewriting its message, so the cause it already carried survives for a log
+    rather than being buried behind a wrapper. Replacing the re-raise with
+    `raise LLMError(str(exc)) from exc` is the way to make this fail.
     """
     _echoing_sdk(monkeypatch, "openai", {"facts": [{"subject": _LONG_KEY, "oops": 1}]})
 

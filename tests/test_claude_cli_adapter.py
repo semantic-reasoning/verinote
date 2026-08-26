@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from verinote.config import Config
-from verinote.llm.base import LLMError
+from verinote.llm.base import LLMError, LLMOutputError
 from verinote.llm.claude_cli_adapter import ClaudeCliAdapter
 from verinote.llm.factory import get_client
 from verinote.pipeline.extract import (
@@ -481,7 +481,11 @@ def test_claude_cli_undecodable_reply_does_not_blame_the_source(tmp_path, monkey
     """
     _fake_claude(tmp_path, monkeypatch, b"\xff\xfe")
 
-    with pytest.raises(LLMError) as excinfo:
+    # `LLMOutputError`, not `LLMError`: the CLI RAN and answered, and #592 reads
+    # that distinction off the class to decide whether the question row records
+    # the failure. Asserting the base class here passed whichever class was
+    # raised, so this line is what makes that decision falsifiable.
+    with pytest.raises(LLMOutputError) as excinfo:
         invoke(ClaudeCliAdapter(_cfg(tmp_path, llm_timeout_seconds=5.0)), "Ada Lovelace")
 
     message = str(excinfo.value)

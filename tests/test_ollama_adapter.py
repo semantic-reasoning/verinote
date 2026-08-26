@@ -483,10 +483,17 @@ def test_a_schema_failure_is_not_reported_as_a_request_failure(tmp_path, monkeyp
     This is the boundary the region must NOT swallow, so it is the counterweight
     to the two cases above: widening the guard until it covers `parse_facts`
     would make both of those pass and this one fail.
+
+    #592 MADE THE CLASS PART OF THE ASSERTION. This used to accept `LLMError`,
+    the base class, which every candidate satisfies -- so it went green whichever
+    class the parser raised and could not fail for the reason it was written.
+    The parsers decide whether the question row records the failure, and for
+    ollama they decide it directly: this adapter calls them without
+    `parsed_under_redaction` in between.
     """
     _raw_body(monkeypatch, json.dumps({"message": {"content": "{}"}}).encode("utf-8"))
 
-    with pytest.raises(LLMError) as exc:
+    with pytest.raises(LLMOutputError) as exc:
         _PARSING_INVOCATIONS[method](OllamaAdapter(_cfg(tmp_path)))
 
     assert "request failed" not in str(exc.value)

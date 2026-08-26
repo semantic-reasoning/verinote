@@ -78,8 +78,8 @@ def parsed_under_redaction(parse, payload, secret):
     they cannot reach the key -- and they interpolate what they caught:
     `schema.parse_facts` puts the offending object in with `{item!r}`, which on
     a malformed response IS the response. `redact_secret` says the secret should
-    never enter an `LLMError` in the first place; this is the construction site
-    that has to call it for that to hold on the parse path.
+    never enter an `LLMError` in the first place; this is the site that has to
+    call it for that to hold on the parse path.
 
     NOT inside the adapters' request `try`. Moving the parse in there would fix
     the redaction and break the attribution, reporting a schema failure as
@@ -87,46 +87,45 @@ def parsed_under_redaction(parse, payload, secret):
     A separate wrapper redacts without moving the blame, the shape `_rendered`
     already has for the render.
 
-    `from exc.__cause__`, not `from exc`. Every parser raises `... from exc`
-    with the `json`/`Key`/`Type` error that caused it, so the original is
-    already on `__cause__`; re-raising `from exc` would bury it behind this
-    wrapper's own `LLMError`. Where a parser raised with no cause at all
-    (`query translation was empty`), `__cause__` is `None` and the re-raise
-    carries none either, which is what it had.
-
     ONLY `LLMError` is caught. A parser that fails some other way is a bug in
     this repo rather than a message about the provider's payload, and it is not
     this function's business to relabel it.
 
-    THE CLASS IS PRESERVED (#592). This re-raised as a bare `LLMError`, which
-    destroyed the type for every caller of this primitive -- so an
-    `LLMOutputError` raised by a parser arrived at the flow indistinguishable
-    from a request that was never sent, and the guard keyed on it would have
-    been a silent no-op. Flattening was a defect independent of #592;
-    `type(exc)` is the faithful behaviour.
+    IT RELABELS, IT DOES NOT REBUILD (#592), and that is what keeps the class.
+    This once re-raised a newly constructed bare `LLMError`, which destroyed the
+    type for every caller -- an `LLMOutputError` raised by a parser arrived at
+    the flow indistinguishable from a request that was never sent, so the guard
+    keyed on it would have been a silent no-op. Rewriting the message on the
+    exception in place and re-raising the SAME OBJECT fixes that while imposing
+    nothing on the class: `exc.args = (redacted,)` reaches `str(exc)` because no
+    `LLMError` here overrides `__str__`, and the class at any depth of
+    subclassing, every other attribute, and `__cause__` all survive because
+    nothing is constructed.
 
-    WHAT THAT REQUIRES OF SUBCLASSES, and what checks it. `type(exc)(msg)`
-    rebuilds the exception from its message alone, so a subclass must accept a
-    single message argument -- one that did not would raise `TypeError` from
-    inside an `except` clause, at the worst possible moment, and the resulting
-    exception is not an `LLMError`, so every `except LLMError` downstream stops
-    catching it. `test_every_llm_error_subclass_takes_one_message` reads
-    `LLMError.__subclasses__()` and asserts the arity of each. READ IT AS A
-    TRIPWIRE, NOT A GUARANTEE. `__subclasses__()` returns DIRECT children only,
-    so a subclass of `LLMOutputError` never appears in it and breaks this line
-    in exactly the same way. It can only see classes something in its import
-    graph has imported, and the adapters are imported lazily inside
-    `get_client`, so a subclass defined in an adapter module is invisible when
-    that test runs alone. And arity is not reconstruction: a subclass that
-    accepts one message and also carries a status code, a retry hint or a
-    payload passes the check and still loses that state crossing this line.
-    Anything a caller must not lose belongs in the message, or this primitive
-    needs to stop rebuilding.
+    RECONSTRUCTING WAS THE ALTERNATIVE AND IT WAS MEASURABLY WORSE. On a
+    subclass of `LLMOutputError` taking a message AND a status code,
+    `type(exc)(msg)` raised `TypeError` from inside this `except` clause -- and a
+    `TypeError` is not an `LLMError`, so every `except LLMError` downstream
+    stops catching it -- while a subclass that did accept one argument crossed
+    this line with its 429 silently replaced by its constructor default.
+    Relabelling has neither failure mode, so this function imposes no
+    constructor contract on `LLMError` subclasses and needs no tripwire over
+    them. `test_parsed_under_redaction_preserves_a_deep_subclass_and_its_state`
+    pins that directly, on a subclass `__subclasses__()` could never have seen.
+
+    `__cause__` IS INHERITED RATHER THAN SET. Every parser raises `... from exc`
+    with the `json`/`Key`/`Type` error underneath, so re-raising the same object
+    carries that cause forward untouched; where a parser raised with no cause at
+    all (`query translation was empty`) it still carries none, which is what it
+    had. The construction this replaced had to spell `from exc.__cause__` to get
+    the same result, and `from exc` would have buried the original behind its
+    own wrapper.
     """
     try:
         return parse(payload)
     except LLMError as exc:
-        raise type(exc)(redact_secret(str(exc), secret)) from exc.__cause__
+        exc.args = (redact_secret(str(exc), secret),)
+        raise
 
 
 def base_url_unusable(provider: str, url: str, exc: Exception) -> LLMError:
