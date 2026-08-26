@@ -1643,13 +1643,44 @@ def cmd_query(cfg: Config, args: argparse.Namespace) -> int:
             print(f"  q{r['id']}: not translated - {r['reason']} (row unchanged)")
         else:
             print(f"  {format_question_outcome(r)}")
+    # #592. FOUR COUNTS, ENUMERATED RATHER THAN GENERALISED OVER, because the
+    # revision before this one wrote "every count here excludes the unrecorded
+    # dicts", fixed three of them, and left the fourth. Each is named with what
+    # it counts and whether it excludes:
+    #
+    #   translated      rows that say `translated`     excludes, vacuously:
+    #                                                  a suppressed run never
+    #                                                  reports `translated`
+    #   failures        rows that say translation_failed   EXCLUDES (this line)
+    #   not_translated  the unrecorded runs themselves     IS that set
+    #   for_review      rows holding a review verdict      excludes
+    #
+    # Every one of them is about ROWS, and `infrastructure_fault` is the only
+    # thing that says whether a row exists -- `status` cannot, because the
+    # suppressed and the recorded cases both report a status.
     translated = sum(1 for r in results if r["status"] == "translated")
-    failures = [r for r in results if r["status"] == "translation_failed"]
-    # #592. EVERY COUNT BELOW IS ABOUT ROWS, so every one of them has to exclude
-    # the dicts whose row was deliberately not written. `infrastructure_fault`
-    # is the only thing that says so -- `status` cannot, because the suppressed
-    # and the recorded cases both report a status.
     unrecorded = [r for r in results if r["infrastructure_fault"]]
+    # THE COUNT THIS REVISION FIXES. It read `status == "translation_failed"`
+    # with no exclusion, so a credential fault, an unknown provider or an
+    # unreachable provider printed "1 failed" over a row left `pending` -- and
+    # printed it directly under `q1: not translated ... (row unchanged)`, so one
+    # output block contradicted itself. Two shipped tests pinned the
+    # contradiction: one asserted that the row's vocabulary must not appear on a
+    # line about a row that was not written, then asserted the summary using it
+    # two lines later.
+    #
+    # ATTRIBUTION, both halves. `main` ALREADY printed "1 failed" over zero
+    # `translation_failed` rows for the POLICY population -- inherited from
+    # #591's suppression, and not fixed here. What this line had done was EXTEND
+    # that to the credential, unknown-provider and unreachable-provider
+    # populations, where main's count was true. So it was a true->false
+    # transition laid on top of a pre-existing false one, and only the first
+    # half is this change's to own.
+    failures = [
+        r
+        for r in results
+        if r["status"] == "translation_failed" and not r["infrastructure_fault"]
+    ]
     # review_required/no_answer/ambiguous are durable review verdicts, not
     # failures (#296): a question legitimately ending there is not a broken run.
     # They count as neither translated nor failed — but surface their number, so
@@ -1667,9 +1698,10 @@ def cmd_query(cfg: Config, args: argparse.Namespace) -> int:
         if r["status"] in {"review_required", "no_answer", "ambiguous"}
         and not r["infrastructure_fault"]
     )
-    # The unrecorded runs already counted as failures are not counted twice: a
-    # `translation_failed` fault is reported as a failure, which is what it is.
-    not_translated = [r for r in unrecorded if r["status"] != "translation_failed"]
+    # ALL of them, with no status carve-out. An unrecorded run is the same
+    # physical event whatever status the flow reported for it, and splitting the
+    # set by status is what let one half escape the exclusion above.
+    not_translated = unrecorded
     # "translated {n} question(s)" is preserved verbatim as the prefix (callers
     # and tests read it); n is the count that genuinely translated, not the total.
     summary = f"translated {translated} question(s)"
@@ -1682,12 +1714,15 @@ def cmd_query(cfg: Config, args: argparse.Namespace) -> int:
     summary += f" -> {cfg.root / 'facts' / 'query.dl'}"
     print(summary)
     print("run the check to see answers (`verinote ui` → Report)")
-    # #592 WIDENED WHAT EXITS NONZERO, and the widening is the point of the rule.
-    # A run that could not reach the provider wrote nothing and answered nothing;
-    # `main` returned 0 for it because the row it wrote made the run look
-    # finished. There is no row now, so the exit code is the only durable report
-    # left and it has to carry the fault -- otherwise `verinote query` in a
-    # script reports success for a run that translated nothing.
+    # #592 WIDENED WHAT EXITS NONZERO, on ONE population: the empty-plan
+    # reinterpretation whose provider could not be reached. Credential, unknown
+    # provider and policy faults already exited 1 on `main` -- measured per
+    # population, not assumed -- so this is not a general 0->1 move.
+    #
+    # THE REASON IS THAT rc 0 WAS A FALSE CLAIM, not that rc is durable. An exit
+    # code is the least durable artifact here; it survives only as long as the
+    # shell that read it. What makes it wrong to return 0 is that 0 says the run
+    # did what it was asked, and this run translated nothing and wrote nothing.
     reported = failures + not_translated
     if reported:
         # Any translation_failed is a hard failure (#243): exit rc 1 and put the

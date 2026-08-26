@@ -31,11 +31,14 @@ class LLMOutputError(LLMError):
     first. #592 records the second on the question row and only reports the
     first, and this class is what lets one `except LLMError` tell them apart.
 
-    THE DISCRIMINATOR IS WHETHER A RESPONSE ARRIVED, not whether it parsed. A
-    payload with no tool_use block, or a CLI payload that cannot be decoded, is
-    output that arrived and could not be used -- the provider was reached and
-    misbehaved, which is the one signal a user has that their provider is broken
-    rather than unconfigured.
+    THE DISCRIMINATOR IS WHETHER THE PROVIDER PRODUCED OUTPUT FOR THIS QUESTION,
+    not whether it was reachable and not whether the output parsed. A payload
+    with no tool_use block, or a CLI payload that cannot be decoded, is output
+    that arrived and could not be used. An HTTP 429 or 500 reaches the provider
+    and gets an answer of a kind, but not an answer to the question -- measured,
+    those are classified the other way, and "was it reached" would predict the
+    opposite. The signal a user gets is that their provider is broken rather
+    than unconfigured.
     """
 
 
@@ -109,9 +112,42 @@ def parsed_under_redaction(parse, payload, secret):
     stops catching it -- while a subclass that did accept one argument crossed
     this line with its 429 silently replaced by its constructor default.
     Relabelling has neither failure mode, so this function imposes no
-    constructor contract on `LLMError` subclasses and needs no tripwire over
-    them. `test_parsed_under_redaction_preserves_a_deep_subclass_and_its_state`
-    pins that directly, on a subclass `__subclasses__()` could never have seen.
+    constructor contract on `LLMError` subclasses.
+    `test_parsed_under_redaction_preserves_a_deep_subclass_and_its_state` pins
+    that directly, on a subclass `__subclasses__()` could never have seen.
+
+    BUT RELABELLING FAILS OPEN WHERE REBUILDING FAILED CLOSED, and that is what
+    the post-condition below is for. Rewriting `args` reaches `str(exc)` only
+    while `str` is `BaseException.__str__`. A subclass that defines `__str__` to
+    cache its message, or to decorate one, keeps returning the ORIGINAL text
+    after the rewrite -- measured: the key survives, in the one function whose
+    whole job is removing it. A decorating `__str__` also compounds, because the
+    already-decorated `str(exc)` is written back into `args[0]` on every pass.
+    The rebuild had neither problem because it never trusted the object.
+
+    SO THE INVARIANT IS ENFORCED, NOT ASSUMED. An earlier revision guarded it
+    with a static sweep over class definitions under `verinote/`; that sweep had
+    measured blind spots it could not bound -- a base named through an import
+    alias, a class built by `type()`, `__str__` assigned after the class body, a
+    `__str__` nested inside an `if` in the class body -- and its scope could
+    never include a subclass defined outside this package. A source sweep is the
+    right instrument for a CONVENTION, which is what #438's producer-side check
+    is. This is a CONFIDENTIALITY INVARIANT, so it is checked at the site, at
+    runtime, against the object actually being raised. If the redacted text is
+    not what the exception will show, the exception does not leave this function
+    -- a fresh `LLMOutputError` carrying the redacted text does. That costs the
+    subclass identity in exactly the case the sweep used to forbid outright, so
+    it costs nothing on the shipped tree, and it holds for shapes nobody has
+    enumerated.
+
+    WHAT IT DOES NOT COVER, measured rather than assumed. `__notes__` (PEP 678)
+    is redacted alongside `args` below, because it reaches
+    `traceback.format_exception` and the rebuild used to drop it. A message the
+    subclass also stored on an ordinary attribute survives, and no general
+    mechanism can reach that -- it is latent rather than live (nothing reads such
+    an attribute here, and the only shipped subclass has none), and it is the
+    reason the class docstring, not this function, is where a new subclass has to
+    be thought about.
 
     `__cause__` IS INHERITED RATHER THAN SET. Every parser raises `... from exc`
     with the `json`/`Key`/`Type` error underneath, so re-raising the same object
@@ -124,7 +160,14 @@ def parsed_under_redaction(parse, payload, secret):
     try:
         return parse(payload)
     except LLMError as exc:
-        exc.args = (redact_secret(str(exc), secret),)
+        redacted = redact_secret(str(exc), secret)
+        exc.args = (redacted,)
+        notes = getattr(exc, "__notes__", None)
+        if notes:
+            exc.__notes__ = [redact_secret(str(note), secret) for note in notes]
+        if str(exc) != redacted:
+            # The object will not show what was redacted, so it does not leave.
+            raise LLMOutputError(redacted) from exc.__cause__
         raise
 
 
