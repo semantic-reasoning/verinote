@@ -133,8 +133,11 @@ def verify(store: Store) -> CheckReport:
     # nowhere in it -- so widening the check here would withhold a report for a
     # file this function never read. Do not generalise that to the routes:
     # `/report` also calls `report_trace`, which reaches `fact_trust_summary`
-    # and DOES read the typed file, so a broken one 500s `/report` on a KB with
-    # a traceable answer. That is #595 and it predates this guard.
+    # and DOES read the typed file, so a broken one USED TO 500 `/report` on a
+    # KB with a traceable answer -- #595, which predated this guard and is now
+    # fixed in the route rather than here. This module's scope is unchanged by
+    # that fix: it still never reads the typed file, which is why the check
+    # here is still alias-only.
     #
     # The clauses below STAY. They are not made dead by this: `query.py`'s alias
     # expansion cap raises `CorroborationPolicyError` from `load_query` on a KB

@@ -6,6 +6,15 @@
 <p class="error" role="alert">{{ policy_error }} The report and its traceability are
   withheld, because both would have been computed under different rules than this KB's
   alias file specifies.</p>
+{% elif trace_error %}
+{# #595. A SEPARATE arm, not a rewording of the one above, because the two cases
+   withhold DIFFERENT amounts and the difference is what tells a reader whether
+   the numbers below can be trusted. Here the report is computed and correct --
+   `verify()` does not read the typed file -- and only the traceability is
+   withheld. The arm above would claim the report was withheld too, and would
+   name the alias file, which is not the file that failed. #}
+<p class="error" role="alert">{{ trace_error }} The traceability below is withheld;
+  the report itself is unaffected and was computed normally.</p>
 {% endif %}
 {% if not rep.engine_available %}
 <p class="warn">DuckDB verification backend is not available.</p>
@@ -76,7 +85,7 @@
     {% endfor %}
   </tbody>
 </table>
-{% elif policy_error %}
+{% elif policy_error or trace_error %}
 {# #590. Without this arm the empty trace prints "no traces are available for
    these report rows", which reads as a searched-and-found-nothing verdict on a
    search that never ran. #}
