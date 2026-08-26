@@ -269,7 +269,24 @@ class AnthropicAdapter:
             # `LLMError` is the only class that can arrive. It is written this
             # way anyway, because the day `_render_prompt` grows a subclass exit
             # the alternative swallows it with no test red anywhere.
-            exc.args = (redact_secret(str(exc), self.cfg.api_key),)
+            #
+            # AND THE POST-CONDITION COMES WITH IT. Relabelling reaches
+            # `str(exc)` only while `str` is `BaseException.__str__`, so the
+            # same fail-open `parsed_under_redaction` guards exists here: a
+            # subclass caching or decorating its message would keep showing the
+            # unredacted text. This copy is a no-op for the same reason the
+            # class preservation is, and it is written for the same reason --
+            # the two clauses have to arrive together or the day one grows a
+            # subclass exit is the day the other leaks.
+            redacted = redact_secret(str(exc), self.cfg.api_key)
+            exc.args = (redacted,)
+            notes = getattr(exc, "__notes__", None)
+            if notes:
+                exc.__notes__ = [
+                    redact_secret(str(note), self.cfg.api_key) for note in notes
+                ]
+            if str(exc) != redacted:
+                raise LLMError(redacted) from exc.__cause__
             raise
 
     def extract_facts(self, *, source_text: str, schema_hint: str = "") -> list[ExtractedFact]:

@@ -909,10 +909,15 @@ def test_query_does_not_count_an_unreachable_provider_as_a_review_verdict(
 ):
     """THE SUMMARY LINE IS ABOUT ROWS, and this exit is the one that broke it.
 
-    `_reinterpret_empty_plan` is the only path returning `review_required` with
-    `infrastructure_fault=True`: the deterministic planner earns the verdict
-    before any request is made, the provider is then asked to re-read the
-    question, and it cannot be reached. Counting that dict in `for_review`
+    `_reinterpret_empty_plan` is the path this test drives, and the one that
+    reaches it through `translate_questions`: the deterministic planner earns
+    the verdict before any request is made, the provider is then asked to
+    re-read the question, and it cannot be reached. It is NOT the only
+    construction that can pair `review_required` with `infrastructure_fault` --
+    `_schema_aware_query_flow_result` and `_translate_direct_datalog_fallback`
+    build that pair too, and `_prepare_repair_question` reaches one of them --
+    so the claim here is about what this fixture exercises, not about the
+    program. Counting that dict in `for_review`
     printed "1 for review" over a row left `pending` -- and the comment above
     the count called those verdicts "durable" and "not a broken run", both false
     of it. The row half of the same exit was pinned two revisions ago; the
@@ -985,7 +990,13 @@ def test_query_reports_a_provider_failure_without_recording_it(tmp_path, monkeyp
     # not written. Deleting the branch that produces the line above brings it
     # straight back, which is what makes this assertion load-bearing.
     assert "q1: translation_failed" not in captured.out
-    assert "translated 0 question(s), 1 failed" in captured.out
+    # THE SUMMARY OBEYS THE SAME RULE AS THE LINE ABOVE IT. This asserted
+    # "1 failed" while asserting, two lines up, that the row's own vocabulary
+    # must not appear on a line about a row that was not written -- so the test
+    # pinned the contradiction rather than catching it. `failed` counts rows
+    # that SAY `translation_failed`; this run left its row `pending`.
+    assert "translated 0 question(s), 1 not translated" in captured.out
+    assert "1 failed" not in captured.out
     assert "provider unavailable" in captured.err
     s = Store(tmp_path / "kb.sqlite")
     q = s.questions()[0]
@@ -1012,7 +1023,8 @@ def test_query_reports_a_get_client_failure_without_recording_it(tmp_path, monke
     assert rc == 1
     assert "q1: not translated - missing provider credentials (row unchanged)" in captured.out
     assert "q1: translation_failed" not in captured.out
-    assert "translated 0 question(s), 1 failed" in captured.out
+    assert "translated 0 question(s), 1 not translated" in captured.out
+    assert "1 failed" not in captured.out
     assert "missing provider credentials" in captured.err
     s = Store(tmp_path / "kb.sqlite")
     q = s.questions()[0]
@@ -1054,7 +1066,11 @@ def test_query_mixed_outcomes_exits_nonzero_with_split(
     # describes its own question, so the two lines differ in kind and not only
     # in status -- q1 reports its row, q2 reports the run.
     assert "q2: not translated - provider rejected this question (row unchanged)" in captured.out
-    assert "translated 1 question(s), 1 failed" in captured.out
+    # The mixed run in the strong sense: one row written, one deliberately not.
+    # "1 failed" would have described the second question as a recorded failure
+    # while the assertion below shows its row is `pending`.
+    assert "translated 1 question(s), 1 not translated" in captured.out
+    assert "1 failed" not in captured.out
     assert "provider rejected this question" in captured.err
     store = Store(tmp_path / "kb.sqlite")
     rows = {int(q["id"]): str(q["status"]) for q in store.questions()}

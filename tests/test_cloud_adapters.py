@@ -885,9 +885,14 @@ def test_a_render_failure_keeps_the_original_error_as_the_cause(
     render path did not, and the docstring now argues from it.
 
     BOTH adapters, because each carries its own `_rendered` and each re-raises
-    `from exc.__cause__` in its own copy of that line. Covering one left the
-    other's unpinned while its docstring named this test as what pins it —
-    change either copy to `from exc` and the matching case here fails.
+    the caught exception in its own copy of that clause. Covering one left the
+    other's unpinned while its docstring named this test as what pins it.
+    #592 replaced `raise type(exc)(...) from exc.__cause__` with rewriting the
+    message on the exception and re-raising it, so the cause is now INHERITED
+    rather than re-attached and there is no `from` clause left in either copy:
+    `grep -rn "raise .* from exc.__cause__" verinote/` returns nothing. Making
+    either copy construct a new exception -- `raise LLMError(str(exc)) from exc`
+    -- is what fails the matching case here now.
     """
     boom = TypeError("render_prompt() got an unexpected keyword argument")
 

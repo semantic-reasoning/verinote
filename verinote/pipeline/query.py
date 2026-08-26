@@ -463,7 +463,11 @@ def _reinterpret_empty_plan(
             f"unavailable: llm error: {exc}"
         )
         # #592. THE THIRD `except LLMError` EXIT, and it shipped without this
-        # line for two revisions. `output_unusable` defaults to False, so
+        # line for THREE revisions -- counted per tag rather than remembered,
+        # by AST over the `_QueryFlowResult` constructions in this file rather
+        # than by grep, since a comment saying so would count itself: four
+        # constructions carry the keyword at revisions 1, 2 and 3, five from
+        # revision 4 on. `output_unusable` defaults to False, so
         # omitting it made `provider_failed and not output_unusable` true here
         # for every failure, and both consumers read that as an infrastructure
         # fault: an answer that ARRIVED off-schema was suppressed at the one
@@ -782,8 +786,12 @@ def translate_questions(
         # suppressed the policy-file case here and left the credential case
         # writing, which made this one line behave two opposite ways depending
         # on which infrastructure fault occurred. #592 settles it for all of
-        # them, and the rule is read off `question_outcome.py::_STATUS_META`
-        # rather than chosen: `translation_failed` is defined there as "The
+        # them, and the rule is ANCHORED IN `question_outcome.py::_STATUS_META`
+        # rather than chosen -- anchored rather than READ OFF, because that
+        # string is the display FALLBACK `question_outcome_view` renders only
+        # for a row carrying no reason, which is the wording
+        # tests/test_query_schema_policy_guard.py already carries and this copy
+        # did not. `translation_failed` is defined there as "The
         # provider output could not be used" -- a claim about the provider's
         # OUTPUT. When the provider was never reached, or translation was never
         # attempted because a policy file could not be read, there is no output

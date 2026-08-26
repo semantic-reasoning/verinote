@@ -24,8 +24,8 @@ provider-side OR PARSING failure", so it conflates a request never sent with an
 answer that came back unusable. `LLMOutputError` is the second case, and the
 tests below pin both directions.
 """
-import ast
 import re
+import traceback
 from html import unescape
 from pathlib import Path
 
@@ -287,71 +287,81 @@ def test_a_mixed_run_reports_the_suppressed_fault_and_not_the_recorded_one(
     assert "did not match schema" not in banner
 
 
-def test_no_shipped_llm_error_subclass_defines_its_own_str():
-    """The RELABEL's precondition, enforced -- the hazard the deleted tripwire
-    did not cover and its replacement could not.
+def test_a_subclass_that_hides_the_redaction_does_not_leave_this_function():
+    """THE POST-CONDITION, which replaced a source sweep over class definitions.
 
-    `parsed_under_redaction` redacts by rewriting `exc.args` and re-raising the
-    same object. That reaches `str(exc)` only because `BaseException.__str__`
-    derives the string from `args`. A subclass that defines `__str__` -- to cache
-    its message, or to format one from other fields -- keeps returning the
-    ORIGINAL text after the rewrite, so the secret survives into a message this
-    function exists to redact. Measured on this primitive: such a subclass leaks
-    where the previous revision's rebuild did not. It is a fail-OPEN direction in
-    the one place whose whole job is redaction.
+    Rewriting `args` reaches `str(exc)` only while `str` is
+    `BaseException.__str__`. A subclass that CACHES its message and returns the
+    cache keeps showing the original text after the rewrite, so the secret
+    survives the one function whose job is removing it. Measured on the shipped
+    primitive before this check existed: `str(exc)` carried the key, and so did
+    `traceback.format_exception`.
 
-    The tripwire this replaces checked constructor ARITY, which was the REBUILD's
-    hazard and is now structurally impossible. It would not have caught this one.
-
-    DERIVED FROM THE SOURCE, not from `__subclasses__()`, and that is the point:
-    `__subclasses__()` returns direct children only and sees nothing a test run
-    has not imported, so the old sweep was blind exactly where a new subclass
-    would be added. This walks every class statement under `verinote/`, resolves
-    the `LLMError` family as a fixpoint over base names, and so covers a subclass
-    at any depth in any module whether or not anything imports it.
-
-    SCOPE, so it is not read as more than it is: this cannot see a subclass
-    defined outside `verinote/`, and it checks `__str__` rather than every way a
-    message could be decoupled from `args`. `__str__` is the decisive one --
-    without it, `str(exc)` reads `args` and the redaction holds.
+    WHY NOT A SWEEP OVER SUBCLASSES. The previous revision guarded this by
+    scanning class statements under `verinote/`. That scan could not see a base
+    named through an import alias, a class built by `type()`, `__str__` assigned
+    after the class body, or a `__str__` nested in an `if` inside it -- each
+    measured -- and it could never see a subclass defined outside the package at
+    all. The check here does not enumerate shapes: it compares what the
+    exception WILL SHOW against what was redacted, so a shape nobody thought of
+    is covered by construction. The cost is the subclass identity, and only in
+    the case the sweep used to forbid outright.
     """
-    package = Path(__file__).resolve().parent.parent / "verinote"
-    classes = {}
-    for path in sorted(package.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ClassDef):
-                bases = {b.id for b in node.bases if isinstance(b, ast.Name)}
-                bases |= {b.attr for b in node.bases if isinstance(b, ast.Attribute)}
-                classes[node.name] = (bases, node, path)
+    secret = "sk-ant-SECRETVALUE0123456789"
 
-    family = {"LLMError"}
-    while True:
-        grown = {
-            name for name, (bases, _, _) in classes.items() if bases & family
-        } | family
-        if grown == family:
-            break
-        family = grown
+    class _Caching(LLMOutputError):
+        def __init__(self, message):
+            super().__init__(message)
+            self._cached = message
 
-    swept = sorted(family - {"LLMError"})
-    assert swept, (
-        "no LLMError subclass was found under verinote/, so this sweep judged "
-        "nothing -- it has been made vacuous, not satisfied"
+        def __str__(self):
+            return self._cached
+
+    def parse(_payload):
+        raise _Caching(f"upstream refused {secret}")
+
+    with pytest.raises(LLMError) as excinfo:
+        parsed_under_redaction(parse, "payload", secret)
+
+    assert secret not in str(excinfo.value)
+    rendered = "".join(
+        traceback.format_exception(
+            type(excinfo.value), excinfo.value, excinfo.value.__traceback__
+        )
     )
+    assert secret not in rendered
+    # The identity is what it costs, and only here: the class is replaced
+    # precisely because its own `__str__` could not be trusted to show the
+    # redacted text. The deep-subclass test below is the counterweight -- a
+    # subclass that does NOT hide the redaction keeps its class and its state.
+    assert type(excinfo.value) is LLMOutputError
 
-    offenders = []
-    for name in swept:
-        _, node, path = classes[name]
-        for child in node.body:
-            if isinstance(child, ast.FunctionDef) and child.name == "__str__":
-                offenders.append(f"{path.name}:{child.lineno} {name}.__str__")
 
-    assert offenders == [], (
-        "these `LLMError` subclasses define `__str__`, so `parsed_under_redaction`"
-        " cannot redact them: it rewrites `args` and re-raises the same object, "
-        f"and their `__str__` keeps returning the unredacted text. {offenders}"
+def test_a_note_is_redacted_alongside_the_message():
+    """`__notes__` (PEP 678) reaches `traceback.format_exception`, and the
+    relabel keeps the object, so a note survives where the rebuild dropped it.
+
+    Measured on the shipped primitive before this: the note carried the key into
+    the rendered traceback while `str(exc)` was clean -- a leak that reading
+    `str(exc)` alone would never show.
+    """
+    secret = "sk-ant-SECRETVALUE0123456789"
+
+    def parse(_payload):
+        error = LLMOutputError("query translation did not match schema")
+        error.add_note(f"request signed with {secret}")
+        raise error
+
+    with pytest.raises(LLMOutputError) as excinfo:
+        parsed_under_redaction(parse, "payload", secret)
+
+    rendered = "".join(
+        traceback.format_exception(
+            type(excinfo.value), excinfo.value, excinfo.value.__traceback__
+        )
     )
+    assert secret not in rendered
+    assert "***" in "".join(excinfo.value.__notes__)
 
 
 def test_parsed_under_redaction_preserves_a_deep_subclass_and_its_state():
@@ -588,7 +598,9 @@ def test_an_unusable_reinterpretation_is_recorded_like_any_other_arrived_answer(
     exits above wrote one -- and this is the exit whose reason quotes the
     provider's own words, so the page denied the run had happened while printing
     them. The two exits above were pinned; this one was not, which is how it
-    survived two revisions and three gate rounds.
+    survived three revisions and three gate rounds -- counted per tag by AST
+    over `query.py`'s `_QueryFlowResult` constructions: four carry the keyword
+    at revisions 1, 2 and 3, five from revision 4 on.
     """
     root = tmp_path / "kb"
     store = _kb_with_an_empty_plan(root)
