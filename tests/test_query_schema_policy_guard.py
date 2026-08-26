@@ -20,9 +20,8 @@ not parse, so a typo'd typed file parsed to `{}` and failed nothing. #589 made
 that line raise, so the guard now fires on it and `POST /ask` names the typed
 file in its body.
 
-The STATUS codes did not move -- `POST /ask` is still 200 and
-`POST /questions/translate` still 303, because this guard degrades rather than
-500s -- which is why the test below kept passing after the behaviour inverted:
+`POST /ask` is still 200 -- this guard degrades rather than 500s -- which is
+why the test below kept passing after the behaviour inverted:
 `ALL_MESSAGES` had been enumerated when the only typed-file message was the
 duplicate-alias one, so the unparseable-line message #589 added was not in it.
 It IS in it now -- the set gained `TYPED_TYPO_MSG` in the same change that
@@ -60,21 +59,20 @@ question resolves deterministically and exits 0 with no credentials at all,
 which `NoProviderClient` below makes self-enforcing by raising if anything asks
 the provider.
 
-WHAT THIS CHANGE DOES NOT DELIVER, stated so its absence is not read as an
-oversight. `POST /questions/translate` answers 303 and redirects to
-`GET /questions`, and the guard deliberately writes nothing to the question rows
-(see below), so that page has nothing to display about the failure. Rendering
-the page from the translate route instead of redirecting would have turned the
-cp949 input from 303 into 500, because `GET /questions` itself failed on a cp949
-alias file when this was written. **#590 has since fixed that** -- `GET /questions`
-answers 200 on both broken-alias entries in `BROKEN_INPUTS` below
-(`alias-malformed` and `alias-cp949`; the third has a healthy alias) -- so the
-500 half of this obstacle is gone. What remains is the other half: this guard
-deliberately writes nothing to the question rows, so the landing page still has
-no per-question record to render. Delivering the diagnosis needs the message
-carried from the POST to the render, which is neither issue's.
+WHAT THIS CHANGE DID NOT DELIVER, AND WHAT SINCE DELIVERED IT. When this file
+was written `POST /questions/translate` answered 303 and redirected to
+`GET /questions`, and the guard wrote nothing to the question rows, so that page
+had nothing to display about the failure. Rendering from the translate route
+instead of redirecting would have turned the cp949 input from 303 into 500,
+because `GET /questions` itself failed on a cp949 alias file back then. #590
+removed that obstacle, and #592 then did the rendering: the route carries the
+message from the POST into the page's `error` slot, so every entry in
+`BROKEN_INPUTS` below now answers **200 with a banner naming the broken file**,
+and `test_translate_survives_each_broken_policy_file` asserts exactly that. A
+303 survives only for a run with no fault to report. The rows still carry
+nothing, which is now a rule rather than a gap -- see the paragraph below.
 
-WHY THE QUESTION ROWS STAY `pending`. `translate_questions` reports the policy
+WHY THE QUESTION ROWS ARE LEFT ALONE. `translate_questions` reports the policy
 failure per question but does not write it. #591's justification was comparative
 and deliberately narrow: today's unhandled exception leaves every pending
 question `pending`, so a guard that wrote `translation_failed` to each would

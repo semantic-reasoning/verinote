@@ -1521,7 +1521,8 @@ def test_no_fact_joins_them_needs_evidence_not_merely_an_untruncated_list(tmp_pa
 
 
 def test_every_provider_failure_exit_reports_the_provider_failed():
-    """Producer-side tripwire for `provider_failed` (#438).
+    """Producer-side tripwire for `provider_failed` (#438) and for
+    `output_unusable` (#592).
 
     Ask suppresses its fallback request on this flag, so a handler that builds a
     `_QueryFlowResult` after an `LLMError` and forgets the keyword silently
@@ -1536,12 +1537,23 @@ def test_every_provider_failure_exit_reports_the_provider_failed():
     package deliberately: `_QueryFlowResult` lives in one module today, and a
     second one importing the private name is exactly the drift worth catching.
 
+    #592 ADDED THE SECOND FLAG BECAUSE OMITTING IT IS THE SAME DEFECT, one flag
+    over. `output_unusable` decides whether the question row records the
+    failure, and its dataclass default is the SUPPRESSING value, so a handler
+    that forgets the keyword silently stops recording answers that arrived. That
+    is not hypothetical: `_reinterpret_empty_plan` shipped without it for two
+    revisions and three gate rounds, and this sweep -- judging only
+    `provider_failed` at the time -- stayed green over it. The behavioural tests
+    at each exit could not catch it either, because there was no test at that
+    exit; a producer-side sweep is what covers an exit nobody thought to test.
+
     What would make this vacuous: no construction inside any `except LLMError:`
     handler, so the loop finds nothing to judge. The companion assertion below
     requires the sweep to have examined at least one.
     """
     package = Path(__file__).resolve().parent.parent / "verinote"
     offenders = []
+    undiscriminated = []
     examined = []
     for path in sorted(package.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -1567,6 +1579,13 @@ def test_every_provider_failure_exit_reports_the_provider_failed():
                 )
                 if not flagged:
                     offenders.append(f"{path.name}:{child.lineno}")
+                # #592. The SECOND flag, judged by PRESENCE rather than by value.
+                # `output_unusable` is necessarily computed (`isinstance(exc,
+                # LLMOutputError)`), so demanding a literal the way the line
+                # above does would be unsatisfiable; what can be demanded is
+                # that the exit answered the question at all.
+                if not any(kw.arg == "output_unusable" for kw in child.keywords):
+                    undiscriminated.append(f"{path.name}:{child.lineno}")
 
     assert examined, (
         "no `_QueryFlowResult` was built inside an `except LLMError:` handler, so "
@@ -1575,4 +1594,10 @@ def test_every_provider_failure_exit_reports_the_provider_failed():
     assert offenders == [], (
         "these provider-failure exits build a flow result without "
         f"provider_failed=True, so Ask cannot tell they failed: {offenders}"
+    )
+    assert undiscriminated == [], (
+        "these provider-failure exits build a flow result without an "
+        "`output_unusable=` keyword, so they fall back to the dataclass default "
+        "of False -- which SUPPRESSES the question row. An answer that arrived "
+        f"and could not be used is silently not recorded there (#592): {undiscriminated}"
     )

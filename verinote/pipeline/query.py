@@ -443,12 +443,23 @@ def _reinterpret_empty_plan(
             f"{deterministic_result.reason}; schema-aware reinterpretation "
             f"unavailable: llm error: {exc}"
         )
+        # #592. THE THIRD `except LLMError` EXIT, and it shipped without this
+        # line for two revisions. `output_unusable` defaults to False, so
+        # omitting it made `provider_failed and not output_unusable` true here
+        # for every failure, and both consumers read that as an infrastructure
+        # fault: an answer that ARRIVED off-schema was suppressed at the one
+        # exit whose reason quotes it, and the banner then said translation
+        # could not run while printing the provider's own words. Computed the
+        # same way as the two exits above rather than defaulted, because the
+        # default is the suppressing value and silence is what it buys.
+        output_unusable = isinstance(exc, LLMOutputError)
         return _QueryFlowResult(
             "review_required",
             f"review_required({_lit(reason)})",
             reason,
             allow_direct_datalog_fallback=False,
             provider_failed=True,
+            output_unusable=output_unusable,
         )
 
     if intent.kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED:
@@ -783,11 +794,19 @@ def translate_questions(
         # row. Keying on the FLOW's own flags is what makes the value written
         # and the decision to write it come from the same read.
         #
-        # The result dict is still appended, so the CLI and the web report
-        # normally and no caller's contract changes. Deleting the append instead
-        # of the write would flip a credential-free `verinote query` to rc=0,
-        # because `cmd_query` derives its failure count from these dicts and not
-        # from the rows.
+        # The result dict is still appended, so the CLI and the web still
+        # report the fault. Deleting the append instead of the write would flip
+        # a credential-free `verinote query` to rc=0, because `cmd_query`
+        # derives its failure count from these dicts and not from the rows.
+        #
+        # THE DICT'S CONTRACT DID CHANGE, and callers must be updated with it.
+        # `infrastructure_fault` below is a REQUIRED key: `cli.py` and
+        # `web/app.py` both index it rather than `.get` it, so a caller still
+        # building the pre-#592 shape gets a `KeyError` from the CLI and a 500
+        # from the web -- measured. `translate_questions` is exported in
+        # `verinote.pipeline.__all__`, so that is a public shape; the four test
+        # doubles this change had to update are the same edit any other caller
+        # needs.
         #
         # AND IT CARRIES THE VERDICT, because `status` cannot be read back as
         # one. Both branches of this decision report `translation_failed` -- the

@@ -34,6 +34,7 @@ from fastapi.testclient import TestClient
 import verinote.web.app as webapp
 from verinote.config import Config
 from verinote.llm.base import LLMError, LLMOutputError, parsed_under_redaction
+from verinote.llm.schema import parse_facts, parse_query
 from verinote.pipeline.query import translate_questions
 from verinote.pipeline.query_intent import parse_query_intent
 from verinote.pipeline.repair import process_repair_job, repair_question
@@ -182,7 +183,7 @@ def test_output_that_arrived_and_could_not_be_used_IS_recorded(tmp_path):
 
 
 def test_repair_does_not_record_an_unreadable_policy_file(tmp_path):
-    """The third writer. `repair_question` persists `prepared.status`, which a
+    """The SECOND writer. `repair_question` persists `prepared.status`, which a
     policy fault reaches as `translation_failed`."""
     root = tmp_path / "kb"
     store = _kb(root, typed=TYPED_BROKEN)
@@ -193,8 +194,25 @@ def test_repair_does_not_record_an_unreadable_policy_file(tmp_path):
 
 
 def test_the_web_reports_the_fault_it_no_longer_records(tmp_path):
-    """AC-2's cost, paid. The row write WAS the web's only diagnosis, so
-    deleting it without this surface would have made a broken provider silent."""
+    """AC-2's cost, and the half of it that is NOT paid.
+
+    The row write WAS the web's only diagnosis, so deleting it without this
+    surface would have made a broken provider silent. What the banner does not
+    replace is DURABILITY, measured with one fixture and only the tree varying:
+    on `6cd66b8` the row carried the reason and every later `GET /questions`
+    rendered it, while here the banner lives in the POST response alone and the
+    next GET shows "Waiting for translation." and nothing else. Nothing in the
+    database, the KB directory or the log holds the fault. With a repair job
+    pending it is shorter still: that page polls `GET /questions` every two
+    seconds and swaps the body, so the first tick replaces the banner.
+
+    The trade is defensible -- a transient true report beats a durable false one,
+    which is the whole of #592 -- but it is a trade and not a free move. The
+    other two surfaces kept a durable home for the same class of fault: the CLI
+    has stdout, stderr and rc=1, and web repair persists `repair_jobs.message`,
+    which survives a reload. Translate is the one surface with no durable
+    equivalent, so this is an outlier rather than the pattern.
+    """
     root = tmp_path / "kb"
     root.mkdir(parents=True)
     policy = root / "policy"
@@ -268,17 +286,40 @@ def test_a_mixed_run_reports_the_suppressed_fault_and_not_the_recorded_one(
     assert "did not match schema" not in banner
 
 
-def test_every_llm_error_subclass_takes_one_message():
-    """`parsed_under_redaction` re-raises with `type(exc)(...)`, so a subclass
-    whose constructor took a different shape would break inside error handling.
+def test_parsed_under_redaction_preserves_a_deep_subclass_and_its_state():
+    """What replaced the subclass tripwire, and it pins the property directly.
 
-    Derived from `__subclasses__()` rather than listed, so a subclass added later
-    is covered without anyone remembering this test exists.
+    The primitive used to rebuild the exception as `type(exc)(message)`, which
+    imposed a constructor contract on every `LLMError` subclass. That contract
+    was guarded by a test walking `LLMError.__subclasses__()` -- a check that
+    could not see a subclass one level deeper, could not see one in a module
+    nothing had imported yet, and would have passed a subclass that took one
+    message and silently dropped everything else it carried.
+
+    The primitive relabels the exception in place now, so there is no contract
+    left to guard and the guard is gone with it. This asserts the property the
+    guard was standing in for, on a subclass `__subclasses__()` could never have
+    reached: two constructor arguments, one level below `LLMOutputError`. Both
+    halves matter -- the class and the `status_code` survive, and the secret
+    still does not.
     """
-    subclasses = LLMError.__subclasses__()
-    assert subclasses, "no subclasses -- this test would pass vacuously"
-    for cls in subclasses:
-        assert str(cls("probe")) == "probe", cls.__name__
+    secret = "sk-ant-SECRETVALUE0123456789"
+
+    class _Throttled(LLMOutputError):
+        def __init__(self, message, status_code=503):
+            super().__init__(message)
+            self.status_code = status_code
+
+    assert _Throttled not in LLMError.__subclasses__()
+
+    def parse(_payload):
+        raise _Throttled(f"upstream refused {secret}", 429)
+
+    with pytest.raises(_Throttled) as excinfo:
+        parsed_under_redaction(parse, "payload", secret)
+    assert excinfo.value.status_code == 429
+    assert secret not in str(excinfo.value)
+    assert str(excinfo.value) == "upstream refused ***"
 
 
 def test_parsed_under_redaction_preserves_the_class_and_the_redaction():
@@ -292,10 +333,14 @@ def test_parsed_under_redaction_preserves_the_class_and_the_redaction():
 
 
 def test_the_async_repair_worker_does_not_record_it_either(tmp_path):
-    """THE FOURTH WRITER, EXERCISED rather than inspected.
+    """THE THIRD WRITER, EXERCISED rather than inspected.
 
     `persist_repair_question` is a SEPARATE write from `repair_question`'s, on
-    the job worker's path, and a guard added to one does not cover the other. It
+    the job worker's path, and a guard added to one does not cover the other. The
+    three are `translate_questions`, `repair_question` and this one -- derived by
+    taking the `Store` methods whose SQL sets `questions.status` and then their
+    callers under `verinote/`, which is the same derivation the module docstring
+    of tests/test_query_schema_policy_guard.py spells out. It
     would be easy to add the check and never run it -- so this drives the real
     worker end to end and asserts the row, not the presence of a guard.
 
@@ -371,6 +416,150 @@ def test_the_async_worker_fails_the_job_on_output_that_arrived_unusable(tmp_path
     saved = store.get_repair_job(int(job["id"]))
     assert str(saved["status"]) == "failed"
     assert "did not match schema" in str(saved["message"])
+
+
+# Every `raise LLMOutputError` site the question path can reach, one case each.
+# The class is the whole mechanism -- `translate_questions` reads it off the
+# exception to decide whether the row records the failure -- so a site raising
+# the base class instead silently rejoins the suppressed half, with no other
+# symptom. Reverting any one of these to `LLMError` reddens exactly its own case.
+_ARRIVED_UNUSABLE_PARSES = {
+    "parse_query/off-schema": (parse_query, {}, "query translation did not match schema"),
+    "parse_query/empty": (parse_query, {"datalog": "   "}, "query translation was empty"),
+    "parse_facts/off-schema": (parse_facts, "not json at all", "extractor output did not match schema"),
+    "parse_facts/malformed-item": (
+        parse_facts,
+        {"facts": [{"subject": "Sample Person", "relation": "born_in"}]},
+        "malformed fact object",
+    ),
+    "parse_query_intent/not-json": (parse_query_intent, "not json at all", "query intent output was not JSON"),
+    "parse_query_intent/off-schema": (parse_query_intent, {"kind": "lookup_object"}, "did not match schema"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_ARRIVED_UNUSABLE_PARSES))
+def test_every_parser_rejection_is_an_arrived_unusable_answer(case):
+    """A parser only ever runs on a payload that ARRIVED, so every exit it has
+    is the recorded half of the rule by construction."""
+    parse, payload, fragment = _ARRIVED_UNUSABLE_PARSES[case]
+    with pytest.raises(LLMOutputError) as excinfo:
+        parse(payload)
+    assert fragment in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "method",
+    ["extract_facts", "translate_query", "extract_query_intent"],
+)
+def test_anthropic_reports_a_missing_tool_use_block_as_unusable_output(
+    tmp_path, monkeypatch, method
+):
+    """The tree's own advertised example, which nothing tested.
+
+    `LLMOutputError`'s docstring offers "a payload with no tool_use block" as the
+    case it exists for, and this adapter raises it at three separate exits -- one
+    per method, none of them shared -- so one test cannot stand for the others.
+    A response with content but no tool_use block ARRIVED: the provider was
+    reached and misbehaved, which is what the row records.
+    """
+    from types import SimpleNamespace
+
+    from verinote.llm.anthropic_adapter import AnthropicAdapter
+
+    monkeypatch.setattr(
+        AnthropicAdapter,
+        "_client",
+        lambda self: SimpleNamespace(
+            messages=SimpleNamespace(
+                create=lambda **kwargs: SimpleNamespace(
+                    content=[SimpleNamespace(type="text", text="no tool use here")]
+                )
+            )
+        ),
+    )
+    cfg = Config(root=tmp_path, db_path=tmp_path / "kb.sqlite", provider="anthropic",
+                 model="m", api_key="sk-ant-SECRETVALUE0123456789", base_url=None)
+    adapter = AnthropicAdapter(cfg)
+    call = {
+        "extract_facts": lambda: adapter.extract_facts(source_text="x"),
+        "translate_query": lambda: adapter.translate_query(question="q", qid=1),
+        "extract_query_intent": lambda: adapter.extract_query_intent(question="q"),
+    }[method]
+
+    with pytest.raises(LLMOutputError, match="no tool_use block"):
+        call()
+
+
+REINTERPRETED_QUESTION = "What is Sample Person's birth place?"
+
+
+def _kb_with_an_empty_plan(root: Path) -> Store:
+    """The state that reaches `_reinterpret_empty_plan`, built from facts.
+
+    The deterministic parser UNDERSTANDS this question, so the flow does not ask
+    the provider for an intent; the plan then comes out EMPTY because the
+    relation is absent from the schema, and only THEN is the provider asked to
+    re-read it. That ordering is the whole point: the row's verdict and its
+    reason are decided before any request is made.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    store = Store(root / "kb.sqlite")
+    store.init_schema()
+    store.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
+    store.add_question(REINTERPRETED_QUESTION)
+    return store
+
+
+def test_an_unusable_reinterpretation_is_recorded_like_any_other_arrived_answer(tmp_path):
+    """THE THIRD `except LLMError` EXIT, which shipped without the discriminator.
+
+    `_reinterpret_empty_plan` constructed its result without `output_unusable`,
+    and the field defaults to the SUPPRESSING value, so every failure at this
+    exit was classified an infrastructure fault. An answer that arrived and was
+    unusable therefore wrote no row here while the identical answer at the two
+    exits above wrote one -- and this is the exit whose reason quotes the
+    provider's own words, so the page denied the run had happened while printing
+    them. The two exits above were pinned; this one was not, which is how it
+    survived two revisions and three gate rounds.
+    """
+    root = tmp_path / "kb"
+    store = _kb_with_an_empty_plan(root)
+
+    results = translate_questions(store, _AnswersUnusably(), root=root)
+
+    assert results[0]["infrastructure_fault"] is False
+    row = store.questions()[0]
+    assert str(row["status"]) == "review_required"
+    # The DETERMINISTIC verdict is what the row keeps -- the engine reached it
+    # without the provider -- with the failed re-reading appended to it.
+    assert "is not in the schema or its aliases" in str(row["reason"])
+    assert "did not match schema" in str(row["reason"])
+
+
+def test_a_reinterpretation_that_never_landed_is_still_not_recorded(tmp_path):
+    """The counterweight, and the reason the test above is not vacuous.
+
+    Setting `output_unusable=True` unconditionally at that exit would satisfy
+    every assertion above and re-record infrastructure faults, so the negative
+    needs its own run. A provider that was never reached leaves the row
+    `pending`, and the question is re-picked on the next run rather than parked:
+    measured, a second run once the provider answers reaches `review_required`
+    with the same deterministic reason.
+    """
+    root = tmp_path / "kb"
+    store = _kb_with_an_empty_plan(root)
+
+    results = translate_questions(store, _NeverReached(), root=root)
+
+    assert results[0]["infrastructure_fault"] is True
+    assert _statuses(store) == ["pending"]
+    assert not str(store.questions()[0]["reason"])
+
+    # Recovery, in the same test, because "left pending" is only defensible if
+    # the question comes back: `translate_questions` re-picks `pending`.
+    translate_questions(store, _AnswersUnusably(), root=root)
+    assert _statuses(store) == ["review_required"]
+    assert "is not in the schema or its aliases" in str(store.questions()[0]["reason"])
 
 
 def test_openai_inherits_the_class_without_an_edit_to_its_adapter():

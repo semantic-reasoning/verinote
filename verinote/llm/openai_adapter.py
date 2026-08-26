@@ -250,25 +250,27 @@ class OpenAIAdapter:
         file -- so the fix is not "the render leaks", it is that these twelve
         stopped being redacted and are redacted again.
 
-        `from exc.__cause__`, not `from exc`. `_render_prompt` already hung the
-        original failure there, and
+        NO `from` CLAUSE, because there is nothing new to chain to.
+        `_render_prompt` already hung the original failure on `__cause__` and
         `test_a_render_failure_keeps_the_original_error_as_the_cause` asserts on
-        it; re-raising `from exc` would bury that behind this wrapper's own
-        `LLMError` and break it. Tidying this to `from exc` is the way to make
-        that test fail.
+        it; re-raising the same object carries that cause forward untouched.
+        Replacing this with `raise LLMError(...) from exc` is the way to make
+        that test fail -- it would bury the original behind a new wrapper.
         """
         try:
             return _render_prompt(self.cfg.root, prompt_id, **values)
         except LLMError as exc:
-            # #592. `type(exc)` here is a NO-OP today and is written this way
-            # anyway. Measured: this `try` calls only `_render_prompt`, which
-            # raises bare `LLMError` at its two prompt-loading exits, so the
-            # only class that can arrive is `LLMError` itself. But this line is
-            # character-identical to `parsed_under_redaction`'s, which had to
-            # stop flattening -- leaving one of three identical lines flattening
-            # would be an asymmetry a reader has to resolve, and it would
-            # silently swallow a subclass the day `_render_prompt` grows one.
-            raise type(exc)(redact_secret(str(exc), self.cfg.api_key)) from exc.__cause__
+            # #592. Relabelled in place, not reconstructed, which is the shape
+            # `parsed_under_redaction` settled on and the reason is the same:
+            # rebuilding an exception from its message alone destroys the class
+            # and any state it carries. Preserving the class here is a NO-OP
+            # today -- measured: this `try` calls only `_render_prompt`, which
+            # raises bare `LLMError` at both of its prompt-loading exits, so
+            # `LLMError` is the only class that can arrive. It is written this
+            # way anyway, because the day `_render_prompt` grows a subclass exit
+            # the alternative swallows it with no test red anywhere.
+            exc.args = (redact_secret(str(exc), self.cfg.api_key),)
+            raise
 
     def extract_facts(self, *, source_text: str, schema_hint: str = "") -> list[ExtractedFact]:
         client = self._client()
@@ -288,6 +290,8 @@ class OpenAIAdapter:
         except Exception as exc:  # noqa: BLE001 - normalise provider errors
             raise self._request_failed(exc) from exc
 
+        # #601: `choices[0]` is read OUTSIDE the `try` above, so an empty
+        # `choices` escapes as `IndexError` rather than an `LLMError`.
         return parsed_under_redaction(
             parse_facts, resp.choices[0].message.content or "", self.cfg.api_key
         )
@@ -312,6 +316,8 @@ class OpenAIAdapter:
         except Exception as exc:  # noqa: BLE001 - normalise provider errors
             raise self._request_failed(exc) from exc
 
+        # #601: `choices[0]` is read OUTSIDE the `try` above, so an empty
+        # `choices` escapes as `IndexError` rather than an `LLMError`.
         return parsed_under_redaction(
             parse_query, resp.choices[0].message.content or "", self.cfg.api_key
         )
@@ -338,6 +344,8 @@ class OpenAIAdapter:
         except Exception as exc:  # noqa: BLE001 - normalise provider errors
             raise self._request_failed(exc) from exc
 
+        # #601: `choices[0]` is read OUTSIDE the `try` above, so an empty
+        # `choices` escapes as `IndexError` rather than an `LLMError`.
         return parsed_under_redaction(
             parse_query_intent, resp.choices[0].message.content or "", self.cfg.api_key
         )
@@ -360,6 +368,8 @@ class OpenAIAdapter:
         except Exception as exc:  # noqa: BLE001 - normalise provider errors
             raise self._request_failed(exc) from exc
 
+        # #601: `choices[0]` is read OUTSIDE the `try` above, so an empty
+        # `choices` escapes as `IndexError` rather than an `LLMError`.
         return (resp.choices[0].message.content or "").strip()
 
 

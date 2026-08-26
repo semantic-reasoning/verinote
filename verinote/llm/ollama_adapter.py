@@ -113,8 +113,15 @@ class OllamaAdapter:
         user their server did not answer when nothing was ever dialled sends
         them to the wrong place (#493). The envelope decode is separated for the
         same reason and one more: since #592 the split also decides whether the
-        question row records the failure, because a body that arrived is output
-        the row may record and a request that never landed is not.
+        question row records the failure, because a 2xx body that could not be
+        decoded is output the row may record and a request that never landed is
+        not. Deliberately narrow: `urlopen` raises `HTTPError` for a non-2xx
+        status, so that lands in the clause above and is reported as a request
+        failure even though bytes came back. Measured, and defensible -- a 500
+        produced no usable output, so `translation_failed` ("The provider output
+        could not be used") would be as false of it as of a refused connection --
+        but it is NOT what "a body arrived" would predict, so the criterion is
+        written as the code has it rather than as the slogan.
         """
         # Hoisted out of the `Request(...)` call, not merely out of the `try`:
         # as an ARGUMENT it would be evaluated inside the guarded region, so a
