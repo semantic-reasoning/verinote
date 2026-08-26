@@ -102,8 +102,10 @@ def parsed_under_redaction(parse, payload, secret):
     exception in place and re-raising the SAME OBJECT fixes that while imposing
     nothing on the class: `exc.args = (redacted,)` reaches `str(exc)` because no
     `LLMError` here overrides `__str__`, and the class at any depth of
-    subclassing, every other attribute, and `__cause__` all survive because
-    nothing is constructed.
+    subclassing, every other attribute, and `__cause__` all survive because the
+    object is not rebuilt. On the paths where the guard below cannot vouch for
+    the object, a replacement IS constructed -- of the same kind, carrying only
+    the redacted text -- and that is the whole cost of the guard.
 
     RECONSTRUCTING WAS THE ALTERNATIVE AND IT WAS MEASURABLY WORSE. On a
     subclass of `LLMOutputError` taking a message AND a status code,
@@ -111,19 +113,28 @@ def parsed_under_redaction(parse, payload, secret):
     `TypeError` is not an `LLMError`, so every `except LLMError` downstream
     stops catching it -- while a subclass that did accept one argument crossed
     this line with its 429 silently replaced by its constructor default.
-    Relabelling has neither failure mode, so this function imposes no
-    constructor contract on `LLMError` subclasses.
+    Relabelling imposes no constructor contract on `LLMError` subclasses, which
+    is why this function needs no tripwire over them;
     `test_parsed_under_redaction_preserves_a_deep_subclass_and_its_state` pins
-    that directly, on a subclass `__subclasses__()` could never have seen.
+    that directly, on a subclass `__subclasses__()` could never have seen. It is
+    not free of failure modes, though -- it has different ones, and the guard
+    below is what answers them.
 
-    BUT RELABELLING FAILS OPEN WHERE REBUILDING FAILED CLOSED, and that is what
-    the post-condition below is for. Rewriting `args` reaches `str(exc)` only
-    while `str` is `BaseException.__str__`. A subclass that defines `__str__` to
-    cache its message, or to decorate one, keeps returning the ORIGINAL text
-    after the rewrite -- measured: the key survives, in the one function whose
-    whole job is removing it. A decorating `__str__` also compounds, because the
+    RELABELLING FAILS OPEN WHERE REBUILDING FAILED CLOSED. Rewriting `args`
+    reaches `str(exc)` only while `str` is `BaseException.__str__`. A subclass
+    that defines `__str__` to CACHE its message keeps returning the ORIGINAL
+    text after the rewrite -- measured: the key survives, in the one function
+    whose whole job is removing it. A DECORATING `__str__` does not leak (its
+    decoration wraps the redacted text), but it compounds, because the
     already-decorated `str(exc)` is written back into `args[0]` on every pass.
-    The rebuild had neither problem because it never trusted the object.
+    And mutating the caught object can FAIL: a subclass whose `args` setter
+    raises, or whose `__notes__` is a read-only property, took an
+    `AttributeError` out of this function, past every `except LLMError`
+    downstream. Measured separately, because the two do not leak alike: the
+    `args` shape leaks the key every time, since the redaction never lands; the
+    `__notes__` shape leaks only when the note itself carries it, which is the
+    case the note redaction exists for. Both escape as a foreign exception. The
+    rebuild had none of these because it never touched the object.
 
     SO THE INVARIANT IS ENFORCED, NOT ASSUMED. An earlier revision guarded it
     with a static sweep over class definitions under `verinote/`; that sweep had
@@ -133,21 +144,34 @@ def parsed_under_redaction(parse, payload, secret):
     never include a subclass defined outside this package. A source sweep is the
     right instrument for a CONVENTION, which is what #438's producer-side check
     is. This is a CONFIDENTIALITY INVARIANT, so it is checked at the site, at
-    runtime, against the object actually being raised. If the redacted text is
-    not what the exception will show, the exception does not leave this function
-    -- a fresh `LLMOutputError` carrying the redacted text does. That costs the
-    subclass identity in exactly the case the sweep used to forbid outright, so
-    it costs nothing on the shipped tree, and it holds for shapes nobody has
-    enumerated.
+    runtime, against the object actually being raised, and EVERY MUTATING LINE
+    IS INSIDE THE GUARD -- a guard placed after the lines it guards is skipped
+    by a failure in them, which is how the `args`-setter and `__notes__` shapes
+    escaped before. If the object will not show the redacted text, or cannot be
+    made to, it does not leave this function; one of the same KIND carrying the
+    redacted text does.
 
-    WHAT IT DOES NOT COVER, measured rather than assumed. `__notes__` (PEP 678)
-    is redacted alongside `args` below, because it reaches
-    `traceback.format_exception` and the rebuild used to drop it. A message the
-    subclass also stored on an ordinary attribute survives, and no general
-    mechanism can reach that -- it is latent rather than live (nothing reads such
-    an attribute here, and the only shipped subclass has none), and it is the
-    reason the class docstring, not this function, is where a new subclass has to
-    be thought about.
+    WHAT IT DOES NOT COVER, ENUMERATED RATHER THAN CLAIMED AWAY. The check reads
+    what `str(exc)` returns at the moment it runs, so it covers exactly what a
+    reader of `str(exc)` afterwards would see -- and no more. Four shapes are
+    outside it, each measured on this tree:
+
+      1. a `__str__` whose value CHANGES after the check -- it can return the
+         redacted text once and the original afterwards, and the guard reads
+         once. "What the exception will show" is measured, not guaranteed.
+      2. `__repr__` -- a subclass rendering its own message there leaks through
+         `repr()`, which `args` never reaches.
+      3. a message the subclass also stored on an ordinary attribute; no general
+         mechanism reaches an arbitrary attribute.
+      4. `__cause__`, and this one needs no custom subclass at all. The chained
+         exception is never redacted, so a payload that makes a parser raise
+         `ValueError: could not convert string to float: '<key>'` puts the key
+         in `traceback.format_exception` above the redacted message. Measured
+         through the shipped `parse_facts`. It predates this guard and is not
+         narrowed by it.
+
+    `__notes__` (PEP 678) IS covered -- redacted alongside `args` below, because
+    it reaches `traceback.format_exception` and the rebuild used to drop it.
 
     `__cause__` IS INHERITED RATHER THAN SET. Every parser raises `... from exc`
     with the `json`/`Key`/`Type` error underneath, so re-raising the same object
@@ -160,14 +184,37 @@ def parsed_under_redaction(parse, payload, secret):
     try:
         return parse(payload)
     except LLMError as exc:
-        redacted = redact_secret(str(exc), secret)
-        exc.args = (redacted,)
-        notes = getattr(exc, "__notes__", None)
-        if notes:
-            exc.__notes__ = [redact_secret(str(note), secret) for note in notes]
-        if str(exc) != redacted:
+        # THE REPLACEMENT KEEPS THE KIND. `LLMOutputError` is #592's
+        # discriminator -- `output_unusable = isinstance(exc, LLMOutputError)`
+        # decides whether the question row records `translation_failed` or is
+        # suppressed -- so raising it unconditionally would PROMOTE a bare
+        # `LLMError` into "the provider answered", which is the inverse of the
+        # type destruction this function was changed to stop.
+        kind = LLMOutputError if isinstance(exc, LLMOutputError) else LLMError
+        try:
+            redacted = redact_secret(str(exc), secret)
+        except Exception:
+            # Its own `__str__` failed, so there is no text to redact and no way
+            # to know what it would print. `from None` suppresses the context so
+            # the unreadable original is not rendered underneath.
+            raise kind("provider output could not be read") from None
+        # EVERY MUTATING LINE IS INSIDE THE GUARD, because a guard placed after
+        # the lines it guards is skipped by a failure in them. Measured before
+        # this: a subclass whose `args` setter raises, or whose `__notes__` is a
+        # read-only property, took an `AttributeError` straight out of this
+        # function, past every `except LLMError` downstream -- carrying the key
+        # whenever the text that failed to be redacted still held it.
+        try:
+            exc.args = (redacted,)
+            notes = getattr(exc, "__notes__", None)
+            if notes:
+                exc.__notes__ = [redact_secret(str(note), secret) for note in notes]
+            settled = str(exc) == redacted
+        except Exception:
+            settled = False
+        if not settled:
             # The object will not show what was redacted, so it does not leave.
-            raise LLMOutputError(redacted) from exc.__cause__
+            raise kind(redacted) from exc.__cause__
         raise
 
 
