@@ -107,6 +107,7 @@ from verinote.pipeline.corroboration import (
     store_relation_aliases,
     store_single_valued_conflicts,
     store_typed_relations,
+    TYPED_RELATIONS_RELPATH,
     typed_spec_for_canonical,
 )
 from verinote.pipeline.workbench import trust_workbench
@@ -3221,18 +3222,50 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         policy_failure = policy_file_failure(
             lambda: store_relation_aliases(store), RELATION_ALIASES_RELPATH
         )
-        try:
-            trace = report_trace(store)
-        except PolicyMissingError:
-            # The report itself already carries the policy_missing error; the
-            # trace needs the same (lost) policy, so it has nothing to say.
-            trace = ReportTrace(
-                answers=(), excluded_review_count=0, excluded_by_status=()
+        # #595. A SECOND, TRACE-SCOPED signal, and it is deliberately not the
+        # same key. `report_trace` reaches `fact_trust_summary`, which reads the
+        # TYPED file too -- but only on a KB whose report has a traceable
+        # answer, which is why a fixture without one measured 200 here and why
+        # this went unseen through #585 and #590.
+        #
+        # It is scoped to the trace because the report itself is unaffected:
+        # `verify(store)` returns the same `ok=True, errors=0, answers=1` under
+        # a healthy and a broken typed file, so withholding the whole page --
+        # which is what reusing `policy_error` would do -- would withhold
+        # numbers that are computed and correct, under a banner naming the wrong
+        # file.
+        #
+        # ORDERING IS LOAD-BEARING. When the ALIAS file fails, `policy_failure`
+        # already withholds the whole page, and the typed file must then be
+        # neither read nor named: a message about it there would be a claim
+        # about a file this request never needed.
+        trace_failure = (
+            None
+            if policy_failure is not None
+            else policy_file_failure(
+                lambda: store_typed_relations(store), TYPED_RELATIONS_RELPATH
             )
+        )
+        trace = ReportTrace(answers=(), excluded_review_count=0, excluded_by_status=())
+        if trace_failure is None:
+            try:
+                trace = report_trace(store)
+            except PolicyMissingError:
+                # The report itself already carries the policy_missing error;
+                # the trace needs the same (lost) policy, so it has nothing to
+                # say.
+                trace = ReportTrace(
+                    answers=(), excluded_review_count=0, excluded_by_status=()
+                )
         return templates.TemplateResponse(
             request,
             "report.html",
-            {"rep": rep, "trace": trace, "policy_error": policy_failure},
+            {
+                "rep": rep,
+                "trace": trace,
+                "policy_error": policy_failure,
+                "trace_error": trace_failure,
+            },
         )
 
     @app.get("/analytics", response_class=HTMLResponse)

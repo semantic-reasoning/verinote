@@ -51,15 +51,17 @@ mapping to one canonical name and a draft rule with four `relation/3` atoms is
 configuration into a 500. `test_the_alias_expansion_cap_still_answers` pins it,
 and it is not a new guard: it is an existing one this change must not break.
 
-A DEFECT THIS CHANGE FOUND AND DOES NOT FIX, recorded so its absence is not
-read as an oversight. `report_trace` reaches `fact_trust_summary`, which reads
-BOTH policy files, so on a KB whose report has a traceable answer a broken
-`policy/typed-relations.md` makes `GET /report` answer 500. Measured, and
-measured identically on this change's base commit, so it predates this work.
-It is invisible to any sweep whose fixture has no traceable answer -- which is
-how #585 missed it and how this change's own plan concluded these two routes
-never read the typed file. `/questions` is unaffected: it does not call
-`report_trace`. Tracked as #595; this issue is the alias file.
+A DEFECT THIS CHANGE FOUND AND DID NOT FIX, SINCE FIXED BY #595. `report_trace`
+reaches `fact_trust_summary`, which reads BOTH policy files, so on a KB whose
+report had a traceable answer a broken `policy/typed-relations.md` MADE
+`GET /report` answer 500 -- measured here and identically on this change's base
+commit, so it predated this work and was left to #595, which guards it in the
+route. It answers 200 now.
+
+The reason it went unseen is the part worth keeping: it was invisible to any
+sweep whose fixture had no traceable answer, which is how #585 missed it and how
+this change's own plan concluded these two routes never read the typed file.
+`/questions` was unaffected throughout: it does not call `report_trace`.
 
 WHAT DEGRADES, AND WHAT DOES NOT. `/questions` is `/review`'s shape: the queue
 and the repair job come from the store, read no policy file, and stay; only
@@ -79,6 +81,7 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
 from verinote.config import Config
+from verinote.pipeline.report_trace import report_trace
 from verinote.policy_defaults import RELATION_ALIASES_RELPATH, TYPED_RELATIONS_RELPATH
 from verinote.pipeline.query import MAX_ALIAS_EXPANDED_RULES_PER_RULE
 from verinote.pipeline.verify import verify
@@ -333,42 +336,40 @@ def test_a_broken_typed_file_does_not_trigger_this_guard_on_questions(tmp_path):
 
 
 def test_a_broken_typed_file_does_not_trigger_this_guard_on_report(tmp_path):
-    """Same scope claim for `/report`, on a KB with no traceable answer.
+    """Same scope claim for `/report`, RE-WIDENED BY #595 to the fixture that can
+    express it.
 
-    THE FIXTURE IS DELIBERATELY THE WEAKER ONE, and the reason is a defect this
-    change does not fix. `report_trace` reaches `fact_trust_summary`, which
-    reads BOTH policy files, so on a KB whose report HAS a traceable answer a
-    broken `typed-relations.md` makes `/report` answer 500 -- measured, and
-    measured identically on this change's base commit, so it predates this work
-    and is out of its scope (this issue is the alias file). Asserting 200 on the
-    answer-bearing fixture here would fail for a reason that has nothing to do
-    with this guard; asserting the 500 would lock a defect in as desired
-    behaviour. So the scope claim is pinned on the configuration where the typed
-    file genuinely is not read, and the `/questions` test above -- which is
-    unaffected by that defect -- is what actually catches the two-file
-    simplification.
+    THIS TEST USED THE WEAKER FIXTURE ON PURPOSE, and the narrowing is now
+    resolved rather than merely explained. `report_trace` reaches
+    `fact_trust_summary`, which reads BOTH policy files -- but only when there is
+    an answer to trace. So on a KB with a traceable answer a broken
+    `typed-relations.md` made `/report` answer 500, measured identically on
+    `c0dd1cc` before #590, which is why it was out of #590's scope: asserting 200
+    would have failed for an unrelated reason, and asserting 500 would have
+    locked a defect in as desired behaviour. The fixture here therefore had no
+    `query_dl`, and this docstring recorded that it could not pin
+    `report_trace`'s own alias-only choice.
 
-    SO THIS TEST DOES NOT PIN `report_trace`'s OWN alias-only choice, and nothing
-    else does either. Measured, not inferred: swapping that pre-flight to
-    `query_schema_policy_failure` and running all of `tests/` leaves it green,
-    with the same counts as the unmutated tree. The configuration that would
-    expose the difference is the answer-bearing one #595 owns, so there is no
-    input in this file that can separate the two. Stated rather than implied --
-    the `/questions` test above covers `/questions`'s choice, not this module's.
-
-    WHAT THE UNPINNED SWAP WOULD COST, on that same answer-bearing KB, measured:
-    status 500 -> 200, the answer still rendered, and the trace section printing
-    "No direct relation fact traces are available for these report rows" -- with
-    no banner, no "Not computed", and no mention of the file that failed. Green
-    suite, healthier-looking page, and a searched-and-found-nothing verdict on a
-    search that never ran. That is why `report_trace.py` keeps the alias-only
-    reader and says so in a comment; the comment is the only thing holding it.
+    #595 fixed the 500 in the route, so the full scope claim is assertable now
+    and is asserted: an answer-bearing KB, a broken typed file, 200, and this
+    guard's own message absent because the ALIAS file is healthy. The typed
+    file's own diagnosis is `test_report_names_the_typed_file_and_not_the_alias_file`
+    in `test_report_trace_typed_guard.py`; what belongs here is only that THIS
+    guard stays quiet about a file it never read.
     """
-    client, _, _ = _build(tmp_path, alias=ALIAS_HEALTHY, typed=TYPED_DUP_ALIAS,
-                          query_dl="")
+    # The widening is only meaningful on a KB that HAS an answer to trace: with
+    # no answer `report_trace` never reaches `fact_trust_summary`, the typed file
+    # is never read, and the 200 below would prove nothing -- which is precisely
+    # the state this test was left in. Pinned on the HEALTHY pair, because on the
+    # broken one `report_trace` raises: that raise IS the defect #595 fixed, and
+    # calling it directly there would measure the defect instead of the fixture.
+    _, healthy_app, _ = _build(tmp_path / "healthy", alias=ALIAS_HEALTHY)
+    assert len(report_trace(healthy_app.state.store).answers) >= 1
+
+    client, _, _ = _build(tmp_path / "broken", alias=ALIAS_HEALTHY,
+                          typed=TYPED_DUP_ALIAS)
     r = client.get("/report")
     assert r.status_code == 200
-    assert NOT_COMPUTED not in r.text
     assert ALIAS_MSG not in r.text
 
 

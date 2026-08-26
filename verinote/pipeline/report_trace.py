@@ -133,14 +133,26 @@ def report_trace(store: Store) -> ReportTrace:
     # THE ALIAS READER ONLY, and NOT because this module is innocent of the
     # typed file -- it is not. `_trace_fact` calls `fact_trust_summary`, which
     # reads BOTH policy files, so on a KB whose report has a traceable answer a
-    # broken `typed-relations.md` raises out of here. That is #595, it predates
-    # this guard (measured identically on `c0dd1cc`), and widening this
+    # broken `typed-relations.md` raises out of here -- still true of THIS
+    # function, which is why the argument below still binds. #595 predated this
+    # guard and fixed it in the ROUTE, which no longer calls this function when
+    # the typed file is broken; it did not change what happens if you do. And
+    # widening this
     # pre-flight would REPLACE the 500 with a silent false negative rather than
-    # fix it: the page then answers 200, still renders the answer, and prints
-    # "No direct relation fact traces are available for these report rows" --
-    # with no banner, no "Not computed", and no mention of the file that failed.
-    # That is the searched-and-found-nothing verdict the `{% elif policy_error %}`
-    # arm in `report.html` exists to prevent, reached from the other side.
+    # fix it: the page then answers 200 and prints "No direct relation fact
+    # traces are available for these report rows" -- with no banner, no "Not
+    # computed", and no mention of the file that failed. That is the
+    # searched-and-found-nothing verdict the `{% elif policy_error %}` arm in
+    # `report.html` exists to prevent, reached from the other side.
+    #
+    # AND IT COSTS THE WHOLE TRACEABILITY TABLE, not just a banner. An earlier
+    # draft of this comment said the widened page "still renders the answer",
+    # which is ambiguous between two things on one page and false for the one it
+    # is about: the traceability answer row and its contributing facts are
+    # exactly what disappears. A value does survive, but in `verify()`'s own
+    # answers section, which reads the alias file only and is unaffected. #595
+    # measured both -- widened, the page loses "Contributing facts" and the
+    # source path while `rep.text` still shows the answer value.
     # The alias file is what this guard is for; the typed read is #595's.
     if policy_file_failure(
         lambda: store_relation_aliases(store), RELATION_ALIASES_RELPATH
