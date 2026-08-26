@@ -254,13 +254,14 @@ class AnthropicAdapter:
         chain to. `_render_prompt` already hung the original failure on
         `__cause__` and `test_a_render_failure_keeps_the_original_error_as_the_cause`
         asserts on it; re-raising the same object carries that cause forward
-        untouched. The guard below has TWO replacement exits and they chain
-        differently, which is deliberate: the one that replaces an object whose
-        message could not be shown carries `from exc.__cause__`, re-attaching
-        the SAME cause the original held, so the assertion holds there too; the
-        one taken when the object's own `__str__` raised carries `from None`,
-        because an original nothing can read is not a cause worth rendering
-        underneath. Replacing the common-path `raise` with
+        untouched. The guard below has ONE replacement raise, and what it chains
+        to is decided inside the guard rather than at the raise: the original's
+        `__cause__` when that could be read and is an exception, and nothing
+        otherwise. So a replacement forced by an object whose message could not
+        be shown still re-attaches the SAME cause and the assertion holds there
+        too, while one forced by a `__str__` that raised chains to nothing --
+        an original nothing can read is not a cause worth rendering underneath.
+        Replacing the common-path `raise` with
         `raise LLMError(...) from exc` is the way to make that test fail: that
         buries the original behind a new wrapper.
         """
@@ -290,23 +291,34 @@ class AnthropicAdapter:
             # here would DEMOTE an `LLMOutputError` -- the mirror of the
             # promotion the primitive avoids, and the same #592 discriminator
             # either way.
+            #
+            # AND NO EXIT PATH READS THE OBJECT, which is the property rather
+            # than the list of attributes that have needed protecting so far.
+            # Everything touching `exc` is inside the one `try`, including the
+            # `__cause__` read, so a failure anywhere in it leaves as a clean
+            # replacement instead of as whatever the object threw.
             kind = LLMOutputError if isinstance(exc, LLMOutputError) else LLMError
+            redacted = "prompt render failed"
+            replacement = None
+            cause = None
             try:
                 redacted = redact_secret(str(exc), self.cfg.api_key)
-            except Exception:
-                raise kind("prompt render failed") from None
-            try:
                 exc.args = (redacted,)
                 notes = getattr(exc, "__notes__", None)
                 if notes:
                     exc.__notes__ = [
                         redact_secret(str(note), self.cfg.api_key) for note in notes
                     ]
-                settled = str(exc) == redacted
+                if str(exc) != redacted:
+                    replacement = kind(redacted)
+                    cause = exc.__cause__
+                    if not isinstance(cause, BaseException):
+                        cause = None
             except Exception:
-                settled = False
-            if not settled:
-                raise kind(redacted) from exc.__cause__
+                replacement = kind(redacted)
+                cause = None
+            if replacement is not None:
+                raise replacement from cause
             raise
 
     def extract_facts(self, *, source_text: str, schema_hint: str = "") -> list[ExtractedFact]:
