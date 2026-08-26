@@ -24,6 +24,7 @@ provider-side OR PARSING failure", so it conflates a request never sent with an
 answer that came back unusable. `LLMOutputError` is the second case, and the
 tests below pin both directions.
 """
+import ast
 import re
 from html import unescape
 from pathlib import Path
@@ -284,6 +285,73 @@ def test_a_mixed_run_reports_the_suppressed_fault_and_not_the_recorded_one(
     # The recorded question's reason belongs on its ROW, which this same page
     # renders. What must not happen is the banner speaking for it.
     assert "did not match schema" not in banner
+
+
+def test_no_shipped_llm_error_subclass_defines_its_own_str():
+    """The RELABEL's precondition, enforced -- the hazard the deleted tripwire
+    did not cover and its replacement could not.
+
+    `parsed_under_redaction` redacts by rewriting `exc.args` and re-raising the
+    same object. That reaches `str(exc)` only because `BaseException.__str__`
+    derives the string from `args`. A subclass that defines `__str__` -- to cache
+    its message, or to format one from other fields -- keeps returning the
+    ORIGINAL text after the rewrite, so the secret survives into a message this
+    function exists to redact. Measured on this primitive: such a subclass leaks
+    where the previous revision's rebuild did not. It is a fail-OPEN direction in
+    the one place whose whole job is redaction.
+
+    The tripwire this replaces checked constructor ARITY, which was the REBUILD's
+    hazard and is now structurally impossible. It would not have caught this one.
+
+    DERIVED FROM THE SOURCE, not from `__subclasses__()`, and that is the point:
+    `__subclasses__()` returns direct children only and sees nothing a test run
+    has not imported, so the old sweep was blind exactly where a new subclass
+    would be added. This walks every class statement under `verinote/`, resolves
+    the `LLMError` family as a fixpoint over base names, and so covers a subclass
+    at any depth in any module whether or not anything imports it.
+
+    SCOPE, so it is not read as more than it is: this cannot see a subclass
+    defined outside `verinote/`, and it checks `__str__` rather than every way a
+    message could be decoupled from `args`. `__str__` is the decisive one --
+    without it, `str(exc)` reads `args` and the redaction holds.
+    """
+    package = Path(__file__).resolve().parent.parent / "verinote"
+    classes = {}
+    for path in sorted(package.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                bases = {b.id for b in node.bases if isinstance(b, ast.Name)}
+                bases |= {b.attr for b in node.bases if isinstance(b, ast.Attribute)}
+                classes[node.name] = (bases, node, path)
+
+    family = {"LLMError"}
+    while True:
+        grown = {
+            name for name, (bases, _, _) in classes.items() if bases & family
+        } | family
+        if grown == family:
+            break
+        family = grown
+
+    swept = sorted(family - {"LLMError"})
+    assert swept, (
+        "no LLMError subclass was found under verinote/, so this sweep judged "
+        "nothing -- it has been made vacuous, not satisfied"
+    )
+
+    offenders = []
+    for name in swept:
+        _, node, path = classes[name]
+        for child in node.body:
+            if isinstance(child, ast.FunctionDef) and child.name == "__str__":
+                offenders.append(f"{path.name}:{child.lineno} {name}.__str__")
+
+    assert offenders == [], (
+        "these `LLMError` subclasses define `__str__`, so `parsed_under_redaction`"
+        " cannot redact them: it rewrites `args` and re-raises the same object, "
+        f"and their `__str__` keeps returning the unredacted text. {offenders}"
+    )
 
 
 def test_parsed_under_redaction_preserves_a_deep_subclass_and_its_state():

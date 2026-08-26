@@ -76,8 +76,7 @@ def _prepare_repair_question(
         RepairQuestionResult(question_id, accepted, "" if accepted else flow.reason, flow.provider_failed),
         flow.status,
         query_dl,
-        infrastructure_fault=flow.policy_failed
-        or (flow.provider_failed and not flow.output_unusable),
+        infrastructure_fault=flow.infrastructure_fault,
     )
 
 

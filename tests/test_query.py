@@ -1579,12 +1579,20 @@ def test_every_provider_failure_exit_reports_the_provider_failed():
                 )
                 if not flagged:
                     offenders.append(f"{path.name}:{child.lineno}")
-                # #592. The SECOND flag, judged by PRESENCE rather than by value.
-                # `output_unusable` is necessarily computed (`isinstance(exc,
-                # LLMOutputError)`), so demanding a literal the way the line
-                # above does would be unsatisfiable; what can be demanded is
-                # that the exit answered the question at all.
-                if not any(kw.arg == "output_unusable" for kw in child.keywords):
+                # #592. The SECOND flag. `output_unusable` is necessarily
+                # computed (`isinstance(exc, LLMOutputError)`), so demanding the
+                # literal `True` the line above demands would be unsatisfiable.
+                # What IS demanded is that the exit answered the question with a
+                # computed value: a keyword that is present but CONSTANT --
+                # `output_unusable=False` -- is semantically identical to
+                # omitting it, since False is the dataclass default and the
+                # suppressing value. Rejecting constants is satisfiable on this
+                # tree; every examined site passes a computed Name.
+                discriminated = any(
+                    kw.arg == "output_unusable" and not isinstance(kw.value, ast.Constant)
+                    for kw in child.keywords
+                )
+                if not discriminated:
                     undiscriminated.append(f"{path.name}:{child.lineno}")
 
     assert examined, (
@@ -1596,8 +1604,8 @@ def test_every_provider_failure_exit_reports_the_provider_failed():
         f"provider_failed=True, so Ask cannot tell they failed: {offenders}"
     )
     assert undiscriminated == [], (
-        "these provider-failure exits build a flow result without an "
-        "`output_unusable=` keyword, so they fall back to the dataclass default "
-        "of False -- which SUPPRESSES the question row. An answer that arrived "
-        f"and could not be used is silently not recorded there (#592): {undiscriminated}"
+        "these provider-failure exits build a flow result without a COMPUTED "
+        "`output_unusable=` keyword, so the flag is False -- the dataclass "
+        "default, and the SUPPRESSING value. An answer that arrived and could "
+        f"not be used is silently not recorded there (#592): {undiscriminated}"
     )
