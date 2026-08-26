@@ -250,12 +250,19 @@ class AnthropicAdapter:
         file -- so the fix is not "the render leaks", it is that these twelve
         stopped being redacted and are redacted again.
 
-        NO `from` CLAUSE, because there is nothing new to chain to.
-        `_render_prompt` already hung the original failure on `__cause__` and
-        `test_a_render_failure_keeps_the_original_error_as_the_cause` asserts on
-        it; re-raising the same object carries that cause forward untouched.
-        Replacing this with `raise LLMError(...) from exc` is the way to make
-        that test fail -- it would bury the original behind a new wrapper.
+        NO `from` CLAUSE ON THE COMMON PATH, because there is nothing new to
+        chain to. `_render_prompt` already hung the original failure on
+        `__cause__` and `test_a_render_failure_keeps_the_original_error_as_the_cause`
+        asserts on it; re-raising the same object carries that cause forward
+        untouched. The guard below has TWO replacement exits and they chain
+        differently, which is deliberate: the one that replaces an object whose
+        message could not be shown carries `from exc.__cause__`, re-attaching
+        the SAME cause the original held, so the assertion holds there too; the
+        one taken when the object's own `__str__` raised carries `from None`,
+        because an original nothing can read is not a cause worth rendering
+        underneath. Replacing the common-path `raise` with
+        `raise LLMError(...) from exc` is the way to make that test fail: that
+        buries the original behind a new wrapper.
         """
         try:
             return _render_prompt(self.cfg.root, prompt_id, **values)
@@ -278,15 +285,28 @@ class AnthropicAdapter:
             # class preservation is, and it is written for the same reason --
             # the two clauses have to arrive together or the day one grows a
             # subclass exit is the day the other leaks.
-            redacted = redact_secret(str(exc), self.cfg.api_key)
-            exc.args = (redacted,)
-            notes = getattr(exc, "__notes__", None)
-            if notes:
-                exc.__notes__ = [
-                    redact_secret(str(note), self.cfg.api_key) for note in notes
-                ]
-            if str(exc) != redacted:
-                raise LLMError(redacted) from exc.__cause__
+            # Same shape as `parsed_under_redaction`, including WHICH class the
+            # replacement carries. Raising a bare `LLMError` unconditionally
+            # here would DEMOTE an `LLMOutputError` -- the mirror of the
+            # promotion the primitive avoids, and the same #592 discriminator
+            # either way.
+            kind = LLMOutputError if isinstance(exc, LLMOutputError) else LLMError
+            try:
+                redacted = redact_secret(str(exc), self.cfg.api_key)
+            except Exception:
+                raise kind("prompt render failed") from None
+            try:
+                exc.args = (redacted,)
+                notes = getattr(exc, "__notes__", None)
+                if notes:
+                    exc.__notes__ = [
+                        redact_secret(str(note), self.cfg.api_key) for note in notes
+                    ]
+                settled = str(exc) == redacted
+            except Exception:
+                settled = False
+            if not settled:
+                raise kind(redacted) from exc.__cause__
             raise
 
     def extract_facts(self, *, source_text: str, schema_hint: str = "") -> list[ExtractedFact]:

@@ -1655,8 +1655,10 @@ def cmd_query(cfg: Config, args: argparse.Namespace) -> int:
     #   not_translated  the unrecorded runs themselves     IS that set
     #   for_review      rows holding a review verdict      excludes
     #
-    # Every one of them is about ROWS, and `infrastructure_fault` is the only
-    # thing that says whether a row exists -- `status` cannot, because the
+    # Read the table, not a summary of it: three of the four count ROWS and
+    # `not_translated` counts the RUNS that produced none, which is why it is
+    # the one that does not "exclude" anything. `infrastructure_fault` is the
+    # only thing that says whether a row exists -- `status` cannot, because the
     # suppressed and the recorded cases both report a status.
     translated = sum(1 for r in results if r["status"] == "translated")
     unrecorded = [r for r in results if r["infrastructure_fault"]]
@@ -1669,13 +1671,17 @@ def cmd_query(cfg: Config, args: argparse.Namespace) -> int:
     # line about a row that was not written, then asserted the summary using it
     # two lines later.
     #
-    # ATTRIBUTION, both halves. `main` ALREADY printed "1 failed" over zero
-    # `translation_failed` rows for the POLICY population -- inherited from
-    # #591's suppression, and not fixed here. What this line had done was EXTEND
-    # that to the credential, unknown-provider and unreachable-provider
-    # populations, where main's count was true. So it was a true->false
-    # transition laid on top of a pre-existing false one, and only the first
-    # half is this change's to own.
+    # ATTRIBUTION. `main` printed "N failed" over `pending` rows for the POLICY
+    # population too -- inherited from #591's suppression, and older than #592.
+    # #592 then EXTENDED the same falsehood to the credential, unknown-provider
+    # and unreachable-provider populations, where the count had been true.
+    #
+    # THIS ONE LINE FIXES BOTH, which is more than #604 asked for and more than
+    # an earlier draft of this comment claimed. `policy_failed` is a disjunct of
+    # `infrastructure_fault`, so a policy fault is excluded here by the same
+    # predicate as the rest. Measured through the real command on a typed file
+    # the parser cannot read: "2 not translated", rc 1, rows `pending` -- where
+    # both `6cd66b8` and `c9b6836` said "2 failed" over the same `pending` rows.
     failures = [
         r
         for r in results
@@ -1723,6 +1729,11 @@ def cmd_query(cfg: Config, args: argparse.Namespace) -> int:
     # code is the least durable artifact here; it survives only as long as the
     # shell that read it. What makes it wrong to return 0 is that 0 says the run
     # did what it was asked, and this run translated nothing and wrote nothing.
+    #
+    # AND THE DURABLE GAP IS REAL AND FILED, not closed by this rc. Nothing
+    # anywhere records "attempted, provider out" after the process exits -- the
+    # row is `pending` and says only "waiting", which is the accepted cost of
+    # the #592 ruling. #606 tracks it; this line is not a substitute for it.
     reported = failures + not_translated
     if reported:
         # Any translation_failed is a hard failure (#243): exit rc 1 and put the

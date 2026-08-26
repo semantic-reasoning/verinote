@@ -337,6 +337,122 @@ def test_a_subclass_that_hides_the_redaction_does_not_leave_this_function():
     assert type(excinfo.value) is LLMOutputError
 
 
+def test_a_failure_in_the_lines_the_guard_guards_cannot_skip_it():
+    """A GUARD PLACED AFTER THE LINES IT GUARDS IS NOT A GUARD.
+
+    The redaction works by mutating the caught exception, and mutation can FAIL:
+    a subclass whose `args` setter raises, or whose `__notes__` is a read-only
+    property, throws from inside the very lines the post-condition exists to
+    police. Measured before those lines were wrapped: an `AttributeError` came
+    straight out of this function -- `isinstance(e, LLMError)` False, so every
+    `except LLMError` between here and the user stopped catching it. The two
+    shapes do not leak alike, which is why both are driven here: the `args` one
+    leaks every time, because the redaction never lands; the `__notes__` one
+    leaks when the note carries the key, so the note below carries it. That is
+    strictly worse than the behaviour #592 replaced, which never touched the
+    object and so could not fail this way.
+
+    Both directions are asserted: nothing leaks, AND what leaves is still an
+    `LLMError`, because a redaction that escapes its own error handling as a
+    foreign exception is a different outage from a redaction that works.
+    """
+    secret = "sk-ant-SECRETVALUE0123456789"
+
+    class _ArgsLocked(LLMOutputError):
+        def __setattr__(self, name, value):
+            if name == "args":
+                raise AttributeError("args is read-only")
+            super().__setattr__(name, value)
+
+    class _NotesLocked(LLMOutputError):
+        @property
+        def __notes__(self):
+            return [f"request signed with {secret}"]
+
+    for cls in (_ArgsLocked, _NotesLocked):
+        def parse(_payload, _cls=cls):
+            raise _cls(f"upstream refused {secret}")
+
+        with pytest.raises(LLMError) as excinfo:
+            parsed_under_redaction(parse, "payload", secret)
+
+        assert secret not in str(excinfo.value), cls.__name__
+        rendered = "".join(
+            traceback.format_exception(
+                type(excinfo.value), excinfo.value, excinfo.value.__traceback__
+            )
+        )
+        assert secret not in rendered, cls.__name__
+
+
+def test_the_replacement_keeps_the_kind_it_replaced():
+    """THE REPLACEMENT MUST NOT CROSS #592's DISCRIMINATOR.
+
+    `output_unusable = isinstance(exc, LLMOutputError)` is what decides whether
+    the question row records `translation_failed` or is suppressed. So a
+    replacement raised as a fixed class re-classifies the failure: raising
+    `LLMOutputError` unconditionally PROMOTES a bare `LLMError` into "the
+    provider produced output", and raising `LLMError` unconditionally -- which
+    is what the two adapters' copies did -- DEMOTES the other way.
+
+    That is the same defect as the type destruction this primitive was changed
+    to stop, pointed the other way, and it was unpinned: the class-preserving
+    line reddened nothing when it was measured.
+    """
+    secret = "sk-ant-SECRETVALUE0123456789"
+
+    class _HidingOutput(LLMOutputError):
+        def __init__(self, message):
+            super().__init__(message)
+            self._cached = message
+
+        def __str__(self):
+            return self._cached
+
+    class _HidingPlain(LLMError):
+        def __init__(self, message):
+            super().__init__(message)
+            self._cached = message
+
+        def __str__(self):
+            return self._cached
+
+    for cls, expect_output in ((_HidingOutput, True), (_HidingPlain, False)):
+        def parse(_payload, _cls=cls):
+            raise _cls(f"upstream refused {secret}")
+
+        with pytest.raises(LLMError) as excinfo:
+            parsed_under_redaction(parse, "payload", secret)
+
+        assert secret not in str(excinfo.value), cls.__name__
+        assert isinstance(excinfo.value, LLMOutputError) is expect_output, cls.__name__
+
+
+def test_a_decorating_str_does_not_leak_and_does_not_compound():
+    """#603's third shape, which nothing pinned.
+
+    A `__str__` that DECORATES rather than caches does not leak -- its
+    decoration wraps whatever `args` holds, so it wraps the redacted text. What
+    it used to do is COMPOUND: the already-decorated `str(exc)` was written back
+    into `args[0]`, so the prefix accumulated on every pass through this
+    function. The guard replaces the object instead, so the prefix appears once.
+    """
+    secret = "sk-ant-SECRETVALUE0123456789"
+
+    class _Decorating(LLMOutputError):
+        def __str__(self):
+            return "provider: " + super().__str__()
+
+    def parse(_payload):
+        raise _Decorating(f"upstream refused {secret}")
+
+    with pytest.raises(LLMOutputError) as excinfo:
+        parsed_under_redaction(parse, "payload", secret)
+
+    assert secret not in str(excinfo.value)
+    assert str(excinfo.value).count("provider: ") <= 1
+
+
 def test_a_note_is_redacted_alongside_the_message():
     """`__notes__` (PEP 678) reaches `traceback.format_exception`, and the
     relabel keeps the object, so a note survives where the rebuild dropped it.

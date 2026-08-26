@@ -888,11 +888,13 @@ def test_a_render_failure_keeps_the_original_error_as_the_cause(
     the caught exception in its own copy of that clause. Covering one left the
     other's unpinned while its docstring named this test as what pins it.
     #592 replaced `raise type(exc)(...) from exc.__cause__` with rewriting the
-    message on the exception and re-raising it, so the cause is now INHERITED
-    rather than re-attached and there is no `from` clause left in either copy:
-    `grep -rn "raise .* from exc.__cause__" verinote/` returns nothing. Making
-    either copy construct a new exception -- `raise LLMError(str(exc)) from exc`
-    -- is what fails the matching case here now.
+    message on the exception and re-raising it, so on the common path the cause
+    is INHERITED rather than re-attached. #603 then added a guard that replaces
+    the object when it cannot be made to show the redacted text, and that exit
+    DOES spell `from exc.__cause__` -- re-attaching the same cause, so this test
+    passes on both paths. Making either copy chain to the WRAPPER instead --
+    `raise LLMError(str(exc)) from exc` -- is what fails the matching case
+    here.
     """
     boom = TypeError("render_prompt() got an unexpected keyword argument")
 
