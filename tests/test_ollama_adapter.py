@@ -6,7 +6,7 @@ import pytest
 
 from verinote.config import Config, save_settings
 from verinote.engine.terms import Compound, NumberLit
-from verinote.llm.base import LLMError
+from verinote.llm.base import LLMError, LLMOutputError
 from verinote.llm.ollama_adapter import OllamaAdapter, list_models
 from verinote.llm.schema import FACT_ARRAY_SCHEMA
 from verinote.pipeline import extract_source
@@ -411,35 +411,66 @@ def test_every_method_posts_through_the_one_request_site(tmp_path, monkeypatch, 
 
 
 @pytest.mark.parametrize("method", sorted(_INVOCATIONS))
-def test_a_response_body_that_is_not_json_is_a_normalised_request_failure(
+def test_a_response_body_that_is_not_json_is_normalised_as_unusable_output(
     tmp_path, monkeypatch, method
 ):
-    """A proxy or a captive portal answering HTML is a transport failure the
-    caller already handles, not a `JSONDecodeError` escaping the adapter.
+    """A proxy or a captive portal answering HTML is normalised by this adapter,
+    not a `JSONDecodeError` escaping it. Pinning that here means a later edit
+    that folds the four request sites into one helper cannot quietly leave the
+    decode outside the guard, which would turn this into an unnormalised raise.
 
-    `json.loads` is inside the guarded region today. Pinning that here means a
-    later edit that folds the four request sites into one helper cannot quietly
-    leave the parse outside it, which would turn this into an unnormalised raise.
+    #592 RENAMED WHAT IT IS NORMALISED TO, and the rename is the substance. This
+    used to join `urlopen` under one clause and report "ollama request failed",
+    which says the server did not answer -- but it did: the response arrived,
+    with a body, and the body is what could not be used. `translate_questions`
+    reads that distinction off the class, so the old wording did more than
+    misdirect a reader. Measured on a 200 carrying `<html>502 Bad Gateway</html>`
+    it left the question row `pending` with no trace of the failure, where a
+    `translation_failed` row is exactly true of it.
     """
     _raw_body(monkeypatch, b"not json")
 
-    with pytest.raises(LLMError, match="^ollama request failed"):
+    with pytest.raises(LLMOutputError, match="^ollama response could not be read"):
         _INVOCATIONS[method](OllamaAdapter(_cfg(tmp_path)))
 
 
 @pytest.mark.parametrize("method", sorted(_INVOCATIONS))
-def test_a_response_body_that_is_not_utf8_is_a_normalised_request_failure(
+def test_a_response_body_that_is_not_utf8_is_normalised_as_unusable_output(
     tmp_path, monkeypatch, method
 ):
-    """`.decode("utf-8")` is the other statement in the region that can raise on
-    an otherwise well-formed HTTP response — a server that ignored the content
-    type and sent UTF-16 gets here. Separate from the non-JSON case because the
-    two are different statements, and an edit can move one without the other.
+    """`.decode("utf-8")` is the other statement that can raise on an otherwise
+    well-formed HTTP response — a server that ignored the content type and sent
+    UTF-16 gets here. Separate from the non-JSON case because the two are
+    different statements, and an edit can move one without the other.
     """
     _raw_body(monkeypatch, b"\xff\xfe")
 
-    with pytest.raises(LLMError, match="^ollama request failed"):
+    with pytest.raises(LLMOutputError, match="^ollama response could not be read"):
         _INVOCATIONS[method](OllamaAdapter(_cfg(tmp_path)))
+
+
+@pytest.mark.parametrize("method", sorted(_INVOCATIONS))
+def test_a_request_that_never_landed_stays_a_plain_request_failure(
+    tmp_path, monkeypatch, method
+):
+    """The counterweight to the two above, and the reason they are not vacuous.
+
+    #592's discriminator is whether a response arrived, so `urlopen` failing and
+    its body failing to decode must land on OPPOSITE sides -- otherwise one
+    clause covering both would satisfy every assertion here. This one asserts the
+    negative directly: a connection that never produced a body is an `LLMError`
+    and is NOT an `LLMOutputError`, so merging the two clauses back together
+    reddens this test whichever class the merged clause picks.
+    """
+
+    def refuse(req, *, timeout):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr("urllib.request.urlopen", refuse)
+
+    with pytest.raises(LLMError, match="^ollama request failed") as exc:
+        _INVOCATIONS[method](OllamaAdapter(_cfg(tmp_path)))
+    assert not isinstance(exc.value, LLMOutputError)
 
 
 @pytest.mark.parametrize("method", sorted(_PARSING_INVOCATIONS))

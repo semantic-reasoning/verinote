@@ -3804,7 +3804,7 @@ def test_translate_reports_an_unreached_provider_on_the_page(tmp_path, monkeypat
 
     assert r.status_code == 200
     body = " ".join(r.text.split())
-    assert "Translation did not run" in body
+    assert "Translation could not run" in body
     assert "provider unavailable" in body
     q = c.app.state.store.questions()[0]
     assert q["status"] == "pending"
@@ -3822,7 +3822,7 @@ def test_translate_reports_a_get_client_failure_on_the_page(tmp_path, monkeypatc
 
     assert r.status_code == 200
     body = " ".join(r.text.split())
-    assert "Translation did not run" in body
+    assert "Translation could not run" in body
     assert "missing provider credentials" in body
     q = c.app.state.store.questions()[0]
     assert q["status"] == "pending"
@@ -3855,7 +3855,7 @@ def test_translate_leaves_the_reason_blank_when_the_llm_error_has_no_message(
 
     assert r.status_code == 200
     body = " ".join(r.text.split())
-    assert "Translation did not run" in body
+    assert "Translation could not run" in body
     assert "LLMError" not in body
     q = c.app.state.store.questions()[0]
     assert q["status"] == "pending"
@@ -3869,28 +3869,40 @@ def test_translate_leaves_the_reason_blank_when_the_llm_error_has_no_message(
     assert "LLMError" not in page
 
 
-def test_translate_collapses_whitespace_and_bounds_the_reason_to_240_chars(
+def test_translate_collapses_whitespace_and_bounds_the_detail_to_240_chars(
     tmp_path, monkeypatch
 ):
     """S6's inline normalisation (`" ".join(str(exc).split())[:240]`) is a bare
     expression, not a named helper, since #551 cut this site off from
     `_short_error` — easier to lose a piece of by accident than a helper call
-    would be. `questions.reason` is unbounded `TEXT`, written for every pending
-    question at once, so both halves need a test: the internal-whitespace
-    collapse, and the 240-character bound.
+    would be. Both halves need a test: the internal-whitespace collapse, and the
+    240-character bound.
 
-    Message built so the expected result can be computed by direct slicing,
-    not by re-deriving the production logic: 100 `a`s, an irregular whitespace
-    run that must collapse to one space, then 200 `b`s. Collapsed that is 301
+    #592 MOVED THE DESTINATION AND THE BOUND WITH IT. The text used to go to
+    `questions.reason`, an unbounded `TEXT` column written for every pending
+    question at once; it now goes to the page banner, which is a fixed sentence
+    with the provider's message interpolated. That makes WHERE the bound is
+    applied a substantive question rather than a detail, and a revision of #592
+    got it wrong: capping the composed line put the provider's text first and
+    the fixed tail last, so a long message truncated away the half that tells a
+    user what happened to their rows and the banner ended mid-word. The bound is
+    on the DETAIL now, and this asserts the whole banner rather than a prefix of
+    it -- a prefix assertion is what let the bound go unpinned through a whole
+    revision, where deleting `[:240]` reddened nothing at all.
+
+    Message built so the expected result can be computed by direct slicing, not
+    by re-deriving the production logic: 100 `a`s, an irregular whitespace run
+    that must collapse to one space, then 200 `b`s. Collapsed that is 301
     characters (100 + 1 + 200); truncated to 240 it is 100 `a`s, one space, and
-    139 `b`s — one message that exercises both the collapse and the
-    truncation boundary.
+    139 `b`s — one message that exercises both the collapse and the truncation
+    boundary. The trailing period is the production code's, added because the
+    truncated detail does not punctuate itself.
     """
     message = "a" * 100 + "  \n\t  " + "b" * 200
     collapsed = "a" * 100 + " " + "b" * 200
     assert len(collapsed) == 301
-    expected_reason = collapsed[:240]
-    assert expected_reason == "a" * 100 + " " + "b" * 139
+    expected_detail = collapsed[:240]
+    assert expected_detail == "a" * 100 + " " + "b" * 139
 
     def raise_long_llm_error(cfg):
         raise LLMError(message)
@@ -3901,13 +3913,63 @@ def test_translate_collapses_whitespace_and_bounds_the_reason_to_240_chars(
     r = c.post("/questions/translate", follow_redirects=False)
 
     # #592. Rendered, not redirected: the row is no longer the diagnosis, so
-    # the page has to be. The 240-char bound now applies to the banner.
+    # the page has to be.
     assert r.status_code == 200
-    body = " ".join(r.text.split())
-    assert "Translation did not run" in body
+    body = " ".join(unescape(r.text).split())
+    assert (
+        "Translation could not run: "
+        + expected_detail
+        + ". The questions it stopped on kept the status and reason they had."
+    ) in body
+    # The raw whitespace run never reaches the page, and the 101st `b` never
+    # does either. Asserting both directions is what makes the two halves above
+    # separable: dropping the collapse leaves the tab in, dropping the bound
+    # lets the full 200 `b`s through.
+    assert "a" * 100 + " \n" not in body
+    assert "b" * 140 not in body
     q = c.app.state.store.questions()[0]
     assert q["status"] == "pending"
     assert not q["reason"]
+
+
+def test_the_banner_tail_survives_a_detail_far_past_the_bound(tmp_path, monkeypatch):
+    """The property the bound exists to protect, stated as its own test.
+
+    Bounding the composed line instead of the detail satisfies every assertion
+    about the detail and still loses the tail, so the tail needs an assertion
+    that does not mention the detail at all. Measured on the revision that got
+    it wrong: a 300-character message produced 240 characters of provider text
+    and nothing else.
+    """
+
+    def raise_huge_llm_error(cfg):
+        raise LLMError("z" * 5000)
+
+    monkeypatch.setattr(webapp, "get_client", raise_huge_llm_error)
+    c = _client(tmp_path)
+    c.app.state.store.add_question("What is the sample answer?")
+    r = c.post("/questions/translate", follow_redirects=False)
+
+    body = " ".join(unescape(r.text).split())
+    assert "The questions it stopped on kept the status and reason they had." in body
+
+
+def test_the_banner_reads_as_a_sentence_when_the_detail_is_empty(tmp_path, monkeypatch):
+    """`LLMError("")` is constructible, so the composed line has to survive it.
+
+    Interpolating an empty detail after a colon leaves `Translation could not
+    run: The questions...` -- a dangling separator, which is the #551 class the
+    predecessor of this site was exempt from only because it wrote to a
+    standalone column. It is not exempt now.
+    """
+    monkeypatch.setattr(webapp, "get_client", lambda cfg: (_ for _ in ()).throw(LLMError("")))
+    c = _client(tmp_path)
+    c.app.state.store.add_question("What is the sample answer?")
+    r = c.post("/questions/translate", follow_redirects=False)
+
+    body = " ".join(unescape(r.text).split())
+    assert "Translation could not run. The questions it stopped on kept the status and reason they had." in body
+    assert "run: The questions" not in body
 
 
 def test_translate_shows_invalid_model_output_reason_in_question_row(
@@ -3921,7 +3983,10 @@ def test_translate_shows_invalid_model_output_reason_in_question_row(
         store.set_question_query(
             q["id"], f'review_required("{reason}")', "review_required", reason
         )
-        return [{"id": q["id"], "status": "review_required", "reason": reason}]
+        return [
+            {"id": q["id"], "status": "review_required", "reason": reason,
+             "infrastructure_fault": False}
+        ]
 
     monkeypatch.setattr(webapp, "translate_questions", translate)
     c = _client(tmp_path)

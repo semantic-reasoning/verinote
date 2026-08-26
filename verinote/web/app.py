@@ -1040,13 +1040,33 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         the diagnosis had to move somewhere a user sees, and `questions.html`
         already had an `error` slot that this route never used.
 
-        Normalised the way that function normalised its reason column, because
-        the destination is still a single line of user-facing text.
+        THE BOUND IS ON THE DETAIL, NOT ON THE COMPOSED LINE. An earlier draft
+        capped the whole sentence, which put the provider's text first and the
+        fixed tail last: a 300-character provider message truncated away the
+        half that tells a user what happened to their rows, and the banner
+        ended mid-word in the provider's text. Bounding the variable part and
+        composing after it makes the tail unconditional. An empty detail --
+        `LLMError("")` is constructible -- would otherwise leave a dangling
+        colon, so it takes a period instead, and a detail that does not
+        punctuate itself gets one so the two sentences do not run together.
+
+        WHAT IT CLAIMS ABOUT THE ROWS IS SCOPED. The predecessor's text said
+        the questions "remain pending", which is false twice over: a question
+        already `translation_failed` from an earlier genuine failure enters the
+        loop and keeps that status, and a run can suppress one question's write
+        while recording another's. Both measured. The tail therefore speaks
+        only of the questions this fault stopped, and says they were left as
+        they were rather than naming a status.
         """
-        return " ".join(
-            f"Translation did not run: {detail} No question was marked failed;"
-            " they remain pending.".split()
-        )[:240]
+        collapsed = " ".join(detail.split())[:240]
+        if collapsed and collapsed[-1] not in ".!?":
+            collapsed += "."
+        opening = (
+            f"Translation could not run: {collapsed}"
+            if collapsed
+            else "Translation could not run."
+        )
+        return f"{opening} The questions it stopped on kept the status and reason they had."
 
     def _extraction_schema_hint(cfg: Config) -> str:
         try:
@@ -3203,14 +3223,19 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             # the web said anything about the fault -- so removing the write
             # without adding this surface would have made a broken provider
             # config silent. `get_client` raises for an unknown provider, not a
-            # missing key, so nothing was attempted and the rows stay `pending`.
+            # missing key, so nothing was attempted and no row is touched on
+            # this arm at all.
             return _questions(request, error=_translation_fault(str(e)))
         results = translate_questions(store, client, root=cfg.root)
-        # Since #592 an infrastructure fault is the ONLY thing that yields
-        # `translation_failed`, so a result carrying it is the fault report --
-        # the same derivation `cmd_query` uses for its exit code. The rows it
-        # describes were deliberately not written.
-        faults = [r for r in results if r["status"] == "translation_failed"]
+        # Filtered on the flag, NOT on `r["status"]`. Both sides of #592's
+        # discriminator report `translation_failed` -- the fault that was
+        # suppressed and the unusable answer that was written -- so the status
+        # string cannot tell them apart, and keying on it made this page say
+        # "Translation could not run ... kept the status they had" directly
+        # above a row the same request had just marked `Translation failed`.
+        # Measured on tests/test_query_planning_e2e.py's off-schema intent,
+        # which is the case #592 says IS recorded.
+        faults = [r for r in results if r["infrastructure_fault"]]
         if faults:
             return _questions(request, error=_translation_fault(faults[0]["reason"]))
         return RedirectResponse("/questions", status_code=303)

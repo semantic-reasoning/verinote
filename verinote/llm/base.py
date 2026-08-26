@@ -103,11 +103,25 @@ def parsed_under_redaction(parse, payload, secret):
     `LLMOutputError` raised by a parser arrived at the flow indistinguishable
     from a request that was never sent, and the guard keyed on it would have
     been a silent no-op. Flattening was a defect independent of #592;
-    `type(exc)` is the faithful behaviour. Every `LLMError` subclass must
-    therefore accept a single message argument, which
-    `test_every_llm_error_subclass_takes_one_message` derives from
-    `__subclasses__()` and asserts, because a subclass that did not would break
-    here -- inside error handling, at the worst possible moment.
+    `type(exc)` is the faithful behaviour.
+
+    WHAT THAT REQUIRES OF SUBCLASSES, and what checks it. `type(exc)(msg)`
+    rebuilds the exception from its message alone, so a subclass must accept a
+    single message argument -- one that did not would raise `TypeError` from
+    inside an `except` clause, at the worst possible moment, and the resulting
+    exception is not an `LLMError`, so every `except LLMError` downstream stops
+    catching it. `test_every_llm_error_subclass_takes_one_message` reads
+    `LLMError.__subclasses__()` and asserts the arity of each. READ IT AS A
+    TRIPWIRE, NOT A GUARANTEE. `__subclasses__()` returns DIRECT children only,
+    so a subclass of `LLMOutputError` never appears in it and breaks this line
+    in exactly the same way. It can only see classes something in its import
+    graph has imported, and the adapters are imported lazily inside
+    `get_client`, so a subclass defined in an adapter module is invisible when
+    that test runs alone. And arity is not reconstruction: a subclass that
+    accepts one message and also carries a status code, a retry hint or a
+    payload passes the check and still loses that state crossing this line.
+    Anything a caller must not lose belongs in the message, or this primitive
+    needs to stop rebuilding.
     """
     try:
         return parse(payload)

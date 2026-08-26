@@ -11,7 +11,13 @@ import json
 import urllib.request
 
 from verinote.config import Config
-from verinote.llm.base import ExtractedFact, LLMError, ModelListing, base_url_unusable
+from verinote.llm.base import (
+    ExtractedFact,
+    LLMError,
+    LLMOutputError,
+    ModelListing,
+    base_url_unusable,
+)
 from verinote.llm.schema import (
     FACT_ARRAY_SCHEMA,
     QUERY_INTENT_SCHEMA,
@@ -94,15 +100,21 @@ class OllamaAdapter:
     def _post_chat(self, payload: dict) -> dict:
         """POST one chat payload to `/api/chat` and return the decoded body.
 
-        The single request site for all four methods, so which statements count
-        as "the request" -- and which are the caller's own parse, reported as the
-        caller's own failure -- is written once instead of four times in
-        parallel.
+        The single request site for all four methods, so the boundaries between
+        what failed are written once instead of four times in parallel. There
+        are three, each with its own clause below, and each names a different
+        thing to the user: building the URL, sending the request, and decoding
+        the envelope that came back. A fourth -- interpreting that envelope's
+        content -- belongs to the caller and is reported as the caller's own
+        failure.
 
-        `Request(...)` gets its own narrow clause rather than joining the one
-        below: a URL that cannot be built is not a request that failed, and
-        telling a user their server did not answer when nothing was ever dialled
-        sends them to the wrong place (#493).
+        `Request(...)` gets its own narrow clause rather than joining the send:
+        a URL that cannot be built is not a request that failed, and telling a
+        user their server did not answer when nothing was ever dialled sends
+        them to the wrong place (#493). The envelope decode is separated for the
+        same reason and one more: since #592 the split also decides whether the
+        question row records the failure, because a body that arrived is output
+        the row may record and a request that never landed is not.
         """
         # Hoisted out of the `Request(...)` call, not merely out of the `try`:
         # as an ARGUMENT it would be evaluated inside the guarded region, so a
@@ -123,9 +135,22 @@ class OllamaAdapter:
             with urllib.request.urlopen(  # noqa: S310 - local trusted endpoint
                 req, timeout=self.cfg.llm_timeout_seconds
             ) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+                body = resp.read()
         except Exception as exc:  # noqa: BLE001 - normalise provider/transport errors
             raise LLMError(f"ollama request failed: {exc}") from exc
+        # The envelope decode is its OWN clause, for the same reason
+        # `Request(...)` has one above: what failed decides what the user is
+        # told, and #592 makes it decide more than that. A body reached us, so
+        # this is output that ARRIVED and could not be used -- `LLMOutputError`,
+        # which `translate_questions` records on the question row, where bare
+        # `LLMError` would have it suppress the row and say nothing. Measured on
+        # a 200 whose body is `<html>502 Bad Gateway</html>`, the shape a proxy
+        # in front of ollama emits: joined to the clause above it left the row
+        # `pending` with no trace of the failure.
+        try:
+            return json.loads(body.decode("utf-8"))
+        except Exception as exc:  # noqa: BLE001 - any undecodable body, not only bad JSON
+            raise LLMOutputError(f"ollama response could not be read: {exc}") from exc
 
     def extract_facts(self, *, source_text: str, schema_hint: str = "") -> list[ExtractedFact]:
         system = _with_schema_hint(

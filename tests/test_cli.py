@@ -905,15 +905,23 @@ def test_query_relation_discovery_prints_public_lifecycle_outcomes(
 
 
 def test_query_reports_a_provider_failure_without_recording_it(tmp_path, monkeypatch, capsys, fake_client):
-    """#592 inverted the row half of this test, and NOT the reporting half.
+    """#592 inverted the row half of this test, AND the one line that named it.
 
     The provider was never reached, so `translation_failed` ("The provider
     output could not be used") would be false of the row -- it stays `pending`.
-    Everything a user sees is unchanged: the same stdout line, the same split,
-    the same stderr, and the same rc=1. That is what "reported, never recorded"
-    means, and the rc is why the RESULT DICTS are still returned: `failures`
-    derives from them, not from the rows, so deleting the append instead of the
-    write would silently turn this run green.
+    The reporting half is unchanged where it reports the RUN: the same split,
+    the same stderr, the same rc=1, and the rc is why the RESULT DICTS are
+    still returned -- `failures` derives from them, not from the rows, so
+    deleting the append instead of the write would silently turn this run
+    green.
+
+    The per-question stdout line DID change, because it was the one place the
+    command described the row. `format_question_outcome` renders
+    `q{id}: {status} - {message}`, so passing a result dict through it printed
+    `q1: translation_failed` over a row this same command had just left
+    `pending` -- a report of the run wearing the row's clothes. It now names
+    the run and says what the row did, and the assertion below is what stops
+    it drifting back.
     """
     _env(monkeypatch, tmp_path)
     monkeypatch.setattr(
@@ -925,7 +933,11 @@ def test_query_reports_a_provider_failure_without_recording_it(tmp_path, monkeyp
 
     captured = capsys.readouterr()
     assert rc == 1
-    assert "q1: translation_failed - provider unavailable" in captured.out
+    assert "q1: not translated - provider unavailable (row unchanged)" in captured.out
+    # The row's own vocabulary must not appear on a line about a row that was
+    # not written. Deleting the branch that produces the line above brings it
+    # straight back, which is what makes this assertion load-bearing.
+    assert "q1: translation_failed" not in captured.out
     assert "translated 0 question(s), 1 failed" in captured.out
     assert "provider unavailable" in captured.err
     s = Store(tmp_path / "kb.sqlite")
@@ -951,7 +963,8 @@ def test_query_reports_a_get_client_failure_without_recording_it(tmp_path, monke
     # both streams, the count split. Reported, never recorded.
     captured = capsys.readouterr()
     assert rc == 1
-    assert "q1: translation_failed - missing provider credentials" in captured.out
+    assert "q1: not translated - missing provider credentials (row unchanged)" in captured.out
+    assert "q1: translation_failed" not in captured.out
     assert "translated 0 question(s), 1 failed" in captured.out
     assert "missing provider credentials" in captured.err
     s = Store(tmp_path / "kb.sqlite")
@@ -989,9 +1002,17 @@ def test_query_mixed_outcomes_exits_nonzero_with_split(
     captured = capsys.readouterr()
     assert rc == 1
     assert "q1: translated" in captured.out
-    assert "q2: translation_failed" in captured.out
+    # #592 makes this a MIXED run in the strong sense: one row was written and
+    # one deliberately was not, in a single pass of the same loop. Each line
+    # describes its own question, so the two lines differ in kind and not only
+    # in status -- q1 reports its row, q2 reports the run.
+    assert "q2: not translated - provider rejected this question (row unchanged)" in captured.out
     assert "translated 1 question(s), 1 failed" in captured.out
     assert "provider rejected this question" in captured.err
+    store = Store(tmp_path / "kb.sqlite")
+    rows = {int(q["id"]): str(q["status"]) for q in store.questions()}
+    store.close()
+    assert rows == {1: "translated", 2: "pending"}
 
 
 def test_query_no_pending_errors(tmp_path, monkeypatch, capsys):
@@ -1114,7 +1135,10 @@ def test_query_prints_review_required_outcome(tmp_path, monkeypatch, capsys):
         store.set_question_query(
             q["id"], f'review_required("{reason}")', "review_required", reason
         )
-        return [{"id": q["id"], "status": "review_required", "reason": reason}]
+        return [
+            {"id": q["id"], "status": "review_required", "reason": reason,
+             "infrastructure_fault": False}
+        ]
 
     monkeypatch.setattr("verinote.pipeline.translate_questions", translate)
 
@@ -1135,7 +1159,10 @@ def test_query_prints_no_answer_outcome(tmp_path, monkeypatch, capsys):
         q = store.questions(pending_only=True)[0]
         reason = "no confirmed facts match"
         store.set_question_query(q["id"], f'no_answer("{reason}")', "no_answer", reason)
-        return [{"id": q["id"], "status": "no_answer", "reason": reason}]
+        return [
+            {"id": q["id"], "status": "no_answer", "reason": reason,
+             "infrastructure_fault": False}
+        ]
 
     monkeypatch.setattr("verinote.pipeline.translate_questions", translate)
 
@@ -1153,7 +1180,10 @@ def test_query_prints_ambiguous_outcome(tmp_path, monkeypatch, capsys):
         q = store.questions(pending_only=True)[0]
         reason = "multiple synthetic candidates matched"
         store.set_question_query(q["id"], f'ambiguous("{reason}")', "ambiguous", reason)
-        return [{"id": q["id"], "status": "ambiguous", "reason": reason}]
+        return [
+            {"id": q["id"], "status": "ambiguous", "reason": reason,
+             "infrastructure_fault": False}
+        ]
 
     monkeypatch.setattr("verinote.pipeline.translate_questions", translate)
 

@@ -82,11 +82,17 @@ leave the KB in a worse state than the bug it replaces.
 
 #592 REPLACED THAT WITH A RULE, and this paragraph used to say there was none --
 that `_fail_pending_translations` and `cli.py`'s credential path recorded such
-faults deliberately and were left alone. Both have since stopped: an
-infrastructure fault is REPORTED, never RECORDED, at all four writers. The rule
-is read off `translation_failed`'s own definition, "The provider output could
-not be used", which is false when no output existed. A response that ARRIVED and
-was unusable is a different case and is still recorded.
+faults deliberately and were left alone. Both have since stopped writing at all:
+an infrastructure fault is REPORTED, never RECORDED, at each of the sites that
+write `questions.status` -- `translate_questions`, `repair_question`, and the
+job worker's `persist_repair_question`, which is every one of them, derived by
+finding the `Store` methods whose SQL sets that column and then their callers
+under `verinote/`. The rule is ANCHORED IN `translation_failed`'s only textual
+definition in this repo, `question_outcome.py::_STATUS_META`'s "The provider
+output could not be used", which is false when no output existed -- anchored
+rather than READ OFF, because that string is a display FALLBACK
+`question_outcome_view` renders only for a row carrying no reason. A response
+that ARRIVED and was unusable is a different case and is still recorded.
 """
 
 import re
@@ -310,7 +316,7 @@ def test_translate_survives_each_broken_policy_file(
     r = client.post("/questions/translate", follow_redirects=False)
     assert r.status_code == 200
     body = " ".join(r.text.split())
-    assert "Translation did not run" in body
+    assert "Translation could not run" in body
     assert message in body
 
 

@@ -253,11 +253,19 @@ def process_repair_job(
                 store.finish_repair_item(int(item["id"]), owner_token, status="failed", reason=reason)
                 store.finish_repair_job(job_id, owner_token, failed=True, message=f"Repair failed: {reason}")
                 raise
-            # #592 widens this from `result.provider_failed` to every
-            # infrastructure fault: a policy fault also means nothing was
-            # translated, and the job must report it rather than finish "done"
-            # over a row it deliberately did not write.
-            if prepared.infrastructure_fault:
+            # #592 ADDS a disjunct here; it does not replace one. An earlier
+            # draft substituted `infrastructure_fault` for
+            # `result.provider_failed`, which NARROWED the report: an answer
+            # that arrived unusable sets `provider_failed` and clears
+            # `infrastructure_fault`, so the job stopped failing on it --
+            # measured, the item went from `failed` on the parent to `done`.
+            # The two disjuncts answer different questions. `provider_failed`
+            # is "the provider work did not produce a usable translation",
+            # which is what the job reports on. `infrastructure_fault` adds the
+            # policy fault, where no provider was asked at all, so nothing was
+            # translated and the job must not finish "done" over a row it
+            # deliberately did not write.
+            if prepared.result.provider_failed or prepared.infrastructure_fault:
                 store.finish_repair_item(int(item["id"]), owner_token, status="failed", reason=prepared.result.reason)
                 store.finish_repair_job(
                     job_id, owner_token, failed=True, message=f"Repair failed: {prepared.result.reason}"

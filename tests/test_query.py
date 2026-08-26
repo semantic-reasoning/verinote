@@ -318,6 +318,7 @@ def test_translate_korean_role_question_bypasses_llm(tmp_path):
             "status": "translated",
             "query_dl": s.questions()[0]["query_dl"],
             "reason": "",
+            "infrastructure_fault": False,
         }
     ]
     query_dl = s.questions()[0]["query_dl"]
@@ -358,6 +359,7 @@ def test_translate_korean_provide_question_bypasses_llm(tmp_path):
             "status": "translated",
             "query_dl": s.questions()[0]["query_dl"],
             "reason": "",
+            "infrastructure_fault": False,
         }
     ]
     query_dl = s.questions()[0]["query_dl"]
@@ -457,6 +459,7 @@ def test_translate_retries_translation_failed_questions(tmp_path, fake_client, i
             "status": "translated",
             "query_dl": s.questions()[0]["query_dl"],
             "reason": "",
+            "infrastructure_fault": False,
         }
     ]
     assert s.questions()[0]["status"] == "translated"
@@ -635,6 +638,7 @@ def test_translation_never_calls_direct_datalog_fallback(
             "status": "review_required",
             "query_dl": 'review_required("requires a synthetic relation")',
             "reason": "requires a synthetic relation",
+            "infrastructure_fault": False,
         }
     ]
 
@@ -691,6 +695,7 @@ def test_planned_executable_without_rows_becomes_no_answer(
             "status": "no_answer",
             "query_dl": 'no_answer("no confirmed facts match")',
             "reason": "no confirmed facts match",
+            "infrastructure_fault": False,
         }
     ]
     assert load_query(s) == ""
@@ -776,6 +781,7 @@ def test_quality_policy_review_required_outcome_is_persisted(
             "status": "review_required",
             "query_dl": 'review_required("relation label requires review: source")',
             "reason": "relation label requires review: source",
+            "infrastructure_fault": False,
         }
     ]
     assert load_query(s) == ""
@@ -805,6 +811,7 @@ def test_supported_planner_review_required_does_not_call_direct_datalog(
             "status": "review_required",
             "query_dl": 'review_required("relation label requires review: source")',
             "reason": "relation label requires review: source",
+            "infrastructure_fault": False,
         }
     ]
     assert load_query(s) == ""
@@ -927,6 +934,7 @@ def test_translate_reports_an_unreached_provider_without_persisting_it(tmp_path,
             "status": "translation_failed",
             "query_dl": None,
             "reason": "provider unavailable",
+            "infrastructure_fault": True,
         }
     ]
     q = s.questions()[0]
