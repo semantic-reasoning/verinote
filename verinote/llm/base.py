@@ -16,6 +16,29 @@ class LLMError(RuntimeError):
     """Any provider-side or parsing failure, normalised across adapters."""
 
 
+class LLMOutputError(LLMError):
+    """The provider ANSWERED and the answer could not be used (#592).
+
+    A subclass rather than a flag because the distinction has to survive being
+    raised, caught and re-raised across the adapter boundary, and callers that
+    do not care keep catching `LLMError` unchanged.
+
+    WHY IT EXISTS. `LLMError` is documented as "any provider-side OR PARSING
+    failure", so it conflates a request that was never sent -- no API key, SDK
+    missing, provider unreachable -- with a response that arrived and was
+    unusable. `questions.status`'s `translation_failed` means "The provider
+    output could not be used", which is TRUE of the second and false of the
+    first. #592 records the second on the question row and only reports the
+    first, and this class is what lets one `except LLMError` tell them apart.
+
+    THE DISCRIMINATOR IS WHETHER A RESPONSE ARRIVED, not whether it parsed. A
+    payload with no tool_use block, or a CLI payload that cannot be decoded, is
+    output that arrived and could not be used -- the provider was reached and
+    misbehaved, which is the one signal a user has that their provider is broken
+    rather than unconfigured.
+    """
+
+
 # A secret shorter than this cannot be replaced without mangling ordinary text —
 # a key of "key" would turn "invalid api key" into "invalid api ***" — so it is
 # deliberately left alone. That is a statement about collateral damage, not about
@@ -74,11 +97,22 @@ def parsed_under_redaction(parse, payload, secret):
     ONLY `LLMError` is caught. A parser that fails some other way is a bug in
     this repo rather than a message about the provider's payload, and it is not
     this function's business to relabel it.
+
+    THE CLASS IS PRESERVED (#592). This re-raised as a bare `LLMError`, which
+    destroyed the type for every caller of this primitive -- so an
+    `LLMOutputError` raised by a parser arrived at the flow indistinguishable
+    from a request that was never sent, and the guard keyed on it would have
+    been a silent no-op. Flattening was a defect independent of #592;
+    `type(exc)` is the faithful behaviour. Every `LLMError` subclass must
+    therefore accept a single message argument, which
+    `test_every_llm_error_subclass_takes_one_message` derives from
+    `__subclasses__()` and asserts, because a subclass that did not would break
+    here -- inside error handling, at the worst possible moment.
     """
     try:
         return parse(payload)
     except LLMError as exc:
-        raise LLMError(redact_secret(str(exc), secret)) from exc.__cause__
+        raise type(exc)(redact_secret(str(exc), secret)) from exc.__cause__
 
 
 def base_url_unusable(provider: str, url: str, exc: Exception) -> LLMError:

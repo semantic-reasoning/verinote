@@ -1603,7 +1603,17 @@ def cmd_query(cfg: Config, args: argparse.Namespace) -> int:
         reason = _short_error(e)
         results = []
         for q in translatable:
-            store.set_question_query(q["id"], None, "translation_failed", reason)
+            # #592. REPORTED, NEVER RECORDED. `get_client` raises only for an
+            # unknown provider -- a corrupt config, not a missing key -- so
+            # translation was never attempted and `translation_failed` ("The
+            # provider output could not be used") would be false of the row.
+            # The rows stay `pending`, which is true of them.
+            #
+            # The RESULT DICT is still appended, and that is not cosmetic:
+            # `failures` below derives from these dicts, not from the rows, so
+            # deleting the append instead of the write would silently flip a
+            # broken-config run to rc=0. The fault is reported here, on stdout
+            # and in the exit code, and simply not written down.
             results.append(
                 {"id": q["id"], "status": "translation_failed", "reason": reason}
             )

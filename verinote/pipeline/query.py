@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Callable
 
 from verinote.engine.datalog import AtomExpr, Comparison, DatalogParseError, parse_program
 from verinote.engine.terms import Atom, StringLit, render_term
-from verinote.llm.base import LLMClient, LLMError
+from verinote.llm.base import LLMClient, LLMError, LLMOutputError
 from verinote.pipeline.corroboration import (
     CorroborationPolicyError,
     store_relation_aliases,
@@ -71,10 +71,24 @@ class _QueryFlowResult:
     # Repair-only eligibility: ordinary translation is always schema-only.
     allow_direct_datalog_fallback: bool = False
     provider_failed: bool = False
+    # #592. Set ALONGSIDE `provider_failed`, never instead of it. `provider_failed`
+    # answers "should Ask decline its fallback request" and must stay True for
+    # every `LLMError` exit -- #438's tripwire enforces that with a literal, and
+    # an earlier draft of #592 made it a computed expression, which the tripwire
+    # correctly rejected. This one answers a different question: "did a response
+    # ARRIVE and turn out unusable", which is what decides whether the row may
+    # record `translation_failed`. An unusable answer is still a provider
+    # failure for Ask's purposes; it is simply not an infrastructure fault.
+    output_unusable: bool = False
     # Set only by the trust-policy guard below. `translate_questions` keys its
-    # write suppression on THIS, not on a read of its own: the status alone
-    # cannot carry it, because a missing API key produces `translation_failed`
-    # too and that one IS meant to be written to the row (#591).
+    # write suppression on this and on `provider_failed`, not on a read of its
+    # own, so the value written and the decision to write it come from one read.
+    #
+    # An earlier draft of this comment said a missing API key "IS meant to be
+    # written to the row (#591)". #592 reversed that: no infrastructure fault is
+    # written to a row now, and a missing key is one. The flag still exists
+    # because the status alone cannot distinguish the cases -- both arrive as
+    # `translation_failed`.
     policy_failed: bool = False
 
 
@@ -291,6 +305,14 @@ def _schema_aware_query_flow_result(
             )
         except LLMError as exc:
             reason = _short_reason(exc)
+            # #592. `provider_failed` means THE PROVIDER DID NOT ANSWER, which is
+            # what `translate_questions` suppresses the row write on. An
+            # `LLMOutputError` is the opposite case: a response arrived and could
+            # not be used, which is exactly what `translation_failed` means and
+            # so IS recorded. Without this the guard would suppress the one
+            # failure the status exists for -- measured, it turned a
+            # schema-violating intent into a `pending` row.
+            output_unusable = isinstance(exc, LLMOutputError)
             if llm_error_status == "translation_failed":
                 # Flagged like the sibling exits of this handler even though
                 # nothing reads it here: `translate_questions` is the only
@@ -303,6 +325,7 @@ def _schema_aware_query_flow_result(
                     None,
                     reason,
                     provider_failed=True,
+                    output_unusable=output_unusable,
                 )
             reason = _short_reason(f"llm error: {exc}")
             # No fallback here. The direct-Datalog fallback answers "planning
@@ -320,6 +343,7 @@ def _schema_aware_query_flow_result(
                 f"review_required({_lit(reason)})",
                 reason,
                 provider_failed=True,
+                output_unusable=output_unusable,
             )
 
     if intent.kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED:
@@ -648,11 +672,19 @@ def _translate_direct_datalog_fallback(
         )
     except LLMError as exc:
         reason = _short_reason(exc)
+        # #592, same discriminator as the schema-aware handler above: an
+        # `LLMOutputError` means a response arrived and could not be used, which
+        # the row may record; anything else means no response, which it may not.
+        output_unusable = isinstance(exc, LLMOutputError)
         if llm_error_status == "translation_failed":
-            return _QueryFlowResult("translation_failed", None, reason, provider_failed=True)
+            return _QueryFlowResult(
+                "translation_failed", None, reason,
+                provider_failed=True, output_unusable=output_unusable,
+            )
         reason = _short_reason(f"llm error: {exc}")
         return _QueryFlowResult(
-            "review_required", f"review_required({_lit(reason)})", reason, provider_failed=True
+            "review_required", f"review_required({_lit(reason)})", reason,
+            provider_failed=True, output_unusable=output_unusable,
         )
 
     outcome = _non_executable_outcome(line)
@@ -710,39 +742,48 @@ def translate_questions(
             llm_error_status="translation_failed",
         )
         status, query_dl, reason = flow.status, flow.query_dl, flow.reason
-        # G2 (#591). Report the policy failure, but do NOT write it to the row.
-        # The justification is comparative, not a principle: today's unhandled
-        # exception leaves every pending question `pending`, so a guard that
-        # wrote `translation_failed` to each of them would leave the KB in a
-        # worse state than the bug it replaces -- a durable, audited claim that
-        # each question failed translation, when translation was never attempted
-        # and nothing about the questions is wrong. Repairing the file and
-        # re-running then translates them, with no intervening state for the
-        # user to notice and undo.
+        # AN INFRASTRUCTURE FAULT IS REPORTED, NEVER RECORDED (#592). #591
+        # suppressed the policy-file case here and left the credential case
+        # writing, which made this one line behave two opposite ways depending
+        # on which infrastructure fault occurred. #592 settles it for all of
+        # them, and the rule is read off `question_outcome.py::_STATUS_META`
+        # rather than chosen: `translation_failed` is defined there as "The
+        # provider output could not be used" -- a claim about the provider's
+        # OUTPUT. When the provider was never reached, or translation was never
+        # attempted because a policy file could not be read, there is no output
+        # and the claim is false under the status's own definition. `pending`
+        # ("Waiting for translation.") is true of every such fault, and it is
+        # already in `db.py`'s CHECK constraint, so no schema change is needed.
         #
-        # This is NOT a rule that an environment fault may never be recorded on a
-        # question row. `web/app.py::_fail_pending_translations` and `cli.py`'s
-        # own missing-credential path both do exactly that, deliberately, and
-        # this change leaves both alone. The inconsistency that leaves --
-        # credentials mark the rows, an unreadable policy file does not -- is
-        # real and is tracked as #592; it is a contract question across three
-        # call sites, not this guard's to settle.
+        # THE PREDICATE IS DERIVED, NOT CHOSEN. Every infrastructure exit in
+        # this module sets one of these two flags -- measured by enumerating
+        # every `_QueryFlowResult` construction: the policy exit sets
+        # `policy_failed`, and every exit that reports a provider that did not
+        # answer sets `provider_failed`. So the two flags together are exactly
+        # "no usable provider output existed", which is exactly what must not be
+        # recorded.
         #
-        # ONE VERDICT GOVERNS BOTH DECISIONS, and an earlier revision of this
-        # guard got that wrong in the one direction that matters. It read the
-        # policy files once before this loop and suppressed on THAT, while the
-        # flow above re-read them per question. With the files healthy at the
-        # pre-loop read and broken before a question's flow ran, the fresh
+        # ONE VERDICT GOVERNS BOTH DECISIONS, and an earlier revision of the
+        # #591 guard got that wrong in the one direction that matters. It read
+        # the policy files once before this loop and suppressed on THAT, while
+        # the flow above re-read them per question. With the files healthy at
+        # the pre-loop read and broken before a question's flow ran, the fresh
         # verdict said "failed" -- so `translation_failed` and the policy
         # message went into `status` and `reason` -- while the stale verdict
         # said "healthy", so the write was not suppressed. Measured: the parent
         # raised and wrote NOTHING; that revision wrote the failure to every
-        # row. Keying on `flow.policy_failed` is what makes the value written
+        # row. Keying on the FLOW's own flags is what makes the value written
         # and the decision to write it come from the same read.
         #
         # The result dict is still appended, so the CLI and the web report
-        # normally and no caller's contract changes.
-        if not flow.policy_failed:
+        # normally and no caller's contract changes. Deleting the append instead
+        # of the write would flip a credential-free `verinote query` to rc=0,
+        # because `cmd_query` derives its failure count from these dicts and not
+        # from the rows.
+        infrastructure_fault = flow.policy_failed or (
+            flow.provider_failed and not flow.output_unusable
+        )
+        if not infrastructure_fault:
             store.set_question_query(q["id"], query_dl, status, reason)
         results.append(
             {"id": q["id"], "status": status, "query_dl": query_dl, "reason": reason}

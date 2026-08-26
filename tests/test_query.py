@@ -904,7 +904,16 @@ def test_query_schema_hint_includes_typed_comparison_type_and_amount_units(tmp_p
     assert "Synthetic Company" not in hint
 
 
-def test_translate_persists_llm_error_as_translation_failed(tmp_path, fake_client):
+def test_translate_reports_an_unreached_provider_without_persisting_it(tmp_path, fake_client):
+    """#592 inverted the row half. The RESULT is unchanged and still carries the
+    fault -- that is the report, and every caller derives its own diagnosis from
+    it. The row stays `pending`, because a provider that was never reached
+    produced no output for `translation_failed` to be true about.
+
+    `test_invalid_intent_output_fails_translation_and_skips_draft` is the other
+    side of the same rule and must stay green: there the provider ANSWERED and
+    the answer was unusable, so the row records.
+    """
     s = _store(tmp_path)
     qid = s.add_question("What is the sample answer?")
 
@@ -921,8 +930,8 @@ def test_translate_persists_llm_error_as_translation_failed(tmp_path, fake_clien
         }
     ]
     q = s.questions()[0]
-    assert q["status"] == "translation_failed"
-    assert q["reason"] == "provider unavailable"
+    assert q["status"] == "pending"
+    assert not q["reason"]
     assert q["query_dl"] is None
     assert load_query(s) == ""
 

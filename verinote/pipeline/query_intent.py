@@ -10,7 +10,7 @@ import json
 import re
 from typing import Any
 
-from verinote.llm.base import LLMError
+from verinote.llm.base import LLMOutputError
 from verinote.llm.schema import QUERY_INTENT_SCHEMA
 
 
@@ -1094,11 +1094,11 @@ def parse_query_intent(raw: str | dict[str, Any]) -> QueryIntent:
     try:
         data = json.loads(raw) if isinstance(raw, str) else raw
     except json.JSONDecodeError as exc:
-        raise LLMError(f"query intent output was not JSON: {exc}") from exc
+        raise LLMOutputError(f"query intent output was not JSON: {exc}") from exc
     try:
         return _parse_query_intent_object(data)
     except (KeyError, TypeError, ValueError) as exc:
-        raise LLMError(f"query intent output did not match schema: {exc}") from exc
+        raise LLMOutputError(f"query intent output did not match schema: {exc}") from exc
 
 
 def _parse_query_intent_object(data: Any) -> QueryIntent:

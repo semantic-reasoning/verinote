@@ -810,7 +810,10 @@ def test_repair_unsupported_intent_still_reaches_fallback(
     assert s.questions()[0]["status"] == "translated"
 
 
-def test_repair_persists_llm_error_reason(tmp_path, fake_client):
+def test_repair_reports_an_unreached_provider_without_persisting_it(tmp_path, fake_client):
+    """#592. The row already held `review_required` and keeps it -- repair leaves
+    the question exactly as it found it when the provider was never reached. The
+    reason is still returned to the caller, which is the report."""
     s, qid = _store_with_review_required(tmp_path)
     original_query = s.questions()[0]["query_dl"]
     client = fake_client(error=LLMError("provider unavailable"))
@@ -822,4 +825,5 @@ def test_repair_persists_llm_error_reason(tmp_path, fake_client):
     q = s.questions()[0]
     assert q["status"] == "review_required"
     assert q["query_dl"] == original_query
-    assert q["reason"] == "llm error: provider unavailable"
+    # Unwritten, so the row keeps whatever reason it already had.
+    assert q["reason"] != "llm error: provider unavailable"

@@ -7,6 +7,7 @@ from verinote.config import Config
 from verinote.llm.base import (
     ExtractedFact,
     LLMError,
+    LLMOutputError,
     parsed_under_redaction,
     redact_secret,
 )
@@ -259,7 +260,15 @@ class AnthropicAdapter:
         try:
             return _render_prompt(self.cfg.root, prompt_id, **values)
         except LLMError as exc:
-            raise LLMError(redact_secret(str(exc), self.cfg.api_key)) from exc.__cause__
+            # #592. `type(exc)` here is a NO-OP today and is written this way
+            # anyway. Measured: this `try` calls only `_render_prompt`, which
+            # raises bare `LLMError` at its two prompt-loading exits, so the
+            # only class that can arrive is `LLMError` itself. But this line is
+            # character-identical to `parsed_under_redaction`'s, which had to
+            # stop flattening -- leaving one of three identical lines flattening
+            # would be an asymmetry a reader has to resolve, and it would
+            # silently swallow a subclass the day `_render_prompt` grows one.
+            raise type(exc)(redact_secret(str(exc), self.cfg.api_key)) from exc.__cause__
 
     def extract_facts(self, *, source_text: str, schema_hint: str = "") -> list[ExtractedFact]:
         client = self._client()
@@ -286,7 +295,7 @@ class AnthropicAdapter:
                 return parsed_under_redaction(
                     parse_facts, block.input, self.cfg.api_key
                 )
-        raise LLMError("anthropic response contained no tool_use block")
+        raise LLMOutputError("anthropic response contained no tool_use block")
 
     def translate_query(self, *, question: str, qid: int, schema_hint: str = "") -> str:
         client = self._client()
@@ -315,7 +324,7 @@ class AnthropicAdapter:
                 return parsed_under_redaction(
                     parse_query, block.input, self.cfg.api_key
                 )
-        raise LLMError("anthropic response contained no tool_use block")
+        raise LLMOutputError("anthropic response contained no tool_use block")
 
     def extract_query_intent(self, *, question: str, schema_hint: str = "") -> QueryIntent:
         client = self._client()
@@ -342,7 +351,7 @@ class AnthropicAdapter:
                 return parsed_under_redaction(
                     parse_query_intent, block.input, self.cfg.api_key
                 )
-        raise LLMError("anthropic response contained no tool_use block")
+        raise LLMOutputError("anthropic response contained no tool_use block")
 
     def answer_question(self, *, question: str, context: str) -> str:
         client = self._client()

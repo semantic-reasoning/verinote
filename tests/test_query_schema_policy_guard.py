@@ -75,13 +75,18 @@ no per-question record to render. Delivering the diagnosis needs the message
 carried from the POST to the render, which is neither issue's.
 
 WHY THE QUESTION ROWS STAY `pending`. `translate_questions` reports the policy
-failure per question but does not write it. The justification is comparative and
-deliberately narrow: today's unhandled exception leaves every pending question
-`pending`, so a guard that wrote `translation_failed` to each would leave the KB
-in a worse state than the bug it replaces. It is NOT a rule that an environment
-fault may never be recorded on a question row -- `_fail_pending_translations`
-and `cli.py`'s missing-credential path both do exactly that, deliberately, and
-this change leaves both alone.
+failure per question but does not write it. #591's justification was comparative
+and deliberately narrow: today's unhandled exception leaves every pending
+question `pending`, so a guard that wrote `translation_failed` to each would
+leave the KB in a worse state than the bug it replaces.
+
+#592 REPLACED THAT WITH A RULE, and this paragraph used to say there was none --
+that `_fail_pending_translations` and `cli.py`'s credential path recorded such
+faults deliberately and were left alone. Both have since stopped: an
+infrastructure fault is REPORTED, never RECORDED, at all four writers. The rule
+is read off `translation_failed`'s own definition, "The provider output could
+not be used", which is false when no output existed. A response that ARRIVED and
+was unusable is a different case and is still recorded.
 """
 
 import re
@@ -293,12 +298,20 @@ def test_translate_survives_each_broken_policy_file(
     one. #590 fixed that and the reason changed rather than disappearing: the
     redirect target is a different route with its own guard and its own tests,
     so asserting on it here would attribute #590's behaviour to #591's guard.
-    The 303 is what this test owns.
+    THE STATUS CHANGED IN #592, and the reason for asserting here did not. This
+    asserted 303: the route redirected and the diagnosis lived in the question
+    rows it wrote. #592 stopped writing those rows -- an infrastructure fault is
+    reported, never recorded -- so the route now RENDERS the page with the fault
+    in its error slot, which is a 200. The message is asserted rather than the
+    bare status, because the status alone no longer distinguishes "reported" from
+    "silently redirected".
     """
-    del message
     client, _ = _client(tmp_path, alias_bytes, typed_bytes)
     r = client.post("/questions/translate", follow_redirects=False)
-    assert r.status_code == 303
+    assert r.status_code == 200
+    body = " ".join(r.text.split())
+    assert "Translation did not run" in body
+    assert message in body
 
 
 @pytest.mark.parametrize("alias_bytes, typed_bytes, message", BROKEN_INPUTS)

@@ -260,7 +260,15 @@ class OpenAIAdapter:
         try:
             return _render_prompt(self.cfg.root, prompt_id, **values)
         except LLMError as exc:
-            raise LLMError(redact_secret(str(exc), self.cfg.api_key)) from exc.__cause__
+            # #592. `type(exc)` here is a NO-OP today and is written this way
+            # anyway. Measured: this `try` calls only `_render_prompt`, which
+            # raises bare `LLMError` at its two prompt-loading exits, so the
+            # only class that can arrive is `LLMError` itself. But this line is
+            # character-identical to `parsed_under_redaction`'s, which had to
+            # stop flattening -- leaving one of three identical lines flattening
+            # would be an asymmetry a reader has to resolve, and it would
+            # silently swallow a subclass the day `_render_prompt` grows one.
+            raise type(exc)(redact_secret(str(exc), self.cfg.api_key)) from exc.__cause__
 
     def extract_facts(self, *, source_text: str, schema_hint: str = "") -> list[ExtractedFact]:
         client = self._client()
