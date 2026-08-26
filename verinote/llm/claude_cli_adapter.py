@@ -11,7 +11,7 @@ import tempfile
 from typing import Any
 
 from verinote.config import Config
-from verinote.llm.base import ExtractedFact, LLMError
+from verinote.llm.base import ExtractedFact, LLMError, LLMOutputError
 from verinote.llm.schema import (
     FACT_ARRAY_SCHEMA,
     QUERY_INTENT_SCHEMA,
@@ -197,7 +197,7 @@ class ClaudeCliAdapter:
                     # fix their source. Constant message: this exception's text
                     # carries byte values and offsets from the model's output, which
                     # derives from the user's document.
-                    raise LLMError(_UNDECODABLE_OUTPUT) from exc
+                    raise LLMOutputError(_UNDECODABLE_OUTPUT) from exc
                 except ValueError as exc:
                     # The ARGUMENT could not be encoded. MUST stay below
                     # UnicodeDecodeError, which is a ValueError subclass. The

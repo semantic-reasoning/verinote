@@ -3785,7 +3785,14 @@ def test_questions_translate_relation_discovery_shows_actual_lifecycle_states(
     assert "no_answer" not in query_dl
 
 
-def test_translate_persists_llm_error_reason(tmp_path, monkeypatch, fake_client):
+def test_translate_reports_an_unreached_provider_on_the_page(tmp_path, monkeypatch, fake_client):
+    """#592 moved this diagnosis from the ROW to the PAGE.
+
+    The row was the only place the web said anything about the fault, so
+    deleting the write without a surface would have made a broken provider
+    silent. The page now carries it and the row stays `pending`, which is true
+    of a question nothing was attempted for.
+    """
     monkeypatch.setattr(
         webapp,
         "get_client",
@@ -3795,16 +3802,16 @@ def test_translate_persists_llm_error_reason(tmp_path, monkeypatch, fake_client)
     c.app.state.store.add_question("What is the sample answer?")
     r = c.post("/questions/translate", follow_redirects=False)
 
-    assert r.status_code == 303
+    assert r.status_code == 200
+    body = " ".join(r.text.split())
+    assert "Translation did not run" in body
+    assert "provider unavailable" in body
     q = c.app.state.store.questions()[0]
-    assert q["status"] == "translation_failed"
-    assert q["reason"] == "provider unavailable"
-    page = c.get("/questions").text
-    assert "translation_failed" in page
-    assert "provider unavailable" in page
+    assert q["status"] == "pending"
+    assert not q["reason"]
 
 
-def test_translate_persists_get_client_failure_reason(tmp_path, monkeypatch):
+def test_translate_reports_a_get_client_failure_on_the_page(tmp_path, monkeypatch):
     def raise_client_error(cfg):
         raise LLMError("missing provider credentials")
 
@@ -3813,27 +3820,30 @@ def test_translate_persists_get_client_failure_reason(tmp_path, monkeypatch):
     c.app.state.store.add_question("What is the sample answer?")
     r = c.post("/questions/translate", follow_redirects=False)
 
-    assert r.status_code == 303
+    assert r.status_code == 200
+    body = " ".join(r.text.split())
+    assert "Translation did not run" in body
+    assert "missing provider credentials" in body
     q = c.app.state.store.questions()[0]
-    assert q["status"] == "translation_failed"
-    assert q["reason"] == "missing provider credentials"
-    assert (tmp_path / "facts" / "query.dl").read_text(encoding="utf-8") == ""
-    page = c.get("/questions").text
-    assert "translation_failed" in page
-    assert "missing provider credentials" in page
+    assert q["status"] == "pending"
+    assert not q["reason"]
+    # No row changed, so the derived draft was not regenerated. It used to be
+    # rewritten (empty) as a side effect of the row write that #592 removed.
+    assert not (tmp_path / "facts" / "query.dl").exists()
 
 
 def test_translate_leaves_the_reason_blank_when_the_llm_error_has_no_message(
     tmp_path, monkeypatch
 ):
-    """`_fail_pending_translations` (S6) is deliberately OUT of #551's scope: its
-    `reason` is a standalone column, not interpolated after a separator, and
-    `question_outcome_view` already renders a per-status default sentence when it
-    is blank — there is no dangling colon here to fix. Naming the exception's type
-    at this site would REPLACE that sentence ("The provider output could not be
-    used.") with a bare class name, which is a regression, not an improvement.
-    This pins the unchanged behavior so nothing re-routes this site through
-    `_error_cause` later."""
+    """S6 was deliberately OUT of #551's scope, and #592 REMOVED the site rather
+    than resolving that: `_fail_pending_translations` wrote the reason to a
+    standalone column, and there is no such column to write now.
+
+    What survives is the property #551 cared about — a blank `LLMError` must not
+    be rendered as a bare class name. The destination moved from the row to the
+    page, so that is where it is asserted: the banner still reads as a sentence
+    with an empty detail, and the row is untouched.
+    """
 
     def raise_blank_llm_error(cfg):
         raise LLMError("")
@@ -3843,12 +3853,20 @@ def test_translate_leaves_the_reason_blank_when_the_llm_error_has_no_message(
     c.app.state.store.add_question("What is the sample answer?")
     r = c.post("/questions/translate", follow_redirects=False)
 
-    assert r.status_code == 303
+    assert r.status_code == 200
+    body = " ".join(r.text.split())
+    assert "Translation did not run" in body
+    assert "LLMError" not in body
     q = c.app.state.store.questions()[0]
-    assert q["status"] == "translation_failed"
-    assert q["reason"] == ""
+    assert q["status"] == "pending"
+    assert not q["reason"]
+    # The per-status sentence this used to assert belongs to a
+    # `translation_failed` ROW, and there is no longer one to render it for --
+    # which is the point of #592, not a lost assertion. What must still hold is
+    # that a blank `LLMError` never surfaces as a class name anywhere.
     page = c.get("/questions").text
-    assert "The provider output could not be used." in page
+    assert "The provider output could not be used." not in page
+    assert "LLMError" not in page
 
 
 def test_translate_collapses_whitespace_and_bounds_the_reason_to_240_chars(
@@ -3882,11 +3900,14 @@ def test_translate_collapses_whitespace_and_bounds_the_reason_to_240_chars(
     c.app.state.store.add_question("What is the sample answer?")
     r = c.post("/questions/translate", follow_redirects=False)
 
-    assert r.status_code == 303
+    # #592. Rendered, not redirected: the row is no longer the diagnosis, so
+    # the page has to be. The 240-char bound now applies to the banner.
+    assert r.status_code == 200
+    body = " ".join(r.text.split())
+    assert "Translation did not run" in body
     q = c.app.state.store.questions()[0]
-    assert q["status"] == "translation_failed"
-    assert q["reason"] == expected_reason
-    assert len(q["reason"]) == 240
+    assert q["status"] == "pending"
+    assert not q["reason"]
 
 
 def test_translate_shows_invalid_model_output_reason_in_question_row(

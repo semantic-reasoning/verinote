@@ -904,7 +904,17 @@ def test_query_relation_discovery_prints_public_lifecycle_outcomes(
     assert query_dl == ""
 
 
-def test_query_persists_translation_failure_reason(tmp_path, monkeypatch, capsys, fake_client):
+def test_query_reports_a_provider_failure_without_recording_it(tmp_path, monkeypatch, capsys, fake_client):
+    """#592 inverted the row half of this test, and NOT the reporting half.
+
+    The provider was never reached, so `translation_failed` ("The provider
+    output could not be used") would be false of the row -- it stays `pending`.
+    Everything a user sees is unchanged: the same stdout line, the same split,
+    the same stderr, and the same rc=1. That is what "reported, never recorded"
+    means, and the rc is why the RESULT DICTS are still returned: `failures`
+    derives from them, not from the rows, so deleting the append instead of the
+    write would silently turn this run green.
+    """
     _env(monkeypatch, tmp_path)
     monkeypatch.setattr(
         "verinote.llm.get_client",
@@ -920,12 +930,12 @@ def test_query_persists_translation_failure_reason(tmp_path, monkeypatch, capsys
     assert "provider unavailable" in captured.err
     s = Store(tmp_path / "kb.sqlite")
     q = s.questions()[0]
-    assert q["status"] == "translation_failed"
-    assert q["reason"] == "provider unavailable"
+    assert q["status"] == "pending"
+    assert not q["reason"]
     assert (tmp_path / "facts" / "query.dl").read_text(encoding="utf-8") == ""
 
 
-def test_query_persists_get_client_failure_reason(tmp_path, monkeypatch, capsys):
+def test_query_reports_a_get_client_failure_without_recording_it(tmp_path, monkeypatch, capsys):
     _env(monkeypatch, tmp_path)
 
     def raise_client_error(cfg):
@@ -935,8 +945,10 @@ def test_query_persists_get_client_failure_reason(tmp_path, monkeypatch, capsys)
 
     rc = cli.main(["query", "What is the sample answer?"])
 
-    # Every question is marked translation_failed on a get_client failure, so the
-    # run is a total failure: rc 1, with the reason surfaced and the count split.
+    # #592. `get_client` raises only for an unknown provider -- a corrupt
+    # config, not a missing key -- so nothing was attempted and no question is
+    # marked. The run is still a total failure and says so: rc 1, the reason on
+    # both streams, the count split. Reported, never recorded.
     captured = capsys.readouterr()
     assert rc == 1
     assert "q1: translation_failed - missing provider credentials" in captured.out
@@ -944,8 +956,8 @@ def test_query_persists_get_client_failure_reason(tmp_path, monkeypatch, capsys)
     assert "missing provider credentials" in captured.err
     s = Store(tmp_path / "kb.sqlite")
     q = s.questions()[0]
-    assert q["status"] == "translation_failed"
-    assert q["reason"] == "missing provider credentials"
+    assert q["status"] == "pending"
+    assert not q["reason"]
     assert (tmp_path / "facts" / "query.dl").read_text(encoding="utf-8") == ""
 
 

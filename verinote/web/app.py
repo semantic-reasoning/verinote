@@ -1031,15 +1031,22 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     def _short_error(exc: BaseException) -> str:
         return " ".join(_error_cause(exc).split())[:240]
 
-    def _fail_pending_translations(store: Store, cfg: Config, exc: LLMError) -> None:
-        # Not `_short_error`: this reason is a standalone column, not interpolated
-        # into a separator, and `question_outcome_view` renders a per-status
-        # sentence when it is blank. Substituting a type name here replaces that
-        # sentence, it does not rescue a dangling colon.
-        reason = " ".join(str(exc).split())[:240]
-        for q in store.questions(pending_only=True):
-            store.set_question_query(q["id"], None, "translation_failed", reason)
-        write_query_file(store, cfg.root)
+    def _translation_fault(detail: str) -> str:
+        """Shape an infrastructure fault for the questions page (#592).
+
+        This replaced `_fail_pending_translations`, which wrote
+        `translation_failed` to every pending row. The rows were the only place
+        the web reported the fault, so the write could not simply be deleted --
+        the diagnosis had to move somewhere a user sees, and `questions.html`
+        already had an `error` slot that this route never used.
+
+        Normalised the way that function normalised its reason column, because
+        the destination is still a single line of user-facing text.
+        """
+        return " ".join(
+            f"Translation did not run: {detail} No question was marked failed;"
+            " they remain pending.".split()
+        )[:240]
 
     def _extraction_schema_hint(cfg: Config) -> str:
         try:
@@ -3191,9 +3198,21 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         try:
             client = get_client(app.state.cfg)
         except LLMError as e:
-            _fail_pending_translations(store, cfg, e)
-            return RedirectResponse("/questions", status_code=303)
-        translate_questions(store, client, root=cfg.root)
+            # #592. REPORTED, NEVER RECORDED. This previously marked every
+            # pending question `translation_failed`, which was the ONLY place
+            # the web said anything about the fault -- so removing the write
+            # without adding this surface would have made a broken provider
+            # config silent. `get_client` raises for an unknown provider, not a
+            # missing key, so nothing was attempted and the rows stay `pending`.
+            return _questions(request, error=_translation_fault(str(e)))
+        results = translate_questions(store, client, root=cfg.root)
+        # Since #592 an infrastructure fault is the ONLY thing that yields
+        # `translation_failed`, so a result carrying it is the fault report --
+        # the same derivation `cmd_query` uses for its exit code. The rows it
+        # describes were deliberately not written.
+        faults = [r for r in results if r["status"] == "translation_failed"]
+        if faults:
+            return _questions(request, error=_translation_fault(faults[0]["reason"]))
         return RedirectResponse("/questions", status_code=303)
 
     @app.post("/questions/repair", response_class=HTMLResponse)

@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from verinote.llm.base import ExtractedFact, LLMError
+from verinote.llm.base import ExtractedFact, LLMOutputError
 from verinote.engine.terms import Compound, Term, TermParseError, Var, parse_term
 from verinote.prompts import default_prompt_text
 
@@ -73,9 +73,9 @@ def parse_query(raw: str | dict[str, Any]) -> str:
         data = json.loads(raw) if isinstance(raw, str) else raw
         line = str(data["datalog"]).strip()
     except (json.JSONDecodeError, KeyError, TypeError) as exc:
-        raise LLMError(f"query translation did not match schema: {exc}") from exc
+        raise LLMOutputError(f"query translation did not match schema: {exc}") from exc
     if not line:
-        raise LLMError("query translation was empty")
+        raise LLMOutputError("query translation was empty")
     return line
 
 
@@ -193,7 +193,7 @@ def parse_facts(raw: str | list[Any] | dict[str, Any]) -> list[ExtractedFact]:
         data = _decode_first_json(raw) if isinstance(raw, str) else raw
         items = _fact_items(data)
     except (json.JSONDecodeError, KeyError, TypeError) as exc:
-        raise LLMError(f"extractor output did not match schema: {exc}") from exc
+        raise LLMOutputError(f"extractor output did not match schema: {exc}") from exc
 
     facts: list[ExtractedFact] = []
     for item in items:
@@ -225,7 +225,7 @@ def parse_facts(raw: str | list[Any] | dict[str, Any]) -> list[ExtractedFact]:
             # valid ones would report the chunk as a success with the violating
             # fact silently gone -- exactly the smuggled-off-schema failure this
             # parser exists to make loud (issue #168).
-            raise LLMError(f"malformed fact object {item!r}: {exc}") from exc
+            raise LLMOutputError(f"malformed fact object {item!r}: {exc}") from exc
     return facts
 
 

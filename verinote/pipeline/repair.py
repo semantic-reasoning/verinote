@@ -44,6 +44,12 @@ class _PreparedRepair:
     result: RepairQuestionResult
     status: str
     query_dl: str | None
+    # #592. True when no usable provider output existed -- the provider was
+    # never reached, or a policy file could not be read so translation was never
+    # attempted. Both repair writers key their write suppression on this.
+    # `result.provider_failed` alone is not enough: it does not cover the policy
+    # fault, which is the case that reaches this module most often.
+    infrastructure_fault: bool = False
 
 
 def _prepare_repair_question(
@@ -70,6 +76,8 @@ def _prepare_repair_question(
         RepairQuestionResult(question_id, accepted, "" if accepted else flow.reason, flow.provider_failed),
         flow.status,
         query_dl,
+        infrastructure_fault=flow.policy_failed
+        or (flow.provider_failed and not flow.output_unusable),
     )
 
 
@@ -95,9 +103,14 @@ def repair_question(
         previous_query_dl=previous["query_dl"] if previous is not None else None,
         allow_direct_datalog_fallback=allow_direct_datalog_fallback,
     )
-    store.set_question_query(
-        question_id, prepared.query_dl, prepared.status, prepared.result.reason
-    )
+    # #592. REPORTED, NEVER RECORDED. A policy file that cannot be read reaches
+    # here as `translation_failed`, which claims "The provider output could not
+    # be used" about a translation that was never attempted. The row keeps the
+    # status it had; the caller still receives the result and logs it below.
+    if not prepared.infrastructure_fault:
+        store.set_question_query(
+            question_id, prepared.query_dl, prepared.status, prepared.result.reason
+        )
     write_query_file(store, root)
     if not prepared.result.accepted:
         _log.warning("repair q%d kept %s: %s", question_id, prepared.status, prepared.result.reason)
@@ -219,12 +232,20 @@ def process_repair_job(
                 # A policy can disappear during the provider call. Check before
                 # every DB/query-write boundary, before any result is persisted.
                 policy_guard()
-                persisted = store.persist_repair_question(
-                    job_id, int(item["id"]), owner_token, int(question["id"]),
-                    prepared.query_dl, prepared.status, prepared.result.reason,
-                )
-                if not persisted:
-                    return
+                # #592. Same rule on the async path, and it has to be here
+                # rather than only in the sync writer: this is a SEPARATE write,
+                # and `persist_repair_question` would set the row to a status
+                # describing provider output that never existed. Skipping it
+                # leaves the row `review_required`, which is still true of it.
+                # The fault is reported below, where the item and job are
+                # finished as failed with the same reason.
+                if not prepared.infrastructure_fault:
+                    persisted = store.persist_repair_question(
+                        job_id, int(item["id"]), owner_token, int(question["id"]),
+                        prepared.query_dl, prepared.status, prepared.result.reason,
+                    )
+                    if not persisted:
+                        return
             except PolicyMissingError:
                 raise
             except Exception as exc:
@@ -232,7 +253,11 @@ def process_repair_job(
                 store.finish_repair_item(int(item["id"]), owner_token, status="failed", reason=reason)
                 store.finish_repair_job(job_id, owner_token, failed=True, message=f"Repair failed: {reason}")
                 raise
-            if prepared.result.provider_failed:
+            # #592 widens this from `result.provider_failed` to every
+            # infrastructure fault: a policy fault also means nothing was
+            # translated, and the job must report it rather than finish "done"
+            # over a row it deliberately did not write.
+            if prepared.infrastructure_fault:
                 store.finish_repair_item(int(item["id"]), owner_token, status="failed", reason=prepared.result.reason)
                 store.finish_repair_job(
                     job_id, owner_token, failed=True, message=f"Repair failed: {prepared.result.reason}"
