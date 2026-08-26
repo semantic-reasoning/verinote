@@ -5,7 +5,9 @@
 <p class="muted">Natural-language questions are translated to a Datalog query the
   engine evaluates over confirmed facts. Untranslatable ones are flagged
   <code>review_required</code>, <code>no_answer</code>, <code>ambiguous</code>, or
-  <code>translation_failed</code>.</p>
+  <code>translation_failed</code>. A run that could not reach the provider, or
+  could not read a policy file, leaves those questions as they were and reports
+  the fault instead of recording it on the row.</p>
 
 {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
 

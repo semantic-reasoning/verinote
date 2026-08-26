@@ -305,13 +305,17 @@ def _schema_aware_query_flow_result(
             )
         except LLMError as exc:
             reason = _short_reason(exc)
-            # #592. `provider_failed` means THE PROVIDER DID NOT ANSWER, which is
-            # what `translate_questions` suppresses the row write on. An
-            # `LLMOutputError` is the opposite case: a response arrived and could
-            # not be used, which is exactly what `translation_failed` means and
-            # so IS recorded. Without this the guard would suppress the one
-            # failure the status exists for -- measured, it turned a
-            # schema-violating intent into a `pending` row.
+            # #592. Both exits below set `provider_failed=True`, so that flag
+            # alone cannot say whether a response arrived -- it is True for
+            # every `LLMError`, which is the invariant
+            # tests/test_query.py::test_every_provider_failure_exit_reports_the_provider_failed
+            # enforces. `output_unusable` is what splits it. An `LLMOutputError`
+            # means a response arrived and could not be used, which is exactly
+            # what `translation_failed` means and so IS recorded; anything else
+            # means no response, which is not. Without this flag the suppression
+            # in `translate_questions` would key on `provider_failed` alone and
+            # swallow the one failure the status exists for -- measured, it
+            # turned a schema-violating intent into a `pending` row.
             output_unusable = isinstance(exc, LLMOutputError)
             if llm_error_status == "translation_failed":
                 # Flagged like the sibling exits of this handler even though
@@ -728,7 +732,9 @@ def translate_questions(
 ) -> list[dict]:
     """Translate pending and previously failed questions through the schema-only flow.
 
-    Returns one dict per processed question: {id, status, query_dl, reason}.
+    Returns one dict per processed question: {id, status, query_dl, reason,
+    infrastructure_fault}. `status` is the outcome of the RUN; the row was
+    written only where `infrastructure_fault` is False (#592).
     """
     results: list[dict] = []
     for q in store.questions():
@@ -755,13 +761,15 @@ def translate_questions(
         # ("Waiting for translation.") is true of every such fault, and it is
         # already in `db.py`'s CHECK constraint, so no schema change is needed.
         #
-        # THE PREDICATE IS DERIVED, NOT CHOSEN. Every infrastructure exit in
-        # this module sets one of these two flags -- measured by enumerating
-        # every `_QueryFlowResult` construction: the policy exit sets
-        # `policy_failed`, and every exit that reports a provider that did not
-        # answer sets `provider_failed`. So the two flags together are exactly
-        # "no usable provider output existed", which is exactly what must not be
-        # recorded.
+        # THE PREDICATE IS BUILT FROM THE FLAGS THE FLOW ALREADY SETS, and both
+        # halves are needed. `policy_failed` marks the exit where no request was
+        # sent at all. `provider_failed` is set on EVERY `LLMError` exit,
+        # including one carrying an answer that arrived unusable, so it is too
+        # wide on its own -- `output_unusable` subtracts exactly that case back
+        # out. Keying on `provider_failed` alone was the first attempt and it
+        # suppressed a schema-violating intent, which
+        # tests/test_query.py::test_invalid_intent_output_fails_translation_and_skips_draft
+        # caught.
         #
         # ONE VERDICT GOVERNS BOTH DECISIONS, and an earlier revision of the
         # #591 guard got that wrong in the one direction that matters. It read
@@ -780,13 +788,30 @@ def translate_questions(
         # of the write would flip a credential-free `verinote query` to rc=0,
         # because `cmd_query` derives its failure count from these dicts and not
         # from the rows.
+        #
+        # AND IT CARRIES THE VERDICT, because `status` cannot be read back as
+        # one. Both branches of this decision report `translation_failed` -- the
+        # fault whose row is suppressed, and the unusable answer whose row is
+        # written -- so a consumer filtering on the status string gets the two
+        # together and cannot tell which it is holding. That run is
+        # tests/test_infrastructure_fault_not_recorded.py::test_a_mixed_run_reports_the_suppressed_fault_and_not_the_recorded_one:
+        # one question written, one not, both dicts saying `translation_failed`.
+        # The web banner and the CLI's per-question line both need the half that
+        # was NOT written, so the flag travels with the dict rather than being
+        # re-derived downstream from something that cannot express it.
         infrastructure_fault = flow.policy_failed or (
             flow.provider_failed and not flow.output_unusable
         )
         if not infrastructure_fault:
             store.set_question_query(q["id"], query_dl, status, reason)
         results.append(
-            {"id": q["id"], "status": status, "query_dl": query_dl, "reason": reason}
+            {
+                "id": q["id"],
+                "status": status,
+                "query_dl": query_dl,
+                "reason": reason,
+                "infrastructure_fault": infrastructure_fault,
+            }
         )
     write_query_file(store, root)
     return results

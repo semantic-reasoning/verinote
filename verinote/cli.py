@@ -1607,21 +1607,42 @@ def cmd_query(cfg: Config, args: argparse.Namespace) -> int:
             # unknown provider -- a corrupt config, not a missing key -- so
             # translation was never attempted and `translation_failed` ("The
             # provider output could not be used") would be false of the row.
-            # The rows stay `pending`, which is true of them.
+            # Nothing is written, so each row keeps whatever it had: `pending`
+            # for most, and `translation_failed` for one that genuinely failed
+            # an earlier run, since `translatable` above admits both.
             #
             # The RESULT DICT is still appended, and that is not cosmetic:
             # `failures` below derives from these dicts, not from the rows, so
             # deleting the append instead of the write would silently flip a
             # broken-config run to rc=0. The fault is reported here, on stdout
-            # and in the exit code, and simply not written down.
+            # and in the exit code, and simply not written down -- and
+            # `infrastructure_fault` is what tells the printing loop below that
+            # the `status` in this dict describes the run and not the row.
             results.append(
-                {"id": q["id"], "status": "translation_failed", "reason": reason}
+                {
+                    "id": q["id"],
+                    "status": "translation_failed",
+                    "reason": reason,
+                    "infrastructure_fault": True,
+                }
             )
         write_query_file(store, cfg.root)
     else:
         results = translate_questions(store, client, root=cfg.root)
     for r in results:
-        print(f"  {format_question_outcome(r)}")
+        if r["infrastructure_fault"]:
+            # #592. NOT `format_question_outcome`, which formats a QUESTION --
+            # `q{id}: {status} - {message}` reading `status` as the row's. On
+            # this branch the dict's `status` is the run's outcome and the row
+            # was deliberately not written, so passing it through printed
+            # `q1: translation_failed` over a row this command had just left
+            # `pending`. Measured with VERINOTE_PROVIDER=nosuchprovider. The
+            # run is still reported -- `failures` below counts this dict, the
+            # reason goes to stderr and rc is 1 -- it simply stops claiming to
+            # be a row.
+            print(f"  q{r['id']}: not translated - {r['reason']} (row unchanged)")
+        else:
+            print(f"  {format_question_outcome(r)}")
     translated = sum(1 for r in results if r["status"] == "translated")
     failures = [r for r in results if r["status"] == "translation_failed"]
     # review_required/no_answer/ambiguous are durable review verdicts, not
