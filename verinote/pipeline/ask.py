@@ -599,7 +599,17 @@ def _source_text_paths(store: Store, root: Path) -> list[tuple[str, Path]]:
 
 
 def _question_patterns(question: str) -> tuple[str, ...]:
-    tokens = [_fold(match.group(0)) for match in _TOKEN.finditer(question)]
+    """Tokenise the folded question, not the raw one (issue #575).
+
+    The fold runs before the class test, so NFD Hangul composes into
+    `가-힣` and expanding folds (`ß` to `ss`, `ﬄ` to `ffl`) are word
+    characters before `_TOKEN` runs, instead of breaking the token
+    (`stra`, `uent`). The matches are already folded, so no per-token
+    `_fold` is applied. They contain no whitespace because none of
+    `_TOKEN`'s classes contains a whitespace code point, which
+    `_best_excerpt`'s first-character guarantee below relies on.
+    """
+    tokens = [match.group(0) for match in _TOKEN.finditer(_fold(question))]
     return tuple(dict.fromkeys(token for token in tokens if token))
 
 

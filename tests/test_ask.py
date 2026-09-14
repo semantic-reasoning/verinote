@@ -2312,3 +2312,188 @@ def test_a_length_coincidence_with_text_does_not_fool_the_shortcut():
 
     assert score == 2
     assert "샘플조직의" in excerpt
+
+
+# --- #575: `_question_patterns` tokenises the folded question, not the raw one ---
+
+
+def test_an_nfd_question_yields_the_patterns_of_its_nfc_form():
+    """An NFD question yields the patterns of its NFC form (issue #575, defect 1).
+
+    Tokenising the raw question matches nothing in NFD Hangul, because the
+    conjoining jamo (U+1100--U+11FF) are in none of `_TOKEN`'s classes --
+    all three CJK ranges are precomposed -- so the NFD question yields `()`
+    and `search_source_excerpts` returns `[]` for every source. Folding
+    first (`nfc` then `casefold`) composes the jamo into `가-힣` before the
+    class test, so the NFD and NFC forms yield the same patterns.
+
+    Reddened by the parent (the NFD half is `()` there) and by any fix that
+    tokenises the raw question, whatever it folds afterwards. Also reddened
+    by a fix that widens `_TOKEN` to admit jamo runs: such a fix would
+    return jamo-run tokens, not the composed-syllable patterns asserted
+    here, so this test pins fold-first specifically rather than "NFD now
+    matches" in the abstract. The `nfd != nfc` premise keeps the fixture
+    from silently becoming NFC on a future Unicode table and passing for
+    the wrong reason.
+    """
+    question = "샘플조직의 역할은 무엇인가?"
+    nfd = unicodedata.normalize("NFD", question)
+    nfc = unicodedata.normalize("NFC", question)
+    assert nfd != nfc
+
+    assert ask_module._question_patterns(nfd) == ask_module._question_patterns(nfc)
+    assert ask_module._question_patterns(nfd) == ("샘플조직의", "역할은", "무엇인가")
+
+
+def test_a_sharp_s_in_the_question_does_not_truncate_the_word():
+    """`ß` does not terminate the Latin token (issue #575, defect 2).
+
+    `ß` (U+00DF) is outside `[A-Za-z0-9_]`, so tokenising the raw question
+    ends the run before it and the question searches for `stra`. Its fold
+    `ss` is inside the class, so tokenising the folded question keeps the
+    word whole as `strasse`.
+
+    This is the Latin half of defect 2 (AC2): the Hangul pin above would
+    stay green under a fix that composes NFD Hangul but still tokenises
+    before folding, so a Hangul-only suite cannot pin this half. Reddened
+    by the parent, which returns `('stra', 'is', '무엇인가')` for this
+    question, and by a fold-free tokenisation of any shape.
+    """
+    assert ask_module._question_patterns("Straße is 무엇인가?") == (
+        "strasse",
+        "is",
+        "무엇인가",
+    )
+
+
+def test_an_ff_l_ligature_in_the_question_does_not_truncate_the_word():
+    """`ﬄ` (U+FB04) folds to the width-3 `ffl` and does not break the word.
+
+    The widest possible fold sits at a word-initial position here: the raw
+    tokenisation loses the entire `ffl` prefix and the question searches
+    for `uent`, while the folded tokenisation yields `ffluent`. The width-3
+    bound itself is pinned by `test_no_code_point_casefold_exceeds_three_characters`;
+    this test pins that a widest-fold expansion is *used* when it happens
+    before the class test.
+
+    Reddened by the parent, which returns `('uent', '역할은', '무엇인가')`
+    for this question.
+    """
+    assert ask_module._question_patterns("\ufb04uent 역할은 무엇인가?") == (
+        "ffluent",
+        "역할은",
+        "무엇인가",
+    )
+
+
+def test_an_nfd_question_finds_the_excerpt_of_the_source_it_matches(tmp_path):
+    """End to end: an NFD question finds the excerpt the source it matches holds.
+
+    The source is plain NFC text; only the question arrives decomposed --
+    the paste-from-macOS case the issue is about. Today the question yields
+    zero patterns and `search_source_excerpts` returns `[]` for this
+    source, so the page shows an answer with no supporting excerpt and no
+    indication why. The NFC question finds the same excerpt (the
+    neighbouring #516 fixtures show that path), so the difference here is
+    the question's normalisation form alone.
+
+    Reddened by the parent and by a revert to raw-question tokenisation;
+    the `score == 2` and membership assertions follow the #516 fixtures,
+    where two of the three patterns are present in the body.
+    """
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    (sources / "roles.txt").write_text(_EXCERPT_BODY, encoding="utf-8")
+    store = _store(tmp_path)
+    store.add_source("sources/roles.txt")
+
+    question = unicodedata.normalize("NFD", "샘플조직의 역할은 무엇인가?")
+    excerpts = search_source_excerpts(store, root=tmp_path, question=question)
+
+    assert len(excerpts) == 1
+    assert excerpts[0].score == 2
+    assert "샘플조직의" in excerpts[0].excerpt
+
+
+def test_an_nfd_question_against_an_nfd_source_finds_the_excerpt(tmp_path):
+    """The composition: NFD question against an NFD source (issue #575 + #516).
+
+    The #516 fixtures all pair an NFC Hangul question with an NFD source;
+    this pairs an NFD question with an NFD source, the combination the
+    issue says hits this defect first and never reaches `_best_excerpt`
+    today. The fix must compose the question (`nfc` inside the fold before
+    the class test) and still rely on #516's source-side handling, so the
+    excerpt is quoted from the composed form of the decomposed source.
+
+    Reddened by the parent (zero patterns, `[]`) and by a fix that repairs
+    only one side: a question-side-only fix is this test, a source-side-only
+    fix is a #516 test.
+    """
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    (sources / "roles.txt").write_text(
+        unicodedata.normalize("NFD", _EXCERPT_BODY), encoding="utf-8"
+    )
+    store = _store(tmp_path)
+    store.add_source("sources/roles.txt")
+
+    question = unicodedata.normalize("NFD", "샘플조직의 역할은 무엇인가?")
+    excerpts = search_source_excerpts(store, root=tmp_path, question=question)
+
+    assert len(excerpts) == 1
+    assert excerpts[0].score == 2
+    assert "샘플조직의" in excerpts[0].excerpt
+
+
+def test_token_boundaries_do_not_move_for_plain_latin_questions():
+    """Questions with no decomposable or fold-expanding characters keep today's boundaries.
+
+    A pin, not a guard: it is green on the parent *and* on the fix, and
+    reddens an ordering or class change that moves token boundaries for
+    ordinary Latin input -- the blast radius the issue calls out, since
+    the fix folds before the class test for every question. The first
+    tuple also pins the `{2,}` minimum (the `s` of `Project's` and the
+    standalone `d` below are dropped) and the apostrophe boundary; the
+    second pins the underscore and digit membership inside a Latin run.
+    """
+    assert ask_module._question_patterns(
+        "What is Sample Project's Also Known As?"
+    ) == ("what", "is", "sample", "project", "also", "known", "as")
+    assert ask_module._question_patterns("A_B C1 d") == ("a_b", "c1")
+
+
+def test_no_code_point_in_the_token_classes_is_or_folds_to_whitespace():
+    """AC6: the `_TOKEN` classes stay whitespace-free after the fold moves.
+
+    Two existing claims rest on these classes containing no whitespace
+    code point: `_best_excerpt`'s first-character guarantee, which is
+    stated conditional on "patterns containing no whitespace -- true of
+    every pattern `_question_patterns` can produce, since `_TOKEN`'s
+    character classes contain none", and the `if score:` / `if excerpt:`
+    gate-equivalence reasoning in
+    `test_search_source_excerpts_drops_a_source_it_read_and_matched_nothing_in`,
+    whose docstring quantifies over the same class. Folding before the
+    class test changes which strings reach `_TOKEN`, not the classes it
+    tests, so the claims must stay true after the change: 0 of the
+    32,303 members is whitespace and 0 has a casefold containing
+    whitespace. Membership is derived from `_TOKEN` itself (a code point
+    is a member iff two of it match one of the classes), so a class
+    widening that admitted a whitespace code point reddens this test
+    instead of silently breaking the two claims.
+
+    A pin: green on the parent and on the fix; no mutation in this change
+    reddens it.
+    """
+    members = [
+        chr(codepoint)
+        for codepoint in range(sys.maxunicode + 1)
+        if ask_module._TOKEN.fullmatch(chr(codepoint) * 2)
+    ]
+    assert len(members) == 32303
+
+    assert all(not member.isspace() for member in members)
+    assert all(
+        not folded_char.isspace()
+        for member in members
+        for folded_char in member.casefold()
+    )
