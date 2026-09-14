@@ -16,6 +16,7 @@ import threading
 import time
 import unicodedata
 from html import unescape
+from types import SimpleNamespace
 
 import pytest
 
@@ -3686,6 +3687,45 @@ def test_translate_and_report_answers(tmp_path, monkeypatch, fake_client, intent
     # the report and questions page now surface the engine-evaluated answer
     assert "Sample Place" in c.get("/report").text
     assert "Sample Place" in c.get("/questions").text
+
+
+def test_translate_with_empty_choices_does_not_500(tmp_path, monkeypatch):
+    """A provider body with no choice must reach the endpoint as an `LLMError`,
+    not as `IndexError`: with the guard, the row is recorded
+    `translation_failed` and the response is a 303 redirect; without it, the
+    `choices[0]` read escapes past `except LLMError` and the handler 500s.
+    Reddened by removing the `extract_query_intent` guard in `openai_adapter.py`.
+    The `assert calls` keeps the test non-vacuous: it fails if the flow stops
+    reaching the provider rather than passing the empty body through."""
+    cfg = Config(
+        root=tmp_path,
+        db_path=tmp_path / "kb.sqlite",
+        provider="openai",
+        model="model",
+        api_key="key",
+        base_url=None,
+        llm_timeout_seconds=600.0,
+    )
+    app = create_app(cfg)
+    c = TestClient(app)
+    c.app.state.store.add_question("What is the sample answer?")
+
+    calls: list[object] = []
+
+    class _Completions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(choices=[])
+
+    class _Factory:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=_Completions())
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=_Factory))
+
+    r = c.post("/questions/translate", follow_redirects=False)
+    assert calls, "the flow never reached the provider; the test is vacuous"
+    assert r.status_code != 500, f"expected the LLMError family to be handled, got {r.status_code}"
 
 
 def test_questions_translate_relation_discovery_shows_actual_lifecycle_states(

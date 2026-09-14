@@ -340,8 +340,10 @@ class OpenAIAdapter:
         except Exception as exc:  # noqa: BLE001 - normalise provider errors
             raise self._request_failed(exc) from exc
 
-        # #601: `choices[0]` is read OUTSIDE the `try` above, so an empty
-        # `choices` escapes as `IndexError` rather than an `LLMError`.
+        # An empty `choices` list is an answer that arrived unusable:
+        # `LLMOutputError` (#592), not bare `LLMError`, which would suppress it.
+        if not resp.choices:
+            raise LLMOutputError(f"{self.name} response contained no choice")
         return parsed_under_redaction(
             parse_facts, resp.choices[0].message.content or "", self.cfg.api_key
         )
@@ -366,8 +368,10 @@ class OpenAIAdapter:
         except Exception as exc:  # noqa: BLE001 - normalise provider errors
             raise self._request_failed(exc) from exc
 
-        # #601: `choices[0]` is read OUTSIDE the `try` above, so an empty
-        # `choices` escapes as `IndexError` rather than an `LLMError`.
+        # An empty `choices` list is an answer that arrived unusable:
+        # `LLMOutputError` (#592), not bare `LLMError`, which would suppress it.
+        if not resp.choices:
+            raise LLMOutputError(f"{self.name} response contained no choice")
         return parsed_under_redaction(
             parse_query, resp.choices[0].message.content or "", self.cfg.api_key
         )
@@ -394,8 +398,10 @@ class OpenAIAdapter:
         except Exception as exc:  # noqa: BLE001 - normalise provider errors
             raise self._request_failed(exc) from exc
 
-        # #601: `choices[0]` is read OUTSIDE the `try` above, so an empty
-        # `choices` escapes as `IndexError` rather than an `LLMError`.
+        # An empty `choices` list is an answer that arrived unusable:
+        # `LLMOutputError` (#592), not bare `LLMError`, which would suppress it.
+        if not resp.choices:
+            raise LLMOutputError(f"{self.name} response contained no choice")
         return parsed_under_redaction(
             parse_query_intent, resp.choices[0].message.content or "", self.cfg.api_key
         )
@@ -418,8 +424,10 @@ class OpenAIAdapter:
         except Exception as exc:  # noqa: BLE001 - normalise provider errors
             raise self._request_failed(exc) from exc
 
-        # #601: `choices[0]` is read OUTSIDE the `try` above, so an empty
-        # `choices` escapes as `IndexError` rather than an `LLMError`.
+        # An empty `choices` list is an answer that arrived unusable:
+        # `LLMOutputError` (#592), not bare `LLMError`, which would suppress it.
+        if not resp.choices:
+            raise LLMOutputError(f"{self.name} response contained no choice")
         return (resp.choices[0].message.content or "").strip()
 
 

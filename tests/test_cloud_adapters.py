@@ -10,7 +10,7 @@ import pytest
 
 from verinote.config import Config, save_settings
 from verinote.llm.anthropic_adapter import AnthropicAdapter
-from verinote.llm.base import LLMError
+from verinote.llm.base import LLMError, LLMOutputError
 from verinote.llm.openai_adapter import OpenAIAdapter
 from verinote.llm.openrouter_adapter import OpenRouterAdapter
 from verinote.prompts import save_prompt_override
@@ -381,6 +381,53 @@ def test_provider_error_never_carries_the_key(tmp_path, monkeypatch, method, pro
 
     assert _LONG_KEY not in str(exc.value)
     assert "***" in str(exc.value)
+
+
+def _empty_choices_sdk(monkeypatch) -> None:
+    """A provider that answers HTTP-200 with a body containing no choice."""
+
+    class _Completions:
+        def create(self, **kwargs):
+            return SimpleNamespace(choices=[])
+
+    class _Factory:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=_Completions())
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=_Factory))
+
+
+@pytest.mark.parametrize("method", sorted(_INVOCATIONS))
+def test_openai_empty_choices_is_an_unusable_output(tmp_path, monkeypatch, method):
+    """Each generation method must raise `LLMOutputError` — the #592 class for an
+    answer that arrived but could not be used — when the provider's body carries
+    no choice. Reddened by removing that method's `if not resp.choices` guard in
+    `openai_adapter.py` (the `choices[0]` read then escapes as `IndexError`, which
+    is not `LLMOutputError`); the other three methods' guards keep their cases
+    green, so each site stays independently pinnable. Pinning the *class* matters:
+    a bare `LLMError` is the parent, so it fails this test, and it would be the
+    wrong class anyway — #592's `output_unusable` discriminator requires
+    `LLMOutputError`, or the question row is suppressed instead of recorded
+    `translation_failed`."""
+    _empty_choices_sdk(monkeypatch)
+    adapter = OpenAIAdapter(_cfg(tmp_path, provider="openai"))
+    with pytest.raises(LLMOutputError) as excinfo:
+        _INVOCATIONS[method](adapter)
+    assert "response contained no choice" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("method", sorted(_INVOCATIONS))
+def test_openrouter_inherits_the_empty_choices_guard(tmp_path, monkeypatch, method):
+    """`OpenRouterAdapter` overrides only `name` and `_base_url()`; all four
+    generation methods are inherited, so the empty-choices guard must hold for
+    them here without any edit to `openrouter_adapter.py`. Reddened by removing
+    that method's guard in `openai_adapter.py` (the inherited read then escapes
+    as `IndexError`); no `OpenRouterAdapter`-specific change can fix it, which
+    is the point — coverage is asserted, not inferred."""
+    _empty_choices_sdk(monkeypatch)
+    adapter = OpenRouterAdapter(_cfg(tmp_path, provider="openrouter"))
+    with pytest.raises(LLMOutputError):
+        _INVOCATIONS[method](adapter)
 
 
 def test_a_short_key_leaves_the_message_intact(tmp_path, monkeypatch):
