@@ -376,7 +376,19 @@ def _nested_pytest(*args: str, gate_env: dict[str, str] | None = None) -> subpro
     The autouse sandbox chdir's every test off the repo and this suite may be
     launched with the gate already exported, so the CWD and every `VN_CONTRACT_*`
     variable are pinned explicitly here rather than inherited.
+
+    A zero-argument call is refused by the floor below (issue #567): it would
+    not be a smaller run, it would be the whole suite.
     """
+    if not args:
+        raise ValueError(
+            "zero node ids is not a smaller run: from the repo root the child "
+            "collects the whole suite, since pyproject.toml sets testpaths = "
+            "['tests'] (this module included), and re-enters the test that "
+            "spawned it; each generation blocks in subprocess.run while "
+            "forking the next, so the chain never terminates. Pass at least "
+            "one node id, or an explicit -m/-k/path selection."
+        )
     env = {k: v for k, v in os.environ.items() if not k.startswith("VN_CONTRACT_")}
     env.update(gate_env or {})
     env["PYTHONPATH"] = str(REPO_ROOT)
@@ -769,6 +781,42 @@ def test_meta_nested_pytest_never_opts_into_a_live_provider():
         "#270 no meta test needs the contract gate, so any value here is "
         "flagged rather than checked against an allow-list"
     )
+
+
+def test_nested_pytest_with_no_targets_raises_before_spawning(monkeypatch):
+    """A zero-target `_nested_pytest` call must raise, not fork a whole-suite child.
+
+    #565's call-site assert guards one splat; the floor guards every call
+    (all 8 today, plus any added later), since with no node ids `testpaths =
+    ["tests"]` makes a child from the repo root collect the whole suite, this
+    module included, and re-enter the test that spawned it — each generation
+    blocking in `subprocess.run` while forking the next, so the chain never
+    terminates (issue #567).
+
+    The stub is installed before the call: with the floor deleted, the call
+    reaches `subprocess.run` and the stub fails the test, naming the would-be
+    argv — a fast FAIL, never a hang (a pin without the stub measured 92
+    processes at 60 s, non-terminating). Reddened by deleting the
+    `if not args: raise ValueError(...)` floor in `_nested_pytest`, and by
+    nothing else: every other call in this file passes at least one target,
+    so with the floor deleted their behavior is unchanged, and with it in
+    place the raise fires before `subprocess.run` is reached, the stub is
+    never called, and `spawned` stays empty.
+    """
+    spawned: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> None:
+        spawned.append(cmd)
+        raise AssertionError(
+            f"zero-target _nested_pytest() attempted to spawn a child: {cmd!r}"
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(ValueError):
+        _nested_pytest()
+
+    assert spawned == []
 
 
 @pytest.mark.parametrize(
