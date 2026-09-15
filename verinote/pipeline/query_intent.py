@@ -849,6 +849,32 @@ does not participate, so it reads back as None, which is the right answer:
 `얼마나` names no unit.
 """
 
+_KOREAN_MEASURE_TRAILING_NOUN = re.compile(
+    r"(?<!\S)얼마나\s+많은\s+([가-힣]+)$"
+)
+"""The `얼마나 많은 N` shape, where N is the noun the question names as its relation.
+
+The `얼마나` half of `_KOREAN_MEASURE_QUESTION_TAIL` takes up to two runs of
+Hangul after the interrogative, so it also eats `많은 인원` -- `많은` as one run
+and the noun as the next -- leaving only whatever stands before
+얼마나. The measure strip therefore asked the schema for a relation named only by the
+prefix, and the noun the user actually spelled was never offered (#447).
+
+The bare form is not the defect: there the measure tail is the whole label, so
+the label is read whole and already reads as fixed. Only a label with something
+before the interrogative reaches the defect, which is why this rule requires a
+non-empty prefix (`match.start() > 0`): the bare form is left exactly as it
+reads today.
+
+This is the other direction of the cut, and a different mechanism from the
+end-anchored tail strip: the strip removes what is after the interrogative and
+keeps what is before it, whereas here the trailing noun is kept and the
+interrogative phrase set aside. It does not widen the `얼마나` wildcard, so the
+conjugated-predicate cases still strip to the word before them exactly as
+before -- they do not spell `많은` before their final word.
+"""
+
+
 _KOREAN_ATTRIBUTE_LABEL_MEASURE_TAIL = re.compile(
     rf"\s*(?:{_KOREAN_MEASURE_QUESTION_TAIL})\s*$"
 )
@@ -893,8 +919,11 @@ def _korean_attribute_label_readings(value: str) -> tuple[str, ...]:
     read whole, exactly as it would be read without this rule. So this change
     declines no question that was not already declined. Unlike the josa, a
     measure tail is not a spelling of a relation name the way `단가` is, so
-    there is no second reading for the schema to choose between; the one narrow
-    case where it could be, `몇` read as "several", is named in
+    there is no second reading for the schema to choose between, with one
+    narrow exception: a prefixed `얼마나 많은 N` label (something before the
+    interrogative) names the trailing noun N, which the strip otherwise discards, so
+    that noun is offered as a further reading by `_with_trailing_measure_noun`
+    (#447). The bare form and the `얼마나` "several" case are named in
     `_KOREAN_MEASURE_QUESTION_TAIL`'s docstring.
     """
     label = " ".join(value.strip().split())
@@ -912,8 +941,28 @@ def _korean_attribute_label_readings(value: str) -> tuple[str, ...]:
     if measured != label:
         readings = _label_readings_after_measure(measured)
         if readings:
-            return readings
-    return _label_readings_after_measure(label)
+            return _with_trailing_measure_noun(label, readings)
+    return _with_trailing_measure_noun(label, _label_readings_after_measure(label))
+
+
+def _with_trailing_measure_noun(label: str, readings: tuple[str, ...]) -> tuple[str, ...]:
+    """Offer the noun a prefixed `얼마나 많은 N` label names (#447).
+
+    When the label is `<prefix>`얼마나 많은 N`, the measure tail has already
+    stripped away the interrogative phrase and left only the prefix. The noun is the
+    relation the question named and is otherwise never offered, so it is added as a
+    further reading. The reading this has always proposed, the prefix, stays first; the
+    noun is appended, never substituted, so the candidate set is a superset of what this
+    asked for before. A bare `얼마나 많은 N`, or any label the shape does not
+    spell, is returned unchanged.
+    """
+    match = _KOREAN_MEASURE_TRAILING_NOUN.search(label)
+    if match is None or match.start() == 0:
+        return readings
+    noun = match.group(1)
+    if noun in readings:
+        return readings
+    return readings + (noun,)
 
 
 def _label_readings_after_measure(label: str) -> tuple[str, ...]:

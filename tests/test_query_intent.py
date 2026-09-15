@@ -1013,6 +1013,48 @@ def test_a_label_the_measure_strip_would_empty_is_read_whole(question, candidate
 @pytest.mark.parametrize(
     ("question", "candidates"),
     [
+        ("샘플사업의 총 얼마나 많은 인원?", ("총", "인원")),
+        ("샘플사업의 최근 얼마나 많은 인원?", ("최근", "인원")),
+    ],
+)
+def test_a_prefixed_amount_shape_keeps_the_noun_it_names(question, candidates):
+    """The prefix is not the whole answer: the named noun reaches the schema.
+
+    The `얼마나` wildcard eats the adjective and the noun, so a label with
+    something before the interrogative asked the schema for the prefix alone and
+    the relation the user spelled was never offered (#447). The noun is now
+    offered as a further reading; the prefix this has always proposed stays
+    first. The bare form is not affected and is pinned just below.
+    """
+    intent = deterministic_query_intent(question)
+
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.relation_candidates == candidates
+
+
+@pytest.mark.parametrize(
+    ("question", "candidates"),
+    [
+        ("샘플사업의 얼마나 많은 인원?", ("얼마나 많은 인원",)),
+    ],
+)
+def test_the_bare_amount_shape_is_read_whole_not_just_the_noun(question, candidates):
+    """The bare `얼마나 많은 N` is the whole label, so it is read whole.
+
+    No prefix stands before the interrogative, so the trailing-noun rule does
+    not fire and the label keeps its whole spelling -- the row the issue names
+    as already reading as fixed. Pinning it here keeps the prefix requirement
+    of the rule above falsifiable.
+    """
+    intent = deterministic_query_intent(question)
+
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.relation_candidates == candidates
+
+
+@pytest.mark.parametrize(
+    ("question", "candidates"),
+    [
         # The un-stripped spelling is the third reading (#443), as on the tail
         # matrix above; the row without an interrogative tail keeps one reading.
         ("샘플제품의 이 몇 개인가?", ("이 몇 개", "이 몇 개인가")),
