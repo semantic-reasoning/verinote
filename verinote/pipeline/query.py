@@ -634,11 +634,14 @@ def _plan_and_evaluate_intent(
 def _empty_plan_reason(plan, intent: QueryIntent) -> str:
     """Say which half of the question the KB does not have, and name it.
 
-    "No query candidates matched the schema" is true of three situations whose
-    remedies differ -- add a relation alias, fix the entity's spelling, or
-    accept that the fact is simply absent -- so on its own it tells a user only
-    that something did not work. The planner has already established which one
-    it was; this turns that into the sentence the user acts on.
+    "No query candidates matched the schema" is true of four situations whose
+    remedies differ -- add a relation alias, fix the entity's spelling, accept
+    that the fact is simply absent, and the `lookup_relation` pair whose
+    endpoints are both known but nothing joins them. The last has no requested
+    relation to name, so it gets its own sentence rather than the case-(c)
+    wording, whose "the requested relation resolved" clause would be false. The
+    planner has already established which situation it was; this turns that
+    into the sentence the user acts on.
 
     Falls back to the planner's own reason whenever the diagnosis is absent,
     which is every kind whose emptiness does not reduce to one relation and one
@@ -670,6 +673,17 @@ def _empty_plan_reason(plan, intent: QueryIntent) -> str:
         missing.append(f"entity {absent} is not in the knowledge base")
     if missing:
         return "; ".join(missing)
+    if diagnosis.pair_absence_proven:
+        # `lookup_relation` names two endpoints and requests no relation, so
+        # the case-(c) wording -- "the requested relation resolved" -- would be
+        # false here. The claim stands on the pair alone: both are known to the
+        # KB and the whole search found nothing joining them in either stored
+        # order. A reverse-order connector keeps this False, and the vague
+        # fallback below stays the true answer for it.
+        return (
+            f"entities {entities} are in the knowledge base, but no "
+            "confirmed fact connects them"
+        )
     if (
         diagnosis.relation_in_schema
         and diagnosis.entity_in_kb

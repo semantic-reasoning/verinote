@@ -89,6 +89,11 @@ class EmptyPlanDiagnosis:
     The two are independent and both are reported: a question can name a
     relation the KB lacks *and* an entity it lacks, and fixing one of them still
     yields no answer.
+
+    The `lookup_relation` shape names two endpoints and no relation, so the
+    "both known, nothing joins them" reading has no requested relation to name
+    and would be false if forced into the other clause. It carries its own
+    verdict, `pair_absence_proven`, and the renderer gives it its own sentence.
     """
 
     relation_in_schema: bool | None
@@ -102,10 +107,14 @@ class EmptyPlanDiagnosis:
     (`max_exact_entity_facts`). So on a hub relation or a busy entity the
     planner can come up empty while the joining fact exists just past a cap.
 
-    Only the "both known, nothing joins them" reading depends on that search
-    having been exhaustive; the two absence readings rest on the complete sets
-    and are unaffected. When this is False, a caller must not claim the fact is
-    missing -- vague and true beats specific and false.
+    Only the "both known, nothing joins them" readings depend on that search
+    having been exhaustive -- case (c) and `pair_absence_proven`; the two
+    absence readings rest on the complete sets and are unaffected. Case (c)
+    needs nothing more than this flag; the pair reading needs it plus its
+    either-order scan, because the candidate generator that makes emptiness
+    meaningful matches only the order the question names (see
+    `pair_absence_proven`). When this is False, a caller must not claim the
+    fact is missing -- vague and true beats specific and false.
     """
     absent_entities: tuple[str, ...] = ()
     """Exactly the named endpoints the KB does not hold.
@@ -148,6 +157,36 @@ class EmptyPlanDiagnosis:
     than a substitution. The message stays true; the signal is duller than it
     was. Separating a requested label from a speculative reading would sharpen
     it again -- see #441.
+    """
+
+    pair_absence_proven: bool = False
+    """Whether an empty plan proves the KB holds no confirmed fact joining
+    the two named endpoints, in either stored order.
+
+    Only the `lookup_relation` shape can earn it: it names two endpoints and
+    requests no relation, so the case-(c) reading has no requested relation to
+    resolve, and its "the requested relation resolved" clause would be false
+    here. The claim stands on the pair alone: both endpoints are in the
+    knowledge base, and the search that could have found the joining fact was
+    whole.
+
+    The proof runs in two halves, and the second is the one the case-(c)
+    reading does not have. Membership comes from the complete sets, as always:
+    a missing endpoint is the absent-entities message's to report, and saying
+    "both are in the knowledge base" about one the KB lacks would be false.
+    Emptiness needs the whole exact-fact list, and more: that list was built
+    for BOTH endpoints, so it holds every fact touching either one, and a fact
+    joining the pair touches both. The scan then checks BOTH stored orders,
+    because the candidate generator matches only the order the question names
+    -- a stored `(B, R, A)` yields no candidate for a question naming `(A, B)`
+    -- so emptiness alone would read that fact's presence as absence. The
+    reverse-order check is what keeps the message true, and this field is
+    False whenever a connector is found in either order.
+
+    Inherits the shared assumption of `join_search_complete` that every stored
+    term is a `StringLit` and the build, membership and scan matchers agree on
+    the displayed surface. The claim is stronger than case (c)'s -- it names no
+    relation at all -- so that assumption carries more weight here.
     """
 
 
@@ -286,6 +325,7 @@ def _diagnose_empty_lookup(
         absent_entities=absent,
         matched_relations=matched,
         any_unmatched=any_unmatched,
+        pair_absence_proven=_pair_absence_is_proven(intent, snapshot, absent),
     )
 
 
@@ -313,6 +353,44 @@ def _join_search_was_complete(snapshot: QuerySchemaSnapshot) -> bool:
     `_entity_matches` and the membership sets agree on the displayed surface.
     """
     return bool(snapshot.exact_entity_facts) and not snapshot.exact_entity_facts_truncated
+
+
+def _pair_absence_is_proven(
+    intent: QueryIntent, snapshot: QuerySchemaSnapshot, absent: tuple[str, ...]
+) -> bool:
+    """Whether an empty plan proves no confirmed fact joins the pair, either way.
+
+    See `EmptyPlanDiagnosis.pair_absence_proven` for the claim this is the
+    backstop of. The guard order is the argument in miniature: the kind and
+    two-endpoint checks say the question is about a pair at all; the `absent`
+    check says both halves of the pair are in the knowledge base; completeness
+    says the list holding every fact touching either one was actually whole;
+    and the scan is the half the candidate generator cannot provide -- it finds
+    a connector only in the order the question names, so a stored `(B, R, A)`
+    for a question naming `(A, B)` leaves the plan empty while the KB does
+    connect them, and only this check turns the reading back to the vague
+    fallback.
+    """
+    if intent.kind is not QueryIntentKind.LOOKUP_RELATION:
+        return False
+    if intent.subject is None or intent.object is None:
+        return False
+    if snapshot.all_entity_surfaces is None or absent:
+        return False
+    if not _join_search_was_complete(snapshot):
+        return False
+    subject = intent.subject.value
+    object_ = intent.object.value
+    for fact in snapshot.exact_entity_facts:
+        if (
+            _entity_ref_matches(fact.subject, subject)
+            and _entity_ref_matches(fact.object, object_)
+        ) or (
+            _entity_ref_matches(fact.subject, object_)
+            and _entity_ref_matches(fact.object, subject)
+        ):
+            return False
+    return True
 
 
 def _diagnosed_entities(intent: QueryIntent) -> tuple[str, ...]:
