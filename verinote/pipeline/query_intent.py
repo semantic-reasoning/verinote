@@ -880,18 +880,20 @@ def _korean_attribute_label_readings(value: str) -> tuple[str, ...]:
     `평가?` from an answer into an ambiguity report. That is the honest outcome
     for a question the KB genuinely does not disambiguate.
 
-    Two tails are stripped before any of this and both are single guesses: the
-    interrogative tail (`재인가?` loses `인가` and asks only for `재` -- see
-    #443) and the measure tail. They differ in whether they may leave a label
-    with nothing to ask for. The interrogative tail may, which is how
-    `샘플사업의 인가?` loses its whole label and is declined. The measure tail
-    may not, and what enforces that is not the strip but the readings it leads
-    to: the measure reading is adopted only when it yields readings, and
-    otherwise the label is read whole, exactly as it would be read without this
-    rule. So this change declines no question that was not already declined.
-    Unlike the josa, a measure tail is not a spelling of a relation name the way
-    `단가` is, so there is no second reading for the schema to choose between;
-    the one narrow case where it could be, `몇` read as "several", is named in
+    Two tails are stripped before any of this: the interrogative tail and the
+    measure tail. The interrogative tail offers the same two readings the josa
+    does -- `재인가?` is both `재` and a relation spelled exactly like the
+    question, and only the schema knows which (#443) -- so it differs from the
+    measure tail in whether it may leave a label with nothing to ask for. It
+    may, which is how `샘플사업의 인가?` loses its whole label and is
+    declined; the josa and measure tails may not, and what enforces that for
+    the measure tail is not the strip but the readings it leads to: the measure
+    reading is adopted only when it yields readings, and otherwise the label is
+    read whole, exactly as it would be read without this rule. So this change
+    declines no question that was not already declined. Unlike the josa, a
+    measure tail is not a spelling of a relation name the way `단가` is, so
+    there is no second reading for the schema to choose between; the one narrow
+    case where it could be, `몇` read as "several", is named in
     `_KOREAN_MEASURE_QUESTION_TAIL`'s docstring.
     """
     label = " ".join(value.strip().split())
@@ -919,20 +921,37 @@ def _label_readings_after_measure(label: str) -> tuple[str, ...]:
     Returns no readings at all when the label cleans away to nothing. That empty
     result is the signal the caller reads: a measure reading that cleans away is
     dropped in favour of reading the whole label.
+
+    When the tail strip leaves a reading, the un-stripped label is offered as
+    a further reading, the same way the un-stripped josa is offered (#431):
+    `재인가` is either `재` with the copula it trails, or a relation spelled
+    exactly like the question -- `허가` is #431's own list and `재인가` is the
+    same word family, and only the schema knows which spelling it holds
+    (#443). The stripped reading stays first, so the reading this has always
+    proposed leads and the candidate set is a superset of the old one.
     """
-    label = _KOREAN_ATTRIBUTE_LABEL_TAIL.sub("", label).strip()
-    stripped = _KOREAN_ATTRIBUTE_LABEL_JOSA.sub("", label).strip()
+    base = _KOREAN_ATTRIBUTE_LABEL_TAIL.sub("", label).strip()
+    if not base:
+        # The whole label is an interrogative tail -- `무엇인가`, `누구인가`,
+        # the bare `인가`. There is nothing left to ask for, and declining
+        # sends the question to the model, which sees the schema hint. A KB
+        # that really does hold a relation spelled like the copula is
+        # reachable there, the same way one named `은` is.
+        return ()
+    stripped = _KOREAN_ATTRIBUTE_LABEL_JOSA.sub("", base).strip()
     if not stripped:
-        # The whole label is a josa. Reading it as a relation name would claim
+        # The whole base is a josa. Reading it as a relation name would claim
         # a shape this parser has always declined -- `{entity}의 {label}은?`
         # with a blank label lands here -- and then advise adding a policy
         # alias for a grammatical particle. A KB that really does hold a
         # relation named `은` is still reachable through the model, which sees
         # it in the schema hint.
         return ()
-    if stripped == label:
-        return (label,)
-    return (stripped, label)
+    readings = (stripped, base) if stripped != base else (base,)
+    if base != label:
+        # The tail was stripped: the un-stripped spelling is a reading too.
+        readings = readings + (label,)
+    return readings
 
 
 def _clean_korean_attribute_label(value: str) -> str:
@@ -1054,25 +1073,28 @@ def _clean_english_attribute_label(value: str) -> str:
 def _korean_attribute_relation_request(raw_label: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """`(candidates, speculative)` for a Korean attribute label.
 
-    `candidates` is the set the planner tries. `speculative` is the josa
-    pair the parser split one ambiguous label into (#431). Both readings
-    of that pair are the parser's disambiguation of a single word the user
-    typed -- the schema, not the question, decides which is the relation
-    -- so either one resolving, or failing, is a disambiguation, not the
+    `candidates` is the set the planner tries. `speculative` is the readings
+    the parser split one ambiguous label into: the josa pair (#431) and, when
+    an interrogative tail was stripped, the un-stripped spelling too (#443).
+    Every one of them is the parser's disambiguation of a single word the user
+    typed -- the schema, not the question, decides which is the relation --
+    so any of them resolving, or failing, is a disambiguation, not the
     substitution signal `EmptyPlanDiagnosis.any_unmatched` reports. That is
-    why #441 excludes the pair from the unmatched computation: without it,
+    why #441 excludes them from the unmatched computation: without it,
     `any_unmatched` fires for nearly every Korean attribute question and the
     renderer names a reading that is usually the user's own word.
 
     The stripped reading leads, and today it is the only one that can be a
-    synonym key: no key in that function's set ends in `은`/`는`/`이`/`가`,
-    while the second reading ends in one by construction. So expanding it too
-    is a branch nothing can currently reach.
+    synonym key: no key in that function's set ends in a josa syllable or a
+    tail syllable, while every later reading ends in one by construction --
+    the josa readings in `은`/`는`/`이`/`가`, the tail readings in `인가`,
+    `입니까`, a stem ending, or `요`/`야`. So expanding a later reading is a
+    branch nothing can currently reach.
 
     That is a fact about the key set, not a law. Add a key like `평가` -- which
     ends in a josa syllable and is in this issue's own list -- and `평가?` would
     need the second reading expanded to keep its synonyms, because the leading
-    `평` is not a key. Expand both if that day comes.
+    `평` is not a key. Expand all the later readings if that day comes.
     """
     readings = _korean_attribute_label_readings(raw_label)
     candidates = list(_attribute_relation_candidates(readings[0]))
@@ -1082,7 +1104,7 @@ def _korean_attribute_relation_request(raw_label: str) -> tuple[tuple[str, ...],
 
 
 def _korean_attribute_relation_candidates(raw_label: str) -> tuple[str, ...]:
-    """Relation candidates for a Korean attribute label, both josa readings."""
+    """Relation candidates for a Korean attribute label, all its readings."""
     candidates, _ = _korean_attribute_relation_request(raw_label)
     return candidates
 

@@ -411,14 +411,23 @@ def test_generic_attribute_questions_become_lookup_object_intents():
     assert english_possessive.relation_candidates == PURPOSE_RELATION_CANDIDATES
     assert english_of.relation_candidates == PURPOSE_RELATION_CANDIDATES
     assert korean.relation_candidates == PURPOSE_RELATION_CANDIDATES + ("목적은",)
+    # `무엇인가` is an interrogative tail as well as a josa-bearing label, so
+    # the explicit form carries a third reading: the un-stripped spelling
+    # (#443), the same way the un-stripped josa is carried (#431).
     assert korean_explicit.relation_candidates == PURPOSE_RELATION_CANDIDATES + (
         "목적은",
+        "목적은 무엇인가",
     )
-    # The josa pair is the parser's speculative disambiguation (#431), kept
-    # apart from the synonym set so #441 can drop it from the unmatched
-    # signal; English labels have no josa, so nothing is speculative.
+    # The readings past the leading one are the parser's speculative
+    # disambiguation (#431, #443), kept apart from the synonym set so #441 can
+    # drop them from the unmatched signal; English labels have no josa or
+    # interrogative tail, so nothing is speculative.
     assert korean.speculative_relations == ("목적", "목적은")
-    assert korean_explicit.speculative_relations == ("목적", "목적은")
+    assert korean_explicit.speculative_relations == (
+        "목적",
+        "목적은",
+        "목적은 무엇인가",
+    )
     assert english_possessive.speculative_relations == ()
     assert english_of.speculative_relations == ()
     assert korean.subject == IntentTarget("entity", "샘플프로젝트")
@@ -554,15 +563,15 @@ def test_generic_korean_attribute_requires_question_shape():
 # A hand-list drifts: with `이에요` written out for one stem only, dropping it
 # from the other three fails no test, because the stem that still carries it
 # masks them.
-# The second entry of each pair is the un-stripped josa reading, offered
-# alongside the stripped one because nothing here can tell a josa from a
-# label's own last syllable (#431). It never matches for these labels; the
-# stripped reading is the one the KB holds.
+# Each row is (entity, label, expected readings): the second reading is the
+# un-stripped josa reading, offered alongside the stripped one because nothing
+# here can tell a josa from a label's own last syllable (#431); it never
+# matches for these labels, and the stripped reading is the one the KB holds.
 _KOREAN_INTERROGATIVE_STEMS = (
-    ("샘플프로젝트의 담당자는 누구", ("담당자", "담당자는")),
-    ("샘플제품의 가격은 얼마", ("가격", "가격은")),
-    ("샘플조직의 본사는 어디", ("본사", "본사는")),
-    ("샘플프로젝트의 착수일은 언제", ("착수일", "착수일은")),
+    ("샘플프로젝트", "담당자는 누구", ("담당자", "담당자는")),
+    ("샘플제품", "가격은 얼마", ("가격", "가격은")),
+    ("샘플조직", "본사는 어디", ("본사", "본사는")),
+    ("샘플프로젝트", "착수일은 언제", ("착수일", "착수일은")),
 )
 _KOREAN_INTERROGATIVE_QUESTION_FORMS = (
     "인가?",
@@ -578,18 +587,34 @@ _KOREAN_INTERROGATIVE_QUESTION_FORMS = (
 @pytest.mark.parametrize(
     ("question", "candidates"),
     [
-        (stem + form, expected)
-        for stem, expected in _KOREAN_INTERROGATIVE_STEMS
+        # The third entry is the un-stripped spelling: the interrogative tail
+        # is a strip like the josa, so its removed form is offered as a reading
+        # too and the schema decides (#443).
+        (
+            f"{entity}의 {label}{form}",
+            expected + (label + form.removesuffix("?"),),
+        )
+        for entity, label, expected in _KOREAN_INTERROGATIVE_STEMS
         for form in _KOREAN_INTERROGATIVE_QUESTION_FORMS
     ]
     # The pre-existing stems keep working, including the forms this rule newly
     # admits on each of them. They are listed separately because they do not
-    # carry the same suffix set as the four added stems.
+    # carry the same suffix set as the four added stems, and the un-stripped
+    # spelling is their third reading for the same reason (#443).
     + [
-        ("샘플프로젝트의 목적은 무엇인가요?", PURPOSE_RELATION_CANDIDATES + ("목적은",)),
-        ("샘플프로젝트의 목적이 뭐인가요?", PURPOSE_RELATION_CANDIDATES + ("목적이",)),
-        ("샘플프로젝트의 목적이 뭐예요?", PURPOSE_RELATION_CANDIDATES + ("목적이",)),
-        ("샘플문서의 형식은 어떤 것인가요?", ("형식", "형식은")),
+        (
+            "샘플프로젝트의 목적은 무엇인가요?",
+            PURPOSE_RELATION_CANDIDATES + ("목적은", "목적은 무엇인가요"),
+        ),
+        (
+            "샘플프로젝트의 목적이 뭐인가요?",
+            PURPOSE_RELATION_CANDIDATES + ("목적이", "목적이 뭐인가요"),
+        ),
+        (
+            "샘플프로젝트의 목적이 뭐예요?",
+            PURPOSE_RELATION_CANDIDATES + ("목적이", "목적이 뭐예요"),
+        ),
+        ("샘플문서의 형식은 어떤 것인가요?", ("형식", "형식은", "형식은 어떤 것인가요")),
     ],
 )
 def test_korean_attribute_questions_strip_person_place_time_and_amount_words(
@@ -600,6 +625,9 @@ def test_korean_attribute_questions_strip_person_place_time_and_amount_words(
     Stripping only `무엇` left the relation candidate as the entire phrase (e.g.
     `담당자는 누구`), which no schema can hold, so a question that named its
     relation exactly still planned no candidates and was answered UNVERIFIED.
+
+    The un-stripped spelling of the tail is a reading as well (#443): a KB
+    could hold a relation spelled exactly like the question, and only it knows.
     """
     intent = deterministic_query_intent(question)
 
@@ -638,7 +666,14 @@ def test_korean_attribute_label_does_not_strip_a_stemless_politeness_ending():
     assert deterministic_query_intent("샘플사업의 재인가요?").relation_candidates == (
         "재인가요",
     )
-    # The form a KB holding `재인가` actually answers keeps working, because the
+        # The bare `인가` tail itself is stripped, and the un-stripped spelling
+    # is a reading alongside the stripped one -- a KB holding `재인가`
+    # answers, and one holding only `재` still does (#443, the same way
+    # the un-stripped josa is offered in #431).
+    intent = deterministic_query_intent("샘플사업의 재인가?")
+    assert intent.relation_candidates == ("재", "재인가")
+    assert intent.speculative_relations == ("재", "재인가")
+# The form a KB holding `재인가` actually answers keeps working, because the
     # `는` here is a real josa rather than a politeness ending.
     assert deterministic_query_intent("샘플사업의 재인가는?").relation_candidates == (
         "재인가",
@@ -937,10 +972,12 @@ def test_a_label_the_measure_strip_would_empty_is_read_whole(question, candidate
 @pytest.mark.parametrize(
     ("question", "candidates"),
     [
-        ("샘플제품의 이 몇 개인가?", ("이 몇 개",)),
-        ("샘플광산의 은 몇 개인가?", ("은 몇 개",)),
+        # The un-stripped spelling is the third reading (#443), as on the tail
+        # matrix above; the row without an interrogative tail keeps one reading.
+        ("샘플제품의 이 몇 개인가?", ("이 몇 개", "이 몇 개인가")),
+        ("샘플광산의 은 몇 개인가?", ("은 몇 개", "은 몇 개인가")),
         ("샘플대상의 가 몇 개?", ("가 몇 개",)),
-        ("샘플모임의 누구 몇 명인가?", ("누구 몇 명",)),
+        ("샘플모임의 누구 몇 명인가?", ("누구 몇 명", "누구 몇 명인가")),
     ],
 )
 def test_a_label_the_later_strips_would_empty_is_read_whole(question, candidates):
@@ -952,6 +989,10 @@ def test_a_label_the_later_strips_would_empty_is_read_whole(question, candidates
     the job and decline the question anyway, which is the harm the guard exists
     to prevent. Guarding on the finished readings is what actually holds these
     where they were, so the measure rule adds nothing to the declined class.
+
+    The interrogative tail left in these rows is still stripped and still
+    offers its un-stripped spelling as the last reading (#443); the guard this
+    pins is that the label is claimed at all, not declined.
     """
     intent = deterministic_query_intent(question)
 
