@@ -711,7 +711,8 @@ def test_a_counted_measure_question_asks_for_the_relation_it_names(question):
     intent = deterministic_query_intent(question)
 
     assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
-    assert intent.relation_candidates == ("나이", "나이는")
+    label = question.split("의 ", 1)[1].rstrip("?")
+    assert intent.relation_candidates == ("나이", "나이는") + (label,)
 
 
 @pytest.mark.parametrize(
@@ -732,7 +733,8 @@ def test_a_vowel_final_counter_takes_the_vowel_final_predicates(question):
     intent = deterministic_query_intent(question)
 
     assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
-    assert intent.relation_candidates == ("나이", "나이는")
+    label = question.split("의 ", 1)[1].rstrip("?")
+    assert intent.relation_candidates == ("나이", "나이는") + (label,)
 
 
 @pytest.mark.parametrize("question", ["샘플인물의 나이는 몇인가?", "샘플인물의 나이는 몇이야?", "샘플인물의 나이는 몇?"])
@@ -745,7 +747,8 @@ def test_a_measure_question_needs_no_counter(question):
     intent = deterministic_query_intent(question)
 
     assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
-    assert intent.relation_candidates == ("나이", "나이는")
+    label = question.split("의 ", 1)[1].rstrip("?")
+    assert intent.relation_candidates == ("나이", "나이는") + (label,)
 
 
 def test_a_measure_question_may_omit_the_space_before_the_counter():
@@ -755,10 +758,12 @@ def test_a_measure_question_may_omit_the_space_before_the_counter():
     Hangul syllable it is not optional before the interrogative itself -- see
     the word-boundary tests.
     """
-    intent = deterministic_query_intent("샘플인물의 나이는 몇살인가?")
+    question = "샘플인물의 나이는 몇살인가?"
+    intent = deterministic_query_intent(question)
 
     assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
-    assert intent.relation_candidates == ("나이", "나이는")
+    label = question.split("의 ", 1)[1].rstrip("?")
+    assert intent.relation_candidates == ("나이", "나이는") + (label,)
 
 
 @pytest.mark.parametrize(
@@ -767,7 +772,7 @@ def test_a_measure_question_may_omit_the_space_before_the_counter():
         ("샘플대상의 가격-몇 개?", ("가격-몇 개",)),
         ("샘플대상의 A몇 개?", ("A몇 개",)),
         ("샘플대상의 3몇 개?", ("3몇 개",)),
-        ("샘플대상의 최근 몇 개?", ("최근",)),
+        ("샘플대상의 최근 몇 개?", ("최근",) + ("최근 몇 개",)),
     ],
 )
 def test_a_non_space_before_the_interrogative_keeps_the_label_whole(
@@ -797,9 +802,11 @@ def test_the_formal_age_counter_se_is_read_like_sal():
     counters reach the same candidates, so dropping either is noticed by name.
     """
     for counter in ("살", "세"):
-        intent = deterministic_query_intent(f"샘플인물의 나이는는 몇 {counter}인가?")
+        question = f"샘플인물의 나이는는 몇 {counter}인가?"
+        intent = deterministic_query_intent(question)
         assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
-        assert intent.relation_candidates == ("나이는", "나이는는")
+        label = question.split("의 ", 1)[1].rstrip("?")
+        assert intent.relation_candidates == ("나이는", "나이는는") + (label,)
 
 
 @pytest.mark.parametrize(
@@ -826,8 +833,35 @@ def test_a_measure_question_may_space_the_predicate_off_the_counter(
     intent = deterministic_query_intent(question)
 
     assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
-    assert intent.relation_candidates == candidates
+    label = question.split("의 ", 1)[1].rstrip("?")
+    assert intent.relation_candidates == candidates + (label,)
 
+
+@pytest.mark.parametrize(
+    ("question", "candidates"),
+    [
+        ("샘플기간의 최근 몇 년?", ("최근",)),
+        ("샘플순위의 상위 몇 명?", ("상위",)),
+        ("샘플대상의 최근 몇 주야?", ("최근",)),
+    ],
+)
+def test_the_several_reading_offers_the_counted_phrase(question, candidates):
+    """The "several" reading of the interrogative offers its counted phrase (#448).
+
+    The interrogative is a question word in an age question but "several" in
+    "the last few years", and nothing at the parser settles which is meant.
+    #442 stripped the phrase unconditionally on the argument that the counted
+    phrase is an implausible relation name; this reverses that: the stripped
+    reading stays first and the un-stripped counted phrase is offered as a
+    further reading, so the schema decides which spelling it holds. The three
+    questions are the issue's own witnesses, verified against synthetic
+    fixtures only.
+    """
+    intent = deterministic_query_intent(question)
+
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    label = question.split("의 ", 1)[1].rstrip("?")
+    assert intent.relation_candidates == candidates + (label,)
 
 @pytest.mark.parametrize(
     "question",

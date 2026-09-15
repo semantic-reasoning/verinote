@@ -832,9 +832,11 @@ read; the spaces on either side of the counter are both optional, so
 the interrogative -- `나이는몇살인가?` and `가격은얼마나?` alike.
 
 `몇` also means "several" non-interrogatively and nothing here settles which it
-is: `샘플기간의 최근 몇 년?` loses its `몇 년` and asks only for `최근`. That is
-an accepted cost, weighed against `최근 몇 년` being an implausible relation
-name, not a case this handles.
+is: `샘플기간의 최근 몇 년?` loses its `몇 년` to the strip and asks only for
+`최근`. The counted phrase the user named is offered back as a further
+reading by `_with_unstripped_counted_phrase`, so the schema decides which
+spelling it holds (#448) -- reversing the accepted-cost stance #442
+recorded here.
 
 Not covered, and stated rather than implied: a counter outside the list
 (`몇 톤인가?`), a non-Hangul unit (`몇 %인가?`), an ordinal (`몇 번째인가?`), the
@@ -872,6 +874,24 @@ keeps what is before it, whereas here the trailing noun is kept and the
 interrogative phrase set aside. It does not widen the `얼마나` wildcard, so the
 conjugated-predicate cases still strip to the word before them exactly as
 before -- they do not spell `많은` before their final word.
+"""
+
+
+_KOREAN_MEASURE_MYEOT_PREFIXED = re.compile(
+    rf"^.+?\s몇\s*(?:{_KOREAN_MEASURE_COUNTER})?\s*(?:{_KOREAN_MEASURE_PREDICATE})?\s*$"
+)
+"""The prefixed `몇` shape, where the counted phrase is the relation the question names.
+
+`몇` is interrogative in `몇 살인가` but indefinite in `최근 몇 년` ("the last few
+years"), and nothing at the parser settles which is meant. The measure tail strips it
+unconditionally (#442), so the counted phrase the user named -- `몇 년`, `몇 명` -- is otherwise
+never offered. This marks the prefixed `몇` shape so
+`_with_unstripped_counted_phrase` can offer the un-stripped reading, as the josa does.
+
+It is scoped to the `몇` half, not the `얼마나` half: `얼마나` names a conjugated
+predicate or the `많은` noun (#447), a different ambiguity. And to a non-empty
+prefix: a bare `몇 개` is the whole label and is already read whole, so the rule
+does not fire there.
 """
 
 
@@ -923,7 +943,10 @@ def _korean_attribute_label_readings(value: str) -> tuple[str, ...]:
     narrow exception: a prefixed `얼마나 많은 N` label (something before the
     interrogative) names the trailing noun N, which the strip otherwise discards, so
     that noun is offered as a further reading by `_with_trailing_measure_noun`
-    (#447). The bare form and the `얼마나` "several" case are named in
+    (#447). And the prefixed `몇` phrase (something before the interrogative)
+    names the counted words the strip discards, which
+    `_with_unstripped_counted_phrase` offers as a further reading (#448).
+    The bare form and the `얼마나` "several" case are named in
     `_KOREAN_MEASURE_QUESTION_TAIL`'s docstring.
     """
     label = " ".join(value.strip().split())
@@ -941,8 +964,11 @@ def _korean_attribute_label_readings(value: str) -> tuple[str, ...]:
     if measured != label:
         readings = _label_readings_after_measure(measured)
         if readings:
-            return _with_trailing_measure_noun(label, readings)
-    return _with_trailing_measure_noun(label, _label_readings_after_measure(label))
+            readings = _with_trailing_measure_noun(label, readings)
+            return _with_unstripped_counted_phrase(label, readings)
+    readings = _label_readings_after_measure(label)
+    readings = _with_trailing_measure_noun(label, readings)
+    return _with_unstripped_counted_phrase(label, readings)
 
 
 def _with_trailing_measure_noun(label: str, readings: tuple[str, ...]) -> tuple[str, ...]:
@@ -963,6 +989,24 @@ def _with_trailing_measure_noun(label: str, readings: tuple[str, ...]) -> tuple[
     if noun in readings:
         return readings
     return readings + (noun,)
+
+
+def _with_unstripped_counted_phrase(label: str, readings: tuple[str, ...]) -> tuple[str, ...]:
+    """Offer the un-stripped `몇` counted phrase alongside the stripped one (#448).
+
+    `몇` is interrogative in `몇 살인가` but indefinite in `최근 몇 년`, and the measure
+    tail strips it either way (#442), so the counted phrase the user named is
+    otherwise never offered. This offers it back, exactly as the josa and the
+    interrogative tail do: the stripped reading stays first and the un-stripped
+    label is appended, never substituted, so the schema decides which spelling it
+    holds. It fires only on the prefixed `몇` shape -- the `얼마나` shape is the
+    separate trailing-noun rule (#447), and a bare `몇 개` is already read whole.
+    """
+    if not _KOREAN_MEASURE_MYEOT_PREFIXED.match(label):
+        return readings
+    if label in readings:
+        return readings
+    return readings + (label,)
 
 
 def _label_readings_after_measure(label: str) -> tuple[str, ...]:
