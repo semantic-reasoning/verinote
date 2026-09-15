@@ -858,21 +858,105 @@ def test_ask_fallback_survives_llm_answer_error(tmp_path):
 
 
 def test_search_source_excerpts_reads_latest_text_artifact(tmp_path):
+    """The artifact is the grounding text even when the original is present.
+
+    #561: the original file exists on disk and is readable UTF-8, so the
+    assertion cannot pass by the original being skipped as missing or
+    undecodable -- it passes only by path selection: a source with a text
+    artifact row contributes its artifact, not its original. On the parent
+    commit this fixture yields two excerpts for the same sentence and the
+    assertion fails; that is the pin working, not a setup accident.
+
+    Verified against synthetic fixtures only. Refs #561, #473, #495.
+    """
     store = _store(tmp_path)
-    sid = store.add_source("sources/sample.pdf", kind="binary")
-    artifact_path = tmp_path / "artifacts" / "sources" / str(sid) / "text.txt"
-    artifact_path.parent.mkdir(parents=True)
-    artifact_path.write_text("샘플문서는 샘플항목을 포함한다.", encoding="utf-8")
+    (tmp_path / "sources").mkdir()
+    (tmp_path / "sources" / "sample.txt").write_text('샘플문서는 샘플항목을 포함한다.', encoding="utf-8")
+    sid = store.add_source("sources/sample.txt")
+    artifact_rel = f"artifacts/sources/{sid}/text.txt"
+    (tmp_path / artifact_rel).parent.mkdir(parents=True)
+    (tmp_path / artifact_rel).write_text('샘플문서는 샘플항목을 포함한다.', encoding="utf-8")
     store.add_source_artifact(
         source_id=sid,
         kind="extracted_text",
-        path=f"artifacts/sources/{sid}/text.txt",
+        path=artifact_rel,
         checksum="sha",
     )
 
-    excerpts = search_source_excerpts(store, root=tmp_path, question="샘플항목")
+    excerpts = search_source_excerpts(store, root=tmp_path, question='샘플항목')
 
-    assert [item.path for item in excerpts] == [f"artifacts/sources/{sid}/text.txt"]
+    assert [item.path for item in excerpts] == [artifact_rel]
+
+
+def test_a_source_without_an_artifact_is_grounded_by_its_original(tmp_path):
+    """No artifact row: the original stays the grounding text, by choice.
+
+    #561's trade-off, pinned. The population #495 tracks -- rows that never
+    went through extraction, so they have no artifact row -- keeps its
+    original as its only text. Refusing it would leave the population with no
+    grounding at all, and its NUL risk is the bounded, non-crashing one
+    (#474 names the one provider branch that crashes; the other providers
+    escape the NUL in their JSON bodies). So the original is read as-is,
+    unsanitized on purpose: sanitizing it in ask would be #473's forbidden
+    second decision point.
+
+    This passes on the parent commit by design: it records the chosen
+    handling, and the code comment in `_source_text_paths` carries the
+    reasoning. Verified against synthetic fixtures only. Refs #561, #473,
+    #474, #495.
+    """
+    store = _store(tmp_path)
+    (tmp_path / "sources").mkdir()
+    (tmp_path / "sources" / "sample.txt").write_text('샘플문서는 샘플항목을 포함한다.', encoding="utf-8")
+    store.add_source("sources/sample.txt")
+
+    excerpts = search_source_excerpts(store, root=tmp_path, question='샘플항목')
+
+    assert [item.path for item in excerpts] == ["sources/sample.txt"]
+
+
+def test_ask_fallback_context_carries_no_nul_when_the_original_has_one(tmp_path):
+    """The original's NUL never reaches the model input: the artifact is read.
+
+    #561's acceptance for the NUL symptom, pinned on path *selection*, not on
+    sanitization. The original file on disk carries a raw NUL (valid UTF-8,
+    so the decode guard passes it); the artifact carries the U+FFFD that
+    ingest wrote in its place. The model-input context therefore counts zero
+    NULs not because ask sanitizes -- it does not, and must not (#473's single
+    sanitization point) -- but because path selection reads the artifact and
+    never the original.
+
+    The excerpt-path assertion is what pins the selection: a fix that
+    sanitized the original inside ask would still cite the original's path in
+    `result.excerpts` and fail here, so it cannot hide behind this test.
+
+    Verified against synthetic fixtures only. Refs #561, #473, #474.
+    """
+    store = _store(tmp_path)
+    (tmp_path / "sources").mkdir()
+    (tmp_path / "sources" / "sample.txt").write_bytes(
+        ('샘플조직은 ' + "F\x0013" + '샘플서비스를 제공한다.').encode("utf-8")
+    )
+    sid = store.add_source("sources/sample.txt")
+    artifact_rel = f"artifacts/sources/{sid}/text.txt"
+    (tmp_path / artifact_rel).parent.mkdir(parents=True)
+    (tmp_path / artifact_rel).write_text(
+        '샘플조직은 ' + "F\uFFFD13" + '샘플서비스를 제공한다.', encoding="utf-8"
+    )
+    store.add_source_artifact(
+        source_id=sid,
+        kind="extracted_text",
+        path=artifact_rel,
+        checksum="sha",
+    )
+    client = FallbackClient(answer='샘플조직은 샘플서비스를 제공한다고 볼 수 있습니다.')
+
+    result = ask_question(store, client, root=tmp_path, question='샘플조직 설명해줘')
+
+    assert result.route == "fallback"
+    assert client.context.count("\x00") == 0
+    assert "F\uFFFD13" in client.context
+    assert [item.path for item in result.excerpts] == [artifact_rel]
 
 
 def test_ask_grounding_table_shows_a_comma_answer_in_its_source_form(tmp_path):
