@@ -50,7 +50,7 @@ from verinote.config import (
 )
 from verinote.kb_location import KBLocationError, assert_kb_root_is_safe_to_create
 from verinote.llm import MIN_REDACTABLE_SECRET, LLMError, get_client
-from verinote.llm.base import ModelListing
+from verinote.llm.base import ModelListing, redact_secret
 from verinote.llm.claude_cli_adapter import CLI_MODEL_ALIASES
 from verinote.llm.ollama_adapter import (
     OLLAMA_DEFAULT_BASE_URL,
@@ -1031,6 +1031,19 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     def _short_error(exc: BaseException) -> str:
         return " ".join(_error_cause(exc).split())[:240]
 
+    def _bounded_detail(detail: str) -> str:
+        """Collapse whitespace and cap the provider's text for the questions page.
+
+        This is #592's bound, factored out as a named helper so the #606
+        durable-record section can inherit the same cap without re-spelling the
+        constant (re-spelling it would only add another copy -- the duplication
+        #583 asks to consolidate). It bounds ONLY what the page renders: the
+        `unreached_attempts` table keeps the full redacted detail, and
+        `verinote status` prints it unbounded -- the bound is the page's, not
+        the record's.
+        """
+        return " ".join((detail or "").split())[:240]
+
     def _translation_fault(detail: str) -> str:
         """Shape an infrastructure fault for the questions page (#592).
 
@@ -1058,7 +1071,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         only of the questions this fault stopped, and says they were left as
         they were rather than naming a status.
         """
-        collapsed = " ".join(detail.split())[:240]
+        collapsed = _bounded_detail(detail)
         if collapsed and collapsed[-1] not in ".!?":
             collapsed += "."
         opening = (
@@ -3159,6 +3172,21 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 "answers": answers,
                 "error": page_error,
                 "repair_job": store.latest_repair_job(),
+                # #606. The durable half of the #592 ruling: runs that tried
+                # the provider and never reached it, newest first. Read on
+                # every page render, so a later visit still shows the fault
+                # the POST banner carried only once. The detail inherits the
+                # page's #592 bound (_bounded_detail) -- the record itself keeps
+                # the full text, and `verinote status` prints it unbounded.
+                "unreached_attempts": [
+                    {
+                        "at": r["at"],
+                        "population": r["population"],
+                        "detail": _bounded_detail(r["detail"]),
+                        "question_id": r["question_id"],
+                    }
+                    for r in store.recent_unreached_attempts(10)
+                ],
             },
             status_code=status_code,
         )
@@ -3217,14 +3245,32 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         cfg = _active_cfg()
         try:
             client = get_client(app.state.cfg)
+        except CredentialsCorruptError as exc:
+            # #606. The durable half, at the run level: a corrupt credentials
+            # file means no provider could be built, so this is the
+            # `credentials` population with question_id NULL (before any
+            # question). Record FIRST, then RE-RAISE so the app-level halt
+            # handler still renders the 409 page -- the response is unchanged,
+            # the append-only row is the new part (#606's point). The banner
+            # dies with this response and the halt is the surface, so the row
+            # is what outlives both.
+            store.record_unreached_attempt(
+                None, "credentials", redact_secret(str(exc), cfg.api_key)
+            )
+            raise
         except LLMError as e:
-            # #592. REPORTED, NEVER RECORDED. This previously marked every
-            # pending question `translation_failed`, which was the ONLY place
-            # the web said anything about the fault -- so removing the write
-            # without adding this surface would have made a broken provider
-            # config silent. `get_client` raises for an unknown provider, not a
-            # missing key, so nothing was attempted and no row is touched on
-            # this arm at all.
+            # #606. `get_client` raises here for an unknown provider (not a
+            # missing key), so this is the `unknown_provider` population at the
+            # run level, question_id NULL. The #592 banner below is unchanged;
+            # the record is the durable half #606 adds.
+            store.record_unreached_attempt(
+                None, "unknown_provider", redact_secret(str(e), cfg.api_key)
+            )
+            # #592. REPORTED, NEVER RECORDED on a ROW. This previously marked
+            # every pending question `translation_failed`, which was the ONLY
+            # place the web said anything about the fault -- so removing the
+            # write without adding this surface would have made a broken
+            # provider config silent. No row is touched on this arm at all.
             return _questions(request, error=_translation_fault(str(e)))
         results = translate_questions(store, client, root=cfg.root)
         # Filtered on the flag, NOT on `r["status"]`. Both sides of #592's

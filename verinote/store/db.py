@@ -3257,6 +3257,47 @@ class Store:
         with self._lock:
             self._conn.execute("DELETE FROM questions WHERE id = ?", (question_id,))
 
+    # #606. The four unreached populations, the friendly copy of the CHECK
+    # constraint in schema.sql (the durable one) and of
+    # `verinote.llm.base.UNREACHED_POPULATIONS` (the classifier's closed set).
+    # The store layer must not import the llm layer to get them, so the set is
+    # spelled here rather than reached across.
+    UNREACHED_POPULATIONS = frozenset(
+        {"policy", "credentials", "unknown_provider", "unreachable"}
+    )
+
+    def record_unreached_attempt(
+        self, question_id: int | None, population: str, detail: str
+    ) -> int:
+        """Append the durable record of a run that never reached the provider.
+
+        `question_id` is the row the run was for, or NULL for a run-level fault
+        (unknown provider, corrupt credentials) that happened before any
+        question could be attempted. `population` names which of the four ways
+        it failed; `detail` must ALREADY be redacted by the caller -- this table
+        is the sink, not the scrubber, and the record site is the one place
+        that holds both the text and the key.
+        """
+        if population not in self.UNREACHED_POPULATIONS:
+            raise ValueError(f"unknown unreached population: {population}")
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO unreached_attempts(question_id, population, detail) "
+                "VALUES(?,?,?) RETURNING id",
+                (question_id, population, detail),
+            )
+            return int(cur.fetchone()[0])
+
+    def recent_unreached_attempts(self, limit: int = 20) -> list[sqlite3.Row]:
+        """Newest first, for the web and CLI read surfaces."""
+        with self._lock:
+            return list(
+                self._conn.execute(
+                    "SELECT * FROM unreached_attempts ORDER BY id DESC LIMIT ?",
+                    (limit,),
+                )
+            )
+
     # --- durable question repair jobs -----------------------------------
     def enqueue_repair_job(self, *, provider: str | None, model: str | None) -> tuple[sqlite3.Row, bool]:
         """Create a snapshot repair pass, or return the existing live pass.

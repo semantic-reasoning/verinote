@@ -1572,7 +1572,9 @@ def _recorded_clause(source) -> str | None:
 
 
 def cmd_query(cfg: Config, args: argparse.Namespace) -> int:
+    from verinote.config import CredentialsCorruptError
     from verinote.llm import LLMError, get_client
+    from verinote.llm.base import redact_secret
     from verinote.pipeline import translate_questions, write_query_file
 
     # With no question there is nothing to add, so a missing KB means there is
@@ -1599,8 +1601,31 @@ def cmd_query(cfg: Config, args: argparse.Namespace) -> int:
         return 1
     try:
         client = get_client(cfg)
+    except CredentialsCorruptError as exc:
+        # #606 + an INTENTIONAL behavior change, not a silent one: a corrupt
+        # credentials file used to escape this command as an unhandled
+        # traceback, because only `LLMError` was caught above. It is now
+        # reported like its sibling arm and recorded before it is reported --
+        # the durable `credentials` population at the run level (question_id
+        # NULL, before any question), one line on stderr, rc 1. `main` still
+        # refuses a known-corrupt config earlier (rc 2); this arm is the
+        # defense-in-depth for the window between that check and this one.
+        detail = _short_error(exc)
+        store.record_unreached_attempt(
+            None, "credentials", redact_secret(detail, cfg.api_key)
+        )
+        print(f"  credentials fault: {detail} (row unchanged; recorded)", file=sys.stderr)
+        store.close()
+        return 1
     except LLMError as e:
         reason = _short_error(e)
+        # #606. The durable half at the run level: `get_client` raises here
+        # only for an unknown provider, so this is the `unknown_provider`
+        # population, question_id NULL (before any question could be tried).
+        # The #592 report below is unchanged; the record is the new part.
+        store.record_unreached_attempt(
+            None, "unknown_provider", redact_secret(reason, cfg.api_key)
+        )
         results = []
         for q in translatable:
             # #592. REPORTED, NEVER RECORDED. `get_client` raises only for an
@@ -1997,9 +2022,46 @@ def _status(cfg: Config) -> int:
         # working *on* a halted KB, and a diagnosis command that fails is not a
         # diagnosis. The stdout marker is what makes the halt impossible to miss.
         _print_policy_state_ro(conn, cfg)
+        # #606. The durable read surface: runs that tried the provider and never
+        # reached it, with the four populations kept distinct.
+        _print_unreached_ro(conn)
     finally:
         conn.close()
     return 0
+
+
+def _print_unreached_ro(conn: sqlite3.Connection) -> None:
+    """Print the #606 durable record, degrading on a pre-migration KB.
+
+    This read path does NOT migrate: `_read_only_conn` opens
+    `?mode=ro&immutable=1` when no `-wal`/`-shm` sidecar exists, and a KB
+    created before `unreached_attempts` existed has no such table in the file
+    at all. A bare `SELECT` would crash `status` with `no such table` -- and a
+    diagnosis command that fails is not a diagnosis. So the table's presence is
+    checked first: absent means the section is omitted and a one-line note says
+    how to migrate (any write command runs `init_schema`). Present means the
+    rows are printed, newest first, with the population label intact -- the
+    four must stay distinct here, since lumping them is the failure #606
+    forbids.
+    """
+    present = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='unreached_attempts'"
+    ).fetchone()
+    if present is None:
+        print(
+            "unreached provider attempts: not yet migrated -- "
+            "run any verinote write command once to migrate"
+        )
+        return
+    rows = conn.execute(
+        "SELECT population, detail, at FROM unreached_attempts ORDER BY id DESC LIMIT 20"
+    ).fetchall()
+    if not rows:
+        print("unreached provider attempts: none")
+        return
+    print(f"unreached provider attempts: {len(rows)} most recent")
+    for population, detail, at in rows:
+        print(f"  {population:<17} {at}  {detail}")
 
 
 def cmd_ui(cfg: Config | None, args: argparse.Namespace) -> int:

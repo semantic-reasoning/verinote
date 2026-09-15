@@ -145,7 +145,9 @@ class AnthropicAdapter:
         Redaction covers only the key this process knows about, which is why
         `_require_key` refuses to let the SDK authenticate with one it never saw.
         """
-        return LLMError(redact_secret(f"{self.name} request failed: {exc}", self.cfg.api_key))
+        error = LLMError(redact_secret(f"{self.name} request failed: {exc}", self.cfg.api_key))
+        error.population = "unreachable"
+        return error
 
     def _client_failed(self, exc: Exception) -> LLMError:
         """The client could not be built, so nothing was ever dialled.
@@ -175,9 +177,11 @@ class AnthropicAdapter:
         a different variable: two paragraphs documenting two SDKs, not one
         copied twice.
         """
-        return LLMError(
+        error = LLMError(
             redact_secret(f"{self.name} client could not be created: {exc}", self.cfg.api_key)
         )
+        error.population = "unreachable"
+        return error
 
     def _require_key(self) -> str:
         """The configured key, or a clear failure instead of a silent fallback.
@@ -194,11 +198,13 @@ class AnthropicAdapter:
         the failure inside the contract callers already handle.
         """
         if not self.cfg.api_key:
-            raise LLMError(
+            error = LLMError(
                 f"{self.name} requires an API key; set "
                 f"VERINOTE_{self.name.upper()}_API_KEY "
                 f"(the {self.name} SDK's own environment variable is deliberately not used)"
             )
+            error.population = "credentials"
+            raise error
         return self.cfg.api_key
 
     def _client(self):

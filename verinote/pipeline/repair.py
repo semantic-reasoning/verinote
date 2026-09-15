@@ -19,7 +19,7 @@ import sqlite3
 import threading
 from uuid import uuid4
 
-from verinote.llm.base import LLMClient
+from verinote.llm.base import LLMClient, client_api_key, redact_secret
 from verinote.pipeline.query import (
     _schema_aware_query_flow_result,
     _translate_direct_datalog_fallback,
@@ -50,6 +50,11 @@ class _PreparedRepair:
     # `result.provider_failed` alone is not enough: it does not cover the policy
     # fault, where no provider is asked at all and so nothing sets that flag.
     infrastructure_fault: bool = False
+    # #606. WHICH of the four unreached populations this fault was, threaded
+    # from the flow's `unreached_population`. Set ONLY alongside
+    # `infrastructure_fault=True`; the two writers below read it to append the
+    # durable record at exactly the point they suppress the row.
+    unreached_population: str | None = None
 
 
 def _prepare_repair_question(
@@ -77,6 +82,7 @@ def _prepare_repair_question(
         flow.status,
         query_dl,
         infrastructure_fault=flow.infrastructure_fault,
+        unreached_population=flow.unreached_population,
     )
 
 
@@ -109,6 +115,15 @@ def repair_question(
     if not prepared.infrastructure_fault:
         store.set_question_query(
             question_id, prepared.query_dl, prepared.status, prepared.result.reason
+        )
+    else:
+        # #606. The durable half of that suppression: the never-reached repair
+        # leaves an append-only record, gated on the same
+        # `infrastructure_fault`, redacted with the key this client holds.
+        store.record_unreached_attempt(
+            question_id,
+            prepared.unreached_population or "unreachable",
+            redact_secret(prepared.result.reason, client_api_key(client)),
         )
     write_query_file(store, root)
     if not prepared.result.accepted:
@@ -265,6 +280,16 @@ def process_repair_job(
             # translated and the job must not finish "done" over a row it
             # deliberately did not write.
             if prepared.result.provider_failed or prepared.infrastructure_fault:
+                if prepared.infrastructure_fault:
+                    # #606. Same durable record as `repair_question`, at the
+                    # job-worker writer: the never-reached repair is reported as
+                    # a failed item AND left an append-only trace, gated on the
+                    # same `infrastructure_fault` that suppressed the row.
+                    store.record_unreached_attempt(
+                        int(question["id"]),
+                        prepared.unreached_population or "unreachable",
+                        redact_secret(prepared.result.reason, client_api_key(client)),
+                    )
                 store.finish_repair_item(int(item["id"]), owner_token, status="failed", reason=prepared.result.reason)
                 store.finish_repair_job(
                     job_id, owner_token, failed=True, message=f"Repair failed: {prepared.result.reason}"

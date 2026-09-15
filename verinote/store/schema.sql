@@ -317,3 +317,44 @@ FOR EACH ROW
 BEGIN
     SELECT RAISE(ABORT, 'source identity repair audit is append-only');
 END;
+
+-- Append-only record of a run that tried the provider but never reached it
+-- (#606). `population` is which of the four ways that happened; `detail`
+-- carries the run's redacted reason. `question_id` is the row the run was for,
+-- or NULL for a run-level fault (unknown provider, corrupt credentials) that
+-- happened before any question could be attempted. Provider text must never
+-- enter this record unredacted: the record site redacts, the CHECK constraint
+-- is the closed set, and the triggers keep the trail append-only.
+CREATE TABLE IF NOT EXISTS unreached_attempts (
+    id          INTEGER PRIMARY KEY,
+    question_id INTEGER REFERENCES questions(id) ON DELETE SET NULL,
+    population  TEXT NOT NULL
+                CHECK (population IN ('policy','credentials','unknown_provider','unreachable')),
+    detail      TEXT NOT NULL,
+    at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_unreached_attempts_question
+    ON unreached_attempts(question_id, id);
+
+CREATE INDEX IF NOT EXISTS idx_unreached_attempts_population
+    ON unreached_attempts(population, id);
+
+-- The WHEN clause carves out exactly one update: the schema's own
+-- `ON DELETE SET NULL` propagating a deleted question's id to NULL. That is the
+-- table's own contract, not a mutation of the audit, so the append-only
+-- refusal must not fire for it; every other UPDATE is refused.
+CREATE TRIGGER IF NOT EXISTS unreached_attempts_no_update
+BEFORE UPDATE ON unreached_attempts
+FOR EACH ROW
+WHEN NOT (OLD.question_id IS NOT NULL AND NEW.question_id IS NULL)
+BEGIN
+    SELECT RAISE(ABORT, 'unreached attempts audit is append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS unreached_attempts_no_delete
+BEFORE DELETE ON unreached_attempts
+FOR EACH ROW
+BEGIN
+    SELECT RAISE(ABORT, 'unreached attempts audit is append-only');
+END;

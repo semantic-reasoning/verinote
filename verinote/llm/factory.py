@@ -48,6 +48,8 @@ def get_client(cfg: Config) -> LLMClient:
     # Derived from PROVIDERS rather than spelled out: a hand-written list here
     # goes stale the moment a provider is added, and this message is what tells
     # a user with a typo in config.json what they were allowed to write.
-    raise LLMError(
+    error = LLMError(
         f"unknown VERINOTE_PROVIDER={provider!r}; expected {'|'.join(PROVIDERS)}"
     )
+    error.population = "unknown_provider"
+    raise error

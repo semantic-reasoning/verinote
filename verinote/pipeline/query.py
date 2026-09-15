@@ -25,7 +25,14 @@ from typing import TYPE_CHECKING, Callable
 
 from verinote.engine.datalog import AtomExpr, Comparison, DatalogParseError, parse_program
 from verinote.engine.terms import Atom, StringLit, render_term
-from verinote.llm.base import LLMClient, LLMError, LLMOutputError
+from verinote.llm.base import (
+    LLMClient,
+    LLMError,
+    LLMOutputError,
+    client_api_key,
+    redact_secret,
+    unreached_population,
+)
 from verinote.pipeline.corroboration import (
     CorroborationPolicyError,
     store_relation_aliases,
@@ -90,6 +97,13 @@ class _QueryFlowResult:
     # because the status alone cannot distinguish the cases -- both arrive as
     # `translation_failed`.
     policy_failed: bool = False
+    # #606. WHICH of the four unreached populations this failure was, set ONLY
+    # on the infrastructure-fault exits (the policy exit and the three
+    # `except LLMError` exits) and never on a successful or output-unusable one.
+    # `translate_questions` and `repair` read it to write the durable record;
+    # `infrastructure_fault` above is still the write-suppression predicate --
+    # the field rides ALONGSIDE it, never instead, so the #592 rule is untouched.
+    unreached_population: str | None = None
 
     @property
     def infrastructure_fault(self) -> bool:
@@ -309,7 +323,11 @@ def _schema_aware_query_flow_result(
     policy_failure = query_schema_policy_failure(store)
     if policy_failure is not None:
         return _QueryFlowResult(
-            "translation_failed", None, _short_reason(policy_failure), policy_failed=True
+            "translation_failed", None, _short_reason(policy_failure), policy_failed=True,
+            # #606. No request was sent at all: the provider was never reached
+            # because translation was never attempted. Named here, not by the
+            # classifier, because there is no exception to classify.
+            unreached_population="policy",
         )
     snapshot = build_query_schema_snapshot(store)
     intent = deterministic_query_intent(question)
@@ -349,6 +367,10 @@ def _schema_aware_query_flow_result(
                     reason,
                     provider_failed=True,
                     output_unusable=output_unusable,
+                    # #606. Never-reached label for the durable record; None when
+                    # the provider actually answered (output_unusable), which is
+                    # the half the row records instead.
+                    unreached_population=None if output_unusable else unreached_population(exc),
                 )
             reason = _short_reason(f"llm error: {exc}")
             # No fallback here. The direct-Datalog fallback answers "planning
@@ -367,6 +389,7 @@ def _schema_aware_query_flow_result(
                 reason,
                 provider_failed=True,
                 output_unusable=output_unusable,
+                unreached_population=None if output_unusable else unreached_population(exc),
             )
 
     if intent.kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED:
@@ -483,6 +506,7 @@ def _reinterpret_empty_plan(
             allow_direct_datalog_fallback=False,
             provider_failed=True,
             output_unusable=output_unusable,
+            unreached_population=None if output_unusable else unreached_population(exc),
         )
 
     if intent.kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED:
@@ -718,11 +742,13 @@ def _translate_direct_datalog_fallback(
             return _QueryFlowResult(
                 "translation_failed", None, reason,
                 provider_failed=True, output_unusable=output_unusable,
+                unreached_population=None if output_unusable else unreached_population(exc),
             )
         reason = _short_reason(f"llm error: {exc}")
         return _QueryFlowResult(
             "review_required", f"review_required({_lit(reason)})", reason,
             provider_failed=True, output_unusable=output_unusable,
+            unreached_population=None if output_unusable else unreached_population(exc),
         )
 
     outcome = _non_executable_outcome(line)
@@ -848,6 +874,24 @@ def translate_questions(
         infrastructure_fault = flow.infrastructure_fault
         if not infrastructure_fault:
             store.set_question_query(q["id"], query_dl, status, reason)
+        else:
+            # #606. The row was just deliberately left alone (#592). This is the
+            # durable half of that ruling: a never-reached run leaves an
+            # append-only record so the fault outlives the banner and the rc.
+            # Gated on the SAME `infrastructure_fault` that suppressed the row,
+            # so the write-suppression and the record come from one read.
+            # `unreached_population` names which of the four ways it failed
+            # (policy here is set at the policy exit, the classifier's residual
+            # for everything else); the `or` keeps a record even if a future
+            # exit forgot to name one, since "unreachable" is true of anything
+            # we cannot name. Detail is the run's reason, redacted with the key
+            # this client holds -- the record site redacts rather than trusting
+            # the carrier, which is what the #603 gap costs claude_cli/ollama.
+            store.record_unreached_attempt(
+                q["id"],
+                flow.unreached_population or "unreachable",
+                redact_secret(reason, client_api_key(client)),
+            )
         results.append(
             {
                 "id": q["id"],

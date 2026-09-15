@@ -12,8 +12,26 @@ if TYPE_CHECKING:
 FactSlotKind = Literal["string", "term"]
 
 
+# #606. The four ways a run can fail without ever reaching the provider.
+# `policy` is set at the flow's policy exit, where no exception exists at all;
+# the other three are what may be MARKED ON an `LLMError`, and `unreachable`
+# is the classifier's residual -- semantically true of anything it cannot
+# name: a request was tried and it did not arrive.
+UNREACHED_POPULATIONS = ("policy", "credentials", "unknown_provider", "unreachable")
+
+
 class LLMError(RuntimeError):
     """Any provider-side or parsing failure, normalised across adapters."""
+
+    # #606. WHICH of the unreached populations this failure belongs to, set on
+    # the instance where it is raised. A data label read by the record site's
+    # classifier (`unreached_population`), not a dispatch key -- the class
+    # hierarchy stays exactly what #592's discriminator needs. A rebuilt
+    # instance (`type(exc)(msg)` on the render path) loses the instance
+    # attribute and falls to this default, which the classifier maps to the
+    # residual -- the safe direction, because the record is written on the
+    # request path, where the marker is still on the object.
+    population: str | None = None
 
 
 class LLMOutputError(LLMError):
@@ -42,12 +60,45 @@ class LLMOutputError(LLMError):
     """
 
 
+def unreached_population(exc: BaseException) -> str:
+    """Classify a never-reached provider failure into one of the four #606
+    populations, for the durable record.
+
+    The ONLY input is the marker on the exception itself: `credentials` (no
+    usable key to authenticate with) or `unknown_provider` (the configured
+    provider name is not one we can build a client for). Everything else
+    returns the residual `unreachable` -- unmarked SDK import failures, a base
+    URL that cannot be built, a CLI or local server that did not answer -- and
+    that residual is semantically TRUE of all of them: a request was tried and
+    it did not arrive.
+
+    `policy` is deliberately never returned here: it is set at the flow's
+    policy exit, where there is no exception to classify in the first place.
+    A marker of `policy` on an exception would be a bug in the marking, and
+    returning it from here would launder that bug into the record.
+    """
+    marked = getattr(exc, "population", None)
+    if marked in ("credentials", "unknown_provider"):
+        return marked
+    return "unreachable"
+
+
 # A secret shorter than this cannot be replaced without mangling ordinary text —
 # a key of "key" would turn "invalid api key" into "invalid api ***" — so it is
 # deliberately left alone. That is a statement about collateral damage, not about
 # what counts as a credential: a short key (a self-hosted gateway's shared token,
 # say) is NOT protected here. Error text that varies with the key's content is
 # itself a small oracle, which is the other half of why the floor exists.
+# #606. The record site redacts with the key the CLIENT was built with.
+# Adapters that redact at construction (#603) make this a no-op; the two that
+# do not (`claude_cli`, `ollama` -- a pre-existing #603 gap) need it, so the
+# record site applies it uniformly rather than trusting the carrier. A client
+# without a `cfg.api_key` (test doubles, keyless providers) redacts nothing.
+def client_api_key(client: object) -> str | None:
+    cfg = getattr(client, "cfg", None)
+    return getattr(cfg, "api_key", None)
+
+
 MIN_REDACTABLE_SECRET = 8
 
 

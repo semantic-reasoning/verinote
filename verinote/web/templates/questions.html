@@ -11,6 +11,36 @@
 
 {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
 
+{# #606. The durable half of the #592 ruling: the POST banner dies with the
+   response, and this section reads the append-only `unreached_attempts`
+   table, so a later visit still shows what stopped the run. The population
+   label is the point -- policy / credentials / unknown_provider / unreachable
+   are four different things a user fixes in four different places, and the
+   four must stay distinct here (lumping them is the failure #606 forbids).
+   Detail is redacted at the record site, before it reaches this page. #}
+{% if unreached_attempts %}
+<section id="unreached-attempts">
+  <h2>Provider not reached</h2>
+  <p class="muted">Runs that tried the provider and never reached it. The
+    questions involved kept the status they had; this is the durable record of
+    what stopped the run, and which of the four ways that happened.</p>
+  <table class="counts">
+    <thead><tr><th>When</th><th>Population</th><th>Detail</th><th>Question</th></tr></thead>
+    <tbody>
+      {% for u in unreached_attempts %}
+      <tr>
+        <td>{{ u.at }}</td>
+        <td><span class="badge">{{ u.population }}</span></td>
+        <td>{{ u.detail }}</td>
+        <td>{% if u.question_id %}q{{ u.question_id }}{% else %}<span class="muted">run</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+
 <form class="upload" action="/questions" method="post">
   <label>Ask a question
     <input type="text" name="text" size="48" placeholder="Where was Example Person born?" required>
