@@ -139,6 +139,7 @@ def test_the_asked_unit_stated_anywhere_in_the_value_suppresses_the_caveat(quest
         ("샘플사업의 기간은 몇 년인가?", "6달", ("년", "달")),
         ("샘플사업의 증가율은 몇 배인가?", "30%", ("배", "%")),
         ("샘플인물의 나이는 몇 살인가?", "24개월", ("살", "개월")),
+        ("샘플인물의 나이는 몇 세인가?", "24개월", ("세", "개월")),
     ],
 )
 def test_a_spellings_row_is_pinned_by_a_question_asked_in_a_different_row(
@@ -252,7 +253,7 @@ def test_the_digit_requirement_keeps_ordinary_prose_out_of_the_caveat(monkeypatc
     )
 
     counters = _unit_bearing_counters()
-    assert len(counters) == 13
+    assert len(counters) == 14
     questions = [f"샘플대상의 지표는 몇 {counter}인가?" for counter in counters]
     pairs = [(question, value) for question in questions for value in _PROSE_VALUES]
     assert len(pairs) == len(counters) * len(_PROSE_VALUES)
@@ -279,28 +280,28 @@ def test_the_digit_requirement_keeps_ordinary_prose_out_of_the_caveat(monkeypatc
         1 for question, value in pairs
         if korean_measure_unit_mismatch(question, value) is not None
     )
-    assert fires == 68
+    assert fires == 75
 
 
 def test_the_counter_table_is_the_size_the_comment_names():
-    """29 alternatives in `_KOREAN_MEASURE_COUNTER`, and nothing else counts them.
+    """30 alternatives in `_KOREAN_MEASURE_COUNTER`, and nothing else counts them.
 
     The overlap pinned above is an intersection, so it does not move for a
-    counter that names no unit: adding `마리` leaves it at 13 and reaches
+    counter that names no unit: adding `마리` leaves it at 14 and reaches
     nothing else in this file. The comment beside the table in `query_intent.py`
     quotes both figures, points at this file for both, and names this test for
-    the 29, so this counts the table itself -- otherwise a widening that touches
+    the 30, so this counts the table itself -- otherwise a widening that touches
     no unit lands unremarked, and the figure in that comment is one no assertion
     holds.
 
-    Its own test rather than a line beside the overlap: the 13 is what that
+    Its own test rather than a line beside the overlap: the 14 is what that
     sweep is built from, while this is a documentation guard, and an author who
     widens the table should be told that by name and not by a failure in a
     test about the digit requirement.
     """
     from verinote.pipeline.query_intent import _KOREAN_MEASURE_COUNTER
 
-    assert len(_KOREAN_MEASURE_COUNTER.split("|")) == 29
+    assert len(_KOREAN_MEASURE_COUNTER.split("|")) == 30
 
 
 def test_a_cross_family_unit_is_not_a_unit_mismatch():

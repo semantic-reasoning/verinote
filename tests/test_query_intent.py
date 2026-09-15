@@ -764,6 +764,47 @@ def test_a_measure_question_may_omit_the_space_before_the_counter():
 @pytest.mark.parametrize(
     ("question", "candidates"),
     [
+        ("샘플대상의 가격-몇 개?", ("가격-몇 개",)),
+        ("샘플대상의 A몇 개?", ("A몇 개",)),
+        ("샘플대상의 3몇 개?", ("3몇 개",)),
+        ("샘플대상의 최근 몇 개?", ("최근",)),
+    ],
+)
+def test_a_non_space_before_the_interrogative_keeps_the_label_whole(
+    question, candidates
+):
+    """The guard is a word boundary, not a character class (#446).
+
+    A non-space in front of the interrogative -- a hyphen, a letter, a digit --
+    is refused: the label is left whole rather than cut to a fragment. This is
+    the motivating case from the issue and what the tightened guard buys over the
+    old Hangul-only one; the control row pins that a genuine space before the
+    interrogative still strips to the whole word, so the tightening drops nothing
+    that was correct.
+    """
+    intent = deterministic_query_intent(question)
+
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.relation_candidates == candidates
+
+
+def test_the_formal_age_counter_se_is_read_like_sal():
+    """`세`, the standard formal counter for age, reads like `살` (#446).
+
+    It was missing from the closed counter list, so asking for the age in `세`
+    named the relation with its counter still attached -- a label no schema holds
+    -- while the identical `살` question reached the relation. This pins that both
+    counters reach the same candidates, so dropping either is noticed by name.
+    """
+    for counter in ("살", "세"):
+        intent = deterministic_query_intent(f"샘플인물의 나이는는 몇 {counter}인가?")
+        assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+        assert intent.relation_candidates == ("나이는", "나이는는")
+
+
+@pytest.mark.parametrize(
+    ("question", "candidates"),
+    [
         ("샘플인물의 나이는 몇 살 인가?", ("나이", "나이는")),
         ("샘플인물의 나이는 몇 살 이야?", ("나이", "나이는")),
         ("샘플대상의 수량은 몇 개 인가요?", ("수량", "수량은")),

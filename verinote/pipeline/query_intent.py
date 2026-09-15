@@ -778,19 +778,19 @@ _ENGLISH_ATTRIBUTE_TRAILING_PREDICATE = re.compile(
 
 # tests/test_query_measure_unit.py, now a module away, pins this string twice.
 # test_the_digit_requirement_keeps_ordinary_prose_out_of_the_caveat pins its
-# overlap with _MEASUREMENT_UNIT_SPELLINGS at 13, and
+# overlap with _MEASUREMENT_UNIT_SPELLINGS at 14, and
 # test_the_counter_table_is_the_size_the_comment_names pins its own alternatives
-# at 29. The overlap is an intersection, so it does not move for a counter that
-# names no unit -- `마리`, say; the count of 29 is what notices that one. Either
+# at 30. The overlap is an intersection, so it does not move for a counter that
+# names no unit -- `마리`, say; the count of 30 is what notices that one. Either
 # way the red lands in that file, not in this one's.
 _KOREAN_MEASURE_COUNTER = (
-    r"살|명|개|건|년|개월|달|주|일|시간|분|초|번|회|차|가지|종류|종|"
+    r"살|세|명|개|건|년|개월|달|주|일|시간|분|초|번|회|차|가지|종류|종|"
     r"퍼센트|프로|원|점|위|권|장|쪽|편|배|층"
 )
 _KOREAN_MEASURE_PREDICATE = r"인가요?|입니까|이에요|이야|예요|야"
 _KOREAN_MEASURE_QUESTION_TAIL = (
-    rf"(?<![가-힣])몇\s*(?:(?P<counter>{_KOREAN_MEASURE_COUNTER}))?\s*(?:{_KOREAN_MEASURE_PREDICATE})?"
-    r"|(?<![가-힣])얼마나(?:\s*[가-힣]{1,6}){0,2}"
+    rf"(?<!\S)몇\s*(?:(?P<counter>{_KOREAN_MEASURE_COUNTER}))?\s*(?:{_KOREAN_MEASURE_PREDICATE})?"
+    r"|(?<!\S)얼마나(?:\s*[가-힣]{1,6}){0,2}"
 )
 """The measure-question tails `_clean_korean_attribute_label` strips.
 
@@ -812,18 +812,19 @@ seven and is stripped, two runs covering it between them, while
 word, leaving the second word's seven syllables to a single run of six. Twelve
 syllables is the ceiling -- one word of twelve, or two words of six.
 
-Both interrogatives carry `(?<![가-힣])`, so neither may follow a Hangul
-syllable. `몇몇` is an ordinary Korean determiner, and without that guard its
-second syllable matched the bare-`몇` form and cut `몇몇` down to `몇`. What the
-guard buys for the bare `야`/`예요` predicates is narrower than safety: inside a
-Hangul label they are reachable only bound to a word-initial `몇`, so this rule
-cannot cut a word in half the way a stemless `야` would leave `분야` as `분` --
-it takes whole words. The guard names Hangul only, so any non-Hangul character
-before the interrogative -- punctuation as much as another script -- falls
-outside that reasoning, and there the rule does leave a fragment:
-`샘플대상의 가격-몇 개?` asks for `가격-`. A label whose tail really is `몇` +
-counter + `야` still loses that phrase: `샘플대상의 최근 몇 주야?` asks only for
-`최근`. That is the "several" case below, not a truncation.
+Both interrogatives carry `(?<!\\S)`, so each must begin the label or
+follow a space: a word boundary, not merely a non-Hangul syllable. `몇`
+is an ordinary Korean determiner, and without a guard its second syllable
+would match the bare-`몇` form and cut `몇` down to `몇`; the bare
+`야`/`예요` predicates are reachable only bound to a word-initial `몇`, so
+this rule takes whole words and cannot cut one in half the way a stemless
+`야` would leave `분야` as `분`. Because the guard is a boundary and not a
+character class, it also refuses any non-space in front of the
+interrogative -- a digit, a letter, punctuation -- and there the label is
+left whole rather than cut to a fragment: `샘플대상의 가격-몇 개?` asks
+for `가격-몇 개`, not `가격-` (#446). A label whose tail really is `몇` +
+counter + `야` still loses that phrase: `샘플대상의 최근 몇 주야?` asks only
+for `최근`. That is the "several" case below, not a truncation.
 
 The guard is on the interrogative, not on the counter, so `몇살인가?` is still
 read; the spaces on either side of the counter are both optional, so
