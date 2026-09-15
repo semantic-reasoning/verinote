@@ -1520,6 +1520,229 @@ def test_no_fact_joins_them_needs_evidence_not_merely_an_untruncated_list(tmp_pa
     assert "no confirmed fact joins them" not in _empty_plan_reason(plan, intent)
 
 
+def _lookup_relation_pair_intent():
+    from verinote.pipeline.query_intent import (
+        IntentTarget,
+        QueryIntent,
+        QueryIntentKind,
+    )
+
+    return QueryIntent(
+        kind=QueryIntentKind.LOOKUP_RELATION,
+        subject=IntentTarget("entity", "샘플프로젝트"),
+        object=IntentTarget("entity", "샘플조직"),
+    )
+
+
+def test_lookup_relation_with_both_known_reaches_the_no_such_fact_diagnosis(tmp_path):
+    """The pair shape reaches the no-such-fact reading #439 added.
+
+    Both endpoints are in the KB and nothing joins them, but `relation_in_schema`
+    is None for `lookup_relation` -- the relation is the answer variable -- so
+    the case-(c) branch, which needs it truthy, can never fire. Before #439
+    this fell through to the vague string the taxonomy exists to replace.
+    """
+    from verinote.pipeline.query import _empty_plan_reason
+    from verinote.pipeline.query_planner import plan_query_candidates
+    from verinote.pipeline.query_schema import build_query_schema_snapshot
+
+    s = _diagnosis_store(tmp_path)
+    intent = _lookup_relation_pair_intent()
+    snapshot = build_query_schema_snapshot(
+        s, exact_entities=("샘플프로젝트", "샘플조직")
+    )
+
+    plan = plan_query_candidates(intent, snapshot, qid=1)
+
+    assert plan.candidates == ()
+    assert plan.diagnosis is not None
+    assert plan.diagnosis.relation_in_schema is None
+    assert plan.diagnosis.entity_in_kb is True
+    assert plan.diagnosis.join_search_complete is True
+    assert plan.diagnosis.pair_absence_proven is True
+    assert _empty_plan_reason(plan, intent) == (
+        'entities "샘플프로젝트", "샘플조직" are in the knowledge base, '
+        "but no confirmed fact connects them"
+    )
+
+
+def test_lookup_relation_absence_is_not_proven_by_a_reverse_only_connector(tmp_path):
+    """A stored (B, R, A) connects the pair even though it answers no candidate.
+
+    The generator matches the pair as the question names it, so a reverse-order
+    fact yields an EMPTY plan while the KB does connect them. Emptiness plus a
+    whole list would therefore read presence as absence -- the either-order scan
+    is what keeps the new sentence from firing, and the vague fallback stays the
+    true answer. Generating from the reverse order is the real fix and is
+    registered separately, so this pin is what stops the message quietly
+    becoming false if that fix lands.
+    """
+    from verinote.pipeline.query import _empty_plan_reason
+    from verinote.pipeline.query_planner import plan_query_candidates
+    from verinote.pipeline.query_schema import build_query_schema_snapshot
+
+    s = _store(tmp_path)
+    # The pair stored in reverse: it answers a (샘플조직, 샘플프로젝트) question,
+    # not this one, so nothing the generator matches is missing from the KB.
+    s.add_fact("샘플조직", "관계", "샘플프로젝트", status="confirmed")
+    intent = _lookup_relation_pair_intent()
+    snapshot = build_query_schema_snapshot(
+        s, exact_entities=("샘플프로젝트", "샘플조직")
+    )
+
+    plan = plan_query_candidates(intent, snapshot, qid=1)
+
+    # The directional asymmetry this test stands on: the stored fact answers no
+    # candidate for this ordering.
+    assert plan.candidates == ()
+    assert plan.diagnosis is not None
+    assert plan.diagnosis.entity_in_kb is True
+    assert plan.diagnosis.join_search_complete is True
+    assert plan.diagnosis.pair_absence_proven is False
+    assert _empty_plan_reason(plan, intent) == "no query candidates matched the schema"
+
+
+def test_lookup_relation_pair_absence_needs_the_search_complete(tmp_path):
+    """A capped exact-fact list cannot prove the pair is unjoined.
+
+    Same gate as case (c): on a busy entity the joining fact can sit just past
+    `max_exact_entity_facts`, so the planner comes up empty while the KB does
+    connect them. Claiming absence there would be a false statement about the
+    KB's own contents.
+    """
+    from verinote.pipeline.query import _empty_plan_reason
+    from verinote.pipeline.query_intent import (
+        IntentTarget,
+        QueryIntent,
+        QueryIntentKind,
+    )
+    from verinote.pipeline.query_planner import plan_query_candidates
+    from verinote.pipeline.query_schema import build_query_schema_snapshot
+
+    s = _kb_where_the_join_search_truncates(tmp_path)
+    intent = QueryIntent(
+        kind=QueryIntentKind.LOOKUP_RELATION,
+        subject=IntentTarget("entity", "힣타겟"),
+        object=IntentTarget("entity", "주체000"),
+    )
+    snapshot = build_query_schema_snapshot(
+        s, exact_entities=("힣타겟", "주체000")
+    )
+    # The fixture really does truncate, or this test proves nothing.
+    assert snapshot.exact_entity_facts_truncated
+
+    plan = plan_query_candidates(intent, snapshot, qid=1)
+
+    assert plan.candidates == ()
+    assert plan.diagnosis is not None
+    assert plan.diagnosis.entity_in_kb is True
+    assert plan.diagnosis.join_search_complete is False
+    assert plan.diagnosis.pair_absence_proven is False
+    assert _empty_plan_reason(plan, intent) == "no query candidates matched the schema"
+
+
+def test_pair_absence_is_lookup_relation_only(tmp_path):
+    """The pair verdict must not leak into the kinds it was not designed for.
+
+    Case (c) for `lookup_object` is its own branch and needs the pair field to
+    stay False there; and the kind guard is what keeps a one-sided
+    `lookup_relation` -- an open side, not a pair -- out of the reading, since
+    a live plan for that shape can be non-empty on any in-KB endpoint.
+    """
+    from verinote.pipeline.query_intent import (
+        IntentTarget,
+        QueryIntent,
+        QueryIntentKind,
+    )
+    from verinote.pipeline.query_planner import _pair_absence_is_proven
+    from verinote.pipeline.query_schema import build_query_schema_snapshot
+
+    # Case-(c) shape, from the #434 fixtures: the pair field must stay False so
+    # the existing branch keeps the message.
+    plan = _plan_for(_diagnosis_store(tmp_path), subject="샘플조직", relation="purpose")
+    assert plan.candidates == ()
+    assert plan.diagnosis is not None
+    assert plan.diagnosis.pair_absence_proven is False
+
+    # One-sided: the guard, not the scan, is what makes it False -- a live plan
+    # for that shape is non-empty on any in-KB endpoint, so the reading is out
+    # of scope by construction.
+    s = _diagnosis_store(tmp_path)
+    one_sided = QueryIntent(
+        kind=QueryIntentKind.LOOKUP_RELATION,
+        subject=IntentTarget("entity", "샘플조직"),
+    )
+    snapshot = build_query_schema_snapshot(s, exact_entities=("샘플조직",))
+    assert _pair_absence_is_proven(one_sided, snapshot, ()) is False
+
+
+def test_lookup_relation_with_one_endpoint_absent_stays_the_absence_message(tmp_path):
+    """A missing endpoint keeps its own remedy; the pair claim must not fire.
+
+    This is the only case that exercises the `absent` precondition AND the
+    branch-after-`missing` ordering together: a regression dropping either would
+    emit "both are in the knowledge base" about one the KB lacks.
+    """
+    from verinote.pipeline.query import _empty_plan_reason
+    from verinote.pipeline.query_intent import (
+        IntentTarget,
+        QueryIntent,
+        QueryIntentKind,
+    )
+    from verinote.pipeline.query_planner import plan_query_candidates
+    from verinote.pipeline.query_schema import build_query_schema_snapshot
+
+    s = _store(tmp_path)
+    s.add_fact("샘플조직", "is_a", "조직", status="confirmed")
+    # One endpoint in the KB, one not: the shape the precondition exists for.
+    intent = QueryIntent(
+        kind=QueryIntentKind.LOOKUP_RELATION,
+        subject=IntentTarget("entity", "샘플조직"),
+        object=IntentTarget("entity", "없는것"),
+    )
+    snapshot = build_query_schema_snapshot(s, exact_entities=("샘플조직", "없는것"))
+
+    plan = plan_query_candidates(intent, snapshot, qid=1)
+
+    assert plan.candidates == ()
+    assert plan.diagnosis is not None
+    assert plan.diagnosis.entity_in_kb is False
+    assert plan.diagnosis.absent_entities == ("없는것",)
+    assert plan.diagnosis.pair_absence_proven is False
+    reason = _empty_plan_reason(plan, intent)
+    assert reason == 'entity "없는것" is not in the knowledge base'
+    assert "knowledge base, but no confirmed fact connects them" not in reason
+
+
+def test_lookup_relation_with_both_known_says_no_fact_connects_them(
+    tmp_path, fake_client, intent_payload
+):
+    """The pair sentence reaches the question row, not just the renderer.
+
+    Mirror of the case-(c) end-to-end pin: the flow plans empty for a
+    `lookup_relation` naming two known endpoints, and the reason carried is
+    what the user reads.
+    """
+    s = _diagnosis_store(tmp_path)
+    # The deterministic parser declines this shape (it mis-splits a Korean pair
+    # with a conjunction), so the provider's reading -- the fake client's
+    # `lookup_relation` intent -- is what the flow plans.
+    s.add_question("What is the relationship between 샘플프로젝트 and 샘플조직?")
+    client = fake_client(
+        intent=intent_payload(
+            "lookup_relation", subject="샘플프로젝트", object="샘플조직"
+        )
+    )
+
+    results = translate_questions(s, client, root=tmp_path)
+
+    assert results[0]["status"] == "review_required"
+    assert results[0]["reason"] == (
+        'entities "샘플프로젝트", "샘플조직" are in the knowledge base, '
+        "but no confirmed fact connects them"
+    )
+
+
 def test_every_provider_failure_exit_reports_the_provider_failed():
     """Producer-side tripwire for `provider_failed` (#438) and for
     `output_unusable` (#592).
