@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: MPL-2.0
 """Source ingestion: register original sources and extraction text artifacts.
 
-Extraction reads text, but facts cite original files. Text uploads are stored
-under `sources/` and reused as their own extraction artifact. Binary uploads are
-stored under `sources/` with their original filename, converted through a
-per-extension converter, and the converted text is stored separately under
-`artifacts/sources/<source_id>/`.
+Extraction reads text, but facts cite original files. Both kinds of upload are
+stored under `sources/` as their original file, and their text is stored
+separately under `artifacts/sources/<source_id>/`: a text upload's text is the
+file's own UTF-8 content, a binary upload's is the output of a per-extension
+converter. There is no branch in `store_source`; both texts are sanitized once,
+there, before the artifact is written.
 
 The converter table is open: `register_converter('.ext', fn)` adds a format.
 The built-in docx/pdf converters import their (optional) library lazily and

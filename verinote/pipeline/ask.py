@@ -587,11 +587,36 @@ def grounding_facts(
 
 
 def _source_text_paths(store: Store, root: Path) -> list[tuple[str, Path]]:
+    """One grounding text per source: the sanitized artifact, else the original.
+
+    #561: a source with a text artifact used to contribute both its artifact
+    and its original file. They are different paths, so the `seen_paths` dedupe
+    in `search_source_excerpts` never saw them as the same one, and the excerpt
+    budget was spent twice on the same sentence -- and the model saw the
+    unsanitized copy, raw NULs included, beside the sanitized one. The artifact
+    is the sanitized text (ingest is the single sanitization point, #473), so it
+    is the grounding text and the original of that source is not read.
+
+    A source with no artifact row -- the population #495 tracks, whose rows
+    never went through extraction -- keeps its original as its only text.
+    Refusing it would leave the population without any grounding at all, and its
+    NUL risk is the bounded, non-crashing one: #474 names the one provider
+    branch that crashes, and the other providers escape the NUL in their JSON
+    bodies. The original is therefore read as-is, unsanitized on purpose --
+    sanitizing it here would be #473's forbidden second decision point.
+
+    This is selection at read time, not sanitization: nothing here replaces a
+    character, so the one-sanitization-point decision stays intact.
+    """
+    inputs = list(store.source_text_inputs())
+    artifacted = {int(row["source_id"]) for row in inputs}
     paths: list[tuple[str, Path]] = []
-    for row in store.source_text_inputs():
+    for row in inputs:
         artifact = str(row["artifact_path"])
         paths.append((artifact, root / artifact))
     for row in store.sources():
+        if int(row["id"]) in artifacted:
+            continue
         source = str(row["path"])
         path = Path(source)
         paths.append((source, path if path.is_absolute() else root / path))
