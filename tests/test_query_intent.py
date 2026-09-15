@@ -552,6 +552,140 @@ def test_the_possessive_shape_splits_at_the_last_possessive():
     assert intent.relation_candidates == ("manager",)
 
 
+# --- #559: the English attribute head alternation, pinned at its current members ---
+
+_ENGLISH_POSSESSIVE_HEAD_CURRENT = {
+    "what is": "What is Sample Project's owner?",
+    "what was": "What was Sample Project's owner?",
+    "find": "Find Sample Project's owner?",
+    "show": "Show Sample Project's owner?",
+}
+"""The head alternation of `_ENGLISH_POSSESSIVE_ATTRIBUTE_QUESTION`, one
+question per member, over the fixed valid possessive part
+(`Sample Project's owner`). Literal, not a parametrize over a live constant:
+the head set lives inside the compiled pattern, there is no exported tuple to
+compare against, so the only pin is behavioural. The possessive part is fixed
+and valid in every row, so the head is the only variable separating the current
+members from #433's.
+"""
+
+_ENGLISH_POSSESSIVE_HEAD_PROPOSED = {
+    "who is": "Who is Sample Project's owner?",
+    "when is": "When is Sample Project's owner?",
+    "where is": "Where is Sample Project's owner?",
+    "how much is": "How much is Sample Project's owner?",
+}
+"""The four heads #433 proposes to admit, over the same fixed possessive part.
+None is admitted on this tree. #520 argues they must not be: each is
+type-bearing (`who` a person, `when` a time, `where` a place, `how much` an
+amount), while `QueryIntentKind.LOOKUP_OBJECT` carries no expected type, so the
+planner answers the relation it finds whatever the interrogative expected. This
+dict is the witness set that #433's widening turns green, and so is what
+reddens it back.
+"""
+
+
+def test_the_possessive_head_alternation_is_pinned_at_its_current_members():
+    """The possessive attribute question admits exactly its current four heads.
+
+    The head alternation (`what is`, `what was`, `find`, `show`) is the one part
+    of `_ENGLISH_POSSESSIVE_ATTRIBUTE_QUESTION` that #517's pinning (PR #558)
+    deliberately left, because #433 and #520 disagree about what it should be:
+    #433 asks that `who is`, `when is`, `where is`, `how much is` be admitted
+    too, and #520 measures that the widening answers type-bearing questions with
+    the wrong type under the system's strongest label. #559 records that, on the
+    possessive side, the head set was unpinned: widening it reddened nothing in
+    the suite.
+
+    This test is the pin #559 asks for. It is a tripwire for #433's widening of
+    the head alternation: the moment any of #433's four heads is admitted, its
+    row stops being `unknown_or_unsupported` and the test reddens. It is not an
+    inert record -- an inert record would stay green across that widening, and
+    this does not. Nor is it a precondition guard for some other boundary: that is
+    what `tests/contract/test_query_intent_contract.py::test_deterministic_parser
+    _does_not_resolve_the_role_question` is, and what reddens today for an
+    unrelated reason.
+
+    It does not itself decide the #433/#520 argument; it makes the widening a
+    visible, deliberate act that updates this test, rather than a silent
+    behaviour change. The positive rows pin the current members from the other
+    side: removing one of them reddens its row.
+
+    Verified against synthetic fixtures only. Refs #559, #433, #520.
+    """
+    for head, question in _ENGLISH_POSSESSIVE_HEAD_CURRENT.items():
+        intent = deterministic_query_intent(question)
+
+        assert intent.kind == QueryIntentKind.LOOKUP_OBJECT, head
+        assert intent.subject == IntentTarget("entity", "Sample Project"), head
+        assert intent.relation_candidates == ("owner",), head
+
+    for head, question in _ENGLISH_POSSESSIVE_HEAD_PROPOSED.items():
+        intent = deterministic_query_intent(question)
+
+        assert intent.kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED, head
+
+
+_ENGLISH_OF_HEAD_CURRENT = {
+    "what is": "What is the owner of Sample Project?",
+    "what was": "What was the owner of Sample Project?",
+    "find": "Find the owner of Sample Project?",
+    "show": "Show the owner of Sample Project?",
+}
+"""The head alternation of `_ENGLISH_OF_ATTRIBUTE_QUESTION`, one question per
+member, over the fixed valid `of` part (`the owner of Sample Project`). Same
+literal-not-constant and fixed-part reasoning as the possessive pair above.
+"""
+
+_ENGLISH_OF_HEAD_PROPOSED = {
+    "who is": "Who is the owner of Sample Project?",
+    "when is": "When is the owner of Sample Project?",
+    "where is": "Where is the owner of Sample Project?",
+    "how much is": "How much is the owner of Sample Project?",
+}
+"""The four heads #433 proposes to admit, over the same fixed `of` part. None is
+admitted on this tree; #520's type-bearing argument applies to the `of` shape
+the same way it applies to the possessive one.
+"""
+
+
+def test_the_of_head_alternation_is_pinned_at_its_current_members():
+    """The `of` attribute question admits exactly its current four heads.
+
+    The same pin as
+    `test_the_possessive_head_alternation_is_pinned_at_its_current_members`, for
+    `_ENGLISH_OF_ATTRIBUTE_QUESTION`.
+
+    It is distinguishable from
+    `tests/contract/test_query_intent_contract.py::test_deterministic_parser_does
+    _not_resolve_the_role_question`, which reddens today for an unrelated reason:
+    that test is a precondition guard whose job is to stop the live/replay
+    provider assertions going vacuous, so a #433 implementer who reddens it is
+    pointed at the provider boundary, not at the head set. This test's subject is
+    the head set: it reddens the moment the alternation is widened to admit any of
+    #433's four heads, and it stays green otherwise.
+
+    It is a tripwire for #433's widening, not an inert record: an inert record
+    would stay green across that widening, and this reddens it. It does not
+    itself decide the #433/#520 argument; it makes the widening a visible,
+    deliberate act that updates this test. The positive rows pin the current
+    members from the other side: removing one of them reddens its row.
+
+    Verified against synthetic fixtures only. Refs #559, #433, #520.
+    """
+    for head, question in _ENGLISH_OF_HEAD_CURRENT.items():
+        intent = deterministic_query_intent(question)
+
+        assert intent.kind == QueryIntentKind.LOOKUP_OBJECT, head
+        assert intent.subject == IntentTarget("entity", "Sample Project"), head
+        assert intent.relation_candidates == ("owner",), head
+
+    for head, question in _ENGLISH_OF_HEAD_PROPOSED.items():
+        intent = deterministic_query_intent(question)
+
+        assert intent.kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED, head
+
+
 def test_generic_korean_attribute_requires_question_shape():
     intent = deterministic_query_intent("샘플프로젝트의 목적")
 
