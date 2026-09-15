@@ -317,7 +317,9 @@ def _diagnose_empty_lookup(
     absent = tuple(
         value for value in entities if _nfc(value) not in snapshot.all_entity_surfaces
     )
-    matched, any_unmatched = _requested_relations_in_schema(requested, snapshot)
+    matched, any_unmatched = _requested_relations_in_schema(
+        requested, snapshot, intent.speculative_relations
+    )
     return EmptyPlanDiagnosis(
         relation_in_schema=bool(matched) if requested else None,
         entity_in_kb=(not absent) if entities else None,
@@ -403,7 +405,8 @@ def _diagnosed_entities(intent: QueryIntent) -> tuple[str, ...]:
 
 
 def _requested_relations_in_schema(
-    requested: tuple[str, ...], snapshot: QuerySchemaSnapshot
+    requested: tuple[str, ...], snapshot: QuerySchemaSnapshot,
+    speculative: tuple[str, ...] = (),
 ) -> tuple[tuple[str, ...], bool]:
     """Which requested labels name a relation the KB holds, and whether any did not.
 
@@ -430,6 +433,14 @@ def _requested_relations_in_schema(
     # can compare "relation `목적` resolved" against the word they typed, while a
     # canonical such as `role` is often neither their word nor any label in the
     # KB, so it gives them nothing to compare and states a name no fact carries.
+    # A speculative reading is a josa disambiguation the parser invented
+    # (#431): one ambiguous label split into two, and the schema -- not the
+    # question -- picks which is the relation. Its failing to resolve is
+    # expected and says nothing about a word being substituted for another,
+    # so it is dropped from the unmatched signal. Only a non-speculative
+    # requested label failing is the signal the renderer turns into a named
+    # reading (#441).
+    speculative_set = frozenset(_nfc(value) for value in speculative)
     matched: dict[str, str] = {}
     unmatched = False
     for value in requested:
@@ -438,7 +449,7 @@ def _requested_relations_in_schema(
             for observed in observed_labels
         ):
             matched.setdefault(_nfc(canonical_relation(value, aliases)), value)
-        else:
+        elif _nfc(value) not in speculative_set:
             unmatched = True
     return tuple(matched.values()), unmatched
 

@@ -195,6 +195,7 @@ class QueryIntent:
     relation: IntentTarget | None = None
     object: IntentTarget | None = None
     relation_candidates: tuple[str, ...] = field(default_factory=tuple)
+    speculative_relations: tuple[str, ...] = field(default_factory=tuple)
     operator: str | None = None
     value_type: str | None = None
     value: str | None = None
@@ -213,6 +214,13 @@ class QueryIntent:
             self,
             "relation_candidates",
             tuple(_clean_required_string(item, "relation candidate") for item in self.relation_candidates),
+        )
+        if not isinstance(self.speculative_relations, tuple):
+            raise ValueError("speculative_relations must be a tuple")
+        object.__setattr__(
+            self,
+            "speculative_relations",
+            tuple(_clean_required_string(item, "speculative relation") for item in self.speculative_relations),
         )
         if not isinstance(self.hops, tuple):
             raise ValueError("hops must be a tuple")
@@ -485,10 +493,12 @@ def deterministic_query_intent(question: str) -> QueryIntent:
         raw_label = match.group("label")
         label = _clean_korean_attribute_label(raw_label)
         if entity and label and _looks_like_korean_attribute_question(raw_label, text):
+            candidates, speculative = _korean_attribute_relation_request(raw_label)
             return QueryIntent(
                 kind=QueryIntentKind.LOOKUP_OBJECT,
                 subject=IntentTarget("entity", entity),
-                relation_candidates=_korean_attribute_relation_candidates(raw_label),
+                relation_candidates=candidates,
+                speculative_relations=speculative,
             )
 
     match = _ENGLISH_POSSESSIVE_ATTRIBUTE_QUESTION.match(text)
@@ -1041,10 +1051,19 @@ def _clean_english_attribute_label(value: str) -> str:
     return _ENGLISH_ATTRIBUTE_TRAILING_PREDICATE.sub("", label).strip()
 
 
-def _korean_attribute_relation_candidates(raw_label: str) -> tuple[str, ...]:
-    """Relation candidates for a Korean attribute label, both josa readings.
+def _korean_attribute_relation_request(raw_label: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """`(candidates, speculative)` for a Korean attribute label.
 
-    Only the leading reading is expanded through `_attribute_relation_candidates`.
+    `candidates` is the set the planner tries. `speculative` is the josa
+    pair the parser split one ambiguous label into (#431). Both readings
+    of that pair are the parser's disambiguation of a single word the user
+    typed -- the schema, not the question, decides which is the relation
+    -- so either one resolving, or failing, is a disambiguation, not the
+    substitution signal `EmptyPlanDiagnosis.any_unmatched` reports. That is
+    why #441 excludes the pair from the unmatched computation: without it,
+    `any_unmatched` fires for nearly every Korean attribute question and the
+    renderer names a reading that is usually the user's own word.
+
     The stripped reading leads, and today it is the only one that can be a
     synonym key: no key in that function's set ends in `은`/`는`/`이`/`가`,
     while the second reading ends in one by construction. So expanding it too
@@ -1058,7 +1077,14 @@ def _korean_attribute_relation_candidates(raw_label: str) -> tuple[str, ...]:
     readings = _korean_attribute_label_readings(raw_label)
     candidates = list(_attribute_relation_candidates(readings[0]))
     candidates.extend(readings[1:])
-    return tuple(dict.fromkeys(candidates))
+    speculative = tuple(readings) if len(readings) > 1 else ()
+    return tuple(dict.fromkeys(candidates)), speculative
+
+
+def _korean_attribute_relation_candidates(raw_label: str) -> tuple[str, ...]:
+    """Relation candidates for a Korean attribute label, both josa readings."""
+    candidates, _ = _korean_attribute_relation_request(raw_label)
+    return candidates
 
 
 def _attribute_relation_candidates(label: str) -> tuple[str, ...]:

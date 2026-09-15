@@ -1230,13 +1230,15 @@ def test_known_entity_with_no_such_fact_is_reported_as_neither_half_missing(
     results = translate_questions(s, client, root=tmp_path)
 
     assert results[0]["status"] == "review_required"
-    # The question also carries its un-stripped josa reading (#431), which no KB
-    # holds, so `any_unmatched` fires and the resolved reading is named. It is
-    # the user's own word, so the message stays true -- but see #441: the
-    # "a word was substituted" signal is now close to always-on for this shape.
+    # The question also carries its un-stripped josa reading (#431), `목적은`,
+    # which no KB holds. Before #441 that reading's failure set `any_unmatched`,
+    # and the renderer named `목적` -- the user's own word, so a false
+    # "a word was substituted" flag. The josa pair is now excluded from the
+    # unmatched computation, so the message is the honest generic one: nothing
+    # was substituted, the relation the user asked for is simply unfactored.
     assert results[0]["reason"] == (
-        'entity "샘플조직" is in the knowledge base and relation "목적" '
-        "resolved, but no confirmed fact joins them"
+        'entity "샘플조직" is in the knowledge base and the requested '
+        "relation resolved, but no confirmed fact joins them"
     )
 
 
@@ -1476,6 +1478,69 @@ def test_case_c_names_the_reading_only_when_a_requested_label_was_dropped(tmp_pa
     assert plan.diagnosis.matched_relations == ("목적",)
     assert _empty_plan_reason(plan, partial) == (
         'entity "샘플조직" is in the knowledge base and relation "목적" '
+        "resolved, but no confirmed fact joins them"
+    )
+
+
+def test_josa_reading_failure_does_not_flag_a_substitution(tmp_path):
+    """A josa pair's non-resolution is disambiguation, not a substitution (#441).
+
+    The parser splits one ambiguous label into two readings (#431) and the schema
+    picks which is the relation. Whether the *un*-held reading fails to resolve
+    is therefore expected and must not set `any_unmatched` -- else the renderer
+    names a reading that is usually the user's own word, the false "a word was
+    substituted" flag #441 removes. A non-josa requested label failing, by
+    contrast, still discloses the reading.
+    """
+    from verinote.pipeline.query import _empty_plan_reason
+    from verinote.pipeline.query_intent import (
+        IntentTarget,
+        QueryIntent,
+        QueryIntentKind,
+    )
+    from verinote.pipeline.query_planner import plan_query_candidates
+    from verinote.pipeline.query_schema import build_query_schema_snapshot
+
+    s = _store(tmp_path)
+    # `단` is in the schema (a fact under a different subject); `단가` is not.
+    s.add_fact("다른제품", "단", "1000", status="confirmed")
+    s.add_fact("샘플조직", "is_a", "조직", status="confirmed")
+    snapshot = build_query_schema_snapshot(s, exact_entities=("샘플조직",))
+
+    # The deterministic reading of `샘플제품의 단가?`: the josa pair, both
+    # speculative, and no fact joins 샘플조직 with 단 -- the (c) shape.
+    josa = QueryIntent(
+        kind=QueryIntentKind.LOOKUP_OBJECT,
+        subject=IntentTarget("entity", "샘플조직"),
+        relation_candidates=("단", "단가"),
+        speculative_relations=("단", "단가"),
+    )
+    plan = plan_query_candidates(josa, snapshot, qid=1)
+
+    assert plan.candidates == ()
+    assert plan.diagnosis is not None
+    assert plan.diagnosis.relation_in_schema is True
+    assert plan.diagnosis.matched_relations == ("단",)
+    # `단가` failed to resolve, but it is the parser's speculative josa reading,
+    # not a dropped requested label -- so no substitution is flagged.
+    assert plan.diagnosis.any_unmatched is False
+    assert _empty_plan_reason(plan, josa) == (
+        'entity "샘플조직" is in the knowledge base and the requested '
+        "relation resolved, but no confirmed fact joins them"
+    )
+    # The same pair without the speculative mark is a genuine partial match and
+    # discloses the reading -- pinning that the exclusion, not the data, is what
+    # suppresses the name.
+    plain = QueryIntent(
+        kind=QueryIntentKind.LOOKUP_OBJECT,
+        subject=IntentTarget("entity", "샘플조직"),
+        relation_candidates=("단", "단가"),
+    )
+    plan2 = plan_query_candidates(plain, snapshot, qid=2)
+    assert plan2.diagnosis is not None
+    assert plan2.diagnosis.any_unmatched is True
+    assert _empty_plan_reason(plan2, plain) == (
+        'entity "샘플조직" is in the knowledge base and relation "단" '
         "resolved, but no confirmed fact joins them"
     )
 

@@ -414,6 +414,13 @@ def test_generic_attribute_questions_become_lookup_object_intents():
     assert korean_explicit.relation_candidates == PURPOSE_RELATION_CANDIDATES + (
         "목적은",
     )
+    # The josa pair is the parser's speculative disambiguation (#431), kept
+    # apart from the synonym set so #441 can drop it from the unmatched
+    # signal; English labels have no josa, so nothing is speculative.
+    assert korean.speculative_relations == ("목적", "목적은")
+    assert korean_explicit.speculative_relations == ("목적", "목적은")
+    assert english_possessive.speculative_relations == ()
+    assert english_of.speculative_relations == ()
     assert korean.subject == IntentTarget("entity", "샘플프로젝트")
     assert english_possessive.subject == IntentTarget("entity", "Sample Project")
     assert english_of.subject == IntentTarget("entity", "Sample Project")
