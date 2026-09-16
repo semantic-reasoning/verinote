@@ -99,6 +99,26 @@ def client_api_key(client: object) -> str | None:
     return getattr(cfg, "api_key", None)
 
 
+# The character budget every "short reason" sink applies when it folds an
+# exception into a job row, a page banner, or a CLI line: collapse whitespace,
+# then cap (`" ".join(text.split())[:MAX_REASON_LENGTH]`).
+#
+# What the budget is for: the longest fixed reason any capped path can carry,
+# measured, not rounded. That is `_UNSENDABLE_ARGUMENT` -- the longest fixed
+# `LLMError` message, 251 chars (`verinote/llm/claude_cli_adapter.py`) --
+# behind the longest fixed clause any caller prepends to it, 56 chars (the
+# schema-aware reinterpretation failure in `verinote/pipeline/query.py`).
+# 251 + 56 = 307. A smaller cap truncates that message mid-sentence on a path
+# that used to arrive whole. The sites that add a fixed prefix (the repair-job
+# rows) apply it AFTER the cap, so the prefix is deliberately outside this
+# budget and stays fully visible.
+#
+# `tests/test_claude_cli_adapter.py::test_reason_cap_covers_the_longest_fixed_reason`
+# re-derives both sides from the source and reddens if either fixed text
+# outgrows the budget without someone re-deriving this constant.
+MAX_REASON_LENGTH = 307
+
+
 MIN_REDACTABLE_SECRET = 8
 
 
