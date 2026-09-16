@@ -1584,7 +1584,18 @@ class Store:
         THE CURSOR MUST BE CONSUMED BEFORE THIS RETURNS, and the `fetchone()` is
         what consumes it. `UPDATE ... RETURNING` holds the write lock until the
         statement finishes stepping, and the commit happens inside `fetchone()`,
-        not inside `execute()`. Measured on this connection's own settings
+        not inside `execute()`. What makes a lone `fetchone()` sufficient here
+        is a precondition the rulebook had left implied: `WHERE id = ?` targets
+        `source_chunks.id`, an `INTEGER PRIMARY KEY` (`store/schema.sql`), so the
+        CAS can match at most one row and one fetch drains the whole `RETURNING`.
+        The moment a statement can return more than one row -- a batch variant that
+        widens the `WHERE` clause to claim N pending chunks in one statement -- a
+        single `fetchone()` no longer finishes it (measured: a four-row `RETURNING`
+        still held three rows after the first fetch), and the cursor must be drained
+        with `fetchall()`, not fetched once. That single-row ground is the clause a
+        future editor must not drop: every other rule above holds, and the batch
+        variant would follow them all and still strand the unfinished statement.
+        Measured on this connection's own settings
         (autocommit; in WAL, which is what `store/schema.sql` sets for a real KB,
         and again on the rollback journal, with the same result both ways): with
         the cursor left alive and unfetched, another PROCESS reads the row as
