@@ -15,7 +15,7 @@ import pytest
 from verinote.config import PROVIDERS, Config, ConfigCorruptError
 from verinote.llm import factory
 from verinote.llm.base import LLMError
-from verinote.llm.openai_adapter import OpenAIAdapter
+from verinote.llm.openai_adapter import OPENAI_DEFAULT_BASE_URL, OpenAIAdapter
 from verinote.llm.openrouter_adapter import (
     OPENROUTER_DEFAULT_BASE_URL,
     OpenRouterAdapter,
@@ -122,13 +122,18 @@ def test_explicit_base_url_still_wins(tmp_path, monkeypatch):
     assert recorded["base_url"] == "https://proxy.internal/v1"
 
 
-def test_openai_provider_keeps_the_sdk_default_endpoint(tmp_path, monkeypatch):
-    """The hook must not leak the OpenRouter endpoint into the openai provider."""
+def test_openai_provider_dials_openai_not_openrouter(tmp_path, monkeypatch):
+    """The seam must not leak the OpenRouter endpoint into the openai provider.
+
+    Since #499 the openai provider resolves a blank field to
+    `OPENAI_DEFAULT_BASE_URL` rather than handing the SDK a `None`; the
+    assertion is that what it gets is the openai endpoint, not openrouter's.
+    """
     recorded = _record_client(monkeypatch, "extract_facts")
 
     OpenAIAdapter(_cfg(tmp_path, provider="openai")).extract_facts(source_text="x")
 
-    assert recorded["base_url"] is None
+    assert recorded["base_url"] == OPENAI_DEFAULT_BASE_URL
 
 
 # --- a failure names the provider that failed ---

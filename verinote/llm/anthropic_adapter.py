@@ -21,6 +21,16 @@ from verinote.llm.schema import (
 from verinote.pipeline.query_intent import QueryIntent, parse_query_intent
 from verinote.prompts import PromptError, render_prompt
 
+# The endpoint an unset `base_url` resolves to. Named rather than inlined so the
+# SDK never sees `base_url=None`: a `None` there is a delegation, and the
+# anthropic SDK's delegation target is its own `ANTHROPIC_BASE_URL`, so a blank
+# field would let an environment the settings screen never shows decide where
+# documents go. `_require_key` makes the same refusal for the credential -- the
+# endpoint and the key must both be values this process resolved.
+# `OllamaAdapter.__init__` and `OpenRouterAdapter._base_url` already bind their
+# endpoints this way.
+ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
+
 
 class AnthropicAdapter:
     name = "anthropic"
@@ -154,14 +164,18 @@ class AnthropicAdapter:
 
         Deliberately does NOT name the Base URL setting. A malformed `base_url`
         is the reachable cause this exists for (#493), but measured against the
-        installed `anthropic` SDK it is not the only one: with `base_url` unset
-        entirely, `SSL_CERT_FILE` pointing at a missing file raises
-        `FileNotFoundError`, and `HTTPS_PROXY='::::'` or
-        `ANTHROPIC_BASE_URL='::::'` raise `httpx.InvalidURL`. Telling those users
-        to check a field they left blank sends them to fix something that is not
-        broken -- the misdirection #474 was reported as. The urllib adapters can
-        be specific, and are, because `Request(url)` has no second cause; see
-        `base_url_unusable`.
+        installed `anthropic` SDK it is not the only one: `SSL_CERT_FILE`
+        pointing at a missing file raises `FileNotFoundError`, and
+        `HTTPS_PROXY='::::'` raises `httpx.InvalidURL`. The vendor's own
+        `ANTHROPIC_BASE_URL` is no longer among them: `_client` resolves a blank
+        field to `ANTHROPIC_DEFAULT_BASE_URL`, so the SDK never sees
+        `base_url=None` and cannot fall back to the environment -- measured, the
+        `ANTHROPIC_BASE_URL='::::'` that raised `httpx.InvalidURL` with
+        `base_url=None` raises nothing once the explicit default is supplied
+        (#499). Telling those users to check a field they left blank sends them
+        to fix something that is not broken -- the misdirection #474 was
+        reported as. The urllib adapters can be specific, and are, because
+        `Request(url)` has no second cause; see `base_url_unusable`.
 
         Singular SDK, and its own variable, because each SDK reads only its own
         *base-URL* variable: measured, `OPENAI_BASE_URL` carrying that same
@@ -224,9 +238,15 @@ class AnthropicAdapter:
         # failure. The region below must contain no statement that raises
         # `LLMError`, and this line is how that stays true.
         key = self._require_key()
+        # `or ANTHROPIC_DEFAULT_BASE_URL` is #499: a `None` here is a
+        # delegation, and the anthropic SDK's delegation target is its own
+        # `ANTHROPIC_BASE_URL` -- an environment the settings screen never
+        # shows. The same refusal `_require_key` makes for the key.
         try:
             return anthropic.Anthropic(
-                api_key=key, base_url=self.cfg.base_url, timeout=self.cfg.llm_timeout_seconds
+                api_key=key,
+                base_url=self.cfg.base_url or ANTHROPIC_DEFAULT_BASE_URL,
+                timeout=self.cfg.llm_timeout_seconds,
             )
         except Exception as exc:  # noqa: BLE001 - normalise SDK construction errors
             raise self._client_failed(exc) from exc

@@ -248,6 +248,36 @@ verinote does not fall back to a vendor SDK's own `OPENAI_API_KEY` or
 never resolved could not be redacted from an error message, so a missing key is
 an error instead.
 
+## Endpoints (Base URL)
+
+The endpoint is resolved by the same rule as the key: it is a value verinote
+itself resolved, never a delegation to a vendor SDK's own environment variable.
+The adapter always hands the SDK an explicit endpoint — never `None` — because
+a `None` is what lets the SDK consult `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL`,
+and a shell variable the Settings screen never shows would then decide where
+your documents go. For each provider, the endpoint is resolved in this order:
+
+| Source | Notes |
+|---|---|
+| `VERINOTE_BASE_URL` | provider-agnostic — applies to whichever provider is selected |
+| the Base URL saved in Settings | per KB, `config.json` |
+| the provider's default endpoint | an explicit constant, table below |
+
+The provider default endpoints:
+
+| Provider | Default endpoint |
+|---|---|
+| `anthropic` | `https://api.anthropic.com` |
+| `openai` | `https://api.openai.com/v1` |
+| `openrouter` | `https://openrouter.ai/api/v1` |
+| `ollama` | `http://localhost:11434` |
+| `claudecli` | none — it shells out to the `claude` binary, which follows its own config |
+
+A Base URL you do set still overrides the default, so a self-hosted gateway or
+a regional endpoint stays reachable. `claudecli` reads no endpoint at all: the
+`claude` binary follows its own configuration, which is the documented exception
+for this provider.
+
 ## Auto-accept
 
 `auto_accept_recommendations` is the one setting that changes what verinote
