@@ -3941,6 +3941,44 @@ class Store:
         if repair_item_columns and "owner_token" not in repair_item_columns:
             self._conn.execute("ALTER TABLE repair_job_items ADD COLUMN owner_token TEXT")
 
+        # #608. A KB created in #606-#608 carries the WIDER append-only carve-out
+        # (the `question_id` transition alone), in which a crafted
+        # `UPDATE ... SET question_id = NULL, detail = ...` rewrites an audit row.
+        # schema.sql's `CREATE TRIGGER IF NOT EXISTS` is a no-op for such a KB, so
+        # replace that one trigger here -- but ONLY when it is actually the wider
+        # version. A fresh KB already has the tightened trigger from schema.sql,
+        # and the web app's worker threads each open a Store and call init_schema,
+        # so this runs on concurrent connections: an unconditional `DROP` + `CREATE`
+        # is not atomic across them and one thread's `CREATE` can lose to another
+        # in-flight replace, raising `trigger already exists` (the py3.11/3.13
+        # #608 CI legs went red exactly this way). Checking sqlite_master first
+        # skips the replacement entirely when the tightened trigger is already in
+        # place; the residual "both connections read the wider one, both replace"
+        # race still ends with the tightened trigger (the loser's `CREATE` sees
+        # "already exists", which is the desired end state), so that is tolerated.
+        _ua = self._conn.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'trigger' AND name = 'unreached_attempts_no_update'"
+        ).fetchone()
+        _ua_sql = " ".join(
+            ((_ua["sql"] if _ua is not None else "") or "").lower().split()
+        )
+        if _ua is not None and "old.population = new.population" not in _ua_sql:
+            self._conn.execute("DROP TRIGGER IF EXISTS unreached_attempts_no_update")
+            try:
+                self._conn.execute(
+                    "CREATE TRIGGER unreached_attempts_no_update "
+                    "BEFORE UPDATE ON unreached_attempts FOR EACH ROW "
+                    "WHEN NOT (OLD.question_id IS NOT NULL AND NEW.question_id IS NULL "
+                    "AND OLD.population = NEW.population AND OLD.detail = NEW.detail "
+                    "AND OLD.at = NEW.at) "
+                    "BEGIN SELECT RAISE(ABORT, "
+                    "'unreached attempts audit is append-only'); END"
+                )
+            except sqlite3.OperationalError as e:
+                if "already exists" not in str(e):
+                    raise
+
     def _ensure_question_schema(self) -> None:
         columns = {
             row["name"] for row in self._conn.execute("PRAGMA table_info(questions)")

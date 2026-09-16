@@ -276,6 +276,86 @@ def test_question_id_null_and_survives_question_delete(tmp_path):
     ]
 
 
+def test_crafted_question_id_null_update_is_refused(tmp_path):
+    # #608 AC-3. The append-only carve-out is exactly the FK's own `SET NULL`:
+    # it may move `question_id` NOT NULL -> NULL and nothing else. A crafted
+    # statement that rides that transition to also rewrite `detail` or
+    # `population` must still be refused -- the pre-#608 trigger let it through,
+    # so this test is red on the parent commit.
+    store = _kb(tmp_path / "kb")
+    qid = int(store.questions()[0]["id"])
+    row_id = store.record_unreached_attempt(qid, "unreachable", "original detail")
+    for mutated in (
+        "UPDATE unreached_attempts SET question_id = NULL, detail = 'attacker text' WHERE id = ?",
+        "UPDATE unreached_attempts SET question_id = NULL, population = 'policy' WHERE id = ?",
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            store._conn.execute(mutated, (row_id,))
+    # Both statements aborted: the row, and its question link, are untouched.
+    rows = _unreached_rows(store)
+    assert len(rows) == 1
+    assert rows[0]["question_id"] == qid
+    assert rows[0]["population"] == "unreachable"
+    assert rows[0]["detail"] == "original detail"
+
+
+def test_init_schema_repairs_the_wider_carve_out(tmp_path):
+    # #608 migration. A KB opened before the tightening carries the wider
+    # trigger, under which the crafted UPDATE above is ALLOWED. `init_schema()`
+    # must replace that trigger: the schema.sql trigger is created with
+    # `IF NOT EXISTS` (concurrency-safe for parallel worker connections), so
+    # the widening detection happens in the `db.py` migration -- it reads the
+    # stored trigger SQL, and only when the wide pre-#608 form is present it
+    # drops and recreates the tightened one -- so after a re-open the same
+    # crafted UPDATE is refused.
+    root = tmp_path / "kb"
+    store = _kb(root)
+    qid = int(store.questions()[0]["id"])
+    row_id = store.record_unreached_attempt(qid, "unreachable", "original detail")
+    store.close()
+
+    # Rebuild the pre-#608 trigger: the wide carve-out (the question_id
+    # transition alone). This is the state an existing KB was in before #608.
+    legacy = sqlite3.connect(root / "kb.sqlite")
+    legacy.execute("DROP TRIGGER IF EXISTS unreached_attempts_no_update")
+    legacy.execute(
+        "CREATE TRIGGER unreached_attempts_no_update "
+        "BEFORE UPDATE ON unreached_attempts FOR EACH ROW "
+        "WHEN NOT (OLD.question_id IS NOT NULL AND NEW.question_id IS NULL) "
+        "BEGIN SELECT RAISE(ABORT, 'unreached attempts audit is append-only'); END"
+    )
+    legacy.commit()
+    legacy.close()
+
+    # Under the wide trigger the crafted UPDATE slips through (the bug #608 fixes).
+    wide = sqlite3.connect(root / "kb.sqlite")
+    wide.execute("PRAGMA foreign_keys = ON")
+    wide.execute(
+        "UPDATE unreached_attempts "
+        "SET question_id = NULL, detail = 'attacker text' WHERE id = ?",
+        (row_id,),
+    )
+    wide.commit()
+    wide.close()
+    check = sqlite3.connect(root / "kb.sqlite")
+    mutated = check.execute(
+        "SELECT detail, question_id FROM unreached_attempts WHERE id = ?", (row_id,)
+    ).fetchone()
+    check.close()
+    assert mutated[0] == "attacker text" and mutated[1] is None  # the pre-#608 leak
+
+    # Re-open through init_schema(), which must repair the trigger.
+    store = Store(root / "kb.sqlite")
+    store.init_schema()
+    row_id2 = store.record_unreached_attempt(qid, "unreachable", "original detail")
+    with pytest.raises(sqlite3.IntegrityError):
+        store._conn.execute(
+            "UPDATE unreached_attempts "
+            "SET question_id = NULL, detail = 'attacker text' WHERE id = ?",
+            (row_id2,),
+        )
+
+
 # ---------------------------------------------------------------------------
 # U2. translate_records the four request-path populations per question.
 # ---------------------------------------------------------------------------
