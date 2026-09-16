@@ -1032,6 +1032,22 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     def _short_error(exc: BaseException) -> str:
         return " ".join(_error_cause(exc).split())[:240]
 
+    def _record_and_cause(exc: BaseException, context: str) -> str:
+        """Record a save-route write failure with its traceback; return a safe banner cause.
+
+        The three save routes render the exception into a page banner and return
+        500. Before #574 they left no durable record of the failure and rendered
+        `str(exc)` raw, so an exception with a blank message (`IndexError()`) left
+        the banner ending in a bare colon -- no reason, no type, nothing to
+        diagnose from, and nothing logged. This records the exception with its
+        traceback (the `logger.exception` house form, as in the repair-job worker
+        below) and returns a cause that is never blank: the message, or the type
+        name when the message is empty (`_error_cause`). `OSError` is unchanged --
+        its message already carries the errno and the absolute path.
+        """
+        logger.exception("%s: %s", context, _error_cause(exc))
+        return _error_cause(exc)
+
     def _bounded_detail(detail: str) -> str:
         """Collapse whitespace and cap the provider's text for the questions page.
 
@@ -3690,7 +3706,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 prompt_text=prompt_text,
                 error=(
                     f"prompt {prompt_id} could not be saved to "
-                    f"{prompt_override_path(cfg.root, prompt_id)}: {exc}"
+                    f"{prompt_override_path(cfg.root, prompt_id)}: "
+                    f"{_record_and_cause(exc, 'save_prompt_override failed')}"
                 ),
                 status_code=500,
             )
@@ -3750,7 +3767,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 prompt_id=prompt_id,
                 error=(
                     f"prompt {prompt_id} override could not be deleted from "
-                    f"{prompt_override_path(cfg.root, prompt_id)}: {exc}"
+                    f"{prompt_override_path(cfg.root, prompt_id)}: "
+                    f"{_record_and_cause(exc, 'delete_prompt_override failed')}"
                 ),
                 status_code=500,
             )
@@ -3984,7 +4002,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             action = "written" if text else "removed"
             return _settings(
                 request,
-                error=f"Nothing was saved. {RELATION_ALIASES_RELPATH} could not be {action}: {exc}",
+                error=f"Nothing was saved. {RELATION_ALIASES_RELPATH} could not be {action}: "
+                f"{_record_and_cause(exc, 'relation-alias save failed')}",
                 status_code=500,
             )
         return RedirectResponse("/settings", status_code=303)
