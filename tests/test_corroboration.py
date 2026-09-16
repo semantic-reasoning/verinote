@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
+import os
+
 import unicodedata
 
 import pytest
@@ -76,6 +78,26 @@ def test_store_relation_aliases_omits_default_that_conflicts_with_user_direction
 
     assert aliases["role"] == "역할"
     assert "역할" not in aliases
+
+
+def test_store_relation_aliases_reports_a_directory_at_the_path(tmp_path):
+    s = _store(tmp_path)
+    alias = tmp_path / "policy" / "relation-aliases.md"
+    alias.parent.mkdir(parents=True)
+    alias.mkdir()
+
+    with pytest.raises(CorroborationPolicyError, match="not a readable file"):
+        store_relation_aliases(s)
+
+
+def test_store_relation_aliases_reports_a_symlink_loop_at_the_path(tmp_path):
+    s = _store(tmp_path)
+    alias = tmp_path / "policy" / "relation-aliases.md"
+    alias.parent.mkdir(parents=True)
+    os.symlink(alias, alias)
+
+    with pytest.raises(CorroborationPolicyError, match="not a readable file"):
+        store_relation_aliases(s)
 
 
 def test_corroboration_counts_distinct_engine_sources_only():

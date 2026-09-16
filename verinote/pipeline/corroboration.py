@@ -12,6 +12,7 @@ import datetime
 import decimal
 from dataclasses import dataclass
 from decimal import Decimal
+import os
 import re
 import unicodedata
 from typing import Any, Iterable, Mapping
@@ -221,8 +222,21 @@ def _relation_alias_token(text: str, *, line_no: int) -> str:
 
 def store_relation_aliases(store: Store) -> dict[str, str]:
     path = store.db_path.parent / RELATION_ALIASES_RELPATH
-    if not path.is_file():
+    try:
+        os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        # Truly absent: the documented "no alias file" state, so defaults apply.
         return relation_aliases(DEFAULT_RELATION_ALIASES)
+    if not path.is_file():
+        # Present but not a readable regular file: a directory, a symlink loop,
+        # or a symlink that does not resolve to a file. `is_file()` follows
+        # symlinks, so a healthy symlink-to-file still reads; a loop reports
+        # here because `exists()`/`is_file()` both swallow its ELOOP and would
+        # otherwise be read as absent. Report rather than silently substitute
+        # the packaged defaults.
+        raise CorroborationPolicyError(
+            f"{RELATION_ALIASES_RELPATH}: present but not a readable file"
+        )
     user_aliases = relation_aliases(path.read_text(encoding="utf-8"))
     return merge_default_relation_aliases(user_aliases)
 
