@@ -1231,8 +1231,15 @@ class Store:
         sanitizing changes nothing -- which is exactly the case where the count
         is 0. A pre-column extraction that did contain NUL hashes differently
         once sanitized: the re-ingest INSERTs a second row carrying the count
-        and leaves the original NULL, permanently. Deleting the source is what
-        clears it.
+        and leaves the original NULL. That row is not permanent, and deleting
+        the source is not the only way it ends -- it is the costlier cure. It
+        ends in one of three ways: a backfill, when a later registration
+        reproduces its checksum and measures the count (the `COALESCE` below);
+        the identity-repair DELETE, when a duplicate citation is collapsed onto
+        a retained source that already holds the same `(kind, checksum)`
+        (`_apply_source_identity_group`), which re-points the source's facts and
+        jobs onto the retained artifact and loses nothing; or `ON DELETE CASCADE`
+        from `delete_source`, which clears the row and the source's facts with it.
 
         `COALESCE` keeps a caller that did not measure (NULL) from erasing a
         count that was measured. It is not a "highest wins" rule: an explicit 0
