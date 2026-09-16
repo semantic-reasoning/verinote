@@ -30,10 +30,37 @@ A message set that lists the conditions known at the time silently stops
 covering a condition added later; the test below asserts the message that IS
 produced, rather than that no known message appears.
 
-Promoting `TYPED_TYPO` into `BROKEN_INPUTS` would now be correct and would give
-every parametrized test above a fourth real input. It is deliberately NOT done
-here, because that is coverage this issue did not set out to add and belongs to
-whoever next works this file.
+`TYPED_TYPO` is IN `BROKEN_INPUTS` now, added in #598, so every parametrized test
+below runs it as a fourth real input. It was deliberately NOT promoted when this
+file was written -- that was coverage #591 did not set out to add -- and #598
+measured what each test pins on it before adding it:
+
+- the message-bearing tests -- `test_ask_survives_each_broken_policy_file`,
+  `test_ask_carries_the_diagnosis_in_the_answer_not_only_on_the_page`,
+  `test_translate_survives_each_broken_policy_file` and
+  `test_verinote_query_reports_the_policy_failure_instead_of_crashing` -- assert
+  the distinct string `typed-relations.md:1: expected` on their route (the /ask
+  body, the ask-result section, the rendered translate page, and the CLI stdout).
+  That is a different string from the message each of the other three inputs
+  produces, so the assertion discriminates this input rather than merely matching
+  any failure;
+- `test_translate_leaves_every_question_pending` pins the write suppression: the
+  strict-parser failure is reported, not recorded, so the pending question stays
+  `pending` and no `translation_failed` row is written;
+- `test_repair_does_not_reach_the_direct_datalog_fallback` pins that the repair
+  status is `translation_failed` (not `review_required`) and that the direct-
+  datalog fallback -- which would re-raise the failure the guard just caught --
+  is never reached;
+- `test_the_guard_stops_the_snapshot_from_being_built_at_all` pins that
+  `build_query_schema_snapshot` is never called at all on /ask or /translate.
+
+Adding the input reddens nothing, and that is expected, not hollow: the guard's
+handling of the strict-parser class was already correct (the behaviour #589 and
+#591 established), so no test should fail. Before #598 the typo was exercised
+only by `test_a_typod_typed_file_is_reported_since_589`, and only on `POST /ask`;
+now it also runs through the translate page, the write suppression, the repair
+path, the snapshot-reachability count and the CLI -- the entry points that
+previously saw only the read and the duplicate-alias failures.
 
 THE EMPTY-QUEUE TRAP. `POST /questions/translate` returns 303 when there are no
 pending questions, under a broken policy file just as under a healthy one.
@@ -138,11 +165,12 @@ TYPED_PARSER_MSG = "typed-relations.md: alias"
 # is exactly why `ALL_MESSAGES` did not catch it.
 TYPED_TYPO_MSG = "typed-relations.md:1: expected"
 
-# (alias bytes, typed bytes, the message that must appear). Three inputs.
+# (alias bytes, typed bytes, the message that must appear). Four inputs.
 BROKEN_INPUTS = [
     pytest.param(ALIAS_MALFORMED, TYPED_HEALTHY, ALIAS_PARSER_MSG, id="alias-malformed"),
     pytest.param(ALIAS_CP949, TYPED_HEALTHY, ALIAS_NAMED, id="alias-cp949"),
     pytest.param(ALIAS_HEALTHY, TYPED_DUP_ALIAS, TYPED_PARSER_MSG, id="typed-duplicate-alias"),
+    pytest.param(ALIAS_HEALTHY, TYPED_TYPO, TYPED_TYPO_MSG, id="typed-typo"),
 ]
 # Every policy-file message a guarded route can render. `TYPED_TYPO_MSG` is a
 # member because #589 made the typed parser strict: a false-positive parse error
