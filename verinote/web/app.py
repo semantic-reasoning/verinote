@@ -113,6 +113,7 @@ from verinote.pipeline.corroboration import (
 from verinote.pipeline.workbench import trust_workbench
 from verinote.prompts import (
     PromptError,
+    PromptUnavailableError,
     delete_prompt_override,
     get_prompt,
     list_prompts,
@@ -2250,14 +2251,15 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
             WHAT IT DOES NOT COVER — each bullet says which status it leaves the job
             in and how close to reachable it is; they do not share an answer:
-            - A FUTURE REWINDING PATH. The two paths that rewind a job to `pending`
-              (`_halt_extraction_job`, `_back_off_from_locked_sidecar`) re-raise
-              types the `PolicyMissingError` and `DuckDBFactTermStoreLockedError`
-              clauses take ABOVE these two, so no rewind reaches here. A new one
-              that did would arrive `pending` and be buried, since `done` is the
-              only status this refuses. A new rewinding path in this worker
-              therefore needs its own clause above `except LLMError`; it cannot
-              lean on this guard.
+            - A REWINDING PATH. The three paths that rewind a job to `pending`
+              (`_halt_extraction_job`, `_back_off_from_locked_sidecar`,
+              `_back_off_from_unavailable_prompt`) re-raise types the
+              `PolicyMissingError`, `DuckDBFactTermStoreLockedError` and
+              `PromptUnavailableError` clauses take ABOVE these two, so no rewind
+              reaches here. A new one that did would arrive `pending` and be
+              buried, since `done` is the only status this refuses. A new rewinding
+              path in this worker therefore needs its own clause above
+              `except LLMError`; it cannot lean on this guard.
             - A PEER THAT REWINDS IN THE WINDOW. The re-read and the write are two
               statements on an autocommit connection, and `fail_extraction_job`
               updates `WHERE id = ?` with no status predicate, so this holds against
@@ -2530,6 +2532,25 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 logger.warning(
                     "extraction job %s paused (fact-term store locked by another "
                     "process): %s",
+                    job_id,
+                    exc,
+                )
+            except PromptUnavailableError as exc:
+                # ORDER IS LOAD-BEARING — above `except Exception` and, like the
+                # DuckDB clause, a log-only handler. The focused-role extraction
+                # prompt could not be loaded (an unreadable override file): an
+                # availability condition, the category the two clauses above refuse
+                # to charge to the content. `process_extraction_job` has already
+                # rolled the job back to `pending` so the next pass RESUMES it with
+                # the retry budget intact, and this guard declines only `done`, so
+                # the generic clause would otherwise write `failed` over that
+                # rollback — filing a host condition as the job's own failure, in
+                # the job row, in the `extraction_job_failed` event beside it, and
+                # on the Sources page (#269, #544). Log and leave it, exactly as
+                # the DuckDB clause does.
+                logger.warning(
+                    "extraction job %s paused (focused-role extraction prompt "
+                    "could not be loaded): %s",
                     job_id,
                     exc,
                 )

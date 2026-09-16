@@ -23,7 +23,7 @@ from verinote.pipeline.corroboration import (
 from verinote.pipeline.normalize import normalize_for_extraction
 from verinote.pipeline.policy_state import PolicyMissingError, assert_writable
 from verinote.policy_defaults import RELATION_ALIASES_RELPATH
-from verinote.prompts import PromptError, render_prompt
+from verinote.prompts import PromptError, PromptUnavailableError, render_prompt
 from verinote.store import Store
 from verinote.store.duckdb_fact_terms import DuckDBFactTermStoreLockedError
 from verinote.store.fact_input import nfc_term, structural_term
@@ -666,12 +666,27 @@ def process_extraction_job(
                 # `DuckDBFactTermStoreLockedError` is a `ValueError` subclass.
                 store.requeue_chunk_claim(chunk_id, attempts=claimed_attempts)
                 raise
+            except PromptUnavailableError:
+                # Not this chunk's failure either: the focused-role prompt could
+                # not be loaded. An unreadable override is a condition of the host
+                # (a file the machine cannot decode), not of the chunk's content —
+                # the same category `web/app.py` files under a corrupt config
+                # (#269). So the claim is REWOUND rather than released as failed —
+                # `pending` with the attempt refunded — and the outer handler then
+                # rewinds the job around it, the same two-level shape the sidecar
+                # clause above uses. Charged per chunk instead, `MAX_CHUNK_ATTEMPTS`
+                # of these would give up on the source for good over a file the
+                # user can fix (#544). The hint is resolved before any provider
+                # call, so no call is spent either.
+                store.requeue_chunk_claim(chunk_id, attempts=claimed_attempts)
+                raise
             except Exception as exc:
                 # The release point for a claim whose failure IS this chunk's own.
-                # No longer the only release: the sidecar clause above rewinds a
-                # claim instead, for a cause the chunk did not commit. This is the
-                # last one, though — nothing below it releases anything, so every
-                # exception that is not named above leaves through here.
+                # No longer the only release: the sidecar and unavailable-prompt
+                # clauses above rewind a claim instead, for a cause the chunk did
+                # not commit. This is the last one, though — nothing below it
+                # releases anything, so every exception that is not named above
+                # leaves through here.
                 #
                 # Broad on purpose, but NOT because `LLMError` is the only failure
                 # this pipeline models. Name the modelled set and it is plainly
@@ -723,6 +738,21 @@ def process_extraction_job(
         # rather than rebuilt, so the LLM is not paid for them a second time.
         # The rewind is what keeps the next pass on this job and the record true.
         _back_off_from_locked_sidecar(
+            store,
+            job_id=job_id,
+            run_id=run_id,
+            source_path=str(source["path"]),
+            run_candidates=store.run_candidate_count(job_id=job_id, run_id=run_id),
+            run_chunks=run_chunks,
+        )
+        raise
+    except PromptUnavailableError:
+        # The focused-role prompt could not be loaded — an availability condition,
+        # not the source's failure. The chunk clause above already rewound its own
+        # claim; this rewinds the JOB around it, the same two-level shape as the
+        # two clauses above, so the next pass resumes with the budget intact once
+        # the user fixes or removes the override (#269, #544).
+        _back_off_from_unavailable_prompt(
             store,
             job_id=job_id,
             run_id=run_id,
@@ -897,6 +927,49 @@ def _back_off_from_locked_sidecar(
     )
 
 
+def _back_off_from_unavailable_prompt(
+    store: Store,
+    *,
+    job_id: int,
+    run_id: int,
+    source_path: str,
+    run_candidates: int,
+    run_chunks: int,
+) -> None:
+    """Rewind a job that stopped because the focused-role prompt could not load.
+
+    The availability sibling of `_back_off_from_locked_sidecar`, and deliberately
+    the same shape: rewind to `pending` through `rollback_extraction_job`, then
+    record what this run really did. The reasons carry over unchanged — a job left
+    `running` that nothing is running is a KB lying about its own state, and
+    `failed` would mislabel chunks that never ran — and `pending` is again the one
+    status from which the documented remedy ("fix or remove the override file,
+    then retry") actually works.
+
+    A prompt the machine cannot read is a condition of the host, not of the
+    content (#269): the chunk clause above already refunded this pass's claim, so
+    the next pass finds the retry budget intact, and the LLM is paid no call for
+    it — the hint is resolved before any provider call (#544).
+    """
+    job = store.get_extraction_job(job_id)
+    completed = int(job["completed_chunks"]) if job is not None else 0
+    total = int(job["total_chunks"]) if job is not None else 0
+    store.rollback_extraction_job(
+        job_id,
+        f"Paused: the focused-role extraction prompt could not be loaded. Rolled "
+        f"back to pending at {completed}/{total} chunk(s). Fix or remove the "
+        f"override (policy/prompts/focused-role-extraction.md), then re-run the "
+        f"analysis.",
+    )
+    store.set_run_summary(
+        run_id,
+        f"{source_path}: paused because the focused-role extraction prompt could "
+        f"not be loaded; job rolled back to pending at job progress "
+        f"{completed}/{total} chunk(s); this run wrote {run_candidates} "
+        f"candidate(s) from {run_chunks} chunk(s)",
+    )
+
+
 def _extract_chunk(
     store: Store,
     client: LLMClient,
@@ -976,10 +1049,15 @@ def _extract_chunk(
 def _extract_chunk_facts(
     client: LLMClient, *, source_text: str, schema_hint: str = "", root=None
 ) -> list[ExtractedFact]:
-    facts = client.extract_facts(source_text=source_text, schema_hint=schema_hint)
     if _ROLE_CUE_RE.search(source_text) is None:
-        return facts
+        return client.extract_facts(source_text=source_text, schema_hint=schema_hint)
+    # Resolve the focused-role hint BEFORE any provider call. It is a file read,
+    # and a failure to load it is an availability condition (#544), not this
+    # chunk's content — so it must surface before this chunk is charged a call.
+    # A role cue is present, so the focused pass IS owed to this chunk; a non-
+    # role-cue chunk never reads the file at all and is unaffected by it.
     focused_schema_hint = _focused_role_schema_hint(schema_hint, root=root)
+    facts = client.extract_facts(source_text=source_text, schema_hint=schema_hint)
     try:
         facts.extend(
             client.extract_facts(
@@ -998,9 +1076,9 @@ def _focused_role_schema_hint(schema_hint: str, *, root=None) -> str:
     try:
         focused_role_prompt = render_prompt(root, "focused-role-extraction")
     except PromptError as exc:
-        raise LLMError(str(exc)) from exc
+        raise PromptUnavailableError(str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 - normalise every render failure
-        raise LLMError(
+        raise PromptUnavailableError(
             f"prompt focused-role-extraction could not be loaded: {exc}"
         ) from exc
     if not schema_hint:

@@ -18,6 +18,7 @@ from verinote.pipeline.extract import (
     _extract_chunk_facts,
     _focused_role_schema_hint,
 )
+from verinote.prompts import PromptUnavailableError
 from verinote.pipeline.query import query_path
 from verinote.pipeline.verify import verify
 from verinote.policy_defaults import RELATION_ALIASES_RELPATH
@@ -1556,26 +1557,37 @@ def _broken_override(path: Path, mode: str):
 
 
 @pytest.mark.parametrize("mode", ["non_utf8", "chmod"])
-def test_a_broken_focused_role_override_is_an_llm_error(tmp_path, fake_client, mode):
-    """An unreadable focused-role override is named, not raised raw (#539).
+def test_a_broken_focused_role_override_is_prompt_unavailable(tmp_path, fake_client, mode):
+    """An unreadable focused-role override is an availability condition, named.
 
-    The second half is about PLACEMENT, not normalisation: the hint is resolved
-    OUTSIDE the `except LLMError: pass` that guards the focused second pass, so
-    a broken override still reaches the caller. Move the resolution inside that
-    `try` and this assertion goes red — which it could not do before #539,
-    because what the read raised was not an `LLMError` for that clause to
-    swallow.
+    It is NOT an `LLMError` (#539 made it one, and that is the defect #544
+    fixes): an `LLMError` is a chunk-level, content-attributable failure the
+    chunk loop charges and continues past, so a broken override burned one retry
+    attempt and one provider call PER chunk. A prompt the machine cannot read is
+    a condition of the host, and it is routed the way the two siblings are
+    (`PolicyMissingError`, `DuckDBFactTermStoreLockedError`): as a
+    `PromptUnavailableError` the chunk loop re-raises without charging, so the
+    job stops once with its budget intact.
+
+    The second half is about PLACEMENT: the hint is resolved before any provider
+    call and OUTSIDE the `except LLMError: pass` that guards the focused second
+    pass, so a broken override surfaces before this chunk is charged a call. The
+    client therefore makes ZERO calls — move the resolution after the generic
+    call and this assertion goes red, which is exactly the per-chunk waste #544
+    removes.
     """
     path = tmp_path / "policy" / "prompts" / "focused-role-extraction.md"
     named = r"^prompt focused-role-extraction could not be loaded"
+    client = fake_client([ExtractedFact("Ada", "role", "CTO", 0.9)])
 
     with _broken_override(path, mode):
-        with pytest.raises(LLMError, match=named):
+        with pytest.raises(PromptUnavailableError, match=named):
             _focused_role_schema_hint("", root=tmp_path)
 
-        with pytest.raises(LLMError, match=named):
+        with pytest.raises(PromptUnavailableError, match=named):
             _extract_chunk_facts(
-                fake_client([ExtractedFact("Ada", "role", "CTO", 0.9)]),
+                client,
                 source_text="Ada는 이 회사의 CTO다.",
                 root=tmp_path,
             )
+        assert client.calls == 0, "the broken hint must surface before any call"

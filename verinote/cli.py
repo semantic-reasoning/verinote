@@ -19,6 +19,7 @@ from verinote.kb_location import (
     resolve_kb_root,
 )
 from verinote.pipeline.question_outcome import format_question_outcome
+from verinote.prompts import PromptUnavailableError
 from verinote.store import Store, engine_statuses, fact_status_order
 from verinote.store.duckdb_fact_terms import DuckDBFactTermStoreLockedError
 from verinote.text import nfc
@@ -907,6 +908,24 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     # error ever reached here with the job still `running`, the
                     # broad clause would charge a peer process's timing to the
                     # source as "analysis failed".
+                    raise
+                except PromptUnavailableError:
+                    # The focused-role extraction prompt could not be loaded —
+                    # an unreadable override file, a condition of the host, the
+                    # category the clause above refuses to charge to the content.
+                    # `process_extraction_job` has already rolled the job back to
+                    # `pending` with the chunk's attempt refunded, so the next
+                    # pass CONTINUES it once the override is fixed or removed.
+                    # Writing `failed` over that rewind would file a host
+                    # condition as this job's own failure and spend the source's
+                    # retry budget on a file the user can fix (#269, #544).
+                    # `main` turns the error itself into a clean rc=1 message.
+                    #
+                    # ABOVE `except Exception` regardless of the exception's base
+                    # (`PromptUnavailableError` is a `RuntimeError`, so nothing
+                    # else here would take it either): same pair-kept shape as the
+                    # two clauses above, the siblings of the one `web/app.py`
+                    # logs in the worker.
                     raise
                 except Exception as exc:
                     # THE JOB-LEVEL FLOOR (#488), sibling to the chunk-level one in
@@ -2374,6 +2393,16 @@ def main(argv: list[str] | None = None) -> int:
         # line, so a single floor here spares `sync`, `seed`, and the rest from
         # leaking a raw "Conflicting lock" traceback when another verinote
         # process (typically `verinote ui`) is holding the store.
+        print(str(exc), file=sys.stderr)
+        return 1
+    except PromptUnavailableError as exc:
+        # The same centralized floor for the other availability condition: a
+        # focused-role extraction prompt override the machine cannot decode.
+        # `cmd_sync`'s dedicated clause above keeps the job `pending` (rolled
+        # back with the retry budget intact, #544); without this, the error
+        # would leave `main` as a raw traceback, and the message it carries —
+        # naming the file to fix or remove — is exactly the diagnosis the user
+        # needs.
         print(str(exc), file=sys.stderr)
         return 1
 

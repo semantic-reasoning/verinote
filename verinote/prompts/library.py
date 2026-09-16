@@ -25,6 +25,21 @@ class PromptError(ValueError):
     """Raised when a prompt key or prompt text violates the prompt contract."""
 
 
+class PromptUnavailableError(RuntimeError):
+    """A required prompt could not be loaded at all — an availability condition.
+
+    A prompt file the pipeline cannot read is a condition of the host (a file the
+    machine cannot decode), not of the source's content. It must not be charged to
+    a chunk's content retry budget the way an `LLMError` is: an availability
+    condition stops the job once and leaves the budget intact, so the source is
+    not given up on over a file the user can fix (#269, #544).
+
+    A `RuntimeError` on purpose (like `PolicyMissingError`), not a `PromptError`
+    (`ValueError`) subclass: the routing clauses that take it sit above the broad
+    `except Exception`, and no `except ValueError` site should also claim it.
+    """
+
+
 @dataclass(frozen=True)
 class PromptDefinition:
     id: PromptId
