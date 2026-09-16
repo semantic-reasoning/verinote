@@ -198,6 +198,41 @@ re-sorting the table by length changes no reading. A spelling extended by
 punctuation would sit outside the class, and there the order would decide.
 """
 
+_TIME_UNIT_SPELLINGS = tuple(
+    sorted(
+        (
+            spelling
+            for spelling, unit in _MEASUREMENT_UNIT_SPELLINGS.items()
+            if _MEASUREMENT_FAMILY[unit] == "time"
+        ),
+        key=len,
+        reverse=True,
+    )
+)
+"""The time-family spellings, longest-first.
+
+`_LEADING_COMPOUND` is built from this. Longest-first because the alternation
+must not read the `주` inside `주일`, or the `year` inside `years`: one member
+is the prefix of another only in that Korean pair and the Latin plurals, and
+the sort is what keeps the longer taken first.
+"""
+
+_LEADING_COMPOUND = re.compile(
+    r"(?P<num1>[0-9][0-9,.]*\s*[만억천조]?\s*)"
+    r"(?P<unit1>" + "|".join(re.escape(s) for s in _TIME_UNIT_SPELLINGS) + r")"
+    r"(?P<num2>[0-9][0-9,.]*\s*[만억천조]?\s*)"
+    r"(?P<unit2>" + "|".join(re.escape(s) for s in _TIME_UNIT_SPELLINGS) + r")"
+    r"(?![가-힣0-9A-Za-z])"
+)
+"""An unspaced time compound: a quantity, a time unit, a quantity, a time unit.
+
+The `unit1` is exactly the unit `_VALUE_MEASUREMENT` refuses -- a digit
+follows it, so its trailing lookahead fails -- and the `unit2` is the one the
+strict scan does read. A value matching this is therefore one whose reported
+list holds only the trailing component. `_leading_time_compound_unit` is the
+selection rule it feeds; #454 is where the design call is argued.
+"""
+
 _MONTH_WORD_MEMBERS = (
     "매월", "매달", "금월", "익월", "내월", "당월", "전월", "차월",
     "다음 달", "이번 달", "지난 달", "내달",
@@ -1201,6 +1236,46 @@ def _value_measure_units(value: str) -> tuple[tuple[str, str], ...]:
     )
 
 
+def _leading_time_compound_unit(value: str) -> str | None:
+    """The leading unit of an unspaced time compound, or None.
+
+    #454: the reporting scan refuses a unit a digit follows, so in `3시간30분`
+    it sees only the `분`, and in `1년365일` only the `일`. The leading unit
+    is the larger quantity and the more useful thing to name, so when the
+    caveat already fires for such a value the caller names the leading unit
+    instead of the trailing one.
+
+    This re-selects only; it never adds a caveat. The caller establishes the
+    firing gate -- the strict scan found a same-family unit -- before
+    consulting this, so a value whose compound tail is a bare digit
+    (`3시간30분2`) never reaches here with anything to name.
+
+    Time family only, because the "leading is the larger quantity" principle
+    is a magnitude order -- hour over minute, year over day -- that exists
+    within time and not across money spellings, where a leading/trailing pair
+    is a guess rather than a duration.
+
+    The year guard: a leading number of 2-4 plain digits is a plausible
+    calendar year, so the compound is a date -- `2021년12개월` is December of
+    that year -- and the year must not be promoted. The guard reads only the
+    leading `[0-9]+` run, stopping at any separator, decimal, or magnitude,
+    which is the same bare-digit width `_TIME_POINT`'s year branches admit.
+    So a one-digit year (`1년365일`), a five-digit one (`10000년`), a decimal
+    (`1.5년`), a magnitude form (`3만년`), or a separator-form year
+    (`2,021년`) is a duration and is promoted -- each names a unit that is
+    literally present in the value, never a wrong one.
+    """
+    folded = nfc(value).casefold()
+    for match in _LEADING_COMPOUND.finditer(folded):
+        unit1 = _MEASUREMENT_UNIT_SPELLINGS[match.group("unit1")]
+        if unit1 == "YEAR":
+            digits = re.match(r"[0-9]+", match.group("num1")).group(0)
+            if 2 <= len(digits) <= 4:
+                continue
+        return match.group("unit1")
+    return None
+
+
 def korean_measure_unit_mismatch(question: str, value: str) -> tuple[str, str] | None:
     """The (asked counter, stated unit) a unit caveat should name, or None.
 
@@ -1272,6 +1347,15 @@ def korean_measure_unit_mismatch(question: str, value: str) -> tuple[str, str] |
     The first same-family unit is reported, not the first unit. `30% 완료, 3주`
     asked in months states a ratio first and a duration second, and the duration
     is the part the question was about.
+
+    Since #454 there is one exception to "first": for an unspaced time
+    compound, where the strict scan refuses the leading unit a digit follows
+    and `found` holds only the trailing one, the leading unit is named instead
+    -- `3시간30분` asked in years states `시간`, `1년365일` asked in months
+    states `년`. The rule is in `_leading_time_compound_unit`; it re-selects
+    only, so the silence above and the suppression scan are untouched, and a
+    leading number that reads as a calendar year (`2021년12개월`) is not
+    promoted.
 
     The main causes of an accepted silence, rather than all of them: a value
     stating no number; a unit run into the next syllable (`2년차`); a quantity
@@ -1503,7 +1587,19 @@ def korean_measure_unit_mismatch(question: str, value: str) -> tuple[str, str] |
     if _value_states_asked_unit(value, asked_unit):
         return None
     asked_family = _MEASUREMENT_FAMILY[asked_unit]
+    first = None
     for unit, spelling in found:
         if _MEASUREMENT_FAMILY[unit] == asked_family:
-            return (asked_spelling, spelling)
-    return None
+            first = spelling
+            break
+    if first is None:
+        return None
+    # #454: the strict scan above refuses a unit a digit follows, so for an
+    # unspaced time compound `first` is the trailing component. Name the
+    # leading unit instead -- the larger, more useful quantity. Time family
+    # only, and only here, where the caveat is already firing.
+    if asked_family == "time":
+        lead = _leading_time_compound_unit(value)
+        if lead is not None:
+            return (asked_spelling, lead)
+    return (asked_spelling, first)

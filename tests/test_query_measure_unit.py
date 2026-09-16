@@ -1044,6 +1044,83 @@ def test_the_suppression_scan_sees_everything_the_value_scan_sees():
             assert _value_states_asked_unit(value, unit), (value, unit)
 
 
+@pytest.mark.parametrize(
+    ("question", "value", "expected"),
+    [
+        ("샘플작업의 소요시간은 몇 년인가?", "3시간30분", ("년", "시간")),
+        ("샘플사업의 기간은 몇 개월인가?", "1년365일", ("개월", "년")),
+        ("샘플사업의 기간은 몇 년인가?", "1주2일", ("년", "주")),
+    ],
+)
+def test_an_unspaced_time_compound_names_the_leading_unit(question, value, expected):
+    """#454: the larger, leading quantity of an unspaced compound is named.
+
+    The reporting scan refuses a unit a digit follows, so `3시간30분` is read
+    as stating only `분` and `1년365일` only `일`. Both sentences are true --
+    the value does state 분 and does state 일 -- but the leading quantity is
+    the larger one and the more useful thing to name, and the spaced forms
+    already named it, so the asymmetry was the defect.
+
+    This re-selects only: the firing gate (a same-family unit in the strict
+    scan's list) and the suppression scan are unchanged, so no caveat is added
+    or withdrawn by it.
+    """
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
+
+    assert korean_measure_unit_mismatch(question, value) == expected
+
+
+@pytest.mark.parametrize(
+    ("question", "value"),
+    [
+        ("샘플사업의 기간은 몇 주인가?", "3시간30분2"),
+        ("샘플사업의 기간은 몇 년인가?", "1년365일9"),
+        ("샘플작업의 배수는 몇 배인가?", "3배2"),
+        ("샘플사업의 기간은 몇 분인가?", "30분20"),
+        ("샘플작업의 소요는 몇 초인가?", "5초3"),
+        ("샘플사업의 비용은 몇 원인가?", "1000원50"),
+    ],
+)
+def test_the_compound_rule_never_adds_a_caveat(question, value):
+    """The leading-unit rule re-selects; a tail that is not a quantity is silent.
+
+    `3시간30분2` and `1년365일9` end in a bare digit rather than a quantity,
+    so the strict scan's list holds no same-family unit and the caveat does not
+    fire. If the leading-unit rule were a new scan rather than a re-selection
+    it would name 시간 / 년 here, putting a new sentence in front of a reader.
+    The last four are the exact regressions #454 measured when the lookahead
+    was dropped: a unit followed by a digit that does not begin a quantity
+    states no unit.
+    """
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
+
+    assert korean_measure_unit_mismatch(question, value) is None
+
+
+def test_a_plausible_year_is_not_promoted_from_a_compound():
+    """#454's year guard: a 2-4-digit leading year is a date, not a duration.
+
+    `2021년12개월` is December of that year, so the leading `2021년` must not
+    be named even though the compound shape is the one that promotes. The
+    `("주", "개월")` outcome is pinned against the old behaviour elsewhere in
+    this file; stated here as the guard the fix carries, so widening the
+    year's digit bounds cannot turn a green suite into a silent change. The
+    one- and five-digit years are durations and promote.
+    """
+    from verinote.pipeline.query_measure_unit import (
+        _leading_time_compound_unit,
+        korean_measure_unit_mismatch,
+    )
+
+    assert _leading_time_compound_unit("2021년12개월") is None
+    assert _leading_time_compound_unit("1년365일") == "년"
+    assert _leading_time_compound_unit("10000년3개월") == "년"
+    assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 주인가?", "2021년12개월") == (
+        "주",
+        "개월",
+    )
+
+
 @pytest.mark.parametrize("value", ["21.03.15일", "25-01-15일", "2021.03.15 일"])
 def test_the_iso_branch_reads_a_two_digit_year_like_every_other_branch(value):
     """The year+month branch takes two-digit years; the ISO branch now does too.
