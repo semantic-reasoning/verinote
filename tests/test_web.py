@@ -7709,6 +7709,74 @@ def test_a_save_that_cannot_be_written_over_an_invalid_override_still_names_the_
     assert 'name="prompt_text"' in r.text
 
 
+def test_a_blank_exception_on_the_save_routes_names_its_type_and_records_a_traceback(
+    tmp_path, monkeypatch, caplog
+):
+    """#574: `str(IndexError())` is `""`, so all three save routes used to render a
+    banner ending in a bare colon (`... could not be written: `) -- no reason, no
+    type -- and recorded nothing. They now name the exception type in the banner
+    and log the failure with its traceback.
+
+    Each route's write path is driven to raise a blank `IndexError()` and both
+    properties are asserted: the banner carries a usable reason (the type name,
+    which is what refutes the bare colon) and a traceback was recorded. `OSError`
+    is the unchanged common case (its message already carries errno and the path)
+    and is pinned by the chmod-based tests in this file.
+    """
+    import os
+
+    def blank(*args, **kwargs):
+        raise IndexError()
+
+    c = _client(tmp_path)
+
+    def record(fragment):
+        return next(r for r in caplog.records if fragment in r.getMessage())
+
+    # save_prompt_route -- patch the module-level library call it makes.
+    monkeypatch.setattr(webapp, "save_prompt_override", blank)
+    with caplog.at_level(logging.INFO, logger="verinote.web.app"):
+        r = c.post(
+            "/prompts",
+            data={"prompt_id": "extraction", "prompt_text": "some text"},
+            follow_redirects=False,
+        )
+    assert r.status_code == 500
+    assert "prompt extraction could not be saved to" in r.text
+    assert "IndexError" in r.text  # the type names it; the colon is not bare
+    assert record("save_prompt_override failed").exc_info is not None
+    caplog.clear()
+
+    # reset_prompt_route -- the delete half of the same pair.
+    monkeypatch.setattr(webapp, "delete_prompt_override", blank)
+    with caplog.at_level(logging.INFO, logger="verinote.web.app"):
+        r = c.post(
+            "/prompts/reset",
+            data={"prompt_id": "extraction"},
+            follow_redirects=False,
+        )
+    assert r.status_code == 500
+    assert "prompt extraction override could not be deleted from" in r.text
+    assert "IndexError" in r.text
+    assert record("delete_prompt_override failed").exc_info is not None
+    caplog.clear()
+
+    # save_relation_aliases -- its write is a closure; patch the first filesystem
+    # call it makes so the failure is a blank `IndexError()`, not an `OSError`.
+    monkeypatch.setattr(os, "fchmod", blank, raising=False)
+    with caplog.at_level(logging.INFO, logger="verinote.web.app"):
+        r = c.post(
+            "/settings/relation-aliases",
+            data={"relation_aliases_text": "- role -> 역할"},
+            follow_redirects=False,
+        )
+    assert r.status_code == 500
+    assert "Nothing was saved" in r.text
+    assert "could not be written" in r.text
+    assert "IndexError" in r.text
+    assert record("relation-alias save failed").exc_info is not None
+
+
 @pytest.mark.parametrize(
     "mode",
     ["dir_0o500_readable_override", "dir_0o000_override", "dir_0o000_no_override"],
