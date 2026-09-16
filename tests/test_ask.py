@@ -2632,7 +2632,7 @@ def test_an_nfd_question_against_an_nfd_source_finds_the_excerpt(tmp_path):
 
 
 def test_token_boundaries_do_not_move_for_plain_latin_questions():
-    """Questions with no decomposable or fold-expanding characters keep today's boundaries.
+    """Questions with no characters that change under the fold (NFC composition or casefold expansion) keep today's token boundaries.
 
     A pin, not a guard: it is green on the parent *and* on the fix, and
     reddens an ordering or class change that moves token boundaries for
