@@ -344,10 +344,33 @@ CREATE INDEX IF NOT EXISTS idx_unreached_attempts_population
 -- `ON DELETE SET NULL` propagating a deleted question's id to NULL. That is the
 -- table's own contract, not a mutation of the audit, so the append-only
 -- refusal must not fire for it; every other UPDATE is refused.
+--
+-- #608 tightened the carve-out. The earlier form inspected only the
+-- `question_id` transition, so a crafted `UPDATE ... SET question_id = NULL,
+-- detail = ...` slipped through and rewrote an existing audit row. The carve-out
+-- now requires the `question_id` transition AND that every other column be
+-- unchanged -- exactly the FK's own write, and nothing wider.
+--
+-- `CREATE TRIGGER IF NOT EXISTS` (not `DROP` + `CREATE`) on purpose: `init_schema()`
+-- runs on every open, and the web app's worker threads each open a Store and call
+-- it -- so this script runs on concurrent connections. `DROP` + `CREATE` is not
+-- atomic across those connections: one thread's `CREATE` can lose to another
+-- thread's in-flight replace and raise `trigger already exists` (measured: the
+-- py3.11/3.13 legs of the #608 CI went red exactly this way). `IF NOT EXISTS` is
+-- idempotent and race-free. A KB opened between #606 and #608 still carries the
+-- wider trigger, and `IF NOT EXISTS` leaves it in place -- `_ensure_schema_migrations`
+-- in `store/db.py` detects and replaces that one, pinned by
+-- `tests/test_unreached_recorded.py::test_init_schema_repairs_the_wider_carve_out`.
 CREATE TRIGGER IF NOT EXISTS unreached_attempts_no_update
 BEFORE UPDATE ON unreached_attempts
 FOR EACH ROW
-WHEN NOT (OLD.question_id IS NOT NULL AND NEW.question_id IS NULL)
+WHEN NOT (
+    OLD.question_id IS NOT NULL
+    AND NEW.question_id IS NULL
+    AND OLD.population = NEW.population
+    AND OLD.detail     = NEW.detail
+    AND OLD.at         = NEW.at
+)
 BEGIN
     SELECT RAISE(ABORT, 'unreached attempts audit is append-only');
 END;
