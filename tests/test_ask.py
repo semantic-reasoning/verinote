@@ -7,7 +7,7 @@ import pytest
 
 import verinote.pipeline.ask as ask_module
 from verinote.llm.base import LLMError
-from verinote.pipeline.ask import ask_question, search_source_excerpts
+from verinote.pipeline.ask import MAX_EXCERPTS, ask_question, search_source_excerpts
 from verinote.pipeline.query import _QueryFlowResult, query_path
 from verinote.store import Store
 from verinote.store.duckdb_fact_terms import DuckDBFactTermStoreError
@@ -913,6 +913,108 @@ def test_a_source_without_an_artifact_is_grounded_by_its_original(tmp_path):
     excerpts = search_source_excerpts(store, root=tmp_path, question='샘플항목')
 
     assert [item.path for item in excerpts] == ["sources/sample.txt"]
+
+
+def test_equal_scored_excerpts_order_by_the_path_tie_break(tmp_path):
+    """Two equally-scored sources order by path, not by their input order.
+
+    #533: `search_source_excerpts` sorts by `(-score, path)`; the `path`
+    term is what makes the order deterministic when two sources score equally.
+    Without it a stable sort falls back to the input order, which
+    `_source_text_paths` happens to produce as `ORDER BY source path` for the
+    original rows — the same order only by construction, and nothing pins it.
+    The page renders `result.excerpts` in receipt order (a bare `{% for %}` in
+    ask.html), so the order a user sees is exactly this one.
+
+    The fixture misaligns the two sources so the input order and the path order
+    differ. Both carry a text artifact, so `_source_text_paths` lists them in
+    `source_text_inputs()`' `ORDER BY s.path` — the smaller original path first.
+    But their artifact labels order by source id, and the larger original path
+    is registered first, so it gets the smaller id and the smaller artifact
+    label. Input order and label order are then opposites, and with equal
+    scores only the path tie-break decides. Asserting the label order is what
+    pins the tie-break: drop the `path` term and the order is the input order.
+
+    This fixture must not also exercise descending-score ordering: with equal
+    scores the score sign is not observable, so that property is pinned by the
+    budget fixture below, not here.
+
+    Verified against synthetic fixtures only. Refs #533, #468.
+    """
+    store = _store(tmp_path)
+    # Larger original path registered first -> smaller id -> smaller artifact label.
+    first = store.add_source("sources/zzz.txt")
+    second = store.add_source("sources/aaa.txt")
+    text = "샘플문서는 샘플항목을 포함한다."
+    for source_id in (first, second):
+        (tmp_path / "sources").mkdir(exist_ok=True)
+        artifact_rel = f"artifacts/sources/{source_id}/text.txt"
+        (tmp_path / artifact_rel).parent.mkdir(parents=True)
+        (tmp_path / artifact_rel).write_text(text, encoding="utf-8")
+        store.add_source_artifact(
+            source_id=source_id,
+            kind="extracted_text",
+            path=artifact_rel,
+            checksum="sha",
+        )
+
+    excerpts = search_source_excerpts(store, root=tmp_path, question="샘플항목")
+
+    assert excerpts[0].score == excerpts[1].score, (
+        "the fixture must score the two sources equally, or the score ordering "
+        "— not the path tie-break — would be deciding the order"
+    )
+    assert [item.path for item in excerpts] == [
+        f"artifacts/sources/{first}/text.txt",
+        f"artifacts/sources/{second}/text.txt",
+    ]
+
+
+def test_the_excerpt_budget_keeps_the_highest_scoring_sources(tmp_path):
+    """More than MAX_EXCERPTS matches: the budget keeps the highest-scoring.
+
+    #533: `[:limit]` (limit = MAX_EXCERPTS) is the only thing bounding how many
+    excerpts reach the page, and it applies after the `(-score, path)` sort, so
+    the ones kept are the highest-scoring — not the first MAX_EXCERPTS in input
+    order. No fixture registers more than three sources, so the slice never
+    truncated and neither the bound nor the keep-highest behaviour was pinned.
+
+    The fixture registers MAX_EXCERPTS + 2 sources. The lower-scoring ones get
+    the smaller paths, so a slice that ignored score would keep them and drop
+    the higher-scoring ones. Asserting that every higher-scoring source is kept
+    is what pins the sort-before-limit ordering.
+
+    Verified against synthetic fixtures only. Refs #533, #468.
+    """
+    store = _store(tmp_path)
+    (tmp_path / "sources").mkdir()
+    low_token, high_token = "샘플둘", "샘플하나"
+    # `high_token` alone scores 1; both together score 2 (co-occurring window).
+    high_paths = [f"sources/z_{i:02d}.txt" for i in range(3)]
+    low_paths = [f"sources/a_{i:02d}.txt" for i in range(MAX_EXCERPTS - 1)]
+    for path in high_paths:
+        (tmp_path / path).write_text(
+            f"샘플문서에 {high_token}와 {low_token}이 들어 있다.", encoding="utf-8"
+        )
+        store.add_source(path)
+    for path in low_paths:
+        (tmp_path / path).write_text(
+            f"샘플문서에 {low_token}이 들어 있다.", encoding="utf-8"
+        )
+        store.add_source(path)
+
+    excerpts = search_source_excerpts(
+        store, root=tmp_path, question=f"{high_token} {low_token}"
+    )
+
+    assert len(excerpts) == MAX_EXCERPTS
+    kept = {item.path for item in excerpts}
+    for path in high_paths:
+        assert path in kept, (
+            "a higher-scoring source was dropped by the budget: the limit must "
+            f"apply after the score sort, keeping {path}"
+        )
+    assert [item.path for item in excerpts] == high_paths + low_paths[: MAX_EXCERPTS - 3]
 
 
 def test_ask_fallback_context_carries_no_nul_when_the_original_has_one(tmp_path):
