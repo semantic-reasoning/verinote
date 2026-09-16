@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: MPL-2.0
 """Durable question-repair lifecycle coverage."""
 
+import pytest
+
 from verinote.llm.base import LLMError
 from verinote.pipeline.repair import process_repair_job
 from verinote.pipeline.policy_state import POLICY_RELPATH, assert_writable, write_default_policy
@@ -211,3 +213,106 @@ def test_repair_job_processes_the_enqueued_snapshot(tmp_path, fake_client, inten
         "translated",
         "translated",
     ]
+
+
+def test_blank_exception_in_the_item_prepare_path_names_the_type(tmp_path, monkeypatch):
+    """#579, item-prepare site: a blank ``str(exc)`` must name the exception's
+    type, not leave the job row reading "Repair failed: " and the failed item's
+    reason blank.
+
+    Drives the REAL ``process_repair_job`` (not a monkeypatched stand-in) by
+    raising an argument-less ``ValueError()`` from ``_prepare_repair_question``.
+    The two publish-path sites are untouched, so reverting only this site
+    reddens this test and the publish-path tests stay green.
+    """
+    import verinote.pipeline.repair as repair
+
+    store = _store(tmp_path)
+    _review_question(store, "What is synthetic?")
+    job, _ = store.enqueue_repair_job(provider="fake", model="m")
+
+    def blank(*args, **kwargs):
+        raise ValueError()
+
+    monkeypatch.setattr(repair, "_prepare_repair_question", blank)
+
+    with pytest.raises(ValueError):
+        process_repair_job(store, _NoCallClient(), job_id=int(job["id"]), root=tmp_path)
+
+    saved = store.get_repair_job(int(job["id"]))
+    assert saved["message"] == "Repair failed: ValueError"
+    assert store.repair_job_items(int(job["id"]))[0]["status"] == "failed"
+    assert store.repair_job_items(int(job["id"]))[0]["reason"] == "ValueError"
+
+
+def test_blank_exception_in_the_completion_publish_path_names_the_type(
+    tmp_path, monkeypatch, fake_client, intent_payload,
+):
+    """#579, completion-publish site: after an item completes, a blank
+    ``str(exc)`` from the derived writer must name the exception's type, not
+    leave "Query draft regeneration pending: " dangling.
+
+    This is the publish reached on the same iteration an item is finished,
+    distinct from the no-item publish site. Reverting only this site reddens
+    this test; the no-item publish test stays green.
+    """
+    import verinote.pipeline.repair as repair
+
+    store = _store(tmp_path)
+    store.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
+    _review_question(store, "Where was Sample Person born?")
+    job, _ = store.enqueue_repair_job(provider="fake", model="m")
+    client = fake_client(
+        intent=intent_payload("lookup_object", subject="Sample Person", relation="born_in")
+    )
+
+    def blank_writer(*args, **kwargs):
+        raise ValueError()
+
+    monkeypatch.setattr(repair, "write_query_file", blank_writer)
+
+    process_repair_job(store, client, job_id=int(job["id"]), root=tmp_path)
+
+    assert store.repair_job_items(int(job["id"]))[0]["status"] == "done"
+    saved = store.get_repair_job(int(job["id"]))
+    assert saved["status"] == "pending"
+    assert saved["message"] == "Query draft regeneration pending: ValueError"
+
+
+def test_blank_exception_in_the_no_item_publish_path_names_the_type(
+    tmp_path, monkeypatch, fake_client, intent_payload,
+):
+    """#579, no-item publish site: with every item already done, a blank
+    ``str(exc)`` from the derived writer must name the exception's type, not
+    leave "Query draft regeneration pending: " dangling.
+
+    Run 1 completes the item (deferred by a failed publish); run 2 re-claims
+    the job, finds no item to process, and reaches the no-item publish site.
+    The final assertion is on run 2, so reverting only this site reddens this
+    test while the completion-publish test stays green.
+    """
+    import verinote.pipeline.repair as repair
+
+    store = _store(tmp_path)
+    store.add_fact("Sample Person", "born_in", "Sample Place", status="confirmed")
+    _review_question(store, "Where was Sample Person born?")
+    job, _ = store.enqueue_repair_job(provider="fake", model="m")
+    client = fake_client(
+        intent=intent_payload("lookup_object", subject="Sample Person", relation="born_in")
+    )
+
+    def blank_writer(*args, **kwargs):
+        raise ValueError()
+
+    monkeypatch.setattr(repair, "write_query_file", blank_writer)
+
+    # Run 1: the item completes (done); the failed publish defers the job.
+    process_repair_job(store, client, job_id=int(job["id"]), root=tmp_path)
+    assert store.repair_job_items(int(job["id"]))[0]["status"] == "done"
+    assert store.get_repair_job(int(job["id"]))["status"] == "pending"
+
+    # Run 2: no item left to process -> the no-item publish site.
+    process_repair_job(store, _NoCallClient(), job_id=int(job["id"]), root=tmp_path)
+    saved = store.get_repair_job(int(job["id"]))
+    assert saved["status"] == "pending"
+    assert saved["message"] == "Query draft regeneration pending: ValueError"

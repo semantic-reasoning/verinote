@@ -175,6 +175,20 @@ def repair_questions(
     return results
 
 
+def _error_cause(exc: BaseException) -> str:
+    """The exception's own message, or its type name when that message is blank.
+
+    #579. A blank ``str(exc)`` (an argument-less ``ValueError()`` is the
+    reachable case) would otherwise leave a durable, UI-rendered failure message
+    ending in a bare separator -- ``Repair failed: `` -- with no cause. Naming
+    the type only when the message is blank keeps a message-bearing exception
+    unchanged (no type-qualification), mirroring the ``_error_cause`` #551
+    settled in ``verinote/web/app.py``.
+    """
+    text = str(exc)
+    return text if text.strip() else type(exc).__name__
+
+
 def process_repair_job(
     store: Store, client: LLMClient, *, job_id: int, root: Path, policy_guard=lambda: None,
 ) -> None:
@@ -222,7 +236,7 @@ def process_repair_job(
                     raise
                 except Exception as exc:
                     store.defer_repair_job(
-                        job_id, owner_token, f"Query draft regeneration pending: {' '.join(str(exc).split())[:200]}"
+                        job_id, owner_token, f"Query draft regeneration pending: {' '.join(_error_cause(exc).split())[:200]}"
                     )
                     return
                 store.finish_repair_job(job_id, owner_token)
@@ -263,7 +277,7 @@ def process_repair_job(
             except PolicyMissingError:
                 raise
             except Exception as exc:
-                reason = " ".join(str(exc).split())[:240]
+                reason = " ".join(_error_cause(exc).split())[:240]
                 store.finish_repair_item(int(item["id"]), owner_token, status="failed", reason=reason)
                 store.finish_repair_job(job_id, owner_token, failed=True, message=f"Repair failed: {reason}")
                 raise
@@ -290,6 +304,14 @@ def process_repair_job(
                         prepared.unreached_population or "unreachable",
                         redact_secret(prepared.result.reason, client_api_key(client)),
                     )
+                # #579. Checked, not assumed: this interpolates the ENGINE's
+                # stored reason, not an exception's str(). In this
+                # provider_failed / infrastructure_fault path it is always a
+                # non-blank `_short_reason(...)` (see the provider-failure exits
+                # in query.py), so it cannot leave the "Repair failed: "
+                # separator dangling -- the blank-exception defect this issue
+                # fixes does not reach this site, and there is no exception to
+                # run `_error_cause` on here.
                 store.finish_repair_item(int(item["id"]), owner_token, status="failed", reason=prepared.result.reason)
                 store.finish_repair_job(
                     job_id, owner_token, failed=True, message=f"Repair failed: {prepared.result.reason}"
@@ -307,7 +329,7 @@ def process_repair_job(
             except Exception as exc:
                 store.defer_repair_job(
                     job_id, owner_token,
-                    f"Query draft regeneration pending: {' '.join(str(exc).split())[:200]}",
+                    f"Query draft regeneration pending: {' '.join(_error_cause(exc).split())[:200]}",
                 )
                 return
     finally:
