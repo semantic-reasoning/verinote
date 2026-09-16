@@ -2493,9 +2493,15 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 # content-attributable) still writes NOTHING here (mirror
                 # `except PolicyMissingError`) instead of falling through to
                 # `except Exception`, which would call `fail_extraction_job` —
-                # burying the job in `failed` with a misleading "analysis failed" and
-                # consuming this session's MAX_CHUNK_ATTEMPTS retry budget for a cause
-                # unrelated to the source content (#269).
+                # burying the job in `failed` with a misleading "analysis failed"
+                # for a cause unrelated to the source content, and writing to a KB
+                # whose config is corrupt (the same reason the
+                # `except PolicyMissingError` clause above writes nothing). That
+                # write spends no retry budget: the failure lands before any chunk
+                # is claimed, so every chunk stays `pending`, `attempts` stay 0,
+                # `failed_chunk_attempt_status` reads `(0, 0)`, and the next pass
+                # gets an empty plan and rebuilds the source from scratch — the
+                # work re-done, not the budget (#269).
                 logger.warning(
                     "extraction job %s halted (%s): %s", job_id, type(exc).__name__, exc
                 )

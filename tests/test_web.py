@@ -42,7 +42,13 @@ from verinote.llm.base import ExtractedFact, LLMError, ModelListing  # noqa: E40
 from verinote.llm.claude_cli_adapter import ClaudeCliAdapter  # noqa: E402
 from verinote.llm.ollama_adapter import OllamaAdapter  # noqa: E402
 from verinote.llm.openai_adapter import OpenAIAdapter  # noqa: E402
-from verinote.pipeline import ChunkedExtractionResult, ExtractionJobBusyError  # noqa: E402
+from verinote.pipeline import (  # noqa: E402
+    ChunkedExtractionResult,
+    ExtractionJobBusyError,
+    ExtractionJobPlan,
+    create_chunked_extraction_job,
+    plan_source_extraction,
+)
 from verinote.pipeline.verify import _with_unrecorded_policy_warning  # noqa: E402
 from verinote.pipeline.policy_state import (  # noqa: E402
     POLICY_RELPATH,
@@ -5276,9 +5282,13 @@ def test_worker_config_corrupt_does_not_mark_the_job_failed(tmp_path, monkeypatc
     an error were ever raised there (a future get_client that re-reads disk, or a
     caller that passes a different cfg into the thread). A corrupt config is a
     host/environment condition, not content-attributable, so the worker must write
-    NOTHING — not bury the job in `failed` (a misleading "analysis failed") and burn
-    this session's retry budget. Below `except Exception`, the generic handler would
-    call `fail_extraction_job`; this test pins that it does not."""
+    NOTHING — not bury the job in `failed` with a misleading "analysis failed", and
+    not write to a KB whose config is corrupt. The cost of the generic handler is the
+    discarded job, not the budget: the failure lands before any chunk claim, so every
+    chunk stays `pending`, `attempts` stay 0, and the next pass rebuilds the source
+    from scratch — the work re-done, not the retry budget (the value the test below
+    derives). Below `except Exception`, the generic handler would call
+    `fail_extraction_job`; this test pins that it does not."""
     cfg, job_id, _ = _job_kb(tmp_path, with_policy=True)  # healthy cfg -> hoist passes
     called = threading.Event()
 
@@ -5298,6 +5308,73 @@ def test_worker_config_corrupt_does_not_mark_the_job_failed(tmp_path, monkeypatc
     assert job["status"] == "pending", "a corrupt-config race buried the job in `failed`"
     assert "analysis failed" not in (job["message"] or "")
     assert "extraction_job_failed" not in _job_event_types(cfg, job_id)
+
+
+def test_fail_extraction_job_before_any_claim_charges_no_budget(tmp_path):
+    """#532: the cost of `fail_extraction_job` on the pre-claim path is the
+    discarded job, not the retry budget.
+
+    The worker's `except (ConfigCorruptError, CredentialsCorruptError)` clause and
+    the ordering guard above it both rest on this: the failure lands before any
+    chunk is claimed, so nothing is charged. This test derives the value those
+    prose now state, directly — a job failed through `fail_extraction_job` with no
+    chunk ever claimed keeps every chunk `pending`, `attempts` at 0,
+    `failed_chunks` at 0, `failed_chunk_attempt_status` at `(0, 0)`, and plans
+    empty (rebuild fresh).
+
+    It drives `fail_extraction_job` straight from the store rather than through
+    `process_extraction_job`, so it does not depend on the chunk loop's `except`
+    shape: a mutant that reshapes that clause leaves this green, while a mutant
+    that makes the pre-claim failure mark chunks `failed` (spending the budget)
+    takes it red. The job is built through `create_chunked_extraction_job` and
+    planned with the matching config, so the empty plan is the no-charged
+    outcome, not a stale fixture.
+    """
+    store = Store(tmp_path / "kb.sqlite")
+    store.init_schema()
+    source_id = store.add_source("sources/a.txt")
+    source_text = "alpha\n\nbeta\n\ngamma"
+    chunk_chars, chunk_overlap = 8, 0
+    job_id = create_chunked_extraction_job(
+        store,
+        source_id=source_id,
+        artifact_id=None,
+        source_text=source_text,
+        provider="fake",
+        model="m",
+        chunk_chars=chunk_chars,
+        chunk_overlap_chars=chunk_overlap,
+    )
+
+    # Pre-claim state: every chunk pending, no attempt spent.
+    chunks = store.source_chunks(job_id)
+    assert [c["status"] for c in chunks] == ["pending"] * len(chunks)
+    assert [c["attempts"] for c in chunks] == [0] * len(chunks)
+
+    # The generic handler's only write on this path.
+    store.fail_extraction_job(job_id, "analysis failed: config.json is not valid JSON")
+
+    # Nothing was charged: the chunk rows are untouched, the job reports no failed
+    # chunk, and the give-up gate reads (0, 0).
+    chunks = store.source_chunks(job_id)
+    assert [c["status"] for c in chunks] == ["pending"] * len(chunks)
+    assert [c["attempts"] for c in chunks] == [0] * len(chunks)
+    assert store.get_extraction_job(job_id)["failed_chunks"] == 0
+    assert store.failed_chunk_attempt_status(job_id, max_attempts=3) == (0, 0)
+
+    # Planning rebuilds fresh (empty plan), not retry/resume/exhausted/busy.
+    plan = plan_source_extraction(
+        store,
+        source_id=source_id,
+        artifact_id=None,
+        source_text=source_text,
+        provider="fake",
+        model="m",
+        chunk_chars=chunk_chars,
+        chunk_overlap_chars=chunk_overlap,
+    )
+    assert plan == ExtractionJobPlan()
+    store.close()
 
 
 def test_worker_sidecar_lock_does_not_overwrite_the_rollback(tmp_path, monkeypatch, fake_client):
