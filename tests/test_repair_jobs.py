@@ -3,7 +3,7 @@
 
 import pytest
 
-from verinote.llm.base import LLMError
+from verinote.llm.base import LLMError, MAX_REASON_LENGTH
 from verinote.pipeline.repair import process_repair_job
 from verinote.pipeline.policy_state import POLICY_RELPATH, assert_writable, write_default_policy
 from verinote.store import Store
@@ -243,6 +243,70 @@ def test_blank_exception_in_the_item_prepare_path_names_the_type(tmp_path, monke
     assert saved["message"] == "Repair failed: ValueError"
     assert store.repair_job_items(int(job["id"]))[0]["status"] == "failed"
     assert store.repair_job_items(int(job["id"]))[0]["reason"] == "ValueError"
+
+
+def test_item_prepare_path_collapses_internal_whitespace_in_the_reason(
+    tmp_path, monkeypatch
+):
+    """#584, AC-3 (collapse half). The item-prepare `except Exception` clause
+    folds every internal whitespace run of the cause to one space before it
+    writes the failed item's reason and the job message. Drive it with a cause
+    whose collapsed form stays UNDER `MAX_REASON_LENGTH`, so the cap is the
+    identity and this test isolates the collapse: 100 `a`s, an irregular
+    whitespace run that must fold to one space, then 50 `b`s. Dropping the
+    `.split()` collapse leaves the raw run in the durable reason and reddens
+    ONLY this test; dropping the `[:MAX_REASON_LENGTH]` bound (a no-op on a
+    sub-cap message) stays green.
+    """
+    import verinote.pipeline.repair as repair
+
+    store = _store(tmp_path)
+    _review_question(store, "What is synthetic?")
+    job, _ = store.enqueue_repair_job(provider="fake", model="m")
+    cause = "a" * 100 + "  \n\t  " + "b" * 50
+    expected = "a" * 100 + " " + "b" * 50
+    assert len(expected) < MAX_REASON_LENGTH  # the cap must be the identity here
+
+    def boom(*args, **kwargs):
+        raise ValueError(cause)
+
+    monkeypatch.setattr(repair, "_prepare_repair_question", boom)
+
+    with pytest.raises(ValueError):
+        process_repair_job(store, _NoCallClient(), job_id=int(job["id"]), root=tmp_path)
+
+    assert store.repair_job_items(int(job["id"]))[0]["reason"] == expected
+    assert store.get_repair_job(int(job["id"]))["message"] == "Repair failed: " + expected
+
+
+def test_item_prepare_path_caps_the_reason_at_the_reason_cap(tmp_path, monkeypatch):
+    """#584, AC-3 (cap half) + the issue's sentinel probe: this clause's reason
+    must reach an assertion. Drive it with a single unbroken token carrying NO
+    internal whitespace, so the collapse is the identity and this test isolates
+    the bound: `MAX_REASON_LENGTH + 50` `c`s, which must land on the failed
+    item's reason as exactly `MAX_REASON_LENGTH`. Dropping
+    `[:MAX_REASON_LENGTH]` reddens ONLY this test (the sentinel); dropping the
+    `.split()` collapse (a no-op on a whitespace-free token) stays green.
+    """
+    import verinote.pipeline.repair as repair
+
+    store = _store(tmp_path)
+    _review_question(store, "What is synthetic?")
+    job, _ = store.enqueue_repair_job(provider="fake", model="m")
+    cause = "c" * (MAX_REASON_LENGTH + 50)
+    expected = "c" * MAX_REASON_LENGTH
+    assert len(cause) > MAX_REASON_LENGTH
+
+    def boom(*args, **kwargs):
+        raise ValueError(cause)
+
+    monkeypatch.setattr(repair, "_prepare_repair_question", boom)
+
+    with pytest.raises(ValueError):
+        process_repair_job(store, _NoCallClient(), job_id=int(job["id"]), root=tmp_path)
+
+    assert store.repair_job_items(int(job["id"]))[0]["reason"] == expected
+    assert store.get_repair_job(int(job["id"]))["message"] == "Repair failed: " + expected
 
 
 def test_blank_exception_in_the_completion_publish_path_names_the_type(
