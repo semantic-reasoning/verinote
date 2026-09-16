@@ -4308,6 +4308,70 @@ def test_repair_worker_names_the_type_when_the_generic_error_has_only_whitespace
     assert store.latest_repair_job()["message"] == "repair failed: ValueError"
 
 
+def test_repair_worker_collapses_internal_whitespace_in_a_generic_error(
+    tmp_path, monkeypatch
+):
+    """#584, AC-1 (collapse half). The repair worker's broad `except Exception`
+    clause composes `_short_error`, whose first half folds every internal
+    whitespace run to a single space. Drive it with a cause whose collapsed
+    form stays UNDER `MAX_REASON_LENGTH`, so the cap is the identity here and
+    this test isolates the collapse: a cause of 100 `a`s, an irregular
+    whitespace run that must collapse to one space, then 50 `b`s. Dropping the
+    `.split()` collapse leaves the raw run in the row and reddens ONLY this
+    test; dropping the `[:MAX_REASON_LENGTH]` bound (a no-op on a sub-cap
+    message) leaves this test green."""
+    c, store = _repair_kb(tmp_path)
+    cause = "a" * 100 + "  \n\t  " + "b" * 50
+    expected = "a" * 100 + " " + "b" * 50
+    assert len(expected) < MAX_REASON_LENGTH  # the cap must be the identity here
+
+    def boom(*args, **kwargs):
+        raise ValueError(cause)
+
+    monkeypatch.setattr(webapp, "process_repair_job", boom)
+
+    response = c.post("/questions/repair", follow_redirects=False)
+    assert response.status_code == 303
+
+    def failed():
+        job = store.latest_repair_job()
+        assert job is not None and job["status"] == "failed"
+
+    _wait_for(failed)
+    assert store.latest_repair_job()["message"] == "repair failed: " + expected
+
+
+def test_repair_worker_caps_a_generic_error_at_the_reason_cap(
+    tmp_path, monkeypatch
+):
+    """#584, AC-1 (cap half). The same clause's second half bounds the cause to
+    `MAX_REASON_LENGTH`. Drive it with a single unbroken token that carries NO
+    internal whitespace, so the collapse is the identity here and this test
+    isolates the bound: `MAX_REASON_LENGTH + 50` `c`s, which must land on the
+    row as exactly `MAX_REASON_LENGTH`. Dropping `[:MAX_REASON_LENGTH]`
+    reddens ONLY this test; dropping the `.split()` collapse (a no-op on a
+    whitespace-free token) leaves this test green."""
+    c, store = _repair_kb(tmp_path)
+    cause = "c" * (MAX_REASON_LENGTH + 50)
+    expected = "c" * MAX_REASON_LENGTH
+    assert len(cause) > MAX_REASON_LENGTH
+
+    def boom(*args, **kwargs):
+        raise ValueError(cause)
+
+    monkeypatch.setattr(webapp, "process_repair_job", boom)
+
+    response = c.post("/questions/repair", follow_redirects=False)
+    assert response.status_code == 303
+
+    def failed():
+        job = store.latest_repair_job()
+        assert job is not None and job["status"] == "failed"
+
+    _wait_for(failed)
+    assert store.latest_repair_job()["message"] == "repair failed: " + expected
+
+
 def test_questions_page_shows_live_repair_progress_and_terminal_failure(tmp_path):
     c = _client(tmp_path)
     store = c.app.state.store

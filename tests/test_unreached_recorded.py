@@ -35,6 +35,7 @@ from verinote.config import Config, CredentialsCorruptError
 from verinote.llm.base import (
     LLMError,
     LLMOutputError,
+    MAX_REASON_LENGTH,
     UNREACHED_POPULATIONS,
     client_api_key,
     redact_secret,
@@ -588,6 +589,73 @@ def test_cli_cmd_query_credentials_arm_is_intentional_and_pinned(tmp_path, monke
     assert rows[0]["population"] == "credentials"
     assert rows[0]["question_id"] is None
     assert [str(q["status"]) for q in store.questions()] == ["pending"]
+
+
+def test_cli_short_error_collapses_internal_whitespace(tmp_path, monkeypatch):
+    """#584, AC-2 (collapse half) + the `cli.py` "bounded reason" prose.
+    `cmd_query`'s `credentials` arm folds the exception's internal whitespace
+    before it records the row and prints it. Drive it with a cause whose
+    collapsed form stays UNDER `MAX_REASON_LENGTH`, so the cap is the identity
+    and this test isolates the collapse: 100 `a`s, an irregular whitespace run
+    that must fold to one space, then 50 `b`s. Dropping the `.split()` collapse
+    leaves the raw run in the durable row and reddens ONLY this test; dropping
+    the `[:MAX_REASON_LENGTH]` bound (a no-op on a sub-cap message) stays green.
+    """
+    root = tmp_path / "kb"
+    _kb(root)
+    cfg = _cfg(root)
+    cause = "a" * 100 + "  \n\t  " + "b" * 50
+    expected = "a" * 100 + " " + "b" * 50
+    assert len(expected) < MAX_REASON_LENGTH  # the cap must be the identity here
+
+    def _raise(_cfg):
+        raise CredentialsCorruptError(cause)
+
+    monkeypatch.setattr(llm_pkg, "get_client", _raise)
+    from verinote.cli import cmd_query
+
+    args = argparse.Namespace(question=None)
+    with contextlib.redirect_stderr(io.StringIO()):
+        rc = cmd_query(cfg, args)
+    assert rc == 1
+    store = Store(root / "kb.sqlite")
+    rows = _unreached_rows(store)
+    assert len(rows) == 1
+    assert rows[0]["population"] == "credentials"
+    assert rows[0]["detail"] == expected
+
+
+def test_cli_short_error_caps_at_the_reason_cap(tmp_path, monkeypatch):
+    """#584, AC-2 (cap half). The same arm bounds the recorded detail to
+    `MAX_REASON_LENGTH`. Drive it with a single unbroken token carrying NO
+    internal whitespace, so the collapse is the identity and this test isolates
+    the bound: `MAX_REASON_LENGTH + 50` `c`s, which must land on the row as
+    exactly `MAX_REASON_LENGTH`. Dropping `[:MAX_REASON_LENGTH]` reddens ONLY
+    this test; dropping the `.split()` collapse (a no-op on a whitespace-free
+    token) stays green.
+    """
+    root = tmp_path / "kb"
+    _kb(root)
+    cfg = _cfg(root)
+    cause = "c" * (MAX_REASON_LENGTH + 50)
+    expected = "c" * MAX_REASON_LENGTH
+    assert len(cause) > MAX_REASON_LENGTH
+
+    def _raise(_cfg):
+        raise CredentialsCorruptError(cause)
+
+    monkeypatch.setattr(llm_pkg, "get_client", _raise)
+    from verinote.cli import cmd_query
+
+    args = argparse.Namespace(question=None)
+    with contextlib.redirect_stderr(io.StringIO()):
+        rc = cmd_query(cfg, args)
+    assert rc == 1
+    store = Store(root / "kb.sqlite")
+    rows = _unreached_rows(store)
+    assert len(rows) == 1
+    assert rows[0]["population"] == "credentials"
+    assert rows[0]["detail"] == expected
 
 
 # ---------------------------------------------------------------------------
