@@ -18,7 +18,7 @@ from verinote.engine import CheckReport, FindingDetail
 from verinote.engine.wirelog import answer_qid
 from verinote.engine.duckdb_backend import run_check_duckdb
 from verinote.engine.wirelog import strip_answer_line_prefix
-from verinote.llm.base import LLMClient, LLMError
+from verinote.llm.base import LLMClient, LLMError, MAX_REASON_LENGTH
 from verinote.pipeline.corroboration import CorroborationPolicyError, store_relation_aliases
 from verinote.pipeline.engine_input import engine_relation_rows
 from verinote.pipeline.query import (
@@ -712,6 +712,10 @@ def _best_excerpt(text: str, patterns: tuple[str, ...]) -> tuple[str, int]:
     if best_pos < 0:
         return "", 0
     anchor = best_pos if len(folded) == len(normalized) else _unfold_offset(normalized, best_pos)
+    # The 240 below is this excerpt window (240 before / 420 after, per the
+    # docstring above), NOT the reason cap: the numeric coincidence with
+    # MAX_REASON_LENGTH is accidental, and neither value constrains the other
+    # (#583).
     start = max(0, anchor - 240)
     end = min(len(normalized), anchor + 420)
     excerpt = " ".join(normalized[start:end].split())
@@ -775,4 +779,4 @@ def _unfold_offset(normalized: str, index: int) -> int:
 
 
 def _short_reason(value: object) -> str:
-    return " ".join(str(value).split())[:240]
+    return " ".join(str(value).split())[:MAX_REASON_LENGTH]

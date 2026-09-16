@@ -6,13 +6,14 @@ import shlex
 import subprocess
 import tempfile
 import textwrap
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from verinote.config import Config
-from verinote.llm.base import LLMError, LLMOutputError
-from verinote.llm.claude_cli_adapter import ClaudeCliAdapter
+from verinote.llm.base import LLMError, LLMOutputError, MAX_REASON_LENGTH
+from verinote.llm.claude_cli_adapter import ClaudeCliAdapter, _UNSENDABLE_ARGUMENT
 from verinote.llm.factory import get_client
 from verinote.pipeline.extract import (
     create_chunked_extraction_job,
@@ -505,21 +506,63 @@ def test_claude_cli_undecodable_reply_does_not_blame_the_source(tmp_path, monkey
         "not be read. Check the claude CLI's version if it recurs."
     )
 
-    # The reason that reaches a job row goes through `_short_reason`'s 240-char
-    # cap with an `llm error: ` prefix already on it. `_UNSENDABLE_ARGUMENT` is
-    # over that cap today and loses its last sentence there; this pins that this
-    # constant does not. (`verinote/pipeline/ask.py` keeps a second copy of
+    # The reason that reaches a job row goes through `_short_reason`'s
+    # MAX_REASON_LENGTH cap with an `llm error: ` prefix already on it. #583
+    # sized the cap to the longest fixed message any capped path carries, so
+    # `_UNSENDABLE_ARGUMENT` (251 chars) now arrives whole here;
+    # test_reason_cap_covers_the_longest_fixed_reason re-derives that floor from
+    # the source. (`verinote/pipeline/ask.py` keeps a second copy of
     # `_short_reason` with the same cap.)
     #
-    # Only for THIS prefix, though. `query.py:387` puts a variable reason and a
-    # much longer fixed clause in front of the message before the same cap
-    # applies, so the message's share of the room there is far smaller than it is
-    # here -- too small for this constant even when that reason is empty, and the
-    # tail goes mid-word. The reason and the message share that room between them;
-    # which of the two gives is a separate change. What the assertion below pins
-    # is only that this message arrives whole on the `llm error: ` path.
+    # Not for EVERY prefix, though. `query.py` puts a variable reason and a 56-
+    # char fixed clause in front of the message before the same cap applies, so
+    # the message's share of the room there is the cap minus the clause: whole
+    # when that reason is empty, shared with the reason once it has any length.
+    # The invariant test pins the empty-reason floor; which of the two yields
+    # once the reason is non-empty is a separate change. What the assertion
+    # below pins is only that this message arrives whole on the `llm error: `
+    # path.
     prefixed = f"llm error: {message}"
     assert _short_reason(prefixed) == prefixed
+
+
+def test_reason_cap_covers_the_longest_fixed_reason():
+    """#583, AC2: MAX_REASON_LENGTH must cover the longest fixed reason a capped path carries.
+
+    The worst fixed reason is `_UNSENDABLE_ARGUMENT` -- the longest fixed
+    `LLMError` message, 251 chars -- behind the longest fixed clause any caller
+    prepends to it before the cap applies: 56 chars, the schema-aware
+    reinterpretation failure in `verinote/pipeline/query.py`. Both sides are
+    re-derived from the source below, not hardcoded: with the old bare `240`
+    this test failed (67 chars short), and it reddens again the moment either
+    fixed text outgrows the budget without someone re-deriving the constant.
+    """
+    query_path = Path(__file__).resolve().parents[1] / "verinote" / "pipeline" / "query.py"
+    tree = ast.parse(query_path.read_text())
+    fixed_clause_lengths = [
+        sum(
+            len(part.value)
+            for part in call.args[0].values
+            if isinstance(part, ast.Constant) and isinstance(part.value, str)
+        )
+        for call in ast.walk(tree)
+        if (
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id == "_short_reason"
+            and call.args
+            and isinstance(call.args[0], ast.JoinedStr)
+        )
+    ]
+    assert fixed_clause_lengths, "expected _short_reason(f-string) calls in query.py"
+    required = max(fixed_clause_lengths) + len(_UNSENDABLE_ARGUMENT)
+    assert MAX_REASON_LENGTH >= required, (
+        f"MAX_REASON_LENGTH={MAX_REASON_LENGTH} < required {required} "
+        f"(longest fixed clause {max(fixed_clause_lengths)} + "
+        f"len(_UNSENDABLE_ARGUMENT)={len(_UNSENDABLE_ARGUMENT)}): the "
+        "unsendable-argument message would be truncated mid-sentence on the "
+        "schema-aware reinterpretation path -- re-derive the constant"
+    )
 
 
 @pytest.mark.parametrize("invoke", _INVOCATIONS)

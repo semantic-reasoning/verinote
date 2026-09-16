@@ -19,7 +19,7 @@ import sqlite3
 import threading
 from uuid import uuid4
 
-from verinote.llm.base import LLMClient, client_api_key, redact_secret
+from verinote.llm.base import LLMClient, MAX_REASON_LENGTH, client_api_key, redact_secret
 from verinote.pipeline.query import (
     _schema_aware_query_flow_result,
     _translate_direct_datalog_fallback,
@@ -277,7 +277,11 @@ def process_repair_job(
             except PolicyMissingError:
                 raise
             except Exception as exc:
-                reason = " ".join(_error_cause(exc).split())[:240]
+                reason = " ".join(_error_cause(exc).split())[:MAX_REASON_LENGTH]
+                # #583: the "Repair failed: " prefix below is added AFTER the
+                # cap is applied, deliberately outside MAX_REASON_LENGTH: the
+                # budget is on the cause, and the fixed sentence that names the
+                # operation must reach the row whole.
                 store.finish_repair_item(int(item["id"]), owner_token, status="failed", reason=reason)
                 store.finish_repair_job(job_id, owner_token, failed=True, message=f"Repair failed: {reason}")
                 raise

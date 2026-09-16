@@ -18,6 +18,7 @@ from verinote.kb_location import (
     assert_kb_root_is_safe_to_create,
     resolve_kb_root,
 )
+from verinote.llm.base import MAX_REASON_LENGTH
 from verinote.pipeline.question_outcome import format_question_outcome
 from verinote.prompts import PromptUnavailableError
 from verinote.store import Store, engine_statuses, fact_status_order
@@ -1790,7 +1791,7 @@ def cmd_query(cfg: Config, args: argparse.Namespace) -> int:
 
 
 def _short_error(exc: BaseException) -> str:
-    return " ".join(str(exc).split())[:240]
+    return " ".join(str(exc).split())[:MAX_REASON_LENGTH]
 
 
 def cmd_repair(cfg: Config, args: argparse.Namespace) -> int:

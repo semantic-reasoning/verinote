@@ -29,6 +29,7 @@ from verinote.llm.base import (
     LLMClient,
     LLMError,
     LLMOutputError,
+    MAX_REASON_LENGTH,
     client_api_key,
     redact_secret,
     unreached_population,
@@ -181,7 +182,7 @@ def _short_reason(value: object) -> str:
     if len(text) >= 2 and text[0] == text[-1] == '"':
         text = text[1:-1]
     text = text.replace('\\"', '"').replace("\\\\", "\\")
-    return " ".join(text.split())[:240]
+    return " ".join(text.split())[:MAX_REASON_LENGTH]
 
 
 def _lit(value: str) -> str:

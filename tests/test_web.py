@@ -38,7 +38,7 @@ from verinote.engine import CheckReport, DEFAULT_POLICY, FindingDetail  # noqa: 
 from verinote.engine.terms import Atom, Compound, StringLit  # noqa: E402
 from verinote.kb_location import KBRootSafetyError  # noqa: E402
 from verinote.llm.anthropic_adapter import AnthropicAdapter  # noqa: E402
-from verinote.llm.base import ExtractedFact, LLMError, ModelListing  # noqa: E402
+from verinote.llm.base import ExtractedFact, LLMError, MAX_REASON_LENGTH, ModelListing  # noqa: E402
 from verinote.llm.claude_cli_adapter import ClaudeCliAdapter  # noqa: E402
 from verinote.llm.ollama_adapter import OllamaAdapter  # noqa: E402
 from verinote.llm.openai_adapter import OpenAIAdapter  # noqa: E402
@@ -1908,7 +1908,7 @@ def test_worker_leaves_a_message_bearing_error_unbounded_on_the_job_row(
     and something this issue does not add: it covers cause notation only.
     The extraction worker's two direct sites (S1/S2) are unbounded for that
     reason, unlike `_short_error` and S6's own inline normalisation, which
-    both bound their reason to 240 characters. A 300-character message must
+    both bound their reason at MAX_REASON_LENGTH. A 300-character message must
     survive on the job row whole."""
     cfg, job_id, _ = _job_kb(tmp_path, with_policy=True)
     monkeypatch.setattr(
@@ -3915,14 +3915,15 @@ def test_translate_leaves_the_reason_blank_when_the_llm_error_has_no_message(
     assert "LLMError" not in page
 
 
-def test_translate_collapses_whitespace_and_bounds_the_detail_to_240_chars(
+def test_translate_collapses_whitespace_and_bounds_the_detail_to_the_reason_cap(
     tmp_path, monkeypatch
 ):
-    """S6's inline normalisation (`" ".join(str(exc).split())[:240]`) is a bare
-    expression, not a named helper, since #551 cut this site off from
+    """S6's inline normalisation (`" ".join(str(exc).split())[:MAX_REASON_LENGTH]`)
+    is a bare expression, not a named helper, since #551 cut this site off from
     `_short_error` — easier to lose a piece of by accident than a helper call
     would be. Both halves need a test: the internal-whitespace collapse, and the
-    240-character bound.
+    MAX_REASON_LENGTH bound (#583 consolidated the six copies of that bound into
+    the one constant this test now derives its expectation from).
 
     #592 MOVED THE DESTINATION AND THE BOUND WITH IT. The text used to go to
     `questions.reason`, an unbounded `TEXT` column written for every pending
@@ -3938,17 +3939,19 @@ def test_translate_collapses_whitespace_and_bounds_the_detail_to_240_chars(
 
     Message built so the expected result can be computed by direct slicing, not
     by re-deriving the production logic: 100 `a`s, an irregular whitespace run
-    that must collapse to one space, then 200 `b`s. Collapsed that is 301
-    characters (100 + 1 + 200); truncated to 240 it is 100 `a`s, one space, and
-    139 `b`s — one message that exercises both the collapse and the truncation
-    boundary. The trailing period is the production code's, added because the
-    truncated detail does not punctuate itself.
+    that must collapse to one space, then enough `b`s that the collapsed form
+    exceeds the cap. Collapsed it is 101 + (cap + 50) characters; truncated to
+    MAX_REASON_LENGTH it is 100 `a`s, one space, and cap - 101 `b`s — one
+    message that exercises both the collapse and the truncation boundary. The
+    trailing period is the production code's, added because the truncated detail
+    does not punctuate itself.
     """
-    message = "a" * 100 + "  \n\t  " + "b" * 200
-    collapsed = "a" * 100 + " " + "b" * 200
-    assert len(collapsed) == 301
-    expected_detail = collapsed[:240]
-    assert expected_detail == "a" * 100 + " " + "b" * 139
+    b_count = MAX_REASON_LENGTH + 50
+    message = "a" * 100 + "  \n\t  " + "b" * b_count
+    collapsed = "a" * 100 + " " + "b" * b_count
+    assert len(collapsed) > MAX_REASON_LENGTH
+    expected_detail = collapsed[:MAX_REASON_LENGTH]
+    assert expected_detail == "a" * 100 + " " + "b" * (MAX_REASON_LENGTH - 101)
 
     def raise_long_llm_error(cfg):
         raise LLMError(message)
@@ -3967,12 +3970,12 @@ def test_translate_collapses_whitespace_and_bounds_the_detail_to_240_chars(
         + expected_detail
         + ". The questions it stopped on kept the status and reason they had."
     ) in body
-    # The raw whitespace run never reaches the page, and the 101st `b` never
-    # does either. Asserting both directions is what makes the two halves above
-    # separable: dropping the collapse leaves the tab in, dropping the bound
-    # lets the full 200 `b`s through.
+    # The raw whitespace run never reaches the page, and the (cap - 100)th `b`
+    # never does either. Asserting both directions is what makes the two halves
+    # above separable: dropping the collapse leaves the tab in, dropping the
+    # bound lets the full `b_count` run through.
     assert "a" * 100 + " \n" not in body
-    assert "b" * 140 not in body
+    assert "b" * (MAX_REASON_LENGTH - 100) not in body
     q = c.app.state.store.questions()[0]
     assert q["status"] == "pending"
     assert not q["reason"]

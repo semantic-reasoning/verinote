@@ -49,7 +49,7 @@ from verinote.config import (
     save_settings,
 )
 from verinote.kb_location import KBLocationError, assert_kb_root_is_safe_to_create
-from verinote.llm import MIN_REDACTABLE_SECRET, LLMError, get_client
+from verinote.llm import MAX_REASON_LENGTH, MIN_REDACTABLE_SECRET, LLMError, get_client
 from verinote.llm.base import ModelListing, redact_secret
 from verinote.llm.claude_cli_adapter import CLI_MODEL_ALIASES
 from verinote.llm.ollama_adapter import (
@@ -1030,7 +1030,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         return text if text.strip() else type(exc).__name__
 
     def _short_error(exc: BaseException) -> str:
-        return " ".join(_error_cause(exc).split())[:240]
+        return " ".join(_error_cause(exc).split())[:MAX_REASON_LENGTH]
 
     def _record_and_cause(exc: BaseException, context: str) -> str:
         """Record a save-route write failure with its traceback; return a safe banner cause.
@@ -1059,7 +1059,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         `verinote status` prints it unbounded -- the bound is the page's, not
         the record's.
         """
-        return " ".join((detail or "").split())[:240]
+        return " ".join((detail or "").split())[:MAX_REASON_LENGTH]
 
     def _translation_fault(detail: str) -> str:
         """Shape an infrastructure fault for the questions page (#592).
@@ -2708,6 +2708,10 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 logger.exception("repair job %s failed", job_id)
                 with Store(cfg.db_path) as worker_store:
                     worker_store.init_schema()
+                    # #583: the "repair failed: " prefix is added AFTER
+                    # _short_error's cap, deliberately outside
+                    # MAX_REASON_LENGTH: the budget is on the cause, and the
+                    # fixed sentence must reach the row whole.
                     worker_store.fail_pending_repair_job(job_id, f"repair failed: {_short_error(exc)}")
             finally:
                 with app.state.repair_scheduler_lock:
