@@ -21,6 +21,15 @@ from verinote.llm.schema import (
 from verinote.pipeline.query_intent import QueryIntent, parse_query_intent
 from verinote.prompts import PromptError, render_prompt
 
+# The endpoint an unset `base_url` resolves to. Named rather than inlined so the
+# SDK never sees `base_url=None`: a `None` there is a delegation, and the openai
+# SDK's delegation target is its own `OPENAI_BASE_URL`, so a blank field would
+# let an environment the settings screen never shows decide where documents go.
+# `_require_key` makes the same refusal for the credential -- the endpoint and
+# the key must both be values this process resolved. `OpenRouterAdapter._base_url`
+# and `OllamaAdapter.__init__` already bind their endpoints this way.
+OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
+
 
 class OpenAIAdapter:
     name = "openai"
@@ -146,21 +155,25 @@ class OpenAIAdapter:
 
         Deliberately does NOT name the Base URL setting. A malformed `base_url`
         is the reachable cause this exists for (#493), but measured against the
-        installed `openai` SDK it is not the only one: with `base_url` unset
-        entirely, `SSL_CERT_FILE` pointing at a missing file raises
-        `FileNotFoundError`, and `HTTPS_PROXY='::::'` or `OPENAI_BASE_URL='::::'`
-        raise `httpx.InvalidURL`. Telling those users to check a field they left
-        blank sends them to fix something that is not broken -- the misdirection
-        #474 was reported as. The urllib adapters can be specific, and are,
-        because `Request(url)` has no second cause; see `base_url_unusable`.
+        installed `openai` SDK it is not the only one: `SSL_CERT_FILE` pointing
+        at a missing file raises `FileNotFoundError`, and `HTTPS_PROXY='::::'`
+        raises `httpx.InvalidURL`. The vendor's own `OPENAI_BASE_URL` is no
+        longer among them -- `_base_url` resolves a blank field to
+        `OPENAI_DEFAULT_BASE_URL`, so the SDK never sees `base_url=None` and
+        cannot fall back to the environment; measured, the `OPENAI_BASE_URL='::::'`
+        that raised `httpx.InvalidURL` with `base_url=None` raises nothing once
+        the explicit default is supplied (#499). Telling those users to check a
+        field they left blank sends them to fix something that is not broken --
+        the misdirection #474 was reported as. The urllib adapters can be
+        specific, and are, because `Request(url)` has no second cause; see
+        `base_url_unusable`.
 
-        `OpenRouterAdapter` inherits this, and one clause above cannot reach it:
-        its `_base_url()` substitutes `OPENROUTER_DEFAULT_BASE_URL` for a blank
-        field, so `base_url` is never unset there and the SDK's
-        `OPENAI_BASE_URL` fallback is never consulted -- measured, the `::::`
-        that raises with `base_url=None` raises nothing once that default is
-        supplied. `SSL_CERT_FILE` and `HTTPS_PROXY` still do reach it, so the
-        conclusion -- do not name the Base URL setting -- holds there too.
+        `OpenRouterAdapter` inherits this, and its `_base_url()` override
+        supplies `OPENROUTER_DEFAULT_BASE_URL` for the same reason, so neither
+        adapter can be pointed at a host the user did not choose by an
+        environment variable. `SSL_CERT_FILE` and `HTTPS_PROXY` still reach
+        both, which is why the conclusion -- do not name the Base URL setting --
+        holds for them.
         """
         error = LLMError(
             redact_secret(f"{self.name} client could not be created: {exc}", self.cfg.api_key)
@@ -221,16 +234,19 @@ class OpenAIAdapter:
         except Exception as exc:  # noqa: BLE001 - normalise SDK construction errors
             raise self._client_failed(exc) from exc
 
-    def _base_url(self) -> str | None:
-        """The endpoint to dial. `None` lets the SDK use its own default.
+    def _base_url(self) -> str:
+        """The endpoint to dial -- always a value this process resolved.
 
-        A seam, not indirection for its own sake: a subclass that IS one
-        specific service overrides this so an unset `base_url` cannot silently
-        resolve to `api.openai.com` and ship documents to a vendor the user did
-        not choose. Keeping it here means there is still exactly one `OpenAI(...)`
-        construction site.
+        A blank field resolves to `OPENAI_DEFAULT_BASE_URL` rather than `None`,
+        because a `None` is a delegation and the openai SDK's delegation target
+        is its own `OPENAI_BASE_URL`; the same refusal `_require_key` makes for
+        the key (#499). `OpenRouterAdapter` overrides this so its blank field
+        resolves to its own service instead of `api.openai.com` -- a user who
+        chose OpenRouter and cleared the field must not ship documents to a
+        vendor they never selected. Keeping the seam here means there is still
+        exactly one `OpenAI(...)` construction site.
         """
-        return self.cfg.base_url
+        return self.cfg.base_url or OPENAI_DEFAULT_BASE_URL
 
     def _rendered(self, prompt_id: str, **values: object) -> str:
         """Render a prompt, and put the result under the redacting constructor.

@@ -9,9 +9,9 @@ from types import SimpleNamespace
 import pytest
 
 from verinote.config import Config, save_settings
-from verinote.llm.anthropic_adapter import AnthropicAdapter
+from verinote.llm.anthropic_adapter import ANTHROPIC_DEFAULT_BASE_URL, AnthropicAdapter
 from verinote.llm.base import LLMError, LLMOutputError
-from verinote.llm.openai_adapter import OpenAIAdapter
+from verinote.llm.openai_adapter import OPENAI_DEFAULT_BASE_URL, OpenAIAdapter
 from verinote.llm.openrouter_adapter import OpenRouterAdapter
 from verinote.llm.schema import parse_facts, parse_query
 from verinote.pipeline.query_intent import parse_query_intent
@@ -271,10 +271,25 @@ def _configured_key(monkeypatch):
     monkeypatch.setenv("VERINOTE_API_KEY", "configured-test-key")
 
 
+# What a blank field resolves to, per provider. #499: the adapters must hand
+# the SDK an explicit endpoint, never `None`, because `None` is what lets the
+# vendor SDK consult its own base-URL environment variable.
+_CLOUD_DEFAULTS = {
+    "openai": OPENAI_DEFAULT_BASE_URL,
+    "anthropic": ANTHROPIC_DEFAULT_BASE_URL,
+}
+
+
 @pytest.mark.parametrize("provider", sorted(_CLOUD_ADAPTERS))
-def test_empty_base_url_env_reaches_cloud_client_as_none(tmp_path, monkeypatch, provider):
-    # `is None`, not falsy: an empty string is falsy too, so a truthiness check
-    # here would pass against the very bug this guards.
+def test_empty_base_url_env_resolves_to_the_providers_default(
+    tmp_path, monkeypatch, provider
+):
+    # #499: a blank field must not reach the SDK as `None`. A `None` is a
+    # delegation, and the vendor SDK's delegation target is its own
+    # `OPENAI_BASE_URL`/`ANTHROPIC_BASE_URL` -- an environment the settings
+    # screen never shows deciding where documents go. The blank field now
+    # resolves to the provider's own endpoint, which is what the settings page
+    # means when it calls the field optional.
     record, adapter_cls = _CLOUD_ADAPTERS[provider]
     recorded = record(monkeypatch)
     monkeypatch.setenv("VERINOTE_PROVIDER", provider)
@@ -282,7 +297,7 @@ def test_empty_base_url_env_reaches_cloud_client_as_none(tmp_path, monkeypatch, 
 
     adapter_cls(Config.for_root(tmp_path)).extract_facts(source_text="x")
 
-    assert recorded["base_url"] is None
+    assert recorded["base_url"] == _CLOUD_DEFAULTS[provider]
 
 
 @pytest.mark.parametrize("provider", sorted(_CLOUD_ADAPTERS))
@@ -312,7 +327,12 @@ def test_settings_file_base_url_reaches_cloud_client(tmp_path, monkeypatch, prov
 
 
 @pytest.mark.parametrize("provider", sorted(_CLOUD_ADAPTERS))
-def test_whitespace_only_saved_base_url_reaches_cloud_client_as_none(tmp_path, monkeypatch, provider):
+def test_whitespace_only_saved_base_url_resolves_to_the_providers_default(
+    tmp_path, monkeypatch, provider
+):
+    # A whitespace-only saved value is no value: `save_settings` maps it to
+    # `None`, and the adapter maps that blank to the provider's own endpoint
+    # rather than delegating to the SDK's env-var fallback (#499).
     record, adapter_cls = _CLOUD_ADAPTERS[provider]
     recorded = record(monkeypatch)
     monkeypatch.delenv("VERINOTE_BASE_URL", raising=False)
@@ -320,7 +340,33 @@ def test_whitespace_only_saved_base_url_reaches_cloud_client_as_none(tmp_path, m
 
     adapter_cls(Config.for_root(tmp_path)).extract_facts(source_text="x")
 
-    assert recorded["base_url"] is None
+    assert recorded["base_url"] == _CLOUD_DEFAULTS[provider]
+
+
+@pytest.mark.parametrize(
+    ("provider", "vendor_var"),
+    [("openai", "OPENAI_BASE_URL"), ("anthropic", "ANTHROPIC_BASE_URL")],
+)
+def test_the_vendor_sdk_base_url_env_var_is_never_consulted(
+    tmp_path, monkeypatch, provider, vendor_var
+):
+    # #499, the headline: with the Base URL field blank, a vendor SDK would
+    # otherwise read its own base-URL variable and dial a host the user never
+    # chose -- the endpoint half of the fallback `_require_key` already refuses
+    # for the key. The stub records the constructor argument rather than
+    # dialling, so the assertion is on what the adapter hands the SDK: an
+    # explicit endpoint, never `None` -- because `None` is what hands the
+    # decision to that variable in the real SDK (measured against anthropic
+    # 0.116.0 / openai 2.53.0: the variable dials when `base_url` is `None`
+    # and is ignored once an explicit value is supplied).
+    record, adapter_cls = _CLOUD_ADAPTERS[provider]
+    recorded = record(monkeypatch)
+    monkeypatch.setenv(vendor_var, "https://evil.example/v1")
+
+    adapter_cls(_cfg(tmp_path, provider=provider)).extract_facts(source_text="x")
+
+    assert recorded["base_url"] is not None
+    assert recorded["base_url"] == _CLOUD_DEFAULTS[provider]
 
 
 @pytest.mark.parametrize("provider", sorted(_CLOUD_ADAPTERS))
