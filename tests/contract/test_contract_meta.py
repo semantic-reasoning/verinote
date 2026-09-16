@@ -19,7 +19,6 @@ from __future__ import annotations
 import ast
 from datetime import date
 import importlib.util
-import inspect
 import json
 import os
 import re
@@ -38,6 +37,7 @@ from . import capture
 from .conftest import (
     API_KEY_VAR,
     BASE_URL_VAR,
+    GATE_HINT,
     GATE_VAR,
     MODEL_VAR,
     _client_for_provider,
@@ -401,14 +401,42 @@ def _nested_pytest(*args: str, gate_env: dict[str, str] | None = None) -> subpro
     )
 
 
+def _contract_marker_collects_zero() -> bool:
+    """True when ``-m contract`` selects no test at all (the marked set is empty).
+
+    That is the end of the promotion path: the contract marker selects nothing,
+    so a run that asked for the contract guards has nothing to select and the
+    false-green scenario the session guard prevents cannot arise. It is a
+    different situation from "selected but all skipped", which is what the guard
+    fails — and it must be reported as such, not as a gate that failed to bite.
+    """
+    result = _nested_pytest("-m", "contract", "--collect-only")
+    return "no tests collected" in result.stdout
+
+
 def test_all_skipped_contract_selection_fails_the_session():
     """`-m contract` with no gate must not be a green no-op — from any path.
 
     The parent-path form is the one that regressed (issue #272): it is the
     natural opt-in spelling, and reporting "N skipped" with exit 0 is exactly
     the false green this harness exists to prevent.
+
+    When the marked set is empty (the promotion path reached its end), the
+    failure is a different one and is said as such: nothing is left to gate,
+    not a gate that failed to bite. That keeps a reader from chasing
+    ``conftest.py`` or issue #273's wrapper for what is the successful end of
+    the promotion.
     """
     result = _nested_pytest("-m", "contract")
+    if _contract_marker_collects_zero():
+        pytest.fail(
+            "nothing is left to gate: `-m contract` selected no test, so the "
+            "contract marker now selects nothing and the opt-in set is empty. "
+            "That is the end of the promotion path, not a broken gate — retire "
+            "the opt-in harness (and this test) rather than chasing a guard "
+            "that has nothing to bite.\n"
+            f"child run:\n{result.stdout}\n{result.stderr}"
+        )
     assert result.returncode != 0, (
         "`pytest -m contract` with the gate unset exited 0 while skipping every "
         f"guard — a false green.\n{result.stdout}\n{result.stderr}"
@@ -491,15 +519,15 @@ def test_deterministic_promoted_guards_run_with_no_gate_at_all():
 
 @pytest.mark.parametrize("module_name", sorted(PROMOTED_GUARDS))
 def test_promoted_guards_carry_neither_the_marker_nor_the_gate(module_name):
-    """A guard this ledger names still exists, without the marker or the opt-in gate.
+    """A guard this ledger names still exists, is unmarked, and is ungated.
 
-    Two of the three reversions read for here cost default-suite coverage
-    outright: ``require_opt_in`` coming back makes the guard skip there, and
-    deleting the guard removes it. The marker is different — a marked test still
-    runs under ``pytest tests`` — but it puts the guard back into the opt-in
-    accounting, where it keeps ``conftest.py``'s all-skipped session guard
-    permanently satisfied. All three are source-level edits, so reading the
-    source catches them without spawning a pytest.
+    Deleting the guard removes default-suite coverage outright, and re-marking
+    it puts it back into the opt-in accounting, where it keeps ``conftest.py``'s
+    all-skipped session guard permanently satisfied (a marked test still runs
+    under ``pytest tests``, so the marker is the subtle one). Both are
+    source-level edits, so reading the source catches them without spawning a
+    pytest. The third — the guard being re-gated so it skips in the default
+    suite — is not a source-level read, so it is checked by observation (below).
 
     Not every way is source-readable — let ``LIVE_FIXTURES``' glob stop matching
     and the parametrized replays collect nothing while their ``def`` still reads
@@ -509,13 +537,19 @@ def test_promoted_guards_carry_neither_the_marker_nor_the_gate(module_name):
     guard skips in every default run, which is what the count in
     :func:`test_deterministic_promoted_guards_run_with_no_gate_at_all` catches.
 
-    Being source-readable is not enough either. The three assertions below are
-    the whole of what this test reads, so an un-promotion it does not read still
-    passes: taking the sibling gate ``require_live_provider`` instead of
-    ``require_opt_in``, and ``@pytest.mark.skip``, both leave it green. Both
-    were measured to be caught only by that same count — which begins with
-    ``pytest.importorskip("duckdb")``, so where duckdb is missing neither is
-    caught at all.
+    The gate is checked by observation because a name check is an open set:
+    reading ``require_opt_in`` from the signature let a guard switched to a
+    sibling gate (``require_live_provider``, ``contract_client``), or to a gate
+    fixture added later, skip in the default suite while the ledger still read
+    green. Measured with ``require_live_provider``: the ledger passed and only
+    the run-count guard went red. So each guard is run in a default (gate-unset)
+    child run and required not to be skipped by a gate. The gate fixtures in
+    play — require_opt_in, contract_client, require_live_provider — skip with the
+    same GATE_HINT, so observing the hint catches a gate skip from any of them,
+    and from a gate fixture added later that follows the same convention,
+    without the check itself naming them. ``@pytest.mark.skip`` is a different
+    un-promotion: it reads as promoted and skips without a gate hint, so this
+    observation does not catch it; the run-count guards below do.
 
     ``PROMOTED_GUARDS`` is written out rather than discovered because of the
     deletion: a guard that no longer exists cannot be discovered from source
@@ -558,9 +592,28 @@ def test_promoted_guards_carry_neither_the_marker_nor_the_gate(module_name):
             "the opt-in accounting its promotion took it out of, where it keeps "
             "conftest.py's all-skipped session guard permanently satisfied"
         )
-        assert "require_opt_in" not in inspect.signature(func).parameters, (
-            f"{module_name}::{name} takes `require_opt_in` again; it was "
-            "promoted into the default suite and that fixture skips it there"
+        # Gate check by observation, not by fixture name: a name check is an
+        # open set (it read `require_opt_in`, so a sibling or future gate would
+        # pass it). Run this one guard in a default (gate-unset) child run and
+        # require that it was not skipped by a gate. The gate fixtures
+        # (require_opt_in, contract_client, require_live_provider) skip with the
+        # same GATE_HINT, so observing the hint catches a gate skip from any of
+        # them, and from one added later that follows the same convention. `-rs`
+        # surfaces the skip reason so the hint is visible in a quiet run.
+        result = _nested_pytest(f"tests/contract/{module_name}::{name}", "-rs")
+        assert GATE_HINT not in result.stdout, (
+            f"{module_name}::{name} was skipped by a contract gate in a default "
+            f"(gate-unset) run — its skip reason carries the gate hint, so it "
+            f"was re-attached to a gate fixture and no longer runs in the "
+            f"default suite; the promotion this ledger records was undone. "
+            f"(This is the check the `require_opt_in` name-read used to stand "
+            f"in for; it now covers the sibling gates as well.)\n"
+            f"{result.stdout}\n{result.stderr}"
+        )
+        assert result.returncode == 0, (
+            f"{module_name}::{name} did not run to a pass in a default run "
+            f"(and its skip, if any, was not a gate skip).\n"
+            f"{result.stdout}\n{result.stderr}"
         )
 
 
