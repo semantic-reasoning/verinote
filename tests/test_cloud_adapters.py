@@ -13,6 +13,8 @@ from verinote.llm.anthropic_adapter import AnthropicAdapter
 from verinote.llm.base import LLMError, LLMOutputError
 from verinote.llm.openai_adapter import OpenAIAdapter
 from verinote.llm.openrouter_adapter import OpenRouterAdapter
+from verinote.llm.schema import parse_facts, parse_query
+from verinote.pipeline.query_intent import parse_query_intent
 from verinote.prompts import save_prompt_override
 
 
@@ -677,6 +679,156 @@ def test_each_adapter_names_only_its_own_vendor_base_url_variable(adapter, own, 
 
     assert own in causes[0]
     assert foreign not in causes[0]
+
+
+# --- the `_request_failed` docstring's quantifiers, pinned (#534) ---
+#
+# `_client_failed` above already pins one of its own docstring's quantified
+# claims (which vendor variable the cause paragraph names). The `_request_failed`
+# prose in both cloud adapters carries three of the same quietly-going-stale
+# claims, and three of #493's last five commits were fixing one of them. These
+# pin the SETS that prose counts -- not the sentences, which cannot be tested
+# directly -- so each check goes red the moment the set moves, which is exactly
+# when the sentence becomes false.
+
+# The three schema helpers the prose names; the set it counts.
+_SCHEMA_HELPERS = {"parse_facts", "parse_query", "parse_query_intent"}
+
+# What the prose counts, method by method: three of the four generation methods
+# call one of these just past their guarded region, and `answer_question` calls
+# none. The exact mapping IS the set -- pinning it pins "three of the four" and
+# "`answer_question` calls none" at once.
+_REQUEST_FAILED_HELPER_MAP = {
+    "extract_facts": ["parse_facts"],
+    "translate_query": ["parse_query"],
+    "extract_query_intent": ["parse_query_intent"],
+    "answer_question": [],
+}
+
+
+def _request_failed_helper_map(adapter) -> dict[str, list[str]]:
+    """Which schema helper each generation method of `adapter` calls, from the AST.
+
+    Read out of the source the way `_client_failed_docstring` does: the claim is
+    a property of the source text that ships, and under `python -OO` `__doc__` is
+    stripped anyway, so reading the source is both the direct route and the
+    flag-independent one.
+
+    "Generation method" is derived, not named: the public method whose body
+    reaches `self._request_failed` -- the four the docstring means. Deriving it
+    is what keeps the guard from going vacuous if a method is renamed or a fifth
+    is added: the assertion below then fails on the derived set instead of
+    checking nothing.
+    """
+    tree = ast.parse(Path(inspect.getfile(adapter)).read_text(encoding="utf-8"))
+    cls = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == adapter.__name__
+    )
+    mapping: dict[str, list[str]] = {}
+    for node in cls.body:
+        if not isinstance(node, ast.FunctionDef) or node.name.startswith("_"):
+            continue
+        reaches_guard = any(
+            isinstance(step, ast.Call)
+            and isinstance(step.func, ast.Attribute)
+            and step.func.attr == "_request_failed"
+            for step in ast.walk(node)
+        )
+        if not reaches_guard:
+            continue
+        mapping[node.name] = sorted(
+            {
+                ref.id
+                for ref in ast.walk(node)
+                if isinstance(ref, ast.Name) and ref.id in _SCHEMA_HELPERS
+            }
+        )
+    return mapping
+
+
+@pytest.mark.parametrize(
+    "adapter",
+    [AnthropicAdapter, OpenAIAdapter],
+    ids=["anthropic", "openai"],
+)
+def test_request_failed_pin_three_of_four_methods_call_a_schema_helper(adapter):
+    """The docstring says "three of the four generation methods" call a schema
+    helper just past their guarded region and that `answer_question` calls none.
+    `d2ce712` had to narrow an "each generation method" that was false of
+    `answer_question`; `759eac0` had to narrow the helper set. This is the check
+    that catches either the moment the method/helper set moves.
+
+    The pin is the SET the prose counts, read out of the AST: exactly these four
+    generation methods, with exactly this helper mapping -- so "three of the
+    four" and "`answer_question` calls none" are pinned together.
+    """
+    mapping = _request_failed_helper_map(adapter)
+
+    # The four the docstring means -- no more, no fewer.
+    assert set(mapping) == set(_REQUEST_FAILED_HELPER_MAP), mapping
+    # The exact set: which method calls which helper.
+    assert mapping == _REQUEST_FAILED_HELPER_MAP, mapping
+    # The quantifiers the sentence makes, stated so a reader sees what is pinned:
+    # three of the four call a helper, and `answer_question` calls none.
+    assert len([name for name, helpers in mapping.items() if helpers]) == 3, mapping
+    assert mapping["answer_question"] == [], mapping
+
+
+def test_request_failed_pin_parse_query_has_exactly_two_raise_sites():
+    """The docstring says `parse_query` "cannot" leak because "its two raise
+    sites carry a missing key name, a builtin `TypeError` phrase, or a JSON
+    position, and nothing of the payload". `759eac0` had to narrow "none of the
+    three is harmless" down to "two of the three" precisely because `parse_query`
+    is the bounded one. This pins the count that makes it bounded: exactly two
+    raise sites.
+
+    Adding a third `raise` to `parse_query` -- the move that would let it carry
+    a payload -- goes red here.
+    """
+    tree = ast.parse(Path(inspect.getfile(parse_query)).read_text(encoding="utf-8"))
+    fn = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "parse_query"
+    )
+    raise_sites = [node for node in ast.walk(fn) if isinstance(node, ast.Raise)]
+    assert len(raise_sites) == 2, [ast.dump(site) for site in raise_sites]
+
+
+def test_request_failed_pin_two_leak_one_is_bounded():
+    """The docstring's leak split: `parse_facts` and `parse_query_intent` "put
+    what they were handed into the message they raise"; `parse_query` "cannot".
+    This pins that split by observation, not by reading the sentence.
+
+    One marker-bearing payload per helper, in the shape each adapter hands it:
+    `parse_facts` and `parse_query_intent` echo the marker into the raised
+    message (the two that leak), while `parse_query` -- the bounded one -- does
+    not, either because the marker is not the parsed value (it raises with a
+    missing key name, never the payload) or because it is the parsed value (it
+    returns it rather than raising).
+    """
+    marker = "sk-SUPERSECRET-123"
+
+    # The two that leak: the marker lands in the raised message.
+    with pytest.raises(LLMOutputError) as exc:
+        parse_facts([{"subject": marker, "oops": 1}])
+    assert marker in str(exc.value), str(exc.value)
+
+    with pytest.raises(LLMOutputError) as exc:
+        parse_query_intent({"kind": marker})
+    assert marker in str(exc.value), str(exc.value)
+
+    # The bounded one: the marker-bearing payload raises WITHOUT the marker.
+    with pytest.raises(LLMOutputError) as exc:
+        parse_query({"subject": marker, "oops": 1})
+    assert marker not in str(exc.value), str(exc.value)
+
+    # ... and when the marker IS the parsed value, `parse_query` returns it
+    # rather than raising, so there is no message for it to leak into.
+    assert parse_query({"datalog": marker}) == marker
+
 
 
 @pytest.mark.parametrize(("provider", "module"), [("anthropic", "anthropic"), ("openai", "openai")])
