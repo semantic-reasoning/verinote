@@ -440,6 +440,50 @@ def test_amend_route_rejects_a_superseded_fact_without_mutating_it(tmp_path):
     assert _row(store, fact_id) == before
 
 
+def test_amend_renders_a_read_only_row_when_a_reject_lands_in_the_toctou_window(
+    tmp_path, monkeypatch
+):
+    # The amend test above settles the pre-check's plain 400 -- the answer a
+    # form left open gets, measured. This one settles the other window the
+    # handler exists for (#586): the fact is still live when the pre-check
+    # runs, then a reject lands before `store.amend_fact` re-reads it. The
+    # pre-check is NOT faked -- faking it would render a row production cannot
+    # produce (a superseded badge with live decision buttons), which #570
+    # measured as the defect. Instead the real store rejects the fact inside
+    # the gap, and the real `store.amend_fact` then raises the real
+    # `TerminalFactError`, which the handler must turn into the read-only row
+    # at 200.
+    client, store = _client(tmp_path)
+    fact_id = store.add_fact("Ledger", "owner", "Park", status="needs_review")
+    assert store.get_fact(fact_id)["status"] == "needs_review"
+    original_amend = store.amend_fact
+
+    def toctou_amend(fact_id_arg, **kwargs):
+        store.reject_fact(fact_id)
+        return original_amend(fact_id_arg, **kwargs)
+
+    monkeypatch.setattr(store, "amend_fact", toctou_amend)
+
+    resp = client.post(
+        f"/facts/{fact_id}/amend",
+        data={
+            "subject": "Ledger",
+            "subject_kind": "string",
+            "relation": "owner",
+            "relation_kind": "string",
+            "object": "Choi",
+            "object_kind": "string",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert "rejected — no further action" in resp.text
+    assert f'hx-post="/facts/{fact_id}/amend"' not in resp.text
+    fact = store.get_fact(fact_id)
+    assert fact["status"] == "superseded"
+    assert fact["object"] == "Park"
+
+
 # --- legacy databases ------------------------------------------------------
 
 

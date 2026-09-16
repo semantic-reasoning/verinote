@@ -3117,9 +3117,12 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             # until it landed.
             # Re-render the read-only row at 200 rather than an error at 4xx:
             # htmx's default responseHandling does not swap 4xx, so an error
-            # status would leave the stale edit form on screen still offering a
-            # save that cannot succeed. The row it swaps in says "rejected -- no
-            # further action", which is both the state and the explanation.
+            # status would leave the form the user just posted on screen, still
+            # offering a save that cannot succeed. That in-flight form is the
+            # only one this path can have on screen -- a form merely left open
+            # is the plain 400 above, not this one. The row it swaps in says
+            # "rejected -- no further action", which is both the state and the
+            # explanation.
             #
             # By the same reasoning the validation-error path above, which
             # re-renders the edit form at 400, does not swap either and so shows
