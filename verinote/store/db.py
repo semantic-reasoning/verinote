@@ -1884,25 +1884,23 @@ class Store:
         Closing it is that follow-up, not this one; the refund's direction here
         is toward retrying again, not toward giving up early.
 
-        THE TWO REWINDS THAT DO NOT REFUND stay that way, one for a reason and one
-        as residue. `claim_pending_extraction_job`'s sweep is this one minus the
-        refund. Its own comment calls it "a defensive no-op", and on the
-        ordinary paths it is; in the same #242 window as above it does fire, and
-        the row it sweeps carries the attempt `mark_chunk_running` charged
-        (measured, two processes). Refunding there belongs with the window. `rollback_extraction_job` is the
-        one with a live gap: the reason `requeue_chunk_claim` records for it — a
-        halt freezes the whole KB against writes, so the count is not what stands
-        in the way — covers its two halt callers (`_halt_extraction_job` and the
-        sidecar back-off, both `pipeline/extract.py`) and NOT its other two, which
-        are crash recovery rather than halts (`web/app.py`'s restart resume,
-        `cli.py`'s `sync --recover`). The `running` chunk those two rewind is the
-        very class this refund is about, and its attempt stays charged there — the
-        same over-charge reached by a different path. Pre-existing, outside #524,
-        and named here rather than covered: it is not the residue #536 owns
-        either, and wants a ticket of its own. What #536 does own is the residue no
-        chunk row can carry — a fault reproducing below the chunk accounting burns
-        a run row and two job events every pass, and this refund does not touch
-        that.
+        ONE OF THE TWO REWINDS THAT USED NOT TO REFUND HAS SINCE BEEN FIXED.
+        `claim_pending_extraction_job`'s sweep still does not refund: its own
+        comment calls it "a defensive no-op", and on the ordinary paths it is; in
+        the same #242 window as above it does fire, and the row it sweeps carries
+        the attempt `mark_chunk_running` charged (measured, two processes).
+        Refunding there belongs with the window. `rollback_extraction_job` once
+        carried the same gap on its two crash-recovery callers
+        (`web/app.py`'s restart resume, `cli.py`'s `sync --recover`) — "the one
+        with a live gap", named here rather than covered, and "wanting a ticket
+        of its own". #556 closed it: those two callers now pass
+        `refund_attempt=True`, so the rewind they get refunds the dead pass's
+        claim exactly as this method's stray sweep does, while its halt and
+        back-off callers keep the no-refund default for the reasons
+        `rollback_extraction_job`'s own docstring records. What #536 does own is
+        the residue no chunk row can carry — a fault reproducing below the chunk
+        accounting burns a run row and two job events every pass, and this refund
+        does not touch that.
         """
         with self._lock:
             before = self.get_extraction_job(job_id)
@@ -2021,7 +2019,9 @@ class Store:
                     after=_job_event_payload(after),
                 )
 
-    def rollback_extraction_job(self, job_id: int, message: str) -> None:
+    def rollback_extraction_job(
+        self, job_id: int, message: str, *, refund_attempt: bool = False
+    ) -> None:
         """Rewind an interrupted job to `pending` so it can be resumed later.
 
         Used when this KB's logic policy file vanishes mid-job (#194). The job must
@@ -2034,6 +2034,34 @@ class Store:
         Chunks already `done` stay `done` (their candidate facts are real, and
         re-extracting them would just re-do work), and `failed` chunks keep their
         error. Only the in-flight `running` chunk is returned to the queue.
+
+        ATTEMPT REFUND IS OPT-IN, and the split follows the CALLER'S CLASS, not this
+        method's (#556). `refund_attempt=True` refunds the one attempt
+        `mark_chunk_running` charged on every `running` chunk the rewind returns
+        (floored at zero) — the same inverse this method's sibling
+        `claim_extraction_job_for_retry` performs on its stray-chunk sweep (#524);
+        the default `False` leaves the budget charged, which is the right answer
+        for the two classes of caller that must not refund:
+
+        - HALT — `_halt_extraction_job` (`pipeline/extract.py`): the KB is frozen to
+          writes for as long as the policy is gone, so the retry budget is not what
+          stands between a chunk and its retry. The charge stays.
+        - BACK-OFF — `_back_off_from_locked_sidecar` and
+          `_back_off_from_unavailable_prompt` (`pipeline/extract.py`): the chunk
+          clause already refunded this pass's claim via `requeue_chunk_claim`
+          before reaching here, so this pass's chunk is `pending` and the
+          `WHERE status = 'running'` below passes over it. A second refund here
+          would be a double refund of a claim already returned, and in the #242
+          window — where the refund's `UPDATE` is unconditional per job — it would
+          reach a LIVE peer's claim this pass never held.
+
+        The one class that DOES refund is crash recovery, where the process died
+        holding the claim and nobody else ever refunded it:
+        `_resume_source_extraction_jobs` (`web/app.py`) and `sync --recover`
+        (`cli.py`) both pass `refund_attempt=True`. A dead pass is not a failure
+        of the chunk's content, and the KB is healthy enough to be retried right
+        away — so the attempt it charged goes back with the rewind, exactly the
+        way the retry claim refunds the same stray class.
 
         THAT USED TO BE JUSTIFIED HERE BY THE CLAIM THAT THE CHUNK "was rolled back
         *before* any of its facts were written", AND THAT CLAIM WAS FALSE (#482).
@@ -2097,8 +2125,14 @@ class Store:
                 return
             if before["status"] == "canceled":
                 return
+            refund = "attempts = MAX(attempts - 1, 0), " if refund_attempt else ""
+            # The refund clause is the caller's, not this method's: crash recovery
+            # asks for it (the dead pass's claim is owed one back, #556), the halt
+            # and back-off callers keep the default and the budget stays charged.
+            # The `MAX` floor matches `claim_extraction_job_for_retry`'s stray
+            # sweep (#524), whose refund this is the sibling of.
             self._conn.execute(
-                "UPDATE source_chunks SET status = 'pending', error = '', "
+                f"UPDATE source_chunks SET status = 'pending', error = '', {refund}"
                 "updated_at = datetime('now') "
                 "WHERE job_id = ? AND status = 'running'",
                 (job_id,),

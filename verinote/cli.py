@@ -741,9 +741,13 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     job = store.get_extraction_job(latest_id)
                     if job is None or job["status"] != "running":
                         continue
+                    # Crash recovery, not a halt: the dead pass's claim is
+                    # refunded with the rewind (#556), so a crash costs the
+                    # chunk none of its retry budget.
                     store.rollback_extraction_job(
                         latest_id,
                         "Recovering an extraction job interrupted mid-run.",
+                        refund_attempt=True,
                     )
                     print(
                         f"recovering {source.source_path}: rolled back stuck "
