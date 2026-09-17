@@ -162,22 +162,359 @@ def test_a_spellings_row_is_pinned_by_a_question_asked_in_a_different_row(
 @pytest.mark.parametrize(
     ("question", "value"),
     [
-        ("샘플사업의 항목은 몇 개인가?", "2년"),
         ("샘플사업의 기간은 얼마나 되나요?", "2년"),
     ],
 )
-def test_a_tail_naming_no_unit_is_silent(question, value):
-    """`몇 개` and `얼마나` reach the same answer by different routes.
+def test_a_no_counter_tail_is_silent(question, value):
+    """`얼마나` captures no counter at all, so the lookup is handed None.
 
-    `개` is a counter `_KOREAN_MEASURE_COUNTER` lists and
-    `_MEASUREMENT_UNIT_SPELLINGS` does not, so no unit is derived from it and the
-    family table is never consulted. The `얼마나` branch captures no counter at
-    all, so the lookup is handed None. Both land on the same `.get` returning
-    None rather than on a branch apiece.
+    #455 moved its neighbour out of this test: `몇 개` is a classifier counter,
+    and `샘플사업의 항목은 몇 개인가?` answered `2년` now fires `("개", "년")`
+    -- pinned by the #455 fire matrix below, which is the test the value
+    belongs in. `얼마나` still lands on the same None the canonical side hands
+    it, and that half keeps this test.
     """
     from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
 
     assert korean_measure_unit_mismatch(question, value) is None
+
+
+# --- the classifier-measure caveat (#455) ----------------------------------
+#
+# `korean_measure_unit_mismatch` gains a second question side for which there
+# is no family to compare in: the 16 counters `_KOREAN_MEASURE_COUNTER` lists
+# and `_MEASUREMENT_UNIT_SPELLINGS` does not -- `몇 개`, `몇 명` and their kin
+# -- ask for a count of a kind, so the value's kind is what is compared. The
+# branch fires only on a positive signal the value itself states, in the order
+# the module pins: a count in the ASKED kind suppresses (S), a unit the value
+# states is named (A1), and only then a count in another classifier kind is
+# named (A2), with the synonym, general-count and position exclusions cutting
+# A2 out.
+#
+# Every assertion here is on the exact pair or on None, for the reason the
+# #445 section states: a mutation that returned the wrong counter would print
+# a caveat naming a kind the question did not ask.
+
+
+def test_a_classifier_question_answered_in_a_different_kind_names_both():
+    """The two examples the issue names, at the level that decides them.
+
+    `샘플사업의 기간은 몇 개인가?` against a KB holding `2년` and
+    `샘플사업의 참여자는 몇 명인가?` against `3개 기관` are answered VERIFIED
+    with no caveat as this file stood; the value states a kind the question
+    did not ask, and the pair is what the caveat beside it is worded from.
+    """
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
+
+    assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 개인가?", "2년") == (
+        "개",
+        "년",
+    )
+    assert korean_measure_unit_mismatch("샘플사업의 참여자는 몇 명인가?", "3개 기관") == (
+        "명",
+        "개",
+    )
+
+
+@pytest.mark.parametrize(
+    ("question", "value", "expected"),
+    [
+        # A1: the value states a unit the question did not ask in.
+        ("샘플사업의 기간은 몇 개인가?", "3주", ("개", "주")),
+        ("샘플사업의 가격은 몇 개인가?", "1000원", ("개", "원")),
+        ("샘플사업의 비율은 몇 개인가?", "30%", ("개", "%")),
+        ("샘플사업의 증가율은 몇 개인가?", "2배", ("개", "배")),
+        # A1 through the #454 rule: an unspaced time compound names its
+        # leading unit, so the caveat says `시간`, not `분`.
+        ("샘플사업의 소요는 몇 개인가?", "3시간30분", ("개", "시간")),
+        # A2: the value states a count in another classifier kind.
+        ("샘플행사의 참석자는 몇 번인가?", "2명 참석", ("번", "명")),
+        ("샘플사업의 항목은 몇 가지인가?", "3개 도구", ("가지", "개")),
+    ],
+)
+def test_the_classifier_fire_matrix_fires_on_a_kind_the_value_states(
+    question, value, expected
+):
+    """Each row is a branch of #455's fire side with nothing to mask it.
+
+    The first five pin A1, the unit branch: the question names no unit, the
+    value states one, and the pair is the kind asked beside the unit stated.
+    The last two pin A2, the classifier branch, from the asked side (`번`
+    beside a `명` count) and from a kind the value's first count names
+    (`3개 도구` stating `개` beside the `가지` asked).
+    """
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
+
+    assert korean_measure_unit_mismatch(question, value) == expected
+
+
+@pytest.mark.parametrize(
+    ("question", "value"),
+    [
+        # S: a count in the ASKED kind anywhere in the value is a complete
+        # answer, and it beats A1 and A2 -- `2년 3개` against `몇 개` would
+        # otherwise name `년` through the unit branch, and `5명 2개 기관`
+        # against `몇 명` would otherwise name `개` through A2.
+        ("샘플사업의 항목은 몇 개인가?", "3개"),
+        ("샘플사업의 항목은 몇 개인가?", "3개 기관"),
+        ("샘플사업의 항목은 몇 개인가?", "2년 3개"),
+        ("샘플사업의 참여자는 몇 명인가?", "5명 2개 기관"),
+        ("샘플사업의 소요는 몇 번인가?", "5명 3번"),
+        # Synonym pairs, both directions: the value states the asked kind's
+        # sibling, which counts the same kind of thing.
+        ("샘플사업의 건수는 몇 건인가?", "3개"),
+        ("샘플사업의 항목은 몇 개인가?", "5건"),
+        ("샘플사업의 항목은 몇 가지인가?", "2종류"),
+        ("샘플사업의 도구는 몇 종류인가?", "3가지"),
+        ("샘플행사의 횟수는 몇 번인가?", "5회"),
+        ("샘플행사의 횟수는 몇 회인가?", "3번"),
+        # A general count asks for a count of things without naming a kind, so
+        # any count answers it and A2 is cut out against `개`.
+        ("샘플인물의 인원은 몇 개인가?", "5명"),
+        ("샘플사업의 항목은 몇 개인가?", "3종류"),
+        # Positions are not counts: `1위` ranks and `3차` sequences, so the
+        # value states no kind to caveat against.
+        ("샘플인물의 순위는 몇 명인가?", "1위"),
+        ("샘플행사의 순위는 몇 번인가?", "3위"),
+        ("샘플사업의 단계는 몇 차인가?", "3차"),
+        # No quantity on the value side at all: the prose corpus carries these
+        # through the sweep below, and the rows kept here are the near-misses
+        # that pin the mechanism -- `2년차` and `5개년` refuse the trailing
+        # syllable, `3차 회의` is a position, `지원 없음` states no count.
+        ("샘플사업의 항목은 몇 개인가?", "3차 회의 예정"),
+        ("샘플사업의 단계는 몇 차인가?", "3차 회의 예정"),
+        ("샘플사업의 항목은 몇 개인가?", "2년차 담당자 배정"),
+        ("샘플사업의 항목은 몇 개인가?", "5개년 계획 수립"),
+        ("샘플사업의 가격은 몇 개인가?", "지원 없음"),
+        # A date, not a duration: the #445 date branch still reads it as a
+        # point in time, and #455's branch is silent beside it too.
+        ("샘플사업의 시점은 몇 개인가?", "3월 15일"),
+        ("샘플사업의 시점은 몇 개인가?", "2021년 3월 15일"),
+        # Cross-family: a `몇 원` question has the canonical side read `원` as
+        # a unit, so #455's branch never sees it -- `2년` beside it is a
+        # mis-read question rather than a unit difference.
+        ("샘플사업의 가격은 몇 원인가?", "2년"),
+        # The general count beside the issue's own examples, pinned in the
+        # direction that separates them: `인원 몇 개` answered `5명` states
+        # the count the question asked for, while `참여자 몇 명` answered
+        # `3개 기관` does not, and the two must not collapse into one answer.
+        ("샘플인물의 인원은 몇 개인가?", "3개 기관"),
+    ],
+)
+def test_the_classifier_silence_matrix_stays_silent(question, value):
+    """The rows the fire matrix must not swallow, one per exclusion.
+
+    S pins first because it is the branch that runs before the other two:
+    `2년 3개` states `년` through A1's eyes and `3개` through S's, and the
+    value wins as a complete answer on the asked kind. The synonym, general
+    and position exclusions each pin one row the A2 branch would otherwise
+    name, and the near-miss rows pin the trailing-syllable refusal and the
+    prose boundary the sweep below measures.
+
+    `인원은 몇 개인가?` answered `3개 기관` is the row that keeps the general
+    count honest from the OTHER side of the issue's two examples: the value
+    states the general kind in `3개`, so S wins, and the case is silent for
+    the suppression's reason rather than for the general counter's -- the two
+    rows above it pin the general counter itself.
+    """
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
+
+    assert korean_measure_unit_mismatch(question, value) is None
+
+
+def test_the_classifier_counter_set_is_the_counters_that_name_no_unit():
+    """30 counters split 14 unit-named and 16 classifier-named, exactly.
+
+    `_CLASSIFIER_COUNTERS` is derived from the two tables rather than listed,
+    so this re-derives the split and pins it one-sidedly: a counter added to
+    `_KOREAN_MEASURE_COUNTER` lands in the classifier set automatically, a row
+    added to `_MEASUREMENT_UNIT_SPELLINGS` leaves it, and either move moves
+    this count without moving the 14 the #445 sweep is built from. The two
+    sets must partition the table -- a counter in both would ask in a unit
+    and a kind at once, and the branch order in the module cannot tell them
+    apart.
+    """
+    from verinote.pipeline.query_intent import _KOREAN_MEASURE_COUNTER
+    from verinote.pipeline.query_measure_unit import (
+        _CLASSIFIER_COUNTERS,
+        _MEASUREMENT_UNIT_SPELLINGS,
+    )
+
+    all_counters = _KOREAN_MEASURE_COUNTER.split("|")
+    unit_named = tuple(c for c in all_counters if c in _MEASUREMENT_UNIT_SPELLINGS)
+    assert len(unit_named) == 14
+    assert set(_CLASSIFIER_COUNTERS) == set(all_counters) - set(unit_named)
+    assert len(_CLASSIFIER_COUNTERS) == 16
+    # Longest-first: `종류` before `종`, the way the alternation must take it.
+    lengths = [len(c) for c in _CLASSIFIER_COUNTERS]
+    assert lengths == sorted(lengths, reverse=True)
+    assert "종류" in _CLASSIFIER_COUNTERS and "종" in _CLASSIFIER_COUNTERS
+    assert _CLASSIFIER_COUNTERS.index("종류") < _CLASSIFIER_COUNTERS.index("종")
+
+
+def test_the_general_count_counter_is_in_the_classifier_set():
+    """`개` asks for a count of things without naming a kind.
+
+    It is the one classifier counter A2 must never fire against, because any
+    count answers a `몇 개`. The silence matrix pins the behaviour; this pins
+    the mechanism -- that `개` is in the set and that it is the set's
+    designated general member, not one of the sixteen by accident of spelling.
+    """
+    from verinote.pipeline.query_measure_unit import (
+        _CLASSIFIER_COUNTERS,
+        _GENERAL_COUNT_COUNTER,
+    )
+
+    assert _GENERAL_COUNT_COUNTER == "개"
+    assert _GENERAL_COUNT_COUNTER in _CLASSIFIER_COUNTERS
+
+
+@pytest.mark.parametrize(
+    ("counter_a", "counter_b"),
+    [
+        ("건", "개"),
+        ("개", "건"),
+        ("가지", "종류"),
+        ("종류", "가지"),
+        ("번", "회"),
+        ("회", "번"),
+    ],
+)
+def test_the_synonym_pairs_are_pinned_pair_by_pair(counter_a, counter_b):
+    """Each direction of each pair is a member, and no pair is missing.
+
+    The set is a frozenset of frozensets, so `("개", "건")` and
+    `("건", "개")` are the same member and this parametrises both to pin that
+    the set is symmetric by construction. A pair dropped from the set fires
+    A2 in one direction -- `몇 번` answered `5회` would caveat `회` -- and the
+    silence matrix row for that pair goes red. The pairs are the three the
+    counters name in ordinary use, and adding one only silences, so this pins
+    membership, not closure.
+    """
+    from verinote.pipeline.query_measure_unit import _COUNT_SYNONYM_PAIRS
+
+    assert frozenset((counter_a, counter_b)) in _COUNT_SYNONYM_PAIRS
+    # And the set has exactly three members: no pair is listed twice under a
+    # different spelling, and none is missing that the silence matrix carries.
+    assert len(_COUNT_SYNONYM_PAIRS) == 3
+
+
+@pytest.mark.parametrize("counter", ("위", "차"))
+def test_the_position_counters_are_pinned(counter):
+    """`1위` ranks and `3차` sequences: the value states a position, not a kind.
+
+    A2 must not fire against either, and the silence matrix carries the rows.
+    This pins the set itself -- that both are in it and nothing else is, so
+    a mutation that widens or narrows the set is caught here and not by a
+    test about a value that happens to be silent for another reason.
+    """
+    from verinote.pipeline.query_measure_unit import _COUNT_POSITION_COUNTERS
+
+    assert counter in _COUNT_POSITION_COUNTERS
+    assert set(_COUNT_POSITION_COUNTERS) == {"위", "차"}
+
+
+def test_question_classifier_counter_reads_the_counter_and_refuses_얼마나():
+    """The question side: the counter a classifier question asks in, or None.
+
+    `얼마나` captures no counter and lands on None, the same answer the
+    canonical side gives it, so the two tails that name no kind share a None
+    rather than a branch apiece. The flat-attribute shape is the guard: a
+    question that names no relation in front of the measure tail is not a
+    measure question and must not reach the value side at all.
+    """
+    from verinote.pipeline.query_measure_unit import _question_classifier_counter
+
+    assert _question_classifier_counter("샘플사업의 기간은 몇 개인가?") == "개"
+    assert _question_classifier_counter("샘플사업의 참여자는 몇 명인가?") == "명"
+    assert _question_classifier_counter("샘플행사의 횟수는 몇 번인가?") == "번"
+    assert _question_classifier_counter("샘플사업의 기간은 얼마나 되나요?") is None
+    # A unit-named counter is not a classifier counter: the canonical side
+    # reads it, and the classifier side must refuse it or the two branches
+    # would both claim the same question.
+    assert _question_classifier_counter("샘플사업의 기간은 몇 개월인가?") is None
+    # No relation in front of the tail: not a measure question.
+    assert _question_classifier_counter("샘플사업의 몇 년인가?") is None
+    # A counter outside the classifier set is not read here.
+    assert _question_classifier_counter("샘플사업의 비율은 몇 퍼센트인가?") is None
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("3개 기관", "개"),
+        ("3종류 도구", "종류"),
+        ("5명 2개 기관", "명"),
+        ("2년", None),
+        ("5개년 계획 수립", None),
+        ("2백개", None),
+        ("3천개 기관", "개"),
+        ("지원 없음", None),
+        ("2년차 담당자 배정", None),
+        # `3차` states the position counter at the mechanism level: the
+        # trailing space admits it, and it is the caller -- not this scan --
+        # that keeps a position out of the caveat through
+        # `_COUNT_POSITION_COUNTERS`. The silence matrix pins that side.
+        ("3차 회의 예정", "차"),
+    ],
+)
+def test_value_classifier_count_reads_the_first_classifier_kind(value, expected):
+    """The value side: the kind the first count states, or None.
+
+    `3개 기관` states `개`, `3종류 도구` states `종류`, and `5개년` states
+    nothing, for the reason the module's `_VALUE_CLASSIFIER_COUNT` gives --
+    the trailing syllable is refused, the way `2년차` refuses `년` on the
+    canonical side. `2백개` states no count because the magnitude word is not
+    in the one-of-four set the pattern admits, and `3천개` does state one
+    because `천` is in it. `3차 회의` states `차`, the position counter, and
+    stays a count here: exclusion of positions is the caller's decision, and
+    this scan reports what is stated.
+    """
+    from verinote.pipeline.query_measure_unit import _value_classifier_count
+
+    assert _value_classifier_count(value) == expected
+
+
+def test_value_states_classifier_reads_anywhere_in_the_value():
+    """S's mechanism: a count in the asked kind anywhere in the value.
+
+    `5명 2개 기관` states `개` at position two, and S must see it -- the
+    first count is `명`, and only a scan past it reaches `개`. This is the
+    row the silence matrix pins at the pair level, and this pins the
+    mechanism: `_value_states_classifier` returns True for the second count,
+    not the first.
+    """
+    from verinote.pipeline.query_measure_unit import _value_states_classifier
+
+    assert _value_states_classifier("5명 2개 기관", "개") is True
+    assert _value_states_classifier("5명 2개 기관", "명") is True
+    assert _value_states_classifier("5명 2개 기관", "종") is False
+    assert _value_states_classifier("2년", "개") is False
+    assert _value_states_classifier("5개년 계획 수립", "개") is False
+
+
+def test_the_classifier_sweep_keeps_ordinary_prose_silent():
+    """Every classifier counter against the prose corpus, all silent.
+
+    This is what the leading `[0-9]` and the trailing refusal in
+    `_VALUE_CLASSIFIER_COUNT` buy, and the sweep rather than any single case
+    is what measures it. The #445 sweep covers the 14 unit-named counters
+    against the same corpus; this covers the 16 that name no unit, and the
+    only counter-carrying value in the corpus is `3차 회의 예정`, which is
+    excluded by its own position against `차` and by the trailing refusal
+    against the other fifteen.
+    """
+    import verinote.pipeline.query_measure_unit as qmu
+    from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
+
+    counters = qmu._CLASSIFIER_COUNTERS
+    assert len(counters) == 16
+    questions = [f"샘플대상의 지표는 몇 {counter}인가?" for counter in counters]
+    pairs = [(question, value) for question in questions for value in _PROSE_VALUES]
+    assert len(pairs) == len(counters) * len(_PROSE_VALUES)
+
+    for question, value in pairs:
+        assert korean_measure_unit_mismatch(question, value) is None, (question, value)
 
 
 def test_a_relation_literally_named_with_a_counter_is_not_a_measure_question():

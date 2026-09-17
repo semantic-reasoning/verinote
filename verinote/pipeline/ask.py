@@ -26,7 +26,10 @@ from verinote.pipeline.query import (
     expand_query_relation_aliases,
 )
 from verinote.pipeline.query_candidate_eval import RELATION_DECL
-from verinote.pipeline.query_measure_unit import korean_measure_unit_mismatch
+from verinote.pipeline.query_measure_unit import (
+    _MEASUREMENT_UNIT_SPELLINGS,
+    korean_measure_unit_mismatch,
+)
 from verinote.pipeline.report_trace import trace_query_answers
 from verinote.store import Store, engine_statuses
 from verinote.store.duckdb_fact_terms import DuckDBFactTermStoreError
@@ -279,10 +282,19 @@ def _engine_answer_warning(
     if mismatch is None:
         return None
     counter, stated = mismatch
+    if counter in _MEASUREMENT_UNIT_SPELLINGS:
+        # #445: two units in one family measure the same thing, so the
+        # refusal of conversion is the claim worth making.
+        return (
+            f"the question's counter is {counter}; the verified value states "
+            f"{stated}. verinote shows stored values as recorded and applies "
+            f"no unit conversion"
+        )
+    # #455: the counter names no unit, so there is no conversion to refuse;
+    # the sentence names what the value states and nothing more.
     return (
         f"the question's counter is {counter}; the verified value states "
-        f"{stated}. verinote shows stored values as recorded and applies "
-        f"no unit conversion"
+        f"{stated}. verinote shows stored values as recorded"
     )
 
 

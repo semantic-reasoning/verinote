@@ -1195,6 +1195,73 @@ def test_ask_does_not_warn_when_the_verified_value_is_in_the_asked_unit(tmp_path
     assert result.warning is None
 
 
+# --- the classifier-measure caveat (#455) ----------------------------------
+
+
+def test_ask_warns_beside_a_classifier_answered_in_a_different_kind(tmp_path):
+    """#455: the answer stands, and the caveat beside it names no conversion.
+
+    `샘플사업의 기간은 몇 개인가?` against a KB holding `(샘플사업, 기간, 2년)`
+    is answered VERIFIED, and the caveat names the kind asked beside the unit
+    stated. The sentence is the canonical one MINUS its last clause: the
+    counter `개` names no unit, so there is no conversion to refuse, and
+    asserting the whole sentence is what keeps the two templates apart -- a
+    mutation that merged them back into one sentence would print "applies no
+    unit conversion" beside a count, which the sentence there is not licensed
+    to say.
+    """
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/sample-plan.txt")
+    store.add_fact("샘플사업", "기간", "2년", status="confirmed", source_id=source_id)
+
+    result = ask_question(
+        store,
+        DeterministicOnlyClient(),
+        root=tmp_path,
+        question="샘플사업의 기간은 몇 개인가?",
+    )
+
+    assert result.route == "engine"
+    assert result.label == "VERIFIED — engine"
+    assert result.status == "translated"
+    assert result.reason == "deterministic query matched confirmed/accepted facts"
+    assert result.answer == "샘플사업, 기간, 2년\n    ← sources/sample-plan.txt"
+    assert result.warning == (
+        "the question's counter is 개; the verified value states 년. verinote "
+        "shows stored values as recorded"
+    )
+    # The two templates are apart: the canonical sentence carries the refusal
+    # of conversion and the classifier sentence does not, and this pair is the
+    # row that pins the split from the classifier side.
+    assert "no unit conversion" not in result.warning
+    assert result.warning != _UNIT_WARNING
+    # ask.html renders this slot as text, so the sentence carries no markup.
+    assert "`" not in result.warning
+    assert "*" not in result.warning
+
+
+def test_ask_does_not_warn_when_the_classifier_value_states_the_asked_kind(tmp_path):
+    """`참여자 몇 명` answered `3명`: the value states the kind asked in.
+
+    The S half of #455 at the screen level: the value is a complete answer in
+    the kind the question asked, so the caveat is withdrawn rather than
+    reworded, and the answer stands exactly as it did before #455.
+    """
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/sample-plan.txt")
+    store.add_fact("샘플사업", "참여자", "3명", status="confirmed", source_id=source_id)
+
+    result = ask_question(
+        store,
+        DeterministicOnlyClient(),
+        root=tmp_path,
+        question="샘플사업의 참여자는 몇 명인가?",
+    )
+
+    assert result.label == "VERIFIED — engine"
+    assert result.warning is None
+
+
 def test_ask_warns_on_the_answering_fact_of_a_two_hop_proof(tmp_path):
     """A two-hop proof lists an intermediate fact whose object is not the answer.
 

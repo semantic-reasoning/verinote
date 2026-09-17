@@ -8,6 +8,7 @@ import re
 from verinote.pipeline.query_intent import (
     _KOREAN_ATTRIBUTE_LABEL_MEASURE_TAIL,
     _KOREAN_ATTRIBUTE_QUESTION,
+    _KOREAN_MEASURE_COUNTER,
     _label_readings_after_measure,
 )
 from verinote.text import nfc
@@ -231,6 +232,87 @@ follows it, so its trailing lookahead fails -- and the `unit2` is the one the
 strict scan does read. A value matching this is therefore one whose reported
 list holds only the trailing component. `_leading_time_compound_unit` is the
 selection rule it feeds; #454 is where the design call is argued.
+"""
+
+_CLASSIFIER_COUNTERS = tuple(
+    sorted(
+        (
+            counter
+            for counter in _KOREAN_MEASURE_COUNTER.split("|")
+            if counter not in _MEASUREMENT_UNIT_SPELLINGS
+        ),
+        key=len,
+        reverse=True,
+    )
+)
+"""The 16 counters that name no unit, longest-first.
+
+#455: the complement of the canonical counters inside
+`_KOREAN_MEASURE_COUNTER` -- the 16 the issue names -- derived rather than
+listed, so a counter added to that table lands here automatically and a row
+added to `_MEASUREMENT_UNIT_SPELLINGS` leaves here.
+`test_the_classifier_counter_set_is_the_counters_that_name_no_unit`
+re-derives the split. Longest-first because `종류` extends `종` and the
+alternation must take the longer first, the same way `_LEADING_COMPOUND`
+keeps `주일` whole.
+"""
+
+_GENERAL_COUNT_COUNTER = "개"
+"""The counter that asks for a count of things without naming a kind.
+
+A value that states a count of anything answers a `몇 개` as a complete
+answer -- `인원 몇 개` answered `5명` states the count the question asked for
+-- so the value-side classifier check never fires for it and only the unit
+check does. The direction is what separates the issue's two examples:
+`참여자 몇 명` answered `3개 기관` names a kind the question did not ask,
+while `인원 몇 개` answered `3명` names the kind the question asked for.
+`test_the_general_count_counter_silences_a_count_of_any_kind` pins both.
+"""
+
+_COUNT_SYNONYM_PAIRS = frozenset(
+    {frozenset(pair) for pair in (("건", "개"), ("가지", "종류"), ("번", "회"))}
+)
+"""Counter pairs that count the same kind of thing, so stated in one answers
+the other and is not caveated.
+
+`건`/`개` are item counters, `가지`/`종류` kind counters, and `번`/`회`
+occurrence counters: `횟수 몇 번` answered `5회` states the same count in
+the sibling counter, the way `2년 6개월` states the asked unit beside
+another. The pairs are a list rather than a rule because "counts the same
+kind" is a judgement about two counters and there is no table it lives in;
+`test_the_synonym_pairs_are_pinned_pair_by_pair` pins each member so one
+cannot be dropped with the suite green. Adding a pair only silences, which
+is the safe direction, and the pairs are the ones the counters name in
+ordinary use rather than a claim that the set is closed.
+"""
+
+_COUNT_POSITION_COUNTERS = ("위", "차")
+"""Counters that read as a position rather than a count of a quantity.
+
+`1위` is a rank and `3차` a sequence: a value stating either states a
+position, not a measure a question could ask in and be answered in another,
+so it is not reported as a stated kind. The prose corpus carries the
+witness, `3차 회의 예정`, which stays silent against every classifier
+question -- through its own suppression against the sixteenth and through
+this exclusion against the other fifteen.
+"""
+
+_VALUE_CLASSIFIER_COUNT = re.compile(
+    r"[0-9][0-9,.]*\s*[만억천조]?\s*"
+    r"(?P<counter>" + "|".join(re.escape(s) for s in _CLASSIFIER_COUNTERS) + r")"
+    r"(?![가-힣0-9A-Za-z])"
+)
+"""One count of a classifier kind stated inside a value.
+
+#455's value-side reading, with the number and the trailing refusal taken
+from `_VALUE_MEASUREMENT` rather than copied: the same ASCII digit head, the
+same one-of-four magnitude, and the same refusal of a counter run into the
+next character, so `2년차`, `5개년`, `2백개` and `３개` state no count here
+for the same reasons they state no unit there, and `5개년` stays the name
+of a plan rather than five of something. `_UNIT_SUFFIX` is not here because
+a classifier kind is what a count names, not a quantity wearing a particle:
+`3개 기관` counts organisations and states `개`, while `3일간` wears the
+particle on a unit and states nothing.
 """
 
 _MONTH_WORD_MEMBERS = (
@@ -1276,11 +1358,98 @@ def _leading_time_compound_unit(value: str) -> str | None:
     return None
 
 
+def _question_classifier_counter(question: str) -> str | None:
+    """The classifier a measure question asks in, or None.
+
+    #455: the same flat attribute shape, the same measure tail and the same
+    relation-in-front guard as `_question_measure_unit`, for the 16 counters
+    that table does not read -- `몇 개인가?`, `몇 명인가?` and their kin.
+    `얼마나` captures no counter and lands on the same None here as on the
+    canonical side, so the two tails that reach no kind share an answer
+    rather than a branch apiece.
+    """
+    match = _KOREAN_ATTRIBUTE_QUESTION.match(question.strip())
+    if match is None:
+        return None
+    label = " ".join(match.group("label").strip().split())
+    tail = _KOREAN_ATTRIBUTE_LABEL_MEASURE_TAIL.search(label)
+    if tail is None:
+        return None
+    counter = tail.group("counter")
+    if counter not in _CLASSIFIER_COUNTERS:
+        return None
+    if not _label_readings_after_measure(label[: tail.start()].strip()):
+        return None
+    return counter
+
+
+def _value_states_classifier(value: str, counter: str) -> bool:
+    """Whether the value states a count in the classifier the question asked in.
+
+    #455's suppression half: a value that states a count in the asked kind has
+    that kind as a complete answer, the way a value that states the asked unit
+    does in `_value_states_asked_unit`, and the caveat is withdrawn rather than
+    reworded. Read with the same number and the same trailing refusal as
+    `_VALUE_CLASSIFIER_COUNT`, so `2년차`, `5개년` and `2백개` state no count
+    for the reasons they state no unit.
+    """
+    return any(
+        match.group("counter") == counter
+        for match in _VALUE_CLASSIFIER_COUNT.finditer(nfc(value).casefold())
+    )
+
+
+def _value_classifier_count(value: str) -> str | None:
+    """The classifier kind the first count in the value is stated in, or None.
+
+    `3개 기관` states `개`, `3종류 도구` states `종류`, and `5개년 계획`
+    states nothing, for the reason `_VALUE_CLASSIFIER_COUNT` gives. Only the
+    first count is reported, the way `_value_measure_units` reports in order
+    and the caller takes the first it needs: a value that states two kinds
+    states the first first, and a count of the asked kind anywhere in the
+    value is what `_value_states_classifier` catches before this is consulted.
+    """
+    match = _VALUE_CLASSIFIER_COUNT.search(nfc(value).casefold())
+    if match is None:
+        return None
+    return match.group("counter")
+
+
 def korean_measure_unit_mismatch(question: str, value: str) -> tuple[str, str] | None:
     """The (asked counter, stated unit) a unit caveat should name, or None.
 
     A mismatch only when the value states a unit in the same family as the one
     asked for and a second scan finds no quantity in the asked unit itself.
+
+    Since #455 there is a second question side for which there is no family to
+    compare in: the 16 counters that name no unit -- `몇 개인가?`,
+    `몇 명인가?` and their kin -- ask for a count of a kind, so the value's
+    kind is what is compared. The branch fires only on a positive signal the
+    value itself states, in the order that decides it:
+
+    1. a count in the ASKED kind anywhere in the value withdraws the caveat
+       (`3개 기관, 5명` against `몇 명`, and `2년 3개` against `몇 개`),
+       because that kind is then a complete answer, the way a value that
+       states the asked unit is in the canonical branch;
+    2. a unit the value states, read by `_value_measure_units`, names that
+       unit -- `2년` against `몇 개` states `년`, the leading one of an
+       unspaced time compound through the #454 rule -- and the caveat says
+       the question asked a count;
+    3. otherwise a count in ANOTHER classifier kind names that kind --
+       `3개 기관` against `몇 명` states `개` -- unless the two counters count
+       the same kind (`_COUNT_SYNONYM_PAIRS`), the question asked the general
+       count (`_GENERAL_COUNT_COUNTER`), or the value states a position rather
+       than a quantity (`_COUNT_POSITION_COUNTERS`).
+
+    Nothing in the branch reads the relation's name for a kind, so a `기간`
+    holding `2년` is not caveated because `기간` means duration; it is
+    caveated because the value states `년` and the question asked `개`. That
+    is the positive signal #445 declined for the cross-family canonical case,
+    and it is available here because a count has no family to belong to:
+    `2년` beside a `몇 원` is a mis-read question rather than a unit
+    difference, while `2년` beside a `몇 개` is a duration where a count was
+    asked, and the sentence names what the value says without claiming what
+    the two measure against each other.
 
     Both halves are what a pattern reads, not what the value contains, and the
     sentence has to be put that way round: `_value_states_asked_unit` re-reads
@@ -1581,6 +1750,31 @@ def korean_measure_unit_mismatch(question: str, value: str) -> tuple[str, str] |
     """
     asked = _question_measure_unit(question)
     if asked is None:
+        # #455: a classifier question asks for a count of a kind, so the
+        # value's kind is what is compared, and a value that states the
+        # asked kind has that kind as a complete answer.
+        classifier = _question_classifier_counter(question)
+        if classifier is not None:
+            if _value_states_classifier(value, classifier):
+                return None
+            found = _value_measure_units(value)
+            if found:
+                unit, spelling = found[0]
+                if _MEASUREMENT_FAMILY[unit] == "time":
+                    lead = _leading_time_compound_unit(value)
+                    if lead is not None:
+                        spelling = lead
+                return (classifier, spelling)
+            stated = _value_classifier_count(value)
+            if (
+                stated is not None
+                and stated != classifier
+                and classifier != _GENERAL_COUNT_COUNTER
+                and stated not in _COUNT_POSITION_COUNTERS
+                and frozenset((classifier, stated)) not in _COUNT_SYNONYM_PAIRS
+            ):
+                return (classifier, stated)
+            return None
         return None
     asked_spelling, asked_unit = asked
     found = _value_measure_units(value)
