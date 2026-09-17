@@ -37,6 +37,8 @@ from verinote.pipeline.corroboration import (
     store_relation_aliases,
     store_single_valued_conflicts,
     store_typed_relations,
+    typed_declaration_for_canonical,
+    typed_relations,
     typed_spec_for_canonical,
 )
 from verinote.pipeline.trust import fact_trust_summary
@@ -275,3 +277,60 @@ def test_a_declaration_under_the_canonical_label_still_wins_alone(tmp_path):
     store = _store(tmp_path, _decl(ALIASED) + _decl(UNALIASED, "capital"))
     workbench = trust_workbench(store)
     assert len(workbench.corroborated) == 1
+
+
+def test_the_pair_resolver_returns_the_written_label_for_each_case(tmp_path):
+    """#597. `typed_declaration_for_canonical` is the single lookup, and it
+    returns the label the user WROTE alongside the spec -- never the canonical
+    -- so a consumer can render the entry under the user's own word.
+
+    The three arms are the three ways a declaration and a fact can meet:
+    same raw label, declaration under the canonical, and the #597 case -- a
+    DIFFERENT raw label that the packaged table routes to the same canonical.
+    The resolver sees all three as "declaration under an aliased label, looked
+    up by the canonical"; what differs is which raw label the fact's row uses,
+    and that is the snapshot's to assert, not the resolver's.
+    """
+    aliases = relation_aliases(DEFAULT_RELATION_ALIASES)
+
+    aliased = typed_relations(_decl(ALIASED))
+    pair = typed_declaration_for_canonical(aliased, CANONICAL, aliases)
+    assert pair == (ALIASED, aliased[ALIASED])
+
+    canonical_written = typed_relations(f"- {CANONICAL} : date as founded\n")
+    pair = typed_declaration_for_canonical(canonical_written, CANONICAL, aliases)
+    assert pair == (CANONICAL, canonical_written[CANONICAL])
+
+    unaliased = typed_relations(_decl(UNALIASED, "capital"))
+    pair = typed_declaration_for_canonical(unaliased, UNALIASED, aliases)
+    assert pair == (UNALIASED, unaliased[UNALIASED])
+
+
+def test_the_pair_resolver_reports_no_declaration_for_an_unrelated_canonical(tmp_path):
+    """#597. Anti-vacuity for the arm above: a canonical the declaration does
+    NOT route to must report nothing, so the FOUND arms are not passing by
+    returning the first declaration whatever the canonical is."""
+    aliases = relation_aliases(DEFAULT_RELATION_ALIASES)
+    aliased = typed_relations(_decl(ALIASED))
+    assert typed_declaration_for_canonical(aliased, UNALIASED, aliases) is None
+    assert typed_declaration_for_canonical(
+        typed_relations(_decl(UNALIASED, "capital")), CANONICAL, aliases
+    ) is None
+
+
+def test_the_spec_wrapper_drops_the_label_without_changing_the_spec(tmp_path):
+    """#597. `typed_spec_for_canonical` is now a projection of the pair
+    resolver. The five trust sites (acceptance, trust, workbench,
+    `single_valued_conflicts`, the `/sources` route) keep calling it and must
+    see exactly the spec they saw before the extraction -- this pins that the
+    wrapper returns `pair[1]` in every case, found or not."""
+    aliases = relation_aliases(DEFAULT_RELATION_ALIASES)
+    for written, tag in ((ALIASED, "founded"), (CANONICAL, "founded_on"), (UNALIASED, "capital")):
+        typed = typed_relations(_decl(written, tag))
+        canonical = relation_aliases(DEFAULT_RELATION_ALIASES).get(written, written)
+        pair = typed_declaration_for_canonical(typed, canonical, aliases)
+        spec = typed_spec_for_canonical(typed, canonical, aliases)
+        assert pair is not None
+        assert spec == pair[1]
+        assert spec.type == "date"
+        assert typed_spec_for_canonical(typed, "unrelated_canonical", aliases) is None

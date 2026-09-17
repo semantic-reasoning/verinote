@@ -30,6 +30,7 @@ from verinote.pipeline.corroboration import (
     canonical_relation,
     store_relation_aliases,
     store_typed_relations,
+    typed_declaration_for_canonical,
 )
 from verinote.pipeline.engine_input import engine_relation_rows
 from verinote.store import Store, engine_statuses
@@ -304,7 +305,7 @@ def _relation_schemas(
                 relation=relation_facts[0].relation,
                 canonical_relation=canonical,
                 aliases=_aliases_for_relation(display, canonical, aliases),
-                typed=_typed_for_relation(display, canonical, typed_specs),
+                typed=_typed_for_relation(canonical, typed_specs, aliases),
                 fact_count=len(relation_facts),
                 distinct_subject_count=len(all_subjects),
                 distinct_object_count=len(all_objects),
@@ -415,15 +416,22 @@ def _aliases_for_relation(
 
 
 def _typed_for_relation(
-    display: str,
     canonical: str,
     typed_specs: Mapping[str, TypedRelationSpec],
+    aliases: Mapping[str, str],
 ) -> TypedRelationEntry | None:
-    for key in (display, _nfc(display), canonical, _nfc(canonical)):
-        spec = typed_specs.get(key)
-        if spec is not None:
-            return _typed_entry(key, spec)
-    return None
+    # #597. Resolve through the shared pair resolver, not a dict probe. The
+    # old probe tried `display`, NFC(display), `canonical` and NFC(canonical)
+    # as keys, so it found a declaration written under this row's own label or
+    # under the canonical -- and missed one written under a DIFFERENT raw label
+    # that the alias table canonicalises to the same canonical. The pair
+    # resolver returns the written label, so the entry keeps "the label the
+    # user WROTE", the invariant `test_query_schema.py` pins.
+    declaration = typed_declaration_for_canonical(typed_specs, canonical, aliases)
+    if declaration is None:
+        return None
+    declared, spec = declaration
+    return _typed_entry(declared, spec)
 
 
 def _alias_entries(aliases: Mapping[str, str]) -> tuple[RelationAliasEntry, ...]:

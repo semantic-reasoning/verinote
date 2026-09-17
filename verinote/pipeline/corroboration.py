@@ -383,29 +383,37 @@ def _refuse_canonical_collisions(
         seen[key] = declared
 
 
-def typed_spec_for_canonical(
-    typed: dict[str, TypedRelationSpec],
+def typed_declaration_for_canonical(
+    typed: Mapping[str, TypedRelationSpec],
     canonical: str,
-    aliases: dict[str, str],
-) -> TypedRelationSpec | None:
+    aliases: Mapping[str, str],
+) -> tuple[str, TypedRelationSpec] | None:
     """Resolve a typed declaration for ``canonical``, through the alias table.
 
-    THE ONLY COPY OF THIS LOOKUP -- scoped deliberately, because it is not the
-    only place in the package that knows this rule. Every consumer that had
-    `typed.get(relation)` open-coded now calls this, because `typed_relations`
-    keys the dict by the label the user WROTE while every consumer looks up the
-    CANONICAL label -- so a declaration on any label the alias table rewrites
-    was stored under a key nobody queries and silently did nothing (#589).
+    Returns the ``(declared_label, spec)`` pair. ``declared_label`` is the
+    label the user WROTE in ``typed-relations.md`` -- the dict key -- not the
+    canonical label. A consumer that renders the typed entry into the LLM
+    planner's prompt (`query_schema`) needs that written label; the spec-only
+    projection below does not.
 
-    Two other resolvers exist and BOTH are deliberate, so a reader who finds
-    them does not have to guess whether they were missed.
-    `query_planner._typed_specs_for_canonical_relation` already resolved this
-    way and is the prior art this follows. `query_schema._typed_for_relation`
-    is NOT converted: it tries `display`, NFC(display), `canonical` and
-    NFC(canonical), which resolves a declaration written under the label the
-    fact itself uses but not one under a DIFFERENT raw label sharing the same
-    canonical. That residual gap is measured and tracked as #597, left out of
-    #589 on purpose because that snapshot feeds the LLM planner's prompts.
+    THE ONLY PAIR LOOKUP (written label + spec) in the package -- scoped
+    deliberately, because it is not the only place that knows this rule.
+    Every consumer that had
+    `typed.get(relation)` open-coded now resolves through here, because
+    `typed_relations` keys the dict by the label the user WROTE while every
+    consumer looks up the CANONICAL label -- so a declaration on any label the
+    alias table rewrites was stored under a key nobody queries and silently did
+    nothing (#589). #597 closed the last partial resolver:
+    `query_schema._typed_for_relation` used to probe only `display`,
+    NFC(display), `canonical` and NFC(canonical), which found a declaration
+    written under the fact's own label but not one under a DIFFERENT raw label
+    sharing the same canonical. It now resolves through here too.
+
+    `query_planner._typed_specs_for_canonical_relation` also exists and is
+    deliberate, so a reader who finds it does not have to guess whether it was
+    missed. It is not a resolver but a set-membership filter over already
+    resolved `TypedRelationEntry` objects -- a different input shape -- so it
+    is left as-is.
 
     The keys stay as written on purpose, and for ONE reason rather than the two
     an earlier draft of this docstring gave. It said canonicalising them inside
@@ -431,8 +439,25 @@ def typed_spec_for_canonical(
     want = unicodedata.normalize("NFC", canonical)
     for declared, spec in typed.items():
         if unicodedata.normalize("NFC", canonical_relation(declared, aliases)) == want:
-            return spec
+            return declared, spec
     return None
+
+
+def typed_spec_for_canonical(
+    typed: Mapping[str, TypedRelationSpec],
+    canonical: str,
+    aliases: Mapping[str, str],
+) -> TypedRelationSpec | None:
+    """The spec-only projection of `typed_declaration_for_canonical`.
+
+    The five trust consumers (acceptance, trust, workbench,
+    `single_valued_conflicts`, and the `/sources` web route) need the spec and
+    do not care about the written label, so they keep calling this. Its
+    behaviour is identical to calling the pair resolver and dropping the label.
+    Inherited, not re-argued: it does not raise.
+    """
+    declaration = typed_declaration_for_canonical(typed, canonical, aliases)
+    return declaration[1] if declaration is not None else None
 
 
 def corroboration(

@@ -911,6 +911,47 @@ def test_query_schema_hint_includes_typed_comparison_type_and_amount_units(tmp_p
     assert "Synthetic Company" not in hint
 
 
+def test_snapshot_hint_gains_typed_suffix_for_sibling_declaration(tmp_path):
+    """#597 AC-2. The LLM planner's hint is the consumer this fix is FOR:
+    a declaration written under `설립일` and a fact under `창립일` share the
+    canonical `established_on`, so the row now carries the typed entry and the
+    hint gains the declared label plus the type -- the planner can finally see
+    that the relation is a date, under the user's own word.
+
+    The delta is EXACTLY the label list and the typed suffix, not the alias
+    list: `founded` is already in the packaged alias table for
+    `established_on`, so it is deduped and the alias list is byte-identical
+    before and after. What changes is that the row's label list gains the
+    WRITTEN label `설립일` and the `(typed: date)` suffix appears.
+
+    Measured on the pre-fix tree (HEAD), this row was:
+        - established_on (aliases: 창립일, established, founded, founded_on, 설립, 설립연도, 설립일, 창립) (subjects=1, objects=1)
+    with the row's typed entry `None` -- the declaration was stored but never
+    attached to its row. Post-fix the same fixture renders:
+        - established_on, 설립일 (aliases: 창립일, established, founded, founded_on, 설립, 설립연도, 설립일, 창립) (typed: date) (subjects=1, objects=1)
+    """
+    from verinote.pipeline.query_schema import build_query_schema_snapshot
+
+    s = _store(tmp_path)
+    policy = tmp_path / "policy"
+    policy.mkdir()
+    (policy / "typed-relations.md").write_text(
+        "- `설립일` : date as founded\n",
+        encoding="utf-8",
+    )
+    s.add_fact("Company A", "창립일", "2005-06-07", status="confirmed")
+
+    hint = query_schema_hint(build_query_schema_snapshot(s))
+    line = next(row for row in hint.splitlines() if row.startswith("- established_on"))
+
+    # The row gained the declared label and the typed suffix.
+    assert "established_on, 설립일" in line
+    assert "(typed: date)" in line
+    # The alias list is unchanged: `founded` was already packaged, so it is
+    # deduped rather than re-listed -- the delta is the label + suffix only.
+    assert "(aliases: 창립일, established, founded, founded_on, 설립, 설립연도, 설립일, 창립)" in line
+
+
 def test_translate_reports_an_unreached_provider_without_persisting_it(tmp_path, fake_client):
     """#592 inverted the row half. The RESULT is unchanged and still carries the
     fault -- that is the report, and every caller derives its own diagnosis from
