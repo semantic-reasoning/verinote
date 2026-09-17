@@ -2268,6 +2268,55 @@ def test_startup_revives_a_job_left_running_by_a_crash(tmp_path, monkeypatch, fa
     assert "extraction_job_rolled_back" in _job_event_types(cfg, job_id)
 
 
+def test_restart_resume_refunds_the_attempt_a_crash_left_charged(tmp_path, monkeypatch, fake_client):
+    """The restart rewind refunds the dead pass's claim; the resume recharges it (#556).
+
+    The crashed pass claimed the chunk at `attempts = 1` and died holding it.
+    `_resume_source_extraction_jobs` rolls the job back with
+    `refund_attempt=True` — the dead pass's claim is owed one back, and the KB is
+    healthy enough to be retried right away — and the fresh claim recharges it.
+    A job that finishes after a restart therefore ends at ONE attempt, not two.
+
+    Two is what the bug costs: the dead pass's claim never refunded and the
+    resume's charged on top, so `MAX_CHUNK_ATTEMPTS` of pure crashes — no real
+    failure at all — give up on the source. Dropping `refund_attempt=True` from
+    the restart call leaves the chunk at two and turns this assertion red, while
+    the halt-path test in `test_policy_state.py` is the one that turns red if the
+    refund is instead widened to the halt callers. The two mutations, the two reds.
+    """
+    cfg, job_id, _ = _job_kb(tmp_path, with_policy=True)
+    with Store(cfg.db_path) as store:
+        store.init_schema()
+        store.mark_extraction_job_running(job_id)
+        chunk_id = store.source_chunks(job_id)[0]["id"]
+        store.mark_chunk_running(chunk_id)
+    assert _job_row(cfg, job_id)["status"] == "running"
+    with Store(cfg.db_path) as store:
+        store.init_schema()
+        assert store.source_chunks(job_id)[0]["attempts"] == 1  # the dead pass's claim
+    monkeypatch.setattr(
+        webapp,
+        "get_client",
+        lambda cfg: fake_client([ExtractedFact("X", "is_a", "Y", 0.9)]),
+    )
+
+    c = TestClient(create_app(cfg))
+
+    def revived():
+        assert "is_a" in c.get("/review").text
+        assert _job_row(cfg, job_id)["status"] == "done"
+
+    _wait_for(revived)
+
+    with Store(cfg.db_path) as store:
+        store.init_schema()
+        row = store.source_chunks(job_id)[0]
+        assert row["status"] == "done"
+        # refunded (1 -> 0) by the restart rewind, recharged (0 -> 1) by the fresh
+        # claim — not the old 1 -> 2, which is the dead pass's attempt surviving
+        assert row["attempts"] == 1
+
+
 def _auto_accept_kb(tmp_path):
     """A KB one finished job away from auto-accepting a fact.
 

@@ -1748,6 +1748,42 @@ def test_a_halt_under_a_held_claim_returns_the_chunk_to_the_queue(tmp_path):
     store.close()
 
 
+def test_a_halt_under_a_held_claim_does_not_refund_the_attempt(tmp_path):
+    """A halt keeps the claim's attempt charged — the refund is crash recovery's, not halt's (#556).
+
+    The chunk here is `running` and already claimed (`attempts` advanced to 1 by
+    `mark_chunk_running`), and the halt reaches it while it is still `running` —
+    the one arrangement where a refund would actually bite. The halt caller must
+    therefore stay on the `refund_attempt=False` default: a halted KB is frozen
+    to writes, so the retry budget is not what stands between the chunk and its
+    retry, and charging it costs nothing the user can feel. Extending the refund
+    to this path (or making `True` the default) drops `attempts` to 0 and turns
+    this assertion red.
+
+    This is the sibling, on the halt side, of the crash-recovery refund that
+    `test_startup_revives_a_job_left_running_by_a_crash` and the `sync --recover`
+    tests pin from the other side — the two sides of #556's split.
+    """
+    from verinote.pipeline.extract import process_extraction_job
+
+    path, job_id = _halted_mid_job_kb(tmp_path)
+    store = _PolicyVanishingAfterClaimStore(tmp_path / "kb.sqlite", path)
+    store.init_schema()
+    client = _ChunkClient()
+
+    with pytest.raises(PolicyMissingError):
+        process_extraction_job(store, client, job_id=job_id)
+
+    chunks = store.source_chunks(job_id)
+    # chunk 0 finished (attempts charged once, kept); chunk 1 was the in-flight
+    # one the halt rewound to `pending`. Its attempt STAYS CHARGED: the halt does
+    # not refund, it only returns the chunk to the queue.
+    assert [c["status"] for c in chunks] == ["done", "pending"]
+    assert chunks[0]["attempts"] == 1  # a done chunk keeps the attempt it spent
+    assert chunks[1]["attempts"] == 1  # the halted chunk is NOT refunded to 0
+    store.close()
+
+
 class _AlwaysEligibleEngine:
     """A recommendation engine that reads no policy and accepts everything.
 

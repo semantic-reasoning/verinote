@@ -1724,6 +1724,75 @@ def test_rollback_extraction_job_ignores_an_unknown_job(tmp_path):
     assert list(s._conn.execute("SELECT id FROM fact_events")) == []
 
 
+def test_rollback_extraction_job_default_does_not_refund_the_attempt(tmp_path):
+    """The default is the halt contract (#556): the budget stays charged.
+
+    The fixture's in-flight chunk is claimed at `attempts = 1`, so a refund is
+    visible on it. Flipping the default to a refund would extend the refund to
+    every halt and back-off caller — the two classes whose no-refund default is
+    the point of #556 — and this assertion is what keeps that red.
+    """
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    job_id, chunks = _job_with_mixed_chunks(s, sid)
+    running_id = chunks[2]
+    assert s.get_source_chunk(running_id)["attempts"] == 1
+
+    s.rollback_extraction_job(job_id, "halted")
+
+    row = s.get_source_chunk(running_id)
+    assert row["status"] == "pending"
+    assert row["attempts"] == 1
+
+
+def test_rollback_extraction_job_refunds_the_attempt_when_asking(tmp_path):
+    """Crash recovery asks for the refund the dead pass's claim is owed (#556).
+
+    The exact inverse of the claim: `attempts` back where it stood before
+    `mark_chunk_running`, the same `MAX(..., 0)` floor `claim_extraction_job_for_retry`
+    uses on its stray-chunk sweep (#524) — this refund is its sibling, reached
+    by the crash-recovery callers instead of the retry path.
+    """
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    job_id, chunks = _job_with_mixed_chunks(s, sid)
+    running_id = chunks[2]
+    assert s.get_source_chunk(running_id)["attempts"] == 1
+
+    s.rollback_extraction_job(job_id, "resuming after a restart", refund_attempt=True)
+
+    row = s.get_source_chunk(running_id)
+    assert row["status"] == "pending"
+    assert row["attempts"] == 0
+
+
+def test_rollback_extraction_job_refund_floors_at_zero_and_leaves_finished_chunks(tmp_path):
+    """The floor is `MAX(..., 0)`, and the refund reaches only `running` chunks.
+
+    A chunk the sweep found at `attempts = 0` stays at zero rather than going
+    negative — a negative budget would make the very next claim look like a
+    spent retry. `done` and `failed` chunks keep whatever their own history
+    charged: the refund is scoped to the rewind's own
+    `WHERE status = 'running'`, not a job-wide reset.
+    """
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    job_id, chunks = _job_with_mixed_chunks(s, sid)
+    # the in-flight chunk's attempt was spent and already refunded out of band
+    s._conn.execute("UPDATE source_chunks SET attempts = 0 WHERE id = ?", (chunks[2],))
+    # and the finished chunks carry a longer history to prove the refund does not
+    # reach them
+    for chunk in (chunks[0], chunks[1]):
+        s._conn.execute("UPDATE source_chunks SET attempts = 2 WHERE id = ?", (chunk,))
+
+    s.rollback_extraction_job(job_id, "resuming after a restart", refund_attempt=True)
+
+    by_id = {c["id"]: c for c in s.source_chunks(job_id)}
+    assert (by_id[chunks[2]]["status"], by_id[chunks[2]]["attempts"]) == ("pending", 0)
+    assert (by_id[chunks[0]]["status"], by_id[chunks[0]]["attempts"]) == ("done", 2)
+    assert (by_id[chunks[1]]["status"], by_id[chunks[1]]["attempts"]) == ("failed", 2)
+
+
 def test_mark_chunk_running_returns_none_when_chunk_already_claimed(tmp_path):
     s = _store(tmp_path)
     sid = s.add_source("sources/a.txt")

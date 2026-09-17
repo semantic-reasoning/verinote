@@ -676,6 +676,46 @@ def test_sync_recover_resumes_a_stuck_running_job(
     assert _rolled_back_events(s, job_id) == 1
 
 
+def test_sync_recover_refunds_the_attempt_a_crash_left_charged(tmp_path, monkeypatch, capsys, fake_client):
+    # `sync --recover` is crash recovery, not a halt (#556): the stuck chunk's
+    # attempt was charged by the dead pass's `mark_chunk_running` and nobody
+    # refunded it. The rollback `--recover` performs must refund it, so the resume
+    # starts from a clean budget instead of inheriting a charge the chunk never
+    # earned. The test drives the real `--recover` path (not the store directly)
+    # so that the caller's `refund_attempt=True` is what is under test, not the
+    # store's flag in isolation.
+    _env(monkeypatch, tmp_path)
+    _register_two_chunk_source(tmp_path, monkeypatch)
+    job_id = _stuck_running_job(tmp_path)
+    # the stuck chunk is `running` with one attempt charged by the dead pass
+    s = Store(tmp_path / "kb.sqlite")
+    stuck_chunk_id = s.source_chunks(job_id)[0]["id"]
+    assert s.get_source_chunk(stuck_chunk_id)["status"] == "running"
+    assert s.get_source_chunk(stuck_chunk_id)["attempts"] == 1
+    s.close()
+    monkeypatch.setattr(
+        "verinote.llm.get_client",
+        lambda cfg: fake_client([ExtractedFact("A", "is_a", "B", 0.9)]),
+    )
+
+    rc = cli.main(["sync", "--recover"])
+
+    err = capsys.readouterr().err
+    assert rc == 0
+    assert f"rolled back stuck extraction job #{job_id}" in err
+    s = Store(tmp_path / "kb.sqlite")
+    job = s.get_extraction_job(job_id)
+    assert job["status"] == "done"
+    assert int(job["completed_chunks"]) == int(job["total_chunks"]) == 2
+    assert _rolled_back_events(s, job_id) == 1
+    # the refunded attempt: the chunk went back to `pending` with the dead pass's
+    # charge returned, then the resume re-claimed and completed it — so it lands
+    # at exactly one attempt (the resume's own), not two (dead pass + resume).
+    # Without the refund it would be two: the dead pass's charge would have stuck.
+    assert s.get_source_chunk(stuck_chunk_id)["attempts"] == 1
+    s.close()
+
+
 def test_sync_recover_is_a_noop_on_a_done_job(tmp_path, monkeypatch, fake_client):
     # The most important guard: `rollback_extraction_job` does NOT self-guard a
     # `done` job, so a missing `status == 'running'` gate would rewind a finished

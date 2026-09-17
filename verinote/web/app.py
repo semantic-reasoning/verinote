@@ -2660,8 +2660,14 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             if not is_live_extraction_job(job, latest_job_ids):
                 continue
             if job["status"] == "running":
+                # Crash recovery refunds the attempt the dead pass charged: the
+                # process died holding the claim, nobody else refunded it, and
+                # the KB is healthy enough to be retried right away (#556). The
+                # halt and back-off callers keep the default and do not refund.
                 app.state.store.rollback_extraction_job(
-                    int(job["id"]), "Resuming analysis interrupted by a restart."
+                    int(job["id"]),
+                    "Resuming analysis interrupted by a restart.",
+                    refund_attempt=True,
                 )
             _start_source_extraction(int(job["id"]), app.state.cfg)
 
