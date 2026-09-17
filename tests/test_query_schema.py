@@ -152,6 +152,118 @@ def test_typed_relation_metadata_attaches_through_canonical_alias_with_units(tmp
     ]
 
 
+def test_typed_declaration_attaches_through_a_sibling_raw_label(tmp_path):
+    """#597 AC-1, both directions, end-to-end through
+    `build_query_schema_snapshot` (AC-5): asserting the lookup function alone
+    would miss partial resolution the same way the code did.
+
+    The declaration is written under `설립일`, which the packaged table routes
+    to `established_on` -- as does every sibling raw label. Two fact rows can
+    sit under that canonical, and BOTH were `typed=None` on the pre-fix tree:
+
+    - the reported case: the fact under the SIBLING raw label `창립일` -- the
+      old four-key probe tried the row's own labels only, never the dict key
+      the declaration was stored under;
+    - the mirror: the fact under the CANONICAL label itself -- the probe
+      tried `established_on` and never `설립일`, so it missed the declaration
+      even when the row's display was the canonical.
+
+    In both, the entry is present now and carries the DECLARED label, not the
+    row's own: the entry is the user's declaration, not a description of the
+    fact.
+    """
+    def _decl_store(root):
+        s = _store(root)
+        policy = root / "policy"
+        policy.mkdir()
+        (policy / "typed-relations.md").write_text(
+            "- `설립일` : date as founded\n",
+            encoding="utf-8",
+        )
+        return s
+
+    # Arm 1: fact under the sibling raw label (the issue's repro).
+    s = _decl_store(tmp_path / "sibling")
+    s.add_fact("Company A", "창립일", "2005-06-07", status="confirmed")
+    snapshot = build_query_schema_snapshot(s)
+    relation = snapshot.relations[0]
+    assert (relation.relation.display, relation.canonical_relation) == (
+        "창립일",
+        "established_on",
+    )
+    assert relation.typed is not None
+    assert (relation.typed.relation, relation.typed.type, relation.typed.alias) == (
+        "설립일",
+        "date",
+        "founded",
+    )
+    # The global typed list already carried the declaration before the fix;
+    # the per-row entry is what was missing, and it is value-identical to the
+    # one there, so a planner filtering by canonical sees exactly one spec.
+    assert [(e.relation, e.type, e.alias) for e in snapshot.typed_relations] == [
+        ("설립일", "date", "founded")
+    ]
+
+    # Arm 2 (mirror): fact under the canonical label, declaration under a
+    # sibling raw label.
+    m = _decl_store(tmp_path / "mirror")
+    m.add_fact("Company B", "established_on", "2001-01-01", status="confirmed")
+    mirror = build_query_schema_snapshot(m).relations[0]
+    assert (mirror.relation.display, mirror.canonical_relation) == (
+        "established_on",
+        "established_on",
+    )
+    assert mirror.typed is not None
+    assert (mirror.typed.relation, mirror.typed.type, mirror.typed.alias) == (
+        "설립일",
+        "date",
+        "founded",
+    )
+
+
+def test_same_label_and_canonical_declaration_still_attach_the_written_label(tmp_path):
+    """#597 AC-3. The two cases that already worked keep their typed entry,
+    and the entry keeps the label the user WROTE -- byte-for-byte the
+    invariant the pre-fix probe produced:
+
+    - declaration and fact share the raw label   -> entry.label is that label;
+    - declaration under the canonical itself      -> entry.label is the canonical.
+
+    A fix that re-keyed the entry onto the canonical (or the fact's label)
+    would pass the sibling-label test above while silently rewriting the label
+    lists these rows already rendered.
+    """
+    # Arm 1: declaration and fact share the raw label.
+    a = _store(tmp_path / "same")
+    (tmp_path / "same" / "policy").mkdir()
+    (tmp_path / "same" / "policy" / "typed-relations.md").write_text(
+        "- `설립일` : date as founded\n", encoding="utf-8"
+    )
+    a.add_fact("Company A", "설립일", "2001-03-04", status="confirmed")
+    same = build_query_schema_snapshot(a).relations[0]
+    assert same.typed is not None
+    assert (same.typed.relation, same.typed.type, same.typed.alias) == (
+        "설립일",
+        "date",
+        "founded",
+    )
+
+    # Arm 2: declaration under the canonical label itself.
+    b = _store(tmp_path / "canonical")
+    (tmp_path / "canonical" / "policy").mkdir()
+    (tmp_path / "canonical" / "policy" / "typed-relations.md").write_text(
+        "- established_on : date as founded_on\n", encoding="utf-8"
+    )
+    b.add_fact("Company B", "창립일", "2005-06-07", status="confirmed")
+    canonical = build_query_schema_snapshot(b).relations[0]
+    assert canonical.typed is not None
+    assert (canonical.typed.relation, canonical.typed.type, canonical.typed.alias) == (
+        "established_on",
+        "date",
+        "founded_on",
+    )
+
+
 def test_typed_policy_errors_are_not_swallowed(tmp_path):
     s = _store(tmp_path)
     policy = tmp_path / "policy"
