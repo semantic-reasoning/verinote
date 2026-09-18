@@ -102,9 +102,12 @@
                  delete route, is the only thing THIS PAGE offers that ends it.
                  One other code path reaches the row:
                  `Store._apply_source_identity_group` DELETEs a retired
-                 source's artifact when the retained source already holds the
-                 same (kind, checksum), so repairing a duplicate citation can
-                 take an unmeasured row with it. That is a CLI repair, over
+                 source's artifact row when the retained source already holds
+                 the same (kind, checksum), so repairing a duplicate citation
+                 can take an unmeasured row with it; if the row it takes is
+                 the one that carries a count, that count now lands on the
+                 surviving row first instead of dying with the row. That is a
+                 CLI repair, over
                  citations that resolve to one file -- not an action offered
                  here, and not one to name in a badge.
 

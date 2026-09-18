@@ -22,6 +22,7 @@ from verinote.llm.base import MAX_REASON_LENGTH
 from verinote.pipeline.question_outcome import format_question_outcome
 from verinote.prompts import PromptUnavailableError
 from verinote.store import Store, engine_statuses, fact_status_order
+from verinote.store.db import SourceIdentityRepairResult
 from verinote.store.duckdb_fact_terms import DuckDBFactTermStoreLockedError
 from verinote.text import nfc
 
@@ -1296,6 +1297,10 @@ def cmd_sources_repair_identities(cfg: Config, args: argparse.Namespace) -> int:
                 print(f"  {path}")
         if not args.apply:
             print("dry-run: no sources changed; rerun with --apply to repair ready groups")
+            print(
+                "with --apply, the file behind a retired duplicate citation's "
+                "artifact row is removed too"
+            )
             return 0
         result = store.apply_source_identity_repairs(plan)
         repaired = sum(group.status == "repaired" for group in result.groups)
@@ -1303,10 +1308,104 @@ def cmd_sources_repair_identities(cfg: Config, args: argparse.Namespace) -> int:
         for group in result.groups:
             if group.status != "repaired":
                 print(f"unchanged: {group.status}: {group.canonical_path}")
+        _sweep_retired_artifact_files(store, result, cfg.root)
         print(f"source identity repair: {repaired} repaired, {unchanged} unchanged")
         return 0
     finally:
         store.close()
+
+
+def _source_file_path(source_path: str, root: Path) -> Path:
+    """Resolve a KB-relative path, refusing any that leaves the KB root.
+
+    Same guard as the web delete route's file sweep: the store's stored paths
+    are the only authority for what to remove, and a stored path that resolves
+    outside the root is a bug we must not let unlink.
+    """
+    resolved = (root / source_path).resolve()
+    try:
+        resolved.relative_to(root.resolve())
+    except ValueError as e:
+        raise OSError(f"refusing to delete source file outside KB root: {source_path}") from e
+    return resolved
+
+
+def _protected_source_files(
+    store: Store, result: SourceIdentityRepairResult, root: Path
+) -> set[Path]:
+    """Resolved files a repaired group still points at -- never unlink these.
+
+    The collision branch retires one artifact row when the survivor already
+    holds the same `(kind, checksum)`.  Nothing in the schema keeps the retired
+    row's stored path from resolving to the very file a surviving row names
+    (two spellings of one file), so the sweep must not trust "the row is gone"
+    as proof the file is orphaned (#529).
+    """
+    protected: set[Path] = set()
+    for group in result.groups:
+        if group.status != "repaired":
+            continue
+        for source_id in group.source_ids:
+            source = store.get_source(source_id)
+            if source is None:
+                continue  # the retired row: already gone
+            paths = [str(source["path"])]
+            paths.extend(str(row["path"]) for row in store.source_artifacts(source_id))
+            for path in paths:
+                try:
+                    protected.add(_source_file_path(path, root))
+                except OSError:
+                    continue  # a survivor path outside the root is not ours to keep via us
+    return protected
+
+
+def _sweep_retired_artifact_files(
+    store: Store, result: SourceIdentityRepairResult, root: Path
+) -> None:
+    """Remove the files behind the artifact rows a repair retired (#529).
+
+    The store removes the rows and reports their stored paths; removing the
+    files is the route's job, the same split as the web delete route.  Every
+    path is validated against the KB root before any file is touched -- one
+    escaping path aborts the whole sweep, mirroring the delete route -- and a
+    path that resolves to a file a surviving row still points at is kept, not
+    unlinked.  A sweep failure warns rather than fails: the rows are already
+    merged and audited, and the command must not report a broken repair.
+    """
+    paths = result.retired_artifact_paths
+    if not paths:
+        return
+    try:
+        targets = [_source_file_path(path, root) for path in paths]
+    except OSError as e:
+        print(f"warning: no retired artifact file removed: {e}", file=sys.stderr)
+        return
+    protected = _protected_source_files(store, result, root)
+    removed = 0
+    for path, target in zip(paths, targets):
+        if target in protected or any(
+            _same_file(target, other) for other in protected
+        ):
+            print(
+                f"warning: keeping {path}: a surviving row still points at this file",
+                file=sys.stderr,
+            )
+            continue
+        try:
+            if target.is_file():
+                removed += 1
+            target.unlink(missing_ok=True)
+        except OSError as e:
+            print(f"warning: retired artifact file not removed: {e}", file=sys.stderr)
+    if removed:
+        print(f"removed {removed} retired artifact file(s)")
+
+
+def _same_file(a: Path, b: Path) -> bool:
+    try:
+        return a.samefile(b)
+    except (OSError, ValueError):
+        return False  # a missing file shares nothing
 
 
 def cmd_sources_scan_unreadable(cfg: Config, args: argparse.Namespace) -> int:

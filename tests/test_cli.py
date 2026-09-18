@@ -279,6 +279,214 @@ def test_sources_repair_identities_is_dry_run_until_apply(tmp_path, monkeypatch,
     check.close()
 
 
+def _repair_fixture(tmp_path, retired_rel_path, retained_rel_path):
+    """Two NFC-variant citations with colliding artifacts, files on disk.
+
+    The `Path.samefile` patch is the precondition: on Linux the NFC/NFD
+    spellings are different inodes, so without it the group reads
+    `distinct_paths` and nothing repairs.  Every assertion below that expects
+    a repair depends on it holding.
+    """
+    nfd_name = unicodedata.normalize("NFD", "caf\u00e9.txt")
+    nfc_name = unicodedata.normalize("NFC", nfd_name)
+    nfd_path = f"sources/{nfd_name}"
+    nfc_path = f"sources/{nfc_name}"
+    store = Store(tmp_path / "kb.sqlite")
+    store.init_schema()
+    retired_id = store.add_source(nfd_path)
+    retained_id = store.add_source(nfc_path)
+    store.add_source_artifact(
+        source_id=retired_id,
+        kind="original_text",
+        path=retired_rel_path,
+        checksum="same-content",
+    )
+    store.add_source_artifact(
+        source_id=retained_id,
+        kind="original_text",
+        path=retained_rel_path,
+        checksum="same-content",
+    )
+    store.close()
+    return nfd_path, nfc_path
+
+
+def _patch_source_samefile(root, monkeypatch, nfd_path, nfc_path):
+    """Fake the one samefile fact a repair needs; leave every other pair real."""
+    real_samefile = Path.samefile
+
+    def samefile(self, other):
+        if {self, other} == {root / nfd_path, root / nfc_path}:
+            return True
+        return real_samefile(self, other)
+
+    monkeypatch.setattr(Path, "samefile", samefile)
+
+
+def test_sources_repair_identities_sweeps_the_retired_artifact_file(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    nfd_path, nfc_path = _repair_fixture(
+        tmp_path, "artifacts/retired-count.txt", "artifacts/retained-count.txt"
+    )
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    retired_file = artifacts / "retired-count.txt"
+    retired_file.write_bytes(b"a\x00b")  # synthetic NUL: the content the count tracks
+    retained_file = artifacts / "retained-count.txt"
+    retained_file.write_text("clean synthetic text", encoding="utf-8")
+    _patch_source_samefile(tmp_path, monkeypatch, nfd_path, nfc_path)
+
+    assert cli.main(["sources", "repair-identities", "--apply"]) == 0
+    out = capsys.readouterr().out
+    assert "source identity repair: 1 repaired, 0 unchanged" in out
+    assert "removed 1 retired artifact file" in out
+    assert not retired_file.exists()
+    assert retained_file.read_text(encoding="utf-8") == "clean synthetic text"
+
+
+def test_sources_repair_identities_dry_run_leaves_the_retired_file(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    nfd_path, nfc_path = _repair_fixture(
+        tmp_path, "artifacts/retired-dry.txt", "artifacts/retained-dry.txt"
+    )
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    retired_file = artifacts / "retired-dry.txt"
+    retired_file.write_bytes(b"a\x00b")
+    _patch_source_samefile(tmp_path, monkeypatch, nfd_path, nfc_path)
+
+    assert cli.main(["sources", "repair-identities"]) == 0
+    out = capsys.readouterr().out
+    assert "dry-run: no sources changed" in out
+    assert retired_file.exists()
+
+
+def test_sources_repair_identities_keeps_a_file_a_surviving_row_still_names(tmp_path, monkeypatch, capsys):
+    """Two spellings of one file: the sweep must keep the file the survivor names.
+
+    The retired row's stored path is an in-root alias of the surviving row's
+    path; unlinking it would leave the survivor pointing at nothing, so the
+    sweep skips it with a warning instead.
+    """
+    _env(monkeypatch, tmp_path)
+    nfd_path, nfc_path = _repair_fixture(
+        tmp_path, "artifacts/../artifacts/shared-file.txt", "artifacts/shared-file.txt"
+    )
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    shared = artifacts / "shared-file.txt"
+    shared.write_text("synthetic kept file", encoding="utf-8")
+    _patch_source_samefile(tmp_path, monkeypatch, nfd_path, nfc_path)
+
+    assert cli.main(["sources", "repair-identities", "--apply"]) == 0
+    captured = capsys.readouterr()
+    assert "source identity repair: 1 repaired, 0 unchanged" in captured.out
+    assert "keeping artifacts/../artifacts/shared-file.txt" in captured.err
+    assert shared.exists()
+    assert shared.read_text(encoding="utf-8") == "synthetic kept file"
+    check = Store(tmp_path / "kb.sqlite")
+    assert len(check.sources()) == 1
+    check.close()
+
+
+def test_sources_repair_identities_refuses_a_sweep_that_escapes_the_root(tmp_path, monkeypatch, capsys):
+    """One escaping path aborts the whole sweep: validate-all, then delete.
+
+    The valid path's file must still exist afterwards -- a partial sweep would
+    pass a weaker assertion.  The command still exits 0: the rows are merged,
+    the sweep is a side effect that warns rather than fails.
+    """
+    kb_root = tmp_path / "kb"
+    kb_root.mkdir()
+    monkeypatch.setenv("VERINOTE_ROOT", str(kb_root))
+    monkeypatch.setenv("VERINOTE_PROVIDER", "anthropic")
+    nfd_name = unicodedata.normalize("NFD", "caf\u00e9.txt")
+    nfc_name = unicodedata.normalize("NFC", nfd_name)
+    nfd_path = f"sources/{nfd_name}"
+    nfc_path = f"sources/{nfc_name}"
+    store = Store(kb_root / "kb.sqlite")
+    store.init_schema()
+    retired_id = store.add_source(nfd_path)
+    retained_id = store.add_source(nfc_path)
+    store.add_source_artifact(
+        source_id=retired_id, kind="original_text",
+        path="artifacts/valid-retired.txt", checksum="c1",
+    )
+    store.add_source_artifact(
+        source_id=retired_id, kind="original_text",
+        path="../outside-retired.txt", checksum="c2",
+    )
+    store.add_source_artifact(
+        source_id=retained_id, kind="original_text",
+        path="artifacts/retained-1.txt", checksum="c1",
+    )
+    store.add_source_artifact(
+        source_id=retained_id, kind="original_text",
+        path="artifacts/retained-2.txt", checksum="c2",
+    )
+    store.close()
+
+    artifacts = kb_root / "artifacts"
+    artifacts.mkdir()
+    valid_file = artifacts / "valid-retired.txt"
+    valid_file.write_text("must survive the aborted sweep", encoding="utf-8")
+    outside = tmp_path / "outside-retired.txt"
+    outside.write_text("outside the KB root", encoding="utf-8")
+
+    _patch_source_samefile(kb_root, monkeypatch, nfd_path, nfc_path)
+
+    assert cli.main(["sources", "repair-identities", "--apply"]) == 0
+    captured = capsys.readouterr()
+    assert "source identity repair: 1 repaired, 0 unchanged" in captured.out
+    assert "refusing to delete source file outside KB root" in captured.err
+    assert valid_file.exists()  # validate-all: nothing was unlinked
+    assert outside.exists()
+
+
+def test_sources_repair_identities_sweep_tolerates_a_missing_file(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    nfd_path, nfc_path = _repair_fixture(
+        tmp_path, "artifacts/never-was.txt", "artifacts/retained-never.txt"
+    )
+    _patch_source_samefile(tmp_path, monkeypatch, nfd_path, nfc_path)
+
+    assert cli.main(["sources", "repair-identities", "--apply"]) == 0
+    captured = capsys.readouterr()
+    assert "source identity repair: 1 repaired, 0 unchanged" in captured.out
+    # Nothing to remove and nothing to report: the summary stays quiet.
+    assert "retired artifact file" not in captured.out
+
+
+def test_sources_repair_identities_repoint_sweeps_nothing(tmp_path, monkeypatch, capsys):
+    """A re-pointed artifact row survives with its file: the sweep names nothing."""
+    _env(monkeypatch, tmp_path)
+    nfd_name = unicodedata.normalize("NFD", "caf\u00e9.txt")
+    nfc_name = unicodedata.normalize("NFC", nfd_name)
+    nfd_path = f"sources/{nfd_name}"
+    nfc_path = f"sources/{nfc_name}"
+    store = Store(tmp_path / "kb.sqlite")
+    store.init_schema()
+    retired_id = store.add_source(nfd_path)
+    store.add_source(nfc_path)
+    store.add_source_artifact(
+        source_id=retired_id, kind="original_text",
+        path="artifacts/unique-retired.txt", checksum="unique",
+    )
+    store.close()
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    unique = artifacts / "unique-retired.txt"
+    unique.write_text("re-parented, not orphaned", encoding="utf-8")
+    _patch_source_samefile(tmp_path, monkeypatch, nfd_path, nfc_path)
+
+    assert cli.main(["sources", "repair-identities", "--apply"]) == 0
+    captured = capsys.readouterr()
+    assert "source identity repair: 1 repaired, 0 unchanged" in captured.out
+    assert "retired artifact file" not in captured.out
+    assert unique.exists()
+    assert unique.read_text(encoding="utf-8") == "re-parented, not orphaned"
+
+
 def test_sources_repair_identities_dry_run_supports_legacy_kb_without_jobs(
     tmp_path, monkeypatch, capsys
 ):
