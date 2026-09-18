@@ -2354,6 +2354,116 @@ def test_source_identity_repair_rewires_every_surface_and_artifact_collision(
     assert s.apply_source_identity_repairs(s.plan_source_identity_repairs()).groups == ()
 
 
+@pytest.mark.parametrize(
+    ("retained_count", "retired_count", "expected"),
+    [
+        # The reported bug: the unmeasured survivor must absorb the count.
+        (None, 7, 7),
+        # The survivor's own reading of the file stands over the retired row's.
+        (3, 5, 3),
+        # An explicit 0 is a reading (checked, clean); it must not be clobbered.
+        (0, 5, 0),
+        # Nobody measured: the survivor stays "never measured", not a made-up 0.
+        (None, None, None),
+        # Measured survivor, unmeasured retired row: nothing to absorb.
+        (2, None, 2),
+    ],
+)
+def test_source_identity_repair_keeps_the_measurement_when_the_twin_row_dies(
+    tmp_path, monkeypatch, retained_count, retired_count, expected
+):
+    s = _store(tmp_path)
+    nfd_path, nfc_path = _unicode_source_paths()
+    retired_id = s.add_source(nfd_path)
+    retained_id = s.add_source(nfc_path)
+    retired_artifact = s.add_source_artifact(
+        source_id=retired_id,
+        kind="original_text",
+        path="artifacts/count-retired.txt",
+        checksum="same-content",
+        unreadable_chars=retired_count,
+    )
+    s.add_source_artifact(
+        source_id=retained_id,
+        kind="original_text",
+        path="artifacts/count-retained.txt",
+        checksum="same-content",
+        unreadable_chars=retained_count,
+    )
+
+    monkeypatch.setattr(Path, "samefile", lambda self, other: True)
+    plan = s.plan_source_identity_repairs()
+    assert [group.status for group in plan.groups] == ["ready"]
+
+    result = s.apply_source_identity_repairs(plan)
+
+    assert [group.status for group in result.groups] == ["repaired"]
+    # Read straight off the survivor row: persisting the count, not reporting
+    # it, is what the Sources page renders later.
+    row = s._conn.execute(
+        "SELECT unreadable_chars FROM source_artifacts WHERE source_id = ?",
+        (retained_id,),
+    ).fetchone()
+    assert row["unreadable_chars"] == expected
+    # The retired row's FILE is named for the route to sweep -- and only the
+    # collision branch's row is named.
+    assert result.retired_artifact_paths == ("artifacts/count-retired.txt",)
+    assert s.get_source_artifact(retired_artifact) is None
+    assert len(s.source_artifacts(retained_id)) == 1
+
+
+def test_source_identity_repair_repoints_name_no_file_for_the_sweep(tmp_path, monkeypatch):
+    """A re-pointed artifact row survives with its file: the sweep list is empty.
+
+    The collision branch is the only branch that removes an artifact row, so
+    it is the only one whose paths may reach the route's file sweep.
+    """
+    s = _store(tmp_path)
+    nfd_path, nfc_path = _unicode_source_paths()
+    retired_id = s.add_source(nfd_path)
+    retained_id = s.add_source(nfc_path)
+    s.add_source_artifact(
+        source_id=retired_id,
+        kind="original_text",
+        path="artifacts/unique-retired.txt",
+        checksum="unique-content",
+    )
+
+    monkeypatch.setattr(Path, "samefile", lambda self, other: True)
+    plan = s.plan_source_identity_repairs()
+
+    result = s.apply_source_identity_repairs(plan)
+
+    assert [group.status for group in result.groups] == ["repaired"]
+    assert result.retired_artifact_paths == ()
+    survivors = s.source_artifacts(retained_id)
+    assert [artifact["path"] for artifact in survivors] == ["artifacts/unique-retired.txt"]
+    assert survivors[0]["unreadable_chars"] is None
+
+
+def test_the_store_has_exactly_the_named_source_deletion_sites():
+    """The store's row deletions are exactly the set the docs name (#529).
+
+    The `sources.html` note counts one artifact-row removal and two
+    source-row removals.  The note itself is prose a test cannot read (and
+    indeed reverting it passes the suite), so the set it counts is what is
+    pinned here: a third deletion path appearing anywhere in the package
+    reddens this, which is the moment "One other code path reaches the row"
+    stops being true.
+    """
+    package = Path(db.__file__).resolve().parent.parent
+    artifact_sites = 0
+    source_sites = 0
+    for file in sorted(package.rglob("*.py")):
+        if "__pycache__" in file.parts:
+            continue
+        text = file.read_text(encoding="utf-8")
+        artifact_sites += text.count("DELETE FROM source_artifacts")
+        source_sites += text.count("DELETE FROM sources WHERE")
+    assert artifact_sites == 1
+    assert source_sites == 2
+
+
 def test_source_identity_repair_aggregates_coverage_after_verified_merge(
     tmp_path, monkeypatch
 ):

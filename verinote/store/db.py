@@ -194,9 +194,17 @@ class SourceIdentityRepairPlan:
 
 @dataclass(frozen=True)
 class SourceIdentityRepairResult:
-    """Outcome of applying a source-identity repair plan."""
+    """Outcome of applying a source-identity repair plan.
+
+    `retired_artifact_paths` carries the stored `source_artifacts.path` of
+    every artifact row the repair removed, in removal order.  The store never
+    touches the filesystem: it reports the paths, and the route that invoked
+    the apply sweeps them -- the same split as `delete_source`, whose file
+    sweep sits beside it in the delete route rather than in the store.
+    """
 
     groups: tuple[SourceIdentityRepairGroup, ...]
+    retired_artifact_paths: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -974,6 +982,7 @@ class Store:
         filesystem or active-job race from turning a scan result into a merge.
         """
         outcomes: list[SourceIdentityRepairGroup] = []
+        retired_artifact_paths: list[str] = []
         for planned in plan.groups:
             if planned.status != "ready":
                 outcomes.append(planned)
@@ -1006,7 +1015,9 @@ class Store:
                     if current.status != "ready":
                         outcomes.append(current)
                         continue
-                    self._apply_source_identity_group(rows, planned.canonical_path)
+                    retired_artifact_paths.extend(
+                        self._apply_source_identity_group(rows, planned.canonical_path)
+                    )
                     outcomes.append(
                         SourceIdentityRepairGroup(
                             canonical_path=planned.canonical_path,
@@ -1015,7 +1026,10 @@ class Store:
                             status="repaired",
                         )
                     )
-        return SourceIdentityRepairResult(groups=tuple(outcomes))
+        return SourceIdentityRepairResult(
+            groups=tuple(outcomes),
+            retired_artifact_paths=tuple(retired_artifact_paths),
+        )
 
     def _source_identity_group(
         self, rows: list[sqlite3.Row], canonical_path: str
@@ -1066,7 +1080,14 @@ class Store:
 
     def _apply_source_identity_group(
         self, rows: list[sqlite3.Row], canonical_path: str
-    ) -> None:
+    ) -> list[str]:
+        """Collapse one ready group; return the paths of the rows it removes.
+
+        The return is the `path` stored on every artifact row the collision
+        branch drops, in removal order, so the route that applied the repair
+        can sweep those files (see `SourceIdentityRepairResult`).  The
+        re-pointed rows are not named: they survive, and so must their files.
+        """
         # Prefer an existing canonical citation; otherwise retain the oldest
         # source row and rename it only after the conflicting rows are gone.
         retained = next(
@@ -1075,19 +1096,20 @@ class Store:
         retained_id = int(retained["id"])
         retired = [row for row in rows if int(row["id"]) != retained_id]
         retired_ids = tuple(int(row["id"]) for row in retired)
+        retired_artifact_paths: list[str] = []
 
         for retired_id in retired_ids:
             artifacts = list(
                 self._conn.execute(
-                    "SELECT id, kind, checksum FROM source_artifacts "
-                    "WHERE source_id = ? ORDER BY id",
+                    "SELECT id, kind, checksum, path, unreadable_chars "
+                    "FROM source_artifacts WHERE source_id = ? ORDER BY id",
                     (retired_id,),
                 )
             )
             for artifact in artifacts:
                 artifact_id = int(artifact["id"])
                 retained_artifact = self._conn.execute(
-                    "SELECT id FROM source_artifacts "
+                    "SELECT id, unreadable_chars FROM source_artifacts "
                     "WHERE source_id = ? AND kind = ? AND checksum = ?",
                     (retained_id, artifact["kind"], artifact["checksum"]),
                 ).fetchone()
@@ -1106,7 +1128,20 @@ class Store:
                     "UPDATE fact_evidence SET artifact_id = ? WHERE artifact_id = ?",
                     (retained_artifact_id, artifact_id),
                 )
+                # #529: the measurement must not die with the row.  The
+                # survivor's own count stands when it has one -- COALESCE
+                # keeps exactly that; it only adopts the retired row's number
+                # when the survivor never measured.  That is a different rule
+                # from `add_source_artifact`'s incoming-wins COALESCE, and the
+                # difference is deliberate: the surviving row is the one later
+                # reads, and its own reading of the file stands.
+                self._conn.execute(
+                    "UPDATE source_artifacts SET unreadable_chars = COALESCE("
+                    "unreadable_chars, ?) WHERE id = ?",
+                    (artifact["unreadable_chars"], retained_artifact_id),
+                )
                 self._conn.execute("DELETE FROM source_artifacts WHERE id = ?", (artifact_id,))
+                retired_artifact_paths.append(str(artifact["path"]))
 
         # These are every source FK surface.  Keep this explicit rather than
         # relying on ON DELETE actions, which would discard provenance.
@@ -1141,6 +1176,7 @@ class Store:
             "UPDATE sources SET path = ? WHERE id = ?", (canonical_path, retained_id)
         )
         self._validate_source_identity_repair_domain()
+        return retired_artifact_paths
 
     def _validate_source_identity_repair_domain(self) -> None:
         if list(self._conn.execute("PRAGMA foreign_key_check")):
@@ -1235,11 +1271,13 @@ class Store:
         the source is not the only way it ends -- it is the costlier cure. It
         ends in one of three ways: a backfill, when a later registration
         reproduces its checksum and measures the count (the `COALESCE` below);
-        the identity-repair DELETE, when a duplicate citation is collapsed onto
-        a retained source that already holds the same `(kind, checksum)`
+        the identity repair, when a duplicate citation is collapsed onto a
+        retained source that already holds the same `(kind, checksum)`
         (`_apply_source_identity_group`), which re-points the source's facts and
-        jobs onto the retained artifact and loses nothing; or `ON DELETE CASCADE`
-        from `delete_source`, which clears the row and the source's facts with it.
+        jobs onto the retained artifact, folds the retired row's measurement
+        into the survivor when the survivor never measured (#529), and only
+        then removes the retired row; or `ON DELETE CASCADE` from
+        `delete_source`, which clears the row and the source's facts with it.
 
         `COALESCE` keeps a caller that did not measure (NULL) from erasing a
         count that was measured. It is not a "highest wins" rule: an explicit 0
