@@ -47,17 +47,16 @@ cover — A CHUNK CANNOT BE `canceled` AT ALL. `source_chunks`'s CHECK constrain
 `('pending','running','done','failed')` (`schema.sql`), and writing the value to a
 chunk raises `IntegrityError`. It belongs to `extraction_jobs`, whose CHECK does
 list it, and even there no production code writes it. The two sites that NAME the
-value do not behave alike, so they are worth keeping apart:
+value now both keep the criterion (as of #526), by different mechanisms — worth keeping apart only in how they get there:
 
 * `rollback_extraction_job` returns early, ahead of every write, and does not
   touch such a job at all;
-* `mark_extraction_job_running` excludes the value from its UPDATE
-  (`... AND status != 'canceled'`), so the status survives — but its
-  `extraction_job_started` event row is written anyway, because that write is not
-  conditioned on the UPDATE having matched. A `canceled` job therefore collects an
-  event saying it started, with `before == after == canceled`. Out of scope here
-  and unreachable today; it is #526, whose point is that `test_store.py` holds
-  `rollback_extraction_job` to the standard this one misses.
+* `mark_extraction_job_running` also leaves such a job alone entirely, as of
+  #526: its UPDATE still carries `... AND status != 'canceled'`, and its
+  `extraction_job_started` event is now recorded only when that UPDATE matched a
+  row (`cur.rowcount == 1`), so a `canceled` job no longer collects an event
+  saying it started, with `before == after == canceled`. Unreachable in
+  production today; `test_store.py` pins both behaviors to the same standard.
 
 Two further sites refuse such a job WITHOUT naming it — the two claim CASes,
 `claim_pending_extraction_job` (`status = 'pending'`) and

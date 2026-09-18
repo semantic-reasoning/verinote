@@ -1716,6 +1716,89 @@ def test_rollback_extraction_job_records_no_event_for_a_canceled_job(tmp_path):
     assert "extraction_job_rolled_back" not in events
 
 
+def test_mark_extraction_job_running_records_no_event_for_a_canceled_job(tmp_path):
+    """A canceled job was never started, so claiming a start is a lie.
+
+    `extraction_job_started` with before == after == `canceled` is exactly the
+    kind of KB self-misreport #194 exists to remove — the mirror of the
+    rollback criterion pinned right above this test (#526).
+    """
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    job_id, _ = _job_with_mixed_chunks(s, sid)
+    before = s.get_extraction_job(job_id)
+
+    def started():
+        return s._conn.execute(
+            "SELECT COUNT(*) AS n FROM fact_events WHERE job_id = ? "
+            "AND event_type = 'extraction_job_started'",
+            (job_id,),
+        ).fetchone()["n"]
+
+    assert started() == 1  # the fixture's one legitimate start (pending -> running)
+    s._conn.execute(
+        "UPDATE extraction_jobs SET status = 'canceled' WHERE id = ?", (job_id,)
+    )
+
+    s.mark_extraction_job_running(job_id)
+
+    after = s.get_extraction_job(job_id)
+    # The row is untouched: still canceled, and nothing was rewritten over it.
+    assert after["status"] == "canceled"
+    assert after["message"] == before["message"]
+    assert (
+        after["completed_chunks"],
+        after["failed_chunks"],
+        after["candidate_count"],
+    ) == (
+        before["completed_chunks"],
+        before["failed_chunks"],
+        before["candidate_count"],
+    )
+    # ...and no second start: the fixture's one remains the only one.
+    assert started() == 1
+
+
+def test_refresh_extraction_job_leaves_a_canceled_job_alone(tmp_path):
+    """A canceled job's row and history are left entirely alone (#526).
+
+    Touching its chunk must not re-derive the job's `status`/`message`/
+    counters out of `canceled` — the one-sided care the rollback docstring
+    calls out. The chunk itself still terminalizes: the guard is on the JOB
+    row, not the chunk, mirroring `rollback_extraction_job`.
+    """
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    job_id, chunks = _job_with_mixed_chunks(s, sid)
+    # A marker state a re-derivation would clobber: 99 is not a recountable value.
+    s._conn.execute(
+        "UPDATE extraction_jobs SET status = 'canceled', "
+        "message = 'canceled by user', candidate_count = 99 WHERE id = ?",
+        (job_id,),
+    )
+    before = s.get_extraction_job(job_id)
+
+    def events():
+        return s._conn.execute(
+            "SELECT COUNT(*) AS n FROM fact_events WHERE job_id = ?", (job_id,)
+        ).fetchone()["n"]
+
+    events_before = events()
+
+    s.mark_chunk_done(chunks[2])  # the real call path into _refresh_extraction_job
+
+    # The chunk really did terminalize, so the guard — not a no-op chunk —
+    # is what saved the job row.
+    assert s.get_source_chunk(chunks[2])["status"] == "done"
+    after = s.get_extraction_job(job_id)
+    assert after["status"] == "canceled"
+    assert after["message"] == "canceled by user"
+    assert after["completed_chunks"] == before["completed_chunks"]
+    assert after["failed_chunks"] == before["failed_chunks"]
+    assert after["candidate_count"] == 99
+    assert events() == events_before  # no event written for the job
+
+
 def test_rollback_extraction_job_ignores_an_unknown_job(tmp_path):
     s = _store(tmp_path)
 
