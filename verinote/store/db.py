@@ -1706,7 +1706,10 @@ class Store:
         refunds a claim it cannot prove is the caller's.
 
         THE REFUND IS THE DIFFERENCE from `rollback_extraction_job`, which also
-        returns a `running` chunk to the queue but leaves `attempts` alone. Both
+        returns a `running` chunk to the queue but, on its default, leaves
+        `attempts` alone — the crash-recovery callers opt the refund back in
+        (#556); the authoritative split is recorded in
+        `rollback_extraction_job`'s own docstring. Both
         are right for their own case. A halt freezes the whole KB against writes,
         so nothing is queued up behind that counter — restoring the policy file is
         the only way forward, and the count is not what stands in the way. A
