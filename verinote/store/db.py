@@ -2027,8 +2027,14 @@ class Store:
         return (int(row["failed"]), int(row["exhausted"]))
 
     def finish_extraction_job(self, job_id: int) -> None:
+        """Terminalise the job; a `canceled` job is left alone entirely (row and
+        history), mirroring `rollback_extraction_job` (#641)."""
         with self._lock:
             before = self.get_extraction_job(job_id)
+            if before is None:
+                return
+            if before["status"] == "canceled":
+                return
             self._refresh_extraction_job(job_id, final=True)
             after = self.get_extraction_job(job_id)
             if after is not None:
@@ -2043,8 +2049,14 @@ class Store:
                 )
 
     def fail_extraction_job(self, job_id: int, message: str) -> None:
+        """Record the failure; a `canceled` job is left alone entirely (row and
+        history), mirroring `rollback_extraction_job` (#641)."""
         with self._lock:
             before = self.get_extraction_job(job_id)
+            if before is None:
+                return
+            if before["status"] == "canceled":
+                return
             self._conn.execute(
                 "UPDATE extraction_jobs SET status = 'failed', message = ?, "
                 "updated_at = datetime('now') WHERE id = ?",
@@ -2195,16 +2207,19 @@ class Store:
             # from under its owner (#337). Placed AFTER the `canceled` early
             # return above, which must write nothing at all.
             #
-            # THAT CARE IS NO LONGER ONE-SIDED (#526). `_refresh_extraction_job`
-            # now early-returns on a `canceled` job before its chunk read and its
-            # `WHERE id = ?` UPDATE, so a touched chunk can no longer rewrite a
-            # canceled job's `status`, `message`, or `candidate_count`. Two
-            # same-class sites remain open and are tracked separately:
-            # `finish_extraction_job`'s own `extraction_job_completed` append and
-            # `fail_extraction_job`'s unguarded `status` write + event both pass
-            # over `canceled`. Latent when #526 was filed: nothing under
-            # `verinote/` wrote `'canceled'` -- every occurrence was a guard, the
-            # CHECK at `store/schema.sql:71`, or prose.
+            # THAT CARE IS NO LONGER ONE-SIDED (#526, #641). Every store site
+            # that writes a job row or a job event now early-returns on a
+            # `canceled` job: `_refresh_extraction_job` before its chunk read and
+            # its `WHERE id = ?` UPDATE, and `finish_extraction_job` and
+            # `fail_extraction_job` before their own write and event, mirroring
+            # this method. The one same-class exposure still open is the web
+            # worker's `_fail_job_unless_done` guard (`web/app.py`), a third
+            # latent site of the `#526` class, tracked as #525: its `done`-only
+            # refusal set still routes a `canceled` job into
+            # `fail_extraction_job` -- a no-op since #641, but the guard still
+            # lacks an explicit `canceled` branch. Latent when #526 was filed:
+            # nothing under `verinote/` wrote `'canceled'` -- every occurrence
+            # was a guard, the CHECK at `store/schema.sql:71`, or prose.
             self._refresh_job_candidate_count(job_id)
             after = self.get_extraction_job(job_id)
             if after is not None:
