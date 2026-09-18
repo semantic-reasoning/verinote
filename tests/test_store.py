@@ -1799,10 +1799,92 @@ def test_refresh_extraction_job_leaves_a_canceled_job_alone(tmp_path):
     assert events() == events_before  # no event written for the job
 
 
+def test_finish_extraction_job_records_no_event_for_a_canceled_job(tmp_path):
+    """Nothing was completed, so claiming a completion in the history is a lie.
+
+    `extraction_job_completed` with before == after == `canceled` is exactly the
+    kind of KB self-misreport #194 exists to remove -- the mirror of the
+    `mark`/`rollback` criterion pinned above (#641).
+    """
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    job_id, _ = _job_with_mixed_chunks(s, sid)
+    before = s.get_extraction_job(job_id)
+
+    def completed():
+        return s._conn.execute(
+            "SELECT COUNT(*) AS n FROM fact_events WHERE job_id = ? "
+            "AND event_type = 'extraction_job_completed'", (job_id,)
+        ).fetchone()["n"]
+
+    assert completed() == 0  # the fixture has not finished
+    s._conn.execute(
+        "UPDATE extraction_jobs SET status = 'canceled' WHERE id = ?", (job_id,)
+    )
+
+    s.finish_extraction_job(job_id)
+
+    after = s.get_extraction_job(job_id)
+    assert after["status"] == "canceled"  # the #526 refresh guard already kept this
+    assert after["message"] == before["message"]
+    assert (
+        after["completed_chunks"], after["failed_chunks"], after["candidate_count"],
+    ) == (
+        before["completed_chunks"], before["failed_chunks"], before["candidate_count"],
+    )
+    assert completed() == 0  # RED pre-fix: finish appended it with before == after == canceled
+
+
+def test_fail_extraction_job_records_no_event_for_a_canceled_job(tmp_path):
+    """Nothing failed, so claiming a failure is a lie -- and `canceled` must not
+    be rewritten to `failed`. The unguarded `status` write and the event are the
+    two halves of the same exposure (#641).
+    """
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    job_id, _ = _job_with_mixed_chunks(s, sid)
+    before = s.get_extraction_job(job_id)
+
+    def failed():
+        return s._conn.execute(
+            "SELECT COUNT(*) AS n FROM fact_events WHERE job_id = ? "
+            "AND event_type = 'extraction_job_failed'", (job_id,)
+        ).fetchone()["n"]
+
+    assert failed() == 0  # the fixture has not failed
+    s._conn.execute(
+        "UPDATE extraction_jobs SET status = 'canceled' WHERE id = ?", (job_id,)
+    )
+
+    s.fail_extraction_job(job_id, "analysis failed: boom")
+
+    after = s.get_extraction_job(job_id)
+    assert after["status"] == "canceled"  # RED pre-fix: rewritten to 'failed'
+    assert after["message"] == before["message"]  # RED pre-fix: overwritten
+    assert (
+        after["completed_chunks"], after["failed_chunks"], after["candidate_count"],
+    ) == (
+        before["completed_chunks"], before["failed_chunks"], before["candidate_count"],
+    )
+    assert failed() == 0  # RED pre-fix: extraction_job_failed appended
+
+
 def test_rollback_extraction_job_ignores_an_unknown_job(tmp_path):
     s = _store(tmp_path)
 
     s.rollback_extraction_job(9999, "halted")
+
+    assert list(s._conn.execute("SELECT id FROM fact_events")) == []
+
+
+def test_finish_and_fail_extraction_job_ignore_an_unknown_job(tmp_path):
+    """The unknown-job parity of `rollback_extraction_job` (#641): a `job_id`
+    with no row writes nothing and raises nothing on either terminal writer.
+    """
+    s = _store(tmp_path)
+
+    s.finish_extraction_job(9999)
+    s.fail_extraction_job(9999, "analysis failed: boom")
 
     assert list(s._conn.execute("SELECT id FROM fact_events")) == []
 
