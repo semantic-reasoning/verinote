@@ -1537,14 +1537,19 @@ class Store:
     def mark_extraction_job_running(self, job_id: int) -> None:
         with self._lock:
             job = self.get_extraction_job(job_id)
-            self._conn.execute(
+            cur = self._conn.execute(
                 "UPDATE extraction_jobs SET status = 'running', "
                 "message = 'Analyzing chunks...', updated_at = datetime('now') "
                 "WHERE id = ? AND status != 'canceled'",
                 (job_id,),
             )
             after = self.get_extraction_job(job_id)
-            if job is not None and after is not None:
+            # The start is recorded only if the UPDATE actually took effect: a
+            # canceled job's row exists (both reads non-None) but nothing
+            # started, so an `extraction_job_started` with before == after ==
+            # `canceled` is the KB self-misreport #194 exists to remove (#526) —
+            # the mirror of `rollback_extraction_job`'s no-event criterion.
+            if cur.rowcount == 1 and job is not None and after is not None:
                 self._add_fact_event(
                     fact_id=None,
                     event_type="extraction_job_started",
@@ -2190,14 +2195,16 @@ class Store:
             # from under its owner (#337). Placed AFTER the `canceled` early
             # return above, which must write nothing at all.
             #
-            # THAT CARE IS ONE-SIDED. `_refresh_extraction_job` has no `canceled`
-            # branch in its status ladder and no status predicate on its UPDATE
-            # (`WHERE id = ?`), so a canceled job whose chunk is touched has its
-            # `candidate_count` rewritten there regardless -- since #482, a further
-            # column on #526's item 2, which until then was about `status` and
-            # `message` alone. Latent today: nothing under `verinote/` writes
-            # `'canceled'` -- on `grep -rn "canceled" verinote/` every occurrence is
-            # a guard, the CHECK at `store/schema.sql:71`, or prose.
+            # THAT CARE IS NO LONGER ONE-SIDED (#526). `_refresh_extraction_job`
+            # now early-returns on a `canceled` job before its chunk read and its
+            # `WHERE id = ?` UPDATE, so a touched chunk can no longer rewrite a
+            # canceled job's `status`, `message`, or `candidate_count`. Two
+            # same-class sites remain open and are tracked separately:
+            # `finish_extraction_job`'s own `extraction_job_completed` append and
+            # `fail_extraction_job`'s unguarded `status` write + event both pass
+            # over `canceled`. Latent when #526 was filed: nothing under
+            # `verinote/` wrote `'canceled'` -- every occurrence was a guard, the
+            # CHECK at `store/schema.sql:71`, or prose.
             self._refresh_job_candidate_count(job_id)
             after = self.get_extraction_job(job_id)
             if after is not None:
@@ -4164,7 +4171,21 @@ class Store:
         until it is retried and a chunk completes. The run-scoped number the user
         is shown meanwhile is `Store.run_candidate_count`, counted at the moment of
         use and therefore true even while this column lags.
+
+        A `canceled` job is left alone ENTIRELY — job row, counters and
+        history — by the early return at the top of this method, mirroring
+        `rollback_extraction_job` (#526): re-deriving `status` from chunks
+        would flip a human-canceled job to `done`/`failed` the moment any
+        chunk is touched, and the final UPDATE (`WHERE id = ?`) would rewrite
+        `message` and the counters over the human's state. The chunk rows
+        themselves are not the guard's target: a chunk that terminalizes is
+        what it is — the job row and the history are what stay still.
         """
+        job = self.get_extraction_job(job_id)
+        if job is None:
+            return
+        if job["status"] == "canceled":
+            return
         counts = self._conn.execute(
             "SELECT "
             "COALESCE(SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END), 0) AS done, "
@@ -4180,8 +4201,7 @@ class Store:
         failed = int(counts["failed"])
         running = int(counts["running"])
         total = int(counts["total"])
-        current = self.get_extraction_job(job_id)
-        current_status = current["status"] if current is not None else None
+        current_status = job["status"]
         if final and failed:
             status = "failed"
         elif final or (total and done == total):
