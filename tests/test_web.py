@@ -7746,7 +7746,7 @@ def test_a_save_into_an_unwritable_prompts_dir_is_a_page_not_a_crash(tmp_path):
     finally:
         override.parent.chmod(0o700)
 
-    assert r.status_code == 500  # plan §3.1: the write did not happen
+    assert r.status_code == 500  # the write did not happen
     assert f"prompt extraction could not be saved to {override}:" in r.text
     assert sentinel in r.text
     assert 'name="prompt_text"' in r.text
@@ -7776,7 +7776,7 @@ def test_a_save_over_an_unwritable_override_keeps_the_typed_text(tmp_path):
             follow_redirects=False,
         )
 
-    assert r.status_code == 500  # plan §3.1: the write did not happen
+    assert r.status_code == 500  # the write did not happen
     assert f"prompt extraction could not be saved to {override}:" in r.text
     assert sentinel in r.text
     assert 'name="prompt_text"' in r.text
@@ -7819,7 +7819,7 @@ def test_a_save_that_cannot_be_written_over_an_invalid_override_still_names_the_
     finally:
         override.chmod(0o600)
 
-    assert r.status_code == 500  # plan §3.1: the write did not happen
+    assert r.status_code == 500  # the write did not happen
     assert f"prompt query-translation could not be saved to {override}:" in r.text
     assert sentinel in r.text
     assert 'name="prompt_text"' in r.text
@@ -7959,7 +7959,7 @@ def test_a_reset_that_cannot_unlink_is_a_page_not_a_crash(tmp_path, mode):
     finally:
         override.parent.chmod(0o700)
 
-    assert r.status_code == 500  # plan §3.1: the delete did not happen
+    assert r.status_code == 500  # the delete did not happen
     assert f"prompt extraction override could not be deleted from {override}:" in r.text
     assert 'action="/prompts/reset"' in r.text  # the retry the user needs
     if mode != "dir_0o000_no_override":
@@ -8022,7 +8022,7 @@ def test_a_prompt_write_failure_of_a_kind_nobody_enumerated_is_still_a_page(
         )
         expected = f"prompt extraction override could not be deleted from {override}:"
 
-    assert r.status_code == 500  # plan §3.1: the write did not happen
+    assert r.status_code == 500  # the write did not happen
     assert expected in r.text
     assert "nobody enumerated this" in r.text
 
@@ -8111,7 +8111,7 @@ def test_a_failed_reset_over_an_invalid_override_offers_no_control(tmp_path):
     finally:
         override.parent.chmod(0o700)
 
-    assert r.status_code == 500  # plan §3.1: the delete did not happen
+    assert r.status_code == 500  # the delete did not happen
     assert (
         f"prompt query-translation override could not be deleted from {override}:"
         in r.text
