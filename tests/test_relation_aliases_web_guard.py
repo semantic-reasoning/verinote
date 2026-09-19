@@ -8,8 +8,10 @@ WHY THE MALFORMED TESTS ASSERT THE MESSAGE, NOT THE STATUS. Deleting the narrow
 `query_schema.py`, which is where #591 had put it) does NOT turn any route back
 into a 500: the malformed case falls through to the
 broad `except Exception` clause (G2) underneath, which also returns a string, so
-every affected route still renders 200 (measured — see plan555.md §2.2/M9,
-critique555.md's independent reproduction). What changes is the MESSAGE: the
+every affected route still renders 200 and only the message changes -- verify
+it yourself: delete the G1 clause and re-run this file, and it goes red on the
+`NAMED`-absence assertions while every status assertion stays green. What
+changes is the MESSAGE: the
 banner goes from `relation-aliases.md:1: expected \`raw\` -> \`canonical\`` to
 `policy/relation-aliases.md could not be read: relation-aliases.md:1: expected …`
 — the file's own name, prefixed onto a message that already carries the file's
@@ -226,12 +228,12 @@ def test_sources_survives_a_cp949_alias_file_and_names_the_file(cp949_client):
 
 
 def test_sources_shows_no_trust_counts_it_could_not_compute(malformed_client):
-    """Refuses to fall back to defaults/`{}` -- see plan555.md Q3.
+    """Refuses to fall back to defaults/`{}` when the trust signals could not be computed.
 
     Asserted on the trust block and the exact label, not the bare words
     unsupported/conflicted/corroborated: `sources.html` also renders
     `<span class="badge trust-conflicted">chunk N</span>` for a failed
-    extraction chunk, which is unrelated to trust COUNTS (critique555.md N-3).
+    extraction chunk, which is unrelated to trust COUNTS.
     """
     r = malformed_client.get("/sources")
     assert '<span class="badge muted">trust not computed</span>' in r.text
@@ -341,7 +343,7 @@ def test_a_healthy_alias_file_still_offers_every_open_button(healthy_client):
 
 def test_settings_names_the_parse_error_in_a_malformed_alias_file(malformed_client):
     """Red on the parent commit too: today `/settings` is 200 and silent on this
-    same input (plan555.md M3) -- that silence is what this test is closing."""
+    same input -- that silence is what this test is closing."""
     r = malformed_client.get("/settings")
     assert r.status_code == 200
     assert PARSER_MSG in r.text
