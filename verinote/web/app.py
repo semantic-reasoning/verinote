@@ -123,6 +123,7 @@ from verinote.prompts import (
 from verinote.engine.terms import StringLit, render_term
 from verinote.store import (
     DEFAULT_REVIEW_PAGE_SIZE,
+    ExtractionCallState,
     REVIEW_PAGE_SIZES,
     ReviewQueuePage,
     Store,
@@ -703,26 +704,6 @@ def _policy_guard_exempt(method: str, path: str) -> bool:
     if method in {"GET", "HEAD", "OPTIONS"}:
         return _matches(path, _POLICY_GUARD_READ_PATHS)
     return path in _POLICY_GUARD_WRITE_PATHS
-
-
-def _is_per_chunk_failure_message(existing: str | None) -> bool:
-    """Whether a job row's existing message is the store's per-chunk failure signature.
-
-    `Store._refresh_extraction_job` (the ONLY writer of a `failed` job row on the
-    finish path) emits exactly this shape for a job with a failed chunk:
-    `"Analysis failed: {n} chunk(s) failed, {d}/{t} complete[: {error}]"` — capital
-    `A`, and always containing `" chunk(s) failed"`. The guard's own writes are
-    lowercase (`"analysis failed: ..."` / `"extraction failed: ..."`, #551) and the
-    `done` message is `"Analysis complete: ..."`, so this two-part check matches
-    ONLY the store's per-chunk failure signature. The web guard (#552) relies on it
-    to tell a row THIS pass's finish already terminalized (keep its detail) from a
-    row a previous pass left (a retry's pre-claim failure must still be recorded),
-    so the string is load-bearing across files: if the store rewords that branch,
-    the guard's refusal silently stops firing — see `store/db.py::_refresh_extraction_job`.
-    """
-    if not existing:
-        return False
-    return existing.startswith("Analysis failed:") and " chunk(s) failed" in existing
 
 
 def create_app(cfg: Config | None = None) -> FastAPI:
@@ -2225,6 +2206,13 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         # between this check and the thread actually running (#269).
         assert_settings_intact(cfg)
         assert_credentials_intact(cfg)
+        # One handshake per pass (#645): `finish_extraction_job` sets the flag and
+        # the guard below reads it, both on this pass's worker thread (the guard
+        # runs in `run()`'s except clauses), so the set→read is same-thread
+        # sequential. Per-pass identity is what isolates concurrent passes — the
+        # guard's fresh `Store` cannot carry it, and a `Store` field or `app.state`
+        # would leak it across them.
+        call_state = ExtractionCallState()
 
         def _fail_job_unless_done(message: str) -> None:
             """Record a worker-level failure — iff this call still owns the job.
@@ -2242,9 +2230,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             `failed: analysis failed: ...` with an `extraction_job_failed` event
             beside it.
 
-            IT REFUSES `done`, AND A NON-RETRY `failed` ROW THAT ALREADY
-            CARRIES PER-CHUNK DETAIL (#552) — AND NEITHER IS THE CLI'S
-            PREDICATE. `cmd_sync`
+            IT REFUSES `done`, AND A `failed` ROW THIS PASS'S OWN FINISH
+            COMMITTED (#552, #645) — AND NEITHER IS THE CLI'S PREDICATE.
+            `cmd_sync`
             writes only a `running` job, and copying that here would not tighten
             this clause but silently gut it: this worker's `try` also spans
             `get_client(cfg)` and the `_extraction_schema_hint(cfg)` argument
@@ -2268,35 +2256,39 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             call's argument expressions is itself a call. The predicates differ
             because the scopes do.
 
-            THE `failed` REFUSAL IS THE #552 FIX, AND `retry` IS WHAT KEEPS IT
-            SAFE. A non-retry worker claims only a `pending` job
+            THE `failed` REFUSAL IS THE #552/#645 FIX, AND THE COMMIT-SCOPE
+            SIGNAL IS WHAT KEEPS IT SAFE. The status alone cannot answer "whose
+            `failed` row is this": a non-retry worker claims only a `pending` job
             (`claim_pending_extraction_job`, `WHERE status = 'pending'`), so it can
-            NEVER inherit a `failed` row: the only other writer of `failed`
-            (`fail_extraction_job`) is this guard, and it has not run yet. A `failed`
-            row a non-retry pass therefore reaches the guard with is THIS pass's
-            `finish_extraction_job(final=True)` output — it already recorded which
-            chunk failed and why, in the per-chunk message. The failure that then
-            escapes (a store-level error in the `extraction_job_completed` append)
-            is less useful than that detail, and its `extraction_job_failed` event
-            is the redundant second one beside the `chunk_failed` already there — so
-            the guard declines the write and keeps the detail (the decline still
-            logs). A `retry` pass is the exception that makes a bare `failed`
-            refusal dangerous: its `try` spans `get_client(cfg)` and
-            `_extraction_schema_hint(cfg)` while the job is STILL the previous
-            run's `failed` (the status only moves at
-            `claim_extraction_job_for_retry`), and a retry that dies pre-claim must
-            still be recorded. `retry=True` therefore short-circuits the `failed`
-            refusal and the write goes ahead — that is the must-record side of the
-            same decision. RESIDUAL (named, not fixed here): a RETRY pass that
-            reaches the finish phase — commits `failed` + the per-chunk detail, then
-            the append raises — still sees `retry=True` and is clobbered, because a
-            DB-only predicate cannot tell that row (this pass's) from the
-            pre-claim one (the previous pass's); distinguishing them needs a
-            call-scope flag threaded from the finish site, filed as the follow-up
-            to #552.
+            NEVER inherit one — the only other writer of `failed`
+            (`fail_extraction_job`) is this guard — while a `retry` pass CAN
+            inherit the previous run's `failed` row (its pre-claim window, the
+            status only moving at `claim_extraction_job_for_retry`), and a retry
+            that dies pre-claim must still be recorded. So the origin comes from
+            `call_state` instead: `job_terminalized_by_finish` is set by
+            `finish_extraction_job` (`store/db.py`) the moment THIS pass's
+            `final=True` refresh commits a `failed` row — before the
+            `extraction_job_completed` append whose raise is the whole residual —
+            and no other code sets it. A `failed` row the guard reaches with the
+            flag set is this pass's finish output: it already recorded which chunk
+            failed and why, in the per-chunk message. The failure that then
+            escapes (a store-level error in the append) is less useful than that
+            detail, and its `extraction_job_failed` event is the redundant second
+            one beside the `chunk_failed` already there — so the guard declines
+            the write and keeps the detail (the decline still logs). A retry that
+            dies pre-claim never reaches `finish_extraction_job`, so ITS flag is
+            unset and the write goes ahead — the must-record half of the same
+            decision (pinned by
+            `test_worker_records_a_retry_pre_claim_failure_over_a_failed_job`),
+            which #552's `not retry` heuristic only reached by accident. The
+            former residual — a RETRY pass that reaches the finish phase
+            (commits `failed` + the per-chunk detail, then the append raises) —
+            is covered by the signal too: its own finish set its own flag (pinned
+            by
+            `test_worker_keeps_the_per_chunk_message_when_a_retry_job_is_already_failed`).
 
-            REFUSING `done` AND THE NON-RETRY `failed`+DETAIL ROW ALSO KEEPS THE
-            CLAUSE-ORDER TESTS HONEST.
+            REFUSING `done` AND THE FINISH-COMMITTED `failed`+DETAIL ROW ALSO
+            KEEPS THE CLAUSE-ORDER TESTS HONEST.
             `test_worker_halt_does_not_mark_the_job_failed` and
             `test_worker_busy_does_not_mark_the_job_failed` both leave the job
             `pending`, so this guard still WRITES on their paths and the clauses
@@ -2336,31 +2328,30 @@ def create_app(cfg: Config | None = None) -> FastAPI:
               second boot against the same KB is the concrete shape of that peer.
               Closing it means moving the predicate into the SQL, as the extraction
               path's ownership handshakes already do — a store change, not made here.
-            - AN ALREADY-`failed` JOB, #552. This is NOW COVERED for the
-              non-retry case and NAMED (not fixed) for the retry-finish case.
-              `finish_extraction_job` runs on an autocommit connection, so its
-              `_refresh_extraction_job(final=True)` UPDATE commits `failed` + the
-              per-chunk message BEFORE its `extraction_job_completed` event is
-              appended. A raise at that last step leaves a `failed` row that already
-              says which chunk failed and why. MEASURED, driving the real worker on
-              a 2-chunk job whose first chunk raised `LLMError` and whose
-              `extraction_job_completed` append was forced to raise: before #552 the
-              job came to rest `failed` with "analysis failed: post-final event
+            - AN ALREADY-`failed` JOB, #552/#645. NOW COVERED FOR BOTH HALVES:
+              the non-retry case #552 fixed, and the retry-finish case it could
+              only name. `finish_extraction_job` runs on an autocommit connection,
+              so its `_refresh_extraction_job(final=True)` UPDATE commits `failed`
+              + the per-chunk message BEFORE its `extraction_job_completed` event
+              is appended — and it sets this pass's
+              `call_state.job_terminalized_by_finish` at that moment. A raise at
+              the append leaves a `failed` row that already says which chunk
+              failed and why, with the flag set. MEASURED, driving the real worker
+              on a 2-chunk job whose first chunk raised `LLMError` and whose
+              `extraction_job_completed` append was forced to raise: before #552
+              the job came to rest `failed` with "analysis failed: post-final event
               append failed" and a second `extraction_job_failed` event beside the
-              `chunk_failed` one; now, on a non-retry pass, the guard declines the
-              write — the job keeps "Analysis failed: 1 chunk(s) failed, 1/2
+              `chunk_failed` one; now the guard declines the write on EITHER kind
+              of pass — the job keeps "Analysis failed: 1 chunk(s) failed, 1/2
               complete: chunk one llm failure" and appends no second failure event
               (pinned by
-              `test_worker_keeps_the_per_chunk_message_when_a_non_retry_job_is_already_failed`).
-              The refusal is `not retry`-gated on purpose: a retry pass's pre-claim
-              window still sees the previous run's `failed` row, and a retry that
-              dies pre-claim must be recorded (pinned by
+              `test_worker_keeps_the_per_chunk_message_when_a_non_retry_job_is_already_failed`
+              and
+              `test_worker_keeps_the_per_chunk_message_when_a_retry_job_is_already_failed`).
+              The other half is untouched by the signal: a retry that dies
+              pre-claim never reaches `finish_extraction_job`, so its flag is
+              unset and its fresh failure is still recorded (pinned by
               `test_worker_records_a_retry_pre_claim_failure_over_a_failed_job`).
-              What remains, named and out of scope: a RETRY pass that reaches the
-              finish phase (commits `failed` + detail, then the append raises) still
-              sees `retry=True` and is clobbered — a DB-only predicate cannot tell
-              that row from the pre-claim one, and the fix is a call-scope flag
-              threaded from the finish site, filed as the #552 follow-up.
             - A `canceled` JOB. This guard refuses `done` BY NAME, so every other
               status the CHECK on `extraction_jobs.status` admits (`schema.sql`) is
               written over, and `canceled` is one of them. That contradicts what
@@ -2386,7 +2377,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             the #525 path it is a genuine sqlite/WAL-class failure — and refusing the
             job row must not also refuse the record. Nothing else records it: the
             job keeps the terminal row this pass already committed — a `done` row
-            (#525), or, on the #552 path, a non-retry `failed` row whose per-chunk
+            (#525), or, on the #552/#645 path, a `failed` row whose per-chunk
             message already says which chunk failed and why — and because
             `finish_extraction_job` raised part-way there is no
             `extraction_job_completed` event and no run summary either. So the
@@ -2410,20 +2401,24 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             with Store(cfg.db_path) as worker_store:
                 worker_store.init_schema()
                 job_now = worker_store.get_extraction_job(job_id)
-                # NON-RETRY `failed` AT GUARD TIME MEANS THIS PASS'S FINISH
-                # COMMITTED IT: a non-retry worker claims only a `pending` job
-                # (`claim_pending_extraction_job`, `WHERE status = 'pending'`), so it
-                # cannot inherit a `failed` row — the only other writer of `failed`
-                # (`fail_extraction_job`) is this guard. A `retry` pass CAN inherit
-                # `failed` (its pre-claim window sees the previous run's row), and its
-                # fresh pre-claim failure must still be recorded, so `retry`
-                # short-circuits the `failed` refusal below (#552).
+                # `failed` AT GUARD TIME IS REFUSED IFF THIS PASS'S OWN FINISH
+                # COMMITTED IT: the status is read from the row, but the origin is
+                # not in the row — #552's `not retry` heuristic and message-shape
+                # match could not tell a RETRY pass's finish output (keep the
+                # detail) from the PREVIOUS pass's pre-claim row (record the fresh
+                # failure). The signal does: `call_state.job_terminalized_by_finish`
+                # is set by `finish_extraction_job` the moment THIS pass's
+                # `final=True` refresh commits a `failed` row (before the
+                # `extraction_job_completed` append that may still raise), and no
+                # other code sets it. A retry that dies pre-claim never reaches
+                # `finish_extraction_job`, so its flag is unset and the write goes
+                # ahead — the must-record half (#552), now without the `retry`
+                # short-circuit (#645).
                 if job_now is not None and (
                     job_now["status"] == "done"
                     or (
                         job_now["status"] == "failed"
-                        and not retry
-                        and _is_per_chunk_failure_message(job_now["message"])
+                        and call_state.job_terminalized_by_finish
                     )
                 ):
                     # The status is interpolated rather than spelled "already done":
@@ -2457,6 +2452,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                         schema_hint=_extraction_schema_hint(cfg),
                         retry=retry,
                         retry_max_attempts=retry_max_attempts,
+                        call_state=call_state,
                     )
                     # A clean run judges staleness: a confirmed/accepted citation
                     # whose source text changed under it returns to review (#329).
@@ -2632,8 +2628,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 # to charge to the content. `process_extraction_job` has already
                 # rolled the job back to `pending` so the next pass RESUMES it with
                 # the retry budget intact, and this guard still WRITES a `pending`
-                # job (it declines `done`, plus only a non-retry `failed` row that
-                # already carries per-chunk detail, #552), so the generic clause
+                # job (it declines `done`, plus a `failed` row THIS pass's own
+                # finish committed — #552/#645's signal, unset here), so the
+                # generic clause
                 # would otherwise write `failed` over that
                 # rollback — filing a host condition as the job's own failure, in
                 # the job row, in the `extraction_job_failed` event beside it, and

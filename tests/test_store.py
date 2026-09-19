@@ -8,7 +8,7 @@ import pytest
 
 from verinote.engine import compile_dl, coverage
 from verinote.engine.terms import Compound, NumberLit
-from verinote.store import Store, db, engine_statuses
+from verinote.store import ExtractionCallState, Store, db, engine_statuses
 
 
 def _store(tmp_path) -> Store:
@@ -1833,6 +1833,60 @@ def test_finish_extraction_job_records_no_event_for_a_canceled_job(tmp_path):
         before["completed_chunks"], before["failed_chunks"], before["candidate_count"],
     )
     assert completed() == 0  # RED pre-fix: finish appended it with before == after == canceled
+
+
+def test_finish_extraction_job_sets_the_call_state_flag_only_for_a_failed_commit(tmp_path):
+    """The #645 handshake is per-call and per-outcome: the flag claims exactly one thing.
+
+    `job_terminalized_by_finish` becomes `True` only when THIS call's `final=True`
+    refresh commits a `failed` terminal row. This is the store-level pin of the
+    contract the web guard in `web/app.py` leans on (its end-to-end shape is the
+    `test_web.py` worker tests). A store-layer regression — flag set on an
+    early-return path, the "dormant mine" #645 names — would let a retry that
+    died pre-claim look like a pass that finished, and the fresh pre-claim
+    failure would go unrecorded.
+    """
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+
+    # A failed chunk: this call's refresh commits `failed` — the flag claims it.
+    job_id, _ = _job_with_mixed_chunks(s, sid)
+    cs = ExtractionCallState()
+    assert cs.job_terminalized_by_finish is False
+    s.finish_extraction_job(job_id, call_state=cs)
+    assert s.get_extraction_job(job_id)["status"] == "failed"
+    assert cs.job_terminalized_by_finish is True  # RED pre-#645: no flag on the store
+
+    # A fully done job: the commit is `done`, not `failed` — no claim.
+    job_id = s.create_extraction_job(source_id=sid, provider="fake", model="m", total_chunks=1)
+    chunk_id = s.add_source_chunks(job_id=job_id, source_id=sid, chunks=["a"])[0]
+    s.mark_extraction_job_running(job_id)
+    s.mark_chunk_running(chunk_id)
+    s.mark_chunk_done(chunk_id)
+    cs = ExtractionCallState()
+    s.finish_extraction_job(job_id, call_state=cs)
+    assert s.get_extraction_job(job_id)["status"] == "done"
+    assert cs.job_terminalized_by_finish is False
+
+    # A canceled job: an early return commits nothing — no claim.
+    job_id, _ = _job_with_mixed_chunks(s, sid)
+    s._conn.execute("UPDATE extraction_jobs SET status = 'canceled' WHERE id = ?", (job_id,))
+    cs = ExtractionCallState()
+    s.finish_extraction_job(job_id, call_state=cs)
+    assert s.get_extraction_job(job_id)["status"] == "canceled"
+    assert cs.job_terminalized_by_finish is False
+
+    # A missing row: the other early return — no claim, no error.
+    cs = ExtractionCallState()
+    s.finish_extraction_job(999_999, call_state=cs)
+    assert cs.job_terminalized_by_finish is False
+
+    # And a call without a call_state (the CLI, the zero-chunk fast path) is
+    # byte-identical to pre-#645: the failed job still terminalises, with no
+    # flag object to set at all.
+    job_id, _ = _job_with_mixed_chunks(s, sid)
+    s.finish_extraction_job(job_id)
+    assert s.get_extraction_job(job_id)["status"] == "failed"
 
 
 def test_fail_extraction_job_records_no_event_for_a_canceled_job(tmp_path):

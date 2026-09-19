@@ -270,6 +270,33 @@ class UnreadableTextScan:
     unreadable_chars_column_present: bool
 
 
+@dataclass
+class ExtractionCallState:
+    """A worker pass's call-scope handshake with the store it commits through.
+
+    OWNED BY THE PASS, NOT THE STORE: one instance per worker pass, created by
+    the web worker in `_start_source_extraction` (`web/app.py`) and handed to
+    `process_extraction_job` (`pipeline/extract.py`), which forwards it to
+    `finish_extraction_job`. It is deliberately NOT a `Store` field or
+    `app.state`: concurrent passes (another job's worker, or the next retry of
+    the same job) must each see only their own finish, and the web guard reads
+    the job row through a *fresh* `Store` connection where an instance field
+    would be invisible anyway.
+
+    `job_terminalized_by_finish` is set by `finish_extraction_job` the moment
+    its `final=True` refresh commits a `failed` terminal row — BEFORE the
+    `extraction_job_completed` append below that commit, the one step whose
+    raise is the whole residual #645 is about. A pass whose failure handler
+    then runs can tell the `failed` row its OWN finish committed (keep the
+    per-chunk detail, decline the redundant second failure write) from a
+    `failed` row a PREVIOUS pass left behind (a retry that dies pre-claim must
+    still be recorded) — a distinction no DB read can make, because both rows
+    are indistinguishable `failed` rows.
+    """
+
+    job_terminalized_by_finish: bool = False
+
+
 REVIEW_PAGE_SIZES = (25, 50, 100)
 DEFAULT_REVIEW_PAGE_SIZE = 50
 DEFAULT_REVIEW_SORT = "newest"
@@ -2029,16 +2056,36 @@ class Store:
         ).fetchone()
         return (int(row["failed"]), int(row["exhausted"]))
 
-    def finish_extraction_job(self, job_id: int) -> None:
+    def finish_extraction_job(
+        self, job_id: int, *, call_state: ExtractionCallState | None = None
+    ) -> None:
         """Terminalise the job; a `canceled` job is left alone entirely (row and
-        history), mirroring `rollback_extraction_job` (#641)."""
+        history), mirroring `rollback_extraction_job` (#641).
+
+        `call_state`, when the caller pass carries one, is that pass's #645
+        handshake: if this call's `final=True` refresh commits a `failed`
+        terminal row, `job_terminalized_by_finish` is set the moment the
+        refresh returns — BEFORE the `extraction_job_completed` append below,
+        the one step whose raise is the whole residual. Callers that pass
+        nothing (the CLI, the zero-chunk fast path, tests) get exactly today's
+        behavior: the refresh runs, the append runs, no flag is touched.
+        """
         with self._lock:
             before = self.get_extraction_job(job_id)
             if before is None:
                 return
             if before["status"] == "canceled":
                 return
-            self._refresh_extraction_job(job_id, final=True)
+            written = self._refresh_extraction_job(job_id, final=True)
+            if written == "failed" and call_state is not None:
+                # SET-POINT (#645): the refresh UPDATE above has committed
+                # (autocommit) a terminal `failed` row — claim it for THIS pass
+                # now, before any statement that may still raise (the re-read
+                # below, the append). Not after `process_extraction_job`
+                # returns — the residual is defined by that call RAISING, so a
+                # flag set there is dead code — and not on the two early
+                # returns above, which commit nothing.
+                call_state.job_terminalized_by_finish = True
             after = self.get_extraction_job(job_id)
             if after is not None:
                 self._add_fact_event(
@@ -4150,8 +4197,15 @@ class Store:
             (job_id, job_id),
         )
 
-    def _refresh_extraction_job(self, job_id: int, *, final: bool = False) -> None:
+    def _refresh_extraction_job(
+        self, job_id: int, *, final: bool = False
+    ) -> str | None:
         """Re-derive the job row from the rows that are actually there.
+
+        Returns the `status` the final UPDATE wrote, or `None` when one of the
+        early returns (`job is None`, `canceled`, no chunk rows) wrote nothing.
+        `finish_extraction_job` reads that return for the #645 signal instead
+        of issuing another read of its own.
 
         `completed_chunks`/`failed_chunks`/`status`/`message` were always computed
         from `source_chunks` here. `candidate_count` JOINED THEM IN #482; before
@@ -4243,13 +4297,13 @@ class Store:
             status = "pending"
 
         # The `failed` branch's message shape ("Analysis failed: {n} chunk(s) failed,
-        # {d}/{t} complete[: {error}]") is LOAD-BEARING CROSS-FILE: the web worker's
-        # guard (`web/app.py::_is_per_chunk_failure_message`, #552) matches it to tell
-        # a row THIS pass's finish terminalized (keep its detail, decline the
-        # redundant second failure write) from one a previous pass left (a retry's
-        # pre-claim failure must still be recorded). If you reword this branch, update
-        # that helper and its pinning test together or the guard's refusal silently
-        # stops firing.
+        # {d}/{t} complete[: {error}]") was LOAD-BEARING CROSS-FILE under #552 —
+        # the web worker's guard matched it to tell a row THIS pass's finish
+        # terminalized from one a previous pass left. #645 moved that judgement to
+        # the commit-scope signal (`ExtractionCallState.job_terminalized_by_finish`,
+        # set in `finish_extraction_job`), so the shape is no longer a cross-file
+        # contract: it is the job row's human-readable detail, pinned by the
+        # message assertions in `tests/test_web.py`.
         if status == "done":
             message = f"Analysis complete: {done}/{total} chunk(s)"
         elif status == "failed":
@@ -4276,6 +4330,7 @@ class Store:
             "WHERE id = ?",
             (status, done, failed, job_id, message, job_id),
         )
+        return status
 
 
 def _utc_now() -> str:
