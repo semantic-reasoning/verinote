@@ -2014,7 +2014,7 @@ def _raise_on_finish(monkeypatch, exc):
     escapes with the job already complete.
     """
 
-    def boom(self, job_id):
+    def boom(self, job_id, *, call_state=None):
         raise exc
 
     monkeypatch.setattr(store_db.Store, "finish_extraction_job", boom)
@@ -2162,7 +2162,7 @@ def test_worker_writes_nothing_when_the_job_row_is_gone(tmp_path, monkeypatch, f
     )
     failures = _fail_job_spy(monkeypatch)
 
-    def delete_the_source_then_raise(self, job_id):
+    def delete_the_source_then_raise(self, job_id, *, call_state=None):
         # `PRAGMA foreign_keys = ON` is set per connection (`store/db.py`) and
         # `extraction_jobs.source_id` is `ON DELETE CASCADE` (`schema.sql`), so the
         # job row goes with the source and the guard's re-read sees `None`.
@@ -2333,20 +2333,117 @@ def test_worker_keeps_the_per_chunk_message_when_a_non_retry_job_is_already_fail
     assert declined.exc_info is not None
 
 
+def test_worker_keeps_the_per_chunk_message_when_a_retry_job_is_already_failed(
+    tmp_path, monkeypatch, fake_client, caplog
+):
+    """#645: a `failed` row a RETRY pass's own finish committed keeps its detail.
+
+    The residual #552 could only name: its guard told the two `failed` rows
+    apart with `not retry` plus the store's message shape, which could NOT tell
+    this retry pass's finish output — commit `failed` + the per-chunk detail,
+    then the `extraction_job_completed` append raises — from the PREVIOUS
+    pass's pre-claim row, which must still be recorded. Measured on the pre-fix
+    tree: pass two escaped with `retry=True`, the refusal short-circuited, and
+    the row came to rest `failed` with "analysis failed: post-final event
+    append failed" over the per-chunk detail, with a second
+    `extraction_job_failed` event beside `chunk_failed`.
+
+    #645's commit-scope signal is what the guard reads now:
+    `call_state.job_terminalized_by_finish`, set by `finish_extraction_job`
+    the moment this pass's `final=True` refresh commits `failed` — before the
+    append that raises. The flag is per-pass: pass one's finish set ITS flag
+    (harmless — pass one's append succeeds, so its guard never runs), and pass
+    two's finish sets PASS TWO's flag, the one its guard reads. Also red for a
+    flag set AFTER `process_extraction_job` returned — the residual is defined
+    by that call RAISING, so the flag never lands and the guard clobbers.
+    """
+    cfg, job_id, _ = _job_kb(
+        tmp_path, with_policy=True, chunks=["chunk one text", "chunk two text"]
+    )
+    failures = _fail_job_spy(monkeypatch)
+    # A fresh first-call-fails client per pass: pass one's first `extract_facts`
+    # (chunk one) raises, pass two's does the same after the retry claim resets
+    # the chunk.
+    monkeypatch.setattr(
+        webapp, "get_client", lambda cfg: _first_call_fails_client(fake_client)
+    )
+
+    # PASS ONE — a non-retry pass leaves the job `failed` with the store's
+    # per-chunk detail; its append succeeds, so its guard never runs.
+    c = TestClient(create_app(cfg))
+    _join_worker(job_id)
+    job = _job_row(cfg, job_id)
+    assert job["status"] == "failed"
+    assert job["message"] == (
+        "Analysis failed: 1 chunk(s) failed, 1/2 complete: chunk one llm failure"
+    )
+    assert failures == []
+
+    # PASS TWO — the retry claims (resetting chunk one), fails it again, and its
+    # finish commits a fresh `failed` + detail; then ONLY the
+    # `extraction_job_completed` append is forced to raise.
+    real_append = store_db.Store._add_fact_event
+
+    def raise_on_final_append(self, *, event_type, **kwargs):
+        if event_type == "extraction_job_completed":
+            raise RuntimeError("post-final event append failed")
+        return real_append(self, event_type=event_type, **kwargs)
+
+    monkeypatch.setattr(store_db.Store, "_add_fact_event", raise_on_final_append)
+
+    with caplog.at_level(logging.WARNING, logger="verinote.web.app"):
+        retry = c.post(f"/sources/jobs/{job_id}/retry", follow_redirects=False)
+        assert retry.status_code == 303
+        _join_worker(job_id)
+
+    job = _job_row(cfg, job_id)
+    assert job["status"] == "failed"
+    # THIS pass's per-chunk detail, kept in place: a guard that clobbered it
+    # would show "analysis failed: post-final event append failed" instead.
+    assert job["message"] == (
+        "Analysis failed: 1 chunk(s) failed, 1/2 complete: chunk one llm failure"
+    )
+    # No failure event from the guard — the write it refused is the one that
+    # would append `extraction_job_failed` beside the `chunk_failed` rows.
+    # And exactly ONE `extraction_job_completed`: pass one's (which succeeded);
+    # pass two's append raised before its insert, so no second one.
+    events = _job_event_types(cfg, job_id)
+    assert "extraction_job_failed" not in events
+    assert events.count("extraction_job_completed") == 1
+    # The detail is real, not just a message: chunk one failed with that error
+    # again, chunk two still completed.
+    with Store(cfg.db_path) as store:
+        store.init_schema()
+        assert [r["status"] for r in store.source_chunks(job_id)] == ["failed", "done"]
+    # A POSITIVE assertion of the refusal: the write never happened.
+    assert failures == [], "the retry pass's own per-chunk detail was clobbered"
+    # DECLINING IS NOT DROPPING: the log line is the whole of the record, with
+    # the traceback (the row keeps its state; the raise left no completion
+    # event and no run summary).
+    assert "not recording on the job row" in caplog.text
+    assert "post-final event append failed" in caplog.text
+    assert "RuntimeError" in caplog.text
+    declined = next(
+        r for r in caplog.records if "not recording on the job row" in r.getMessage()
+    )
+    assert declined.exc_info is not None
+
+
 def test_worker_records_a_retry_pre_claim_failure_over_a_failed_job(
     tmp_path, monkeypatch, fake_client
 ):
-    """#552's other half: a retry that dies pre-claim is still recorded.
+    """#552's other half: a retry that dies pre-claim is still recorded (#645).
 
     The previous run genuinely failed a chunk and finished `failed` with the
-    per-chunk detail — the exact row the guard keeps in the other test. The retry
-    pass is the exception that makes a bare `failed` refusal dangerous: its `try`
-    spans `get_client(cfg)` while the job is STILL the previous run's `failed`
-    (the status only moves at `claim_extraction_job_for_retry`), so a retry that
-    dies pre-claim must still be written — `retry=True` short-circuits the #552
-    refusal. Drop the `not retry` conjunct from the guard and this test goes red:
-    the row would keep the old detail, no new event would be appended, and the
-    provider failure would be recorded nowhere.
+    per-chunk detail — the exact row the guard keeps in the other tests. The
+    retry pass dies in `get_client`, BEFORE `process_extraction_job` claims the
+    job, so it never reaches `finish_extraction_job`: THIS pass's
+    `call_state.job_terminalized_by_finish` stays unset, and the guard must
+    still write the fresh failure over the previous run's `failed` row. The
+    signal is what keeps this half honest now that #645 removed the `not
+    retry` heuristic and the message-shape match: a guard that refused a bare
+    `failed` row would leave the old detail, append no new event, and record
+    the provider failure nowhere.
     """
     cfg, job_id, _ = _job_kb(
         tmp_path, with_policy=True, chunks=["chunk one text", "chunk two text"]

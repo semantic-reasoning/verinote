@@ -879,7 +879,7 @@ def test_a_job_that_already_finished_is_not_buried_by_a_later_failure(
     assert cli.main(["ingest", str(src)]) == 0
     monkeypatch.setattr("verinote.llm.get_client", lambda cfg: _ChunkClient())
 
-    def _boom(self, job_id):
+    def _boom(self, job_id, *, call_state=None):
         raise ValueError("the job row is already done by the time we get here")
 
     monkeypatch.setattr(Store, "finish_extraction_job", _boom)

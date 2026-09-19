@@ -24,7 +24,7 @@ from verinote.pipeline.normalize import normalize_for_extraction
 from verinote.pipeline.policy_state import PolicyMissingError, assert_writable
 from verinote.policy_defaults import RELATION_ALIASES_RELPATH
 from verinote.prompts import PromptError, PromptUnavailableError, render_prompt
-from verinote.store import Store
+from verinote.store import ExtractionCallState, Store
 from verinote.store.duckdb_fact_terms import DuckDBFactTermStoreLockedError
 from verinote.store.fact_input import nfc_term, structural_term
 from verinote.text import nfc
@@ -490,8 +490,18 @@ def process_extraction_job(
     schema_hint: str = "",
     retry: bool = False,
     retry_max_attempts: int | None = None,
+    call_state: ExtractionCallState | None = None,
 ) -> ChunkedExtractionResult:
     """Process pending chunks for one durable extraction job.
+
+    `call_state`, when the caller pass carries one, is that pass's #645
+    handshake: it is forwarded to `finish_extraction_job`, which sets
+    `job_terminalized_by_finish` the moment the `final=True` refresh commits a
+    `failed` terminal row — before the `extraction_job_completed` append whose
+    raise is the whole residual. The web worker passes its per-pass instance so
+    its failure handler can tell this pass's finish output from a previous
+    pass's `failed` row; the CLI (`cmd_sync`, #488) and the zero-chunk fast
+    path pass nothing and get exactly today's behavior.
 
     Raises `PolicyMissingError` if this KB's recorded logic policy file is gone —
     at the start, before each chunk is claimed, and again at the write boundary in
@@ -762,7 +772,7 @@ def process_extraction_job(
         )
         raise
 
-    store.finish_extraction_job(job_id)
+    store.finish_extraction_job(job_id, call_state=call_state)
     final = store.get_extraction_job(job_id)
     summary = (
         f"{source['path']}: {final['completed_chunks']}/{final['total_chunks']} "
