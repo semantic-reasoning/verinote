@@ -851,10 +851,10 @@ def test_a_prompt_that_cannot_be_read_is_a_normalised_failure(tmp_path, monkeypa
 
     This adapter builds its prompt before `_run` is called, which is the shape
     #500 asks the cloud adapters to adopt, so the `UnicodeDecodeError` that
-    `_render_prompt`'s `except PromptError` does not convert leaves the adapter
-    as itself and §10.1 is violated with nothing spawned. `_invoke` already
-    reached that conclusion for its own temp directory; this is the same rule
-    applied one statement earlier.
+    `render_prompt_or_error`'s `except PromptError` does not convert would
+    leave the adapter as itself and violate §10.1 with nothing spawned.
+    `_invoke` already reached that conclusion for its own temp directory; this
+    is the same rule applied one statement earlier.
     """
     _unreadable_override(tmp_path, "extraction")
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("spawned"))
@@ -894,7 +894,7 @@ def test_an_unlisted_render_failure_is_a_normalised_failure(tmp_path, monkeypatc
     def boom(*args, **kwargs):
         raise _Unlisted("nobody enumerated this")
 
-    monkeypatch.setattr("verinote.llm.claude_cli_adapter.render_prompt", boom)
+    monkeypatch.setattr("verinote.llm.base.render_prompt", boom)
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("spawned"))
 
     with pytest.raises(LLMError, match="^prompt extraction could not be loaded"):

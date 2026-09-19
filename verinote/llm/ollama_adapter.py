@@ -17,6 +17,7 @@ from verinote.llm.base import (
     LLMOutputError,
     ModelListing,
     base_url_unusable,
+    render_prompt_or_error,
 )
 from verinote.llm.schema import (
     FACT_ARRAY_SCHEMA,
@@ -26,7 +27,6 @@ from verinote.llm.schema import (
     parse_query,
 )
 from verinote.pipeline.query_intent import QueryIntent, parse_query_intent
-from verinote.prompts import PromptError, render_prompt
 
 # The endpoint an unset `base_url` resolves to. Named so the settings UI can
 # report the *same* URL it will actually talk to instead of printing "(default)".
@@ -161,8 +161,8 @@ class OllamaAdapter:
 
     def extract_facts(self, *, source_text: str, schema_hint: str = "") -> list[ExtractedFact]:
         system = _with_schema_hint(
-            _render_prompt(
-                self.cfg.root,
+            render_prompt_or_error(
+                self.cfg,
                 "ollama-extraction",
                 max_facts=self.cfg.extraction_max_facts_per_chunk,
             ),
@@ -188,7 +188,7 @@ class OllamaAdapter:
 
     def translate_query(self, *, question: str, qid: int, schema_hint: str = "") -> str:
         system = _with_schema_hint(
-            _render_prompt(self.cfg.root, "query-translation", qid=qid), schema_hint
+            render_prompt_or_error(self.cfg, "query-translation", qid=qid), schema_hint
         )
         payload = {
             "model": self.cfg.model,
@@ -207,7 +207,7 @@ class OllamaAdapter:
 
     def extract_query_intent(self, *, question: str, schema_hint: str = "") -> QueryIntent:
         system = _with_schema_hint(
-            _render_prompt(self.cfg.root, "query-intent"), schema_hint
+            render_prompt_or_error(self.cfg, "query-intent"), schema_hint
         )
         payload = {
             "model": self.cfg.model,
@@ -231,7 +231,7 @@ class OllamaAdapter:
             "think": False,
             "options": {"temperature": 0, "num_predict": 1200},
             "messages": [
-                {"role": "system", "content": _render_prompt(self.cfg.root, "ask-fallback")},
+                {"role": "system", "content": render_prompt_or_error(self.cfg, "ask-fallback")},
                 {
                     "role": "user",
                     "content": f"Question:\n{question}\n\nContext:\n{context}",
@@ -244,48 +244,3 @@ class OllamaAdapter:
 
 def _with_schema_hint(prompt: str, schema_hint: str) -> str:
     return prompt + ("\n" + schema_hint if schema_hint else "")
-
-
-def _render_prompt(root, prompt_id: str, **values: object) -> str:
-    """Render `prompt_id` under `root`, or raise `LLMError`.
-
-    Two clauses, and their order is the design. `PromptError` is whatever the
-    prompt library states in its own words -- a required placeholder the
-    override left out, an id nothing defines (`unknown prompt: extractoin`), a
-    value the caller never passed (`missing prompt value: qid`) -- so it goes
-    out as written, with nothing in front of it. Only the first of those three
-    is the user's doing; the other two are measured, and they reach the user
-    through the narrow clause with no operation named at all. The clause below
-    names the operation because what *it* catches is further still from a
-    sentence anybody can act on.
-
-    Being that wide relabels a genuine programming error as something that
-    reads like a broken file: `prompt <id> could not be loaded` points at
-    `policy/prompts/<id>.md`, and for a `TypeError` raised inside
-    `render_prompt` that file is fine. It is the same widening
-    `test_a_non_valueerror_from_the_request_constructor_is_not_blamed_on_the_base_url`
-    in `tests/test_ollama_adapter.py` refuses for `Request()` -- refused there
-    for a reason that does not hold here. `Request()` has one reachable
-    failure, so a type tells a real cause and a bug apart. `render_prompt`
-    reads two files, the packaged default and the override, and the `OSError`
-    family those reads can raise is not closed by a list; #500's reviewer said
-    normalising the region is safer than enumerating it, and offered no list as
-    complete. §10.1 -- every LLM failure reaches its caller as an `LLMError` --
-    wins that trade at the adapter seam, because what the narrow clause alone
-    lets past is a `UnicodeDecodeError` from a hand-edited override or a
-    `PermissionError` from a mode bit, escaping as itself.
-    `claude_cli_adapter._invoke` is the nearest precedent, and only for the
-    *form*: one `except OSError` "out here" rather than a copy per call site,
-    broad "where the `ValueError` above may not". Its reason does not carry
-    over -- `OSError` is not a domain type in this repo, and `except Exception`
-    catches every domain type there is. `from exc` pays for the trade -- the
-    original exception stays on `__cause__` for a log.
-
-    `except Exception` reaches neither `KeyboardInterrupt` nor `SystemExit`.
-    """
-    try:
-        return render_prompt(root, prompt_id, **values)
-    except PromptError as exc:
-        raise LLMError(str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001 - normalise every render failure
-        raise LLMError(f"prompt {prompt_id} could not be loaded: {exc}") from exc

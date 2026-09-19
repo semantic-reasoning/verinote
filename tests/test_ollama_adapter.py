@@ -817,10 +817,10 @@ def test_a_prompt_that_cannot_be_read_is_a_normalised_failure(tmp_path, monkeypa
 
     This adapter has always rendered outside its `try`, which is the shape #500
     asks the cloud adapters to adopt. So the `UnicodeDecodeError` that
-    `_render_prompt`'s `except PromptError` does not convert leaves the adapter
-    as itself, and §10.1 -- every LLM failure reaches its caller as an
-    `LLMError` -- is violated here today, with nothing dialled. The cloud
-    adapters were only hiding the same hole behind an argument-position render.
+    `render_prompt_or_error`'s `except PromptError` does not convert would
+    leave the adapter as itself, violating §10.1 -- every LLM failure reaches
+    the caller as an `LLMError` -- with nothing dialled. The cloud adapters
+    were only hiding the same hole behind an argument-position render.
     """
     _unreadable_override(tmp_path, "ollama-extraction")
     monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: pytest.fail("dialled"))
@@ -845,7 +845,7 @@ def test_an_unlisted_render_failure_is_a_normalised_failure(tmp_path, monkeypatc
     def boom(*args, **kwargs):
         raise _Unlisted("nobody enumerated this")
 
-    monkeypatch.setattr("verinote.llm.ollama_adapter.render_prompt", boom)
+    monkeypatch.setattr("verinote.llm.base.render_prompt", boom)
     monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: pytest.fail("dialled"))
 
     with pytest.raises(LLMError, match="^prompt ollama-extraction could not be loaded"):

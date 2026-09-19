@@ -6,7 +6,11 @@ from __future__ import annotations
 from dataclasses import KW_ONLY, dataclass
 from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
+from verinote.prompts import PromptError, render_prompt
+
 if TYPE_CHECKING:
+    from verinote.config import Config
+
     from verinote.pipeline.query_intent import QueryIntent
 
 FactSlotKind = Literal["string", "term"]
@@ -145,6 +149,65 @@ def redact_secret(text: str, secret: str | None) -> str:
     return text.replace(secret, "***")
 
 
+def render_prompt_or_error(cfg: Config, prompt_id: str, **values: object) -> str:
+    """Render `prompt_id` under `cfg.root`, or raise `LLMError` -- redacted.
+
+Two clauses, and their order is the design. `PromptError` is whatever the
+prompt library states in its own words -- a required placeholder the
+override left out, an id nothing defines (`unknown prompt: extractoin`), a
+value the caller never passed (`missing prompt value: qid`) -- so it goes
+out as written, with nothing in front of it. Only the first of those three
+is the user's doing; the other two are measured, and they reach the user
+through the narrow clause with no operation named at all. The clause below
+names the operation because what *it* catches is further still from a
+sentence anybody can act on.
+
+Being that wide relabels a genuine programming error as something that
+reads like a broken file: `prompt <id> could not be loaded` points at
+`policy/prompts/<id>.md`, and for a `TypeError` raised inside
+`render_prompt` that file is fine. It is the same widening
+`test_a_non_valueerror_from_the_request_constructor_is_not_blamed_on_the_base_url`
+in `tests/test_ollama_adapter.py` refuses for `Request()` -- refused there
+for a reason that does not hold here. `Request()` has one reachable
+failure, so a type tells a real cause and a bug apart. `render_prompt`
+reads two files, the packaged default and the override, and the `OSError`
+family those reads can raise is not closed by a list; #500's reviewer said
+normalising the region is safer than enumerating it, and offered no list as
+complete. §10.1 -- every LLM failure reaches its caller as an `LLMError` --
+wins that trade at the adapter seam, because what the narrow clause alone
+lets past is a `UnicodeDecodeError` from a hand-edited override or a
+`PermissionError` from a mode bit, escaping as itself.
+`claude_cli_adapter._invoke` is the nearest precedent, and only for the
+*form*: one `except OSError` "out here" rather than a copy per call site,
+broad "where the `ValueError` above may not". Its reason does not carry
+over -- `OSError` is not a domain type in this repo, and `except Exception`
+catches every domain type there is. `from exc` pays for the trade -- the
+original exception stays on `__cause__` for a log.
+
+`except Exception` reaches neither `KeyboardInterrupt` nor `SystemExit`.
+Both clauses run their message through `redact_secret(..., cfg.api_key)`.
+That is the one thing the per-adapter copies this replaces could not do:
+a module-level function inside an adapter has no `cfg` in scope, so
+`redact_secret` had nothing to be handed. `anthropic` and `openai` closed
+that gap with a second, class-bound layer their generation methods went
+through; `ollama` and `claude_cli` had no such layer and imported no
+`redact_secret` at all, so an `OSError` from the override read spelled
+`cfg.root` -- a key in a KB directory name and all of it -- into an
+`LLMError` that is persisted to `source_chunks.error`. Here the key is in
+scope, so every adapter redacts the render path with the same clause, and a
+provider with no key, or one shorter than `MIN_REDACTABLE_SECRET`, redacts
+nothing -- a no-op exactly where there is no secret to remove.
+"""
+    try:
+        return render_prompt(cfg.root, prompt_id, **values)
+    except PromptError as exc:
+        raise LLMError(redact_secret(str(exc), cfg.api_key)) from exc
+    except Exception as exc:  # noqa: BLE001 - normalise every render failure
+        raise LLMError(
+            redact_secret(f"prompt {prompt_id} could not be loaded: {exc}", cfg.api_key)
+        ) from exc
+
+
 def parsed_under_redaction(parse, payload, secret):
     """Run a response parser, and put what it raises under `redact_secret`.
 
@@ -158,8 +221,8 @@ def parsed_under_redaction(parse, payload, secret):
     NOT inside the adapters' request `try`. Moving the parse in there would fix
     the redaction and break the attribution, reporting a schema failure as
     "request failed" -- the misattribution #500 took out of this very region.
-    A separate wrapper redacts without moving the blame, the shape `_rendered`
-    already has for the render.
+    A separate wrapper redacts without moving the blame, the shape
+    `render_prompt_or_error` already has for the render.
 
     ONLY `LLMError` is caught. A parser that fails some other way is a bug in
     this repo rather than a message about the provider's payload, and it is not

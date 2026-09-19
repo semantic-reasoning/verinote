@@ -988,8 +988,9 @@ def test_a_missing_placeholder_keeps_the_library_s_own_words(tmp_path, monkeypat
     """`translate_query` is the one method here whose prompt declares a required
     placeholder, and this is the exact string #500 quotes.
 
-    Anchored at both ends, which is the whole test. `_render_prompt` keeps
-    `except PromptError` above its catch-all so a prompt-contract violation --
+    Anchored at both ends, which is the whole test.
+    `render_prompt_or_error` in `llm/base.py` keeps `except PromptError` above
+    its catch-all so a prompt-contract violation --
     something the user can read as an instruction and act on -- goes out as the
     library wrote it. Delete that clause and the catch-all absorbs the case with
     "prompt query-translation could not be loaded: " in front; put the render
@@ -1075,7 +1076,7 @@ def test_a_render_failure_of_a_kind_nobody_enumerated_is_still_an_llm_error(
     def boom(*args, **kwargs):
         raise _Unlisted("nobody enumerated this")
 
-    monkeypatch.setattr(f"{module}.render_prompt", boom)
+    monkeypatch.setattr("verinote.llm.base.render_prompt", boom)
     _raising_sdk(monkeypatch, provider, RuntimeError("dialled"))
 
     with pytest.raises(LLMError, match=r"^prompt extraction could not be loaded") as exc:
@@ -1105,7 +1106,7 @@ def test_a_programming_error_in_the_render_is_deliberately_an_llm_error(tmp_path
     def boom(*args, **kwargs):
         raise TypeError("render_prompt() got an unexpected keyword argument")
 
-    monkeypatch.setattr("verinote.llm.openai_adapter.render_prompt", boom)
+    monkeypatch.setattr("verinote.llm.base.render_prompt", boom)
     _raising_sdk(monkeypatch, "openai", RuntimeError("dialled"))
 
     with pytest.raises(LLMError, match=r"^prompt extraction could not be loaded"):
@@ -1129,25 +1130,20 @@ def test_a_render_failure_keeps_the_original_error_as_the_cause(
     (`test_a_client_that_cannot_be_built_keeps_the_sdk_error_as_the_cause`); the
     render path did not, and the docstring now argues from it.
 
-    BOTH adapters, because each carries its own `_rendered` and each re-raises
-    the caught exception in its own copy of that clause. Covering one left the
-    other's unpinned while its docstring named this test as what pins it.
-    #592 replaced `raise type(exc)(...) from exc.__cause__` with rewriting the
-    message on the exception and re-raising it, so on the common path the cause
-    is INHERITED rather than re-attached. #603 then added a guard that replaces
-    the object when it cannot be made to show the redacted text, and that
-    replacement chains to the cause the guard read off the original before
-    giving up on it -- re-attaching the same cause, so this test passes on both
-    paths. Making either copy chain to the WRAPPER instead --
-    `raise LLMError(str(exc)) from exc` -- is what fails the matching case
-    here.
+    BOTH adapters, because each still reaches the render through its own call
+    site into the shared `render_prompt_or_error` (`llm/base.py`), and pinning
+    one left the other's path unpinned. The shared copy does
+    `raise LLMError(...) from exc` on both of its exit clauses, so the cause
+    is the ORIGINAL exception on every path, and this is what pins that.
+    Making the shared copy chain to the WRAPPER instead -- dropping the
+    `from exc` -- is what fails the matching case here.
     """
     boom = TypeError("render_prompt() got an unexpected keyword argument")
 
     def raiser(*args, **kwargs):
         raise boom
 
-    monkeypatch.setattr(f"{module}.render_prompt", raiser)
+    monkeypatch.setattr("verinote.llm.base.render_prompt", raiser)
     _raising_sdk(monkeypatch, provider, RuntimeError("dialled"))
 
     with pytest.raises(LLMError) as exc:
@@ -1194,8 +1190,9 @@ def test_a_render_failure_never_carries_the_key(tmp_path, monkeypatch, method, p
     hoisting the render above the `try` took it out from under
     `_request_failed`. On `759eac0` this same setup produced
     `anthropic request failed: [Errno 13] Permission denied: '.../kb-***/...'`;
-    between the hoist and this test it produced the key. `self._rendered` puts
-    the render back under a redactor and this is what holds it there.
+    between the hoist and this test it produced the key.
+    `render_prompt_or_error` in `llm/base.py` puts the render under the
+    redactor and this is what holds it there.
 
     Twelve cells, not twenty-four. The other break this section uses -- a
     non-UTF-8 override -- cannot exercise redaction at all, because
@@ -1203,8 +1200,7 @@ def test_a_render_failure_never_carries_the_key(tmp_path, monkeypatch, method, p
     for the key to ride in on. An `OSError` from the override read spells out
     `cfg.root`, which is why the unreadable file is the one that reaches this.
     `openrouter` is in the parametrization rather than assumed: it inherits the
-    four methods and `_rendered` from `OpenAIAdapter` and redacts with its own
-    key.
+    four methods from `OpenAIAdapter` and redacts with its own key.
 
     The SDK is never dialled on this path -- the render raises just after
     `self._client()` and before the `try` -- so `_request_failed` is not what
