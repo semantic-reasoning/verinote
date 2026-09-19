@@ -4242,6 +4242,14 @@ class Store:
         else:
             status = "pending"
 
+        # The `failed` branch's message shape ("Analysis failed: {n} chunk(s) failed,
+        # {d}/{t} complete[: {error}]") is LOAD-BEARING CROSS-FILE: the web worker's
+        # guard (`web/app.py::_is_per_chunk_failure_message`, #552) matches it to tell
+        # a row THIS pass's finish terminalized (keep its detail, decline the
+        # redundant second failure write) from one a previous pass left (a retry's
+        # pre-claim failure must still be recorded). If you reword this branch, update
+        # that helper and its pinning test together or the guard's refusal silently
+        # stops firing.
         if status == "done":
             message = f"Analysis complete: {done}/{total} chunk(s)"
         elif status == "failed":
