@@ -10,6 +10,7 @@ from verinote.llm.base import (
     LLMOutputError,
     parsed_under_redaction,
     redact_secret,
+    render_prompt_or_error,
 )
 from verinote.llm.schema import (
     FACT_ARRAY_SCHEMA,
@@ -19,7 +20,6 @@ from verinote.llm.schema import (
     parse_query,
 )
 from verinote.pipeline.query_intent import QueryIntent, parse_query_intent
-from verinote.prompts import PromptError, render_prompt
 
 # The endpoint an unset `base_url` resolves to. Named rather than inlined so the
 # SDK never sees `base_url=None`: a `None` there is a delegation, and the openai
@@ -50,29 +50,16 @@ class OpenAIAdapter:
         turns on, so this is not a subclass that merely renames things.
 
         Redaction is not universal outside that class boundary, though.
-        Module-level `_render_prompt` in this file builds an `LLMError` around
-        a caught exception with no redaction, a third carrier of caught text.
-        The sentence this replaces called it harmless *as written*, because the
-        only thing it caught was `PromptError`; #500 widened its second clause,
-        so that qualifier has to be replaced rather than dropped. It now carries
-        `str(exc)` of whatever the render raised, an open set -- an `OSError`
-        from the override read arrives with the KB's absolute path spelled out
-        in full (measured), key included if the user named a directory after
-        one.
-
-        So the four generation methods do not call it. They go through
-        `_rendered` above, which is a method rather than a module-level function
-        for the single reason that a method can pass `self.cfg.api_key` to
-        `redact_secret`. `OpenRouterAdapter` inherits it and redacts with its
-        own key. Measured: the twelve cells that carry a path -- this adapter,
-        `openrouter`, `anthropic`, four methods each, an unreadable override --
-        mask again, as they did on `759eac0` before the render was hoisted out
+        The render goes through `render_prompt_or_error` in `llm/base.py`,
+        which takes the `Config` and hands `cfg.api_key` to `redact_secret`
+        at both of its exit clauses. That is the consolidation #540 asked
+        for, and it closes the residue #500 left behind: the per-adapter
+        module-level copies that once built an `LLMError` around a caught
+        exception with no redaction are gone, so the twelve cells that carry
+        a path -- this adapter, `openrouter`, `anthropic`, four methods each,
+        an unreadable override -- all mask now, `ollama` and `claude_cli`
+        included, as they did on `759eac0` before the render was hoisted out
         of the `try` that used to redact them.
-
-        `ollama_adapter` and `claude_cli_adapter` call their copies bare and
-        import no `redact_secret` at all; they never masked this and still do
-        not. That residue is theirs and predates #500, and consolidating the
-        four copies somewhere a key can be passed is the follow-up for it.
         `openrouter_adapter.list_models` is the same shape -- a bare
         `LLMError(f"openrouter request failed: {exc}")`, in a module that
         imports no `redact_secret` at all -- and rests on the first half of that
@@ -84,8 +71,8 @@ class OpenAIAdapter:
         Measured, `parse_facts` and `parse_query_intent` copy what they were
         handed into the message they raise. `parse_query` does not: its two
         raise sites can carry a missing key name, a builtin `TypeError` phrase,
-        or a JSON position -- unredacted, and bounded in a way `_render_prompt`
-        above no longer is. For the other two the input is provider response
+        or a JSON position -- unredacted, and bounded in a way the render's
+        catch-all no longer is. For the other two the input is provider response
         text, and the threat model is the one `_require_key` sets out below,
         transposed: there an attacker-influenced endpoint -- `base_url` is
         caller-supplied -- echoes back a credential verinote never resolved, so
@@ -130,18 +117,14 @@ class OpenAIAdapter:
         case of this message covering something that never dialled -- no longer
         arrives.
 
-        Rendering outside the guard is the shape `ollama_adapter` and
-        `claude_cli_adapter` were already in, and it carries a hole this `try`
-        was covering. `get_prompt` reads an override with `read_text`, so a
-        hand-edited non-UTF-8 file raises `UnicodeDecodeError` and a mode bit
-        raises `PermissionError`, and `_render_prompt`'s `except PromptError`
-        converted neither. Measured on those two adapters before this change,
-        that is eight method-and-condition pairs on each of them -- sixteen
-        cells -- leaving the adapter as something that is not an `LLMError`,
-        which is §10.1 broken in the tree already and not by the hoist. So the
-        hoist ships with the second clause added to
-        `_render_prompt` in the same PR, which normalises the render's failures
-        wherever the render sits.
+        The render sits outside this guard in every adapter, and the hole
+        that position opens -- `get_prompt` reads an override with
+        `read_text`, so a hand-edited non-UTF-8 file raises
+        `UnicodeDecodeError` and a mode bit raises `PermissionError`, neither
+        a `PromptError` -- is closed by the catch-all in
+        `render_prompt_or_error` (`llm/base.py`), which normalises the
+        render's failures wherever the render sits. That is what keeps §10.1
+        true at the seam: the message here claims only the SDK call.
 
         Redaction covers only the key this process knows about, which is why
         `_require_key` refuses to let the SDK authenticate with one it never saw.
@@ -248,105 +231,9 @@ class OpenAIAdapter:
         """
         return self.cfg.base_url or OPENAI_DEFAULT_BASE_URL
 
-    def _rendered(self, prompt_id: str, **values: object) -> str:
-        """Render a prompt, and put the result under the redacting constructor.
-
-        Two layers, and they are not the same job. Module-level `_render_prompt`
-        normalises: every render failure leaves it as an `LLMError`, which is
-        §10.1, and all four adapters need it. This wraps that in the one thing a
-        module-level function cannot do -- reach `self.cfg.api_key` -- and it
-        exists only here and in `anthropic_adapter`, because those are the two
-        classes that redact at all. Nothing else changes: no new exception type,
-        no new message shape, only whether a configured key survives in the text.
-
-        It is here because #500 took it away. Before the hoist the render was an
-        ARGUMENT to the SDK call, so a `PermissionError` on the override went
-        through `_request_failed`, which redacts (measured on `759eac0`: the KB
-        path came out as `.../kb-***/policy/prompts/extraction.md`). Lifting the
-        render above the `try` moved that raise site out from under the redactor
-        while `_render_prompt` gained a message that carries `str(exc)` whole --
-        and an `OSError` from the override read spells out `cfg.root`. A key a
-        user put in their KB directory name then rode into
-        `source_chunks.error`. Twelve cells: three adapters, four methods, and
-        the conditions whose exception text carries a path. A non-UTF-8 override
-        is not one of them -- `UnicodeDecodeError` names a byte offset and no
-        file -- so the fix is not "the render leaks", it is that these twelve
-        stopped being redacted and are redacted again.
-
-        NO `from` CLAUSE ON THE COMMON PATH, because there is nothing new to
-        chain to. `_render_prompt` already hung the original failure on
-        `__cause__` and `test_a_render_failure_keeps_the_original_error_as_the_cause`
-        asserts on it; re-raising the same object carries that cause forward
-        untouched. The guard below has ONE replacement raise, and what it chains
-        to is decided inside the guard rather than at the raise: the original's
-        `__cause__` when that could be read and is an exception, and nothing
-        otherwise. So a replacement forced by an object whose message could not
-        be shown still re-attaches the SAME cause and the assertion holds there
-        too, while one forced by a `__str__` that raised chains to nothing --
-        an original nothing can read is not a cause worth rendering underneath.
-        Replacing the common-path `raise` with
-        `raise LLMError(...) from exc` is the way to make that test fail: that
-        buries the original behind a new wrapper.
-        """
-        try:
-            return _render_prompt(self.cfg.root, prompt_id, **values)
-        except LLMError as exc:
-            # #592. Relabelled in place, not reconstructed, which is the shape
-            # `parsed_under_redaction` settled on and the reason is the same:
-            # rebuilding an exception from its message alone destroys the class
-            # and any state it carries. Preserving the class here is a NO-OP
-            # today -- measured: this `try` calls only `_render_prompt`, which
-            # raises bare `LLMError` at both of its prompt-loading exits, so
-            # `LLMError` is the only class that can arrive. It is written this
-            # way anyway, because the day `_render_prompt` grows a subclass exit
-            # the alternative swallows it with no test red anywhere.
-            #
-            # AND THE POST-CONDITION COMES WITH IT. Relabelling reaches
-            # `str(exc)` only while `str` is `BaseException.__str__`, so the
-            # same fail-open `parsed_under_redaction` guards exists here: a
-            # subclass caching or decorating its message would keep showing the
-            # unredacted text. This copy is a no-op for the same reason the
-            # class preservation is, and it is written for the same reason --
-            # the two clauses have to arrive together or the day one grows a
-            # subclass exit is the day the other leaks.
-            # Same shape as `parsed_under_redaction`, including WHICH class the
-            # replacement carries. Raising a bare `LLMError` unconditionally
-            # here would DEMOTE an `LLMOutputError` -- the mirror of the
-            # promotion the primitive avoids, and the same #592 discriminator
-            # either way.
-            #
-            # AND NO EXIT PATH READS THE OBJECT, which is the property rather
-            # than the list of attributes that have needed protecting so far.
-            # Everything touching `exc` is inside the one `try`, including the
-            # `__cause__` read, so a failure anywhere in it leaves as a clean
-            # replacement instead of as whatever the object threw.
-            kind = LLMOutputError if isinstance(exc, LLMOutputError) else LLMError
-            redacted = "prompt render failed"
-            replacement = None
-            cause = None
-            try:
-                redacted = redact_secret(str(exc), self.cfg.api_key)
-                exc.args = (redacted,)
-                notes = getattr(exc, "__notes__", None)
-                if notes:
-                    exc.__notes__ = [
-                        redact_secret(str(note), self.cfg.api_key) for note in notes
-                    ]
-                if str(exc) != redacted:
-                    replacement = kind(redacted)
-                    cause = exc.__cause__
-                    if not isinstance(cause, BaseException):
-                        cause = None
-            except Exception:
-                replacement = kind(redacted)
-                cause = None
-            if replacement is not None:
-                raise replacement from cause
-            raise
-
     def extract_facts(self, *, source_text: str, schema_hint: str = "") -> list[ExtractedFact]:
         client = self._client()
-        system = _with_schema_hint(self._rendered("extraction"), schema_hint)
+        system = _with_schema_hint(render_prompt_or_error(self.cfg, "extraction"), schema_hint)
         try:
             resp = client.chat.completions.create(
                 model=self.cfg.model,
@@ -373,7 +260,7 @@ class OpenAIAdapter:
     def translate_query(self, *, question: str, qid: int, schema_hint: str = "") -> str:
         client = self._client()
         system = _with_schema_hint(
-            self._rendered("query-translation", qid=qid), schema_hint
+            render_prompt_or_error(self.cfg, "query-translation", qid=qid), schema_hint
         )
         try:
             resp = client.chat.completions.create(
@@ -400,7 +287,7 @@ class OpenAIAdapter:
 
     def extract_query_intent(self, *, question: str, schema_hint: str = "") -> QueryIntent:
         client = self._client()
-        system = _with_schema_hint(self._rendered("query-intent"), schema_hint)
+        system = _with_schema_hint(render_prompt_or_error(self.cfg, "query-intent"), schema_hint)
         try:
             resp = client.chat.completions.create(
                 model=self.cfg.model,
@@ -430,7 +317,7 @@ class OpenAIAdapter:
 
     def answer_question(self, *, question: str, context: str) -> str:
         client = self._client()
-        system = self._rendered("ask-fallback")
+        system = render_prompt_or_error(self.cfg, "ask-fallback")
         try:
             resp = client.chat.completions.create(
                 model=self.cfg.model,
@@ -455,48 +342,3 @@ class OpenAIAdapter:
 
 def _with_schema_hint(prompt: str, schema_hint: str) -> str:
     return prompt + ("\n" + schema_hint if schema_hint else "")
-
-
-def _render_prompt(root, prompt_id: str, **values: object) -> str:
-    """Render `prompt_id` under `root`, or raise `LLMError`.
-
-    Two clauses, and their order is the design. `PromptError` is whatever the
-    prompt library states in its own words -- a required placeholder the
-    override left out, an id nothing defines (`unknown prompt: extractoin`), a
-    value the caller never passed (`missing prompt value: qid`) -- so it goes
-    out as written, with nothing in front of it. Only the first of those three
-    is the user's doing; the other two are measured, and they reach the user
-    through the narrow clause with no operation named at all. The clause below
-    names the operation because what *it* catches is further still from a
-    sentence anybody can act on.
-
-    Being that wide relabels a genuine programming error as something that
-    reads like a broken file: `prompt <id> could not be loaded` points at
-    `policy/prompts/<id>.md`, and for a `TypeError` raised inside
-    `render_prompt` that file is fine. It is the same widening
-    `test_a_non_valueerror_from_the_request_constructor_is_not_blamed_on_the_base_url`
-    in `tests/test_ollama_adapter.py` refuses for `Request()` -- refused there
-    for a reason that does not hold here. `Request()` has one reachable
-    failure, so a type tells a real cause and a bug apart. `render_prompt`
-    reads two files, the packaged default and the override, and the `OSError`
-    family those reads can raise is not closed by a list; #500's reviewer said
-    normalising the region is safer than enumerating it, and offered no list as
-    complete. §10.1 -- every LLM failure reaches its caller as an `LLMError` --
-    wins that trade at the adapter seam, because what the narrow clause alone
-    lets past is a `UnicodeDecodeError` from a hand-edited override or a
-    `PermissionError` from a mode bit, escaping as itself.
-    `claude_cli_adapter._invoke` is the nearest precedent, and only for the
-    *form*: one `except OSError` "out here" rather than a copy per call site,
-    broad "where the `ValueError` above may not". Its reason does not carry
-    over -- `OSError` is not a domain type in this repo, and `except Exception`
-    catches every domain type there is. `from exc` pays for the trade -- the
-    original exception stays on `__cause__` for a log.
-
-    `except Exception` reaches neither `KeyboardInterrupt` nor `SystemExit`.
-    """
-    try:
-        return render_prompt(root, prompt_id, **values)
-    except PromptError as exc:
-        raise LLMError(str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001 - normalise every render failure
-        raise LLMError(f"prompt {prompt_id} could not be loaded: {exc}") from exc

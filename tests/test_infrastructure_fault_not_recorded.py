@@ -878,7 +878,9 @@ def test_openai_inherits_the_class_without_an_edit_to_its_adapter():
     adapter._client = lambda: types.SimpleNamespace(
         chat=types.SimpleNamespace(completions=completions)
     )
-    adapter._rendered = lambda *args, **kwargs: "prompt"
+    # No render stub: `render_prompt_or_error` renders the packaged default for
+    # `query-intent` under `root=/tmp` and the failure under test is the parse,
+    # so the render is expected to succeed for real here.
 
     with pytest.raises(LLMOutputError):
         adapter.extract_query_intent(question="q")
