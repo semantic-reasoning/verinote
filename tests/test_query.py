@@ -2,6 +2,7 @@
 import ast
 import unicodedata
 import os
+import sqlite3
 import stat
 import threading
 from pathlib import Path
@@ -19,6 +20,7 @@ from verinote.pipeline.query import (
 )
 import verinote.pipeline.query as query_module
 from verinote.pipeline.corroboration import CorroborationPolicyError
+from verinote.pipeline.policy_state import assert_writable
 from verinote.pipeline.query_intent import deterministic_query_intent
 from verinote.store import Store
 
@@ -265,6 +267,128 @@ def test_directory_fsync_failure_reports_failed_publish_after_replace(tmp_path, 
         write_query_file(store, tmp_path)
 
     assert path.read_text(encoding="utf-8") == ".decl answer_q1()\nanswer_q1().\n"
+
+
+# Authorizer action codes that write the SQLite file: the DML the invariant
+# forbids, plus the DDL/attach actions it folds into "no DML". A write of any
+# kind inside the publication transaction is the desync the pin guards against,
+# so all of them deny (issue #573).
+_WRITE_ACTIONS = frozenset(
+    getattr(sqlite3, name)
+    for name in (
+        "SQLITE_INSERT",
+        "SQLITE_UPDATE",
+        "SQLITE_DELETE",
+        "SQLITE_CREATE_TABLE",
+        "SQLITE_CREATE_INDEX",
+        "SQLITE_CREATE_VIEW",
+        "SQLITE_CREATE_TRIGGER",
+        "SQLITE_DROP_TABLE",
+        "SQLITE_DROP_INDEX",
+        "SQLITE_DROP_VIEW",
+        "SQLITE_DROP_TRIGGER",
+        "SQLITE_ALTER_TABLE",
+    )
+    if hasattr(sqlite3, name)
+)
+
+
+def _no_write_authorizer(seen):
+    """Authorizer that records every action and denies any file-writing one."""
+
+    def authorizer(action, arg1, arg2, db_name, trigger_name):
+        seen.append(action)
+        if action in _WRITE_ACTIONS:
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
+
+    return authorizer
+
+
+def test_write_query_file_publication_transaction_performs_no_dml(tmp_path):
+    """The publication transaction publishes without writing the database.
+
+    `write_query_file` runs `os.replace` (irreversible) inside
+    `store.immediate_transaction()` (reversible until COMMIT). That asymmetry is
+    safe only while the transaction performs no DML: the moment any path --
+    including a caller-supplied `publication_guard` -- writes a row, a COMMIT
+    failure (or any exception after the rename) publishes a `query.dl` whose rows
+    were rolled back, with nothing in the tree to notice (issue #573).
+
+    The pin runs the *production* guard path -- `assert_writable` ->
+    `policy_marker` -> `SELECT kb_meta`, plus `repair_query_publication_owned` ->
+    `SELECT repair_jobs` -- not the `lambda: None` default, so a guard that reads
+    is covered. A sqlite3 authorizer on the transaction connection records every
+    action and denies any write, so the test fails if any path in the
+    transaction performs DML/DDL.
+
+    Scope limit (issue #573 AC4): the authorizer is bound to this one connection
+    and one SQLite file. A guard opening its own connection to the same file
+    cannot write here anyway (`BEGIN IMMEDIATE` holds the write lock ->
+    `database is locked`); a write to a different database (e.g. the DuckDB
+    fact-terms sidecar) is outside this authorizer and is not pinned here.
+    """
+    store = _store(tmp_path)
+    _translated_question(store, "Synthetic?", ".decl answer_q1()\nanswer_q1().")
+    # A review_required question so enqueue_repair_job snapshots a live item, then
+    # a claimed (running, leased) job so the production guard's
+    # repair_query_publication_owned SELECT returns True and publication proceeds.
+    qid = store.add_question("Synthetic review?")
+    store.set_question_query(qid, 'review_required("synthetic")', "review_required")
+    job, _ = store.enqueue_repair_job(provider="fake", model="m")
+    job_id = int(job["id"])
+    owner_token = "pin-owner"
+    assert store.claim_repair_job(job_id, owner_token)
+
+    def production_guard(conn):
+        assert_writable(store)
+        return Store.repair_query_publication_owned(conn, job_id, owner_token)
+
+    seen = []
+    store._conn.set_authorizer(_no_write_authorizer(seen))
+    try:
+        path = write_query_file(store, tmp_path, publication_guard=production_guard)
+    finally:
+        store._conn.set_authorizer(None)
+
+    assert path is not None
+    assert query_path(tmp_path).is_file()
+    # The guard's production SELECTs ran (not the inert `lambda: None`) ...
+    assert sqlite3.SQLITE_SELECT in seen or sqlite3.SQLITE_READ in seen
+    # ... and no path in the transaction wrote the database.
+    assert not (set(seen) & _WRITE_ACTIONS), (
+        "the publication transaction performed a database write; its DML would "
+        "desync the published query.dl from rows a COMMIT failure rolls back"
+    )
+
+
+def test_write_query_file_dml_detector_fires_on_guard_write(tmp_path):
+    """Negative control: the no-DML detector actually fires (issue #573 AC2).
+
+    The pin above must not be able to pass because its detector is inert. A guard
+    that performs DML inside the publication transaction is caught: the
+    authorizer denies the write, `immediate_transaction` rolls back, and the
+    publication aborts -- the exact desync the invariant exists to prevent. A
+    zero-row UPDATE is used so the control also proves the detector catches DML
+    that changes no rows (which a `total_changes`-style count would miss).
+    """
+    store = _store(tmp_path)
+    _translated_question(store, "Synthetic?", ".decl answer_q1()\nanswer_q1().")
+
+    def dml_guard(conn):
+        conn.execute("UPDATE questions SET reason = 'pinned' WHERE id = -1")
+        return True
+
+    seen = []
+    store._conn.set_authorizer(_no_write_authorizer(seen))
+    try:
+        with pytest.raises(sqlite3.DatabaseError):
+            write_query_file(store, tmp_path, publication_guard=dml_guard)
+    finally:
+        store._conn.set_authorizer(None)
+
+    # The detector saw the write and denied it -- it is not inert.
+    assert sqlite3.SQLITE_UPDATE in seen
 
 
 def test_translate_survives_a_reason_on_a_well_classified_intent(
