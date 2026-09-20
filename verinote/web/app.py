@@ -61,6 +61,7 @@ from verinote.llm.openrouter_adapter import (
     list_models as _list_openrouter_models,
 )
 from verinote.policy_defaults import DEFAULT_RELATION_ALIASES
+from verinote.pipeline.ingest import count_nuls
 from verinote.pipeline import (
     create_chunked_extraction_job,
     ExtractionJobBusyError,
@@ -1959,6 +1960,17 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 row["corroborated_count"] = counts["corroborated"]
             row["evidence_snippets"] = store.source_evidence_snippets(source_id)
             row["artifacts"] = [dict(artifact) for artifact in store.source_artifacts(source_id)]
+            # #569: the re-uploaded-but-not-re-analysed state. The latest stored
+            # artifact measured 0 — the row Re-analyze reads, same MAX(id) lens as
+            # `latest_source_text_artifact` — while the latest job's chunks still
+            # hold NULs cut from the older, unsanitized text. Only that
+            # combination earns the Re-analyze note on the page: with an
+            # unmeasured latest row re-analysis would re-read unsanitized text,
+            # and with a measured-loss latest row the artifact's own count
+            # already names the state. `None` (not 0) when it does not apply, so
+            # a template that forgets the `{% if %}` renders nothing rather than
+            # a "0 character(s)" note.
+            row["stale_analysis_nuls"] = None
             row["failed_chunk_details"] = []
             row["pending_chunks"] = 0
             row["running_chunks"] = 0
@@ -1978,6 +1990,15 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 row["running_chunks"] = sum(
                     1 for chunk in chunks if chunk["status"] == "running"
                 )
+                latest_text = [
+                    artifact
+                    for artifact in row["artifacts"]
+                    if artifact["kind"] in ("original_text", "extracted_text")
+                ]
+                if latest_text and latest_text[-1]["unreadable_chars"] == 0:
+                    nuls = sum(count_nuls(str(chunk["text"])) for chunk in chunks)
+                    if nuls:
+                        row["stale_analysis_nuls"] = nuls
             rows.append(row)
         return rows
 

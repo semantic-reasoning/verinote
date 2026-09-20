@@ -1441,7 +1441,7 @@ def _scan_unreadable(store: Store) -> int:
     for note in _scan_schema_notes(scan):
         print(note)
 
-    current = superseded = unknown = unscannable = unscanned = 0
+    current = stale = superseded = unknown = unscannable = unscanned = 0
     for source in scan.sources:
         if source.status == "no_stored_text":
             unscanned += 1
@@ -1450,6 +1450,8 @@ def _scan_unreadable(store: Store) -> int:
         verdict = _source_scan_verdict(source)
         if verdict == "current":
             current += 1
+        elif verdict == "stale":
+            stale += 1
         elif verdict == "superseded":
             superseded += 1
         elif verdict == "unknown":
@@ -1463,8 +1465,8 @@ def _scan_unreadable(store: Store) -> int:
     # is the residue, and a bucket for it would imply these add up.
     #
     # THEY ARE NOT BUILT AS A PARTITION, deliberately, and need not add up to
-    # the source count. `current`, `superseded` and `unknown` are verdicts from
-    # `_source_scan_verdict`;
+    # the source count. `current`, `stale`, `superseded` and `unknown` are
+    # verdicts from `_source_scan_verdict`;
     # `unscanned` is not a verdict at all, but the `no_stored_text` branch
     # above, which `continue`s before a verdict is asked for; and `unscannable`
     # answers a different question -- did ANY artifact of this source fail to be
@@ -1483,6 +1485,7 @@ def _scan_unreadable(store: Store) -> int:
         f"scanned {scan.artifacts_scanned} extraction-text artifact(s) and "
         f"{scan.chunks_scanned} analysis chunk(s) across {len(scan.sources)} "
         f"source(s): {current} with unreadable characters in current rows, "
+        f"{stale} in the latest job's chunks under a clean latest artifact, "
         f"{superseded} in superseded rows only, {unknown} whose latest stored "
         f"text could not be read, {unscanned} with no stored text; "
         f"separately, {unscannable} source(s) had an artifact that could not be read"
@@ -1520,10 +1523,10 @@ def _unscannable_artifacts(source) -> list:
 
 
 def _source_scan_verdict(source) -> str:
-    """`current`, `unknown`, `superseded` or `clean` for one scanned source.
+    """`current`, `stale`, `unknown`, `superseded` or `clean` for one scanned source.
 
     A verdict picks a headline in `_source_scan_line` and increments a summary
-    bucket in `_scan_unreadable`. A fifth verdict has to be given both, and the
+    bucket in `_scan_unreadable`. A new verdict has to be given both, and the
     two go wrong differently. Miss the bucket and it prints uncounted -- the trap
     `clean` sits in on purpose, for the reason the comment beside those buckets
     gives. Miss the HEADLINE and it falls to that function's `else`, which is
@@ -1541,20 +1544,33 @@ def _source_scan_verdict(source) -> str:
     `clean` are then indistinguishable by construction, not by coverage.
     Measured too: `return "clean"` -> `return "pristine"` leaves the suite
     unchanged. `clean` is the residue, which makes it the likeliest donor for a
-    fifth verdict and the one to be most careful with. A carve-out from a state
+    new verdict and the one to be most careful with. A carve-out from a state
     no test exercises escapes it as well. Write the headline with the branch.
 
     Neither consumer asks the user to do anything: these lines report what the
-    scan found, and even the `superseded` headline's mention of re-upload is
-    there to say it is not called for. So what a verdict is chosen for is
-    whether its headline would be TRUE of the source -- not what it would tell
-    anyone to do.
+    scan found, and the two mentions of re-upload (in the `stale` and
+    `superseded` headlines) are there to say it is not called for. So what a
+    verdict is chosen for is whether its headline would be TRUE of the source
+    -- not what it would tell anyone to do.
 
     `current` means at least one finding sits where something will read it
-    again -- the latest text artifact, or a chunk of the newest job. Its
-    headline asserts that unreadable characters are still stored, so it is
-    reached only from a finding the scan actually made; reached any other way it
-    would report one that does not exist.
+    again -- the latest text artifact, or a chunk of the newest job whose
+    latest artifact the scan could not establish as clean. Its headline asserts
+    that unreadable characters are still stored, so it is reached only from a
+    finding the scan actually made; reached any other way it would report one
+    that does not exist.
+
+    `stale` is the one `current` state whose remedy is not re-upload (#569): a
+    live chunk finding under a latest artifact the scan read as clean, so
+    re-analysis re-reads clean text and the finding is rewritten out. Its
+    headline may say "no re-upload is called for" because for this state that
+    sentence is TRUE: the finding the scan read is one re-analysis rewrites
+    from clean text; a `current` source gets the bare assertion instead,
+    because for it only a re-upload reaches the latest artifact. `stale` does
+    not fire while the latest artifact is unreadable or absent -- there
+    re-analysis would re-read what the scan could not read -- and not for a
+    chunk whose job recency is unknown, for the reason the paragraph above
+    gives for the underivable case.
 
     Two different things can be unknown, and they do not get the same answer.
     When a chunk's job recency could not be derived, the NULs are still stored
@@ -1572,6 +1588,16 @@ def _source_scan_verdict(source) -> str:
     will read again, and `clean` needs a scan that read everything it needed to.
     """
     if any(a.status == "found" and a.is_latest for a in source.artifacts):
+        return "current"
+    if any(c.is_latest_job is True for c in source.chunks):
+        # A live chunk finding under a LATEST artifact the scan read as clean
+        # is its own state (#569): re-analysis reads that clean row and
+        # rewrites the finding out, so the remedy is not re-upload. Where the
+        # latest artifact is unreadable or absent, re-analysis would re-read
+        # what the scan could not read, and the state stays `current`.
+        latest = next((a for a in source.artifacts if a.is_latest), None)
+        if latest is not None and latest.status == "clean":
+            return "stale"
         return "current"
     if any(c.is_latest_job is not False for c in source.chunks):
         return "current"
@@ -1602,6 +1628,11 @@ def _source_scan_line(source, verdict: str) -> str:
 
     if verdict == "current":
         headline = "unreadable characters still stored"
+    elif verdict == "stale":
+        headline = (
+            "unreadable characters still stored in the latest job's chunks — "
+            "the latest stored artifact is clean, so no re-upload is called for"
+        )
     elif verdict == "unknown":
         headline = "could not tell whether unreadable characters are still stored"
     elif verdict == "superseded":
