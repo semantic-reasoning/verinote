@@ -620,25 +620,89 @@ def test_the_digit_requirement_keeps_ordinary_prose_out_of_the_caveat(monkeypatc
     assert fires == 75
 
 
-def test_the_counter_table_is_the_size_the_comment_names():
-    """30 alternatives in `_KOREAN_MEASURE_COUNTER`, and nothing else counts them.
+def _counter_comment_figures(block: str) -> tuple[int, int] | None:
+    """The (overlap, alternatives) figures a comment block quotes, else None.
 
-    The overlap pinned above is an intersection, so it does not move for a
-    counter that names no unit: adding `마리` leaves it at 14 and reaches
-    nothing else in this file. The comment beside the table in `query_intent.py`
-    quotes both figures, points at this file for both, and names this test for
-    the 30, so this counts the table itself -- otherwise a widening that touches
-    no unit lands unremarked, and the figure in that comment is one no assertion
-    holds.
-
-    Its own test rather than a line beside the overlap: the 14 is what that
-    sweep is built from, while this is a documentation guard, and an author who
-    widens the table should be told that by name and not by a failure in a
-    test about the digit requirement.
+    The comment markers come off first, so the anchors are plain prose rather
+    than comment syntax, and a figure wrapped onto the next line still reads
+    as one sentence. A block that quotes either figure in other words yields
+    None instead of a guess -- the caller says so by name.
     """
+    import re
+
+    prose = " ".join(line.lstrip("#").strip() for line in block.splitlines())
+    overlap = re.search(r"overlap with _MEASUREMENT_UNIT_SPELLINGS at (\d+)", prose)
+    alternatives = re.search(r"alternatives at (\d+)", prose)
+    if overlap is None or alternatives is None:
+        return None
+    return int(overlap.group(1)), int(alternatives.group(1))
+
+
+def test_the_counter_table_is_the_size_the_comment_names():
+    """Both figures the comment beside the table quotes equal the live tables.
+
+    The comment in `query_intent.py` names this test and quotes two figures:
+    the overlap of `_KOREAN_MEASURE_COUNTER` with
+    `_MEASUREMENT_UNIT_SPELLINGS`, and the number of alternatives. This reads
+    them out of the comment rather than restating them, and asserts each
+    equals the live tables (#530). A figure restated here would be the second
+    transcription the issue names: an author who widens the table would
+    update this test and never open the other file, and the comment would
+    keep its stale figure with nothing failing.
+
+    The coupling runs both ways: a widening of the table is red here until
+    the comment is updated, and a stale figure in the comment is red here
+    instead of rotting. The overlap is an intersection, so it does not move
+    for a counter that names no unit -- `마리`, say; the alternative count is
+    what notices that one.
+
+    The scan is proven rather than assumed below: the live file is the only
+    block it will ever be handed, so a scan that returned fixed figures -- or
+    None -- whatever it was given would pass the live assertion on it.
+    """
+    import pathlib
+    import re
+
+    from verinote.pipeline import query_intent
     from verinote.pipeline.query_intent import _KOREAN_MEASURE_COUNTER
 
-    assert len(_KOREAN_MEASURE_COUNTER.split("|")) == 30
+    source = pathlib.Path(query_intent.__file__).read_text(encoding="utf-8")
+    block = re.search(
+        r"((?:^#[^\n]*\n)+)^_KOREAN_MEASURE_COUNTER\s*=", source, re.M
+    )
+    assert block, (
+        "the comment block above _KOREAN_MEASURE_COUNTER is gone; this test "
+        "reads the figures it quotes, so restore it or point this test at the "
+        "new comment"
+    )
+    figures = _counter_comment_figures(block.group(1))
+    assert figures is not None, (
+        "the comment above _KOREAN_MEASURE_COUNTER no longer quotes its "
+        "overlap with _MEASUREMENT_UNIT_SPELLINGS and its number of "
+        "alternatives in the wording this test reads; restore that wording or "
+        "update the anchors in _counter_comment_figures"
+    )
+    quoted_overlap, quoted_alternatives = figures
+    measured_overlap = len(_unit_bearing_counters())
+    measured_alternatives = len(_KOREAN_MEASURE_COUNTER.split("|"))
+    assert (quoted_overlap, quoted_alternatives) == (
+        measured_overlap,
+        measured_alternatives,
+    ), (
+        f"the comment above _KOREAN_MEASURE_COUNTER quotes "
+        f"overlap={quoted_overlap} and alternatives={quoted_alternatives}, but "
+        f"the live tables measure overlap={measured_overlap} and "
+        f"alternatives={measured_alternatives}; update the comment in "
+        "verinote/pipeline/query_intent.py"
+    )
+
+    # Re-run the scan on a block with other figures, one wrapped across a
+    # line, and on one that quotes neither, and pin what comes back.
+    assert _counter_comment_figures(
+        "# overlap with _MEASUREMENT_UNIT_SPELLINGS at 7, and the\n"
+        "# alternatives at 9.\n"
+    ) == (7, 9)
+    assert _counter_comment_figures("# some prose without any figures\n") is None
 
 
 def test_a_cross_family_unit_is_not_a_unit_mismatch():

@@ -776,13 +776,15 @@ _ENGLISH_ATTRIBUTE_TRAILING_PREDICATE = re.compile(
     # pinned as mutants in tests/test_query_intent.py.
 )
 
-# tests/test_query_measure_unit.py, now a module away, pins this string twice.
-# test_the_digit_requirement_keeps_ordinary_prose_out_of_the_caveat pins its
-# overlap with _MEASUREMENT_UNIT_SPELLINGS at 14, and
-# test_the_counter_table_is_the_size_the_comment_names pins its own alternatives
-# at 30. The overlap is an intersection, so it does not move for a counter that
-# names no unit -- `마리`, say; the count of 30 is what notices that one. Either
-# way the red lands in that file, not in this one's.
+# tests/test_query_measure_unit.py, now a module away, keeps this string
+# honest: test_the_counter_table_is_the_size_the_comment_names reads the two
+# figures quoted here -- the overlap with _MEASUREMENT_UNIT_SPELLINGS at 14,
+# and the alternatives at 30 -- and asserts each equals the live tables, so a
+# widening is red there until this comment is updated too, and a stale figure
+# here is red there instead of rotting (#530). The overlap is an intersection,
+# so it does not move for a counter that names no unit -- `마리`, say; the
+# alternative count is what notices that one. The red lands in that file, not
+# in this one's.
 _KOREAN_MEASURE_COUNTER = (
     r"살|세|명|개|건|년|개월|달|주|일|시간|분|초|번|회|차|가지|종류|종|"
     r"퍼센트|프로|원|점|위|권|장|쪽|편|배|층"
