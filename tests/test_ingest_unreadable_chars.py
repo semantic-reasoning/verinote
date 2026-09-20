@@ -702,6 +702,147 @@ def test_a_re_upload_clears_the_note_when_the_old_extraction_held_no_nul(
     assert "unreadable character(s)" not in html
 
 
+# #569: the re-uploaded-but-not-re-analysed state, and the note that names
+# its non-destructive remedy. The CLI verdict for the same state is pinned in
+# tests/test_unreadable_scan.py; this is the surface that recommends.
+_STALE_NOTE_OPEN = '<span class="badge src">stored text is clean, but the current analysis still holds '
+
+
+def _stale_note_in(html: str) -> str:
+    """The #569 note, whole.
+
+    A page-level `not in` would not do the job: the unmeasured row's badge,
+    pinned above as `_UNMEASURED_NOTE`, still renders for the same source and
+    names `Re-upload` and `delete` -- which is the point of the #494 division
+    of labour, the note for the OTHER row is row-level truth. The note is
+    therefore extracted and asserted on itself, the way `_UNMEASURED_NOTE` is
+    asserted whole rather than by substring.
+    """
+    start = html.find(_STALE_NOTE_OPEN)
+    assert start != -1, "the #569 note did not render"
+    end = html.find("</span>", start)
+    return html[start : end + len("</span>")]
+
+
+def test_the_sources_page_names_reanalyze_for_the_reuploaded_source(
+    tmp_path, monkeypatch, nulx
+):
+    """#569: the one state no surface used to name a remedy for.
+
+    The legacy row kept its pre-#473 NULs and its never-measured badge; the
+    re-upload landed a measured-0 row beside it; and no re-analysis ran, so
+    the latest job's chunks still hold the NULs cut from the older text. For
+    this state the page must name the remedy that actually clears it --
+    Re-analyze, which re-reads the clean latest row -- and must name NO
+    destructive action: in this state delete-and-re-upload drops every fact
+    from the source, `confirmed` and `accepted` included, to fix something a
+    Re-analyze click fixes for free.
+    """
+    _block_the_extraction_worker(monkeypatch)
+    client = _sources_client(tmp_path)
+    store = client.app.state.store
+
+    # The pre-#473 row: an artifact hashed over text that still holds its NULs,
+    # no count, and the job whose chunks carry the finding.
+    source_id = store.add_source("sources/halfway", kind="binary")
+    _legacy_text_artifact(store, tmp_path, "sources/halfway", _DIRTY)
+    job_id = store.create_extraction_job(
+        source_id=source_id, artifact_id=None, provider=None, model=None,
+        total_chunks=1, message="",
+    )
+    store.add_source_chunks(job_id=job_id, source_id=source_id, chunks=[_DIRTY])
+
+    # The re-upload that measured 0 and became the latest text-artifact row:
+    # the same text, sanitized, which is the row Re-analyze will read.
+    clean_text = _DIRTY.replace("\x00", "\ufffd")
+    clean_digest = hashlib.sha256(nfc(clean_text).encode("utf-8")).hexdigest()
+    relpath = f"artifacts/sources/{source_id}/{clean_digest}.txt"
+    (tmp_path / relpath).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / relpath).write_text(clean_text, encoding="utf-8")
+    store.add_source_artifact(
+        source_id=source_id,
+        kind="extracted_text",
+        path=relpath,
+        checksum=clean_digest,
+        unreadable_chars=0,
+    )
+
+    # Preconditions, not decoration: a fixture that does not hold the
+    # measured-0-latest-row-plus-dirty-latest-job combination cannot separate
+    # the note from the two badges it must not be.
+    rows = store.source_artifacts(source_id)
+    assert [row["unreadable_chars"] for row in rows] == [None, 0]
+    chunks = store.source_chunks(job_id)
+    assert sum(chunk["text"].count("\x00") for chunk in chunks) == 7
+
+    html = client.get("/sources").text
+    note = _stale_note_in(html)
+    # The remedy named, whole: a chip that loses either half stops saying
+    # what clears the state.
+    assert "Re-analyze re-reads the clean stored text and clears them" in note
+    # 7, the NUL count of the chunks, so a hardcoded 1 or a source id cannot
+    # pass.
+    assert "7 unreadable character(s)" in note
+    # The destructive remedy, nowhere in this note. (Page-level `not in` would
+    # trip on the legacy row's own badge, which still tells that row to
+    # re-upload -- row-level truth, separate claim, pinned above.)
+    assert "delete" not in note
+    assert "re-upload" not in note
+    # And the unmeasured badge for the legacy row is untouched: the note adds
+    # a home for the live state without stealing the row-level one.
+    assert _UNMEASURED_NOTE in html
+    assert html.count("not checked for unreadable characters") == 1
+
+
+def test_the_stale_note_stays_off_when_reanalyze_would_recut_the_nuls(
+    tmp_path, monkeypatch, nulx
+):
+    """The note's negative boundary: a latest artifact that still holds NULs.
+
+    `stale_analysis_nuls` fires only when the latest text-artifact row
+    MEASURED 0 -- the row Re-analyze reads. Where the latest artifact itself
+    still holds NULs, re-analysis re-reads that file and re-cuts them, so the
+    note would promise a fix that does not clear the state: the remedy there
+    is the re-upload, which the row's own measured count already names. This
+    pins that boundary: the same dirty chunks, the latest artifact measured
+    7, and the note must not render.
+    """
+    _block_the_extraction_worker(monkeypatch)
+    client = _sources_client(tmp_path)
+    store = client.app.state.store
+
+    source_id = store.add_source("sources/reuploaded-dirty", kind="binary")
+    # The latest text-artifact row: the same text the chunks hold, measured 7.
+    _legacy_text_artifact(
+        store, tmp_path, "sources/reuploaded-dirty", _DIRTY
+    )
+    for row in store.source_artifacts(source_id):
+        store.add_source_artifact(
+            source_id=source_id,
+            kind="extracted_text",
+            path=row["path"],
+            checksum=row["checksum"],
+            unreadable_chars=7,
+        )
+    job_id = store.create_extraction_job(
+        source_id=source_id, artifact_id=None, provider=None, model=None,
+        total_chunks=1, message="",
+    )
+    store.add_source_chunks(job_id=job_id, source_id=source_id, chunks=[_DIRTY])
+
+    rows = store.source_artifacts(source_id)
+    assert [row["unreadable_chars"] for row in rows] == [7]
+    chunks = store.source_chunks(job_id)
+    assert sum(chunk["text"].count("\x00") for chunk in chunks) == 7
+
+    html = client.get("/sources").text
+    # No stale note: Re-analyze would re-read the dirty latest row and re-cut
+    # the NULs, so it is not the remedy this state earns.
+    assert _STALE_NOTE_OPEN not in html
+    # The row's own measured-loss badge is the claim here, and it stays.
+    assert '<span class="warn-inline">7 unreadable character(s)</span>' in html
+
+
 def _cli_env(monkeypatch, tmp_path):
     """Point `cli.main` at a fresh KB under tmp_path, as tests/test_cli.py does."""
     monkeypatch.setenv("VERINOTE_ROOT", str(tmp_path))

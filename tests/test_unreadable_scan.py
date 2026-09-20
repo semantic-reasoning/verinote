@@ -1198,3 +1198,109 @@ def test_unreadable_scan_reports_an_unreadable_kb(tmp_path, monkeypatch, capsys)
 
     assert cli.main(["sources", "scan-unreadable"]) == 1
     assert "cannot read the KB at" in capsys.readouterr().err
+
+
+# --- the re-uploaded-but-not-re-analysed state (#569) ---------------------
+
+
+def test_live_chunk_finding_under_a_clean_latest_artifact_is_its_own_verdict(
+    tmp_path, monkeypatch, capsys
+):
+    """#569: the one state no surface used to name a remedy for.
+
+    The user re-uploaded a clean file (new artifact, measured 0, now latest)
+    but did not re-analyse, so the dirty job is still the newest. The finding
+    sits where something will read it again — the latest job's chunks — yet
+    re-analysis alone clears it: it re-reads the clean latest row. `current`'s
+    headline is still TRUE of this source, so the split is not about truth; it
+    is about the remedy, which for this state is not re-upload.
+    """
+    _env(monkeypatch, tmp_path)
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/halfway", kind="binary")
+    old_rel = _write_artifact(tmp_path, source_id, "old", _DIRTY)
+    store.add_source_artifact(
+        source_id=source_id, kind="extracted_text", path=old_rel, checksum="old",
+    )  # the pre-#473 row: never measured
+    clean_rel = _write_artifact(
+        tmp_path, source_id, "clean", _DIRTY.replace("\x00", "�")
+    )
+    store.add_source_artifact(
+        source_id=source_id, kind="extracted_text", path=clean_rel,
+        checksum="clean", unreadable_chars=0,
+    )  # the re-upload: measured 0, now latest
+    # No re-analysis: the dirty job is still the newest, its chunks still dirty.
+    job_id = store.create_extraction_job(
+        source_id=source_id, artifact_id=None, provider=None, model=None,
+        total_chunks=1, message="",
+    )
+    store.add_source_chunks(job_id=job_id, source_id=source_id, chunks=[_DIRTY])
+
+    scan = store.scan_unreadable_text()
+    store.close()
+    source = _only_source(scan)
+    # Preconditions, not decoration: a fixture that lands in `current` or
+    # `superseded` cannot separate the new clause.
+    assert [a.status for a in source.artifacts] == ["found", "clean"]
+    assert [a.is_latest for a in source.artifacts] == [False, True]
+    assert [c.is_latest_job for c in source.chunks] == [True]
+
+    assert cli.main(["sources", "scan-unreadable"]) == 0
+    out = capsys.readouterr().out
+    line = _source_line(out, "sources/halfway")
+    # The headline, whole: its first clause is a prefix of `current`'s, so a
+    # shorter assertion would let `current` carry it.
+    assert line.startswith(
+        "sources/halfway: unreadable characters still stored in the latest "
+        "job's chunks — the latest stored artifact is clean, so no re-upload "
+        "is called for — "
+    )
+    # Distinguished from both its neighbours: not `clean`'s absence claim, not
+    # `superseded`'s dead-rows claim.
+    assert "no unreadable characters still stored" not in line
+    assert "in superseded rows only" not in line
+    # Both finding homes stay on the line, and the measured 0 stays beside them.
+    assert "artifacts: 2 in 1 superseded of 2 artifact row(s)" in line
+    assert "chunks: 2 in 1 chunk(s) of the latest job" in line
+    assert "extraction recorded 0 replaced at ingest" in line
+    # The bucket, named as the whole phrase.
+    assert "1 in the latest job's chunks under a clean latest artifact" in out
+
+
+def test_stale_verdict_does_not_absorb_a_dirty_latest_artifact(tmp_path, monkeypatch, capsys):
+    """The split keeps `current` where re-analysis would re-read a dirty file.
+
+    A dirty LATEST artifact is the state the split must not touch: re-analysis
+    reads that same row and meets the NULs again, so the remedy is re-upload,
+    not re-analysis, and the source keeps the bare `current` headline.
+    """
+    _env(monkeypatch, tmp_path)
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/reuploaded-dirty", kind="binary")
+    rel = _write_artifact(tmp_path, source_id, "latest", _DIRTY)
+    store.add_source_artifact(
+        source_id=source_id, kind="extracted_text", path=rel,
+        checksum="latest", unreadable_chars=0,
+    )
+    job_id = store.create_extraction_job(
+        source_id=source_id, artifact_id=None, provider=None, model=None,
+        total_chunks=1, message="",
+    )
+    store.add_source_chunks(job_id=job_id, source_id=source_id, chunks=[_DIRTY])
+
+    scan = store.scan_unreadable_text()
+    store.close()
+    source = _only_source(scan)
+    assert [a.status for a in source.artifacts] == ["found"]
+    assert [a.is_latest for a in source.artifacts] == [True]
+    assert [c.is_latest_job for c in source.chunks] == [True]
+
+    assert cli.main(["sources", "scan-unreadable"]) == 0
+    out = capsys.readouterr().out
+    line = _source_line(out, "sources/reuploaded-dirty")
+    assert line.startswith(
+        "sources/reuploaded-dirty: unreadable characters still stored — "
+    )
+    assert "the latest stored artifact is clean" not in line
+    assert "1 with unreadable characters in current rows" in out
+    assert "0 in the latest job's chunks under a clean latest artifact" in out

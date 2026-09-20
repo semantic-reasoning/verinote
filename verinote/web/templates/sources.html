@@ -168,6 +168,32 @@
           {% endfor %}
         </div>
         {% endif %}
+        {# #569: the re-uploaded-but-not-re-analysed state, which the per-row
+           badges above cannot name. The per-row badges answer "what does this
+           row record" -- the latest row measured 0 and renders nothing, and a
+           superseded row's note is about THAT row. But the source's live state
+           is "the stored text is clean, yet the current analysis still holds
+           NULs", and that state's remedy is Re-analyze, not delete-and-re-upload.
+
+           The #494 division of labour gives recommending to the surface, not the
+           scan, so the note names the remedy. It names the non-destructive one
+           and names NO destructive action on purpose: in this state re-analysis
+           re-reads the clean latest row and rewrites the dirty chunks out, while
+           delete-and-re-upload drops every fact from the source including
+           `confirmed` and `accepted` ones -- the sharp edge the comment above
+           records. Offering it here would cost human decisions to fix something
+           a Re-analyze click fixes for free.
+
+           The predicate is the latest TEXT-artifact row measuring exactly 0
+           (`stale_analysis_nuls`, set in `_source_inspector_rows`): an
+           unmeasured latest row would have re-analysis re-read unsanitized text,
+           and a measured-loss latest row is already named by its own count.
+           `.badge src` like the unmeasured note: a chip is right for
+           information, and this is information, not a measured loss.
+           No new CSS either way. #}
+        {% if s["stale_analysis_nuls"] %}
+          <span class="badge src">stored text is clean, but the current analysis still holds {{ s["stale_analysis_nuls"] }} unreadable character(s) — Re-analyze re-reads the clean stored text and clears them</span>
+        {% endif %}
       </td>
       {# The four cells the poll refreshes carry ids so `hx-select-oob` can name
          them one by one. They are ids rather than a class selector because htmx
