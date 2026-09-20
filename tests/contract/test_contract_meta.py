@@ -401,6 +401,19 @@ def _nested_pytest(*args: str, gate_env: dict[str, str] | None = None) -> subpro
     )
 
 
+def _reported_passed_count(result: subprocess.CompletedProcess) -> int | None:
+    """The child run's ``N passed`` tally, or ``None`` when it reported none.
+
+    Re-derived with ``re.findall`` rather than a substring ``in`` check — the
+    comparison #564 removes passed a grown run, because ``"1 passed" in
+    "11 passed"`` is true where an expectation of 1 was meant. ``findall``
+    captures the whole number, so the call site compares integers; the last
+    match is the run's summary line, the last line a ``-q`` child writes.
+    """
+    counts = [int(count) for count in re.findall(r"(\d+) passed", result.stdout)]
+    return counts[-1] if counts else None
+
+
 def _contract_marker_collects_zero() -> bool:
     """True when ``-m contract`` selects no test at all (the marked set is empty).
 
@@ -461,9 +474,11 @@ def test_replay_targets_run_with_no_gate_at_all():
         f"{result.stdout}\n{result.stderr}"
     )
     expected_count = 2 * len(_valid_live_fixture_pairs()) + 1
-    assert f"{expected_count} passed" in result.stdout, (
-        "the replay guards did not run every discovered provider fixture pair "
-        "and the Claude regression assertion.\n"
+    assert _reported_passed_count(result) == expected_count, (
+        f"the run with no gate set did not report exactly {expected_count} "
+        "passed: either a replay guard was not reported as passed, or one of "
+        "these node ids now collects more than one test, as "
+        "`@pytest.mark.parametrize` does.\n"
         f"{result.stdout}\n{result.stderr}"
     )
 
@@ -509,11 +524,12 @@ def test_deterministic_promoted_guards_run_with_no_gate_at_all():
         "the promoted deterministic guards should pass with no contract gate "
         f"set at all.\n{result.stdout}\n{result.stderr}"
     )
-    assert f"{len(DETERMINISTIC_PROMOTED_TARGETS)} passed" in result.stdout, (
-        "the run with no gate set did not report "
+    assert _reported_passed_count(result) == len(DETERMINISTIC_PROMOTED_TARGETS), (
+        "the run with no gate set did not report exactly "
         f"{len(DETERMINISTIC_PROMOTED_TARGETS)} passed: either a promoted guard "
-        "did not execute, or one of these node ids now collects more than one "
-        f"test, as `@pytest.mark.parametrize` does.\n{result.stdout}\n{result.stderr}"
+        "was not reported as passed, or one of these node ids now collects more "
+        "than one test, as `@pytest.mark.parametrize` does.\n"
+        f"{result.stdout}\n{result.stderr}"
     )
 
 
@@ -687,9 +703,12 @@ def test_filtering_the_guards_out_by_keyword_is_not_a_failure():
         "a run that filtered the contract tests out by keyword was failed for "
         f"not running them.\n{result.stdout}\n{result.stderr}"
     )
-    assert "1 passed" in result.stdout, (
-        f"{CONTROL_ONLY_KEYWORD!r} no longer selects exactly the one control this "
-        f"test needs.\n{result.stdout}\n{result.stderr}"
+    assert _reported_passed_count(result) == 1, (
+        f"`-k {CONTROL_ONLY_KEYWORD!r}` did not report exactly 1 passed: either "
+        "the one control this test needs was not reported as passed, or the "
+        "keyword now selects more than one test, as `@pytest.mark.parametrize` "
+        "and new sibling names do.\n"
+        f"{result.stdout}\n{result.stderr}"
     )
 
 
