@@ -785,6 +785,10 @@ _ENGLISH_ATTRIBUTE_TRAILING_PREDICATE = re.compile(
 # so it does not move for a counter that names no unit -- `마리`, say; the
 # alternative count is what notices that one. The red lands in that file, not
 # in this one's.
+# The membership of WHICH counters name a unit is assertion-pinned, not
+# comment-recorded: test_the_unit_bearing_counters_are_pinned_by_
+# membership_not_count in that file fixes the cross-table intersection
+# as a set, so a constant-count membership swap is red there (#501).
 _KOREAN_MEASURE_COUNTER = (
     r"살|세|명|개|건|년|개월|달|주|일|시간|분|초|번|회|차|가지|종류|종|"
     r"퍼센트|프로|원|점|위|권|장|쪽|편|배|층"
