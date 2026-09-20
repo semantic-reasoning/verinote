@@ -562,6 +562,79 @@ def test_migration_adds_the_stale_column_to_a_legacy_facts_table(tmp_path):
         reopened.close()
 
 
+def test_candidate_count_and_run_tally_plans_are_covering_index_searches(tmp_path):
+    # #554 pins the two `EXPLAIN QUERY PLAN` claims #482 left in
+    # `db.py::_ensure_schema_migrations`: the `candidate_count` recount and the
+    # per-run tally each drive a COVERING INDEX search, so neither touches the
+    # `facts` table and neither degrades to a table scan as the KB grows. If the
+    # planner ever picks a scan, a non-covering index, or a different index, one
+    # of these reddens -- which is the point, since the prose alone would rot
+    # silently.
+    #
+    # No rows are needed: the plan is shape-based, and a covering-index search
+    # is chosen on an empty table just as on a full one (measured on this tree).
+    s = _store(tmp_path)
+    try:
+        # `_refresh_job_candidate_count`'s subquery, verbatim from the store.
+        details = [
+            row["detail"]
+            for row in s._conn.execute(
+                "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM facts WHERE job_id = ?", (1,)
+            )
+        ]
+        assert any(
+            "COVERING INDEX" in d and "idx_facts_job" in d for d in details
+        ), f"candidate_count recount is not a covering idx_facts_job search: {details}"
+
+        # `run_candidate_count`'s statement, verbatim from the store.
+        details = [
+            row["detail"]
+            for row in s._conn.execute(
+                "EXPLAIN QUERY PLAN SELECT COUNT(*) AS n FROM facts "
+                "WHERE job_id = ? AND run_id = ?",
+                (1, 2),
+            )
+        ]
+        assert any(
+            "COVERING INDEX" in d and "idx_facts_run" in d for d in details
+        ), f"run tally is not a covering idx_facts_run search: {details}"
+    finally:
+        s.close()
+
+
+def test_idx_facts_job_on_a_legacy_facts_table_without_job_id_raises(tmp_path):
+    # #554 pins the ordering claim #482 left: `idx_facts_job` covers `job_id`, a
+    # column `_ensure_schema_migrations` only adds via `ADD COLUMN` -- and that
+    # ALTER runs AFTER `schema.sql`. So the index cannot live in `schema.sql`:
+    # against a legacy `facts` table (no `job_id`) the `CREATE INDEX` itself
+    # fails. This is the exact failure the legacy-migration test would hit if
+    # the index were moved into the schema script, re-derived here instead of
+    # trusted.
+    conn = sqlite3.connect(tmp_path / "kb.sqlite")
+    conn.execute(
+        """
+        CREATE TABLE facts (
+            id INTEGER PRIMARY KEY,
+            subject TEXT NOT NULL,
+            relation TEXT NOT NULL,
+            object TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'candidate',
+            confidence REAL NOT NULL DEFAULT 0.0,
+            source_id INTEGER,
+            run_id INTEGER,
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="no such column: job_id"):
+            conn.execute("CREATE INDEX idx_facts_job ON facts(job_id)")
+    finally:
+        conn.close()
+
+
 def test_note_fact_reobserved_clears_stale_on_the_existing_anchor_path(tmp_path):
     # The drop-then-revert regression: a fact demoted stale=1 whose content returns
     # at an artifact it was ALREADY anchored to. The anchor exists, so the method
