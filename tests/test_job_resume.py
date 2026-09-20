@@ -208,6 +208,46 @@ def test_sync_resumes_rolled_back_job_without_redoing_done_chunks(
     assert "sync complete: 5 candidate(s)" in out
 
 
+def test_success_run_summary_keeps_job_and_run_scopes_apart(tmp_path, monkeypatch):
+    """A resumed job that SUCCEEDS must not present the job's totals as this run's work (#550).
+
+    The halt leaves one chunk done and one candidate written by the FIRST run. The
+    resume completes the remaining five, so the job stands at 6/6 chunks and 6
+    job-wide candidates — but the SECOND run wrote only five, from five chunks. Its
+    summary is rendered beside that one run row (`provenance.html`), so it must state
+    the job's cumulative progress as job progress and this run's contribution as its
+    own, the two-scope shape the rewind handlers already use.
+
+    The old shape, "6/6 chunk(s), 6 candidate(s), 0 failed", reads as this run's work
+    and is false: this run did five chunks and wrote five candidates.
+    """
+    job_id = _halted_job(tmp_path, monkeypatch)
+
+    client = _RecordingClient()
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: client)
+    assert cli.main(["sync"]) == 0
+
+    jobs = _jobs(tmp_path)
+    assert [int(job["id"]) for job in jobs] == [job_id]  # resumed, not replaced
+    assert jobs[0]["status"] == "done"
+    total = len(MARKERS)
+    assert int(jobs[0]["completed_chunks"]) == total
+    assert int(jobs[0]["candidate_count"]) == total  # 1 by run 1 + 5 by run 2
+
+    store = _store(tmp_path)
+    runs = list(store._conn.execute("SELECT id, summary FROM runs ORDER BY id"))
+    store.close()
+    assert len(runs) == 2  # run 1 halted, run 2 is the success path under test
+    summary = runs[1]["summary"]
+
+    # Job scope: the job's cumulative progress, stated as job progress.
+    assert f"job progress {total}/{total} chunk(s)" in summary
+    # Run scope: what THIS run did — five of the six, from five of the six chunks.
+    assert f"this run wrote {total - 1} candidate(s) from {total - 1} chunk(s)" in summary
+    # THE DEFECT: the job's TOTAL candidate count must not be readable as this
+    # run's. It was, before the fix: "6/6 chunk(s), 6 candidate(s), 0 failed".
+    assert f"{total} candidate(s)" not in summary
+
 def test_sync_reports_a_resumed_run_that_fails_everything_as_failed_not_incomplete(
     tmp_path, monkeypatch, capsys
 ):

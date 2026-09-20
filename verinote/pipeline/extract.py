@@ -774,10 +774,25 @@ def process_extraction_job(
 
     store.finish_extraction_job(job_id, call_state=call_state)
     final = store.get_extraction_job(job_id)
+    # The two scopes stay grammatically apart in this summary too — the same rule
+    # the three rewind handlers apply to theirs, which `_halt_extraction_job` names:
+    # `completed`/`total`/`failed` are the *job's* progress, cumulative across every
+    # resume; `run_candidates`/`run_chunks` are what *this* invocation did. Before
+    # #550 this line read the job's cumulative `candidate_count` beside a single run
+    # row (`provenance.html`), so a resumed job that finished 2/2 with five job-wide
+    # candidates showed "2/2 chunk(s), 5 candidate(s)" on the run that wrote two.
+    #
+    # `run_chunks` is the caller's accumulator on purpose, the same exception the
+    # rewind handlers document: `source_chunks` carries no `run_id`
+    # (`store/schema.sql`), so no table can answer "how many chunks did THIS run
+    # finish". `run_candidates` is counted from the fact rows the way
+    # `_refresh_extraction_job` counts the job column — neither is accumulated here.
+    run_candidates = store.run_candidate_count(job_id=job_id, run_id=run_id)
     summary = (
-        f"{source['path']}: {final['completed_chunks']}/{final['total_chunks']} "
-        f"chunk(s), {final['candidate_count']} candidate(s), "
-        f"{final['failed_chunks']} failed"
+        f"{source['path']}: job progress "
+        f"{final['completed_chunks']}/{final['total_chunks']} chunk(s), "
+        f"{final['failed_chunks']} failed; "
+        f"this run wrote {run_candidates} candidate(s) from {run_chunks} chunk(s)"
     )
     store.set_run_summary(run_id, summary)
     return ChunkedExtractionResult(
@@ -785,7 +800,7 @@ def process_extraction_job(
         candidates=int(final["candidate_count"]),
         completed_chunks=int(final["completed_chunks"]),
         failed_chunks=int(final["failed_chunks"]),
-        run_candidates=store.run_candidate_count(job_id=job_id, run_id=run_id),
+        run_candidates=run_candidates,
         run_chunks=run_chunks,
     )
 
