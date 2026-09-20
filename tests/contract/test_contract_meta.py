@@ -533,6 +533,76 @@ def test_deterministic_promoted_guards_run_with_no_gate_at_all():
     )
 
 
+class _ChildSpawnAttempted(Exception):
+    """Raised by the pin's spy when the guard reached `_nested_pytest`.
+
+    A distinct exception type, not an ``AssertionError``: the pin's
+    ``except`` ladder must tell the guard's own assert apart from the guard
+    falling through to the spawn, and a returned stand-in would let the
+    guard's next assertion read as a pass.
+    """
+
+
+def test_empty_ledger_is_rejected_before_the_duckdb_skip(monkeypatch):
+    """An empty ``DETERMINISTIC_PROMOTED_TARGETS`` reddens at the assert, not the skip.
+
+    The guard above refuses an empty ledger *before*
+    ``pytest.importorskip("duckdb")`` — an empty ledger is a fact about the
+    tree, not the environment — and nothing else pins that order (issue
+    #568). This empties the ledger, makes ``duckdb`` unimportable, and
+    requires the guard's ``AssertionError`` to arrive first: with the order
+    swapped the guard ``Skipped``s instead, and the empty ledger would be
+    invisible on a duckdb-less machine — exactly where it is most likely to
+    be introduced.
+
+    The absence is created, not stubbed: ``sys.modules["duckdb"] = None``
+    makes ``import duckdb`` fail, which is the condition the guard's
+    ``importorskip`` detects. Patching ``pytest.importorskip`` would stub
+    the mechanism instead and go vacuous the moment the guard is re-spelled
+    (``from pytest import importorskip``, a hand-rolled ``try: import
+    duckdb``). The ``except BaseException`` leg is mandatory, not stylistic:
+    ``Skipped`` is a ``BaseException``, so ``except Exception`` would let a
+    swapped build skip its way to green and the pin remove itself from a
+    green run. The spy must raise rather than return: a stand-in result lets
+    the guard's next assertion read as a pass, and a real call hands pytest
+    no node id — which the issue #567 floor now refuses, and before it was
+    the measured hang. The spy also gives the no-spawn guarantee below
+    something to assert on rather than infer.
+    """
+    module = sys.modules[__name__]
+    spawned = []
+
+    def _spy(*args, **kwargs):
+        spawned.append((args, kwargs))
+        raise _ChildSpawnAttempted("the guard reached _nested_pytest")
+
+    monkeypatch.setattr(module, "DETERMINISTIC_PROMOTED_TARGETS", ())
+    monkeypatch.setitem(sys.modules, "duckdb", None)
+    monkeypatch.setattr(module, "_nested_pytest", _spy)
+    try:
+        test_deterministic_promoted_guards_run_with_no_gate_at_all()
+    except AssertionError:
+        assert not spawned, (
+            "the guard's assert fired on the empty ledger, yet it also "
+            f"reached _nested_pytest {len(spawned)} time(s) — the no-spawn "
+            "guarantee is broken\n"
+            f"spawn calls: {spawned!r}"
+        )
+    except BaseException as exc:
+        pytest.fail(
+            f"an empty DETERMINISTIC_PROMOTED_TARGETS did not red at the "
+            f"guard's assert: the guard surfaced {type(exc).__name__} "
+            f"({exc!s}) instead — the pytest.importorskip(duckdb) line is "
+            "ahead of the assert, or the assert is gone"
+        )
+    else:
+        pytest.fail(
+            "an empty DETERMINISTIC_PROMOTED_TARGETS passed the guard: its "
+            "assert DETERMINISTIC_PROMOTED_TARGETS is gone or no longer fires "
+            f"on empty (spawn calls: {spawned!r})"
+        )
+
+
 @pytest.mark.parametrize("module_name", sorted(PROMOTED_GUARDS))
 def test_promoted_guards_carry_neither_the_marker_nor_the_gate(module_name):
     """A guard this ledger names still exists, is unmarked, and is ungated.
