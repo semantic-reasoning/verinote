@@ -25,7 +25,29 @@ UNREACHED_POPULATIONS = ("policy", "credentials", "unknown_provider", "unreachab
 
 
 class LLMError(RuntimeError):
-    """Any provider-side or parsing failure, normalised across adapters."""
+    """Any failure of an LLM call, normalised across adapters.
+
+    Four populations, and the breadth is pinned -- each clause names the test
+    that fails if the clause's failures were allowed to escape as themselves:
+
+    - the request never reached the provider -- no usable key, an unknown
+      provider name, an SDK that cannot be built -- pin
+      `tests/test_cloud_adapters.py::test_a_client_that_cannot_be_built_is_a_normalised_failure`;
+    - the response arrived and was unusable -- a subclass, `LLMOutputError`,
+      so one `except LLMError` below can tell the two apart -- pin
+      `tests/test_cloud_adapters.py::test_openai_empty_choices_is_an_unusable_output`;
+    - a programming error inside `render_prompt` -- a `TypeError`, or any type
+      nobody listed -- the shared render path's `except Exception` is
+      deliberately wider than the `OSError` family, and these stay normalised
+      rather than escaping as themselves -- pin
+      `tests/test_cloud_adapters.py::test_a_programming_error_in_the_render_is_deliberately_an_llm_error`
+      and the `_Unlisted` trio in the three adapter test modules;
+    - the scratch-space conditions around a CLI invocation -- the temp
+      directory's creation (ENOSPC, an unwritable TMPDIR) and its cleanup,
+      each a filesystem condition and neither provider-side -- pin
+      `tests/test_claude_cli_adapter.py::test_claude_cli_unusable_temp_directory_is_llm_error`
+      and `tests/test_claude_cli_adapter.py::test_claude_cli_failing_temp_directory_cleanup_is_llm_error`.
+    """
 
     # #606. WHICH of the unreached populations this failure belongs to, set on
     # the instance where it is raised. A data label read by the record site's
@@ -45,10 +67,9 @@ class LLMOutputError(LLMError):
     raised, caught and re-raised across the adapter boundary, and callers that
     do not care keep catching `LLMError` unchanged.
 
-    WHY IT EXISTS. `LLMError` is documented as "any provider-side OR PARSING
-    failure", so it conflates a request that was never sent -- no API key, SDK
-    missing, provider unreachable -- with a response that arrived and was
-    unusable. `questions.status`'s `translation_failed` means "The provider
+    WHY IT EXISTS. `LLMError` is documented as "any failure of an LLM call",
+    so it conflates a request that was never sent -- no API key, SDK missing,
+    provider unreachable -- with a response that arrived and was unusable. `questions.status`'s `translation_failed` means "The provider
     output could not be used", which is TRUE of the second and false of the
     first. #592 records the second on the question row and only reports the
     first, and this class is what lets one `except LLMError` tell them apart.
