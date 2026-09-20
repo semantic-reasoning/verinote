@@ -3939,6 +3939,8 @@ class Store:
         # table, `COUNT(*) ... WHERE job_id = ?` ran ~200x slower without an index
         # here than with one (single run, 200 calls averaged, one host — enough to
         # settle whether the index is needed, not a portable benchmark figure).
+        # The ~200x is a one-host measurement, not a constant: re-measure it
+        # before changing the number -- do not edit the figure from memory.
         #
         # THE OTHER QUESTION THIS DIFF RAISES is what the derived count costs at
         # all, since the write it replaced — `candidate_count = candidate_count + ?`
