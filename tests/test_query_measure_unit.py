@@ -352,6 +352,66 @@ def test_the_classifier_counter_set_is_the_counters_that_name_no_unit():
     assert _CLASSIFIER_COUNTERS.index("종류") < _CLASSIFIER_COUNTERS.index("종")
 
 
+def test_the_unit_bearing_counters_are_pinned_by_membership_not_count():
+    """The counters that name a unit are pinned as a set, not as a count.
+
+    Every other pin on this split is a count: a swap that keeps the count the
+    same -- drop one unit-bearing counter and admit another -- stays green on
+    all of them, yet changes which `몇 X` questions reach the unit caveat and
+    which read as a kind. Pinning the *membership* is the independent guard:
+    the spec set below is asserted equal to the intersection the two tables
+    derive, so the swap is red here and nowhere else.
+
+    This is the #501 mechanism for the side a comment cannot hold. #459 split
+    the two tables across a module boundary and left a back-reference comment;
+    a comment records a fact but cannot fail. Deriving one table from the
+    other is foreclosed: the one-way import guard pins
+    `query_measure_unit` importing `query_intent`, and the tables are
+    deliberately different. So the cross-table membership is assertion-pinned
+    here instead, and the value-only mirror is derived, not re-listed -- it is
+    determined by the spellings (pinned as a closed set below) and by this
+    intersection, and re-listing it would add a second copy to keep in step.
+    """
+    from verinote.pipeline.query_intent import _KOREAN_MEASURE_COUNTER
+    from verinote.pipeline.query_measure_unit import _MEASUREMENT_UNIT_SPELLINGS
+
+    # The spec: the counters a question may ask in that also name a unit.
+    # Membership, not count.
+    unit_bearing = {"살", "세", "년", "개월", "달", "주", "일", "시간", "분", "초", "퍼센트", "프로", "원", "배"}
+
+    derived = {
+        counter
+        for counter in _KOREAN_MEASURE_COUNTER.split("|")
+        if counter in _MEASUREMENT_UNIT_SPELLINGS
+    }
+    assert derived == unit_bearing
+
+
+def test_the_clock_hour_is_in_neither_table_and_the_hour_unit_in_both():
+    """The 시/시간 split the `_TIME_POINT` argument rests on.
+
+    시 is a clock hour, a point in time: it is in NEITHER table, so digits
+    run into it state no unit this file can read and can only be a point.
+    시간 is a duration, a unit: it is in BOTH, so it is unit-bearing and a
+    value stating it is read as one. The `_TIME_POINT` docstring argues the
+    branch from exactly this difference, and #501 names it as the argument
+    that must stay true. The two tables sit in different modules, so the split
+    is pinned here, where both are importable, by membership.
+    """
+    from verinote.pipeline.query_intent import _KOREAN_MEASURE_COUNTER
+    from verinote.pipeline.query_measure_unit import _MEASUREMENT_UNIT_SPELLINGS
+
+    counters = set(_KOREAN_MEASURE_COUNTER.split("|"))
+    spellings = set(_MEASUREMENT_UNIT_SPELLINGS)
+
+    clock_hour = "\uc2dc"        # 시
+    hour_unit = "\uc2dc\uac04"  # 시간
+    assert clock_hour not in counters
+    assert clock_hour not in spellings
+    assert hour_unit in counters
+    assert hour_unit in spellings
+
+
 def test_the_general_count_counter_is_in_the_classifier_set():
     """`개` asks for a count of things without naming a kind.
 
