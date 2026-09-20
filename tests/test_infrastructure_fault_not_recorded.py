@@ -19,10 +19,10 @@ provider was reached and misbehaved, `translation_failed` is exactly true of the
 row, and it IS recorded. Without that half the rule would be satisfiable by
 never recording anything and the status would become unreachable.
 
-`LLMError` could not express that distinction: its own docstring is "Any
-provider-side OR PARSING failure", so it conflates a request never sent with an
-answer that came back unusable. `LLMOutputError` is the second case, and the
-tests below pin both directions.
+`LLMError` could not express that distinction: its own docstring is "any
+failure of an LLM call", so it conflates a request never sent with an answer
+that came back unusable. `LLMOutputError` is the second case, and the tests
+below pin both directions.
 """
 import re
 import traceback
