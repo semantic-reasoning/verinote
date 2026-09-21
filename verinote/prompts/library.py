@@ -150,6 +150,42 @@ def get_prompt(root: Path, prompt_id: str) -> Prompt:
     )
 
 
+def readable_override_text(path: Path) -> str | None:
+    """The stored override at `path`, read the way `get_prompt` reads it — or None.
+
+    `None` means "absent, empty after normalization, or unreadable by this
+    process", and NO exception leaves this function. It mirrors `get_prompt`'s
+    read clause — the `is_file()` guard first, a `read_text` as UTF-8, then the
+    SAME normalization — because its one caller
+    (`verinote/web/app.py::_prompts_page`) discriminates between two
+    `PromptError` states by whether this answer is non-empty: non-`None` means
+    the stored text is what failed validation, so the page offers the editor
+    seeded from it and a reset that deletes it; `None` means the packaged
+    default is what failed, so the page offers neither — a reset there would
+    delete the user's file and fix nothing (#546). The two answers must never
+    diverge from what `get_prompt` actually did with this file, or the page
+    offers a destructive control on a guess.
+
+    `None` on empty-after-normalization is the discriminator, not a detail:
+    `get_prompt` SKIPS an empty override (and then validates the default), so
+    it must read as `None` here too — a non-`None` answer for an empty file
+    would classify a packaged-default fault as a stored-override fault and
+    hand out a Reset that deletes a file the loader never used.
+
+    Broad except, the way `_override_is_unreadable` in the app does it: an
+    unreadable parent directory makes `is_file()` itself raise
+    (`PermissionError`, measured), and the caller renders the page this answer
+    feeds — a raise here would take that page down instead of letting it
+    choose.
+    """
+    try:
+        if not path.is_file():
+            return None
+        return _normalize_prompt_text(path.read_text(encoding="utf-8")) or None
+    except Exception:  # noqa: BLE001 - "absent, empty, or unreadable" IS the answer
+        return None
+
+
 def render_prompt(root: Path, prompt_id: str, **values: object) -> str:
     prompt = get_prompt(root, prompt_id)
     text = prompt.text

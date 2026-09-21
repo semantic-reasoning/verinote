@@ -7905,8 +7905,9 @@ def test_an_unknown_prompt_id_is_reported_once_not_twice(tmp_path, route):
     """Composing the two diagnoses must not concatenate a string with itself.
 
     An unknown `prompt_id` raises the same `PromptError` in the route's own
-    library call and again in `_prompts_page`'s `get_prompt`, out of the same
-    `prompt_definition` lookup. Composing them unconditionally printed
+    library call and again in `_prompts_page`'s own `prompt_definition` call
+    (the first branch, #546's split), out of the same lookup. Composing them
+    unconditionally printed
     `unknown prompt: nope; unknown prompt: nope` on the most ordinary error page
     these routes have.
 
@@ -8221,8 +8222,9 @@ def test_a_reset_that_cannot_unlink_is_a_page_not_a_crash(tmp_path, mode):
     # `reset_prompt_route`'s clause, so it is pinned here rather than implied: an
     # override that loads gets the full editor, one that cannot be READ gets the
     # reset-only section. The third shape that sentence names — an override that
-    # reads and fails validation — has no control at all and is pinned by
-    # `test_a_failed_reset_over_an_invalid_override_offers_no_control`.
+    # reads and fails validation — carries the editor AND a reset retry since
+    # #546, and is pinned by
+    # `test_a_failed_reset_over_an_invalid_override_offers_the_editor`.
     if mode == "dir_0o500_readable_override":
         assert 'name="prompt_text"' in r.text  # the full editor
         assert "Could not load" not in r.text
@@ -8311,31 +8313,23 @@ def test_an_unpatched_prompt_write_still_redirects(tmp_path):
     assert not override.exists()
 
 
-def test_a_failed_reset_over_an_invalid_override_offers_no_control(tmp_path):
-    """The third shape a failed reset renders, and the one with nothing to click.
+def test_a_failed_reset_over_an_invalid_override_offers_the_editor(tmp_path):
+    """The third shape a failed reset renders: the editor, and a retry.
 
     An override that READS and fails validation makes `get_prompt` raise
-    `PromptError`, so `_prompts_page` takes that branch: `prompt` is None, so no
-    editor, and that branch passes `reset_only=False` outright, so no reset-only
-    section. `_override_is_unreadable` is the `except Exception` branch's gate
-    and is never consulted here — forcing it to return True leaves this response
-    byte-identical, which is how that was checked rather than read off. What
-    comes back is the banner and the prompt selector.
+    `PromptError`, so `_prompts_page` takes its `except PromptError` branch and
+    classifies it as state B — `readable_override_text` answers non-`None` — and
+    renders the editor seeded from the stored text, whose section carries its
+    own reset form: the page offers a fix (save over it) AND a retry of the very
+    reset that just failed, at this route's 500. #546 landed, and these two
+    assertions are the landing: they were the `not in` pair that pinned the old
+    dead end.
 
-    Short of a repair affordance, deliberately: offering one for a
-    readable-but-invalid override is #546, and the line it has to change is that
-    hardcoded `reset_only=False`. It cannot simply become True, because
-    `get_prompt` raises the same `PromptError` when the PACKAGED default is what
-    fails validation — where a reset would delete the user's file and fix
-    nothing.
-
-    What #545 does deliver here is the diagnosis, and the contrast is measured,
-    not assumed: on `2c96317` this same request answers a bare 500 with no page
-    at all — no banner, no selector, nothing naming the file. Delete the broad
-    clause in `reset_prompt_route` and this row returns to that.
-
-    When #546 lands, the two `not in` assertions below are what tell you this
-    docstring and `reset_prompt_route`'s comment need rewriting.
+    What the #545-era clause still delivers here is the diagnosis, and the
+    contrast is measured, not assumed: on `2c96317` this same request answered a
+    bare 500 with no page at all — no banner, no selector, nothing naming the
+    file. Delete the broad clause in `reset_prompt_route` and this row returns
+    to that.
     """
     from verinote.prompts.library import prompt_override_path
 
@@ -8371,8 +8365,8 @@ def test_a_failed_reset_over_an_invalid_override_offers_no_control(tmp_path):
     )
     assert "{qid}" in r.text  # and why the page could not be loaded either
     assert 'value="ask-fallback"' in r.text  # the selector still routes away
-    assert 'action="/prompts/reset"' not in r.text  # the #546 gap, pinned
-    assert 'name="prompt_text"' not in r.text  # neither section rendered
+    assert 'action="/prompts/reset"' in r.text  # and a retry of the reset
+    assert 'name="prompt_text"' in r.text  # the editor, seeded from the store
 
 
 def test_a_save_for_an_unknown_prompt_id_is_offered_no_save_form(tmp_path):
@@ -8421,20 +8415,20 @@ def test_a_save_for_an_unknown_prompt_id_is_offered_no_save_form(tmp_path):
 
 
 def test_a_save_that_cleared_the_textarea_gets_the_empty_textarea_back(tmp_path):
-    """`is not none` and not truthiness, and the empty string is what buys it.
+    """The field comes back EMPTY — seeded from the submission, not the store.
 
     Clearing the field and pressing Save sends `prompt_text=""`, and the save is
-    refused for exactly that. On a truthy gate the echo-back section would not
-    render, so over an override that cannot load the page would come back with
-    no editor, no Save button, and — the override being readable, so
-    `reset_only` is False — no reset control either: a 400 with nothing on the
-    page to act on. `is not none` hands the empty field back, and the user can
-    type into it and resubmit.
+    refused for exactly that. The B branch's seed rule is `is not none`, and the
+    empty string is what buys the distinction: the field comes back empty (the
+    bytes that request carried, #545), so the user can type into it and
+    resubmit, and the state now also carries the reset that repairs it — the
+    editor section renders its own reset form, so the 400 is not a dead end.
 
-    `""` and not `"   "`: whitespace is truthy, so a whitespace submission
-    survives that mutation and would pin nothing. The assertion the mutation
-    kills is the textarea one; the status and both banner reasons are already
-    covered by `test_a_refusal_over_an_invalid_stored_override_keeps_both_reasons`.
+    The `not in` on the STORED text is what pins the seed: a branch that seeded
+    the editor from the stored override over a refused save would print that
+    line and leave the user to believe the field held it. The status and both
+    banner reasons are already covered by
+    `test_a_refusal_over_an_invalid_stored_override_keeps_both_reasons`.
     """
     from verinote.prompts.library import prompt_override_path
 
@@ -8442,7 +8436,8 @@ def test_a_save_that_cleared_the_textarea_gets_the_empty_textarea_back(tmp_path)
     override = prompt_override_path(tmp_path, "query-translation")
     override.parent.mkdir(parents=True, exist_ok=True)
     # Readable, so this is the validation-failure state, not the unreadable one.
-    override.write_text("Translate the question into Datalog.\n", encoding="utf-8")
+    stored = "Translate the question into Datalog."
+    override.write_text(stored + "\n", encoding="utf-8")
 
     r = c.post(
         "/prompts",
@@ -8454,6 +8449,215 @@ def test_a_save_that_cleared_the_textarea_gets_the_empty_textarea_back(tmp_path)
     assert "prompt text is required" in r.text  # why the save was refused
     assert "{qid}" in r.text  # and why the page could not be loaded
     assert 'name="prompt_text"' in r.text  # the field comes back, empty
-    # And it is the only control on this page: `reset_only` is False here, so
-    # without that field the 400 would be a dead end.
-    assert 'action="/prompts/reset"' not in r.text
+    assert stored not in r.text  # seeded from the submission, not the store
+    # And a reset that repairs it — the editor section carries it.
+    assert 'action="/prompts/reset"' in r.text
+
+
+def test_a_readable_invalid_override_page_offers_an_editor_and_a_reset(tmp_path):
+    """#546's opening symptom, closed: a readable-but-invalid override gets a page
+    that says WHAT is wrong and offers the controls that fix it.
+
+    The issue's own reproduction: `extraction-limit-hint` override `Keep it
+    short.` (valid UTF-8, readable, missing the required `{max_facts}`).
+    `get_prompt` adopts the non-empty override and its validation raises
+    `PromptError`, so `_prompts_page` takes its `except PromptError` branch and
+    classifies it as state B (`readable_override_text` answers non-`None`).
+    Before #546 this answered 400 with the banner and NOTHING to act on; now it
+    answers 200 (a stored-file fault is #539's 200 logic) with the editor seeded
+    from the stored text, a Save form, and a reset form.
+
+    Kills: (i) a B branch that reverted to `prompt=None` (the editor/save/reset
+    assertions), and (ii) a B branch that took A's `400 if 200 else status` rule
+    (the 200 assertion).
+    """
+    from verinote.prompts.library import prompt_override_path
+
+    c = _prompts_client(tmp_path)
+    override = prompt_override_path(tmp_path, "extraction-limit-hint")
+    override.parent.mkdir(parents=True, exist_ok=True)
+    stored = "Keep it short."
+    override.write_text(stored + "\n", encoding="utf-8")
+
+    r = c.get("/prompts", params={"prompt": "extraction-limit-hint"})
+
+    assert r.status_code == 200
+    assert (
+        "Extraction limit hint prompt must include required placeholder {max_facts}"
+        in r.text
+    )
+    assert stored in r.text  # the stored text is shown, so it can be fixed
+    assert 'name="prompt_text"' in r.text  # the editor's field
+    assert 'action="/prompts"' in r.text  # a Save form
+    assert 'name="prompt_id" value="extraction-limit-hint"' in r.text  # …for this id
+    assert 'action="/prompts/reset"' in r.text  # and a reset form
+
+
+def test_the_editor_repairs_a_readable_invalid_override(tmp_path):
+    """The editor is not decoration: fixing the text in the field and saving
+    overwrites the invalid override and the page goes healthy.
+
+    The dead end #546 opens with was that the repair needed an OUTSIDE
+    `POST /prompts/reset`; this proves the in-UI SAVE path also works — the
+    page offers a Save form whose hidden id is correct and whose round-trip
+    lands.
+    """
+    from verinote.prompts.library import prompt_override_path
+
+    c = _prompts_client(tmp_path)
+    override = prompt_override_path(tmp_path, "extraction-limit-hint")
+    override.parent.mkdir(parents=True, exist_ok=True)
+    override.write_text("Keep it short.\n", encoding="utf-8")
+
+    fixed = "Extract at most {max_facts} facts, in one line."
+    r = c.post(
+        "/prompts",
+        data={"prompt_id": "extraction-limit-hint", "prompt_text": fixed},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/prompts?prompt=extraction-limit-hint"
+    assert override.read_text(encoding="utf-8") == fixed + "\n"
+
+    healthy = c.get("/prompts", params={"prompt": "extraction-limit-hint"})
+    assert healthy.status_code == 200
+    assert "must include required placeholder" not in healthy.text
+    assert fixed in healthy.text
+
+
+def test_reset_repairs_a_readable_invalid_override(tmp_path):
+    """The reset is the other repair: deleting the invalid override drops the
+    page back onto the packaged default, healthy.
+
+    This is #539's reset, re-pinned for the READABLE state — the gate that
+    offered it for an unreadable override deliberately excluded this one, and
+    #546 is what brings it back inside the editor section.
+    """
+    from verinote.prompts.library import prompt_override_path
+
+    c = _prompts_client(tmp_path)
+    override = prompt_override_path(tmp_path, "extraction-limit-hint")
+    override.parent.mkdir(parents=True, exist_ok=True)
+    override.write_text("Keep it short.\n", encoding="utf-8")
+
+    r = c.post(
+        "/prompts/reset",
+        data={"prompt_id": "extraction-limit-hint"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert not override.exists()
+
+    healthy = c.get("/prompts", params={"prompt": "extraction-limit-hint"})
+    assert healthy.status_code == 200
+    assert "must include required placeholder" not in healthy.text
+    assert "Extract at most {max_facts} facts" in healthy.text  # the default is back
+
+
+@pytest.mark.parametrize("kind", ["no_override", "empty_override"])
+def test_a_broken_packaged_default_gets_a_banner_and_no_control(
+    tmp_path, monkeypatch, kind
+):
+    """State C: the PACKAGED default fails validation and there is no (non-empty)
+    override, so a reset would delete the user's file and fix nothing.
+
+    The page still says what is wrong (the banner) and still routes the other
+    prompts, but it offers NO destructive control and NO editor — the two states
+    B and C share one `except PromptError`, and this row is what keeps a
+    "always offer the editor" mutant from handing out a reset that fixes nothing.
+
+    Drives C by patching the LIBRARY `default_prompt_text` (what `get_prompt`
+    resolves) to a non-empty text missing `{qid}` — the same house precedent as
+    `test_no_reset_is_offered_when_the_override_is_not_what_failed`. The two
+    kinds split two mutants: `no_override` kills "always-B" (hardcoded
+    `stored is not None`); `empty_override` kills dropping the helper's `or
+    None` (an empty file classifying as B).
+    """
+    import verinote.prompts.library as library
+    from verinote.prompts.library import prompt_override_path
+
+    monkeypatch.setattr(
+        library, "default_prompt_text", lambda prompt_id: "Translate the question."
+    )
+    c = _prompts_client(tmp_path)
+    override = prompt_override_path(tmp_path, "query-translation")
+    if kind == "empty_override":
+        override.parent.mkdir(parents=True, exist_ok=True)
+        override.write_text("   \n", encoding="utf-8")  # whitespace → normalizes empty
+
+    r = c.get("/prompts", params={"prompt": "query-translation"})
+
+    assert r.status_code == 200
+    assert "must include required placeholder {qid}" in r.text
+    assert 'name="prompt_text"' not in r.text  # no editor
+    assert 'action="/prompts/reset"' not in r.text  # no reset
+    assert 'value="extraction"' in r.text  # the selector still routes away
+
+
+def test_a_default_that_dies_between_reads_does_not_take_the_page_down(tmp_path, monkeypatch):
+    """The B branch reads the packaged default a SECOND time to seed the editor;
+    if that read raises (it succeeded moments earlier inside `get_prompt`), the
+    page degrades to the C shape instead of answering a bare 500.
+
+    Pins the inner `try/except` around the `Prompt(...)` construction. Patches
+    the APP global (`webapp.default_prompt_text`) — the B branch resolves it
+    there — NOT the library global `get_prompt` uses, which is why the two are
+    distinct targets (see `test_a_broken_packaged_default_...` above).
+    """
+    import verinote.web.app as webapp_mod
+    from verinote.prompts.library import prompt_override_path
+
+    def _die(prompt_id):
+        raise FileNotFoundError(3, "the default died mid-render")
+
+    monkeypatch.setattr(webapp_mod, "default_prompt_text", _die)
+    c = _prompts_client(tmp_path)
+    override = prompt_override_path(tmp_path, "extraction-limit-hint")
+    override.parent.mkdir(parents=True, exist_ok=True)
+    override.write_text("Keep it short.\n", encoding="utf-8")
+
+    r = c.get("/prompts", params={"prompt": "extraction-limit-hint"})
+
+    assert r.status_code == 200  # not a bare 500
+    assert "must include required placeholder {max_facts}" in r.text
+    assert 'name="prompt_text"' not in r.text  # degraded to C: no editor
+    assert 'action="/prompts/reset"' not in r.text  # …and no reset
+
+
+def test_a_refused_save_sharing_the_loads_complaint_says_it_once(tmp_path):
+    """The B/C branch composes the route's refusal with the load complaint, but
+    when they are the SAME string it must print it once, not twice.
+
+    Reachable: a stored override missing `{qid}` (state B) AND a submission that
+    also misses `{qid}`. `save_prompt_override`'s validation and `get_prompt`'s
+    override validation both raise the identical
+    `Datalog translation prompt must include required placeholder {qid}`, so
+    without the `error == load_error` dedupe the banner doubles. Kills deleting
+    that guard from the B/C branch — the A-branch dedupe is pinned separately by
+    `test_an_unknown_prompt_id_is_reported_once_not_twice`.
+    """
+    from verinote.prompts.library import prompt_override_path
+
+    c = _prompts_client(tmp_path)
+    override = prompt_override_path(tmp_path, "query-translation")
+    override.parent.mkdir(parents=True, exist_ok=True)
+    # Readable, missing {qid}: state B.
+    override.write_text("Translate the question into Datalog.\n", encoding="utf-8")
+
+    # Submitted text ALSO missing {qid} (and non-empty, so not "text is required").
+    r = c.post(
+        "/prompts",
+        data={
+            "prompt_id": "query-translation",
+            "prompt_text": "Return a query for the question.",
+        },
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 400
+    banner = re.search(r'<p class="error" role="alert">(.*?)</p>', r.text, re.S)
+    assert banner is not None
+    assert (
+        unescape(banner.group(1)).strip()
+        == "Datalog translation prompt must include required placeholder {qid}"
+    )
