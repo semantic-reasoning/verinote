@@ -13,6 +13,9 @@ from verinote.prompts import (
     render_prompt,
     save_prompt_override,
 )
+# From the SUBMODULE on purpose, the way `verinote/web/app.py` does: it is not in
+# `verinote/prompts/__init__.py`'s `__all__` (it joined `library.py` in #546).
+from verinote.prompts.library import readable_override_text
 from verinote.config import Config
 
 
@@ -165,3 +168,84 @@ def test_config_extraction_schema_hint_uses_kb_override(tmp_path):
 def test_unknown_prompt_id_is_rejected(tmp_path):
     with pytest.raises(PromptError):
         get_prompt(tmp_path, "../secret")
+
+
+def test_readable_override_text_is_total_and_mirrors_get_prompt(tmp_path):
+    """`readable_override_text` answers the B/C question `get_prompt` already decided.
+
+    Its one caller (`verinote/web/app.py::_prompts_page`) uses the answer to choose
+    whether to hand the user a Reset that deletes this file, so it is a TOTAL
+    function: no state of the filesystem below makes it RAISE, because a raise
+    there would take the page down instead of letting it choose (#546). Every
+    unreadable-or-irrelevant state answers `None`; the one readable state answers
+    the NORMALIZED text — the same string `get_prompt` would adopt for the same
+    file — so the editor seeded from it cannot diverge from the load.
+
+    The `None` for empty-after-normalization is the discriminator, not a detail:
+    `get_prompt` SKIPS such an override and then validates the packaged default,
+    so the page must classify a broken DEFAULT (no controls) rather than a stored
+    override (an editor + reset that would delete a file the loader never used).
+    """
+    override = prompt_override_path(tmp_path, "extraction")
+    override.parent.mkdir(parents=True, exist_ok=True)
+
+    # A missing path answers None and does not raise.
+    assert readable_override_text(override) is None
+
+    # A DIRECTORY at the path answers None and does not raise.
+    subdir = override.parent / "a-directory"
+    subdir.mkdir()
+    try:
+        assert readable_override_text(subdir) is None
+    finally:
+        subdir.rmdir()
+
+    # An EMPTY file answers None — the discriminator, not a detail.
+    override.write_text("", encoding="utf-8")
+    assert readable_override_text(override) is None
+
+    # A whitespace-only file normalizes to empty and answers None too.
+    override.write_text("   \n\t  ", encoding="utf-8")
+    assert readable_override_text(override) is None
+
+    # A readable file answers the NORMALIZED text: CRLF -> LF, then stripped —
+    # exactly `get_prompt`'s read clause (`_normalize_prompt_text`).
+    override.write_text("first line\r\nsecond line\r\n", encoding="utf-8")
+    assert readable_override_text(override) == "first line\nsecond line"
+
+    # A file this process cannot decode answers None and does not raise.
+    override.write_bytes(b"at most {max_facts} facts \xff\xfe and a bad byte")
+    assert readable_override_text(override) is None
+
+    # A mode-0o000 FILE answers None. The probe is the same runtime one the
+    # sibling file's local `_broken_override` uses: attempt the read, and if this
+    # user reads straight through the mode bit (root, or a filesystem that ignores
+    # it) the answer would be the text — skip rather than assert the wrong way.
+    override.write_text("at most {max_facts} facts\n", encoding="utf-8")
+    override.chmod(0o000)
+    try:
+        try:
+            override.read_text(encoding="utf-8")
+        except PermissionError:
+            pass
+        else:
+            pytest.skip("this user reads straight through mode 0o000")
+        assert readable_override_text(override) is None
+    finally:
+        override.chmod(0o600)
+
+    # A mode-0o000 PARENT directory answers None: stat and read are both blocked,
+    # and `is_file()` itself is the raise the docstring names. Restore the parent
+    # mode in `finally` — it runs even on the skip above — or the rest of this
+    # file (and pytest's tmp cleanup) could not touch the tree at all.
+    override.parent.chmod(0o000)
+    try:
+        try:
+            override.read_text(encoding="utf-8")
+        except PermissionError:
+            pass
+        else:
+            pytest.skip("this user reads straight through mode 0o000")
+        assert readable_override_text(override) is None
+    finally:
+        override.parent.chmod(0o700)
