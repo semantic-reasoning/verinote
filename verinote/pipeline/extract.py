@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+import logging
 import re
 import unicodedata
 from typing import Iterable
@@ -28,6 +29,9 @@ from verinote.store import ExtractionCallState, Store
 from verinote.store.duckdb_fact_terms import DuckDBFactTermStoreLockedError
 from verinote.store.fact_input import nfc_term, structural_term
 from verinote.text import nfc
+
+
+logger = logging.getLogger(__name__)
 
 
 class ExtractionJobBusyError(Exception):
@@ -722,14 +726,38 @@ def process_extraction_job(
         # The policy vanished mid-job — either before this chunk was claimed (the
         # gate above) or between its LLM call and its first insert (the boundary in
         # `_extract_chunk`). Rewind so the KB is recoverable, then let the error out.
-        _halt_extraction_job(
-            store,
-            job_id=job_id,
-            run_id=run_id,
-            source_path=str(source["path"]),
-            run_candidates=store.run_candidate_count(job_id=job_id, run_id=run_id),
-            run_chunks=run_chunks,
-        )
+        #
+        # THE REWIND ITSELF CAN FAIL, and #658's contract is stated once here and
+        # shared by the two clauses below. A statement inside the rewind that
+        # raises — the connection is autocommit, so the statements before it have
+        # landed — is a condition of the host, not the job's failure (#269): it is
+        # logged in full, and the ORIGINAL exception is what escapes, because the
+        # callers dispatch on its TYPE (web: the log-only clause above its
+        # `except Exception`; CLI: the clean rc in `cmd_sync` and `main`). The
+        # inner error is not merely demoted: once the handler completes, the
+        # re-raised original carries a clean `__context__`, so THIS LOG LINE IS
+        # THE INNER ERROR'S ONLY RECORD, and `exc_info=True` in
+        # `_log_rewind_failure` is load-bearing, not decorative. The catch is
+        # open on `Exception` on purpose — whatever a rewind statement raises is
+        # logged and demoted, and the original is dispatched: a host-condition
+        # handler never re-dispatches a new host condition. `BaseException`
+        # (Ctrl-C, SystemExit) keeps escaping unhandled, the chunk loop's policy.
+        # Where the rewind broke decides the resting state: `running`, with
+        # nothing committed (recover with `verinote sync --recover` or a UI
+        # boot, #242), or `pending`, which the resume loop continues (#524).
+        # Neither is written over on this path, and no number is synthesized to
+        # paper over the failure (#482).
+        try:
+            _halt_extraction_job(
+                store,
+                job_id=job_id,
+                run_id=run_id,
+                source_path=str(source["path"]),
+                run_candidates=store.run_candidate_count(job_id=job_id, run_id=run_id),
+                run_chunks=run_chunks,
+            )
+        except Exception:  # noqa: BLE001
+            _log_rewind_failure(job_id, run_id)
         raise
     except DuckDBFactTermStoreLockedError:
         # The sidecar was held by another process while this chunk was writing.
@@ -747,14 +775,20 @@ def process_extraction_job(
         # job holding finished chunks is continued through the retry claim
         # rather than rebuilt, so the LLM is not paid for them a second time.
         # The rewind is what keeps the next pass on this job and the record true.
-        _back_off_from_locked_sidecar(
-            store,
-            job_id=job_id,
-            run_id=run_id,
-            source_path=str(source["path"]),
-            run_candidates=store.run_candidate_count(job_id=job_id, run_id=run_id),
-            run_chunks=run_chunks,
-        )
+        # If the rewind below cannot write, the #658 contract on the
+        # `PolicyMissingError` clause above applies: the failure is logged in
+        # full, and the ORIGINAL is what the caller dispatches on.
+        try:
+            _back_off_from_locked_sidecar(
+                store,
+                job_id=job_id,
+                run_id=run_id,
+                source_path=str(source["path"]),
+                run_candidates=store.run_candidate_count(job_id=job_id, run_id=run_id),
+                run_chunks=run_chunks,
+            )
+        except Exception:  # noqa: BLE001
+            _log_rewind_failure(job_id, run_id)
         raise
     except PromptUnavailableError:
         # The focused-role prompt could not be loaded — an availability condition,
@@ -762,14 +796,20 @@ def process_extraction_job(
         # claim; this rewinds the JOB around it, the same two-level shape as the
         # two clauses above, so the next pass resumes with the budget intact once
         # the user fixes or removes the override (#269, #544).
-        _back_off_from_unavailable_prompt(
-            store,
-            job_id=job_id,
-            run_id=run_id,
-            source_path=str(source["path"]),
-            run_candidates=store.run_candidate_count(job_id=job_id, run_id=run_id),
-            run_chunks=run_chunks,
-        )
+        # If the rewind below cannot write, the #658 contract on the
+        # `PolicyMissingError` clause above applies: the failure is logged in
+        # full, and the ORIGINAL is what the caller dispatches on.
+        try:
+            _back_off_from_unavailable_prompt(
+                store,
+                job_id=job_id,
+                run_id=run_id,
+                source_path=str(source["path"]),
+                run_candidates=store.run_candidate_count(job_id=job_id, run_id=run_id),
+                run_chunks=run_chunks,
+            )
+        except Exception:  # noqa: BLE001
+            _log_rewind_failure(job_id, run_id)
         raise
 
     store.finish_extraction_job(job_id, call_state=call_state)
@@ -828,6 +868,29 @@ def _release_claimed_chunk(store: Store, chunk_id: int, exc: BaseException) -> N
         return
     message = str(exc) if isinstance(exc, LLMError) else f"{type(exc).__name__}: {exc}"
     store.mark_chunk_failed(chunk_id, message)
+
+
+def _log_rewind_failure(job_id: int, run_id: int) -> None:
+    """The #658 record for a rewind that could not write — and its only record.
+
+    Called from the three rewind handlers' `except Exception` while that handler's
+    error is still in flight, so `exc_info=True` carries its full traceback. When
+    the clause's `raise` then re-raises the ORIGINAL, that original carries a
+    clean `__context__`: the inner error leaves no trace on the exception chain,
+    and no write lands in the KB (the store's statement is what failed). The
+    callers are a daemon worker thread and a process that is exiting, and neither
+    has anywhere to re-raise to — so this log line is the whole of the record,
+    and `exc_info=True` is load-bearing: without it the record names the job but
+    not the failure. See the contract comment on the `except PolicyMissingError`
+    clause in `process_extraction_job`, where #658 states the decision once.
+    """
+    logger.error(
+        "rewind failed for extraction job %s (run %s); the job may be left "
+        "running — recover with `verinote sync --recover` or a UI boot",
+        job_id,
+        run_id,
+        exc_info=True,
+    )
 
 
 def _halt_extraction_job(
