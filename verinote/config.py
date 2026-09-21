@@ -362,6 +362,61 @@ def save_app_theme(theme: str) -> None:
     _write_json_atomic(app_config_path(), {**existing, "theme": theme})
 
 
+def read_form_webhook_config() -> dict:
+    """Return the machine-wide form webhook URL and secret for generated Apps Script."""
+    config = read_app_config()
+    url = config.get("form_webhook_url")
+    secret = config.get("form_webhook_secret")
+    return {
+        "form_webhook_url": url.strip() if isinstance(url, str) and url.strip() else None,
+        "form_webhook_secret": secret.strip() if isinstance(secret, str) and secret.strip() else None,
+    }
+
+
+def save_form_webhook_config(*, url: str | None, secret: str | None) -> None:
+    """Persist one form webhook URL and secret in app config, never inside a KB."""
+    cleaned_url = url.strip() if isinstance(url, str) else None
+    cleaned_secret = secret.strip() if isinstance(secret, str) else None
+    existing = read_app_config()
+    payload = dict(existing)
+    if cleaned_url:
+        payload["form_webhook_url"] = cleaned_url
+    else:
+        payload.pop("form_webhook_url", None)
+    if cleaned_secret:
+        payload["form_webhook_secret"] = cleaned_secret
+    else:
+        payload.pop("form_webhook_secret", None)
+    _write_json_atomic(app_config_path(), payload)
+
+
+def generate_apps_script_url(*, form_webhook_url: str | None, form_webhook_secret: str | None) -> str:
+    """Build a copy-ready Apps Script that posts form payloads to the public listener."""
+    url = (form_webhook_url or "https://example.com/forms/webhook").strip()
+    secret = form_webhook_secret or "replace-with-form-webhook-secret"
+    return (
+        "function onFormSubmit(e) {\n"
+        "  const payload = JSON.stringify({\n"
+        "    formId: e.range.getSheet().getParent().getId(),\n"
+        "    response: e.namedValues\n"
+        "  });\n"
+        "  const signature = Utilities.computeHmacSha256Signature(payload, \"" + secret + "\");\n"
+        "  const headers = {\n"
+        "    'Content-Type': 'application/json',\n"
+        "    'X-Verinote-Signature': Utilities.base64Encode(signature)\n"
+        "  };\n"
+        "  UrlFetchApp.fetch(\"" + url + "\", {\n"
+        "    muteHttpExceptions: true,\n"
+        "    method: 'post',\n"
+        "    contentType: 'application/json',\n"
+        "    headers: headers,\n"
+        "    payload: payload\n"
+        "  });\n"
+        "  return null;\n"
+        "}\n"
+    )
+
+
 def active_root() -> Path | None:
     """Return the selected KB root, or None when the web UI should ask."""
     env_root = os.environ.get("VERINOTE_ROOT")
@@ -839,6 +894,8 @@ class Config:
     # mode, `asdict`, and the fact that a frozen dataclass compares on this field.
     api_key: str | None = field(repr=False)
     base_url: str | None
+    form_webhook_url: str | None = None
+    form_webhook_secret: str | None = field(repr=False, default=None)
     llm_timeout_seconds: float = 600.0
     extraction_chunk_chars: int = 300
     extraction_chunk_overlap_chars: int = 40
@@ -897,6 +954,7 @@ class Config:
             saved.get("auto_accept_recommendations"),
             False,
         )
+        form_webhook = read_form_webhook_config()
         stored_keys, credentials_read_error = _read_credentials()
         state, api_key = api_key_source(provider, stored_keys, credentials_read_error)
         # The halt is exactly the state that says we cannot tell — every other
@@ -910,6 +968,8 @@ class Config:
             model=model,
             api_key=api_key,
             base_url=base_url,
+            form_webhook_url=form_webhook["form_webhook_url"],
+            form_webhook_secret=form_webhook["form_webhook_secret"],
             llm_timeout_seconds=_llm_timeout_seconds(),
             extraction_chunk_chars=chunk_chars,
             extraction_chunk_overlap_chars=chunk_overlap,

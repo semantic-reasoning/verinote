@@ -39,13 +39,16 @@ from verinote.config import (
     api_key_source,
     credentials_path,
     delete_credential,
+    generate_apps_script_url,
     provider_key_env_var,
+    read_form_webhook_config,
     save_credential,
     assert_credentials_intact,
     assert_settings_intact,
     normalize_provider,
     save_active_root,
     save_app_theme,
+    save_form_webhook_config,
     save_settings,
 )
 from verinote.kb_location import KBLocationError, assert_kb_root_is_safe_to_create
@@ -3650,6 +3653,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             except PolicyMissingError:
                 theme_editable = False
                 credentials_editable = False
+        form_webhook = read_form_webhook_config()
         return templates.TemplateResponse(
             request,
             "settings.html",
@@ -3660,6 +3664,12 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 "provider_label": PROVIDER_LABELS.get(c.provider, c.provider),
                 "model": c.model,
                 "base_url": c.base_url or "",
+                "form_webhook_url": form_webhook["form_webhook_url"] or "",
+                "form_webhook_secret": form_webhook["form_webhook_secret"] or "",
+                "form_webhook_script": generate_apps_script_url(
+                    form_webhook_url=form_webhook["form_webhook_url"],
+                    form_webhook_secret=form_webhook["form_webhook_secret"],
+                ),
                 "extraction_chunk_chars": c.extraction_chunk_chars,
                 "extraction_chunk_overlap_chars": c.extraction_chunk_overlap_chars,
                 "extraction_max_facts_per_chunk": c.extraction_max_facts_per_chunk,
@@ -3904,6 +3914,20 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         )
         # reload from the app's own root so the change takes effect on next sync
         app.state.cfg = Config.for_root(cfg.root)
+        return RedirectResponse("/settings", status_code=303)
+
+    @app.post("/settings/form-webhook", response_class=HTMLResponse)
+    def save_form_webhook_route(
+        request: Request,
+        form_webhook_url: str = Form(""),
+        form_webhook_secret: str = Form(""),
+    ):
+        save_form_webhook_config(
+            url=form_webhook_url.strip() or None,
+            secret=form_webhook_secret.strip() or None,
+        )
+        if app.state.cfg is not None:
+            app.state.cfg = Config.for_root(app.state.cfg.root)
         return RedirectResponse("/settings", status_code=303)
 
     @app.post("/settings/credentials", response_class=HTMLResponse)
