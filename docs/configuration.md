@@ -278,6 +278,32 @@ a regional endpoint stays reachable. `claudecli` reads no endpoint at all: the
 `claude` binary follows its own configuration, which is the documented exception
 for this provider.
 
+## Public webhook tunnel for Google Forms
+
+Do not expose the main verinote web UI. The app is intentionally meant to stay on
+loopback, and the web UI is not authenticated by default; tunnelling the main
+port would expose the whole KB and all its review state to the internet. The
+public URL belongs only to the dedicated webhook listener port for form POSTs,
+not to the main verinote port.
+
+Use a fixed tunnel rather than a temporary URL. `cloudflared` with a fixed domain
+or `Tailscale Funnel` are the intended options; a temporary URL changes every
+restart, so Apps Script has to be edited every time the tunnel rotates. The public
+URL is configured in verinote Settings and then copied into the Apps Script code
+that verinote generates for the form (#509). This is an opt-in feature: form
+integration still works through a 1–2 minute polling fallback, and real-time
+delivery is convenience rather than a prerequisite.
+
+If the tunnel is turned off, the webhook never reaches verinote, but polling does
+not stop. The result is delay, not data loss: nothing is dropped just because the
+inbound listener is unavailable, and the next polling cycle picks it up.
+
+The security wording should stay precise. The HMAC proves only that
+"someone who can edit the form sent this"; it does not prove that "Google sent
+it". A forged payload still has a bounded impact: the worst realistic outcome is
+one unnecessary sheet read, not full KB compromise. Document that plainly so the
+risk is scaled to the actual exposure.
+
 ## Auto-accept
 
 `auto_accept_recommendations` is the one setting that changes what verinote
