@@ -16,9 +16,12 @@ from verinote.config import (
     active_root,
     app_config_path,
     assert_settings_intact,
+    generate_apps_script_url,
     read_app_config,
+    read_form_webhook_config,
     read_settings,
     save_active_root,
+    save_form_webhook_config,
     save_settings,
 )
 from verinote.llm.base import LLMError
@@ -238,6 +241,26 @@ def test_padded_api_key_env_is_trimmed(tmp_path, monkeypatch):
     # accidental side effect of routing through _pick.
     monkeypatch.setenv("VERINOTE_API_KEY", "  sk-secret  ")
     assert Config.for_root(tmp_path).api_key == "sk-secret"
+
+
+def test_form_webhook_config_round_trip(tmp_path):
+    save_form_webhook_config(url="https://example.com/forms/webhook", secret="very-secret")
+    config = read_form_webhook_config()
+    assert config == {
+        "form_webhook_url": "https://example.com/forms/webhook",
+        "form_webhook_secret": "very-secret",
+    }
+    assert "very-secret" in app_config_path().read_text(encoding="utf-8")
+
+
+def test_generate_apps_script_url_uses_public_listener_and_secret():
+    script = generate_apps_script_url(
+        form_webhook_url="https://example.com/forms/webhook",
+        form_webhook_secret="very-secret",
+    )
+    assert "https://example.com/forms/webhook" in script
+    assert "very-secret" in script
+    assert "computeHmacSha256Signature" in script
 
 
 def test_active_root_uses_env_first(tmp_path, monkeypatch):

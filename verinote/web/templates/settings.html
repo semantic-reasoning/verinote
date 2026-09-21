@@ -87,6 +87,24 @@
   <button class="btn" type="submit">Save</button>
 </form>
 
+<h2>Form webhook</h2>
+<p class="muted">Generate a copy-ready Apps Script for a Google Form. Use the fixed public URL for the dedicated webhook listener only; do not tunnel the main verinote web UI.</p>
+<form class="settings" action="/settings/form-webhook" method="post">
+  <label>Public webhook URL
+    <input type="url" name="form_webhook_url" value="{{ form_webhook_url }}" placeholder="https://example.com/forms/webhook">
+  </label>
+  <label>Trigger secret
+    <input type="text" name="form_webhook_secret" value="{{ form_webhook_secret }}" autocomplete="off" spellcheck="false" placeholder="leave empty to clear it">
+  </label>
+  <button class="btn" type="submit">Save webhook</button>
+</form>
+<p class="muted">This secret is intentionally rendered in the generated script because it is not a credential for the app itself: it lives in the form's Apps Script and is only meant to gate a form editor's webhook trigger.</p>
+{% if form_webhook_url and form_webhook_secret %}
+<pre class="code-block">{{ form_webhook_script }}</pre>
+{% else %}
+<p class="muted">Save a public URL and a trigger secret to generate the Apps Script you can paste into the form's script editor.</p>
+{% endif %}
+
 <h2>API keys</h2>
 {% if credentials_halting %}
 <p class="warn" role="alert">Your saved API keys could not be read, so verinote
