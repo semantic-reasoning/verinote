@@ -103,6 +103,36 @@ inside the working tree destroys the KB and its audit log with no undo.
 Moving the default root outside the working tree is tracked in
 [#185](https://github.com/semantic-reasoning/verinote/issues/185).
 
+## Public form-webhook tunnel (opt-in)
+
+Only the webhook listener port should be exposed to the internet. Do not attach a
+public tunnel to the main verinote web UI port. The main app is intentionally
+local-only and unauthenticated, so a tunnel there would make the whole KB browser-
+accessible without any login. The listener port is the one dedicated to form
+webhooks; the UI stays local.
+
+For the real-time form path, prefer a fixed public URL over a temporary one:
+
+- `cloudflared` with a fixed hostname / custom domain, or
+- `Tailscale Funnel` with a stable public route
+
+Temporary URLs are not a good fit for Apps Script because they change when the
+session restarts, which means editing the Apps Script every time. Save the fixed
+public URL in verinote Settings, then keep the generated Apps Script code in sync
+with that value (#509). The tunnel is optional; without it, form integration keeps
+working by polling every 1–2 minutes, and the delay is the only change.
+
+When the tunnel is disabled, webhook deliveries stop reaching verinote. Polling
+continues, so the same form submissions eventually appear; no data is lost, and
+there is no need to restart the service to resume normal operation once the tunnel
+is back up. This is a delay-tolerant setup, not a realtime-only one.
+
+Security note: the HMAC does not authenticate the sender as Google. It authenticates
+that the request was signed by someone who can edit the form, and the worst case of
+a forged request is a single unnecessary sheet read. That is the right mental model
+for the feature: it is a controlled webhook endpoint for a form editor, not a public
+admin API.
+
 ## Windows: don't launch verinote from an elevated terminal
 
 Opening a KB root the process cannot write to fails with `sqlite3.OperationalError:
