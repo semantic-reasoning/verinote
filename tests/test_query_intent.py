@@ -552,6 +552,87 @@ def test_the_possessive_shape_splits_at_the_last_possessive():
     assert intent.relation_candidates == ("manager",)
 
 
+# --- #517 finish: the three captured-field bounds the of-label pin left unguarded ---
+
+_BOUND_LABEL_IN = "primary contact email addresses of Region"     # 41 characters
+_BOUND_LABEL_OUT = "primary contact email addresses of Regions"   # 42 characters
+"""The possessive-label bound, one row each side of `[A-Za-z] + {0,40}`. The `of`
+sitting inside the label is deliberate: it is the fall-through riskiest row,
+because it is the only one of the two that the `of` shape could claim, and it
+still refuses. Built from the same pair rows 3-4 of
+`test_the_of_shape_splits_where_the_greedy_label_stops` pin for the `of` label,
+so the two bounds read as twins.
+"""
+_BOUND_ENTITY_IN = "Sample " * 14 + "Sam"    # 101 characters
+_BOUND_ENTITY_OUT = "Sample " * 14 + "Samp"  # 102 characters
+"""The entity bound, one row each side of `[A-Z] + {0,100}`. Built to length
+rather than spelled: no 101-character word exists to spell it with, and a
+hand-written line would rot its own length. 14 repetitions of `Sample ` (98)
+plus a three/four-letter tail land on 101/102, first character an uppercase.
+"""
+
+
+def test_the_captured_field_bounds_are_pinned_at_their_ceiling():
+    """The three captured-field bounds that #517's pinning left are the ceiling, not a sample.
+
+    `test_the_of_shape_splits_where_the_greedy_label_stops` rows 3-4 pin the `of`
+    label's `[A-Za-z] + {0,40}` from both sides: narrowing the cap to `{0,39}`
+    moves the 41-character row, widening it to `{0,41}` moves the 42-character
+    one, and nothing else in the suite catches either. The sibling bounds -- the
+    possessive label's same `{0,40}`, and the two entities' `{0,100}` -- decide
+    match vs no-match at 41/42 and 101/102 characters, and before this test
+    nothing in the suite sat within reach of them: the six bound mutants
+    (`{0,40}->{0,39}` and `->{0,41}` on the possessive label, `{0,100}->{0,99}`
+    and `->{0,101}` on the possessive entity and the `of` entity) each left
+    `tests/test_query_intent.py` and `tests/test_query.py` fully green (281
+    passed). A harmonising edit -- dropping any of them to a rounder number --
+    would move real lookups and no test would fire. That is #517's own guard
+    clause, applied to the three bounds its first pinning pass left.
+
+    Each flip reddens exactly one row of this test, one-to-one: narrowing a
+    bound reddens its in-bounds row (the lookup stops matching), widening it
+    reddens its out-of-bounds row (the refusal becomes a lookup). The out-of-
+    bounds rows are refused, not re-split: a 42-character possessive label and
+    a 102-character entity match no attribute shape, and no later branch claims
+    them either -- the possessive rows carry an apostrophe the `of` label class
+    `[A-Za-z0-9 _-]` cannot hold, and the `of` rows carry no `'s` for the
+    possessive shape to split on -- so they land in `unknown_or_unsupported`.
+    The refusal is the pin.
+
+    The subjects are asserted exactly, not by length, so a bound edit that
+    re-splits the in-bounds row onto a different subject cannot pass silently
+    behind the kind assertion.
+
+    Verified against synthetic fixtures only. Refs #517.
+    """
+    assert len(_BOUND_LABEL_IN) == 41 and len(_BOUND_LABEL_OUT) == 42
+    assert len(_BOUND_ENTITY_IN) == 101 and len(_BOUND_ENTITY_OUT) == 102
+
+    # the possessive label's `[A-Za-z] + {0,40}`
+    intent = deterministic_query_intent("What is Sample Org's %s?" % _BOUND_LABEL_IN)
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.subject == IntentTarget("entity", "Sample Org")
+    assert intent.relation_candidates == (_BOUND_LABEL_IN,)
+    intent = deterministic_query_intent("What is Sample Org's %s?" % _BOUND_LABEL_OUT)
+    assert intent.kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED
+
+    # the possessive entity's `[A-Z] + {0,100}`
+    intent = deterministic_query_intent("What is %s's owner?" % _BOUND_ENTITY_IN)
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.subject == IntentTarget("entity", _BOUND_ENTITY_IN)
+    assert intent.relation_candidates == ("owner",)
+    intent = deterministic_query_intent("What is %s's owner?" % _BOUND_ENTITY_OUT)
+    assert intent.kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED
+
+    # the `of` entity's `[A-Z] + {0,100}`
+    intent = deterministic_query_intent("What is the owner of %s?" % _BOUND_ENTITY_IN)
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.subject == IntentTarget("entity", _BOUND_ENTITY_IN)
+    assert intent.relation_candidates == ("owner",)
+    intent = deterministic_query_intent("What is the owner of %s?" % _BOUND_ENTITY_OUT)
+    assert intent.kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED
+
+
 # --- #559: the English attribute head alternation, pinned at its current members ---
 
 _ENGLISH_POSSESSIVE_HEAD_CURRENT = {
