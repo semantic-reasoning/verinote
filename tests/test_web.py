@@ -4725,6 +4725,7 @@ def test_settings_page_renders(tmp_path):
     assert 'name="auto_accept_recommendations"' in r.text
     assert 'name="relation_aliases_text"' in r.text
     assert 'href="/prompts"' in r.text
+    assert "not a read-only sheet fetch" in r.text
 
 
 def test_settings_saves_app_theme_across_kb_switches(tmp_path, monkeypatch):

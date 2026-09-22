@@ -89,6 +89,7 @@
 
 <h2>Form webhook</h2>
 <p class="muted">Generate a copy-ready Apps Script for a Google Form. Use the fixed public URL for the dedicated webhook listener only; do not tunnel the main verinote web UI.</p>
+<p class="muted">This is not a read-only sheet fetch: each submitted form response is sent to the configured LLM provider for extraction into facts. If you do not want that, turn this feature off or use a provider that keeps data local.</p>
 <form class="settings" action="/settings/form-webhook" method="post">
   <label>Public webhook URL
     <input type="url" name="form_webhook_url" value="{{ form_webhook_url }}" placeholder="https://example.com/forms/webhook">
