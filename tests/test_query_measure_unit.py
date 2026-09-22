@@ -1184,9 +1184,6 @@ def test_a_full_width_number_states_no_quantity():
         ("샘플계약의 기간은 몇 개월인가?", "03/15일", ("개월", "일"), "March 15th, no year"),
         ("샘플사업의 가격은 몇 원인가?", "이천만원 (15,000달러)", ("원", "달러"),
          "20 million won, in Sino-Korean numerals"),
-        ("샘플사업의 기간은 몇 년인가?", "20여년 3주", ("년", "주"), "twenty-odd years"),
-        ("샘플사업의 가격은 몇 원인가?", "3만여원 (15,000달러)", ("원", "달러"),
-         "thirty-odd thousand won"),
         ("샘플작업의 소요시간은 몇 시간인가?", "한 시간 30분", ("시간", "분"),
          "an hour and a half, in its ordinary spelling"),
         ("샘플사업의 기간은 몇 년인가?", "반년 3주", ("년", "주"), "half a year"),
@@ -1218,8 +1215,9 @@ def test_known_false_unit_statements_are_recorded_not_fixed(
     scan could not spell while adding one it still cannot. What is left of that
     cause is what `_VALUE_MEASUREMENT_RELAXED` states as a rule rather than a
     list: SOME decimal digit must stand before the asked unit with nothing
-    between them but digits, separators, class magnitudes and whitespace. Some
-    DIGIT and not every digit -- `1경5천조원` is read on its `5` though its `1`
+    between them but digits, separators, class magnitudes, whitespace and,
+    since #464, the one gap approximation after the magnitude run.
+    Some DIGIT and not every digit -- `1경5천조원` is read on its `5` though its `1`
     is blocked, so a value is out of reach ON THIS CONDITION only when every
     digit in it fails -- it may still go unread for one of the two reasons
     `_VALUE_MEASUREMENT_RELAXED` names, which satisfy the condition and are not
@@ -1228,10 +1226,15 @@ def test_known_false_unit_statements_are_recorded_not_fixed(
     why the noun is in the sentence and not left to the witness. `이천만원`,
     `한 시간 30분` and `반년 3주` have no digit before the unit at all -- the
     last has no numeral in it either, which is why the condition is not "a
-    numeral the scan cannot spell" -- while `20여년` and `3만여원` have one
-    whose gap is blocked. All five are older than #451 and untouched by it;
-    successive drafts of this docstring named one class, then two, and the
-    rows are here so the third cannot be left out silently again. Beside them
+    numeral the scan cannot spell" -- and they are all older than #451 and
+    untouched by it. The fourth cause the successive drafts of this
+    docstring chased, a blocked gap, #464 closed for the single-syllable
+    approximator: `20여년` and `3만여원` are read on both scans since then
+    and their two rows left this table for
+    `test_a_number_unit_approximator_in_the_gap_is_read`. What the gap
+    still declines is a magnitude outside the class (`1경원`) or the
+    approximator standing between two magnitudes (`3천여만원`), the
+    residue `korean_measure_unit_mismatch` names. Beside them
     sit the rows whose asked-unit SPELLING the
     table excludes on purpose, which is a different cause and is argued in
     `_MEASUREMENT_UNIT_SPELLINGS`. So this
@@ -1831,7 +1834,7 @@ def test_the_widened_number_can_only_silence(monkeypatch):
     so no spelling occurrence can start inside a number, no number can extend
     across one, and at every start where the narrower pattern matched the wider
     one matches the same span and unit. Add a spelling that opens with a digit,
-    a comma, a dot, whitespace or a magnitude word and the argument fails here
+    a comma, a dot, whitespace, a magnitude word or the gap approximator and the argument fails here
     rather than silently.
 
     The premise is asserted in two halves because a literal set cannot state
@@ -1839,7 +1842,7 @@ def test_the_widened_number_can_only_silence(monkeypatch):
     enumerable by hand: `\\d` is every Unicode decimal digit rather than the
     ASCII ten, and `\\s` reaches `\\r`, `\\f`, `\\v` and the non-breaking space,
     which a hand-typed `" \\t\\n"` would miss. The literal half is the closed
-    part -- the comma, the dot, and the magnitude class read live.
+    part -- the comma, the dot, the magnitude class and the gap approximator, all read live.
 
     The outcome half sweeps the two patterns against each other through
     `_value_states_asked_unit` itself rather than a copy of it. The corpus
@@ -1852,11 +1855,12 @@ def test_the_widened_number_can_only_silence(monkeypatch):
     from verinote.pipeline.query_measure_unit import (
         _MEASUREMENT_FAMILY,
         _MEASUREMENT_UNIT_SPELLINGS,
+        _GAP_APPROXIMATORS,
         _SINO_KOREAN_MAGNITUDES,
         _value_states_asked_unit,
     )
 
-    literal_prefix_chars = set(",.") | set(_SINO_KOREAN_MAGNITUDES)
+    literal_prefix_chars = set(",.") | set(_SINO_KOREAN_MAGNITUDES) | set(_GAP_APPROXIMATORS)
     assert [
         s for s in _MEASUREMENT_UNIT_SPELLINGS if s[0] in literal_prefix_chars
     ] == []
@@ -1906,6 +1910,126 @@ def test_the_widened_number_can_only_silence(monkeypatch):
         if after and not before
     )
     assert gained > 0, "the shipped scan must read strictly more somewhere"
+def test_a_number_unit_approximator_in_the_gap_is_read():
+    """#464: `여` between a number and its unit is read on both scans.
+
+    The headline defect: a value that plainly states the asked unit was told it
+    states a neighbour's, because the gap the two scans read through admitted
+    digits, separators, magnitudes and whitespace -- and not the approximator
+    that stands between the number and the unit. The two rows this fix retired
+    from `test_known_false_unit_statements_are_recorded_not_fixed` are the first
+    four assertions, and the non-vacuity half is that the unit is now in the
+    REPORTED list, so a silence that arrived by the reporting scan going blind
+    would fail here.
+
+    The classifier twin is the same defect one table over: `20여명, 3주` asked
+    in `명` was told the value states weeks while the `20여명` it really states
+    stood unread a syllable away, and `20명, 3주` beside it was silent.
+
+    What the fix does not reach is pinned, not assumed, each for the reason
+    stated beside it: a `여` between two magnitudes, the unspaced twin, and the
+    two readings the fix retires by silence.
+    """
+    from verinote.pipeline.query_measure_unit import (
+        _CLASSIFIER_COUNTERS,
+        _GAP_APPROXIMATORS,
+        _MEASUREMENT_UNIT_SPELLINGS,
+        _value_classifier_count,
+        _value_measure_units,
+        _value_states_asked_unit,
+        _value_states_classifier,
+        korean_measure_unit_mismatch,
+    )
+
+    # The swallow premise, both halves, over the live tables.
+    assert [
+        s
+        for s in _MEASUREMENT_UNIT_SPELLINGS
+        if s == _GAP_APPROXIMATORS or s.startswith(_GAP_APPROXIMATORS)
+    ] == []
+    assert [
+        c
+        for c in _CLASSIFIER_COUNTERS
+        if c == _GAP_APPROXIMATORS or c.startswith(_GAP_APPROXIMATORS)
+    ] == []
+
+    # Suppression: the asked unit is now stated, so the caveat ends.
+    for question, value in [
+        ("샘플사업의 기간은 몇 년인가?", "20여년 3주"),
+        ("샘플사업의 기간은 몇 년인가?", "20여 년 3주"),
+        ("샘플사업의 가격은 몇 원인가?", "3만여원 (15,000달러)"),
+        ("샘플작업의 소요는 몇 일인가?", "100여 일 소요, 3주"),
+        ("샘플사업의 참여자는 몇 명인가?", "20여명, 3주"),
+    ]:
+        assert korean_measure_unit_mismatch(question, value) is None, value
+
+    # The non-vacuity half: the unit is in the reported list, not hidden.
+    assert _value_measure_units("20여년") == (("YEAR", "년"),)
+    assert _value_measure_units("3만여원") == (("KRW", "원"),)
+    assert _value_states_asked_unit("20여년 3주", "YEAR") is True
+    assert _value_states_classifier("20여명, 3주", "명") is True
+    assert _value_classifier_count("20여명, 3주") == "명"
+
+    # Reporting side: asked in a different unit of the family, the leading
+    # quantity is named now rather than the trailing one -- the rename the
+    # issue warned about, measured in the more-accurate direction.
+    assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 개월인가?", "20여년 3주") == (
+        "개월",
+        "년",
+    )
+    assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 일인가?", "20여년 3개월") == (
+        "일",
+        "년",
+    )
+    assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 개월인가?", "100여일 20여년") == (
+        "개월",
+        "일",
+    )
+
+    # The bare-quantity gains: the value plainly states the unit and the old
+    # code under-read it, including the spaced form.
+    assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 주인가?", "20여년") == (
+        "주",
+        "년",
+    )
+    assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 주인가?", "20 여년") == (
+        "주",
+        "년",
+    )
+    assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 개월인가?", "매월 20여일 정산") == (
+        "개월",
+        "일",
+    )
+
+    # The boundaries the fix does not reach.
+    # A `여` between two magnitudes still blocks the gap, the class `1경원`
+    # already stands in for.
+    assert korean_measure_unit_mismatch("샘플사업의 가격은 몇 원인가?", "3천여만원 100달러") == (
+        "원",
+        "달러",
+    )
+    # The unspaced twin keeps the no-approximator twin's reading: the leading
+    # unit a digit follows is refused by the lookahead, and a 2-4 digit leading
+    # number is a plausible calendar year to the #454 guard, so the weeks are
+    # named. The spacing asymmetry is the one `20년3주` already had, not one
+    # this fix introduces.
+    assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 개월인가?", "20여년3주") == (
+        "개월",
+        "주",
+    )
+    assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 개월인가?", "20년3주") == (
+        "개월",
+        "주",
+    )
+    # The two readings the fix retires by silence: the `분` of `10여분 의복`
+    # is the honorific and the `주` of `20여주` are shares -- the same accepted
+    # ambiguity the record table carries for `5분` and `100주`, now on the
+    # silent side rather than the naming one.
+    assert korean_measure_unit_mismatch("샘플사업의 소요는 몇 분인가?", "10여분 의복, 3주") is None
+    assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 주인가?", "20여주, 3개월") is None
+
+
+
 
 
 def test_the_magnitude_run_needs_no_inner_digits():
@@ -2413,7 +2537,7 @@ def test_a_shadow_word_is_one_the_reporting_scan_already_refuses():
     one character earlier and dodge a guard placed after the number -- it cannot,
     because no spelling begins with any character the number itself consumes, so
     there is no earlier start at which the unit group still matches. That is all
-    four classes and not three: `[\\d,.\\s]` plus `_SINO_KOREAN_MAGNITUDES`, and
+    five classes and not four: `[\\d,.\\s]` plus `_SINO_KOREAN_MAGNITUDES` and `_GAP_APPROXIMATORS`, and
     the separators belong there because `1,000년` and `1.5주년` retry inside the
     digit run rather than before it. Add a spelling opening with any of them and
     this fails here rather than silently. `180년대`, `1980년대`,
@@ -2421,6 +2545,7 @@ def test_a_shadow_word_is_one_the_reporting_scan_already_refuses():
     argument is about, and they read no unit.
     """
     from verinote.pipeline.query_measure_unit import (
+        _GAP_APPROXIMATORS,
         _MEASUREMENT_UNIT_SPELLINGS,
         _SINO_KOREAN_MAGNITUDES,
         _UNIT_SHADOW_WORDS,
@@ -2439,6 +2564,7 @@ def test_a_shadow_word_is_one_the_reporting_scan_already_refuses():
         or s[0].isspace()
         or s[0] in ",."
         or s[0] in _SINO_KOREAN_MAGNITUDES
+        or s[0] in _GAP_APPROXIMATORS
     ] == []
     for value in ("180년대", "1980년대", "1.5주년", "2백주주", "3  분기", "3\xa0secondary"):
         assert [m.group("unit") for m in _VALUE_MEASUREMENT_RELAXED.finditer(value)] == []

@@ -163,8 +163,42 @@ state no unit here: with the suffix taken, the next character is Hangul and the
 lookahead refuses it; without it, `간` is Hangul and the lookahead refuses that.
 """
 
+_GAP_APPROXIMATORS = "여"
+"""The single-syllable approximator a number may wear in the gap, before the unit.
+
+#464: `여` stands between a number and its unit -- `20여년`, `3만여원`,
+`100여 일` -- the position the suffixes of `_UNIT_SUFFIX_MEMBERS` do not hold,
+which stand after the unit. The same syllable after the unit is not a suffix
+member, so the suffix side needs nothing: `매월 15일 여` is not Korean, and
+`3개월여` is refused by the reporting scan's trailing lookahead, which is
+already harmless on the suppression side. Admitting it to the gap is a position
+judgement, not a vocabulary one: reading it there can only add readings of a
+quantity that states the unit beside it, on every scan that carries it.
+
+The swallow premise, checked rather than assumed: no spelling in
+`_MEASUREMENT_UNIT_SPELLINGS` is `여` or begins with it, which
+`test_the_widened_number_can_only_silence` and
+`test_a_shadow_word_is_one_the_reporting_scan_already_refuses` re-derive from
+the live table; no member of `_CLASSIFIER_COUNTERS` is `여` or begins with it,
+which `test_a_number_unit_approximator_in_the_gap_is_read` states; and
+`_UNIT_SHADOW_WORDS` holds no word it begins, so the guard a relaxed match
+stands before is reached on the same text it reached before for every value
+that does not carry the gap syllable. A syllable consumed here cannot be the
+first of a unit or counter the scan would otherwise read.
+
+One occurrence, after the magnitude run, and no more: `여여` is not Korean, so
+the group is optional and singular in every pattern that carries it, and the
+boundary is stated rather than widened. A `여` standing BETWEEN two magnitudes
+(`3천여만원`) escapes exactly as a magnitude outside the class does
+(`1경원`), and the multi-syllable approximators that attach to the unit
+instead (`20년 남짓`) already read where they stand, which is why the open
+class is one syllable and not a list.
+"""
+
 _VALUE_MEASUREMENT = re.compile(
-    r"[0-9][0-9,.]*\s*[만억천조]?\s*(?P<unit>"
+    r"[0-9][0-9,.]*\s*[만억천조]?\s*"
+    r"(?:" + _GAP_APPROXIMATORS + r")?\s*"
+    r"(?P<unit>"
     + "|".join(re.escape(s) for s in _MEASUREMENT_UNIT_SPELLINGS)
     + r")" + _UNIT_SUFFIX + r"(?![가-힣0-9A-Za-z])"
 )
@@ -173,7 +207,13 @@ magnitude words, and a unit spelling.
 
 `[만억천조]?` is one character, not a run, so `3만원` is read and `2천만원` is
 not; it is those four and no others, so `2백만원` is not either; and the digits
-are `[0-9]` rather than `\\d`, so `３년` is not. All three of those bounds are
+are `[0-9]` rather than `\\d`, so `３년` is not. Since #464 the gap may also
+carry one syllable of `_GAP_APPROXIMATORS`, after the magnitude and before the
+unit, so `20여년`, `3만여원` and `100여 일` are read; the premise that it
+cannot swallow a spelling is in that constant, and the trailing lookahead
+applies after it unchanged, which is what keeps `20여년3주` refusing the
+leading `년` on the same ground the no-approximator twin refuses it.
+All three of those bounds are
 narrower than `_VALUE_MEASUREMENT_RELAXED`'s, which is a statement about the
 NUMBER and not about the two patterns as wholes: since #453 the relaxed one
 carries a refusal of its own in `_UNIT_SHADOW_GUARD`, one this pattern already
@@ -299,6 +339,7 @@ this exclusion against the other fifteen.
 
 _VALUE_CLASSIFIER_COUNT = re.compile(
     r"[0-9][0-9,.]*\s*[만억천조]?\s*"
+    r"(?:" + _GAP_APPROXIMATORS + r")?\s*"
     r"(?P<counter>" + "|".join(re.escape(s) for s in _CLASSIFIER_COUNTERS) + r")"
     r"(?![가-힣0-9A-Za-z])"
 )
@@ -309,7 +350,11 @@ from `_VALUE_MEASUREMENT` rather than copied: the same ASCII digit head, the
 same one-of-four magnitude, and the same refusal of a counter run into the
 next character, so `2년차`, `5개년`, `2백개` and `３개` state no count here
 for the same reasons they state no unit there, and `5개년` stays the name
-of a plan rather than five of something. `_UNIT_SUFFIX` is not here because
+of a plan rather than five of something. Since #464 the gap may also carry
+one `_GAP_APPROXIMATORS` syllable, so `20여명` states `명` the way `20명`
+does; the premise that it cannot swallow a counter is stated in that constant
+and asserted by `test_a_number_unit_approximator_in_the_gap_is_read` rather
+than assumed. `_UNIT_SUFFIX` is not here because
 a classifier kind is what a count names, not a quantity wearing a particle:
 `3개 기관` counts organisations and states `개`, while `3일간` wears the
 particle on a unit and states nothing.
@@ -827,6 +872,11 @@ anywhere between that run and the unit. `1경5천조원` is read, because its la
 digit run is the `5` and only `천` and `조` stand after it. `1경원`, `1천경원`
 and `1억경원` are not, and the `천` in the second of those is in the class and
 does not help -- what decides is the whole gap, not any one member of it.
+Since #464 the gap may also carry one `_GAP_APPROXIMATORS` syllable, after the
+run and before the unit, so a blocked gap now means a magnitude outside the
+class anywhere in it (`1경원`) or the approximator standing between two
+magnitudes (`3천여만원`) -- not a syllable after the run, which `20여년` and
+`3만여원` are read for since the admission.
 
 `_DAY_DURATION_SUFFIXES` says an open-ended class needs a safe default and a
 tripwire. Only the tripwire is available here, and that is worth saying plainly
@@ -847,6 +897,7 @@ member cannot be dropped with the suite green.
 
 _RELAXED_QUANTITY_NUMBER = (
     r"\d[\d,.]*\s*(?:[" + _SINO_KOREAN_MAGNITUDES + r"]\s*)*"
+    r"(?:" + _GAP_APPROXIMATORS + r"\s*)?"
 )
 """The number `_VALUE_MEASUREMENT_RELAXED` reads, named so the tests can rebuild
 the pattern instead of restating it.
@@ -856,7 +907,10 @@ about the pattern that nothing checks: both went on passing when the number
 changed under them for #451, because their probes happened not to distinguish
 the old shape from the new one. Naming it is the same remedy
 `_UNIT_SUFFIX_MEMBERS` and `_MONTH_WORD_MEMBERS` get, and the probes were
-widened at the same time.
+widened at the same time. Since #464 the number may also carry one
+`_GAP_APPROXIMATORS` syllable after the magnitude run, the position it takes
+on `_VALUE_MEASUREMENT`, so `20여년` and `3만여원` are read on this scan as
+well; the premise is in `_GAP_APPROXIMATORS`.
 """
 
 _UNIT_SHADOW_WORDS = ("분기", "주년", "년대", "주주", "secondary")
@@ -1457,7 +1511,8 @@ def korean_measure_unit_mismatch(question: str, value: str) -> tuple[str, str] |
     lookahead, and anything that scan cannot see is not suppressed on. It reads `6개월` in
     `2년 6개월`, so a `몇 개월인가?` is suppressed, and since #451 it reads the
     won in `2천만원 (15,000달러)` and `2백만원 (15,000달러)` and the years in
-    `３년 30주` as well.
+    `３년 30주` as well, and since #464 the won in `3만여원 (15,000달러)`, the
+    years in `20여년 3주` and the days in `100여 일 소요` as well.
 
     What it still cannot see is given as a rule in
     `_VALUE_MEASUREMENT_RELAXED`, and the rule is the thing to read, because
@@ -1473,8 +1528,10 @@ def korean_measure_unit_mismatch(question: str, value: str) -> tuple[str, str] |
     first. So `한 시간 30분` and `반년 3주`
     fail for want of any digit -- as `이천만원` does, and the native-numeral and
     no-numeral forms are the reachable members of that class rather than the
-    Sino-Korean one -- while `1경원`, `3천만여원` and `20여년` have digits whose
-    gaps are all blocked. The other half of the residue is a spelling
+    Sino-Korean one -- while `1경원` has a magnitude outside the class in the
+    gap and `3천여만원` has the approximator standing between two magnitudes,
+    where #464 does not reach; `20여년` and `3만여원` were read since #464,
+    when the single-syllable approximator was admitted to the gap.
     `_MEASUREMENT_UNIT_SPELLINGS` leaves out on purpose: the `개년` in
     `5개년 계획 3주` and the bare `월` in `6월 및 30주`. #451 widened what may
     stand in a gap, and widened which characters count as digits; the
@@ -1618,9 +1675,11 @@ def korean_measure_unit_mismatch(question: str, value: str) -> tuple[str, str] |
       than a limit on what can be asked.
 
       Something in the GAP between that digit and the unit. A magnitude outside
-      `_SINO_KOREAN_MAGNITUDES` (`1경원 (15,000달러)`), or an approximator
-      (`3천만여원 (15,000달러)`, `20여년 3주`) -- position and not vocabulary,
-      since the same `여` after the unit is harmless.
+      `_SINO_KOREAN_MAGNITUDES` (`1경원 (15,000달러)`), or the approximator
+      standing BETWEEN two magnitudes (`3천여만원 100달러`): #464 admitted a
+      single `여` after the magnitude run, so `20여년 3주` and
+      `3만여원 (15,000달러)` are read on both scans and no longer belong to this
+      bullet, while a `여` inside the run escapes exactly as `1경` does.
 
       #451 moved the gap condition and part of the digit one: it widened what
       magnitudes may stand in the gap, and widened the digits themselves from
