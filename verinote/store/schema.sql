@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS extraction_jobs (
     completed_chunks INTEGER NOT NULL DEFAULT 0,
     failed_chunks    INTEGER NOT NULL DEFAULT 0,
     candidate_count  INTEGER NOT NULL DEFAULT 0,
+    residual_failures INTEGER NOT NULL DEFAULT 0,
     message          TEXT NOT NULL DEFAULT '',
     created_at       TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at       TEXT NOT NULL DEFAULT (datetime('now'))

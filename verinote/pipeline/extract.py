@@ -221,6 +221,18 @@ def is_live_extraction_job(job, latest_job_ids: dict[int, int]) -> bool:
 # (`max_attempts=None`).
 MAX_CHUNK_ATTEMPTS = 3
 
+# The total below-chunk-accounting terminalizations one job may charge before
+# planning gives up on it. A job in the pure #524 state (finished chunks,
+# nothing charged, nothing in flight) cannot be bounded by the chunk budget —
+# no chunk ever reached a `failed` verdict, so `attempts` has nothing to count
+# — and `Store.fail_extraction_job` is where that failure lands, on the job
+# (#536). Three failures, then the pass skips the job instead of re-offering it
+# every sync and burning an empty run — the loop #323 exists to break, one
+# level up, with the same `>=` exhaustion idiom. A reanalysis (a new job row, a
+# fresh counter) and the web retry button (the human override that never
+# consults this cap) stay the ways out.
+MAX_RESIDUAL_FAILURES = 3
+
 
 @dataclass(frozen=True)
 class ExtractionJobPlan:
@@ -233,9 +245,11 @@ class ExtractionJobPlan:
     has no failed chunk to reset and the claim is taken for the ownership alone —
     it still rewinds any stray `running` chunk, refunding its attempt — so the
     chunks it already finished are not thrown away (#524);
-    `exhausted_job_id` names a `failed` job that has given up — a chunk has failed
-    every attempt, so the pass skips it instead of spinning the same dead chunk
-    every sync (#323); `busy_job_id` says another process owns it and this pass must
+    `exhausted_job_id` names a `failed` job that has given up — either a chunk
+    has failed every attempt, so the pass skips it instead of spinning the same
+    dead chunk every sync (#323), or the job has charged its whole
+    `MAX_RESIDUAL_FAILURES` budget on below-chunk-accounting failures (#536) —
+    `busy_job_id` says another process owns it and this pass must
     keep its hands off. No field set means start a fresh job.
     """
 
@@ -256,6 +270,7 @@ def plan_source_extraction(
     chunk_chars: int | None = None,
     chunk_overlap_chars: int | None = None,
     max_chunk_attempts: int = MAX_CHUNK_ATTEMPTS,
+    max_residual_failures: int = MAX_RESIDUAL_FAILURES,
 ) -> ExtractionJobPlan:
     """Decide whether a source's newest job resumes, retries, gives up, or is stale.
 
@@ -360,13 +375,22 @@ def plan_source_extraction(
     1/1/1/1 and recovers all three facts, at the continuing pass's price of 2/3/4/5
     cumulative LLM calls against a rebuild's 2/4/6/8.
 
-    So the branch is offered unguarded, with one honest residue — a fault that
-    reproduces below the chunk accounting is re-offered every sync and spends no
-    budget doing it, because `failed_chunk_attempt_status` counts `failed` chunks
-    and this state has none. The LLM calls stop after the first pass; the run row
-    and the two job events do not. Closing that needs a failure counter the chunk
-    rows cannot carry, so it is deliberately left to a follow-up (#536) rather
-    than charged to a chunk that did nothing wrong.
+    So the branch is no longer offered unguarded. The residue it used to carry
+    — a fault that reproduces below the chunk accounting is re-offered every
+    sync and spends no budget doing it, because `failed_chunk_attempt_status`
+    counts `failed` chunks and this state has none — is now capped by a
+    job-level counter the chunk rows cannot carry (#536): the pass's own
+    terminalization charges it in `Store.fail_extraction_job`, and once the job
+    holds `MAX_RESIDUAL_FAILURES` such failures the gate below answers
+    `exhausted_job_id`, so the pass skips the job — no run row, no job events,
+    no LLM. The LLM calls still stop after the first pass, exactly as before;
+    the gate ends the run-row-and-events loop #323 exists to break, one level
+    up. Two states stay out of both the charge and the gate, each for the
+    reason measured above: a `running` chunk is the refund case, and a ceiling
+    would strand the recovery the refund exists to keep; a `failed` row is a
+    content failure the `attempts` budget already owns. A reanalysis (a new job
+    row, a fresh counter) and the web retry button stay the ways out of a
+    give-up, the same two the #323 give-up points at.
 
     A `running` job is neither resumed nor replaced. It may belong to a live UI
     worker, and resuming would have `claim_pending_extraction_job`'s reclaim yank
@@ -418,6 +442,20 @@ def plan_source_extraction(
             # The retry claim has no failed chunk to reset here; it is being used
             # for the ownership half of what it does, and for the refunding rewind
             # of a chunk a dead frame left `running` (#524).
+            #
+            # #536's termination, on the same snapshot the `done` check just
+            # read: the job's below-chunk-accounting failures, charged by
+            # `Store.fail_extraction_job`, reach their ceiling — the pass skips
+            # the job instead of re-offering it and burning an empty run (#323's
+            # loop, one level up). The `running` row is checked here as well as
+            # in the charge: a chunk in flight is the refund case above, and the
+            # recovery it pins must survive a ceiling the job accumulated in
+            # another shape of this branch.
+            if (
+                int(job["residual_failures"]) >= max_residual_failures
+                and not any(str(row["status"]) == "running" for row in chunk_rows)
+            ):
+                return ExtractionJobPlan(exhausted_job_id=latest_id)
             return ExtractionJobPlan(retry_job_id=latest_id)
         # Nothing finished, so rebuilding discards nothing and costs the same.
         return ExtractionJobPlan()

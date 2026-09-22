@@ -26,6 +26,7 @@ from verinote.engine import DEFAULT_POLICY
 from verinote.llm.base import ExtractedFact, LLMError
 from verinote.pipeline import (
     MAX_CHUNK_ATTEMPTS,
+    MAX_RESIDUAL_FAILURES,
     ExtractionJobPlan,
     create_chunked_extraction_job,
     plan_source_extraction,
@@ -1170,28 +1171,39 @@ def test_plan_does_not_continue_a_finished_chunk_job_that_is_stale_or_owned(
 
 
 def test_a_reproducing_crash_below_chunk_accounting_stops_paying_the_llm(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, capsys
 ):
-    """The cost of a fault that keeps happening, measured over repeated syncs.
+    """The cost of a fault that keeps happening — and the end of that cost.
 
     Rebuilding also reset the attempt budget, so the same source paid for the same
     finished chunks on EVERY sync — 2, 4, 6 LLM calls over three passes on a
-    six-chunk source. Continuing the job pays once.
+    six-chunk source. Continuing the job pays once; #536's ceiling ends the loop
+    the continuation left open.
 
-    THE RUN COUNT BELOW IS A CHARACTERISATION, NOT A GUARANTEE. Nothing here
-    terminates: this state charges no chunk, `failed_chunk_attempt_status` counts
-    only `failed` chunks, and so the job is offered again every sync and burns an
-    empty run doing it — at exactly the rate it burned one before this fix, which
-    is why it is no regression and is out of scope for #524. Giving it an end
-    needs a job-level failure count (#536), and when that lands `runs` will stop
-    growing and this line MUST go red. Update it to the new ceiling then; do not
-    restore the growth to keep it green.
+    THE RUN COUNT BELOW IS THE CEILING, NOT A CHARACTERISATION. This state
+    charges no chunk, so `failed_chunk_attempt_status` — which counts `failed`
+    chunks — cannot bound it; the job-level counter can. The fixture's pass and
+    every loop pass below terminalise through `Store.fail_extraction_job`, which
+    charges one below-chunk failure per pass, and once the job holds
+    `MAX_RESIDUAL_FAILURES` of them the planner answers `exhausted_job_id`, so
+    the final sync skips the source before any claim: no run row opens, no
+    exception escapes, rc 1 with the give-up named on stderr — the empty-run
+    loop #323 exists to break, one level up. `runs` MUST stop growing at this
+    line; restoring the growth to keep a larger line green would reopen the loop
+    the issue exists to close.
     """
     job_id, crash = _crashed_below_chunk_accounting(tmp_path, monkeypatch)
     client = _RecordingClient()
     monkeypatch.setattr("verinote.llm.get_client", lambda cfg: client)
+
+    # The fixture's own pass already terminalised the job once below the chunk
+    # accounting, so the counter starts at one, not zero.
+    store = _store(tmp_path)
+    assert int(store.get_extraction_job(job_id)["residual_failures"]) == 1
+    store.close()
+
     runs = []
-    for _ in range(3):
+    for _ in range(MAX_RESIDUAL_FAILURES - 1):
         with pytest.raises(RuntimeError):
             cli.main(["sync"])
         # Each pass leaves the job `running` and each pass's caller terminalises
@@ -1201,10 +1213,25 @@ def test_a_reproducing_crash_below_chunk_accounting_stops_paying_the_llm(
         store.close()
         runs.append(_run_count(tmp_path))
 
-    # Not one further chunk reached the LLM across three more passes.
+    # The ceiling: the job now holds MAX_RESIDUAL_FAILURES below-chunk failures,
+    # so the pass skips it — measured exactly as the #323 give-up is measured.
+    capsys.readouterr()  # drop the failing syncs' output
+    assert cli.main(["sync"]) == 1
+    err = capsys.readouterr().err
+    assert "giving up on sources/doc.txt" in err
+
+    # Not one further chunk reached the LLM across the whole loop, and the run
+    # count stopped at the ceiling's pass rather than growing past it.
     assert client.markers == []
     assert [int(job["id"]) for job in _jobs(tmp_path)] == [job_id]
-    assert runs == [2, 3, 4]  # CHARACTERISATION — see the docstring
+    assert runs == [2, MAX_RESIDUAL_FAILURES]
+    assert _run_count(tmp_path) == MAX_RESIDUAL_FAILURES
+    store = _store(tmp_path)
+    assert (
+        int(store.get_extraction_job(job_id)["residual_failures"])
+        == MAX_RESIDUAL_FAILURES
+    )
+    store.close()
 
 
 def test_a_failed_job_that_finished_everything_terminalises_without_the_llm(
@@ -1364,6 +1391,61 @@ def test_plan_continues_a_finished_chunk_job_that_also_holds_a_running_one(tmp_p
     assert plan == ExtractionJobPlan(retry_job_id=job_id)
 
 
+def test_plan_gives_up_on_a_below_accounting_job_at_the_residual_ceiling(tmp_path):
+    """#536's gate, at the boundary: the ceiling is inclusive, one below is not.
+
+    The unit-level twin of `test_a_reproducing_crash_below_chunk_accounting_
+    stops_paying_the_llm`, which drives the same ceiling through real syncs:
+    here the counter is set directly so the two boundary values — and only they
+    — decide. A `running` chunk is absent from the fixture, so this is the pure
+    #524 state the charge is scoped to.
+    """
+    store, source_id, job_id = _edge_state_job(tmp_path, done=1)
+    # Below the ceiling: the branch still offers the retry.
+    store._conn.execute(
+        "UPDATE extraction_jobs SET residual_failures = ? WHERE id = ?",
+        (MAX_RESIDUAL_FAILURES - 1, job_id),
+    )
+    plan = _plan_edge(store, source_id)
+    assert plan == ExtractionJobPlan(retry_job_id=job_id)
+
+    # At the ceiling: the pass skips the job instead of re-offering it.
+    store._conn.execute(
+        "UPDATE extraction_jobs SET residual_failures = ? WHERE id = ?",
+        (MAX_RESIDUAL_FAILURES, job_id),
+    )
+    plan = _plan_edge(store, source_id)
+    store.close()
+    assert plan == ExtractionJobPlan(exhausted_job_id=job_id)
+
+
+def test_plan_keeps_offering_a_running_chunk_job_even_at_the_ceiling(tmp_path):
+    """A chunk in flight stays outside the #536 ceiling, whatever the counter says.
+
+    The `running` shape of this branch is the #524 refund case, and its
+    recovery guarantee — the source is recovered when the host condition heals,
+    not given up on — is pinned by
+    `test_a_recurring_lost_release_does_not_spend_the_chunks_attempt_budget`.
+    The ceiling is a job-level budget for the pure #524 state (the charge in
+    `Store.fail_extraction_job` is scoped to it too), so a counter at the ceiling
+    must not strand a job whose state currently holds an in-flight claim: the
+    gate reads the same snapshot the branch does and sees the `running` row.
+    """
+    store, source_id, job_id = _edge_state_job(tmp_path, done=1)
+    claimed = store.source_chunks(job_id)[1]
+    store.mark_chunk_running(int(claimed["id"]))
+    assert _j_chunk_states(store, job_id) == [("done", 1), ("running", 1), ("pending", 0)]
+    store._conn.execute(
+        "UPDATE extraction_jobs SET residual_failures = ? WHERE id = ?",
+        (MAX_RESIDUAL_FAILURES, job_id),
+    )
+
+    plan = _plan_edge(store, source_id)
+    store.close()
+
+    assert plan == ExtractionJobPlan(retry_job_id=job_id)
+
+
 def test_a_recurring_lost_release_does_not_spend_the_chunks_attempt_budget(
     tmp_path, monkeypatch
 ):
@@ -1396,6 +1478,14 @@ def test_a_recurring_lost_release_does_not_spend_the_chunks_attempt_budget(
     assert budget == [1, 1, 1]
     store = _store(tmp_path)
     assert _j_chunk_states(store, job_id) == [("done", 1), ("running", 1), ("pending", 0)]
+    # ...and the job-level counter HAS accrued: the #536 charge closes BOTH
+    # injection points, so a `running` shape is charged like the pure one — one
+    # below-accounting failure per terminalization, four here. What spares this
+    # source is not the charge but the GATE: a chunk in flight is the #524 refund
+    # case, and the ceiling defers it (pinned by
+    # `test_plan_keeps_offering_a_running_chunk_job_even_at_the_ceiling`), so the
+    # recovery below can still happen.
+    assert int(store.get_extraction_job(job_id)["residual_failures"]) == 4
     store.close()
     # The finished chunk was never re-sent, and only the failing one was retried.
     assert client.markers == [J_MARKERS[0]] + [J_MARKERS[1]] * 4
