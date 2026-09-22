@@ -45,3 +45,29 @@ jobs:
       # importorskip'd — without it CI green-lights code it never executes.
       - run: pip install -e ".[test,wirelog]"
       - run: pytest -q
+
+  sdk-anchors:
+    name: SDK constructor anchors (real anthropic + openai)
+    runs-on: ubuntu-latest
+    # Installs the vendor SDKs and runs the real-SDK constructor anchors with
+    # no provider calls; the bound only matters if the SDK install hangs.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      # The matrix job installs only the test and wirelog extras, so the
+      # real-SDK constructor anchors in tests/test_cloud_adapters.py skip
+      # there. This job installs both vendor SDKs and runs exactly those
+      # anchors, so the constructor-failure contract is checked against the
+      # real constructors on every push and pull request, not only on
+      # machines that already have both SDKs. No key or network is needed:
+      # the constructors raise before any request.
+      - run: pip install -e ".[test,anthropic,openai]"
+      - run: >-
+          pytest -q
+          tests/test_cloud_adapters.py::test_the_installed_anthropic_sdk_really_does_reject_an_unusable_base_url
+          tests/test_cloud_adapters.py::test_the_installed_openai_sdk_really_does_reject_an_unusable_base_url
