@@ -2016,6 +2016,177 @@ def test_finish_and_fail_extraction_job_ignore_an_unknown_job(tmp_path):
     assert list(s._conn.execute("SELECT id FROM fact_events")) == []
 
 
+def _residual_failures(s, job_id) -> int:
+    return int(s.get_extraction_job(job_id)["residual_failures"])
+
+
+def _job_with_two_chunks(s, sid):
+    job_id = s.create_extraction_job(
+        source_id=sid, provider="fake", model="m", total_chunks=2
+    )
+    chunks = s.add_source_chunks(job_id=job_id, source_id=sid, chunks=["a", "b"])
+    s.mark_extraction_job_running(job_id)
+    return job_id, chunks
+
+
+def test_fail_extraction_job_charges_the_below_accounting_states(tmp_path):
+    """The #536 charge is the planner's #524 offer, no wider and no narrower.
+
+    Both below-chunk-accounting shapes charge the job-level counter — the
+    pure #524 state (finished work, nothing charged) and the `running` shape
+    (a claim that reached no verdict) — which is what #536's candidate one
+    means by "closes both injection points". What differs is the GATE, in
+    `plan_source_extraction`, which defers the `running` shape so the #524
+    refund's recovery guarantee is never stranded. The two shapes that do NOT
+    charge are the content-failure axis (a `failed` chunk keeps the
+    `failed_chunks` counter nonzero, and the `attempts` budget already owns
+    it) and a job holding no finished work (a rebuild discards nothing, so
+    there is no loop to terminate).
+    """
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+
+    # Pure #524: one chunk finished, the rest pending, nothing charged.
+    job_pure, a_pure = _job_with_two_chunks(s, sid)
+    s.mark_chunk_running(a_pure[0])
+    s.mark_chunk_done(a_pure[0])
+    s.fail_extraction_job(job_pure, "analysis failed: RuntimeError: crash")
+    assert s.get_extraction_job(job_pure)["status"] == "failed"
+    assert _residual_failures(s, job_pure) == 1  # RED without the charge
+
+    # The `running` shape (a claim that reached no verdict, the #524 refund
+    # case): charged the same — the second injection point of #536, "closes
+    # both injection points". The gate, not the charge, is what spares this
+    # shape; see `test_plan_keeps_offering_a_running_chunk_job_even_at_the_
+    # ceiling` in test_job_resume.py.
+    job_running, a_running = _job_with_two_chunks(s, sid)
+    s.mark_chunk_running(a_running[0])
+    s.mark_chunk_done(a_running[0])
+    s.mark_chunk_running(a_running[1])
+    s.fail_extraction_job(job_running, "analysis failed: boom")
+    assert s.get_extraction_job(job_running)["status"] == "failed"
+    assert _residual_failures(s, job_running) == 1  # RED if the running shape is exempted
+
+    # A genuinely `failed` chunk: the `failed_chunks` counter is nonzero, so
+    # the planner routes through the failed-chunk branch, and the `attempts`
+    # budget already owns this failure — no charge.
+    job_failed, a_failed = _job_with_two_chunks(s, sid)
+    s.mark_chunk_running(a_failed[0])
+    s.mark_chunk_done(a_failed[0])
+    s.mark_chunk_running(a_failed[1])
+    s.mark_chunk_failed(a_failed[1], "provider down")
+    s.fail_extraction_job(job_failed, "analysis failed: provider down")
+    assert _residual_failures(s, job_failed) == 0  # RED if a failed row is charged
+
+    # No finished work at all: a rebuild discards nothing — no charge.
+    job_bare, _a_bare = _job_with_two_chunks(s, sid)
+    s.fail_extraction_job(job_bare, "analysis failed: crash before any chunk")
+    assert _residual_failures(s, job_bare) == 0
+
+
+def test_fail_extraction_job_charges_once_per_terminalization_and_never_twice_in_a_row(
+    tmp_path,
+):
+    """The counter counts terminalizations, and a repeated write does not double.
+
+    One charge per below-accounting failure is the ceiling's arithmetic:
+    `MAX_RESIDUAL_FAILURES` failures, then the pass skips the job. A caller that
+    terminalises the same failure twice (a retry of its own broad clause) must
+    not get two charges out of one fault — but the store cannot see the
+    message, so what is pinned here is the increment itself: two calls, two
+    charges, each exactly one, monotonic.
+    """
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    job_id, a = _job_with_two_chunks(s, sid)
+    s.mark_chunk_running(a[0])
+    s.mark_chunk_done(a[0])
+
+    s.fail_extraction_job(job_id, "analysis failed: boom")
+    assert _residual_failures(s, job_id) == 1
+    s.fail_extraction_job(job_id, "analysis failed: boom again")
+    assert _residual_failures(s, job_id) == 2
+
+
+def test_fail_extraction_job_counter_survives_a_rollback_and_accumulates(tmp_path):
+    """The counter is per job row, not per pass: recovery does not forgive it.
+
+    A job that fails below accounting, is rolled back (`sync --recover`), and
+    fails below accounting again holds TWO charges, not one: the rollback
+    re-opens the job so it can resume, it does not refund the budget the job
+    already spent. Only a rebuild — a new job row — starts again at 0, which is
+    why a flaky source is given up on, never half-forgiven, once its budget is
+    spent.
+    """
+    s = _store(tmp_path)
+    sid = s.add_source("sources/a.txt")
+    job_id, a = _job_with_two_chunks(s, sid)
+    s.mark_chunk_running(a[0])
+    s.mark_chunk_done(a[0])
+    s.fail_extraction_job(job_id, "analysis failed: boom")
+    assert _residual_failures(s, job_id) == 1
+
+    s.rollback_extraction_job(
+        job_id,
+        "Recovering an extraction job interrupted mid-run.",
+        refund_attempt=True,
+    )
+    assert s.get_extraction_job(job_id)["status"] == "pending"
+    assert _residual_failures(s, job_id) == 1  # the rollback does not forgive the charge
+
+    s.mark_extraction_job_running(job_id)
+    s.fail_extraction_job(job_id, "analysis failed: boom again")
+    assert s.get_extraction_job(job_id)["status"] == "failed"
+    assert _residual_failures(s, job_id) == 2  # RED if the rollback resets the counter
+
+
+def test_migration_adds_residual_failures_to_a_legacy_extraction_jobs_table(tmp_path):
+    # A pre-#536 KB predates the column; reopening must migrate it in so a
+    # fresh and a migrated DB expose the same `extraction_jobs` schema, and
+    # every backfilled row must land a concrete 0 — "never failed below
+    # accounting" — rather than NULL. Mirrors the `stale` legacy-migration
+    # guard above, which is the same `NOT NULL DEFAULT 0` shape.
+    conn = sqlite3.connect(tmp_path / "kb.sqlite")
+    conn.execute(
+        """
+        CREATE TABLE extraction_jobs (
+            id               INTEGER PRIMARY KEY,
+            source_id        INTEGER NOT NULL,
+            artifact_id      INTEGER,
+            status           TEXT NOT NULL DEFAULT 'pending',
+            provider         TEXT,
+            model            TEXT,
+            total_chunks     INTEGER NOT NULL DEFAULT 0,
+            completed_chunks INTEGER NOT NULL DEFAULT 0,
+            failed_chunks    INTEGER NOT NULL DEFAULT 0,
+            candidate_count  INTEGER NOT NULL DEFAULT 0,
+            message          TEXT NOT NULL DEFAULT '',
+            created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO extraction_jobs(source_id, status) VALUES (1, 'failed')"
+    )
+    conn.commit()
+    conn.close()
+
+    reopened = _store(tmp_path)
+    try:
+        columns = {
+            row["name"]
+            for row in reopened._conn.execute("PRAGMA table_info(extraction_jobs)")
+        }
+        assert "residual_failures" in columns
+        row = reopened._conn.execute(
+            "SELECT residual_failures FROM extraction_jobs"
+        ).fetchone()
+        assert row["residual_failures"] == 0
+    finally:
+        reopened.close()
+
+
 def test_rollback_extraction_job_default_does_not_refund_the_attempt(tmp_path):
     """The default is the halt contract (#556): the budget stays charged.
 

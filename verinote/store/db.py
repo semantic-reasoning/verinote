@@ -2100,17 +2100,66 @@ class Store:
 
     def fail_extraction_job(self, job_id: int, message: str) -> None:
         """Record the failure; a `canceled` job is left alone entirely (row and
-        history), mirroring `rollback_extraction_job` (#641)."""
+        history), mirroring `rollback_extraction_job` (#641).
+
+        A terminalization in the #524 state — the job holds finished chunks yet
+        charged NO chunk — is a below-chunk-accounting failure, and it is
+        counted here, on the job, not on a chunk (#536). Both callers' broad
+        clauses (the CLI `cmd_sync`, since #488, and the web worker, since
+        #525) terminalise through this method, and no other code writes the
+        counter, so the count is caller-independent. The other `failed` writer
+        — the `final=True` refresh behind `finish_extraction_job` — is the
+        content-failure axis: it writes `failed` beside a failed chunk, and the
+        condition below excludes it.
+
+        The condition is the planner's own #524 offer, verbatim: `failed_chunks`
+        zero (its first gate — a content failure keeps a nonzero counter, and
+        the `attempts` budget already owns it) and at least one `done` chunk
+        (its continuing decision — without one, a rebuild discards nothing, so
+        there is no loop to terminate). A `running` chunk does NOT keep a
+        terminalization out of the count: that shape is below the chunk
+        accounting just as much (the claim reached no verdict), which is why
+        #536's candidate one "closes both injection points". What the `running`
+        shape gets is the GATE's deference, in `plan_source_extraction`: the
+        ceiling does not fire while a claim is in flight, because that state's
+        recovery guarantee is the #524 refund, and a ceiling would strand it.
+
+        The counter is monotonic per job row: a `sync --recover` rollback or a
+        successful resume does not reset it — only a rebuild (a new job row)
+        starts again at 0, which is why a flaky source is given up on, never
+        half-forgiven, once its budget is spent. It does NOT touch chunk
+        `attempts` — charging a host condition to the content budget is exactly
+        what `MAX_CHUNK_ATTEMPTS` refuses.
+        """
         with self._lock:
             before = self.get_extraction_job(job_id)
             if before is None:
                 return
             if before["status"] == "canceled":
                 return
+            # #536: count a below-chunk-accounting failure of a job that holds
+            # finished work — the planner's #524 offer (docstring), so a
+            # terminalization is charged exactly when the next pass would
+            # re-offer it. A `running` chunk is counted too: it is below the
+            # chunk accounting as much (both injection points of #536); what it
+            # gets is the gate's deference in `plan_source_extraction`, not a
+            # credit here. Folded into the status UPDATE below (one write, same
+            # snapshot), not a second statement — there is no window between
+            # them.
+            residual = 0
+            if int(before["failed_chunks"]) == 0:
+                holds_work = self._conn.execute(
+                    "SELECT 1 FROM source_chunks WHERE job_id = ? AND status = 'done' "
+                    "LIMIT 1",
+                    (job_id,),
+                ).fetchone()
+                if holds_work is not None:
+                    residual = 1
             self._conn.execute(
                 "UPDATE extraction_jobs SET status = 'failed', message = ?, "
+                "residual_failures = residual_failures + ?, "
                 "updated_at = datetime('now') WHERE id = ?",
-                (message, job_id),
+                (message, residual, job_id),
             )
             after = self.get_extraction_job(job_id)
             if after is not None:
@@ -3904,6 +3953,19 @@ class Store:
             self._conn.execute(
                 "ALTER TABLE extraction_jobs ADD COLUMN artifact_id INTEGER "
                 "REFERENCES source_artifacts(id) ON DELETE SET NULL"
+            )
+        if "residual_failures" not in job_columns:
+            # #536: the count of a job's below-chunk-accounting failures, kept on
+            # the JOB because no chunk row can carry it (the chunk never reached a
+            # `failed` verdict, so the chunk `attempts` budget is untouched). This
+            # ALTER, not the schema.sql column, is what gives an existing KB the
+            # column: init_schema() runs that script first, and its CREATE TABLE
+            # IF NOT EXISTS does nothing to a table that already exists. Every row
+            # predating this reads back 0 — "never failed below accounting", not a
+            # fabricated count. `NOT NULL DEFAULT 0`, like `stale` above.
+            self._conn.execute(
+                "ALTER TABLE extraction_jobs ADD COLUMN residual_failures "
+                "INTEGER NOT NULL DEFAULT 0"
             )
         fact_columns = {
             row["name"] for row in self._conn.execute("PRAGMA table_info(facts)")

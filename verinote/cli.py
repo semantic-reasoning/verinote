@@ -82,10 +82,13 @@ class _SourceSyncOutcome:
 class _BlockedSource:
     """A source whose newest job has given up and cannot auto-retry.
 
-    A `failed` job with a chunk that has spent its whole attempt budget is not
-    processed this run — reprocessing would spin the same dead chunk every sync
-    forever with no progress (#323). It is surfaced as a hard failure so the
-    operator sees the give-up signal instead of a silently green run.
+    A `failed` job that can make no progress on its own is not processed this
+    run: either a chunk has spent its whole attempt budget, and reprocessing
+    would spin the same dead chunk every sync forever (#323), or the job has
+    charged its whole `MAX_RESIDUAL_FAILURES` budget on below-chunk-accounting
+    failures and re-offering it burns an empty run each sync (#536). Either way
+    it is surfaced as a hard failure so the operator sees the give-up signal
+    instead of a silently green run.
     """
 
     source_path: str
@@ -786,10 +789,12 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                     )
                     continue
                 if plan.exhausted_job_id is not None:
-                    # A chunk has failed every attempt. Processing the job again
-                    # would reset nothing and burn an empty run each sync, so skip
-                    # it here and surface the give-up below — this skip BEFORE any
-                    # claim is the anti-spurious-run gate #323 exists for.
+                    # The job has given up — a chunk failed every attempt (#323),
+                    # or its below-chunk-accounting failures reached the ceiling
+                    # (#536). Processing it again would reset nothing and burn an
+                    # empty run each sync, so skip it here and surface the
+                    # give-up below — this skip BEFORE any claim is the
+                    # anti-spurious-run gate #323 exists for.
                     blocked.append(
                         _BlockedSource(
                             source_path=source.source_path,
@@ -1178,13 +1183,16 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
                 f"fact(s) returned to review — source text no longer supports them"
             )
     for source in result.blocked:
-        # The give-up signal #323 adds: a job whose chunk has exhausted its retries
-        # will never make progress on its own, so name it on stderr and point at
-        # the two ways out rather than silently skipping it every run.
+        # The give-up signal #323 adds, #536's ceiling reuses it: a job that can
+        # make no progress on its own (a chunk that exhausted its retries, or
+        # below-chunk-accounting failures that exhausted the job) is named on
+        # stderr, and the two ways out are pointed at rather than the source
+        # being silently skipped every run.
         print(
             f"giving up on {source.source_path}: extraction job #{source.job_id} "
-            f"has a chunk that failed every retry attempt — reanalyse the source or "
-            f"retry it in `verinote ui`",
+            f"has given up — a chunk failed every retry attempt, or the job "
+            f"charged its whole budget on failures below the chunk accounting — "
+            f"reanalyse the source or retry it in `verinote ui`",
             file=sys.stderr,
         )
     failed = result.failed_sources
