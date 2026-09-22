@@ -897,12 +897,15 @@ def test_the_installed_anthropic_sdk_really_does_reject_an_unusable_base_url(tmp
     with. Without it every test in this section could be green against an SDK
     that quietly accepted `::::`.
 
-    Skipped where the optional dependency is absent, which includes the `ci.yml`
-    pytest job — it installs `.[test,wirelog]` and neither vendor SDK.
-    (`provider-contract.yml` does install the openai extra, but it runs
-    `tests/contract/run.sh` on a schedule, not this suite.) Local green therefore
-    does not speak for that job on this one axis, which is why the stubs carry
-    the contract.
+    Skipped where the optional dependency is absent, which is still the `ci.yml`
+    matrix job — it installs `.[test,wirelog]` and neither vendor SDK, so the
+    stubs above carry the contract in that leg. A separate `ci.yml` job
+    (`sdk-anchors`) installs both vendor SDKs and runs exactly these anchors on
+    every push and pull request, so the constructor-failure contract is checked
+    against the real constructors in the gate, not only on a machine that
+    already has both SDKs (issue #502).
+    `provider-contract.yml` installs the openai extra but runs
+    `tests/contract/run.sh`, not this suite, so these anchors do not run there.
     """
     pytest.importorskip("anthropic")
 
