@@ -219,7 +219,7 @@ in `test_known_false_unit_statements_are_recorded_not_fixed`, and the
 _NATIVE_NUMERAL_ALT = "|".join(re.escape(n) for n in _NATIVE_KOREAN_NUMERALS)
 
 _VALUE_MEASUREMENT = re.compile(
-    r"(?:[0-9][0-9,.]*\s*[만억천조]?\s*"
+    r"(?:[0-9][0-9,.]*\s*(?:[십백천만억조]\s*)*"
     r"(?:" + _GAP_APPROXIMATORS + r")?\s*"
     r"|" + r"(?:" + _NATIVE_NUMERAL_ALT + r")\s*"
     r")"
@@ -227,12 +227,16 @@ _VALUE_MEASUREMENT = re.compile(
     + "|".join(re.escape(s) for s in _MEASUREMENT_UNIT_SPELLINGS)
     + r")" + _UNIT_SUFFIX + r"(?![가-힣0-9A-Za-z])"
 )
-"""One quantity stated inside a value: ASCII digits, at most one of four Korean
-magnitude words, and a unit spelling.
+"""One quantity stated inside a value: ASCII digits, a run of the closed
+Sino-Korean magnitude words, and a unit spelling.
 
-`[만억천조]?` is one character, not a run, so `3만원` is read and `2천만원` is
-not; it is those four and no others, so `2백만원` is not either; and the digits
-are `[0-9]` rather than `\\d`, so `３년` is not. Since #464 the gap may also
+Since #463 the magnitude is the `_SINO_KOREAN_MAGNITUDES` run rather than the
+old one-of-four `[만억천조]?`, so `3만원`, `2천만원` and `2백만원` are all
+read; the bound is the same closed class the suppression scan uses, and the two
+scans now agree on it. What still separates them is the digit class: the digits
+here are `[0-9]` rather than the relaxed scan's `\\d`, so `３년` is still not
+read -- the open non-ASCII digit class is the follow-up issue, not this bound.
+Since #464 the gap may also
 carry one syllable of `_GAP_APPROXIMATORS`, after the magnitude and before the
 unit, so `20여년`, `3만여원` and `100여 일` are read; the premise that it
 cannot swallow a spelling is in that constant, and the trailing lookahead
@@ -243,7 +247,7 @@ Since #465 the number head may instead be one of the closed
 the digit head alone would not; the premise that a native numeral cannot
 swallow a spelling is asserted in
 `test_a_native_korean_numeral_in_front_of_the_unit_is_read`.
-All three of those bounds are
+The digit bound is
 narrower than `_VALUE_MEASUREMENT_RELAXED`'s, which is a statement about the
 NUMBER and not about the two patterns as wholes: since #453 the relaxed one
 carries a refusal of its own in `_UNIT_SHADOW_GUARD`, one this pattern already
@@ -251,8 +255,8 @@ makes through its trailing lookahead. The asymmetry has a direction. This
 pattern decides what a value STATES and its output is put in front of a reader,
 so widening it ADDS sentences and needs a sweep of its own; the relaxed one
 decides only whether to stay silent. #451 widened the relaxed number and left
-this one where it was, which is why those three are silent here and suppress
-there.
+this one where it was; #463 closed that gap on the closed magnitude class and
+left the open digit class (`３년`) to its own issue.
 
 Requiring the digits is the whole precision of this rule. Ordinary Korean prose
 is full of syllables that are also unit spellings -- `지원`, `내년`, `일정`,
@@ -289,9 +293,9 @@ the sort is what keeps the longer taken first.
 """
 
 _LEADING_COMPOUND = re.compile(
-    r"(?P<num1>[0-9][0-9,.]*\s*[만억천조]?\s*)"
+    r"(?P<num1>[0-9][0-9,.]*\s*(?:[십백천만억조]\s*)*)"
     r"(?P<unit1>" + "|".join(re.escape(s) for s in _TIME_UNIT_SPELLINGS) + r")"
-    r"(?P<num2>[0-9][0-9,.]*\s*[만억천조]?\s*)"
+    r"(?P<num2>[0-9][0-9,.]*\s*(?:[십백천만억조]\s*)*)"
     r"(?P<unit2>" + "|".join(re.escape(s) for s in _TIME_UNIT_SPELLINGS) + r")"
     r"(?![가-힣0-9A-Za-z])"
 )
@@ -368,7 +372,7 @@ this exclusion against the other fifteen.
 """
 
 _VALUE_CLASSIFIER_COUNT = re.compile(
-    r"[0-9][0-9,.]*\s*[만억천조]?\s*"
+    r"[0-9][0-9,.]*\s*(?:[십백천만억조]\s*)*"
     r"(?:" + _GAP_APPROXIMATORS + r")?\s*"
     r"(?P<counter>" + "|".join(re.escape(s) for s in _CLASSIFIER_COUNTERS) + r")"
     r"(?![가-힣0-9A-Za-z])"
@@ -377,8 +381,8 @@ _VALUE_CLASSIFIER_COUNT = re.compile(
 
 #455's value-side reading, with the number and the trailing refusal taken
 from `_VALUE_MEASUREMENT` rather than copied: the same ASCII digit head, the
-same one-of-four magnitude, and the same refusal of a counter run into the
-next character, so `2년차`, `5개년`, `2백개` and `３개` state no count here
+same six-magnitude run, and the same refusal of a counter run into the
+next character, so `2년차`, `5개년` and `３개` state no count here
 for the same reasons they state no unit there, and `5개년` stays the name
 of a plan rather than five of something. Since #464 the gap may also carry
 one `_GAP_APPROXIMATORS` syllable, so `20여명` states `명` the way `20명`
@@ -1035,20 +1039,20 @@ states minutes and that no conversion is applied, when the leading quantity is
 exactly the hours asked for. A single space changed the outcome, because
 `3시간 30분` passes the lookahead and `3시간30분` does not.
 
-The number is wider in three ways, and #451 is what made them necessary. They
-are three and not two, which matters below: the magnitude group is a RUN rather
-than one character, its CLASS is `_SINO_KOREAN_MAGNITUDES` rather than
-`[만억천조]`, and these are independent -- `2천만원` needs only the run, `2백원`
-needs only the class, and `2백만원` needs both. So `2천만원`, `1억5천만원`,
-`2백만원` and `2백원` are read -- `X천만원`, `X억Y천만원`, `X백만원` and `X백원`
-are how a Korean document writes a sum, and `원` is a live question counter, so
-a `몇 원인가?` answered any of them was told the value states `달러` beside an
-answer whose leading figure is won. The digit class is `\\d`, every Unicode
-decimal digit rather than a listed range, because naming a range would leave the
-next script out; `verinote.text.nfc` is not `nfkc` and folding compatibility
-forms would have this rule compare a value differently from every other
-comparison made on it, but admitting the characters in a class local to this
-pattern normalizes nothing, so the one-normalizer rule is not in play.
+Since #451 this number is wider than `_VALUE_MEASUREMENT`'s, and #463
+closed the magnitude part of that gap by giving the reporting scan the
+same closed `_SINO_KOREAN_MAGNITUDES` run this scan has. So `2천만원`,
+`1억5천만원`, `2백만원` and `2백원` are read by both -- `X천만원`, `X억Y천만원`, `X백만원`
+and `X백원` are how a Korean document writes a sum, and `원` is a live
+question counter, so before #463 a `몇 원인가?` answered any of them was
+told the value states `달러` beside an answer whose leading figure is won.
+What is left is the digit class: it is `\d` here, every Unicode decimal
+digit rather than a listed range, because naming a range would leave the
+next script out; `verinote.text.nfc` is not `nfkc` and folding
+compatibility forms would have this rule compare a value differently
+from every other comparison made on it, but admitting the characters in
+a class local to this pattern normalizes nothing, so the one-normalizer
+rule is not in play.
 
 What is still out of reach is stated as a rule and not as a list, because a
 list here has been wrong every time it has been written -- three times, each
@@ -1580,7 +1584,7 @@ def korean_measure_unit_mismatch(question: str, value: str) -> tuple[str, str] |
     The two halves are read by different patterns, and that is deliberate rather
     than an oversight. What the value STATES comes from `_value_measure_units`,
     which refuses a unit run into the next character and reads ASCII digits and
-    at most one of `[만억천조]`. Whether the value CARRIES the asked unit comes from
+    the closed `_SINO_KOREAN_MAGNITUDES` run. Whether the value CARRIES the asked unit comes from
     `_value_states_asked_unit`, which differs from it in both directions and
     sets those differences out. Add a part to either pattern and that is the
     paragraph to correct: it reads the pattern and sits beside it, which is why
@@ -1626,24 +1630,23 @@ def korean_measure_unit_mismatch(question: str, value: str) -> tuple[str, str] |
     stating no number; a unit run into the next syllable (`2년차`); a quantity
     that overlaps a point in time (`매월 15일`); a spelling outside the
     table; a suffix outside `_UNIT_SUFFIX`;
-    a number that stacks magnitude words (`2천만원`) or uses one outside
-    `[만억천조]` (`2백원`), since `_VALUE_MEASUREMENT` admits at most one and
-    only from those four -- `2백만원` needs both allowances and is silent for
-    either reason; and a number written in full-width digits (`３년`),
-    which its `[0-9]` does not admit and `nfc` does not fold away. `nfkc` would
-    fold it, but `verinote.text.nfc` is the one normalizer the rest of the
-    codebase compares through, and folding compatibility forms here alone would
-    have this rule read a value differently from every other comparison made on
-    it. A non-breaking space between the number and the unit is fine
-    (`3<NBSP>년` states years), so
-    this silence is specifically the digits. Those last two are silences on the
-    REPORTING side only since #451. The suppression scan reads all three
-    notations, so where the ASKED unit is the one written that way the whole rule
-    now says nothing instead of naming a neighbour: `2천만원 (15,000달러)` asked
-    in won, `３년 30주` asked in years. Asked in some other unit of the family the
-    quantity is still unreported and a neighbour can still be named --
-    `３년 30주` asked in months says `주` -- which is the reporting silence doing
-    what it has always done. An earlier cross-family quantity
+    and a number written in full-width digits (`３년`), which its `[0-9]` does
+    not admit and `nfc` does not fold away -- since #463 a number that
+    stacks magnitude words or uses one outside the old four (`2천만원`, `2백만원`)
+    is read by the reporting scan, so the only digit-shaped silence left on
+    that side is `３년` itself. `nfkc` would fold it, but `verinote.text.nfc`
+    is the one normalizer the rest of the codebase compares through, and
+    folding compatibility forms here alone would have this rule read a value
+    differently from every other comparison made on it. A non-breaking space
+    between the number and the unit is fine (`3<NBSP>년` states years), so
+    this silence is specifically the digits. That last one is a silence on
+    the REPORTING side only since #451. The suppression scan reads the full-
+    width notation the reporting scan still misses, so where the ASKED unit
+    is the one written that way the whole rule now says nothing instead of
+    naming a neighbour: `３년 30주` asked in years. Asked in some other unit of
+    the family the quantity is still unreported and a neighbour can still be
+    named -- `３년 30주` asked in months says `주` -- which is the reporting
+    silence doing what it has always done. An earlier cross-family quantity
     does not silence a later same-family one.
 
     One silence is worth separating from those, because it is the only one where
