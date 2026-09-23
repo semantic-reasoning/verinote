@@ -627,8 +627,9 @@ def test_a_question_or_value_with_nothing_to_compare_is_silent(question, value):
 def test_the_digit_requirement_keeps_ordinary_prose_out_of_the_caveat(monkeypatch):
     """Every unit-bearing counter against a corpus of prose values, all silent.
 
-    This is what the leading `[0-9]` in `_VALUE_MEASUREMENT` buys, and the sweep
-    rather than any single case is what measures it.
+    This is what the number head in `_VALUE_MEASUREMENT` buys -- a decimal
+    digit OR one of the closed `_NATIVE_KOREAN_NUMERALS`, since #465 -- and the
+    sweep rather than any single case is what measures it.
 
     The mutant count is BUILT AND MEASURED here rather than quoted in prose. It
     was quoted once, as 55, and went stale the moment the suppression scan got
@@ -639,12 +640,13 @@ def test_the_digit_requirement_keeps_ordinary_prose_out_of_the_caveat(monkeypatc
 
     A one-sided case for the requirement, not masked by the same-unit
     suppression: `몇 개월인가?` answered `내년 착수` is silent as written and
-    fires `(개월, 년)` without the digit prefix.
+    fires `(개월, 년)` without a number head to carry it.
     """
     import re
 
     import verinote.pipeline.query_measure_unit as qmu
     from verinote.pipeline.query_measure_unit import (
+        _NATIVE_NUMERAL_ALT,
         _VALUE_MEASUREMENT,
         korean_measure_unit_mismatch,
     )
@@ -664,15 +666,15 @@ def test_the_digit_requirement_keeps_ordinary_prose_out_of_the_caveat(monkeypatc
     # the suppression pattern left alone. Mutating both instead gives 55, which
     # is what the stale figure was measuring.
     #
-    # Sliced off the live pattern rather than rebuilt from parts, so the mutant
-    # is this pattern minus its digit head and nothing else. A hand-built copy
-    # would drift from the source silently, and asserting text equality against
-    # one would fail whenever the alternation is legitimately reordered -- the
-    # `startswith` is the tie, and it is the only thing this hardcodes.
-    digit_head = r"[0-9][0-9,.]*"
-    assert _VALUE_MEASUREMENT.pattern.startswith(digit_head)
-    without_digits = re.compile(_VALUE_MEASUREMENT.pattern[len(digit_head):])
-    monkeypatch.setattr(qmu, "_VALUE_MEASUREMENT", without_digits)
+    # Sliced off the live pattern at the unit group rather than rebuilt from
+    # parts, so the mutant is this pattern minus its ENTIRE number head -- the
+    # digit branch and the #465 native branch, together and nothing else. A
+    # hand-built copy would drift from the source silently; the unit group name
+    # is the tie, and it is the only thing this hardcodes.
+    assert _NATIVE_NUMERAL_ALT in _VALUE_MEASUREMENT.pattern
+    head_end = _VALUE_MEASUREMENT.pattern.index("(?P<unit>")
+    without_number = re.compile(_VALUE_MEASUREMENT.pattern[head_end:])
+    monkeypatch.setattr(qmu, "_VALUE_MEASUREMENT", without_number)
     fires = sum(
         1 for question, value in pairs
         if korean_measure_unit_mismatch(question, value) is not None
@@ -1184,8 +1186,6 @@ def test_a_full_width_number_states_no_quantity():
         ("샘플계약의 기간은 몇 개월인가?", "03/15일", ("개월", "일"), "March 15th, no year"),
         ("샘플사업의 가격은 몇 원인가?", "이천만원 (15,000달러)", ("원", "달러"),
          "20 million won, in Sino-Korean numerals"),
-        ("샘플작업의 소요시간은 몇 시간인가?", "한 시간 30분", ("시간", "분"),
-         "an hour and a half, in its ordinary spelling"),
         ("샘플사업의 기간은 몇 년인가?", "반년 3주", ("년", "주"), "half a year"),
         ("샘플사업의 기간은 몇 년인가?", "5개년 계획 3주", ("년", "주"), "a five-year plan"),
         ("샘플사업의 기간은 몇 개월인가?", "6월 및 30주", ("개월", "주"), "June, or six months"),
@@ -1193,6 +1193,12 @@ def test_a_full_width_number_states_no_quantity():
         ("샘플사업의 소요는 몇 분인가?", "2 second review", ("분", "second"), "a second review"),
         ("샘플사업의 기간은 몇 년인가?", "100주", ("년", "주"), "one hundred shares"),
         ("샘플회의의 시간은 몇 시간인가?", "5분", ("시간", "분"), "five people, honorific"),
+        ("샘플회의의 참여자는 몇 명인가?", "다섯분 참여, 3주", ("명", "분"),
+         "five people, honorific -- the native twin of the row above"),
+        ("샘플회의의 참여자는 몇 명인가?", "두 명, 3주", ("명", "주"),
+         "two people, native numeral the classifier scan still cannot read"),
+        ("샘플사업의 기간은 몇 달인가?", "열세", ("달", "세"),
+         "thirteen years old, or the word for 'disadvantage'"),
         ("샘플계약의 마감일은 몇 개월인가?", "2021년 계약, 15일 마감", ("개월", "일"), "a deadline on the 15th"),
         ("샘플계약의 기간은 몇 개월인가?", "3월 15일~20일", ("개월", "일"), "the 15th to the 20th"),
         ("샘플계약의 기간은 몇 개월인가?", "매월 15일, 30일 정산", ("개월", "일"), "the 15th and the 30th"),
@@ -1223,18 +1229,20 @@ def test_known_false_unit_statements_are_recorded_not_fixed(
     `_VALUE_MEASUREMENT_RELAXED` names, which satisfy the condition and are not
     this cause. Ranged over
     occurrences of the spelling instead the same words would be false, which is
-    why the noun is in the sentence and not left to the witness. `이천만원`,
-    `한 시간 30분` and `반년 3주` have no digit before the unit at all -- the
-    last has no numeral in it either, which is why the condition is not "a
-    numeral the scan cannot spell" -- and they are all older than #451 and
-    untouched by it. The fourth cause the successive drafts of this
-    docstring chased, a blocked gap, #464 closed for the single-syllable
-    approximator: `20여년` and `3만여원` are read on both scans since then
-    and their two rows left this table for
-    `test_a_number_unit_approximator_in_the_gap_is_read`. What the gap
-    still declines is a magnitude outside the class (`1경원`) or the
-    approximator standing between two magnitudes (`3천여만원`), the
-    residue `korean_measure_unit_mismatch` names. Beside them
+    why the noun is in the sentence and not left to the witness. `이천만원`
+    and `반년 3주` have no digit before the unit at all -- the last has no
+    numeral in it either, which is why the cause is not "a numeral the scan
+    cannot spell" -- and both are older than #451 and untouched by it. The
+    fifth cause the successive drafts of this docstring chased, a numeral the
+    scan cannot spell, #465 closed for the native series: `한 시간 30분` and
+    `두 달 3주` are read on both scans since then and their rows left this
+    table for `test_a_native_korean_numeral_in_front_of_the_unit_is_read`.
+    What the number still declines is the excluded native numerals (`세`/`일`
+    are spellings, `이` is a deictic, `일곱` borrows the DAY syllable), the
+    suppletive `이틀`, and the open quantifiers `반`/`수`/`여러`, the residue
+    `korean_measure_unit_mismatch` names. The native forms that DO read carry
+    the `분`/`명`/`세` dualities this table records beside the digit twins.
+    Beside them
     sit the rows whose asked-unit SPELLING the
     table excludes on purpose, which is a different cause and is argued in
     `_MEASUREMENT_UNIT_SPELLINGS`. So this
@@ -2030,6 +2038,107 @@ def test_a_number_unit_approximator_in_the_gap_is_read():
 
 
 
+
+
+def test_a_native_korean_numeral_in_front_of_the_unit_is_read():
+    """#465: a native-Korean numeral before the unit is read on both scans.
+
+    The headline defect: `한 시간 30분` asked in `시간` was told it states `분`,
+    and `두 달 3주` asked in `달` was told it states `주`, because both scans
+    began the number at a decimal digit and the native series -- the COMMON
+    spelling for these counters -- carried none. #465 admits the closed set
+    `_NATIVE_KOREAN_NUMERALS` to the number head, so the value that states the
+    asked unit is silent again, and the one that states a different unit of the
+    family names the leading quantity, the direction #454 pins.
+
+    What the admission does NOT reach is pinned, not assumed, and the native
+    forms it does read carry the dualities the record tables keep for the digit
+    twins: `분` (minute vs honorific person), `명` (a classifier the native
+    numeral still cannot carry), `세` (year vs thirteen vs "disadvantage"), and
+    the `열<unit>` class (`열일`).
+    """
+    from verinote.pipeline.query_measure_unit import (
+        _CLASSIFIER_COUNTERS,
+        _MEASUREMENT_UNIT_SPELLINGS,
+        _NATIVE_KOREAN_NUMERALS,
+        _value_measure_units,
+        korean_measure_unit_mismatch,
+    )
+
+    # The swallow premise, both directions, over the live tables: no unit
+    # spelling equals or begins with an admitted numeral, and no admitted
+    # numeral equals or begins with a spelling. The second half is what keeps
+    # `세`/`일`/`일곱` out of the set -- each equals or borrows a live spelling
+    # (`세`=YEAR, `일`=DAY, `일곱` borrows DAY's first syllable) -- so adding
+    # one of them reddens here rather than silently swallowing a unit.
+    assert [
+        s for s in _MEASUREMENT_UNIT_SPELLINGS
+        if any(s == n or s.startswith(n) for n in _NATIVE_KOREAN_NUMERALS)
+    ] == []
+    assert [
+        n for n in _NATIVE_KOREAN_NUMERALS
+        if any(n == s or n.startswith(s) for s in _MEASUREMENT_UNIT_SPELLINGS)
+    ] == []
+    assert [
+        c for c in _CLASSIFIER_COUNTERS
+        if any(c == n or c.startswith(n) for n in _NATIVE_KOREAN_NUMERALS)
+    ] == []
+
+    # Suppression: the asked unit is now stated, so the caveat ends.
+    for question, value in [
+        ("샘플회의의 소요는 몇 시간인가?", "한 시간 30분"),
+        ("샘플회의의 소요는 몇 시간인가?", "한 시간 30분 15초"),
+        ("샘플사업의 기간은 몇 달인가?", "두 달 3주"),
+        ("샘플회의의 소요는 몇 분인가?", "다섯분 참여, 3주"),
+    ]:
+        assert korean_measure_unit_mismatch(question, value) is None, value
+
+    # Non-vacuity: the unit is in the REPORTED list, not hidden by going blind.
+    assert _value_measure_units("한 시간") == (("HOUR", "시간"),)
+    assert _value_measure_units("두 달") == (("MONTH", "달"),)
+
+    # Reporting: a different unit of the family names the LEADING quantity
+    # (#454), the rename the issue warned about -- measured in the more-accurate
+    # direction, the value really does state the leading unit.
+    assert korean_measure_unit_mismatch("샘플회의의 소요는 몇 초인가?", "한 시간 30분") == (
+        "초",
+        "시간",
+    )
+
+    # The native forms that do read carry the dualities the digit twins keep:
+    # the `분` of `다섯분` is the honorific and the `명` of `두 명` the classifier
+    # the native numeral cannot carry, and `열세` is a number and a word.
+    assert korean_measure_unit_mismatch("샘플회의의 참여자는 몇 명인가?", "다섯분 참여, 3주") == (
+        "명",
+        "분",
+    )
+    assert korean_measure_unit_mismatch("샘플회의의 참여자는 몇 명인가?", "두 명, 3주") == (
+        "명",
+        "주",
+    )
+    assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 달인가?", "열세") == (
+        "달",
+        "세",
+    )
+
+    # Lost caveats the admission adds, recorded rather than left silent: a
+    # native numeral before a real unit now suppresses that unit's own caveat.
+    assert korean_measure_unit_mismatch("샘플회의의 소요는 몇 분인가?", "두분, 2시간 소요") is None
+    assert korean_measure_unit_mismatch("샘플작업의 기간은 몇 일인가?", "열일하게, 3주") is None
+
+    # The exclusions, each for the reason in `_NATIVE_KOREAN_NUMERALS`: `세`
+    # and `이` are spellings/deictics, `반` carries no numeral, `이틀` is
+    # suppletive, `수`/`여러` are open quantifiers, and `일곱` borrows the DAY
+    # syllable.
+    assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 달인가?", "세 달 3주") == ("달", "주")
+    assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 달인가?", "이달 중 3일") == ("달", "일")
+    assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 년인가?", "반년 3주") == ("년", "주")
+    assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 달인가?", "이틀 3주") == ("달", "주")
+    assert korean_measure_unit_mismatch("샘플사업의 가격은 몇 원인가?", "수십억원 (15,000달러)") == (
+        "원",
+        "달러",
+    )
+    assert korean_measure_unit_mismatch("샘플회의의 기간은 몇 일인가?", "일곱일") is None
 
 
 def test_the_magnitude_run_needs_no_inner_digits():

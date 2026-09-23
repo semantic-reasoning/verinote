@@ -195,9 +195,34 @@ instead (`20년 남짓`) already read where they stand, which is why the open
 class is one syllable and not a list.
 """
 
+_NATIVE_KOREAN_NUMERALS = ("한", "두", "넷", "네", "다섯", "여섯", "여덟", "아홉", "열")
+"""The native-Korean numerals a quantity may lead with, in front of its unit.
+
+#465: for the duration counters this rule reads, the native series is the
+COMMON spelling, so the most natural value (`한 시간`, `두 달`) is the one
+neither measure scan could read, because both began the number at a decimal
+digit. This is a closed list, not a widening of the digit class: a digit is
+open by definition (any decimal character), but a numeral word is one of
+these nine and nothing else.
+
+Left out, each for a measured reason (checked, not assumed): `세` is the
+spelling for YEAR and `일` is the spelling for DAY, so admitting either would
+let the number swallow a unit the scan already reads, breaking the premise
+the #464 tripwires re-derive from the live table; `일곱` takes its first
+syllable from the DAY spelling, the same break; and `이` is the formal `두`
+but also the deictic in `이달` (this month), which would read a false
+quantity. The honorific `한분`/`두분` is recorded with the digit twin `5분`
+in `test_known_false_unit_statements_are_recorded_not_fixed`, and the
+`열<unit>` class with `열세`/`열일` in the two record tables.
+"""
+
+_NATIVE_NUMERAL_ALT = "|".join(re.escape(n) for n in _NATIVE_KOREAN_NUMERALS)
+
 _VALUE_MEASUREMENT = re.compile(
-    r"[0-9][0-9,.]*\s*[만억천조]?\s*"
+    r"(?:[0-9][0-9,.]*\s*[만억천조]?\s*"
     r"(?:" + _GAP_APPROXIMATORS + r")?\s*"
+    r"|" + r"(?:" + _NATIVE_NUMERAL_ALT + r")\s*"
+    r")"
     r"(?P<unit>"
     + "|".join(re.escape(s) for s in _MEASUREMENT_UNIT_SPELLINGS)
     + r")" + _UNIT_SUFFIX + r"(?![가-힣0-9A-Za-z])"
@@ -213,6 +238,11 @@ unit, so `20여년`, `3만여원` and `100여 일` are read; the premise that it
 cannot swallow a spelling is in that constant, and the trailing lookahead
 applies after it unchanged, which is what keeps `20여년3주` refusing the
 leading `년` on the same ground the no-approximator twin refuses it.
+Since #465 the number head may instead be one of the closed
+`_NATIVE_KOREAN_NUMERALS`, so `한 시간`, `두 달` and `다섯 분` are read where
+the digit head alone would not; the premise that a native numeral cannot
+swallow a spelling is asserted in
+`test_a_native_korean_numeral_in_front_of_the_unit_is_read`.
 All three of those bounds are
 narrower than `_VALUE_MEASUREMENT_RELAXED`'s, which is a statement about the
 NUMBER and not about the two patterns as wholes: since #453 the relaxed one
@@ -896,8 +926,9 @@ member cannot be dropped with the suite green.
 """
 
 _RELAXED_QUANTITY_NUMBER = (
-    r"\d[\d,.]*\s*(?:[" + _SINO_KOREAN_MAGNITUDES + r"]\s*)*"
+    r"(?:\d[\d,.]*\s*(?:[" + _SINO_KOREAN_MAGNITUDES + r"]\s*)*"
     r"(?:" + _GAP_APPROXIMATORS + r"\s*)?"
+    r"|" + r"(?:" + _NATIVE_NUMERAL_ALT + r")\s*)"
 )
 """The number `_VALUE_MEASUREMENT_RELAXED` reads, named so the tests can rebuild
 the pattern instead of restating it.
@@ -910,7 +941,10 @@ the old shape from the new one. Naming it is the same remedy
 widened at the same time. Since #464 the number may also carry one
 `_GAP_APPROXIMATORS` syllable after the magnitude run, the position it takes
 on `_VALUE_MEASUREMENT`, so `20여년` and `3만여원` are read on this scan as
-well; the premise is in `_GAP_APPROXIMATORS`.
+well; the premise is in `_GAP_APPROXIMATORS`. Since #465 the number may
+instead be one of the closed `_NATIVE_KOREAN_NUMERALS`, so `한 시간` and
+`두 달` are read on this scan as well; the premise is asserted in
+`test_a_native_korean_numeral_in_front_of_the_unit_is_read`.
 """
 
 _UNIT_SHADOW_WORDS = ("분기", "주년", "년대", "주주", "secondary")
@@ -1086,16 +1120,18 @@ buy is the thing four drafts of this paragraph kept getting wrong -- a cause
 that fails the condition needs no new entry here, because the condition already
 covers it.
 
-FAILING THE DIGIT. No decimal digit stands before the asked unit, so there is
-nothing for the scan to start from. A Sino-Korean numeral (`이천만원`) is the
-case this file has recorded longest, but the reachable ones are the native
-Korean numerals -- `한 시간 30분` asked in hours, `두 달 3주`, `이틀 3주` --
-and the quantities that carry no numeral at all: `반년`, `수개월`, `수십억원`,
-`여러 달`. `반년` is why the condition cannot be phrased as "a numeral the scan
-cannot spell": there is no numeral in it to fail to spell. `한 시간 30분` is
-the most reachable of all of them, since `일 시간` is not Korean and an hour
-and a half is ordinarily written that way -- though `1시간 30분` and `1.5시간`
-are read, so what is out of reach is the notation and not the quantity.
+FAILING THE DIGIT. No decimal digit stands before the asked unit, and no
+native numeral from the closed `_NATIVE_KOREAN_NUMERALS` (admitted since #465,
+which is why `한 시간 30분` and `두 달 3주` are read, not declined here). A
+Sino-Korean numeral (`이천만원`) is the case this file has recorded longest,
+and the rest of the group is what the native admission does not reach: the
+excluded numerals `세`/`일`/`일곱` (each equals or borrows a unit spelling) and
+`이` (a deictic), the suppletive `이틀`, and the quantities that carry no
+numeral at all -- `반년`, `수개월`, `수십억원`, `여러 달`. `반년` is why the
+condition cannot be phrased as "a numeral the scan cannot spell": there is no
+numeral in it to fail to spell. The native forms that DO read carry their own
+dualities (`한분` honorific, `두 명` classifier, `열세`), which the record
+tables keep beside their digit twins.
 
 FAILING THE GAP. Digits do stand before the unit, and EVERY one of them has
 something in its gap: a magnitude outside the class (`1경원`, and `1천경원`,
@@ -1525,13 +1561,16 @@ def korean_measure_unit_mismatch(question: str, value: str) -> tuple[str, str] |
     reads wrong: it qualifies on its `5` and not on its `1`. The noun is worth
     repeating because ranged over occurrences of the SPELLING the same words
     say something false -- `2천만원 지원` holds two `원` and is read on the
-    first. So `한 시간 30분` and `반년 3주`
-    fail for want of any digit -- as `이천만원` does, and the native-numeral and
-    no-numeral forms are the reachable members of that class rather than the
-    Sino-Korean one -- while `1경원` has a magnitude outside the class in the
-    gap and `3천여만원` has the approximator standing between two magnitudes,
-    where #464 does not reach; `20여년` and `3만여원` were read since #464,
-    when the single-syllable approximator was admitted to the gap.
+    first. So `반년 3주`
+    fails for want of any digit and any native numeral -- as `이천만원` does,
+    and the no-numeral and Sino-Korean forms are the members of that class that
+    stay out of reach -- while `한 시간 30분` and `두 달 3주` were read since
+    #465, when the closed `_NATIVE_KOREAN_NUMERALS` were admitted to the number
+    head (the excluded `세`/`일`/`이`/`일곱` and the suppletive `이틀` are the
+    members that still fail the digit); and `1경원` has a magnitude outside the
+    class in the gap and `3천여만원` has the approximator standing between two
+    magnitudes, where #464 does not reach; `20여년` and `3만여원` were read
+    since #464, when the single-syllable approximator was admitted to the gap.
     `_MEASUREMENT_UNIT_SPELLINGS` leaves out on purpose: the `개년` in
     `5개년 계획 3주` and the bare `월` in `6월 및 30주`. #451 widened what may
     stand in a gap, and widened which characters count as digits; the
@@ -1663,16 +1702,15 @@ def korean_measure_unit_mismatch(question: str, value: str) -> tuple[str, str] |
       direction, and the two classes it declines while satisfying are recorded
       with it rather than here.
 
-      No DIGIT at all before the asked unit, so the scan has nothing to start
-      from. `이천만원 (15,000달러)` asked in won reports `달러`, and so do
-      `한 시간 30분` asked in hours, `두 달 3주` and `이틀 3주` asked in their
-      own units, and `반년 3주`, `수개월 3주` and `수십억원 (15,000달러)`,
-      which carry no numeral to spell at all. `한 시간 30분` is the one to
-      weigh: it is the very sentence this scan exists to prevent, on the way an
-      hour and a half is ordinarily written, since `일 시간` is not Korean.
-      Notation and not quantity -- `1시간 30분` and `1.5시간` say the same thing
-      and are both silent -- which is what makes it a spelling defect rather
-      than a limit on what can be asked.
+      No DIGIT at all before the asked unit, and no admitted native numeral, so
+      the scan has nothing to start from. `이천만원 (15,000달러)` asked in won
+      reports `달러`, and so do `이틀 3주` asked in its own unit (the suppletive
+      `이틀` is not a numeral-plus-counter) and `반년 3주`, `수개월 3주` and
+      `수십억원 (15,000달러)`, which carry no numeral to spell at all. #465
+      admitted the closed native set to the number head, so `한 시간 30분` and
+      `두 달 3주` no longer belong to this bullet; the members that still fail
+      it are the excluded numerals `세`/`일`/`이`/`일곱`, the suppletive `이틀`,
+      and the open quantifiers, and those are what this bullet now lists.
 
       Something in the GAP between that digit and the unit. A magnitude outside
       `_SINO_KOREAN_MAGNITUDES` (`1경원 (15,000달러)`), or the approximator
