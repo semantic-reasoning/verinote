@@ -2123,8 +2123,11 @@ def test_a_native_korean_numeral_in_front_of_the_unit_is_read():
 
     # Lost caveats the admission adds, recorded rather than left silent: a
     # native numeral before a real unit now suppresses that unit's own caveat.
+    # The `한<unit>` member `한일` (Korea-Japan) is the most common one; `열일`
+    # and the `분` honorific are the other recorded members of the class.
     assert korean_measure_unit_mismatch("샘플회의의 소요는 몇 분인가?", "두분, 2시간 소요") is None
     assert korean_measure_unit_mismatch("샘플작업의 기간은 몇 일인가?", "열일하게, 3주") is None
+    assert korean_measure_unit_mismatch("샘플회의의 기간은 몇 일인가?", "한일 정상회의, 3주") is None
 
     # The exclusions, each for the reason in `_NATIVE_KOREAN_NUMERALS`: `세`
     # and `이` are spellings/deictics, `반` carries no numeral, `이틀` is
@@ -2138,7 +2141,13 @@ def test_a_native_korean_numeral_in_front_of_the_unit_is_read():
         "원",
         "달러",
     )
-    assert korean_measure_unit_mismatch("샘플회의의 기간은 몇 일인가?", "일곱일") is None
+    # `일곱` is excluded because it borrows the DAY syllable; the non-vacuous
+    # witness carries a neighbour unit, so admitting `일곱` would flip it to
+    # silent and red.
+    assert korean_measure_unit_mismatch("샘플회의의 기간은 몇 일인가?", "일곱일, 3주") == (
+        "일",
+        "주",
+    )
 
 
 def test_the_magnitude_run_needs_no_inner_digits():
