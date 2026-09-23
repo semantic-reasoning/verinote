@@ -507,7 +507,7 @@ def test_question_classifier_counter_reads_the_counter_and_refuses_얼마나():
         ("5명 2개 기관", "명"),
         ("2년", None),
         ("5개년 계획 수립", None),
-        ("2백개", None),
+        ("2백개", "개"),
         ("3천개 기관", "개"),
         ("지원 없음", None),
         ("2년차 담당자 배정", None),
@@ -524,9 +524,10 @@ def test_value_classifier_count_reads_the_first_classifier_kind(value, expected)
     `3개 기관` states `개`, `3종류 도구` states `종류`, and `5개년` states
     nothing, for the reason the module's `_VALUE_CLASSIFIER_COUNT` gives --
     the trailing syllable is refused, the way `2년차` refuses `년` on the
-    canonical side. `2백개` states no count because the magnitude word is not
-    in the one-of-four set the pattern admits, and `3천개` does state one
-    because `천` is in it. `3차 회의` states `차`, the position counter, and
+    canonical side. Since #463 the number runs through the closed
+    `_SINO_KOREAN_MAGNITUDES`, so `2백개` states `개` the way `3천개` does --
+    `백` and `천` both in the class, where the one-of-four bound pre-#463 left
+    `2백개` silent. `3차 회의` states `차`, the position counter, and
     stays a count here: exclusion of positions is the caller's decision, and
     this scan reports what is stated.
     """
@@ -1757,7 +1758,7 @@ def test_the_suppression_scan_reads_a_run_of_magnitude_words(monkeypatch):
 
     The killer is derived from the live constant rather than retyped: turn the
     run back into the single optional character it was before #451 and both
-    stacked witnesses name the dollars again.
+    stacked witnesses lose the won on this scan.
 
     Both are asserted because the issue reports both, not because either is an
     independent killer -- they are not. `1억5천만원` ends in `5천만원`, so no
@@ -1766,30 +1767,33 @@ def test_the_suppression_scan_reads_a_run_of_magnitude_words(monkeypatch):
     filed on, and the test says so rather than implying a discrimination it
     does not make.
 
-    The reporting scan is deliberately left where it was, so `2천만원` still
-    STATES nothing -- what changed is only whether the value is read as already
-    carrying the unit that was asked for.
+    Since #463 the reporting scan reads the run too, so the killer asserts on
+    the suppression scan directly (`_value_states_asked_unit`) rather than on
+    the caveat -- the widened reporting scan now reads `2천만원` as KRW, which
+    is a separate #463 change from this one. The notation the two scans still
+    differ on is the open non-ASCII digit class (`３년`), the follow-up issue.
     """
     import verinote.pipeline.query_measure_unit as qmu
     from verinote.pipeline.query_measure_unit import (
         _RELAXED_QUANTITY_NUMBER,
         _value_measure_units,
         _value_states_asked_unit,
-        korean_measure_unit_mismatch,
     )
 
     assert _value_states_asked_unit("2천만원", "KRW") is True
     assert _value_states_asked_unit("1억5천만원", "KRW") is True
-    assert _value_measure_units("2천만원") == ()
+    assert _value_measure_units("2천만원") == (("KRW", "원"),)
 
     one_magnitude = _RELAXED_QUANTITY_NUMBER.replace(r")*", r")?")
     assert one_magnitude != _RELAXED_QUANTITY_NUMBER, "the mutation did not apply"
     monkeypatch.setattr(
         qmu, "_VALUE_MEASUREMENT_RELAXED", _relaxed_pattern_from(one_magnitude)
     )
-    question = "샘플사업의 가격은 몇 원인가?"
-    assert korean_measure_unit_mismatch(question, "2천만원 (15,000달러)") == ("원", "달러")
-    assert korean_measure_unit_mismatch(question, "1억5천만원 및 20,000달러") == ("원", "달러")
+    # Narrowing the run back to one magnitude loses both stacked witnesses on
+    # this scan; the widened reporting scan is a separate #463 change from what
+    # this assertion is about.
+    assert _value_states_asked_unit("2천만원", "KRW") is False
+    assert _value_states_asked_unit("1억5천만원", "KRW") is False
 
 
 def test_the_suppression_scan_reads_any_unicode_decimal_digit(monkeypatch):
@@ -2272,53 +2276,52 @@ def test_the_magnitude_class_is_a_series_and_this_is_where_it_stops():
 
 
 def test_the_reporting_scans_magnitude_bound_has_two_halves_and_both_are_pinned():
-    """`[만억천조]?` says "at most one" AND "only these four"; pin each separately.
+    """Since #463 the reporting number runs the closed six-magnitude class; pin each half.
 
-    `korean_measure_unit_mismatch` states both halves in one sentence, and one
-    fixture cannot hold them. The obvious choice is vacuous: `2백만원` needs the
-    run AND the class, so it stays unreadable under a mutation that supplies
-    only one, and a test resting on it would pass while either half rotted.
+    The pre-#463 bound was `[만억천조]?` -- at most one of four -- which left
+    `2천만원`, `2백원`, `5십원`, `2백5십원` and `2백만원` silent. #463 widened it to
+    the `_SINO_KOREAN_MAGNITUDES` run, so all five now state their unit, the way
+    the suppression scan already did. The open non-ASCII digit class (`３년`)
+    is still out: it is the follow-up issue, not this bound.
 
-    The diagonal below is the whole point. `2천만원` needs only the run, so it
-    moves under the run mutation and not the class one; `2백원` and `5십원` need
-    only the class, so they move under the class mutation and not the run one.
-    Each half therefore has a value that fails for it alone. `2백만원` is
-    asserted too, but as the conjunction it names rather than as a killer.
-
-    #451 sits on the class half: the SUPPRESSION scan gained `십백` and this one
-    did not, which is why `2백원` asked in won is silent here and suppresses
-    there.
+    The two halves of the widened bound are pinned separately, mirroring the
+    old diagonal. `2천만원` needs the RUN, so a mutant that narrows the run back
+    to one magnitude loses it while one that narrows the class keeps it; `2백원`
+    and `5십원` need the CLASS (the sub-myriad `십`/`백`), so the
+    class-narrowing mutant loses them while the run-narrowing mutant keeps
+    them; `2백만원` needs BOTH. Each half therefore has a value that fails for
+    it alone, and the conjunction is asserted as the conjunction it names.
     """
     import re
 
     from verinote.pipeline.query_measure_unit import _VALUE_MEASUREMENT, _value_measure_units
 
     for value in ["2천만원", "2백원", "5십원", "2백5십원", "2백만원"]:
-        assert _value_measure_units(value) == (), value
-    # The control: one magnitude from the four is read, so the silences above
-    # are the bound and not a blind pattern.
+        assert _value_measure_units(value) == (("KRW", "원"),), value
+    # The control that predated the widening: one myriad-step magnitude.
     assert _value_measure_units("3만원") == (("KRW", "원"),)
 
     live = _VALUE_MEASUREMENT.pattern
-    bound = "[만억천조]?"
+    bound = r"(?:[십백천만억조]\s*)*"
     assert bound in live, "the bound moved; this test hardcodes only its text"
-    wider_class = re.compile(live.replace(bound, "[십백천만억조]?"))
-    longer_run = re.compile(live.replace(bound, "[만억천조]*"))
+    narrow_class = re.compile(live.replace(bound, r"(?:[만억천조]\s*)*"))
+    narrow_run = re.compile(live.replace(bound, "[십백천만억조]?"))
 
     def reads(pattern, value):
         return [m.group("unit") for m in pattern.finditer(value)]
 
-    # Widening the class reaches the sub-myriad values and not the stacked one.
-    assert reads(wider_class, "2백원") == ["원"]
-    assert reads(wider_class, "5십원") == ["원"]
-    assert reads(wider_class, "2천만원") == []
-    # Allowing a run reaches the stacked value and not the sub-myriad ones.
-    assert reads(longer_run, "2천만원") == ["원"]
-    assert reads(longer_run, "2백원") == []
-    assert reads(longer_run, "5십원") == []
-    # And the conjunction really is one: neither mutation alone reads it.
-    assert reads(wider_class, "2백만원") == []
-    assert reads(longer_run, "2백만원") == []
+    # Narrowing the run to one magnitude loses the stacked value and the
+    # conjunction, keeps the sub-myriad single-magnitude ones.
+    assert reads(narrow_run, "2천만원") == []
+    assert reads(narrow_run, "2백만원") == []
+    assert reads(narrow_run, "2백원") == ["원"]
+    assert reads(narrow_run, "5십원") == ["원"]
+    # Narrowing the class to the old four loses the sub-myriad values and the
+    # conjunction, keeps the myriad-run one.
+    assert reads(narrow_class, "2백원") == []
+    assert reads(narrow_class, "5십원") == []
+    assert reads(narrow_class, "2백만원") == []
+    assert reads(narrow_class, "2천만원") == ["원"]
 
 
 def test_a_separator_is_admitted_only_inside_the_leading_digit_run(monkeypatch):
