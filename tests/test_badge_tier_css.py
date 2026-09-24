@@ -277,10 +277,25 @@ def _busiest_fixture(tmp_path) -> tuple[TestClient, int]:
     return client, fact_id
 
 
+def _review_body(client: TestClient) -> str:
+    """The /review body, asserting a 200 first.
+
+    #498: this suite's one order-dependent flake was a non-200 (FD exhaustion
+    at the policy guard, which then rendered an empty page) read as a missing
+    row. Parsing a body is only meaningful on the 200 the test expects; any
+    other status must fail as what it is.
+    """
+    response = client.get("/review")
+    assert response.status_code == 200, (
+        f"/review returned {response.status_code}: {response.text[:200]!r}"
+    )
+    return response.text
+
+
 def _busiest_row(tmp_path) -> list[tuple[frozenset[str], list[str]]]:
     client, fact_id = _busiest_fixture(tmp_path)
 
-    body = client.get("/review").text
+    body = _review_body(client)
     row = re.search(rf'<tr id="fact-{fact_id}".*?</tr>', body, re.DOTALL)
     assert row is not None, f"/review did not render fact {fact_id}"
     parser = _Badges()
@@ -296,7 +311,7 @@ def _signal_markup(response_text: str) -> str:
 
 def _signal_badges(client: TestClient, fact_id: int) -> list[tuple[frozenset[str], str]]:
     """Badges in the trust cell, excluding the row status verdict."""
-    body = client.get("/review").text
+    body = _review_body(client)
     row = re.search(rf'<tr id="fact-{fact_id}".*?</tr>', body, re.DOTALL)
     assert row is not None, f"/review did not render fact {fact_id}"
     parser = _Badges()

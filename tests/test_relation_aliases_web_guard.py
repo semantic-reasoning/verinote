@@ -1454,6 +1454,54 @@ def test_review_stays_up_with_an_empty_queue_under_a_broken_alias_file(tmp_path)
     assert client.get("/review").status_code == 200
 
 
+def test_review_does_not_render_a_policy_failure_when_the_real_one_is_emfile(
+    tmp_path, monkeypatch,
+):
+    """#498: EMFILE at the guard's read is a system-resource failure, not a
+    policy-file failure, and must not be rendered as one.
+
+    Before the fix, `policy_file_failure`'s broad `except Exception` (G2)
+    swallowed `OSError(errno.EMFILE)` exactly like a cp949 byte string and a
+    chmod'd file, so a process out of file descriptors got a 200 page
+    claiming the alias file could not be read -- with an EMPTY review queue
+    on the default filter. That is the exact shape #498's flaky
+    `test_single_source_renders_as_a_warning_verdict_with_a_marker` failed
+    with ("did not render fact 2" on a healthy KB): a resource failure
+    wearing a policy file's message. A page that is wrong about which kind
+    of failure happened is worse than a 500, because it redirects the
+    diagnosis (and the issue it spawns) at a file that is fine.
+
+    The injection is the EMFILE the guard itself would raise, raised at the
+    same statement (`os.lstat` inside `store_relation_aliases`), not a
+    stand-in: `monkeypatch` restores it, so the test is deterministic
+    without an FD limit to tune.
+    """
+    import errno
+    import os
+
+    root = _make_kb(tmp_path)
+    app = _open_app(root)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    real_lstat = os.lstat
+
+    def emfile_lstat(path, *args, **kwargs):
+        if str(path).endswith(RELATION_ALIASES_RELPATH.split("/")[-1]):
+            raise OSError(errno.EMFILE, "Too many open files", str(path))
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", emfile_lstat)
+
+    r = client.get("/review")
+    # The route must fail loudly. It must NOT answer 200 with the
+    # "could not be read" wrapper: that message names a file as the cause,
+    # and under EMFILE the file was never the cause.
+    assert r.status_code == 500, (
+        f"EMFILE rendered as {r.status_code}: {r.text[:200]!r}"
+    )
+    assert NAMED not in r.text
+
+
 def test_review_still_lists_the_queue_rows_and_withholds_only_their_trust(
     malformed_client,
 ):
