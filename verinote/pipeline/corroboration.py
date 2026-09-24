@@ -12,6 +12,7 @@ import datetime
 import decimal
 from dataclasses import dataclass
 from decimal import Decimal
+import errno
 import os
 import re
 import unicodedata
@@ -99,6 +100,22 @@ def policy_file_failure(read, relpath: str) -> str | None:
         # twice AND would misstate what happened -- the file WAS read; it parsed
         # and failed. Must stay ABOVE G2.
         return str(exc)
+    except OSError as exc:
+        # G0. SYSTEM RESOURCE EXHAUSTION IS NOT A POLICY-FILE CONDITION. An
+        # EMFILE/ENFILE at this read means the process or the kernel is out of
+        # file handles; the policy file may be perfectly healthy. Normalising
+        # that to a "…could not be read" message makes every caller render a
+        # 200 page claiming the file is broken -- #498's `/review` came back
+        # 200 with an EMPTY queue and a "policy could not be read" banner while
+        # the real failure was FD exhaustion, and every reader of that page
+        # (and of the flaky test it poisoned) was pointed at a file that was
+        # fine. Re-raise so the caller fails loudly. Every OTHER OSError
+        # (a chmod'd file, ENOSPC) IS a file condition: it earns G2's message,
+        # not this clause's fall-through (an except clause that neither raises
+        # nor returns would let the read report success).
+        if exc.errno in (errno.ENFILE, errno.EMFILE):
+            raise
+        return f"{relpath} could not be read: {exc}"
     except Exception as exc:  # noqa: BLE001 - normalise every policy-read failure
         # G2. BROAD, NOT A TYPE LIST. `UnicodeDecodeError` (a file saved as
         # cp949) descends from `ValueError` as `CorroborationPolicyError` does
