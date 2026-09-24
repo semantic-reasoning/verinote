@@ -195,7 +195,7 @@ instead (`20년 남짓`) already read where they stand, which is why the open
 class is one syllable and not a list.
 """
 
-_NATIVE_KOREAN_NUMERALS = ("한", "두", "넷", "네", "다섯", "여섯", "여덟", "아홉", "열")
+_NATIVE_KOREAN_NUMERALS = ("한", "두", "넷", "네", "다섯", "여섯", "여덟", "아홉", "열", "스무", "서른", "쉰")
 """The native-Korean numerals a quantity may lead with, in front of its unit.
 
 #465: for the duration counters this rule reads, the native series is the
@@ -203,7 +203,11 @@ COMMON spelling, so the most natural value (`한 시간`, `두 달`) is the one
 neither measure scan could read, because both began the number at a decimal
 digit. This is a closed list, not a widening of the digit class: a digit is
 open by definition (any decimal character), but a numeral word is one of
-these nine and nothing else.
+these twelve and nothing else. Since #675 the round tens `스무`, `서른` and
+`쉰` are members, each admitted only after the per-member swallow check in
+`test_the_round_tens_are_admitted_with_their_own_swallow_check` proved it
+equals no spelling or counter and begins with neither, so `스무 달`,
+`서른 살` and `쉰 년` state their unit beside `20달`, `30살` and `50년`.
 
 Left out, each for a measured reason (checked, not assumed): `세` is the
 spelling for YEAR and `일` is the spelling for DAY, so admitting either would
