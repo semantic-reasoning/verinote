@@ -2257,6 +2257,80 @@ def test_a_native_korean_numeral_in_front_of_the_unit_is_read():
     )
 
 
+def test_the_round_tens_are_admitted_with_their_own_swallow_check():
+    """#675: the round tens join the closed set only with the swallow premise proven per member.
+
+    The #465 premise in `test_a_native_korean_numeral_in_front_of_the_unit_is_read`
+    re-derives over the WHOLE set, which now carries `스무`, `서른` and `쉰`.
+    This test re-derives it per NEW member instead: each ten equals no unit
+    spelling or classifier counter and begins with neither, and is begun by
+    neither, over the LIVE tables. That is the break the exclusions are pinned
+    on -- `세` and `일` equal live spellings (YEAR, DAY) and `일곱` borrows
+    DAY's first syllable, so each is refused -- and had any of the three tens
+    carried it, the admission would silently swallow a unit the scan already
+    reads. Checking per member is what keeps a borrowed first syllable red on
+    THAT member rather than averaged over the nine #465 ones.
+
+    What the admission reads is pinned beside its digit twins, and what it
+    leaves out stays out: `여러` is an open quantifier and `반` carries no
+    numeral, so neither states the unit and `여러 달`, `반년` name their
+    residue exactly as before #675.
+    """
+    from verinote.pipeline.query_measure_unit import (
+        _CLASSIFIER_COUNTERS,
+        _MEASUREMENT_UNIT_SPELLINGS,
+        _NATIVE_KOREAN_NUMERALS,
+        _value_measure_units,
+        korean_measure_unit_mismatch,
+    )
+
+    round_tens = ("스무", "서른", "쉰")
+    # All three are in the shipped set: the premise below and the readings
+    # below run over the live table, not a copy of it.
+    assert [n for n in round_tens if n not in _NATIVE_KOREAN_NUMERALS] == []
+
+    # The per-member swallow check, both tables, both directions: adding a
+    # ten that a spelling or counter equals or begins with (or one that begins
+    # with either) reddens on that member.
+    for ten in round_tens:
+        assert [
+            s for s in _MEASUREMENT_UNIT_SPELLINGS if s == ten or s.startswith(ten)
+        ] == [], ten
+        assert [
+            s for s in _MEASUREMENT_UNIT_SPELLINGS if s == ten or ten.startswith(s)
+        ] == [], ten
+        assert [
+            c for c in _CLASSIFIER_COUNTERS if c == ten or c.startswith(ten)
+        ] == [], ten
+        assert [
+            c for c in _CLASSIFIER_COUNTERS if c == ten or ten.startswith(c)
+        ] == [], ten
+
+    # The three tens read their unit the way the digit twins 20달/30살/50년
+    # do: the native branch carries no digit, so these readings are its own.
+    assert _value_measure_units("스무 달") == (("MONTH", "달"),)
+    assert _value_measure_units("서른 살") == (("YEAR", "살"),)
+    assert _value_measure_units("쉰 년") == (("YEAR", "년"),)
+
+    # Suppression: the asked unit is now stated, so the caveat ends, the way
+    # `한 시간 30분` and `두 달 3주` end it in the #465 test.
+    assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 달인가?", "스무 달 3주") is None
+    assert korean_measure_unit_mismatch("샘플인물의 나이는 몇 살인가?", "서른 살 2개월") is None
+    assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 년인가?", "쉰 년 6개월") is None
+
+    # What the admission does NOT reach stays named: `여러` is an open
+    # quantifier and `반` carries no numeral, so the residue is still the
+    # caveat, the direction #454 pins, exactly as before #675.
+    assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 달인가?", "여러 달 3주") == (
+        "달",
+        "주",
+    )
+    assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 년인가?", "반년 3주") == (
+        "년",
+        "주",
+    )
+
+
 def test_the_magnitude_run_needs_no_inner_digits():
     """The declined alternative reads the same units, measured rather than assumed.
 
