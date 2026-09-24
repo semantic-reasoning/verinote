@@ -1060,12 +1060,12 @@ def test_a_latin_spelling_is_matched_and_reported_casefolded():
 def test_a_four_digit_year_run_into_more_digits_is_not_a_calendar_year():
     """The two bounds on the four-digit year are not symmetric, and only one bites.
 
-    The left-hand `(?<!\d)` is live: without it `10000년` matches on its inner
+    The left-hand `(?<!\\d)` is live: without it `10000년` matches on its inner
     `0000년`, the real `10000년` straddles that span's left edge, and a genuine
     ten-thousand-year duration is dropped. `test_a_longer_digit_run_is_not_read_as_a_calendar_year`
     is where that is pinned.
 
-    The right-hand `(?!\d)` cannot bite under a span-local guard, and the
+    The right-hand `(?!\\d)` cannot bite under a span-local guard, and the
     reason is not a corpus result but an entailment. For it to matter a quantity
     would have to overlap the span `NNNN년`; that span ends at `년`, and the bound
     only fires when a digit follows, so any quantity ending there is refused by
@@ -1161,14 +1161,14 @@ def test_each_time_point_branch_is_needed_by_one_of_these_values(
 def test_a_full_width_number_states_the_unit_like_its_ascii_twin():
     """#677: `３년` is a number, and the reporting scan reads it like `3년`.
 
-    The digit class is `\d` on both scans, so the full-width notation states
+    The digit class is `\\d` on both scans, so the full-width notation states
     the unit where its ASCII twin does, and a months question names the same
     mismatch for both. The twin pairing is the falsifier: a row whose ASCII
     twin read differently would be the notation divergence #677 exists to
-    close. `nfc` is not `nfkc`, so this is a `\d` class reading rather than
+    close. `nfc` is not `nfkc`, so this is a `\\d` class reading rather than
     a compatibility fold.
 
-    The non-breaking space assertion is the spacing control: `\s` already
+    The non-breaking space assertion is the spacing control: `\\s` already
     admits it, so it never was a digit-class matter.
     `test_the_scans_read_any_unicode_decimal_digit` is the other side.
     """
@@ -1222,7 +1222,7 @@ def test_the_full_width_notation_states_its_unit_and_dates_the_same():
 
     # A unit a decimal digit follows is refused in either notation, so the
     # mixed-notation value reads its twin's reading: the `년` the narrower
-    # scan read in `3년３주` before #677 is refused now that a `\d` follows
+    # scan read in `3년３주` before #677 is refused now that a `\\d` follows
     # it, and the `개` in `３개３주` stays refused where `3개3주` refuses it.
     assert _value_measure_units("3년３주") == _value_measure_units("3년3주") == (
         ("WEEK", "주"),
@@ -1247,8 +1247,6 @@ def test_the_full_width_notation_states_its_unit_and_dates_the_same():
         ("샘플회의의 시간은 몇 시간인가?", "5분", ("시간", "분"), "five people, honorific"),
         ("샘플회의의 참여자는 몇 명인가?", "다섯분 참여, 3주", ("명", "분"),
          "five people, honorific -- the native twin of the row above"),
-        ("샘플회의의 참여자는 몇 명인가?", "두 명, 3주", ("명", "주"),
-         "two people, native numeral the classifier scan still cannot read"),
         ("샘플사업의 기간은 몇 달인가?", "열세", ("달", "세"),
          "thirteen years old, or the word for 'disadvantage'"),
         ("샘플계약의 마감일은 몇 개월인가?", "2021년 계약, 15일 마감", ("개월", "일"), "a deadline on the 15th"),
@@ -1862,16 +1860,16 @@ def test_the_suppression_scan_reads_a_run_of_magnitude_words(monkeypatch):
 def test_the_scans_read_any_unicode_decimal_digit(monkeypatch):
     """#677: `３년` is a number, and both scans admit any Unicode decimal digit.
 
-    `\d` rather than a listed range, which is the claim the Arabic-Indic and
+    `\\d` rather than a listed range, which is the claim the Arabic-Indic and
     Devanagari assertions make: a `[0-9０-９]` would satisfy the full-width
     witness and fail those.
 
-    Decimal digit and not numeral: `\d` is the Nd category, so `一년` is no more
+    Decimal digit and not numeral: `\\d` is the Nd category, so `一년` is no more
     readable here than `이천만원` is, and the numeral axis stays where
     `korean_measure_unit_mismatch` records it.
 
     Each killer narrows one scan's class back to ASCII, and does it by
-    replacing the head as one substring -- replacing `\d` alone would leave
+    replacing the head as one substring -- replacing `\\d` alone would leave
     the nested set `[[0-9],.]` and a `FutureWarning` rather than the pattern
     intended. The suppression killer is derived from the live
     `_RELAXED_QUANTITY_NUMBER`; the reporting killer rebuilds the live
@@ -2141,6 +2139,7 @@ def test_a_native_korean_numeral_in_front_of_the_unit_is_read():
         _CLASSIFIER_COUNTERS,
         _MEASUREMENT_UNIT_SPELLINGS,
         _NATIVE_KOREAN_NUMERALS,
+        _value_classifier_count,
         _value_measure_units,
         korean_measure_unit_mismatch,
     )
@@ -2163,6 +2162,15 @@ def test_a_native_korean_numeral_in_front_of_the_unit_is_read():
         c for c in _CLASSIFIER_COUNTERS
         if any(c == n or c.startswith(n) for n in _NATIVE_KOREAN_NUMERALS)
     ] == []
+    # #674: the classifier head admits the same set, so the premise is
+    # re-derived over the counters in BOTH directions, the way the unit one
+    # is: adding a counter that a numeral begins with (or a numeral that a
+    # counter begins with) reddens here rather than silently swallowing one
+    # of the other.
+    assert [
+        n for n in _NATIVE_KOREAN_NUMERALS
+        if any(n == c or n.startswith(c) for c in _CLASSIFIER_COUNTERS)
+    ] == []
 
     # Suppression: the asked unit is now stated, so the caveat ends.
     for question, value in [
@@ -2170,12 +2178,24 @@ def test_a_native_korean_numeral_in_front_of_the_unit_is_read():
         ("샘플회의의 소요는 몇 시간인가?", "한 시간 30분 15초"),
         ("샘플사업의 기간은 몇 달인가?", "두 달 3주"),
         ("샘플회의의 소요는 몇 분인가?", "다섯분 참여, 3주"),
+        # #674: the classifier half of the same admission -- `두 명` states
+        # the asked `명`, the way `2명` does, so the caveat ends where the
+        # digit twin's ends.
+        ("샘플회의의 참여자는 몇 명인가?", "두 명, 3주"),
+        ("샘플회의의 참여자는 몇 명인가?", "두 명 참석, 3주"),
     ]:
         assert korean_measure_unit_mismatch(question, value) is None, value
 
     # Non-vacuity: the unit is in the REPORTED list, not hidden by going blind.
     assert _value_measure_units("한 시간") == (("HOUR", "시간"),)
     assert _value_measure_units("두 달") == (("MONTH", "달"),)
+    # #674 non-vacuity: the counter is in the REPORTED list.
+    assert _value_classifier_count("두 명") == "명"
+    assert _value_classifier_count("두 명") == _value_classifier_count("2명")
+    # and the native branch declines the magnitude run the digit branch
+    # carries: `두백개` states no count, the way the measure head declines it.
+    assert _value_classifier_count("두백개") is None
+    assert _value_classifier_count("2백개") == "개"
 
     # Reporting: a different unit of the family names the LEADING quantity
     # (#454), the rename the issue warned about -- measured in the more-accurate
@@ -2186,20 +2206,27 @@ def test_a_native_korean_numeral_in_front_of_the_unit_is_read():
     )
 
     # The native forms that do read carry the dualities the digit twins keep:
-    # the `분` of `다섯분` is the honorific and the `명` of `두 명` the classifier
-    # the native numeral cannot carry, and `열세` is a number and a word.
+    # the `분` of `다섯분` is the honorific the classifier scan does not read
+    # (it is a unit, not a counter), and `열세` is a number and a word. The
+    # `명` duality moved with #674: `두 명` now states the asked `명` in the
+    # silent half above, beside its twin `2명, 3주`. `한쪽` is the `한<counter>`
+    # word the admission reads as a count of `쪽` the way its twin `1쪽` is.
     assert korean_measure_unit_mismatch("샘플회의의 참여자는 몇 명인가?", "다섯분 참여, 3주") == (
         "명",
         "분",
-    )
-    assert korean_measure_unit_mismatch("샘플회의의 참여자는 몇 명인가?", "두 명, 3주") == (
-        "명",
-        "주",
     )
     assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 달인가?", "열세") == (
         "달",
         "세",
     )
+    assert _value_classifier_count("한쪽") == "쪽"
+    assert _value_classifier_count("한쪽") == _value_classifier_count("1쪽")
+    assert korean_measure_unit_mismatch("샘플문서의 첫 장은 몇 쪽인가?", "한쪽, 3장") is None
+    # `한편` (on the one hand) is the same `한<counter>` class and the
+    # commonest of it: read as a count of `편` the way its twin `1편` is.
+    assert _value_classifier_count("한편") == "편"
+    assert _value_classifier_count("한편") == _value_classifier_count("1편")
+    assert korean_measure_unit_mismatch("샘플논문의 참고문헌은 몇 편인가?", "한편, 3장") is None
 
     # Lost caveats the admission adds, recorded rather than left silent: a
     # native numeral before a real unit now suppresses that unit's own caveat.

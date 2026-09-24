@@ -375,8 +375,10 @@ this exclusion against the other fifteen.
 """
 
 _VALUE_CLASSIFIER_COUNT = re.compile(
-    r"\d[\d,.]*\s*(?:[십백천만억조]\s*)*"
+    r"(?:\d[\d,.]*\s*(?:[십백천만억조]\s*)*"
     r"(?:" + _GAP_APPROXIMATORS + r")?\s*"
+    r"|" + r"(?:" + _NATIVE_NUMERAL_ALT + r")\s*"
+    r")"
     r"(?P<counter>" + "|".join(re.escape(s) for s in _CLASSIFIER_COUNTERS) + r")"
     r"(?![가-힣\dA-Za-z])"
 )
@@ -389,7 +391,19 @@ same refusal of a counter run into the next character, so `2년차`, `5개년`
 and the `３개` in `３개３주` state no count here for the same reasons they
 state no unit there, while `５개 기관` states `개` beside its ASCII twin
 `3개 기관`, and `5개년` stays the name
-of a plan rather than five of something. Since #464 the gap may also carry
+of a plan rather than five of something. Since #674 the head is also one of
+the closed `_NATIVE_KOREAN_NUMERALS`, the branch #465 added to the two
+measure heads, so `두 명` states `명` the way `2명` does and `두 가지`,
+`여섯 장` and `다섯 번` state their counter beside the digit twins; the
+native branch carries no magnitude run, the way the measure head's does not,
+so `두백개` states nothing where `2백개` states `개`. What the branch does
+and does not reach is pinned in
+`test_a_native_korean_numeral_in_front_of_the_unit_is_read`: `분` and `일`
+are not counters, so `다섯분` and `한일` stay silent, `두백개` states no
+count, and the `한<counter>` words `한쪽` and `한편` are read as counts of
+`쪽` and `편` the way their twins `1쪽` and `1편` are -- the `분`/`명`/`세`
+duality the table keeps is the `분` and `세` halves, the `명` half having
+moved with this branch. Since #464 the gap may also carry
 one `_GAP_APPROXIMATORS` syllable, so `20여명` states `명` the way `20명`
 does; the premise that it cannot swallow a counter is stated in that constant
 and asserted by `test_a_number_unit_approximator_in_the_gap_is_read` rather
@@ -397,7 +411,7 @@ than assumed. `_UNIT_SUFFIX` is not here because
 a classifier kind is what a count names, not a quantity wearing a particle:
 `3개 기관` counts organisations and states `개`, while `3일간` wears the
 particle on a unit and states nothing.
-"""
+"""""""""
 
 _MONTH_WORD_MEMBERS = (
     "매월", "매달", "금월", "익월", "내월", "당월", "전월", "차월",
