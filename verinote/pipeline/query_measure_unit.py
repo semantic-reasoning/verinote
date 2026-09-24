@@ -219,23 +219,23 @@ in `test_known_false_unit_statements_are_recorded_not_fixed`, and the
 _NATIVE_NUMERAL_ALT = "|".join(re.escape(n) for n in _NATIVE_KOREAN_NUMERALS)
 
 _VALUE_MEASUREMENT = re.compile(
-    r"(?:[0-9][0-9,.]*\s*(?:[십백천만억조]\s*)*"
+    r"(?:\d[\d,.]*\s*(?:[십백천만억조]\s*)*"
     r"(?:" + _GAP_APPROXIMATORS + r")?\s*"
     r"|" + r"(?:" + _NATIVE_NUMERAL_ALT + r")\s*"
     r")"
     r"(?P<unit>"
     + "|".join(re.escape(s) for s in _MEASUREMENT_UNIT_SPELLINGS)
-    + r")" + _UNIT_SUFFIX + r"(?![가-힣0-9A-Za-z])"
+    + r")" + _UNIT_SUFFIX + r"(?![가-힣\dA-Za-z])"
 )
-"""One quantity stated inside a value: ASCII digits, a run of the closed
-Sino-Korean magnitude words, and a unit spelling.
+"""One quantity stated inside a value: any Unicode decimal digit, a run of
+the closed Sino-Korean magnitude words, and a unit spelling.
 
 Since #463 the magnitude is the `_SINO_KOREAN_MAGNITUDES` run rather than the
 old one-of-four `[만억천조]?`, so `3만원`, `2천만원` and `2백만원` are all
 read; the bound is the same closed class the suppression scan uses, and the two
-scans now agree on it. What still separates them is the digit class: the digits
-here are `[0-9]` rather than the relaxed scan's `\\d`, so `３년` is still not
-read -- the open non-ASCII digit class is the follow-up issue, not this bound.
+scans now agree on it. Since #677 the digit class is the relaxed scan's `\\d`
+on both sides, so `３년` is read here as well as there, and the number reads
+the same notation in both scans.
 Since #464 the gap may also
 carry one syllable of `_GAP_APPROXIMATORS`, after the magnitude and before the
 unit, so `20여년`, `3만여원` and `100여 일` are read; the premise that it
@@ -247,16 +247,19 @@ Since #465 the number head may instead be one of the closed
 the digit head alone would not; the premise that a native numeral cannot
 swallow a spelling is asserted in
 `test_a_native_korean_numeral_in_front_of_the_unit_is_read`.
-The digit bound is
-narrower than `_VALUE_MEASUREMENT_RELAXED`'s, which is a statement about the
-NUMBER and not about the two patterns as wholes: since #453 the relaxed one
-carries a refusal of its own in `_UNIT_SHADOW_GUARD`, one this pattern already
-makes through its trailing lookahead. The asymmetry has a direction. This
-pattern decides what a value STATES and its output is put in front of a reader,
-so widening it ADDS sentences and needs a sweep of its own; the relaxed one
-decides only whether to stay silent. #451 widened the relaxed number and left
-this one where it was; #463 closed that gap on the closed magnitude class and
-left the open digit class (`３년`) to its own issue.
+What separates the two now is no longer the number: since #677 the digit
+class is `\\d` on both sides, so the number itself -- digit class, magnitude
+run, gap -- reads the same notation in both scans. What this pattern refuses
+that the relaxed one does not is the trailing lookahead, a difference between
+the patterns as wholes rather than the number: since #453 the relaxed one
+carries a refusal of its own in `_UNIT_SHADOW_GUARD`, a different refusal,
+and it has no trailing lookahead at all where one would refuse a unit a
+decimal digit follows. The asymmetry has a direction. This pattern decides
+what a value STATES and its output is put in front of a reader, so widening
+it ADDS sentences and needs a sweep of its own; the relaxed one decides only
+whether to stay silent. #451 widened the relaxed number and left this one
+where it was; #463 closed that gap on the closed magnitude class; #677 closed
+the digit class, and the number's two sides have agreed since.
 
 Requiring the digits is the whole precision of this rule. Ordinary Korean prose
 is full of syllables that are also unit spellings -- `지원`, `내년`, `일정`,
@@ -293,11 +296,11 @@ the sort is what keeps the longer taken first.
 """
 
 _LEADING_COMPOUND = re.compile(
-    r"(?P<num1>[0-9][0-9,.]*\s*(?:[십백천만억조]\s*)*)"
+    r"(?P<num1>\d[\d,.]*\s*(?:[십백천만억조]\s*)*)"
     r"(?P<unit1>" + "|".join(re.escape(s) for s in _TIME_UNIT_SPELLINGS) + r")"
-    r"(?P<num2>[0-9][0-9,.]*\s*(?:[십백천만억조]\s*)*)"
+    r"(?P<num2>\d[\d,.]*\s*(?:[십백천만억조]\s*)*)"
     r"(?P<unit2>" + "|".join(re.escape(s) for s in _TIME_UNIT_SPELLINGS) + r")"
-    r"(?![가-힣0-9A-Za-z])"
+    r"(?![가-힣\dA-Za-z])"
 )
 """An unspaced time compound: a quantity, a time unit, a quantity, a time unit.
 
@@ -372,18 +375,20 @@ this exclusion against the other fifteen.
 """
 
 _VALUE_CLASSIFIER_COUNT = re.compile(
-    r"[0-9][0-9,.]*\s*(?:[십백천만억조]\s*)*"
+    r"\d[\d,.]*\s*(?:[십백천만억조]\s*)*"
     r"(?:" + _GAP_APPROXIMATORS + r")?\s*"
     r"(?P<counter>" + "|".join(re.escape(s) for s in _CLASSIFIER_COUNTERS) + r")"
-    r"(?![가-힣0-9A-Za-z])"
+    r"(?![가-힣\dA-Za-z])"
 )
 """One count of a classifier kind stated inside a value.
 
 #455's value-side reading, with the number and the trailing refusal taken
-from `_VALUE_MEASUREMENT` rather than copied: the same ASCII digit head, the
-same six-magnitude run, and the same refusal of a counter run into the
-next character, so `2년차`, `5개년` and `３개` state no count here
-for the same reasons they state no unit there, and `5개년` stays the name
+from `_VALUE_MEASUREMENT` rather than copied: the same decimal-digit head
+(since #677, `\\d` rather than `[0-9]`), the same six-magnitude run, and the
+same refusal of a counter run into the next character, so `2년차`, `5개년`
+and the `３개` in `３개３주` state no count here for the same reasons they
+state no unit there, while `５개 기관` states `개` beside its ASCII twin
+`3개 기관`, and `5개년` stays the name
 of a plan rather than five of something. Since #464 the gap may also carry
 one `_GAP_APPROXIMATORS` syllable, so `20여명` states `명` the way `20명`
 does; the premise that it cannot swallow a counter is stated in that constant
@@ -424,14 +429,14 @@ Closed on purpose -- see `_TIME_POINT`, which is where the rule lives.
 """
 
 _MONTH_OF_YEAR = (
-    r"(?:[0-9]{1,2}\s*월|"
+    r"(?:\d{1,2}\s*월|"
     # The word alternatives carry a left bound the digit one must not have.
     # Without it `차월` matches inside `1차월`, which is month one of a
     # programme and not a point in time at all, and `1차월 3일 소요` lost a
     # caveat it had earned. Digits are the only thing excluded, so `해당월` and
     # `익익월` keep matching on their tails -- an accident, but one that lands
     # on the right answer, and a Hangul bound would give it up.
-    + r"(?<![0-9])(?:"
+    + r"(?<!\d)(?:"
     # Every member is Hangul plus at most one space, so they join raw -- the
     # premise `_UNIT_SUFFIX` joins on -- and the space is relaxed so
     # `다음달 1일` reads like `다음 달 1일`.
@@ -443,9 +448,9 @@ _TIME_POINT = re.compile(
     # A year in front of the month term belongs to the same date, so the span
     # reaches back over it. No left bound here, unlike the year+month branch --
     # see the docstring, where the two bounds are told apart.
-    r"(?:[0-9]{2,4}\s*년\s*)?"
+    r"(?:\d{2,4}\s*년\s*)?"
     + _MONTH_OF_YEAR
-    + r"\s*(?:" + "|".join(_MONTH_PART_MEMBERS) + r")?\s*[0-9]{1,2}\s*일"
+    + r"\s*(?:" + "|".join(_MONTH_PART_MEMBERS) + r")?\s*\d{1,2}\s*일"
     # Not a day of the month if what follows proves it is a duration. That is
     # `_DAY_DURATION_SUFFIXES`, a subset of `_UNIT_SUFFIX_MEMBERS` and not that
     # tuple -- see the docstring for why the two differ.
@@ -454,16 +459,19 @@ _TIME_POINT = re.compile(
     # optional independently of the other -- nested, `3시 20초` left its `초`
     # outside. Neither carries a lookahead of its own; the docstring weighs the
     # two candidates for one.
-    r"|[0-9]{1,2}\s*시(?![가-힣])(?:\s*[0-9]{1,2}\s*분)?(?:\s*[0-9]{1,2}\s*초)?"
-    r"|['’‘]\s*[0-9]{2}\s*년"
-    r"|(?<![0-9])[0-9]{2,4}\s*년\s*[0-9]{1,2}\s*월"
-    r"|(?<![0-9])[0-9]{4}\s*년(?![0-9])"
-    r"|(?<![0-9])[0-9]{2,4}\s*[-./]\s*[0-9]{1,2}\s*[-./]\s*[0-9]{1,2}"
+    r"|\d{1,2}\s*시(?![가-힣])(?:\s*\d{1,2}\s*분)?(?:\s*\d{1,2}\s*초)?"
+    r"|['’‘]\s*\d{2}\s*년"
+    r"|(?<!\d)\d{2,4}\s*년\s*\d{1,2}\s*월"
+    r"|(?<!\d)\d{4}\s*년(?!\d)"
+    r"|(?<!\d)\d{2,4}\s*[-./]\s*\d{1,2}\s*[-./]\s*\d{1,2}"
 )
 """Shapes that make a value a point in time rather than a quantity of one.
 
 `2021년` is a year, not two thousand and twenty-one years, and a question
-asking `몇 개월인가?` must not be told that value states years.
+asking `몇 개월인가?` must not be told that value states years. Since #677
+every digit position is `\\d` rather than `[0-9]`, the same class the
+reporting number reads, so a date is a date in every notation the value
+writes in and each full-width twin above is matched beside its ASCII form.
 
 The guard is span-local: `_value_measure_units` drops the quantities that
 overlap a match of this pattern and reports the rest, so a duration standing
@@ -572,8 +580,8 @@ It returns nothing when the question names no unit at all; when the suppression
 scan finds the asked unit in the head's own notation; and when its loop finds
 nothing to name. That last one is the one with several roads into it: the
 entry's quantity may be covered by a span, or never read at all --
-`_VALUE_MEASUREMENT`'s trailing lookahead is `(?![가-힣0-9A-Za-z])`, so a unit
-run into Hangul, a digit or Latin is refused, and the `15일` in
+`_VALUE_MEASUREMENT`'s trailing lookahead is `(?![가-힣\\dA-Za-z])`, so a unit
+run into Hangul, a decimal digit or Latin is refused, and the `15일` in
 `3월 15일과 20일` is never read for that reason, as is the one in
 `매월 15일동안 3주` -- or read, and outside every span, and passed over anyway
 for measuring something else, which is what becomes of a `15일` when the
@@ -634,7 +642,7 @@ it as an optional prefix so that the span reaches back over it. Without the
 prefix, `2021년 3월 15일` is matched by the year+month branch, which stops at
 `3월` and leaves a `15일` outside the span to be read as fifteen days -- the day
 branch cannot take it instead, because it must begin at the month term and the
-earlier match has already consumed past it. The prefix is `[0-9]{2,4}` for the
+earlier match has already consumed past it. The prefix is `\\d{2,4}` for the
 reason the year+month branch's year is, and the two are written out separately
 rather than shared because their bounds differ, which is two paragraphs down.
 
@@ -644,7 +652,7 @@ inner `23월 15일` and is silent, and adding a bound would make that value newl
 caveated -- a caveat gained, which this rule may not do quietly. The word
 alternatives are bounded, for the opposite reason given beside them. One
 consequence of the digit month being unbounded is that the width it admits is
-decoration: `[0-9]{1,2}` and `[0-9]` and `[0-9]{1,3}` all read the same values,
+decoration: `\\d{1,2}` and `\\d` and `\\d{1,3}` all read the same values,
 because a longer run simply matches further in. The same is true of the clock
 hour. Only the DAY's width is load-bearing, since the day must start where the
 month term ended.
@@ -731,7 +739,7 @@ what separate them: `시` is in neither `_MEASUREMENT_UNIT_SPELLINGS` nor
 `_KOREAN_MEASURE_COUNTER` while `시간` is in both, so digits running into `시`
 state no unit this file can read and can only be a clock. The lookahead is
 `(?![가-힣])` rather than `(?!간)` because `3시그마` and `5시리즈` are words,
-not times; it is not `(?![가-힣0-9])` because `3시30분` is half past three. A
+not times; it is not `(?![가-힣\\d])` because `3시30분` is half past three. A
 clock time with a Hangul tail -- `3시부터`, `3시경`, `3시반` -- falls outside
 and needs nothing, since it states no unit for a caveat to be wrong about.
 
@@ -818,12 +826,12 @@ twelve years and six months and stays a duration, because `개월` is not `월`.
 A bare two-digit year is deliberately NOT caught. `21년` on its own really can be
 twenty-one years, so it is left reading YEAR and disclosed in
 `korean_measure_unit_mismatch` instead. Widening the four-digit branch to
-`[0-9]{2,4}` would silence it, and that is the trade this declines. Written with
+`\\d{2,4}` would silence it, and that is the trade this declines. Written with
 an apostrophe it is caught, for the reason given above; bare, it is not.
 
 The four-digit year branch is bounded on both sides, and the two bounds do
-different work. The left-hand `(?<![0-9])` is what stops a genuine `10000년`
-matching on its inner `0000년`. The right-hand `(?![0-9])` stops a four-digit run
+different work. The left-hand `(?<!\\d)` is what stops a genuine `10000년`
+matching on its inner `0000년`. The right-hand `(?!\\d)` stops a four-digit run
 that continues into more digits from being read as a year, which only a
 contrived value reaches (`2021년12개월`).
 
@@ -847,7 +855,7 @@ keeps `2021-03-15일` off the days side, which is the whole of what the branch i
 for; they were silent before this change too, so it removes that cost neither
 more nor less than it removes any other.
 
-Its year is `[0-9]{2,4}` for the same reason the year+month branch's is, and
+Its year is `\\d{2,4}` for the same reason the year+month branch's is, and
 holding it at four digits while arguing two-digit years are ordinary notation
 one branch above was the contradiction that got it widened: `21.03.15일` and
 `25-01-15일` are dates by exactly the premise this file already accepts. Bounded
@@ -995,7 +1003,7 @@ direction, since a listed word is also the prefix of longer strings that stand
 in values which do state the asked unit -- `30분기준` is `30분` plus `기준`.
 `_VALUE_MEASUREMENT_RELAXED` argues that and
 `test_the_shadow_bound_admits_a_digit_and_refuses_a_letter` re-derives why the
-class is not `_VALUE_MEASUREMENT`'s `[가-힣0-9A-Za-z]`.
+class is not `_VALUE_MEASUREMENT`'s `[가-힣\\dA-Za-z]`.
 
 Named rather than inlined because `test_a_unit_suffix_would_be_inert_here` and
 `test_only_the_달러_before_달_constraint_decides_the_suppression_ordering` rebuild
@@ -1039,14 +1047,16 @@ states minutes and that no conversion is applied, when the leading quantity is
 exactly the hours asked for. A single space changed the outcome, because
 `3시간 30분` passes the lookahead and `3시간30분` does not.
 
-Since #451 this number is wider than `_VALUE_MEASUREMENT`'s, and #463
-closed the magnitude part of that gap by giving the reporting scan the
-same closed `_SINO_KOREAN_MAGNITUDES` run this scan has. So `2천만원`,
+Since #451 this number was wider than `_VALUE_MEASUREMENT`'s; #463 closed
+the magnitude part of that gap by giving the reporting scan the same closed
+`_SINO_KOREAN_MAGNITUDES` run this scan has, and #677 closed the digit part,
+so the two numbers read the same notation and `３년` is read by both.
+`2천만원`,
 `1억5천만원`, `2백만원` and `2백원` are read by both -- `X천만원`, `X억Y천만원`, `X백만원`
 and `X백원` are how a Korean document writes a sum, and `원` is a live
 question counter, so before #463 a `몇 원인가?` answered any of them was
 told the value states `달러` beside an answer whose leading figure is won.
-What is left is the digit class: it is `\d` here, every Unicode decimal
+The digit class is `\\d` -- every Unicode decimal
 digit rather than a listed range, because naming a range would leave the
 next script out; `verinote.text.nfc` is not `nfkc` and folding
 compatibility forms would have this rule compare a value differently
@@ -1224,7 +1234,7 @@ That is the failure the boundary shapes weighed for this scan were rejected for,
 arrived at from the other side, and it is the opposite direction from the one an
 unlisted word costs.
 
-The class is `[가-힣A-Za-z]` and not `_VALUE_MEASUREMENT`'s `[가-힣0-9A-Za-z]`,
+The class is `[가-힣A-Za-z]` and not `_VALUE_MEASUREMENT`'s `[가-힣\\dA-Za-z]`,
 and the difference is load-bearing rather than an oversight: a digit after a
 listed word begins a new number, it does not continue a word.
 `80년대2000년대 비교, 3개월` asked in years names its `개월` under this class and
@@ -1294,10 +1304,11 @@ def _value_states_asked_unit(value: str, asked_unit: str) -> bool:
     is added -- #453 added one. What the differences are is a diff of the two
     patterns and of the two callers, not a number in this line.
 
-    It reads MORE where the NUMBER is wider -- any Unicode decimal digit rather
-    than ASCII, a run of magnitude words rather than one, a wider magnitude class
-    -- and where the trailing lookahead is absent. That those widenings read more
-    and never less is argued from the character sets rather than sampled; the
+    It reads MORE where the trailing lookahead is absent. Since #677 the
+    NUMBER agrees with `_VALUE_MEASUREMENT`'s -- any Unicode decimal digit,
+    the closed magnitude run, the gap -- so the missing lookahead is the only
+    reading difference on that side. That it reads more and never less is
+    argued from the character sets rather than sampled; the
     argument is in `_VALUE_MEASUREMENT_RELAXED` and its premise is asserted by
     `test_the_widened_number_can_only_silence`. It is worth knowing which of the
     two the tests are doing, because `finditer` resumes from a match's end and a
@@ -1434,7 +1445,7 @@ def _leading_time_compound_unit(value: str) -> str | None:
     The year guard: a leading number of 2-4 plain digits is a plausible
     calendar year, so the compound is a date -- `2021년12개월` is December of
     that year -- and the year must not be promoted. The guard reads only the
-    leading `[0-9]+` run, stopping at any separator, decimal, or magnitude,
+    leading `\\d+` run, stopping at any separator, decimal, or magnitude,
     which is the same bare-digit width `_TIME_POINT`'s year branches admit.
     So a one-digit year (`1년365일`), a five-digit one (`10000년`), a decimal
     (`1.5년`), a magnitude form (`3만년`), or a separator-form year
@@ -1445,7 +1456,7 @@ def _leading_time_compound_unit(value: str) -> str | None:
     for match in _LEADING_COMPOUND.finditer(folded):
         unit1 = _MEASUREMENT_UNIT_SPELLINGS[match.group("unit1")]
         if unit1 == "YEAR":
-            digits = re.match(r"[0-9]+", match.group("num1")).group(0)
+            digits = re.match(r"\d+", match.group("num1")).group(0)
             if 2 <= len(digits) <= 4:
                 continue
         return match.group("unit1")
@@ -1583,8 +1594,8 @@ def korean_measure_unit_mismatch(question: str, value: str) -> tuple[str, str] |
 
     The two halves are read by different patterns, and that is deliberate rather
     than an oversight. What the value STATES comes from `_value_measure_units`,
-    which refuses a unit run into the next character and reads ASCII digits and
-    the closed `_SINO_KOREAN_MAGNITUDES` run. Whether the value CARRIES the asked unit comes from
+    which refuses a unit run into the next character and, since #677, reads the
+    same number the carrying side reads. Whether the value CARRIES the asked unit comes from
     `_value_states_asked_unit`, which differs from it in both directions and
     sets those differences out. Add a part to either pattern and that is the
     paragraph to correct: it reads the pattern and sits beside it, which is why
@@ -1627,27 +1638,22 @@ def korean_measure_unit_mismatch(question: str, value: str) -> tuple[str, str] |
     promoted.
 
     The main causes of an accepted silence, rather than all of them: a value
-    stating no number; a unit run into the next syllable (`2년차`); a quantity
-    that overlaps a point in time (`매월 15일`); a spelling outside the
-    table; a suffix outside `_UNIT_SUFFIX`;
-    and a number written in full-width digits (`３년`), which its `[0-9]` does
-    not admit and `nfc` does not fold away -- since #463 a number that
-    stacks magnitude words or uses one outside the old four (`2천만원`, `2백만원`)
-    is read by the reporting scan, so the only digit-shaped silence left on
-    that side is `３년` itself. `nfkc` would fold it, but `verinote.text.nfc`
-    is the one normalizer the rest of the codebase compares through, and
-    folding compatibility forms here alone would have this rule read a value
-    differently from every other comparison made on it. A non-breaking space
-    between the number and the unit is fine (`3<NBSP>년` states years), so
-    this silence is specifically the digits. That last one is a silence on
-    the REPORTING side only since #451. The suppression scan reads the full-
-    width notation the reporting scan still misses, so where the ASKED unit
-    is the one written that way the whole rule now says nothing instead of
-    naming a neighbour: `３년 30주` asked in years. Asked in some other unit of
-    the family the quantity is still unreported and a neighbour can still be
-    named -- `３년 30주` asked in months says `주` -- which is the reporting
-    silence doing what it has always done. An earlier cross-family quantity
-    does not silence a later same-family one.
+    stating no number; a unit run into the next syllable (`2년차`) or into a
+    following decimal digit, which the trailing lookahead refuses
+    (`3년30주`'s `년`); a quantity that overlaps a point in time (`매월 15일`,
+    and since #677 the full-width date beside it); a spelling outside the
+    table; a suffix outside `_UNIT_SUFFIX`. A number written in full-width
+    digits (`３년`) is read by the reporting scan since #677, and the two
+    scans agree on the digit class: `nfc` does not fold it away and neither
+    scan folds it, which is why the digit class is `\\d` rather than a
+    compatibility fold. A non-breaking space between the number and the unit
+    is fine (`3<NBSP>년` states years), so a silence a full-width value keeps
+    is the unit or the span, not the spacing or the digits.
+    `３년 30주` is the notation row #677 moved: asked in years it is silent,
+    because the carrying side reads its own notation, and asked in months it
+    now names its `년` instead of its `주`, because the reporting side reads
+    the leading quantity where the narrower scan read only the trailing one.
+    An earlier cross-family quantity does not silence a later same-family one.
 
     One silence is worth separating from those, because it is the only one where
     the value did earn a caveat and this rule loses it by misreading rather than
