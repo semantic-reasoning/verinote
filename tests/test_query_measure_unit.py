@@ -1060,12 +1060,12 @@ def test_a_latin_spelling_is_matched_and_reported_casefolded():
 def test_a_four_digit_year_run_into_more_digits_is_not_a_calendar_year():
     """The two bounds on the four-digit year are not symmetric, and only one bites.
 
-    The left-hand `(?<![0-9])` is live: without it `10000년` matches on its inner
+    The left-hand `(?<!\d)` is live: without it `10000년` matches on its inner
     `0000년`, the real `10000년` straddles that span's left edge, and a genuine
     ten-thousand-year duration is dropped. `test_a_longer_digit_run_is_not_read_as_a_calendar_year`
     is where that is pinned.
 
-    The right-hand `(?![0-9])` cannot bite under a span-local guard, and the
+    The right-hand `(?!\d)` cannot bite under a span-local guard, and the
     reason is not a corpus result but an entailment. For it to matter a quantity
     would have to overlap the span `NNNN년`; that span ends at `년`, and the bound
     only fires when a digit follows, so any quantity ending there is refused by
@@ -1090,10 +1090,13 @@ def test_a_four_digit_year_run_into_more_digits_is_not_a_calendar_year():
 
     # The right bound is inert: the same readings with it and without it.
     without = re.compile(_TIME_POINT.pattern.replace(
-        r"|(?<![0-9])[0-9]{4}\s*년(?![0-9])", r"|(?<![0-9])[0-9]{4}\s*년"))
+        r"|(?<!\d)\d{4}\s*년(?!\d)", r"|(?<!\d)\d{4}\s*년"))
     assert without.pattern != _TIME_POINT.pattern, "the mutation did not apply"
     import verinote.pipeline.query_measure_unit as qmu
-    for value in ["2021년12개월", "2021년 12개월", "2021년12주", "2021년1,000원", "2021년"]:
+    for value in [
+        "2021년12개월", "2021년 12개월", "2021년12주", "2021년1,000원", "2021년",
+        "２０２１년１２개월", "２０２１년",
+    ]:
         original = qmu._TIME_POINT
         qmu._TIME_POINT = without
         try:
@@ -1155,29 +1158,77 @@ def test_each_time_point_branch_is_needed_by_one_of_these_values(
     assert korean_measure_unit_mismatch(question, value) is None
 
 
-def test_a_full_width_number_states_no_quantity():
-    """`[0-9]` is ASCII, and `nfc` is not `nfkc`, so `３년` states nothing.
+def test_a_full_width_number_states_the_unit_like_its_ascii_twin():
+    """#677: `３년` is a number, and the reporting scan reads it like `3년`.
 
-    The silence is specifically the digits: a non-breaking space between the
-    number and the unit is folded by nothing and needs no folding, because
-    `\\s` already admits it.
+    The digit class is `\d` on both scans, so the full-width notation states
+    the unit where its ASCII twin does, and a months question names the same
+    mismatch for both. The twin pairing is the falsifier: a row whose ASCII
+    twin read differently would be the notation divergence #677 exists to
+    close. `nfc` is not `nfkc`, so this is a `\d` class reading rather than
+    a compatibility fold.
 
-    Since #451 the `[0-9]` sentence is true of `_VALUE_MEASUREMENT` alone. The
-    suppression scan reads `\\d` and does see this number, which is why
-    `３년 30주` no longer names the weeks;
-    `test_the_suppression_scan_reads_any_unicode_decimal_digit` is the other
-    side.
+    The non-breaking space assertion is the spacing control: `\s` already
+    admits it, so it never was a digit-class matter.
+    `test_the_scans_read_any_unicode_decimal_digit` is the other side.
     """
     from verinote.pipeline.query_measure_unit import (
         _value_measure_units,
         korean_measure_unit_mismatch,
     )
 
-    assert _value_measure_units("３년") == ()
-    assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 개월인가?", "３년") is None
+    assert _value_measure_units("３년") == (("YEAR", "년"),)
+    assert _value_measure_units("３년") == _value_measure_units("3년")
+    assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 개월인가?", "３년") == (
+        "개월",
+        "년",
+    )
+    assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 개월인가?", "3년") == (
+        "개월",
+        "년",
+    )
     # Written as the escape rather than pasted, so the non-breaking space
     # cannot be mistaken for -- or reflowed into -- an ordinary one.
-    assert _value_measure_units("3\xa0년") == (("YEAR", "년"),)
+    assert _value_measure_units("3 년") == (("YEAR", "년"),)
+
+
+def test_the_full_width_notation_states_its_unit_and_dates_the_same():
+    """#677: the notation a value writes its number in no longer decides the reading.
+
+    Each full-width row is asserted beside its ASCII twin, and the twins read
+    alike: a number states its unit in either notation, and a date is a date
+    in either notation. The pairing is the falsifier, as in
+    `test_a_point_in_time_silence_travels_into_the_new_notations`: a row whose
+    twin read differently would be the notation divergence #677 closes.
+    """
+    from verinote.pipeline.query_measure_unit import (
+        _value_measure_units,
+        _value_states_classifier,
+        korean_measure_unit_mismatch,
+    )
+
+    # A number states its unit in either notation.
+    assert _value_measure_units("３년") == _value_measure_units("3년") == (("YEAR", "년"),)
+    assert _value_measure_units("２０００만원") == (
+        _value_measure_units("2000만원")
+    ) == (("KRW", "원"),)
+
+    # A date is a date in either notation.
+    assert _value_measure_units("２０２１년") == _value_measure_units("2021년") == ()
+    assert _value_measure_units("２１.０３.１５일") == (
+        _value_measure_units("21.03.15일")
+    ) == ()
+    assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 개월인가?", "２０２１년") is None
+
+    # A unit a decimal digit follows is refused in either notation, so the
+    # mixed-notation value reads its twin's reading: the `년` the narrower
+    # scan read in `3년３주` before #677 is refused now that a `\d` follows
+    # it, and the `개` in `３개３주` stays refused where `3개3주` refuses it.
+    assert _value_measure_units("3년３주") == _value_measure_units("3년3주") == (
+        ("WEEK", "주"),
+    )
+    assert _value_states_classifier("３개３주", "개") is False
+    assert _value_states_classifier("3개3주", "개") is False
 
 
 @pytest.mark.parametrize(
@@ -1574,7 +1625,9 @@ def test_a_plausible_year_is_not_promoted_from_a_compound():
     """#454's year guard: a 2-4-digit leading year is a date, not a duration.
 
     `2021년12개월` is December of that year, so the leading `2021년` must not
-    be named even though the compound shape is the one that promotes. The
+    be named even though the compound shape is the one that promotes. Since
+    #677 the same holds for the full-width year beside it, and its guard line
+    reads the year in either notation. The
     `("주", "개월")` outcome is pinned against the old behaviour elsewhere in
     this file; stated here as the guard the fix carries, so widening the
     year's digit bounds cannot turn a green suite into a silent change. The
@@ -1591,6 +1644,15 @@ def test_a_plausible_year_is_not_promoted_from_a_compound():
     assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 주인가?", "2021년12개월") == (
         "주",
         "개월",
+    )
+
+    # Since #677 the guard reads the year in any decimal-digit notation: the
+    # full-width twin is a date too, and the guard that used to raise on it
+    # (its `re.match` was ASCII) is the one this test pins.
+    assert _leading_time_compound_unit("２０２１년12개월") is None
+    assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 달인가?", "２０２１년12주") == (
+        "달",
+        "주",
     )
 
 
@@ -1770,8 +1832,9 @@ def test_the_suppression_scan_reads_a_run_of_magnitude_words(monkeypatch):
     Since #463 the reporting scan reads the run too, so the killer asserts on
     the suppression scan directly (`_value_states_asked_unit`) rather than on
     the caveat -- the widened reporting scan now reads `2천만원` as KRW, which
-    is a separate #463 change from this one. The notation the two scans still
-    differ on is the open non-ASCII digit class (`３년`), the follow-up issue.
+    is a separate #463 change from this one. Since #677 the digit class is
+    the same on both scans, so the notation a value writes its number in no
+    longer decides what it states.
     """
     import verinote.pipeline.query_measure_unit as qmu
     from verinote.pipeline.query_measure_unit import (
@@ -1796,43 +1859,56 @@ def test_the_suppression_scan_reads_a_run_of_magnitude_words(monkeypatch):
     assert _value_states_asked_unit("1억5천만원", "KRW") is False
 
 
-def test_the_suppression_scan_reads_any_unicode_decimal_digit(monkeypatch):
-    """`３년` is a number, and the suppression scan admits any Unicode decimal digit.
+def test_the_scans_read_any_unicode_decimal_digit(monkeypatch):
+    """#677: `３년` is a number, and both scans admit any Unicode decimal digit.
 
-    `\\d` rather than a listed range, which is the claim the Arabic-Indic and
-    Devanagari assertions make -- the first two below: a `[0-9０-９]` would
-    satisfy the full-width witness and fail those. The reporting scan is
-    unchanged and still reads ASCII digits only.
+    `\d` rather than a listed range, which is the claim the Arabic-Indic and
+    Devanagari assertions make: a `[0-9０-９]` would satisfy the full-width
+    witness and fail those.
 
-    Decimal digit and not numeral: `\\d` is the Nd category, so `一년` is no more
+    Decimal digit and not numeral: `\d` is the Nd category, so `一년` is no more
     readable here than `이천만원` is, and the numeral axis stays where
     `korean_measure_unit_mismatch` records it.
 
-    The killer narrows the class back to ASCII, and does it by replacing the
-    head as one substring -- replacing `\\d` alone would leave the nested set
-    `[[0-9],.]` and a `FutureWarning` rather than the pattern intended.
+    Each killer narrows one scan's class back to ASCII, and does it by
+    replacing the head as one substring -- replacing `\d` alone would leave
+    the nested set `[[0-9],.]` and a `FutureWarning` rather than the pattern
+    intended. The suppression killer is derived from the live
+    `_RELAXED_QUANTITY_NUMBER`; the reporting killer rebuilds the live
+    `_VALUE_MEASUREMENT`, where the class sits on that side, and asserts on
+    the scan directly rather than on the caveat.
     """
+    import re
+
     import verinote.pipeline.query_measure_unit as qmu
     from verinote.pipeline.query_measure_unit import (
         _RELAXED_QUANTITY_NUMBER,
+        _VALUE_MEASUREMENT,
         _value_measure_units,
         _value_states_asked_unit,
-        korean_measure_unit_mismatch,
     )
 
     assert _value_states_asked_unit("٣년", "YEAR") is True
     assert _value_states_asked_unit("३년", "YEAR") is True
-    assert _value_measure_units("３년") == ()
+    assert _value_measure_units("３년") == (("YEAR", "년"),)
 
     ascii_only = _RELAXED_QUANTITY_NUMBER.replace(r"\d[\d,.]*", r"[0-9][0-9,.]*")
     assert ascii_only != _RELAXED_QUANTITY_NUMBER and "\\d" not in ascii_only
     monkeypatch.setattr(
         qmu, "_VALUE_MEASUREMENT_RELAXED", _relaxed_pattern_from(ascii_only)
     )
-    assert korean_measure_unit_mismatch("샘플사업의 기간은 몇 년인가?", "３년 30주") == (
-        "년",
-        "주",
+    assert _value_states_asked_unit("３년", "YEAR") is False
+
+    ascii_reporting = re.compile(
+        _VALUE_MEASUREMENT.pattern.replace(r"\d[\d,.]*", r"[0-9][0-9,.]*")
     )
+    assert ascii_reporting.pattern != _VALUE_MEASUREMENT.pattern
+    original = qmu._VALUE_MEASUREMENT
+    qmu._VALUE_MEASUREMENT = ascii_reporting
+    try:
+        assert _value_measure_units("３년") == ()
+    finally:
+        qmu._VALUE_MEASUREMENT = original
 
 
 def test_the_widened_number_can_only_silence(monkeypatch):
@@ -2281,8 +2357,8 @@ def test_the_reporting_scans_magnitude_bound_has_two_halves_and_both_are_pinned(
     The pre-#463 bound was `[만억천조]?` -- at most one of four -- which left
     `2천만원`, `2백원`, `5십원`, `2백5십원` and `2백만원` silent. #463 widened it to
     the `_SINO_KOREAN_MAGNITUDES` run, so all five now state their unit, the way
-    the suppression scan already did. The open non-ASCII digit class (`３년`)
-    is still out: it is the follow-up issue, not this bound.
+    the suppression scan already did. The non-ASCII digit class (`３년`)
+    was closed by #677, not this bound.
 
     The two halves of the widened bound are pinned separately, mirroring the
     old diagonal. `2천만원` needs the RUN, so a mutant that narrows the run back
