@@ -146,33 +146,28 @@ def _capture_legacy_sync_paths(monkeypatch):
     return paths
 
 
-def test_sync_explicit_nfd_source_citation_uses_nfc_when_samefile_proves_identity(
-    tmp_path, monkeypatch
-):
+def test_sync_explicit_nfd_source_citation_uses_nfc(tmp_path, monkeypatch):
+    # #495: an unregistered sync input registers through store_source on the
+    # way through, so its citation is the canonical `sources/<nfc(name)>` and
+    # its bytes land in the KB's sources/ directory.
     _env(monkeypatch, tmp_path / "kb")
     nfd_name = unicodedata.normalize("NFD", "cafe\u0301.txt")
     nfc_name = unicodedata.normalize("NFC", nfd_name)
     assert nfd_name != nfc_name
     source = tmp_path / nfd_name
     source.write_text("synthetic source text", encoding="utf-8")
-    nfc_candidate = tmp_path / nfc_name
 
-    def samefile(self, other):
-        assert self == source
-        assert other == nfc_candidate
-        return True
-
-    monkeypatch.setattr(Path, "samefile", samefile)
     paths = _capture_legacy_sync_paths(monkeypatch)
 
     assert cli.main(["sync", str(source)]) == 0
 
-    assert paths == [str(nfc_candidate)]
+    assert paths == [f"sources/{nfc_name}"]
+    assert (tmp_path / "kb" / "sources" / nfc_name).read_text(
+        encoding="utf-8"
+    ) == "synthetic source text"
 
 
-def test_sync_glob_nfd_source_citation_uses_nfc_when_samefile_proves_identity(
-    tmp_path, monkeypatch
-):
+def test_sync_glob_nfd_source_citation_uses_nfc(tmp_path, monkeypatch):
     _env(monkeypatch, tmp_path)
     nfd_name = unicodedata.normalize("NFD", "cafe\u0301.txt")
     nfc_name = unicodedata.normalize("NFC", nfd_name)
@@ -180,68 +175,108 @@ def test_sync_glob_nfd_source_citation_uses_nfc_when_samefile_proves_identity(
     source = tmp_path / "sources" / nfd_name
     source.parent.mkdir()
     source.write_text("synthetic source text", encoding="utf-8")
-    nfc_candidate = tmp_path / "sources" / nfc_name
 
-    def samefile(self, other):
-        assert self == source
-        assert other == nfc_candidate
-        return True
-
-    monkeypatch.setattr(Path, "samefile", samefile)
     monkeypatch.setattr(cli, "_source_dir_files", lambda cfg: [source])
     paths = _capture_legacy_sync_paths(monkeypatch)
 
     assert cli.main(["sync"]) == 0
 
     assert paths == [f"sources/{nfc_name}"]
+    assert (tmp_path / "sources" / nfc_name).read_text(
+        encoding="utf-8"
+    ) == "synthetic source text"
 
 
-def test_sync_keeps_nfd_citation_when_nfc_spelling_is_a_distinct_file(
-    tmp_path, monkeypatch
+def test_sync_records_nul_loss_for_a_loose_source_file(
+    tmp_path, monkeypatch, fake_client
 ):
+    # #495: the loose-file branch used to hand the extractor raw text with no
+    # source or artifact row behind it, so a NUL replaced on the way in had
+    # nowhere to be counted. Now the input registers through store_source, and
+    # the loss lands on the artifact row instead of vanishing.
     _env(monkeypatch, tmp_path)
-    nfd_name = unicodedata.normalize("NFD", "cafe\u0301.txt")
-    nfc_name = unicodedata.normalize("NFC", nfd_name)
-    assert nfd_name != nfc_name
-    source = tmp_path / nfd_name
-    source.write_text("synthetic source text", encoding="utf-8")
-    nfc_candidate = tmp_path / nfc_name
+    monkeypatch.setattr(
+        "verinote.llm.get_client",
+        lambda cfg: fake_client([ExtractedFact("A", "is_a", "B", 0.9)]),
+    )
+    dirty = "A\x0001\nB\x0002"
+    sources_dir = tmp_path / "sources"
+    sources_dir.mkdir()
+    loose = sources_dir / "note.txt"
+    loose.write_bytes(dirty.encode("utf-8"))
 
-    def samefile(self, other):
-        assert self == source
-        assert other == nfc_candidate
-        return False
+    assert cli.main(["sync"]) == 0
 
-    monkeypatch.setattr(Path, "samefile", samefile)
-    paths = _capture_legacy_sync_paths(monkeypatch)
+    s = Store(tmp_path / "kb.sqlite")
+    src = s.get_source_by_path("sources/note.txt")
+    assert src is not None
+    artifacts = s.source_artifacts(int(src["id"]))
+    assert len(artifacts) == 1
+    assert artifacts[0]["unreadable_chars"] == 2
+    artifact_text = (tmp_path / artifacts[0]["path"]).read_text(encoding="utf-8")
+    assert artifact_text == "A\ufffd01\nB\ufffd02"
+    snippets = s.source_evidence_snippets(int(src["id"]))
+    assert snippets
+    assert all("\x00" not in snippet for snippet in snippets)
+    # the loss was replaced, not removed: length is preserved and the original
+    # file keeps the bytes it was given
+    assert len(artifact_text) == len(dirty)
+    assert "\x00" in loose.read_bytes().decode("utf-8")
+    s.close()
 
-    assert cli.main(["sync", str(source)]) == 0
 
-    assert paths == [nfd_name]
-
-
-def test_sync_keeps_nfd_citation_when_nfc_spelling_does_not_exist(
-    tmp_path, monkeypatch
+def test_sync_records_nul_loss_for_an_explicit_path_source(
+    tmp_path, monkeypatch, fake_client
 ):
+    # The explicit-path branch, same contract: a file outside sources/ still
+    # registers at the single purification point.
+    _env(monkeypatch, tmp_path / "kb")
+    monkeypatch.setattr(
+        "verinote.llm.get_client",
+        lambda cfg: fake_client([ExtractedFact("A", "is_a", "B", 0.9)]),
+    )
+    dirty = "A\x0001\nB\x0002"
+    outside = tmp_path / "notes" / "note.txt"
+    outside.parent.mkdir(parents=True)
+    outside.write_bytes(dirty.encode("utf-8"))
+
+    assert cli.main(["sync", str(outside)]) == 0
+
+    s = Store(tmp_path / "kb" / "kb.sqlite")
+    src = s.get_source_by_path("sources/note.txt")
+    assert src is not None
+    artifacts = s.source_artifacts(int(src["id"]))
+    assert artifacts[0]["unreadable_chars"] == 2
+    artifact_text = (tmp_path / "kb" / artifacts[0]["path"]).read_text(
+        encoding="utf-8"
+    )
+    assert artifact_text == "A\ufffd01\nB\ufffd02"
+    s.close()
+
+
+def test_sync_clean_source_records_zero_not_null(
+    tmp_path, monkeypatch, fake_client
+):
+    # Nothing lost, but the extraction still ran: the count is 0, never NULL.
+    # NULL means "never measured", and a sync that extracted this source did
+    # measure it.
     _env(monkeypatch, tmp_path)
-    nfd_name = unicodedata.normalize("NFD", "cafe\u0301.txt")
-    nfc_name = unicodedata.normalize("NFC", nfd_name)
-    assert nfd_name != nfc_name
-    source = tmp_path / nfd_name
-    source.write_text("synthetic source text", encoding="utf-8")
-    nfc_candidate = tmp_path / nfc_name
+    monkeypatch.setattr(
+        "verinote.llm.get_client",
+        lambda cfg: fake_client([ExtractedFact("A", "is_a", "B", 0.9)]),
+    )
+    sources_dir = tmp_path / "sources"
+    sources_dir.mkdir()
+    (sources_dir / "note.txt").write_text("A01\nB02", encoding="utf-8")
 
-    def samefile(self, other):
-        assert self == source
-        assert other == nfc_candidate
-        raise FileNotFoundError(nfc_candidate)
+    assert cli.main(["sync"]) == 0
 
-    monkeypatch.setattr(Path, "samefile", samefile)
-    paths = _capture_legacy_sync_paths(monkeypatch)
-
-    assert cli.main(["sync", str(source)]) == 0
-
-    assert paths == [nfd_name]
+    s = Store(tmp_path / "kb.sqlite")
+    src = s.get_source_by_path("sources/note.txt")
+    assert src is not None
+    artifacts = s.source_artifacts(int(src["id"]))
+    assert artifacts[0]["unreadable_chars"] == 0
+    s.close()
 
 
 def test_sources_repair_identities_is_dry_run_until_apply(tmp_path, monkeypatch, capsys):
@@ -2979,7 +3014,10 @@ def test_sync_with_a_path_argument_still_scaffolds(tmp_path, monkeypatch):
     assert cli.main(["sync", str(note)]) == 0
 
     assert (root / "kb.sqlite").is_file()
-    assert received["source_pairs"] == [(str(note.resolve()), "body")]
+    assert received["source_pairs"] == [("sources/note.txt", "body")]
+    # #495: the explicit-path input registered on the way through, and its
+    # bytes are now the KB's own
+    assert (root / "sources" / "note.txt").read_text(encoding="utf-8") == "body"
     assert not (workdir / "data").exists()
 
 

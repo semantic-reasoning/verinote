@@ -569,41 +569,6 @@ def cmd_seed(cfg: Config, args: argparse.Namespace) -> int:
     return 0
 
 
-def _rel_to_root(root: Path, p: Path) -> str:
-    """Cite a source by its path relative to the KB root when it lives under it."""
-    p = p.resolve()
-    try:
-        return str(p.relative_to(root))
-    except ValueError:
-        return str(p)
-
-
-def _sync_source_citation(root: Path, source: Path) -> str:
-    """Return a safe NFC citation for an unregistered sync source.
-
-    Filesystems differ on whether NFC and NFD spellings name the same file. Keep
-    the path used to read the source unchanged, and only use an NFC citation
-    after the alternate spelling has been proven to identify that same file.
-    """
-    citation = _rel_to_root(root, source)
-    normalized = nfc(citation)
-    if normalized == citation:
-        return citation
-
-    candidate = (
-        Path(normalized)
-        if Path(citation).is_absolute()
-        else root / normalized
-    )
-    try:
-        if source.samefile(candidate):
-            return normalized
-    except OSError:
-        # The NFC spelling may not exist, or may not be stat-able. In either
-        # case it has not been proven to identify this source.
-        pass
-    return citation
-
 
 def _source_dir_files(cfg: Config) -> list[Path]:
     """Loose source files under `<root>/sources` — the unregistered-input path.
@@ -616,17 +581,41 @@ def _source_dir_files(cfg: Config) -> list[Path]:
     return sorted(sources_dir.glob("*.txt")) + sorted(sources_dir.glob("*.md"))
 
 
+def _unregistered_input(store: Store, root: Path, f: Path) -> _SourceInput:
+    """Register an unregistered sync input at the single purification point.
+
+    #495: this resolver used to hand `sync_sources` the file's raw text with no
+    source or artifact row behind it, so a NUL it replaced would have had
+    nowhere to be counted -- the unremarked entry #473 closed for the
+    converter paths. Registering through `store_source` (the one place NULs
+    are replaced and counted) gives the input its artifact row, so the loss
+    has a place to be recorded, and hands extraction the sanitized text.
+
+    The decode stays this resolver's own `read_text`, so a non-UTF-8 file
+    still fails the way `sync` has always failed on one -- #495's side
+    defect stays its own fix. `source_id`/`artifact_id` stay unset: this is
+    a sanitization-and-recording fix, not a change of the extraction
+    mechanism, and the legacy pass's `extract_source` re-adds the same
+    citation, so its facts land on the row this registration created.
+    """
+    from verinote.pipeline.ingest import store_source
+
+    text = f.read_text(encoding="utf-8")
+    result = store_source(store, root, f.name, f.read_bytes(), text, "text")
+    return _SourceInput(source_path=result["citation"], text=result["text"])
+
+
 def _resolve_sources(cfg: Config, store: Store, path: str | None) -> list[_SourceInput]:
-    """Resolve a file path or registered text artifacts to extraction inputs."""
+    """Resolve a file path or registered text artifacts to extraction inputs.
+
+    Unregistered files are registered on the way through (#495), so the text
+    a sync extracts from them is always the text of a recorded artifact.
+    """
     if path:
         f = Path(path)
         if not f.is_file():
             raise FileNotFoundError(f"no such file: {path}")
-        return [
-            _SourceInput(
-                _sync_source_citation(cfg.root, f), f.read_text(encoding="utf-8")
-            )
-        ]
+        return [_unregistered_input(store, cfg.root, f)]
 
     inputs = [
         _SourceInput(
@@ -640,10 +629,7 @@ def _resolve_sources(cfg: Config, store: Store, path: str | None) -> list[_Sourc
     if inputs:
         return inputs
 
-    return [
-        _SourceInput(_sync_source_citation(cfg.root, f), f.read_text(encoding="utf-8"))
-        for f in _source_dir_files(cfg)
-    ]
+    return [_unregistered_input(store, cfg.root, f) for f in _source_dir_files(cfg)]
 
 
 def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
