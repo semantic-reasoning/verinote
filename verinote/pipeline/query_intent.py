@@ -535,7 +535,23 @@ def deterministic_query_intent(
             untruncated = nfc(" ".join(
                 f"{match.group('label')} of {match.group('entity')}".split()
             ))
-            if known_entities is not None and untruncated in known_entities:
+            # A trailing predicate on the entity must not hide the proper name
+            # from this check either: `What is the Bank of America called?`
+            # carries entity `America called`, so the untruncated tail with the
+            # predicate (`Bank of America called`) is not the known entity, but
+            # the tail with the predicate stripped (`Bank of America`) is.
+            # Without this, the #515 cut below would strip `America called` to
+            # the known `America` and answer `America`/`Bank`/... under
+            # `VERIFIED -- engine` -- exactly the misparse #521 exists to
+            # prevent. Declining is the safe direction: the model reads a
+            # question the engine cannot settle, and no answer is lost.
+            proper_name_tails = {untruncated}
+            stripped_entity = _strip_of_entity_tail(entity)
+            if stripped_entity and stripped_entity != entity:
+                proper_name_tails.add(nfc(" ".join(
+                    f"{match.group('label')} of {stripped_entity}".split()
+                )))
+            if known_entities is not None and proper_name_tails & known_entities:
                 return QueryIntent(
                     kind=QueryIntentKind.UNKNOWN_OR_UNSUPPORTED,
                     reason=(
@@ -543,6 +559,17 @@ def deterministic_query_intent(
                         "entity reading is declined to the model (#521)"
                     ),
                 )
+            # #515. The `of` shape's entity is the terminal field, so a trailing
+            # naming predicate lands on it where the label cleaner cannot see it,
+            # and the parse keeps it whole -- `Sample Project called` matches no
+            # entity and reaches the model. The two readings are indistinguishable
+            # from the question text alone, so resolve the entity against the KB
+            # before deciding whether the trailing word is part of the name: a
+            # known entity as spelled is kept whole (`Company named`), a known
+            # entity with the tail stripped is used (`Sample Project called` ->
+            # `Sample Project`), and neither keeps the whole entity as the safe
+            # failure. A no-op on the unit path (`known_entities` is `None`).
+            entity = _resolve_of_entity_tail(entity, known_entities)
             return QueryIntent(
                 kind=QueryIntentKind.LOOKUP_OBJECT,
                 subject=IntentTarget("entity", entity),
@@ -596,6 +623,63 @@ def deterministic_query_intent(
 
 def _is_generic_entity_anchor(value: str) -> bool:
     return value.strip().casefold() in _GENERIC_ENTITY_ANCHORS
+
+
+def _strip_of_entity_tail(entity: str) -> str:
+    """Syntactically strip a trailing naming predicate from the `of` entity.
+
+    #515. Reuses `_ENGLISH_ATTRIBUTE_TRAILING_PREDICATE`, the same closed member
+    list the label cleaner `_clean_english_attribute_label` uses, so no new
+    spelling is admitted and a member inside a longer word is not cut (the leading
+    `\\s+` binding is what keeps `recalled` whole). Purely syntactic -- it does not
+    consult the KB -- which is what lets the same strip feed both the #521
+    proper-name decline and the #515 entity resolution.
+    """
+    return _ENGLISH_ATTRIBUTE_TRAILING_PREDICATE.sub("", entity).strip()
+
+
+def _resolve_of_entity_tail(entity: str, known_entities: frozenset[str] | None) -> str:
+    """Decide whether the `of` shape's trailing word is a predicate or a name part.
+
+    #515. The entity is the terminal field of the `of` shape, so a trailing
+    naming predicate lands on it (`... of Sample Project called`) where the label
+    cleaner `_clean_english_attribute_label` cannot see it, and the parse keeps
+    it whole: subject `Sample Project called`, no fact, the model reached. The two
+    readings -- the entity as spelled and the entity with the tail stripped -- are
+    indistinguishable from the question text alone, so the KB decides:
+
+    - the entity as spelled is a known entity -> keep it whole. A name that ends
+      in a predicate word (`Company named`) is exactly this, and cutting it to
+      `Company` would answer a different subject under `VERIFIED -- engine`;
+    - the tail-stripped entity is a known entity -> use it. `Sample Project
+      called` asks for `Sample Project`;
+    - neither is known -> keep the entity as spelled, which is the safe failure:
+      it matches no entity, the plan is empty, and the model reads it.
+
+    The accepted cost of the second reading is the flip of the first: where the
+    spelled entity is not a known entity but the stripped one is, this answers the
+    stripped subject under `VERIFIED -- engine` where a safe model-fallback stood
+    before. That is the fix the issue asks for, not a regression, but it is the
+    same "different subject under a top label" class the codebase otherwise
+    refuses, so it is pinned at the answer by
+    `tests/test_ask.py::test_ask_of_shape_trailing_predicate_is_stripped_to_the_known_entity`
+    and its dangerous mirror by
+    `tests/test_ask.py::test_ask_of_shape_two_entity_kb_still_answers_the_named_entity`.
+
+    Comparisons are NFC and case-preserving to match the store's surface set.
+    `None` means no store was consulted (the unit path), so the entity is read
+    exactly as before and the function is a no-op there.
+    """
+    if known_entities is None:
+        return entity
+    stripped = _strip_of_entity_tail(entity)
+    if stripped == entity or not stripped:
+        return entity
+    if nfc(entity) in known_entities:
+        return entity
+    if nfc(stripped) in known_entities:
+        return stripped
+    return entity
 
 
 _KOREAN_INTERROGATIVE_TAIL = (

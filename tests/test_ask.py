@@ -2811,3 +2811,100 @@ def test_ask_of_shape_known_entity_tail_is_read_by_the_model_not_the_engine(tmp_
     assert result.label == "VERIFIED — engine"
     assert "New York" in result.answer
     assert "First National" not in result.answer
+
+
+def test_ask_of_shape_trailing_predicate_is_stripped_to_the_known_entity(tmp_path):
+    """#515 end-to-end tripwire: the tail on the `of` entity is a predicate, not a name.
+
+    The KB holds `Sample Project` (owner `Alice`); `Sample Project called` is not
+    an entity. The `of` shape's entity is the terminal field, so the trailing
+    `called` lands on it where the label cleaner cannot see it, and the parse used
+    to keep it whole -- subject `Sample Project called`, no fact, the model
+    reached. Resolved against the KB, the tail-stripped entity is the known one,
+    so the deterministic parse uses it and the engine answers with no provider
+    call.
+
+    If the entity resolution at the `of` site is removed, the subject stays
+    `Sample Project called`, matches no fact, the deterministic path reaches
+    `extract_query_intent`, and `DeterministicOnlyClient` raises -- the test fails.
+    """
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/sample.txt")
+    store.add_fact(
+        "Sample Project", "owner", "Alice", status="confirmed", source_id=source_id
+    )
+
+    result = ask_question(
+        store,
+        DeterministicOnlyClient(),
+        root=tmp_path,
+        question="What is the owner of Sample Project called?",
+    )
+
+    assert result.route == "engine"
+    assert result.label == "VERIFIED — engine"
+    assert "Alice" in result.answer
+
+
+def test_ask_of_shape_two_entity_kb_still_answers_the_named_entity(tmp_path):
+    """#515's two-entity case, pinned end to end: the named entity is kept whole.
+
+    Both `Company` and `Company named` are known entities holding `owner`. The
+    question asks for the owner of `Company named`, and the engine must answer
+    for `Company named` (`Bob`) -- not cut the name to `Company` and answer for
+    `Company` (`Alice`) under the same `VERIFIED -- engine` label. The full entity
+    is a known entity, so it is kept whole and the deterministic parse does not
+    cut it.
+
+    This is the case that separates a fix from a regression, asserted where it
+    is visible -- at the answer, not at the parse.
+    """
+    store = _store(tmp_path)
+    source_id = store.add_source("sources/sample.txt")
+    store.add_fact("Company", "owner", "Alice", status="confirmed", source_id=source_id)
+    store.add_fact(
+        "Company named", "owner", "Bob", status="confirmed", source_id=source_id
+    )
+
+    result = ask_question(
+        store,
+        DeterministicOnlyClient(),
+        root=tmp_path,
+        question="What is the owner of Company named?",
+    )
+
+    assert result.route == "engine"
+    assert result.label == "VERIFIED — engine"
+    assert "Bob" in result.answer
+    assert "Alice" not in result.answer
+
+
+def test_ask_of_shape_proper_name_with_trailing_predicate_is_not_answered(tmp_path):
+    """#521 x #515 compound case, pinned at the answer: the proper name is not cut.
+
+    The KB holds the proper name `Bank of America` AND `America` (which holds a
+    `Bank` fact that does not answer the question). The question `What is the Bank
+    of America called?` carries entity `America called`. A cut to the known
+    `America` would answer `America, Bank, First National` under
+    `VERIFIED -- engine` -- exactly the misparse #521 exists to prevent. The
+    decline must see the stripped tail (`Bank of America`) and route the question
+    to the model instead, so the non-answering fact is not committed.
+
+    This is the regression #515's entity cut would otherwise re-introduce: the
+    #521 guard alone keys on the untruncated tail with the predicate
+    (`Bank of America called`), which is not the known entity.
+    """
+    store = _store(tmp_path)
+    store.add_fact("America", "Bank", "First National", status="confirmed")
+    store.add_fact("Bank of America", "hq", "New York", status="confirmed")
+
+    client = _OfTailModelClient()
+    result = ask_question(
+        store, client, root=tmp_path, question="What is the Bank of America called?"
+    )
+
+    assert client.intent_calls >= 1, "the deterministic parse must decline to the model"
+    assert result.route == "engine"
+    assert result.label == "VERIFIED — engine"
+    assert "New York" in result.answer
+    assert "First National" not in result.answer
