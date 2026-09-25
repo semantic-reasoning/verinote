@@ -1894,3 +1894,147 @@ def test_the_known_entity_guard_lives_in_the_of_branch_only():
     )
     assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
     assert intent.subject == IntentTarget("entity", "Bank of America")
+
+
+# --- #515: the `of` shape resolves its terminal entity's trailing predicate against the KB ---
+def test_the_of_shape_entity_tail_is_stripped_when_the_stripped_entity_is_known():
+    """#515: a trailing naming predicate on the `of` entity is a predicate, not a name.
+
+    The entity is the terminal field, so `... of Sample Project called` lands the
+    tail on the entity where the label cleaner cannot see it, and the parse used
+    to keep it whole -- subject `Sample Project called`, which matches no entity
+    and reaches the model. When the tail-stripped entity (`Sample Project`) is a
+    known entity in the KB, the deterministic parse now uses it.
+    """
+    intent = deterministic_query_intent(
+        "What is the owner of Sample Project called?",
+        known_entities=frozenset({"Sample Project"}),
+    )
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.subject == IntentTarget("entity", "Sample Project")
+    assert intent.relation_candidates == ("owner",)
+
+
+def test_the_of_shape_entity_is_kept_whole_when_the_full_entity_is_known():
+    """#515's two-entity case: a name that ends in a predicate word is kept whole.
+
+    This is the case that separates a fix from a regression. Both `Company` and
+    `Company named` are known entities holding `owner`; the question asks for the
+    owner of `Company named`. The full entity is a known entity, so it is kept
+    whole and the parse does NOT cut it to `Company` -- which would answer a
+    different subject under `VERIFIED -- engine`.
+    """
+    intent = deterministic_query_intent(
+        "What is the owner of Company named?",
+        known_entities=frozenset({"Company", "Company named"}),
+    )
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.subject == IntentTarget("entity", "Company named")
+    assert intent.relation_candidates == ("owner",)
+
+
+def test_the_of_shape_entity_tail_stays_whole_when_neither_reading_is_known():
+    """#515: when neither the whole nor the stripped entity is known, keep it whole.
+
+    That is the safe failure: `Sample Project called` matches no entity, the plan
+    is empty, and the model reads the question instead of the engine committing to
+    a subject the KB does not hold.
+    """
+    intent = deterministic_query_intent(
+        "What is the owner of Sample Project called?",
+        known_entities=frozenset({"Other Entity"}),
+    )
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.subject == IntentTarget("entity", "Sample Project called")
+
+
+def test_the_of_shape_entity_resolution_is_a_no_op_without_a_store():
+    """#515: the unit path (`known_entities` is `None`) reads the entity exactly as before.
+
+    No store is consulted on this path, so the trailing predicate stays in the
+    entity and the shape is unchanged -- the resolution only happens against a KB.
+    """
+    for known_entities in (None, frozenset()):
+        intent = deterministic_query_intent(
+            "What is the owner of Sample Project called?",
+            known_entities=known_entities,
+        )
+        assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+        assert intent.subject == IntentTarget("entity", "Sample Project called")
+
+
+def test_the_of_shape_entity_resolution_is_nfc_case_sensitive_not_casefolded():
+    """#515: entity matching here is NFC, case-preserving (the codebase never casefolds).
+
+    A lowercase known set must NOT strip a title-cased entity tail, while the
+    exact-case known set must. This guards against silently casefolding the
+    candidate, which would make the check a no-op against real KB spellings.
+    """
+    not_stripped = deterministic_query_intent(
+        "What is the owner of Company Named?",
+        known_entities=frozenset({"company"}),
+    )
+    assert not_stripped.subject == IntentTarget("entity", "Company Named")
+
+    # The pattern carries no `re.IGNORECASE`, so a title-cased `Named` never
+    # matches the lower-case member `named` and is kept whole regardless of the
+    # known set -- the lower-case spelling is what a flagless strip fires on.
+    stripped = deterministic_query_intent(
+        "What is the owner of Company named?",
+        known_entities=frozenset({"Company"}),
+    )
+    assert stripped.subject == IntentTarget("entity", "Company")
+
+
+def test_the_of_shape_entity_resolution_leaves_a_no_tail_entity_alone():
+    """#515: an entity with no trailing predicate member is never cut.
+
+    `Sample Project` ends in `Project`, which is not a member, so the resolver is
+    a no-op for it whether or not it is known -- pinning that the strip only ever
+    acts on a real tail and cannot truncate an ordinary name.
+    """
+    for known_entities in (None, frozenset({"Sample Project"})):
+        intent = deterministic_query_intent(
+            "What is the owner of Sample Project?",
+            known_entities=known_entities,
+        )
+        assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+        assert intent.subject == IntentTarget("entity", "Sample Project")
+
+
+def test_the_of_shape_declines_a_proper_name_tail_with_a_trailing_predicate():
+    """#521 x #515: a trailing predicate on the entity must not hide the proper name.
+
+    `What is the Bank of America called?` carries entity `America called`. The
+    untruncated tail with the predicate (`Bank of America called`) is not the known
+    entity, but the tail with the predicate stripped (`Bank of America`) is. Without
+    the decline seeing the stripped tail, the #515 entity cut strips `America
+    called` to the known `America` and reads the question as `America`/`Bank` --
+    exactly the misparse #521 exists to prevent. So the decline must fire on the
+    stripped tail too, and route the question to the model.
+    """
+    intent = deterministic_query_intent(
+        "What is the Bank of America called?",
+        known_entities=frozenset({"Bank of America", "America"}),
+    )
+    assert intent.kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED
+    assert intent.reason
+
+
+def test_the_of_shape_decline_does_not_fire_on_a_bare_entity_tail():
+    """The extended decline must not over-reach to a plain `of` question.
+
+    `What is the owner of Sample Project called?` has entity `Sample Project
+    called`; the stripped tail is `Sample Project`, and the proper-name candidates
+    (`owner of Sample Project called`, `owner of Sample Project`) are not entities.
+    So the decline does not fire and the #515 cut still reads the subject as
+    `Sample Project` -- pinning that the extension keys on a known proper name, not
+    on the mere presence of a tail.
+    """
+    intent = deterministic_query_intent(
+        "What is the owner of Sample Project called?",
+        known_entities=frozenset({"Sample Project"}),
+    )
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.subject == IntentTarget("entity", "Sample Project")
+    assert intent.relation_candidates == ("owner",)
