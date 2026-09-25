@@ -1815,3 +1815,82 @@ def test_a_shortened_label_re_enters_the_purpose_synonyms():
 
         assert intent.kind == QueryIntentKind.LOOKUP_OBJECT, question
         assert intent.relation_candidates == PURPOSE_RELATION_CANDIDATES, question
+
+
+# --- #521: the `of` shape declines when the untruncated tail is a known entity ---
+def test_the_of_shape_declines_when_the_untruncated_tail_is_a_known_entity():
+    """#521: a proper name containing `of` must not resolve as label-of-entity.
+
+    `What is the Bank of America?` parses the `of` shape as subject=`America`,
+    relation=`Bank` and, on a KB holding `('America', 'Bank', ...)`, is answered
+    VERIFIED from a fact that does not answer it. When the untruncated tail
+    (`Bank of America`) is a known entity in the KB, the deterministic parse now
+    declines to the model instead of committing to the misparse. The candidate is
+    NFC-normalized (case-preserving) to match the store's surface set, not
+    casefolded.
+    """
+    intent = deterministic_query_intent(
+        "What is the Bank of America?",
+        known_entities=frozenset({"Bank of America"}),
+    )
+    assert intent.kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED
+    assert intent.reason
+
+
+def test_the_of_shape_keeps_the_lookup_when_the_tail_is_not_a_known_entity():
+    """The decline needs a verbatim known-entity tail, not partial token overlap.
+
+    `purpose` and `Sample Project` are each known, but the untruncated tail
+    `purpose of Sample Project` is not, so the lookup stands. `None` (no store)
+    and the empty frozenset both behave as "no known entities".
+    """
+    for known_entities in (None, frozenset()):
+        intent = deterministic_query_intent(
+            "What is the purpose of Sample Project?",
+            known_entities=known_entities,
+        )
+        assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+        assert intent.subject == IntentTarget("entity", "Sample Project")
+
+    intent = deterministic_query_intent(
+        "What is the purpose of Sample Project?",
+        known_entities=frozenset({"purpose", "Sample Project"}),
+    )
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.subject == IntentTarget("entity", "Sample Project")
+    assert intent.relation_candidates == PURPOSE_RELATION_CANDIDATES
+
+
+def test_the_known_entity_guard_is_nfc_case_sensitive_not_casefolded():
+    """Entity matching here is NFC, case-preserving (the codebase never casefolds).
+
+    A lowercase known set must NOT decline a title-cased question tail, while the
+    exact-case known set must. This guards against silently casefolding the
+    candidate, which would make the check a no-op against real KB spellings.
+    """
+    not_declined = deterministic_query_intent(
+        "What is the Bank of America?",
+        known_entities=frozenset({"bank of america"}),
+    )
+    assert not_declined.kind == QueryIntentKind.LOOKUP_OBJECT
+
+    declined = deterministic_query_intent(
+        "What is the Bank of America?",
+        known_entities=frozenset({"Bank of America"}),
+    )
+    assert declined.kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED
+
+
+def test_the_known_entity_guard_lives_in_the_of_branch_only():
+    """The possessive shape is a different branch and is never declined here.
+
+    `What is Bank of America's head?` reads the possessive shape with subject
+    `Bank of America`; even with `Bank of America` a known entity the guard must
+    not fire, pinning the check to the `of` branch only.
+    """
+    intent = deterministic_query_intent(
+        "What is Bank of America's head?",
+        known_entities=frozenset({"Bank of America"}),
+    )
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.subject == IntentTarget("entity", "Bank of America")

@@ -2750,3 +2750,64 @@ def test_no_code_point_in_the_token_classes_is_or_folds_to_whitespace():
         for member in members
         for folded_char in member.casefold()
     )
+
+
+class _OfTailModelClient:
+    """Consulted only when the deterministic `of` parse declines a known-entity tail (#521)."""
+
+    name = "of-tail-model"
+
+    def __init__(self) -> None:
+        self.intent_calls = 0
+
+    def extract_query_intent(self, *, question: str, schema_hint: str = ""):
+        from verinote.pipeline.query_intent import parse_query_intent
+
+        self.intent_calls += 1
+        return parse_query_intent(
+            {
+                "kind": "lookup_object",
+                "subject": {"kind": "entity", "value": "Bank of America"},
+                "relation": {"kind": "relation", "value": "hq"},
+                "object": None,
+                "relation_candidates": None,
+                "operator": None,
+                "value_type": None,
+                "value": None,
+                "reason": "the model read the `of` tail as the proper name",
+            }
+        )
+
+    def translate_query(self, *, question: str, qid: int, schema_hint: str = "") -> str:
+        raise AssertionError("Ask must not call persistent direct Datalog translation")
+
+    def answer_question(self, *, question: str, context: str) -> str:
+        return "UNVERIFIED synthetic answer"
+
+
+def test_ask_of_shape_known_entity_tail_is_read_by_the_model_not_the_engine(tmp_path):
+    """#521 end-to-end tripwire for the production wiring.
+
+    The KB holds a non-answering fact `('America', 'Bank', 'First National')` AND
+    the known entity `Bank of America`. The untruncated `of`-tail (`Bank of
+    America`) is a known entity, so the deterministic parse must decline it to the
+    model (query.py passes `known_entities=snapshot.all_entity_surfaces`) rather
+    than answer `America, Bank, First National` under `VERIFIED -- engine`.
+
+    If the wiring at query.py:334 is removed, this fails: the engine answers the
+    non-answering fact and `client.intent_calls` stays 0.
+    """
+    store = _store(tmp_path)
+    store.add_fact("America", "Bank", "First National", status="confirmed")
+    store.add_fact("Bank of America", "hq", "New York", status="confirmed")
+
+    client = _OfTailModelClient()
+    result = ask_question(
+        store, client, root=tmp_path, question="What is the Bank of America?"
+    )
+
+    assert client.intent_calls >= 1, "the deterministic `of` parse must decline to the model"
+    assert result.route == "engine"
+    assert result.label == "VERIFIED — engine"
+    assert "New York" in result.answer
+    assert "First National" not in result.answer
