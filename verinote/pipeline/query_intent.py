@@ -12,6 +12,7 @@ from typing import Any
 
 from verinote.llm.base import LLMOutputError
 from verinote.llm.schema import QUERY_INTENT_SCHEMA
+from verinote.text import nfc
 
 
 # Every derivation below takes its schema as an argument rather than reading
@@ -464,7 +465,9 @@ _GENERIC_ENTITY_ANCHORS = {
 }
 
 
-def deterministic_query_intent(question: str) -> QueryIntent:
+def deterministic_query_intent(
+    question: str, *, known_entities: frozenset[str] | None = None
+) -> QueryIntent:
     """Return a structured intent for deterministic synthetic question shapes."""
     text = question.strip()
     match = _ROLE_TITLE_QUESTION.search(text)
@@ -517,6 +520,29 @@ def deterministic_query_intent(question: str) -> QueryIntent:
         entity = match.group("entity").strip()
         label = _clean_english_attribute_label(match.group("label"))
         if entity and label and not _is_generic_entity_anchor(entity):
+            # #521. The untruncated tail (`<label> of <entity>`) is exactly what a
+            # proper name containing `of` is, and the parse cannot tell the two
+            # apart from the question text alone. When that tail is a known entity
+            # in the KB, the label-of-entity reading is a misparse (`What is the
+            # Bank of America?` -> subject `America`, relation `Bank`), so decline
+            # it to the model instead of answering a non-answering fact VERIFIED.
+            # NFC-normalized and case-preserving to match the store's surface set;
+            # `None` means no store was consulted (the unit path), so the shape is
+            # read exactly as before. This covers the bare single-`of` tail only:
+            # multi-`of` phrasings (`headquarters of the Bank of America`) and the
+            # possessive mirror (`America's Bank`) are still read deterministically
+            # and belong to the head/shape widening in #433/#520.
+            untruncated = nfc(" ".join(
+                f"{match.group('label')} of {match.group('entity')}".split()
+            ))
+            if known_entities is not None and untruncated in known_entities:
+                return QueryIntent(
+                    kind=QueryIntentKind.UNKNOWN_OR_UNSUPPORTED,
+                    reason=(
+                        "the `of`-shape tail is a known entity, so the label-of-"
+                        "entity reading is declined to the model (#521)"
+                    ),
+                )
             return QueryIntent(
                 kind=QueryIntentKind.LOOKUP_OBJECT,
                 subject=IntentTarget("entity", entity),

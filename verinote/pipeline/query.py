@@ -331,7 +331,9 @@ def _schema_aware_query_flow_result(
             unreached_population="policy",
         )
     snapshot = build_query_schema_snapshot(store)
-    intent = deterministic_query_intent(question)
+    intent = deterministic_query_intent(
+        question, known_entities=snapshot.all_entity_surfaces
+    )
     deterministic_intent_supported = (
         intent.kind != QueryIntentKind.UNKNOWN_OR_UNSUPPORTED
     )
