@@ -62,6 +62,8 @@ SETTINGS_FILENAME = "config.json"
 APP_CONFIG_FILENAME = "app.json"
 CREDENTIALS_FILENAME = "credentials.json"
 CREDENTIALS_VERSION = 1
+GOOGLE_OAUTH_FILENAME = "google_oauth.json"
+GOOGLE_OAUTH_VERSION = 1
 APP_NAME = "verinote"
 APP_THEMES = ("system", "light", "dark")
 
@@ -194,6 +196,16 @@ def credentials_path() -> Path:
     `config.json` stay safe to hand to somebody else.
     """
     return app_config_dir() / CREDENTIALS_FILENAME
+
+
+def google_oauth_grant_path() -> Path:
+    """Where the Google OAuth grant lives: beside `credentials.json`, never in a KB.
+
+    The same split as `credentials_path`, with a stronger case: a refresh token
+    is standing access to a user's Google account, so the rule that a KB is
+    user data to be synced, copied and shared applies to it with more force.
+    """
+    return app_config_dir() / GOOGLE_OAUTH_FILENAME
 
 
 def provider_key_env_var(provider: str) -> str:
@@ -665,6 +677,18 @@ class CredentialsCorruptError(RuntimeError):
     """
 
 
+class GoogleOAuthCorruptError(RuntimeError):
+    """Raised when `google_oauth.json` is present but unreadable.
+
+    Its own type for the same reason `CredentialsCorruptError` is its own: the
+    two name different files, different scopes, different fixes. That one
+    points at the provider key map, whose recovery is re-saving a key; this one
+    points at the Google connection, whose recovery is disconnecting or
+    reconnecting (#484). Conflating them would tell the user to re-save a
+    provider key for a file that holds no provider key.
+    """
+
+
 def _read_credentials() -> tuple[dict[str, str], str | None]:
     """Stored keys, plus why they could not be read.
 
@@ -845,6 +869,141 @@ def delete_credential(provider: str) -> bool:
             mode=0o600,
         )
         return True
+
+
+@dataclass(frozen=True)
+class GoogleGrant:
+    """The stored Google OAuth connection (#476).
+
+    One grant is one Google account: the file holds exactly one, so a second
+    account is a shape change with a `version` bump, not a silent second row.
+    `access_token` and its expiry are deliberately absent — they are transient
+    and the refresh path (#484) owns them; Google rotates refresh tokens, and
+    a rotated token is saved back through the same `save_google_grant`, which
+    is why the payload carries a `version` so a future shape is never misread
+    as this one.
+
+    `scopes` is a tuple so the frozen instance stays hashable (JSON gives it
+    back as a list, and `load_google_grant` converts), and `refresh_token` is
+    kept out of the `repr` for the same reason `Config.api_key` is: a stray
+    log line or assertion diff must not print the credential.
+    """
+
+    refresh_token: str = field(repr=False)
+    email: str
+    scopes: tuple[str, ...]
+
+
+def _google_grant_payload(grant: GoogleGrant) -> dict:
+    return {
+        "version": GOOGLE_OAUTH_VERSION,
+        "refresh_token": grant.refresh_token,
+        "email": grant.email,
+        "scopes": list(grant.scopes),
+    }
+
+
+def load_google_grant() -> GoogleGrant | None:
+    """The stored Google grant, or `None` when the file does not exist.
+
+    A missing file is the normal "not connected" state. A file that is present
+    but unreadable — bad JSON, a version this build does not know, an empty
+    token — is a *broken* connection, not an absent one, so it raises
+    `GoogleOAuthCorruptError` instead of returning `None`: the two lead to
+    opposite screen states ("connect" vs. "this connection is broken;
+    disconnect or reconnect"), and collapsing them would hide the breakage.
+    Same discipline as `_read_credentials`.
+    """
+    path = google_oauth_grant_path()
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeDecodeError) as exc:
+        raise GoogleOAuthCorruptError(f"{path} is unreadable: {exc}") from exc
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise GoogleOAuthCorruptError(f"{path} is not valid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise GoogleOAuthCorruptError(f"{path} is not a JSON object")
+    version = data.get("version")
+    # `True == 1` in Python, so a boolean version would otherwise pass the
+    # inequality: guard it like the codebase's other shape checks.
+    if isinstance(version, bool) or version != GOOGLE_OAUTH_VERSION:
+        raise GoogleOAuthCorruptError(
+            f"{path} has version {version!r}; this verinote stores version"
+            f" {GOOGLE_OAUTH_VERSION}"
+        )
+    refresh_token = data.get("refresh_token")
+    if not isinstance(refresh_token, str) or not refresh_token.strip():
+        raise GoogleOAuthCorruptError(f"{path} has no usable refresh_token")
+    email = data.get("email")
+    if not isinstance(email, str) or not email.strip():
+        raise GoogleOAuthCorruptError(f"{path} has no usable email")
+    scopes = data.get("scopes")
+    if not isinstance(scopes, list) or not scopes:
+        raise GoogleOAuthCorruptError(f"{path} has no usable scopes")
+    for scope in scopes:
+        if not isinstance(scope, str) or not scope.strip():
+            raise GoogleOAuthCorruptError(f"{path} holds a non-string scope")
+    return GoogleGrant(
+        refresh_token=refresh_token.strip(),
+        email=email.strip(),
+        scopes=tuple(scope.strip() for scope in scopes),
+    )
+
+
+def save_google_grant(grant: GoogleGrant) -> None:
+    """Persist the Google grant, machine-local, outside every KB (#476).
+
+    Deliberately does NOT read the existing file first, unlike
+    `save_credential`: that one refuses a corrupt file because a save is a
+    *merge* and overwriting would silently discard the other providers' keys.
+    This file holds exactly one grant, so a save replaces the whole content —
+    overwriting a corrupt file is the reconnect's recovery path, not data
+    loss (the counterpart of `save_settings`, which likewise rewrites a
+    complete payload). The torn-write guarantee is `_write_json_atomic`'s
+    atomic replace; the lock is held for consistency with the credentials
+    plumbing, not as a lost-update defence.
+    """
+    token = grant.refresh_token.strip()
+    if not token:
+        raise ValueError("refresh_token is empty")
+    email = grant.email.strip()
+    if not email:
+        raise ValueError("email is empty")
+    scopes = []
+    for scope in grant.scopes:
+        if not isinstance(scope, str) or not scope.strip():
+            raise ValueError("every scope must be a non-blank string")
+        scopes.append(scope.strip())
+    if not scopes:
+        raise ValueError("scopes must not be empty")
+    cleaned = GoogleGrant(refresh_token=token, email=email, scopes=tuple(scopes))
+    with _credentials_lock():
+        _ensure_config_dir_gitignore()
+        _write_json_atomic(
+            google_oauth_grant_path(),
+            _google_grant_payload(cleaned),
+            mode=0o600,
+        )
+
+
+def clear_google_grant() -> None:
+    """Remove the stored Google grant — [disconnect] calls this (#481).
+
+    Idempotent: a missing file is already "not connected". A corrupt file is
+    deleted too — the file holds one grant and nothing else, so there is no
+    other content to preserve, and clearing is one of the two recovery paths
+    for a broken connection (the other is reconnecting, which overwrites).
+
+    The lock keeps the unlink from landing mid-save: without it a concurrent
+    `save_google_grant` could replace the file after this unlink returned, and
+    the user would see "disconnected" while the grant quietly comes back.
+    """
+    with _credentials_lock():
+        google_oauth_grant_path().unlink(missing_ok=True)
 
 
 def _llm_timeout_seconds() -> float:
