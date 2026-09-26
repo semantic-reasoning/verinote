@@ -776,6 +776,78 @@ class Store:
             "SELECT * FROM sources WHERE path = ?", (path,)
         ).fetchone()
 
+    # Closed set of `form_sources.last_error_kind` values (#477). The screen maps
+    # each to a sentence; an HTTP status or exception name must never land here
+    # (#481 scans the rendered page for such strings). `None` = healthy.
+    FORM_ERROR_KINDS = frozenset({"token_expired", "sheet_forbidden"})
+
+    def add_form_source(self, sheet_id: str, name: str) -> int:
+        """Register a form sheet. A second registration of the same sheet is refused.
+
+        Unlike `add_source` (which upserts by path), a duplicate `sheet_id` would
+        make the same responses candidate facts twice, so it is refused at
+        registration (#477) rather than silently merged into the first row.
+        """
+        with self._lock:
+            if self.get_form_source_by_sheet_id(sheet_id) is not None:
+                raise ValueError(f"form source already registered for sheet: {sheet_id}")
+            cur = self._conn.execute(
+                "INSERT INTO form_sources(sheet_id, name) VALUES(?, ?) RETURNING id",
+                (sheet_id, name),
+            )
+            return int(cur.fetchone()[0])
+
+    def form_sources(self) -> list[sqlite3.Row]:
+        return list(self._conn.execute("SELECT * FROM form_sources ORDER BY id"))
+
+    def get_form_source(self, form_id: int) -> sqlite3.Row | None:
+        return self._conn.execute(
+            "SELECT * FROM form_sources WHERE id = ?", (form_id,)
+        ).fetchone()
+
+    def get_form_source_by_sheet_id(self, sheet_id: str) -> sqlite3.Row | None:
+        return self._conn.execute(
+            "SELECT * FROM form_sources WHERE sheet_id = ?", (sheet_id,)
+        ).fetchone()
+
+    def set_form_enabled(self, form_id: int, enabled: bool) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE form_sources SET enabled = ? WHERE id = ?",
+                (1 if enabled else 0, form_id),
+            )
+
+    def delete_form_source(self, form_id: int) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM form_sources WHERE id = ?", (form_id,))
+
+    def record_check_result(
+        self,
+        form_id: int,
+        *,
+        watermark: str | None,
+        last_checked_at: str,
+        next_check_at: str | None,
+        error_kind: str | None,
+    ) -> None:
+        """Atomically record one check's outcome for a registered form (#477).
+
+        The four fields land in one UPDATE so there is no intermediate state in
+        which the watermark moved but the timestamp is stale (or vice versa). A
+        FAILED check passes its *old* watermark with a non-None `error_kind`;
+        this method records exactly what it is handed, so "a failure does not
+        advance the watermark" is enforced by the caller's argument -- which is
+        the point of keeping the two columns separate.
+        """
+        if error_kind is not None and error_kind not in self.FORM_ERROR_KINDS:
+            raise ValueError(f"unknown form error kind: {error_kind!r}")
+        with self._lock:
+            self._conn.execute(
+                "UPDATE form_sources SET watermark = ?, last_checked_at = ?, "
+                "next_check_at = ?, last_error_kind = ? WHERE id = ?",
+                (watermark, last_checked_at, next_check_at, error_kind, form_id),
+            )
+
     def scan_unreadable_text(self) -> UnreadableTextScan:
         """Report the NULs still stored in artifacts and analysis chunks (#494).
 

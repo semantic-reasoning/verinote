@@ -29,6 +29,37 @@ CREATE TABLE IF NOT EXISTS sources (
     added_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Form Sync registrations (#477). A registered Google Sheet the Form Sync
+-- worker polls; the screen answers per form: last checked / next check / any
+-- problem. These must survive a restart, hence a table, not memory.
+--
+-- `watermark` and `last_checked_at` are two deliberately distinct things (#477):
+-- "where we read up to" vs. "when we last looked". A FAILED check advances
+-- `last_checked_at` (we did look) but must NOT advance `watermark` (we did not
+-- read past it) -- that split is the reason this table exists, and the
+-- accessors enforce it in one atomic write.
+--
+-- `last_error_kind` is a closed behavior classification the screen maps to a
+-- sentence -- NOT an HTTP status or exception name. `tests` for the integrations
+-- panel (#481) scan the rendered page for such strings, so leaking an exception
+-- name into this column would surface on the screen and break that test.
+--
+-- It lives in the KB DB rather than app config (#476): the watermark is
+-- per-KB state (two KBs syncing one sheet need independent positions), and
+-- `sheet_id` is a public identifier, not a credential.
+CREATE TABLE IF NOT EXISTS form_sources (
+    id              INTEGER PRIMARY KEY,
+    sheet_id        TEXT NOT NULL UNIQUE,  -- Google Sheet identifier (not a URL)
+    name            TEXT NOT NULL,         -- display name
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    watermark       TEXT,                  -- last read position; NULL = never read
+    last_checked_at TEXT,
+    next_check_at   TEXT,
+    last_error_kind TEXT                  -- token_expired | sheet_forbidden | NULL (healthy)
+                  CHECK (last_error_kind IN ('token_expired','sheet_forbidden')),
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- Text artifacts used by extraction. Text sources point at their original file;
 -- binary sources point at a derived UTF-8 text artifact.
 CREATE TABLE IF NOT EXISTS source_artifacts (
