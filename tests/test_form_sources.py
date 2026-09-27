@@ -91,7 +91,7 @@ def test_last_error_kind_accepts_only_the_closed_set(tmp_path):
     s = _store(tmp_path)
     fid = s.add_form_source("sheet_abc", "Sample Form")
 
-    for kind in ("token_expired", "sheet_forbidden", None):
+    for kind in ("token_expired", "sheet_forbidden", "sheet_not_found", None):
         s.record_check_result(
             fid, watermark="row_1", last_checked_at="t", next_check_at="u", error_kind=kind,
         )
@@ -126,3 +126,56 @@ def test_opening_a_pre_477_kb_migrates_in_the_table(tmp_path):
     # and the new table is now usable
     fid = s.add_form_source("sheet_abc", "Sample Form")
     assert s.get_form_source(fid)["sheet_id"] == "sheet_abc"
+
+
+def test_pre_479_kb_migrates_check_constraint(tmp_path):
+    """A pre-#479 KB has the old 2-value CHECK. After init_schema, sheet_not_found
+    must be writable and sheet_id UNIQUE must still be enforced."""
+    conn = sqlite3.connect(tmp_path / "kb.sqlite")
+    conn.execute(
+        "CREATE TABLE form_sources ("
+        "id INTEGER PRIMARY KEY, "
+        "sheet_id TEXT NOT NULL UNIQUE, "
+        "name TEXT NOT NULL, "
+        "enabled INTEGER NOT NULL DEFAULT 1, "
+        "watermark TEXT, "
+        "last_checked_at TEXT, "
+        "next_check_at TEXT, "
+        "last_error_kind TEXT "
+        "CHECK (last_error_kind IN ('token_expired','sheet_forbidden')), "
+        "created_at TEXT NOT NULL DEFAULT (datetime('now'))"
+        ")"
+    )
+    conn.execute(
+        "INSERT INTO form_sources(sheet_id, name, last_error_kind) "
+        "VALUES('old_sheet', 'Old Form', 'sheet_forbidden')"
+    )
+    conn.commit()
+    conn.close()
+
+    s = _store(tmp_path)
+    fid = s.get_form_source_by_sheet_id("old_sheet")["id"]
+
+    # sheet_not_found is now writable
+    s.record_check_result(
+        fid, watermark="w", last_checked_at="t", next_check_at=None,
+        error_kind="sheet_not_found",
+    )
+    assert s.get_form_source(fid)["last_error_kind"] == "sheet_not_found"
+
+    # UNIQUE is still enforced: duplicate sheet_id is refused
+    try:
+        s.add_form_source("old_sheet", "Dup")
+        assert False, "should have raised"
+    except ValueError as exc:
+        assert "already registered" in str(exc)
+
+    # bad kinds are still refused
+    try:
+        s.record_check_result(
+            fid, watermark="w", last_checked_at="t", next_check_at=None,
+            error_kind="bogus",
+        )
+        assert False, "should have raised"
+    except ValueError as exc:
+        assert "unknown form error kind" in str(exc)

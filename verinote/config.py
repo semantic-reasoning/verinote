@@ -64,6 +64,7 @@ CREDENTIALS_FILENAME = "credentials.json"
 CREDENTIALS_VERSION = 1
 GOOGLE_OAUTH_FILENAME = "google_oauth.json"
 GOOGLE_OAUTH_VERSION = 1
+GOOGLE_CLIENT_FILENAME = "google_oauth_client.json"
 APP_NAME = "verinote"
 APP_THEMES = ("system", "light", "dark")
 
@@ -206,6 +207,15 @@ def google_oauth_grant_path() -> Path:
     user data to be synced, copied and shared applies to it with more force.
     """
     return app_config_dir() / GOOGLE_OAUTH_FILENAME
+
+def google_oauth_client_path() -> Path:
+    """Where the Google OAuth client_id lives: beside the grant, never in a KB.
+
+    The client_id is a public identifier (not a secret), but it is machine-local
+    provisioning state — it belongs with the grant, not inside a KB that gets
+    synced, copied and shared.
+    """
+    return app_config_dir() / GOOGLE_CLIENT_FILENAME
 
 
 def provider_key_env_var(provider: str) -> str:
@@ -1004,6 +1014,61 @@ def clear_google_grant() -> None:
     """
     with _credentials_lock():
         google_oauth_grant_path().unlink(missing_ok=True)
+
+
+def load_google_client_id() -> str | None:
+    """The stored Google OAuth client_id, or None when the file does not exist.
+
+    A missing file is the normal "not provisioned" state (#484 owns provisioning).
+    A present-but-unparsable file is a broken provisioning, so it raises
+    GoogleOAuthCorruptError instead of returning None.
+    """
+    path = google_oauth_client_path()
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeDecodeError) as exc:
+        raise GoogleOAuthCorruptError(f"{path} is unreadable: {exc}") from exc
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise GoogleOAuthCorruptError(f"{path} is not valid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise GoogleOAuthCorruptError(f"{path} is not a JSON object")
+    version = data.get("version")
+    # Same discipline as load_google_grant: `True == 1` in Python, so a
+    # boolean version would otherwise pass the inequality — guard it here
+    # too, and reject a version this build does not know (the two credential
+    # files must validate identically).
+    if isinstance(version, bool) or version != GOOGLE_OAUTH_VERSION:
+        raise GoogleOAuthCorruptError(
+            f"{path} has version {version!r}; this verinote stores version"
+            f" {GOOGLE_OAUTH_VERSION}"
+        )
+    client_id = data.get("client_id")
+    if not isinstance(client_id, str) or not client_id.strip():
+        raise GoogleOAuthCorruptError(f"{path} has no usable client_id")
+    return client_id.strip()
+
+
+def save_google_client_id(client_id: str) -> None:
+    """Persist the Google OAuth client_id, machine-local, outside every KB.
+
+    Same idiom as save_google_grant: atomic write, 0o600, credentials lock.
+    #484 owns the OAuth flow that fills this; #479 ships the load/save pair
+    so the worker can handle the None case (record token_expired).
+    """
+    cleaned = client_id.strip()
+    if not cleaned:
+        raise ValueError("client_id is empty")
+    with _credentials_lock():
+        _ensure_config_dir_gitignore()
+        _write_json_atomic(
+            google_oauth_client_path(),
+            {"version": GOOGLE_OAUTH_VERSION, "client_id": cleaned},
+            mode=0o600,
+        )
 
 
 def _llm_timeout_seconds() -> float:

@@ -779,7 +779,7 @@ class Store:
     # Closed set of `form_sources.last_error_kind` values (#477). The screen maps
     # each to a sentence; an HTTP status or exception name must never land here
     # (#481 scans the rendered page for such strings). `None` = healthy.
-    FORM_ERROR_KINDS = frozenset({"token_expired", "sheet_forbidden"})
+    FORM_ERROR_KINDS = frozenset({"token_expired", "sheet_forbidden", "sheet_not_found"})
 
     def add_form_source(self, sheet_id: str, name: str) -> int:
         """Register a form sheet. A second registration of the same sheet is refused.
@@ -4215,6 +4215,7 @@ class Store:
             """
         )
         self._ensure_question_schema()
+        self._ensure_form_sources_v2()
         repair_item_columns = {
             row["name"] for row in self._conn.execute("PRAGMA table_info(repair_job_items)")
         }
@@ -4306,6 +4307,56 @@ class Store:
             )
             self._conn.execute("DROP TABLE questions")
             self._conn.execute("ALTER TABLE questions_new RENAME TO questions")
+            self._conn.execute("COMMIT")
+        except Exception:
+            self._rollback_quietly()
+            raise
+
+    def _ensure_form_sources_v2(self) -> None:
+        """Widen `last_error_kind` CHECK to include `sheet_not_found` (#479).
+
+        SQLite cannot ALTER a CHECK constraint, so the table is rebuilt:
+        detect the old 2-value CHECK via `sqlite_master`, then
+        CREATE form_sources_new (schema.sql definition, UNIQUE preserved)
+        INSERT SELECT DROP old RENAME COMMIT.
+        Precedent: `_ensure_question_schema`.
+        """
+        row = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'form_sources'"
+        ).fetchone()
+        create_sql = row["sql"] if row is not None and row["sql"] is not None else ""
+        if "sheet_not_found" in create_sql:
+            return
+        columns = [
+            row["name"] for row in self._conn.execute("PRAGMA table_info(form_sources)")
+        ]
+        if not columns:
+            return
+        self._conn.execute("BEGIN")
+        try:
+            self._conn.execute("DROP TABLE IF EXISTS form_sources_new")
+            self._conn.execute(
+                "CREATE TABLE form_sources_new ("
+                "id INTEGER PRIMARY KEY, "
+                "sheet_id TEXT NOT NULL UNIQUE, "
+                "name TEXT NOT NULL, "
+                "enabled INTEGER NOT NULL DEFAULT 1, "
+                "watermark TEXT, "
+                "last_checked_at TEXT, "
+                "next_check_at TEXT, "
+                "last_error_kind TEXT "
+                "CHECK (last_error_kind IN ('token_expired','sheet_forbidden','sheet_not_found')), "
+                "created_at TEXT NOT NULL DEFAULT (datetime('now'))"
+                ")"
+            )
+            self._conn.execute(
+                "INSERT INTO form_sources_new(id, sheet_id, name, enabled, watermark, "
+                "last_checked_at, next_check_at, last_error_kind, created_at) "
+                "SELECT id, sheet_id, name, enabled, watermark, last_checked_at, "
+                "next_check_at, last_error_kind, created_at FROM form_sources"
+            )
+            self._conn.execute("DROP TABLE form_sources")
+            self._conn.execute("ALTER TABLE form_sources_new RENAME TO form_sources")
             self._conn.execute("COMMIT")
         except Exception:
             self._rollback_quietly()
