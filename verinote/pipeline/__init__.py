@@ -20,6 +20,14 @@ from verinote.pipeline.extract import (
     process_extraction_job,
     sync_sources,
 )
+from verinote.pipeline.form_responses import (
+    DEFAULT_VALUE_RANGE,
+    ResponseBatch,
+    fetch_form_responses,
+    materialize_form_batch,
+    parse_watermark,
+    render_responses_as_text,
+)
 from verinote.pipeline.ingest import (
     IngestError,
     ingest_bytes,
@@ -58,4 +66,10 @@ __all__ = [
     "repair_question",
     "process_repair_job",
     "fact_trust_summary",
+    "DEFAULT_VALUE_RANGE",
+    "ResponseBatch",
+    "fetch_form_responses",
+    "materialize_form_batch",
+    "parse_watermark",
+    "render_responses_as_text",
 ]
