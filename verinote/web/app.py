@@ -34,15 +34,19 @@ from verinote.config import (
     Config,
     ConfigCorruptError,
     CredentialsCorruptError,
+    GoogleOAuthCorruptError,
     app_theme,
     _read_credentials,
     api_key_source,
     credentials_path,
     delete_credential,
     generate_apps_script_url,
+    load_google_client_id,
+    load_google_grant,
     provider_key_env_var,
     read_form_webhook_config,
     save_credential,
+    save_google_grant,
     assert_credentials_intact,
     assert_settings_intact,
     normalize_provider,
@@ -73,6 +77,7 @@ from verinote.pipeline import (
     ingest_bytes,
     is_live_extraction_job,
     latest_source_job_ids,
+    materialize_form_batch,
     process_extraction_job,
     process_repair_job,
     store_source,
@@ -80,6 +85,11 @@ from verinote.pipeline import (
     translate_questions,
     verify,
     write_query_file,
+)
+from verinote.google_sheets import (
+    SheetReadError,
+    TokenRefreshError,
+    read_sheet_values,
 )
 from verinote.pipeline.policy_state import (
     PolicyMissingError,
@@ -722,6 +732,205 @@ def _policy_guard_exempt(method: str, path: str) -> bool:
     return path in _POLICY_GUARD_WRITE_PATHS
 
 
+FORM_RETRY_BACKOFF_SECONDS = 60
+
+
+def _run_form_check(
+    store,
+    cfg,
+    form_id: int,
+    *,
+    sheet_lock: Lock,
+    read=None,
+    start_extraction=None,
+) -> None:
+    """Check one registered form: read the sheet, materialise, record, extract.
+
+    The three gates (settings, credentials, policy) run synchronously before
+    any work. The sheet read + rotated-token persist are one critical section
+    under ``sheet_lock`` (contract #3: the "Single caller" assumption covers
+    the refresh+persist unit, not the read alone).
+
+    Error mapping (contract #5):
+      TokenRefreshError      -> token_expired
+      SheetReadError(403)    -> sheet_forbidden
+      SheetReadError(404)    -> sheet_not_found
+      SheetReadError(retry)  -> next_check_at backoff, error_kind=None
+      IngestError / other    -> next_check_at backoff, error_kind=None
+
+    The lock is held across the grant/client_id load, materialize_form_batch
+    AND save_google_grant so two concurrent forms on one grant cannot capture
+    a pre-rotation refresh token or invert the persisted token.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    now_utc = datetime.now(timezone.utc)
+    now_str = now_utc.strftime("%Y-%m-%d %H:%M:%S")
+
+    def _backoff_str() -> str:
+        return (now_utc + timedelta(seconds=FORM_RETRY_BACKOFF_SECONDS)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+
+    # Gate 1: settings and credentials intact
+    assert_settings_intact(cfg)
+    assert_credentials_intact(cfg)
+
+    # Gate 2: writable
+    assert_writable(store)
+
+    # Guard: form must still exist
+    form = store.get_form_source(form_id)
+    if form is None:
+        logger.info("form check %s: form not found, skipping", form_id)
+        return
+
+    old_watermark = form["watermark"]
+
+    def _record_failure(kind, next_check_at):
+        store.record_check_result(
+            form_id,
+            watermark=old_watermark,
+            last_checked_at=now_str,
+            next_check_at=next_check_at,
+            error_kind=kind,
+        )
+
+    def _persist_rotated(rotated):
+        if rotated is not None:
+            from verinote.config import GoogleGrant
+            save_google_grant(
+                GoogleGrant(
+                    refresh_token=rotated,
+                    email=grant.email,
+                    scopes=grant.scopes,
+                )
+            )
+
+    # Resolve the read seam: None means "use the default" (F-1 fix)
+    effective_read = read if read is not None else read_sheet_values
+
+    # Critical section: credential capture + sheet read + rotated-token persist,
+    # all under sheet_lock (contract #3: the "Single caller" unit is
+    # capture + refresh + persist, not the read alone)
+    with sheet_lock:
+        # Load grant and client_id INSIDE the lock (review F-1): capture +
+        # refresh + persist is the "Single caller" atomic unit (contract #3).
+        # Loading outside let two forms on one grant both capture the
+        # pre-rotation refresh token; the loser then refreshed a token Google
+        # had already rotated away (400 invalid_grant) and recorded a spurious
+        # token_expired even though the persisted grant was healthy.
+        try:
+            grant = load_google_grant()
+        except GoogleOAuthCorruptError as exc:
+            logger.warning("form check %s: corrupt grant: %s", form_id, exc)
+            store.record_check_result(
+                form_id,
+                watermark=old_watermark,
+                last_checked_at=now_str,
+                next_check_at=None,
+                error_kind="token_expired",
+            )
+            return
+        if grant is None:
+            logger.info("form check %s: no grant, recording token_expired", form_id)
+            store.record_check_result(
+                form_id,
+                watermark=old_watermark,
+                last_checked_at=now_str,
+                next_check_at=None,
+                error_kind="token_expired",
+            )
+            return
+
+        try:
+            client_id = load_google_client_id()
+        except GoogleOAuthCorruptError as exc:
+            logger.warning("form check %s: corrupt client_id: %s", form_id, exc)
+            store.record_check_result(
+                form_id,
+                watermark=old_watermark,
+                last_checked_at=now_str,
+                next_check_at=None,
+                error_kind="token_expired",
+            )
+            return
+        if client_id is None:
+            logger.info("form check %s: no client_id, recording token_expired", form_id)
+            store.record_check_result(
+                form_id,
+                watermark=old_watermark,
+                last_checked_at=now_str,
+                next_check_at=None,
+                error_kind="token_expired",
+            )
+            return
+
+        try:
+            result = materialize_form_batch(
+                store,
+                cfg.root,
+                grant,
+                client_id,
+                form["sheet_id"],
+                since_watermark=old_watermark,
+                provider=cfg.provider,
+                model=cfg.model,
+                chunk_chars=cfg.extraction_chunk_chars,
+                chunk_overlap_chars=cfg.extraction_chunk_overlap_chars,
+                read=effective_read,
+            )
+        except TokenRefreshError as exc:
+            _persist_rotated(exc.live_refresh_token)
+            logger.warning("form check %s: token expired", form_id)
+            _record_failure("token_expired", None)
+            return
+        except SheetReadError as exc:
+            _persist_rotated(exc.live_refresh_token)
+            if exc.status == 403:
+                logger.warning("form check %s: sheet forbidden", form_id)
+                _record_failure("sheet_forbidden", None)
+            elif exc.status == 404:
+                logger.warning("form check %s: sheet not found", form_id)
+                _record_failure("sheet_not_found", None)
+            elif exc.retryable:
+                logger.info("form check %s: retryable, backing off", form_id)
+                _record_failure(None, _backoff_str())
+            else:
+                logger.warning("form check %s: sheet read failed: %s", form_id, exc)
+                _record_failure(None, _backoff_str())
+            return
+        except IngestError as exc:
+            logger.warning("form check %s: ingest error: %s", form_id, exc)
+            _record_failure(None, _backoff_str())
+            return
+        except PolicyMissingError as exc:
+            logger.warning("form check %s: halted (KB policy missing): %s", form_id, exc)
+            return
+        except Exception:  # noqa: BLE001
+            logger.exception("form check %s: unexpected error", form_id)
+            _record_failure(None, _backoff_str())
+            return
+        # Success: persist rotated token INSIDE the lock (F-2 fix: the
+        # "Single caller" contract covers refresh+persist as one unit)
+        _persist_rotated(result.get("rotated_refresh_token"))
+        store.record_check_result(
+            form_id,
+            watermark=result["new_watermark"],
+            last_checked_at=now_str,
+            next_check_at=None,
+            error_kind=None,
+        )
+
+    if result.get("materialized") and result.get("job_id") is not None and start_extraction is not None:
+        try:
+            start_extraction(int(result["job_id"]), cfg)
+        except (ConfigCorruptError, CredentialsCorruptError) as exc:
+            logger.warning(
+                "form check %s: extraction not started (config): %s", form_id, exc
+            )
+
+
 def create_app(cfg: Config | None = None) -> FastAPI:
     cfg = cfg if cfg is not None else Config.load_for_ui()
 
@@ -730,6 +939,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     app.state.store = None
     app.state.repair_scheduler_lock = Lock()
     app.state.repair_scheduled = set()
+    app.state.form_sheet_lock = Lock()
+    app.state.form_check_lock = Lock()
+    app.state.form_checking = set()
     if cfg is not None:
         assert_kb_root_is_safe_to_create(cfg.root)
         store = Store(cfg.db_path)
@@ -2939,9 +3151,84 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         for job in app.state.store.repair_jobs_to_resume():
             _start_repair_job(int(job["id"]), app.state.cfg)
 
+    def _start_form_check(form_id: int, cfg: Config) -> bool:
+        """Start a form check in a background thread. Returns True if started."""
+        assert_settings_intact(cfg)
+        assert_credentials_intact(cfg)
+
+        with app.state.form_check_lock:
+            if form_id in app.state.form_checking:
+                return False
+            app.state.form_checking.add(form_id)
+
+        def run() -> None:
+            try:
+                with Store(cfg.db_path) as worker_store:
+                    worker_store.init_schema()
+                    _run_form_check(
+                        worker_store, cfg, form_id,
+                        sheet_lock=app.state.form_sheet_lock,
+                        start_extraction=_start_source_extraction,
+                    )
+            except PolicyMissingError as exc:
+                logger.warning("form check %s halted (KB policy missing): %s", form_id, exc)
+            except (ConfigCorruptError, CredentialsCorruptError) as exc:
+                logger.warning("form check %s config error: %s", form_id, exc)
+            except Exception:  # noqa: BLE001
+                logger.exception("form check %s failed", form_id)
+            finally:
+                with app.state.form_check_lock:
+                    app.state.form_checking.discard(form_id)
+
+        threading.Thread(
+            target=run, name=f"verinote-form-check-{form_id}", daemon=True
+        ).start()
+        return True
+
+    def _resume_form_checks() -> None:
+        """Start a check for every enabled form on a healthy KB.
+
+        Skips forms whose next_check_at is in the future (429 backoff must
+        survive process restarts).
+        """
+        if app.state.store is None or app.state.cfg is None:
+            return
+        try:
+            assert_settings_intact(app.state.cfg)
+            assert_credentials_intact(app.state.cfg)
+            assert_writable(app.state.store)
+        except (ConfigCorruptError, CredentialsCorruptError, PolicyMissingError) as exc:
+            logger.warning("not resuming form checks: %s", exc)
+            return
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        for form in app.state.store.form_sources():
+            if not form["enabled"]:
+                continue
+            if form["next_check_at"] is not None:
+                try:
+                    nca = datetime.strptime(form["next_check_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                    if nca > now:
+                        continue
+                except ValueError:
+                    pass
+            _start_form_check(int(form["id"]), app.state.cfg)
+
     @app.get("/", response_class=HTMLResponse)
     def dashboard(request: Request):
         return _dashboard(request)
+
+    @app.post("/integrations/forms/{form_id}/check", status_code=202)
+    def check_form(form_id: int):
+        """Start a form check (the #481 [지금 동기화] button POSTs here)."""
+        if app.state.store is None or app.state.cfg is None:
+            raise HTTPException(status_code=503, detail="no KB loaded")
+        form = app.state.store.get_form_source(form_id)
+        if form is None:
+            raise HTTPException(status_code=404, detail="form not found")
+        if not _start_form_check(form_id, app.state.cfg):
+            raise HTTPException(status_code=409, detail="check already in progress")
+        return {"started": True, "form_id": form_id}
 
     @app.post("/kb/select", response_class=HTMLResponse)
     def select_kb(request: Request, root: str = Form(...)):
@@ -4337,6 +4624,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     _resume_source_extraction_jobs()
     _resume_repair_jobs()
+    _resume_form_checks()
 
     return app
 

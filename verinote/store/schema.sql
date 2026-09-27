@@ -55,8 +55,8 @@ CREATE TABLE IF NOT EXISTS form_sources (
     watermark       TEXT,                  -- last read position; NULL = never read
     last_checked_at TEXT,
     next_check_at   TEXT,
-    last_error_kind TEXT                  -- token_expired | sheet_forbidden | NULL (healthy)
-                  CHECK (last_error_kind IN ('token_expired','sheet_forbidden')),
+    last_error_kind TEXT                  -- token_expired | sheet_forbidden | sheet_not_found | NULL (healthy)
+                  CHECK (last_error_kind IN ('token_expired','sheet_forbidden','sheet_not_found')),
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

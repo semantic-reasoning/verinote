@@ -21,8 +21,11 @@ from verinote.config import (
     GoogleOAuthCorruptError,
     app_config_dir,
     clear_google_grant,
+    google_oauth_client_path,
     google_oauth_grant_path,
+    load_google_client_id,
     load_google_grant,
+    save_google_client_id,
     save_google_grant,
     save_settings,
 )
@@ -268,3 +271,30 @@ def test_concurrent_saves_never_leave_a_torn_file(isolate_app_environment):
     # and the child wrote to the sandboxed home, not somewhere real
     assert path.parent == Path(expected_dir)
     assert expected_dir.endswith(APP_NAME)
+
+
+# --- client_id storage (#479 seam for #484) ---
+
+
+def test_client_id_round_trip(isolated_app_config):
+    save_google_client_id("Sample-Client-123")
+    assert load_google_client_id() == "Sample-Client-123"
+
+
+def test_client_id_missing_returns_none(isolated_app_config):
+    assert load_google_client_id() is None
+
+
+def test_client_id_corrupt_raises(isolated_app_config):
+    path = google_oauth_client_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("not json", encoding="utf-8")
+    with pytest.raises(GoogleOAuthCorruptError):
+        load_google_client_id()
+
+
+def test_client_id_file_mode_600(isolated_app_config):
+    import os
+    save_google_client_id("Sample-Client-456")
+    mode = os.stat(google_oauth_client_path()).st_mode & 0o777
+    assert mode == 0o600
