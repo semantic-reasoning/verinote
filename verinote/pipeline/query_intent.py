@@ -171,11 +171,18 @@ class QueryIntent:
 
     `reason` and the comparison fields (operator/value_type/value) are advisory:
     any kind may carry them, and only the kind that consumes one requires it.
-    `unknown_or_unsupported` requires `reason` and accepts nothing else;
-    `compare_typed_value` requires all three comparison fields. Advisory means
-    "ignored", never "unchecked" -- a non-null operator or value_type is held to
-    QUERY_INTENT_SCHEMA's enum on every kind (`_validate_schema_domains`), so the
-    validator never accepts what the schema forbids.
+    `expected_type` is the same kind of advisory field, but it is internal: the
+    deterministic parser sets it from the interrogative's head (who/when/where/
+    how much), the planner consumes it for `lookup_object`, and the provider
+    schema never names it -- so a model-supplied intent always carries
+    `None`. Advisory means "ignored", never "unchecked": a non-null operator or
+    value_type is held to QUERY_INTENT_SCHEMA's enum on every kind
+    (`_validate_schema_domains`), and a non-null `expected_type` is held to
+    `_EXPECTED_ANSWER_TYPES` on every kind (`__post_init__`), so the validator
+    never accepts what the vocabulary forbids.
+    `unknown_or_unsupported` requires `reason` and accepts nothing else
+    (including `expected_type`); `compare_typed_value` requires all three
+    comparison fields.
 
     QUERY_INTENT_SCHEMA must list every property as required -- OpenAI strict
     mode forbids conditional requirements -- and its `operator` enum admits "=".
@@ -197,6 +204,7 @@ class QueryIntent:
     object: IntentTarget | None = None
     relation_candidates: tuple[str, ...] = field(default_factory=tuple)
     speculative_relations: tuple[str, ...] = field(default_factory=tuple)
+    expected_type: str | None = None
     operator: str | None = None
     value_type: str | None = None
     value: str | None = None
@@ -231,6 +239,15 @@ class QueryIntent:
             raise ValueError("chain_hops must be a tuple")
         if self.answer_var is not None:
             object.__setattr__(self, "answer_var", _clean_optional_string(self.answer_var, "answer_var"))
+        # `expected_type` is internal (not in the provider schema), so it is held
+        # to its own closed vocabulary here rather than to QUERY_INTENT_SCHEMA's
+        # enum (which has no person/place and cannot name it). Advisory like the
+        # other fields: `None` is always legal, and the planner consumes it only
+        # for `lookup_object`; the unknown_or_unsupported combination check below
+        # rejects it on the one kind that accepts nothing else.
+        if self.expected_type is not None and self.expected_type not in _EXPECTED_ANSWER_TYPES:
+            allowed = ", ".join(sorted(_EXPECTED_ANSWER_TYPES))
+            raise ValueError(f"expected_type must be one of {allowed}, got {self.expected_type!r}")
         # A blank nullable string is an absent one -- but only where the schema
         # pins no domain for the field. Every schema property typed
         # `["string", "null"]` is normalised here, and each is still listed in
@@ -389,6 +406,7 @@ class QueryIntent:
                     self.operator,
                     self.value_type,
                     self.value,
+                    self.expected_type,
                 )
             ) or self.relation_candidates:
                 raise ValueError("unknown_or_unsupported accepts only kind and reason")
@@ -443,13 +461,54 @@ _KOREAN_ATTRIBUTE_QUESTION = re.compile(
     r'^\s*["“”\']?(?P<entity>[^"“”\'?？\n]{1,100}?)["“”\']?\s*'
     r"(?:의|에\s*대한)\s*(?P<label>[^?？\n]{1,80})\s*[?？]?\s*$"
 )
+_EXPECTED_ANSWER_TYPES = frozenset({"person", "place", "date", "amount"})
+"""The closed vocabulary `QueryIntent.expected_type` admits (plus `None`).
+
+Internal only: the deterministic parser sets it from the interrogative head and
+the planner consumes it for `lookup_object`. `person`/`place` have no
+verification machinery in the typed-relation vocabulary, so the engine can never
+positively verify them and always declines those to the model; `date`/`amount`
+are the verifiable projections (the only time- and money-ish members of
+`corroboration._TYPED_TYPES`). `None` means a type-neutral head.
+"""
+
+_HEAD_EXPECTED_TYPE = {
+    "what is": None,
+    "what was": None,
+    "find": None,
+    "show": None,
+    "who is": "person",
+    "when is": "date",
+    "where is": "place",
+    "how much is": "amount",
+}
+"""The head -> expected_type map (#433/#520).
+
+Keyed on the canonical folded, single-spaced head. The regex admits the head
+case-insensitively and with `\\s+` runs, so the parser normalizes the matched
+head (`" ".join(head.split()).lower()`) before this lookup; a head admitted but
+absent from the table maps to `None` (type-neutral) by the parser's `.get`.
+"""
+
+def _expected_type_for_head(head: str) -> str | None:
+    """Map a matched interrogative head to its expected answer type.
+
+    The regex admits the head case-insensitively and with `\\s+` runs, so the
+    matched text must be normalized (folded, single-spaced) before the
+    `_HEAD_EXPECTED_TYPE` lookup. A head admitted by the alternation but absent
+    from the table maps to `None` (type-neutral), so admitting a new head
+    without a row is the safe direction, never a wrong-type answer.
+    """
+    return _HEAD_EXPECTED_TYPE.get(" ".join(head.split()).lower())
+
+
 _ENGLISH_POSSESSIVE_ATTRIBUTE_QUESTION = re.compile(
-    r"^\s*(?i:what\s+is|what\s+was|find|show)\s+(?:the\s+)?"
+    r"^\s*(?i:(?P<head>what\s+is|what\s+was|find|show|who\s+is|when\s+is|where\s+is|how\s+much\s+is))\s+(?:the\s+)?"
     r"(?P<entity>[A-Z][^?]{0,100}?)'s\s+"
     r"(?P<label>[A-Za-z][A-Za-z0-9 _-]{0,40})\s*\??\s*$"
 )
 _ENGLISH_OF_ATTRIBUTE_QUESTION = re.compile(
-    r"^\s*(?i:what\s+is|what\s+was|find|show)\s+(?:the\s+)?"
+    r"^\s*(?i:(?P<head>what\s+is|what\s+was|find|show|who\s+is|when\s+is|where\s+is|how\s+much\s+is))\s+(?:the\s+)?"
     r"(?P<label>[A-Za-z][A-Za-z0-9 _-]{0,40})\s+of\s+"
     r"(?P<entity>[A-Z][^?]{0,100}?)\s*\??\s*$"
 )
@@ -509,10 +568,14 @@ def deterministic_query_intent(
         entity = match.group("entity").strip()
         label = _clean_english_attribute_label(match.group("label"))
         if entity and label and not _is_generic_entity_anchor(entity):
+            # #520. The head's expected type rides on the intent so the planner
+            # can refuse a type-mismatched answer instead of asserting VERIFIED;
+            # type-neutral heads map to None and keep the exact prior behaviour.
             return QueryIntent(
                 kind=QueryIntentKind.LOOKUP_OBJECT,
                 subject=IntentTarget("entity", entity),
                 relation_candidates=_attribute_relation_candidates(label),
+                expected_type=_expected_type_for_head(match.group("head")),
             )
 
     match = _ENGLISH_OF_ATTRIBUTE_QUESTION.match(text)
@@ -570,10 +633,15 @@ def deterministic_query_intent(
             # `Sample Project`), and neither keeps the whole entity as the safe
             # failure. A no-op on the unit path (`known_entities` is `None`).
             entity = _resolve_of_entity_tail(entity, known_entities)
+            # #520. Same as the possessive branch: the head's expected type rides
+            # on the intent for the planner's type check. The #521 decline above
+            # deliberately returns kind+reason only (no expected_type), because
+            # unknown_or_unsupported rejects every other field.
             return QueryIntent(
                 kind=QueryIntentKind.LOOKUP_OBJECT,
                 subject=IntentTarget("entity", entity),
                 relation_candidates=_attribute_relation_candidates(label),
+                expected_type=_expected_type_for_head(match.group("head")),
             )
 
     match = _ENGLISH_ENTITY_RELATION_DISCOVERY_QUESTION.match(text)

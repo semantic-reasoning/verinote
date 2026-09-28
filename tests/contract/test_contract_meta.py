@@ -329,8 +329,8 @@ def test_every_module_in_the_directory_is_accounted_for():
     marker, so the parametrized check below forces it out of `CONTRACT_MODULES`,
     and the rule then demands every remaining `test_*` there be entered under
     `PROMOTED_GUARDS` — including
-    `test_deterministic_parser_does_not_resolve_the_role_question`, a control
-    that was never gated and so was never promoted. Measured: the rule names
+    `test_deterministic_parser_admits_and_declines_the_role_question`, a
+    control that was never gated and so was never promoted. Measured: the rule names
     that control alongside the guard actually being promoted. Entering it would
     be a false claim written into a data structure to satisfy an assertion.
 

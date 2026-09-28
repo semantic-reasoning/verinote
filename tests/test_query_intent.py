@@ -650,47 +650,36 @@ and valid in every row, so the head is the only variable separating the current
 members from #433's.
 """
 
-_ENGLISH_POSSESSIVE_HEAD_PROPOSED = {
-    "who is": "Who is Sample Project's owner?",
-    "when is": "When is Sample Project's owner?",
-    "where is": "Where is Sample Project's owner?",
-    "how much is": "How much is Sample Project's owner?",
+_ENGLISH_POSSESSIVE_HEAD_TYPE_BEARING = {
+    "who is": ("Who is Sample Project's owner?", "person"),
+    "when is": ("When is Sample Project's owner?", "date"),
+    "where is": ("Where is Sample Project's owner?", "place"),
+    "how much is": ("How much is Sample Project's owner?", "amount"),
 }
-"""The four heads #433 proposes to admit, over the same fixed possessive part.
-None is admitted on this tree. #520 argues they must not be: each is
-type-bearing (`who` a person, `when` a time, `where` a place, `how much` an
-amount), while `QueryIntentKind.LOOKUP_OBJECT` carries no expected type, so the
-planner answers the relation it finds whatever the interrogative expected. This
-dict is the witness set that #433's widening turns green, and so is what
-reddens it back.
+"""The four type-bearing heads #520 admits, over the same fixed possessive part,
+each with the expected type it carries on the intent. #520's fix is exactly
+this: the heads are admitted (the #433 widening) but the interrogative's type
+rides on `QueryIntent.expected_type`, so the planner can refuse a type-mismatched
+answer instead of asserting it under the strongest label. `person` and `place`
+have no typed-relation verification and are always declined to the model;
+`date` and `amount` verify only against a relation's own typed declaration.
 """
 
 
 def test_the_possessive_head_alternation_is_pinned_at_its_current_members():
-    """The possessive attribute question admits exactly its current four heads.
+    """The possessive attribute question admits all eight heads, typed.
 
-    The head alternation (`what is`, `what was`, `find`, `show`) is the one part
-    of `_ENGLISH_POSSESSIVE_ATTRIBUTE_QUESTION` that #517's pinning (PR #558)
-    deliberately left, because #433 and #520 disagree about what it should be:
-    #433 asks that `who is`, `when is`, `where is`, `how much is` be admitted
-    too, and #520 measures that the widening answers type-bearing questions with
-    the wrong type under the system's strongest label. #559 records that, on the
-    possessive side, the head set was unpinned: widening it reddened nothing in
-    the suite.
+    #559 first pinned the alternation at the four type-neutral heads
+    (`what is`, `what was`, `find`, `show`) and reddened the moment #433's four
+    type-bearing heads (`who is`, `when is`, `where is`, `how much is`) were
+    admitted. #520 resolved the #433/#520 disagreement in favour of admitting
+    them -- but only with the interrogative's expected type riding on
+    `QueryIntent.expected_type`, so the planner refuses a type-mismatched answer
+    instead of asserting it under the system's strongest label.
 
-    This test is the pin #559 asks for. It is a tripwire for #433's widening of
-    the head alternation: the moment any of #433's four heads is admitted, its
-    row stops being `unknown_or_unsupported` and the test reddens. It is not an
-    inert record -- an inert record would stay green across that widening, and
-    this does not. Nor is it a precondition guard for some other boundary: that is
-    what `tests/contract/test_query_intent_contract.py::test_deterministic_parser
-    _does_not_resolve_the_role_question` is, and what reddens today for an
-    unrelated reason.
-
-    It does not itself decide the #433/#520 argument; it makes the widening a
-    visible, deliberate act that updates this test, rather than a silent
-    behaviour change. The positive rows pin the current members from the other
-    side: removing one of them reddens its row.
+    This test now pins the widened set from both sides: removing a type-neutral
+    head reddens its `None` row, and admitting a type-bearing head without its
+    type (or admitting it with a wrong one) reddens its typed row.
 
     Verified against synthetic fixtures only. Refs #559, #433, #520.
     """
@@ -700,11 +689,17 @@ def test_the_possessive_head_alternation_is_pinned_at_its_current_members():
         assert intent.kind == QueryIntentKind.LOOKUP_OBJECT, head
         assert intent.subject == IntentTarget("entity", "Sample Project"), head
         assert intent.relation_candidates == ("owner",), head
+        assert intent.expected_type is None, head
 
-    for head, question in _ENGLISH_POSSESSIVE_HEAD_PROPOSED.items():
+    for head, (question, expected_type) in (
+        _ENGLISH_POSSESSIVE_HEAD_TYPE_BEARING.items()
+    ):
         intent = deterministic_query_intent(question)
 
-        assert intent.kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED, head
+        assert intent.kind == QueryIntentKind.LOOKUP_OBJECT, head
+        assert intent.subject == IntentTarget("entity", "Sample Project"), head
+        assert intent.relation_candidates == ("owner",), head
+        assert intent.expected_type == expected_type, head
 
 
 _ENGLISH_OF_HEAD_CURRENT = {
@@ -718,41 +713,33 @@ member, over the fixed valid `of` part (`the owner of Sample Project`). Same
 literal-not-constant and fixed-part reasoning as the possessive pair above.
 """
 
-_ENGLISH_OF_HEAD_PROPOSED = {
-    "who is": "Who is the owner of Sample Project?",
-    "when is": "When is the owner of Sample Project?",
-    "where is": "Where is the owner of Sample Project?",
-    "how much is": "How much is the owner of Sample Project?",
+_ENGLISH_OF_HEAD_TYPE_BEARING = {
+    "who is": ("Who is the owner of Sample Project?", "person"),
+    "when is": ("When is the owner of Sample Project?", "date"),
+    "where is": ("Where is the owner of Sample Project?", "place"),
+    "how much is": ("How much is the owner of Sample Project?", "amount"),
 }
-"""The four heads #433 proposes to admit, over the same fixed `of` part. None is
-admitted on this tree; #520's type-bearing argument applies to the `of` shape
-the same way it applies to the possessive one.
+"""The four type-bearing heads #520 admits on the `of` shape, each with the
+expected type it carries on the intent -- the same typed widening as the
+possessive pair, since #520's argument applies to both shapes identically.
 """
 
 
 def test_the_of_head_alternation_is_pinned_at_its_current_members():
-    """The `of` attribute question admits exactly its current four heads.
+    """The `of` attribute question admits all eight heads, typed.
 
-    The same pin as
+    The same typed pin as
     `test_the_possessive_head_alternation_is_pinned_at_its_current_members`, for
-    `_ENGLISH_OF_ATTRIBUTE_QUESTION`.
+    `_ENGLISH_OF_ATTRIBUTE_QUESTION`: the four type-neutral heads carry
+    `expected_type=None` (exactly the pre-#520 behaviour), and the four
+    type-bearing heads #520 admits carry their expected type so the planner can
+    refuse a type-mismatched answer.
 
-    It is distinguishable from
-    `tests/contract/test_query_intent_contract.py::test_deterministic_parser_does
-    _not_resolve_the_role_question`, which reddens today for an unrelated reason:
-    that test is a precondition guard whose job is to stop the live/replay
-    provider assertions going vacuous, so a #433 implementer who reddens it is
-    pointed at the provider boundary, not at the head set. This test's subject is
-    the head set: it reddens the moment the alternation is widened to admit any of
-    #433's four heads, and it stays green otherwise.
+    The #521 proper-name decline (`What is the Bank of America?`) still happens
+    before the head is mapped, so a type-bearing head does not change it: see
+    `test_the_type_bearing_of_head_still_declines_a_known_entity_tail`.
 
-    It is a tripwire for #433's widening, not an inert record: an inert record
-    would stay green across that widening, and this reddens it. It does not
-    itself decide the #433/#520 argument; it makes the widening a visible,
-    deliberate act that updates this test. The positive rows pin the current
-    members from the other side: removing one of them reddens its row.
-
-    Verified against synthetic fixtures only. Refs #559, #433, #520.
+    Verified against synthetic fixtures only. Refs #559, #433, #520, #521.
     """
     for head, question in _ENGLISH_OF_HEAD_CURRENT.items():
         intent = deterministic_query_intent(question)
@@ -760,11 +747,116 @@ def test_the_of_head_alternation_is_pinned_at_its_current_members():
         assert intent.kind == QueryIntentKind.LOOKUP_OBJECT, head
         assert intent.subject == IntentTarget("entity", "Sample Project"), head
         assert intent.relation_candidates == ("owner",), head
+        assert intent.expected_type is None, head
 
-    for head, question in _ENGLISH_OF_HEAD_PROPOSED.items():
+    for head, (question, expected_type) in _ENGLISH_OF_HEAD_TYPE_BEARING.items():
         intent = deterministic_query_intent(question)
 
-        assert intent.kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED, head
+        assert intent.kind == QueryIntentKind.LOOKUP_OBJECT, head
+        assert intent.subject == IntentTarget("entity", "Sample Project"), head
+        assert intent.relation_candidates == ("owner",), head
+        assert intent.expected_type == expected_type, head
+
+
+def test_type_bearing_heads_carry_expected_type_under_case_and_space_variants():
+    """The head lookup is case- and spacing-insensitive (#520, critic C1).
+
+    The regex admits the head case-insensitively and with `\\s+` runs, so the
+    matched text can be `WHO IS` or `How  much is`; `_expected_type_for_head`
+    must fold it to the canonical single-spaced lowercase key. Each row below is
+    a type-bearing head in a casing or spacing the table does not list
+    verbatim, and the intent must still carry the head's expected type rather
+    than degrade to `None` -- a silent degrade turns a refused answer back into
+    a type-mismatched VERIFIED one.
+    """
+    rows = (
+        ("WHO IS Sample Project's owner?", "person"),
+        ("When  is Sample Project's owner?", "date"),
+        ("Where is   Sample Project's owner?", "place"),
+        ("How  Much IS Sample Project's owner?", "amount"),
+    )
+    for question, expected_type in rows:
+        intent = deterministic_query_intent(question)
+
+        assert intent.kind == QueryIntentKind.LOOKUP_OBJECT, question
+        assert intent.subject == IntentTarget("entity", "Sample Project"), question
+        assert intent.relation_candidates == ("owner",), question
+        assert intent.expected_type == expected_type, question
+
+
+def test_expected_type_is_advisory_and_vocabulary_checked():
+    """`expected_type` rides on any kind, is held to its closed vocabulary.
+
+    `None` is always legal. A non-null value must be one of the vocabulary's
+    four members on every kind, so a misspelled or invented type is rejected
+    by the validator instead of reaching the planner, and
+    `unknown_or_unsupported` -- the kind that accepts nothing but a reason --
+    rejects it even though the vocabulary itself admits it.
+    """
+    lookup = QueryIntent(
+        kind=QueryIntentKind.LOOKUP_OBJECT,
+        subject=IntentTarget("entity", "Sample Project"),
+        relation_candidates=("owner",),
+        expected_type="person",
+    )
+    assert lookup.expected_type == "person"
+
+    compare = QueryIntent(
+        kind=QueryIntentKind.COMPARE_TYPED_VALUE,
+        subject=IntentTarget("entity", "Sample Project"),
+        relation=IntentTarget("relation", "metric"),
+        operator=">=",
+        value_type="number",
+        value="number(10)",
+        expected_type="amount",
+    )
+    assert compare.expected_type == "amount"
+
+    for kind, kwargs in (
+        (
+            QueryIntentKind.LOOKUP_OBJECT,
+            {
+                "subject": IntentTarget("entity", "Sample Project"),
+                "relation_candidates": ("owner",),
+            },
+        ),
+        (
+            QueryIntentKind.COMPARE_TYPED_VALUE,
+            {
+                "subject": IntentTarget("entity", "Sample Project"),
+                "relation": IntentTarget("relation", "metric"),
+                "operator": ">=",
+                "value_type": "number",
+                "value": "number(10)",
+            },
+        ),
+    ):
+        with pytest.raises(ValueError, match="expected_type"):
+            QueryIntent(kind=kind, expected_type="company", **kwargs)
+
+    with pytest.raises(ValueError, match="unknown_or_unsupported"):
+        QueryIntent(
+            kind=QueryIntentKind.UNKNOWN_OR_UNSUPPORTED,
+            reason="unsupported",
+            expected_type="person",
+        )
+
+
+def test_the_type_bearing_of_head_still_declines_a_known_entity_tail():
+    """#521's proper-name decline precedes the #520 head widening.
+
+    `Bank of America` is a known entity, so `Where is the Bank of America?`
+    must still decline to the model exactly as the type-neutral head does --
+    the `where is` head must not turn the misparse into a `place`-typed lookup
+    of subject `America`, relation `Bank`.
+    """
+    intent = deterministic_query_intent(
+        "Where is the Bank of America?",
+        known_entities=frozenset({"Bank of America"}),
+    )
+
+    assert intent.kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED
+    assert intent.reason
 
 
 def test_generic_korean_attribute_requires_question_shape():

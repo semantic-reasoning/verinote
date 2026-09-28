@@ -2908,3 +2908,124 @@ def test_ask_of_shape_proper_name_with_trailing_predicate_is_not_answered(tmp_pa
     assert result.label == "VERIFIED — engine"
     assert "New York" in result.answer
     assert "First National" not in result.answer
+
+
+class _TypeBearingDeclinerClient:
+    """Consulted only when the deterministic parse plans nothing (#520).
+
+    Reads the type-bearing question as it actually is -- about the referent's
+    attribute, not the relation the engine can see -- and declines to give a
+    single-relation reading, which is what the engine could not settle either.
+    """
+
+    name = "type-bearing-decliner"
+
+    def __init__(self) -> None:
+        self.intent_calls = 0
+
+    def extract_query_intent(self, *, question: str, schema_hint: str = ""):
+        from verinote.pipeline.query_intent import parse_query_intent
+
+        self.intent_calls += 1
+        return parse_query_intent(
+            {
+                "kind": "unknown_or_unsupported",
+                "subject": None,
+                "relation": None,
+                "object": None,
+                "relation_candidates": None,
+                "operator": None,
+                "value_type": None,
+                "value": None,
+                "reason": "the question asks about the referent's attribute, not the named relation",
+            }
+        )
+
+    def translate_query(self, *, question: str, qid: int, schema_hint: str = "") -> str:
+        raise AssertionError("Ask must not call persistent direct Datalog translation")
+
+    def answer_question(self, *, question: str, context: str) -> str:
+        return "UNVERIFIED synthetic: the knowledge base does not hold that attribute."
+
+
+def test_ask_type_bearing_heads_decline_the_wrong_type_fact_to_the_model(tmp_path):
+    """#520 end-to-end tripwire: the wrong-type fact is not asserted VERIFIED.
+
+    The KB holds `('Sample Project', 'owner', 'Alice')`. The four type-bearing
+    heads now parse deterministically, but the `owner` relation carries no
+    typed declaration, so the planner refuses all of them -- `person` and
+    `place` can never verify, and `date`/`amount` find no spec -- and the
+    question reaches the model, which declines to give a single-relation
+    reading. The answer therefore carries the fallback label, and the owner's
+    name is never committed under the system's strongest label.
+
+    If the planner's type check is removed, the engine answers `Alice` under
+    `VERIFIED — engine` for all four questions -- exactly the defect #520
+    records -- and `client.intent_calls` stays 0.
+    """
+    questions = (
+        "Who is Sample Project's owner?",
+        "When is Sample Project's owner?",
+        "Where is Sample Project's owner?",
+        "How much is Sample Project's owner?",
+    )
+    for index, question in enumerate(questions):
+        store = _store(tmp_path / f"kb-{index}")
+        store.add_fact("Sample Project", "owner", "Alice", status="confirmed")
+
+        client = _TypeBearingDeclinerClient()
+        result = ask_question(store, client, root=tmp_path, question=question)
+
+        assert client.intent_calls >= 1, (
+            f"{question!r}: the deterministic path must decline to the model"
+        )
+        assert result.route == "fallback", question
+        assert result.label == "UNVERIFIED — source exploration", question
+        assert "Alice" not in result.answer, question
+
+
+def test_ask_type_bearing_head_of_shape_declines_the_wrong_type_fact_to_the_model(
+    tmp_path,
+):
+    """#520 end-to-end, `of` shape: `Who is the price of Sample Product?`.
+
+    The KB holds `('Sample Product', 'price', '10 USD')`. The `who` head
+    expects a person, the `price` relation declares no typed type, so the
+    planner refuses and the model reads the question -- the amount is not
+    committed under the strongest label as a person's name.
+    """
+    store = _store(tmp_path)
+    store.add_fact("Sample Product", "price", "10 USD", status="confirmed")
+
+    client = _TypeBearingDeclinerClient()
+    result = ask_question(
+        store, client, root=tmp_path, question="Who is the price of Sample Product?"
+    )
+
+    assert client.intent_calls >= 1, "the deterministic path must decline to the model"
+    assert result.route == "fallback"
+    assert result.label == "UNVERIFIED — source exploration"
+    assert "10 USD" not in result.answer
+
+
+def test_ask_type_neutral_head_still_answers_the_same_fact_verified(tmp_path):
+    """#520 positive control: the type-neutral head keeps the VERIFIED answer.
+
+    On the same KB the `what is` reading of the owner relation is exactly the
+    pre-#520 behaviour: the engine answers `Alice` under the strongest label
+    with no provider call. The refusal the four type-bearing heads receive is
+    therefore the type check, not a missing fact.
+    """
+    store = _store(tmp_path)
+    store.add_fact("Sample Project", "owner", "Alice", status="confirmed")
+
+    result = ask_question(
+        store,
+        DeterministicOnlyClient(),
+        root=tmp_path,
+        question="What is Sample Project's owner?",
+    )
+
+    assert result.route == "engine"
+    assert result.label == "VERIFIED — engine"
+    assert "Alice" in result.answer
