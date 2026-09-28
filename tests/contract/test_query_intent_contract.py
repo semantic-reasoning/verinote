@@ -1,14 +1,19 @@
 # SPDX-License-Identifier: MPL-2.0
-"""Contract guards for issue #237: a role question the deterministic parser cannot
-resolve must still yield a valid query intent through the provider and the
-production parse boundary.
+"""Contract guards for issue #237: a role question the deterministic engine
+cannot resolve must still yield a valid query intent through the provider and
+the production parse boundary.
 
-The deterministic parser deliberately returns ``unknown_or_unsupported`` for a
-"who is the CEO of X" question (asserted below as a precondition), so the only
-thing that can turn it into an executable intent is the LLM. A guard that pushes
-a raw intent through ``parse_query_intent`` goes red on any branch where the
-parser rejects it — for example when the model fills ``reason`` on a
-``lookup_object`` intent, the schema the parser rejects.
+#520 widened the deterministic parser to admit the role question (`Who is the
+CEO of Acme Robotics?` is now `lookup_object` carrying `expected_type="person"`,
+asserted below as a precondition), but `person` has no typed-relation
+verification, so the planner declines it: zero candidates (asserted as the
+companion). The only thing that can turn the question into an executable intent
+is therefore still the LLM — the precondition the guard rests on moved from
+"the parser rejects it" to "the parser admits it and the planner yields
+nothing", and both halves are asserted in the default suite below. A guard that
+pushes a raw intent through ``parse_query_intent`` goes red on any branch where
+the model fills ``reason`` on a ``lookup_object`` intent, the schema the
+validator rejects.
 
 The #237 fix is merged, so the replays below run in the **default** suite, and
 neither of them needs a provider, credentials or the network (issue #270).
@@ -47,15 +52,85 @@ def _fixture(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def test_deterministic_parser_does_not_resolve_the_role_question():
-    """Precondition: the deterministic parser hands this question off to the LLM.
+def test_deterministic_parser_admits_and_declines_the_role_question():
+    """Precondition: the deterministic engine cannot answer this question.
 
-    Locks the assumption the whole guard rests on. If the deterministic parser
-    ever starts resolving this, the live/replay assertions below would stop
+    #520 admits the role question to the deterministic parser — `Who is the
+    CEO of Acme Robotics?` is now `lookup_object` carrying
+    `expected_type="person"` — but `person` has no typed-relation verification,
+    so the planner declines it to the model: the same snapshot that holds a
+    `CEO` relation for the subject yields exactly one candidate for the
+    type-neutral reading and zero for the `person` reading, isolating the type
+    check as the only difference. The LLM remains the only thing that can turn
+    the question into an executable intent, which is what the live/replay
+    assertions below exercise. If either half changes, they would stop
     exercising the provider boundary and silently go vacuous.
     """
+    from verinote.pipeline.query_planner import plan_query_candidates
+    from verinote.pipeline.query_schema import (
+        EntityRef,
+        QuerySchemaSnapshot,
+        RelationSchema,
+        TermRef,
+    )
+
     intent = deterministic_query_intent("Who is the CEO of Acme Robotics?")
-    assert intent.kind == QueryIntentKind.UNKNOWN_OR_UNSUPPORTED
+    assert intent.kind == QueryIntentKind.LOOKUP_OBJECT
+    assert intent.expected_type == "person"
+
+    ceo = TermRef(
+        display="CEO", executable='"CEO"', kind="StringLit", key="StringLit:\"CEO\""
+    )
+    company = EntityRef(
+        display="Acme Robotics",
+        executable='"Acme Robotics"',
+        kind="StringLit",
+        key="StringLit:\"Acme Robotics\"",
+        fact_count=1,
+    )
+    snapshot = QuerySchemaSnapshot(
+        relations=(
+            RelationSchema(
+                relation=ceo,
+                canonical_relation="CEO",
+                aliases=(),
+                typed=None,
+                fact_count=1,
+                distinct_subject_count=1,
+                distinct_object_count=1,
+                subjects=(company,),
+                objects=(
+                    EntityRef(
+                        display="Sample Person",
+                        executable='"Sample Person"',
+                        kind="StringLit",
+                        key="StringLit:\"Sample Person\"",
+                        fact_count=1,
+                    ),
+                ),
+                subjects_truncated=False,
+                objects_truncated=False,
+            ),
+        ),
+        relations_truncated=False,
+        relation_aliases=(),
+        typed_relations=(),
+        exact_entity_facts=(),
+        exact_entity_facts_truncated=False,
+        fact_count=1,
+    )
+
+    # the type-bearing reading is declined by the planner
+    assert plan_query_candidates(intent, snapshot, qid=0).candidates == ()
+
+    # the type-neutral reading of the same question still plans: the refusal
+    # above is the type check, not a missing relation or subject
+    neutral = QueryIntent(
+        kind=QueryIntentKind.LOOKUP_OBJECT,
+        subject=intent.subject,
+        relation_candidates=intent.relation_candidates,
+    )
+    assert len(plan_query_candidates(neutral, snapshot, qid=0).candidates) == 1
 
 
 @pytest.mark.contract

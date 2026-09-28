@@ -587,6 +587,38 @@ def _typed_specs_for_canonical_relation(
     }
 
 
+def _expected_type_verified(
+    relation_display: str,
+    expected_type: str | None,
+    snapshot: QuerySchemaSnapshot,
+    aliases: dict[str, str],
+) -> bool:
+    """Whether the relation's typed spec positively verifies the expected type.
+
+    #520. A `lookup_object` intent carries the interrogative's expected type
+    (`QueryIntent.expected_type`). The engine may assert a VERIFIED answer for
+    a type-bearing question only when it can positively verify the answer's
+    type, and the one verification it has is the relation's typed declaration:
+    the relation must resolve to exactly one typed spec whose type equals the
+    expected type.
+
+    `None` (a type-neutral head) is always verified -- that is the pre-#520
+    behaviour and the positive control. `person` and `place` can never verify:
+    they are not in the typed-relation vocabulary (see
+    `corroboration._TYPED_TYPES` = date/number/ordinal/amount), so no spec can
+    match them and those candidates are declined to the model. That is the safe
+    direction: the model reads the question at a lower trust label instead of
+    the engine asserting a type it cannot check.
+    """
+    if expected_type is None:
+        return True
+    if expected_type in ("person", "place"):
+        return False
+    canonical = _nfc(canonical_relation(relation_display, aliases))
+    specs = _typed_specs_for_canonical_relation(canonical, snapshot, aliases)
+    return len(specs) == 1 and next(iter(specs)).type == expected_type
+
+
 def _parse_exact_typed_scalar(
     type_tag: str, raw: str, units: dict[str, int]
 ) -> Decimal | int | datetime.date | None:
@@ -1094,7 +1126,15 @@ def _lookup_object_candidates(
     if intent.subject is None:
         return ()
     candidates: list[QueryCandidate] = []
+    aliases = _snapshot_relation_aliases(snapshot)
     for relation in _matching_relations(intent, snapshot):
+        # #520. A type-bearing head (who/when/where/how much) is answered by the
+        # engine only when this relation positively verifies the expected type;
+        # a type-neutral head (expected_type=None) keeps the exact prior behaviour.
+        if not _expected_type_verified(
+            relation.relation.display, intent.expected_type, snapshot, aliases
+        ):
+            continue
         for subject in _matching_entities(relation.subjects, intent.subject.value):
             query_dl = _query_dl(
                 qid,
@@ -1194,12 +1234,19 @@ def _lookup_object_exact_fact_candidates(
     if intent.subject is None:
         return []
     candidates: list[QueryCandidate] = []
+    aliases = _snapshot_relation_aliases(snapshot)
     for fact in snapshot.exact_entity_facts:
         if fact.matched_side not in {"subject", "both"}:
             continue
         if not _entity_ref_matches(fact.subject, intent.subject.value):
             continue
         if not _fact_relation_matches_any(fact, intent, snapshot):
+            continue
+        # #520. Same per-candidate rule as the relation-driven branch: the issue's
+        # wrong-type examples are exact-fact rows, so the refusal must apply here.
+        if not _expected_type_verified(
+            fact.relation.display, intent.expected_type, snapshot, aliases
+        ):
             continue
         candidates.append(
             QueryCandidate(

@@ -1366,3 +1366,214 @@ def test_typed_comparison_type_mismatch_aborts_instead_of_returning_no_answer():
     assert plan.candidates == ()
     assert plan.no_answer is False
     assert plan.reason == "typed comparison relation has incompatible typed spec"
+
+
+# --- #520: the planner refuses a type-bearing head it cannot verify ---
+
+
+def test_lookup_object_type_bearing_head_refused_when_relation_unverified():
+    """#520: a type-bearing head is declined when the relation cannot verify it.
+
+    The intent carries the interrogative's expected type (`person` for `who`).
+    `person` has no typed-relation verification, so the planner must refuse the
+    relation it would otherwise answer -- rather than assert it under the
+    strongest label -- leaving the candidate plan empty so the question falls
+    through to the model.
+    """
+    project = _entity("Sample Project", '"Sample Project"')
+    snapshot = _snapshot(
+        _relation(
+            "owner",
+            '"owner"',
+            subjects=(project,),
+            objects=(_entity("Alice", '"Alice"'),),
+        ),
+    )
+
+    for expected_type in ("person", "place"):
+        intent = QueryIntent(
+            kind=QueryIntentKind.LOOKUP_OBJECT,
+            subject=IntentTarget("entity", "Sample Project"),
+            relation_candidates=("owner",),
+            expected_type=expected_type,
+        )
+        plan = plan_query_candidates(intent, snapshot, qid=1)
+        assert plan.candidates == (), expected_type
+
+
+def test_lookup_object_type_neutral_head_keeps_the_prior_behaviour():
+    """#520 positive control: `expected_type=None` answers exactly as before.
+
+    A type-neutral head (`what is`) carries `None`, which is always verified.
+    The relation the type-bearing head was refused for is still answered here,
+    so the refusal above is the type check and not a missing relation.
+    """
+    project = _entity("Sample Project", '"Sample Project"')
+    snapshot = _snapshot(
+        _relation(
+            "owner",
+            '"owner"',
+            subjects=(project,),
+            objects=(_entity("Alice", '"Alice"'),),
+        ),
+    )
+    intent = QueryIntent(
+        kind=QueryIntentKind.LOOKUP_OBJECT,
+        subject=IntentTarget("entity", "Sample Project"),
+        relation_candidates=("owner",),
+        expected_type=None,
+    )
+
+    plan = plan_query_candidates(intent, snapshot, qid=2)
+
+    assert [candidate.relation_display for candidate in plan.candidates] == ["owner"]
+
+
+def test_lookup_object_verifiable_head_kept_when_relation_declares_the_type():
+    """#520: `amount` verifies when the relation declares exactly `amount`.
+
+    The one verification the engine has is the relation's typed declaration. A
+    `how much` head (`amount`) is answered when the relation resolves to exactly
+    one typed spec of the same type, and refused when that declaration is absent
+    or of a different type.
+    """
+    product = _entity("Sample Product", '"Sample Product"')
+    typed = _snapshot(
+        _relation(
+            "price",
+            '"price"',
+            subjects=(product,),
+            objects=(_entity("10 USD", '"10 USD"'),),
+            typed=TypedRelationEntry("price", "amount", "price_scalar"),
+        ),
+    )
+    untyped = _snapshot(
+        _relation(
+            "price",
+            '"price"',
+            subjects=(product,),
+            objects=(_entity("10 USD", '"10 USD"'),),
+        ),
+    )
+    wrong_type = _snapshot(
+        _relation(
+            "price",
+            '"price"',
+            subjects=(product,),
+            objects=(_entity("10 USD", '"10 USD"'),),
+            typed=TypedRelationEntry("price", "number", "price_scalar"),
+        ),
+    )
+
+    def plan(snapshot_, expected_type, qid):
+        intent = QueryIntent(
+            kind=QueryIntentKind.LOOKUP_OBJECT,
+            subject=IntentTarget("entity", "Sample Product"),
+            relation_candidates=("price",),
+            expected_type=expected_type,
+        )
+        return plan_query_candidates(intent, snapshot_, qid=qid)
+
+    assert [c.relation_display for c in plan(typed, "amount", 3).candidates] == ["price"]
+    assert plan(untyped, "amount", 4).candidates == ()
+    assert plan(wrong_type, "amount", 5).candidates == ()
+
+
+def test_lookup_object_refusal_applies_per_candidate():
+    """#520 (critic C6): verification is per candidate, not per intent.
+
+    Two relation candidates, exactly one of which declares the expected type.
+    The verified candidate is kept and the unverified one dropped -- a blanket
+    per-intent refusal would drop both, and a per-intent acceptance would keep
+    both.
+    """
+    company = _entity("Synthetic Company", '"Synthetic Company"')
+    snapshot = _snapshot(
+        _relation(
+            "revenue",
+            '"revenue"',
+            subjects=(company,),
+            objects=(_entity("100", '"100"'),),
+            typed=TypedRelationEntry("revenue", "amount", "revenue_scalar"),
+        ),
+        _relation(
+            "owner",
+            '"owner"',
+            subjects=(company,),
+            objects=(_entity("Alice", '"Alice"'),),
+        ),
+    )
+    intent = QueryIntent(
+        kind=QueryIntentKind.LOOKUP_OBJECT,
+        subject=IntentTarget("entity", "Synthetic Company"),
+        relation_candidates=("revenue", "owner"),
+        expected_type="amount",
+    )
+
+    plan = plan_query_candidates(intent, snapshot, qid=6)
+
+    assert [c.relation_display for c in plan.candidates] == ["revenue"]
+
+
+def test_lookup_object_exact_fact_refused_for_type_bearing_head():
+    """#520: the refusal reaches the exact-fact branch, not only relations.
+
+    The issue's wrong-type answers (`Where/When/How much is Sample Project's
+    owner?` answering the owner's name) are exact-fact rows, so the filter must
+    apply to `_lookup_object_exact_fact_candidates` too: the same fact that the
+    type-neutral head answers is refused for a type-bearing one.
+    """
+    snapshot = _snapshot_with_exact(
+        exact_facts=(
+            _fact(
+                _term("Sample Project", '"Sample Project"'),
+                _term("owner", '"owner"'),
+                _term("Alice", '"Alice"'),
+                matched_entity="Sample Project",
+                matched_side="subject",
+            ),
+        ),
+    )
+
+    def plan(expected_type, qid):
+        intent = QueryIntent(
+            kind=QueryIntentKind.LOOKUP_OBJECT,
+            subject=IntentTarget("entity", "Sample Project"),
+            relation_candidates=("owner",),
+            expected_type=expected_type,
+        )
+        return plan_query_candidates(intent, snapshot, qid=qid)
+
+    for expected_type in ("person", "place", "amount"):
+        assert plan(expected_type, 7).candidates == (), expected_type
+
+    neutral = plan(None, 8)
+    assert [c.relation_display for c in neutral.candidates] == ["owner"]
+
+
+def test_lookup_object_exact_fact_kept_when_type_declared():
+    """#520: an exact fact verifies when its relation declares the expected type."""
+    snapshot = _typed_exact_snapshot(
+        (
+            _fact(
+                _term("Sample Product", '"Sample Product"'),
+                _term("price", '"price"'),
+                _term("10 USD", '"10 USD"'),
+                matched_entity="Sample Product",
+                matched_side="subject",
+            ),
+        ),
+        typed=(TypedRelationEntry("price", "amount", "price_scalar"),),
+    )
+
+    def plan(expected_type, qid):
+        intent = QueryIntent(
+            kind=QueryIntentKind.LOOKUP_OBJECT,
+            subject=IntentTarget("entity", "Sample Product"),
+            relation_candidates=("price",),
+            expected_type=expected_type,
+        )
+        return plan_query_candidates(intent, snapshot, qid=qid)
+
+    assert [c.relation_display for c in plan("amount", 9).candidates] == ["price"]
+    assert plan("person", 10).candidates == ()
