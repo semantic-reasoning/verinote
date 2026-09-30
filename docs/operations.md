@@ -133,6 +133,79 @@ a forged request is a single unnecessary sheet read. That is the right mental mo
 for the feature: it is a controlled webhook endpoint for a form editor, not a public
 admin API.
 
+## Google Forms: connect, reconnect, recover (#476–#487)
+
+Form Sync (#476–#487) reads a form’s **response sheet** on a
+schedule and from the CLI. This page is the standing-state reference —
+what each state a form can be in means, and the fix for each. The credential
+setup lives in [configuration.md](configuration.md#google-forms-response-sheet-sync-credentials-476-487).
+
+### The command surface
+
+```bash
+verinote forms list                 # every registered form + its last check state (read-only)
+verinote forms add <sheet-url>      # register: open the Form, choose View responses, copy the Sheets URL
+verinote forms remove <id>          # by row id (what `forms list` prints) or by sheet id
+verinote forms sync                 # check every enabled form now, and extract what is new
+verinote forms sync <id>            # check one by row id or sheet id — even a disabled one
+```
+
+`verinote status` carries the standing count: `forms: 2 registered, 1 need
+attention`, where "need attention" is the forms whose last check ended in a
+state that needs a user action.
+
+### The four states, and the fix for each
+
+| `forms list` state | Meaning | Fix |
+|---|---|---|
+| `healthy` | the last check succeeded (or none has failed) | — |
+| `token_expired` | the stored Google connection is missing, broken, or expired | a fresh grant for the same account. The interactive consent flow that creates one is [#484](https://github.com/semantic-reasoning/verinote/issues/484) — **not shipped in this release** — so until it lands there is no in-product way to mint one; the row stays `token_expired` (remove it with `verinote forms remove` if you want it gone) |
+| `sheet_forbidden` | the connected Google account cannot read the sheet | share the response sheet with that account in Google Drive — the account is the `email` in `google_oauth.json` |
+| `sheet_not_found` | the sheet was deleted or moved | `verinote forms remove <id>`, then `verinote forms add` with the sheet’s new URL |
+
+`token_expired` is the state of a *broken or absent connection*;
+`sheet_forbidden` and `sheet_not_found` are states of the *sheet*. All three
+are closed states — they persist until the fix lands, and the next check
+re-records them.
+
+### Transient failures are not states
+
+A 429 or an infrastructure error records **no** closed state: the watermark
+stays where it was (the same rows are re-read on the retry), a 60-second
+backoff is scheduled (`next_check_at`), and `last_error_kind` stays
+`healthy`’s `NULL`. `verinote forms sync` reports it and exits 1:
+`check failed (transient) — backing off until <time>`. The backoff
+survives a restart, and the next scheduled check after it re-reads the sheet.
+
+### Edited responses are not re-fetched
+
+The watermark is a **row position** in the response sheet: a check reads the
+rows past the last read position. A respondent editing an earlier row does
+not move that position, so the edit is not re-read. The position is
+deliberately allowed to move **down**: if rows are deleted and added again,
+the new rows re-arrive and are re-read, instead of a high-water mark skipping
+them forever. (If you need the edited values, remove the registration —
+`verinote forms remove <id>` — and add it again: a fresh
+registration starts at position zero, and the same sheet id cannot be
+registered twice at once.)
+
+### A failed extraction still consumed the batch
+
+When a check reads new responses, they become an **immutable source**
+(`sources/form-<SHEET-ID>-<stamp>.txt`) and an extraction job. If the
+extraction then fails, `forms sync` exits 1 and names the batch — the
+watermark has already advanced (the *read* succeeded), so the batch is
+consumed, not lost: re-analyse it with `verinote sync <path>` or retry the
+job in `verinote ui`. Nothing is re-fetched from Google for that; the bytes
+are in `sources/`.
+
+### Disabled forms
+
+A disabled form is skipped by the scheduled checks and by a bare
+`verinote forms sync`; naming it explicitly (`verinote forms sync <id>`) is a
+direct order and still runs. Disabling is a pause on the schedule, not a
+delete — the registration and its watermark survive.
+
 ## Windows: don't launch verinote from an elevated terminal
 
 Opening a KB root the process cannot write to fails with `sqlite3.OperationalError:

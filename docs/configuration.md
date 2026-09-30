@@ -304,6 +304,87 @@ it". A forged payload still has a bounded impact: the worst realistic outcome is
 one unnecessary sheet read, not full KB compromise. Document that plainly so the
 risk is scaled to the actual exposure.
 
+## Google Forms: response-sheet sync credentials (#476–#487)
+
+Form Sync reads a form’s **response sheet** — not the form — with a
+Google OAuth connection. That connection lives **outside every KB**, in the
+same machine-local app config directory as `app.json` and `credentials.json`
+(Windows `%APPDATA%\verinote`, macOS `~/Library/Application
+Support/verinote`, Linux/Unix `${XDG_CONFIG_HOME:-~/.config}/verinote`):
+
+- **`google_oauth_client.json`** — your OAuth **client id**. Per #483
+  (option ⓑ) the client belongs to **your own GCP project**: verinote
+  ships none and brokers none, and it stores only the `client_id` — the
+  client secret is never held by verinote, and the refresh request sends no
+  secret, only `grant_type`, `client_id`, `refresh_token`, and `scope`.
+- **`google_oauth.json`** — the grant for **one Google account**: its
+  `refresh_token`, `email`, `scopes`, and a `version`. One account per file:
+  a second account is a fresh grant, not a second row in the same file. The
+  `refresh_token` is kept out of every `repr`, log line, and error message,
+  the same discipline as `Config.api_key`.
+
+Both files are written with mode `0600`, and the directory is git-ignored by
+verinote, so a KB copied or shared stays credential-free and the connection
+never rides along with one.
+
+The split matches how Google uses the two. The client id identifies *your*
+OAuth app at Google’s token endpoint; the grant is the *account* whose
+Drive the response sheet must be shared with. On every check verinote
+exchanges the refresh token for a short-lived access token, and — because
+Google rotates refresh tokens, making the old one dead on rotation — a
+rotated token is saved back to `google_oauth.json` **before** the check
+records its outcome. Dropping it would turn a healthy connection into next
+check’s `invalid_grant`.
+
+The one-time setup for option ⓑ is in your own Google Cloud project:
+enable the **Google Sheets API**, create an **OAuth client ID** (a desktop
+app is the natural shape) with the read-only Sheets scope, and take the
+`client_id` from the JSON Google hands you.
+
+> **Where the connect flow stands (as of this release).** The interactive
+> consent flow that mints the initial grant is
+> [#484](https://github.com/semantic-reasoning/verinote/issues/484), and the
+> web integrations panel (connect/disconnect screens) is
+> [#481](https://github.com/semantic-reasoning/verinote/issues/481) —
+> both are still open. What this release ships is the credential model above,
+> the read/refresh/persist machinery that consumes it, and the registration
+> and check commands (below). Nothing in this build creates the initial
+> grant — the check worker only *persists rotated* tokens — so a
+> missing `google_oauth.json` is the expected "not connected" state, and a
+> check of a registered form reports `token_expired` until a grant is in
+> place.
+
+## Register and check (CLI)
+
+The commands below are what this release ships for Form Sync. Register the
+form’s response sheet — open the Form, choose **View responses**,
+and copy the Google Sheets URL it opens:
+
+```bash
+verinote forms add https://docs.google.com/spreadsheets/d/<SHEET-ID>/edit
+verinote forms list                # id, name, sheet, enabled, watermark, state
+verinote forms sync                # check every enabled form now, extract new responses
+verinote forms sync <id>           # check one by row id or sheet id (even a disabled one)
+verinote forms remove <id>
+```
+
+`verinote forms add` takes the **response sheet**’s URL, not the
+form’s: a `docs.google.com/forms/...` URL is refused with a pointer to
+**View responses**, and anything else that is not a Sheets URL is refused
+with the expected shape. The sheet id becomes the registration’s
+identity (a second registration of the same sheet is refused — the same
+responses must not candidate facts twice); the display name defaults to the
+sheet id and `--name` overrides it. `forms list` and `status` are read-only:
+they work on a halted KB and on a KB that predates the form tables, degrading
+to `forms: not yet migrated -- run any verinote write command once to
+migrate` instead of failing. `add`, `remove`, and `sync` are writers: on a
+halted KB they are refused before dispatch (rc 2) and change nothing.
+
+`verinote status` reports the standing state on one line —
+`forms: 2 registered, 1 need attention` — where "need attention"
+counts the forms whose last check ended in a state that needs a user action
+(`token_expired`, `sheet_forbidden`, `sheet_not_found`).
+
 ## Auto-accept
 
 `auto_accept_recommendations` is the one setting that changes what verinote
