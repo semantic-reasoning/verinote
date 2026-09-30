@@ -23,6 +23,38 @@ Because the mirrors are lossy, the sidecar is data and not a cache — losing it
 an unrecoverable failure, not a rebuild. See
 [operations.md](operations.md#factsduckdb-is-data-not-a-cache).
 
+## Form responses as sources
+
+A Form Sync check turns one batch of new response rows into **one immutable
+source** — `sources/form-<SHEET-ID>-<stamp>.txt` — and hands it to the existing
+chunked extraction pipeline. There is no separate "form" extraction path: the
+batch is a source exactly like an ingested document, so review, corroboration,
+verification, and provenance all treat it the same.
+
+The one-source-per-batch split is the audit trail: a fact can be traced to
+the *exact batch* it came from, and the batch survives in `sources/` byte for
+byte even if its extraction later fails (re-analyse with `verinote sync
+<path>`). An empty batch materialises nothing — no source row, no job — and a
+citation collision is refused before any side effect, because
+`Store.add_source` upserts by path and a second batch on the same path would
+silently overwrite a source row whose candidates a human may already have
+judged.
+
+Two invariants keep the Google side honest:
+
+- **Single caller per grant.** The credential capture, the token refresh, the sheet read, and
+  the rotated-token persist are one critical section under one lock (the
+  worker's `sheet_lock`; the CLI holds one lock for the whole command).
+  Google rotates refresh tokens, so two concurrent readers of the same grant
+  would each capture the pre-rotation token, and the loser would die with an
+  `invalid_grant` that looks exactly like expiry. Serialising them, and
+  persisting the rotated token *inside* the section, is what makes "the
+  stored token is the live one" true across checks.
+- **Non-monotonic watermark.** The watermark is a row *position*, not a high
+  water mark: it may move down when rows are deleted, and that is intended —
+  the returning rows must be re-read, and a monotonic mark would skip them
+  forever.
+
 ## Term typing
 
 Plain extractor output remains `StringLit` by default, so text such as
