@@ -736,3 +736,61 @@ def test_secrets_never_reach_the_exception_surfaces(monkeypatch, script):
 
     _no_secret(err.value)
     assert err.value.live_refresh_token in (None, ROTATED)
+
+
+# --- #487: the URL -> sheet_id parser `verinote forms add` rides on ----------
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://docs.google.com/spreadsheets/d/sample_sheet_1",
+        "https://docs.google.com/spreadsheets/d/sample_sheet_1/edit",
+        "https://docs.google.com/spreadsheets/d/sample_sheet_1/view",
+        "https://docs.google.com/spreadsheets/d/sample_sheet_1/htmlview",
+        "http://docs.google.com/spreadsheets/d/sample_sheet_1",
+        "https://www.docs.google.com/spreadsheets/d/sample_sheet_1/edit",
+        "https://docs.google.com/spreadsheets/d/sample_sheet_1?gid=12345",
+        "https://docs.google.com/spreadsheets/d/sample_sheet_1?usp=sharing",
+        "https://docs.google.com/spreadsheets/d/sample_sheet_1#gid=12345",
+        "https://docs.google.com/spreadsheets/d/sample_sheet_1/",
+        "https://docs.google.com/spreadsheets/u/1/d/sample_sheet_1/edit",
+    ],
+)
+def test_sheet_id_from_url_accepts_the_response_sheet_shapes(url):
+    # The one URL a user copies is the response sheet's, with whatever Google
+    # appends; the id out is the same, validated segment.
+    assert gs.sheet_id_from_url(url) == "sample_sheet_1"
+
+
+def test_sheet_id_from_url_rejects_a_forms_url_with_the_view_responses_pointer():
+    # The common mis-copy is the FORM's own URL. The refusal must point at
+    # where the response sheet is, and must not read as "wrong input".
+    for url in (
+        "https://docs.google.com/forms/d/sample_form_1/viewform",
+        "https://docs.google.com/forms/d.e/sample_form_1/entry.1",
+    ):
+        with pytest.raises(ValueError) as err:
+            gs.sheet_id_from_url(url)
+        msg = str(err.value)
+        assert "response sheet" in msg
+        assert "View responses" in msg
+        assert "wrong" not in msg
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://docs.google.com/document/d/sample_doc_1/edit",
+        "https://docs.google.com/spreadsheets/t/sample_team_1",
+        "https://example.com/spreadsheets/d/sample_sheet_1",
+        "not a url",
+        "https://docs.google.com/spreadsheets/d/",
+    ],
+)
+def test_sheet_id_from_url_rejects_non_sheet_urls(url):
+    # Anything that is not a docs.google.com response sheet is the expected-
+    # shape refusal, whatever it happens to look like.
+    with pytest.raises(ValueError) as err:
+        gs.sheet_id_from_url(url)
+    assert "response-sheet URL" in str(err.value)

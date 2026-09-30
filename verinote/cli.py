@@ -1270,6 +1270,374 @@ def cmd_ingest(cfg: Config, args: argparse.Namespace) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# #487: `verinote forms` — the registration path and the synchronous check of
+# Form Sync (#476-#481).
+#
+# `forms list` (and the `status` line) are read-only, halt-safe, and never
+# migrate. `add`, `remove`, and `sync` are writers declared `halt_safe=False`,
+# so `main` refuses them on a halted KB before dispatch. `forms sync` reuses
+# the #479 worker (`_run_form_check`) — the one answer for the gates, the
+# error mapping, and the rotation persist — with `read=None` (the production
+# sheet client) and a `start_extraction` closure that runs
+# `process_extraction_job` in this process, so the exit code reflects the
+# check and its extraction, not just the sheet read.
+# ---------------------------------------------------------------------------
+
+
+def _form_sources_present(conn: sqlite3.Connection) -> bool:
+    """Whether this KB file has the `form_sources` table at all (#477)."""
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='form_sources'"
+        ).fetchone()
+        is not None
+    )
+
+
+def cmd_forms_list(cfg: Config, args: argparse.Namespace) -> int:
+    """List registered forms and their last check state (read-only)."""
+    refusal = _require_existing_kb(cfg)
+    if refusal is not None:
+        return refusal
+    try:
+        return _forms_list(cfg)
+    except (sqlite3.DatabaseError, TypeError, ValueError) as exc:
+        return _unusable_kb(cfg, exc)
+
+
+def _forms_list(cfg: Config) -> int:
+    conn = _read_only_conn(cfg)
+    try:
+        if not _form_sources_present(conn):
+            # `form_sources` arrived in #477 and is not a core table, so a KB
+            # that predates it passes `_kb_schema_problem` without it. Degrade
+            # the way `_print_unreached_ro` does: report, and do not migrate —
+            # this path opened the file read-only and must leave it that way.
+            print(
+                "forms: not yet migrated -- run any verinote write command "
+                "once to migrate"
+            )
+            return 0
+        rows = conn.execute(
+            "SELECT id, name, sheet_id, enabled, watermark, last_checked_at, "
+            "next_check_at, last_error_kind FROM form_sources ORDER BY id"
+        ).fetchall()
+        if not rows:
+            print(
+                "forms: none registered -- add one with "
+                "`verinote forms add <sheet-url>`"
+            )
+            return 0
+        for row in rows:
+            print(
+                f"  {row['id']}  {row['name']}  sheet={row['sheet_id']}  "
+                f"enabled={'yes' if row['enabled'] else 'no'}  "
+                f"watermark={row['watermark'] or 'never'}  "
+                f"last_checked={row['last_checked_at'] or 'never'}  "
+                f"next_check={row['next_check_at'] or '-'}  "
+                f"state={row['last_error_kind'] or 'healthy'}"
+            )
+        return 0
+    finally:
+        conn.close()
+
+
+def cmd_forms_add(cfg: Config, args: argparse.Namespace) -> int:
+    """Register a form's response sheet by its Google Sheets URL."""
+    from verinote.google_sheets import sheet_id_from_url
+
+    store = _store(cfg)
+    try:
+        try:
+            sheet_id = sheet_id_from_url(args.sheet_url)
+        except ValueError as exc:
+            # A mis-copied URL. The two `sheet_id_from_url` messages each name
+            # their own fix (the Form itself vs the expected shape), so this
+            # clause only carries them.
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        name = args.name if args.name else sheet_id
+        try:
+            form_id = store.add_form_source(sheet_id, name)
+        except ValueError:
+            # Duplicate sheet_id: `add_form_source` refuses it by design
+            # (#477) — the same responses must not candidate facts twice.
+            # A separate clause on purpose: both calls raise `ValueError`, and
+            # the ORDER of these try blocks is the distinction, not a message
+            # sniff.
+            print(
+                f"error: form for sheet {sheet_id} is already registered "
+                "-- see `verinote forms list`",
+                file=sys.stderr,
+            )
+            return 2
+        print(f"added form {form_id}: {sheet_id} (name: {name})")
+        return 0
+    finally:
+        store.close()
+
+
+def _find_form_by_arg(store: Store, arg: str):
+    """A form row by its row id or its sheet_id, whichever the argument names.
+
+    An all-digit argument tries the row id first — that is the number
+    `forms list` prints — and a sheet_id that happens to be all digits is
+    still found on the second lookup; a non-digit argument only ever was a
+    sheet id.
+    """
+    if arg.isdigit():
+        form = store.get_form_source(int(arg))
+        if form is not None:
+            return form
+    return store.get_form_source_by_sheet_id(arg)
+
+
+def cmd_forms_remove(cfg: Config, args: argparse.Namespace) -> int:
+    """Remove a registered form by its row id or sheet_id."""
+    store = _store(cfg)
+    try:
+        form = _find_form_by_arg(store, args.id)
+        if form is None:
+            print(
+                f"no form matching '{args.id}' (id or sheet_id); "
+                "see `verinote forms list`",
+                file=sys.stderr,
+            )
+            return 2
+        store.delete_form_source(int(form["id"]))
+        print(f"removed form {form['id']}: {form['sheet_id']}")
+        return 0
+    finally:
+        store.close()
+
+
+def _extraction_schema_hint(cfg: Config) -> str:
+    """`cfg.extraction_schema_hint()` with `cmd_sync`'s normalisation.
+
+    `render_prompt` reads `policy/prompts/*` off disk, so an override the
+    user saved and then made unreadable arrives as whatever `Path.read_text`
+    raised; both failure shapes become `LLMError` exactly as `cmd_sync`'s
+    closure does, so `forms sync` and `sync` cannot diagnose the same broken
+    prompt differently. `cmd_sync`'s closure is left untouched; this is the
+    shared shape it mirrors.
+    """
+    from verinote.llm import LLMError
+    from verinote.prompts import PromptError
+
+    try:
+        return cfg.extraction_schema_hint()
+    except PromptError as exc:
+        raise LLMError(str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - normalise every render failure
+        # Name the prompt: `str(UnicodeDecodeError)` names no file at all.
+        raise LLMError(
+            f"prompt extraction-limit-hint could not be loaded: {exc}"
+        ) from exc
+
+
+def _report_form_outcome(store: Store, form_id: int, captures: dict) -> int:
+    """The per-form `forms sync` line and its exit-code contribution.
+
+    The recorded row is judged first — the worker's own verdict — then the
+    extraction capture, because the worker records a CLEAN row before it
+    starts extraction: a chunk-level extraction failure leaves
+    `last_error_kind=NULL` with the watermark already advanced, so the row
+    alone would report a consumed batch as success (rc=0, never retried).
+    The captured `ChunkedExtractionResult` is where that failure is visible;
+    it is judged like `cmd_sync` judges `failed_chunks` — rc=1, the job and
+    the re-analysis paths named — never folded into rc=0.
+    """
+    form = store.get_form_source(form_id)
+    if form is None:
+        # Deleted underfoot mid-command; nothing to report as a failure.
+        print(f"form {form_id}: no longer registered")
+        return 0
+    kind = form["last_error_kind"]
+    if kind == "token_expired":
+        print(
+            f"form {form_id} ({form['sheet_id']}): token expired -- the "
+            "Google connection needs a fresh grant; reconnect it (see "
+            "docs/operations.md)",
+            file=sys.stderr,
+        )
+        return 1
+    if kind == "sheet_forbidden":
+        print(
+            f"form {form_id} ({form['sheet_id']}): the connected Google "
+            "account cannot read that sheet -- grant it access in Google "
+            "Drive (see docs/operations.md)",
+            file=sys.stderr,
+        )
+        return 1
+    if kind == "sheet_not_found":
+        print(
+            f"form {form_id} ({form['sheet_id']}): the sheet is gone or was "
+            "moved -- copy its URL again with `verinote forms add` (see "
+            "docs/operations.md)",
+            file=sys.stderr,
+        )
+        return 1
+    if form["next_check_at"] is not None:
+        # kind NULL with a backoff set: a transient failure the worker
+        # scheduled for later.
+        print(
+            f"form {form_id} ({form['sheet_id']}): check failed (transient) "
+            f"-- backing off until {form['next_check_at']}",
+            file=sys.stderr,
+        )
+        return 1
+    # A clean row: no sheet-side failure, no backoff. What happened to the
+    # batch is in the capture — or in its absence, when the read found
+    # nothing new (an empty batch materialises no source and no job).
+    if "job" not in captures:
+        watermark = form["watermark"]
+        since = f" since watermark {watermark}" if watermark else ""
+        print(
+            f"form {form_id} ({form['sheet_id']}): up to date "
+            f"(no new responses{since})"
+        )
+        return 0
+    tag, value = captures["job"]
+    if tag == "busy":
+        print(
+            f"form {form_id} ({form['sheet_id']}): new responses "
+            f"materialised; extraction job #{value.job_id} is already "
+            "running (another process owns it)"
+        )
+        return 0
+    result = value
+    if result.failed_chunks:
+        source_path = ""
+        job = store.get_extraction_job(result.job_id)
+        if job is not None and job["source_id"] is not None:
+            source = store.get_source(int(job["source_id"]))
+            if source is not None:
+                source_path = str(source["path"])
+        if source_path:
+            tail = (
+                f" -- the batch is source {source_path}: re-analyse it with "
+                f"`verinote sync {source_path}` or retry it in `verinote ui`"
+            )
+        else:
+            tail = " -- retry it in `verinote ui`"
+        print(
+            f"form {form_id} ({form['sheet_id']}): extraction job "
+            f"#{result.job_id} failed -- {result.failed_chunks} chunk(s) "
+            f"failed{tail}",
+            file=sys.stderr,
+        )
+        return 1
+    print(
+        f"form {form_id} ({form['sheet_id']}): {result.run_candidates} "
+        f"candidate(s) from extraction job #{result.job_id} -- review at "
+        "`verinote ui`"
+    )
+    return 0
+
+
+def cmd_forms_sync(cfg: Config, args: argparse.Namespace) -> int:
+    """Check one (or every enabled) registered form now, and extract it."""
+    import threading
+
+    from verinote.llm import LLMError
+    from verinote.pipeline import (
+        ExtractionJobBusyError,
+        process_extraction_job,
+    )
+    from verinote.pipeline.policy_state import PolicyMissingError
+    from verinote.web.app import _run_form_check
+
+    store = _store(cfg)
+    try:
+        if args.id is not None:
+            form = _find_form_by_arg(store, args.id)
+            if form is None:
+                print(
+                    f"no form matching '{args.id}' (id or sheet_id); "
+                    "see `verinote forms list`",
+                    file=sys.stderr,
+                )
+                return 2
+            # An explicit check is a direct order: it runs even for a
+            # disabled form, whose pause applies to the scheduled checks.
+            forms = [form]
+        else:
+            all_forms = store.form_sources()
+            if not all_forms:
+                print(
+                    "no forms registered -- add one with "
+                    "`verinote forms add <sheet-url>`",
+                    file=sys.stderr,
+                )
+                return 1
+            forms = [f for f in all_forms if f["enabled"]]
+            if not forms:
+                print(
+                    "all registered forms are disabled -- re-enable one to "
+                    "resume checks, or check one explicitly: "
+                    "`verinote forms sync <id>`",
+                    file=sys.stderr,
+                )
+                return 1
+
+        # The worker's lock exists for its internal critical section
+        # (contract #3: capture + refresh + persist is one unit). This
+        # process is the only caller in it, so one lock for the whole
+        # command is all the worker asks for.
+        sheet_lock = threading.Lock()
+        rc = 0
+        try:
+            for form in forms:
+                form_id = int(form["id"])
+                captures: dict = {}
+
+                def _start(job_id: int, cfg_: Config, _cap: dict = captures) -> None:
+                    # Built only once a batch materialised, not up front: a
+                    # check that read nothing must not fail on a provider key
+                    # it never needed, and a token-expired check (which stops
+                    # before any batch) must not be masked by one.
+                    from verinote.llm import get_client
+
+                    try:
+                        result = process_extraction_job(
+                            store,
+                            get_client(cfg_),
+                            job_id=job_id,
+                            schema_hint=_extraction_schema_hint(cfg_),
+                        )
+                    except ExtractionJobBusyError as exc:
+                        # Another process owns the job (a running
+                        # `verinote ui`, a concurrent sync). Same outcome as
+                        # `cmd_sync`'s plan-time busy: report it, never a
+                        # failure — the batch is materialised and the work is
+                        # accounted for where the owner runs.
+                        _cap["job"] = ("busy", exc)
+                        return
+                    _cap["job"] = ("result", result)
+
+                _run_form_check(
+                    store,
+                    cfg,
+                    form_id,
+                    sheet_lock=sheet_lock,
+                    read=None,
+                    start_extraction=_start,
+                )
+                rc = max(rc, _report_form_outcome(store, form_id, captures))
+        except PolicyMissingError as exc:
+            # The policy vanished after the command's preflight — the same
+            # clean rc=2 `cmd_sync` gives for the same event.
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        except LLMError as exc:
+            print(f"extraction failed: {exc}", file=sys.stderr)
+            return 1
+        return rc
+    finally:
+        store.close()
+
+
 def cmd_sources_repair_identities(cfg: Config, args: argparse.Namespace) -> int:
     """Inspect or explicitly merge same-file NFC/NFD source identities."""
     refusal = _require_existing_kb(cfg)
@@ -2173,6 +2541,9 @@ def _status(cfg: Config) -> int:
         # #606. The durable read surface: runs that tried the provider and never
         # reached it, with the four populations kept distinct.
         _print_unreached_ro(conn)
+        # #477. The form-sync state: the registered count plus the forms that
+        # need a user action (reconnect, sheet access).
+        _print_forms_ro(conn)
     finally:
         conn.close()
     return 0
@@ -2210,6 +2581,36 @@ def _print_unreached_ro(conn: sqlite3.Connection) -> None:
     print(f"unreached provider attempts: {len(rows)} most recent")
     for population, detail, at in rows:
         print(f"  {population:<17} {at}  {detail}")
+
+
+def _print_forms_ro(conn: sqlite3.Connection) -> None:
+    """The form-sync one-liner for `status`, degrading on a pre-#477 KB.
+
+    `form_sources` is not a core table, so a KB that predates #477 passes
+    `_kb_schema_problem` without it; a bare SELECT would crash a command
+    whose whole job is to report. Same presence-check shape as
+    `_print_unreached_ro`: this path opened the file read-only and leaves it
+    that way.
+    """
+    if not _form_sources_present(conn):
+        print(
+            "forms: not yet migrated -- run any verinote write command once "
+            "to migrate"
+        )
+        return
+    total = int(
+        conn.execute("SELECT COUNT(*) c FROM form_sources").fetchone()["c"]
+    )
+    attention = int(
+        conn.execute(
+            "SELECT COUNT(*) c FROM form_sources "
+            "WHERE last_error_kind IS NOT NULL"
+        ).fetchone()["c"]
+    )
+    line = f"forms: {total} registered"
+    if attention:
+        line += f", {attention} need attention"
+    print(line)
 
 
 def cmd_ui(cfg: Config | None, args: argparse.Namespace) -> int:
@@ -2442,6 +2843,59 @@ def build_parser() -> argparse.ArgumentParser:
 
     status = sub.add_parser("status", parents=[root_option], help="summarise KB state")
     status.set_defaults(func=cmd_status, halt_safe=True)
+
+    forms = sub.add_parser(
+        "forms",
+        parents=[root_option],
+        help="register and check Google Forms response sheets",
+    )
+    forms_sub = forms.add_subparsers(dest="forms_command", required=True)
+
+    forms_list = forms_sub.add_parser(
+        "list",
+        parents=[root_option],
+        help="list registered forms and their last check state",
+    )
+    # Read-only diagnosis: must keep working *on* a halted KB, like `status`.
+    forms_list.set_defaults(func=cmd_forms_list, halt_safe=True)
+
+    forms_add = forms_sub.add_parser(
+        "add",
+        parents=[root_option],
+        help="register a form's response sheet by its Google Sheets URL",
+    )
+    forms_add.add_argument(
+        "sheet_url",
+        help="the Google Sheets URL of the form's response sheet (Form -> View responses)",
+    )
+    forms_add.add_argument(
+        "--name",
+        help="display name (default: the sheet id)",
+    )
+    forms_add.set_defaults(func=cmd_forms_add, halt_safe=False)
+
+    forms_remove = forms_sub.add_parser(
+        "remove",
+        parents=[root_option],
+        help="remove a registered form by its row id or sheet id",
+    )
+    forms_remove.add_argument(
+        "id",
+        help="the form id from `verinote forms list`, or the sheet id",
+    )
+    forms_remove.set_defaults(func=cmd_forms_remove, halt_safe=False)
+
+    forms_sync = forms_sub.add_parser(
+        "sync",
+        parents=[root_option],
+        help="check a form now and extract its new responses",
+    )
+    forms_sync.add_argument(
+        "id",
+        nargs="?",
+        help="the form id or sheet id; omit to check every enabled form",
+    )
+    forms_sync.set_defaults(func=cmd_forms_sync, halt_safe=False)
 
     policy = sub.add_parser(
         "policy", parents=[root_option], help="manage this KB's logic policy file"

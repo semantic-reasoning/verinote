@@ -3236,3 +3236,472 @@ def test_an_unreadable_extraction_limit_hint_is_still_an_llm_error(
         "extraction failed: prompt extraction-limit-hint could not be loaded"
         in capsys.readouterr().err
     )
+
+
+# ---------------------------------------------------------------------------
+# #487: `verinote forms` — the CLI registration path and the synchronous check
+# of Form Sync (#476-#481). Read-only commands (`list`, `status`) stay usable on
+# a halted KB and degrade on a pre-#477 KB; writers (`add`, `remove`, `sync`)
+# are refused on a halted KB. `sync` reuses the #479 worker with `read=None`
+# (the production client), so the suite stubs the sheet read at the worker's
+# seam and pins that the real Google transport is never dialed.
+# ---------------------------------------------------------------------------
+
+SHEET_URL = "https://docs.google.com/spreadsheets/d/sample_sheet_1/edit"
+SHEET_ID = "sample_sheet_1"
+FORMS_URL = "https://docs.google.com/forms/d/sample_form_1/viewform"
+NON_SHEET_URL = "https://docs.google.com/document/d/sample_doc_1/edit"
+SHEET_ROWS = (
+    ("Timestamp", "Question one", "Question two"),
+    ("2026-09-30 10:00", "Sample Answer A", "Sample Answer B"),
+)
+
+
+def _halted_kb(monkeypatch, tmp_path):
+    """A CLI-visible KB whose scaffolded policy file has been deleted."""
+    _env(monkeypatch, tmp_path)
+    assert cli.main(["init"]) == 0
+    (tmp_path / "policy" / "logic-policy.dl").unlink()
+
+
+def _pre_477_kb(monkeypatch, tmp_path):
+    """A KB that predates `form_sources`: present core tables, no form table."""
+    _env(monkeypatch, tmp_path)
+    assert cli.main(["init"]) == 0
+    conn = sqlite3.connect(tmp_path / "kb.sqlite")
+    conn.execute("DROP TABLE form_sources")
+    conn.commit()
+    conn.close()
+
+
+def _form_row_count(tmp_path):
+    conn = sqlite3.connect(tmp_path / "kb.sqlite")
+    count = conn.execute("SELECT COUNT(*) FROM form_sources").fetchone()[0]
+    conn.close()
+    return count
+
+
+def _stub_google(monkeypatch, rows=SHEET_ROWS, read_exc=None):
+    """Stub the worker's sheet-read seam and pin the real transport never dials.
+
+    `cmd_forms_sync` calls the #479 worker with `read=None`, which resolves to
+    the module-level `read_sheet_values` in `verinote.web.app`; patching that is
+    the seam. `google_sheets._open` (the single transport) is spied to fail
+    loud if any code path reaches it — the base-suite "never dials Google"
+    invariant — and its call list is returned for an explicit `== []` assert.
+    """
+    import verinote.google_sheets as gs
+    from verinote.config import GoogleGrant
+    from verinote.google_sheets import SheetReadResult
+    from verinote.web import app as webapp
+
+    calls = []
+
+    def _no_network(req, *, timeout):
+        calls.append(req)
+        raise AssertionError("the base suite never dials Google")
+
+    monkeypatch.setattr(gs, "_open", _no_network)
+    monkeypatch.setattr(gs, "_sleep", lambda s: None)
+    grant = GoogleGrant(
+        refresh_token="synthetic-refresh-token-1",
+        email="sample@example.com",
+        scopes=("https://www.googleapis.com/auth/spreadsheets.readonly",),
+    )
+
+    def _read(grant_arg, client_id, sheet_id, value_range):
+        if read_exc is not None:
+            raise read_exc
+        return SheetReadResult(rows=rows)
+
+    monkeypatch.setattr(webapp, "load_google_grant", lambda: grant)
+    monkeypatch.setattr(webapp, "load_google_client_id", lambda: "sample-client-id")
+    monkeypatch.setattr(webapp, "read_sheet_values", _read)
+    return calls
+
+
+def test_forms_add_registers_with_default_name(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    assert cli.main(["init"]) == 0
+    assert cli.main(["forms", "add", SHEET_URL]) == 0
+    out = capsys.readouterr().out
+    assert f"added form 1: {SHEET_ID} (name: {SHEET_ID})" in out
+    assert _form_row_count(tmp_path) == 1
+
+
+def test_forms_add_with_an_explicit_name(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    assert cli.main(["init"]) == 0
+    assert cli.main(["forms", "add", SHEET_URL, "--name", "Sample Form"]) == 0
+    out = capsys.readouterr().out
+    assert "added form 1: sample_sheet_1 (name: Sample Form)" in out
+    conn = sqlite3.connect(tmp_path / "kb.sqlite")
+    assert [r[0] for r in conn.execute("SELECT name FROM form_sources")] == ["Sample Form"]
+    conn.close()
+
+
+def test_forms_add_rejects_a_forms_url(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    assert cli.main(["init"]) == 0
+    rc = cli.main(["forms", "add", FORMS_URL])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "View responses" in err
+    assert "response sheet" in err
+    assert _form_row_count(tmp_path) == 0
+
+
+def test_forms_add_rejects_a_non_sheet_url(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    assert cli.main(["init"]) == 0
+    rc = cli.main(["forms", "add", NON_SHEET_URL])
+    assert rc == 2
+    assert "response-sheet URL" in capsys.readouterr().err
+    assert _form_row_count(tmp_path) == 0
+
+
+def test_forms_add_rejects_a_duplicate_sheet(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    assert cli.main(["init"]) == 0
+    assert cli.main(["forms", "add", SHEET_URL]) == 0
+    capsys.readouterr()
+    rc = cli.main(["forms", "add", SHEET_URL])
+    assert rc == 2
+    assert "already registered" in capsys.readouterr().err
+    assert _form_row_count(tmp_path) == 1
+
+
+def test_forms_list_reports_the_registered_form(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    assert cli.main(["init"]) == 0
+    assert cli.main(["forms", "add", SHEET_URL]) == 0
+    capsys.readouterr()
+    assert cli.main(["forms", "list"]) == 0
+    out = capsys.readouterr().out
+    # the row: id, default name (= sheet id), sheet, enabled, healthy
+    assert (
+        f"1  {SHEET_ID}  sheet={SHEET_ID}  enabled=yes  watermark=never  "
+        f"last_checked=never  next_check=-  state=healthy"
+    ) in out
+
+
+def test_forms_list_on_a_halted_kb_is_read_only_and_safe(tmp_path, monkeypatch, capsys):
+    """`forms list` is halt-safe: a diagnosis command must survive the halt."""
+    _env(monkeypatch, tmp_path)
+    assert cli.main(["init"]) == 0
+    assert cli.main(["forms", "add", SHEET_URL]) == 0
+    (tmp_path / "policy" / "logic-policy.dl").unlink()  # halt
+    assert cli.main(["forms", "list"]) == 0
+    out = capsys.readouterr().out
+    assert f"sheet={SHEET_ID}" in out
+    assert "state=healthy" in out
+
+
+def test_forms_list_degrades_on_a_pre_477_kb(tmp_path, monkeypatch, capsys):
+    _pre_477_kb(monkeypatch, tmp_path)
+    assert cli.main(["forms", "list"]) == 0
+    assert "not yet migrated" in capsys.readouterr().out
+
+
+def test_forms_remove_by_id_and_by_sheet_id(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    assert cli.main(["init"]) == 0
+    assert cli.main(["forms", "add", "https://docs.google.com/spreadsheets/d/sheet_alpha/edit"]) == 0
+    assert cli.main(["forms", "add", "https://docs.google.com/spreadsheets/d/sheet_beta/edit"]) == 0
+    capsys.readouterr()
+
+    # an all-digit argument is the row id `forms list` prints
+    assert cli.main(["forms", "remove", "1"]) == 0
+    assert "removed form 1: sheet_alpha" in capsys.readouterr().out
+    # a non-digit argument is the sheet id
+    assert cli.main(["forms", "remove", "sheet_beta"]) == 0
+    assert "removed form 2: sheet_beta" in capsys.readouterr().out
+    assert _form_row_count(tmp_path) == 0
+
+
+def test_forms_remove_unknown_is_refused(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    assert cli.main(["init"]) == 0
+    rc = cli.main(["forms", "remove", "999"])
+    assert rc == 2
+    assert "no form matching '999'" in capsys.readouterr().err
+    assert _form_row_count(tmp_path) == 0
+
+
+def test_forms_add_is_refused_on_a_halted_kb(tmp_path, monkeypatch, capsys):
+    _halted_kb(monkeypatch, tmp_path)
+    rc = cli.main(["forms", "add", SHEET_URL])
+    assert rc == 2
+    assert "missing" in capsys.readouterr().err
+    assert _form_row_count(tmp_path) == 0
+
+
+def test_forms_remove_is_refused_on_a_halted_kb(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    assert cli.main(["init"]) == 0
+    assert cli.main(["forms", "add", SHEET_URL]) == 0
+    (tmp_path / "policy" / "logic-policy.dl").unlink()  # halt
+    rc = cli.main(["forms", "remove", "1"])
+    assert rc == 2
+    assert "missing" in capsys.readouterr().err
+    assert _form_row_count(tmp_path) == 1  # the row survives the refusal
+
+
+def test_forms_sync_is_refused_on_a_halted_kb(tmp_path, monkeypatch, capsys, fake_client):
+    """A halted `sync` is refused before dispatch: no network, no client, no write."""
+    _env(monkeypatch, tmp_path)
+    assert cli.main(["init"]) == 0
+    assert cli.main(["forms", "add", SHEET_URL]) == 0
+    (tmp_path / "policy" / "logic-policy.dl").unlink()  # halt
+    calls = _stub_google(monkeypatch)
+    constructed = []
+    monkeypatch.setattr("verinote.llm.get_client", lambda cfg: constructed.append(cfg))
+
+    assert cli.main(["forms", "sync"]) == 2
+    assert "missing" in capsys.readouterr().err
+    assert calls == []  # the real Google transport was never dialed
+    assert constructed == []  # no extraction client was built
+    conn = sqlite3.connect(tmp_path / "kb.sqlite")
+    assert conn.execute("SELECT watermark FROM form_sources").fetchone()[0] is None
+    assert conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0] == 0
+    conn.close()
+
+
+def test_forms_sync_with_no_forms(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    assert cli.main(["init"]) == 0
+    rc = cli.main(["forms", "sync"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "no forms registered" in err
+    assert "add one with" in err
+
+
+def test_forms_sync_all_disabled_is_refused(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    assert cli.main(["init"]) == 0
+    assert cli.main(["forms", "add", SHEET_URL]) == 0
+    conn = sqlite3.connect(tmp_path / "kb.sqlite")
+    conn.execute("UPDATE form_sources SET enabled = 0")
+    conn.commit()
+    conn.close()
+    rc = cli.main(["forms", "sync"])
+    assert rc == 1
+    assert "all registered forms are disabled" in capsys.readouterr().err
+
+
+def test_forms_sync_unknown_id_is_refused(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    assert cli.main(["init"]) == 0
+    rc = cli.main(["forms", "sync", "999"])
+    assert rc == 2
+    assert "no form matching '999'" in capsys.readouterr().err
+
+
+def test_forms_sync_success_materialises_and_extracts(
+    tmp_path, monkeypatch, capsys, fake_client
+):
+    """The full path: sheet read (stubbed) → immutable source → extraction job done."""
+    _env(monkeypatch, tmp_path)
+    assert cli.main(["init"]) == 0
+    assert cli.main(["forms", "add", SHEET_URL]) == 0
+    calls = _stub_google(monkeypatch, rows=SHEET_ROWS)
+    monkeypatch.setattr(
+        "verinote.llm.get_client",
+        lambda cfg: fake_client(
+            [ExtractedFact("Sample Org", "is_a", "Sample Service", 0.9)]
+        ),
+    )
+
+    assert cli.main(["forms", "sync"]) == 0
+    out = capsys.readouterr().out
+    assert "candidate(s) from extraction job" in out
+
+    # the batch became an immutable source file
+    files = list((tmp_path / "sources").glob(f"form-{SHEET_ID}-*.txt"))
+    assert files, "the form batch was not materialised as a source"
+    # the job ran to done and the watermark advanced past the one new response
+    conn = sqlite3.connect(tmp_path / "kb.sqlite")
+    assert conn.execute("SELECT status FROM extraction_jobs").fetchone()[0] == "done"
+    assert conn.execute("SELECT watermark FROM form_sources").fetchone()[0] == "1"
+    conn.close()
+    assert calls == []  # the real Google transport was never dialed
+
+
+def test_forms_sync_token_expired_when_no_grant(
+    tmp_path, monkeypatch, capsys, fake_client
+):
+    _env(monkeypatch, tmp_path)
+    assert cli.main(["init"]) == 0
+    assert cli.main(["forms", "add", SHEET_URL]) == 0
+    calls = _stub_google(monkeypatch, rows=SHEET_ROWS)
+    from verinote.web import app as webapp
+
+    monkeypatch.setattr(webapp, "load_google_grant", lambda: None)  # no grant
+
+    assert cli.main(["forms", "sync"]) == 1
+    assert "token expired" in capsys.readouterr().err
+    conn = sqlite3.connect(tmp_path / "kb.sqlite")
+    row = conn.execute("SELECT watermark, last_error_kind FROM form_sources").fetchone()
+    assert row[0] is None  # watermark untouched
+    assert row[1] == "token_expired"
+    assert conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0] == 0
+    conn.close()
+    assert calls == []
+
+
+def test_forms_sync_sheet_forbidden(tmp_path, monkeypatch, capsys, fake_client):
+    _env(monkeypatch, tmp_path)
+    assert cli.main(["init"]) == 0
+    assert cli.main(["forms", "add", SHEET_URL]) == 0
+    from verinote.google_sheets import SheetReadError
+
+    calls = _stub_google(
+        monkeypatch,
+        rows=SHEET_ROWS,
+        read_exc=SheetReadError("forbidden", status=403, retryable=False),
+    )
+    assert cli.main(["forms", "sync"]) == 1
+    err = capsys.readouterr().err
+    assert "cannot read that sheet" in err
+    assert "docs/operations.md" in err
+    conn = sqlite3.connect(tmp_path / "kb.sqlite")
+    row = conn.execute("SELECT watermark, last_error_kind FROM form_sources").fetchone()
+    assert row[0] is None
+    assert row[1] == "sheet_forbidden"
+    conn.close()
+    assert calls == []
+
+
+def test_forms_sync_failed_extraction_reports_the_batch(
+    tmp_path, monkeypatch, capsys, fake_client
+):
+    """A chunk-level extraction failure is rc=1 and names the re-analysis paths.
+
+    The worker records a CLEAN row before it starts extraction (watermark already
+    advanced), so the failure is visible only in the captured result — judging the
+    row alone would report a consumed batch as success (rc=0, never retried).
+    """
+    _env(monkeypatch, tmp_path)
+    assert cli.main(["init"]) == 0
+    assert cli.main(["forms", "add", SHEET_URL]) == 0
+    calls = _stub_google(monkeypatch, rows=SHEET_ROWS)
+    monkeypatch.setattr(
+        "verinote.llm.get_client",
+        lambda cfg: fake_client(error=LLMError("provider down")),
+    )
+
+    assert cli.main(["forms", "sync"]) == 1
+    err = capsys.readouterr().err
+    assert "extraction job" in err
+    assert "chunk(s) failed" in err
+    assert f"form-{SHEET_ID}-" in err  # the materialised batch is named
+    assert "verinote sync" in err  # and the re-analysis path
+    conn = sqlite3.connect(tmp_path / "kb.sqlite")
+    row = conn.execute("SELECT watermark, last_error_kind FROM form_sources").fetchone()
+    assert row[0] == "1"  # the batch is consumed (re-analysable), not lost
+    assert row[1] is None  # the row is clean; the failure lives in the result
+    conn.close()
+    assert calls == []
+
+
+def test_status_reports_form_counts(tmp_path, monkeypatch, capsys):
+    _env(monkeypatch, tmp_path)
+    assert cli.main(["init"]) == 0
+    assert cli.main(["forms", "add", "https://docs.google.com/spreadsheets/d/sheet_alpha/edit"]) == 0
+    assert cli.main(["forms", "add", "https://docs.google.com/spreadsheets/d/sheet_beta/edit"]) == 0
+    conn = sqlite3.connect(tmp_path / "kb.sqlite")
+    conn.execute(
+        "UPDATE form_sources SET last_error_kind='token_expired' WHERE sheet_id='sheet_alpha'"
+    )
+    conn.commit()
+    conn.close()
+    assert cli.main(["status"]) == 0
+    assert "forms: 2 registered, 1 need attention" in capsys.readouterr().out
+
+
+def test_status_degrades_on_a_pre_477_kb(tmp_path, monkeypatch, capsys):
+    _pre_477_kb(monkeypatch, tmp_path)
+    assert cli.main(["status"]) == 0
+    assert "forms: not yet migrated" in capsys.readouterr().out
+
+
+def test_forms_sync_explicit_id_checks_a_disabled_form(
+    tmp_path, monkeypatch, capsys, fake_client
+):
+    """An explicit check is a direct order: it runs even for a disabled form.
+
+    The disabled pause applies to the scheduled checks, not a user who names the
+    form by id and asks for a check now.
+    """
+    _env(monkeypatch, tmp_path)
+    assert cli.main(["init"]) == 0
+    assert cli.main(["forms", "add", SHEET_URL]) == 0
+    conn = sqlite3.connect(tmp_path / "kb.sqlite")
+    conn.execute("UPDATE form_sources SET enabled = 0")
+    conn.commit()
+    conn.close()
+    calls = _stub_google(monkeypatch, rows=SHEET_ROWS)
+    monkeypatch.setattr(
+        "verinote.llm.get_client",
+        lambda cfg: fake_client([ExtractedFact("Sample Org", "is_a", "Sample Service", 0.9)]),
+    )
+
+    assert cli.main(["forms", "sync", "1"]) == 0
+    assert "candidate(s) from extraction job" in capsys.readouterr().out
+    assert calls == []
+
+
+def test_forms_sync_transient_backoff_keeps_the_watermark(
+    tmp_path, monkeypatch, capsys, fake_client
+):
+    """A retryable read failure schedules a backoff and does NOT advance the row.
+
+    `error_kind` stays NULL (a retryable failure is a scheduling problem, not a
+    closed-state verdict), so the outcome is read from `next_check_at`, and the
+    old watermark is preserved so the retry re-reads the same rows.
+    """
+    _env(monkeypatch, tmp_path)
+    assert cli.main(["init"]) == 0
+    assert cli.main(["forms", "add", SHEET_URL]) == 0
+    from verinote.google_sheets import SheetReadError
+
+    calls = _stub_google(
+        monkeypatch,
+        rows=SHEET_ROWS,
+        read_exc=SheetReadError("rate limited", status=429, retryable=True),
+    )
+    assert cli.main(["forms", "sync"]) == 1
+    err = capsys.readouterr().err
+    assert "check failed (transient)" in err
+    assert "backing off until" in err
+    conn = sqlite3.connect(tmp_path / "kb.sqlite")
+    row = conn.execute(
+        "SELECT watermark, last_error_kind, next_check_at FROM form_sources"
+    ).fetchone()
+    assert row[0] is None  # old watermark kept
+    assert row[1] is None  # retryable is not a closed error kind
+    assert row[2] is not None  # a backoff was scheduled
+    conn.close()
+    assert calls == []
+
+
+def test_forms_sync_with_no_new_responses_is_up_to_date(
+    tmp_path, monkeypatch, capsys, fake_client
+):
+    """A clean read that finds nothing new reports up-to-date, not a failure."""
+    _env(monkeypatch, tmp_path)
+    assert cli.main(["init"]) == 0
+    assert cli.main(["forms", "add", SHEET_URL]) == 0
+    # the watermark already covers the one response row, so the slice is empty
+    conn = sqlite3.connect(tmp_path / "kb.sqlite")
+    conn.execute("UPDATE form_sources SET watermark='1'")
+    conn.commit()
+    conn.close()
+    calls = _stub_google(monkeypatch, rows=SHEET_ROWS)
+
+    assert cli.main(["forms", "sync"]) == 0
+    out = capsys.readouterr().out
+    assert "up to date" in out
+    assert "no new responses since watermark 1" in out
+    assert calls == []

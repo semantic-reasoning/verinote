@@ -253,6 +253,52 @@ def _validate_sheet_id(sheet_id: str) -> None:
         )
 
 
+_SHEET_URL_HOSTS = frozenset({"docs.google.com", "www.docs.google.com"})
+# The one URL shape `verinote forms add` takes (#487): the response sheet the
+# Form's "View responses" screen opens. An account-switch segment (`/u/<n>/`)
+# is what Google appends when the sheet was opened under a non-default
+# account, so it is part of the copied URL too.
+_SHEET_URL_PATH_RE = re.compile(r"^/spreadsheets/(?:u/\d+/)?d/(?P<sheet_id>[^/]+)")
+_FORMS_URL_PATH_RE = re.compile(r"^/forms/")
+_SHEET_URL_ERROR = (
+    "expected a Google Sheets response-sheet URL like "
+    "https://docs.google.com/spreadsheets/d/<ID>"
+)
+_FORMS_URL_ERROR = (
+    "that is a Google Form, not its response sheet -- open the Form, choose "
+    "'View responses', and copy the Google Sheets URL it opens"
+)
+
+
+def sheet_id_from_url(url: str) -> str:
+    """The sheet id out of a Google Sheets URL (`verinote forms add`, #487).
+
+    Accepts the response-sheet URL copied from a Form's "View responses"
+    screen: ``http(s)://docs.google.com/spreadsheets/d/<ID>`` with whatever
+    Google appends -- ``/edit``, ``/view``, ``/htmlview``, ``?gid=``,
+    ``?usp=``, ``#gid=``, a trailing slash. The id is validated against
+    ``_SHEET_ID_RE`` exactly like every other entry point.
+
+    Two tailored refusals, because the fix for each is different: a
+    ``docs.google.com/forms/...`` URL is the Form itself -- the message points
+    at where the response sheet is -- while anything else is simply not a
+    sheet URL.
+    """
+    if not isinstance(url, str):
+        raise ValueError(_SHEET_URL_ERROR)
+    parts = urllib.parse.urlsplit(url.strip())
+    if parts.netloc.lower() not in _SHEET_URL_HOSTS:
+        raise ValueError(_SHEET_URL_ERROR)
+    if _FORMS_URL_PATH_RE.match(parts.path):
+        raise ValueError(_FORMS_URL_ERROR)
+    match = _SHEET_URL_PATH_RE.match(parts.path)
+    if match is None:
+        raise ValueError(_SHEET_URL_ERROR)
+    sheet_id = match.group("sheet_id")
+    _validate_sheet_id(sheet_id)
+    return sheet_id
+
+
 def _validate_value_range(value_range: str) -> None:
     if not isinstance(value_range, str) or not value_range.strip():
         raise ValueError("value_range must be a non-blank A1 string")
