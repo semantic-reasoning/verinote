@@ -1,0 +1,7 @@
+// triple-v1: reachability only within the explicitly selected predicate.
+.decl edge(src:symbol,predicate:symbol,dst:symbol)
+.decl direct(src:symbol,predicate:symbol,dst:symbol)
+.decl reach(src:symbol,predicate:symbol,dst:symbol)
+direct(X,P,Y) :- edge(X,P,Y).
+reach(X,P,Y) :- edge(X,P,Y).
+reach(X,P,Z) :- edge(X,P,Y),reach(Y,P,Z).
