@@ -133,6 +133,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(store.runs())
             if len(parts) == 3 and parts[:2] == ['api', 'runs'] and method == 'GET':
                 return self.send(store.run(parts[2]))
+            if route.path == '/api/questions':
+                if method == 'GET':
+                    return self.send(store.questions())
+                if method == 'POST':
+                    return self.send(self.server.service.ask(self.body()), 202)
+            if len(parts) == 3 and parts[:2] == ['api', 'questions'] and method == 'GET':
+                return self.send(store.question(parts[2]))
             if route.path == '/api/query' and method == 'POST':
                 return self.send(self.server.service.query(self.body()))
             if route.path == '/api/queries' and method == 'GET':

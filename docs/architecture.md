@@ -39,4 +39,12 @@
 
 ## 채택한 범위
 
-첫 원자적 구현 단위는 버전별 문서 등록 → 실제 CLI 추출 → 사람 검토 → Wirelog 결과와 원문 증명이다. 기존 교육자료의 서비스·문서명·승인 예시를 하드코딩하지 않는다. 자연어 planner, 복수 사용자 인증, 사용자 정의 온톨로지 편집기, OCR, 의미 검증 자동화는 이 초기 구현 범위에 포함하지 않는다.
+첫 원자적 구현 단위는 버전별 문서 등록 → 실제 CLI 추출 → 사람 검토 → Wirelog 결과와 원문 증명이다. 기존 교육자료의 서비스·문서명·승인 예시를 하드코딩하지 않는다. 복수 사용자 인증, 사용자 정의 온톨로지 편집기, OCR, 의미 검증 자동화는 이 초기 구현 범위에 포함하지 않는다.
+
+## 자연어 질문
+
+`assistant.py`는 선택 CLI의 JSON 요청을 `query_graph`, `search_documents`, `read_document`만으로 제한한다. 모델이 선택한 실제 graph 실행이 없으면 최종 답변을 거부한다. graph/source/inference 주장 종류와 실제 반환된 증거 ID를 대조한다. 빈 graph는 긍정 주장 근거가 될 수 없다. 의미적 함의 검증은 사람이 한다.
+
+`questions` 테이블은 제출 시 고정한 snapshot, agent/model, 질문, 상태, 누적 trace/evidence, 답변과 오류를 저장한다. 검색·읽기는 snapshot의 문서 버전만 사용하고 그래프는 snapshot의 승인 payload만 사용한다. 기존 runs와 같은 worker/8개 슬롯을 사용하며 재시작 시 미완료 질문도 interrupted로 복구한다.
+
+POST `/api/questions`는 `{question,agent?,model?,snapshot?}`를 받아 202로 작업을 반환한다. GET `/api/questions`는 최근 30개, GET `/api/questions/{id}`는 저장 결과와 진행 상태를 반환한다. UI polling은 선택 질문 ID를 확인하여 이전 실행이 새 화면을 덮어쓰지 않는다. 고급 구조화 질의 API는 유지한다.

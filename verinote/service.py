@@ -96,3 +96,49 @@ class Service:
         snapshot = self.store.snapshot(request.get('snapshot'))
         result = query(snapshot, **{k: v for k, v in request.items() if k != 'snapshot'})
         return result | {'query_id': self.store.save_query(result)}
+
+    def ask(self, request):
+        if not isinstance(request, dict) or set(request) - {'question', 'agent', 'model', 'snapshot'}:
+            raise ValueError('알 수 없는 질문 필드')
+        question = text(request.get('question'), '질문', 2000)
+        config = self.store.settings()
+        agent = request.get('agent', config['selected'])
+        if not isinstance(agent, str) or agent not in PROVIDERS:
+            raise ValueError('지원하지 않는 에이전트')
+        model = validate_model(request.get('model', config['models'].get(agent, '')))
+        snapshot_id = request.get('snapshot')
+        if snapshot_id is not None and (not isinstance(snapshot_id, str) or len(snapshot_id) != 64):
+            raise ValueError('스냅샷 ID 형식 오류')
+        if not self.slots.acquire(blocking=False):
+            raise ValueError('작업 대기열이 가득 찼습니다.')
+        job = None
+        try:
+            snapshot = self.store.snapshot(snapshot_id)
+            job = self.store.create_question(question, agent, model, snapshot['id'])
+            self.pool.submit(self.answer, dict(job), snapshot)
+            return job
+        except Exception as exc:
+            if job:
+                job.update(status='error', error=str(exc))
+                self.store.save_question(job)
+            self.slots.release()
+            raise
+
+    def answer(self, job, snapshot):
+        from .assistant import Assistant
+        def progress(trace, evidence):
+            job.update(trace=trace, evidence=evidence)
+            self.store.save_question(job)
+        try:
+            job['status'] = 'running'
+            self.store.save_question(job)
+            assistant = Assistant(self.store, self.cli, snapshot, job, self.root / 'questions' / job['id'], progress)
+            job['answer'] = assistant.run()
+            job['status'] = 'success'
+        except Exception as exc:
+            job.update(status='error', error=str(exc)[:2000])
+        finally:
+            try:
+                self.store.save_question(job)
+            finally:
+                self.slots.release()

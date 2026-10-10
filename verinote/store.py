@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT,item_id 
 CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY,document_id TEXT,version INTEGER,agent TEXT,model TEXT,status TEXT,detail TEXT,created_at TEXT);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT);
 CREATE TABLE IF NOT EXISTS snapshots(id TEXT PRIMARY KEY,payload TEXT,created_at TEXT);
+CREATE TABLE IF NOT EXISTS questions(id TEXT PRIMARY KEY,payload TEXT,created_at TEXT);
 CREATE TABLE IF NOT EXISTS queries(id TEXT PRIMARY KEY,payload TEXT,created_at TEXT);
 CREATE UNIQUE INDEX IF NOT EXISTS active_extraction ON runs(document_id) WHERE status IN ('queued','running');
 '''
@@ -66,6 +67,35 @@ class Store:
     def recover(self):
         with self.connect(True) as db:
             db.execute("UPDATE runs SET status='interrupted',detail='서버가 재시작되었습니다. 다시 추출하세요.' WHERE status IN ('queued','running')")
+
+        with self.connect(True) as db:
+            for row in db.execute('SELECT id,payload FROM questions').fetchall():
+                job = json.loads(row['payload'])
+                if job['status'] in ('queued', 'running'):
+                    job.update(status='interrupted', error='서버 재시작으로 중단되었습니다.')
+                    db.execute('UPDATE questions SET payload=? WHERE id=?', (canonical(job), row['id']))
+
+    def create_question(self, question, agent, model, snapshot):
+        job = {'id': ident(), 'question': question, 'agent': agent, 'model': model,
+               'snapshot': snapshot, 'status': 'queued', 'trace': [], 'evidence': {},
+               'answer': None, 'error': '', 'created_at': now()}
+        self.save_question(job)
+        return job
+
+    def save_question(self, job):
+        with self.connect(True) as db:
+            db.execute('INSERT OR REPLACE INTO questions VALUES(?,?,?)', (job['id'], canonical(job), job['created_at']))
+
+    def question(self, key):
+        with self.connect() as db:
+            row = db.execute('SELECT payload FROM questions WHERE id=?', (key,)).fetchone()
+            if not row:
+                raise ValueError('질문을 찾을 수 없습니다.')
+            return json.loads(row[0])
+
+    def questions(self):
+        with self.connect() as db:
+            return [json.loads(r[0]) for r in db.execute('SELECT payload FROM questions ORDER BY created_at DESC LIMIT 30')]
 
     def register(self, title, filename, raw, text, document_id=None, expected_version=None):
         with self.connect(True) as db:
