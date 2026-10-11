@@ -2,7 +2,7 @@
 
 ## 데이터와 승인 경계
 
-`documents`는 논리 문서 ID와 현재 버전을, `versions`는 불변 원본 바이트·텍스트·파일명·해시를 저장한다. 새 버전 등록은 낙관적 `expected_version` 확인과 한 트랜잭션으로 진행한다. 문서 제목은 논리 문서의 제목이며 파일명은 버전별로 보존한다. 원문 삭제·과거 버전 덮어쓰기는 제공하지 않는다.
+`documents`는 논리 문서 ID와 현재 버전을, `versions`는 불변 원본 바이트·텍스트·파일명·해시를 저장한다. 새 버전 등록은 낙관적 `expected_version` 확인과 한 트랜잭션으로 진행한다. 문서 제목은 논리 문서의 제목이며 파일명은 버전별로 보존한다. 명시적인 최신 리비전/전체 문서 삭제를 제공한다. 과거 버전 덮어쓰기는 제공하지 않는다.
 
 `runs`는 에이전트·모델·대상 문서 버전을 고정한다. 실행 중 원문 버전이 올라가도 결과는 원래 버전에만 저장한다. 문서별 동시 실행은 DB unique index로 차단한다. 성공한 같은 버전의 추출을 다시 실행하여 기존 검토를 덮어쓰지 않는다. 실패한 실행은 부분 후보를 남기지 않으며 재시도 가능하다.
 
@@ -23,7 +23,7 @@
 
 | 경로 | 동작 |
 | --- | --- |
-| GET/POST `/api/documents` | 목록 / 신규 또는 다음 버전 등록 (`document_id`, `expected_version`) |
+| GET/POST `/api/documents` | 목록 / 신규 또는 다음 버전 등록 (`document_id`, `expected_version`, `expected_generation`) |
 | GET `/api/documents/{id}?version=N` | 해당 버전 원문·초안·관계·버전 목록 |
 | GET `/api/documents/{id}/raw?version=N` | 정확한 원본 바이트 다운로드 |
 | GET `/api/documents/{id}/diff?version=N` | 직전 버전 대비 추출 텍스트 diff |
@@ -48,3 +48,13 @@
 `questions` 테이블은 제출 시 고정한 snapshot, agent/model, 질문, 상태, 누적 trace/evidence, 답변과 오류를 저장한다. 검색·읽기는 snapshot의 문서 버전만 사용하고 그래프는 snapshot의 승인 payload만 사용한다. 기존 runs와 같은 worker/8개 슬롯을 사용하며 재시작 시 미완료 질문도 interrupted로 복구한다.
 
 POST `/api/questions`는 `{question,agent?,model?,snapshot?}`를 받아 202로 작업을 반환한다. GET `/api/questions`는 최근 30개, GET `/api/questions/{id}`는 저장 결과와 진행 상태를 반환한다. UI polling은 선택 질문 ID를 확인하여 이전 실행이 새 화면을 덮어쓰지 않는다. 고급 구조화 질의 API는 유지한다.
+
+## 삭제와 동시성
+
+`documents.next_version`은 기존 최대 버전+1로 migration하며 삭제 시 내려가지 않는다. 별도의 `generation`은 새 버전 등록/최신 삭제마다 증가한다. 두 변경 토큰을 필수로 확인해 버전 rollback의 ABA를 방지한다. version_count는 생존 원문 행을 센다.
+
+POST `/api/documents/{id}/delete-latest`, `/delete`는 정확히 `{expected_version,expected_generation}`를 받는다. 최신-only는 마지막 하나를 삭제하지 않고 409를 반환한다. DB 트랜잭션은 전체 active runs/questions를 확인한 뒤 대상 버전과 파생 데이터, 해당 버전을 포함한 snapshots, 관련 queries/questions를 제거한다. 원문의 일부가 들어간 질문뿐 아니라 해당 스냅샷을 사용한 모든 이력이 제거된다.
+
+`create_question`의 스냅샷 존재 검사와 INSERT는 하나의 BEGIN IMMEDIATE에 속한다. 질문 등록이 먼저면 삭제는 active 작업 때문에 거부되고, 삭제가 먼저면 질문 등록은 삭제된 snapshot 때문에 거부된다. 따라서 별도 service lifecycle lock 없이 DB가 수명 경쟁을 직렬화한다. `save_question`은 UPDATE만 허용하고 스냅샷 존재를 재확인한다. 동기 그래프 조회의 `save_query`도 스냅샷 존재를 같은 저장 트랜잭션에서 재확인하여 삭제 후 결과가 재생성되지 않게 한다.
+
+삭제 트랜잭션은 `log_cleanup(kind,id)`에 로그 정리 의무를 함께 저장한다. Service는 삭제 후와 시작 시 처리하고 GET `/api/cleanup`, POST `/api/cleanup` (`{}`)으로 상태/재시도를 제공한다. 서버가 생성한 32자리 hex ID와 고정 runs/questions 루트만 사용하며 루트/대상 symlink는 따라가지 않고 pending으로 남긴다. 없는 폴더는 정리 성공이다. 파일 오류는 의무를 남기고 DB 삭제 성공과 구분한다. 복구 가능한 휴지통이나 포렌식 소거는 제공하지 않는다.

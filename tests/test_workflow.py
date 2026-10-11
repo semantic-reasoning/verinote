@@ -60,14 +60,14 @@ class Workflow(unittest.TestCase):
     def test_immutable_document_versions_and_stale_upload(self):
         self.approve(self.extract())
         snapshot = self.store.snapshot()
-        updated = self.store.register('운영', 'new.md', b'new version', 'new version', self.doc['id'], 1)
+        updated = self.store.register('운영', 'new.md', b'new version', 'new version', self.doc['id'], 1, 1)
         self.assertEqual(updated['version'], 2)
         self.assertEqual(self.store.document(self.doc['id'], 1)['text'], SOURCE)
         self.assertEqual(self.store.raw(self.doc['id'], 1)[0], SOURCE.encode())
         self.assertEqual(self.store.snapshot()['facts'], [])
         self.assertEqual(len(self.store.snapshot(snapshot['id'])['facts']), 2)
         with self.assertRaises(Conflict):
-            self.store.register('운영', 'bad.md', b'bad', 'bad', self.doc['id'], 1)
+            self.store.register('운영', 'bad.md', b'bad', 'bad', self.doc['id'], 1, 1)
         self.assertEqual(Store(self.root / 'state.sqlite3').document(self.doc['id'])['version'], 2)
 
     def test_concurrent_review_has_one_winner(self):
@@ -139,7 +139,7 @@ class Workflow(unittest.TestCase):
         service = Service(self.store, self.root, Fake())
         run = service.start(self.doc['id'], 'agy', '')
         self.assertTrue(entered.wait(3))
-        self.store.register('new', 'new.md', b'new', 'new', self.doc['id'], 1)
+        self.store.register('new', 'new.md', b'new', 'new', self.doc['id'], 1, 1)
         release.set(); service.pool.shutdown(wait=True)
         self.assertEqual(self.store.run(run['id'])['status'], 'success')
         self.approve(self.store.document(self.doc['id'], 1)['items'])
@@ -232,7 +232,7 @@ class HTTP(unittest.TestCase):
             self.request(f'/api/items/{i["id"]}/review','POST',{'revision':1,'action':'approved','actor':'Tester','reason':'verified'})
         r=self.request('/api/query','POST',{'action':'path','subject':'주문','predicate':'depends_on','target':'원장'})
         self.assertEqual(len(r['proofs'][0]['fact_ids']),2)
-        self.request('/api/documents','POST',{'title':'test','filename':'test.md','text':'new','document_id':doc['id'],'expected_version':1})
+        self.request('/api/documents','POST',{'title':'test','filename':'test.md','text':'new','document_id':doc['id'],'expected_version':1,'expected_generation':1})
         diff=self.request(f'/api/documents/{doc["id"]}/diff')['diff'];self.assertIn('+new',diff);self.assertIn('-'+SOURCE,diff)
         self.assertEqual(self.request('/api/query','POST',{})['rows'],[])
         self.assertEqual(self.request('/api/query','POST',{'snapshot':r['snapshot']})['rows'],[['결제','depends_on','원장'],['주문','depends_on','결제']])

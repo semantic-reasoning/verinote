@@ -7,7 +7,7 @@ let docs = [], config, selectedDoc, uploadTarget, reviewTarget;
 async function api(path, method = 'GET', data) {
   const response = await fetch(path, {method, headers: data ? {'Content-Type':'application/json'} : {}, body: data ? JSON.stringify(data) : undefined});
   const result = await response.json();
-  if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+  if (!response.ok) {const error=new Error(result.error || `HTTP ${response.status}`);error.status=response.status;throw error;}
   return result;
 }
 function notice(message, error = false) { $('#notice').textContent = message; $('#notice').className = error ? 'error' : ''; }
@@ -23,7 +23,7 @@ function showView(name) {
 }
 async function loadLibrary() {
   docs = await api('/api/documents');
-  $('#stats').innerHTML = `<div class="stat">등록 문서<strong>${docs.length}</strong></div><div class="stat">보존된 원문 버전<strong>${docs.reduce((n,d)=>n+d.current_version,0)}</strong></div><div class="stat">지식의 기준<strong>사람의 승인</strong></div>`;
+  $('#stats').innerHTML = `<div class="stat">등록 문서<strong>${docs.length}</strong></div><div class="stat">보존된 원문 버전<strong>${docs.reduce((n,d)=>n+d.version_count,0)}</strong></div><div class="stat">지식의 기준<strong>사람의 승인</strong></div>`;
   await renderDocs();
 }
 async function renderDocs() {
@@ -42,10 +42,12 @@ async function openDoc(id, version) {
   selectedDoc = await api(`/api/documents/${id}${version?'?version='+version:''}`);
   const d = selectedDoc, latest = d.version === d.current_version;
   showView('library');
-  $('#document-detail').innerHTML = `<div class="panel"><div class="detail-title"><h2>${esc(d.title)}</h2><select id="version-select" aria-label="문서 버전">${d.versions.map(v=>`<option value="${v.version}" ${v.version===d.version?'selected':''}>v${v.version}${v.version===d.current_version?' · 현재':''}</option>`).join('')}</select><button id="add-version">＋ 새 버전 등록</button></div><p class="muted">${latest?'현재 문서 버전':'과거 문서 버전 · 현재 그래프에 포함되지 않습니다'} · ${esc(d.filename)}</p><p class="mono">SHA-256 ${esc(d.sha256)}</p><div class="actions"><a href="/api/documents/${d.id}/raw?version=${d.version}" download="${esc(d.filename)}">원본 다운로드</a><button id="show-diff">이전 버전과 비교</button></div><div id="version-diff"></div><details><summary>원문 전체 · v${d.version}</summary><pre class="source">${esc(d.text)}</pre></details>${latest&&!d.items.length?`<div class="form-grid">${providerSelect()}</div><button class="primary" id="extract">위키 초안 추출</button><p class="muted">원문이 선택한 CLI 모델 제공자에게 전달됩니다. 추출 결과는 검토 대기로 저장됩니다.</p>`:''}</div><h2>위키와 사실 검토</h2><p class="muted">위키 문장 승인과 관계 사실 승인은 별개입니다. 원문의 인용을 대조하여 각각 검토하세요.</p><div id="items">${d.items.length?d.items.map(renderItem).join(''):'<div class="empty">아직 생성된 초안이 없습니다. 추출을 시작해 주세요.</div>'}</div>`;
+  $('#document-detail').innerHTML = `<div class="panel"><div class="detail-title"><h2>${esc(d.title)}</h2><select id="version-select" aria-label="문서 버전">${d.versions.map(v=>`<option value="${v.version}" ${v.version===d.version?'selected':''}>v${v.version}${v.version===d.current_version?' · 현재':''}</option>`).join('')}</select><button id="add-version">＋ 새 버전 등록</button></div><p class="muted">${latest?'현재 문서 버전':'과거 문서 버전 · 현재 그래프에 포함되지 않습니다'} · ${esc(d.filename)}</p><p class="mono">SHA-256 ${esc(d.sha256)}</p><div class="actions"><a href="/api/documents/${d.id}/raw?version=${d.version}" download="${esc(d.filename)}">원본 다운로드</a><button id="show-diff">이전 버전과 비교</button></div><div class="actions"><button id="delete-latest" class="danger" ${d.versions.length===1?'disabled':''}>최신 리비전 v${d.current_version}만 삭제</button><button id="delete-document" class="danger">문서 전체 삭제</button></div>${d.versions.length===1?'<p class="muted">리비전이 하나뿐이면 문서 전체 삭제를 사용하세요.</p>':''}<div id="version-diff"></div><details><summary>원문 전체 · v${d.version}</summary><pre class="source">${esc(d.text)}</pre></details>${latest&&!d.items.length?`<div class="form-grid">${providerSelect()}</div><button class="primary" id="extract">위키 초안 추출</button><p class="muted">원문이 선택한 CLI 모델 제공자에게 전달됩니다. 추출 결과는 검토 대기로 저장됩니다.</p>`:''}</div><h2>위키와 사실 검토</h2><p class="muted">위키 문장 승인과 관계 사실 승인은 별개입니다. 원문의 인용을 대조하여 각각 검토하세요.</p><div id="items">${d.items.length?d.items.map(renderItem).join(''):'<div class="empty">아직 생성된 초안이 없습니다. 추출을 시작해 주세요.</div>'}</div>`;
   $('#document-detail').scrollIntoView({behavior:'smooth',block:'start'});
   $('#version-select').addEventListener('change', e=>attempt(()=>openDoc(id,Number(e.target.value))));
   $('#add-version').onclick = ()=>openUpload(d);
+  $('#delete-latest').onclick=()=>openDelete(d,true);
+  $('#delete-document').onclick=()=>openDelete(d,false);
   $('#show-diff').onclick = ()=>attempt(async()=>{const r=await api(`/api/documents/${id}/diff?version=${d.version}`);$('#version-diff').innerHTML=`<pre class="source">${esc(r.diff||'변경 없음')}</pre>`;});
   if ($('#extract-agent')) $('#extract-agent').onchange = e=>{$('#extract-model').value=config.models[e.target.value]||'';};
   if ($('#extract')) $('#extract').onclick = ()=>attempt(async()=>{
@@ -70,7 +72,7 @@ async function watchRun(id, docId) {
 }
 function openUpload(doc=null) {
   uploadTarget=doc;$('#upload-form').reset();$('#upload-form').elements.title.value=doc?.title||'';$('#upload-form').elements.title.readOnly=Boolean(doc);
-  $('#upload-heading').textContent=doc?`새 문서 버전 · v${doc.current_version+1}`:'문서 등록';
+  $('#upload-heading').textContent=doc?`새 문서 버전 · v${doc.next_version}`:'문서 등록';
   $('#upload-dialog').showModal();
 }
 $('#new-document').onclick=()=>openUpload();$('#close-upload').onclick=()=>$('#upload-dialog').close();
@@ -80,7 +82,7 @@ $('#upload-form').onsubmit=e=>{e.preventDefault();attempt(async()=>{
     const data={title:form.elements.title.value,filename:file?.name||'note.md'};
     if(file){if(file.size>4*1024*1024)throw new Error('최대 파일 크기는 4 MiB입니다.');const bytes=new Uint8Array(await file.arrayBuffer());let binary='';for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode(...bytes.subarray(i,i+8192));data.content_base64=btoa(binary);}
     else data.text=form.elements.text.value;
-    if(uploadTarget){data.document_id=uploadTarget.id;data.expected_version=uploadTarget.current_version;}
+    if(uploadTarget){data.document_id=uploadTarget.id;data.expected_version=uploadTarget.current_version;data.expected_generation=uploadTarget.generation;}
     const d=await api('/api/documents','POST',data);$('#upload-dialog').close();await loadLibrary();await openDoc(d.id);notice('원문을 보존했습니다. 에이전트를 선택해 위키 초안을 만드세요.');
   } finally{button.disabled=false;}
 });};
@@ -120,6 +122,7 @@ async function loadQueries() {
   for(const button of document.querySelectorAll('[data-replay]'))button.onclick=()=>attempt(async()=>{const r=rows.find(r=>r.id===button.dataset.replay).payload;renderQuery(await api('/api/query','POST',{...r.query,snapshot:r.snapshot}));});
 }
 async function loadRuns() {
+  await loadCleanup();
   const rows=await api('/api/runs');
   $('#runs').innerHTML=rows.map(r=>`<div class="panel">${badge(r.status)} <strong>${esc(r.agent)} / ${esc(r.model||'기본 모델')}</strong><p>${esc(r.detail)}</p><p class="muted">${esc(date(r.created_at))}</p>${sourceLink(r.document_id,r.version)}<details><summary>실행 메타데이터</summary><pre class="source">${esc(JSON.stringify(r,null,2))}</pre><p class="muted">프롬프트·stdout·stderr: data/runs/${esc(r.id)}/</p></details></div>`).join('')||'<div class="empty">아직 실행 기록이 없습니다.</div>';
 }
@@ -167,4 +170,34 @@ function renderAnswer(job){
   $('#answer-result').innerHTML=`<article class="panel"><h2>${esc(job.question)}</h2>${badge(job.status)} <span>${esc(job.agent)} / ${esc(job.model||'기본 모델')}</span><p class="muted">질문 제출 시 고정한 승인 상태입니다. 이후 문서 변경·승인 철회는 반영되지 않습니다.</p><p class="mono">스냅샷 ${esc(job.snapshot)}</p>${job.error?`<p class="error">${esc(job.error)}</p>`:''}${job.answer?job.answer.claims.map(c=>`<div class="item"><span class="badge">${esc({graph:'승인 그래프',source:'미검토 원문',inference:'추론'}[c.kind])}</span><p>${esc(c.text)}</p>${c.citations.map(id=>renderEvidence(id,job.evidence[id])).join('')}</div>`).join('')+job.answer.unknowns.map(u=>`<p class="muted">확인 불가 · ${esc(u)}</p>`).join(''): (['queued','running'].includes(job.status)?'<p>모델의 질의 해석과 도구 실행을 기다리고 있습니다.</p>':'<p>답변이 생성되지 않았습니다.</p>')}<details><summary>실행 추적 · ${job.trace.length}개 도구 호출</summary>${job.trace.map(t=>`<p>${esc(t.name)} · ${esc(t.status)}</p><pre class="source">${esc(JSON.stringify(t.arguments,null,2))}</pre>${t.evidence_id?renderEvidence(t.evidence_id,job.evidence[t.evidence_id]):''}`).join('')}<pre class="source">${esc(JSON.stringify(job,null,2))}</pre></details><p class="muted">인용 검사는 의미적 정확성을 보증하지 않습니다. 모델 해석·답변은 비결정적이며, 같은 질의·스냅샷·규칙·엔진의 그래프 계산만 결정적입니다.</p><div class="actions"><button id="download-answer">답변 JSON 다운로드</button><button id="rerun-answer">같은 스냅샷으로 다시 질문 준비</button></div></article>`;
   $('#download-answer').onclick=()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(job,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='verinote-answer.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
   $('#rerun-answer').onclick=()=>{$('#question-text').value=job.question;$('#ask-agent').value=job.agent;$('#ask-model').value=job.model;$('#ask-snapshot').value=job.snapshot;$('#ask-form').scrollIntoView({behavior:'smooth'});};
+}
+
+let deleteTarget;
+function openDelete(doc,latestOnly){
+  deleteTarget={doc,latestOnly};
+  const previous=doc.versions.find(v=>v.version<doc.current_version);
+  $('#delete-heading').textContent=latestOnly?`최신 리비전 v${doc.current_version}만 삭제`:'문서 전체 삭제';
+  $('#delete-scope').textContent=`「${doc.title}」 — `+(latestOnly?`현재 최신 v${doc.current_version}의 원문·위키·사실·검토 이력을 삭제합니다. v${previous.version}과 그 승인 상태가 다시 현재 기준이 됩니다.`:`모든 ${doc.versions.length}개 리비전의 원문·위키·사실·검토 이력과 문서 자체를 삭제합니다.`);
+  $('#delete-error').textContent='';$('#confirm-delete').disabled=false;
+  $('#delete-dialog').showModal();
+}
+$('#cancel-delete').onclick=()=>$('#delete-dialog').close();
+$('#confirm-delete').onclick=()=>attempt(async()=>{
+  const {doc,latestOnly}=deleteTarget;$('#confirm-delete').disabled=true;
+  try{
+    const result=await api(`/api/documents/${doc.id}/${latestOnly?'delete-latest':'delete'}`,'POST',{expected_version:doc.current_version,expected_generation:doc.generation});
+    $('#delete-dialog').close();activeQuestion=null;selectedDoc=null;
+    for(const selector of ['#document-detail','#query-result','#answer-result','#runs'])$(selector).innerHTML='';
+    await loadLibrary();await loadQueries();await loadQuestions();await loadCleanup();
+    if(result.current_version)await openDoc(doc.id,result.current_version);
+    notice(result.cleanup_pending?'원문과 연결된 DB 기록을 삭제했습니다. 일부 로컬 로그 정리가 남았습니다. 실행 기록에서 재시도하세요.':(latestOnly?'최신 리비전을 삭제하고 이전 리비전으로 돌아갔습니다.':'문서와 모든 리비전을 삭제했습니다.'),Boolean(result.cleanup_pending));
+  }catch(error){
+    if(error.status===409){$('#delete-dialog').close();await loadLibrary();await openDoc(doc.id);notice(error.message+' 삭제하려면 다시 선택하세요.',true);}
+    else{$('#delete-error').textContent=error.message;$('#confirm-delete').disabled=false;}
+  }
+});
+async function loadCleanup(){
+  const state=await api('/api/cleanup');
+  $('#cleanup-status').innerHTML=state.cleanup_pending?`<div class="panel"><p>삭제한 문서의 로컬 로그 ${state.cleanup_pending}개 정리가 남았습니다. DB 원문·관련 이력은 이미 삭제되었습니다.</p><button id="retry-cleanup">로그 정리 재시도</button></div>`:'';
+  if($('#retry-cleanup'))$('#retry-cleanup').onclick=()=>attempt(async()=>{const result=await api('/api/cleanup','POST',{});await loadCleanup();notice(result.cleanup_pending?'정리가 아직 완료되지 않았습니다. 로그 폴더 접근 권한을 확인하세요.':'남은 로그 정리를 완료했습니다.',Boolean(result.cleanup_pending));});
 }

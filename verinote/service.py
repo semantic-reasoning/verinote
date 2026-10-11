@@ -1,6 +1,8 @@
 """Bounded extraction orchestration; validation never performs human approval."""
 from concurrent.futures import ThreadPoolExecutor
 import json
+import re
+import shutil
 from pathlib import Path
 import threading
 
@@ -54,6 +56,8 @@ class Service:
         self.store, self.root, self.cli = store, Path(root), cli or CLI()
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='verinote-extract')
         self.slots = threading.BoundedSemaphore(8)
+        self.cleanup_lock = threading.Lock()
+        self.cleanup_logs()
 
     def start(self, document_id, agent, model):
         if agent not in PROVIDERS:
@@ -142,3 +146,31 @@ class Service:
                 self.store.save_question(job)
             finally:
                 self.slots.release()
+
+    def cleanup_logs(self):
+        # Obligations are persisted before DB rows disappear. Never follow a log-root symlink.
+        with self.cleanup_lock:
+            for task in self.store.pending_cleanup():
+                kind, key = task['kind'], task['id']
+                if kind not in ('runs', 'questions') or not re.fullmatch(r'[a-f0-9]{32}', key):
+                    continue
+                root = self.root.resolve()
+                parent = root / kind
+                path = parent / key
+                try:
+                    if parent.is_symlink() or path.is_symlink():
+                        continue
+                    if path.exists():
+                        shutil.rmtree(path)
+                    self.store.finish_cleanup(kind, key)
+                except OSError:
+                    # Keep the durable obligation; startup and explicit retry will try again.
+                    continue
+            pending = len(self.store.pending_cleanup())
+            return {'cleanup_pending': pending, 'cleanup_status': 'pending' if pending else 'complete'}
+
+    def delete_document(self, document_id, latest_only, request):
+        if not isinstance(request, dict) or set(request) != {'expected_version', 'expected_generation'}:
+            raise ValueError('expected_version과 expected_generation만 필요합니다.')
+        result = self.store.delete_document(document_id, latest_only, request['expected_version'], request['expected_generation'])
+        return result | self.cleanup_logs()

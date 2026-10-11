@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS versions(document_id TEXT,version INTEGER,filename TE
 CREATE TABLE IF NOT EXISTS items(id TEXT PRIMARY KEY,document_id TEXT,version INTEGER,kind TEXT,payload TEXT,status TEXT,revision INTEGER,run_id TEXT);
 CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT,item_id TEXT,revision INTEGER,action TEXT,actor TEXT,reason TEXT,payload TEXT,created_at TEXT);
 CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY,document_id TEXT,version INTEGER,agent TEXT,model TEXT,status TEXT,detail TEXT,created_at TEXT);
+CREATE TABLE IF NOT EXISTS log_cleanup(kind TEXT, id TEXT, PRIMARY KEY(kind,id));
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT);
 CREATE TABLE IF NOT EXISTS snapshots(id TEXT PRIMARY KEY,payload TEXT,created_at TEXT);
 CREATE TABLE IF NOT EXISTS questions(id TEXT PRIMARY KEY,payload TEXT,created_at TEXT);
@@ -48,6 +49,13 @@ class Store:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
             db.executescript(SCHEMA)
+        with self.connect(True) as db:
+            columns = {r['name'] for r in db.execute('PRAGMA table_info(documents)')}
+            if 'next_version' not in columns:
+                db.execute('ALTER TABLE documents ADD COLUMN next_version INTEGER NOT NULL DEFAULT 2')
+                db.execute('UPDATE documents SET next_version=(SELECT COALESCE(MAX(version),0)+1 FROM versions WHERE document_id=documents.id)')
+            if 'generation' not in columns:
+                db.execute('ALTER TABLE documents ADD COLUMN generation INTEGER NOT NULL DEFAULT 1')
 
     @contextmanager
     def connect(self, write=False):
@@ -79,12 +87,16 @@ class Store:
         job = {'id': ident(), 'question': question, 'agent': agent, 'model': model,
                'snapshot': snapshot, 'status': 'queued', 'trace': [], 'evidence': {},
                'answer': None, 'error': '', 'created_at': now()}
-        self.save_question(job)
+        with self.connect(True) as db:
+            self.require_snapshot(db, snapshot)
+            db.execute('INSERT INTO questions VALUES(?,?,?)', (job['id'], canonical(job), job['created_at']))
         return job
 
     def save_question(self, job):
         with self.connect(True) as db:
-            db.execute('INSERT OR REPLACE INTO questions VALUES(?,?,?)', (job['id'], canonical(job), job['created_at']))
+            self.require_snapshot(db, job['snapshot'])
+            if not db.execute('UPDATE questions SET payload=? WHERE id=?', (canonical(job), job['id'])).rowcount:
+                raise Conflict('질문이 삭제되었습니다.')
 
     def question(self, key):
         with self.connect() as db:
@@ -97,26 +109,25 @@ class Store:
         with self.connect() as db:
             return [json.loads(r[0]) for r in db.execute('SELECT payload FROM questions ORDER BY created_at DESC LIMIT 30')]
 
-    def register(self, title, filename, raw, text, document_id=None, expected_version=None):
+    def register(self, title, filename, raw, text, document_id=None, expected_version=None, expected_generation=None):
         with self.connect(True) as db:
             if document_id:
                 row = db.execute('SELECT * FROM documents WHERE id=?', (document_id,)).fetchone()
                 if not row:
                     raise ValueError('문서를 찾을 수 없습니다.')
-                if row['current_version'] != expected_version:
-                    raise Conflict('문서 버전이 변경되었습니다. 새로고침하세요.')
-                version = row['current_version'] + 1
-                db.execute('UPDATE documents SET current_version=? WHERE id=?', (version, document_id))
+                self.check_document_token(row, expected_version, expected_generation)
+                version = row['next_version']
+                db.execute('UPDATE documents SET current_version=?,next_version=?,generation=generation+1 WHERE id=?', (version, version + 1, document_id))
             else:
                 document_id, version = ident(), 1
-                db.execute('INSERT INTO documents VALUES(?,?,?)', (document_id, title, version))
+                db.execute('INSERT INTO documents(id,title,current_version,next_version,generation) VALUES(?,?,?,2,1)', (document_id, title, version))
             db.execute('INSERT INTO versions VALUES(?,?,?,?,?,?,?)',
                        (document_id, version, filename, text, raw, digest(raw), now()))
         return self.document(document_id)
 
     def documents(self):
         with self.connect() as db:
-            return [dict(r) for r in db.execute('SELECT d.*,v.filename,v.sha256,v.created_at FROM documents d JOIN versions v ON v.document_id=d.id AND v.version=d.current_version ORDER BY v.created_at DESC')]
+            return [dict(r) for r in db.execute('SELECT d.*,v.filename,v.sha256,v.created_at,(SELECT COUNT(*) FROM versions WHERE document_id=d.id) AS version_count FROM documents d JOIN versions v ON v.document_id=d.id AND v.version=d.current_version ORDER BY v.created_at DESC')]
 
     def document(self, document_id, version=None):
         with self.connect() as db:
@@ -244,9 +255,61 @@ class Store:
     def save_query(self, result):
         key = ident()
         with self.connect(True) as db:
+            self.require_snapshot(db, result['snapshot'])
             db.execute('INSERT INTO queries VALUES(?,?,?)', (key, canonical(result), now()))
         return key
 
     def queries(self):
         with self.connect() as db:
             return [self.unpack(r) for r in db.execute('SELECT * FROM queries ORDER BY created_at DESC LIMIT 30')]
+
+    @staticmethod
+    def require_snapshot(db, snapshot_id):
+        if not db.execute('SELECT 1 FROM snapshots WHERE id=?', (snapshot_id,)).fetchone():
+            raise Conflict('근거 스냅샷이 삭제되었습니다. 새로 조회하세요.')
+
+    @staticmethod
+    def check_document_token(row, version, generation):
+        if type(version) is not int or version < 1 or type(generation) is not int or generation < 1:
+            raise ValueError('expected_version과 expected_generation 양의 정수가 필요합니다. 문서를 새로고침하세요.')
+        if row['current_version'] != version or row['generation'] != generation:
+            raise Conflict('문서가 변경되었습니다. 새로고침 후 다시 선택하세요.')
+
+    def delete_document(self, document_id, latest_only, expected_version, expected_generation):
+        with self.connect(True) as db:
+            doc = db.execute('SELECT * FROM documents WHERE id=?', (document_id,)).fetchone()
+            if not doc:
+                raise ValueError('문서를 찾을 수 없습니다.')
+            self.check_document_token(doc, expected_version, expected_generation)
+            if db.execute("SELECT 1 FROM runs WHERE status IN ('queued','running') LIMIT 1").fetchone() or any(json.loads(r[0])['status'] in ('queued', 'running') for r in db.execute('SELECT payload FROM questions')):
+                raise Conflict('추출 또는 질문 작업이 진행 중입니다. 모든 작업 완료 후 삭제하세요.')
+            versions = [r[0] for r in db.execute('SELECT version FROM versions WHERE document_id=? ORDER BY version', (document_id,))]
+            if latest_only and len(versions) == 1:
+                raise Conflict('리비전이 하나뿐입니다. 문서 전체 삭제를 사용하세요.')
+            removed = [doc['current_version']] if latest_only else versions
+            snapshots = {r['id'] for r in db.execute('SELECT id,payload FROM snapshots') if any(d['id'] == document_id and d['current_version'] in removed for d in json.loads(r['payload'])['documents'])}
+            question_ids = [r['id'] for r in db.execute('SELECT id,payload FROM questions') if json.loads(r['payload'])['snapshot'] in snapshots]
+            query_ids = [r['id'] for r in db.execute('SELECT id,payload FROM queries') if json.loads(r['payload'])['snapshot'] in snapshots]
+            run_ids = [r['id'] for r in db.execute('SELECT id,version FROM runs WHERE document_id=?', (document_id,)) if r['version'] in removed]
+            db.executemany('INSERT OR IGNORE INTO log_cleanup VALUES(?,?)', [('runs', key) for key in run_ids] + [('questions', key) for key in question_ids])
+            for table, keys in [('questions', question_ids), ('queries', query_ids), ('snapshots', snapshots), ('runs', run_ids)]:
+                db.executemany(f'DELETE FROM {table} WHERE id=?', [(key,) for key in keys])
+            for version in removed:
+                db.execute('DELETE FROM events WHERE item_id IN (SELECT id FROM items WHERE document_id=? AND version=?)', (document_id, version))
+                db.execute('DELETE FROM items WHERE document_id=? AND version=?', (document_id, version))
+                db.execute('DELETE FROM versions WHERE document_id=? AND version=?', (document_id, version))
+            current = max(v for v in versions if v not in removed) if latest_only else None
+            if latest_only:
+                db.execute('UPDATE documents SET current_version=?,generation=generation+1 WHERE id=?', (current, document_id))
+            else:
+                db.execute('DELETE FROM documents WHERE id=?', (document_id,))
+        return {'document_id': document_id, 'removed_versions': removed, 'current_version': current,
+                'removed_snapshots': len(snapshots), 'removed_questions': len(question_ids), 'removed_queries': len(query_ids)}
+
+    def pending_cleanup(self):
+        with self.connect() as db:
+            return [dict(r) for r in db.execute('SELECT * FROM log_cleanup ORDER BY kind,id')]
+
+    def finish_cleanup(self, kind, key):
+        with self.connect(True) as db:
+            db.execute('DELETE FROM log_cleanup WHERE kind=? AND id=?', (kind, key))

@@ -86,7 +86,7 @@ class AssistantTests(unittest.TestCase):
         self.assertTrue(entered.wait(3))
         fact = self.store.snapshot()['facts'][0]
         self.store.review(fact['id'],2,'pending','R','철회')
-        self.store.register('운영','new.md',b'new','new',self.doc['id'],1)
+        self.store.register('운영','new.md',b'new','new',self.doc['id'],1,1)
         self.store.register('새 문서','x.md',SOURCE.encode(),SOURCE)
         release.set();service.pool.shutdown(wait=True)
         result = self.store.question(job['id'])

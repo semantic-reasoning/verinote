@@ -107,7 +107,7 @@ class Handler(BaseHTTPRequestHandler):
                     if len(raw) > MAX_BYTES:
                         raise ValueError('파일 크기 제한 초과')
                     content = decode_document(filename, raw)
-                    return self.send(store.register(title, filename, raw, content, data.get('document_id'), data.get('expected_version')), 201)
+                    return self.send(store.register(title, filename, raw, content, data.get('document_id'), data.get('expected_version'), data.get('expected_generation')), 201)
             if len(parts) >= 3 and parts[:2] == ['api', 'documents']:
                 doc_id = parts[2]
                 version = int(params['version'][0]) if 'version' in params else None
@@ -118,8 +118,11 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(raw, mime='application/octet-stream', headers={'Content-Disposition': 'attachment; filename="original"'})
                 if len(parts) == 4 and parts[3] == 'diff' and method == 'GET':
                     doc = store.document(doc_id, version)
-                    previous = store.document(doc_id, doc['version'] - 1)['text'] if doc['version'] > 1 else ''
-                    return self.send({'diff': ''.join(difflib.unified_diff(previous.splitlines(True), doc['text'].splitlines(True), fromfile=f'v{doc["version"] - 1}', tofile=f'v{doc["version"]}'))})
+                    prior = max((v['version'] for v in doc['versions'] if v['version'] < doc['version']), default=0)
+                    previous = store.document(doc_id, prior)['text'] if prior else ''
+                    return self.send({'diff': ''.join(difflib.unified_diff(previous.splitlines(True), doc['text'].splitlines(True), fromfile=f'v{prior}', tofile=f'v{doc["version"]}'))})
+                if len(parts) == 4 and parts[3] in ('delete-latest', 'delete') and method == 'POST':
+                    return self.send(self.server.service.delete_document(doc_id, parts[3] == 'delete-latest', self.body()))
                 if len(parts) == 4 and parts[3] == 'extract' and method == 'POST':
                     data = self.body()
                     return self.send(self.server.service.start(doc_id, data.get('agent'), data.get('model', '')), 202)
@@ -129,6 +132,13 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(store.review(parts[2], d.get('revision'), d.get('action'), d.get('actor'), d.get('reason'), d.get('payload')))
                 if parts[3] == 'history' and method == 'GET':
                     return self.send(store.history(parts[2]))
+            if route.path == '/api/cleanup':
+                if method == 'GET':
+                    return self.send({'cleanup_pending': len(store.pending_cleanup())})
+                if method == 'POST':
+                    if self.body():
+                        raise ValueError('정리 재시도에는 빈 JSON 객체를 보내세요.')
+                    return self.send(self.server.service.cleanup_logs())
             if route.path == '/api/runs' and method == 'GET':
                 return self.send(store.runs())
             if len(parts) == 3 and parts[:2] == ['api', 'runs'] and method == 'GET':
