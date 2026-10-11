@@ -1,6 +1,7 @@
 import json
 import threading
 import unittest
+import unicodedata
 from unittest.mock import patch
 
 import test_workflow as workflow
@@ -119,6 +120,72 @@ class AssistantTests(unittest.TestCase):
         job=self.store.create_question('q','agy','',self.store.snapshot()['id'])
         self.store.recover()
         self.assertEqual(self.store.question(job['id'])['status'],'interrupted')
+
+    def test_document_explanation_with_empty_graph_and_title_search(self):
+        source = '【청구항 1】 온도에 따라 팬을 제어한다. <정정>【청구항 3】 작동 시간을 기록한다.'
+        doc = self.store.register('보정서', 'claims.docx', source.encode(), source)
+        def read_found(prompt):
+            state = json.loads(prompt.split('입력 상태(JSON):\n', 1)[1])
+            match = state['trace'][1]['result']['matches'][0]
+            self.assertEqual(match['document_id'], doc['id'])
+            self.assertEqual(match['matched_fields'], ['title'])
+            self.assertEqual(match['offset_strategy'], 'start')
+            self.assertFalse(state['trace'][1]['result']['citable'])
+            self.assertEqual(state['evidence']['E1']['result']['rows'], [])
+            return tool(name='read_document', document_id=match['document_id'], offset=match['offset'])
+        def explain(prompt):
+            state = json.loads(prompt.split('입력 상태(JSON):\n', 1)[1])
+            evidence = state['evidence']['E2']
+            self.assertEqual(evidence['text'], source)
+            self.assertEqual(evidence['title'], '보정서')
+            self.assertEqual(evidence['filename'], 'claims.docx')
+            self.assertEqual(evidence['end_offset'], evidence['total_chars'])
+            return {'answer': {'claims': [{'text': '등록한 문서는 팬 제어와 작동 시간 기록을 다룬다.', 'kind': 'source', 'citations': ['E2']}], 'unknowns': ['이 원문은 제목 용어의 일반 정의를 명시하지 않습니다.']}}
+        job, _ = self.ask([tool(subject='보정서'), tool(name='search_documents',query='보정서'), read_found, explain], question='보정서가 무엇인가?')
+        self.assertEqual(job['status'], 'success')
+        self.assertEqual(job['evidence']['E2']['version'], 1)
+
+    def test_normalized_metadata_and_body_offsets_remain_original(self):
+        body = '앞부분 ß ' + unicodedata.normalize('NFD', '설명') + ' 끝'
+        doc = self.store.register('제목', unicodedata.normalize('NFD', '보정서') + '.DOCX', body.encode(), body)
+        from verinote.assistant import Assistant
+        assistant = Assistant(self.store, None, self.store.snapshot(), {}, self.root, lambda *args: None)
+        for term, field in [('보정서.docx','filename'), ('SS','text'), ('설명','text')]:
+            assistant.execute({'name':'search_documents','arguments':{'query':term}})
+            result = assistant.trace[-1]['result']
+            match = next(m for m in result['matches'] if m['document_id']==doc['id'])
+            self.assertIn(field, match['matched_fields'])
+            self.assertEqual((match['offset'],match['offset_strategy']), (0,'start'))
+        assistant.execute({'name':'search_documents','arguments':{'query':'끝'}})
+        match=assistant.trace[-1]['result']['matches'][0]
+        self.assertEqual(match['offset'],body.index('끝'))
+        assistant.execute({'name':'read_document','arguments':{'document_id':doc['id'],'offset':match['offset']}})
+        self.assertEqual(assistant.evidence['E1']['text'],'끝')
+        self.assertEqual(assistant.evidence['E1']['total_chars'],len(body))
+        # Ambiguous titles remain distinct navigation candidates, never merged evidence.
+        second=self.store.register('제목','other.md',b'other','other')
+        assistant=Assistant(self.store,None,self.store.snapshot(),{},self.root,lambda *args:None)
+        assistant.execute({'name':'search_documents','arguments':{'query':'제목'}})
+        self.assertEqual({m['document_id'] for m in assistant.trace[-1]['result']['matches']},{doc['id'],second['id']})
+
+    def test_continuation_reads_later_source_and_search_is_not_evidence(self):
+        source='가'*2050+'나중에 확인할 설명입니다.'
+        doc=self.store.register('운영 지침','manual.md',source.encode(),source)
+        def continuation(prompt):
+            state=json.loads(prompt.split('입력 상태(JSON):\n',1)[1])
+            evidence=state['evidence']['E2']
+            self.assertEqual(evidence['text'],source[:2000])
+            self.assertEqual(evidence['next_offset'],2000)
+            self.assertEqual(evidence['total_chars'],len(source))
+            return tool(name='read_document',document_id=doc['id'],offset=evidence['next_offset'])
+        job,_=self.ask([tool(),tool(name='read_document',document_id=doc['id']),continuation,answer(kind='source',ids=['E3'])])
+        self.assertEqual(job['status'],'success')
+        self.assertEqual(job['evidence']['E3']['text'],source[2000:])
+        self.assertIsNone(job['evidence']['E3']['next_offset'])
+        job,_=self.ask([tool(),tool(name='search_documents',query='운영 지침'),answer(kind='source')])
+        self.assertEqual(job['status'],'error')
+        job,_=self.ask([tool(),tool(name='read_document',document_id=doc['id']),answer(kind='graph',ids=['E2'])])
+        self.assertEqual(job['status'],'error')
 
 
 class QuestionHTTP(unittest.TestCase):
