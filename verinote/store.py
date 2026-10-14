@@ -231,12 +231,13 @@ class Store:
         with self.connect(True) as db:
             db.execute('UPDATE runs SET status=?,detail=? WHERE id=?', (status, detail, run_id))
 
-    def finish_run(self, run_id, page=None, facts=None, dictionary=None):
+    def finish_run(self, run_id, page=None, facts=None, dictionary=None, detail=''):
         with self.connect(True) as db:
             run = db.execute('SELECT * FROM runs WHERE id=?', (run_id,)).fetchone()
             if not run or run['status'] != 'running':
                 raise Conflict('실행 상태가 변경되었습니다.')
-            from .service import validate_page, validate_fact
+            from .service import validate_page, validate_fact, text
+            detail = text(detail, '실행 상세', 2000) if detail else ''
             from .ontology import validate_dictionary, dictionary_fact
             source = db.execute('SELECT text FROM versions WHERE document_id=? AND version=?', (run['document_id'], run['version'])).fetchone()[0]
             if run['stage'] == 'ontology':
@@ -260,7 +261,7 @@ class Store:
                 item_id = ident()
                 db.execute('INSERT INTO items VALUES(?,?,?,?,?,?,?,?)', (item_id, run['document_id'], run['version'], kind, canonical(payload), 'pending', 1, run_id))
                 db.execute('INSERT INTO events(item_id,revision,action,actor,reason,payload,created_at) VALUES(?,?,?,?,?,?,?)', (item_id, 1, 'created', 'agent:' + run['agent'], '추출 후보', canonical(payload), now()))
-            db.execute("UPDATE runs SET status='success',detail='' WHERE id=?", (run_id,))
+            db.execute("UPDATE runs SET status='success',detail=? WHERE id=?", (detail, run_id))
 
     def review(self, item_id, revision, action, actor, reason, payload=None):
         if action not in {'approved', 'rejected', 'held', 'pending', 'revise'}:

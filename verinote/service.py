@@ -9,8 +9,10 @@ import threading
 from .agents import CLI, PROVIDERS, validate_model
 from .documents import chunks
 from .engine import query
-from .ontology import (DICTIONARY_PROMPT, EXTRACTION_PROMPT, MAX_FACTS,
-                       bounded_prompt, dictionary_fact, merge_dictionary)
+from .ontology import (DICTIONARY_PROMPT, EXTRACTION_PROMPT,
+                       MAX_QUOTE_REPAIR_CALLS, QUOTE_REPAIR_PROMPT,
+                       apply_quote_repairs, bounded_prompt, dictionary_fact,
+                       extraction_quote_issues, merge_dictionary, quote_label)
 
 
 def text(value, name, limit=200):
@@ -70,6 +72,7 @@ class Service:
             self.store.run_status(run['id'], 'running')
             doc = self.store.document(run['document_id'], run['version'])
             claims, facts = [], []
+            repair_calls, repaired_quotes, repair_locations = 0, 0, []
             dictionary = {'entities': [], 'aliases': [], 'relations': []}
             for index, (offset, chunk) in enumerate(chunks(doc['text']), 1):
                 label = '사전 생성' if run['stage'] == 'ontology' else '승인 사전으로 추출'
@@ -79,20 +82,51 @@ class Service:
                     prompt = bounded_prompt(DICTIONARY_PROMPT, payload | {'dictionary': dictionary})
                 else:
                     prompt = bounded_prompt(EXTRACTION_PROMPT, payload | {'approved_dictionary': run['ontology']})
-                output = self.cli.complete(run['agent'], run['model'], prompt, self.root / 'runs' / run['id'] / str(index))
+                folder = self.root / 'runs' / run['id'] / str(index)
+                output = self.cli.complete(run['agent'], run['model'], prompt, folder)
                 if run['stage'] == 'ontology':
                     dictionary = merge_dictionary(dictionary, output, doc['text'][:offset + len(chunk)], chunk)
                     continue
-                page = validate_page(output, chunk)
-                if len(page['claims']) > 12 or not isinstance(output.get('facts'), list) or len(output['facts']) > MAX_FACTS:
-                    raise ValueError(f'청크당 주장 12개/관계 {MAX_FACTS}개 제한 초과')
+                try:
+                    issues = extraction_quote_issues(output, chunk, run['ontology']['payload'])
+                    if issues:
+                        locations = ', '.join(quote_label(issue['path']) for issue in issues[:5])
+                        if len(issues) > 5:
+                            locations += f' 외 {len(issues) - 5}개'
+                        if repair_calls >= MAX_QUOTE_REPAIR_CALLS:
+                            raise ValueError(f'{locations}: 원문에 없는 인용입니다. 문서당 인용 보정 {MAX_QUOTE_REPAIR_CALLS}회 한도에 도달했습니다.')
+                        self.store.run_status(run['id'], 'running', f'청크 {index} · {locations}: 원문 인용 보정 중 (추가 호출 {repair_calls + 1}/{MAX_QUOTE_REPAIR_CALLS})')
+                        try:
+                            repair_prompt = bounded_prompt(QUOTE_REPAIR_PROMPT, payload | {
+                                'issues': issues, 'approved_dictionary': run['ontology']})
+                            repair_calls += 1
+                            repair_folder = folder / 'quote-repair'
+                            response = self.cli.complete(run['agent'], run['model'], repair_prompt, repair_folder)
+                            output, changes = apply_quote_repairs(output, chunk, issues, response)
+                            # Recheck the whole response; a repair cannot bypass any vocabulary/shape gate.
+                            if extraction_quote_issues(output, chunk, run['ontology']['payload']):
+                                raise ValueError('보정 후에도 원문과 일치하지 않는 인용이 있습니다.')
+                            validate_page(output, chunk)
+                            for fact in output['facts']:
+                                dictionary_fact(fact, chunk, run['ontology']['payload'])
+                            repair_folder.mkdir(parents=True, exist_ok=True)
+                            (repair_folder / 'changes.json').write_text(json.dumps(changes, ensure_ascii=False, indent=2), encoding='utf-8')
+                        except Exception as exc:
+                            raise ValueError(f'{locations}: 인용 보정 실패 (청크당 1회). {exc}') from exc
+                        repaired_quotes += len(changes)
+                        repair_locations.append(f'청크 {index}: {locations}')
+                    page = validate_page(output, chunk)
+                except ValueError as exc:
+                    raise ValueError(f'청크 {index} · {exc}') from exc
                 claims.extend(page['claims'])
                 facts.extend(dictionary_fact(f, chunk, run['ontology']['payload']) for f in output['facts'])
             if run['stage'] == 'ontology':
                 self.store.finish_run(run['id'], dictionary=dictionary)
                 return
             unique = {json.dumps(f, sort_keys=True, ensure_ascii=False): f for f in facts}
-            self.store.finish_run(run['id'], {'title': doc['title'], 'claims': claims}, list(unique.values()))
+            detail = (f'원문 인용 {repaired_quotes}개 보정 · 추가 호출 {repair_calls}회 ({"; ".join(repair_locations)}). 의미가 맞는지 원문과 대조한 뒤 승인하세요.'
+                      if repair_calls else '')
+            self.store.finish_run(run['id'], {'title': doc['title'], 'claims': claims}, list(unique.values()), detail=detail)
         except Exception as exc:
             self.store.run_status(run['id'], 'error', str(exc)[:2000])
         finally:

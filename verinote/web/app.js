@@ -75,7 +75,7 @@ async function watchRun(id, docId) {
   try {
     const r=await api('/api/runs/'+id);
     if (['queued','running'].includes(r.status)) {notice(`추출 중 · ${r.detail||'대기 중'}`);setTimeout(()=>watchRun(id,docId),1500);return;}
-    notice(r.status==='success'?(r.stage==='ontology'?'사전 초안이 준비되었습니다. 개체·별칭·관계 정의를 수정·승인한 다음 추출하세요.':'위키와 관계 후보가 준비되었습니다. 원문과 대조해 각각 승인하세요.'):`추출 ${labels[r.status]}: ${r.detail}`,r.status!=='success');
+    notice(r.status==='success'?((r.stage==='ontology'?'사전 초안이 준비되었습니다. 개체·별칭·관계 정의를 수정·승인한 다음 추출하세요.':'위키와 관계 후보가 준비되었습니다. 원문과 대조해 각각 승인하세요.')+(r.detail?` ${r.detail}`:'')):`추출 ${labels[r.status]}: ${r.detail}`,r.status!=='success');
     await loadLibrary();
     if(selectedDoc?.id===docId && !$('#library').hidden) await openDoc(docId);
   } catch(e){notice(e.message,true);}
