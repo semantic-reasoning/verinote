@@ -91,7 +91,7 @@ class Deletion(unittest.TestCase):
 
     def test_single_version_and_active_jobs_block_deletion(self):
         with self.assertRaises(Conflict):self.delete(True)
-        run=self.store.create_run(self.doc['id'],'agy','')
+        run=self.store.create_run(self.doc['id'],'agy','','ontology',1,1)
         for status in ('queued','running'):
             self.store.run_status(run['id'],status)
             with self.assertRaises(Conflict):self.delete()

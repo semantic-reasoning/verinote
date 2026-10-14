@@ -56,6 +56,11 @@ class Store:
                 db.execute('UPDATE documents SET next_version=(SELECT COALESCE(MAX(version),0)+1 FROM versions WHERE document_id=documents.id)')
             if 'generation' not in columns:
                 db.execute('ALTER TABLE documents ADD COLUMN generation INTEGER NOT NULL DEFAULT 1')
+            run_columns = {r['name'] for r in db.execute('PRAGMA table_info(runs)')}
+            if 'stage' not in run_columns:
+                db.execute("ALTER TABLE runs ADD COLUMN stage TEXT NOT NULL DEFAULT 'legacy'")
+            if 'ontology' not in run_columns:
+                db.execute('ALTER TABLE runs ADD COLUMN ontology TEXT')
 
     @contextmanager
     def connect(self, write=False):
@@ -140,7 +145,17 @@ class Store:
                 raise ValueError('버전을 찾을 수 없습니다.')
             versions = [dict(r) for r in db.execute('SELECT version,filename,sha256,created_at FROM versions WHERE document_id=? ORDER BY version DESC', (document_id,))]
             items = [self.unpack(r) for r in db.execute('SELECT * FROM items WHERE document_id=? AND version=? ORDER BY kind,id', (document_id, selected))]
-            return dict(doc) | dict(source) | {'versions': versions, 'items': items}
+            runs = {r['id']: self.unpack_run(r) for r in db.execute('SELECT * FROM runs WHERE document_id=? AND version=?', (document_id, selected))}
+            dictionary = next((i for i in items if i['kind'] == 'ontology'), None)
+            extracted = set()
+            for run in runs.values():
+                if run['stage'] == 'extract' and run['status'] == 'success' and run['ontology']:
+                    extracted.add((run['ontology']['id'], run['ontology']['revision']))
+            for item in items:
+                pin = runs.get(item['run_id'], {}).get('ontology')
+                item['dictionary'] = {k: pin[k] for k in ('id', 'revision', 'sha256')} if pin else None
+            can_extract = bool(dictionary and dictionary['status'] == 'approved' and (dictionary['id'], dictionary['revision']) not in extracted)
+            return dict(doc) | dict(source) | {'versions': versions, 'items': items, 'can_extract': can_extract}
 
     @staticmethod
     def unpack(row):
@@ -165,42 +180,83 @@ class Store:
             db.execute("INSERT OR REPLACE INTO settings VALUES('agents',?)", (canonical(value),))
         return value
 
-    def create_run(self, document_id, agent, model):
+    def create_run(self, document_id, agent, model, stage='extract', expected_version=None, expected_generation=None):
+        if stage not in ('ontology', 'extract'):
+            raise ValueError('지원하지 않는 추출 단계')
         run_id = ident()
         with self.connect(True) as db:
-            doc = db.execute('SELECT current_version FROM documents WHERE id=?', (document_id,)).fetchone()
+            doc = db.execute('SELECT * FROM documents WHERE id=?', (document_id,)).fetchone()
             if not doc:
                 raise ValueError('문서를 찾을 수 없습니다.')
-            # Retrying is permitted after failure; successful extraction is never silently replaced.
-            if db.execute('SELECT 1 FROM items WHERE document_id=? AND version=? LIMIT 1', (document_id, doc[0])).fetchone():
-                raise Conflict('이 버전은 이미 추출되었습니다. 후보를 수정하거나 새 문서 버전을 등록하세요.')
+            self.check_document_token(doc, expected_version, expected_generation)
+            dictionary = db.execute("SELECT * FROM items WHERE document_id=? AND version=? AND kind='ontology'", (document_id, doc['current_version'])).fetchone()
+            pinned = None
+            if stage == 'ontology':
+                if dictionary:
+                    raise Conflict('이미 사전 초안이 있습니다. 사전을 수정하고 다시 승인하세요.')
+            else:
+                if not dictionary or dictionary['status'] != 'approved':
+                    raise Conflict('이 문서 버전의 개체·별칭·관계 사전을 먼저 승인하세요.')
+                payload = json.loads(dictionary['payload'])
+                pinned = {'id': dictionary['id'], 'revision': dictionary['revision'], 'payload': payload, 'sha256': digest(payload)}
+                for prior in db.execute("SELECT ontology FROM runs WHERE document_id=? AND version=? AND stage='extract' AND status='success'", (document_id, doc['current_version'])):
+                    old = json.loads(prior[0])
+                    if (old['id'], old['revision']) == (pinned['id'], pinned['revision']):
+                        raise Conflict('이 승인 사전 revision으로 이미 추출했습니다. 사전 수정·재승인 후 다시 추출하세요.')
             try:
-                db.execute('INSERT INTO runs VALUES(?,?,?,?,?,?,?,?)', (run_id, document_id, doc[0], agent, model, 'queued', '', now()))
+                db.execute('INSERT INTO runs(id,document_id,version,agent,model,status,detail,created_at,stage,ontology) VALUES(?,?,?,?,?,?,?,?,?,?)',
+                           (run_id, document_id, doc['current_version'], agent, model, 'queued', '', now(), stage, canonical(pinned) if pinned else None))
             except sqlite3.IntegrityError as exc:
                 raise Conflict('이 문서는 이미 추출 중입니다.') from exc
         return self.run(run_id)
+
+    @staticmethod
+    def unpack_run(row):
+        value = dict(row)
+        value['ontology'] = json.loads(value['ontology']) if value['ontology'] else None
+        return value
 
     def run(self, run_id):
         with self.connect() as db:
             row = db.execute('SELECT * FROM runs WHERE id=?', (run_id,)).fetchone()
             if not row:
                 raise ValueError('실행을 찾을 수 없습니다.')
-            return dict(row)
+            return self.unpack_run(row)
 
     def runs(self):
         with self.connect() as db:
-            return [dict(r) for r in db.execute('SELECT * FROM runs ORDER BY created_at DESC LIMIT 100')]
+            return [self.unpack_run(r) for r in db.execute('SELECT * FROM runs ORDER BY created_at DESC LIMIT 100')]
 
     def run_status(self, run_id, status, detail=''):
         with self.connect(True) as db:
             db.execute('UPDATE runs SET status=?,detail=? WHERE id=?', (status, detail, run_id))
 
-    def finish_run(self, run_id, page, facts):
+    def finish_run(self, run_id, page=None, facts=None, dictionary=None):
         with self.connect(True) as db:
             run = db.execute('SELECT * FROM runs WHERE id=?', (run_id,)).fetchone()
-            if run['status'] != 'running':
+            if not run or run['status'] != 'running':
                 raise Conflict('실행 상태가 변경되었습니다.')
-            for kind, payload in [('page', page), *[('fact', f) for f in facts]]:
+            from .service import validate_page, validate_fact
+            from .ontology import validate_dictionary, dictionary_fact
+            source = db.execute('SELECT text FROM versions WHERE document_id=? AND version=?', (run['document_id'], run['version'])).fetchone()[0]
+            if run['stage'] == 'ontology':
+                if db.execute("SELECT 1 FROM items WHERE document_id=? AND version=? AND kind='ontology'", (run['document_id'], run['version'])).fetchone():
+                    raise Conflict('이미 사전 초안이 있습니다.')
+                candidates = [('ontology', validate_dictionary(dictionary, source))]
+            else:
+                page = validate_page(page, source)
+                if not isinstance(facts, list) or len(facts) > 1280:
+                    raise ValueError('관계는 최대 1280개입니다.')
+                if run['stage'] == 'extract':
+                    pinned = json.loads(run['ontology'])
+                    current = db.execute('SELECT * FROM items WHERE id=?', (pinned['id'],)).fetchone()
+                    if not current or current['status'] != 'approved' or current['revision'] != pinned['revision'] or digest(json.loads(current['payload'])) != pinned['sha256']:
+                        raise Conflict('추출 중 사전이 변경되거나 승인이 철회되었습니다. 다시 승인 후 추출하세요.')
+                    facts = [dictionary_fact(f, source, pinned['payload']) for f in facts]
+                else:
+                    facts = [validate_fact(f, source) for f in facts]
+                candidates = [('page', page), *[('fact', f) for f in facts]]
+            for kind, payload in candidates:
                 item_id = ident()
                 db.execute('INSERT INTO items VALUES(?,?,?,?,?,?,?,?)', (item_id, run['document_id'], run['version'], kind, canonical(payload), 'pending', 1, run_id))
                 db.execute('INSERT INTO events(item_id,revision,action,actor,reason,payload,created_at) VALUES(?,?,?,?,?,?,?)', (item_id, 1, 'created', 'agent:' + run['agent'], '추출 후보', canonical(payload), now()))
@@ -218,13 +274,20 @@ class Store:
             if row['revision'] != revision:
                 raise Conflict('후보가 변경되었습니다. 새로고침 후 검토하세요.')
             value = json.loads(row['payload']) if payload is None else payload
-            if payload is not None and (action != 'revise' or row['kind'] != 'fact'):
-                raise ValueError('사실 수정 작업만 payload를 받습니다.')
+            if payload is not None and (action != 'revise' or row['kind'] not in ('fact', 'ontology')):
+                raise ValueError('사실·사전 수정 작업만 payload를 받습니다.')
             if action == 'revise' and payload is None:
                 raise ValueError('수정할 사실이 필요합니다.')
             source = db.execute('SELECT text FROM versions WHERE document_id=? AND version=?', (row['document_id'], row['version'])).fetchone()[0]
             from .service import validate_fact, validate_page
-            value = validate_fact(value, source) if row['kind'] == 'fact' else validate_page(value, source)
+            from .ontology import validate_dictionary, dictionary_fact
+            if row['kind'] == 'ontology':
+                value = validate_dictionary(value, source)
+            elif row['kind'] == 'fact':
+                run = db.execute('SELECT stage,ontology FROM runs WHERE id=?', (row['run_id'],)).fetchone()
+                value = dictionary_fact(value, source, json.loads(run['ontology'])['payload']) if run and run['stage'] == 'extract' else validate_fact(value, source)
+            else:
+                value = validate_page(value, source)
             status = 'pending' if action == 'revise' else action
             if status == row['status'] and action != 'revise':
                 raise Conflict('이미 같은 상태입니다.')

@@ -15,11 +15,37 @@ from verinote.documents import decode_document
 from verinote.engine import query
 from verinote.server import Server
 from verinote.service import Service, validate_fact
-from verinote.store import Conflict, Store
+from verinote.store import Conflict, Store, ident, now
 
 SOURCE = '주문은 결제에 의존한다. 결제는 원장에 의존한다.'
 FACTS = [dict(subject='주문', predicate='depends_on', object='결제', quote='주문은 결제에 의존한다.'), dict(subject='결제', predicate='depends_on', object='원장', quote='결제는 원장에 의존한다.')]
 PAGE = {'title': '결제', 'claims': [{'heading': '구조', 'text': SOURCE, 'quote': SOURCE}]}
+
+
+DICTIONARY = {
+    'entities': [{'id': name, 'name': name, 'type': 'Service', 'quote': SOURCE} for name in ('주문', '결제', '원장')],
+    'aliases': [],
+    'relations': [{'id': 'depends_on', 'description': '주어 서비스가 목적어 서비스에 직접 의존한다.', 'subject_types': ['Service'], 'object_types': ['Service'], 'quote': SOURCE}],
+}
+
+
+def legacy_run(store, doc_id):
+    # Existing graph/review tests exercise the preserved pre-dictionary contract.
+    doc = store.document(doc_id)
+    key = ident()
+    with store.connect(True) as db:
+        db.execute('INSERT INTO runs(id,document_id,version,agent,model,status,detail,created_at) VALUES(?,?,?,?,?,?,?,?)', (key,doc_id,doc['version'],'agy','test','queued','',now()))
+    return store.run(key)
+
+
+def approved_dictionary(store, doc_id, payload=DICTIONARY):
+    doc = store.document(doc_id)
+    run = store.create_run(doc_id, 'agy', 'test', 'ontology', doc['version'], doc['generation'])
+    store.run_status(run['id'], 'running')
+    store.finish_run(run['id'], dictionary=payload)
+    item = next(i for i in store.document(doc_id)['items'] if i['kind']=='ontology')
+    store.review(item['id'], 1, 'approved', 'Reviewer', '사전 검증')
+    return next(i for i in store.document(doc_id)['items'] if i['kind']=='ontology')
 
 
 class Workflow(unittest.TestCase):
@@ -33,7 +59,7 @@ class Workflow(unittest.TestCase):
         self.temp.cleanup()
 
     def extract(self, facts=None):
-        run = self.store.create_run(self.doc['id'], 'agy', 'test')
+        run = legacy_run(self.store, self.doc['id'])
         self.store.run_status(run['id'], 'running')
         self.store.finish_run(run['id'], PAGE, FACTS if facts is None else facts)
         return self.store.document(self.doc['id'])['items']
@@ -112,22 +138,23 @@ class Workflow(unittest.TestCase):
         self.assertEqual(query(self.store.snapshot())['rows'], [[odd.strip(), 'depends_on', '결제']])
 
     def test_active_job_and_restart(self):
-        run = self.store.create_run(self.doc['id'], 'agy', '')
+        run = self.store.create_run(self.doc['id'], 'agy', '', 'ontology', 1, 1)
         with self.assertRaises(Conflict):
-            self.store.create_run(self.doc['id'], 'claude', '')
+            self.store.create_run(self.doc['id'], 'claude', '', 'ontology', 1, 1)
         self.store.recover()
         self.assertEqual(self.store.run(run['id'])['status'], 'interrupted')
-        self.store.create_run(self.doc['id'], 'claude', '')
+        self.store.create_run(self.doc['id'], 'claude', '', 'ontology', 1, 1)
 
     def test_async_protocol_and_failed_quote_atomicity(self):
         class Fake:
             def complete(self, *args):
                 return PAGE | {'facts': [FACTS[0] | {'quote': 'invented quote'}]}
+        approved_dictionary(self.store, self.doc['id'])
         service = Service(self.store, self.root, Fake())
-        run = service.start(self.doc['id'], 'codex', 'test-model')
+        run = service.start(self.doc['id'], 'codex', 'test-model', expected_version=1, expected_generation=1)
         service.pool.shutdown(wait=True)
         self.assertEqual(self.store.run(run['id'])['status'], 'error')
-        self.assertEqual(self.store.document(self.doc['id'])['items'], [])
+        self.assertEqual([i for i in self.store.document(self.doc['id'])['items'] if i['kind']!='ontology'], [])
         self.assertEqual(self.store.document(self.doc['id'])['text'], SOURCE)
 
     def test_new_version_during_extraction_stays_historical(self):
@@ -136,13 +163,14 @@ class Workflow(unittest.TestCase):
             def complete(self, *args):
                 entered.set(); release.wait(5)
                 return PAGE | {'facts': FACTS}
+        approved_dictionary(self.store, self.doc['id'])
         service = Service(self.store, self.root, Fake())
-        run = service.start(self.doc['id'], 'agy', '')
+        run = service.start(self.doc['id'], 'agy', '', expected_version=1, expected_generation=1)
         self.assertTrue(entered.wait(3))
         self.store.register('new', 'new.md', b'new', 'new', self.doc['id'], 1, 1)
         release.set(); service.pool.shutdown(wait=True)
         self.assertEqual(self.store.run(run['id'])['status'], 'success')
-        self.approve(self.store.document(self.doc['id'], 1)['items'])
+        self.approve([i for i in self.store.document(self.doc['id'], 1)['items'] if i['kind']!='ontology'])
         self.assertEqual(self.store.snapshot()['facts'], [])
         self.assertEqual(self.store.document(self.doc['id'])['items'], [])
 
@@ -227,7 +255,7 @@ class HTTP(unittest.TestCase):
 
     def test_http_upload_review_query_version_diff(self):
         doc=self.request('/api/documents','POST',{'title':'test','filename':'test.md','text':SOURCE})
-        run=self.store.create_run(doc['id'],'agy','');self.store.run_status(run['id'],'running');self.store.finish_run(run['id'],PAGE,FACTS)
+        run=legacy_run(self.store, doc['id']);self.store.run_status(run['id'],'running');self.store.finish_run(run['id'],PAGE,FACTS)
         for i in self.store.document(doc['id'])['items']:
             self.request(f'/api/items/{i["id"]}/review','POST',{'revision':1,'action':'approved','actor':'Tester','reason':'verified'})
         r=self.request('/api/query','POST',{'action':'path','subject':'주문','predicate':'depends_on','target':'원장'})

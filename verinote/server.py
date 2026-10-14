@@ -123,9 +123,11 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send({'diff': ''.join(difflib.unified_diff(previous.splitlines(True), doc['text'].splitlines(True), fromfile=f'v{prior}', tofile=f'v{doc["version"]}'))})
                 if len(parts) == 4 and parts[3] in ('delete-latest', 'delete') and method == 'POST':
                     return self.send(self.server.service.delete_document(doc_id, parts[3] == 'delete-latest', self.body()))
-                if len(parts) == 4 and parts[3] == 'extract' and method == 'POST':
+                if len(parts) == 4 and parts[3] in ('extract', 'ontology') and method == 'POST':
                     data = self.body()
-                    return self.send(self.server.service.start(doc_id, data.get('agent'), data.get('model', '')), 202)
+                    if set(data) - {'agent', 'model', 'expected_version', 'expected_generation'}:
+                        raise ValueError('알 수 없는 추출 필드')
+                    return self.send(self.server.service.start(doc_id, data.get('agent'), data.get('model', ''), parts[3], data.get('expected_version'), data.get('expected_generation')), 202)
             if len(parts) == 4 and parts[:2] == ['api', 'items']:
                 if parts[3] == 'review' and method == 'POST':
                     d = self.body()

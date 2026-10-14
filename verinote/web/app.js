@@ -38,11 +38,18 @@ async function renderDocs() {
 function providerSelect() {
   return `<label>추출 에이전트<select id="extract-agent">${config.providers.map(p=>`<option value="${p.id}" ${config.selected===p.id?'selected':''}>${esc(p.name)}${p.installed?'':' · 미설치'}</option>`).join('')}</select></label><label>이 작업의 모델 ID<input id="extract-model" value="${esc(config.models[config.selected]||'')}" placeholder="CLI 기본 모델"></label>`;
 }
+function extractionControls(d) {
+  const dictionary=d.items.find(i=>i.kind==='ontology');
+  return `<h3>1. 사전 생성 → 2. 사전 수정·승인 → 3. 위키·관계 추출</h3><div class="form-grid">${providerSelect()}</div><div class="actions"><button class="primary" id="ontology" ${dictionary?'disabled':''}>1. 개체·별칭·관계 사전 생성</button><button class="primary" id="extract" ${d.can_extract?'':'disabled'}>3. 승인 사전으로 추출</button></div><p class="muted">${!dictionary?'먼저 사전을 생성하세요.':dictionary.status!=='approved'?'아래 사전에서 이름·별칭·관계 방향과 타입을 확인하고 승인하세요.':d.can_extract?'사전이 승인되었습니다. 이 사전을 기준으로 추출할 수 있습니다.':'이 사전 revision의 추출이 완료되었습니다. 변경하려면 사전을 수정·재승인하세요.'} 원문이 선택한 모델 제공자에게 전달됩니다. 기존 결과는 보존하며 새 결과는 검토 대기로 추가합니다.</p>`;
+}
+function renderDictionary(p) {
+  return `<h3>2. 추출 기준 사전 검토</h3><p>개체의 정규 ID, 별칭의 동일성, 관계의 의미·방향·타입을 원문과 대조하세요. 사전 승인 후에도 추출된 사실은 별도로 승인합니다.</p><h3>개체 · ${p.entities.length}</h3>${p.entities.map(e=>`<details><summary>${esc(e.id)} · ${esc(e.name)} · ${esc(e.type)}</summary><blockquote class="quote">${esc(e.quote)}</blockquote></details>`).join('')}<h3>별칭 · ${p.aliases.length}</h3>${p.aliases.map(a=>`<details><summary>${esc(a.alias)} → ${esc(a.entity)}</summary><blockquote class="quote">${esc(a.quote)}</blockquote></details>`).join('')}<h3>관계 · ${p.relations.length}</h3>${p.relations.map(r=>`<div><strong>${esc(r.id)}</strong><p>${r.subject_types.map(esc).join(', ')} → ${r.object_types.map(esc).join(', ')}<br>${esc(r.description)}</p><details><summary>원문 근거</summary><blockquote class="quote">${esc(r.quote)}</blockquote></details></div>`).join('')}`;
+}
 async function openDoc(id, version) {
   selectedDoc = await api(`/api/documents/${id}${version?'?version='+version:''}`);
   const d = selectedDoc, latest = d.version === d.current_version;
   showView('library');
-  $('#document-detail').innerHTML = `<div class="panel"><div class="detail-title"><h2>${esc(d.title)}</h2><select id="version-select" aria-label="문서 버전">${d.versions.map(v=>`<option value="${v.version}" ${v.version===d.version?'selected':''}>v${v.version}${v.version===d.current_version?' · 현재':''}</option>`).join('')}</select><button id="add-version">＋ 새 버전 등록</button></div><p class="muted">${latest?'현재 문서 버전':'과거 문서 버전 · 현재 그래프에 포함되지 않습니다'} · ${esc(d.filename)}</p><p class="mono">SHA-256 ${esc(d.sha256)}</p><div class="actions"><a href="/api/documents/${d.id}/raw?version=${d.version}" download="${esc(d.filename)}">원본 다운로드</a><button id="show-diff">이전 버전과 비교</button></div><div class="actions"><button id="delete-latest" class="danger" ${d.versions.length===1?'disabled':''}>최신 리비전 v${d.current_version}만 삭제</button><button id="delete-document" class="danger">문서 전체 삭제</button></div>${d.versions.length===1?'<p class="muted">리비전이 하나뿐이면 문서 전체 삭제를 사용하세요.</p>':''}<div id="version-diff"></div><details><summary>원문 전체 · v${d.version}</summary><pre class="source">${esc(d.text)}</pre></details>${latest&&!d.items.length?`<div class="form-grid">${providerSelect()}</div><button class="primary" id="extract">위키 초안 추출</button><p class="muted">원문이 선택한 CLI 모델 제공자에게 전달됩니다. 추출 결과는 검토 대기로 저장됩니다.</p>`:''}</div><h2>위키와 사실 검토</h2><p class="muted">위키 문장 승인과 관계 사실 승인은 별개입니다. 원문의 인용을 대조하여 각각 검토하세요.</p><div id="items">${d.items.length?d.items.map(renderItem).join(''):'<div class="empty">아직 생성된 초안이 없습니다. 추출을 시작해 주세요.</div>'}</div>`;
+  $('#document-detail').innerHTML = `<div class="panel"><div class="detail-title"><h2>${esc(d.title)}</h2><select id="version-select" aria-label="문서 버전">${d.versions.map(v=>`<option value="${v.version}" ${v.version===d.version?'selected':''}>v${v.version}${v.version===d.current_version?' · 현재':''}</option>`).join('')}</select><button id="add-version">＋ 새 버전 등록</button></div><p class="muted">${latest?'현재 문서 버전':'과거 문서 버전 · 현재 그래프에 포함되지 않습니다'} · ${esc(d.filename)}</p><p class="mono">SHA-256 ${esc(d.sha256)}</p><div class="actions"><a href="/api/documents/${d.id}/raw?version=${d.version}" download="${esc(d.filename)}">원본 다운로드</a><button id="show-diff">이전 버전과 비교</button></div><div class="actions"><button id="delete-latest" class="danger" ${d.versions.length===1?'disabled':''}>최신 리비전 v${d.current_version}만 삭제</button><button id="delete-document" class="danger">문서 전체 삭제</button></div>${d.versions.length===1?'<p class="muted">리비전이 하나뿐이면 문서 전체 삭제를 사용하세요.</p>':''}<div id="version-diff"></div><details><summary>원문 전체 · v${d.version}</summary><pre class="source">${esc(d.text)}</pre></details>${latest?extractionControls(d):''}</div><h2>사전 · 위키 · 사실 검토</h2><p class="muted">위키 문장 승인과 관계 사실 승인은 별개입니다. 원문의 인용을 대조하여 각각 검토하세요.</p><div id="items">${d.items.length?d.items.map(renderItem).join(''):'<div class="empty">아직 생성된 초안이 없습니다. 사전 생성을 시작해 주세요.</div>'}</div>`;
   $('#document-detail').scrollIntoView({behavior:'smooth',block:'start'});
   $('#version-select').addEventListener('change', e=>attempt(()=>openDoc(id,Number(e.target.value))));
   $('#add-version').onclick = ()=>openUpload(d);
@@ -50,22 +57,25 @@ async function openDoc(id, version) {
   $('#delete-document').onclick=()=>openDelete(d,false);
   $('#show-diff').onclick = ()=>attempt(async()=>{const r=await api(`/api/documents/${id}/diff?version=${d.version}`);$('#version-diff').innerHTML=`<pre class="source">${esc(r.diff||'변경 없음')}</pre>`;});
   if ($('#extract-agent')) $('#extract-agent').onchange = e=>{$('#extract-model').value=config.models[e.target.value]||'';};
-  if ($('#extract')) $('#extract').onclick = ()=>attempt(async()=>{
-    const button=$('#extract'); button.disabled=true;
-    try {const run=await api(`/api/documents/${id}/extract`,'POST',{agent:$('#extract-agent').value,model:$('#extract-model').value});notice('추출을 시작했습니다. 실행 기록에서 진행 상황을 볼 수 있습니다.'); watchRun(run.id,id);}
-    catch(e){button.disabled=false;throw e;}
-  });
+  for (const stage of ['ontology','extract']) {
+    const button=$('#'+stage);
+    if(button) button.onclick=()=>attempt(async()=>{
+      button.disabled=true;
+      try {const run=await api(`/api/documents/${id}/${stage}`,'POST',{agent:$('#extract-agent').value,model:$('#extract-model').value,expected_version:d.version,expected_generation:d.generation});notice('작업을 시작했습니다. 실행 기록에서 진행 상황을 볼 수 있습니다.');watchRun(run.id,id);}
+      catch(e){button.disabled=false;throw e;}
+    });
+  }
 }
 function renderItem(item) {
   const p=item.payload;
-  const body=item.kind==='page'?`<h3>${esc(p.title)}</h3>${p.claims.map(c=>`<h3>${esc(c.heading)}</h3><p>${esc(c.text)}</p><details><summary>원문 근거</summary><blockquote class="quote">${esc(c.quote)}</blockquote></details>`).join('')}`:`<h3 class="query-row">${esc(p.subject)} → <small>${esc(p.predicate)}</small> → ${esc(p.object)}</h3><blockquote class="quote">${esc(p.quote)}</blockquote>`;
-  return `<article class="item">${badge(item.status)} <span class="muted">${item.kind==='page'?'위키 초안':'관계 사실'} · r${item.revision}</span>${body}<div class="actions">${['approved','held','rejected','pending',...(item.kind==='fact'?['revise']:[])].filter(a=>a!==item.status).map(a=>`<button data-review="${item.id}" data-action="${a}">${a==='revise'?'내용 수정':a==='pending'?'승인 철회 / 재검토':labels[a]}</button>`).join('')}<button data-history="${item.id}">이력</button></div><div id="history-${item.id}"></div></article>`;
+  const body=item.kind==='ontology'?renderDictionary(p):item.kind==='page'?`<h3>${esc(p.title)}</h3>${p.claims.map(c=>`<h3>${esc(c.heading)}</h3><p>${esc(c.text)}</p><details><summary>원문 근거</summary><blockquote class="quote">${esc(c.quote)}</blockquote></details>`).join('')}`:`<h3 class="query-row">${esc(p.subject)} → <small>${esc(p.predicate)}</small> → ${esc(p.object)}</h3><blockquote class="quote">${esc(p.quote)}</blockquote>`;
+  return `<article class="item">${badge(item.status)} <span class="muted">${{ontology:'사전 초안',page:'위키 초안',fact:'관계 사실'}[item.kind]} · r${item.revision}</span>${item.dictionary?`<p class="muted">추출 기준 사전 r${item.dictionary.revision} · ${esc(item.dictionary.sha256.slice(0,12))}</p>`:''}${body}<div class="actions">${['approved','held','rejected','pending',...(['fact','ontology'].includes(item.kind)?['revise']:[])].filter(a=>a!==item.status).map(a=>`<button data-review="${item.id}" data-action="${a}">${a==='revise'?'내용 수정':a==='pending'?'승인 철회 / 재검토':labels[a]}</button>`).join('')}<button data-history="${item.id}">이력</button></div><div id="history-${item.id}"></div></article>`;
 }
 async function watchRun(id, docId) {
   try {
     const r=await api('/api/runs/'+id);
     if (['queued','running'].includes(r.status)) {notice(`추출 중 · ${r.detail||'대기 중'}`);setTimeout(()=>watchRun(id,docId),1500);return;}
-    notice(r.status==='success'?'위키 초안이 준비되었습니다. 원문과 대조해 승인하세요.':`추출 ${labels[r.status]}: ${r.detail}`,r.status!=='success');
+    notice(r.status==='success'?(r.stage==='ontology'?'사전 초안이 준비되었습니다. 개체·별칭·관계 정의를 수정·승인한 다음 추출하세요.':'위키와 관계 후보가 준비되었습니다. 원문과 대조해 각각 승인하세요.'):`추출 ${labels[r.status]}: ${r.detail}`,r.status!=='success');
     await loadLibrary();
     if(selectedDoc?.id===docId && !$('#library').hidden) await openDoc(docId);
   } catch(e){notice(e.message,true);}
@@ -83,21 +93,24 @@ $('#upload-form').onsubmit=e=>{e.preventDefault();attempt(async()=>{
     if(file){if(file.size>4*1024*1024)throw new Error('최대 파일 크기는 4 MiB입니다.');const bytes=new Uint8Array(await file.arrayBuffer());let binary='';for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode(...bytes.subarray(i,i+8192));data.content_base64=btoa(binary);}
     else data.text=form.elements.text.value;
     if(uploadTarget){data.document_id=uploadTarget.id;data.expected_version=uploadTarget.current_version;data.expected_generation=uploadTarget.generation;}
-    const d=await api('/api/documents','POST',data);$('#upload-dialog').close();await loadLibrary();await openDoc(d.id);notice('원문을 보존했습니다. 에이전트를 선택해 위키 초안을 만드세요.');
+    const d=await api('/api/documents','POST',data);$('#upload-dialog').close();await loadLibrary();await openDoc(d.id);notice('원문을 보존했습니다. 개체·별칭·관계 사전을 먼저 생성하세요.');
   } finally{button.disabled=false;}
 });};
 function openReview(id,action) {
-  const item=selectedDoc.items.find(i=>i.id===id);reviewTarget={item,action};$('#review-form').reset();
+  const item=selectedDoc.items.find(i=>i.id===id);reviewTarget={item,action};$('#review-form').reset();$('#review-error').textContent='';
   $('#review-heading').textContent=action==='revise'?'후보 수정 → 재검토':action==='pending'?'승인 철회 / 재검토':`${labels[action]} 기록`;
-  $('#revision-fields').innerHTML=action==='revise'?['subject','predicate','object','quote'].map(k=>`<label>${k}<textarea name="${k}" required>${esc(item.payload[k])}</textarea></label>`).join(''):'';
+  $('#revision-fields').innerHTML=action==='revise'&&item.kind==='ontology'?`<label>개체·별칭·관계 사전 JSON<textarea name="dictionary" rows="18" required>${esc(JSON.stringify(item.payload,null,2))}</textarea></label><p>id는 문서 간에도 의미 있는 정규 명칭을 쓰세요. 개체·별칭의 원문 인용과 관계의 방향·타입·포함 및 제외 기준을 확인하세요. 수정하면 다시 승인이 필요합니다.</p>`:action==='revise'?['subject','predicate','object','quote'].map(k=>`<label>${k}<textarea name="${k}" required>${esc(item.payload[k])}</textarea></label>`).join(''):'';
   $('#review-dialog').showModal();
 }
 $('#cancel-review').onclick=()=>$('#review-dialog').close();
 $('#review-form').onsubmit=e=>{e.preventDefault();attempt(async()=>{
+  $('#review-error').textContent='';
+  try {
   const {item,action}=reviewTarget,form=e.target;
   const data={revision:item.revision,action,actor:form.elements.actor.value,reason:form.elements.reason.value};
-  if(action==='revise')data.payload=Object.fromEntries(['subject','predicate','object','quote'].map(k=>[k,form.elements[k].value]));
+  if(action==='revise')data.payload=item.kind==='ontology'?JSON.parse(form.elements.dictionary.value):Object.fromEntries(['subject','predicate','object','quote'].map(k=>[k,form.elements[k].value]));
   await api(`/api/items/${item.id}/review`,'POST',data);$('#review-dialog').close();await openDoc(selectedDoc.id,selectedDoc.version);notice('검토 이력을 저장했습니다.');
+  } catch(error) { $('#review-error').textContent=error.message; }
 });};
 async function loadSettings() {
   config=await api('/api/settings');
@@ -124,7 +137,7 @@ async function loadQueries() {
 async function loadRuns() {
   await loadCleanup();
   const rows=await api('/api/runs');
-  $('#runs').innerHTML=rows.map(r=>`<div class="panel">${badge(r.status)} <strong>${esc(r.agent)} / ${esc(r.model||'기본 모델')}</strong><p>${esc(r.detail)}</p><p class="muted">${esc(date(r.created_at))}</p>${sourceLink(r.document_id,r.version)}<details><summary>실행 메타데이터</summary><pre class="source">${esc(JSON.stringify(r,null,2))}</pre><p class="muted">프롬프트·stdout·stderr: data/runs/${esc(r.id)}/</p></details></div>`).join('')||'<div class="empty">아직 실행 기록이 없습니다.</div>';
+  $('#runs').innerHTML=rows.map(r=>`<div class="panel">${badge(r.status)} <strong>${esc({ontology:'사전 생성',extract:'관계 추출',legacy:'기존 추출'}[r.stage])} · ${esc(r.agent)} / ${esc(r.model||'기본 모델')}</strong>${r.ontology?`<p>기준 사전 r${r.ontology.revision} · ${esc(r.ontology.sha256.slice(0,12))}</p>`:''}<p>${esc(r.detail)}</p><p class="muted">${esc(date(r.created_at))}</p>${sourceLink(r.document_id,r.version)}<details><summary>실행 메타데이터</summary><pre class="source">${esc(JSON.stringify(r,null,2))}</pre><p class="muted">프롬프트·stdout·stderr: data/runs/${esc(r.id)}/</p></details></div>`).join('')||'<div class="empty">아직 실행 기록이 없습니다.</div>';
 }
 document.addEventListener('click',e=>{
   const b=e.target.closest('button');if(!b)return;
