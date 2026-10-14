@@ -123,6 +123,11 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send({'diff': ''.join(difflib.unified_diff(previous.splitlines(True), doc['text'].splitlines(True), fromfile=f'v{prior}', tofile=f'v{doc["version"]}'))})
                 if len(parts) == 4 and parts[3] in ('delete-latest', 'delete') and method == 'POST':
                     return self.send(self.server.service.delete_document(doc_id, parts[3] == 'delete-latest', self.body()))
+                if len(parts) == 4 and parts[3] == 'approve-items' and method == 'POST':
+                    data = self.body()
+                    if set(data) != {'version', 'expected_version', 'expected_generation', 'items', 'actor', 'reason'}:
+                        raise ValueError('일괄 승인에는 version, expected_version, expected_generation, items, actor, reason이 필요합니다.')
+                    return self.send(store.bulk_approve(doc_id, **data))
                 if len(parts) == 4 and parts[3] in ('extract', 'ontology') and method == 'POST':
                     data = self.body()
                     if set(data) - {'agent', 'model', 'expected_version', 'expected_generation'}:

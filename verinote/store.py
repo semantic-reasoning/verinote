@@ -24,6 +24,9 @@ def digest(value):
     return hashlib.sha256(value if isinstance(value, bytes) else canonical(value).encode()).hexdigest()
 
 
+MAX_BULK_APPROVAL = 2000
+
+
 class Conflict(ValueError):
     pass
 
@@ -263,38 +266,82 @@ class Store:
                 db.execute('INSERT INTO events(item_id,revision,action,actor,reason,payload,created_at) VALUES(?,?,?,?,?,?,?)', (item_id, 1, 'created', 'agent:' + run['agent'], '추출 후보', canonical(payload), now()))
             db.execute("UPDATE runs SET status='success',detail=? WHERE id=?", (detail, run_id))
 
+    @staticmethod
+    def validate_reviewer(actor, reason):
+        if not isinstance(actor, str) or not actor.strip() or len(actor) > 100 or not isinstance(reason, str) or not reason.strip() or len(reason) > 1000:
+            raise ValueError('검토자(100자 이하)와 이유(1000자 이하)가 필요합니다.')
+
     def review(self, item_id, revision, action, actor, reason, payload=None):
         if action not in {'approved', 'rejected', 'held', 'pending', 'revise'}:
             raise ValueError('지원하지 않는 검토 상태')
-        if not isinstance(actor, str) or not actor.strip() or len(actor) > 100 or not isinstance(reason, str) or not reason.strip() or len(reason) > 1000:
-            raise ValueError('검토자(100자 이하)와 이유(1000자 이하)가 필요합니다.')
+        self.validate_reviewer(actor, reason)
         with self.connect(True) as db:
             row = db.execute('SELECT * FROM items WHERE id=?', (item_id,)).fetchone()
             if not row:
                 raise ValueError('후보를 찾을 수 없습니다.')
-            if row['revision'] != revision:
-                raise Conflict('후보가 변경되었습니다. 새로고침 후 검토하세요.')
-            value = json.loads(row['payload']) if payload is None else payload
-            if payload is not None and (action != 'revise' or row['kind'] not in ('fact', 'ontology')):
-                raise ValueError('사실·사전 수정 작업만 payload를 받습니다.')
-            if action == 'revise' and payload is None:
-                raise ValueError('수정할 사실이 필요합니다.')
-            source = db.execute('SELECT text FROM versions WHERE document_id=? AND version=?', (row['document_id'], row['version'])).fetchone()[0]
-            from .service import validate_fact, validate_page
-            from .ontology import validate_dictionary, dictionary_fact
-            if row['kind'] == 'ontology':
-                value = validate_dictionary(value, source)
-            elif row['kind'] == 'fact':
-                run = db.execute('SELECT stage,ontology FROM runs WHERE id=?', (row['run_id'],)).fetchone()
-                value = dictionary_fact(value, source, json.loads(run['ontology'])['payload']) if run and run['stage'] == 'extract' else validate_fact(value, source)
-            else:
-                value = validate_page(value, source)
-            status = 'pending' if action == 'revise' else action
-            if status == row['status'] and action != 'revise':
-                raise Conflict('이미 같은 상태입니다.')
-            db.execute('UPDATE items SET payload=?,status=?,revision=revision+1 WHERE id=?', (canonical(value), status, item_id))
-            db.execute('INSERT INTO events(item_id,revision,action,actor,reason,payload,created_at) VALUES(?,?,?,?,?,?,?)', (item_id, revision + 1, action, actor.strip(), reason.strip(), canonical(value), now()))
+            return self._review_item(db, row, revision, action, actor, reason, payload)
+
+    def _review_item(self, db, row, revision, action, actor, reason, payload=None):
+        """Shared validation and audit mutation inside the caller's transaction."""
+        item_id = row['id']
+        if row['revision'] != revision:
+            raise Conflict('후보가 변경되었습니다. 새로고침 후 검토하세요.')
+        value = json.loads(row['payload']) if payload is None else payload
+        if payload is not None and (action != 'revise' or row['kind'] not in ('fact', 'ontology')):
+            raise ValueError('사실·사전 수정 작업만 payload를 받습니다.')
+        if action == 'revise' and payload is None:
+            raise ValueError('수정할 사실이 필요합니다.')
+        source = db.execute('SELECT text FROM versions WHERE document_id=? AND version=?', (row['document_id'], row['version'])).fetchone()[0]
+        from .service import validate_fact, validate_page
+        from .ontology import validate_dictionary, dictionary_fact
+        if row['kind'] == 'ontology':
+            value = validate_dictionary(value, source)
+        elif row['kind'] == 'fact':
+            run = db.execute('SELECT stage,ontology FROM runs WHERE id=?', (row['run_id'],)).fetchone()
+            value = dictionary_fact(value, source, json.loads(run['ontology'])['payload']) if run and run['stage'] == 'extract' else validate_fact(value, source)
+        else:
+            value = validate_page(value, source)
+        status = 'pending' if action == 'revise' else action
+        if status == row['status'] and action != 'revise':
+            raise Conflict('이미 같은 상태입니다.')
+        db.execute('UPDATE items SET payload=?,status=?,revision=revision+1 WHERE id=?', (canonical(value), status, item_id))
+        db.execute('INSERT INTO events(item_id,revision,action,actor,reason,payload,created_at) VALUES(?,?,?,?,?,?,?)', (item_id, revision + 1, action, actor.strip(), reason.strip(), canonical(value), now()))
         return {'id': item_id, 'revision': revision + 1, 'status': status}
+
+    def bulk_approve(self, document_id, version, expected_version, expected_generation, items, actor, reason):
+        self.validate_reviewer(actor, reason)
+        if type(version) is not int or version < 1:
+            raise ValueError('승인할 문서 version은 양의 정수여야 합니다.')
+        if not isinstance(items, list) or not 1 <= len(items) <= MAX_BULK_APPROVAL:
+            raise ValueError(f'일괄 승인은 1~{MAX_BULK_APPROVAL}개 항목을 선택해야 합니다.')
+        seen = set()
+        for item in items:
+            if not isinstance(item, dict) or set(item) != {'id', 'revision'}:
+                raise ValueError('각 승인 대상에는 id와 revision만 필요합니다.')
+            if not isinstance(item['id'], str) or not item['id'] or len(item['id']) > 200 or type(item['revision']) is not int or item['revision'] < 1:
+                raise ValueError('유효한 후보 ID와 양의 정수 revision이 필요합니다.')
+            if item['id'] in seen:
+                raise ValueError('일괄 승인 대상 ID가 중복되었습니다.')
+            seen.add(item['id'])
+        with self.connect(True) as db:
+            doc = db.execute('SELECT * FROM documents WHERE id=?', (document_id,)).fetchone()
+            if not doc:
+                raise Conflict('문서가 삭제되었습니다. 목록을 새로고침하세요.')
+            self.check_document_token(doc, expected_version, expected_generation)
+            if not db.execute('SELECT 1 FROM versions WHERE document_id=? AND version=?', (document_id, version)).fetchone():
+                raise Conflict('문서 버전이 삭제되었습니다. 목록을 새로고침하세요.')
+            rows = []
+            for item in items:
+                row = db.execute('SELECT * FROM items WHERE id=?', (item['id'],)).fetchone()
+                if not row or row['document_id'] != document_id or row['version'] != version:
+                    raise Conflict('선택한 문서 버전에 속하지 않거나 삭제된 후보가 있습니다. 다시 선택하세요.')
+                if row['kind'] not in ('page', 'fact'):
+                    raise ValueError('일괄 승인은 위키·관계만 가능합니다. 사전은 별도로 승인하세요.')
+                if row['revision'] != item['revision'] or row['status'] != 'pending':
+                    raise Conflict('선택한 후보가 변경되었거나 검토 대기가 아닙니다. 새로고침 후 다시 선택하세요.')
+                rows.append(row)
+            approved = [self._review_item(db, row, row['revision'], 'approved', actor, reason) for row in rows]
+        return {'document_id': document_id, 'version': version, 'approved_count': len(approved), 'items': approved}
 
     def history(self, item_id):
         with self.connect() as db:

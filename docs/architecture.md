@@ -31,6 +31,7 @@
 | POST `/api/documents/{id}/ontology` | `{agent,model?,expected_version,expected_generation}`로 사전 생성 시작, 202 응답 |
 | POST `/api/documents/{id}/extract` | 같은 요청 형식으로 승인 사전 기반 추출 시작, 202 응답. 미승인/기추출 사전 또는 오래된 문서 토큰은 409 |
 | POST `/api/items/{id}/review` | `{revision,action,actor,reason,payload?}` |
+| POST `/api/documents/{id}/approve-items` | `{version,expected_version,expected_generation,items:[{id,revision}],actor,reason}`로 선택한 검토 대기 위키·관계를 원자적으로 승인 |
 | GET `/api/items/{id}/history` | 불변 검토 이벤트 목록 |
 | GET `/api/runs`, `/api/runs/{id}` | 작업 상태와 오류 |
 | GET/PUT `/api/settings` | 선택 에이전트 및 provider별 모델 ID |
@@ -38,6 +39,14 @@
 | GET `/api/queries` | 최근 결과 30개와 재현 입력 |
 
 변경 API는 application/json만 받는다. 원문 업로드는 `content_base64` 또는 `text`, `title`, `filename`을 받는다. 충돌 409, 잘못된 입력 400, 교차 출처 403, 처리 실패 500을 구분한다. 웹 파일은 고정 allowlist만 제공한다.
+
+## 일괄 승인
+
+`bulk_approve`는 명시된 1~2,000개 ID/revision만 승인한다. `version`은 화면에서 선택한 원문 버전이며 `expected_version`/`expected_generation`은 그 화면이 읽은 현재 문서의 동시성 토큰이다. 따라서 과거 버전도 명시적으로 검토할 수 있지만 도중의 새 버전 등록·삭제·롤백은 충돌로 처리한다. 빈 배치, 중복, 잘못된 타입(bool revision 포함), 추가 필드, 다른 문서/버전의 항목, 사전 및 pending이 아닌 항목은 거부한다.
+
+문서 토큰·멤버십·revision·상태 검사와 각 후보 검증·상태 변경·이력 기록은 하나의 `BEGIN IMMEDIATE` 안에서 실행한다. 개별 `review`와 공유하는 `_review_item`이 원문 인용과 추출 당시 고정 사전을 다시 검증하며, 하나라도 실패하면 앞선 변경과 events까지 모두 롤백한다. 성공하면 항목별 revision이 한 번 증가하고 같은 검토자/이유로 개별 승인 이벤트를 기록한다. 현재 사전의 승인 철회를 이미 추출된 사실의 승인 금지로 바꾸지 않는다. 개별 검토와 동일한 계약이다.
+
+브라우저는 초기 선택을 비우고 pending page/fact에만 체크박스를 표시한다. 전체 선택은 한도를 넘어도 몰래 잘라내지 않고 한도 초과를 표시한다. 확인창을 열 때 문서 ID·표시 버전·문서 토큰·선택 ID/revision을 별도 객체에 고정한다. 전송 중에는 중복 제출을 막고, 충돌 시 사용자가 새로고침해서 다시 선택한다. 늦게 도착한 문서 응답은 요청 순서로 차단하며 승인 완료 후에도 같은 문서/버전을 보고 있을 때만 해당 화면을 갱신한다. 모델 호출이나 DB 스키마 변경은 없다.
 
 ## 채택한 범위
 

@@ -4,6 +4,8 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;',
 const labels = {pending:'검토 대기', approved:'승인', rejected:'반려', held:'보류', queued:'대기 중', running:'처리 중', success:'완료', error:'실패', interrupted:'중단'};
 const badge = status => `<span class="badge ${esc(status)}">${esc(labels[status] || status)}</span>`;
 let docs = [], config, selectedDoc, uploadTarget, reviewTarget;
+let documentRequest = 0, bulkReviewTarget = null, bulkSubmitting = false;
+const MAX_BULK_APPROVAL = 2000;
 async function api(path, method = 'GET', data) {
   const response = await fetch(path, {method, headers: data ? {'Content-Type':'application/json'} : {}, body: data ? JSON.stringify(data) : undefined});
   const result = await response.json();
@@ -15,6 +17,7 @@ async function attempt(fn) { try { await fn(); } catch (error) { notice(error.me
 function date(value) { return new Date(value).toLocaleString('ko-KR'); }
 function sourceLink(id, version, label='원문 보기') { return `<button data-source="${esc(id)}" data-version="${version}">${esc(label)} · v${version}</button>`; }
 function showView(name) {
+  if (name !== 'library') documentRequest++;
   for (const el of document.querySelectorAll('.view')) el.hidden = el.id !== name;
   for (const el of document.querySelectorAll('nav button')) el.classList.toggle('active', el.dataset.view === name);
   $('#breadcrumb').textContent = {library:'문서와 위키',query:'관계 탐색',activity:'실행 기록',settings:'에이전트 설정'}[name];
@@ -46,11 +49,17 @@ function renderDictionary(p) {
   return `<h3>2. 추출 기준 사전 검토</h3><p>개체의 정규 ID, 별칭의 동일성, 관계의 의미·방향·타입을 원문과 대조하세요. 사전 승인 후에도 추출된 사실은 별도로 승인합니다.</p><h3>개체 · ${p.entities.length}</h3><p>각 항목이 하나의 개체입니다. <strong>개체 ID</strong>가 관계의 주어·목적어와 조회에 사용됩니다. <strong>원문 명칭</strong>은 문서에 쓰인 이름이고, <strong>개체 유형</strong>은 분류입니다. 같은 ID는 같은 개체로 연결되므로 원문 근거와 함께 확인하세요.</p>${p.entities.map(e=>`<section class="panel"><h4>원문 명칭: ${esc(e.name)}</h4><p class="query-row"><strong>개체 ID:</strong> <code>${esc(e.id)}</code></p><p><strong>개체 유형:</strong> ${esc(e.type)}</p><strong>원문 근거</strong><blockquote class="quote">${esc(e.quote)}</blockquote></section>`).join('')}<h3>별칭 · ${p.aliases.length}</h3>${p.aliases.map(a=>`<details><summary>${esc(a.alias)} → ${esc(a.entity)}</summary><blockquote class="quote">${esc(a.quote)}</blockquote></details>`).join('')}<h3>관계 · ${p.relations.length}</h3>${p.relations.map(r=>`<div><strong>${esc(r.id)}</strong><p>${r.subject_types.map(esc).join(', ')} → ${r.object_types.map(esc).join(', ')}<br>${esc(r.description)}</p><details><summary>원문 근거</summary><blockquote class="quote">${esc(r.quote)}</blockquote></details></div>`).join('')}`;
 }
 async function openDoc(id, version) {
-  selectedDoc = await api(`/api/documents/${id}${version?'?version='+version:''}`);
+  const request = ++documentRequest;
+  const loaded = await api(`/api/documents/${id}${version?'?version='+version:''}`);
+  if (request !== documentRequest) return;
+  selectedDoc = loaded;
   const d = selectedDoc, latest = d.version === d.current_version;
   showView('library');
-  $('#document-detail').innerHTML = `<div class="panel"><div class="detail-title"><h2>${esc(d.title)}</h2><select id="version-select" aria-label="문서 버전">${d.versions.map(v=>`<option value="${v.version}" ${v.version===d.version?'selected':''}>v${v.version}${v.version===d.current_version?' · 현재':''}</option>`).join('')}</select><button id="add-version">＋ 새 버전 등록</button></div><p class="muted">${latest?'현재 문서 버전':'과거 문서 버전 · 현재 그래프에 포함되지 않습니다'} · ${esc(d.filename)}</p><p class="mono">SHA-256 ${esc(d.sha256)}</p><div class="actions"><a href="/api/documents/${d.id}/raw?version=${d.version}" download="${esc(d.filename)}">원본 다운로드</a><button id="show-diff">이전 버전과 비교</button></div><div class="actions"><button id="delete-latest" class="danger" ${d.versions.length===1?'disabled':''}>최신 리비전 v${d.current_version}만 삭제</button><button id="delete-document" class="danger">문서 전체 삭제</button></div>${d.versions.length===1?'<p class="muted">리비전이 하나뿐이면 문서 전체 삭제를 사용하세요.</p>':''}<div id="version-diff"></div><details><summary>원문 전체 · v${d.version}</summary><pre class="source">${esc(d.text)}</pre></details>${latest?extractionControls(d):''}</div><h2>사전 · 위키 · 사실 검토</h2><p class="muted">위키 문장 승인과 관계 사실 승인은 별개입니다. 원문의 인용을 대조하여 각각 검토하세요.</p><div id="items">${d.items.length?d.items.map(renderItem).join(''):'<div class="empty">아직 생성된 초안이 없습니다. 사전 생성을 시작해 주세요.</div>'}</div>`;
+  $('#document-detail').innerHTML = `<div class="panel"><div class="detail-title"><h2>${esc(d.title)}</h2><select id="version-select" aria-label="문서 버전">${d.versions.map(v=>`<option value="${v.version}" ${v.version===d.version?'selected':''}>v${v.version}${v.version===d.current_version?' · 현재':''}</option>`).join('')}</select><button id="add-version">＋ 새 버전 등록</button></div><p class="muted">${latest?'현재 문서 버전':'과거 문서 버전 · 현재 그래프에 포함되지 않습니다'} · ${esc(d.filename)}</p><p class="mono">SHA-256 ${esc(d.sha256)}</p><div class="actions"><a href="/api/documents/${d.id}/raw?version=${d.version}" download="${esc(d.filename)}">원본 다운로드</a><button id="show-diff">이전 버전과 비교</button></div><div class="actions"><button id="delete-latest" class="danger" ${d.versions.length===1?'disabled':''}>최신 리비전 v${d.current_version}만 삭제</button><button id="delete-document" class="danger">문서 전체 삭제</button></div>${d.versions.length===1?'<p class="muted">리비전이 하나뿐이면 문서 전체 삭제를 사용하세요.</p>':''}<div id="version-diff"></div><details><summary>원문 전체 · v${d.version}</summary><pre class="source">${esc(d.text)}</pre></details>${latest?extractionControls(d):''}</div><h2>사전 · 위키 · 사실 검토</h2><p class="muted">위키 문장 승인과 관계 사실 승인은 별개입니다. 원문의 인용을 대조하여 각각 검토하세요.</p>${renderBulkControls(d)}<div id="items">${d.items.length?d.items.map(renderItem).join(''):'<div class="empty">아직 생성된 초안이 없습니다. 사전 생성을 시작해 주세요.</div>'}</div>`;
   $('#document-detail').scrollIntoView({behavior:'smooth',block:'start'});
+  $('#bulk-select-all').onchange = e=>{for(const box of document.querySelectorAll('[data-bulk-item]')) box.checked=e.target.checked;updateBulkSelection();};
+  $('#bulk-clear').onclick = ()=>{for(const box of document.querySelectorAll('[data-bulk-item]')) box.checked=false;updateBulkSelection();};
+  $('#bulk-approve').onclick = ()=>attempt(openBulkReview);
   $('#version-select').addEventListener('change', e=>attempt(()=>openDoc(id,Number(e.target.value))));
   $('#add-version').onclick = ()=>openUpload(d);
   $('#delete-latest').onclick=()=>openDelete(d,true);
@@ -69,7 +78,7 @@ async function openDoc(id, version) {
 function renderItem(item) {
   const p=item.payload;
   const body=item.kind==='ontology'?renderDictionary(p):item.kind==='page'?`<h3>${esc(p.title)}</h3>${p.claims.map(c=>`<h3>${esc(c.heading)}</h3><p>${esc(c.text)}</p><details><summary>원문 근거</summary><blockquote class="quote">${esc(c.quote)}</blockquote></details>`).join('')}`:`<h3 class="query-row">${esc(p.subject)} → <small>${esc(p.predicate)}</small> → ${esc(p.object)}</h3><blockquote class="quote">${esc(p.quote)}</blockquote>`;
-  return `<article class="item">${badge(item.status)} <span class="muted">${{ontology:'사전 초안',page:'위키 초안',fact:'관계 사실'}[item.kind]} · r${item.revision}</span>${item.dictionary?`<p class="muted">추출 기준 사전 r${item.dictionary.revision} · ${esc(item.dictionary.sha256.slice(0,12))}</p>`:''}${body}<div class="actions">${['approved','held','rejected','pending',...(['fact','ontology'].includes(item.kind)?['revise']:[])].filter(a=>a!==item.status).map(a=>`<button data-review="${item.id}" data-action="${a}">${a==='revise'?'내용 수정':a==='pending'?'승인 철회 / 재검토':labels[a]}</button>`).join('')}<button data-history="${item.id}">이력</button></div><div id="history-${item.id}"></div></article>`;
+  return `<article class="item">${item.status==='pending'&&['page','fact'].includes(item.kind)?`<label class="bulk-choice"><input type="checkbox" data-bulk-item="${esc(item.id)}" aria-label="${esc(bulkItemLabel(item))} 일괄 승인에 포함">일괄 승인에 포함</label>`:''}${badge(item.status)} <span class="muted">${{ontology:'사전 초안',page:'위키 초안',fact:'관계 사실'}[item.kind]} · r${item.revision}</span>${item.dictionary?`<p class="muted">추출 기준 사전 r${item.dictionary.revision} · ${esc(item.dictionary.sha256.slice(0,12))}</p>`:''}${body}<div class="actions">${['approved','held','rejected','pending',...(['fact','ontology'].includes(item.kind)?['revise']:[])].filter(a=>a!==item.status).map(a=>`<button data-review="${item.id}" data-action="${a}">${a==='revise'?'내용 수정':a==='pending'?'승인 철회 / 재검토':labels[a]}</button>`).join('')}<button data-history="${item.id}">이력</button></div><div id="history-${item.id}"></div></article>`;
 }
 async function watchRun(id, docId) {
   try {
@@ -95,6 +104,69 @@ $('#upload-form').onsubmit=e=>{e.preventDefault();attempt(async()=>{
     if(uploadTarget){data.document_id=uploadTarget.id;data.expected_version=uploadTarget.current_version;data.expected_generation=uploadTarget.generation;}
     const d=await api('/api/documents','POST',data);$('#upload-dialog').close();await loadLibrary();await openDoc(d.id);notice('원문을 보존했습니다. 개체·별칭·관계 사전을 먼저 생성하세요.');
   } finally{button.disabled=false;}
+});};
+function bulkCandidates(doc) {
+  return doc.items.filter(item=>item.status==='pending'&&['page','fact'].includes(item.kind));
+}
+function bulkItemLabel(item) {
+  return item.kind==='page'?`위키: ${item.payload.title}`:`관계: ${item.payload.subject} → ${item.payload.predicate} → ${item.payload.object}`;
+}
+function captureBulkReview(doc, selectedIds) {
+  const chosen=bulkCandidates(doc).filter(item=>selectedIds.includes(item.id));
+  if(!chosen.length||chosen.length>MAX_BULK_APPROVAL) throw new Error(`일괄 승인은 1~${MAX_BULK_APPROVAL}개 항목을 선택하세요.`);
+  return {documentId:doc.id,title:doc.title,version:doc.version,expected_version:doc.current_version,expected_generation:doc.generation,
+    items:chosen.map(item=>({id:item.id,revision:item.revision})),pages:chosen.filter(item=>item.kind==='page').length,facts:chosen.filter(item=>item.kind==='fact').length};
+}
+function renderBulkControls(doc) {
+  const count=bulkCandidates(doc).length;
+  return `<section class="bulk-toolbar panel" aria-label="일괄 승인"><strong>검토 대기 위키·관계 일괄 승인</strong><p class="muted">현재 보고 있는 v${doc.version}의 항목을 선택하세요. 사전은 별도로 승인합니다.</p><div class="actions"><label class="bulk-choice"><input id="bulk-select-all" type="checkbox" ${count?'':'disabled'}>검토 대기 전체 선택 (${count}개)</label><button id="bulk-clear" ${count?'':'disabled'}>선택 해제</button><button id="bulk-approve" class="primary" disabled>선택 0개 승인</button></div><p id="bulk-count" role="status">선택 없음</p><p id="bulk-limit" role="alert" hidden>한 번에 최대 ${MAX_BULK_APPROVAL}개까지 승인할 수 있습니다. 일부 선택을 해제하세요.</p></section>`;
+}
+function updateBulkSelection() {
+  const boxes=[...document.querySelectorAll('[data-bulk-item]')],selected=boxes.filter(box=>box.checked);
+  const ids=new Set(selected.map(box=>box.dataset.bulkItem));
+  const items=bulkCandidates(selectedDoc).filter(item=>ids.has(item.id));
+  const pages=items.filter(item=>item.kind==='page').length,facts=items.length-pages;
+  $('#bulk-count').textContent=items.length?`선택 ${items.length}개 · 위키 ${pages}개 · 관계 ${facts}개`:'선택 없음';
+  $('#bulk-approve').textContent=`선택 ${items.length}개 승인`;
+  $('#bulk-approve').disabled=!items.length||items.length>MAX_BULK_APPROVAL;
+  $('#bulk-limit').hidden=items.length<=MAX_BULK_APPROVAL;
+  $('#bulk-select-all').checked=boxes.length>0&&selected.length===boxes.length;
+  $('#bulk-select-all').indeterminate=selected.length>0&&selected.length<boxes.length;
+}
+function openBulkReview() {
+  if(bulkSubmitting) return;
+  const ids=[...document.querySelectorAll('[data-bulk-item]:checked')].map(box=>box.dataset.bulkItem);
+  const target=captureBulkReview(selectedDoc,ids);
+  bulkReviewTarget=target;
+  $('#bulk-review-form').reset();$('#bulk-review-error').textContent='';$('#bulk-refresh').hidden=true;
+  $('#bulk-review-scope').textContent=`${target.title} · v${target.version} · 위키 ${target.pages}개 + 관계 ${target.facts}개 = 총 ${target.items.length}개`;
+  $('#bulk-historical').hidden=target.version===target.expected_version;
+  const selected=new Set(target.items.map(item=>item.id));
+  $('#bulk-review-preview').innerHTML=bulkCandidates(selectedDoc).filter(item=>selected.has(item.id)).map(item=>`<details><summary>${esc(bulkItemLabel(item))}</summary>${item.kind==='page'?item.payload.claims.map(c=>`<p>${esc(c.text)}</p><blockquote class="quote">${esc(c.quote)}</blockquote>`).join(''):`<blockquote class="quote">${esc(item.payload.quote)}</blockquote>`}</details>`).join('');
+  $('#bulk-confirm').textContent=`${target.items.length}개 승인 저장`;
+  $('#bulk-review-dialog').showModal();
+}
+document.addEventListener('change',e=>{if(e.target.matches('[data-bulk-item]'))updateBulkSelection();});
+$('#bulk-cancel').onclick=()=>{if(!bulkSubmitting)$('#bulk-review-dialog').close();};
+$('#bulk-review-dialog').addEventListener('cancel',e=>{if(bulkSubmitting)e.preventDefault();});
+$('#bulk-refresh').onclick=()=>attempt(async()=>{const target=bulkReviewTarget;$('#bulk-review-dialog').close();bulkReviewTarget=null;await openDoc(target.documentId);});
+$('#bulk-review-form').onsubmit=e=>{e.preventDefault();attempt(async()=>{
+  if(bulkSubmitting||!bulkReviewTarget) return;
+  const target=bulkReviewTarget,form=e.target,viewRequest=documentRequest;
+  const data={version:target.version,expected_version:target.expected_version,expected_generation:target.expected_generation,
+    items:target.items,actor:form.elements.actor.value,reason:form.elements.reason.value};
+  bulkSubmitting=true;$('#bulk-confirm').disabled=true;$('#bulk-cancel').disabled=true;
+  $('#bulk-review-error').textContent='';$('#bulk-refresh').hidden=true;
+  let result;
+  try {result=await api(`/api/documents/${target.documentId}/approve-items`,'POST',data);}
+  catch(error){$('#bulk-review-error').textContent=error.message;$('#bulk-refresh').hidden=error.status!==409;return;}
+  finally {bulkSubmitting=false;$('#bulk-confirm').disabled=false;$('#bulk-cancel').disabled=false;}
+  $('#bulk-review-dialog').close();bulkReviewTarget=null;
+  notice(`${result.approved_count}개 항목을 승인하고 각 항목의 검토 이력을 저장했습니다.`);
+  try {
+    await loadLibrary();
+    if(documentRequest===viewRequest&&selectedDoc?.id===target.documentId&&selectedDoc.version===target.version&&!$('#library').hidden) await openDoc(target.documentId,target.version);
+  } catch(error){notice(`${result.approved_count}개 승인은 완료됐지만 목록 새로고침에 실패했습니다. ${error.message}`,true);}
 });};
 function openReview(id,action) {
   const item=selectedDoc.items.find(i=>i.id===id);reviewTarget={item,action};$('#review-form').reset();$('#review-error').textContent='';
