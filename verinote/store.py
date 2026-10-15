@@ -7,6 +7,8 @@ from pathlib import Path
 import sqlite3
 import uuid
 
+from .ontology import EXTRACTION_CONTRACT_VERSION, extraction_key
+
 
 def now():
     return datetime.now(timezone.utc).isoformat()
@@ -153,12 +155,12 @@ class Store:
             extracted = set()
             for run in runs.values():
                 if run['stage'] == 'extract' and run['status'] == 'success' and run['ontology']:
-                    extracted.add((run['ontology']['id'], run['ontology']['revision']))
+                    extracted.add(extraction_key(run['ontology']))
             for item in items:
                 pin = runs.get(item['run_id'], {}).get('ontology')
                 item['dictionary'] = {k: pin[k] for k in ('id', 'revision', 'sha256')} if pin else None
-            can_extract = bool(dictionary and dictionary['status'] == 'approved' and (dictionary['id'], dictionary['revision']) not in extracted)
-            return dict(doc) | dict(source) | {'versions': versions, 'items': items, 'can_extract': can_extract}
+            can_extract = bool(dictionary and dictionary['status'] == 'approved' and extraction_key(dictionary | {'extraction_contract': EXTRACTION_CONTRACT_VERSION}) not in extracted)
+            return dict(doc) | dict(source) | {'versions': versions, 'items': items, 'can_extract': can_extract, 'extraction_upgrade': bool(can_extract and any(k[:2] == (dictionary['id'], dictionary['revision']) for k in extracted))}
 
     @staticmethod
     def unpack(row):
@@ -240,11 +242,11 @@ class Store:
                 if not dictionary or dictionary['status'] != 'approved':
                     raise Conflict('이 문서 버전의 개체·별칭·관계 사전을 먼저 승인하세요.')
                 payload = json.loads(dictionary['payload'])
-                pinned = {'id': dictionary['id'], 'revision': dictionary['revision'], 'payload': payload, 'sha256': digest(payload)}
+                pinned = {'id': dictionary['id'], 'revision': dictionary['revision'], 'payload': payload, 'sha256': digest(payload), 'extraction_contract': EXTRACTION_CONTRACT_VERSION}
                 for prior in db.execute("SELECT ontology FROM runs WHERE document_id=? AND version=? AND stage='extract' AND status='success'", (document_id, doc['current_version'])):
                     old = json.loads(prior[0])
-                    if (old['id'], old['revision']) == (pinned['id'], pinned['revision']):
-                        raise Conflict('이 승인 사전 revision으로 이미 추출했습니다. 사전 수정·재승인 후 다시 추출하세요.')
+                    if extraction_key(old) == extraction_key(pinned):
+                        raise Conflict('이 승인 사전 revision과 추출 방식으로 이미 추출했습니다. 사전 수정·재승인 후 다시 추출하세요.')
             try:
                 db.execute('INSERT INTO runs(id,document_id,version,agent,model,status,detail,created_at,stage,ontology) VALUES(?,?,?,?,?,?,?,?,?,?)',
                            (run_id, document_id, doc['current_version'], agent, model, 'queued', '', now(), stage, canonical(pinned) if pinned else None))

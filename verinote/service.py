@@ -9,7 +9,8 @@ import threading
 from .agents import CLI, PROVIDERS, validate_model
 from .documents import chunks
 from .engine import query
-from .ontology import (EXTRACTION_PROMPT,
+from .extraction_coverage import chunk_report, new_report, read_report, write_report
+from .ontology import (EXTRACTION_PROMPT, EXTRACTION_CONTRACT_VERSION, dictionary_context,
                        MAX_QUOTE_REPAIR_CALLS, QUOTE_REPAIR_PROMPT,
                        apply_quote_repairs, bounded_prompt, dictionary_fact,
                        extraction_quote_issues, quote_label)
@@ -53,10 +54,16 @@ class Service:
         self.cleanup_lock = threading.Lock()
         self.cleanup_logs()
 
-    def with_usage(self, kind, owner):
+    def with_usage(self, kind, owner, *, coverage_details=True):
         from .usage import job_calls, summarize
         calls = job_calls(self.root, kind, owner)
-        return owner | {'usage': summarize(calls) | {'details': calls}}
+        result = owner | {'usage': summarize(calls) | {'details': calls}}
+        if kind == 'runs' and owner.get('stage') == 'extract':
+            report = read_report(self.root, self.store, owner['id'])
+            if not coverage_details:
+                report.pop('chunks', None)
+            result['coverage'] = report
+        return result
 
     def usage_report(self):
         from .usage import job_calls, summarize
@@ -86,6 +93,8 @@ class Service:
             raise
 
     def extract(self, run):
+        report = None
+        report_ok = True
         try:
             self.store.run_status(run['id'], 'running')
             doc = self.store.document(run['document_id'], run['version'])
@@ -94,17 +103,20 @@ class Service:
                 dictionary, detail = generate_dictionary(self.store, self.cli, self.root, run, doc)
                 self.store.finish_run(run['id'], dictionary=dictionary, detail=detail)
                 return
+            current_contract = run['ontology'].get('extraction_contract', 0) == EXTRACTION_CONTRACT_VERSION
+            if current_contract:
+                report = new_report(run, len(doc['text']))
             claims, facts = [], []
             repair_calls, repaired_quotes, repair_locations = 0, 0, []
             for index, (offset, chunk) in enumerate(chunks(doc['text']), 1):
                 label = '승인 사전으로 추출'
                 self.store.run_status(run['id'], 'running', f'{label} · 청크 {index}/{(len(doc["text"]) + 7999) // 8000}')
                 payload = {'filename': doc['filename'], 'version': doc['version'], 'offset': offset, 'text': chunk}
-                prompt = bounded_prompt(EXTRACTION_PROMPT, payload | {'approved_dictionary': run['ontology']})
+                prompt = bounded_prompt(EXTRACTION_PROMPT, payload | {'approved_dictionary': run['ontology'] | {'payload': dictionary_context(run['ontology']['payload'])}})
                 folder = self.root / 'runs' / run['id'] / str(index)
                 output = self.cli.complete(run['agent'], run['model'], prompt, folder)
                 try:
-                    issues = extraction_quote_issues(output, chunk, run['ontology']['payload'])
+                    issues = extraction_quote_issues(output, chunk, run['ontology']['payload'], require_coverage=current_contract)
                     if issues:
                         locations = ', '.join(quote_label(issue['path']) for issue in issues[:5])
                         if len(issues) > 5:
@@ -120,7 +132,7 @@ class Service:
                             response = self.cli.complete(run['agent'], run['model'], repair_prompt, repair_folder)
                             output, changes = apply_quote_repairs(output, chunk, issues, response)
                             # Recheck the whole response; a repair cannot bypass any vocabulary/shape gate.
-                            if extraction_quote_issues(output, chunk, run['ontology']['payload']):
+                            if extraction_quote_issues(output, chunk, run['ontology']['payload'], require_coverage=current_contract):
                                 raise ValueError('보정 후에도 원문과 일치하지 않는 인용이 있습니다.')
                             validate_page(output, chunk)
                             for fact in output['facts']:
@@ -136,11 +148,20 @@ class Service:
                     raise ValueError(f'청크 {index} · {exc}') from exc
                 claims.extend(page['claims'])
                 facts.extend(dictionary_fact(f, chunk, run['ontology']['payload']) for f in output['facts'])
+                if report is not None:
+                    report['chunks'].append(chunk_report(output, offset, len(chunk)))
+                    report_ok = write_report(self.root, report)
             unique = {json.dumps(f, sort_keys=True, ensure_ascii=False): f for f in facts}
             detail = (f'원문 인용 {repaired_quotes}개 보정 · 추가 호출 {repair_calls}회 ({"; ".join(repair_locations)}). 의미가 맞는지 원문과 대조한 뒤 승인하세요.'
                       if repair_calls else '')
-            self.store.finish_run(run['id'], {'title': doc['title'], 'claims': claims}, list(unique.values()), detail=detail)
+            if report is not None:
+                detail = f'관계 후보 {len(unique)}개 · 관계별 점검은 실행 기록에서 확인하세요. 새 후보는 별도 승인 전까지 그래프에 포함되지 않습니다. ' + detail
+                if not report_ok:
+                    detail += ' 관계별 추출 점검 기록 저장 실패: 보고서를 사용할 수 없습니다.'
+            self.store.finish_run(run['id'], {'title': doc['title'], 'claims': claims}, list(unique.values()), detail=detail[:2000])
         except Exception as exc:
+            if report is not None:
+                write_report(self.root, report)
             self.store.run_status(run['id'], 'error', str(exc)[:2000])
         finally:
             self.slots.release()

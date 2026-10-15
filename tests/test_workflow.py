@@ -1,3 +1,4 @@
+import copy
 import concurrent.futures
 import io
 import json
@@ -28,6 +29,16 @@ DICTIONARY = {
     'aliases': [],
     'relations': [{'id': 'depends_on', 'description': '주어 서비스가 목적어 서비스에 직접 의존한다.', 'subject_types': ['Service'], 'object_types': ['Service'], 'quote': SOURCE}],
 }
+
+
+def extraction_response(facts=None, dictionary=DICTIONARY, page=PAGE):
+    facts = FACTS if facts is None else facts
+    rows = []
+    for relation in dictionary['relations']:
+        fi = [i for i, f in enumerate(facts) if f['predicate'] == relation['id']]
+        rows.append({'predicate': relation['id'], 'fact_indices': fi, 'claim_indices': [],
+                     'status': 'extracted' if fi else 'no_evidence', 'reason': '합성 테스트 판단'})
+    return copy.deepcopy(page | {'facts': [copy.deepcopy(f) for f in facts], 'coverage': rows, 'dictionary_gaps': []})
 
 
 def legacy_run(store, doc_id):
@@ -149,7 +160,7 @@ class Workflow(unittest.TestCase):
     def test_async_protocol_and_failed_quote_atomicity(self):
         class Fake:
             def complete(self, *args):
-                return PAGE | {'facts': [FACTS[0] | {'quote': 'invented quote'}]}
+                return extraction_response([FACTS[0] | {'quote': 'invented quote'}])
         approved_dictionary(self.store, self.doc['id'])
         service = Service(self.store, self.root, Fake())
         run = service.start(self.doc['id'], 'codex', 'test-model', expected_version=1, expected_generation=1)
@@ -163,7 +174,7 @@ class Workflow(unittest.TestCase):
         class Fake:
             def complete(self, *args):
                 entered.set(); release.wait(5)
-                return PAGE | {'facts': FACTS}
+                return extraction_response()
         approved_dictionary(self.store, self.doc['id'])
         service = Service(self.store, self.root, Fake())
         run = service.start(self.doc['id'], 'agy', '', expected_version=1, expected_generation=1)

@@ -9,7 +9,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 
 import test_workflow as workflow
-from test_workflow import SOURCE, PAGE, FACTS, DICTIONARY, legacy_run
+from test_workflow import extraction_response, SOURCE, PAGE, FACTS, DICTIONARY, legacy_run
 from verinote.agents import CLI, parse_response
 from verinote.service import Service
 from verinote.usage import (MAX_METADATA, atomic_json, calculate, decode_transport,
@@ -328,7 +328,7 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(retry['status'],'success')
         item=next(i for i in self.store.document(self.doc['id'])['items'] if i['kind']=='ontology')
         self.store.review(item['id'],1,'approved','test','synthetic only')
-        output=copy.deepcopy(PAGE)|{'facts':copy.deepcopy(FACTS)};output['facts'][0]['quote']='wrong quote'
+        output=extraction_response();output['facts'][0]['quote']='wrong quote'
         extraction=self.run_outputs([output,{'repairs':[{'path':'facts.0.quote','quote':FACTS[0]['quote']}]}],stage='extract')
         self.assertEqual(extraction['status'],'success',extraction['detail'])
         self.assertEqual(extraction['usage']['tokens']['input']['value'],120)

@@ -154,7 +154,7 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError('정리 재시도에는 빈 JSON 객체를 보내세요.')
                     return self.send(self.server.service.cleanup_logs())
             if route.path == '/api/runs' and method == 'GET':
-                return self.send([self.server.service.with_usage('runs', row) for row in store.runs()])
+                return self.send([self.server.service.with_usage('runs', row, coverage_details=False) for row in store.runs()])
             if len(parts) == 3 and parts[:2] == ['api', 'runs'] and method == 'GET':
                 return self.send(self.server.service.with_usage('runs', store.run(parts[2])))
             if route.path == '/api/questions':

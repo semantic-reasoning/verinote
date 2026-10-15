@@ -6,14 +6,14 @@ from unittest.mock import patch
 import unittest
 
 import test_workflow as workflow
-from test_workflow import DICTIONARY, FACTS, PAGE, SOURCE, approved_dictionary
+from test_workflow import DICTIONARY, FACTS, PAGE, SOURCE, approved_dictionary, extraction_response
 from verinote.ontology import (QUOTE_REPAIR_PROMPT, apply_quote_repairs,
                                bounded_prompt, extraction_quote_issues)
 from verinote.service import Service
 
 
 def response():
-    return copy.deepcopy(PAGE | {'facts': FACTS})
+    return extraction_response()
 
 
 def broken():
@@ -83,7 +83,7 @@ class QuoteRepair(unittest.TestCase):
     def test_valid_response_needs_no_repair(self):
         run, doc, calls = self.execute([response()])
         self.assertEqual(run['status'], 'success')
-        self.assertEqual(run['detail'], '')
+        self.assertIn('관계 후보 2개', run['detail'])
         self.assertEqual(len(calls), 1)
 
     def test_all_non_quote_errors_prevent_extra_call(self):
@@ -190,7 +190,7 @@ class QuoteRepair(unittest.TestCase):
         self.assertEqual(json.loads(calls[1]['prompt'].split('입력(JSON):\n')[1])['text'], SOURCE)
 
     def test_error_locates_45th_fact_without_exposing_quote(self):
-        value = response(); value['facts'] = [copy.deepcopy(FACTS[0]) for _ in range(48)]
+        value = extraction_response([FACTS[0] for _ in range(48)])
         value['facts'][44]['quote'] = 'private-looking-invalid-quote'
         run, doc, calls = self.execute([value, repair('facts.44.quote', 'also-invalid')])
         self.assertEqual(run['status'], 'error')

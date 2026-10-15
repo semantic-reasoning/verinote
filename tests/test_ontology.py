@@ -9,7 +9,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 
 import test_workflow as workflow
-from test_workflow import DICTIONARY, FACTS, PAGE, SOURCE, approved_dictionary, legacy_run
+from test_workflow import extraction_response, DICTIONARY, FACTS, PAGE, SOURCE, approved_dictionary, legacy_run
 from verinote.ontology import (MAX_FACTS, bounded_prompt, dictionary_fact,
                                merge_dictionary, validate_dictionary)
 from verinote.service import Service
@@ -187,7 +187,7 @@ class OntologyWorkflow(unittest.TestCase):
         entered,release=threading.Event(),threading.Event()
         class Fake:
             def complete(self,*args,**kwargs):
-                entered.set();release.wait(5);return PAGE|{'facts':FACTS}
+                entered.set();release.wait(5);return extraction_response()
         service=Service(self.store,self.root,Fake())
         run=service.start(self.doc['id'],'agy','',expected_version=1,expected_generation=1)
         self.assertTrue(entered.wait(3))
@@ -202,7 +202,7 @@ class OntologyWorkflow(unittest.TestCase):
         class Fake:
             def complete(self,agent,model,prompt,folder,**kwargs):
                 prompts.append(prompt)
-                return wire_dictionary(DICTIONARY, prompt) if '기존 사전은 문맥' in prompt else PAGE|{'facts':[FACTS[0]]*MAX_FACTS}
+                return wire_dictionary(DICTIONARY, prompt) if '기존 사전은 문맥' in prompt else extraction_response([FACTS[0]]*MAX_FACTS)
         service=Service(self.store,self.root,Fake())
         run=service.start(self.doc['id'],'agy','',stage='ontology',expected_version=1,expected_generation=1)
         service.pool.shutdown(wait=True)
@@ -217,7 +217,7 @@ class OntologyWorkflow(unittest.TestCase):
         self.assertIn('approved_dictionary',prompts[-1]);self.assertIn(digest(DICTIONARY),prompts[-1])
         self.assertEqual(len([i for i in self.store.document(self.doc['id'])['items'] if i['kind']=='fact']),1)
         self.store.review(item['id'],2,'pending','R','retry');self.store.review(item['id'],3,'approved','R','retry')
-        with patch.object(Fake,'complete',return_value=PAGE|{'facts':[FACTS[0]]*(MAX_FACTS+1)}):
+        with patch.object(Fake,'complete',return_value=extraction_response([FACTS[0]]*(MAX_FACTS+1))):
             service=Service(self.store,self.root,Fake());run=service.start(self.doc['id'],'agy','',expected_version=1,expected_generation=1);service.pool.shutdown(wait=True)
         self.assertEqual(self.store.run(run['id'])['status'],'error')
 
@@ -242,6 +242,7 @@ class OntologyWorkflow(unittest.TestCase):
         dictionary={'entities':[{'id':'제어 FSM','name':'제어 FSM','type':'FSM','quote':source}]+[{'id':s,'name':s,'type':'State','quote':source} for s in states], 'aliases':[], 'relations':[{'id':'includes_state','description':'명시된 상태 구성','subject_types':['FSM'],'object_types':['State'],'quote':source}]}
         approved_dictionary(self.store,doc['id'],dictionary)
         output={'title':'상태','claims':[{'heading':'구성','text':source,'quote':source}], 'facts':[{'subject':'제어 FSM','predicate':'includes_state','object':s,'quote':source} for s in states]}
+        output=extraction_response(output['facts'],dictionary,output)
         class Fake:
             def complete(self,*args,**kwargs):return output
         service=Service(self.store,self.root,Fake());run=service.start(doc['id'],'agy','',expected_version=1,expected_generation=1);service.pool.shutdown(wait=True)
@@ -252,6 +253,7 @@ class OntologyWorkflow(unittest.TestCase):
         doc=self.store.register('구조','arch.md',ARCH.encode(),ARCH)
         approved_dictionary(self.store,doc['id'],ARCH_DICTIONARY)
         output={'title':'구조','claims':[{'heading':'호출','text':'주문에서 결제, 결제에서 원장으로 호출한다.','quote':ARCH}], 'facts':[{'subject':s,'predicate':'depends_on','object':o,'quote':ARCH} for s,o in [('order','결제 서비스'),('pay','ledger')]]}
+        output=extraction_response(output['facts'],ARCH_DICTIONARY,output)
         class Fake:
             def complete(self,*args,**kwargs):return output
         service=Service(self.store,self.root,Fake());run=service.start(doc['id'],'agy','',expected_version=1,expected_generation=1);service.pool.shutdown(wait=True)
@@ -324,7 +326,7 @@ class OntologyHTTP(unittest.TestCase):
         item=self.request(base)['items'][0]
         self.request(f'/api/items/{item["id"]}/review','POST',{'revision':1,'action':'revise','actor':'R','reason':'edit','payload':DICTIONARY})
         self.request(f'/api/items/{item["id"]}/review','POST',{'revision':2,'action':'approved','actor':'R','reason':'checked'})
-        with patch.object(self.service.cli,'complete',return_value=PAGE|{'facts':FACTS}):
+        with patch.object(self.service.cli,'complete',return_value=extraction_response()):
             run=self.request(base+'/extract','POST',args)
             self.service.pool.submit(lambda:None).result(timeout=3)
         self.assertEqual(self.request('/api/runs/'+run['id'])['ontology']['revision'],3)

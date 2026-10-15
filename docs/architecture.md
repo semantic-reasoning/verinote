@@ -4,7 +4,7 @@
 
 `documents`는 논리 문서 ID와 현재 버전을, `versions`는 불변 원본 바이트·텍스트·파일명·해시를 저장한다. 새 버전 등록은 낙관적 `expected_version` 확인과 한 트랜잭션으로 진행한다. 문서 제목은 논리 문서의 제목이며 파일명은 버전별로 보존한다. 명시적인 최신 리비전/전체 문서 삭제를 제공한다. 과거 버전 덮어쓰기는 제공하지 않는다.
 
-`runs`는 에이전트·모델·대상 문서 버전을 고정한다. 실행 중 원문 버전이 올라가도 결과는 원래 버전에만 저장한다. 문서별 동시 실행은 DB unique index로 차단한다. 사전 생성과 관계 추출을 구분한다. 성공한 동일 사전 revision의 재추출은 거부하며 새 승인 revision의 추출은 기존 검토를 보존하고 새 pending 후보를 추가한다. 실패한 실행은 부분 후보를 남기지 않으며 재시도 가능하다.
+`runs`는 에이전트·모델·대상 문서 버전을 고정한다. 실행 중 원문 버전이 올라가도 결과는 원래 버전에만 저장한다. 문서별 동시 실행은 DB unique index로 차단한다. 사전 생성과 관계 추출을 구분한다. 성공한 동일 사전 revision·추출 방식 버전의 재추출은 거부한다. 새 승인 revision 또는 개선된 추출 방식의 실행은 기존 검토를 보존하고 새 pending 후보를 추가한다. 실패한 실행은 부분 후보를 남기지 않으며 재시도 가능하다.
 
 `items`는 ontology(추출 사전), page, fact를 같은 검토 계약으로 저장한다. 상태는 pending/approved/held/rejected다. `revision`은 내용 수정 및 판정마다 증가하고 요청자가 본 revision을 제출해야 한다. `events`는 생성·승인·보류·반려·철회·수정의 당시 payload, 행위자, 이유, 시각을 보존한다. 사전 및 사실 수정은 반드시 pending으로 전환한다. 위키 승인만으로 관계가 승인되지는 않는다.
 
@@ -29,7 +29,7 @@
 | GET `/api/documents/{id}/raw?version=N` | 정확한 원본 바이트 다운로드 |
 | GET `/api/documents/{id}/diff?version=N` | 직전 버전 대비 추출 텍스트 diff |
 | POST `/api/documents/{id}/ontology` | `{agent,model?,expected_version,expected_generation}`로 사전 생성 시작, 202 응답 |
-| POST `/api/documents/{id}/extract` | 같은 요청 형식으로 승인 사전 기반 추출 시작, 202 응답. 미승인/기추출 사전 또는 오래된 문서 토큰은 409 |
+| POST `/api/documents/{id}/extract` | 같은 요청 형식으로 승인 사전 기반 추출 시작, 202 응답. 미승인/현재 방식으로 기추출한 사전 또는 오래된 문서 토큰은 409 |
 | POST `/api/items/{id}/review` | `{revision,action,actor,reason,payload?}` |
 | POST `/api/documents/{id}/approve-items` | `{version,expected_version,expected_generation,items:[{id,revision}],actor,reason}`로 선택한 검토 대기 위키·관계를 원자적으로 승인 |
 | GET `/api/items/{id}/history` | 불변 검토 이벤트 목록 |
@@ -97,7 +97,7 @@ POST `/api/documents/{id}/delete-latest`, `/delete`는 정확히 `{expected_vers
 
 문서 버전별 ontology item 하나를 먼저 생성하고 사람이 검토한다. 개체는 정규 ID·원문 명칭·타입·인용, 별칭은 명칭·대상 ID·동일성을 검토할 인용, 관계는 snake_case ID·의미/포함/제외 설명·주어/목적어 타입·인용을 가진다. 사전은 개체 200/별칭 400/관계 40개 및 UTF-8 60,000바이트로 제한한다. 별칭과 ID의 충돌, 타입 참조 오류, 원문에 없는 인용은 저장을 거부한다. 개체 name은 자동 별칭으로 취급하지 않는다. 같은 이름의 서로 다른 개체를 구분하려면 범위를 명시한 ID를 쓴다.
 
-`create_run`은 `BEGIN IMMEDIATE` 안에서 문서 version/generation을 확인하고 같은 버전의 approved 사전을 읽어 ID·revision·payload·SHA-256을 `runs.ontology`에 고정한다. active run 유니크 제약은 두 단계에 공통이다. 기존 성공 추출도 같은 트랜잭션에서 검사한다. 사전 생성은 기존 위키/사실에 관계없이 허용하되 사전 item이 이미 있으면 편집을 안내한다. 승인 사전 revision마다 한 번의 성공 추출을 허용하며 재승인으로 revision이 바뀌면 새 추출이 가능하다.
+`create_run`은 `BEGIN IMMEDIATE` 안에서 문서 version/generation을 확인하고 같은 버전의 approved 사전을 읽어 ID·revision·payload·SHA-256을 `runs.ontology`에 고정한다. active run 유니크 제약은 두 단계에 공통이다. 기존 성공 추출도 같은 트랜잭션에서 검사한다. 사전 생성은 기존 위키/사실에 관계없이 허용하되 사전 item이 이미 있으면 편집을 안내한다. 승인 사전 revision·추출 방식 버전마다 한 번의 성공 추출을 허용한다. 재승인으로 revision이 바뀌거나 이전 방식에서 현재 방식으로 바뀌면 새 추출이 가능하다.
 
 사전 생성은 최대 4,000자 구간(최대 64개)과 인용문을 제외한 기존 사전 문맥으로 추가 항목을 요청한다. 구간 분할은 후반부의 문장/줄 경계를 우선하며 모든 문자를 정확히 보존한다. 각 구간을 다시 32자 이후 첫 문장/줄 경계를 우선하는 최대 400자 source span으로 나누고 내용 해시를 포함한 ID를 부여한다. 모델의 `quote_ref:[시작ID,끝ID]`를 현재 구간의 ID 목록으로 검증하고 연속 원문으로 복원한다. 숫자 문자 오프셋 추측·이전 구간 ID·literal quote 대체 응답은 허용하지 않는다. 저장/검토 사전은 기존 literal quote 형식이다. CRLF 인용도 원문 그대로 검증한다. 전체 사전의 이름·별칭·타입·정의 충돌 검증은 유지한다. 경계를 가로지르는 의미의 손실 가능성은 남는다.
 
@@ -141,3 +141,13 @@ POST `/api/documents/{id}/delete-latest`, `/delete`는 정확히 `{expected_vers
 원래 전달받은 기존 사전 항목을 정규화 후 인용까지 정확히 반복하는 경우에만 이전 원문 범위의 근거를 재사용할 수 있다. 새 인용과 같은 응답 안에서 처음 나온 항목은 현재 구간의 근거가 필수다. 실제 충돌 메시지는 이번 응답 내부와 기존 사전/현재 구간 사이를 구분하고 종류·위치·변경 필드를 표시한다. 선언되지 않은 관계 타입도 관계 ID·타입 필드를 명시한다.
 
 사전 생성 복구 계약에는 `merge_contract` 버전이 포함된다. 이전 처리 규칙의 부분 기록은 호환 검사에서 제외되어 새로 시작할 수 있다. 완료된 사전·승인 기록을 다시 쓰지 않으며 `source-spans-v1` 진행 표식과 기존 0회 호출 사용량 해석은 유지한다.
+
+## 승인 사전 기반 추출 점검
+
+`EXTRACTION_CONTRACT_VERSION`을 `runs.ontology` wrapper에 고정한다. 사전 payload/hash는 변경하지 않는다. 성공 중복 키는 `extraction_key(pin)`의 `(id, revision, extraction_contract)`이며 문서 조회와 실행 생성에 동일한 규칙을 사용한다. 버전 필드 없는 pin은 legacy 0으로 취급하여 현재 방식의 재추출 한 번을 허용한다. 기존 후보·이력은 덮어쓰지 않고 새 pending 후보를 추가한다. 승인 철회·사전 변경·동시 실행·문서 버전 검증은 유지한다.
+
+새 추출 응답은 관계마다 `coverage`의 predicate/fact_indices/claim_indices/status/reason과 최대 12개 `dictionary_gaps`를 포함한다. reason 120자, gap detail 160자, 청크당 facts 80개·claims 12개 제한이다. `extracted`, `no_evidence`, `not_representable`, `limit_reached`를 구분하고 모든 사실의 인덱스와 관계를 검사한다. 보고서 형식·인덱스는 인용 보정 호출 전에 검사하고 인용 보정 후 다시 검사한다. 보고서 보정이나 보충 추출 호출은 없다. 정확한 인용과 승인 사전의 어휘·방향·타입 검증 및 기존 인용 보정 최대 2회는 유지한다. 이 검사는 모델 판단의 의미적 타당성이나 recall을 증명하지 않는다.
+
+`extraction_coverage.py`는 검증된 청크의 인덱스/판단을 `runs/<id>/extraction-coverage.json`에 최대 2 MiB로 저장한다. 원문과 전체 사실을 복제하지 않는다. schema/실행/문서 버전/사전 pin과 source 길이, 청크 offset/length, 개수 및 인덱스를 검사한다. symlink/초과 크기/손상/identity 불일치는 unavailable이다. 청크 응답 관계 수와 DB의 실제 저장 후보 수(관계와 인용이 모두 같을 때 중복 제거)를 구분한다. 위키 주장 인덱스는 청크별 claim_base로 전역 번호에 대응한다. 목록 API는 요약만, 실행 상세 API는 구간별 점검을 반환한다.
+
+보고서는 DB 완료 전에 best effort로 저장하며 DB 실행 상태만 게시 여부를 결정한다. 보고서 저장 실패는 후보 저장을 취소하지 않는다. 실패·중단 실행의 보고서는 검증된 접두 구간일 뿐 저장 후보가 아니다. 소유 run을 DB에서 재확인하므로 삭제 이후 파일 정리가 지연되어도 보고서를 노출하지 않는다. 기존 실행의 보고서가 없으면 unavailable이며 0개나 완전 추출을 뜻하지 않는다. 추가 SQL migration이나 승인 자동화는 없다.
