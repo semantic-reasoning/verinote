@@ -166,6 +166,22 @@ class Store:
         item['payload'] = json.loads(item['payload'])
         return item
 
+    def document_metadata(self, document_id, version):
+        """Navigation for legacy snapshots without loading source text or live items."""
+        with self.connect() as db:
+            row = db.execute('SELECT d.id,d.title,v.version,v.filename,v.sha256,length(v.text) AS total_chars FROM documents d JOIN versions v ON d.id=v.document_id WHERE d.id=? AND v.version=?', (document_id, version)).fetchone()
+            if not row:
+                raise ValueError('문서를 찾을 수 없습니다.')
+            return dict(row)
+
+    def source_text(self, document_id, version):
+        """Only the guarded question fallback calls this raw-text accessor."""
+        with self.connect() as db:
+            row = db.execute('SELECT text FROM versions WHERE document_id=? AND version=?', (document_id, version)).fetchone()
+            if not row:
+                raise ValueError('원문을 찾을 수 없습니다.')
+            return row[0]
+
     def raw(self, document_id, version):
         with self.connect() as db:
             row = db.execute('SELECT raw,filename FROM versions WHERE document_id=? AND version=?', (document_id, version)).fetchone()
@@ -377,10 +393,11 @@ class Store:
                 if not row:
                     raise ValueError('스냅샷을 찾을 수 없습니다.')
                 return json.loads(row[0])
-            facts = []
-            for row in db.execute("SELECT i.*,v.sha256 FROM items i JOIN documents d ON i.document_id=d.id AND i.version=d.current_version JOIN versions v ON v.document_id=i.document_id AND v.version=i.version WHERE i.kind='fact' AND i.status='approved' ORDER BY i.id"):
-                facts.append(self.unpack(row))
-            body = {'facts': facts, 'documents': [dict(r) for r in db.execute('SELECT id,current_version FROM documents ORDER BY id')]}
+            approved = {'fact': [], 'page': [], 'ontology': []}
+            for row in db.execute("SELECT i.*,v.sha256 FROM items i JOIN documents d ON i.document_id=d.id AND i.version=d.current_version JOIN versions v ON v.document_id=i.document_id AND v.version=i.version WHERE i.kind IN ('fact','page','ontology') AND i.status='approved' ORDER BY i.id"):
+                approved[row['kind']].append(self.unpack(row))
+            documents = [dict(r) for r in db.execute('SELECT d.id,d.current_version,d.title,v.filename,v.sha256,length(v.text) AS total_chars FROM documents d JOIN versions v ON v.document_id=d.id AND v.version=d.current_version ORDER BY d.id')]
+            body = {'facts': approved['fact'], 'pages': approved['page'], 'ontologies': approved['ontology'], 'knowledge_version': 1, 'documents': documents}
             key = digest(body)
             value = {'id': key, **body}
             db.execute('INSERT OR IGNORE INTO snapshots VALUES(?,?,?)', (key, canonical(value), now()))

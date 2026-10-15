@@ -8,7 +8,7 @@
 
 `items`는 ontology(추출 사전), page, fact를 같은 검토 계약으로 저장한다. 상태는 pending/approved/held/rejected다. `revision`은 내용 수정 및 판정마다 증가하고 요청자가 본 revision을 제출해야 한다. `events`는 생성·승인·보류·반려·철회·수정의 당시 payload, 행위자, 이유, 시각을 보존한다. 사전 및 사실 수정은 반드시 pending으로 전환한다. 위키 승인만으로 관계가 승인되지는 않는다.
 
-`snapshots`는 하나의 SQLite 트랜잭션에서 읽은 현재 문서 버전과 승인 사실 전체를 해시와 함께 저장한다. 과거 후보 내용이 변경되어도 snapshot의 payload는 바뀌지 않는다. `queries`는 질의 결과와 원래 요청·규칙 본문·규칙 해시·엔진 버전을 기록한다. 재조회에는 현재 설치된 엔진과 규칙을 사용하므로 버전이 변경된 환경에서는 기록된 버전·해시를 비교해야 한다.
+`snapshots`는 하나의 SQLite 트랜잭션에서 읽은 현재 문서 버전·메타데이터와 승인 사실·위키·사전 전체를 knowledge_version=1 JSON 및 해시와 함께 저장한다. SQL 스키마 변경이나 기존 스냅샷 backfill은 없으며, 옛 스냅샷은 당시 고정된 관계만 사용한다. 과거 후보 내용이 변경되어도 snapshot의 payload는 바뀌지 않는다. `queries`는 질의 결과와 원래 요청·규칙 본문·규칙 해시·엔진 버전을 기록한다. 재조회에는 현재 설치된 엔진과 규칙을 사용하므로 버전이 변경된 환경에서는 기록된 버전·해시를 비교해야 한다.
 
 ## 모듈
 
@@ -56,7 +56,13 @@
 
 ## 자연어 질문
 
-`assistant.py`는 선택 CLI의 JSON 요청을 `query_graph`, `search_documents`, `read_document`만으로 제한한다. 모델이 선택한 실제 graph 실행이 없으면 최종 답변을 거부한다. graph/source/inference 주장 종류와 실제 반환된 증거 ID를 대조한다. 빈 graph는 긍정 주장 근거가 될 수 없다. 의미적 함의 검증은 사람이 한다.
+`assistant.py`는 `query_graph`, `search_knowledge`, `read_wiki`, `search_documents`, `read_document`만 허용한다. 실제 graph 실행 없이 최종 답변할 수 없다. graph/wiki/source/inference와 실제 증거 ID를 대조하며 빈 graph는 긍정 근거가 아니다. 승인 사전 검색은 문서별 어휘 안내이고 인용 근거가 아니다. `read_wiki`는 고정 페이지의 주장과 원문 인용을 렌더링한 문자열을 2,000자씩 제공하며 page_id/revision/version/sha256, claim_indices, offset/end_offset/next_offset/partial을 기록한다.
+
+Assistant 초기화는 고정 메타데이터만 사용한다. 과거 스냅샷에 메타데이터가 없을 때도 Store.document_metadata가 버전별 컬럼만 조회하며 원문이나 현재 승인 항목을 읽지 않는다. 원문은 authorize_source를 통과한 뒤 source_text로 지연 로딩한다. search_documents 기본 mode=metadata는 제목·파일명만 검색하며 mode=body는 document_id와 fallback이 필수다.
+
+fallback은 lookup_id, reason, detail, wiki_evidence_ids로 구성한다. reason은 legacy_snapshot/no_approved_wiki/no_match/insufficient_wiki 중 실제 상태와 일치해야 한다. 해당 문서를 포함한 잘리지 않은 search_knowledge 결과 및 graph 결과가 이전 모델 입력에 전달되어야 한다. 관련 위키가 있으면 검색된 각 페이지의 읽기 근거도 이전 회차에서 전달되어야 한다. 같은 tools 배열에서 추측한 근거 ID로 우회할 수 없다. 거부 요청도 trace에 error로 남고 원문 조회는 발생하지 않는다. 검사는 순서·범위만 보장하며 검색어와 의미적 충분성은 모델 판단이다. 부분 위키 읽기 범위를 명시하고 이를 전체 부재로 표현하지 않도록 요청한다.
+
+새 스냅샷 pages/ontologies는 facts 및 documents와 동일 트랜잭션에서 승인된 현재 버전 내용만 고정한다. 기존 스냅샷의 누락 필드를 최신 데이터로 채우지 않는다. 자연어 질문에서만 문서 100/사실 500/위키 500/사전 100개와 지식 8 MiB 한도를 적용하며 직접 그래프 조회 한도는 바꾸지 않는다. 검색 20개/위키·원문 읽기 2,000자/결과 30,000바이트/프롬프트 60,000바이트, 모델 6회·도구 10회 예산을 유지한다. 잘린 지식 검색으로 fallback을 허용하지 않으므로 검색 범위를 좁혀야 한다. 삭제는 기존 documents 참조를 따라 새 지식 payload를 포함한 스냅샷 전체와 관련 질문을 제거한다.
 
 `questions` 테이블은 제출 시 고정한 snapshot, agent/model, 질문, 상태, 누적 trace/evidence, 답변과 오류를 저장한다. 검색·읽기는 snapshot의 문서 버전만 사용하고 그래프는 snapshot의 승인 payload만 사용한다. 기존 runs와 같은 worker/8개 슬롯을 사용하며 재시작 시 미완료 질문도 interrupted로 복구한다.
 
@@ -74,9 +80,9 @@ POST `/api/documents/{id}/delete-latest`, `/delete`는 정확히 `{expected_vers
 
 ## 문서 설명과 용어 정의
 
-`search_documents`는 고정 스냅샷의 제목·파일명·본문을 NFC/casefold로 비교한다. 결과에 filename, matched_fields, total_chars, offset_strategy를 추가한다. offset은 원문 읽기 시작점이다. 본문 literal 일치는 원본 문자열 좌표를 반환하고, 제목/파일명이나 정규화 전용 본문 일치는 0(`start`)에서 읽게 한다. 정규화 문자열의 달라진 길이를 원문 좌표로 사용하지 않는다. 결과 상한 20개와 non-citable 계약은 유지한다.
+`search_documents`는 기본 metadata 모드에서 고정 스냅샷의 제목·파일명만 NFC/casefold로 비교한다. body 모드는 한 문서의 ID와 검증된 fallback을 요구한 뒤 본문을 검색한다. 결과에 filename, matched_fields, total_chars, offset_strategy를 제공한다. offset은 원문 읽기 시작점이다. 허용된 본문 literal 일치는 원본 문자열 좌표를 반환하고, 제목/파일명이나 정규화 전용 본문 일치는 0(`start`)에서 읽게 한다. 정규화 문자열의 달라진 길이를 원문 좌표로 사용하지 않는다. 결과 상한 20개와 non-citable 계약은 유지한다.
 
-`read_document`는 원문을 변환하지 않고 title/filename, offset/end_offset/total_chars/next_offset을 제공한다. 문서 카탈로그에도 filename과 길이를 제공한다. 프롬프트는 제목을 가리키는 문서 설명 질문을 원문에 근거해 답하고, 빈 승인 그래프와 원문 설명 가능성을 구분한다. 일반 정의·외부 지식은 별도 근거 없이 보충하지 않으며 부분 읽기의 미확인을 문서 전체 부재로 단정하지 않는다. 실제 Wirelog 실행과 source/graph 인용 검증은 그대로이며, 관련 원문이 없거나 질문이 자료 밖이면 unknown-only 응답도 여전히 허용한다.
+`read_document`는 fallback 검증 후 원문을 변환하지 않고 title/filename, offset/end_offset/total_chars/next_offset을 제공한다. 문서 카탈로그는 본문 없이 filename과 길이를 제공한다. 문서 설명 질문은 승인 위키를 먼저 검색·읽고 부족한 경우에만 원문으로 보충한다. 빈 승인 그래프만으로 위키·원문 설명 불가를 단정하지 않는다. 일반 정의·외부 지식은 별도 근거 없이 보충하지 않으며 부분 읽기의 미확인을 문서 전체 부재로 단정하지 않는다. 실제 Wirelog 실행과 wiki/source/graph 인용 검증을 요구하며, 질문이 자료 밖이면 unknown-only 응답도 허용한다.
 
 
 ## 승인 사전 기반 추출
