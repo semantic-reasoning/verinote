@@ -10,7 +10,7 @@ from urllib.error import HTTPError
 
 import test_workflow as workflow
 from test_workflow import SOURCE, PAGE, FACTS, DICTIONARY, legacy_run
-from verinote.agents import CLI
+from verinote.agents import CLI, parse_response
 from verinote.service import Service
 from verinote.usage import (MAX_METADATA, atomic_json, calculate, decode_transport,
                             empty_usage, job_calls, summarize, validate_rates)
@@ -211,6 +211,83 @@ class Transport(unittest.TestCase):
             self.assertEqual(summarize(calls)['incomplete_calls'],1)
             self.assertIsNone(summarize(calls)['tokens']['input']['value'])
             self.assertIn(meta['usage_warning'],calls[0]['warnings'])
+
+
+class ResponseFraming(unittest.TestCase):
+    def test_recovers_only_known_provider_framing(self):
+        body = '{"tools":[{"name":"query_graph","arguments":{}}]}'
+        for agent in ('agy', 'claude', 'cursor', 'codex', 'copilot'):
+            for raw in (body, '\x1b[32m```json\n' + body + '\n```\x1b[0m'):
+                self.assertEqual(parse_response(agent, raw), (json.loads(body), []))
+        for raw in (body + body, ' \n' + body + '\n ' + body + '\n'):
+            self.assertEqual(parse_response('cursor', raw), (json.loads(body), ['cursor_duplicate_json_object']))
+        self.assertEqual(parse_response('copilot', '<final_answer>\n\n</final_answer>' + body),
+                         (json.loads(body), ['copilot_empty_final_answer_prefix']))
+        literal = {'text': '<final_answer>keep me</final_answer>', 'tools': [{}, {}]}
+        self.assertEqual(parse_response('copilot', json.dumps(literal)), (literal, []))
+
+    def test_rejects_ambiguous_or_unrecognized_framing(self):
+        body = '{"ok":true}'
+        cursor_bad = [body + '{"ok":1}', body + '{ "ok":true}', body * 3, body + '{',
+                      body + '[]', body + 'null', body * 2 + ' trailing', '[] []', '1 1',
+                      body + '{"ok":false,"ok":true}', 'prose ' + body,
+                      '{"a":1,"b":2}{"b":2,"a":1}']
+        copilot_bad = ['<final_answer>nonempty</final_answer>' + body,
+                       '<final_answer><final_answer></final_answer></final_answer>' + body,
+                       '<final_answer></final_answer>' * 2 + body,
+                       '<final_answer>' + body, '<final_answer>' + body + '</final_answer>',
+                       '<final_answer></final_answer>' + body + ' trailing']
+        for agent, values in [('cursor', cursor_bad), ('copilot', copilot_bad)]:
+            for raw in values:
+                with self.subTest(agent=agent, raw=raw), self.assertRaises(ValueError):
+                    parse_response(agent, raw)
+        for agent in ('agy', 'claude', 'cursor', 'codex', 'copilot'):
+            for raw in ('[]', 'true', '1', 'null'):
+                with self.subTest(agent=agent, raw=raw), self.assertRaises(ValueError):
+                    parse_response(agent, raw)
+            if agent != 'cursor':
+                with self.assertRaises(ValueError): parse_response(agent, body * 2)
+            if agent != 'copilot':
+                with self.assertRaises(ValueError): parse_response(agent, '<final_answer></final_answer>' + body)
+
+    def test_recovery_preserves_terminal_status_raw_logs_and_usage(self):
+        body = '{"ok":true}'
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for agent in ('cursor', 'copilot'):
+                raw = body * 2 if agent == 'cursor' else '<final_answer>\n\n</final_answer>' + body
+                sidecar = json.loads(fixture(agent)) if agent == 'copilot' else None
+                for state in ('normal', 'recovered', 'exit', 'provider_error'):
+                    if agent == 'copilot' and state == 'provider_error': continue
+                    output = body if state == 'normal' else raw
+                    if agent == 'cursor':
+                        events = [json.loads(line) for line in fixture(agent).splitlines()]
+                        events[-1]['result'] = output
+                        if state == 'provider_error': events[-1].update(subtype='error', is_error=True)
+                        output = '\n'.join(json.dumps(event) for event in events)
+                    folder = root / (agent + '-' + state)
+                    script = root / 'fake-cli'
+                    code = '#!/usr/bin/env python3\nimport sys,pathlib\n'
+                    if sidecar:
+                        code += f"pathlib.Path(sys.argv[sys.argv.index('--usage-output-file')+1]).write_text({json.dumps(sidecar)!r})\n"
+                    code += f'print({output!r})\nsys.exit({7 if state == "exit" else 0})\n'
+                    script.write_text(code); script.chmod(0o755)
+                    with patch('verinote.agents.executable', return_value=str(script)) as launch:
+                        if state in ('normal', 'recovered'):
+                            self.assertEqual(CLI().complete(agent, '', 'synthetic', folder), {'ok': True})
+                        else:
+                            with self.assertRaisesRegex(ValueError, 'CLI 종료 코드 7|Cursor 실행 실패'):
+                                CLI().complete(agent, '', 'synthetic', folder)
+                        self.assertEqual(launch.call_count, 1)
+                    self.assertEqual((folder / 'stdout.txt').read_text(), output + '\n')
+                    usage = json.loads((folder / 'usage.json').read_text())
+                    meta = json.loads((folder / 'run.json').read_text())
+                    _, expected, _ = decode_transport(agent, output, sidecar)
+                    for key in ('tokens', 'reported_usd', 'reported_credits'):
+                        self.assertEqual(usage[key], expected[key])
+                    self.assertEqual(usage['status'], 'success' if state in ('normal', 'recovered') else 'error')
+                    if state == 'recovered': self.assertEqual(len(meta['response_normalizations']), 1)
+                    if state == 'normal': self.assertEqual(meta['response_normalizations'], [])
 
 
 class Lifecycle(unittest.TestCase):

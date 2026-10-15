@@ -25,7 +25,7 @@ reason은 legacy_snapshot(옛 스냅샷에 승인 지식 없음), no_approved_wi
 원문 접근 전 해당 문서를 포함한 완전한 search_knowledge 결과와 query_graph 결과를 이전 모델 회차에서 받아야 합니다. 검색 결과가 잘렸으면 문서·검색어를 좁히세요. 관련 위키가 있으면 검색된 각 위키를 먼저 읽고 그 근거 ID를 wiki_evidence_ids에 지정하세요. 같은 tools 배열에서 읽은 내용을 미리 부족하다고 판단할 수 없습니다. 원문 계속 읽기에도 같은 fallback을 명시하세요.
 승인 위키·그래프로 답할 수 있으면 원문을 읽지 마세요. 문서 내용 설명은 승인 위키를 우선 검색·읽고, 관계 질문은 승인 그래프를 우선 조회하세요. 그래프만으로 충분하면 위키 검색은 생략할 수 있습니다.
 최종 답변 전 반드시 질문에 맞는 query_graph를 실제 실행해야 합니다. 관련 관계가 없어도 direct로 관련 개체를 조회하세요.
-카탈로그의 정확한 개체/관계명을 사용하세요. 조회 결과를 기다리고 나서 답하세요. 중복 도구 요청 금지.
+카탈로그의 정확한 개체/관계명을 사용하세요. 조회 결과를 기다리고 나서 답하세요. 이미 받은 근거를 사용하고 부족하면 질의를 바꾸세요. 같은 그래프 조회는 기존 근거를 재사용하며 도구 요청 한도는 소비합니다. 다른 도구의 중복 요청은 금지합니다.
 claims 최대12개. kind는 graph(승인 그래프 근거), wiki(승인 위키 근거), source(미검토 원문 기술), inference(명시적 추론).
 graph 주장은 비어 있지 않은 graph 증거, wiki 주장은 wiki 증거, source 주장은 source 증거를 인용해야 합니다. inference는 비어 있지 않은 증거를 인용하세요.
 검색/카탈로그는 근거가 아닙니다. 관계 연결은 인과/실제 장애를 증명하지 않습니다.
@@ -55,6 +55,7 @@ class Assistant:
         self.store, self.cli, self.snapshot, self.job = store, cli, snapshot, job
         self.folder, self.progress = folder, progress
         self.trace, self.evidence, self.seen = [], {}, set()
+        self.successful_graphs = {}
         self.lookups, self.delivered_lookups, self.delivered_evidence = {}, set(), set()
         self.versions = {d['id']: d['current_version'] for d in snapshot['documents']}
         pages, ontologies = snapshot.get('pages', []), snapshot.get('ontologies', [])
@@ -179,13 +180,22 @@ class Assistant:
                 if any(not isinstance(v, str) or len(v) > 200 for v in args.values()):
                     raise ValueError('그래프 인자 형식 오류')
                 args = {k: v.strip() for k, v in args.items()}
+                if args['action'] not in ('direct', 'downstream', 'upstream', 'path'):
+                    raise ValueError('지원 질의: direct, downstream, upstream, path')
+                if args['action'] != 'direct' and (not args['subject'] or not args['predicate']):
+                    raise ValueError('전이 질의에는 기준 개체와 관계를 지정하세요.')
+                if args['action'] == 'path' and not args['target']:
+                    raise ValueError('경로 질의에는 도착 개체가 필요합니다.')
                 if args['action'] == 'direct' and args['target']:
                     raise ValueError('direct는 target을 지원하지 않습니다.')
             signature = canonical({'name': name, 'arguments': args})
+            entry['arguments'] = args
+            if name == 'query_graph' and signature in self.successful_graphs:
+                entry.update(self.successful_graphs[signature], status='success')
+                return  # finally persists the reuse; delivery still waits for the next prompt.
             if signature in self.seen:
                 raise ValueError('중복 도구 호출')
             self.seen.add(signature)
-            entry['arguments'] = args
             if name == 'query_graph':
                 result = {'kind': 'graph', 'result': engine.query(self.snapshot, **args)}
             elif name == 'search_knowledge':
@@ -252,6 +262,8 @@ class Assistant:
                 if lookup is not None:
                     self.lookups[result['lookup_id']] = lookup
             entry['status'] = 'success'
+            if name == 'query_graph':
+                self.successful_graphs[signature] = {'evidence_id': entry['evidence_id'], 'reused_from': len(self.trace)}
         except Exception as exc:
             entry.update(status='error', error=str(exc))
             raise

@@ -8,6 +8,8 @@ import test_workflow as workflow
 from test_workflow import SOURCE
 from verinote.service import Service
 from verinote.store import Store
+from verinote.assistant import Assistant
+from verinote import engine
 
 
 def tool(name='query_graph', **args):
@@ -79,7 +81,7 @@ class AssistantTests(unittest.TestCase):
     def test_reject_invalid_model_contracts(self):
         self.approve(self.extract())
         cases = [[answer()], [tool(),answer(ids=['invented'])], [tool(),answer(kind='source')],
-                 [tool(),tool()], [tool(name='execute', code='bad')], [tool(code='bad')],
+                 [tool(name='search_documents',query='주문')]*2, [tool(name='execute', code='bad')], [tool(code='bad')],
                  [tool(subject='없는 서비스'),answer()], [tool(name='read_document', document_id='../secret')],
                  [tool(name='read_document',document_id=self.doc['id'],offset=-1)],
                  [tool(name='search_documents',query='주문'),answer(ids=['E1'])]]
@@ -88,6 +90,70 @@ class AssistantTests(unittest.TestCase):
                 job, _ = self.ask(outputs)
                 self.assertEqual(job['status'], 'error')
                 self.assertIsNone(job['answer'])
+
+    def test_repeated_graph_reuses_original_evidence_and_trace(self):
+        self.approve(self.extract())
+        requests = [tool(subject=' 주문 '), tool(action='direct',subject='주문',predicate='',target=''),
+                    batch(tool(subject='주문'), tool(subject='결제')), answer()]
+        with patch('verinote.assistant.engine.query', wraps=engine.query) as query:
+            job, fake = self.ask(requests)
+        self.assertEqual(job['status'], 'success', job['error'])
+        self.assertEqual((query.call_count, len(fake.calls), len(job['evidence'])), (2, 4, 2))
+        for index in (1, 2):
+            self.assertEqual(job['trace'][index]['evidence_id'], 'E1')
+            self.assertEqual(job['trace'][index]['reused_from'], 1)
+            self.assertEqual(job['trace'][index]['status'], 'success')
+        self.assertNotIn('reused_from', job['trace'][0])
+        # A new question owns a new cache and must really execute Wirelog.
+        with patch('verinote.assistant.engine.query', wraps=engine.query) as query:
+            other, _ = self.ask([tool(subject='주문'), answer()])
+        self.assertEqual(other['status'], 'success'); self.assertEqual(query.call_count, 1)
+
+    def test_graph_reuse_keeps_empty_evidence_and_failed_results_unusable(self):
+        job, _ = self.ask([tool(subject='없음'), tool(subject='없음'), answer()])
+        self.assertEqual(job['status'], 'error'); self.assertIn('비어 있지 않은 근거', job['error'])
+        self.assertEqual(list(job['evidence']), ['E1'])
+        for result in (RuntimeError('engine failed'), {'rows': [], 'large': 'x' * 30001}):
+            assistant = Assistant(self.store, None, self.store.snapshot(), {}, self.root, lambda *a: None)
+            mock = {'side_effect': result} if isinstance(result, Exception) else {'return_value': result}
+            with patch('verinote.assistant.engine.query', **mock):
+                with self.assertRaises((RuntimeError, ValueError)): assistant.execute(tool()['tools'][0])
+            self.assertEqual(assistant.successful_graphs, {}); self.assertEqual(assistant.evidence, {})
+            self.assertEqual(assistant.trace[-1]['status'], 'error')
+
+    def test_graph_reuse_keeps_tool_round_and_context_budgets(self):
+        for outputs, error, calls, traces in [([tool()] * 6, '최대 모델 회차', 6, 6),
+                                             ([batch(tool(),tool(),tool())] * 4, '도구 요청 개수', 4, 9)]:
+            with patch('verinote.assistant.engine.query', wraps=engine.query) as query:
+                job, fake = self.ask(outputs)
+            self.assertEqual(job['status'], 'error'); self.assertIn(error, job['error'])
+            self.assertEqual((len(fake.calls), len(job['trace']), query.call_count), (calls, traces, 1))
+        # Force the next prompt over budget only after a reuse has been recorded.
+        with patch('verinote.assistant.MAX_CONTEXT', 60000):
+            def repeat(prompt):
+                import verinote.assistant as module
+                module.MAX_CONTEXT = len(prompt.encode())
+                return tool()
+            job, fake = self.ask([tool(), repeat])
+        self.assertEqual(job['status'], 'error'); self.assertIn('프롬프트 크기', job['error'])
+        self.assertEqual(len(fake.calls), 2); self.assertEqual(job['trace'][1]['reused_from'], 1)
+
+    def test_graph_reuse_cannot_deliver_evidence_within_same_batch(self):
+        lookup = tool(name='search_knowledge',query='주문',document_id=self.doc['id'])
+        raw = tool(name='read_document',document_id=self.doc['id'],fallback=fallback())
+        with patch.object(self.store, 'source_text', side_effect=AssertionError('premature raw read')):
+            job, _ = self.ask([lookup, batch(tool(),tool(),raw)])
+        self.assertEqual(job['status'], 'error'); self.assertIn('그래프 조회 결과를 먼저', job['error'])
+        self.assertEqual(job['trace'][2]['reused_from'], 2)
+        self.assertEqual(list(job['evidence']), ['E1'])
+
+    def test_invalid_graph_arguments_cannot_reuse_success(self):
+        for invalid in [dict(action='unknown'), dict(subject=True), dict(extra='value'),
+                        dict(action='path',subject='주문',predicate='depends_on'),
+                        dict(action='downstream',subject='주문'), dict(target='원장')]:
+            job, _ = self.ask([tool(), tool(**invalid)])
+            self.assertEqual(job['status'], 'error')
+            self.assertNotIn('reused_from', job['trace'][-1])
 
     def test_submission_pins_graph_search_and_source(self):
         self.approve([i for i in self.extract() if i['kind']=='fact'])

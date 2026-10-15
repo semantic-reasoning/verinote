@@ -41,6 +41,34 @@ def command(agent, model, prompt):
     return (args + ['-'], prompt) if agent == 'codex' else (args + ['-p', prompt], '')
 
 
+def parse_response(agent, response):
+    """Recover only observed, unambiguous terminal-text framing artifacts."""
+    response = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', response).strip()
+    normalizations = []
+    if agent == 'copilot':
+        prefix = re.match(r'<final_answer>\s*</final_answer>\s*(?=\{)', response)
+        if prefix:
+            response = response[prefix.end():]
+            normalizations.append('copilot_empty_final_answer_prefix')
+    fence = re.fullmatch(r'```(?:json)?\s*\n(.*?)\n```', response, re.S)
+    if fence:
+        response = fence[1].strip()
+    try:
+        result = json.loads(response)
+    except json.JSONDecodeError:
+        if agent != 'cursor':
+            raise
+        # Exact text equality avoids conflating e.g. true and 1, or choosing
+        # between conflicting answers. A third object or trailing prose fails.
+        result, end = json.JSONDecoder().raw_decode(response)
+        if not isinstance(result, dict) or response[end:].strip() != response[:end]:
+            raise
+        normalizations.append('cursor_duplicate_json_object')
+    if not isinstance(result, dict):
+        raise ValueError('CLI 최종 응답은 JSON 객체여야 합니다.')
+    return result, normalizations
+
+
 class CLI:
     def __init__(self, timeout=None, max_output=1024 * 1024, rates=None):
         self.timeout, self.max_output = timeout, max_output
@@ -112,14 +140,12 @@ class CLI:
                 raise ValueError(f'CLI 종료 코드 {proc.returncode}. 실행 로그의 stderr를 확인하세요.')
             if provider_error or response is None:
                 raise ValueError(provider_error or 'CLI의 최종 응답을 읽지 못했습니다.')
-            response = response.strip()
-            response = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', response)
-            fence = re.fullmatch(r'```(?:json)?\s*\n(.*?)\n```', response, re.S)
-            if fence:
-                response = fence[1]
-            result = json.loads(response)
+            try:
+                result, normalizations = parse_response(agent, response)
+            except json.JSONDecodeError as exc:
+                raise json.JSONDecodeError(f'{PROVIDERS[agent]} 최종 JSON 응답 형식 오류: {exc.msg}', exc.doc, exc.pos) from exc
             usage['status'] = 'success'
-            record('success', returncode=proc.returncode)
+            record('success', returncode=proc.returncode, response_normalizations=normalizations)
             return result
         except Exception as exc:
             if proc and proc.poll() is None:

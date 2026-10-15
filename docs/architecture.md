@@ -84,6 +84,8 @@ POST `/api/documents/{id}/delete-latest`, `/delete`는 정확히 `{expected_vers
 
 `read_document`는 fallback 검증 후 원문을 변환하지 않고 title/filename, offset/end_offset/total_chars/next_offset을 제공한다. 문서 카탈로그는 본문 없이 filename과 길이를 제공한다. 문서 설명 질문은 승인 위키를 먼저 검색·읽고 부족한 경우에만 원문으로 보충한다. 빈 승인 그래프만으로 위키·원문 설명 불가를 단정하지 않는다. 일반 정의·외부 지식은 별도 근거 없이 보충하지 않으며 부분 읽기의 미확인을 문서 전체 부재로 단정하지 않는다. 실제 Wirelog 실행과 wiki/source/graph 인용 검증을 요구하며, 질문이 자료 밖이면 unknown-only 응답도 허용한다.
 
+`query_graph`는 같은 Assistant와 고정 스냅샷 안에서 정규화된 인자가 같은 성공 결과를 재사용한다. 인자 검증 후 실제 엔진 실행·결과 크기 검사·근거 등록까지 성공한 결과만 저장한다. 빈 조회도 재사용되지만 긍정 주장에 필요한 근거를 만들지는 않는다. 재사용 trace는 원래 `evidence_id`와 1부터 시작하는 최초 성공 trace 번호 `reused_from`을 가지며 새로운 근거를 만들지 않는다. 매 요청의 trace와 progress, 도구 10회·모델 6회·누적 프롬프트 한도를 유지한다. 결과를 다음 모델 회차에 전달하기 전에는 재사용해도 원문 fallback이 허용되지 않는다. 그래프 이외의 중복 요청은 기존처럼 거부한다.
+
 
 ## 승인 사전 기반 추출
 
@@ -112,6 +114,8 @@ POST `/api/documents/{id}/delete-latest`, `/delete`는 정확히 `{expected_vers
 ## CLI 사용량 산출
 
 `usage.py`는 CLI 전송 형식만 읽으며 모델이 생성한 답변의 `usage` 키를 계측 근거로 사용하지 않는다. `CLI.complete`는 기존처럼 애플리케이션 JSON을 반환한다. Claude/agy는 JSON result의 본문을, Cursor는 stream-json의 최종 result를, Codex는 JSON events의 agent_message와 최종 turn.completed 카운터를 분리한다. Copilot은 호출마다 지정한 `--usage-output-file`을 읽는다. 중간·중복 이벤트를 합산하지 않는다. 실제 설치 CLI의 무해한 단문 응답을 정제한 5개 fixture가 `tests/fixtures/usage`에 있다.
+
+`agents.parse_response`는 최종 본문의 ANSI·전체 JSON 코드 블록 처리를 유지하며 객체만 반환한다. Copilot에 한해 JSON 객체 앞의 공백뿐인 `<final_answer>...</final_answer>` 접두 태그 하나를 제거한다. Cursor에 한해 전체 본문이 정확히 같은 JSON 객체 텍스트 두 개일 때 하나로 읽는다. 객체 밖 공백만 무시하며 서로 다른 필드 순서·숫자 표기·값, 세 번째 객체, 덜 끝난 객체, 부가 설명은 수용하지 않는다. 임의 텍스트에서 JSON을 찾아내거나 여러 응답을 합치지 않는다. 프로세스 종료·제공자 실패 검사가 우선하고 원본 stdout과 사용량은 그대로 보존하며 성공한 정리의 고정 라벨만 `run.json.response_normalizations`에 남긴다. 이 공통 파서는 사전·추출·질문에 적용되며 별도 모델 재호출은 없다.
 
 정규화된 입력은 캐시를 포함하는 총량, 출력은 추론을 포함하는 총량이다. Claude·Cursor·Copilot은 일반 입력+캐시 읽기+캐시 쓰기로 입력을 복원한다. agy는 input_tokens+cache_read_tokens, Codex는 이미 캐시를 포함한 input_tokens를 사용한다. agy/Codex는 별도 청구되는 캐시 쓰기 구간이 없어 계산상 0이다. cache_write는 물리적인 캐시 생성 통계가 아니라 별도 가격을 적용할 구간이다. 추론을 출력에 다시 더하지 않는다. 근거는 [agy headless](https://www.antigravity.google/docs/cli/headless), [Claude 비용](https://code.claude.com/docs/en/costs), [Cursor 출력](https://cursor.com/docs/cli/reference/output-format), [Codex 비대화형](https://learn.chatgpt.com/docs/non-interactive-mode) 문서와 실제 CLI 응답이다. Cursor usage 세부 키는 관측된 형식이므로 형식 변경은 미확인으로 처리한다.
 
