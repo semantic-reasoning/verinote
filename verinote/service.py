@@ -9,20 +9,20 @@ import threading
 from .agents import CLI, PROVIDERS, validate_model
 from .documents import chunks
 from .engine import query
-from .ontology import (DICTIONARY_PROMPT, EXTRACTION_PROMPT,
+from .ontology import (EXTRACTION_PROMPT,
                        MAX_QUOTE_REPAIR_CALLS, QUOTE_REPAIR_PROMPT,
                        apply_quote_repairs, bounded_prompt, dictionary_fact,
-                       extraction_quote_issues, merge_dictionary, quote_label)
+                       extraction_quote_issues, quote_label)
 
 
-def text(value, name, limit=200):
-    if not isinstance(value, str) or not value.strip() or len(value) > limit or any(ord(c) < 32 and c not in '\n\t' for c in value):
+def text(value, name, limit=200, *, allow_cr=False):
+    if not isinstance(value, str) or not value.strip() or len(value) > limit or any(ord(c) < 32 and c not in ('\n\t\r' if allow_cr else '\n\t') for c in value):
         raise ValueError(f'{name}: 비어 있지 않은 {limit}자 이하 문자열이 필요합니다.')
     return value.strip()
 
 
 def evidence(value, source):
-    quote = text(value, 'quote', 8000)
+    quote = text(value, 'quote', 8000, allow_cr=True)
     if quote not in source:
         raise ValueError('원문에 없는 인용입니다.')
     return quote
@@ -89,22 +89,20 @@ class Service:
         try:
             self.store.run_status(run['id'], 'running')
             doc = self.store.document(run['document_id'], run['version'])
+            if run['stage'] == 'ontology':
+                from .dictionary_pipeline import generate_dictionary
+                dictionary, detail = generate_dictionary(self.store, self.cli, self.root, run, doc)
+                self.store.finish_run(run['id'], dictionary=dictionary, detail=detail)
+                return
             claims, facts = [], []
             repair_calls, repaired_quotes, repair_locations = 0, 0, []
-            dictionary = {'entities': [], 'aliases': [], 'relations': []}
             for index, (offset, chunk) in enumerate(chunks(doc['text']), 1):
-                label = '사전 생성' if run['stage'] == 'ontology' else '승인 사전으로 추출'
+                label = '승인 사전으로 추출'
                 self.store.run_status(run['id'], 'running', f'{label} · 청크 {index}/{(len(doc["text"]) + 7999) // 8000}')
                 payload = {'filename': doc['filename'], 'version': doc['version'], 'offset': offset, 'text': chunk}
-                if run['stage'] == 'ontology':
-                    prompt = bounded_prompt(DICTIONARY_PROMPT, payload | {'dictionary': dictionary})
-                else:
-                    prompt = bounded_prompt(EXTRACTION_PROMPT, payload | {'approved_dictionary': run['ontology']})
+                prompt = bounded_prompt(EXTRACTION_PROMPT, payload | {'approved_dictionary': run['ontology']})
                 folder = self.root / 'runs' / run['id'] / str(index)
                 output = self.cli.complete(run['agent'], run['model'], prompt, folder)
-                if run['stage'] == 'ontology':
-                    dictionary = merge_dictionary(dictionary, output, doc['text'][:offset + len(chunk)], chunk)
-                    continue
                 try:
                     issues = extraction_quote_issues(output, chunk, run['ontology']['payload'])
                     if issues:
@@ -138,9 +136,6 @@ class Service:
                     raise ValueError(f'청크 {index} · {exc}') from exc
                 claims.extend(page['claims'])
                 facts.extend(dictionary_fact(f, chunk, run['ontology']['payload']) for f in output['facts'])
-            if run['stage'] == 'ontology':
-                self.store.finish_run(run['id'], dictionary=dictionary)
-                return
             unique = {json.dumps(f, sort_keys=True, ensure_ascii=False): f for f in facts}
             detail = (f'원문 인용 {repaired_quotes}개 보정 · 추가 호출 {repair_calls}회 ({"; ".join(repair_locations)}). 의미가 맞는지 원문과 대조한 뒤 승인하세요.'
                       if repair_calls else '')

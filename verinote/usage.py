@@ -247,7 +247,13 @@ def job_calls(root, kind, owner):
     key = owner['id']
     if kind not in ('runs', 'questions') or not re.fullmatch(r'[a-f0-9]{32}', key):
         return []
-    paths = [(f'llm-{i}', 'question') for i in range(1, 7)] if kind == 'questions' else [(p, stage) for i in range(1, 17) for p, stage in ((str(i), owner.get('stage', 'legacy')), (f'{i}/quote-repair', 'quote_repair'))]
+    if kind == 'questions':
+        paths = [(f'llm-{i}', 'question') for i in range(1, 7)]
+    elif owner.get('stage') == 'ontology':
+        from .ontology import MAX_DICTIONARY_CALLS
+        paths = [(str(i), 'ontology') for i in range(1, MAX_DICTIONARY_CALLS + 1)]
+    else:
+        paths = [(p, stage) for i in range(1, 17) for p, stage in ((str(i), owner.get('stage', 'legacy')), (f'{i}/quote-repair', 'quote_repair'))]
     calls = []
     for path, stage in paths:
         base = f'{kind}/{key}/{path}'
@@ -296,6 +302,21 @@ def job_calls(root, kind, owner):
             clean[k] = unit if isinstance(unit, str) and len(unit) <= 60 else None
         clean.update(call_id=f'{kind}/{key}/{path}', stage=stage, call_count_known=True)
         calls.append(clean)
+    if not calls and kind == 'runs' and owner.get('stage') == 'ontology' and owner['status'] == 'success':
+        # Positive evidence of a fully resumed run, never infer zero from absent logs.
+        raw = safe_file(root, f'runs/{key}/dictionary-progress.json')
+        try:
+            marker = json.loads(raw) if raw else {}
+            if (isinstance(marker, dict) and type(marker.get('schema_version')) is int and marker['schema_version'] == 1
+                    and marker.get('pipeline') == 'source-spans-v1' and marker.get('run_id') == key
+                    and marker.get('status') == 'complete' and type(marker.get('calls_started')) is int and marker['calls_started'] == 0
+                    and isinstance(marker.get('resumed_from'), str) and re.fullmatch(r'[a-f0-9]{32}', marker['resumed_from'])
+                    and marker['resumed_from'] != key and type(marker.get('total_chars')) is int and 0 < marker['total_chars'] <= 128_000
+                    and type(marker.get('resumed_chars')) is int and type(marker.get('completed_chars')) is int
+                    and marker['resumed_chars'] == marker['completed_chars'] == marker['total_chars']):
+                return []
+        except (ValueError, TypeError, UnicodeError):
+            pass
     if not calls and owner['status'] != 'queued':
         missing = empty_usage(owner['agent'], owner.get('model', ''))
         missing.update(call_id=f'{kind}/{key}/unknown', stage='question' if kind == 'questions' else owner.get('stage', 'legacy'), status='unknown', call_count_known=False, warnings=['호출 로그가 없어 사용량과 호출 횟수를 확인할 수 없습니다.'])

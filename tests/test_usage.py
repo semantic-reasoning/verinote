@@ -220,14 +220,18 @@ class Lifecycle(unittest.TestCase):
     def run_outputs(self, outputs, *, stage=None):
         pending=iter(outputs)
         class Replay(CLI):
-            def complete(adapter,agent,model,prompt,folder):
+            def complete(adapter,agent,model,prompt,folder,**kwargs):
                 folder.mkdir(parents=True,exist_ok=True)
                 script=folder/'fake-cli'
-                raw=json.dumps({'status':'SUCCESS','response':json.dumps(next(pending)),
+                output=next(pending)
+                if kwargs.get('phase') == 'ontology':
+                    from test_ontology import wire_dictionary
+                    output=wire_dictionary(output, prompt)
+                raw=json.dumps({'status':'SUCCESS','response':json.dumps(output),
                                 'usage':{'input_tokens':50,'output_tokens':3,'cache_read_tokens':10}})
                 script.write_text('#!/usr/bin/env python3\nprint('+repr(raw)+')\n');script.chmod(0o755)
                 with patch('verinote.agents.executable',return_value=str(script)):
-                    return super().complete(agent,model,prompt,folder)
+                    return super().complete(agent,model,prompt,folder,**kwargs)
         service=Service(self.store,self.root,Replay(rates=self.store.usage_rates))
         if stage:
             job=service.start(self.doc['id'],'agy','',stage,1,1)

@@ -46,7 +46,12 @@ class CLI:
         self.timeout, self.max_output = timeout, max_output
         self.rates = rates or (lambda: {})
 
-    def complete(self, agent, model, prompt, folder):
+    def effective_timeout(self, agent, phase=None):
+        if phase not in (None, 'ontology'):
+            raise ValueError('알 수 없는 CLI 호출 단계')
+        return self.timeout if self.timeout is not None else (600 if phase == 'ontology' or agent == 'agy' else 180)
+
+    def complete(self, agent, model, prompt, folder, *, phase=None):
         folder = Path(folder)
         folder.mkdir(parents=True, exist_ok=True)
         (folder / 'prompt.txt').write_text(prompt, encoding='utf-8')
@@ -55,8 +60,8 @@ class CLI:
         if agent == 'copilot':
             args[1:1] = ['--usage-output-file', str(usage_path.resolve())]
         usage = empty_usage(agent, model, self.rates().get(agent))
-        timeout = self.timeout if self.timeout is not None else (600 if agent == 'agy' else 180)
-        meta = {'agent': agent, 'model': model, 'prompt_sha256': digest(prompt.encode()), 'started_at': now(), 'status': 'running', 'timeout_seconds': timeout}
+        timeout = self.effective_timeout(agent, phase)
+        meta = {'agent': agent, 'model': model, 'phase': phase, 'prompt_sha256': digest(prompt.encode()), 'started_at': now(), 'status': 'running', 'timeout_seconds': timeout}
         def record(status, **fields):
             meta.update(status=status, **fields)
             atomic_json(folder / 'run.json', meta)

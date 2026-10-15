@@ -1,5 +1,6 @@
 """Bounded document decoding; originals are stored separately, unchanged."""
 import io
+import re
 from pathlib import Path
 import zipfile
 import xml.etree.ElementTree as ET
@@ -54,3 +55,17 @@ def decode_document(filename, raw):
 def chunks(text, size=8000):
     for start in range(0, len(text), size):
         yield start, text[start:start + size]
+
+
+def bounded_spans(text, size, *, minimum=None, first=False):
+    """Exact contiguous slices; prefer boundaries in the latter half of a window."""
+    minimum = size // 2 if minimum is None else minimum
+    start = 0
+    while start < len(text):
+        end = min(start + size, len(text))
+        if end < len(text):
+            matches = list(re.finditer(r'\n|[.!?。！？](?:[ \t]|$)', text[start + minimum:end]))
+            if matches:
+                end = start + minimum + matches[0 if first else -1].end()
+        yield start, text[start:end]
+        start = end

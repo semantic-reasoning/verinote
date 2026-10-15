@@ -28,6 +28,19 @@ ARCH_DICTIONARY = {
 }
 
 
+def wire_dictionary(dictionary, prompt):
+    """Fixture adapter: encode valid literal test quotes as actual source references."""
+    spans = json.loads(prompt.split('입력(JSON):\n', 1)[1])['sources']
+    result = copy.deepcopy(dictionary)
+    for rows in result.values():
+        for row in rows:
+            quote = row.pop('quote')
+            match = next(([spans[a]['id'], spans[b]['id']] for a in range(len(spans)) for b in range(a, len(spans))
+                          if quote in ''.join(s['text'] for s in spans[a:b+1])), None)
+            row['quote_ref'] = match or ['invalid', 'invalid']
+    return result
+
+
 class DictionaryContract(unittest.TestCase):
     def test_alias_canonicalization_and_signatures(self):
         dictionary = validate_dictionary(ARCH_DICTIONARY, ARCH)
@@ -173,7 +186,7 @@ class OntologyWorkflow(unittest.TestCase):
         item=approved_dictionary(self.store,self.doc['id'])
         entered,release=threading.Event(),threading.Event()
         class Fake:
-            def complete(self,*args):
+            def complete(self,*args,**kwargs):
                 entered.set();release.wait(5);return PAGE|{'facts':FACTS}
         service=Service(self.store,self.root,Fake())
         run=service.start(self.doc['id'],'agy','',expected_version=1,expected_generation=1)
@@ -187,9 +200,9 @@ class OntologyWorkflow(unittest.TestCase):
     def test_real_orchestration_two_stages_and_fact_limit(self):
         prompts=[]
         class Fake:
-            def complete(self,agent,model,prompt,folder):
+            def complete(self,agent,model,prompt,folder,**kwargs):
                 prompts.append(prompt)
-                return DICTIONARY if '기존 사전은 문맥' in prompt else PAGE|{'facts':[FACTS[0]]*MAX_FACTS}
+                return wire_dictionary(DICTIONARY, prompt) if '기존 사전은 문맥' in prompt else PAGE|{'facts':[FACTS[0]]*MAX_FACTS}
         service=Service(self.store,self.root,Fake())
         run=service.start(self.doc['id'],'agy','',stage='ontology',expected_version=1,expected_generation=1)
         service.pool.shutdown(wait=True)
@@ -209,14 +222,14 @@ class OntologyWorkflow(unittest.TestCase):
         self.assertEqual(self.store.run(run['id'])['status'],'error')
 
     def test_multichunk_dictionary_failure_leaves_no_partial_candidate(self):
-        source=SOURCE+' '*8000+'second'
+        source=SOURCE.ljust(4000)+SOURCE
         doc=self.store.register('long','long.md',source.encode(),source)
         class Fake:
             calls=0
-            def complete(self,*args):
+            def complete(self,*args,**kwargs):
                 self.calls+=1
-                if self.calls==1:return DICTIONARY
-                return {'entities':[DICTIONARY['entities'][0]|{'type':'Other'}],'aliases':[],'relations':[]}
+                if self.calls==1:return wire_dictionary(DICTIONARY, args[2])
+                return wire_dictionary({'entities':[DICTIONARY['entities'][0]|{'type':'Other'}],'aliases':[],'relations':[]}, args[2])
         service=Service(self.store,self.root,Fake());run=service.start(doc['id'],'agy','',stage='ontology',expected_version=1,expected_generation=1);service.pool.shutdown(wait=True)
         self.assertEqual(self.store.run(run['id'])['status'],'error')
         self.assertIn('충돌',self.store.run(run['id'])['detail'])
@@ -230,7 +243,7 @@ class OntologyWorkflow(unittest.TestCase):
         approved_dictionary(self.store,doc['id'],dictionary)
         output={'title':'상태','claims':[{'heading':'구성','text':source,'quote':source}], 'facts':[{'subject':'제어 FSM','predicate':'includes_state','object':s,'quote':source} for s in states]}
         class Fake:
-            def complete(self,*args):return output
+            def complete(self,*args,**kwargs):return output
         service=Service(self.store,self.root,Fake());run=service.start(doc['id'],'agy','',expected_version=1,expected_generation=1);service.pool.shutdown(wait=True)
         self.assertEqual(self.store.run(run['id'])['status'],'success')
         self.assertCountEqual([i['payload']['object'] for i in self.store.document(doc['id'])['items'] if i['kind']=='fact'],states)
@@ -240,7 +253,7 @@ class OntologyWorkflow(unittest.TestCase):
         approved_dictionary(self.store,doc['id'],ARCH_DICTIONARY)
         output={'title':'구조','claims':[{'heading':'호출','text':'주문에서 결제, 결제에서 원장으로 호출한다.','quote':ARCH}], 'facts':[{'subject':s,'predicate':'depends_on','object':o,'quote':ARCH} for s,o in [('order','결제 서비스'),('pay','ledger')]]}
         class Fake:
-            def complete(self,*args):return output
+            def complete(self,*args,**kwargs):return output
         service=Service(self.store,self.root,Fake());run=service.start(doc['id'],'agy','',expected_version=1,expected_generation=1);service.pool.shutdown(wait=True)
         self.assertEqual(self.store.run(run['id'])['status'],'success')
         self.assertEqual(query(self.store.snapshot())['rows'],[])
@@ -305,7 +318,7 @@ class OntologyHTTP(unittest.TestCase):
         for body,status in [({'agent':'agy'},400),(args,409)]:
             with self.assertRaises(HTTPError) as err:self.request(base+'/extract','POST',body)
             self.assertEqual(err.exception.code,status);err.exception.close()
-        with patch.object(self.service.cli,'complete',return_value=DICTIONARY):
+        with patch.object(self.service.cli,'complete',side_effect=lambda a,m,p,f,**kw:wire_dictionary(DICTIONARY,p)):
             run=self.request(base+'/ontology','POST',args)
             self.service.pool.submit(lambda:None).result(timeout=3)
         item=self.request(base)['items'][0]
