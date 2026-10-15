@@ -281,3 +281,30 @@ class Pipeline(unittest.TestCase):
         self.assertEqual(result['status'],'success');self.assertEqual(calls,[])
         self.assertIn('저장 실패',result['detail'])
         self.assertFalse(job_calls(self.root,'runs',result)[0]['call_count_known'])
+
+    def test_identity_alias_reproduction_and_real_conflict_checkpoint(self):
+        from test_ontology import DictionaryMergeTests
+        sample=DictionaryMergeTests();dictionary=sample.dictionary()
+        dictionary['aliases'] += [{'alias':'Conformance Region','entity':'Conformance Region','quote':q} for q in (sample.q1,sample.identity_only)]
+        source=sample.q1+'\n'+sample.identity_only
+        doc=self.new_doc(source)
+        result,calls=self.run_job(doc,[dictionary])
+        self.assertEqual(result['status'],'success',result['detail']);self.assertEqual(len(calls),1)
+        item=self.store.document(doc['id'])['items'][0]
+        self.assertEqual(item['status'],'pending')
+        self.assertEqual([a['alias'] for a in item['payload']['aliases']],['CR'])
+        doc=self.new_doc(source.ljust(4000)+sample.q1)
+        conflict=sample.dictionary();conflict['entities'][0]['type']='Device'
+        result,calls=self.run_job(doc,[dictionary,conflict])
+        self.assertEqual(result['status'],'error');self.assertIn('기존 사전과 현재 구간 사이',result['detail'])
+        self.assertEqual(json.loads(self.checkpoint(result).read_text())['offset'],4000)
+        self.assertEqual(self.store.document(doc['id'])['items'],[])
+
+    def test_old_merge_contract_restarts_visibly(self):
+        doc=self.new_doc(SOURCE.ljust(4000)+'END')
+        first,_=self.run_job(doc,[DICTIONARY,TimeoutError('timeout')])
+        path=self.checkpoint(first);value=json.loads(path.read_text());value['contract']['merge_contract']=1
+        path.write_text(json.dumps(value))
+        result,calls=self.run_job(doc,[DICTIONARY,EMPTY])
+        self.assertEqual(result['status'],'success');self.assertEqual(calls[0]['offset'],0)
+        self.assertIn('제외',result['detail'])

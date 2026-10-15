@@ -2,7 +2,7 @@
 import json
 
 from .documents import bounded_spans
-from .ontology import (DICTIONARY_CHUNK_SIZE, DICTIONARY_PROMPT, LIMITS,
+from .ontology import (DICTIONARY_CHUNK_SIZE, DICTIONARY_PROMPT, LIMITS, MERGE_CONTRACT_VERSION,
                        MAX_DICTIONARY_CALLS, SOURCE_SPAN_SIZE, SOURCE_SPAN_MIN_SIZE, bounded_prompt,
                        dictionary_context, merge_dictionary, resolve_dictionary,
                        source_spans, validate_dictionary)
@@ -19,7 +19,7 @@ def generate_dictionary(store, cli, root, run, doc):
     if len(slices) > MAX_DICTIONARY_CALLS:
         raise ValueError('사전 생성은 최대 64개 구간까지 지원합니다.')
     boundaries = {offset + len(chunk) for offset, chunk in slices}
-    contract = {'pipeline': PIPELINE, 'prompt': digest(DICTIONARY_PROMPT.encode()),
+    contract = {'pipeline': PIPELINE, 'prompt': digest(DICTIONARY_PROMPT.encode()), 'merge_contract': MERGE_CONTRACT_VERSION,
                 'chunk_size': DICTIONARY_CHUNK_SIZE, 'span_size': SOURCE_SPAN_SIZE, 'span_min_size': SOURCE_SPAN_MIN_SIZE,
                 'document_id': run['document_id'], 'version': run['version'],
                 'source_sha256': doc['sha256'], 'text_sha256': digest(source.encode()),

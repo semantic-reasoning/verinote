@@ -7,6 +7,7 @@ MAX_FACTS = 80
 MAX_DICTIONARY_BYTES = 60_000
 MAX_PROMPT_BYTES = 120_000
 MAX_QUOTE_REPAIR_CALLS = 2
+MERGE_CONTRACT_VERSION = 2
 DICTIONARY_CHUNK_SIZE = 4000
 MAX_DICTIONARY_CALLS = 64
 SOURCE_SPAN_SIZE = 400
@@ -14,9 +15,7 @@ SOURCE_SPAN_MIN_SIZE = 32
 LIMITS = {'entities': 200, 'aliases': 400, 'relations': 40}
 
 
-def validate_dictionary(value, source):
-    # Imported lazily: the service also uses this module for extraction.
-    from .service import text, evidence
+def _dictionary_shape(value):
     if not isinstance(value, dict) or set(value) != set(LIMITS):
         raise ValueError('사전에는 entities, aliases, relations 배열이 필요합니다.')
     for key, limit in LIMITS.items():
@@ -24,74 +23,118 @@ def validate_dictionary(value, source):
             raise ValueError(f'사전 {key}: 최대 {limit}개입니다.')
         if any(not isinstance(row, dict) for row in value[key]):
             raise ValueError(f'사전 {key}: JSON 객체가 필요합니다.')
-    result = {key: [] for key in LIMITS}
-    entities, names = {}, {}
-    for row in value['entities']:
-        entity = {k: text(row.get(k), k) for k in ('id', 'name', 'type')}
-        entity['quote'] = evidence(row.get('quote'), source)
-        if entity['name'] not in entity['quote']:
+
+
+def _dictionary_row(kind, row, source, entities):
+    """Normalize and ground a row before it can be retained or discarded."""
+    from .service import text, evidence
+    if kind == 'entities':
+        result = {k: text(row.get(k), k) for k in ('id', 'name', 'type')}
+        result['quote'] = evidence(row.get('quote'), source)
+        if result['name'] not in result['quote']:
             raise ValueError('개체 name은 해당 원문 인용에 있어야 합니다.')
-        if entity['id'] in entities:
-            raise ValueError('중복 개체 ID입니다.')
-        entities[entity['id']] = entity
-        names[entity['id']] = entity['id']
-        result['entities'].append(entity)
-    for row in value['aliases']:
+        return result
+    if kind == 'aliases':
         alias, target = text(row.get('alias'), 'alias'), text(row.get('entity'), 'entity')
         quote = evidence(row.get('quote'), source)
         if target not in entities:
             raise ValueError('별칭이 선언되지 않은 개체를 가리킵니다.')
-        if alias not in quote or entities[target]['name'] not in quote:
-            raise ValueError('별칭 인용에는 별칭과 개체 name이 함께 있어야 합니다.')
+        if alias not in quote:
+            raise ValueError('별칭 인용에는 별칭이 있어야 합니다.')
         if alias == target:
-            # Models often repeat the official ID as its own alias. It adds no
-            # mapping and is safe to omit after checking its evidence.
-            continue
-        if alias in names:
-            raise ValueError('별칭은 다른 별칭 또는 개체 ID와 중복될 수 없습니다.')
-        names[alias] = target
-        result['aliases'].append({'alias': alias, 'entity': target, 'quote': quote})
+            # Identity adds no mapping. The canonical name is independently
+            # grounded by the declared entity, so need not co-occur here.
+            return None
+        if entities[target]['name'] not in quote:
+            raise ValueError('별칭 인용에는 별칭과 개체 name이 함께 있어야 합니다.')
+        return {'alias': alias, 'entity': target, 'quote': quote}
+    relation = {k: text(row.get(k), k, 1500 if k == 'description' else 200) for k in ('id', 'description')}
+    if not re.fullmatch(r'[a-z][a-z0-9_]{0,99}', relation['id']):
+        raise ValueError('관계 ID는 중복 없는 영문 snake_case여야 합니다.')
     types = {e['type'] for e in entities.values()}
-    predicates = set()
-    for row in value['relations']:
-        relation = {k: text(row.get(k), k, 1500 if k == 'description' else 200) for k in ('id', 'description')}
-        if not re.fullmatch(r'[a-z][a-z0-9_]{0,99}', relation['id']) or relation['id'] in predicates:
-            raise ValueError('관계 ID는 중복 없는 영문 snake_case여야 합니다.')
-        predicates.add(relation['id'])
-        for key in ('subject_types', 'object_types'):
-            entries = row.get(key)
-            if not isinstance(entries, list) or not 1 <= len(entries) <= 20 or any(not isinstance(t, str) or t not in types for t in entries):
-                raise ValueError(f'{key}: 사전에 선언된 개체 타입 1~20개가 필요합니다.')
-            relation[key] = sorted(set(entries))
-        relation['quote'] = evidence(row.get('quote'), source)
-        result['relations'].append(relation)
+    for key in ('subject_types', 'object_types'):
+        entries = row.get(key)
+        if not isinstance(entries, list) or not 1 <= len(entries) <= 20 or any(not isinstance(t, str) for t in entries):
+            raise ValueError(f'{key}: 사전에 선언된 개체 타입 1~20개가 필요합니다.')
+        unknown = sorted(set(entries) - types)
+        if unknown:
+            raise ValueError(f'{key}: 관계 {relation["id"]}의 선언되지 않은 타입: {", ".join(t[:200] for t in unknown[:5])}')
+        relation[key] = sorted(set(entries))
+    relation['quote'] = evidence(row.get('quote'), source)
+    return relation
+
+
+def validate_dictionary(value, source):
+    _dictionary_shape(value)
+    result = {key: [] for key in LIMITS}
+    entities, names, predicates = {}, {}, set()
+    for kind in LIMITS:
+        for index, row in enumerate(value[kind], 1):
+            try:
+                parsed = _dictionary_row(kind, row, source, entities)
+            except ValueError as exc:
+                raise ValueError(f'{kind}[{index}]: {exc}') from exc
+            if parsed is None:
+                continue
+            if kind == 'entities':
+                if parsed['id'] in entities:
+                    raise ValueError('중복 개체 ID입니다.')
+                entities[parsed['id']] = parsed
+                names[parsed['id']] = parsed['id']
+            elif kind == 'aliases':
+                if parsed['alias'] in names:
+                    raise ValueError('별칭은 다른 별칭 또는 개체 ID와 중복될 수 없습니다.')
+                names[parsed['alias']] = parsed['entity']
+            else:
+                if parsed['id'] in predicates:
+                    raise ValueError('관계 ID는 중복 없는 영문 snake_case여야 합니다.')
+                predicates.add(parsed['id'])
+            result[kind].append(parsed)
     if len(json.dumps(result, ensure_ascii=False).encode()) > MAX_DICTIONARY_BYTES:
         raise ValueError('사전은 UTF-8 60,000바이트 이내여야 합니다. 범위를 줄여 주세요.')
     return result
 
 
 def merge_dictionary(previous, delta, source, chunk):
-    """Accept additions only; conflicting definitions require a visible retry/edit."""
+    """Validate every incoming row; merge equal definitions with first evidence."""
     from .service import evidence
-    if not isinstance(delta, dict) or set(delta) != set(LIMITS):
-        raise ValueError('사전 응답 형식 오류')
+    _dictionary_shape(delta)
+    previous = validate_dictionary(previous, source)
     merged = {key: list(previous[key]) for key in LIMITS}
-    for key, limit in LIMITS.items():
-        if not isinstance(delta[key], list) or len(delta[key]) > limit:
-            raise ValueError(f'사전 {key} 크기 제한 초과')
-        identity = 'alias' if key == 'aliases' else 'id'
-        existing = {r[identity]: r for r in previous[key]}
-        for row in delta[key]:
-            if not isinstance(row, dict) or not isinstance(row.get(identity), str):
-                raise ValueError('사전 항목 형식 오류')
-            old = existing.get(row[identity])
+    entities = {e['id']: e for e in previous['entities']}
+    for kind in LIMITS:
+        identity = 'alias' if kind == 'aliases' else 'id'
+        prior = {r[identity]: r for r in previous[kind]}
+        existing = dict(prior)
+        origins = {r[identity]: f'기존 사전 {kind}[{i}]' for i, r in enumerate(previous[kind], 1)}
+        for index, row in enumerate(delta[kind], 1):
+            location = f'{kind}[{index}]'
+            try:
+                parsed = _dictionary_row(kind, row, source, entities)
+                if parsed is None:
+                    # No prior identity-alias row survives validation, so this
+                    # is always new evidence and must belong to this chunk.
+                    evidence(row.get('quote'), chunk)
+                    continue
+                key = parsed[identity]
+                # Preserve only exact replay of an initially accepted row.
+                # A different quote or a same-response duplicate is not exempt.
+                if parsed != prior.get(key):
+                    evidence(parsed['quote'], chunk)
+            except ValueError as exc:
+                raise ValueError(f'이번 응답 {location}: {exc}') from exc
+            old = existing.get(key)
             if old is not None:
-                if row != old:
-                    raise ValueError(f'청크 간 사전 정의 충돌: {row[identity]}. 명칭·타입·정의를 일관되게 정리해 다시 시도하세요.')
+                changed = [k for k in parsed if k != 'quote' and parsed[k] != old[k]]
+                if changed:
+                    scope = '기존 사전과 현재 구간 사이' if key in prior else '이번 응답 내부'
+                    raise ValueError(f'사전 정의 충돌 ({scope}): {key} · {location} · 다른 필드: {", ".join(changed)} · 기준: {origins[key]}')
                 continue
-            evidence(row.get('quote'), chunk)
-            merged[key].append(row)
-            existing[row[identity]] = row
+            merged[kind].append(parsed)
+            existing[key] = parsed
+            origins[key] = f'이번 응답 {location}'
+            if kind == 'entities':
+                entities[key] = parsed
     return validate_dictionary(merged, source)
 
 
@@ -238,10 +281,10 @@ DICTIONARY_PROMPT = '''원문에서 개체·별칭·관계 사전의 검토용 �
 형식: {"entities":[{"id":"정규 개체명 또는 공식 ID","name":"원문 명칭","type":"타입","quote_ref":["시작 구간 ID","끝 구간 ID"]}],"aliases":[{"alias":"별칭","entity":"개체 id","quote_ref":["시작 구간 ID","끝 구간 ID"]}],"relations":[{"id":"snake_case","description":"주어에서 목적어로의 의미, 포함 기준과 제외 기준","subject_types":["타입"],"object_types":["타입"],"quote_ref":["시작 구간 ID","끝 구간 ID"]}]}
 개체 id는 문서 간에도 의미 있는 정규 명칭을 사용하세요. e1 같은 임의 번호는 금지합니다. 원문에 공식 ID가 있으면 우선 사용하세요.
 서로 다른 FSM의 같은 상태명은 '주체 FSM:활성 상태'처럼 범위를 명시하세요. name은 원문에 존재해야 합니다.
-별칭은 원문이 동일 개체라고 명시하는 경우만 선언하세요. 개체 ID 자체를 별칭으로 반복하지 마세요. 문자열 유사성, 약어 추측, DB와 서비스 혼동은 금지합니다.
+별칭은 원문이 동일 개체라고 명시하는 경우만 선언하세요. 개체 ID 자체를 별칭으로 반복하지 마세요. 자기 자신을 가리키는 매핑은 사전에 추가되지 않습니다. 문자열 유사성, 약어 추측, DB와 서비스 혼동은 금지합니다.
 관계 정의에는 방향과 타입, 조건·부정·시점·설계 가정의 처리, 제외 대상을 명시하세요. 내부 서비스 직접 호출 의존은 depends_on, 서비스 운영 책임은 owned_by처럼 일관된 이름을 제안하세요. 문서 담당자와 서비스 소유자는 다릅니다. API 호출과 API 소유 서비스도 구분하세요.
 특허·기술 문서의 구성요소·상태 등 나열된 개체는 빠뜨리지 마세요. 이 사전은 사람이 수정·승인한 뒤 사용합니다.
-기존 사전은 문맥입니다. 이번 청크에 새로 등장한 항목만 반환하고 기존 ID·정의를 재정의하지 마세요. 추가가 없으면 빈 배열을 반환하세요.
+기존 사전은 문맥입니다. 이번 청크에 새로 등장한 항목만 반환하고 기존 ID·정의를 재정의하지 마세요. 추가가 없으면 빈 배열을 반환하세요. 같은 정의를 인용만 바꿔 반복하지 마세요. 앱은 각 근거를 검증한 뒤 동일 정의를 합치고 첫 인용을 유지합니다.
 sources는 원문의 연속 구간입니다. quote_ref에는 이번 sources에 있는 시작·끝 id 문자열을 순서대로 넣으세요. 한 구간이면 같은 id를 두 번 쓰세요. 앱이 그 범위의 원문을 그대로 복원합니다. quote 문자열이나 문자 위치를 생성하지 마세요. name은 선택 구간에 그대로 있어야 하며 별칭 구간에는 alias와 정규 name이 모두 있어야 합니다. 가능한 짧고 충분한 구간을 고르세요.
 기존 사전은 인용을 생략한 어휘·정의 문맥입니다. 기존 항목을 출력하지 마세요. 설명은 필요한 의미·조건을 간결하게 쓰고 해설이나 계획 없이 JSON만 반환하세요.
 전체 한도: 개체 200개, 별칭 400개, 관계 40개, 사전 UTF-8 60,000바이트. 인용은 이번 청크에서 가져오세요.

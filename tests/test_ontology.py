@@ -332,3 +332,101 @@ class OntologyHTTP(unittest.TestCase):
         self.request('/api/documents','POST',{'title':'test','filename':'x.md','text':SOURCE,'document_id':doc['id'],'expected_version':1,'expected_generation':1})
         with self.assertRaises(HTTPError) as err:self.request(base+'/ontology','POST',args)
         self.assertEqual(err.exception.code,409);err.exception.close()
+
+
+class DictionaryMergeTests(unittest.TestCase):
+    q1 = '센서 Sensor는 궤적 일치 영역(Conformance Region, CR)을 사용한다.'
+    q2 = '센서 Sensor는 궤적 일치 영역(Conformance Region, CR)을 다시 확인한다.'
+    identity_only = 'Conformance Region은 다른 절에서도 사용된다.'
+
+    def dictionary(self, quote=None):
+        quote = self.q1 if quote is None else quote
+        return {'entities': [
+            {'id':'Conformance Region','name':'궤적 일치 영역','type':'Region','quote':quote},
+            {'id':'Sensor','name':'센서','type':'Device','quote':quote}],
+            'aliases':[{'alias':'CR','entity':'Conformance Region','quote':quote}],
+            'relations':[{'id':'uses','description':'센서가 영역을 사용한다.','subject_types':['Device'], 'object_types':['Region'],'quote':quote}]}
+
+    def test_repeated_self_aliases_with_id_only_evidence(self):
+        d=self.dictionary();d['aliases'] += [
+            {'alias':'Conformance Region','entity':'Conformance Region','quote':q} for q in (self.q1,self.identity_only)]
+        source=self.q1+'\n'+self.identity_only
+        result=merge_dictionary({'entities':[],'aliases':[],'relations':[]},d,source,source)
+        self.assertEqual(result,self.dictionary())
+        self.assertEqual(validate_dictionary(d,source),result)
+        for fields in ({'entity':'missing'}, {'quote':'invented'}, {'quote':'센서'}, {'alias':None}):
+            bad=copy.deepcopy(d);bad['aliases'][-1].update(fields)
+            with self.subTest(fields=fields), self.assertRaises(ValueError):
+                merge_dictionary({'entities':[],'aliases':[],'relations':[]},bad,source,source)
+        real_alias={'alias':'CR','entity':'Conformance Region','quote':'CR은 별칭이다.'}
+        d=self.dictionary();d['aliases']=[real_alias]
+        with self.assertRaisesRegex(ValueError,'name'):
+            validate_dictionary(d,self.q1+'CR은 별칭이다.')
+
+    def test_all_kinds_deduplicate_with_first_valid_evidence(self):
+        first,second=self.dictionary(),self.dictionary(self.q2)
+        source=self.q1+'\n'+self.q2
+        before=copy.deepcopy((first,second))
+        self.assertEqual(merge_dictionary(first,second,source,self.q2),first)
+        combined={k:first[k]+second[k] for k in first}
+        self.assertEqual(merge_dictionary({'entities':[],'aliases':[],'relations':[]},combined,source,source),first)
+        self.assertEqual((first,second),before)
+
+    def test_duplicate_validation_cannot_hide_invalid_rows(self):
+        first=self.dictionary();source=self.q1+'\n'+self.q2+'\nCR은 약어다.\nConformance Region.'
+        for kind in first:
+            bad=self.dictionary(self.q2);bad[kind][0]['quote']='invented'
+            with self.subTest(kind=kind),self.assertRaisesRegex(ValueError,'원문'):
+                merge_dictionary(first,bad,source,self.q2)
+        bad=self.dictionary(self.q2);bad['entities'][0]['quote']='Conformance Region.'
+        with self.assertRaisesRegex(ValueError,'name'):merge_dictionary(first,bad,source,source)
+        bad=self.dictionary(self.q2);bad['aliases'][0]['quote']='CR은 약어다.'
+        with self.assertRaisesRegex(ValueError,'name'):merge_dictionary(first,bad,source,source)
+        bad=self.dictionary(self.q2);bad['relations'][0]['subject_types']=['missing']
+        with self.assertRaisesRegex(ValueError,'타입') as error:merge_dictionary(first,bad,source,source)
+        self.assertIn('uses',str(error.exception));self.assertIn('missing',str(error.exception));self.assertIn('subject_types',str(error.exception))
+
+    def test_normalization_is_schema_only(self):
+        d=self.dictionary();d['relations'][0]['subject_types']=['Device','Region']
+        delta=copy.deepcopy(d)
+        delta['entities'][0]['id']=' Conformance Region '
+        delta['relations'][0]['subject_types']=['Region','Device','Device']
+        delta['relations'][0]['description']=' '+delta['relations'][0]['description']+' '
+        self.assertEqual(merge_dictionary(d,delta,self.q1,self.q1),validate_dictionary(d,self.q1))
+        delta['relations'][0]['subject_types']=[' Device','Region']
+        with self.assertRaises(ValueError):merge_dictionary(d,delta,self.q1,self.q1)
+
+    def test_real_conflicts_identify_origin_and_fields_without_mutation(self):
+        first=self.dictionary()
+        changes=[('entities','name','영역'),('entities','type','Device'),('aliases','entity','Sensor'),
+                 ('relations','description','다른 의미'),('relations','subject_types',['Region']),('relations','object_types',['Device'])]
+        for kind,field,value in changes:
+            delta=copy.deepcopy(first);delta[kind][0][field]=value
+            before=copy.deepcopy((first,delta))
+            with self.subTest(kind=kind,field=field),self.assertRaisesRegex(ValueError,'기존 사전과 현재 구간 사이') as error:
+                merge_dictionary(first,delta,self.q1,self.q1)
+            self.assertIn(field,str(error.exception));self.assertEqual((first,delta),before)
+            same={k:first[k]+delta[k] for k in first}
+            with self.assertRaisesRegex(ValueError,'이번 응답 내부') as error:
+                merge_dictionary({'entities':[],'aliases':[],'relations':[]},same,self.q1,self.q1)
+            self.assertNotIn('청크 간',str(error.exception))
+
+    def test_old_quote_exception_only_for_exact_initial_rows(self):
+        first=self.dictionary();source=self.q1+'\n'+self.q2+'\n새 구간'
+        self.assertEqual(merge_dictionary(first,first,source,'새 구간'),first)
+        with self.assertRaisesRegex(ValueError,'원문'):
+            merge_dictionary(first,self.dictionary(self.q2),source,'새 구간')
+        with self.assertRaisesRegex(ValueError,'원문'):
+            merge_dictionary({'entities':[],'aliases':[],'relations':[]},{k:v+v for k,v in first.items()},source,'새 구간')
+        invalid=copy.deepcopy(first);invalid['entities'][0]['quote']='invented'
+        with self.assertRaises(ValueError):merge_dictionary(invalid,invalid,source,'새 구간')
+
+    def test_bounds_and_new_entity_alias_collisions_still_reject(self):
+        d=self.dictionary();bad=copy.deepcopy(d);bad['entities']=[bad['entities'][0]]*201
+        with self.assertRaisesRegex(ValueError,'최대'):merge_dictionary(d,bad,self.q1,self.q1)
+        bad=copy.deepcopy(d);bad['entities'].append({'id':'CR','name':'CR','type':'Region','quote':self.q1})
+        with self.assertRaisesRegex(ValueError,'중복'):merge_dictionary({'entities':[],'aliases':[],'relations':[]},bad,self.q1,self.q1)
+        source=' '.join(f'개체{i}' for i in range(201))
+        entities=[{'id':f'개체{i}','name':f'개체{i}','type':'T','quote':f'개체{i}'} for i in range(201)]
+        with self.assertRaisesRegex(ValueError,'최대'):
+            merge_dictionary({'entities':entities[:200],'aliases':[],'relations':[]},{'entities':entities[200:],'aliases':[],'relations':[]},source,source)
