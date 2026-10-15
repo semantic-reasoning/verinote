@@ -183,6 +183,29 @@ class Store:
             db.execute("INSERT OR REPLACE INTO settings VALUES('agents',?)", (canonical(value),))
         return value
 
+    def usage_rates(self):
+        with self.connect() as db:
+            row = db.execute("SELECT value FROM settings WHERE key='usage_rates'").fetchone()
+            return json.loads(row[0]) if row else {}
+
+    def save_usage_rates(self, value):
+        from .usage import validate_rates
+        value = validate_rates(value)
+        with self.connect(True) as db:
+            db.execute("INSERT OR REPLACE INTO settings VALUES('usage_rates',?)", (canonical(value),))
+        return value
+
+    def usage_owners(self, limit=1000):
+        with self.connect() as db:
+            runs = [dict(r) | {'kind': 'runs'} for r in db.execute('SELECT id,agent,model,stage,status,created_at FROM runs ORDER BY created_at DESC,id LIMIT ?', (limit + 1,))]
+            questions = []
+            for row in db.execute('SELECT payload FROM questions ORDER BY created_at DESC,id LIMIT ?', (limit + 1,)):
+                job = json.loads(row[0])
+                questions.append({k: job[k] for k in ('id', 'agent', 'model', 'status', 'created_at')} | {'kind': 'questions', 'stage': 'question'})
+            total = db.execute('SELECT (SELECT count(*) FROM runs)+(SELECT count(*) FROM questions)').fetchone()[0]
+        owners = sorted(runs + questions, key=lambda r: (r['created_at'], r['id']), reverse=True)
+        return owners[:limit], total
+
     def create_run(self, document_id, agent, model, stage='extract', expected_version=None, expected_generation=None):
         if stage not in ('ontology', 'extract'):
             raise ValueError('지원하지 않는 추출 단계')

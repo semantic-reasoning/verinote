@@ -225,7 +225,7 @@ class ImportAndCLI(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             script = root/'fake'
-            for index, body, expected in [(0, "print('{\"ok\":true}')", None), (1, 'import sys; sys.exit(7)', ValueError), (2, 'import time; time.sleep(5)', TimeoutError), (3, "print('x'*20000)", ValueError)]:
+            for index, body, expected in [(0, "import json; print(json.dumps({'status':'SUCCESS','response':json.dumps({'ok':True})}))", None), (1, 'import sys; sys.exit(7)', ValueError), (2, 'import time; time.sleep(5)', TimeoutError), (3, "print('x'*20000)", ValueError)]:
                 script.write_text('#!/usr/bin/env python3\n'+body+'\n'); script.chmod(0o755)
                 with patch('verinote.agents.executable', return_value=str(script)):
                     if expected:
@@ -255,7 +255,11 @@ class ImportAndCLI(unittest.TestCase):
                     proc = Mock(pid=12345, returncode=0)
                     proc.poll.side_effect = [None, None] if expires else [None, 0]
                     def launch(*args, **kwargs):
-                        kwargs['stdout'].write(b'{"ok":true}')
+                        body = '{"ok":true}'
+                        envelope = {'agy': {'status': 'SUCCESS', 'response': body}, 'claude': {'type': 'result', 'result': body},
+                                    'cursor': {'type': 'result', 'subtype': 'success', 'result': body},
+                                    'codex': {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': body}}}
+                        kwargs['stdout'].write((json.dumps(envelope[agent]) if agent in envelope else body).encode())
                         return proc
                     with patch('verinote.agents.executable', return_value='/synthetic/cli'), \
                          patch('verinote.agents.subprocess.Popen', side_effect=launch), \

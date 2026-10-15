@@ -47,11 +47,29 @@ def validate_page(value, source):
 
 class Service:
     def __init__(self, store, root, cli=None):
-        self.store, self.root, self.cli = store, Path(root), cli or CLI()
+        self.store, self.root, self.cli = store, Path(root), cli or CLI(rates=store.usage_rates)
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='verinote-extract')
         self.slots = threading.BoundedSemaphore(8)
         self.cleanup_lock = threading.Lock()
         self.cleanup_logs()
+
+    def with_usage(self, kind, owner):
+        from .usage import job_calls, summarize
+        calls = job_calls(self.root, kind, owner)
+        return owner | {'usage': summarize(calls) | {'details': calls}}
+
+    def usage_report(self):
+        from .usage import job_calls, summarize
+        owners, total = self.store.usage_owners()
+        calls, groups = [], {}
+        for owner in owners:
+            for call in job_calls(self.root, owner['kind'], owner):
+                calls.append(call)
+                key = (owner['agent'], call.get('resolved_model') or owner['model'] or '', call['stage'])
+                groups.setdefault(key, []).append(call)
+        return {'scope': 'retained_jobs', 'owner_limit': 1000, 'included_jobs': len(owners),
+                'total_jobs': total, 'truncated': total > len(owners), 'summary': summarize(calls),
+                'groups': [{'agent': key[0], 'model': key[1], 'stage': key[2], 'usage': summarize(group)} for key, group in sorted(groups.items())]}
 
     def start(self, document_id, agent, model, stage='extract', expected_version=None, expected_generation=None):
         if agent not in PROVIDERS:

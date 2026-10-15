@@ -28,11 +28,11 @@ python -m verinote
 
 | UI 이름 | 실행 방식 | 모델 선택 |
 | --- | --- | --- |
-| Claude | `claude --output-format text --tools '' --strict-mcp-config -p PROMPT` | `--model ID` |
-| Antigravity | `agy --output-format text --mode plan --sandbox --disable-slash-commands -p PROMPT` | `--model ID` |
-| GitHub Copilot | `copilot --silent --available-tools '' --disable-builtin-mcps -p PROMPT` | `--model ID` |
-| Cursor | `cursor-agent --output-format text --mode ask --sandbox enabled --trust -p PROMPT` | `--model ID` |
-| Codex | `codex exec --skip-git-repo-check --ephemeral --sandbox read-only --color never -` | `--model ID`, prompt는 stdin |
+| Claude | `claude --output-format json --tools '' --strict-mcp-config -p PROMPT` | `--model ID` |
+| Antigravity | `agy --output-format json --mode plan --sandbox --disable-slash-commands -p PROMPT` | `--model ID` |
+| GitHub Copilot | `copilot --silent --usage-output-file PATH --available-tools '' --disable-builtin-mcps -p PROMPT` | `--model ID` |
+| Cursor | `cursor-agent --output-format stream-json --mode ask --sandbox enabled --trust -p PROMPT` | `--model ID` |
+| Codex | `codex exec --json --skip-git-repo-check --ephemeral --sandbox read-only --color never -` | `--model ID`, prompt는 stdin |
 
 Cursor는 `cursor-agent`가 없으면 `agent` 실행 파일을 탐색합니다. 설정 화면에서 기본 에이전트와 **각 에이전트별 모델 ID**를 저장하고, 추출 직전에 해당 작업의 모델을 바꿀 수도 있습니다. 모델 목록을 하드코딩하지 않으며 빈 값은 CLI 기본 모델을 뜻합니다. 모델 가용성·로그인은 CLI 계정에 따릅니다. 설치 여부만으로 모델 접근 가능성을 보장하지 않습니다.
 
@@ -43,6 +43,25 @@ CLI는 별도 작업 폴더에서 실행하며 shell 문자열을 사용하지 �
 보정은 주장 내용·관계 triple·항목 수·정상 인용을 유지하고, 해당 청크의 정확한 연속 원문 인용만 허용합니다. 한 항목이라도 보정에 실패하면 부분 결과 없이 실행을 실패 처리하며 청크와 주장/관계 번호를 표시합니다. 성공하면 보정 건수와 위치를 실행 기록 및 완료 알림에 표시하고 결과는 **검토 대기**로 저장합니다. 정확한 문구 일치는 의미가 맞다는 보증이 아니므로 보정된 인용도 사람이 대조해야 합니다. 최초 응답 로그는 유지하며 `data/runs/<run-id>/<chunk>/quote-repair/`에 보정 호출 로그와 변경 전후 `changes.json`을 남깁니다.
 
 CLI 옵션은 설치된 도움말과 [Claude 공식 CLI 문서](https://docs.anthropic.com/en/docs/claude-code/cli-usage), [Cursor CLI 문서](https://cursor.com/docs/cli/overview), [Copilot 도구 제한 문서](https://docs.github.com/en/copilot/how-tos/copilot-cli/use-copilot-cli/allowing-tools)를 기준으로 확인했습니다. CLI 버전이 달라 옵션 오류가 발생하면 실행 로그를 확인하세요.
+
+## 사용량과 크레딧
+
+새 호출부터 5개 에이전트가 보고한 토큰을 자동 저장합니다. **실행 기록**에서 에이전트·모델·사전 생성/관계 추출/인용 보정/질문별 합계와 JSON 다운로드를, 개별 실행·질문에서 호출별 사용량과 계산 근거를 확인합니다. 실패한 작업의 호출, 재시도, 질문의 여러 LLM 호출도 포함합니다. 승인과 고급 관계 탐색 자체는 LLM을 호출하지 않습니다.
+
+| 값 | 계산 근거 |
+| --- | --- |
+| 입력·출력 토큰 | CLI가 보고한 카운터. 입력에는 캐시, 출력에는 추론이 포함되어 세부 값을 다시 더하지 않습니다. |
+| CLI 보고 크레딧 | Copilot 전용 사용량 파일의 `totalNanoAiu / 1,000,000,000`인 GitHub AI credits |
+| CLI 보고 비용 | Claude의 `total_cost_usd`. CLI가 계산한 비용이며 계정의 실제 청구액을 뜻하지 않습니다. |
+| 설정 단가 추정 비용·크레딧 | 사용자가 지정한 USD/100만 토큰 단가와 선택적 크레딧당 USD 환산값 |
+
+**설정 → 사용량 계산 단가**에서 에이전트별 추정을 켜고 일반 입력·출력·캐시 읽기·캐시 쓰기 단가를 모두 입력합니다. 크레딧으로도 보려면 계약상의 단위 이름과 크레딧 1개당 USD를 지정합니다. 단가는 자동으로 추측하지 않습니다. 모델 ID를 지정하면 CLI가 보고한 실제 모델과 우선 대조하고, 보고가 없을 때만 요청 모델을 가정으로 사용합니다. 단가 모델을 비우면 모델을 지정하지 않은 호출에만 ‘CLI 기본 모델 가정’으로 적용합니다. 여러 모델을 합산한 호출이나 모델 불일치는 추정하지 않습니다.
+
+단가와 환산 기준은 **각 호출 시작 시 고정**됩니다. 설정을 바꿔도 과거 비용은 재계산하지 않습니다. 보고 비용과 추정 비용을 서로 더하지 않으며 크레딧은 단위별로 구분합니다. 구독 한도, 할인, 실제 청구액·잔액은 별도입니다.
+
+집계는 **보존된 최근 1,000개 실행·질문 작업**의 읽을 수 있는 호출 로그를 대상으로 하며 전체 작업 수와 누락 범위를 표시합니다. 오래된 기록, 손상·누락된 로그, 제공자가 보내지 않은 값은 **미확인**이지 0이나 무료가 아닙니다. 이미 끝난 과거 호출은 원문 글자 수로 토큰을 추측하거나 로그를 재작성하지 않습니다. 일부 카운터만 있으면 확인된 값의 소계와 기록 수를 표시합니다. 문서 삭제로 연결된 실행·질문이 제거되면 해당 사용량도 집계에서 빠지므로 평생 누적 지출이 아닙니다.
+
+사용량은 `data/runs/{id}/{청크}/usage.json`, 인용 보정은 그 아래 `quote-repair/usage.json`, 질문은 `data/questions/{id}/llm-{회차}/usage.json`에 저장합니다. 원본 CLI 출력과 별도로 저장하며 Copilot 전용 파일과 정규화된 사용량 파일의 읽기 한도는 각각 256 KiB입니다. CLI 응답 형식이 달라지면 사용량이 미확인이 되거나 명시적인 실행 오류가 발생할 수 있습니다.
 
 ## 결정성과 설명 가능성의 경계
 

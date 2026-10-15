@@ -1,0 +1,2 @@
+{"type": "system", "subtype": "init", "model": "Auto"}
+{"type": "result", "subtype": "success", "is_error": false, "result": "{\"ok\":true}", "usage": {"inputTokens": 4, "outputTokens": 9, "cacheReadTokens": 9683, "cacheWriteTokens": 14303}}

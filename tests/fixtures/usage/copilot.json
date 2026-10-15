@@ -1,0 +1,19 @@
+{
+  "currentModel": "gpt-6-luna",
+  "totalNanoAiu": 171017500,
+  "tokenDetails": {
+    "input": {
+      "tokenCount": 3
+    },
+    "cache_read": {
+      "tokenCount": 0
+    },
+    "cache_write": {
+      "tokenCount": 13643
+    },
+    "output": {
+      "tokenCount": 9
+    }
+  },
+  "aiCreditsStatus": "complete"
+}

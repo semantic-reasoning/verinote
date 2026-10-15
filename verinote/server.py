@@ -92,6 +92,13 @@ class Handler(BaseHTTPRequestHandler):
                     if data.get('selected') not in PROVIDERS or not isinstance(data.get('models'), dict) or set(data['models']) - set(PROVIDERS):
                         raise ValueError('에이전트 설정 형식 오류')
                     return self.send(store.save_settings({'selected': data['selected'], 'models': {k: validate_model(v) for k, v in data['models'].items()}}))
+            if route.path == '/api/usage-rates':
+                if method == 'GET':
+                    return self.send(store.usage_rates())
+                if method == 'PUT':
+                    return self.send(store.save_usage_rates(self.body()))
+            if route.path == '/api/usage' and method == 'GET':
+                return self.send(self.server.service.usage_report())
             if route.path == '/api/documents':
                 if method == 'GET':
                     return self.send(store.documents())
@@ -147,16 +154,16 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError('정리 재시도에는 빈 JSON 객체를 보내세요.')
                     return self.send(self.server.service.cleanup_logs())
             if route.path == '/api/runs' and method == 'GET':
-                return self.send(store.runs())
+                return self.send([self.server.service.with_usage('runs', row) for row in store.runs()])
             if len(parts) == 3 and parts[:2] == ['api', 'runs'] and method == 'GET':
-                return self.send(store.run(parts[2]))
+                return self.send(self.server.service.with_usage('runs', store.run(parts[2])))
             if route.path == '/api/questions':
                 if method == 'GET':
-                    return self.send(store.questions())
+                    return self.send([self.server.service.with_usage('questions', row) for row in store.questions()])
                 if method == 'POST':
                     return self.send(self.server.service.ask(self.body()), 202)
             if len(parts) == 3 and parts[:2] == ['api', 'questions'] and method == 'GET':
-                return self.send(store.question(parts[2]))
+                return self.send(self.server.service.with_usage('questions', store.question(parts[2])))
             if route.path == '/api/query' and method == 'POST':
                 return self.send(self.server.service.query(self.body()))
             if route.path == '/api/queries' and method == 'GET':

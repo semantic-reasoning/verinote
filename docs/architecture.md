@@ -35,6 +35,8 @@
 | GET `/api/items/{id}/history` | 불변 검토 이벤트 목록 |
 | GET `/api/runs`, `/api/runs/{id}` | 작업 상태와 오류 |
 | GET/PUT `/api/settings` | 선택 에이전트 및 provider별 모델 ID |
+| GET/PUT `/api/usage-rates` | 별도 settings 키에 에이전트별 선택적 USD/토큰 단가·크레딧 환산 저장 |
+| GET `/api/usage` | 보존된 최근 1,000개 작업의 에이전트·모델·단계별 사용량, 범위와 확인된 값의 소계 |
 | POST `/api/query` | `{action,subject,predicate,target,snapshot?}` |
 | GET `/api/queries` | 최근 결과 30개와 재현 입력 |
 
@@ -94,3 +96,15 @@ POST `/api/documents/{id}/delete-latest`, `/delete`는 정확히 `{expected_vers
 문서 GET 응답은 각 후보에 `dictionary`(ID/revision/hash)와 문서에 `can_extract`를 제공한다. UI는 과거 버전의 실행 버튼을 숨기며 POST는 표시된 version/generation을 서버에서도 확인한다. 사전은 JSON 편집, 원문 인용 확인, 기존 검토 API로 승인한다. 사전/위키/사실 승인은 서로 독립이다. Wirelog는 여전히 approved fact만 읽으며 canonical ID 문자열로 문서를 연결한다. 사전은 버전별이므로 문서 간 ID 충돌·불일치는 검토자가 조정해야 한다.
 
 마이그레이션은 기존 runs에 `stage TEXT NOT NULL DEFAULT 'legacy'`, `ontology TEXT`를 추가한다. 재실행 시 열 존재를 검사하며 기존 items/events/snapshots를 재작성하지 않는다. 새 INSERT는 열을 명시한다. 이전 바이너리는 8열 위치 기반 INSERT를 사용하므로 확장된 DB로 롤백할 수 없다. 서버 종료 후 데이터 폴더 백업 및 이전 DB 복원으로 롤백한다.
+
+## CLI 사용량 산출
+
+`usage.py`는 CLI 전송 형식만 읽으며 모델이 생성한 답변의 `usage` 키를 계측 근거로 사용하지 않는다. `CLI.complete`는 기존처럼 애플리케이션 JSON을 반환한다. Claude/agy는 JSON result의 본문을, Cursor는 stream-json의 최종 result를, Codex는 JSON events의 agent_message와 최종 turn.completed 카운터를 분리한다. Copilot은 호출마다 지정한 `--usage-output-file`을 읽는다. 중간·중복 이벤트를 합산하지 않는다. 실제 설치 CLI의 무해한 단문 응답을 정제한 5개 fixture가 `tests/fixtures/usage`에 있다.
+
+정규화된 입력은 캐시를 포함하는 총량, 출력은 추론을 포함하는 총량이다. Claude·Cursor·Copilot은 일반 입력+캐시 읽기+캐시 쓰기로 입력을 복원한다. agy는 input_tokens+cache_read_tokens, Codex는 이미 캐시를 포함한 input_tokens를 사용한다. agy/Codex는 별도 청구되는 캐시 쓰기 구간이 없어 계산상 0이다. cache_write는 물리적인 캐시 생성 통계가 아니라 별도 가격을 적용할 구간이다. 추론을 출력에 다시 더하지 않는다. 근거는 [agy headless](https://www.antigravity.google/docs/cli/headless), [Claude 비용](https://code.claude.com/docs/en/costs), [Cursor 출력](https://cursor.com/docs/cli/reference/output-format), [Codex 비대화형](https://learn.chatgpt.com/docs/non-interactive-mode) 문서와 실제 CLI 응답이다. Cursor usage 세부 키는 관측된 형식이므로 형식 변경은 미확인으로 처리한다.
+
+`usage.json`은 시작 전/프로세스 실행 후/종료 시 임시 파일 교체로 기록한다. 프로세스 정리 후 남은 제한된 출력을 읽어 JSON 파싱 실패·비정상 종료·타임아웃·크기 초과에서도 가능한 카운터를 남긴다. 전송 성공 후 온톨로지 검증이 실패한 경우 호출 상태는 success, 부모 작업은 error일 수 있다. 단가 snapshot을 호출 시작에 복사하고 결과의 resolved_model, 없으면 requested_model을 대조한다. 모델이 없는 기본값 단가는 명시적 가정이며 모든 추정에 rate_basis를 남긴다. 계산은 `(일반입력×입력단가 + 캐시읽기×읽기단가 + 캐시쓰기×쓰기단가 + 출력×출력단가) / 1e6`; 크레딧 추정은 그 비용을 지정 환산값으로 나눈다. 토큰 구간이 미확인이면 비용을 만들지 않는다. 모델별 복수 단가 자동 선택과 구독 청구 재현은 제공하지 않는다.
+
+별도 `settings.usage_rates` 키를 사용하므로 기존 `/api/settings` roundtrip과 충돌하지 않는다. 에이전트 최대 5개, 각 단가 객체의 필드·숫자·단위·모델 길이를 검증한다. DB 스키마 변경·과거 로그 backfill은 없다. 이전 버전으로 코드만 되돌려도 새 키와 sidecar는 무시되며, 원래 데이터 백업을 복원하면 설정과 로그까지 되돌릴 수 있다. 실행 중 작업은 종료 후 배포하고 데이터 폴더를 백업한다.
+
+조회는 DB가 소유한 ID만 대상으로 runs의 1~16번 청크와 각 quote-repair, questions의 llm-1~6을 확인한다. 경로의 symlink를 거부하고 파일당 256 KiB로 제한한다. 프롬프트/원본 응답을 API 계측값으로 노출하지 않는다. run/question GET 응답에 읽기 전용 usage를 덧붙이며 질문 저장 payload를 변경하지 않는다. 집계는 기존 목록의 100/30개 제한과 독립적으로 최근 1,000개 작업을 선택한다. 작업 수·truncated, 지표별 known_calls, 불완전 기록 수와 호출 횟수조차 모르는 작업 수를 함께 반환한다. DB와 파일은 하나의 트랜잭션이 아니며 읽는 시점의 보존 기록만 나타낸다. 부분적으로 삭제된 로그의 정확한 호출 수는 복원할 수 없다. 삭제된 DB 소유자는 물리 로그 정리 실패와 무관하게 이후 집계에서 제외된다.

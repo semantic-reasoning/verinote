@@ -189,6 +189,7 @@ async function loadSettings() {
   $('#ask-agent').innerHTML=config.providers.map(p=>`<option value="${esc(p.id)}" ${p.id===config.selected?'selected':''}>${esc(p.name)}${p.installed?'':' · 미설치'}</option>`).join('');
   $('#ask-model').value=config.models[config.selected]||'';
   $('#provider-settings').innerHTML=config.providers.map(p=>`<div class="provider-row"><input type="radio" name="selected" value="${p.id}" ${config.selected===p.id?'checked':''} aria-label="${esc(p.name)} 기본 선택"><div><strong>${esc(p.name)}</strong><p class="muted">${p.installed?'● 설치됨':'○ 설치 필요'}</p></div><label>모델 ID<input name="model-${p.id}" value="${esc(config.models[p.id]||'')}" placeholder="CLI 기본 모델"></label></div>`).join('');
+  await loadUsageRates();
 }
 $('#settings-form').onsubmit=e=>{e.preventDefault();attempt(async()=>{
   const form=e.target;await api('/api/settings','PUT',{selected:form.elements.selected.value,models:Object.fromEntries(config.providers.map(p=>[p.id,form.elements['model-'+p.id].value]))});await loadSettings();if($('#extract-agent')){$('#extract-agent').value=config.selected;$('#extract-model').value=config.models[config.selected]||'';}notice('에이전트별 모델 설정을 저장했습니다.');
@@ -208,9 +209,33 @@ async function loadQueries() {
 }
 async function loadRuns() {
   await loadCleanup();
+  const report=await api('/api/usage');
+  $('#usage-overview').innerHTML=`<h2>사용량 · 보존된 실행과 질문</h2><p>최근 ${report.included_jobs}개 작업 / 전체 ${report.total_jobs}개${report.truncated?' · 일부 작업만 집계되었습니다.':''}. 삭제된 작업은 제외됩니다.</p>${renderUsage(report.summary)}<div class="usage-table"><table><thead><tr><th>에이전트 / 모델</th><th>단계</th><th>사용량</th></tr></thead><tbody>${report.groups.map(g=>`<tr><td>${esc(g.agent)}<br>${esc(g.model||'CLI 기본 모델 · 식별 안 됨')}</td><td>${esc(usageStage(g.stage))}</td><td>${renderUsage(g.usage)}</td></tr>`).join('')}</tbody></table></div><button id="download-usage">사용량 JSON 다운로드</button>`;
+  $('#download-usage').onclick=()=>downloadJSON(report,'verinote-usage.json');
   const rows=await api('/api/runs');
-  $('#runs').innerHTML=rows.map(r=>`<div class="panel">${badge(r.status)} <strong>${esc({ontology:'사전 생성',extract:'관계 추출',legacy:'기존 추출'}[r.stage])} · ${esc(r.agent)} / ${esc(r.model||'기본 모델')}</strong>${r.ontology?`<p>기준 사전 r${r.ontology.revision} · ${esc(r.ontology.sha256.slice(0,12))}</p>`:''}<p>${esc(r.detail)}</p><p class="muted">${esc(date(r.created_at))}</p>${sourceLink(r.document_id,r.version)}<details><summary>실행 메타데이터</summary><pre class="source">${esc(JSON.stringify(r,null,2))}</pre><p class="muted">프롬프트·stdout·stderr: data/runs/${esc(r.id)}/</p></details></div>`).join('')||'<div class="empty">아직 실행 기록이 없습니다.</div>';
+  $('#runs').innerHTML=rows.map(r=>`<div class="panel">${badge(r.status)} <strong>${esc({ontology:'사전 생성',extract:'관계 추출',legacy:'기존 추출'}[r.stage])} · ${esc(r.agent)} / ${esc(r.model||'기본 모델')}</strong>${r.ontology?`<p>기준 사전 r${r.ontology.revision} · ${esc(r.ontology.sha256.slice(0,12))}</p>`:''}<p>${esc(r.detail)}</p>${renderUsage(r.usage)}<p class="muted">${esc(date(r.created_at))}</p>${sourceLink(r.document_id,r.version)}<details><summary>실행 메타데이터</summary><pre class="source">${esc(JSON.stringify(r,null,2))}</pre><p class="muted">프롬프트·stdout·stderr: data/runs/${esc(r.id)}/</p></details></div>`).join('')||'<div class="empty">아직 실행 기록이 없습니다.</div>';
 }
+function usageStage(stage){return {ontology:'사전 생성',extract:'관계 추출',quote_repair:'인용 보정',question:'질문',legacy:'기존 추출'}[stage]||stage;}
+function usageNumber(value){if(value==null)return '미확인';if(value>0&&value<1e-8)return '<0.00000001';return Number(value).toLocaleString('ko-KR',{maximumFractionDigits:8});}
+function renderUsage(u){
+  if(!u)return '<p class="muted">사용량 기록 없음</p>';
+  const metric=(m,unit='')=>m.value==null?'미확인':`${usageNumber(m.value)}${unit} <small>(${m.known_calls}/${u.calls}개 기록)</small>`;
+  return `<section class="usage-box" aria-label="사용량"><p>확인된 호출 ${u.calls-(u.unknown_call_count_jobs||0)}회${u.unknown_call_count_jobs?` · 호출 횟수 미확인 작업 ${u.unknown_call_count_jobs}개`:''}${u.incomplete_calls?` · 불완전 기록 ${u.incomplete_calls}개`:''}</p><p>입력 ${metric(u.tokens.input,' 토큰')} · 출력 ${metric(u.tokens.output,' 토큰')}</p><p>CLI 보고 비용 ${metric(u.reported_usd,' USD')} · 설정 단가 추정 비용 ${metric(u.estimated_usd,' USD')}</p><p>${u.credits.length?u.credits.map(c=>`${c.provenance==='reported'?'CLI 보고':'설정 단가 추정'} ${esc(c.unit)}: ${metric(c)}`).join('<br>'):'크레딧: 미확인'}</p><p class="muted">입력에는 캐시, 출력에는 추론이 포함됩니다. 보존된 호출 기록의 합계이며, 누락된 로그의 사용량은 포함할 수 없습니다. 미확인은 0이 아니며, 보고 비용과 추정 비용은 합산하지 않습니다. 계정의 실제 청구액·잔액과는 다를 수 있습니다.</p>${u.details?`<details><summary>호출별 사용량과 계산 근거</summary>${u.details.map(c=>`<div class="history-line"><strong>${esc(usageStage(c.stage))}</strong> · ${esc(c.status)} · ${esc(c.resolved_model||c.requested_model||'모델 식별 안 됨')}<p>${(c.warnings||[]).map(esc).join('<br>')}</p><pre class="source">${esc(JSON.stringify(c,null,2))}</pre></div>`).join('')}</details>`:''}</section>`;
+}
+function downloadJSON(value,name){const url=URL.createObjectURL(new Blob([JSON.stringify(value,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+async function loadUsageRates(){
+  const rates=await api('/api/usage-rates');
+  $('#usage-rate-fields').innerHTML=config.providers.map(p=>{const r=rates[p.id]||{};return `<fieldset data-rate-agent="${esc(p.id)}"><legend>${esc(p.name)}</legend><label class="bulk-choice"><input type="checkbox" name="enabled" ${rates[p.id]?'checked':''}>이 에이전트의 비용 추정 사용</label><label>단가 적용 모델 ID<input name="model" value="${esc(r.model||'')}" maxlength="150" placeholder="비우면 CLI 기본 모델에 대한 가정 단가"></label><div class="form-grid">${[['input','일반 입력'],['output','출력'],['cache_read','캐시 읽기'],['cache_write','캐시 쓰기']].map(([key,label])=>`<label>${label} · USD / 100만 토큰<input type="number" name="${key}" min="0" max="1000000" step="any" value="${esc(r[key]??'')}"></label>`).join('')}</div><div class="form-grid"><label>크레딧 단위 · 선택<input name="credit_unit" maxlength="60" value="${esc(r.credit_unit||'')}" placeholder="계약·서비스의 단위 이름"></label><label>크레딧 1개당 USD · 선택<input type="number" name="usd_per_credit" min="0" max="1000000" step="any" value="${esc(r.usd_per_credit??'')}"></label></div></fieldset>`;}).join('');
+}
+$('#usage-rates-form').onsubmit=e=>{e.preventDefault();attempt(async()=>{
+  const rates={};for(const field of e.target.querySelectorAll('[data-rate-agent]')){
+    const input=name=>field.querySelector(`[name="${name}"]`);
+    if(!input('enabled').checked)continue;
+    const rate={model:input('model').value.trim(),credit_unit:input('credit_unit').value.trim(),usd_per_credit:input('usd_per_credit').value===''?null:Number(input('usd_per_credit').value)};
+    for(const key of ['input','output','cache_read','cache_write']){if(input(key).value==='')throw new Error('사용하는 단가의 입력·출력·캐시 값을 모두 입력하세요. 무료인 항목은 0을 입력하세요.');rate[key]=Number(input(key).value);}
+    rates[field.dataset.rateAgent]=rate;
+  }await api('/api/usage-rates','PUT',rates);notice('새 호출에 적용할 추정 단가를 저장했습니다. 과거 계산은 유지됩니다.');
+});};
 document.addEventListener('click',e=>{
   const b=e.target.closest('button');if(!b)return;
   if(b.dataset.view)showView(b.dataset.view);
@@ -234,7 +259,7 @@ $('#ask-form').onsubmit=e=>{e.preventDefault();attempt(async()=>{
 });};
 async function loadQuestions(){
   const rows=await api('/api/questions');
-  $('#question-history').innerHTML=rows.map(r=>`<div class="history-line"><button data-question="${esc(r.id)}">${esc(r.question)}</button> ${badge(r.status)} <span class="muted">${esc(r.agent)} · ${esc(date(r.created_at))}</span></div>`).join('')||'<p class="muted">아직 질문이 없습니다.</p>';
+  $('#question-history').innerHTML=rows.map(r=>`<div class="history-line"><button data-question="${esc(r.id)}">${esc(r.question)}</button> ${badge(r.status)} <span class="muted">${esc(r.agent)} · ${esc(date(r.created_at))}</span>${renderUsage(r.usage)}</div>`).join('')||'<p class="muted">아직 질문이 없습니다.</p>';
   for(const b of document.querySelectorAll('[data-question]'))b.onclick=()=>{activeQuestion=b.dataset.question;attempt(()=>watchQuestion(activeQuestion));};
 }
 async function watchQuestion(id){
@@ -252,7 +277,7 @@ function renderEvidence(id,e){
   return `<details><summary>${esc(id)} · Wirelog ${esc(r.query.action)} · ${r.rows.length}개 결과</summary><p>${r.rows.map(row=>row.map(esc).join(' → ')).join('<br>')||'해당 질의에서 일치 결과 없음'}</p>${r.facts.map(f=>`<blockquote class="quote">${esc(f.payload.quote)}</blockquote>${sourceLink(f.document_id,f.version)}<p class="mono">사실 ${esc(f.id)} · r${f.revision}</p>`).join('')}<p class="muted">${esc(r.scope)}</p><pre class="source">${esc(JSON.stringify(r.proofs,null,2))}</pre></details>`;
 }
 function renderAnswer(job){
-  $('#answer-result').innerHTML=`<article class="panel"><h2>${esc(job.question)}</h2>${badge(job.status)} <span>${esc(job.agent)} / ${esc(job.model||'기본 모델')}</span><p class="muted">질문 제출 시 고정한 승인 상태입니다. 이후 문서 변경·승인 철회는 반영되지 않습니다.</p><p class="mono">스냅샷 ${esc(job.snapshot)}</p>${job.error?`<p class="error">${esc(job.error)}</p>`:''}${job.answer?job.answer.claims.map(c=>`<div class="item"><span class="badge">${esc({graph:'승인 그래프',source:'미검토 원문',inference:'추론'}[c.kind])}</span><p>${esc(c.text)}</p>${c.citations.map(id=>renderEvidence(id,job.evidence[id])).join('')}</div>`).join('')+job.answer.unknowns.map(u=>`<p class="muted">확인 불가 · ${esc(u)}</p>`).join(''): (['queued','running'].includes(job.status)?'<p>모델의 질의 해석과 도구 실행을 기다리고 있습니다.</p>':'<p>답변이 생성되지 않았습니다.</p>')}<details><summary>실행 추적 · ${job.trace.length}개 도구 호출</summary>${job.trace.map(t=>`<p>${esc(t.name)} · ${esc(t.status)}</p><pre class="source">${esc(JSON.stringify(t.arguments,null,2))}</pre>${t.evidence_id?renderEvidence(t.evidence_id,job.evidence[t.evidence_id]):''}`).join('')}<pre class="source">${esc(JSON.stringify(job,null,2))}</pre></details><p class="muted">인용 검사는 의미적 정확성을 보증하지 않습니다. 모델 해석·답변은 비결정적이며, 같은 질의·스냅샷·규칙·엔진의 그래프 계산만 결정적입니다.</p><div class="actions"><button id="download-answer">답변 JSON 다운로드</button><button id="rerun-answer">같은 스냅샷으로 다시 질문 준비</button></div></article>`;
+  $('#answer-result').innerHTML=`<article class="panel"><h2>${esc(job.question)}</h2>${badge(job.status)} <span>${esc(job.agent)} / ${esc(job.model||'기본 모델')}</span><p class="muted">질문 제출 시 고정한 승인 상태입니다. 이후 문서 변경·승인 철회는 반영되지 않습니다.</p><p class="mono">스냅샷 ${esc(job.snapshot)}</p>${renderUsage(job.usage)}${job.error?`<p class="error">${esc(job.error)}</p>`:''}${job.answer?job.answer.claims.map(c=>`<div class="item"><span class="badge">${esc({graph:'승인 그래프',source:'미검토 원문',inference:'추론'}[c.kind])}</span><p>${esc(c.text)}</p>${c.citations.map(id=>renderEvidence(id,job.evidence[id])).join('')}</div>`).join('')+job.answer.unknowns.map(u=>`<p class="muted">확인 불가 · ${esc(u)}</p>`).join(''): (['queued','running'].includes(job.status)?'<p>모델의 질의 해석과 도구 실행을 기다리고 있습니다.</p>':'<p>답변이 생성되지 않았습니다.</p>')}<details><summary>실행 추적 · ${job.trace.length}개 도구 호출</summary>${job.trace.map(t=>`<p>${esc(t.name)} · ${esc(t.status)}</p><pre class="source">${esc(JSON.stringify(t.arguments,null,2))}</pre>${t.evidence_id?renderEvidence(t.evidence_id,job.evidence[t.evidence_id]):''}`).join('')}<pre class="source">${esc(JSON.stringify(job,null,2))}</pre></details><p class="muted">인용 검사는 의미적 정확성을 보증하지 않습니다. 모델 해석·답변은 비결정적이며, 같은 질의·스냅샷·규칙·엔진의 그래프 계산만 결정적입니다.</p><div class="actions"><button id="download-answer">답변 JSON 다운로드</button><button id="rerun-answer">같은 스냅샷으로 다시 질문 준비</button></div></article>`;
   $('#download-answer').onclick=()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(job,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='verinote-answer.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
   $('#rerun-answer').onclick=()=>{$('#question-text').value=job.question;$('#ask-agent').value=job.agent;$('#ask-model').value=job.model;$('#ask-snapshot').value=job.snapshot;$('#ask-form').scrollIntoView({behavior:'smooth'});};
 }

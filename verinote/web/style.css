@@ -4,3 +4,5 @@
 .danger{color:#a13e32;border-color:#d7aaa1}.danger:hover{background:#fcebe6}#delete-error{color:#a13e32}
 
 .bulk-choice{display:flex;align-items:center;gap:8px;margin:0}.bulk-choice input[type=checkbox]{width:auto;margin:0}.bulk-toolbar{position:sticky;top:68px;z-index:2;padding:16px}.bulk-toolbar p{margin:8px 0}.bulk-toolbar .actions{align-items:center;margin-top:8px}.item>.bulk-choice{margin-bottom:14px}.bulk-preview{max-height:30vh;overflow:auto;overflow-wrap:anywhere;border-block:1px solid var(--border);padding:0 8px}#bulk-review-error,#bulk-limit{color:#a13e32}
+
+.usage-box{border-left:3px solid #b6cbd9;padding:4px 12px;margin:12px 0;font-size:13px}.usage-box p{margin:6px 0}.usage-table{overflow-x:auto}.usage-table table{width:100%;border-collapse:collapse}.usage-table th,.usage-table td{padding:12px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line,#dde3e8)}#usage-rate-fields fieldset{border:1px solid var(--line,#dde3e8);border-radius:10px;padding:18px;margin:18px 0}
