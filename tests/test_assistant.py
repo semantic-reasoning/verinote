@@ -122,7 +122,7 @@ class AssistantTests(unittest.TestCase):
             self.assertEqual(assistant.trace[-1]['status'], 'error')
 
     def test_graph_reuse_keeps_tool_round_and_context_budgets(self):
-        for outputs, error, calls, traces in [([tool()] * 6, '최대 모델 회차', 6, 6),
+        for outputs, error, calls, traces in [([tool()] * 6, '답변 전용 회차', 6, 5),
                                              ([batch(tool(),tool(),tool())] * 4, '도구 요청 개수', 4, 9)]:
             with patch('verinote.assistant.engine.query', wraps=engine.query) as query:
                 job, fake = self.ask(outputs)
@@ -194,7 +194,7 @@ class AssistantTests(unittest.TestCase):
         with patch('verinote.assistant.MAX_ROUNDS', 1):
             job,_=self.ask([tool()])
             self.assertEqual(job['status'],'error')
-            self.assertEqual(job['trace'][0]['status'],'success')
+            self.assertEqual(job['trace'],[])
         with patch('verinote.assistant.engine.query', side_effect=RuntimeError('native failed')):
             job,_=self.ask([tool()])
             self.assertEqual(job['trace'][0]['status'],'error')
@@ -291,6 +291,165 @@ class WikiQuestionTests(unittest.TestCase):
 
     def lookup(self, query='요약', document_id=None):
         return tool(name='search_knowledge',query=query,document_id=document_id or self.doc['id'])
+
+    def test_sixth_call_answers_with_fifth_call_evidence(self):
+        page = self.wiki(claims=[{'heading':'구조','text':'설명'*525,'quote':SOURCE} for _ in range(2)])
+        def final(prompt):
+            state = json.loads(prompt.split('입력 상태(JSON):\n', 1)[1])
+            self.assertTrue(state['answer_only'])
+            self.assertEqual((state['round'], state['exploration_rounds_remaining']), (6, 0))
+            self.assertEqual(state['evidence']['E3']['offset'], 2000)
+            self.assertIsNone(state['evidence']['E3']['next_offset'])
+            return answer(kind='wiki', ids=['E3'])
+        outputs = [tool(), self.lookup(), tool(name='read_wiki',page_id=page['id']), tool(),
+                   tool(name='read_wiki',page_id=page['id'],offset=2000), final]
+        with patch.object(self.store,'source_text',side_effect=AssertionError('raw body read')):
+            job, fake = self.ask(outputs)
+        self.assertEqual(job['status'], 'success', job['error'])
+        self.assertEqual((len(fake.calls), len(job['trace'])), (6, 5))
+        for index, (_, _, prompt) in enumerate(fake.calls[:5]):
+            state = json.loads(prompt.split('입력 상태(JSON):\n', 1)[1])
+            self.assertFalse(state['answer_only'])
+            self.assertEqual(state['exploration_rounds_remaining'], 5-index)
+
+    def test_final_call_enforces_answer_and_existing_evidence_contract(self):
+        self.approve(self.extract())
+        for final in [tool(), answer(ids=['invented']), answer(kind='wiki'),
+                      answer() | tool(), {'answer': {'claims':[], 'unknowns':[]}}]:
+            job, fake = self.ask([tool()] * 5 + [final])
+            self.assertEqual(job['status'], 'error'); self.assertIsNone(job['answer'])
+            self.assertEqual((len(fake.calls), len(job['trace'])), (6, 5))
+        searches = [tool(name='search_documents',query='term'+str(i)) for i in range(5)]
+        job, fake = self.ask(searches + [{'answer':{'claims':[], 'unknowns':['확인 불가']}}])
+        self.assertEqual(job['status'], 'error'); self.assertIn('Wirelog', job['error'])
+        self.assertEqual(len(fake.calls), 6)
+
+    def test_tool_budget_reserves_next_call_for_partial_or_unknown_answer(self):
+        def final(prompt):
+            state = json.loads(prompt.split('입력 상태(JSON):\n', 1)[1])
+            self.assertEqual((state['round'], state['tool_slots_remaining']), (5, 0))
+            self.assertTrue(state['answer_only'])
+            return {'answer': {'claims':[], 'unknowns':['조회한 범위에서는 확인하지 못했습니다.']}}
+        job, fake = self.ask([batch(tool(),tool(),tool())] * 3 + [tool(), final])
+        self.assertEqual(job['status'], 'success', job['error'])
+        self.assertEqual((len(fake.calls), len(job['trace'])), (5, 10))
+
+    def test_long_spaced_title_search_finds_wiki_without_source(self):
+        self.doc = self.store.register('가상논리공간', 'flight.md', SOURCE.encode(), SOURCE)
+        page = self.wiki()
+        query = '가상 논리 공간에서 UAM 기체의 활동 범위 정의'
+        with patch.object(self.store,'source_text',side_effect=AssertionError('raw')):
+            job, fake = self.ask([batch(tool(),self.lookup(query)),tool(name='read_wiki',page_id=page['id']),answer(kind='wiki',ids=['E2'])])
+        self.assertEqual(job['status'],'success',job['error']); self.assertEqual(len(fake.calls),3)
+        result = job['trace'][1]['result']
+        self.assertEqual(result['match_mode'],'catalog'); self.assertEqual(result['query'],query)
+        self.assertEqual(result['matches'][0]['page_id'],page['id']); self.assertFalse(result['citable'])
+        self.assertEqual(result['matched_terms'][0]['kind'],'title')
+        assistant = Assistant(self.store,None,self.store.snapshot(),{},self.root,lambda *a:None)
+        result,_ = assistant.search_knowledge({'query':'FLIGHT에 대한 자세한 질문'})
+        self.assertEqual(result['matches'][0]['page_id'],page['id'])
+        self.assertEqual(result['matched_terms'][0]['kind'],'filename')
+        assistant.execute(tool()['tools'][0])
+        assistant.execute(self.lookup(query)['tools'][0]); deliver(assistant)
+        with self.assertRaisesRegex(ValueError,'insufficient_wiki'):
+            assistant.authorize_source(self.doc['id'],fallback('no_match'))
+
+    def test_catalog_alias_variants_stay_document_and_dictionary_scoped(self):
+        # Both documents use the same alias but have different canonical targets.
+        pages = []
+        for title, name in [('첫번째','주문'), ('두번째','결제')]:
+            body = f'{name}(Order) 관련 설명. 원문전용표식'
+            self.doc = self.store.register(title,title+'.md',body.encode(),body)
+            dictionary = {'entities':[{'id':name,'name':name,'type':'Service','quote':body}],
+                          'aliases':[{'alias':'Order','entity':name,'quote':body}], 'relations':[]}
+            workflow.approved_dictionary(self.store,self.doc['id'],dictionary)
+            pages.append(self.wiki(title='개요',claims=[{'heading':'구조','text':name+'에 관한 설명','quote':body}]))
+            self.wiki(title='무관',claims=[{'heading':'별도','text':('결제' if name=='주문' else '주문')+'에 관한 설명','quote':body}])
+        assistant = Assistant(self.store,None,self.store.snapshot(),{},self.root,lambda *a:None)
+        with patch.object(self.store,'source_text',side_effect=AssertionError('raw')):
+            result, _ = assistant.search_knowledge({'query':'ORDER의 작동 방식은 무엇인가'})
+            hits = [m['page_id'] for m in result['matches'] if m['kind']=='wiki']
+            self.assertEqual(set(hits), {p['id'] for p in pages})
+            self.assertEqual(result['match_mode'],'catalog')
+            scoped, _ = assistant.search_knowledge({'query':'ORDER의 작동 방식은 무엇인가','document_id':self.doc['id']})
+            self.assertTrue(all(m['document_id']==self.doc['id'] for m in scoped['matches']))
+            for query in ('border의 작동 방식', '원문전용표식'):
+                result, _ = assistant.search_knowledge({'query':query})
+                self.assertEqual(result['matches'],[])
+
+    def test_catalog_title_ambiguity_normalization_and_substantive_terms(self):
+        pages=[]
+        for title in ('동일 제목',unicodedata.normalize('NFD','동일 제목'),'문서','X'):
+            self.doc=self.store.register(title,'unique.md',SOURCE.encode(),SOURCE)
+            pages.append(self.wiki())
+        assistant=Assistant(self.store,None,self.store.snapshot(),{},self.root,lambda *a:None)
+        result,_=assistant.search_knowledge({'query':'동일제목에 대한 자세한 질문'})
+        self.assertEqual({m['page_id'] for m in result['matches']}, {p['id'] for p in pages[:2]})
+        for query in ('문서의 자세한 내용을 설명하라','X는 무엇인가','아무 관련 없는 질문'):
+            result,_=assistant.search_knowledge({'query':query})
+            self.assertEqual(result['matches'],[])
+
+    def test_anchor_cap_blocks_fallback_even_with_no_selected_page_hits(self):
+        docs=[]
+        for i in range(13):
+            name=f'대상이름{i:02}'
+            docs.append(self.store.register(name,name+'.md',SOURCE.encode(),SOURCE))
+        query='각 '+ ' '.join(d['title'] for d in docs)+' 질문'
+        assistant=Assistant(self.store,None,self.store.snapshot(),{},self.root,lambda *a:None)
+        selected,_=assistant.search_anchors(query,sorted(assistant.documents))
+        selected_docs={a['document_id'] for a in selected}
+        omitted=next(d for d in docs if d['id'] not in selected_docs)
+        self.doc=omitted
+        page=self.wiki()
+        assistant=Assistant(self.store,None,self.store.snapshot(),{},self.root,lambda *a:None)
+        assistant.execute(tool()['tools'][0])
+        assistant.execute(tool(name='search_knowledge',query=query)['tools'][0]); deliver(assistant)
+        result=assistant.trace[-1]['result']
+        self.assertTrue(result['anchors_truncated']);self.assertTrue(result['truncated'])
+        self.assertEqual(result['matches'],[]);self.assertIsNone(result['next_offset'])
+        with self.assertRaisesRegex(ValueError,'완전한 승인 지식 검색'):
+            assistant.authorize_source(omitted['id'],fallback('no_match'))
+        # Explicit scope filters before selecting anchors, making this search complete.
+        result,lookup=assistant.search_knowledge({'query':query,'document_id':omitted['id']})
+        self.assertFalse(result['anchors_truncated']);self.assertFalse(lookup['truncated'])
+        self.assertEqual(result['matches'][0]['page_id'],page['id'])
+
+    def test_wiki_first_pagination_keeps_literal_strategy_and_stable_totals(self):
+        self.approve(self.extract())
+        for i in range(21): self.wiki(title='주문 '+str(i))
+        workflow.approved_dictionary(self.store,self.doc['id'])
+        snapshot=self.store.snapshot()
+        # An earlier document has enough guidance to fill a page by itself.
+        earlier='0'*32
+        snapshot['documents'].append(snapshot['documents'][0] | {'id':earlier})
+        snapshot['ontologies'].append({'id':'synthetic-ontology','document_id':earlier,'revision':1,'version':1,
+                                      'payload':{'entities':[{'id':f'주문{i}','name':f'주문{i}','type':'Service'} for i in range(25)],'aliases':[],'relations':[]}})
+        assistant=Assistant(self.store,None,snapshot,{},self.root,lambda *a:None)
+        first,_=assistant.search_knowledge({'query':'주문'})
+        second,_=assistant.search_knowledge({'query':'주문','offset':20})
+        self.assertEqual(first['match_mode'],second['match_mode']);self.assertEqual(first['match_mode'],'literal')
+        self.assertEqual(first['total_matches'],second['total_matches'])
+        self.assertTrue(all(m['kind']=='wiki' for m in first['matches']))
+        self.assertEqual(second['matches'][0]['kind'],'wiki')
+        self.assertTrue(first['truncated']);self.assertTrue(second['truncated'])
+        again,_=assistant.search_knowledge({'query':'주문'})
+        self.assertEqual(first['matches'],again['matches'])
+        empty,_=assistant.search_knowledge({'query':'주문','offset':first['total_matches']})
+        self.assertEqual(empty['matches'],[]);self.assertEqual(empty['match_mode'],'literal')
+
+    def test_catalog_search_never_uses_unapproved_page_or_dictionary(self):
+        body=SOURCE+' 주문(SecretAlias)'
+        self.doc=self.store.register('별도','separate.md',body.encode(),body)
+        dictionary=json.loads(json.dumps(workflow.DICTIONARY))
+        dictionary['aliases']=[{'alias':'SecretAlias','entity':'주문','quote':body}]
+        item=workflow.approved_dictionary(self.store,self.doc['id'],dictionary)
+        self.store.review(item['id'],item['revision'],'held','R','보류')
+        for status in ('pending','rejected','held'):
+            self.wiki(status,title='SecretAlias')
+        assistant=Assistant(self.store,None,self.store.snapshot(),{},self.root,lambda *a:None)
+        with patch.object(self.store,'source_text',side_effect=AssertionError('raw')):
+            result,_=assistant.search_knowledge({'query':'SecretAlias의 작동 방식'})
+        self.assertEqual(result['matches'],[]);self.assertEqual(result['matched_terms'],[])
 
     def test_wiki_answer_never_loads_or_sends_raw_body(self):
         # The approved quote is allowed, but unrelated raw text must not reach the model.

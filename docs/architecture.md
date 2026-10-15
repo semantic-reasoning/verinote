@@ -80,6 +80,12 @@ POST `/api/documents/{id}/delete-latest`, `/delete`는 정확히 `{expected_vers
 
 ## 문서 설명과 용어 정의
 
+`Assistant.run`은 호출 1~5에서 탐색 또는 조기 답변을 허용하고, 호출 6에서는 `answer_only=true`를 강제한다. 도구 슬롯 10개를 소진해도 다음 호출이 답변 전용이다. `exploration_rounds_remaining`은 현재 회차를 포함한 남은 탐색 호출 수이며 답변 전용에서는 0이다. `tool_slots_remaining`은 아직 사용하지 않은 요청 수다. 직전 탐색의 모든 trace/evidence를 다음 프롬프트에 전달한 뒤, 답변 전용에서는 정확히 answer 객체인 응답만 기존 인용 검증을 거쳐 반환한다. 추가 도구·혼합 객체는 실행 전에 거부한다. 실제 그래프 조회·유효 근거 없이 답변을 만들어 성공시키지 않는다. 모델 호출 최대 6회, 도구 최대 10회·회당 3개, 프롬프트/결과 크기 제한과 llm-1..6 사용량 기록은 유지한다.
+
+`search_knowledge`는 요청 문서 범위 전체에서 먼저 기존 문자열 포함 검색을 수행한다. 승인 지식 일치가 0개일 때만 문장 안의 문서 제목·파일명 stem·승인 개체 ID/명칭·별칭을 보조 검색 이름으로 선택한다. NFC/casefold를 적용하고 문서 제목 탐색에만 공백을 생략해 비교한다. 한 글자와 명시된 일반 이름은 보조 검색에서 제외하며, 영문·숫자 이름은 다른 영문 단어 안의 부분 문자열을 이름으로 인정하지 않는다. 별칭은 같은 사전의 정확한 대상 ID/명칭으로만 확장하며 이름 하나당 변형은 최대 3개다. 이름은 긴 순서와 문서/종류/문자열 순서로 정렬해 최대 12개를 선택한다. 문서별 이름은 서로 합치지 않으며 명시한 document_id 밖의 이름은 선택하지 않는다. 제목 일치는 해당 문서의 위키를 탐색하도록 안내할 뿐 다른 문서를 요청 범위에서 제거하지 않는다.
+
+위키 제목·주장 heading/text와 quote를 제외한 사전 안내만 검색한다. 전체 일치 위키를 사전 안내보다 앞에 안정적으로 정렬한 뒤 20개씩 페이지를 자른다. `query`, `match_mode`(literal/catalog), `matched_terms`, `anchors_truncated`로 검색 방법을 남기며 결과는 계속 non-citable이다. 전체 이름 후보가 한도를 넘으면 반환 일치가 0개여도 모든 페이지에서 result와 내부 lookup의 truncated를 true로 유지한다. 따라서 누락된 후보를 근거로 no_match 원문 fallback을 허용하지 않는다. 결과 페이지가 비었다는 이유로 검색 방식을 바꾸지 않으며, 페이지별 부분 조회를 합쳐 완전한 조회로 간주하지 않는다. 원문과 인용문은 후보 검색의 입력이 아니다.
+
 `search_documents`는 기본 metadata 모드에서 고정 스냅샷의 제목·파일명만 NFC/casefold로 비교한다. body 모드는 한 문서의 ID와 검증된 fallback을 요구한 뒤 본문을 검색한다. 결과에 filename, matched_fields, total_chars, offset_strategy를 제공한다. offset은 원문 읽기 시작점이다. 허용된 본문 literal 일치는 원본 문자열 좌표를 반환하고, 제목/파일명이나 정규화 전용 본문 일치는 0(`start`)에서 읽게 한다. 정규화 문자열의 달라진 길이를 원문 좌표로 사용하지 않는다. 결과 상한 20개와 non-citable 계약은 유지한다.
 
 `read_document`는 fallback 검증 후 원문을 변환하지 않고 title/filename, offset/end_offset/total_chars/next_offset을 제공한다. 문서 카탈로그는 본문 없이 filename과 길이를 제공한다. 문서 설명 질문은 승인 위키를 먼저 검색·읽고 부족한 경우에만 원문으로 보충한다. 빈 승인 그래프만으로 위키·원문 설명 불가를 단정하지 않는다. 일반 정의·외부 지식은 별도 근거 없이 보충하지 않으며 부분 읽기의 미확인을 문서 전체 부재로 단정하지 않는다. 실제 Wirelog 실행과 wiki/source/graph 인용 검증을 요구하며, 질문이 자료 밖이면 unknown-only 응답도 허용한다.

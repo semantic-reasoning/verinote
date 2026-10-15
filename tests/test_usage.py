@@ -341,6 +341,18 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(question['usage']['tokens']['input']['value'],180)
         self.assertNotIn('usage',self.store.question(question['id']))
 
+    def test_reserved_final_call_stays_within_six_accounted_calls(self):
+        graph={'tools':[{'name':'query_graph','arguments':{}}]}
+        job=self.run_outputs([graph]*5+[{'answer':{'claims':[],'unknowns':['조회 범위에서 확인 불가']}}])
+        self.assertEqual(job['status'],'success',job.get('error'))
+        self.assertEqual(job['usage']['calls'],6)
+        self.assertEqual(job['usage']['tokens']['input']['value'],360)
+        self.assertEqual(len(job['trace']),5)
+        folder=self.root/'questions'/job['id']
+        self.assertEqual({p.name for p in folder.glob('llm-*')},{f'llm-{i}' for i in range(1,7)})
+        prompt=(folder/'llm-6'/'prompt.txt').read_text()
+        self.assertTrue(json.loads(prompt.split('입력 상태(JSON):\n',1)[1])['answer_only'])
+
 
 class Accounting(unittest.TestCase):
     setUp=workflow.Workflow.setUp
