@@ -41,7 +41,7 @@ def command(agent, model, prompt):
 
 
 class CLI:
-    def __init__(self, timeout=180, max_output=1024 * 1024):
+    def __init__(self, timeout=None, max_output=1024 * 1024):
         self.timeout, self.max_output = timeout, max_output
 
     def complete(self, agent, model, prompt, folder):
@@ -49,7 +49,8 @@ class CLI:
         folder.mkdir(parents=True, exist_ok=True)
         (folder / 'prompt.txt').write_text(prompt, encoding='utf-8')
         args, stdin = command(agent, model, prompt)
-        meta = {'agent': agent, 'model': model, 'prompt_sha256': digest(prompt.encode()), 'started_at': now(), 'status': 'running'}
+        timeout = self.timeout if self.timeout is not None else (600 if agent == 'agy' else 180)
+        meta = {'agent': agent, 'model': model, 'prompt_sha256': digest(prompt.encode()), 'started_at': now(), 'status': 'running', 'timeout_seconds': timeout}
         def record(status, **fields):
             meta.update(status=status, **fields)
             (folder / 'run.json').write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -64,10 +65,10 @@ class CLI:
             with (folder / 'stdout.txt').open('wb') as out, (folder / 'stderr.txt').open('wb') as err, (folder / 'stdin.txt').open('wb+') as inp:
                 inp.write(stdin.encode()); inp.seek(0)
                 proc = subprocess.Popen(args, stdin=inp, stdout=out, stderr=err, cwd=work, start_new_session=True)
-                deadline = time.monotonic() + self.timeout
+                deadline = time.monotonic() + timeout
                 while proc.poll() is None:
                     if time.monotonic() > deadline:
-                        raise TimeoutError('CLI 실행 시간 제한 초과')
+                        raise TimeoutError(f'CLI 실행 시간 제한 초과 ({timeout}초)')
                     if out.tell() + err.tell() > self.max_output:
                         raise ValueError('CLI 응답 크기 제한 초과')
                     time.sleep(.05)

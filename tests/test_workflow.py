@@ -2,10 +2,11 @@ import concurrent.futures
 import io
 import json
 from pathlib import Path
+import signal
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 import zipfile
@@ -232,9 +233,46 @@ class ImportAndCLI(unittest.TestCase):
                             CLI(timeout=.2,max_output=10000).complete('agy','', 'test', root/str(index))
                     else:
                         self.assertEqual(CLI().complete('agy','','test',root/str(index)), {'ok':True})
-                self.assertTrue((root/str(index)/'run.json').exists())
+                meta = json.loads((root/str(index)/'run.json').read_text())
+                self.assertEqual(meta['timeout_seconds'], .2 if expected else 600)
+                if expected is TimeoutError:
+                    self.assertIn('(0.2초)', meta['error'])
             with patch('verinote.agents.executable', return_value=None), self.assertRaises(ValueError):
                 CLI().complete('agy','','test',root/'missing')
+
+    def test_provider_deadlines_and_explicit_overrides(self):
+        shared = CLI()
+        # Reuse the instance across providers in both orders; clock starts above zero.
+        cases = [(shared, agent, 600 if agent == 'agy' else 180, elapsed, elapsed > (600 if agent == 'agy' else 180))
+                 for agent in ['copilot', 'agy', 'claude', 'cursor', 'codex', 'agy']
+                 for elapsed in ([181, 599, 601] if agent == 'agy' else [179, 181])]
+        cases += [(CLI(timeout=180), 'agy', 180, 181, True),
+                  (CLI(.2), 'agy', .2, .3, True), (CLI(0), 'agy', 0, .1, True)]
+        with tempfile.TemporaryDirectory() as tmp:
+            for index, (cli, agent, limit, elapsed, expires) in enumerate(cases):
+                with self.subTest(agent=agent, limit=limit, elapsed=elapsed):
+                    folder = Path(tmp) / str(index)
+                    proc = Mock(pid=12345, returncode=0)
+                    proc.poll.side_effect = [None, None] if expires else [None, 0]
+                    def launch(*args, **kwargs):
+                        kwargs['stdout'].write(b'{"ok":true}')
+                        return proc
+                    with patch('verinote.agents.executable', return_value='/synthetic/cli'), \
+                         patch('verinote.agents.subprocess.Popen', side_effect=launch), \
+                         patch('verinote.agents.time.monotonic', side_effect=[1000, 1000 + elapsed]), \
+                         patch('verinote.agents.time.sleep'), patch('verinote.agents.os.killpg') as kill:
+                        if expires:
+                            with self.assertRaisesRegex(TimeoutError, 'CLI 실행 시간 제한 초과') as error:
+                                cli.complete(agent, '', 'synthetic', folder)
+                            self.assertIn(f'({limit}초)', str(error.exception))
+                            kill.assert_called_once_with(proc.pid, signal.SIGKILL)
+                            proc.wait.assert_called_once_with()
+                        else:
+                            self.assertEqual(cli.complete(agent, '', 'synthetic', folder), {'ok': True})
+                            kill.assert_not_called()
+                    meta = json.loads((folder / 'run.json').read_text())
+                    self.assertEqual(meta['timeout_seconds'], limit)
+                    self.assertEqual(meta['status'], 'error' if expires else 'success')
 
 
 class HTTP(unittest.TestCase):
