@@ -9,9 +9,14 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from .agents import PROVIDERS, executable, validate_model
-from .documents import MAX_BYTES, decode_document
+from .documents import MAX_BYTES, MAX_TEXT, decode_document
 from .service import Service, text
 from .store import Conflict, Store
+
+MAX_JSON_BYTES = 6 * 1024 * 1024
+MAX_BASE64_CHARS = ((MAX_BYTES + 2) // 3) * 4
+MAX_UPLOAD_JSON_BYTES = MAX_BASE64_CHARS + 64 * 1024
+DOCUMENT_LIMITS = {'original_bytes': MAX_BYTES, 'text_chars': MAX_TEXT, 'pdf_pages': 200, 'docx_expanded_bytes': 16 * 1024 * 1024}
 
 WEB = Path(__file__).with_name('web')
 
@@ -52,11 +57,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get('Sec-Fetch-Site') == 'cross-site':
             raise PermissionError('교차 사이트 요청은 허용하지 않습니다.')
 
-    def body(self):
+    def body(self, max_bytes=MAX_JSON_BYTES):
         if self.headers.get('Content-Type', '').split(';')[0] != 'application/json':
             raise ValueError('application/json만 지원합니다.')
         length = int(self.headers.get('Content-Length', '0'))
-        if not 0 < length <= 6 * 1024 * 1024:
+        if not 0 < length <= max_bytes:
             raise ValueError('요청 크기 제한 초과')
         self.connection.settimeout(15)
         value = json.loads(self.rfile.read(length))
@@ -86,7 +91,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send((WEB / name).read_bytes(), mime=mime)
             if route.path == '/api/settings':
                 if method == 'GET':
-                    return self.send(store.settings() | {'providers': [{'id': k, 'name': v, 'installed': bool(executable(k))} for k, v in PROVIDERS.items()]})
+                    return self.send(store.settings() | {'document_limits': DOCUMENT_LIMITS, 'providers': [{'id': k, 'name': v, 'installed': bool(executable(k))} for k, v in PROVIDERS.items()]})
                 if method == 'PUT':
                     data = self.body()
                     if data.get('selected') not in PROVIDERS or not isinstance(data.get('models'), dict) or set(data['models']) - set(PROVIDERS):
@@ -103,13 +108,16 @@ class Handler(BaseHTTPRequestHandler):
                 if method == 'GET':
                     return self.send(store.documents())
                 if method == 'POST':
-                    data = self.body()
+                    data = self.body(MAX_UPLOAD_JSON_BYTES)
                     title = text(data.get('title'), '제목')
                     filename = text(data.get('filename'), '파일명')
                     if 'content_base64' in data:
-                        raw = base64.b64decode(data['content_base64'], validate=True)
+                        encoded = data['content_base64']
+                        if not isinstance(encoded, str) or len(encoded) > MAX_BASE64_CHARS:
+                            raise ValueError('파일 base64는 32 MiB 이내 원본을 인코딩한 문자열이어야 합니다.')
+                        raw = base64.b64decode(encoded, validate=True)
                     else:
-                        text(data.get('text'), '본문', 128000)
+                        text(data.get('text'), '본문', MAX_TEXT)
                         raw = data['text'].encode()
                     if len(raw) > MAX_BYTES:
                         raise ValueError('파일 크기 제한 초과')

@@ -151,3 +151,13 @@ POST `/api/documents/{id}/delete-latest`, `/delete`는 정확히 `{expected_vers
 `extraction_coverage.py`는 검증된 청크의 인덱스/판단을 `runs/<id>/extraction-coverage.json`에 최대 2 MiB로 저장한다. 원문과 전체 사실을 복제하지 않는다. schema/실행/문서 버전/사전 pin과 source 길이, 청크 offset/length, 개수 및 인덱스를 검사한다. symlink/초과 크기/손상/identity 불일치는 unavailable이다. 청크 응답 관계 수와 DB의 실제 저장 후보 수(관계와 인용이 모두 같을 때 중복 제거)를 구분한다. 위키 주장 인덱스는 청크별 claim_base로 전역 번호에 대응한다. 목록 API는 요약만, 실행 상세 API는 구간별 점검을 반환한다.
 
 보고서는 DB 완료 전에 best effort로 저장하며 DB 실행 상태만 게시 여부를 결정한다. 보고서 저장 실패는 후보 저장을 취소하지 않는다. 실패·중단 실행의 보고서는 검증된 접두 구간일 뿐 저장 후보가 아니다. 소유 run을 DB에서 재확인하므로 삭제 이후 파일 정리가 지연되어도 보고서를 노출하지 않는다. 기존 실행의 보고서가 없으면 unavailable이며 0개나 완전 추출을 뜻하지 않는다. 추가 SQL migration이나 승인 자동화는 없다.
+
+## 큰 원본 업로드와 분석 진행률
+
+원본 크기 한도는 32 MiB다. `POST /api/documents`의 JSON 요청 한도만 `ceil(MAX_BYTES / 3) * 4 + 64 KiB`로 확장한다. 다른 mutation의 JSON 한도는 6 MiB를 유지하며 Host/Origin 보호는 공통이다. base64 타입·인코딩 문자열 길이를 디코딩 전에 검사하고 디코딩한 원본 크기를 다시 검사한다. 원본 bytes는 그대로 저장한다. settings의 `document_limits`가 브라우저의 파일 검사/한도 안내 기준이다. 본문128000자, PDF200쪽, DOCX 압축 해제16MiB, 모델 호출/청크/후보 한도는 변경하지 않는다. JSON/base64의 일시적 메모리 복사 비용은 남는다.
+
+브라우저는 FileReader 준비 이벤트와 XMLHttpRequest upload 이벤트를 분리한다. 전송 loaded/total은 전체 요청 바이트이며 업로드 load 후에는 서버 처리 중으로 전환한다. HTTP201만 등록 완료다. 타깃 문서/version/generation과 제목·텍스트는 await 전에 복사하고 진행 중에는 폼과 modal을 잠근다. 오류/timeout/abort에서는 잠금을 해제하고 저장 여부 확인을 안내한다. XHR 응답 대기는180초이며 timeout은 서버 작업 취소를 보장하지 않는다.
+
+`progress.py`는 DB 소유 run/고정 원문 길이와 기존 `dictionary-progress.json` 또는 검증된 extraction coverage를 읽는 선택적 조회 어댑터다. 사전 marker는 최대8192바이트, 스키마/실행/전체 길이/정수 counters/결정적 구간 끝/재사용 범위를 검사한다. 추출은 인용 보정까지 검증된 청크만 센다. 누락·손상·symlink·삭제 소유자는 unknown이고 완료 호출 수나 경과 시간으로 진행률을 추정하지 않는다. DB queued는0%, running은 검증 비율(최대99%), 전 구간 검증은saving, DBsuccess만100%다. 실패·중단은 검증된 마지막 비율과 종료 상태를 함께 표시한다. 진행 기록은 후보 저장과 승인의 조건이 아니다.
+
+문서 상세의 `latest_run`은 선택한 버전의 최신 실행 ID/stage/status/version만 반환한다. run API의 progress는 추가 필드다. 문서 상세와 실행 기록은 run ID별 단일 polling registry를 사용하고 선택 문서/version/최신 실행/요청 번호가 맞을 때만 화면을 갱신한다. terminal, 조회 오류(삭제된 run의 현재 응답은400), 관련 화면 이탈 시 watcher가 종료된다. 재진입은 다시 조회하며 새로고침 이후에는 DB 실행에서 복구한다. 분석 진행률은 native progress 요소와 텍스트로 제공한다. SQL migration이나 유료 호출 추가는 없다.

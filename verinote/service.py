@@ -8,6 +8,7 @@ import threading
 
 from .agents import CLI, PROVIDERS, validate_model
 from .documents import chunks
+from .progress import analysis_progress
 from .engine import query
 from .extraction_coverage import chunk_report, new_report, read_report, write_report
 from .ontology import (EXTRACTION_PROMPT, EXTRACTION_CONTRACT_VERSION, dictionary_context,
@@ -58,11 +59,14 @@ class Service:
         from .usage import job_calls, summarize
         calls = job_calls(self.root, kind, owner)
         result = owner | {'usage': summarize(calls) | {'details': calls}}
+        report = None
         if kind == 'runs' and owner.get('stage') == 'extract':
             report = read_report(self.root, self.store, owner['id'])
-            if not coverage_details:
-                report.pop('chunks', None)
             result['coverage'] = report
+        if kind == 'runs':
+            result['progress'] = analysis_progress(self.root, self.store, owner['id'], report)
+        if report is not None and not coverage_details:
+            report.pop('chunks', None)
         return result
 
     def usage_report(self):

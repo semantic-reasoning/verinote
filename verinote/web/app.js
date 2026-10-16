@@ -6,6 +6,8 @@ const badge = status => `<span class="badge ${esc(status)}">${esc(labels[status]
 let docs = [], config, selectedDoc, uploadTarget, reviewTarget;
 let documentRequest = 0, bulkReviewTarget = null, bulkSubmitting = false;
 const MAX_BULK_APPROVAL = 2000;
+let uploadBusy = false;
+const runWatchers = new Map();
 async function api(path, method = 'GET', data) {
   const response = await fetch(path, {method, headers: data ? {'Content-Type':'application/json'} : {}, body: data ? JSON.stringify(data) : undefined});
   const result = await response.json();
@@ -21,6 +23,7 @@ function showView(name) {
   for (const el of document.querySelectorAll('.view')) el.hidden = el.id !== name;
   for (const el of document.querySelectorAll('nav button')) el.classList.toggle('active', el.dataset.view === name);
   $('#breadcrumb').textContent = {library:'문서와 위키',query:'관계 탐색',activity:'실행 기록',settings:'에이전트 설정'}[name];
+  if (name === 'library' && selectedDoc?.latest_run) watchRun(selectedDoc.latest_run.id,selectedDoc.id,selectedDoc.version,selectedDoc.latest_run.status);
   if (name === 'activity') attempt(loadRuns);
   if (name === 'query') attempt(async()=>{await loadQueries();await loadQuestions();});
 }
@@ -55,7 +58,8 @@ async function openDoc(id, version) {
   selectedDoc = loaded;
   const d = selectedDoc, latest = d.version === d.current_version;
   showView('library');
-  $('#document-detail').innerHTML = `<div class="panel"><div class="detail-title"><h2>${esc(d.title)}</h2><select id="version-select" aria-label="문서 버전">${d.versions.map(v=>`<option value="${v.version}" ${v.version===d.version?'selected':''}>v${v.version}${v.version===d.current_version?' · 현재':''}</option>`).join('')}</select><button id="add-version">＋ 새 버전 등록</button></div><p class="muted">${latest?'현재 문서 버전':'과거 문서 버전 · 현재 그래프에 포함되지 않습니다'} · ${esc(d.filename)}</p><p class="mono">SHA-256 ${esc(d.sha256)}</p><div class="actions"><a href="/api/documents/${d.id}/raw?version=${d.version}" download="${esc(d.filename)}">원본 다운로드</a><button id="show-diff">이전 버전과 비교</button></div><div class="actions"><button id="delete-latest" class="danger" ${d.versions.length===1?'disabled':''}>최신 리비전 v${d.current_version}만 삭제</button><button id="delete-document" class="danger">문서 전체 삭제</button></div>${d.versions.length===1?'<p class="muted">리비전이 하나뿐이면 문서 전체 삭제를 사용하세요.</p>':''}<div id="version-diff"></div><details><summary>원문 전체 · v${d.version}</summary><pre class="source">${esc(d.text)}</pre></details>${latest?extractionControls(d):''}</div><h2>사전 · 위키 · 사실 검토</h2><p class="muted">위키 문장 승인과 관계 사실 승인은 별개입니다. 원문의 인용을 대조하여 각각 검토하세요.</p>${renderBulkControls(d)}<div id="items">${d.items.length?d.items.map(renderItem).join(''):'<div class="empty">아직 생성된 초안이 없습니다. 사전 생성을 시작해 주세요.</div>'}</div>`;
+  $('#document-detail').innerHTML = `<div class="panel"><div class="detail-title"><h2>${esc(d.title)}</h2><select id="version-select" aria-label="문서 버전">${d.versions.map(v=>`<option value="${v.version}" ${v.version===d.version?'selected':''}>v${v.version}${v.version===d.current_version?' · 현재':''}</option>`).join('')}</select><button id="add-version">＋ 새 버전 등록</button></div><p class="muted">${latest?'현재 문서 버전':'과거 문서 버전 · 현재 그래프에 포함되지 않습니다'} · ${esc(d.filename)}</p><p class="mono">SHA-256 ${esc(d.sha256)}</p><div class="actions"><a href="/api/documents/${d.id}/raw?version=${d.version}" download="${esc(d.filename)}">원본 다운로드</a><button id="show-diff">이전 버전과 비교</button></div><div class="actions"><button id="delete-latest" class="danger" ${d.versions.length===1?'disabled':''}>최신 리비전 v${d.current_version}만 삭제</button><button id="delete-document" class="danger">문서 전체 삭제</button></div>${d.versions.length===1?'<p class="muted">리비전이 하나뿐이면 문서 전체 삭제를 사용하세요.</p>':''}<div id="version-diff"></div><details><summary>원문 전체 · v${d.version}</summary><pre class="source">${esc(d.text)}</pre></details>${latest?extractionControls(d):''}<div id="document-progress" aria-live="polite"></div></div><h2>사전 · 위키 · 사실 검토</h2><p class="muted">위키 문장 승인과 관계 사실 승인은 별개입니다. 원문의 인용을 대조하여 각각 검토하세요.</p>${renderBulkControls(d)}<div id="items">${d.items.length?d.items.map(renderItem).join(''):'<div class="empty">아직 생성된 초안이 없습니다. 사전 생성을 시작해 주세요.</div>'}</div>`;
+  if(d.latest_run)watchRun(d.latest_run.id,id,d.version,d.latest_run.status);
   $('#document-detail').scrollIntoView({behavior:'smooth',block:'start'});
   $('#bulk-select-all').onchange = e=>{for(const box of document.querySelectorAll('[data-bulk-item]')) box.checked=e.target.checked;updateBulkSelection();};
   $('#bulk-clear').onclick = ()=>{for(const box of document.querySelectorAll('[data-bulk-item]')) box.checked=false;updateBulkSelection();};
@@ -70,7 +74,7 @@ async function openDoc(id, version) {
     const button=$('#'+stage);
     if(button) button.onclick=()=>attempt(async()=>{
       button.disabled=true;
-      try {const run=await api(`/api/documents/${id}/${stage}`,'POST',{agent:$('#extract-agent').value,model:$('#extract-model').value,expected_version:d.version,expected_generation:d.generation});notice('작업을 시작했습니다. 실행 기록에서 진행 상황을 볼 수 있습니다.');watchRun(run.id,id);}
+      try {const run=await api(`/api/documents/${id}/${stage}`,'POST',{agent:$('#extract-agent').value,model:$('#extract-model').value,expected_version:d.version,expected_generation:d.generation});notice('작업을 시작했습니다. 실행 기록에서 진행 상황을 볼 수 있습니다.');if(selectedDoc===d)selectedDoc.latest_run=run;watchRun(run.id,id,d.version,run.status);}
       catch(e){button.disabled=false;throw e;}
     });
   }
@@ -80,31 +84,110 @@ function renderItem(item) {
   const body=item.kind==='ontology'?renderDictionary(p):item.kind==='page'?`<h3>${esc(p.title)}</h3>${p.claims.map((c,i)=>`<h3>#${i+1} · ${esc(c.heading)}</h3><p>${esc(c.text)}</p><details><summary>원문 근거</summary><blockquote class="quote">${esc(c.quote)}</blockquote></details>`).join('')}`:`<h3 class="query-row">${esc(p.subject)} → <small>${esc(p.predicate)}</small> → ${esc(p.object)}</h3><blockquote class="quote">${esc(p.quote)}</blockquote>`;
   return `<article class="item">${item.status==='pending'&&['page','fact'].includes(item.kind)?`<label class="bulk-choice"><input type="checkbox" data-bulk-item="${esc(item.id)}" aria-label="${esc(bulkItemLabel(item))} 일괄 승인에 포함">일괄 승인에 포함</label>`:''}${badge(item.status)} <span class="muted">${{ontology:'사전 초안',page:'위키 초안',fact:'관계 사실'}[item.kind]} · r${item.revision}</span><p class="mono">실행 ${esc(item.run_id)}</p>${item.dictionary?`<p class="muted">추출 기준 사전 r${item.dictionary.revision} · ${esc(item.dictionary.sha256.slice(0,12))}</p>`:''}${body}<div class="actions">${['approved','held','rejected','pending',...(['fact','ontology'].includes(item.kind)?['revise']:[])].filter(a=>a!==item.status).map(a=>`<button data-review="${item.id}" data-action="${a}">${a==='revise'?'내용 수정':a==='pending'?'승인 철회 / 재검토':labels[a]}</button>`).join('')}<button data-history="${item.id}">이력</button></div><div id="history-${item.id}"></div></article>`;
 }
-async function watchRun(id, docId) {
-  try {
-    const r=await api('/api/runs/'+id);
-    if (['queued','running'].includes(r.status)) {notice(`추출 중 · ${r.detail||'대기 중'}`);setTimeout(()=>watchRun(id,docId),1500);return;}
-    notice(r.status==='success'?((r.stage==='ontology'?'사전 초안이 준비되었습니다. 개체·별칭·관계 정의를 수정·승인한 다음 추출하세요.':'위키와 관계 후보가 준비되었습니다. 원문과 대조해 각각 승인하세요.')+(r.detail?` ${r.detail}`:'')):`추출 ${labels[r.status]}: ${r.detail}`,r.status!=='success');
-    await loadLibrary();
-    if(selectedDoc?.id===docId && !$('#library').hidden) await openDoc(docId);
-  } catch(e){notice(e.message,true);}
+function renderProgress(percent, label, detail='', failed=false) {
+  const value=Number.isFinite(percent)?Math.max(0,Math.min(100,percent)):null;
+  return `<section class="job-progress ${failed?'failed':''}" role="status"><strong>${esc(label)}</strong><progress max="100" ${value===null?'':`value="${value}"`} aria-label="${esc(label)}">${value===null?'처리 중':value+'%'}</progress><p>${value===null?'진행률 확인 중':value+'%'}${detail?' · '+esc(detail):''}</p></section>`;
+}
+function renderAnalysisProgress(run) {
+  const p=run.progress||{},stage=run.stage==='ontology'?'사전 생성':'위키·관계 추출';
+  const phase={queued:'대기 중',running:'분석 중',saving:'검증 완료 · 저장 중',success:'저장 완료',error:'실패',interrupted:'중단',unknown:'진행 정보 없음'}[p.phase]||labels[run.status]||'진행 정보 없음';
+  const counts=p.known?`검증 ${p.completed_chars.toLocaleString()}/${p.total_chars.toLocaleString()}자 · 구간 ${p.completed_chunks}/${p.total_chunks}${p.resumed_chars?' · 재사용 '+p.resumed_chars.toLocaleString()+'자':''}`:'검증 진행 기록을 확인할 수 없습니다.';
+  return renderProgress(p.percent,`${stage} · ${phase}`,counts+ (run.detail?' · '+run.detail:''),['error','interrupted'].includes(run.status));
+}
+function watchRun(id, docId, version, initialStatus) {
+  if(runWatchers.has(id))return;
+  const watcher={timer:null,wasActive:['queued','running'].includes(initialStatus)};runWatchers.set(id,watcher);
+  const selected=()=>selectedDoc?.id===docId&&selectedDoc?.version===version&&selectedDoc?.latest_run?.id===id&&!$('#library').hidden;
+  const stop=()=>{clearTimeout(watcher.timer);if(runWatchers.get(id)===watcher)runWatchers.delete(id);};
+  async function poll() {
+    if(!selected()&&$('#activity').hidden){stop();return;}
+    const request=documentRequest;
+    try {
+      const r=await api('/api/runs/'+id);
+      if(runWatchers.get(id)!==watcher)return;
+      // A view may leave and re-enter while this request is in flight. Refetch
+      // for its new generation instead of losing a terminal update.
+      if(selected()&&request!==documentRequest){watcher.timer=setTimeout(poll,0);return;}
+      const current=selected()&&request===documentRequest;
+      if(current&&$('#document-progress'))$('#document-progress').innerHTML=renderAnalysisProgress(r);
+      const panel=document.querySelector(`[data-run-panel="${id}"]`);
+      if(panel&&!$('#activity').hidden)panel.outerHTML=renderRun(r);
+      if(['queued','running'].includes(r.status)){
+        watcher.wasActive=true;watcher.timer=setTimeout(poll,1500);return;
+      }
+      stop();
+      if(watcher.wasActive){
+        await loadLibrary();
+        if(current&&selected()&&request===documentRequest)await openDoc(docId,version);
+      }
+    } catch(e){
+      stop();
+      if(selected()&&request===documentRequest&&$('#document-progress'))$('#document-progress').innerHTML=renderProgress(null,'실행 상태 조회 실패',e.message,true);
+      const panel=document.querySelector(`[data-run-panel="${id}"]`);
+      if(panel&&!$('#activity').hidden)panel.innerHTML=renderProgress(null,'실행 상태 조회 실패',e.message,true);
+    }
+  }
+  poll();
+}
+function setUploadProgress(percent,label,detail='',failed=false){$('#upload-progress').innerHTML=renderProgress(percent,label,detail,failed);}
+function encodeUploadFile(file, progress) {
+  return new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onprogress=e=>progress(e.lengthComputable&&e.total?Math.floor(e.loaded/e.total*100):null,'파일 준비 중');
+    reader.onload=()=>resolve(String(reader.result).split(',')[1]);
+    reader.onerror=()=>reject(new Error('파일을 읽지 못했습니다.'));
+    reader.onabort=()=>reject(new Error('파일 읽기가 중단되었습니다.'));
+    reader.readAsDataURL(file);
+  });
+}
+function uploadDocument(data, progress) {
+  return new Promise((resolve,reject)=>{
+    const xhr=new XMLHttpRequest();xhr.open('POST','/api/documents');xhr.setRequestHeader('Content-Type','application/json');xhr.timeout=180000;
+    xhr.upload.onprogress=e=>progress(e.lengthComputable&&e.total?Math.floor(e.loaded/e.total*100):null,'서버로 전송 중',e.lengthComputable?`${e.loaded.toLocaleString()}/${e.total.toLocaleString()} 요청 바이트`:'');
+    xhr.upload.onload=()=>progress(null,'서버에서 문서 처리 중','전송 완료 · 본문 추출과 원문 저장 결과를 기다립니다.');
+    xhr.onload=()=>{
+      let result;try{result=JSON.parse(xhr.responseText);}catch{reject(new Error('서버 응답을 확인할 수 없습니다. 문서 목록에서 등록 여부를 확인하세요.'));return;}
+      if(xhr.status===201){progress(100,'원문 등록 완료');resolve(result);}
+      else {const error=new Error(result.error||`HTTP ${xhr.status}`);error.status=xhr.status;reject(error);}
+    };
+    xhr.onerror=()=>reject(new Error('전송 연결이 끊겼습니다. 문서 목록에서 등록 여부를 확인한 뒤 다시 시도하세요.'));
+    xhr.ontimeout=()=>reject(new Error('문서 등록 응답 대기 시간이 초과되었습니다. 문서 목록에서 등록 여부를 확인하세요.'));
+    xhr.onabort=()=>reject(new Error('전송이 중단되었습니다. 문서 목록에서 등록 여부를 확인하세요.'));
+    progress(0,'서버로 전송 중');xhr.send(JSON.stringify(data));
+  });
 }
 function openUpload(doc=null) {
+  if(uploadBusy)return;
   uploadTarget=doc;$('#upload-form').reset();$('#upload-form').elements.title.value=doc?.title||'';$('#upload-form').elements.title.readOnly=Boolean(doc);
+  $('#upload-progress').innerHTML='';
   $('#upload-heading').textContent=doc?`새 문서 버전 · v${doc.next_version}`:'문서 등록';
   $('#upload-dialog').showModal();
 }
-$('#new-document').onclick=()=>openUpload();$('#close-upload').onclick=()=>$('#upload-dialog').close();
-$('#upload-form').onsubmit=e=>{e.preventDefault();attempt(async()=>{
-  const form=e.target,file=form.elements.file.files[0],button=$('button.primary',form);button.disabled=true;
+$('#new-document').onclick=()=>openUpload();$('#close-upload').onclick=()=>{if(!uploadBusy)$('#upload-dialog').close();};
+$('#upload-dialog').addEventListener('cancel',e=>{if(uploadBusy)e.preventDefault();});
+async function submitUpload(form) {
+  if(uploadBusy)return;
+  const file=form.elements.file.files[0],target=uploadTarget?{id:uploadTarget.id,version:uploadTarget.current_version,generation:uploadTarget.generation}:null;
+  const data={title:form.elements.title.value,filename:file?.name||'note.md'};
+  if(!file)data.text=form.elements.text.value;
+  if(target){data.document_id=target.id;data.expected_version=target.version;data.expected_generation=target.generation;}
+  const controls=[...form.querySelectorAll('input,textarea,button')],disabled=controls.map(c=>c.disabled);
+  uploadBusy=true;controls.forEach(c=>c.disabled=true);
+  let saved=false;
   try {
-    const data={title:form.elements.title.value,filename:file?.name||'note.md'};
-    if(file){if(file.size>4*1024*1024)throw new Error('최대 파일 크기는 4 MiB입니다.');const bytes=new Uint8Array(await file.arrayBuffer());let binary='';for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode(...bytes.subarray(i,i+8192));data.content_base64=btoa(binary);}
-    else data.text=form.elements.text.value;
-    if(uploadTarget){data.document_id=uploadTarget.id;data.expected_version=uploadTarget.current_version;data.expected_generation=uploadTarget.generation;}
-    const d=await api('/api/documents','POST',data);$('#upload-dialog').close();await loadLibrary();await openDoc(d.id);notice('원문을 보존했습니다. 개체·별칭·관계 사전을 먼저 생성하세요.');
-  } finally{button.disabled=false;}
-});};
+    if(file){
+      const maximum=config.document_limits.original_bytes;
+      if(file.size>maximum)throw new Error(`최대 원본 파일 크기는 ${maximum/1024/1024} MiB입니다.`);
+      setUploadProgress(null,'파일 준비 중');data.content_base64=await encodeUploadFile(file,setUploadProgress);
+    }
+    const d=await uploadDocument(data,setUploadProgress);saved=true;
+    $('#upload-dialog').close();await loadLibrary();await openDoc(d.id);notice('원문을 보존했습니다. 개체·별칭·관계 사전을 먼저 생성하세요.');
+  } catch(error) {
+    if(!saved)setUploadProgress(null,'원문 등록 실패',error.message,true);
+    notice(saved?'원문은 등록되었지만 목록 갱신에 실패했습니다. 새로고침하세요.':error.message,true);
+  } finally {uploadBusy=false;controls.forEach((c,i)=>c.disabled=disabled[i]);}
+}
+$('#upload-form').onsubmit=e=>{e.preventDefault();submitUpload(e.target);};
 function bulkCandidates(doc) {
   return doc.items.filter(item=>item.status==='pending'&&['page','fact'].includes(item.kind));
 }
@@ -186,6 +269,8 @@ $('#review-form').onsubmit=e=>{e.preventDefault();attempt(async()=>{
 });};
 async function loadSettings() {
   config=await api('/api/settings');
+  const limits=config.document_limits;
+  $('#upload-limits').textContent=`원본 최대 ${limits.original_bytes/1024/1024} MiB · 추출 본문 ${limits.text_chars.toLocaleString()}자 · PDF ${limits.pdf_pages}쪽 · DOCX 압축 해제 ${limits.docx_expanded_bytes/1024/1024} MiB`;
   $('#ask-agent').innerHTML=config.providers.map(p=>`<option value="${esc(p.id)}" ${p.id===config.selected?'selected':''}>${esc(p.name)}${p.installed?'':' · 미설치'}</option>`).join('');
   $('#ask-model').value=config.models[config.selected]||'';
   $('#provider-settings').innerHTML=config.providers.map(p=>`<div class="provider-row"><input type="radio" name="selected" value="${p.id}" ${config.selected===p.id?'checked':''} aria-label="${esc(p.name)} 기본 선택"><div><strong>${esc(p.name)}</strong><p class="muted">${p.installed?'● 설치됨':'○ 설치 필요'}</p></div><label>모델 ID<input name="model-${p.id}" value="${esc(config.models[p.id]||'')}" placeholder="CLI 기본 모델"></label></div>`).join('');
@@ -213,8 +298,10 @@ async function loadRuns() {
   $('#usage-overview').innerHTML=`<h2>사용량 · 보존된 실행과 질문</h2><p>최근 ${report.included_jobs}개 작업 / 전체 ${report.total_jobs}개${report.truncated?' · 일부 작업만 집계되었습니다.':''}. 삭제된 작업은 제외됩니다.</p>${renderUsage(report.summary)}<div class="usage-table"><table><thead><tr><th>에이전트 / 모델</th><th>단계</th><th>사용량</th></tr></thead><tbody>${report.groups.map(g=>`<tr><td>${esc(g.agent)}<br>${esc(g.model||'CLI 기본 모델 · 식별 안 됨')}</td><td>${esc(usageStage(g.stage))}</td><td>${renderUsage(g.usage)}</td></tr>`).join('')}</tbody></table></div><button id="download-usage">사용량 JSON 다운로드</button>`;
   $('#download-usage').onclick=()=>downloadJSON(report,'verinote-usage.json');
   const rows=await api('/api/runs');
-  $('#runs').innerHTML=rows.map(r=>`<div class="panel">${badge(r.status)} <strong>${esc({ontology:'사전 생성',extract:'관계 추출',legacy:'기존 추출'}[r.stage])} · ${esc(r.agent)} / ${esc(r.model||'기본 모델')}</strong>${r.ontology?`<p>기준 사전 r${r.ontology.revision} · ${esc(r.ontology.sha256.slice(0,12))}</p>`:''}<p>${esc(r.detail)}</p><div data-coverage-result="${esc(r.id)}">${renderCoverage(r.coverage)}</div>${r.coverage?.available?`<button data-coverage="${esc(r.id)}">관계별 판단·사전 제약 보기</button>`:''}${renderUsage(r.usage)}<p class="muted">${esc(date(r.created_at))}</p>${sourceLink(r.document_id,r.version)}<details><summary>실행 메타데이터</summary><pre class="source">${esc(JSON.stringify(r,null,2))}</pre><p class="muted">프롬프트·stdout·stderr: data/runs/${esc(r.id)}/</p></details></div>`).join('')||'<div class="empty">아직 실행 기록이 없습니다.</div>';
+  $('#runs').innerHTML=rows.map(renderRun).join('')||'<div class="empty">아직 실행 기록이 없습니다.</div>';
+  for(const r of rows)if(['queued','running'].includes(r.status))watchRun(r.id,r.document_id,r.version,r.status);
 }
+function renderRun(r){return `<div class="panel" data-run-panel="${esc(r.id)}">${badge(r.status)} <strong>${esc({ontology:'사전 생성',extract:'관계 추출',legacy:'기존 추출'}[r.stage])} · ${esc(r.agent)} / ${esc(r.model||'기본 모델')}</strong>${r.ontology?`<p>기준 사전 r${r.ontology.revision} · ${esc(r.ontology.sha256.slice(0,12))}</p>`:''}${renderAnalysisProgress(r)}<div data-coverage-result="${esc(r.id)}">${renderCoverage(r.coverage)}</div>${r.coverage?.available?`<button data-coverage="${esc(r.id)}">관계별 판단·사전 제약 보기</button>`:''}${renderUsage(r.usage)}<p class="muted">${esc(date(r.created_at))}</p>${sourceLink(r.document_id,r.version)}<details><summary>실행 메타데이터</summary><pre class="source">${esc(JSON.stringify(r,null,2))}</pre><p class="muted">프롬프트·stdout·stderr: data/runs/${esc(r.id)}/</p></details></div>`;}
 function renderCoverage(c) {
   if(!c)return '';
   if(!c.available)return `<p class="muted">${esc(c.warning)}</p>`;

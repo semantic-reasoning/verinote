@@ -160,7 +160,9 @@ class Store:
                 pin = runs.get(item['run_id'], {}).get('ontology')
                 item['dictionary'] = {k: pin[k] for k in ('id', 'revision', 'sha256')} if pin else None
             can_extract = bool(dictionary and dictionary['status'] == 'approved' and extraction_key(dictionary | {'extraction_contract': EXTRACTION_CONTRACT_VERSION}) not in extracted)
-            return dict(doc) | dict(source) | {'versions': versions, 'items': items, 'can_extract': can_extract, 'extraction_upgrade': bool(can_extract and any(k[:2] == (dictionary['id'], dictionary['revision']) for k in extracted))}
+            latest = max(runs.values(), key=lambda r: (r['created_at'], r['id']), default=None)
+            latest_run = {k: latest[k] for k in ('id', 'stage', 'status', 'version')} if latest else None
+            return dict(doc) | dict(source) | {'latest_run': latest_run, 'versions': versions, 'items': items, 'can_extract': can_extract, 'extraction_upgrade': bool(can_extract and any(k[:2] == (dictionary['id'], dictionary['revision']) for k in extracted))}
 
     @staticmethod
     def unpack(row):

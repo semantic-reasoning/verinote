@@ -5,13 +5,13 @@ from pathlib import Path
 import zipfile
 import xml.etree.ElementTree as ET
 
-MAX_BYTES = 4 * 1024 * 1024
+MAX_BYTES = 32 * 1024 * 1024
 MAX_TEXT = 128_000
 
 
 def decode_document(filename, raw):
     if not raw or len(raw) > MAX_BYTES:
-        raise ValueError('파일은 1 byte~4 MiB여야 합니다.')
+        raise ValueError('파일은 1 byte~32 MiB여야 합니다.')
     suffix = Path(filename).suffix.lower()
     try:
         if suffix in {'.txt', '.md', '.csv', '.json', '.rst', '.log'}:
@@ -19,7 +19,7 @@ def decode_document(filename, raw):
         elif suffix == '.docx':
             with zipfile.ZipFile(io.BytesIO(raw)) as archive:
                 if sum(i.file_size for i in archive.infolist()) > 16 * 1024 * 1024:
-                    raise ValueError('DOCX 압축 해제 크기 제한 초과')
+                    raise ValueError('DOCX 압축 해제 크기는 총 16 MiB까지 지원합니다.')
                 xml = archive.read('word/document.xml')
                 if b'<!DOCTYPE' in xml or b'<!ENTITY' in xml:
                     raise ValueError('DOCX XML 엔티티는 허용하지 않습니다.')
@@ -39,7 +39,7 @@ def decode_document(filename, raw):
             for page in reader.pages:
                 parts.append(page.extract_text() or '')
                 if sum(map(len, parts)) > MAX_TEXT:
-                    raise ValueError('추출 텍스트 크기 제한 초과')
+                    raise ValueError('추출 본문은 128,000자까지 분석할 수 있습니다. 문서를 나누어 등록하세요.')
             text = '\n'.join(parts)
         else:
             raise ValueError('지원 형식: TXT, MD, CSV, JSON, RST, LOG, PDF, DOCX')
