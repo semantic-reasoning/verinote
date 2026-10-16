@@ -1,8 +1,67 @@
-.venv/
+# Python bytecode and virtual environments
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+ENV/
+
+# Packaging and build output
 *.egg-info/
-.pytest_cache/
-data/
+*.egg
+.eggs/
 build/
 dist/
+pip-wheel-metadata/
+
+# Test, coverage, and static-analysis caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.pytype/
+.tox/
+.nox/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.cache/
+
+# Local configuration (keep example files available to Git)
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+.envrc
+
+# Application data and local logs
+data/
+verinote.sqlite3
+verinote.sqlite3-journal
+verinote.sqlite3-wal
+verinote.sqlite3-shm
+*.log
+
+# Local agent state
+.omc/
+
+# Editor and notebook temporary files
+.idea/
+.history/
+*.swp
+*.swo
+*~
+.ipynb_checkpoints/
+
+# Operating-system metadata
+.DS_Store
+._*
+.Spotlight-V100/
+.Trashes/
+Thumbs.db
+ehthumbs.db
+Desktop.ini
