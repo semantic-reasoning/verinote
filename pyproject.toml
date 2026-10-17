@@ -6,6 +6,8 @@ build-backend = "setuptools.build_meta"
 name = "verinote"
 version = "0.1.0"
 description = "Versioned, evidence-backed wiki with human review and Wirelog queries"
+license = { file = "LICENSE" }
+classifiers = ["License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)"]
 requires-python = ">=3.11"
 dependencies = ["pyrewire>=1.1.2,<2", "pypdf>=5,<7"]
 
