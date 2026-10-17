@@ -7,26 +7,36 @@ import shutil
 import signal
 import subprocess
 import time
+from uuid import uuid4
+
+from .transports import Credentials, ExecutionOptions, HTTPResult
 
 from .store import digest, now
 from .usage import MAX_METADATA, atomic_json, calculate, decode_transport, empty_usage
 
-PROVIDERS = {'claude': 'Claude', 'agy': 'Antigravity', 'copilot': 'GitHub Copilot', 'cursor': 'Cursor', 'codex': 'Codex'}
+PROVIDERS = {'claude': 'Claude', 'agy': 'Antigravity', 'copilot': 'GitHub Copilot', 'cursor': 'Cursor', 'codex': 'Codex', 'openrouter': 'OpenRouter (API)'}
+TRANSPORTS = {agent: ('http' if agent == 'openrouter' else 'cli') for agent in PROVIDERS}
+CLI_PROVIDERS = {agent: name for agent, name in PROVIDERS.items() if TRANSPORTS[agent] == 'cli'}
 
 
 def executable(agent):
+    if agent not in CLI_PROVIDERS:
+        return None
     names = ['cursor-agent', 'agent'] if agent == 'cursor' else [agent]
     return next((shutil.which(n) for n in names if shutil.which(n)), None)
 
 
-def validate_model(model):
+def validate_model(model, agent=None):
     if not isinstance(model, str) or len(model) > 150 or (model and (model.startswith('-') or not re.fullmatch(r'[\w./:@+\[\],= -]+', model))):
         raise ValueError('모델 ID 형식이 올바르지 않습니다.')
-    return model.strip()
+    model = model.strip()
+    if agent == 'openrouter' and not model:
+        raise ValueError('OpenRouter 모델 ID가 필요합니다.')
+    return model
 
 
 def command(agent, model, prompt):
-    if agent not in PROVIDERS:
+    if agent not in CLI_PROVIDERS:
         raise ValueError('지원하지 않는 에이전트')
     model = validate_model(model)
     binary = 'cursor-agent' if agent == 'cursor' else agent
@@ -70,16 +80,67 @@ def parse_response(agent, response):
 
 
 class CLI:
-    def __init__(self, timeout=None, max_output=1024 * 1024, rates=None):
+    def __init__(self, timeout=None, max_output=1024 * 1024, rates=None, *,
+                 http_adapter=None, credentials=None, sink=None, options=None):
         self.timeout, self.max_output = timeout, max_output
         self.rates = rates or (lambda: {})
+        self.http_adapter, self._credentials, self.sink = http_adapter, credentials, sink
+        if credentials is not None and not isinstance(credentials, Credentials):
+            raise TypeError('credentials는 Credentials여야 합니다.')
+        if options is not None and not isinstance(options, ExecutionOptions):
+            raise TypeError('options는 ExecutionOptions여야 합니다.')
+        if options is not None and timeout is not None and timeout != options.timeout:
+            raise ValueError('고정 옵션과 timeout override가 일치해야 합니다.')
+        self.options = options
 
     def effective_timeout(self, agent, phase=None):
+        if agent not in PROVIDERS:
+            raise ValueError('지원하지 않는 에이전트')
         if phase not in (None, 'ontology'):
             raise ValueError('알 수 없는 CLI 호출 단계')
+        if agent == 'openrouter' and self.options is not None:
+            return self.options.timeout
         return self.timeout if self.timeout is not None else (600 if phase == 'ontology' or agent == 'agy' else 180)
 
+    def execution_options(self, agent, phase=None):
+        timeout = self.effective_timeout(agent, phase)
+        return self.options if agent == 'openrouter' and self.options is not None else ExecutionOptions(timeout=timeout)
+
+    def ready(self, agent):
+        if agent not in PROVIDERS:
+            raise ValueError('지원하지 않는 에이전트')
+        if TRANSPORTS[agent] == 'cli':
+            return bool(executable(agent))
+        return bool(self.http_adapter is not None and self._credentials is not None
+                    and self.http_adapter.ready(self._credentials))
+
     def complete(self, agent, model, prompt, folder, *, phase=None):
+        if agent not in PROVIDERS:
+            raise ValueError('지원하지 않는 에이전트')
+        model = validate_model(model, agent)
+        timeout = self.effective_timeout(agent, phase)
+        if TRANSPORTS[agent] == 'http':
+            if not self.ready(agent):
+                raise ValueError('OpenRouter HTTP 어댑터 또는 API 자격 증명이 구성되지 않았습니다.')
+            call_id = uuid4().hex
+            result = self.http_adapter.complete(
+                agent, model, prompt, Path(folder), phase=phase,
+                options=self.execution_options(agent, phase),
+                credentials=self._credentials, call_id=call_id)
+            if not isinstance(result, HTTPResult) or result.envelope.call_id != call_id:
+                raise ValueError('HTTP 어댑터 호출 결과 계약 오류')
+            if self.sink is not None:
+                try:
+                    self.sink(result.envelope)
+                except Exception:
+                    pass  # Optional telemetry cannot replace the primary outcome.
+            if result.envelope.transport_status == 'timeout':
+                raise TimeoutError('HTTP 실행 시간 제한 초과')
+            if result.envelope.transport_status != 'success':
+                raise ValueError('HTTP 제공자 호출 실패')
+            if not isinstance(result.response, str):
+                raise ValueError('HTTP 최종 응답이 없습니다.')
+            return parse_response(agent, result.response)[0]
         folder = Path(folder)
         folder.mkdir(parents=True, exist_ok=True)
         (folder / 'prompt.txt').write_text(prompt, encoding='utf-8')
@@ -122,7 +183,9 @@ class CLI:
             work.mkdir(exist_ok=True)
             with (folder / 'stdout.txt').open('wb') as out, (folder / 'stderr.txt').open('wb') as err, (folder / 'stdin.txt').open('wb+') as inp:
                 inp.write(stdin.encode()); inp.seek(0)
-                proc = subprocess.Popen(args, stdin=inp, stdout=out, stderr=err, cwd=work, start_new_session=True)
+                child_env = os.environ.copy()
+                child_env.pop('OPENROUTER_API_KEY', None)
+                proc = subprocess.Popen(args, stdin=inp, stdout=out, stderr=err, cwd=work, start_new_session=True, env=child_env)
                 usage['status'] = 'running'
                 atomic_json(folder / 'usage.json', usage)
                 deadline = time.monotonic() + timeout
