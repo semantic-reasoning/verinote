@@ -12,7 +12,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 import zipfile
 
-from verinote.agents import CLI, PROVIDERS, command
+from verinote.agents import CLI, CLI_PROVIDERS, PROVIDERS, command
 from verinote.documents import decode_document
 from verinote.engine import query
 from verinote.server import Server
@@ -221,7 +221,7 @@ class ImportAndCLI(unittest.TestCase):
             decode_document('large.docx', raw.getvalue())
 
     def test_all_agent_commands_and_model_is_one_argument(self):
-        for agent in PROVIDERS:
+        for agent in CLI_PROVIDERS:
             argv, stdin = command(agent, 'test-model', 'prompt; $(touch nope)')
             self.assertIn('test-model', argv)
             if agent == 'codex':

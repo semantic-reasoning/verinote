@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 import test_workflow as workflow
 from test_workflow import SOURCE, DICTIONARY
 from test_ontology import wire_dictionary
-from verinote.agents import CLI, PROVIDERS
+from verinote.agents import CLI, CLI_PROVIDERS, PROVIDERS
 from verinote.documents import bounded_spans, chunks
 from verinote.ontology import (DICTIONARY_PROMPT, dictionary_context, source_spans,
                                resolve_dictionary, merge_dictionary, validate_dictionary)
@@ -92,7 +92,7 @@ class SpanContract(unittest.TestCase):
 
     def test_ontology_timeout_is_per_call_and_explicit_override_wins(self):
         cli=CLI()
-        for agent in PROVIDERS:
+        for agent in CLI_PROVIDERS:
             self.assertEqual(cli.effective_timeout(agent,'ontology'),600)
             self.assertEqual(cli.effective_timeout(agent),600 if agent=='agy' else 180)
             for override in (0,.1,120):
@@ -101,7 +101,7 @@ class SpanContract(unittest.TestCase):
     def test_ontology_deadline_logged_and_process_group_killed(self):
         cli=CLI()
         with tempfile.TemporaryDirectory() as tmp:
-            for index, agent in enumerate(PROVIDERS):
+            for index, agent in enumerate(CLI_PROVIDERS):
                 proc=Mock(pid=12345,returncode=-9);proc.poll.return_value=None
                 with patch('verinote.agents.executable',return_value='/fake/cli'), patch('verinote.agents.subprocess.Popen',return_value=proc), patch('verinote.agents.time.monotonic',side_effect=[1000,1601]), patch('verinote.agents.os.killpg') as kill:
                     with self.assertRaisesRegex(TimeoutError,'600초'):

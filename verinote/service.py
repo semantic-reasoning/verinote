@@ -85,7 +85,7 @@ class Service:
     def start(self, document_id, agent, model, stage='extract', expected_version=None, expected_generation=None):
         if agent not in PROVIDERS:
             raise ValueError('지원하지 않는 에이전트')
-        model = validate_model(model)
+        model = validate_model(model, agent)
         if not self.slots.acquire(blocking=False):
             raise ValueError('작업 대기열이 가득 찼습니다.')
         try:
@@ -185,7 +185,7 @@ class Service:
         agent = request.get('agent', config['selected'])
         if not isinstance(agent, str) or agent not in PROVIDERS:
             raise ValueError('지원하지 않는 에이전트')
-        model = validate_model(request.get('model', config['models'].get(agent, '')))
+        model = validate_model(request.get('model', config['models'].get(agent, '')), agent)
         snapshot_id = request.get('snapshot')
         if snapshot_id is not None and (not isinstance(snapshot_id, str) or len(snapshot_id) != 64):
             raise ValueError('스냅샷 ID 형식 오류')

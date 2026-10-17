@@ -172,3 +172,59 @@ POST `/api/documents/{id}/delete-latest`, `/delete`는 정확히 `{expected_vers
 `progress.py`는 DB 소유 run/고정 원문 길이와 기존 `dictionary-progress.json` 또는 검증된 extraction coverage를 읽는 선택적 조회 어댑터다. 사전 marker는 최대8192바이트, 스키마/실행/전체 길이/정수 counters/결정적 구간 끝/재사용 범위를 검사한다. 추출은 인용 보정까지 검증된 청크만 센다. 누락·손상·symlink·삭제 소유자는 unknown이고 완료 호출 수나 경과 시간으로 진행률을 추정하지 않는다. DB queued는0%, running은 검증 비율(최대99%), 전 구간 검증은saving, DBsuccess만100%다. 실패·중단은 검증된 마지막 비율과 종료 상태를 함께 표시한다. 진행 기록은 후보 저장과 승인의 조건이 아니다.
 
 문서 상세의 `latest_run`은 선택한 버전의 최신 실행 ID/stage/status/version만 반환한다. run API의 progress는 추가 필드다. 문서 상세와 실행 기록은 run ID별 단일 polling registry를 사용하고 선택 문서/version/최신 실행/요청 번호가 맞을 때만 화면을 갱신한다. terminal, 조회 오류(삭제된 run의 현재 응답은400), 관련 화면 이탈 시 watcher가 종료된다. 재진입은 다시 조회하며 새로고침 이후에는 DB 실행에서 복구한다. 분석 진행률은 native progress 요소와 텍스트로 제공한다. SQL migration이나 유료 호출 추가는 없다.
+
+## Provider transport contract (#704)
+
+`agents.PROVIDERS` retains display names; `TRANSPORTS` identifies `cli|http` and
+`CLI_PROVIDERS` identifies the five executable providers. OpenRouter is
+`openrouter` / `OpenRouter (API)`. `executable('openrouter')` returns `None`
+without searching PATH; installed still means a CLI executable is present.
+`command()` accepts CLI providers only. HTTP readiness is the local
+`CLI.ready(agent)` contract, separate from installation.
+
+`CLI` remains the injectable dispatcher with
+`complete(agent, model, prompt, folder, *, phase=None) -> dict` and
+`effective_timeout(agent, phase=None)`. `Service(..., cli=fake)` requires no new
+fake methods. Construct an HTTP dispatcher with `http_adapter=`,
+`credentials=Credentials(server_memory_key)`, optional `sink=` and `options=`.
+Credentials are loaded by the server startup integration (#703), never by this
+module, and never copied into options, job/checkpoint records, telemetry, or the
+process environment. Every CLI child receives a copied environment with
+`OPENROUTER_API_KEY` removed; the parent environment is unchanged.
+
+`transports.HTTPAdapter` specifies `ready(credentials)` (local configuration
+only) and `complete(..., phase=, options=, credentials=, call_id=)`.
+`ExecutionOptions` is frozen and `dataclasses.asdict(options)` contains only
+`adapter_contract_version=1`, `max_tokens=16384`, and `timeout` in seconds.
+`CLI.execution_options(agent, phase)` captures these defaults. The caller can
+bind that exact snapshot to a task-local dispatcher with `options=snapshot`;
+it is passed unchanged to each adapter call. A conflicting constructor timeout
+is rejected. Without a pinned snapshot, ontology calls use 600 seconds and
+other OpenRouter calls use 180; explicit timeout overrides (including zero)
+win. Existing CLI defaults, including Antigravity's 600 seconds, are retained.
+Job persistence/resume binding belongs to #707; this change writes no options
+to job records. Models retain the common 150-character/character validation;
+OpenRouter additionally requires a nonempty trimmed model. No catalog or model
+substitution is performed.
+
+The trusted HTTP adapter (#705) returns `HTTPResult(envelope, response)`.
+`response` is domain response text, parsed by the dispatcher into a dict.
+The `SafeCallResult` envelope carries the dispatcher's unique `call_id`, terminal
+`transport_status` (`success`, `error`, `timeout`, `not_started`), bounded,
+secret-checked `safe_metadata` (including safe usage evidence), and optional
+`safe_response_payload`. The adapter must perform size and secret checks before
+returning any response text or metadata, sanitize exceptions, and return a
+terminal envelope for expected transport failures. `success` means a complete
+HTTP response; invalid domain JSON can still have transport success. Only a
+complete, size/secret-checked response may set `response_verified=True` and
+provide a payload. Partial, truncated, unverified, and failed transport responses
+must omit the payload. These are trusted adapter attestations, not a replacement
+for the actual checks in #705.
+
+The dispatcher sends the envelope to `sink(envelope)` before domain JSON parsing,
+so usage evidence survives domain parsing failure. Sink exceptions are ignored
+to preserve the primary response/error. The domain return value never includes
+the envelope. Sink file storage is owned by #706; the HTTP branch creates no
+files or subprocesses. `tests/test_transports.py::FakeHTTP` is the synthetic
+fixture for this boundary; it exercises safe success, parsing failure, and
+terminal failures without external API calls. API/UI availability is #708.
