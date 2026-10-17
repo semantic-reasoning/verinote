@@ -1,0 +1,4 @@
+# Use `python -m verinote --init-config` to create the private server file.
+# Edit that file locally and restart the server. Never commit an actual key.
+[openrouter]
+api_key = ""

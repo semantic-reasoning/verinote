@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from .agents import PROVIDERS, executable, validate_model
+from .config import ConfigError, Credentials, create_config, load_config
 from .documents import MAX_BYTES, MAX_TEXT, decode_document
 from .service import Service, text
 from .store import Conflict, Store
@@ -24,8 +25,9 @@ WEB = Path(__file__).with_name('web')
 class Server(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, store, service):
+    def __init__(self, address, store, service, *, credentials=None):
         self.store, self.service = store, service
+        self.credentials = credentials if credentials is not None else Credentials()
         super().__init__(address, Handler)
 
 
@@ -187,16 +189,26 @@ class Handler(BaseHTTPRequestHandler):
             self.send({'error': f'처리 실패: {type(exc).__name__}: {exc}'}, 500)
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description='Verinote — versioned evidence wiki')
     parser.add_argument('--port', type=int, default=8765)
     parser.add_argument('--data-dir', type=Path, default=Path('data'))
-    args = parser.parse_args()
+    parser.add_argument('--config', type=Path, help='서버 전용 TOML 설정 파일 경로')
+    parser.add_argument('--init-config', action='store_true', help='빈 비밀 설정 파일을 안전하게 생성하고 종료')
+    args = parser.parse_args(argv)
+    try:
+        if args.init_config:
+            created = create_config(args.config)
+            print(f'설정 파일 생성 완료: {created} (키를 로컬에서 편집한 뒤 서버를 시작하세요.)')
+            return
+        credentials = load_config(args.config)
+    except ConfigError as exc:
+        parser.error(str(exc))
     root = args.data_dir.resolve()
     store = Store(root / 'verinote.sqlite3')
     store.recover()
     service = Service(store, root)
-    server = Server(('127.0.0.1', args.port), store, service)
+    server = Server(('127.0.0.1', args.port), store, service, credentials=credentials)
     print(f'Verinote: http://127.0.0.1:{server.server_port}', flush=True)
     try:
         server.serve_forever()

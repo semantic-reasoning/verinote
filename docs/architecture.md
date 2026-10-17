@@ -12,6 +12,7 @@
 
 ## 모듈
 
+- `config.py`: 서버 전용 TOML 자격 증명의 경로 선택, POSIX 소유자·권한 검증, 빈 파일 생성, 안전한 오류 및 메모리 주입 계약.
 - `documents.py`: 형식 검사, UTF-8/PDF/DOCX 텍스트 추출, 관계 추출 8,000자 청크와 사전용 경계 우선 분할.
 - `agents.py`: provider별 고정 argv, 모델 값 검증, 별도 cwd, 시간/출력 제한, 종료 및 로그.
 - `ontology.py`: 사전 스키마·누적 크기·별칭 충돌·관계 타입 검사, 두 단계 프롬프트, 추출 응답 사전 검사와 인용 전용 보정 계약.
@@ -19,6 +20,16 @@
 - `store.py`: SQLite 문서 버전과 검토 이력, 트랜잭션, 스냅샷.
 - `rules.dl` / `engine.py`: 사용자 값을 코드로 보간하지 않고 `EasySession.insert`로 넣는 실제 Wirelog 평가. 모든 symbol은 public API를 통해 처리한다. native engine 접근은 lock으로 직렬화한다.
 - `server.py` / `web/`: loopback HTTP API, buildless 한국어 UI.
+
+## 서버 비밀 설정 경계
+
+`server.main()`은 `--config`로 선택한 파일 또는 OS별 기본 파일을 DB 생성·복구와 worker 시작 전에 `load_config()`로 읽는다. `--init-config`는 `create_config()`로 빈 템플릿을 만들고 종료한다. 명시 경로 하나만 사용하고 환경변수 키를 대체 입력으로 읽지 않는다. 기본 파일 미존재·키 누락/빈 문자열은 미설정이고, 명시 파일 미존재·파싱/타입·권한 오류는 시작 오류다. 경로와 운영 방법은 [README](../README.md#서버-전용-비밀-설정-파일)에 정리한다.
+
+POSIX 읽기는 `O_NOFOLLOW | O_NONBLOCK`로 파일을 열고 같은 디스크립터의 `fstat`으로 일반 파일·현재 UID·정확한 `0600`을 검사한 뒤 최대 64 KiB를 읽는다. 경로의 파일이 교체되어도 검사한 디스크립터를 읽으며 FIFO 읽기로 멈추지 않는다. 생성은 직접 부모 디렉터리 디스크립터를 고정해 소유자·그룹/다른 사용자 쓰기 금지를 검사하고 그 안에서 `O_CREAT | O_EXCL | O_NOFOLLOW`, 최초 모드 `0600`으로 수행한다. 새 전용 디렉터리만 `0700`으로 만들고 기존 경로를 chmod하거나 덮어쓰지 않는다. 읽기/생성 모두 선택한 파일 또는 직접 부모 자체의 링크를 따라가지 않지만, 조상 디렉터리와 같은 UID의 악의적인 내용 변경에 대한 완전한 격리는 제공하지 않는다.
+
+로더가 반환하는 `Credentials`는 dict/dataclass가 아닌 private slots 객체다. `repr`/`str`에는 설정 여부만 있고 JSON·pickle·`vars()` 직렬화는 거부한다. 외부 직렬화에는 `public_status()`의 `{'openrouter': {'configured': bool}}`만 사용한다. 후속 HTTP 어댑터는 명시적인 `openrouter_key()` 접근으로 키를 서버 메모리에서 주입받아야 하며 반환된 문자열의 추가 보관·로그·응답 비밀 검사는 소비자의 책임이다. 이 변경은 `Server(..., credentials=...)`에 객체를 보관하되 `Service`/CLI/DB/API에는 키를 전달하지 않는다. 기존 `Server(address, store, service)`와 `Service(..., cli=...)` 호출은 유지한다.
+
+파싱·OS 오류는 원문을 포함하는 예외를 연결하지 않은 정적 `ConfigError`로 변환한다. 환경변수의 `OPENROUTER_API_KEY`를 읽거나 쓰지 않으며 기존 CLI 자식 환경에서의 제거는 #704, HTTP 응답 키 에코 검사는 #705, 상태 API/화면은 #708 책임이다. 런타임 재로딩과 DB 설정 이관은 없다. Windows는 ACL 미검증으로 파일 생성/로딩을 거부하며 기본 파일 미존재만 CLI 시작을 허용한다. 플랫폼 분기는 테스트에서 모의 검증하고 Windows ACL 지원은 주장하지 않는다.
 
 ## API
 

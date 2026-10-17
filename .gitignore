@@ -37,6 +37,7 @@ coverage.xml
 !.env.sample
 !.env.template
 .envrc
+/config.toml
 
 # Application data and local logs
 data/
