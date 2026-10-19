@@ -41,12 +41,33 @@ async function renderDocs() {
   }
   $('#documents').innerHTML = matches.length ? matches.map(d => `<button class="doc-card" data-doc="${d.id}"><span class="badge">DOCUMENT · v${d.current_version}</span><h3>${esc(d.title)}</h3><p>${esc(d.filename)}</p><div class="meta">${esc(date(d.created_at))} &nbsp; ↗ 열기</div></button>`).join('') : `<div class="empty"><h3>${search?'일치하는 문서가 없습니다.':'첫 문서에서 시작하세요.'}</h3><p>원문을 등록하면, 근거가 연결된 나만의 위키를 만들 수 있습니다.</p></div>`;
 }
+function providerById(id){return config?.providers?.find(p=>p.id===id);}
+function providerStatus(p){return p.transport==='http'?(p.configured?'키 설정됨 · 인증/잔액/접근 미확인':'키 미설정'):(p.installed?'설치됨':'미설치');}
+function providerOption(p){return `${esc(p.name)} · ${providerStatus(p)}`;}
+function modelPlaceholder(id){return providerById(id)?.transport==='http'?'필수 · provider/model ID':'CLI 기본 모델';}
+function providerHint(id){
+  const p=providerById(id);
+  if(p?.transport==='http')return `${providerStatus(p)}. 비어 있지 않은 모델 ID가 필요합니다. 원문·사전·질문 등 프롬프트가 OpenRouter와 라우팅된 모델 제공자에게 전달되며 API 과금이 발생할 수 있습니다. <a href="#openrouter-setup" data-open-settings>서버 키 파일 준비 방법</a>`;
+  return '로그인된 로컬 CLI를 사용합니다. 모델을 비우면 CLI 기본 모델입니다. 설치 여부는 로그인이나 모델 접근 권한을 보장하지 않습니다. 원문과 질문이 선택한 모델 제공자에게 전달됩니다.';
+}
+function syncProviderControls(prefix, reset=false){
+  const select=$('#'+prefix+'-agent'), model=$('#'+prefix+'-model');
+  if(!select||!model)return;
+  if(reset)model.value=config.models[select.value]||'';
+  model.placeholder=modelPlaceholder(select.value);model.maxLength=150;
+  model.required=providerById(select.value)?.transport==='http';
+  const hint=$('#'+prefix+'-provider-hint');if(hint)hint.innerHTML=providerHint(select.value);
+}
+function executionGuidance(agent){
+  if(providerById(agent)?.transport!=='http')return '';
+  return '<p class="muted">로컬 timeout·연결 단절은 원격 취소나 미과금을 뜻하지 않습니다. 수동 재실행은 추가 과금될 수 있습니다. 잘림(length)·모델 한도 오류가 나면 모델 한도를 확인하고 모델 ID 또는 서버의 max_tokens 상한을 수동 조정한 뒤 새 작업을 등록하세요. 자동 재전송·모델 교체는 하지 않습니다.</p>';
+}
 function providerSelect() {
-  return `<label>추출 에이전트<select id="extract-agent">${config.providers.map(p=>`<option value="${p.id}" ${config.selected===p.id?'selected':''}>${esc(p.name)}${p.installed?'':' · 미설치'}</option>`).join('')}</select></label><label>이 작업의 모델 ID<input id="extract-model" value="${esc(config.models[config.selected]||'')}" placeholder="CLI 기본 모델"></label>`;
+  return `<label>추출 에이전트<select id="extract-agent">${config.providers.map(p=>`<option value="${p.id}" ${config.selected===p.id?'selected':''}>${providerOption(p)}</option>`).join('')}</select></label><label>이 작업의 모델 ID<input id="extract-model" value="${esc(config.models[config.selected]||'')}" maxlength="150" placeholder="${modelPlaceholder(config.selected)}"></label>`;
 }
 function extractionControls(d) {
   const dictionary=d.items.find(i=>i.kind==='ontology');
-  return `<h3>1. 사전 생성 → 2. 사전 수정·승인 → 3. 위키·관계 추출</h3><div class="form-grid">${providerSelect()}</div><div class="actions"><button class="primary" id="ontology" ${dictionary?'disabled':''}>1. 개체·별칭·관계 사전 생성</button><button class="primary" id="extract" ${d.can_extract?'':'disabled'}>${d.extraction_upgrade?'3. 개선된 방식으로 다시 추출':'3. 승인 사전으로 추출'}</button></div><p class="muted">${!dictionary?'먼저 사전을 생성하세요. 사전 호출은 기본 최대 10분이며, 실패 후 같은 에이전트·모델로 다시 생성하면 검증된 구간부터 이어갑니다.':dictionary.status!=='approved'?'아래 사전에서 이름·별칭·관계 방향과 타입을 확인하고 승인하세요.':d.can_extract?(d.extraction_upgrade?'관계별 점검이 포함된 방식으로 다시 추출할 수 있습니다. 이전 승인 이력은 유지되며 중복 관계가 새 검토 후보로 추가될 수 있습니다.':'사전이 승인되었습니다. 이 사전을 기준으로 추출할 수 있습니다.'):'이 사전 revision의 현재 방식 추출이 완료되었습니다. 변경하려면 사전을 수정·재승인하세요.'} 원문이 선택한 모델 제공자에게 전달됩니다. 기존 결과는 보존하며 새 결과는 검토 대기로 추가합니다.</p>`;
+  return `<h3>1. 사전 생성 → 2. 사전 수정·승인 → 3. 위키·관계 추출</h3><div class="form-grid">${providerSelect()}</div><div id="extract-provider-hint" class="muted">${providerHint(config.selected)}</div><div class="actions"><button class="primary" id="ontology" ${dictionary?'disabled':''}>1. 개체·별칭·관계 사전 생성</button><button class="primary" id="extract" ${d.can_extract?'':'disabled'}>${d.extraction_upgrade?'3. 개선된 방식으로 다시 추출':'3. 승인 사전으로 추출'}</button></div><p class="muted">${!dictionary?'먼저 사전을 생성하세요. 사전 호출은 기본 최대 10분이며, 실패 후 같은 에이전트·모델로 다시 생성하면 검증된 구간부터 이어갑니다.':dictionary.status!=='approved'?'아래 사전에서 이름·별칭·관계 방향과 타입을 확인하고 승인하세요.':d.can_extract?(d.extraction_upgrade?'관계별 점검이 포함된 방식으로 다시 추출할 수 있습니다. 이전 승인 이력은 유지되며 중복 관계가 새 검토 후보로 추가될 수 있습니다.':'사전이 승인되었습니다. 이 사전을 기준으로 추출할 수 있습니다.'):'이 사전 revision의 현재 방식 추출이 완료되었습니다. 변경하려면 사전을 수정·재승인하세요.'} 원문이 선택한 모델 제공자에게 전달됩니다. 기존 결과는 보존하며 새 결과는 검토 대기로 추가합니다.</p>`;
 }
 function renderDictionary(p) {
   return `<h3>2. 추출 기준 사전 검토</h3><p>개체의 정규 ID, 별칭의 동일성, 관계의 의미·방향·타입을 원문과 대조하세요. 사전 승인 후에도 추출된 사실은 별도로 승인합니다.</p><h3>개체 · ${p.entities.length}</h3><p>각 항목이 하나의 개체입니다. <strong>개체 ID</strong>가 관계의 주어·목적어와 조회에 사용됩니다. <strong>원문 명칭</strong>은 문서에 쓰인 이름이고, <strong>개체 유형</strong>은 분류입니다. 같은 ID는 같은 개체로 연결되므로 원문 근거와 함께 확인하세요.</p>${p.entities.map(e=>`<section class="panel"><h4>원문 명칭: ${esc(e.name)}</h4><p class="query-row"><strong>개체 ID:</strong> <code>${esc(e.id)}</code></p><p><strong>개체 유형:</strong> ${esc(e.type)}</p><strong>원문 근거</strong><blockquote class="quote">${esc(e.quote)}</blockquote></section>`).join('')}<h3>별칭 · ${p.aliases.length}</h3>${p.aliases.map(a=>`<details><summary>${esc(a.alias)} → ${esc(a.entity)}</summary><blockquote class="quote">${esc(a.quote)}</blockquote></details>`).join('')}<h3>관계 · ${p.relations.length}</h3>${p.relations.map(r=>`<div><strong>${esc(r.id)}</strong><p>${r.subject_types.map(esc).join(', ')} → ${r.object_types.map(esc).join(', ')}<br>${esc(r.description)}</p><details><summary>원문 근거</summary><blockquote class="quote">${esc(r.quote)}</blockquote></details></div>`).join('')}`;
@@ -69,13 +90,14 @@ async function openDoc(id, version) {
   $('#delete-latest').onclick=()=>openDelete(d,true);
   $('#delete-document').onclick=()=>openDelete(d,false);
   $('#show-diff').onclick = ()=>attempt(async()=>{const r=await api(`/api/documents/${id}/diff?version=${d.version}`);$('#version-diff').innerHTML=`<pre class="source">${esc(r.diff||'변경 없음')}</pre>`;});
-  if ($('#extract-agent')) $('#extract-agent').onchange = e=>{$('#extract-model').value=config.models[e.target.value]||'';};
+  if ($('#extract-agent')) {syncProviderControls('extract');$('#extract-agent').onchange=()=>syncProviderControls('extract',true);}
   for (const stage of ['ontology','extract']) {
     const button=$('#'+stage);
     if(button) button.onclick=()=>attempt(async()=>{
+      if(!$('#extract-model').reportValidity())return;
       button.disabled=true;
       try {const run=await api(`/api/documents/${id}/${stage}`,'POST',{agent:$('#extract-agent').value,model:$('#extract-model').value,expected_version:d.version,expected_generation:d.generation});notice('작업을 시작했습니다. 실행 기록에서 진행 상황을 볼 수 있습니다.');if(selectedDoc===d)selectedDoc.latest_run=run;watchRun(run.id,id,d.version,run.status);}
-      catch(e){button.disabled=false;throw e;}
+      catch(e){button.disabled=false;$('#extract-provider-hint').innerHTML=providerHint($('#extract-agent').value)+executionGuidance($('#extract-agent').value);throw e;}
     });
   }
 }
@@ -271,13 +293,15 @@ async function loadSettings() {
   config=await api('/api/settings');
   const limits=config.document_limits;
   $('#upload-limits').textContent=`원본 최대 ${limits.original_bytes/1024/1024} MiB · 추출 본문 ${limits.text_chars.toLocaleString()}자 · PDF ${limits.pdf_pages}쪽 · DOCX 압축 해제 ${limits.docx_expanded_bytes/1024/1024} MiB`;
-  $('#ask-agent').innerHTML=config.providers.map(p=>`<option value="${esc(p.id)}" ${p.id===config.selected?'selected':''}>${esc(p.name)}${p.installed?'':' · 미설치'}</option>`).join('');
+  $('#ask-agent').innerHTML=config.providers.map(p=>`<option value="${esc(p.id)}" ${p.id===config.selected?'selected':''}>${providerOption(p)}</option>`).join('');
   $('#ask-model').value=config.models[config.selected]||'';
-  $('#provider-settings').innerHTML=config.providers.map(p=>`<div class="provider-row"><input type="radio" name="selected" value="${p.id}" ${config.selected===p.id?'checked':''} aria-label="${esc(p.name)} 기본 선택"><div><strong>${esc(p.name)}</strong><p class="muted">${p.installed?'● 설치됨':'○ 설치 필요'}</p></div><label>모델 ID<input name="model-${p.id}" value="${esc(config.models[p.id]||'')}" placeholder="CLI 기본 모델"></label></div>`).join('');
+  syncProviderControls('ask');
+  $('#provider-settings').innerHTML=config.providers.map(p=>`<div class="provider-row"><input type="radio" name="selected" value="${p.id}" ${config.selected===p.id?'checked':''} aria-label="${esc(p.name)} 기본 선택"><div><strong>${esc(p.name)}</strong><p class="muted">${providerStatus(p)}</p></div><label>모델 ID<input name="model-${p.id}" value="${esc(config.models[p.id]||'')}" maxlength="150" placeholder="${modelPlaceholder(p.id)}" ${p.transport==='http'&&config.selected===p.id?'required':''}></label></div>`).join('');
+  for(const radio of document.querySelectorAll('[name=selected]'))radio.onchange=()=>{const model=$('[name="model-openrouter"]');if(model)model.required=radio.value==='openrouter';};
   await loadUsageRates();
 }
 $('#settings-form').onsubmit=e=>{e.preventDefault();attempt(async()=>{
-  const form=e.target;await api('/api/settings','PUT',{selected:form.elements.selected.value,models:Object.fromEntries(config.providers.map(p=>[p.id,form.elements['model-'+p.id].value]))});await loadSettings();if($('#extract-agent')){$('#extract-agent').value=config.selected;$('#extract-model').value=config.models[config.selected]||'';}notice('에이전트별 모델 설정을 저장했습니다.');
+  const form=e.target;await api('/api/settings','PUT',{selected:form.elements.selected.value,models:Object.fromEntries(config.providers.map(p=>[p.id,form.elements['model-'+p.id].value]))});await loadSettings();if($('#extract-agent')){$('#extract-agent').value=config.selected;$('#extract-model').value=config.models[config.selected]||'';syncProviderControls('extract');}notice('에이전트별 모델 설정을 저장했습니다.');
 });};
 $('#query-form').onsubmit=e=>{e.preventDefault();attempt(async()=>{
   const data=Object.fromEntries(new FormData(e.target));if(!data.snapshot)delete data.snapshot;
@@ -295,13 +319,13 @@ async function loadQueries() {
 async function loadRuns() {
   await loadCleanup();
   const report=await api('/api/usage');
-  $('#usage-overview').innerHTML=`<h2>사용량 · 보존된 실행과 질문</h2><p>최근 ${report.included_jobs}개 작업 / 전체 ${report.total_jobs}개${report.truncated?' · 일부 작업만 집계되었습니다.':''}. 삭제된 작업은 제외됩니다.</p>${renderUsage(report.summary)}<div class="usage-table"><table><thead><tr><th>에이전트 / 모델</th><th>단계</th><th>사용량</th></tr></thead><tbody>${report.groups.map(g=>`<tr><td>${esc(g.agent)}<br>${esc(g.model||'CLI 기본 모델 · 식별 안 됨')}</td><td>${esc(usageStage(g.stage))}</td><td>${renderUsage(g.usage)}</td></tr>`).join('')}</tbody></table></div><button id="download-usage">사용량 JSON 다운로드</button>`;
+  $('#usage-overview').innerHTML=`<h2>사용량 · 보존된 실행과 질문</h2><p>최근 ${report.included_jobs}개 작업 / 전체 ${report.total_jobs}개${report.truncated?' · 일부 작업만 집계되었습니다.':''}. 삭제된 작업은 제외됩니다.</p>${renderUsage(report.summary)}<div class="usage-table"><table><thead><tr><th>에이전트 / 모델</th><th>단계</th><th>사용량</th></tr></thead><tbody>${report.groups.map(g=>`<tr><td>${esc(g.agent)}<br>${esc(g.model||(providerById(g.agent)?.transport==='http'?'모델 미확인':'CLI 기본 모델 · 식별 안 됨'))}</td><td>${esc(usageStage(g.stage))}</td><td>${renderUsage(g.usage)}</td></tr>`).join('')}</tbody></table></div><button id="download-usage">사용량 JSON 다운로드</button>`;
   $('#download-usage').onclick=()=>downloadJSON(report,'verinote-usage.json');
   const rows=await api('/api/runs');
   $('#runs').innerHTML=rows.map(renderRun).join('')||'<div class="empty">아직 실행 기록이 없습니다.</div>';
   for(const r of rows)if(['queued','running'].includes(r.status))watchRun(r.id,r.document_id,r.version,r.status);
 }
-function renderRun(r){return `<div class="panel" data-run-panel="${esc(r.id)}">${badge(r.status)} <strong>${esc({ontology:'사전 생성',extract:'관계 추출',legacy:'기존 추출'}[r.stage])} · ${esc(r.agent)} / ${esc(r.model||'기본 모델')}</strong>${r.ontology?`<p>기준 사전 r${r.ontology.revision} · ${esc(r.ontology.sha256.slice(0,12))}</p>`:''}${renderAnalysisProgress(r)}<div data-coverage-result="${esc(r.id)}">${renderCoverage(r.coverage)}</div>${r.coverage?.available?`<button data-coverage="${esc(r.id)}">관계별 판단·사전 제약 보기</button>`:''}${renderUsage(r.usage)}<p class="muted">${esc(date(r.created_at))}</p>${sourceLink(r.document_id,r.version)}<details><summary>실행 메타데이터</summary><pre class="source">${esc(JSON.stringify(r,null,2))}</pre><p class="muted">프롬프트·stdout·stderr: data/runs/${esc(r.id)}/</p></details></div>`;}
+function renderRun(r){return `<div class="panel" data-run-panel="${esc(r.id)}">${badge(r.status)} <strong>${esc({ontology:'사전 생성',extract:'관계 추출',legacy:'기존 추출'}[r.stage])} · ${esc(r.agent)} / ${esc(r.model||'기본 모델')}</strong>${r.ontology?`<p>기준 사전 r${r.ontology.revision} · ${esc(r.ontology.sha256.slice(0,12))}</p>`:''}${renderAnalysisProgress(r)}<div data-coverage-result="${esc(r.id)}">${renderCoverage(r.coverage)}</div>${r.coverage?.available?`<button data-coverage="${esc(r.id)}">관계별 판단·사전 제약 보기</button>`:''}${renderUsage(r.usage)}${r.status==='error'?`<p class="error">${esc(r.detail)}</p>${executionGuidance(r.agent)}`:''}<p class="muted">${esc(date(r.created_at))}</p>${sourceLink(r.document_id,r.version)}<details><summary>실행 메타데이터</summary><pre class="source">${esc(JSON.stringify(r,null,2))}</pre><p class="muted">${providerById(r.agent)?.transport==='http'?'검사된 응답·실행·사용량은 서버 로컬에만 보관:':'프롬프트·stdout·stderr:'} data/runs/${esc(r.id)}/</p></details></div>`;}
 function renderCoverage(c) {
   if(!c)return '';
   if(!c.available)return `<p class="muted">${esc(c.warning)}</p>`;
@@ -315,12 +339,12 @@ function usageNumber(value){if(value==null)return '미확인';if(value>0&&value<
 function renderUsage(u){
   if(!u)return '<p class="muted">사용량 기록 없음</p>';
   const metric=(m,unit='')=>m.value==null?'미확인':`${usageNumber(m.value)}${unit} <small>(${m.known_calls}/${u.calls}개 기록)</small>`;
-  return `<section class="usage-box" aria-label="사용량"><p>확인된 호출 ${u.calls-(u.unknown_call_count_jobs||0)}회${u.unknown_call_count_jobs?` · 호출 횟수 미확인 작업 ${u.unknown_call_count_jobs}개`:''}${u.incomplete_calls?` · 불완전 기록 ${u.incomplete_calls}개`:''}</p><p>입력 ${metric(u.tokens.input,' 토큰')} · 출력 ${metric(u.tokens.output,' 토큰')}</p><p>CLI 보고 비용 ${metric(u.reported_usd,' USD')} · 설정 단가 추정 비용 ${metric(u.estimated_usd,' USD')}</p><p>${u.credits.length?u.credits.map(c=>`${c.provenance==='reported'?'CLI 보고':'설정 단가 추정'} ${esc(c.unit)}: ${metric(c)}`).join('<br>'):'크레딧: 미확인'}</p><p class="muted">입력에는 캐시, 출력에는 추론이 포함됩니다. 보존된 호출 기록의 합계이며, 누락된 로그의 사용량은 포함할 수 없습니다. 미확인은 0이 아니며, 보고 비용과 추정 비용은 합산하지 않습니다. 계정의 실제 청구액·잔액과는 다를 수 있습니다.</p>${u.details?`<details><summary>호출별 사용량과 계산 근거</summary>${u.details.map(c=>`<div class="history-line"><strong>${esc(usageStage(c.stage))}</strong> · ${esc(c.status)} · ${esc(c.resolved_model||c.requested_model||'모델 식별 안 됨')}<p>${(c.warnings||[]).map(esc).join('<br>')}</p><pre class="source">${esc(JSON.stringify(c,null,2))}</pre></div>`).join('')}</details>`:''}</section>`;
+  return `<section class="usage-box" aria-label="사용량"><p>확인된 호출 ${u.calls-(u.unknown_call_count_jobs||0)}회${u.unknown_call_count_jobs?` · 호출 횟수 미확인 작업 ${u.unknown_call_count_jobs}개`:''}${u.incomplete_calls?` · 불완전 기록 ${u.incomplete_calls}개`:''}</p><p>입력 ${metric(u.tokens.input,' 토큰')} · 출력 ${metric(u.tokens.output,' 토큰')}</p><p>제공자 보고 비용 ${metric(u.reported_usd,' USD')} · 설정 단가 추정 비용 ${metric(u.estimated_usd,' USD')}</p><p>${u.credits.length?u.credits.map(c=>`${c.provenance==='reported'?'제공자 보고':'설정 단가 추정'} ${esc(c.unit)}: ${metric(c)}`).join('<br>'):'크레딧: 미확인'}</p><p class="muted">입력에는 캐시, 출력에는 추론이 포함됩니다. 보존된 호출 기록의 합계이며, 누락된 로그의 사용량은 포함할 수 없습니다. 미확인은 0이 아니며, 보고 비용과 추정 비용은 합산하지 않습니다. 계정의 실제 청구액·잔액과는 다를 수 있습니다.</p>${u.details?`<details><summary>호출별 사용량과 계산 근거</summary>${u.details.map(c=>`<div class="history-line"><strong>${esc(usageStage(c.stage))}</strong> · ${esc(c.status)} · ${esc(c.resolved_model||c.requested_model||'모델 식별 안 됨')}<p>${(c.warnings||[]).map(esc).join('<br>')}</p><pre class="source">${esc(JSON.stringify(c,null,2))}</pre></div>`).join('')}</details>`:''}</section>`;
 }
 function downloadJSON(value,name){const url=URL.createObjectURL(new Blob([JSON.stringify(value,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 async function loadUsageRates(){
   const rates=await api('/api/usage-rates');
-  $('#usage-rate-fields').innerHTML=config.providers.map(p=>{const r=rates[p.id]||{};return `<fieldset data-rate-agent="${esc(p.id)}"><legend>${esc(p.name)}</legend><label class="bulk-choice"><input type="checkbox" name="enabled" ${rates[p.id]?'checked':''}>이 에이전트의 비용 추정 사용</label><label>단가 적용 모델 ID<input name="model" value="${esc(r.model||'')}" maxlength="150" placeholder="비우면 CLI 기본 모델에 대한 가정 단가"></label><div class="form-grid">${[['input','일반 입력'],['output','출력'],['cache_read','캐시 읽기'],['cache_write','캐시 쓰기']].map(([key,label])=>`<label>${label} · USD / 100만 토큰<input type="number" name="${key}" min="0" max="1000000" step="any" value="${esc(r[key]??'')}"></label>`).join('')}</div><div class="form-grid"><label>크레딧 단위 · 선택<input name="credit_unit" maxlength="60" value="${esc(r.credit_unit||'')}" placeholder="계약·서비스의 단위 이름"></label><label>크레딧 1개당 USD · 선택<input type="number" name="usd_per_credit" min="0" max="1000000" step="any" value="${esc(r.usd_per_credit??'')}"></label></div></fieldset>`;}).join('');
+  $('#usage-rate-fields').innerHTML=config.providers.map(p=>{const r=rates[p.id]||{};return `<fieldset data-rate-agent="${esc(p.id)}"><legend>${esc(p.name)}</legend><label class="bulk-choice"><input type="checkbox" name="enabled" ${rates[p.id]?'checked':''}>이 에이전트의 비용 추정 사용</label><label>단가 적용 모델 ID<input name="model" value="${esc(r.model||'')}" maxlength="150" placeholder="${p.transport==='http'?'실행에 지정한 모델 ID와 일치해야 적용':'비우면 CLI 기본 모델에 대한 가정 단가'}"></label><div class="form-grid">${[['input','일반 입력'],['output','출력'],['cache_read','캐시 읽기'],['cache_write','캐시 쓰기']].map(([key,label])=>`<label>${label} · USD / 100만 토큰<input type="number" name="${key}" min="0" max="1000000" step="any" value="${esc(r[key]??'')}"></label>`).join('')}</div><div class="form-grid"><label>크레딧 단위 · 선택<input name="credit_unit" maxlength="60" value="${esc(r.credit_unit||'')}" placeholder="계약·서비스의 단위 이름"></label><label>크레딧 1개당 USD · 선택<input type="number" name="usd_per_credit" min="0" max="1000000" step="any" value="${esc(r.usd_per_credit??'')}"></label></div></fieldset>`;}).join('');
 }
 $('#usage-rates-form').onsubmit=e=>{e.preventDefault();attempt(async()=>{
   const rates={};for(const field of e.target.querySelectorAll('[data-rate-agent]')){
@@ -344,14 +368,14 @@ let searchTimer;$('#search').oninput=()=>{clearTimeout(searchTimer);searchTimer=
 attempt(async()=>{await loadSettings();await loadLibrary();});
 
 let activeQuestion;
-$('#ask-agent').onchange=e=>{$('#ask-model').value=config.models[e.target.value]||'';};
+$('#ask-agent').onchange=()=>syncProviderControls('ask',true);
 $('#ask-form').onsubmit=e=>{e.preventDefault();attempt(async()=>{
   const button=$('button',e.target);button.disabled=true;
   try {
     const data={question:$('#question-text').value,agent:$('#ask-agent').value,model:$('#ask-model').value};
     if($('#ask-snapshot').value.trim())data.snapshot=$('#ask-snapshot').value.trim();
     const job=await api('/api/questions','POST',data);activeQuestion=job.id;renderAnswer(job);await loadQuestions();watchQuestion(job.id);
-  } finally {button.disabled=false;}
+  } catch(error){$('#ask-provider-hint').innerHTML=providerHint($('#ask-agent').value)+executionGuidance($('#ask-agent').value);throw error;} finally {button.disabled=false;}
 });};
 async function loadQuestions(){
   const rows=await api('/api/questions');
@@ -376,9 +400,9 @@ function renderEvidence(id,e){
   return `<details><summary>${esc(id)} · Wirelog ${esc(r.query.action)} · ${r.rows.length}개 결과</summary><p>${r.rows.map(row=>row.map(esc).join(' → ')).join('<br>')||'해당 질의에서 일치 결과 없음'}</p>${r.facts.map(f=>`<blockquote class="quote">${esc(f.payload.quote)}</blockquote>${sourceLink(f.document_id,f.version)}<p class="mono">사실 ${esc(f.id)} · r${f.revision}</p>`).join('')}<p class="muted">${esc(r.scope)}</p><pre class="source">${esc(JSON.stringify(r.proofs,null,2))}</pre></details>`;
 }
 function renderAnswer(job){
-  $('#answer-result').innerHTML=`<article class="panel"><h2>${esc(job.question)}</h2>${badge(job.status)} <span>${esc(job.agent)} / ${esc(job.model||'기본 모델')}</span><p class="muted">질문 제출 시 고정한 승인 상태입니다. 이후 문서 변경·승인 철회는 반영되지 않습니다.</p><p class="mono">스냅샷 ${esc(job.snapshot)}</p>${renderUsage(job.usage)}${job.error?`<p class="error">${esc(job.error)}</p>`:''}${job.answer?job.answer.claims.map(c=>`<div class="item"><span class="badge">${esc({graph:'승인 그래프',wiki:'승인 위키',source:'미검토 원문',inference:'추론'}[c.kind])}</span><p>${esc(c.text)}</p>${c.citations.map(id=>renderEvidence(id,job.evidence[id])).join('')}</div>`).join('')+job.answer.unknowns.map(u=>`<p class="muted">확인 불가 · ${esc(u)}</p>`).join(''): (['queued','running'].includes(job.status)?'<p>모델의 질의 해석과 도구 실행을 기다리고 있습니다.</p>':'<p>답변이 생성되지 않았습니다.</p>')}<details><summary>실행 추적 · ${job.trace.length}개 도구 호출</summary>${job.trace.map(t=>`<p>${esc(t.name)} · ${esc(t.status)}</p><pre class="source">${esc(JSON.stringify(t.arguments,null,2))}</pre>${t.evidence_id?renderEvidence(t.evidence_id,job.evidence[t.evidence_id]):''}`).join('')}<pre class="source">${esc(JSON.stringify(job,null,2))}</pre></details><p class="muted">인용 검사는 의미적 정확성을 보증하지 않습니다. 모델 해석·답변은 비결정적이며, 같은 질의·스냅샷·규칙·엔진의 그래프 계산만 결정적입니다.</p><div class="actions"><button id="download-answer">답변 JSON 다운로드</button><button id="rerun-answer">같은 스냅샷으로 다시 질문 준비</button></div></article>`;
+  $('#answer-result').innerHTML=`<article class="panel"><h2>${esc(job.question)}</h2>${badge(job.status)} <span>${esc(job.agent)} / ${esc(job.model||'기본 모델')}</span><p class="muted">질문 제출 시 고정한 승인 상태입니다. 이후 문서 변경·승인 철회는 반영되지 않습니다.</p><p class="mono">스냅샷 ${esc(job.snapshot)}</p>${renderUsage(job.usage)}${job.error?`<p class="error">${esc(job.error)}</p>${executionGuidance(job.agent)}`:''}${job.answer?job.answer.claims.map(c=>`<div class="item"><span class="badge">${esc({graph:'승인 그래프',wiki:'승인 위키',source:'미검토 원문',inference:'추론'}[c.kind])}</span><p>${esc(c.text)}</p>${c.citations.map(id=>renderEvidence(id,job.evidence[id])).join('')}</div>`).join('')+job.answer.unknowns.map(u=>`<p class="muted">확인 불가 · ${esc(u)}</p>`).join(''): (['queued','running'].includes(job.status)?'<p>모델의 질의 해석과 도구 실행을 기다리고 있습니다.</p>':'<p>답변이 생성되지 않았습니다.</p>')}<details><summary>실행 추적 · ${job.trace.length}개 도구 호출</summary>${job.trace.map(t=>`<p>${esc(t.name)} · ${esc(t.status)}</p><pre class="source">${esc(JSON.stringify(t.arguments,null,2))}</pre>${t.evidence_id?renderEvidence(t.evidence_id,job.evidence[t.evidence_id]):''}`).join('')}<pre class="source">${esc(JSON.stringify(job,null,2))}</pre></details><p class="muted">인용 검사는 의미적 정확성을 보증하지 않습니다. 모델 해석·답변은 비결정적이며, 같은 질의·스냅샷·규칙·엔진의 그래프 계산만 결정적입니다.</p><div class="actions"><button id="download-answer">답변 JSON 다운로드</button><button id="rerun-answer">같은 스냅샷으로 다시 질문 준비</button></div></article>`;
   $('#download-answer').onclick=()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(job,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='verinote-answer.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
-  $('#rerun-answer').onclick=()=>{$('#question-text').value=job.question;$('#ask-agent').value=job.agent;$('#ask-model').value=job.model;$('#ask-snapshot').value=job.snapshot;$('#ask-form').scrollIntoView({behavior:'smooth'});};
+  $('#rerun-answer').onclick=()=>{$('#question-text').value=job.question;$('#ask-agent').value=job.agent;$('#ask-model').value=job.model;$('#ask-snapshot').value=job.snapshot;syncProviderControls('ask');$('#ask-form').scrollIntoView({behavior:'smooth'});};
 }
 
 let deleteTarget;
@@ -410,3 +434,6 @@ async function loadCleanup(){
   $('#cleanup-status').innerHTML=state.cleanup_pending?`<div class="panel"><p>삭제한 문서의 로컬 로그 ${state.cleanup_pending}개 정리가 남았습니다. DB 원문·관련 이력은 이미 삭제되었습니다.</p><button id="retry-cleanup">로그 정리 재시도</button></div>`:'';
   if($('#retry-cleanup'))$('#retry-cleanup').onclick=()=>attempt(async()=>{const result=await api('/api/cleanup','POST',{});await loadCleanup();notice(result.cleanup_pending?'정리가 아직 완료되지 않았습니다. 로그 폴더 접근 권한을 확인하세요.':'남은 로그 정리를 완료했습니다.',Boolean(result.cleanup_pending));});
 }
+
+// Guidance links also navigate out of the current application view.
+document.addEventListener('click',e=>{if(e.target.closest('[data-open-settings]')){e.preventDefault();showView('settings');$('#openrouter-setup').scrollIntoView({behavior:'smooth'});}});
