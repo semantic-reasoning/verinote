@@ -1,11 +1,11 @@
 """Transactional immutable document versions and optimistic human review."""
-from contextlib import contextmanager
-from datetime import datetime, timezone
 import hashlib
 import json
-from pathlib import Path
 import sqlite3
 import uuid
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
 
 from .ontology import EXTRACTION_CONTRACT_VERSION, extraction_key
 
@@ -167,7 +167,7 @@ class Store:
             can_extract = bool(dictionary and dictionary['status'] == 'approved' and extraction_key(dictionary | {'extraction_contract': EXTRACTION_CONTRACT_VERSION}) not in extracted)
             latest = max(runs.values(), key=lambda r: (r['created_at'], r['id']), default=None)
             latest_run = {k: latest[k] for k in ('id', 'stage', 'status', 'version')} if latest else None
-            return dict(doc) | dict(source) | {'latest_run': latest_run, 'versions': versions, 'items': items, 'can_extract': can_extract, 'extraction_upgrade': bool(can_extract and any(k[:2] == (dictionary['id'], dictionary['revision']) for k in extracted))}
+            return dict(doc) | dict(source) | {'latest_run': latest_run, 'versions': versions, 'items': items, 'can_extract': can_extract, 'extraction_upgrade': bool(can_extract and dictionary is not None and any(k[:2] == (dictionary['id'], dictionary['revision']) for k in extracted))}
 
     @staticmethod
     def unpack(row):
@@ -303,9 +303,9 @@ class Store:
             run = db.execute('SELECT * FROM runs WHERE id=?', (run_id,)).fetchone()
             if not run or run['status'] != 'running':
                 raise Conflict('실행 상태가 변경되었습니다.')
-            from .service import validate_page, validate_fact, text
+            from .service import text, validate_fact, validate_page
             detail = text(detail, '실행 상세', 2000) if detail else ''
-            from .ontology import validate_dictionary, dictionary_fact
+            from .ontology import dictionary_fact, validate_dictionary
             source = db.execute('SELECT text FROM versions WHERE document_id=? AND version=?', (run['document_id'], run['version'])).fetchone()[0]
             if run['stage'] == 'ontology':
                 if db.execute("SELECT 1 FROM items WHERE document_id=? AND version=? AND kind='ontology'", (run['document_id'], run['version'])).fetchone():
@@ -356,8 +356,8 @@ class Store:
         if action == 'revise' and payload is None:
             raise ValueError('수정할 사실이 필요합니다.')
         source = db.execute('SELECT text FROM versions WHERE document_id=? AND version=?', (row['document_id'], row['version'])).fetchone()[0]
+        from .ontology import dictionary_fact, validate_dictionary
         from .service import validate_fact, validate_page
-        from .ontology import validate_dictionary, dictionary_fact
         if row['kind'] == 'ontology':
             value = validate_dictionary(value, source)
         elif row['kind'] == 'fact':
@@ -418,7 +418,7 @@ class Store:
                 if not row:
                     raise ValueError('스냅샷을 찾을 수 없습니다.')
                 return json.loads(row[0])
-            approved = {'fact': [], 'page': [], 'ontology': []}
+            approved: dict[str, list[object]] = {'fact': [], 'page': [], 'ontology': []}
             for row in db.execute("SELECT i.*,v.sha256 FROM items i JOIN documents d ON i.document_id=d.id AND i.version=d.current_version JOIN versions v ON v.document_id=i.document_id AND v.version=i.version WHERE i.kind IN ('fact','page','ontology') AND i.status='approved' ORDER BY i.id"):
                 approved[row['kind']].append(self.unpack(row))
             documents = [dict(r) for r in db.execute('SELECT d.id,d.current_version,d.title,v.filename,v.sha256,length(v.text) AS total_chars FROM documents d JOIN versions v ON v.document_id=d.id AND v.version=d.current_version ORDER BY d.id')]

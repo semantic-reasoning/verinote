@@ -1,16 +1,22 @@
 """Offline checked-envelope accounting, recording and public consumption."""
 import copy
 import json
-from pathlib import Path
 import tempfile
 import threading
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from verinote.agents import CLI
 from verinote.http_records import RecordConflict, update_caller_validation
 from verinote.transports import Credentials, HTTPResult, SafeCallResult
-from verinote.usage import decode_http, empty_usage, calculate, job_calls, summarize, validate_rates
+from verinote.usage import (
+    calculate,
+    decode_http,
+    job_calls,
+    summarize,
+    validate_rates,
+)
 
 FIXTURE = json.loads((Path(__file__).parent/'fixtures/usage/openrouter.json').read_text())
 RATE = dict(model='vendor/actual', input=2, output=10, cache_read=.2, cache_write=2.5,
@@ -174,7 +180,7 @@ class Records(unittest.TestCase):
         for index, filename in enumerate(('run.json', 'usage.json', 'response.json', 'all'), 1):
             self.folder = self.folder.parent/str(index)
             def fail(folder, name, value, limit=256*1024):
-                if filename in (name, 'all'):
+                if filename in (name, 'all'):  # noqa: B023 (intentional: same-iteration filename)
                     raise OSError('untrusted error text synthetic-key-706')
                 return original(folder, name, value, limit)
             with patch('verinote.http_records.write_record', side_effect=fail):

@@ -1,24 +1,32 @@
 """Bounded extraction orchestration; validation never performs human approval."""
-from concurrent.futures import ThreadPoolExecutor
-import json
 import copy
+import json
 import re
 import shutil
-from pathlib import Path
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from .agents import CLI, PROVIDERS, validate_model
 from .call_validation import caller_validation
 from .documents import chunks
-from .progress import analysis_progress
 from .engine import query
 from .extraction_checkpoint import CHUNK_TIMEOUT, ExtractionCheckpoint
 from .extraction_coverage import chunk_report, new_report, read_report, write_report
-from .ontology import (EXTRACTION_PROMPT, EXTRACTION_CONTRACT_VERSION, dictionary_context,
-                       MAX_QUOTE_REPAIR_CALLS, QUOTE_REPAIR_PROMPT,
-                       apply_quote_repairs, bounded_prompt, dictionary_fact,
-                       extraction_quote_issues, quote_label)
+from .ontology import (
+    EXTRACTION_CONTRACT_VERSION,
+    EXTRACTION_PROMPT,
+    MAX_QUOTE_REPAIR_CALLS,
+    QUOTE_REPAIR_PROMPT,
+    apply_quote_repairs,
+    bounded_prompt,
+    dictionary_context,
+    dictionary_fact,
+    extraction_quote_issues,
+    quote_label,
+)
+from .progress import analysis_progress
 
 
 def text(value, name, limit=200, *, allow_cr=False):
@@ -80,7 +88,8 @@ class Service:
     def usage_report(self):
         from .usage import job_calls, summarize
         owners, total = self.store.usage_owners()
-        calls, groups = [], {}
+        calls: list[object] = []
+        groups: dict[tuple, list[object]] = {}
         for owner in owners:
             for call in job_calls(self.root, owner['kind'], owner):
                 calls.append(call)
@@ -149,7 +158,8 @@ class Service:
             if current_contract:
                 report = new_report(run, len(doc['text']))
                 checkpoint = ExtractionCheckpoint(self.store, self.root, run, doc)
-            claims, facts = [], []
+            claims: list[object] = []
+            facts: list[object] = []
             repair_calls, repaired_quotes, repair_locations = 0, 0, []
             if checkpoint is not None:
                 for index, output in enumerate(checkpoint.outputs):

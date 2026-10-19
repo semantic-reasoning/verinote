@@ -1,16 +1,15 @@
 """Explicit bulk scope, atomic approval and UI request snapshot regressions."""
 import concurrent.futures
-import copy
-import json
-from pathlib import Path
 import subprocess
 import threading
 import unittest
+from pathlib import Path
 from urllib.error import HTTPError
 
 import test_workflow as workflow
-from test_workflow import SOURCE, PAGE, FACTS, approved_dictionary, legacy_run
-from verinote.store import Conflict, MAX_BULK_APPROVAL, canonical
+from test_workflow import FACTS, PAGE, SOURCE, approved_dictionary, legacy_run
+
+from verinote.store import MAX_BULK_APPROVAL, Conflict, canonical
 
 
 class BulkApproval(unittest.TestCase):

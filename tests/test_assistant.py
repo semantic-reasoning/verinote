@@ -1,15 +1,16 @@
 import json
 import threading
-import unittest
 import unicodedata
+import unittest
 from unittest.mock import patch
 
 import test_workflow as workflow
 from test_workflow import SOURCE
+
+from verinote import engine
+from verinote.assistant import Assistant
 from verinote.service import Service
 from verinote.store import Store
-from verinote.assistant import Assistant
-from verinote import engine
 
 
 def tool(name='query_graph', **args):
@@ -578,7 +579,7 @@ class WikiQuestionTests(unittest.TestCase):
         state=json.loads(fake.calls[-1][2].split('입력 상태(JSON):\n',1)[1]);self.assertEqual(state['catalog']['documents'][0]['title'],'운영')
 
     def test_legacy_snapshot_never_borrows_current_wiki(self):
-        from verinote.store import canonical,digest,now
+        from verinote.store import canonical, digest, now
         self.wiki()
         body={'facts':[],'documents':[{'id':self.doc['id'],'current_version':1}]}
         old={'id':digest(body),**body}

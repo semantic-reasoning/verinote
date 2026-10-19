@@ -1,20 +1,36 @@
 import copy
-from contextlib import closing
 import json
-from pathlib import Path
 import sqlite3
 import threading
 import unittest
+from contextlib import closing
 from unittest.mock import patch
 from urllib.error import HTTPError
 
 import test_workflow as workflow
-from test_workflow import extraction_response, DICTIONARY, FACTS, PAGE, SOURCE, approved_dictionary, legacy_run
-from verinote.ontology import (MAX_DICTIONARY_BYTES, MAX_DICTIONARY_CONTEXT_BYTES, MAX_FACTS, bounded_prompt, dictionary_context, dictionary_fact,
-                               merge_dictionary, validate_dictionary)
-from verinote.service import Service
+from test_workflow import (
+    DICTIONARY,
+    FACTS,
+    PAGE,
+    SOURCE,
+    approved_dictionary,
+    extraction_response,
+    legacy_run,
+)
+
 from verinote.engine import query
-from verinote.store import Conflict, SCHEMA, Store, canonical, digest
+from verinote.ontology import (
+    MAX_DICTIONARY_BYTES,
+    MAX_DICTIONARY_CONTEXT_BYTES,
+    MAX_FACTS,
+    bounded_prompt,
+    dictionary_context,
+    dictionary_fact,
+    merge_dictionary,
+    validate_dictionary,
+)
+from verinote.service import Service
+from verinote.store import SCHEMA, Conflict, Store, canonical, digest
 
 ARCH = '주문 서비스(order)는 결제 서비스(pay)를 호출한다. 결제 서비스(pay)는 원장 서비스(ledger)를 호출한다. 결제 서비스는 결제팀이 운영한다. 문서 ARCH 담당은 문서팀이다.'
 ARCH_DICTIONARY = {

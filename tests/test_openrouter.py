@@ -2,18 +2,18 @@
 import dataclasses
 import http.client
 import json
-from pathlib import Path
 import socket
 import ssl
 import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from verinote.agents import CLI
 from verinote.config import Credentials as ServerCredentials
-from verinote.openrouter import OpenRouter, HOST, PATH, _HTTPS
+from verinote.openrouter import _HTTPS, HOST, PATH, OpenRouter
 from verinote.transports import Credentials, ExecutionOptions
 from verinote.usage import MAX_METADATA
 
@@ -362,18 +362,18 @@ class RealFraming(CallFolders):
                 try:
                     raw = b''
                     while b'\r\n\r\n' not in raw:
-                        raw += server.recv(65536)
-                    request_seen.set()
-                    server.sendall(b'HTTP/1.1 200 OK\r\nConnection: close\r\nTransfer-Encoding: chunked\r\n\r\n'+prefix)
+                        raw += server.recv(65536)  # noqa: B023 (intentional: same-iteration server)
+                    request_seen.set()  # noqa: B023 (intentional: same-iteration request_seen)
+                    server.sendall(b'HTTP/1.1 200 OK\r\nConnection: close\r\nTransfer-Encoding: chunked\r\n\r\n'+prefix)  # noqa: B023 (intentional: same-iteration server/prefix)
                     while True:
-                        server.sendall(b'1'); time.sleep(.01)
+                        server.sendall(b'1'); time.sleep(.01)  # noqa: B023 (intentional: same-iteration server)
                 except OSError:
                     pass
                 finally:
-                    server.close(); stopped.set()
+                    server.close(); stopped.set()  # noqa: B023 (intentional: same-iteration server/stopped)
             server_thread = threading.Thread(target=serve, daemon=True); server_thread.start()
             def connect(conn):
-                conn.sock = client
+                conn.sock = client  # noqa: B023 (intentional: same-iteration client)
             cli = CLI(http_adapter=OpenRouter(), credentials=Credentials(KEY), timeout=.08)
             try:
                 with patch.object(http.client.HTTPSConnection, 'connect', connect):

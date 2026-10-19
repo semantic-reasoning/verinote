@@ -28,7 +28,7 @@ def _dictionary_shape(value):
 
 def _dictionary_row(kind, row, source, entities):
     """Normalize and ground a row before it can be retained or discarded."""
-    from .service import text, evidence
+    from .service import evidence, text
     if kind == 'entities':
         result = {k: text(row.get(k), k) for k in ('id', 'name', 'type')}
         result['quote'] = evidence(row.get('quote'), source)
@@ -67,8 +67,10 @@ def _dictionary_row(kind, row, source, entities):
 
 def validate_dictionary(value, source):
     _dictionary_shape(value)
-    result = {key: [] for key in LIMITS}
-    entities, names, predicates = {}, {}, set()
+    result: dict[str, list[object]] = {key: [] for key in LIMITS}
+    entities: dict[str, object] = {}
+    names: dict[str, str] = {}
+    predicates: set[str] = set()
     for kind in LIMITS:
         for index, row in enumerate(value[kind], 1):
             try:
@@ -263,7 +265,7 @@ def resolve_dictionary(output, spans):
     if not isinstance(output, dict) or set(output) != set(LIMITS):
         raise ValueError('사전 응답에는 entities, aliases, relations 배열이 필요합니다.')
     positions = {span['id']: i for i, span in enumerate(spans)}
-    result = {kind: [] for kind in LIMITS}
+    result: dict[str, list[object]] = {kind: [] for kind in LIMITS}
     fields = {'entities': {'id', 'name', 'type'}, 'aliases': {'alias', 'entity'},
               'relations': {'id', 'description', 'subject_types', 'object_types'}}
     for kind, limit in LIMITS.items():

@@ -1,19 +1,26 @@
 import copy
 import json
 import os
-from pathlib import Path
-import unittest
 import tempfile
+import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import test_workflow as workflow
-from test_workflow import SOURCE, DICTIONARY
 from test_ontology import wire_dictionary
-from verinote.agents import CLI, CLI_PROVIDERS, PROVIDERS
-from verinote.documents import bounded_spans, chunks
+from test_workflow import DICTIONARY, SOURCE
+
+from verinote.agents import CLI, CLI_PROVIDERS
 from verinote.dictionary_pipeline import CHECKPOINT_LIMIT
-from verinote.ontology import (DICTIONARY_PROMPT, dictionary_context, source_spans,
-                               MAX_DICTIONARY_BYTES, resolve_dictionary, merge_dictionary, validate_dictionary)
+from verinote.documents import bounded_spans, chunks
+from verinote.ontology import (
+    MAX_DICTIONARY_BYTES,
+    dictionary_context,
+    merge_dictionary,
+    resolve_dictionary,
+    source_spans,
+    validate_dictionary,
+)
 from verinote.service import Service
 from verinote.store import Conflict
 from verinote.usage import atomic_json, job_calls
@@ -62,7 +69,8 @@ class SpanContract(unittest.TestCase):
         dictionary={'entities':[{'id':f'개체{i}','name':f'개체{i}','type':'Thing','quote':source} for i in range(40)],'aliases':[], 'relations':[]}
         compact=dictionary_context(dictionary)
         self.assertEqual(compact,{'entities':[{k:v for k,v in r.items() if k!='quote'} for r in dictionary['entities']], 'aliases':[],'relations':[]})
-        encode=lambda v:len(json.dumps(v,ensure_ascii=False).encode())
+        def encode(value):
+            return len(json.dumps(value,ensure_ascii=False).encode())
         self.assertLess(encode(compact),encode(dictionary)*.2)
         spans=source_spans(source)
         wire={'entities':[{k:v for k,v in row.items() if k!='quote'}|{'quote_ref':[spans[0]['id'],spans[-1]['id']]} for row in dictionary['entities']], 'aliases':[], 'relations':[]}
@@ -250,7 +258,7 @@ class Pipeline(unittest.TestCase):
                 nonlocal writes
                 if Path(path).name=='dictionary-checkpoint.json':
                     writes+=1
-                    if writes==fail_at:raise OSError('disk failure')
+                    if writes==fail_at:raise OSError('disk failure')  # noqa: B023 (intentional: same-iteration fail_at)
                 atomic_json(path,value)
             with patch('verinote.dictionary_pipeline.atomic_json',side_effect=write):
                 result,calls=self.run_job(doc,[DICTIONARY,EMPTY])
