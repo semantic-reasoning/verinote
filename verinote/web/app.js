@@ -325,7 +325,9 @@ async function loadProviderModels(agent) {
   } catch(error) {
     if(epoch!==modelCatalogEpoch||!select.isConnected)return;
     select.innerHTML='<option>목록을 불러올 수 없음</option>';
-    status.textContent='목록을 불러오지 못했습니다. 제공자를 다시 클릭하거나 모델 ID를 직접 입력하세요.';
+    status.textContent=error.status
+      ? `서버가 모델 목록 요청을 처리하지 못했습니다 (HTTP ${error.status}). 서버 로그를 확인하거나 모델 ID를 직접 입력하세요.`
+      : '서버에 연결하거나 응답을 읽지 못했습니다. 서버 상태를 확인한 뒤 다시 시도하거나 모델 ID를 직접 입력하세요.';
   }
 }
 async function loadSettings() {

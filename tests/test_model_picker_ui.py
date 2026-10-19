@@ -1,8 +1,10 @@
+import shutil
 import subprocess
 import unittest
 
 
 class ModelPickerUI(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('node'),'Node.js is required for browser logic tests.')
     def test_lazy_loading_selection_preservation_stale_requests_and_recovery(self):
         script=r'''
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
@@ -39,6 +41,9 @@ const ok={status:'ok',message:'CLI catalog',models:[{id:'vendor/a',name:'<Model 
     assert.equal(nodes['[name="model-agy"]'].value,'manual/model');assert(nodes['[data-model-catalog="agy"]'].disabled);
   }
   let failure=context.loadProviderModels('agy');pending.agy.reject(Error('private server error'));await failure;
+  assert(!nodes['#catalog-status-agy'].textContent.includes('private'));
+  failure=context.loadProviderModels('agy');const serverError=Error('private server detail');serverError.status=500;pending.agy.reject(serverError);await failure;
+  assert(nodes['#catalog-status-agy'].textContent.includes('HTTP 500'));
   assert(!nodes['#catalog-status-agy'].textContent.includes('private'));
   let recovered=context.loadProviderModels('agy');pending.agy.resolve(ok);await recovered;assert(!nodes['[data-model-catalog="agy"]'].disabled);
   assert(source.includes('radio.onclick=()=>loadProviderModels(radio.value)'));
