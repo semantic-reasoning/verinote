@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from .agents import PROVIDERS, executable, validate_model
+from .agents import PROVIDERS, TRANSPORTS, executable, validate_model
 from .config import ConfigError, Credentials, create_config, load_config
 from .documents import MAX_BYTES, MAX_TEXT, decode_document
 from .service import Service, text
@@ -93,12 +93,23 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send((WEB / name).read_bytes(), mime=mime)
             if route.path == '/api/settings':
                 if method == 'GET':
-                    return self.send(store.settings() | {'document_limits': DOCUMENT_LIMITS, 'providers': [{'id': k, 'name': v, 'installed': bool(executable(k))} for k, v in PROVIDERS.items()]})
+                    providers = []
+                    for key, name in PROVIDERS.items():
+                        value = {'id': key, 'name': name, 'transport': TRANSPORTS[key]}
+                        if TRANSPORTS[key] == 'cli':
+                            value['installed'] = bool(executable(key))
+                        else:
+                            value['configured'] = self.server.credentials.public_status()['openrouter']['configured']
+                        providers.append(value)
+                    return self.send(store.settings() | {'document_limits': DOCUMENT_LIMITS, 'providers': providers})
                 if method == 'PUT':
                     data = self.body()
-                    if data.get('selected') not in PROVIDERS or not isinstance(data.get('models'), dict) or set(data['models']) - set(PROVIDERS):
+                    if not isinstance(data, dict) or set(data) != {'selected', 'models'} or not isinstance(data.get('selected'), str) or data.get('selected') not in PROVIDERS or not isinstance(data.get('models'), dict) or set(data['models']) - set(PROVIDERS):
                         raise ValueError('에이전트 설정 형식 오류')
-                    return self.send(store.save_settings({'selected': data['selected'], 'models': {k: validate_model(v) for k, v in data['models'].items()}}))
+                    models = {key: validate_model(value) for key, value in data['models'].items()}
+                    if data['selected'] == 'openrouter':
+                        models['openrouter'] = validate_model(data['models'].get('openrouter', ''), 'openrouter')
+                    return self.send(store.save_settings({'selected': data['selected'], 'models': models}))
             if route.path == '/api/usage-rates':
                 if method == 'GET':
                     return self.send(store.usage_rates())

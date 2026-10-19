@@ -215,7 +215,7 @@ const doc={id:'a',title:'<document>',version:1,current_version:2,generation:2,it
  {id:'o',revision:2,status:'pending',kind:'ontology',payload:{}},
  ...['approved','held','rejected'].map(status=>({id:status,revision:1,status,kind:'fact',payload:{}}))]};
 let responder;
-const context=vm.createContext({console,doc,$:el,selectedDoc:doc,
+const context=vm.createContext({console,doc,$:el,selectedDoc:doc,syncProviderControls:()=>{},
  document:{addEventListener(){},querySelectorAll(selector){return selector.endsWith(':checked')?boxes.filter(b=>b.checked):boxes;}},
  esc:value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),
  attempt:fn=>{const task=fn();tasks.push(task);return task;},

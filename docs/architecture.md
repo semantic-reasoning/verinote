@@ -394,3 +394,40 @@ Previously paid segments are not copied as new calls; fully resumed checkpoints
 can complete with zero new calls. Local tests exercise the real HTTP adapter via
 network-free fixtures through dictionary approval, extraction review/approval and
 snapshot-backed questions; no paid request is part of validation.
+
+## Public provider settings and execution guidance (#708)
+
+`GET /api/settings` returns provider `id`, `name`, and `transport`. CLI rows
+retain `installed` (executable presence); OpenRouter returns only `configured`
+from startup credential presence, with no executable discovery, key value,
+fragment, hash or actual credential path. Configured does not verify auth,
+balance or model access. `PUT /api/settings` accepts exactly selected/models,
+validates original strings before trim, and requires a nonempty OpenRouter model
+when selected as default. Other defaults may retain an empty OpenRouter model.
+No key is needed to read/save settings; Service rejects unconfigured execution
+before creating jobs. Existing CLI models and missing model-map entries retain
+their meanings; no DB schema change is introduced.
+
+Settings, extraction/dictionary and question controls share transport-specific
+status, model placeholders/requiredness, and disclosure updates, including
+settings reload and preparing a historical question again. HTTP prompts go to
+OpenRouter and its routed model provider and may incur charges. No model catalog,
+key input/save API, browser credential storage, or connectivity probe exists.
+The setup panel explains init-config, editing the server-local file, POSIX
+ownership/0600, restart and the native Windows fail-closed policy (use POSIX/WSL
+or keyless CLI). Model and missing-key errors remain server-authoritative.
+
+HTTP failure panels preserve the static error and explain local timeout or
+disconnect is neither remote cancellation nor proof of no billing. Manual rerun
+can be charged again. For length/model-limit errors, the user can change the
+explicit model ID; server output-limit changes require an administrator. For
+programmatic server construction the existing `CLI(options=ExecutionOptions(
+max_tokens=..., timeout=...))` sets a fixed token cap and explicit timeout for
+all phases. This is not a settings-screen control; defaults without that override
+retain ontology600/other180 seconds. Register a new job after any adjustment;
+queued jobs retain their old snapshot. No automatic resend or fallback is added.
+
+Usage screens use provider-reported cost labels for CLI/API, keep reported
+OpenRouter credits separate from configured USD estimates, and retain unknown
+versus zero and provenance separation. OpenRouter rate hints ask for an explicit
+matching model rather than a CLI default assumption.
