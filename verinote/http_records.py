@@ -25,8 +25,23 @@ class RecordConflict(ValueError):
 
 
 def _directory(folder):
-    """Pin every directory component with no-follow descriptors (POSIX)."""
+    """Open a directory without following links where the platform allows it."""
     path = Path(folder).absolute()
+    if os.name != 'posix' or not all(hasattr(os, flag) for flag in ('O_DIRECTORY', 'O_NOFOLLOW')):
+        current = Path(path.anchor)
+        for part in path.parts[1:]:
+            if part in ('.', '..'):
+                raise OSError('unsafe directory')
+            current /= part
+            try:
+                current.mkdir(mode=0o700)
+            except FileExistsError:
+                pass
+            info = current.lstat()
+            if (not stat.S_ISDIR(info.st_mode)
+                    or getattr(info, 'st_file_attributes', 0) & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400)):
+                raise OSError('unsafe directory')
+        return path
     fd = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY)
     try:
         for part in path.parts[1:]:
@@ -49,6 +64,28 @@ def write_record(folder, filename, value, limit=MAX_METADATA):
     if len(data) > limit:
         raise OSError('record too large')
     fd = _directory(folder)
+    if isinstance(fd, Path):
+        target = fd / filename
+        temp = fd / ('.' + uuid4().hex + '.tmp')
+        try:
+            try:
+                info = target.lstat()
+                if (not stat.S_ISREG(info.st_mode)
+                        or getattr(info, 'st_file_attributes', 0) & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400)):
+                    raise OSError('unsafe destination')
+            except FileNotFoundError:
+                pass
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_BINARY', 0)
+            out = os.open(temp, flags, 0o600)
+            with os.fdopen(out, 'wb') as stream:
+                stream.write(data)
+            os.replace(temp, target)
+        finally:
+            try:
+                temp.unlink()
+            except FileNotFoundError:
+                pass
+        return
     temp = '.' + uuid4().hex + '.tmp'
     try:
         try:
