@@ -123,7 +123,11 @@ class CLI:
             if not self.ready(agent):
                 raise ValueError('OpenRouter HTTP 어댑터 또는 API 자격 증명이 구성되지 않았습니다.')
             call_id = uuid4().hex
-            result = self.http_adapter.complete(
+            adapter = self.http_adapter
+            from .openrouter import OpenRouter
+            if isinstance(adapter, OpenRouter):
+                adapter = adapter.with_max_output(self.max_output)
+            result = adapter.complete(
                 agent, model, prompt, Path(folder), phase=phase,
                 options=self.execution_options(agent, phase),
                 credentials=self._credentials, call_id=call_id)
@@ -134,6 +138,12 @@ class CLI:
                     self.sink(result.envelope)
                 except Exception:
                     pass  # Optional telemetry cannot replace the primary outcome.
+            if result.error_code is not None:
+                from .openrouter import ERROR_MESSAGES
+                message = ERROR_MESSAGES.get(result.error_code, 'HTTP 제공자 호출 실패')
+                if result.error_code == 'timeout':
+                    raise TimeoutError(message)
+                raise ValueError(message)
             if result.envelope.transport_status == 'timeout':
                 raise TimeoutError('HTTP 실행 시간 제한 초과')
             if result.envelope.transport_status != 'success':
