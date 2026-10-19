@@ -10,7 +10,7 @@ class ModelPickerUI(unittest.TestCase):
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
 const source=fs.readFileSync('verinote/web/app.js','utf8');
 const nodes={},pending={},calls=[];
-const context={Map,esc:v=>String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;'),providerById:id=>({transport:id==='openrouter'?'http':'cli'}),$:s=>nodes[s],api:(url,method,body)=>{assert.equal(method,'POST');assert.deepEqual(body,{});const id=url.split('/')[3];calls.push(id);return new Promise((resolve,reject)=>pending[id]={resolve,reject});}};
+const context={Map,esc:v=>String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;'),providerById:id=>({transport:id==='openrouter'?'http':'cli'}),$:s=>nodes[s],api:(url,method,body)=>{assert.equal(method,'POST');assert.deepEqual(body,{});const id=url.split('/')[3];assert.equal(url,`/api/providers/${id}/models`);calls.push(id);return new Promise((resolve,reject)=>pending[id]={resolve,reject});}};
 vm.createContext(context);
 vm.runInContext(source.slice(source.indexOf('let modelCatalogEpoch='),source.indexOf('async function loadSettings()')),context);
 const setup=id=>{nodes[`[data-model-catalog="${id}"]`]={isConnected:true,innerHTML:'initial'};nodes[`#catalog-status-${id}`]={};nodes[`[name="model-${id}"]`]={value:'manual/model'};};
@@ -45,6 +45,8 @@ const ok={status:'ok',message:'CLI catalog',models:[{id:'vendor/a',name:'<Model 
   failure=context.loadProviderModels('agy');const serverError=Error('private server detail');serverError.status=500;pending.agy.reject(serverError);await failure;
   assert(nodes['#catalog-status-agy'].textContent.includes('HTTP 500'));
   assert(!nodes['#catalog-status-agy'].textContent.includes('private'));
+  failure=context.loadProviderModels('agy');const missingRoute=Error('404');missingRoute.status=404;pending.agy.reject(missingRoute);await failure;
+  assert(nodes['#catalog-status-agy'].textContent.includes('서버를 완전히 재시작'));
   let recovered=context.loadProviderModels('agy');pending.agy.resolve(ok);await recovered;assert(!nodes['[data-model-catalog="agy"]'].disabled);
   assert(source.includes('radio.onclick=()=>loadProviderModels(radio.value)'));
   assert(!source.slice(source.indexOf('async function loadSettings()'),source.indexOf("$('#settings-form').onsubmit")).includes('await loadProviderModels'));
