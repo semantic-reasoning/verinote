@@ -4,7 +4,8 @@ import json
 import re
 
 MAX_FACTS = 80
-MAX_DICTIONARY_BYTES = 60_000
+MAX_DICTIONARY_BYTES = 24 * 1024 * 1024
+MAX_DICTIONARY_CONTEXT_BYTES = 60_000
 MAX_PROMPT_BYTES = 120_000
 MAX_QUOTE_REPAIR_CALLS = 2
 MERGE_CONTRACT_VERSION = 2
@@ -90,8 +91,12 @@ def validate_dictionary(value, source):
                     raise ValueError('관계 ID는 중복 없는 영문 snake_case여야 합니다.')
                 predicates.add(parsed['id'])
             result[kind].append(parsed)
-    if len(json.dumps(result, ensure_ascii=False).encode()) > MAX_DICTIONARY_BYTES:
-        raise ValueError('사전은 UTF-8 60,000바이트 이내여야 합니다. 범위를 줄여 주세요.')
+    encoded = json.dumps(result, ensure_ascii=False, separators=(',', ':')).encode()
+    if len(encoded) > MAX_DICTIONARY_BYTES:
+        raise ValueError('사전과 원문 인용은 UTF-8 24 MiB 이내여야 합니다.')
+    context = json.dumps(dictionary_context(result), ensure_ascii=False, separators=(',', ':')).encode()
+    if len(context) > MAX_DICTIONARY_CONTEXT_BYTES:
+        raise ValueError('사전 정의 문맥은 UTF-8 60,000바이트 이내여야 합니다. 개체·별칭·관계 정의를 간결하게 줄여 주세요.')
     return result
 
 
@@ -290,7 +295,7 @@ DICTIONARY_PROMPT = '''원문에서 개체·별칭·관계 사전의 검토용 �
 기존 사전은 문맥입니다. 이번 청크에 새로 등장한 항목만 반환하고 기존 ID·정의를 재정의하지 마세요. 추가가 없으면 빈 배열을 반환하세요. 같은 정의를 인용만 바꿔 반복하지 마세요. 앱은 각 근거를 검증한 뒤 동일 정의를 합치고 첫 인용을 유지합니다.
 sources는 원문의 연속 구간입니다. quote_ref에는 이번 sources에 있는 시작·끝 id 문자열을 순서대로 넣으세요. 한 구간이면 같은 id를 두 번 쓰세요. 앱이 그 범위의 원문을 그대로 복원합니다. quote 문자열이나 문자 위치를 생성하지 마세요. name은 선택 구간에 그대로 있어야 하며 별칭 구간에는 alias와 정규 name이 모두 있어야 합니다. 가능한 짧고 충분한 구간을 고르세요.
 기존 사전은 인용을 생략한 어휘·정의 문맥입니다. 기존 항목을 출력하지 마세요. 설명은 필요한 의미·조건을 간결하게 쓰고 해설이나 계획 없이 JSON만 반환하세요.
-전체 한도: 개체 200개, 별칭 400개, 관계 40개, 사전 UTF-8 60,000바이트. 인용은 이번 청크에서 가져오세요.
+전체 한도: 개체 200개, 별칭 400개, 관계 40개. 인용을 제외한 사전 정의 문맥은 UTF-8 60,000바이트, 검증된 전체 사전과 인용은 UTF-8 24 MiB 이내입니다. 인용은 이번 청크에서 가져오세요.
 입력(JSON):
 '''
 

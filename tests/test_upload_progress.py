@@ -39,6 +39,7 @@ class LargeUpload(unittest.TestCase):
         self.assertGreater(len(raw),4*1024*1024)
         body={'title':'large original','filename':'large.docx','content_base64':base64.b64encode(raw).decode()}
         self.assertGreater(len(json.dumps(body)),MAX_JSON_BYTES)
+        self.assertLess(len(json.dumps(body)),MAX_UPLOAD_JSON_BYTES)
         d=self.request('/api/documents','POST',body)
         self.assertEqual(d['text'],SOURCE)
         with urlopen(self.url+f"/api/documents/{d['id']}/raw") as r:self.assertEqual(r.read(),raw)
