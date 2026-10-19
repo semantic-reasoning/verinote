@@ -289,6 +289,45 @@ $('#review-form').onsubmit=e=>{e.preventDefault();attempt(async()=>{
   await api(`/api/items/${item.id}/review`,'POST',data);$('#review-dialog').close();await openDoc(selectedDoc.id,selectedDoc.version);notice('검토 이력을 저장했습니다.');
   } catch(error) { $('#review-error').textContent=error.message; }
 });};
+let modelCatalogEpoch=0;
+const modelCatalogPending=new Map();
+function cliModelPicker(p) {
+  if(p.transport!=='cli')return '';
+  return `<label>사용 가능한 모델<select data-model-catalog="${p.id}" aria-describedby="catalog-status-${p.id}" disabled><option>제공자를 클릭해 불러오기</option></select></label><p id="catalog-status-${p.id}" class="muted catalog-status" role="status" aria-live="polite">목록에서 고르거나 모델 ID를 직접 입력하세요.</p>`;
+}
+async function loadProviderModels(agent) {
+  const epoch=modelCatalogEpoch,select=$(`[data-model-catalog="${agent}"]`),status=$(`#catalog-status-${agent}`);
+  if(!select||providerById(agent)?.transport!=='cli')return;
+  select.disabled=true;status.textContent='사용 가능한 모델을 불러오는 중…';
+  try {
+    let pending=modelCatalogPending.get(agent);
+    if(!pending){
+      pending=api(`/api/providers/${agent}/models`,'POST',{});
+      modelCatalogPending.set(agent,pending);
+      pending.finally(()=>{if(modelCatalogPending.get(agent)===pending)modelCatalogPending.delete(agent);}).catch(()=>{});
+    }
+    const result=await pending;
+    if(epoch!==modelCatalogEpoch||!select.isConnected)return;
+    status.textContent=result.message;
+    if(result.status!=='ok'){
+      select.innerHTML='<option>목록을 불러올 수 없음</option>';return;
+    }
+    select.innerHTML='<option value="" disabled selected>모델을 선택하세요</option><option value="">CLI 기본 모델</option>'+result.models.map(m=>`<option value="${esc(m.id)}">${esc(m.name)} · ${esc(m.id)}</option>`).join('');
+    const input=$(`[name="model-${agent}"]`);
+    if(input.value&&result.models.some(m=>m.id===input.value))select.value=input.value;
+    select.disabled=false;
+    select.onchange=()=>{input.value=select.value;};
+    input.oninput=()=>{
+      if(input.value&&result.models.some(m=>m.id===input.value))select.value=input.value;
+      else select.selectedIndex=0;
+    };
+    select.onkeydown=e=>{if(e.key==='Enter')e.preventDefault();};
+  } catch(error) {
+    if(epoch!==modelCatalogEpoch||!select.isConnected)return;
+    select.innerHTML='<option>목록을 불러올 수 없음</option>';
+    status.textContent='목록을 불러오지 못했습니다. 제공자를 다시 클릭하거나 모델 ID를 직접 입력하세요.';
+  }
+}
 async function loadSettings() {
   config=await api('/api/settings');
   const limits=config.document_limits;
@@ -296,8 +335,12 @@ async function loadSettings() {
   $('#ask-agent').innerHTML=config.providers.map(p=>`<option value="${esc(p.id)}" ${p.id===config.selected?'selected':''}>${providerOption(p)}</option>`).join('');
   $('#ask-model').value=config.models[config.selected]||'';
   syncProviderControls('ask');
-  $('#provider-settings').innerHTML=config.providers.map(p=>`<div class="provider-row"><input type="radio" name="selected" value="${p.id}" ${config.selected===p.id?'checked':''} aria-label="${esc(p.name)} 기본 선택"><div><strong>${esc(p.name)}</strong><p class="muted">${providerStatus(p)}</p></div><label>모델 ID<input name="model-${p.id}" value="${esc(config.models[p.id]||'')}" maxlength="150" placeholder="${modelPlaceholder(p.id)}" ${p.transport==='http'&&config.selected===p.id?'required':''}></label></div>`).join('');
-  for(const radio of document.querySelectorAll('[name=selected]'))radio.onchange=()=>{const model=$('[name="model-openrouter"]');if(model)model.required=radio.value==='openrouter';};
+  modelCatalogEpoch++;
+  $('#provider-settings').innerHTML=config.providers.map(p=>`<div class="provider-row"><input type="radio" id="provider-${p.id}" name="selected" value="${p.id}" ${config.selected===p.id?'checked':''} aria-label="${esc(p.name)} 기본 선택"><label class="provider-name" for="provider-${p.id}"><strong>${esc(p.name)}</strong><span class="muted">${providerStatus(p)}</span></label><div class="model-fields"><label>모델 ID<input name="model-${p.id}" value="${esc(config.models[p.id]||'')}" maxlength="150" placeholder="${modelPlaceholder(p.id)}" ${p.transport==='http'&&config.selected===p.id?'required':''}></label>${cliModelPicker(p)}</div></div>`).join('');
+  for(const radio of document.querySelectorAll('[name=selected]')){
+    radio.onchange=()=>{const model=$('[name="model-openrouter"]');if(model)model.required=radio.value==='openrouter';};
+    radio.onclick=()=>loadProviderModels(radio.value);
+  }
   await loadUsageRates();
 }
 $('#settings-form').onsubmit=e=>{e.preventDefault();attempt(async()=>{
