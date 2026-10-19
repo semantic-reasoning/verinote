@@ -6,6 +6,7 @@ import difflib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
+import sys
 from urllib.parse import parse_qs, urlsplit
 
 from .agents import CLI_PROVIDERS, PROVIDERS, TRANSPORTS, executable, validate_model
@@ -209,6 +210,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main(argv=None):
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser(description='Verinote — versioned evidence wiki')
     parser.add_argument('--port', type=int, default=8765)
     parser.add_argument('--data-dir', type=Path, default=Path('data'))
