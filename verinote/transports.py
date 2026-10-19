@@ -82,3 +82,16 @@ class HTTPAdapter(Protocol):
         request headers and unchecked responses must never enter the envelope.
         """
         ...
+
+
+def job_options(value):
+    """Strict secret-free persisted HTTP job snapshot; legacy CLI uses null."""
+    if not isinstance(value, dict) or set(value) != {'adapter_contract_version', 'max_tokens', 'timeouts'}:
+        raise ValueError('고정 HTTP 작업 옵션이 올바르지 않습니다. 작업을 다시 등록하세요.')
+    times = value['timeouts']
+    if not isinstance(times, dict) or set(times) != {'default', 'ontology'}:
+        raise ValueError('고정 HTTP 단계별 timeout이 올바르지 않습니다.')
+    for timeout in times.values():
+        ExecutionOptions(value['adapter_contract_version'], value['max_tokens'], timeout)
+    return {'adapter_contract_version': value['adapter_contract_version'], 'max_tokens': value['max_tokens'],
+            'timeouts': dict(times)}

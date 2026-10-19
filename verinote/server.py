@@ -207,7 +207,7 @@ def main(argv=None):
     root = args.data_dir.resolve()
     store = Store(root / 'verinote.sqlite3')
     store.recover()
-    service = Service(store, root)
+    service = Service(store, root, credentials=credentials)
     server = Server(('127.0.0.1', args.port), store, service, credentials=credentials)
     print(f'Verinote: http://127.0.0.1:{server.server_port}', flush=True)
     try:

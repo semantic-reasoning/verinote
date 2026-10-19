@@ -1,6 +1,7 @@
 """Compact, resumable dictionary generation; checkpoints are never approvals."""
 import json
 
+from .call_validation import caller_validation
 from .documents import bounded_spans
 from .ontology import (DICTIONARY_CHUNK_SIZE, DICTIONARY_PROMPT, LIMITS, MERGE_CONTRACT_VERSION,
                        MAX_DICTIONARY_CALLS, SOURCE_SPAN_SIZE, SOURCE_SPAN_MIN_SIZE, bounded_prompt,
@@ -24,17 +25,24 @@ def generate_dictionary(store, cli, root, run, doc):
                 'document_id': run['document_id'], 'version': run['version'],
                 'source_sha256': doc['sha256'], 'text_sha256': digest(source.encode()),
                 'agent': run['agent'], 'model': run['model']}
+    if run['agent'] == 'openrouter':
+        from .transports import job_options
+        contract['execution_options'] = job_options(run.get('execution_options'))
     folder = root / 'runs' / run['id']
     folder.mkdir(parents=True, exist_ok=True)
     dictionary = {kind: [] for kind in LIMITS}
     accepted, resumed_from, warnings = 0, None, []
     skipped = 0
+    option_mismatches = 0
     for prior in store.dictionary_retries(run):
         raw = safe_file(root, f'runs/{prior["id"]}/dictionary-checkpoint.json', CHECKPOINT_LIMIT)
         try:
             value = json.loads(raw) if raw else None
             if not isinstance(value, dict) or set(value) != {'schema_version', 'run_id', 'contract', 'offset', 'dictionary', 'resumed_from'}:
                 raise ValueError('checkpoint shape')
+            if run['agent'] == 'openrouter' and isinstance(value['contract'], dict) and value['contract'].get('execution_options') != contract['execution_options']:
+                option_mismatches += 1
+                raise ValueError('checkpoint HTTP options mismatch')
             offset = value['offset']
             if type(value['schema_version']) is not int or value['schema_version'] != 1 or value['run_id'] != prior['id'] or canonical(value['contract']) != canonical(contract) or type(offset) is not int or offset not in boundaries:
                 raise ValueError('checkpoint identity/boundary')
@@ -43,6 +51,8 @@ def generate_dictionary(store, cli, root, run, doc):
             break
         except (ValueError, TypeError, KeyError, UnicodeError):
             skipped += 1
+    if option_mismatches:
+        warnings.append(f'OpenRouter 고정 실행 옵션이 다른 복구 기록 {option_mismatches}개 제외')
     if skipped:
         warnings.append(f'이전 복구 기록 {skipped}개가 없거나 호환·검증 조건을 충족하지 않아 제외')
     state = {'schema_version': 1, 'pipeline': PIPELINE, 'run_id': run['id'],
@@ -92,8 +102,9 @@ def generate_dictionary(store, cli, root, run, doc):
             write(folder / 'dictionary-progress.json', state)
             try:
                 output = cli.complete(run['agent'], run['model'], prompt, folder / str(index), phase='ontology')
-                delta = resolve_dictionary(output, spans)
-                merged = merge_dictionary(dictionary, delta, source[:offset + len(chunk)], chunk)
+                with caller_validation(cli, folder / str(index), run['agent']):
+                    delta = resolve_dictionary(output, spans)
+                    merged = merge_dictionary(dictionary, delta, source[:offset + len(chunk)], chunk)
             except Exception as exc:
                 raise ValueError(f'사전 구간 {index}/{len(slices)} · {exc}') from exc
             dictionary, accepted = merged, offset + len(chunk)

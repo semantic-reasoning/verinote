@@ -4,6 +4,7 @@ from pathlib import PurePath
 import re
 import unicodedata
 
+from .call_validation import caller_validation
 from . import engine
 from .store import canonical
 
@@ -385,14 +386,15 @@ class Assistant:
             self.delivered_evidence = set(self.evidence)
             self.delivered_lookups = set(self.lookups)
             output = self.cli.complete(self.job['agent'], self.job['model'], prompt, self.folder / f'llm-{round_number}')
-            if len(canonical(output).encode()) > 30000 or not isinstance(output, dict):
-                raise ValueError('모델 응답 크기/형식 오류')
-            if set(output) == {'answer'}:
-                return self.validate_answer(output['answer'])
-            if answer_only:
-                raise ValueError('답변 전용 회차에서 최종 answer가 필요합니다. 추가 도구 요청은 실행하지 않았습니다.')
-            if set(output) != {'tools'} or not isinstance(output['tools'], list) or not 1 <= len(output['tools']) <= 3 or len(self.trace) + len(output['tools']) > MAX_TOOLS:
-                raise ValueError('도구 요청 개수/형식 오류')
-            for call in output['tools']:
-                self.execute(call)
+            with caller_validation(self.cli, self.folder / f'llm-{round_number}', self.job['agent']):
+                if len(canonical(output).encode()) > 30000 or not isinstance(output, dict):
+                    raise ValueError('모델 응답 크기/형식 오류')
+                if set(output) == {'answer'}:
+                    return self.validate_answer(output['answer'])
+                if answer_only:
+                    raise ValueError('답변 전용 회차에서 최종 answer가 필요합니다. 추가 도구 요청은 실행하지 않았습니다.')
+                if set(output) != {'tools'} or not isinstance(output['tools'], list) or not 1 <= len(output['tools']) <= 3 or len(self.trace) + len(output['tools']) > MAX_TOOLS:
+                    raise ValueError('도구 요청 개수/형식 오류')
+                for call in output['tools']:
+                    self.execute(call)
         raise ValueError('최대 모델 회차 초과')
