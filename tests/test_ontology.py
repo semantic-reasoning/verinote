@@ -10,7 +10,7 @@ from urllib.error import HTTPError
 
 import test_workflow as workflow
 from test_workflow import extraction_response, DICTIONARY, FACTS, PAGE, SOURCE, approved_dictionary, legacy_run
-from verinote.ontology import (MAX_FACTS, bounded_prompt, dictionary_fact,
+from verinote.ontology import (MAX_DICTIONARY_BYTES, MAX_DICTIONARY_CONTEXT_BYTES, MAX_FACTS, bounded_prompt, dictionary_context, dictionary_fact,
                                merge_dictionary, validate_dictionary)
 from verinote.service import Service
 from verinote.engine import query
@@ -95,7 +95,22 @@ class DictionaryContract(unittest.TestCase):
         with self.assertRaises(ValueError):validate_dictionary(large,source)
         with self.assertRaisesRegex(ValueError,'바이트'):bounded_prompt('',{'text':'가'*50000})
         large={'entities':[{'id':str(i),'name':'가','type':'T','quote':'가'*8000} for i in range(4)],'aliases':[],'relations':[]}
-        with self.assertRaisesRegex(ValueError,'바이트'):validate_dictionary(large,'가'*8000)
+        expanded=validate_dictionary(large,'가'*8000)
+        self.assertGreater(len(json.dumps(expanded,ensure_ascii=False).encode()),60_000)
+        self.assertLess(len(json.dumps(expanded,ensure_ascii=False,separators=(',',':')).encode()),MAX_DICTIONARY_BYTES)
+
+    def test_dictionary_context_has_its_own_prompt_budget(self):
+        names=[f'entity-{i:03}-'+'x'*180 for i in range(200)]
+        source=' '.join(names)
+        value={'entities':[{'id':name,'name':name,'type':'Thing','quote':name} for name in names],
+               'aliases':[],'relations':[]}
+        with self.assertRaisesRegex(ValueError,'정의 문맥'):
+            validate_dictionary(value,source)
+        compact={'entities':[{'id':f'entity-{i}','name':'가','type':'T','quote':'가'*8000} for i in range(4)],
+                 'aliases':[],'relations':[]}
+        valid=validate_dictionary(compact,'가'*8000)
+        self.assertLess(len(json.dumps(dictionary_context(valid),ensure_ascii=False,separators=(',',':')).encode()),
+                        MAX_DICTIONARY_CONTEXT_BYTES)
 
 
 class OntologyWorkflow(unittest.TestCase):
@@ -334,6 +349,32 @@ class OntologyHTTP(unittest.TestCase):
         self.request('/api/documents','POST',{'title':'test','filename':'x.md','text':SOURCE,'document_id':doc['id'],'expected_version':1,'expected_generation':1})
         with self.assertRaises(HTTPError) as err:self.request(base+'/ontology','POST',args)
         self.assertEqual(err.exception.code,409);err.exception.close()
+
+    def test_review_accepts_dictionary_larger_than_general_json_limit(self):
+        entities=[f'e{index:03}' for index in range(200)]
+        aliases=[f'a{index:03}' for index in range(400)]
+        relations=[f'r_{index:02}' for index in range(40)]
+        tokens=entities+aliases+relations+['e','d']
+        source=' '.join(tokens)+'\n'*(8000-len(' '.join(tokens)))
+        doc=self.request('/api/documents','POST',{'title':'large','filename':'large.md','text':source})
+        run=self.store.create_run(doc['id'],'agy','test','ontology',doc['version'],doc['generation'])
+        self.store.run_status(run['id'],'running')
+        self.store.finish_run(run['id'],dictionary={'entities':[{'id':'e000','name':'e','type':'Thing','quote':'e'}],
+                                                    'aliases':[],'relations':[]})
+        item=next(row for row in self.store.document(doc['id'])['items'] if row['kind']=='ontology')
+        payload={'revision':item['revision'],'action':'revise','actor':'R','reason':'large evidence',
+                 'payload':{'entities':[{'id':name,'name':'e','type':'Thing','quote':source} for name in entities],
+                            'aliases':[{'alias':alias,'entity':entities[index%len(entities)],'quote':source}
+                                       for index,alias in enumerate(aliases)],
+                            'relations':[{'id':relation,'description':'d','subject_types':['Thing'],
+                                          'object_types':['Thing'],'quote':source} for relation in relations]}}
+        self.assertGreater(len(json.dumps(payload).encode()),6*1024*1024)
+        try:
+            self.request(f'/api/items/{item["id"]}/review','POST',payload)
+        except HTTPError as exc:
+            self.fail(exc.read().decode())
+        revised=next(row for row in self.store.document(doc['id'])['items'] if row['kind']=='ontology')
+        self.assertEqual(revised['revision'],item['revision']+1)
 
 
 class DictionaryMergeTests(unittest.TestCase):

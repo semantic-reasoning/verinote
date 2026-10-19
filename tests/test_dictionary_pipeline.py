@@ -1,5 +1,6 @@
 import copy
 import json
+import os
 from pathlib import Path
 import unittest
 import signal
@@ -11,8 +12,9 @@ from test_workflow import SOURCE, DICTIONARY
 from test_ontology import wire_dictionary
 from verinote.agents import CLI, CLI_PROVIDERS, PROVIDERS
 from verinote.documents import bounded_spans, chunks
+from verinote.dictionary_pipeline import CHECKPOINT_LIMIT
 from verinote.ontology import (DICTIONARY_PROMPT, dictionary_context, source_spans,
-                               resolve_dictionary, merge_dictionary, validate_dictionary)
+                               MAX_DICTIONARY_BYTES, resolve_dictionary, merge_dictionary, validate_dictionary)
 from verinote.service import Service
 from verinote.store import Conflict
 from verinote.usage import atomic_json, job_calls
@@ -138,6 +140,53 @@ class Pipeline(unittest.TestCase):
     def checkpoint(self, run):
         return self.root/'runs'/run['id']/'dictionary-checkpoint.json'
 
+    def test_single_document_dictionary_with_repeated_evidence_exceeds_old_byte_limit(self):
+        chunks=[]
+        outputs=[]
+        for group in range(2):
+            names=[f'component-{group}-{index:02}' for index in range(10)]
+            chunk=' '.join(names).ljust(4000,'x')
+            chunks.append(chunk)
+            outputs.append({'entities':[{'id':name,'name':name,'type':'Component','quote':chunk} for name in names],
+                            'aliases':[],'relations':[]})
+        doc=self.new_doc(''.join(chunks))
+        result,calls=self.run_job(doc,outputs)
+        self.assertEqual(result['status'],'success',result['detail'])
+        item=next(row for row in self.store.document(doc['id'])['items'] if row['kind']=='ontology')
+        size=len(json.dumps(item['payload'],ensure_ascii=False,separators=(',',':')).encode())
+        self.assertGreater(size,60_000)
+        self.assertLess(size,MAX_DICTIONARY_BYTES)
+        self.assertEqual(len(item['payload']['entities']),20)
+        self.assertEqual([call['offset'] for call in calls],[0,4000])
+        self.assertGreater(CHECKPOINT_LIMIT,MAX_DICTIONARY_BYTES)
+        self.store.review(item['id'],item['revision'],'approved','Reviewer','대용량 사전 확인')
+        class Extractor:
+            def complete(adapter,agent,model,prompt,folder,*,phase=None):
+                return {'title':'Large dictionary extraction',
+                        'claims':[{'heading':'Components','text':'The document lists components.',
+                                   'quote':chunks[0][:100]}],
+                        'facts':[],'coverage':[],'dictionary_gaps':[]}
+        service=Service(self.store,self.root,Extractor())
+        run=service.start(doc['id'],'agy','','extract',doc['version'],doc['generation'])
+        service.pool.shutdown(wait=True)
+        self.assertEqual(self.store.run(run['id'])['status'],'success',self.store.run(run['id'])['detail'])
+
+    def test_large_evidence_checkpoint_resumes_after_failure(self):
+        first_chunk='가'*4000
+        second_chunk='나'*4000
+        dictionary={'entities':[{'id':f'component-{i:02}','name':'가','type':'Component','quote':first_chunk}
+                                for i in range(12)],
+                    'aliases':[],'relations':[]}
+        doc=self.new_doc(first_chunk+second_chunk)
+        first,calls=self.run_job(doc,[dictionary,TimeoutError('synthetic timeout')])
+        checkpoint=self.checkpoint(first)
+        self.assertEqual(first['status'],'error')
+        self.assertEqual(json.loads(checkpoint.read_text(encoding='utf-8'))['offset'],4000)
+        self.assertGreater(checkpoint.stat().st_size,128_000)
+        second,calls=self.run_job(doc,[EMPTY])
+        self.assertEqual(second['status'],'success',second['detail'])
+        self.assertEqual([call['offset'] for call in calls],[4000])
+
     def test_timeout_resume_lineage_and_pending_finalization(self):
         doc=self.new_doc(SOURCE.ljust(4000)+('B'*4000)+('C'*20))
         first,calls=self.run_job(doc,[DICTIONARY,TimeoutError('CLI 실행 시간 제한 초과')])
@@ -187,8 +236,9 @@ class Pipeline(unittest.TestCase):
             first,_=self.run_job(doc,[DICTIONARY,TimeoutError('timeout')]);path=self.checkpoint(first)
             if mode=='missing':path.unlink()
             elif mode=='corrupt':path.write_text('{')
-            elif mode=='large':path.write_text(' '*128001)
+            elif mode=='large':path.write_text(' '*(CHECKPOINT_LIMIT+1))
             else:
+                if os.name=='nt':continue
                 target=self.root/f'{mode}.json';target.write_bytes(path.read_bytes());path.unlink();path.symlink_to(target)
             result,calls=self.run_job(doc,[DICTIONARY,EMPTY])
             self.assertEqual(result['status'],'success');self.assertEqual(calls[0]['offset'],0)

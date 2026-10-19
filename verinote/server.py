@@ -13,10 +13,12 @@ from .agents import CLI_PROVIDERS, PROVIDERS, TRANSPORTS, executable, validate_m
 from .model_catalog import ModelCatalog
 from .config import ConfigError, Credentials, create_config, load_config
 from .documents import MAX_BYTES, MAX_TEXT, decode_document
+from .ontology import MAX_DICTIONARY_BYTES
 from .service import Service, text
 from .store import Conflict, Store
 
 MAX_JSON_BYTES = 6 * 1024 * 1024
+MAX_DICTIONARY_JSON_BYTES = MAX_DICTIONARY_BYTES + 2 * 1024 * 1024
 MAX_BASE64_CHARS = ((MAX_BYTES + 2) // 3) * 4
 MAX_UPLOAD_JSON_BYTES = MAX_BASE64_CHARS + 64 * 1024
 DOCUMENT_LIMITS = {'original_bytes': MAX_BYTES, 'text_chars': MAX_TEXT, 'pdf_pages': 200, 'docx_expanded_bytes': 16 * 1024 * 1024}
@@ -172,7 +174,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(self.server.service.start(doc_id, data.get('agent'), data.get('model', ''), parts[3], data.get('expected_version'), data.get('expected_generation')), 202)
             if len(parts) == 4 and parts[:2] == ['api', 'items']:
                 if parts[3] == 'review' and method == 'POST':
-                    d = self.body()
+                    d = self.body(MAX_DICTIONARY_JSON_BYTES)
                     return self.send(store.review(parts[2], d.get('revision'), d.get('action'), d.get('actor'), d.get('reason'), d.get('payload')))
                 if parts[3] == 'history' and method == 'GET':
                     return self.send(store.history(parts[2]))

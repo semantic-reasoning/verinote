@@ -4,14 +4,14 @@ import json
 from .call_validation import caller_validation
 from .documents import bounded_spans
 from .ontology import (DICTIONARY_CHUNK_SIZE, DICTIONARY_PROMPT, LIMITS, MERGE_CONTRACT_VERSION,
-                       MAX_DICTIONARY_CALLS, SOURCE_SPAN_SIZE, SOURCE_SPAN_MIN_SIZE, bounded_prompt,
+                       MAX_DICTIONARY_BYTES, MAX_DICTIONARY_CALLS, SOURCE_SPAN_SIZE, SOURCE_SPAN_MIN_SIZE, bounded_prompt,
                        dictionary_context, merge_dictionary, resolve_dictionary,
                        source_spans, validate_dictionary)
 from .store import canonical, digest
 from .usage import atomic_json, safe_file
 
 PIPELINE = 'source-spans-v1'
-CHECKPOINT_LIMIT = 128_000
+CHECKPOINT_LIMIT = MAX_DICTIONARY_BYTES + 2 * 1024 * 1024
 
 
 def generate_dictionary(store, cli, root, run, doc):
