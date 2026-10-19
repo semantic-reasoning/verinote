@@ -429,6 +429,34 @@ class UsageHTTP(unittest.TestCase):
     tearDown=workflow.HTTP.tearDown
     request=workflow.HTTP.request
 
+    def test_http_record_allowlist_never_exposes_local_response(self):
+        from verinote.http_records import HTTPRecord, update_caller_validation
+        from verinote.transports import ExecutionOptions, SafeCallResult
+        doc = self.store.register('synthetic', 's.md', SOURCE.encode(), SOURCE)
+        run = legacy_run(self.store, doc['id'])
+        with self.store.connect(True) as db:
+            db.execute('UPDATE runs SET agent=?,model=?,status=? WHERE id=?', ('openrouter','vendor/model','success',run['id']))
+        folder = self.service.root.resolve()/'runs'/run['id']/'1'
+        writer = HTTPRecord(folder, 'a'*32, model='vendor/model', phase=None, prompt_hash='0'*64,
+                            started_at='2026-10-19', options=ExecutionOptions(), rate=None, max_output=1024*1024).begin()
+        meta = {'usage': {'prompt_tokens': 100, 'completion_tokens': 20,
+                         'prompt_tokens_details': {'cached_tokens': 0, 'cache_write_tokens': 0}, 'cost': .25},
+                'validation_status': 'valid', 'http_status': 200, 'generation_id': 'gen-synthetic'}
+        writer.consume(SafeCallResult('a'*32, 'success', meta, True, {'private': 'PRIVATE_SENTINEL'}))
+        writer.adapter_finished(True)
+        self.assertTrue(update_caller_validation(folder, 'a'*32, 'success'))
+        result = self.request('/api/runs/'+run['id'])
+        details = result['usage']['details']
+        self.assertEqual(details[0]['transport'], 'http')
+        self.assertEqual(details[0]['http_status'], 200)
+        self.assertEqual(details[0]['caller_validation_status'], 'success')
+        self.assertNotIn('PRIVATE_SENTINEL', json.dumps(result))
+        self.assertNotIn('prompt_sha256', json.dumps(result))
+        self.assertEqual(self.request('/api/usage')['summary']['credits'][0]['value'], .25)
+        with self.assertRaises(HTTPError) as error:
+            self.request('/api/runs/'+run['id']+'/response.json')
+        self.assertEqual(error.exception.code, 404); error.exception.close()
+
     def test_endpoints_rates_validation_enrichment_and_origin(self):
         self.assertEqual(self.request('/api/usage-rates'),{})
         self.assertEqual(self.request('/api/usage-rates','PUT',{'agy':RATE}),{'agy':RATE})

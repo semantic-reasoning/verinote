@@ -114,6 +114,10 @@ class CLI:
         return bool(self.http_adapter is not None and self._credentials is not None
                     and self.http_adapter.ready(self._credentials))
 
+    def update_caller_validation(self, folder, call_id, status):
+        from .http_records import update_caller_validation
+        return update_caller_validation(folder, call_id, status)
+
     def complete(self, agent, model, prompt, folder, *, phase=None):
         if agent not in PROVIDERS:
             raise ValueError('지원하지 않는 에이전트')
@@ -123,34 +127,59 @@ class CLI:
             if not self.ready(agent):
                 raise ValueError('OpenRouter HTTP 어댑터 또는 API 자격 증명이 구성되지 않았습니다.')
             call_id = uuid4().hex
+            from .http_records import HTTPRecord
+            from .openrouter import _contains_secret
+            options = self.execution_options(agent, phase)
+            rate = self.rates().get(agent)
+            key = self._credentials.api_key
+            record = HTTPRecord(
+                folder, call_id, model=None if _contains_secret(model, key) else model,
+                phase=phase, prompt_hash=None if _contains_secret(prompt, key) else digest(prompt.encode()),
+                started_at=now(), options=options,
+                rate=None if _contains_secret(rate, key) else rate, max_output=self.max_output).begin()
             adapter = self.http_adapter
             from .openrouter import OpenRouter
             if isinstance(adapter, OpenRouter):
                 adapter = adapter.with_max_output(self.max_output)
-            result = adapter.complete(
-                agent, model, prompt, Path(folder), phase=phase,
-                options=self.execution_options(agent, phase),
-                credentials=self._credentials, call_id=call_id)
+            try:
+                result = adapter.complete(
+                    agent, model, prompt, Path(folder), phase=phase,
+                    options=options, credentials=self._credentials, call_id=call_id)
+            except Exception:
+                record.no_envelope()
+                raise
             if not isinstance(result, HTTPResult) or result.envelope.call_id != call_id:
+                record.no_envelope()
                 raise ValueError('HTTP 어댑터 호출 결과 계약 오류')
+            record.consume(result.envelope)
             if self.sink is not None:
                 try:
                     self.sink(result.envelope)
                 except Exception:
                     pass  # Optional telemetry cannot replace the primary outcome.
             if result.error_code is not None:
+                record.adapter_finished(False)
                 from .openrouter import ERROR_MESSAGES
                 message = ERROR_MESSAGES.get(result.error_code, 'HTTP 제공자 호출 실패')
                 if result.error_code == 'timeout':
                     raise TimeoutError(message)
                 raise ValueError(message)
             if result.envelope.transport_status == 'timeout':
+                record.adapter_finished(False)
                 raise TimeoutError('HTTP 실행 시간 제한 초과')
             if result.envelope.transport_status != 'success':
+                record.adapter_finished(False)
                 raise ValueError('HTTP 제공자 호출 실패')
             if not isinstance(result.response, str):
+                record.adapter_finished(False)
                 raise ValueError('HTTP 최종 응답이 없습니다.')
-            return parse_response(agent, result.response)[0]
+            try:
+                parsed = parse_response(agent, result.response)[0]
+            except (ValueError, TypeError):
+                record.adapter_finished(False)
+                raise
+            record.adapter_finished(True)
+            return parsed
         folder = Path(folder)
         folder.mkdir(parents=True, exist_ok=True)
         (folder / 'prompt.txt').write_text(prompt, encoding='utf-8')
