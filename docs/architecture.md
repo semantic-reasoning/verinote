@@ -228,3 +228,66 @@ the envelope. Sink file storage is owned by #706; the HTTP branch creates no
 files or subprocesses. `tests/test_transports.py::FakeHTTP` is the synthetic
 fixture for this boundary; it exercises safe success, parsing failure, and
 terminal failures without external API calls. API/UI availability is #708.
+
+## Bounded OpenRouter HTTP adapter (#705)
+
+`openrouter.OpenRouter(max_output=1048576)` implements the trusted HTTP boundary.
+Inject it explicitly into `CLI(http_adapter=..., credentials=..., sink=...)`.
+`transports.Credentials.from_server(config_credentials)` bridges the already
+loaded #703 memory credential. This adapter never loads files or environment
+keys, writes logs, or normalizes usage. Startup/pipeline wiring remains #707.
+`CLI.max_output` applies through a per-call adapter copy using the smaller of
+the CLI and adapter limits; shared adapter state and fake adapter signatures
+are unchanged. `ExecutionOptions` supplies pinned timeout/max_tokens.
+
+The adapter performs exactly one direct verified-TLS POST to
+`https://openrouter.ai/api/v1/chat/completions`, with only model, a user prompt
+message, `stream=false`, and max_tokens in the JSON body. It refuses redirects,
+compressed responses, retries, extra lookups, application fallback, and custom
+endpoints/headers. OpenRouter's default upstream routing remains unchanged.
+The request/response shape follows the [official API reference](https://openrouter.ai/docs/api_reference/overview);
+[HTTP errors](https://openrouter.ai/docs/api_reference/errors-and-debugging)
+map to static diagnostics, never provider messages.
+
+A monotonic deadline covers configuration, DNS/connect/TLS, request transmission,
+headers, incremental body reads and validation. A bounded daemon worker owns the
+connection; the caller stops waiting at the total deadline, marks cancellation,
+and shuts down its retained socket (including after the HTTP response takes ownership). Connect/send guards prevent a delayed resolver or
+handshake from sending credentials after cancellation. Python cannot terminate
+an operating-system resolver: a stuck resolver retains one of eight worker
+slots until it returns. Busy capacity fails before sending instead of spawning
+unbounded threads. Timed-out workers cannot publish late results. Owned
+connections close when their worker exits. A local deadline neither proves
+remote cancellation nor that a transmitted request was unbilled.
+
+Both success/error bodies are read incrementally with the output bound plus one
+byte, independent of advertised Content-Length. Requests ask for connection close;
+nonchunked responses are read to EOF and any declared-length mismatch fails.
+Chunked framing is handled by the standard library. Unsupported Content-Encoding
+fails without a payload. `MAX_METADATA` (256 KiB) separately caps extracted safe
+metadata; oversized or invalidly typed usage is omitted; documented `is_byok` booleans and nullable `server_tool_cost` are retained, while a verified complete
+payload can still fit the larger body limit.
+
+A response must contain exactly one choice, nonempty string content and finish
+reason `stop`; provider errors, refusal, native tool calls, abnormal finish,
+reasoning-only output and invalid/nonobject domain JSON fail. Domain dictionaries
+still need the caller's ontology/evidence validation. The adapter checks raw
+strings and decoded JSON keys/string values (including JSON unicode escapes and
+embedded domain objects) for the known key before returning content, payload or
+usage. Outbound prompts/models containing the known key are blocked before
+transmission. This detects known plaintext/JSON escapes, not arbitrary encodings.
+Untrusted exception strings and parser documents/chains never cross the boundary.
+
+`HTTPResult.error_code` selects a static diagnostic after sink delivery.
+A complete checked HTTP exchange uses transport status `success` even for HTTP
+401/429/5xx or invalid domain content: `safe_metadata.validation_status` and
+`error_code` distinguish provider/domain failure from transport completion.
+`transmission_state` is `not_sent`, `sent_unknown`, or `received`.
+Safe metadata includes HTTP status, requested/resolved model, validated `gen-`
+generation ID and raw finite numeric usage with documented boolean/nullable fields when present. Invalid content can
+retain verified usage and payload. Key echoes, oversized/incomplete responses,
+and unverifiable JSON have no payload or response-derived usage. No request,
+headers, raw exceptions or unchecked text are sent to the sink. #706 owns safe
+payload storage and usage normalization. Offline fixtures in
+`tests/test_openrouter.py` include socketpair HTTP framing and real-time slow
+header/body and delayed-connect cancellation tests, without paid API requests.

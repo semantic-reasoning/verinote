@@ -25,6 +25,14 @@ class Credentials:
     """Server-memory-only value. Never serialize this object."""
     api_key: str = field(repr=False)
 
+    @classmethod
+    def from_server(cls, credentials):
+        """Explicit bridge from the already-loaded #703 server-memory value."""
+        from .config import Credentials as ServerCredentials
+        if not isinstance(credentials, ServerCredentials):
+            raise TypeError('서버 자격 증명이 필요합니다.')
+        return cls(credentials.openrouter_key())
+
     def __post_init__(self):
         if not isinstance(self.api_key, str) or not self.api_key.strip():
             raise ValueError('OpenRouter API 자격 증명이 구성되지 않았습니다.')
@@ -57,6 +65,7 @@ class SafeCallResult:
 class HTTPResult:
     envelope: SafeCallResult
     response: str | None = field(default=None, repr=False)
+    error_code: str | None = None
 
 
 class HTTPAdapter(Protocol):
