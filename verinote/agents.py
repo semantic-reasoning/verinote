@@ -6,6 +6,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import time
 from uuid import uuid4
 
@@ -23,7 +24,19 @@ def executable(agent):
     if agent not in CLI_PROVIDERS:
         return None
     names = ['cursor-agent', 'agent'] if agent == 'cursor' else [agent]
-    return next((shutil.which(n) for n in names if shutil.which(n)), None)
+    for name in names:
+        if binary := shutil.which(name):
+            return binary
+    if agent == 'copilot' and sys.platform == 'win32':
+        # Long-lived server processes can inherit PATH before CLI installation.
+        for variable, parts in [('LOCALAPPDATA', ('Microsoft', 'WinGet', 'Links')),
+                                ('APPDATA', ('npm',))]:
+            if root := os.environ.get(variable):
+                directory = Path(root).joinpath(*parts)
+                for name in ('copilot.exe', 'copilot.cmd'):
+                    if binary := shutil.which(name, path=str(directory)):
+                        return binary
+    return None
 
 
 def validate_model(model, agent=None):
