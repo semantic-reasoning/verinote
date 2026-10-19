@@ -156,6 +156,11 @@ class CatalogAPI(unittest.TestCase):
     tearDown=workflow.HTTP.tearDown
     request=workflow.HTTP.request
 
+    def test_catalog_route_uses_current_server_and_returns_status_not_404(self):
+        with patch('verinote.model_catalog.executable',return_value=None):
+            result=self.request('/api/providers/copilot/models','POST',{})
+        self.assertEqual(result['status'],'not_installed')
+
     def test_only_cli_empty_body_same_origin_and_safe_result(self):
         catalog=self.server.model_catalog
         result={'status':'ok','models':[{'id':'vendor/model','name':'Model'}],'message':'catalog'}
