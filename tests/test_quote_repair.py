@@ -1,14 +1,24 @@
 """Synthetic regressions for bounded exact-source quotation repair."""
 import copy
 import json
-from pathlib import Path
-from unittest.mock import patch
 import unittest
+from unittest.mock import patch
 
 import test_workflow as workflow
-from test_workflow import DICTIONARY, FACTS, PAGE, SOURCE, approved_dictionary, extraction_response
-from verinote.ontology import (QUOTE_REPAIR_PROMPT, apply_quote_repairs,
-                               bounded_prompt, extraction_quote_issues)
+from test_workflow import (
+    DICTIONARY,
+    FACTS,
+    SOURCE,
+    approved_dictionary,
+    extraction_response,
+)
+
+from verinote.ontology import (
+    QUOTE_REPAIR_PROMPT,
+    apply_quote_repairs,
+    bounded_prompt,
+    extraction_quote_issues,
+)
 from verinote.service import Service
 
 
@@ -169,7 +179,7 @@ class QuoteRepair(unittest.TestCase):
         for action in ('pending', 'revise'):
             def revoke():
                 d = self.dictionary
-                self.store.review(d['id'], d['revision'], action, 'Reviewer', 'changed during repair', DICTIONARY if action == 'revise' else None)
+                self.store.review(d['id'], d['revision'], action, 'Reviewer', 'changed during repair', DICTIONARY if action == 'revise' else None)  # noqa: B023 (intentional: same-iteration action)
                 return repair()
             with self.subTest(action=action):
                 run, doc, calls = self.execute([broken(), revoke])

@@ -3,18 +3,18 @@ import copy
 from dataclasses import replace
 import json
 import os
-from pathlib import Path
 import re
 import shutil
 import signal
 import subprocess
 import sys
 import time
+from pathlib import Path
+from typing import Any, Callable
 from uuid import uuid4
 
-from .transports import Credentials, ExecutionOptions, HTTPResult
-
 from .store import digest, now
+from .transports import Credentials, ExecutionOptions, HTTPResult
 from .usage import MAX_METADATA, atomic_json, calculate, decode_transport, empty_usage
 
 PROVIDERS = {'claude': 'Claude', 'agy': 'Antigravity', 'copilot': 'GitHub Copilot', 'cursor': 'Cursor', 'codex': 'Codex', 'openrouter': 'OpenRouter (API)'}
@@ -118,7 +118,7 @@ class CLI:
     def __init__(self, timeout=None, max_output=1024 * 1024, rates=None, *,
                  http_adapter=None, credentials=None, sink=None, options=None):
         self.timeout, self.max_output = timeout, max_output
-        self.rates = rates or (lambda: {})
+        self.rates: Callable[[], Any] = rates or (lambda: {})
         self.http_adapter, self._credentials, self.sink = http_adapter, credentials, sink
         if credentials is not None and not isinstance(credentials, Credentials):
             raise TypeError('credentials는 Credentials여야 합니다.')
@@ -237,7 +237,7 @@ class CLI:
         usage = empty_usage(agent, model, self.rates().get(agent))
         timeout = self.effective_timeout(agent, phase)
         meta = {'agent': agent, 'model': model, 'phase': phase, 'prompt_sha256': digest(prompt.encode()), 'started_at': now(), 'status': 'running', 'timeout_seconds': timeout}
-        def record(status, **fields):
+        def record_meta(status, **fields):
             meta.update(status=status, **fields)
             atomic_json(folder / 'run.json', meta)
         def capture():
@@ -258,7 +258,7 @@ class CLI:
             return answer, error
         usage['started_at'] = meta['started_at']
         atomic_json(folder / 'usage.json', usage)
-        record('running')
+        record_meta('running')
         proc = None
         captured = False
         try:
@@ -295,7 +295,7 @@ class CLI:
             except json.JSONDecodeError as exc:
                 raise json.JSONDecodeError(f'{PROVIDERS[agent]} 최종 JSON 응답 형식 오류: {exc.msg}', exc.doc, exc.pos) from exc
             usage['status'] = 'success'
-            record('success', returncode=proc.returncode, response_normalizations=normalizations)
+            record_meta('success', returncode=proc.returncode, response_normalizations=normalizations)
             return result
         except Exception as exc:
             if proc and proc.poll() is None:
@@ -309,7 +309,7 @@ class CLI:
             if not proc or proc.returncode:
                 usage['complete'] = False
             try:
-                record('error', error=str(exc))
+                record_meta('error', error=str(exc))
             except OSError:
                 pass  # Preserve the primary failure if log storage is unavailable.
             raise
@@ -320,6 +320,6 @@ class CLI:
             except OSError:
                 # Optional telemetry must preserve both valid responses and primary failures.
                 try:
-                    record(meta['status'], usage_warning='사용량 저장에 실패해 이 호출의 사용량 기록이 불완전합니다.')
+                    record_meta(meta['status'], usage_warning='사용량 저장에 실패해 이 호출의 사용량 기록이 불완전합니다.')
                 except OSError:
                     pass

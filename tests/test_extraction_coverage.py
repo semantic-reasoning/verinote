@@ -1,18 +1,34 @@
 """Synthetic contract tests, not measurements of real-model semantic recall."""
 import copy
 import json
-from pathlib import Path
 import subprocess
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import test_workflow as workflow
-from test_workflow import (DICTIONARY, FACTS, PAGE, SOURCE, approved_dictionary,
-                           extraction_response)
-from verinote.extraction_coverage import (MAX_REPORT_BYTES, chunk_report, new_report,
-                                         read_report, validate_accounting, write_report)
-from verinote.ontology import (EXTRACTION_CONTRACT_VERSION, EXTRACTION_PROMPT,
-                               bounded_prompt, dictionary_context, extraction_quote_issues)
+from test_workflow import (
+    DICTIONARY,
+    FACTS,
+    PAGE,
+    SOURCE,
+    approved_dictionary,
+    extraction_response,
+)
+
+from verinote.extraction_coverage import (
+    MAX_REPORT_BYTES,
+    read_report,
+    validate_accounting,
+    write_report,
+)
+from verinote.ontology import (
+    EXTRACTION_CONTRACT_VERSION,
+    EXTRACTION_PROMPT,
+    bounded_prompt,
+    dictionary_context,
+    extraction_quote_issues,
+)
 from verinote.service import Service
 from verinote.store import Conflict, canonical
 
@@ -164,7 +180,7 @@ class CoverageWorkflow(unittest.TestCase):
             from verinote.usage import atomic_json
             events=iter(failures)
             def write(path,value):
-                event=next(events)
+                event=next(events)  # noqa: B023 (intentional: same-iteration events)
                 if event:raise event
                 return atomic_json(path,value)
             count=len(failures)
@@ -204,7 +220,7 @@ class CoverageWorkflow(unittest.TestCase):
             db.execute('UPDATE runs SET ontology=? WHERE id=?',(canonical(pin),run['id']))
         self.store.run_status(run['id'],'running');self.store.finish_run(run['id'],PAGE,FACTS)
         items=[i for i in self.store.document(self.doc['id'])['items'] if i['kind']!='ontology']
-        for item,status in zip(items,('approved','held','rejected')):
+        for item,status in zip(items,('approved','held','rejected'),strict=True):
             self.store.review(item['id'],item['revision'],status,'Reviewer','keep history')
         before={i['id']:i for i in self.store.document(self.doc['id'])['items']}
         with self.store.connect() as db:events=[tuple(r) for r in db.execute('SELECT * FROM events ORDER BY seq')]

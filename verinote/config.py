@@ -1,9 +1,9 @@
 """Server-only credentials. No environment-key input or public serialization."""
 import os
-from pathlib import Path
 import stat
 import sys
 import tomllib
+from pathlib import Path
 
 MAX_CONFIG_BYTES = 64 * 1024
 TEMPLATE = '# Server-only credentials; edit locally, then restart Verinote.\n[openrouter]\napi_key = ""\n'
@@ -78,7 +78,7 @@ def _load(path):
     except FileNotFoundError:
         if path is None:
             return Credentials()
-        raise ConfigError('지정한 설정 파일이 없습니다. --init-config로 먼저 생성하세요.')
+        raise ConfigError('지정한 설정 파일이 없습니다. --init-config로 먼저 생성하세요.') from None
     try:
         info = os.fstat(fd)
         _check_file(info)
@@ -155,7 +155,7 @@ def _create(path):
             fd = os.open(selected.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                          0o600, dir_fd=parent)
         except FileExistsError:
-            raise ConfigError('설정 파일이 이미 존재합니다. 기존 파일은 덮어쓰지 않습니다.')
+            raise ConfigError('설정 파일이 이미 존재합니다. 기존 파일은 덮어쓰지 않습니다.') from None
         try:
             # Only the newly and exclusively created descriptor is adjusted.
             os.fchmod(fd, 0o600)

@@ -2,8 +2,8 @@
 import copy
 import json
 import math
-from pathlib import Path
 import re
+from pathlib import Path
 
 AGENTS = {'agy', 'claude', 'copilot', 'cursor', 'codex', 'openrouter'}
 TOKEN_KEYS = ('input', 'output', 'cache_read', 'cache_write', 'reasoning')
@@ -301,7 +301,7 @@ def safe_file(root, relative, limit=MAX_METADATA):
 
 def http_public_fields(meta):
     """Allowlist context; raw payload, prompt hash and error text stay local."""
-    clean = {'transport': 'http'}
+    clean: dict[str, str|int|float|None] = {'transport': 'http'}
     rules = {
         'transport_status': ('running', 'success', 'error', 'timeout', 'not_started'),
         'transmission_state': ('not_sent', 'sent_unknown', 'received'),

@@ -3,8 +3,8 @@ import argparse
 import base64
 import binascii
 import difflib
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import sys
 from urllib.parse import parse_qs, urlsplit
@@ -37,6 +37,7 @@ class Server(ThreadingHTTPServer):
 
 
 class Handler(BaseHTTPRequestHandler):
+    server: Server
     def log_message(self, fmt, *args):
         pass
 

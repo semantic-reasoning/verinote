@@ -1,16 +1,16 @@
-import copy
 import concurrent.futures
+import copy
 import io
 import json
-from pathlib import Path
 import sys
 import tempfile
 import threading
 import unittest
+import zipfile
+from pathlib import Path
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
-import zipfile
 
 from verinote.agents import CLI, CLI_PROVIDERS, PROVIDERS, command
 from verinote.documents import decode_document
@@ -273,8 +273,8 @@ class ImportAndCLI(unittest.TestCase):
                         envelope = {'agy': {'status': 'SUCCESS', 'response': body}, 'claude': {'type': 'result', 'result': body},
                                     'cursor': {'type': 'result', 'subtype': 'success', 'result': body},
                                     'codex': {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': body}}}
-                        kwargs['stdout'].write((json.dumps(envelope[agent]) if agent in envelope else body).encode())
-                        return proc
+                        kwargs['stdout'].write((json.dumps(envelope[agent]) if agent in envelope else body).encode())  # noqa: B023 (intentional: same-iteration agent)
+                        return proc  # noqa: B023 (intentional: same-iteration proc)
                     with patch('verinote.agents.executable', return_value='/synthetic/cli'), \
                          patch('verinote.agents.subprocess.Popen', side_effect=launch), \
                          patch('verinote.agents.time.monotonic', side_effect=[1000, 1000 + elapsed]), \

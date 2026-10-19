@@ -1,11 +1,10 @@
 """Bounded model-selected tools; only the fixed engine can evaluate relations."""
-import json
-from pathlib import PurePath
 import re
 import unicodedata
+from pathlib import PurePath
 
-from .call_validation import caller_validation
 from . import engine
+from .call_validation import caller_validation
 from .store import canonical
 
 MAX_ROUNDS = 6
@@ -147,7 +146,7 @@ class Assistant:
 
     def knowledge_matches(self, term, scope, anchors=()):
         needle, matches, documents = normalized(term), [], []
-        page_hits = {k: [] for k in scope}
+        page_hits: dict[str, list[object]] = {k: [] for k in scope}
         for k in scope:
             d = self.documents[k]
             local = [a for a in anchors if a['document_id'] == k]
@@ -156,7 +155,7 @@ class Assistant:
                       else [f for f in ('title', 'filename') if needle in normalized(d[f])])
             def matches_text(value):
                 text = normalized(value)
-                return any(mentioned(v, text) for v in variants) if anchors else needle in text
+                return any(mentioned(v, text) for v in variants) if anchors else needle in text  # noqa: B023 (intentional: same-iteration variants)
             if fields:
                 documents.append(d | {'matched_fields': fields})
             for page in self.pages.values():

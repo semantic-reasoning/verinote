@@ -1,15 +1,14 @@
 import concurrent.futures
-from contextlib import closing
-import json
-from pathlib import Path
 import sqlite3
 import threading
 import unittest
+from contextlib import closing
 from unittest.mock import patch
 from urllib.error import HTTPError
 
 import test_workflow as workflow
-from test_workflow import SOURCE, PAGE, FACTS
+from test_workflow import SOURCE
+
 from verinote.engine import query
 from verinote.service import Service
 from verinote.store import Conflict, Store
@@ -33,7 +32,7 @@ class Deletion(unittest.TestCase):
         original = self.doc
         self.approve(self.extract())
         old_snapshot = self.store.snapshot()
-        v2 = self.add_version()
+        self.add_version()
         self.approve(self.extract())
         removed_snapshot = self.store.snapshot()
         self.delete(True)
@@ -144,7 +143,7 @@ class Deletion(unittest.TestCase):
                 ready,release=threading.Event(),threading.Event()
                 method=store.create_question if operation=='question' else store.save_query
                 def delayed(*args):
-                    ready.set();release.wait(5);return method(*args)
+                    ready.set();release.wait(5);return method(*args)  # noqa: B023 (intentional: same-iteration ready/release/method)
                 with patch.object(store,'create_question' if operation=='question' else 'save_query',side_effect=delayed):
                     with concurrent.futures.ThreadPoolExecutor() as pool:
                         future=pool.submit(service.ask,{'question':'q'}) if operation=='question' else pool.submit(service.query,{})

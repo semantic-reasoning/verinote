@@ -1,19 +1,34 @@
 """Telemetry from real protocol shapes, accounting boundaries and retained history."""
 import copy
 import json
-from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError
 
 import test_workflow as workflow
-from test_workflow import extraction_response, SOURCE, PAGE, FACTS, DICTIONARY, legacy_run
+from test_workflow import (
+    DICTIONARY,
+    FACTS,
+    SOURCE,
+    extraction_response,
+    legacy_run,
+)
+
 from verinote.agents import CLI, parse_response
 from verinote.service import Service
-from verinote.usage import (MAX_METADATA, atomic_json, calculate, decode_transport,
-                            empty_usage, job_calls, summarize, validate_rates)
+from verinote.usage import (
+    MAX_METADATA,
+    atomic_json,
+    calculate,
+    decode_transport,
+    empty_usage,
+    job_calls,
+    summarize,
+    validate_rates,
+)
 
 FIXTURES = Path(__file__).parent / 'fixtures' / 'usage'
 RATE = dict(model='', input=2, output=10, cache_read=.2, cache_write=2.5,
@@ -141,10 +156,10 @@ class Transport(unittest.TestCase):
                 script.write_text('#!/usr/bin/env python3\n' + body); script.chmod(0o755)
                 rates = {agent: copy.deepcopy(RATE)}
                 def launching(_):
-                    rates[agent]['input'] = 777  # Settings change after the invocation snapshot.
-                    return str(script)
+                    rates[agent]['input'] = 777  # Settings change after the invocation snapshot.  # noqa: B023 (intentional: same-iteration rates/agent)
+                    return str(script)  # noqa: B023 (intentional: same-iteration script)
                 with patch('verinote.agents.executable', side_effect=launching):
-                    self.assertEqual(CLI(rates=lambda:rates).complete(agent,'','synthetic',root/agent), {'ok':True})
+                    self.assertEqual(CLI(rates=lambda:rates).complete(agent,'','synthetic',root/agent), {'ok':True})  # noqa: B023 (intentional: same-iteration rates)
                 u = json.loads((root/agent/'usage.json').read_text())
                 self.assertEqual(u['status'],'success'); self.assertTrue(u['complete'])
                 self.assertEqual(u['rate_snapshot'],RATE)

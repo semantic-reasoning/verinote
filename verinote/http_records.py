@@ -6,10 +6,10 @@ supply trusted canonical folders, never paths from a public request.
 """
 import json
 import os
-from pathlib import Path
 import re
 import stat
 import threading
+from pathlib import Path
 from uuid import uuid4
 
 from .store import now

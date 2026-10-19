@@ -1,8 +1,8 @@
 """Real Wirelog evaluation with deterministic, source-backed witness paths."""
+import threading
 from collections import deque
 from importlib.metadata import version
 from pathlib import Path
-import threading
 
 from .store import digest
 
@@ -11,7 +11,7 @@ LOCK = threading.Lock()
 
 
 def witness(facts, source, target, predicate):
-    queue = deque([(source, [])])
+    queue: deque[tuple[str, list[str]]] = deque([(source, [])])
     seen = {source}
     while queue:
         node, path = queue.popleft()

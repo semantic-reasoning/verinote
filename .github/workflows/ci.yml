@@ -1,0 +1,60 @@
+name: Python CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-26.04
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install package
+        run: pip install -e .
+      - name: Run unit tests
+        run: python -m unittest discover -s tests
+      - name: Check web frontend syntax
+        run: node --check verinote/web/app.js
+
+  lint:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned linters
+        run: pip install ruff==0.15.18 mypy==2.4.0
+      - name: Run ruff
+        run: ruff check verinote tests
+      - name: Run mypy
+        run: mypy verinote
+
+  packaging-smoke:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned build tool
+        run: pip install build==1.6.1
+      - name: Build distributions
+        run: python -m build
+      - name: Smoke test installed wheel
+        run: |
+          python -m venv .smoke
+          .smoke/bin/pip install dist/*.whl
+          .smoke/bin/verinote --help

@@ -1,22 +1,27 @@
 """Offline full HTTP pipeline, queued snapshots, recovery and caller verdicts."""
-import copy
 import json
-from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-from test_workflow import SOURCE, DICTIONARY, FACTS, extraction_response, approved_dictionary
+from test_assistant import answer, tool
 from test_ontology import wire_dictionary
-from test_assistant import tool, answer
-from test_openrouter import Response, Connection
-from verinote.agents import CLI
+from test_openrouter import Connection, Response
+from test_workflow import (
+    DICTIONARY,
+    FACTS,
+    SOURCE,
+    approved_dictionary,
+    extraction_response,
+)
+
 from verinote.config import Credentials
-from verinote.openrouter import OpenRouter
 from verinote.service import Service
 from verinote.store import SCHEMA, Store, digest
-from verinote.transports import Credentials as TransportCredentials, ExecutionOptions
+from verinote.transports import Credentials as TransportCredentials
+from verinote.transports import ExecutionOptions
 from verinote.usage import job_calls
 
 KEY = 'sk-or-pipeline-synthetic-707'
@@ -217,7 +222,7 @@ class Pipeline(unittest.TestCase):
         fixture = Fixture([dictionary, TimeoutError('timeout'), dictionary, {'entities':[],'aliases':[],'relations':[]}])
         with patch('verinote.openrouter._HTTPS', side_effect=fixture):
             self.service.cli.options = ExecutionOptions(max_tokens=321)
-            old = self.start(); self.queue.drain()
+            self.start(); self.queue.drain()
             self.service.cli.options = ExecutionOptions(max_tokens=322)
             new = self.start(); self.queue.drain()
         self.assertEqual(len(self.calls(new)),2)

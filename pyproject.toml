@@ -19,3 +19,11 @@ verinote = ["rules.dl", "web/*"]
 
 [tool.setuptools.packages.find]
 include = ["verinote*"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "B"]
+extend-ignore = ["E501", "E701", "E702"]
+
+[tool.mypy]
+ignore_missing_imports = true
+check_untyped_defs = true

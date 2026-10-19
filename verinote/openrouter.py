@@ -7,6 +7,7 @@ import socket
 import ssl
 import threading
 import time
+from typing import Any
 
 from .transports import Credentials, HTTPResult, SafeCallResult
 from .usage import MAX_METADATA
@@ -150,7 +151,7 @@ def _usage(value):
     """Preserve raw numeric usage evidence, without normalization or pricing."""
     if not isinstance(value, dict):
         return None
-    pending = [((), value)]
+    pending: list[tuple[tuple[str, ...], Any]] = [((), value)]
     while pending:
         path, item = pending.pop()
         if isinstance(item, dict):
@@ -294,7 +295,7 @@ class OpenRouter:
         key = credentials.api_key
         if any(ord(c) < 33 or ord(c) > 126 for c in key):
             raise _Failure('configuration')
-        from .agents import validate_model, parse_response
+        from .agents import parse_response, validate_model
         try:
             model = validate_model(model, agent)
         except ValueError:

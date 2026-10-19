@@ -1,9 +1,9 @@
 """Bounded document decoding; originals are stored separately, unchanged."""
 import io
 import re
-from pathlib import Path
-import zipfile
 import xml.etree.ElementTree as ET
+import zipfile
+from pathlib import Path
 
 MAX_BYTES = 32 * 1024 * 1024
 MAX_TEXT = 128_000

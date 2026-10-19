@@ -2,13 +2,13 @@ import contextlib
 import io
 import json
 import os
-from pathlib import Path
 import pickle
 import stat
 import tempfile
 import traceback
-from types import SimpleNamespace
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from verinote import config

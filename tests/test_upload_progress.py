@@ -1,22 +1,26 @@
 """Real bounded containers + fake model/transport events, without paid calls."""
 import base64
-import copy
 import io
 import json
-from pathlib import Path
 import subprocess
 import unittest
+import zipfile
+from pathlib import Path
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 from urllib.request import urlopen
-import zipfile
 
 import test_workflow as workflow
-from test_workflow import SOURCE, DICTIONARY, approved_dictionary, extraction_response
+from test_workflow import DICTIONARY, SOURCE, approved_dictionary, extraction_response
+
 from verinote.documents import MAX_BYTES, decode_document
-from verinote.extraction_coverage import chunk_report, new_report, write_report
 from verinote.progress import analysis_progress
-from verinote.server import Handler, MAX_BASE64_CHARS, MAX_JSON_BYTES, MAX_UPLOAD_JSON_BYTES
+from verinote.server import (
+    MAX_BASE64_CHARS,
+    MAX_JSON_BYTES,
+    MAX_UPLOAD_JSON_BYTES,
+    Handler,
+)
 from verinote.service import Service
 from verinote.usage import atomic_json
 

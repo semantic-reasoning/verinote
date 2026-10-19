@@ -1,15 +1,28 @@
 import dataclasses
 import json
 import os
-from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
-from verinote.agents import CLI, CLI_PROVIDERS, PROVIDERS, TRANSPORTS, command, executable, validate_model
+from verinote.agents import (
+    CLI,
+    CLI_PROVIDERS,
+    PROVIDERS,
+    TRANSPORTS,
+    command,
+    executable,
+    validate_model,
+)
 from verinote.service import Service
-from verinote.transports import Credentials, ExecutionOptions, HTTPResult, SafeCallResult
+from verinote.transports import (
+    Credentials,
+    ExecutionOptions,
+    HTTPResult,
+    SafeCallResult,
+)
 
 
 class FakeHTTP:
