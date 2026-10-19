@@ -27,6 +27,14 @@ class JobTransport:
                    credentials=self.base._credentials, sink=self.base.sink, options=options)
         return call.complete(agent, model, prompt, folder, phase=phase)
 
+    def limited_timeout(self, agent, seconds):
+        timeout = min(self.effective_timeout(agent), seconds)
+        ExecutionOptions(timeout=timeout)
+        limited = copy.copy(self)
+        limited.options = copy.deepcopy(self.options)
+        limited.options['timeouts']['default'] = timeout
+        return limited
+
     def update_caller_validation(self, folder, call_id, status):
         return self.base.update_caller_validation(folder, call_id, status)
 

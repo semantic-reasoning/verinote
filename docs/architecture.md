@@ -426,7 +426,18 @@ explicit model ID; server output-limit changes require an administrator. For
 programmatic server construction the existing `CLI(options=ExecutionOptions(
 max_tokens=..., timeout=...))` sets a fixed token cap and explicit timeout for
 all phases. This is not a settings-screen control; defaults without that override
-retain ontology600/other180 seconds. Register a new job after any adjustment;
+retain ontology600/other180 seconds. CLI defaults use 600 seconds for
+Antigravity and Copilot, in addition to the 600-second ontology phase.
+Approved-dictionary extraction defaults to 360 seconds per chunk across the initial
+call and any quote repair, including jobs with larger explicit timeouts.
+Shorter explicit timeouts remain effective; ordinary provider defaults do not
+shorten the extraction budget. Timeout-only changes do not invalidate validated
+checkpoint content.
+Validated chunk prefixes are persisted in `extraction-checkpoint.json`, bound
+to source, dictionary revision/hash, provider/model, prompts and HTTP token/adapter options.
+Failed/interrupted jobs can reuse a compatible prefix after revalidation;
+partial results remain unpublished until the final DB transaction succeeds.
+Register a new job after any adjustment;
 queued jobs retain their old snapshot. No automatic resend or fallback is added.
 
 Usage screens use provider-reported cost labels for CLI/API, keep reported

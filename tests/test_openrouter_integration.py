@@ -123,7 +123,8 @@ class Integration(unittest.TestCase):
         self.assertEqual(len(fixture.requests),5)
         self.assertTrue(all(r['model']=='vendor/default' and r['max_tokens']==16384 for r in fixture.requests))
         self.assertTrue(599 < fixture.requests[0]['timeout'] <=600)
-        self.assertTrue(all(179 < r['timeout'] <=180 for r in fixture.requests[1:]))
+        self.assertTrue(all(359 < r['timeout'] <=360 for r in fixture.requests[1:3]))
+        self.assertTrue(all(179 < r['timeout'] <=180 for r in fixture.requests[3:]))
         records = [json.loads(p.read_text()) for p in (self.root/'runs'/extracted['id']).rglob('run.json')]
         self.assertEqual(sorted(r['caller_validation_status'] for r in records), ['failed','success'])
         self.assertEqual(len({r['provider_call_id'] for r in records}),2)

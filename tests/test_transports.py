@@ -162,7 +162,7 @@ class Transports(unittest.TestCase):
                 validate_model(model, 'openrouter')
         for agent in CLI_PROVIDERS:
             self.assertEqual(validate_model('', agent), '')
-            self.assertEqual(CLI().effective_timeout(agent), 600 if agent == 'agy' else 180)
+            self.assertEqual(CLI().effective_timeout(agent), 600 if agent in ('agy', 'copilot') else 180)
         self.assertEqual(CLI().execution_options('openrouter').max_tokens, 16384)
         self.assertEqual(CLI().effective_timeout('openrouter'), 180)
         self.assertEqual(CLI().effective_timeout('openrouter', 'ontology'), 600)

@@ -62,6 +62,23 @@ def analysis_progress(root, store, run_id, coverage=None):
             # read_report has already checked ownership, exact offsets and accounting.
             completed = sum(c['length'] for c in coverage['chunks'])
             count = len(coverage['chunks'])
+            raw = safe_file(root, f'runs/{run_id}/extraction-progress.json', 8192)
+            if raw:
+                marker = json.loads(raw)
+                previous = marker.get('resumed_from') if isinstance(marker, dict) else None
+                if (not isinstance(marker, dict)
+                        or type(marker.get('schema_version')) is not int or marker['schema_version'] != 1
+                        or marker.get('pipeline') != 'approved-extraction-v1' or marker.get('run_id') != run_id
+                        or marker.get('total_chars') != len(source)
+                        or type(marker.get('completed_chars')) is not int or marker['completed_chars'] != completed
+                        or type(marker.get('resumed_chars')) is not int
+                        or marker['resumed_chars'] not in ends | {0}
+                        or not 0 <= marker['resumed_chars'] <= completed
+                        or (previous is not None and (not isinstance(previous, str)
+                            or not re.fullmatch(r'[a-f0-9]{32}', previous) or previous == run_id))
+                        or bool(marker['resumed_chars']) != bool(previous)):
+                    return base
+                resumed = marker['resumed_chars']
         phase = 'saving' if status == 'running' and completed == len(source) else status
         return base | {'known': True, 'phase': phase, 'percent': min(99, completed * 100 // len(source)),
                        'completed_chars': completed, 'completed_chunks': count, 'resumed_chars': resumed}

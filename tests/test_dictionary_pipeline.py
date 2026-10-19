@@ -95,7 +95,7 @@ class SpanContract(unittest.TestCase):
         cli=CLI()
         for agent in CLI_PROVIDERS:
             self.assertEqual(cli.effective_timeout(agent,'ontology'),600)
-            self.assertEqual(cli.effective_timeout(agent),600 if agent=='agy' else 180)
+            self.assertEqual(cli.effective_timeout(agent),600 if agent in ('agy','copilot') else 180)
             for override in (0,.1,120):
                 self.assertEqual(CLI(timeout=override).effective_timeout(agent,'ontology'),override)
 
@@ -110,7 +110,7 @@ class SpanContract(unittest.TestCase):
                 kill.assert_called_once_with(proc);proc.wait.assert_called_once_with()
                 meta=json.loads((Path(tmp)/str(index)/'run.json').read_text())
                 self.assertEqual(meta['phase'],'ontology');self.assertEqual(meta['timeout_seconds'],600)
-                self.assertEqual(cli.effective_timeout(agent),600 if agent=='agy' else 180)
+                self.assertEqual(cli.effective_timeout(agent),600 if agent in ('agy','copilot') else 180)
 
 
 class Pipeline(unittest.TestCase):

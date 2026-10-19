@@ -257,9 +257,9 @@ class ImportAndCLI(unittest.TestCase):
     def test_provider_deadlines_and_explicit_overrides(self):
         shared = CLI()
         # Reuse the instance across providers in both orders; clock starts above zero.
-        cases = [(shared, agent, 600 if agent == 'agy' else 180, elapsed, elapsed > (600 if agent == 'agy' else 180))
+        cases = [(shared, agent, 600 if agent in ('agy', 'copilot') else 180, elapsed, elapsed > (600 if agent in ('agy', 'copilot') else 180))
                  for agent in ['copilot', 'agy', 'claude', 'cursor', 'codex', 'agy']
-                 for elapsed in ([181, 599, 601] if agent == 'agy' else [179, 181])]
+                 for elapsed in ([181, 599, 601] if agent in ('agy', 'copilot') else [179, 181])]
         cases += [(CLI(timeout=180), 'agy', 180, 181, True),
                   (CLI(.2), 'agy', .2, .3, True), (CLI(0), 'agy', 0, .1, True)]
         with tempfile.TemporaryDirectory() as tmp:

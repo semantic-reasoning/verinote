@@ -397,13 +397,15 @@ def job_calls(root, kind, owner):
                     clean['warnings'].append('HTTP 호출 기록이 종료 상태로 저장되지 않았습니다.')
         clean.update(call_id=f'{kind}/{key}/{path}', stage=stage, call_count_known=True)
         calls.append(clean)
-    if not calls and kind == 'runs' and owner.get('stage') == 'ontology' and owner['status'] == 'success':
+    if not calls and kind == 'runs' and owner.get('stage') in ('ontology', 'extract') and owner['status'] == 'success':
         # Positive evidence of a fully resumed run, never infer zero from absent logs.
-        raw = safe_file(root, f'runs/{key}/dictionary-progress.json')
+        filename, pipeline = (('dictionary-progress.json', 'source-spans-v1') if owner['stage'] == 'ontology'
+                              else ('extraction-progress.json', 'approved-extraction-v1'))
+        raw = safe_file(root, f'runs/{key}/{filename}')
         try:
             marker = json.loads(raw) if raw else {}
             if (isinstance(marker, dict) and type(marker.get('schema_version')) is int and marker['schema_version'] == 1
-                    and marker.get('pipeline') == 'source-spans-v1' and marker.get('run_id') == key
+                    and marker.get('pipeline') == pipeline and marker.get('run_id') == key
                     and marker.get('status') == 'complete' and type(marker.get('calls_started')) is int and marker['calls_started'] == 0
                     and isinstance(marker.get('resumed_from'), str) and re.fullmatch(r'[a-f0-9]{32}', marker['resumed_from'])
                     and marker['resumed_from'] != key and type(marker.get('total_chars')) is int and 0 < marker['total_chars'] <= 128_000
