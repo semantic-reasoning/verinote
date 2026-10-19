@@ -1,6 +1,7 @@
 """Read-only installed-CLI model catalogs. Never submit a user prompt."""
 import json
 import os
+import queue
 import re
 import selectors
 import signal
@@ -41,17 +42,32 @@ class _Process:
         self.deadline = self.end - min(1, timeout / 10)
         self.counts = {'out': 0, 'err': 0}
         self.buffer = b''
-        self.selector = selectors.DefaultSelector()
+        self.selector = None
+        self.output_queue = None
         env = os.environ.copy()
         env.pop('OPENROUTER_API_KEY', None)
         try:
+            options = {'creationflags': getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0)} if os.name == 'nt' else {'start_new_session': True}
             self.proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                         stderr=subprocess.PIPE, cwd=cwd, env=env, start_new_session=True, bufsize=0)
+                                         stderr=subprocess.PIPE, cwd=cwd, env=env, bufsize=0, **options)
         except BaseException:
-            self.selector.close()
             raise
-        for stream, name in ((self.proc.stdout, 'out'), (self.proc.stderr, 'err')):
-            self.selector.register(stream, selectors.EVENT_READ, name)
+        if os.name == 'nt':
+            self.output_queue = queue.Queue()
+            self.open_streams = {'out', 'err'}
+            for stream, name in ((self.proc.stdout, 'out'), (self.proc.stderr, 'err')):
+                threading.Thread(target=self._read_stream, args=(stream, name), daemon=True).start()
+        else:
+            self.selector = selectors.DefaultSelector()
+            for stream, name in ((self.proc.stdout, 'out'), (self.proc.stderr, 'err')):
+                self.selector.register(stream, selectors.EVENT_READ, name)
+
+    def _read_stream(self, stream, name):
+        try:
+            while data := stream.read(65536):
+                self.output_queue.put((name, data))
+        finally:
+            self.output_queue.put((name, None))
 
     def remaining(self):
         left = self.deadline - time.monotonic()
@@ -60,7 +76,22 @@ class _Process:
         return left
 
     def read(self):
-        while self.selector.get_map():
+        while self.open_streams if self.output_queue is not None else self.selector.get_map():
+            if self.output_queue is not None:
+                try:
+                    name, data = self.output_queue.get(timeout=self.remaining())
+                except queue.Empty:
+                    raise CatalogError('timeout') from None
+                if data is None:
+                    self.open_streams.remove(name)
+                    continue
+                self.counts[name] += len(data)
+                if self.counts[name] > (MAX_STDOUT if name == 'out' else MAX_STDERR):
+                    raise CatalogError('too_large')
+                if name == 'out':
+                    self.buffer += data
+                    return True
+                continue
             events = self.selector.select(self.remaining())
             if not events:
                 raise CatalogError('timeout')
@@ -134,17 +165,31 @@ class _Process:
         return self.buffer.decode('utf-8')
 
     def close(self):
-        # Kill our isolated process group, including descendants holding pipes.
-        try:
-            os.killpg(self.proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        try:
+        if os.name == 'nt':
+            if self.proc.poll() is None:
+                try:
+                    subprocess.run(['taskkill', '/PID', str(self.proc.pid), '/T', '/F'],
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, timeout=2, check=False)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+                if self.proc.poll() is None:
+                    self.proc.kill()
+            try:
+                self.proc.wait(timeout=max(.001, self.end-time.monotonic()))
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.wait()
+        else:
+            # Kill our isolated process group, including descendants holding pipes.
+            try:
+                os.killpg(self.proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             self.proc.wait(timeout=max(.001, self.end-time.monotonic()))
-        finally:
             self.selector.close()
-            for stream in (self.proc.stdin, self.proc.stdout, self.proc.stderr):
-                stream.close()
+        for stream in (self.proc.stdin, self.proc.stdout, self.proc.stderr):
+            stream.close()
 
 
 def _args(agent):
@@ -249,7 +294,7 @@ class ModelCatalog:
         if agent not in CLI_PROVIDERS:
             raise ValueError('CLI 제공자의 모델 목록만 조회할 수 있습니다.')
         models, status = [], 'unavailable'
-        if os.name != 'posix':
+        if os.name != 'posix' and agent != 'copilot':
             return self.result('unsupported')
         lock = self.locks[agent]
         if not lock.acquire(blocking=False):

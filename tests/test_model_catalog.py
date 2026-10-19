@@ -73,7 +73,8 @@ class Catalog(unittest.TestCase):
             return ModelCatalog(timeout).discover(agent)
 
     def test_each_protocol_and_pagination_without_prompts_or_key_environment(self):
-        for agent in ('agy','cursor','claude','codex','copilot'):
+        agents = ('agy','cursor','claude','codex','copilot') if os.name == 'posix' else ('copilot',)
+        for agent in agents:
             with self.subTest(agent=agent):
                 (self.root/'messages.jsonl').unlink(missing_ok=True)
                 result=self.discover(agent)
@@ -82,7 +83,8 @@ class Catalog(unittest.TestCase):
                 if agent in ('agy','cursor','codex'):self.assertEqual(len(result['models']),2)
                 audit=json.loads((self.root/'audit.json').read_text());self.assertFalse(audit['key_present'])
                 # Every process is reaped on successful inventory, too.
-                with self.assertRaises(ProcessLookupError):os.kill(audit['pid'],0)
+                if os.name == 'posix':
+                    with self.assertRaises(ProcessLookupError):os.kill(audit['pid'],0)
                 if (self.root/'messages.jsonl').exists():
                     messages=[json.loads(x) for x in (self.root/'messages.jsonl').read_text().splitlines()]
                     self.assertTrue(all(m.get('method') in (None,'initialize','initialized','model/list','connect','models.list') for m in messages))
@@ -90,22 +92,34 @@ class Catalog(unittest.TestCase):
                     if agent=='codex':self.assertEqual([m.get('method') for m in messages],['initialize','initialized','model/list','model/list'])
                 self.assertNotIn('account',json.dumps(result));self.assertNotIn('private',json.dumps(result))
 
+    @unittest.skipUnless(os.name == 'nt','Windows command shim test.')
+    def test_windows_copilot_cmd_shim(self):
+        shim=self.root/'copilot.cmd'
+        shim.write_text(f'@echo off\r\n"{sys.executable}" "{self.script}" %*\r\n')
+        with patch.dict(os.environ,self.env),patch('verinote.model_catalog.executable',return_value=str(shim)):
+            result=ModelCatalog().discover('copilot')
+        self.assertEqual(result['status'],'ok',result)
+        self.assertEqual(result['models'][0]['id'],'vendor/a')
+
     def test_deadline_output_bounds_and_safe_errors_reap_children(self):
         for case,status in [('timeout','timeout'),('stdout','too_large'),('stderr','too_large'),('error','unavailable'),('malformed','unavailable')]:
             with self.subTest(case=case):
-                start=time.monotonic();result=self.discover(case=case,timeout=.5)
+                agent='agy' if os.name == 'posix' else 'copilot'
+                start=time.monotonic();result=self.discover(agent,case=case,timeout=.5)
                 self.assertEqual(result['status'],status,result);self.assertLess(time.monotonic()-start,1.5)
                 self.assertEqual(result['models'],[]);self.assertNotIn('private-fixture-secret',json.dumps(result))
                 audit=json.loads((self.root/'audit.json').read_text())
-                with self.assertRaises(ProcessLookupError):os.kill(audit['pid'],0)
-        self.assertEqual(self.discover()['status'],'ok')
+                if os.name == 'posix':
+                    with self.assertRaises(ProcessLookupError):os.kill(audit['pid'],0)
+        self.assertEqual(self.discover('agy' if os.name == 'posix' else 'copilot')['status'],'ok')
 
     def test_normalization_missing_install_unknown_provider_and_bad_shape(self):
         self.assertEqual(_normalize([(' vendor/a ','A\x1b\u200b'),('vendor/a','duplicate'),('bad\nmodel','bad')]),[{'id':'vendor/a','name':'A'}])
         with self.assertRaises(CatalogError):_normalize([('bad\nmodel','bad')])
         self.assertEqual(_normalize([]),[])
         with patch('verinote.model_catalog.executable',return_value=None),patch('verinote.model_catalog._Process') as proc:
-            self.assertEqual(ModelCatalog().discover('agy')['status'],'not_installed')
+            agent='agy' if os.name == 'posix' else 'copilot'
+            self.assertEqual(ModelCatalog().discover(agent)['status'],'not_installed')
             for name in ('openrouter','bad;cmd'):
                 with self.assertRaises(ValueError):ModelCatalog().discover(name)
             proc.assert_not_called()
@@ -124,6 +138,7 @@ class Catalog(unittest.TestCase):
         with self.assertRaises(CatalogError):_read_catalog('claude',process)
         self.assertEqual(process.receive.call_count,2)
 
+    @unittest.skipUnless(os.name == 'posix','Concurrency test covers POSIX-only catalog providers.')
     def test_concurrent_limits_same_provider_and_capacity_release(self):
         entered=threading.Barrier(3);release=threading.Event();catalog=ModelCatalog()
         def blocked(*args):entered.wait(timeout=2);release.wait(timeout=2);return []
