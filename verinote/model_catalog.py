@@ -37,6 +37,9 @@ class CatalogError(Exception):
 
 class _Process:
     """One deadline/byte budget across a complete catalog conversation."""
+    selector: selectors.DefaultSelector | None
+    output_queue: queue.Queue | None
+
     def __init__(self, args, cwd, timeout):
         self.end = time.monotonic() + timeout
         self.deadline = self.end - min(1, timeout / 10)
@@ -58,11 +61,14 @@ class _Process:
             for stream, name in ((self.proc.stdout, 'out'), (self.proc.stderr, 'err')):
                 threading.Thread(target=self._read_stream, args=(stream, name), daemon=True).start()
         else:
-            self.selector = selectors.DefaultSelector()
+            selector = selectors.DefaultSelector()
             for stream, name in ((self.proc.stdout, 'out'), (self.proc.stderr, 'err')):
-                self.selector.register(stream, selectors.EVENT_READ, name)
+                assert stream is not None
+                selector.register(stream, selectors.EVENT_READ, name)
+            self.selector = selector
 
     def _read_stream(self, stream, name):
+        assert self.output_queue is not None
         try:
             while data := stream.read(65536):
                 self.output_queue.put((name, data))
@@ -76,10 +82,11 @@ class _Process:
         return left
 
     def read(self):
-        while self.open_streams if self.output_queue is not None else self.selector.get_map():
-            if self.output_queue is not None:
+        output_queue = self.output_queue
+        if output_queue is not None:
+            while self.open_streams:
                 try:
-                    name, data = self.output_queue.get(timeout=self.remaining())
+                    name, data = output_queue.get(timeout=self.remaining())
                 except queue.Empty:
                     raise CatalogError('timeout') from None
                 if data is None:
@@ -92,14 +99,18 @@ class _Process:
                     self.buffer += data
                     return True
                 continue
-            events = self.selector.select(self.remaining())
+            return False
+        assert self.selector is not None
+        selector = self.selector
+        while selector.get_map():
+            events = selector.select(self.remaining())
             if not events:
                 raise CatalogError('timeout')
             output = False
             for key, _ in events:
                 data = os.read(key.fd, 65536)
                 if not data:
-                    self.selector.unregister(key.fileobj)
+                    selector.unregister(key.fileobj)
                     continue
                 self.counts[key.data] += len(data)
                 if self.counts[key.data] > (MAX_STDOUT if key.data == 'out' else MAX_STDERR):
@@ -119,8 +130,10 @@ class _Process:
         else:
             raw += b'\n'
         # All requests are bounded fixed control messages (no prompts/credentials).
-        self.proc.stdin.write(raw)
-        self.proc.stdin.flush()
+        stdin = self.proc.stdin
+        assert stdin is not None
+        stdin.write(raw)
+        stdin.flush()
 
     def receive(self, framed=False):
         while True:
@@ -157,6 +170,7 @@ class _Process:
             return value['result']
 
     def text(self):
+        assert self.proc.stdin is not None
         self.proc.stdin.close()
         while self.read():
             pass
@@ -187,9 +201,11 @@ class _Process:
             except ProcessLookupError:
                 pass
             self.proc.wait(timeout=max(.001, self.end-time.monotonic()))
+            assert self.selector is not None
             self.selector.close()
         for stream in (self.proc.stdin, self.proc.stdout, self.proc.stderr):
-            stream.close()
+            if stream is not None:
+                stream.close()
 
 
 def _args(agent):
@@ -231,8 +247,8 @@ def _read_catalog(agent, process):
             body = response.get('response')
             if not isinstance(body, dict):
                 raise CatalogError()
-            rows = body.get('models')
-            return _pairs(rows, 'value', 'displayName')
+            models = body.get('models')
+            return _pairs(models, 'value', 'displayName')
     if agent == 'copilot':
         process.rpc('connect', {}, 1, framed=True)
         result = process.rpc('models.list', {}, 2, framed=True)

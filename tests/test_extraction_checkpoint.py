@@ -1,12 +1,19 @@
 """Unpaid extraction retry and shared per-chunk deadline regressions."""
 import copy
 import json
-from pathlib import Path
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import test_workflow as workflow
-from test_workflow import DICTIONARY, FACTS, SOURCE, approved_dictionary, extraction_response
+from test_workflow import (
+    DICTIONARY,
+    FACTS,
+    SOURCE,
+    approved_dictionary,
+    extraction_response,
+)
+
 from verinote.agents import CLI, CLI_PROVIDERS
 from verinote.extraction_checkpoint import CHECKPOINT_LIMIT
 from verinote.job_transport import JobTransport, capture_options
@@ -205,14 +212,14 @@ class ExtractionRecovery(unittest.TestCase):
                 doc = self.document(1)
                 clock = [1000]
                 def broken(cli):
-                    clock[0] += 310
+                    clock[0] += 310  # noqa: B023 (intentional: same-iteration clock)
                     output = extraction_response()
                     output['facts'][0]['quote'] = 'absent quote'
                     return output
                 def repair(cli):
-                    clock[0] += repair_elapsed
+                    clock[0] += repair_elapsed  # noqa: B023 (intentional: same-iteration clock, repair_elapsed)
                     return {'repairs': [{'path': 'facts.0.quote', 'quote': FACTS[0]['quote']}]}
-                with patch('verinote.service.time.monotonic', side_effect=lambda: clock[0]):
+                with patch('verinote.service.time.monotonic', side_effect=lambda: clock[0]):  # noqa: B023 (intentional: same-iteration clock)
                     result, calls = self.execute(doc, [broken, repair])
                 self.assertEqual([c['timeout'] for c in calls], [360, 50])
                 self.assertEqual(result['status'], 'success' if repair_elapsed == 10 else 'error', result['detail'])
@@ -226,9 +233,9 @@ class ExtractionRecovery(unittest.TestCase):
                 doc = self.document()
                 clock = [1000]
                 def response(cli):
-                    clock[0] += elapsed
+                    clock[0] += elapsed  # noqa: B023 (intentional: same-iteration clock, elapsed)
                     return extraction_response()
-                with patch('verinote.service.time.monotonic', side_effect=lambda: clock[0]):
+                with patch('verinote.service.time.monotonic', side_effect=lambda: clock[0]):  # noqa: B023 (intentional: same-iteration clock)
                     result, calls = self.execute(doc, [response, response])
                 if elapsed == 350:
                     self.assertEqual(result['status'], 'success', result['detail'])

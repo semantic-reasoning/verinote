@@ -2,6 +2,7 @@ import dataclasses
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -51,6 +52,7 @@ class Transports(unittest.TestCase):
         self.counter += 1
         return Path(self.tmp.name).resolve()/str(self.counter)
 
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows-only Copilot installation fallback')
     def test_copilot_windows_installations_outside_inherited_path(self):
         root = Path(self.tmp.name).resolve()
         environment = {'PATH': str(root / 'empty'), 'LOCALAPPDATA': str(root / 'local'),
@@ -72,6 +74,7 @@ class Transports(unittest.TestCase):
             self.assertEqual(executable('copilot'), 'chosen-copilot')
             which.assert_called_once_with('copilot')
 
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows-only Copilot installation fallback')
     def test_copilot_missing_installation_is_not_reported_as_installed(self):
         root = Path(self.tmp.name).resolve()
         with patch.dict(os.environ, {'PATH': str(root), 'LOCALAPPDATA': str(root), 'APPDATA': str(root)}), patch('verinote.agents.sys.platform', 'win32'):

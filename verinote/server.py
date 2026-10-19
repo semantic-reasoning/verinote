@@ -4,15 +4,15 @@ import base64
 import binascii
 import difflib
 import json
+import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-import sys
 from urllib.parse import parse_qs, urlsplit
 
 from .agents import CLI_PROVIDERS, PROVIDERS, TRANSPORTS, executable, validate_model
-from .model_catalog import ModelCatalog
 from .config import ConfigError, Credentials, create_config, load_config
 from .documents import MAX_BYTES, MAX_TEXT, decode_document
+from .model_catalog import ModelCatalog
 from .ontology import MAX_DICTIONARY_BYTES
 from .service import Service, text
 from .store import Conflict, Store
@@ -107,7 +107,7 @@ class Handler(BaseHTTPRequestHandler):
                 if method == 'GET':
                     providers = []
                     for key, name in PROVIDERS.items():
-                        value = {'id': key, 'name': name, 'transport': TRANSPORTS[key]}
+                        value: dict[str, object] = {'id': key, 'name': name, 'transport': TRANSPORTS[key]}
                         if TRANSPORTS[key] == 'cli':
                             value['installed'] = bool(executable(key))
                         else:
