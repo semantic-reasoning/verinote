@@ -68,7 +68,18 @@ class Connection:
         self.closed = True
 
 
-class OpenRouterTests(unittest.TestCase):
+class CallFolders(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.counter = 0
+
+    def folder(self):
+        self.counter += 1
+        return Path(self.tmp.name).resolve()/str(self.counter)
+
+
+class OpenRouterTests(CallFolders):
     def execute(self, payload=None, *, raw=None, status=200, encoding='identity', limit=1024*1024,
                 length=None, error=None, prompt='prompt', model='vendor/model', timeout=2):
         if raw is None:
@@ -82,12 +93,13 @@ class OpenRouterTests(unittest.TestCase):
                   max_output=limit, timeout=timeout)
         result, caught = None, None
         with tempfile.TemporaryDirectory() as tmp, patch('verinote.openrouter._HTTPS', side_effect=factory):
-            folder = Path(tmp)/'call'
+            folder = Path(tmp).resolve()/'call'
             try:
                 result = cli.complete('openrouter', model, prompt, folder)
             except Exception as exc:
                 caught = exc
-            self.assertFalse(folder.exists())
+            self.assertTrue((folder/'run.json').exists())
+            self.assertFalse((folder/'stdout.txt').exists())
         self.assertTrue(all(conn.closed for conn in connections))
         return result, caught, attempts, events
 
@@ -234,13 +246,13 @@ class OpenRouterTests(unittest.TestCase):
         cli = CLI(http_adapter=OpenRouter(), credentials=Credentials(KEY), sink=events.append,
                   options=ExecutionOptions(max_tokens=321, timeout=2))
         with patch('verinote.openrouter._HTTPS', side_effect=factory):
-            self.assertEqual(cli.complete('openrouter', 'model', 'prompt', '/unused', phase='ontology'), {'ok': True})
+            self.assertEqual(cli.complete('openrouter', 'model', 'prompt', self.folder(), phase='ontology'), {'ok': True})
         self.assertEqual(json.loads(attempts[0][1]['body'])['max_tokens'], 321)
         attempts.clear()
         cli = CLI(http_adapter=OpenRouter(), credentials=Credentials(KEY), sink=events.append, timeout=0)
         with patch('verinote.openrouter._HTTPS', side_effect=factory):
             with self.assertRaises(TimeoutError):
-                cli.complete('openrouter', 'model', 'prompt', '/unused')
+                cli.complete('openrouter', 'model', 'prompt', self.folder())
         self.assertEqual(attempts, [])
         self.assertEqual(events[-1].safe_metadata['transmission_state'], 'not_sent')
 
@@ -249,7 +261,7 @@ class OpenRouterTests(unittest.TestCase):
         cli = CLI(http_adapter=OpenRouter(), credentials=Credentials(KEY), sink=events.append)
         with patch.object(http.client.HTTPSConnection, 'connect', side_effect=ssl.SSLCertVerificationError(KEY)):
             try:
-                cli.complete('openrouter', 'model', 'prompt', '/unused')
+                cli.complete('openrouter', 'model', 'prompt', self.folder())
             except ValueError as error:
                 self.assert_safe(error, events)
             else:
@@ -272,7 +284,7 @@ class OpenRouterTests(unittest.TestCase):
         self.assertNotIn('usage', events[0].safe_metadata)
 
 
-class RealFraming(unittest.TestCase):
+class RealFraming(CallFolders):
     def run_socket(self, response, *, trickle=False, timeout=1):
         client, server = socket.socketpair()
         received = []
@@ -300,7 +312,7 @@ class RealFraming(unittest.TestCase):
         result, error = None, None
         with patch.object(http.client.HTTPSConnection, 'connect', connect):
             try:
-                result = cli.complete('openrouter', 'model', 'prompt', '/unused')
+                result = cli.complete('openrouter', 'model', 'prompt', self.folder())
             except Exception as exc:
                 error = exc
         elapsed = time.monotonic()-start
@@ -366,7 +378,7 @@ class RealFraming(unittest.TestCase):
             try:
                 with patch.object(http.client.HTTPSConnection, 'connect', connect):
                     with self.assertRaises(TimeoutError):
-                        cli.complete('openrouter', 'model', 'prompt', '/unused')
+                        cli.complete('openrouter', 'model', 'prompt', self.folder())
                     self.assertTrue(request_seen.is_set())
                     self.assertTrue(stopped.wait(.5))
                 deadline = time.monotonic() + .5
@@ -387,7 +399,7 @@ class RealFraming(unittest.TestCase):
         try:
             with patch.object(http.client.HTTPSConnection, 'connect', delayed_connect):
                 with self.assertRaises(TimeoutError):
-                    cli.complete('openrouter', 'model', 'prompt', '/unused')
+                    cli.complete('openrouter', 'model', 'prompt', self.folder())
                 self.assertTrue(entered.is_set())
                 self.assertEqual(events[0].safe_metadata['transmission_state'], 'not_sent')
                 gate.set(); self.assertTrue(finished.wait(1))

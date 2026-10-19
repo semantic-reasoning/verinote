@@ -5,7 +5,7 @@ import math
 from pathlib import Path
 import re
 
-AGENTS = {'agy', 'claude', 'copilot', 'cursor', 'codex'}
+AGENTS = {'agy', 'claude', 'copilot', 'cursor', 'codex', 'openrouter'}
 TOKEN_KEYS = ('input', 'output', 'cache_read', 'cache_write', 'reasoning')
 PRICE_KEYS = ('input', 'output', 'cache_read', 'cache_write')
 MAX_METADATA = 256 * 1024
@@ -183,9 +183,65 @@ def decode_transport(agent, stdout, provider_usage=None):
     return answer, result, terminal_error
 
 
+def decode_http(envelope):
+    """Only checked API metadata is usage evidence, never generated content."""
+    result = empty_usage('openrouter', '')
+    meta = envelope.safe_metadata
+    raw = meta.get('usage') if envelope.response_verified else None
+    # #705 may omit extracted usage when one field has an unsupported type.
+    # A checked full API payload can preserve the other independent evidence;
+    # still enforce the smaller metadata limit and never inspect message content.
+    if not isinstance(raw, dict) and envelope.response_verified and isinstance(envelope.safe_response_payload, dict):
+        candidate = envelope.safe_response_payload.get('usage')
+        try:
+            if isinstance(candidate, dict) and len(json.dumps(candidate, ensure_ascii=True, allow_nan=False).encode()) <= MAX_METADATA:
+                raw = candidate
+        except (ValueError, TypeError, RecursionError):
+            pass
+    raw = raw if isinstance(raw, dict) else {}
+    details = raw.get('prompt_tokens_details')
+    details = details if isinstance(details, dict) else {}
+    output = raw.get('completion_tokens_details')
+    output = output if isinstance(output, dict) else {}
+    t = result['tokens'] = {
+        'input': number(raw.get('prompt_tokens'), True),
+        'output': number(raw.get('completion_tokens'), True),
+        'cache_read': number(details.get('cached_tokens'), True),
+        'cache_write': number(details.get('cache_write_tokens'), True),
+        'reasoning': number(output.get('reasoning_tokens'), True),
+    }
+    fields = [(raw, 'prompt_tokens'), (raw, 'completion_tokens'), (raw, 'total_tokens'),
+              (details, 'cached_tokens'), (details, 'cache_write_tokens'), (output, 'reasoning_tokens')]
+    inconsistent = any(key in source and number(source[key], True) is None for source, key in fields)
+    caches = [t[k] for k in ('cache_read', 'cache_write')]
+    if t['input'] is not None and sum(v for v in caches if v is not None) > t['input']:
+        t['input'] = None
+        inconsistent = True
+    if t['reasoning'] is not None and t['output'] is not None and t['reasoning'] > t['output']:
+        t['reasoning'] = None
+        inconsistent = True
+    # total_tokens is optional, but a reported contradictory total is not complete.
+    total = number(raw.get('total_tokens'), True)
+    if total is not None and t['input'] is not None and t['output'] is not None and total != t['input'] + t['output']:
+        t['input'] = None
+        inconsistent = True
+    result['accounting_consistent'] = not inconsistent
+    if inconsistent:
+        result['warnings'].append('OpenRouter 토큰 사용량의 합계 또는 부분집합이 일치하지 않습니다.')
+    result['reported_credits'] = amount(raw.get('cost'))
+    result['credit_unit'] = 'OpenRouter credits' if result['reported_credits'] is not None else None
+    result['resolved_model'] = _text_model(meta.get('resolved_model')) if envelope.response_verified else None
+    result['complete'] = (envelope.response_verified and not inconsistent
+                          and all(t[k] is not None for k in PRICE_KEYS))
+    if not any(v is not None for v in t.values()):
+        result['warnings'].append('제공자가 토큰 사용량을 보고하지 않았습니다.')
+    result['source'] = 'OpenRouter API envelope'
+    return result
+
+
 def calculate(usage):
     rate = usage.get('rate_snapshot')
-    if not rate:
+    if not rate or usage.get('accounting_consistent') is False:
         return usage
     actual, requested = usage.get('resolved_model'), usage.get('requested_model', '')
     if actual == '(multiple models)':
@@ -243,6 +299,30 @@ def safe_file(root, relative, limit=MAX_METADATA):
         return None
 
 
+def http_public_fields(meta):
+    """Allowlist context; raw payload, prompt hash and error text stay local."""
+    clean = {'transport': 'http'}
+    rules = {
+        'transport_status': ('running', 'success', 'error', 'timeout', 'not_started'),
+        'transmission_state': ('not_sent', 'sent_unknown', 'received'),
+        'adapter_validation_status': ('pending', 'valid', 'failed', 'unverified'),
+        'caller_validation_status': ('pending', 'success', 'failed', 'not_applicable'),
+        'phase': (None, 'ontology'),
+        'finish_reason': ('stop', 'length', 'tool_calls', 'content_filter', 'function_call', 'error'),
+    }
+    for field, allowed in rules.items():
+        value = meta.get(field)
+        clean[field] = value if value in allowed else None
+    for field, pattern in [('provider_call_id', r'[a-f0-9]{32}'), ('generation_id', r'gen-[A-Za-z0-9_-]{1,200}')]:
+        value = meta.get(field)
+        clean[field] = value if isinstance(value, str) and re.fullmatch(pattern, value) else None
+    value = meta.get('http_status')
+    clean['http_status'] = value if type(value) is int and 100 <= value <= 599 else None
+    clean['timeout_seconds'] = amount(meta.get('timeout_seconds'))
+    clean['max_tokens'] = number(meta.get('max_tokens'), True)
+    return clean
+
+
 def job_calls(root, kind, owner):
     key = owner['id']
     if kind not in ('runs', 'questions') or not re.fullmatch(r'[a-f0-9]{32}', key):
@@ -263,9 +343,17 @@ def job_calls(root, kind, owner):
             continue
         usage = None
         try:
+            metadata = json.loads(meta) if meta else None
+        except (ValueError, UnicodeError, RecursionError):
+            metadata = None
+        try:
             value = json.loads(data) if data else None
             if isinstance(value, dict) and type(value.get('schema_version')) is int and value['schema_version'] == 1 and value.get('agent') == owner['agent'] and value.get('status') in ('starting', 'running', 'success', 'error', 'not_started') and isinstance(value.get('tokens'), dict):
-                usage = value
+                if owner['agent'] != 'openrouter' or (isinstance(metadata, dict) and metadata.get('transport') == 'http'
+                        and isinstance(metadata.get('provider_call_id'), str)
+                        and re.fullmatch(r'[a-f0-9]{32}', metadata['provider_call_id'])
+                        and value.get('provider_call_id') == metadata['provider_call_id']):
+                    usage = value
         except (ValueError, UnicodeError):
             pass
         if usage is None:
@@ -300,6 +388,13 @@ def job_calls(root, kind, owner):
         for k in ('credit_unit', 'estimated_credit_unit'):
             unit = usage.get(k)
             clean[k] = unit if isinstance(unit, str) and len(unit) <= 60 else None
+        if owner['agent'] == 'openrouter' and isinstance(metadata, dict):
+            clean.update(http_public_fields(metadata))
+            if usage.get('status') != 'unknown' and metadata.get('status') in ('running', 'success', 'error', 'not_started'):
+                clean['status'] = metadata['status']
+                if clean['status'] == 'running' and owner['status'] not in ('queued', 'running'):
+                    clean['complete'] = False
+                    clean['warnings'].append('HTTP 호출 기록이 종료 상태로 저장되지 않았습니다.')
         clean.update(call_id=f'{kind}/{key}/{path}', stage=stage, call_count_known=True)
         calls.append(clean)
     if not calls and kind == 'runs' and owner.get('stage') == 'ontology' and owner['status'] == 'success':

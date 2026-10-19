@@ -224,8 +224,8 @@ for the actual checks in #705.
 The dispatcher sends the envelope to `sink(envelope)` before domain JSON parsing,
 so usage evidence survives domain parsing failure. Sink exceptions are ignored
 to preserve the primary response/error. The domain return value never includes
-the envelope. Sink file storage is owned by #706; the HTTP branch creates no
-files or subprocesses. `tests/test_transports.py::FakeHTTP` is the synthetic
+the envelope. Sink file storage is owned by #706; the HTTP adapter creates no
+files or subprocesses; dispatcher recording is described in #706 below. `tests/test_transports.py::FakeHTTP` is the synthetic
 fixture for this boundary; it exercises safe success, parsing failure, and
 terminal failures without external API calls. API/UI availability is #708.
 
@@ -291,3 +291,60 @@ headers, raw exceptions or unchecked text are sent to the sink. #706 owns safe
 payload storage and usage normalization. Offline fixtures in
 `tests/test_openrouter.py` include socketpair HTTP framing and real-time slow
 header/body and delayed-connect cancellation tests, without paid API requests.
+
+## OpenRouter call recording and accounting (#706)
+
+The HTTP dispatcher uses `http_records.HTTPRecord` as the sole process-local
+writer of `run.json`, `usage.json`, and optional `response.json` in the existing
+call folder. It writes no stdout, prompt, request headers, or fake subprocess
+return code. The transport call ID is `provider_call_id`; public `call_id` stays
+the existing path-derived discovery ID. One call folder owns one provider ID.
+Reusing a populated folder fails before another transmission. `run.json` is
+authoritative for identity and caller-validation state; consumers reject usage
+with an absent, unreadable, or mismatched HTTP run identity. Individual files
+are atomically replaced, not a multi-file transaction; partial recording is
+reported as incomplete rather than combining calls.
+
+The recording context pins requested model, phase, prompt hash, timestamps,
+timeout, max_tokens and the current rate snapshot. Known-key checks happen
+before context construction: a secret-bearing model, prompt or rate snapshot
+is omitted (including the prompt hash), while the adapter still rejects the
+unsafe request. The recorder receives no credentials. `response.json` is
+written only from the optional complete checked payload attested by #705;
+never from generated content or unchecked text. It remains local and is never
+read by usage APIs/downloads. Run/usage records are capped at `MAX_METADATA`;
+payload serialization has a bounded budget of `6 * max_output + 1024` bytes
+for JSON escaping/formatting. All writes use no-follow directory descriptors,
+exclusive random temporary files and private permissions. Supply call paths
+under a trusted canonical data root; symlink parents/destinations are rejected.
+Optional recording failures preserve the domain result/original error, with a
+static `usage_warning` in run metadata when that file remains writable.
+
+Transport completion (`transport_status`), reception/transmission uncertainty
+(`transmission_state`), adapter JSON validation (`adapter_validation_status`)
+and subsequent caller/domain validation (`caller_validation_status`) are
+separate. A valid dict leaves caller validation pending, never automatically
+approved. #707 can use
+`CLI.update_caller_validation(folder, provider_call_id, 'success' | 'failed')`
+or `http_records.update_caller_validation` without directly rewriting records.
+The shared writer lock serializes read/compare/write operations in one process.
+The API reconstructs from run metadata, returns false for stale/unknown IDs,
+unreadable records or optional write failure, repeats the same terminal status
+idempotently and rejects conflicting final status. It accepts no free-form
+error text. Updating validation does not change token/cost evidence, transport
+status, timestamps or the discovered call count. #707 owns actual notifications
+and resume integration; no cross-process concurrent writers are supported.
+
+`usage.decode_http` consumes only secret-checked top-level API usage from safe
+metadata (or the checked payload when extraction omitted it), bounded separately
+to `MAX_METADATA`. It never reads message content for usage. Prompt tokens map
+to input including cache; completion tokens map to output including reasoning.
+Cache read/write and reasoning are subsets, not additive totals. Missing fields
+stay null; reported zero stays zero. Invalid numbers, cache subsets above input,
+reasoning above output and inconsistent reported totals prevent fabricated
+completeness or estimates while independently confirmed cost is retained.
+`usage.cost` is `reported_credits` in `OpenRouter credits`; `reported_usd` stays
+null and upstream inference cost is not added. User-rate USD estimates retain
+the existing pinned model/snapshot rules. Reported and estimated amounts remain
+separate summary provenance. Existing CLI telemetry, discovery (including quote
+repair/questions) and resumed-segment exclusion remain unchanged.

@@ -1,0 +1,15 @@
+{
+  "id": "gen-synthetic_usage_706",
+  "model": "vendor/actual",
+  "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "{\"ok\":true,\"usage\":{\"prompt_tokens\":999999}}"}}],
+  "usage": {
+    "prompt_tokens": 100,
+    "completion_tokens": 20,
+    "total_tokens": 120,
+    "prompt_tokens_details": {"cached_tokens": 30, "cache_write_tokens": 10},
+    "completion_tokens_details": {"reasoning_tokens": 5},
+    "cost": 0.25,
+    "is_byok": false,
+    "cost_details": {"upstream_inference_cost": 900, "server_tool_cost": null}
+  }
+}

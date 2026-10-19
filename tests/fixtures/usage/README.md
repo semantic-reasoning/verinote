@@ -8,3 +8,10 @@ final agent_message and turn.completed. Copilot is its dedicated usage file,
 separate from plain stdout. Numeric token and cost values were retained to test
 cache partitions and credit conversion. They are protocol examples, not default
 prices or estimates of document-processing cost.
+
+`openrouter.json` is a synthetic, non-streaming API envelope for #706, not an
+observed paid request. Its generated content deliberately contains fake usage;
+only the outer API usage is evidence. Cache and reasoning counts are subsets of
+prompt/completion totals. `cost` is reported OpenRouter credits; upstream cost
+is not added to billing or converted to reported USD. Missing/zero, malformed
+numbers and subset contradictions are derived in `test_http_records.py`.
