@@ -27,7 +27,7 @@
 
 POSIX 읽기는 `O_NOFOLLOW | O_NONBLOCK`로 파일을 열고 같은 디스크립터의 `fstat`으로 일반 파일·현재 UID·정확한 `0600`을 검사한 뒤 최대 64 KiB를 읽는다. 경로의 파일이 교체되어도 검사한 디스크립터를 읽으며 FIFO 읽기로 멈추지 않는다. 생성은 직접 부모 디렉터리 디스크립터를 고정해 소유자·그룹/다른 사용자 쓰기 금지를 검사하고 그 안에서 `O_CREAT | O_EXCL | O_NOFOLLOW`, 최초 모드 `0600`으로 수행한다. 새 전용 디렉터리만 `0700`으로 만들고 기존 경로를 chmod하거나 덮어쓰지 않는다. 읽기/생성 모두 선택한 파일 또는 직접 부모 자체의 링크를 따라가지 않지만, 조상 디렉터리와 같은 UID의 악의적인 내용 변경에 대한 완전한 격리는 제공하지 않는다.
 
-로더가 반환하는 `Credentials`는 dict/dataclass가 아닌 private slots 객체다. `repr`/`str`에는 설정 여부만 있고 JSON·pickle·`vars()` 직렬화는 거부한다. 외부 직렬화에는 `public_status()`의 `{'openrouter': {'configured': bool}}`만 사용한다. 후속 HTTP 어댑터는 명시적인 `openrouter_key()` 접근으로 키를 서버 메모리에서 주입받아야 하며 반환된 문자열의 추가 보관·로그·응답 비밀 검사는 소비자의 책임이다. 이 변경은 `Server(..., credentials=...)`에 객체를 보관하되 `Service`/CLI/DB/API에는 키를 전달하지 않는다. 기존 `Server(address, store, service)`와 `Service(..., cli=...)` 호출은 유지한다.
+로더가 반환하는 `Credentials`는 dict/dataclass가 아닌 private slots 객체다. `repr`/`str`에는 설정 여부만 있고 JSON·pickle·`vars()` 직렬화는 거부한다. 외부 직렬화에는 `public_status()`의 `{'openrouter': {'configured': bool}}`만 사용한다. HTTP 어댑터는 명시적인 `openrouter_key()` 접근으로 키를 서버 메모리에서 주입받아야 하며 반환된 문자열의 추가 보관·로그·응답 비밀 검사는 소비자의 책임이다. 서버 시작 시 `Server(..., credentials=...)`와 `Service(..., credentials=...)`에 메모리 객체를 주입하고 Service는 transport Credentials로 명시적으로 변환하여 HTTP dispatcher에 전달한다. DB/API에는 키를 전달하지 않는다. 기존 `Server(address, store, service)`와 `Service(..., cli=...)` 호출은 유지한다.
 
 파싱·OS 오류는 원문을 포함하는 예외를 연결하지 않은 정적 `ConfigError`로 변환한다. 환경변수의 `OPENROUTER_API_KEY`를 읽거나 쓰지 않으며 기존 CLI 자식 환경에서의 제거는 #704, HTTP 응답 키 에코 검사는 #705, 상태 API/화면은 #708 책임이다. 런타임 재로딩과 DB 설정 이관은 없다. Windows는 ACL 미검증으로 파일 생성/로딩을 거부하며 기본 파일 미존재만 CLI 시작을 허용한다. 플랫폼 분기는 테스트에서 모의 검증하고 Windows ACL 지원은 주장하지 않는다.
 
@@ -128,9 +128,9 @@ POST `/api/documents/{id}/delete-latest`, `/delete`는 정확히 `{expected_vers
 
 마이그레이션은 기존 runs에 `stage TEXT NOT NULL DEFAULT 'legacy'`, `ontology TEXT`를 추가한다. 재실행 시 열 존재를 검사하며 기존 items/events/snapshots를 재작성하지 않는다. 새 INSERT는 열을 명시한다. 이전 바이너리는 8열 위치 기반 INSERT를 사용하므로 확장된 DB로 롤백할 수 없다. 서버 종료 후 데이터 폴더 백업 및 이전 DB 복원으로 롤백한다.
 
-## CLI 사용량 산출
+## CLI/API 사용량 산출
 
-`usage.py`는 CLI 전송 형식만 읽으며 모델이 생성한 답변의 `usage` 키를 계측 근거로 사용하지 않는다. `CLI.complete`는 기존처럼 애플리케이션 JSON을 반환한다. Claude/agy는 JSON result의 본문을, Cursor는 stream-json의 최종 result를, Codex는 JSON events의 agent_message와 최종 turn.completed 카운터를 분리한다. Copilot은 호출마다 지정한 `--usage-output-file`을 읽는다. 중간·중복 이벤트를 합산하지 않는다. 실제 설치 CLI의 무해한 단문 응답을 정제한 5개 fixture가 `tests/fixtures/usage`에 있다.
+`usage.py`는 CLI 전송 형식과 검증된 HTTP envelope를 각각 읽으며 모델이 생성한 답변의 `usage` 키를 계측 근거로 사용하지 않는다. `CLI.complete`는 기존처럼 애플리케이션 JSON을 반환한다. Claude/agy는 JSON result의 본문을, Cursor는 stream-json의 최종 result를, Codex는 JSON events의 agent_message와 최종 turn.completed 카운터를 분리한다. Copilot은 호출마다 지정한 `--usage-output-file`을 읽는다. 중간·중복 이벤트를 합산하지 않는다. 실제 설치 CLI의 무해한 단문 응답을 정제한 5개 fixture가 `tests/fixtures/usage`에 있다.
 
 `agents.parse_response`는 최종 본문의 ANSI·전체 JSON 코드 블록 처리를 유지하며 객체만 반환한다. Copilot에 한해 JSON 객체 앞의 공백뿐인 `<final_answer>...</final_answer>` 접두 태그 하나를 제거한다. Cursor에 한해 전체 본문이 정확히 같은 JSON 객체 텍스트 두 개일 때 하나로 읽는다. 객체 밖 공백만 무시하며 서로 다른 필드 순서·숫자 표기·값, 세 번째 객체, 덜 끝난 객체, 부가 설명은 수용하지 않는다. 임의 텍스트에서 JSON을 찾아내거나 여러 응답을 합치지 않는다. 프로세스 종료·제공자 실패 검사가 우선하고 원본 stdout과 사용량은 그대로 보존하며 성공한 정리의 고정 라벨만 `run.json.response_normalizations`에 남긴다. 이 공통 파서는 사전·추출·질문에 적용되며 별도 모델 재호출은 없다.
 
@@ -138,7 +138,7 @@ POST `/api/documents/{id}/delete-latest`, `/delete`는 정확히 `{expected_vers
 
 `usage.json`은 시작 전/프로세스 실행 후/종료 시 임시 파일 교체로 기록한다. 프로세스 정리 후 남은 제한된 출력을 읽어 JSON 파싱 실패·비정상 종료·타임아웃·크기 초과에서도 가능한 카운터를 남긴다. 전송 성공 후 온톨로지 검증이 실패한 경우 호출 상태는 success, 부모 작업은 error일 수 있다. 단가 snapshot을 호출 시작에 복사하고 결과의 resolved_model, 없으면 requested_model을 대조한다. 모델이 없는 기본값 단가는 명시적 가정이며 모든 추정에 rate_basis를 남긴다. 계산은 `(일반입력×입력단가 + 캐시읽기×읽기단가 + 캐시쓰기×쓰기단가 + 출력×출력단가) / 1e6`; 크레딧 추정은 그 비용을 지정 환산값으로 나눈다. 토큰 구간이 미확인이면 비용을 만들지 않는다. 모델별 복수 단가 자동 선택과 구독 청구 재현은 제공하지 않는다.
 
-별도 `settings.usage_rates` 키를 사용하므로 기존 `/api/settings` roundtrip과 충돌하지 않는다. 에이전트 최대 5개, 각 단가 객체의 필드·숫자·단위·모델 길이를 검증한다. DB 스키마 변경·과거 로그 backfill은 없다. 이전 버전으로 코드만 되돌려도 새 키와 sidecar는 무시되며, 원래 데이터 백업을 복원하면 설정과 로그까지 되돌릴 수 있다. 실행 중 작업은 종료 후 배포하고 데이터 폴더를 백업한다.
+별도 `settings.usage_rates` 키를 사용하므로 기존 `/api/settings` roundtrip과 충돌하지 않는다. 에이전트 최대 6개(CLI 5종과 OpenRouter), 각 단가 객체의 필드·숫자·단위·모델 길이를 검증한다. DB 스키마 변경·과거 로그 backfill은 없다. 이전 버전으로 코드만 되돌려도 새 키와 sidecar는 무시되며, 원래 데이터 백업을 복원하면 설정과 로그까지 되돌릴 수 있다. 실행 중 작업은 종료 후 배포하고 데이터 폴더를 백업한다.
 
 조회는 DB가 소유한 ID만 대상으로 runs의 사전 1~64번 구간, 관계 추출 1~16번 청크와 각 quote-repair, questions의 llm-1~6을 확인한다. 경로의 symlink를 거부하고 파일당 256 KiB로 제한한다. 프롬프트/원본 응답을 API 계측값으로 노출하지 않는다. run/question GET 응답에 읽기 전용 usage를 덧붙이며 질문 저장 payload를 변경하지 않는다. 집계는 기존 목록의 100/30개 제한과 독립적으로 최근 1,000개 작업을 선택한다. 작업 수·truncated, 지표별 known_calls, 불완전 기록 수와 호출 횟수조차 모르는 작업 수를 함께 반환한다. DB와 파일은 하나의 트랜잭션이 아니며 읽는 시점의 보존 기록만 나타낸다. 부분적으로 삭제된 로그의 정확한 호출 수는 복원할 수 없다. 삭제된 DB 소유자는 물리 로그 정리 실패와 무관하게 이후 집계에서 제외된다.
 
@@ -431,3 +431,12 @@ Usage screens use provider-reported cost labels for CLI/API, keep reported
 OpenRouter credits separate from configured USD estimates, and retain unknown
 versus zero and provenance separation. OpenRouter rate hints ask for an explicit
 matching model rather than a CLI default assumption.
+
+
+## Cross-module verification and live smoke (#709)
+
+`tests/test_openrouter_integration.py` starts the real loopback HTTP handler with a private file loaded by the production config loader. Settings, source registration, dictionary approval, extraction/quote repair, separate review, question tools, history and download JSON go through those handlers. Only the outbound HTTPS connection is replaced by ordered fixtures; a socket guard forbids external network. No private user file is used. The fixtures verify pending/approved graph boundaries, individual caller verdicts, model/options/deadline pinning, failure-to-resume billing, incompatible checkpoints, safe/unknown failed usage, and no key/hash persistence. Large fixtures use 183 entities and 80 facts with the actual initial request cap 16,384; this verifies application boundaries, not any model's real capacity.
+
+`python -m scripts.openrouter_smoke` is a separate opt-in operator procedure. Explicit `--allow-network`, `--config`, and `--model` are mandatory before credentials are loaded. It sends exactly one fixed synthetic JSON request with 256 output tokens and a 60-second total deadline. It prints allowlisted adapter-attested metadata and an expected-object boolean, never raw response/errors/headers/configuration. It fails if the expected object is absent; no retry, fallback or generation lookup occurs. Default tests mock this procedure and require no network or real key.
+
+The verification matrix in `docs/verification.md` maps umbrella #702 and children #703–#709 to tests and actual desktop screen evidence. Live smoke success is independent from offline approval/pipeline correctness. Native Windows credential loading is deliberately unsupported; no actual Windows ACL execution or arbitrary-model long-output suitability is claimed.
