@@ -294,8 +294,6 @@ class ModelCatalog:
         if agent not in CLI_PROVIDERS:
             raise ValueError('CLI 제공자의 모델 목록만 조회할 수 있습니다.')
         models, status = [], 'unavailable'
-        if os.name != 'posix' and agent != 'copilot':
-            return self.result('unsupported')
         lock = self.locks[agent]
         if not lock.acquire(blocking=False):
             return self.result('busy')
