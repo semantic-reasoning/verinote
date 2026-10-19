@@ -3,7 +3,6 @@ import concurrent.futures
 import io
 import json
 from pathlib import Path
-import signal
 import sys
 import tempfile
 import threading
@@ -279,12 +278,13 @@ class ImportAndCLI(unittest.TestCase):
                     with patch('verinote.agents.executable', return_value='/synthetic/cli'), \
                          patch('verinote.agents.subprocess.Popen', side_effect=launch), \
                          patch('verinote.agents.time.monotonic', side_effect=[1000, 1000 + elapsed]), \
-                         patch('verinote.agents.time.sleep'), patch('verinote.agents.os.killpg') as kill:
+                         patch('verinote.agents.time.sleep'), \
+                         patch('verinote.agents._kill_process_tree', side_effect=lambda process: process.wait()) as kill:
                         if expires:
                             with self.assertRaisesRegex(TimeoutError, 'CLI 실행 시간 제한 초과') as error:
                                 cli.complete(agent, '', 'synthetic', folder)
                             self.assertIn(f'({limit}초)', str(error.exception))
-                            kill.assert_called_once_with(proc.pid, signal.SIGKILL)
+                            kill.assert_called_once_with(proc)
                             proc.wait.assert_called_once_with()
                         else:
                             self.assertEqual(cli.complete(agent, '', 'synthetic', folder), {'ok': True})
