@@ -66,6 +66,8 @@ class Store:
                 db.execute("ALTER TABLE runs ADD COLUMN stage TEXT NOT NULL DEFAULT 'legacy'")
             if 'ontology' not in run_columns:
                 db.execute('ALTER TABLE runs ADD COLUMN ontology TEXT')
+            if 'execution_options' not in run_columns:
+                db.execute('ALTER TABLE runs ADD COLUMN execution_options TEXT')
 
     @contextmanager
     def connect(self, write=False):
@@ -93,10 +95,13 @@ class Store:
                     job.update(status='interrupted', error='서버 재시작으로 중단되었습니다.')
                     db.execute('UPDATE questions SET payload=? WHERE id=?', (canonical(job), row['id']))
 
-    def create_question(self, question, agent, model, snapshot):
+    def create_question(self, question, agent, model, snapshot, *, execution_options=None):
         job = {'id': ident(), 'question': question, 'agent': agent, 'model': model,
                'snapshot': snapshot, 'status': 'queued', 'trace': [], 'evidence': {},
                'answer': None, 'error': '', 'created_at': now()}
+        if execution_options is not None:
+            from .transports import job_options
+            job['execution_options'] = job_options(execution_options)
         with self.connect(True) as db:
             self.require_snapshot(db, snapshot)
             db.execute('INSERT INTO questions VALUES(?,?,?)', (job['id'], canonical(job), job['created_at']))
@@ -226,9 +231,12 @@ class Store:
         owners = sorted(runs + questions, key=lambda r: (r['created_at'], r['id']), reverse=True)
         return owners[:limit], total
 
-    def create_run(self, document_id, agent, model, stage='extract', expected_version=None, expected_generation=None):
+    def create_run(self, document_id, agent, model, stage='extract', expected_version=None, expected_generation=None, *, execution_options=None):
         if stage not in ('ontology', 'extract'):
             raise ValueError('지원하지 않는 추출 단계')
+        if execution_options is not None:
+            from .transports import job_options
+            execution_options = job_options(execution_options)
         run_id = ident()
         with self.connect(True) as db:
             doc = db.execute('SELECT * FROM documents WHERE id=?', (document_id,)).fetchone()
@@ -250,8 +258,8 @@ class Store:
                     if extraction_key(old) == extraction_key(pinned):
                         raise Conflict('이 승인 사전 revision과 추출 방식으로 이미 추출했습니다. 사전 수정·재승인 후 다시 추출하세요.')
             try:
-                db.execute('INSERT INTO runs(id,document_id,version,agent,model,status,detail,created_at,stage,ontology) VALUES(?,?,?,?,?,?,?,?,?,?)',
-                           (run_id, document_id, doc['current_version'], agent, model, 'queued', '', now(), stage, canonical(pinned) if pinned else None))
+                db.execute('INSERT INTO runs(id,document_id,version,agent,model,status,detail,created_at,stage,ontology,execution_options) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                           (run_id, document_id, doc['current_version'], agent, model, 'queued', '', now(), stage, canonical(pinned) if pinned else None, canonical(execution_options) if execution_options is not None else None))
             except sqlite3.IntegrityError as exc:
                 raise Conflict('이 문서는 이미 추출 중입니다.') from exc
         return self.run(run_id)
@@ -260,6 +268,7 @@ class Store:
     def unpack_run(row):
         value = dict(row)
         value['ontology'] = json.loads(value['ontology']) if value['ontology'] else None
+        value['execution_options'] = json.loads(value['execution_options']) if value.get('execution_options') else None
         return value
 
     def run(self, run_id):

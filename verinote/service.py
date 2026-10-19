@@ -1,12 +1,14 @@
 """Bounded extraction orchestration; validation never performs human approval."""
 from concurrent.futures import ThreadPoolExecutor
 import json
+import copy
 import re
 import shutil
 from pathlib import Path
 import threading
 
 from .agents import CLI, PROVIDERS, validate_model
+from .call_validation import caller_validation
 from .documents import chunks
 from .progress import analysis_progress
 from .engine import query
@@ -48,8 +50,12 @@ def validate_page(value, source):
 
 
 class Service:
-    def __init__(self, store, root, cli=None):
-        self.store, self.root, self.cli = store, Path(root), cli or CLI(rates=store.usage_rates)
+    def __init__(self, store, root, cli=None, *, credentials=None):
+        from .openrouter import OpenRouter
+        from .transports import Credentials
+        configured = Credentials.from_server(credentials) if credentials is not None and credentials.openrouter_key() else None
+        self.store, self.root, self.cli = store, Path(root).resolve(), cli or CLI(
+            rates=store.usage_rates, http_adapter=OpenRouter(), credentials=configured)
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='verinote-extract')
         self.slots = threading.BoundedSemaphore(8)
         self.cleanup_lock = threading.Lock()
@@ -82,29 +88,55 @@ class Service:
                 'total_jobs': total, 'truncated': total > len(owners), 'summary': summarize(calls),
                 'groups': [{'agent': key[0], 'model': key[1], 'stage': key[2], 'usage': summarize(group)} for key, group in sorted(groups.items())]}
 
+    def register_transport(self, agent, model, question=None):
+        if agent != 'openrouter':
+            return None, copy.copy(self.cli) if isinstance(self.cli, CLI) else self.cli
+        from .job_transport import JobTransport, capture_options
+        from .openrouter import _contains_secret
+        if not isinstance(self.cli, CLI) or not self.cli.ready(agent):
+            raise ValueError('OpenRouter HTTP 어댑터 또는 API 자격 증명이 구성되지 않았습니다.')
+        options = capture_options(self.cli)
+        key = self.cli._credentials.api_key
+        if any(ord(c) < 33 or ord(c) > 126 for c in key):
+            raise ValueError('OpenRouter 자격 증명 형식이 올바르지 않습니다.')
+        rates = copy.deepcopy(self.cli.rates())
+        if _contains_secret([model, question, options, rates], key):
+            raise ValueError('OpenRouter 작업 입력에 자격 증명을 포함할 수 없습니다.')
+        return options, JobTransport(self.cli, options, rates=rates)
+
+    def job_cli(self, job):
+        if job['agent'] != 'openrouter':
+            return self.cli
+        from .job_transport import JobTransport
+        if not isinstance(self.cli, CLI) or not self.cli.ready('openrouter'):
+            raise ValueError('OpenRouter 자격 증명이 구성되지 않았습니다.')
+        return JobTransport(self.cli, job.get('execution_options'))
+
     def start(self, document_id, agent, model, stage='extract', expected_version=None, expected_generation=None):
         if agent not in PROVIDERS:
             raise ValueError('지원하지 않는 에이전트')
         model = validate_model(model, agent)
+        options, transport = self.register_transport(agent, model)
         if not self.slots.acquire(blocking=False):
             raise ValueError('작업 대기열이 가득 찼습니다.')
         try:
-            run = self.store.create_run(document_id, agent, model, stage, expected_version, expected_generation)
-            self.pool.submit(self.extract, run)
+            run = self.store.create_run(document_id, agent, model, stage, expected_version, expected_generation, **({'execution_options': options} if options is not None else {}))
+            self.pool.submit(self.extract, copy.deepcopy(run), transport)
             return run
         except Exception:
             self.slots.release()
             raise
 
-    def extract(self, run):
+    def extract(self, run, transport=None):
         report = None
         report_ok = True
         try:
+            cli = transport if transport is not None else self.job_cli(run)
             self.store.run_status(run['id'], 'running')
             doc = self.store.document(run['document_id'], run['version'])
             if run['stage'] == 'ontology':
                 from .dictionary_pipeline import generate_dictionary
-                dictionary, detail = generate_dictionary(self.store, self.cli, self.root, run, doc)
+                dictionary, detail = generate_dictionary(self.store, cli, self.root, run, doc)
                 self.store.finish_run(run['id'], dictionary=dictionary, detail=detail)
                 return
             current_contract = run['ontology'].get('extraction_contract', 0) == EXTRACTION_CONTRACT_VERSION
@@ -118,43 +150,46 @@ class Service:
                 payload = {'filename': doc['filename'], 'version': doc['version'], 'offset': offset, 'text': chunk}
                 prompt = bounded_prompt(EXTRACTION_PROMPT, payload | {'approved_dictionary': run['ontology'] | {'payload': dictionary_context(run['ontology']['payload'])}})
                 folder = self.root / 'runs' / run['id'] / str(index)
-                output = self.cli.complete(run['agent'], run['model'], prompt, folder)
-                try:
-                    issues = extraction_quote_issues(output, chunk, run['ontology']['payload'], require_coverage=current_contract)
-                    if issues:
-                        locations = ', '.join(quote_label(issue['path']) for issue in issues[:5])
-                        if len(issues) > 5:
-                            locations += f' 외 {len(issues) - 5}개'
-                        if repair_calls >= MAX_QUOTE_REPAIR_CALLS:
-                            raise ValueError(f'{locations}: 원문에 없는 인용입니다. 문서당 인용 보정 {MAX_QUOTE_REPAIR_CALLS}회 한도에 도달했습니다.')
-                        self.store.run_status(run['id'], 'running', f'청크 {index} · {locations}: 원문 인용 보정 중 (추가 호출 {repair_calls + 1}/{MAX_QUOTE_REPAIR_CALLS})')
-                        try:
-                            repair_prompt = bounded_prompt(QUOTE_REPAIR_PROMPT, payload | {
-                                'issues': issues, 'approved_dictionary': run['ontology']})
-                            repair_calls += 1
-                            repair_folder = folder / 'quote-repair'
-                            response = self.cli.complete(run['agent'], run['model'], repair_prompt, repair_folder)
-                            output, changes = apply_quote_repairs(output, chunk, issues, response)
-                            # Recheck the whole response; a repair cannot bypass any vocabulary/shape gate.
-                            if extraction_quote_issues(output, chunk, run['ontology']['payload'], require_coverage=current_contract):
-                                raise ValueError('보정 후에도 원문과 일치하지 않는 인용이 있습니다.')
-                            validate_page(output, chunk)
-                            for fact in output['facts']:
-                                dictionary_fact(fact, chunk, run['ontology']['payload'])
-                            repair_folder.mkdir(parents=True, exist_ok=True)
-                            (repair_folder / 'changes.json').write_text(json.dumps(changes, ensure_ascii=False, indent=2), encoding='utf-8')
-                        except Exception as exc:
-                            raise ValueError(f'{locations}: 인용 보정 실패 (청크당 1회). {exc}') from exc
-                        repaired_quotes += len(changes)
-                        repair_locations.append(f'청크 {index}: {locations}')
-                    page = validate_page(output, chunk)
-                except ValueError as exc:
-                    raise ValueError(f'청크 {index} · {exc}') from exc
-                claims.extend(page['claims'])
-                facts.extend(dictionary_fact(f, chunk, run['ontology']['payload']) for f in output['facts'])
-                if report is not None:
-                    report['chunks'].append(chunk_report(output, offset, len(chunk)))
-                    report_ok = write_report(self.root, report)
+                output = cli.complete(run['agent'], run['model'], prompt, folder)
+                with caller_validation(cli, folder, run['agent']) as validation:
+                    try:
+                        issues = extraction_quote_issues(output, chunk, run['ontology']['payload'], require_coverage=current_contract)
+                        if issues:
+                            validation.reject()
+                            locations = ', '.join(quote_label(issue['path']) for issue in issues[:5])
+                            if len(issues) > 5:
+                                locations += f' 외 {len(issues) - 5}개'
+                            if repair_calls >= MAX_QUOTE_REPAIR_CALLS:
+                                raise ValueError(f'{locations}: 원문에 없는 인용입니다. 문서당 인용 보정 {MAX_QUOTE_REPAIR_CALLS}회 한도에 도달했습니다.')
+                            self.store.run_status(run['id'], 'running', f'청크 {index} · {locations}: 원문 인용 보정 중 (추가 호출 {repair_calls + 1}/{MAX_QUOTE_REPAIR_CALLS})')
+                            try:
+                                repair_prompt = bounded_prompt(QUOTE_REPAIR_PROMPT, payload | {
+                                    'issues': issues, 'approved_dictionary': run['ontology']})
+                                repair_calls += 1
+                                repair_folder = folder / 'quote-repair'
+                                response = cli.complete(run['agent'], run['model'], repair_prompt, repair_folder)
+                                with caller_validation(cli, repair_folder, run['agent']):
+                                    output, changes = apply_quote_repairs(output, chunk, issues, response)
+                                    # Recheck the whole response; a repair cannot bypass any vocabulary/shape gate.
+                                    if extraction_quote_issues(output, chunk, run['ontology']['payload'], require_coverage=current_contract):
+                                        raise ValueError('보정 후에도 원문과 일치하지 않는 인용이 있습니다.')
+                                    validate_page(output, chunk)
+                                    for fact in output['facts']:
+                                        dictionary_fact(fact, chunk, run['ontology']['payload'])
+                                    repair_folder.mkdir(parents=True, exist_ok=True)
+                                    (repair_folder / 'changes.json').write_text(json.dumps(changes, ensure_ascii=False, indent=2), encoding='utf-8')
+                            except Exception as exc:
+                                raise ValueError(f'{locations}: 인용 보정 실패 (청크당 1회). {exc}') from exc
+                            repaired_quotes += len(changes)
+                            repair_locations.append(f'청크 {index}: {locations}')
+                        page = validate_page(output, chunk)
+                    except ValueError as exc:
+                        raise ValueError(f'청크 {index} · {exc}') from exc
+                    claims.extend(page['claims'])
+                    facts.extend(dictionary_fact(f, chunk, run['ontology']['payload']) for f in output['facts'])
+                    if report is not None:
+                        report['chunks'].append(chunk_report(output, offset, len(chunk)))
+                        report_ok = write_report(self.root, report)
             unique = {json.dumps(f, sort_keys=True, ensure_ascii=False): f for f in facts}
             detail = (f'원문 인용 {repaired_quotes}개 보정 · 추가 호출 {repair_calls}회 ({"; ".join(repair_locations)}). 의미가 맞는지 원문과 대조한 뒤 승인하세요.'
                       if repair_calls else '')
@@ -186,6 +221,7 @@ class Service:
         if not isinstance(agent, str) or agent not in PROVIDERS:
             raise ValueError('지원하지 않는 에이전트')
         model = validate_model(request.get('model', config['models'].get(agent, '')), agent)
+        options, transport = self.register_transport(agent, model, question)
         snapshot_id = request.get('snapshot')
         if snapshot_id is not None and (not isinstance(snapshot_id, str) or len(snapshot_id) != 64):
             raise ValueError('스냅샷 ID 형식 오류')
@@ -194,8 +230,8 @@ class Service:
         job = None
         try:
             snapshot = self.store.snapshot(snapshot_id)
-            job = self.store.create_question(question, agent, model, snapshot['id'])
-            self.pool.submit(self.answer, dict(job), snapshot)
+            job = self.store.create_question(question, agent, model, snapshot['id'], **({'execution_options': options} if options is not None else {}))
+            self.pool.submit(self.answer, copy.deepcopy(job), snapshot, transport)
             return job
         except Exception as exc:
             if job:
@@ -204,15 +240,16 @@ class Service:
             self.slots.release()
             raise
 
-    def answer(self, job, snapshot):
+    def answer(self, job, snapshot, transport=None):
         from .assistant import Assistant
         def progress(trace, evidence):
             job.update(trace=trace, evidence=evidence)
             self.store.save_question(job)
         try:
+            cli = transport if transport is not None else self.job_cli(job)
             job['status'] = 'running'
             self.store.save_question(job)
-            assistant = Assistant(self.store, self.cli, snapshot, job, self.root / 'questions' / job['id'], progress)
+            assistant = Assistant(self.store, cli, snapshot, job, self.root / 'questions' / job['id'], progress)
             job['answer'] = assistant.run()
             job['status'] = 'success'
         except Exception as exc:

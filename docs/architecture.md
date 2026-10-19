@@ -202,8 +202,7 @@ it is passed unchanged to each adapter call. A conflicting constructor timeout
 is rejected. Without a pinned snapshot, ontology calls use 600 seconds and
 other OpenRouter calls use 180; explicit timeout overrides (including zero)
 win. Existing CLI defaults, including Antigravity's 600 seconds, are retained.
-Job persistence/resume binding belongs to #707; this change writes no options
-to job records. Models retain the common 150-character/character validation;
+Job persistence/resume binding is described in #707 below. Models retain the common 150-character/character validation;
 OpenRouter additionally requires a nonempty trimmed model. No catalog or model
 substitution is performed.
 
@@ -235,7 +234,7 @@ terminal failures without external API calls. API/UI availability is #708.
 Inject it explicitly into `CLI(http_adapter=..., credentials=..., sink=...)`.
 `transports.Credentials.from_server(config_credentials)` bridges the already
 loaded #703 memory credential. This adapter never loads files or environment
-keys, writes logs, or normalizes usage. Startup/pipeline wiring remains #707.
+keys, writes logs, or normalizes usage. Startup/pipeline wiring is described in #707 below.
 `CLI.max_output` applies through a per-call adapter copy using the smaller of
 the CLI and adapter limits; shared adapter state and fake adapter signatures
 are unchanged. `ExecutionOptions` supplies pinned timeout/max_tokens.
@@ -332,7 +331,7 @@ The API reconstructs from run metadata, returns false for stale/unknown IDs,
 unreadable records or optional write failure, repeats the same terminal status
 idempotently and rejects conflicting final status. It accepts no free-form
 error text. Updating validation does not change token/cost evidence, transport
-status, timestamps or the discovered call count. #707 owns actual notifications
+status, timestamps or the discovered call count. #707 below connects actual notifications
 and resume integration; no cross-process concurrent writers are supported.
 
 `usage.decode_http` consumes only secret-checked top-level API usage from safe
@@ -348,3 +347,50 @@ null and upstream inference cost is not added. User-rate USD estimates retain
 the existing pinned model/snapshot rules. Reported and estimated amounts remain
 separate summary provenance. Existing CLI telemetry, discovery (including quote
 repair/questions) and resumed-segment exclusion remain unchanged.
+
+## Registered OpenRouter jobs and domain validation (#707)
+
+Server startup passes the already-loaded credential object into `Service`.
+A missing key leaves CLI jobs usable. OpenRouter registration locally checks
+credentials/adapter readiness, required model and secret-free input/options/rates
+before acquiring a queue slot or creating a job. This is configuration readiness,
+not authentication, balance or model-access verification. No network probe runs.
+
+Each HTTP job stores `execution_options` containing only
+`adapter_contract_version`, `max_tokens`, and `timeouts.default`/`timeouts.ontology`.
+A nullable `runs.execution_options` column is added by the existing idempotent
+column migration; legacy CLI rows retain null. Questions use their existing
+JSON payload. The strict option allowlist rejects malformed/missing OpenRouter
+snapshots before any resumed transmission. No credentials or key hashes are
+stored. Backup/restore of the SQLite file remains the rollback path; migration
+is additive and preserves old rows. Startup recovery marks queued/running jobs
+interrupted and preserves their snapshots; it never automatically retransmits.
+
+Registration also captures a job-local dispatcher: adapter, credentials, sink,
+output limit and a copied rate snapshot. Agent/model and persisted options are
+copied before queueing. Every dictionary call, extraction chunk, quote repair and
+question round uses that capture, with the appropriate fixed phase timeout;
+subsequent settings or dispatcher-default changes do not alter the queued job.
+Existing fake CLI complete signatures remain unchanged. Direct worker invocation
+reconstructs HTTP options from the stored job and fails closed on absent/invalid
+snapshots. Explicit retries are new jobs and use their own registration snapshot.
+
+Domain consumers use `call_validation.caller_validation` only after `complete`
+returns. The helper reads the authoritative bounded call record for its ID and
+notifies #706's single writer; it never edits run metadata or uses a global last
+call ID. Dictionary span resolution and merge, extraction page/fact/coverage
+checks, and each question tool/answer policy boundary must pass before caller
+success. A quote-invalid original response stays failed even when a separate
+repair succeeds; repairs are validated and counted separately. Optional telemetry
+failure cannot replace a domain result/error. Approval and fixed-snapshot evidence
+rules remain unchanged, as do repair and question budgets. HTTP errors add no
+retries or model fallback.
+
+Only OpenRouter dictionary checkpoint contracts include the complete normalized
+execution option snapshot (including both timeouts). Mismatches skip reuse with
+a static explanation. CLI checkpoint serialization stays unchanged. Matching
+options support reuse of validated progress, not model-output reproducibility.
+Previously paid segments are not copied as new calls; fully resumed checkpoints
+can complete with zero new calls. Local tests exercise the real HTTP adapter via
+network-free fixtures through dictionary approval, extraction review/approval and
+snapshot-backed questions; no paid request is part of validation.
