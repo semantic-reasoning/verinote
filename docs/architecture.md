@@ -181,6 +181,8 @@ POST `/api/documents/{id}/delete-latest`, `/delete`는 정확히 `{expected_vers
 without searching PATH; installed still means a CLI executable is present.
 `command()` accepts CLI providers only. HTTP readiness is the local
 `CLI.ready(agent)` contract, separate from installation.
+On Windows, Copilot prompts are piped through stdin rather than passed as a
+command-line argument, avoiding the Windows process command-line length limit.
 
 `CLI` remains the injectable dispatcher with
 `complete(agent, model, prompt, folder, *, phase=None) -> dict` and

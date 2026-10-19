@@ -61,6 +61,8 @@ def command(agent, model, prompt):
         'codex': ['exec', '--skip-git-repo-check', '--ephemeral', '--sandbox', 'read-only', '--color', 'never', '--json'],
     }[agent]
     args = [binary, *flags, *(['--model', model] if model else [])]
+    if agent == 'copilot' and sys.platform == 'win32':
+        return args, prompt
     return (args + ['-'], prompt) if agent == 'codex' else (args + ['-p', prompt], '')
 
 
