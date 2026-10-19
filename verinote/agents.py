@@ -66,6 +66,24 @@ def command(agent, model, prompt):
     return (args + ['-'], prompt) if agent == 'codex' else (args + ['-p', prompt], '')
 
 
+def _kill_process_tree(proc):
+    if os.name == 'nt':
+        try:
+            subprocess.run(['taskkill', '/PID', str(proc.pid), '/T', '/F'],
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=2, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        if proc.poll() is None:
+            proc.kill()
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    proc.wait()
+
+
 def parse_response(agent, response):
     """Recover only observed, unambiguous terminal-text framing artifacts."""
     response = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', response).strip()
@@ -239,7 +257,8 @@ class CLI:
                 inp.write(stdin.encode()); inp.seek(0)
                 child_env = os.environ.copy()
                 child_env.pop('OPENROUTER_API_KEY', None)
-                proc = subprocess.Popen(args, stdin=inp, stdout=out, stderr=err, cwd=work, start_new_session=True, env=child_env)
+                process_options = {'creationflags': getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0)} if os.name == 'nt' else {'start_new_session': True}
+                proc = subprocess.Popen(args, stdin=inp, stdout=out, stderr=err, cwd=work, env=child_env, **process_options)
                 usage['status'] = 'running'
                 atomic_json(folder / 'usage.json', usage)
                 deadline = time.monotonic() + timeout
@@ -266,8 +285,7 @@ class CLI:
             return result
         except Exception as exc:
             if proc and proc.poll() is None:
-                os.killpg(proc.pid, signal.SIGKILL)
-                proc.wait()
+                _kill_process_tree(proc)
             if not captured:
                 try:
                     capture()

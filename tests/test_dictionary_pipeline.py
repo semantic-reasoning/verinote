@@ -3,7 +3,6 @@ import json
 import os
 from pathlib import Path
 import unittest
-import signal
 import tempfile
 from unittest.mock import Mock, patch
 
@@ -105,10 +104,10 @@ class SpanContract(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             for index, agent in enumerate(CLI_PROVIDERS):
                 proc=Mock(pid=12345,returncode=-9);proc.poll.return_value=None
-                with patch('verinote.agents.executable',return_value='/fake/cli'), patch('verinote.agents.subprocess.Popen',return_value=proc), patch('verinote.agents.time.monotonic',side_effect=[1000,1601]), patch('verinote.agents.os.killpg') as kill:
+                with patch('verinote.agents.executable',return_value='/fake/cli'), patch('verinote.agents.subprocess.Popen',return_value=proc), patch('verinote.agents.time.monotonic',side_effect=[1000,1601]), patch('verinote.agents._kill_process_tree',side_effect=lambda process:process.wait()) as kill:
                     with self.assertRaisesRegex(TimeoutError,'600초'):
                         cli.complete(agent,'','synthetic',Path(tmp)/str(index),phase='ontology')
-                kill.assert_called_once_with(12345,signal.SIGKILL);proc.wait.assert_called_once_with()
+                kill.assert_called_once_with(proc);proc.wait.assert_called_once_with()
                 meta=json.loads((Path(tmp)/str(index)/'run.json').read_text())
                 self.assertEqual(meta['phase'],'ontology');self.assertEqual(meta['timeout_seconds'],600)
                 self.assertEqual(cli.effective_timeout(agent),600 if agent=='agy' else 180)

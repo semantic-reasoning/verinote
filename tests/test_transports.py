@@ -2,6 +2,7 @@ import dataclasses
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -85,6 +86,18 @@ class Transports(unittest.TestCase):
              patch('verinote.agents.executable', return_value='copilot.exe'), \
              patch('verinote.agents.subprocess.Popen', side_effect=launch):
             self.assertEqual(CLI().complete('copilot', 'test-model', prompt, self.folder()), {'ok': True})
+
+    def test_windows_process_cleanup_kills_cli_tree_without_killpg(self):
+        from verinote.agents import _kill_process_tree
+        proc = Mock(pid=12345)
+        proc.poll.side_effect = [None, None]
+        with patch('verinote.agents.os.name', 'nt'), \
+             patch('verinote.agents.subprocess.run', side_effect=subprocess.TimeoutExpired('taskkill', 2)) as run:
+            _kill_process_tree(proc)
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[0], ['taskkill', '/PID', '12345', '/T', '/F'])
+        proc.kill.assert_called_once_with()
+        proc.wait.assert_called_once_with()
 
     def test_http_dispatch_records_without_cli_effects(self):
         adapter, events = FakeHTTP(), []
