@@ -4,6 +4,7 @@ import io
 import json
 from pathlib import Path
 import signal
+import sys
 import tempfile
 import threading
 import unittest
@@ -226,6 +227,9 @@ class ImportAndCLI(unittest.TestCase):
             self.assertIn('test-model', argv)
             if agent == 'codex':
                 self.assertEqual(argv[1], 'exec'); self.assertEqual(stdin, 'prompt; $(touch nope)')
+                self.assertNotIn('-p', argv)
+            elif agent == 'copilot' and sys.platform == 'win32':
+                self.assertEqual(stdin, 'prompt; $(touch nope)')
                 self.assertNotIn('-p', argv)
             else:
                 self.assertEqual(argv[-2:], ['-p', 'prompt; $(touch nope)'])

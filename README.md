@@ -72,7 +72,7 @@ python -m verinote
 | --- | --- | --- |
 | Claude | `claude --output-format json --tools '' --strict-mcp-config -p PROMPT` | `--model ID` |
 | Antigravity | `agy --output-format json --mode plan --sandbox --disable-slash-commands -p PROMPT` | `--model ID` |
-| GitHub Copilot | `copilot --silent --usage-output-file PATH --available-tools '' --disable-builtin-mcps -p PROMPT` | `--model ID` |
+| GitHub Copilot | `copilot --silent --usage-output-file PATH --available-tools '' --disable-builtin-mcps -p PROMPT` (Windows에서는 prompt를 stdin으로 전달) | `--model ID` |
 | Cursor | `cursor-agent --output-format stream-json --mode ask --sandbox enabled --trust -p PROMPT` | `--model ID` |
 | Codex | `codex exec --json --skip-git-repo-check --ephemeral --sandbox read-only --color never -` | `--model ID`, prompt는 stdin |
 

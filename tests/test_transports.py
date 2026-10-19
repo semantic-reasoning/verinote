@@ -69,6 +69,23 @@ class Transports(unittest.TestCase):
             self.assertIsNone(executable('copilot'))
             which.assert_called_once_with('copilot')
 
+    def test_windows_copilot_pipes_long_prompts_instead_of_argv(self):
+        prompt = 'source data ' * 4000
+        proc = Mock(pid=12345, returncode=0)
+        proc.poll.return_value = 0
+
+        def launch(args, **kwargs):
+            self.assertNotIn(prompt, args)
+            self.assertNotIn('-p', args)
+            self.assertEqual(kwargs['stdin'].read(), prompt.encode())
+            kwargs['stdout'].write(b'{"ok":true}')
+            return proc
+
+        with patch('verinote.agents.sys.platform', 'win32'), \
+             patch('verinote.agents.executable', return_value='copilot.exe'), \
+             patch('verinote.agents.subprocess.Popen', side_effect=launch):
+            self.assertEqual(CLI().complete('copilot', 'test-model', prompt, self.folder()), {'ok': True})
+
     def test_http_dispatch_records_without_cli_effects(self):
         adapter, events = FakeHTTP(), []
         options, credentials = ExecutionOptions(timeout=600), Credentials('synthetic-only')
