@@ -1,17 +1,18 @@
 """No inference: real bounded subprocesses implement catalog-only fixtures."""
 import json
 import os
-from pathlib import Path
 import sys
 import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
 import test_workflow as workflow
-from verinote.model_catalog import ModelCatalog, _args, _normalize, CatalogError
+
+from verinote.model_catalog import CatalogError, ModelCatalog, _args, _normalize
 
 FIXTURE = r'''
 import json,os,sys,time

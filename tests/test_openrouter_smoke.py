@@ -1,8 +1,8 @@
 """Opt-in CLI contract is tested offline; importing it never sends a request."""
-from contextlib import redirect_stdout, redirect_stderr
 import io
 import json
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
 from scripts.openrouter_smoke import main

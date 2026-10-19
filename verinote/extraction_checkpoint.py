@@ -3,7 +3,12 @@ import copy
 import json
 
 from .documents import chunks
-from .ontology import EXTRACTION_PROMPT, QUOTE_REPAIR_PROMPT, dictionary_fact, extraction_quote_issues
+from .ontology import (
+    EXTRACTION_PROMPT,
+    QUOTE_REPAIR_PROMPT,
+    dictionary_fact,
+    extraction_quote_issues,
+)
 from .store import canonical, digest
 from .usage import atomic_json, safe_file
 
@@ -28,7 +33,8 @@ class ExtractionCheckpoint:
         self.folder = root / 'runs' / run['id']
         self.folder.mkdir(parents=True, exist_ok=True)
         self.slices = list(chunks(doc['text']))
-        self.outputs, self.warnings = [], []
+        self.outputs: list[dict] = []
+        self.warnings: list[str] = []
         pin = run['ontology']
         self.contract = {
             'pipeline': PIPELINE, 'prompt': digest(EXTRACTION_PROMPT.encode()),

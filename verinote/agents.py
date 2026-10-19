@@ -1,6 +1,5 @@
 """Explicit provider adapters. No shell execution or caller-supplied flags."""
 import copy
-from dataclasses import replace
 import json
 import os
 import re
@@ -9,6 +8,7 @@ import signal
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4

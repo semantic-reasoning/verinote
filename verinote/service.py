@@ -162,6 +162,7 @@ class Service:
             facts: list[object] = []
             repair_calls, repaired_quotes, repair_locations = 0, 0, []
             if checkpoint is not None:
+                assert report is not None
                 for index, output in enumerate(checkpoint.outputs):
                     offset, chunk = checkpoint.slices[index]
                     claims.extend(output['claims'])
@@ -182,7 +183,7 @@ class Service:
                 deadline = time.monotonic() + CHUNK_TIMEOUT
 
                 def complete_chunk(prompt, target):
-                    remaining = deadline - time.monotonic()
+                    remaining = deadline - time.monotonic()  # noqa: B023 (intentional: same-iteration deadline)
                     if remaining <= 0:
                         raise TimeoutError(f'청크 실행 시간 제한 초과 ({CHUNK_TIMEOUT}초)')
                     limited = cli.limited_timeout(run['agent'], remaining) if hasattr(cli, 'limited_timeout') else cli

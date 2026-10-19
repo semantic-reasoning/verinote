@@ -290,10 +290,26 @@ class RealFraming(CallFolders):
         received = []
         def serve():
             try:
-                raw = b''
-                while b'\r\n\r\n' not in raw:
-                    raw += server.recv(65536)
-                received.append(raw)
+                header = b''
+                while b'\r\n\r\n' not in header:
+                    header += server.recv(65536)
+                received.append(header)
+                # http.client sends a Content-Length for the body. Drain it before
+                # replying so server.close() is a clean FIN: an unread body left in
+                # the socketpair RX buffer makes the kernel send a RST, which the
+                # client surfaces as ConnectionResetError under CI load. Draining the
+                # body makes this request/response exchange deterministic.
+                header_block = header.split(b'\r\n\r\n', 1)[0]
+                body_read = len(header) - len(header_block) - 4
+                for line in header_block.split(b'\r\n'):
+                    if line.lower().startswith(b'content-length:'):
+                        remaining = int(line.split(b':', 1)[1].strip()) - body_read
+                        while remaining > 0:
+                            chunk = server.recv(min(65536, remaining))
+                            if not chunk:
+                                break
+                            remaining -= len(chunk)
+                        break
                 if trickle:
                     for byte in response:
                         server.send(bytes([byte])); time.sleep(.01)
@@ -327,7 +343,11 @@ class RealFraming(CallFolders):
                     b'HTTP/1.1 200 OK\r\nContent-Length: 99999\r\n\r\n'+raw,
                     b'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n'+hex(len(raw))[2:].encode()+b'\r\n'+raw+b'\r\n0\r\n\r\n']
         for index, response in enumerate(variants):
-            result, error, events, _, received = self.run_socket(response)
+            # This test asserts framing correctness, not the deadline. Use a
+            # load-tolerant budget so CI CPU contention cannot turn a correct
+            # socket exchange into a false timeout; deadline behavior is covered
+            # separately by the .08s trickle tests below.
+            result, error, events, _, received = self.run_socket(response, timeout=30)
             self.assertEqual(len(received), 1)
             if index in (0, 3):
                 self.assertEqual(result, {'ok': True}); self.assertIsNone(error)

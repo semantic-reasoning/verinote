@@ -86,7 +86,7 @@ def write_record(folder, filename, value, limit=MAX_METADATA):
             except FileNotFoundError:
                 pass
         return
-    temp = '.' + uuid4().hex + '.tmp'
+    tmpfile = '.' + uuid4().hex + '.tmp'
     try:
         try:
             info = os.stat(filename, dir_fd=fd, follow_symlinks=False)
@@ -94,14 +94,14 @@ def write_record(folder, filename, value, limit=MAX_METADATA):
                 raise OSError('unsafe destination')
         except FileNotFoundError:
             pass
-        out = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
+        out = os.open(tmpfile, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
         with os.fdopen(out, 'wb') as stream:
             stream.write(data)
-        os.replace(temp, filename, src_dir_fd=fd, dst_dir_fd=fd)
+        os.replace(tmpfile, filename, src_dir_fd=fd, dst_dir_fd=fd)
     finally:
         try:
             try:
-                os.unlink(temp, dir_fd=fd)
+                os.unlink(tmpfile, dir_fd=fd)
             except FileNotFoundError:
                 pass
         finally:

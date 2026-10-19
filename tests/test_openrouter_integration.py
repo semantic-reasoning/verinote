@@ -2,12 +2,12 @@
 import copy
 import json
 import os
-from pathlib import Path
 import socket
 import sys
 import tempfile
 import threading
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -15,8 +15,8 @@ from urllib.request import Request, urlopen
 from test_assistant import answer, tool
 from test_openrouter import Connection, Response, completion
 from test_openrouter_pipeline import Fixture, Queue, dictionary
-from test_ontology import wire_dictionary
 from test_workflow import DICTIONARY, FACTS, SOURCE, extraction_response
+
 from verinote.agents import CLI
 from verinote.config import create_config, load_config
 from verinote.server import Server
@@ -198,7 +198,7 @@ class Integration(unittest.TestCase):
             with self.subTest(name=name):
                 attempts=[]
                 def factory(call):
-                    return Connection(call,Response(json.dumps(payload).encode()),attempts,error=error)
+                    return Connection(call,Response(json.dumps(payload).encode()),attempts,error=error)  # noqa: B023 (intentional: same-iteration payload, attempts, error)
                 with patch('verinote.openrouter._HTTPS',side_effect=factory):
                     run=self.finish(self.start(doc,'extract'))
                     job=self.request('/api/questions','POST',{'question':'synthetic','agent':'openrouter','model':'vendor/default'})
