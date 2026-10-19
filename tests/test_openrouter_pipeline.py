@@ -109,7 +109,9 @@ class Pipeline(unittest.TestCase):
         self.assertEqual(len(fixture.requests), 4)
         self.assertEqual(ontology['execution_options']['timeouts'], {'default':180,'ontology':600})
         self.assertTrue(599 < fixture.requests[0]['timeout'] <=600)
-        self.assertTrue(all(179 < r['timeout'] <=180 for r in fixture.requests[1:]))
+        self.assertEqual(extraction['execution_options']['timeouts']['default'], 360)
+        self.assertTrue(359 < fixture.requests[1]['timeout'] <= 360)
+        self.assertTrue(all(179 < r['timeout'] <=180 for r in fixture.requests[2:]))
         for owner in (ontology, extraction):
             self.assertEqual(self.calls(owner)[0]['caller_validation_status'], 'success')
         qcalls = job_calls(self.root, 'questions', saved)
@@ -246,6 +248,51 @@ class Pipeline(unittest.TestCase):
         self.assertTrue(all(r['max_tokens']==333 and 30 < r['timeout'] <=31 for r in fixture.requests))
         self.assertEqual(len(self.calls(run)),5)
         self.assertEqual(len(self.store.document(self.doc['id'])['items']),1)
+
+    def test_extraction_resume_caps_each_chunk_and_checks_http_options(self):
+        for changed_options in (False, True):
+            with self.subTest(changed_options=changed_options):
+                source = SOURCE.ljust(8000) + SOURCE
+                self.doc = self.store.register('extraction retry', 'retry.md', source.encode(), source)
+                approved_dictionary(self.store, self.doc['id'])
+                self.service.cli.options = ExecutionOptions(max_tokens=321, timeout=600)
+                outputs = [extraction_response(), TimeoutError('fixture timeout'), extraction_response()]
+                if changed_options:
+                    outputs.append(extraction_response())
+                fixture = Fixture(outputs)
+                with patch('verinote.openrouter._HTTPS', side_effect=fixture):
+                    first = self.start('extract'); self.queue.drain()
+                    self.assertEqual(self.store.run(first['id'])['status'], 'error')
+                    if changed_options:
+                        self.service.cli.options = ExecutionOptions(max_tokens=322, timeout=600)
+                    second = self.start('extract'); self.queue.drain()
+                saved = self.store.run(second['id'])
+                self.assertEqual(saved['status'], 'success', saved['detail'])
+                self.assertEqual(len(self.calls(second)), 2 if changed_options else 1)
+                offsets = [json.loads(request['messages'][0]['content'].split('입력(JSON):\n')[1])['offset']
+                           for request in fixture.requests[2:]]
+                self.assertEqual(offsets, [0, 8000] if changed_options else [8000])
+                self.assertTrue(all(0 < request['timeout'] <= 360 for request in fixture.requests))
+                self.assertEqual(saved['execution_options']['timeouts']['default'], 360)
+                self.assertTrue(all(call['timeout_seconds'] <= 360 for call in self.calls(second)))
+                self.assertEqual(self.store.snapshot()['facts'], [])
+
+    def test_extraction_timeout_increase_keeps_validated_http_prefix(self):
+        source = SOURCE.ljust(8000) + SOURCE
+        self.doc = self.store.register('timeout change', 'retry.md', source.encode(), source)
+        approved_dictionary(self.store, self.doc['id'])
+        self.service.cli.options = ExecutionOptions(timeout=180)
+        fixture = Fixture([extraction_response(), TimeoutError('timeout'), extraction_response()])
+        with patch('verinote.openrouter._HTTPS', side_effect=fixture):
+            first = self.start('extract'); self.queue.drain()
+            self.assertEqual(self.store.run(first['id'])['status'], 'error')
+            self.service.cli.options = None
+            second = self.start('extract'); self.queue.drain()
+        saved = self.store.run(second['id'])
+        self.assertEqual(saved['status'], 'success', saved['detail'])
+        self.assertEqual(len(self.calls(second)), 1)
+        self.assertIn('1청크 재사용', saved['detail'])
+        self.assertTrue(359 < fixture.requests[-1]['timeout'] <= 360)
 
     def test_contract_version_mismatch_and_complete_checkpoint_no_new_cost(self):
         source = SOURCE.ljust(4000)+'B'*30

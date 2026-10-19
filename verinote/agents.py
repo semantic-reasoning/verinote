@@ -1,4 +1,6 @@
 """Explicit provider adapters. No shell execution or caller-supplied flags."""
+import copy
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -133,11 +135,23 @@ class CLI:
             raise ValueError('알 수 없는 CLI 호출 단계')
         if agent == 'openrouter' and self.options is not None:
             return self.options.timeout
-        return self.timeout if self.timeout is not None else (600 if phase == 'ontology' or agent == 'agy' else 180)
+        return self.timeout if self.timeout is not None else (600 if phase == 'ontology' or agent in ('agy', 'copilot') else 180)
 
     def execution_options(self, agent, phase=None):
         timeout = self.effective_timeout(agent, phase)
         return self.options if agent == 'openrouter' and self.options is not None else ExecutionOptions(timeout=timeout)
+
+    def limited_timeout(self, agent, seconds):
+        timeout = self.effective_timeout(agent)
+        if self.timeout is None and not (agent == 'openrouter' and self.options is not None):
+            timeout = seconds
+        timeout = min(timeout, seconds)
+        ExecutionOptions(timeout=timeout)
+        limited = copy.copy(self)
+        limited.timeout = timeout
+        if limited.options is not None:
+            limited.options = replace(limited.options, timeout=timeout)
+        return limited
 
     def ready(self, agent):
         if agent not in PROVIDERS:

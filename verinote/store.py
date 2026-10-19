@@ -288,6 +288,12 @@ class Store:
                 "SELECT * FROM runs WHERE document_id=? AND version=? AND agent=? AND model=? AND stage='ontology' AND status IN ('error','interrupted') AND id<>? ORDER BY created_at DESC,id DESC LIMIT 8",
                 (run['document_id'], run['version'], run['agent'], run['model'], run['id']))]
 
+    def extraction_retries(self, run):
+        with self.connect() as db:
+            return [self.unpack_run(r) for r in db.execute(
+                "SELECT * FROM runs WHERE document_id=? AND version=? AND agent=? AND model=? AND stage='extract' AND status IN ('error','interrupted') AND id<>? ORDER BY created_at DESC,id DESC LIMIT 8",
+                (run['document_id'], run['version'], run['agent'], run['model'], run['id']))]
+
     def run_status(self, run_id, status, detail=''):
         with self.connect(True) as db:
             db.execute('UPDATE runs SET status=?,detail=? WHERE id=?', (status, detail, run_id))
