@@ -8,7 +8,8 @@ import json
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from .agents import PROVIDERS, TRANSPORTS, executable, validate_model
+from .agents import CLI_PROVIDERS, PROVIDERS, TRANSPORTS, executable, validate_model
+from .model_catalog import ModelCatalog
 from .config import ConfigError, Credentials, create_config, load_config
 from .documents import MAX_BYTES, MAX_TEXT, decode_document
 from .service import Service, text
@@ -27,6 +28,7 @@ class Server(ThreadingHTTPServer):
 
     def __init__(self, address, store, service, *, credentials=None):
         self.store, self.service = store, service
+        self.model_catalog = ModelCatalog()
         self.credentials = credentials if credentials is not None else Credentials()
         super().__init__(address, Handler)
 
@@ -91,6 +93,12 @@ class Handler(BaseHTTPRequestHandler):
                 name = 'index.html' if route.path == '/' else route.path[1:]
                 mime = {'index.html': 'text/html; charset=utf-8', 'app.js': 'text/javascript; charset=utf-8', 'style.css': 'text/css; charset=utf-8'}[name]
                 return self.send((WEB / name).read_bytes(), mime=mime)
+            if len(parts) == 4 and parts[:2] == ['api', 'providers'] and parts[3] == 'models' and method == 'POST':
+                if parts[2] not in CLI_PROVIDERS:
+                    raise ValueError('CLI 제공자의 모델 목록만 조회할 수 있습니다.')
+                if self.body():
+                    raise ValueError('모델 목록 조회에는 빈 JSON 객체를 보내세요.')
+                return self.send(self.server.model_catalog.discover(parts[2]))
             if route.path == '/api/settings':
                 if method == 'GET':
                     providers = []
