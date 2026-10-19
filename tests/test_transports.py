@@ -37,6 +37,38 @@ class Transports(unittest.TestCase):
         self.counter += 1
         return Path(self.tmp.name).resolve()/str(self.counter)
 
+    def test_copilot_windows_installations_outside_inherited_path(self):
+        root = Path(self.tmp.name).resolve()
+        environment = {'PATH': str(root / 'empty'), 'LOCALAPPDATA': str(root / 'local'),
+                       'APPDATA': str(root / 'roaming')}
+        for directory, name in [(root / 'local' / 'Microsoft' / 'WinGet' / 'Links', 'copilot.exe'),
+                                (root / 'roaming' / 'npm', 'copilot.cmd')]:
+            with self.subTest(installation=name):
+                directory.mkdir(parents=True)
+                binary = directory / name
+                binary.write_text('')
+                binary.chmod(0o700)
+                with patch.dict(os.environ, environment), patch('verinote.agents.sys.platform', 'win32'):
+                    self.assertEqual(executable('copilot'), str(binary))
+                    self.assertTrue(CLI().ready('copilot'))
+                binary.unlink()
+
+    def test_copilot_path_takes_precedence_over_installation_fallback(self):
+        with patch('verinote.agents.sys.platform', 'win32'), patch('verinote.agents.shutil.which', return_value='chosen-copilot') as which:
+            self.assertEqual(executable('copilot'), 'chosen-copilot')
+            which.assert_called_once_with('copilot')
+
+    def test_copilot_missing_installation_is_not_reported_as_installed(self):
+        root = Path(self.tmp.name).resolve()
+        with patch.dict(os.environ, {'PATH': str(root), 'LOCALAPPDATA': str(root), 'APPDATA': str(root)}), patch('verinote.agents.sys.platform', 'win32'):
+            self.assertIsNone(executable('copilot'))
+            self.assertFalse(CLI().ready('copilot'))
+
+    def test_copilot_non_windows_uses_path_only(self):
+        with patch('verinote.agents.sys.platform', 'linux'), patch('verinote.agents.shutil.which', return_value=None) as which:
+            self.assertIsNone(executable('copilot'))
+            which.assert_called_once_with('copilot')
+
     def test_http_dispatch_records_without_cli_effects(self):
         adapter, events = FakeHTTP(), []
         options, credentials = ExecutionOptions(timeout=600), Credentials('synthetic-only')
