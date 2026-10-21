@@ -6,6 +6,16 @@ from typing import Protocol
 
 MIN_JOB_TOKENS = 1
 MAX_JOB_TOKENS = 65536
+MIN_ANSWER_TOKENS = 1024
+MAX_REASONING_TOKENS = 4096
+DEFAULT_ANSWER_TOKENS = 8192
+
+
+def reasoning_budget(total, reserve):
+    """Requested budget, not a provider-independent guarantee of reservation."""
+    if type(reserve) is not int or reserve < MIN_ANSWER_TOKENS or reserve > total - 1024:
+        raise ValueError('답변 목표 여유는 1,024토큰 이상이어야 하고 추론용으로도 1,024토큰 이상 남겨야 합니다. 총 한도를 2,048토큰 이상으로 조절하세요.')
+    return min(MAX_REASONING_TOKENS, total - reserve)
 
 
 def validate_job_tokens(value):
@@ -20,14 +30,21 @@ class ExecutionOptions:
     adapter_contract_version: int = 1
     max_tokens: int = 16384
     timeout: float = 180
+    reasoning_max_tokens: int | None = None
+    answer_reserve_tokens: int | None = None
 
     def __post_init__(self):
-        if type(self.adapter_contract_version) is not int or self.adapter_contract_version != 1:
+        if type(self.adapter_contract_version) is not int or self.adapter_contract_version not in (1, 2):
             raise ValueError('지원하지 않는 어댑터 계약 버전')
         if type(self.max_tokens) is not int or self.max_tokens <= 0:
             raise ValueError('max_tokens는 양의 정수여야 합니다.')
         if isinstance(self.timeout, bool) or not isinstance(self.timeout, (int, float)) or not math.isfinite(self.timeout) or self.timeout < 0:
             raise ValueError('timeout은 0 이상의 유한한 초 값이어야 합니다.')
+        if self.adapter_contract_version == 1:
+            if self.reasoning_max_tokens is not None or self.answer_reserve_tokens is not None:
+                raise ValueError('v1 실행에는 답변 여유 정책을 추가할 수 없습니다.')
+        elif type(self.reasoning_max_tokens) is not int or self.reasoning_max_tokens != reasoning_budget(self.max_tokens, self.answer_reserve_tokens):
+            raise ValueError('고정 추론 요청 예산이 답변 목표 여유와 일치하지 않습니다.')
 
 
 @dataclass(frozen=True)
@@ -96,12 +113,19 @@ class HTTPAdapter(Protocol):
 
 def job_options(value):
     """Strict secret-free persisted HTTP job snapshot; legacy CLI uses null."""
-    if not isinstance(value, dict) or set(value) != {'adapter_contract_version', 'max_tokens', 'timeouts'}:
+    required = {'adapter_contract_version', 'max_tokens', 'timeouts'}
+    if isinstance(value, dict) and value.get('adapter_contract_version') == 2:
+        required |= {'reasoning_max_tokens', 'answer_reserve_tokens'}
+    if not isinstance(value, dict) or set(value) != required:
         raise ValueError('고정 HTTP 작업 옵션이 올바르지 않습니다. 작업을 다시 등록하세요.')
     times = value['timeouts']
     if not isinstance(times, dict) or set(times) != {'default', 'ontology'}:
         raise ValueError('고정 HTTP 단계별 timeout이 올바르지 않습니다.')
     for timeout in times.values():
-        ExecutionOptions(value['adapter_contract_version'], value['max_tokens'], timeout)
-    return {'adapter_contract_version': value['adapter_contract_version'], 'max_tokens': value['max_tokens'],
-            'timeouts': dict(times)}
+        ExecutionOptions(value['adapter_contract_version'], value['max_tokens'], timeout,
+                         value.get('reasoning_max_tokens'), value.get('answer_reserve_tokens'))
+    result = {'adapter_contract_version': value['adapter_contract_version'], 'max_tokens': value['max_tokens'],
+              'timeouts': dict(times)}
+    if value['adapter_contract_version'] == 2:
+        result.update(reasoning_max_tokens=value['reasoning_max_tokens'], answer_reserve_tokens=value['answer_reserve_tokens'])
+    return result

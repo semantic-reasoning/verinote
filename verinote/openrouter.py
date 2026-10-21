@@ -40,6 +40,7 @@ ERROR_MESSAGES = {
     'refusal': 'OpenRouter 제공자가 응답을 거부했습니다.',
     'tools': 'OpenRouter 도구 호출 응답은 허용되지 않습니다.',
     'finish': 'OpenRouter 응답이 정상적으로 완료되지 않았습니다.',
+    'length': 'OpenRouter 추론·답변 토큰 한도에 도달해 답변을 완성하지 못했습니다. 추론 예산·모델 지원을 확인하거나 문서를 나누어 실행하세요.',
     'content': 'OpenRouter 최종 응답은 비어 있지 않은 JSON 객체여야 합니다.',
 }
 
@@ -222,6 +223,8 @@ def _content(payload):
         raise _Failure('refusal')
     if message.get('tool_calls') or message.get('function_call'):
         raise _Failure('tools')
+    if choice.get('finish_reason') == 'length':
+        raise _Failure('length')
     if choice.get('finish_reason') != 'stop':
         raise _Failure('finish')
     content = message.get('content')
@@ -302,6 +305,9 @@ class OpenRouter:
             raise _Failure('configuration') from None
         body = {'model': model, 'messages': [{'role': 'user', 'content': prompt}],
                 'stream': False, 'max_tokens': options.max_tokens}
+        if options.adapter_contract_version == 2:
+            body['reasoning'] = {'max_tokens': options.reasoning_max_tokens}
+            body['provider'] = {'require_parameters': True}
         if _contains_secret(body, key):
             raise _Failure('secret')
         data = json.dumps(body, ensure_ascii=True).encode('utf-8')

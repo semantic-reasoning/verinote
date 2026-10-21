@@ -320,6 +320,10 @@ def http_public_fields(meta):
     clean['http_status'] = value if type(value) is int and 100 <= value <= 599 else None
     clean['timeout_seconds'] = amount(meta.get('timeout_seconds'))
     clean['max_tokens'] = number(meta.get('max_tokens'), True)
+    if type(meta.get('adapter_contract_version')) is int and meta['adapter_contract_version'] == 2:
+        clean['adapter_contract_version'] = 2
+        clean['reasoning_max_tokens'] = number(meta.get('reasoning_max_tokens'), True)
+        clean['answer_reserve_tokens'] = number(meta.get('answer_reserve_tokens'), True)
     return clean
 
 

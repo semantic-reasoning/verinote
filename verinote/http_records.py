@@ -135,6 +135,9 @@ class HTTPRecord:
                      'transmission_state': 'not_sent', 'adapter_validation_status': 'pending',
                      'caller_validation_status': 'pending', 'dispatcher_finished': False, 'timeout_seconds': options.timeout,
                      'max_tokens': options.max_tokens, 'http_status': None, 'generation_id': None}
+        if options.adapter_contract_version == 2:
+            self.meta.update(adapter_contract_version=2, reasoning_max_tokens=options.reasoning_max_tokens,
+                             answer_reserve_tokens=options.answer_reserve_tokens)
         self.usage = empty_usage('openrouter', model, rate)
         self.usage.update(provider_call_id=call_id, started_at=started_at, status='running')
 

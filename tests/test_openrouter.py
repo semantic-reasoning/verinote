@@ -150,7 +150,7 @@ class OpenRouterTests(CallFolders):
         for content in (None, '', ' ', [], 'not JSON', '[]', 'null', '12'):
             cases.append((completion(content), 'content'))
         for finish in ('length', 'tool_calls', None, 'error'):
-            payload = completion(); payload['choices'][0]['finish_reason'] = finish; cases.append((payload, 'finish'))
+            payload = completion(); payload['choices'][0]['finish_reason'] = finish; cases.append((payload, 'length' if finish == 'length' else 'finish'))
         for key, value, code in [('refusal', 'no', 'refusal'), ('tool_calls', [{'id': 'native'}], 'tools'), ('function_call', {'name': 'tool'}, 'tools')]:
             payload = completion(); payload['choices'][0]['message'][key] = value; cases.append((payload, code))
         payload = completion(); payload['choices'][0]['message'] = {'reasoning': '{"ok":true}'}; cases.append((payload, 'content'))

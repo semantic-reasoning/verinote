@@ -22,7 +22,8 @@ class JobTransport:
     def complete(self, agent, model, prompt, folder, *, phase=None):
         from .agents import CLI
         options = ExecutionOptions(self.options['adapter_contract_version'], self.options['max_tokens'],
-                                   self.effective_timeout(agent, phase))
+                                   self.effective_timeout(agent, phase), self.options.get('reasoning_max_tokens'),
+                                   self.options.get('answer_reserve_tokens'))
         call = CLI(max_output=self.base.max_output, rates=self.base.rates, http_adapter=self.base.http_adapter,
                    credentials=self.base._credentials, sink=self.base.sink, options=options)
         return call.complete(agent, model, prompt, folder, phase=phase)
@@ -41,7 +42,10 @@ class JobTransport:
 
 def capture_options(dispatcher):
     normal = asdict(dispatcher.execution_options('openrouter'))
-    return job_options({'adapter_contract_version': normal['adapter_contract_version'],
-                        'max_tokens': normal['max_tokens'],
-                        'timeouts': {'default': normal['timeout'],
-                                     'ontology': dispatcher.effective_timeout('openrouter', 'ontology')}})
+    value = {'adapter_contract_version': normal['adapter_contract_version'],
+             'max_tokens': normal['max_tokens'],
+             'timeouts': {'default': normal['timeout'],
+                          'ontology': dispatcher.effective_timeout('openrouter', 'ontology')}}
+    if normal['adapter_contract_version'] == 2:
+        value.update(reasoning_max_tokens=normal['reasoning_max_tokens'], answer_reserve_tokens=normal['answer_reserve_tokens'])
+    return job_options(value)

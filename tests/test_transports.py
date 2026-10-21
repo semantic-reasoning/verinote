@@ -135,7 +135,7 @@ class Transports(unittest.TestCase):
         self.assertNotEqual(events[0].call_id, events[1].call_id)
         self.assertEqual(events[0].safe_response_payload['usage']['total_tokens'], 12)
         self.assertNotIn('synthetic-only', repr(credentials))
-        self.assertEqual(set(dataclasses.asdict(options)), {'adapter_contract_version', 'max_tokens', 'timeout'})
+        self.assertEqual(set(dataclasses.asdict(options)), {'adapter_contract_version', 'max_tokens', 'timeout', 'reasoning_max_tokens', 'answer_reserve_tokens'})
         with self.assertRaises(dataclasses.FrozenInstanceError):
             options.max_tokens = 1
 
