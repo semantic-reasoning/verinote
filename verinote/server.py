@@ -196,9 +196,11 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(store.bulk_approve(doc_id, **data))
                 if len(parts) == 4 and parts[3] in ('extract', 'ontology') and method == 'POST':
                     data = self.body()
-                    if set(data) - {'agent', 'model', 'expected_version', 'expected_generation', 'max_tokens', 'answer_reserve_tokens'}:
+                    if set(data) - {'agent', 'model', 'expected_version', 'expected_generation', 'max_tokens', 'answer_reserve_tokens', 'regenerate'}:
                         raise ValueError('알 수 없는 추출 필드')
-                    override = {key: data[key] for key in ('max_tokens', 'answer_reserve_tokens') if key in data}
+                    if 'regenerate' in data and data['regenerate'] is None:
+                        raise ValueError('사전 재생성에는 id와 revision이 필요합니다.')
+                    override = {key: data[key] for key in ('max_tokens', 'answer_reserve_tokens', 'regenerate') if key in data}
                     return self.send(self.server.service.start(doc_id, data.get('agent'), data.get('model', ''), parts[3], data.get('expected_version'), data.get('expected_generation'), **override), 202)
             if len(parts) == 4 and parts[:2] == ['api', 'items']:
                 if parts[3] == 'review' and method == 'POST':

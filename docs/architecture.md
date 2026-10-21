@@ -549,3 +549,7 @@ format stays unchanged; processed characters do not imply semantic completeness.
 Optional sidecar failure warns without invalidating accepted data. A valid
 checkpoint may expose a known prefix count while missing details remain explicitly
 unavailable. The existing explicit approval and strict final validation are kept.
+
+### 반려 사전 재생성
+
+사전 재생성은 새 item을 추가하지 않고 반려된 ontology item을 새 pending revision으로 교체한다. 시작 요청의 regenerate `{id, revision}`은 rejected 대상과 정확히 일치해야 한다. ontology 단계의 runs.ontology에는 재생성 대상 ID/revision/hash/이전 run_id/document generation을 고정한다(초기 생성은 null). extract 단계의 승인 사전 snapshot과 stage로 구분하며, item.dictionary는 extract 출처에만 붙인다. 완료 트랜잭션은 대상과 문서 토큰을 재검사하고 payload/revision/run_id/감사 이벤트/성공 상태를 함께 저장한다. 기존 이벤트는 이전 내용을, regenerated 이벤트는 이전·새 run 연결을 보존한다. 위키·사실과 이전 추출 snapshot은 변경하지 않는다. 복구 후보는 LIMIT 전에 동일 target으로 제한하고 checkpoint 계약에도 target을 포함한다. 현재 사전의 제외 경고는 새 run에서 조회하며 과거 run의 경고 파일은 유지한다.

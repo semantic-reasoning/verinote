@@ -162,7 +162,8 @@ class Store:
                 if run['stage'] == 'extract' and run['status'] == 'success' and run['ontology']:
                     extracted.add(extraction_key(run['ontology']))
             for item in items:
-                pin = runs.get(item['run_id'], {}).get('ontology')
+                origin = runs.get(item['run_id'], {})
+                pin = origin.get('ontology') if origin.get('stage') == 'extract' else None
                 item['dictionary'] = {k: pin[k] for k in ('id', 'revision', 'sha256')} if pin else None
             can_extract = bool(dictionary and dictionary['status'] == 'approved' and extraction_key(dictionary | {'extraction_contract': EXTRACTION_CONTRACT_VERSION}) not in extracted)
             latest = max(runs.values(), key=lambda r: (r['created_at'], r['id']), default=None)
@@ -231,12 +232,17 @@ class Store:
         owners = sorted(runs + questions, key=lambda r: (r['created_at'], r['id']), reverse=True)
         return owners[:limit], total
 
-    def create_run(self, document_id, agent, model, stage='extract', expected_version=None, expected_generation=None, *, execution_options=None):
+    def create_run(self, document_id, agent, model, stage='extract', expected_version=None, expected_generation=None, *, execution_options=None, regenerate=None):
         if stage not in ('ontology', 'extract'):
             raise ValueError('지원하지 않는 추출 단계')
         if execution_options is not None:
             from .transports import job_options
             execution_options = job_options(execution_options)
+        if regenerate is not None:
+            if (stage != 'ontology' or not isinstance(regenerate, dict) or set(regenerate) != {'id', 'revision'}
+                    or not isinstance(regenerate['id'], str) or not regenerate['id'] or len(regenerate['id']) > 200
+                    or type(regenerate['revision']) is not int or regenerate['revision'] < 1):
+                raise ValueError('사전 재생성에는 id와 양의 정수 revision이 필요합니다.')
         run_id = ident()
         with self.connect(True) as db:
             doc = db.execute('SELECT * FROM documents WHERE id=?', (document_id,)).fetchone()
@@ -246,8 +252,15 @@ class Store:
             dictionary = db.execute("SELECT * FROM items WHERE document_id=? AND version=? AND kind='ontology'", (document_id, doc['current_version'])).fetchone()
             pinned = None
             if stage == 'ontology':
-                if dictionary:
-                    raise Conflict('이미 사전 초안이 있습니다. 사전을 수정하고 다시 승인하세요.')
+                if regenerate is not None:
+                    if (not dictionary or dictionary['id'] != regenerate['id']
+                            or dictionary['revision'] != regenerate['revision'] or dictionary['status'] != 'rejected'):
+                        raise Conflict('반려된 사전이 변경되었습니다. 새로고침 후 다시 생성하세요.')
+                    pinned = {'id': dictionary['id'], 'revision': dictionary['revision'],
+                              'sha256': digest(json.loads(dictionary['payload'])), 'run_id': dictionary['run_id'],
+                              'generation': doc['generation']}
+                elif dictionary:
+                    raise Conflict('이미 사전 초안이 있습니다. 반려 후 다시 생성하거나 내용을 수정하세요.')
             else:
                 if not dictionary or dictionary['status'] != 'approved':
                     raise Conflict('이 문서 버전의 개체·별칭·관계 사전을 먼저 승인하세요.')
@@ -285,8 +298,8 @@ class Store:
     def dictionary_retries(self, run):
         with self.connect() as db:
             return [self.unpack_run(r) for r in db.execute(
-                "SELECT * FROM runs WHERE document_id=? AND version=? AND agent=? AND model=? AND stage='ontology' AND status IN ('error','interrupted') AND id<>? ORDER BY created_at DESC,id DESC LIMIT 8",
-                (run['document_id'], run['version'], run['agent'], run['model'], run['id']))]
+                "SELECT * FROM runs WHERE document_id=? AND version=? AND agent=? AND model=? AND stage='ontology' AND status IN ('error','interrupted') AND id<>? AND ontology IS ? ORDER BY created_at DESC,id DESC LIMIT 8",
+                (run['document_id'], run['version'], run['agent'], run['model'], run['id'], canonical(run['ontology']) if run['ontology'] else None))]
 
     def extraction_retries(self, run):
         with self.connect() as db:
@@ -308,9 +321,27 @@ class Store:
             from .ontology import dictionary_fact, validate_dictionary
             source = db.execute('SELECT text FROM versions WHERE document_id=? AND version=?', (run['document_id'], run['version'])).fetchone()[0]
             if run['stage'] == 'ontology':
+                value = validate_dictionary(dictionary, source)
+                target = json.loads(run['ontology']) if run['ontology'] else None
+                if target:
+                    doc = db.execute('SELECT * FROM documents WHERE id=?', (run['document_id'],)).fetchone()
+                    self.check_document_token(doc, run['version'], target['generation'])
+                    current = db.execute("SELECT * FROM items WHERE id=? AND document_id=? AND version=? AND kind='ontology'",
+                                         (target['id'], run['document_id'], run['version'])).fetchone()
+                    if (not current or current['status'] != 'rejected' or current['revision'] != target['revision']
+                            or digest(json.loads(current['payload'])) != target['sha256'] or current['run_id'] != target['run_id']):
+                        raise Conflict('재생성 중 사전이 변경되었습니다. 새로고침 후 다시 생성하세요.')
+                    revision = current['revision'] + 1
+                    db.execute("UPDATE items SET payload=?,status='pending',revision=?,run_id=? WHERE id=?",
+                               (canonical(value), revision, run_id, target['id']))
+                    reason = f"사전 재생성 · 이전 실행 {target['run_id']} → 새 실행 {run_id}"
+                    db.execute('INSERT INTO events(item_id,revision,action,actor,reason,payload,created_at) VALUES(?,?,?,?,?,?,?)',
+                               (target['id'], revision, 'regenerated', 'agent:' + run['agent'], reason, canonical(value), now()))
+                    db.execute("UPDATE runs SET status='success',detail=? WHERE id=?", (detail, run_id))
+                    return
                 if db.execute("SELECT 1 FROM items WHERE document_id=? AND version=? AND kind='ontology'", (run['document_id'], run['version'])).fetchone():
                     raise Conflict('이미 사전 초안이 있습니다.')
-                candidates = [('ontology', validate_dictionary(dictionary, source))]
+                candidates = [('ontology', value)]
             else:
                 page = validate_page(page, source)
                 if not isinstance(facts, list) or len(facts) > 1280:
