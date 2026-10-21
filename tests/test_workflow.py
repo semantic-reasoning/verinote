@@ -13,7 +13,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from verinote.agents import CLI, CLI_PROVIDERS, PROVIDERS, command
-from verinote.documents import decode_document
+from verinote.documents import MAX_DOCX_XML_BYTES, decode_document
 from verinote.engine import query
 from verinote.server import Server
 from verinote.service import Service, validate_fact
@@ -188,6 +188,65 @@ class Workflow(unittest.TestCase):
 
 
 class ImportAndCLI(unittest.TestCase):
+    def test_docx_reads_only_body_even_with_large_compressed_media(self):
+        raw = io.BytesIO()
+        with zipfile.ZipFile(raw, 'w', zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr('word/document.xml', '<document><p xmlns="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><t>Hello</t></p></document>')
+            archive.writestr('word/media/image.bin', b'x' * (MAX_DOCX_XML_BYTES + 1))
+        opened = []
+        real_open = zipfile.ZipFile.open
+        def tracked_open(archive, member, *args, **kwargs):
+            opened.append(member.filename)
+            return real_open(archive, member, *args, **kwargs)
+        with patch.object(zipfile.ZipFile, 'open', tracked_open):
+            self.assertEqual(decode_document('images.docx', raw.getvalue()), 'Hello')
+        self.assertEqual(opened, ['word/document.xml'])
+
+    def test_docx_body_exact_expansion_boundary_and_bounded_read(self):
+        prefix = b'<document><!--'
+        suffix = b'--><p xmlns="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><t>Hello</t></p></document>'
+        xml = prefix + b'x' * (MAX_DOCX_XML_BYTES - len(prefix) - len(suffix)) + suffix
+        def packed(body):
+            raw = io.BytesIO()
+            with zipfile.ZipFile(raw, 'w', zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr('word/document.xml', body)
+            return raw.getvalue()
+        self.assertEqual(decode_document('exact.docx', packed(xml)), 'Hello')
+        with self.assertRaisesRegex(ValueError, '본문 XML.*16 MiB'):
+            decode_document('over.docx', packed(xml + b' '))
+        # Enforce the read bound even when metadata does not reject the input.
+        source = Mock()
+        source.__enter__ = Mock(return_value=source)
+        source.__exit__ = Mock(return_value=False)
+        source.read.return_value = xml + b' '
+        small = packed(b'<document/>')
+        with patch.object(zipfile.ZipFile, 'open', return_value=source), patch('verinote.documents.ET.fromstring') as parse:
+            with self.assertRaisesRegex(ValueError, '본문 XML'):
+                decode_document('bounded.docx', small)
+        source.read.assert_called_once_with(MAX_DOCX_XML_BYTES + 1)
+        parse.assert_not_called()
+
+    def test_docx_invalid_body_and_existing_text_limits(self):
+        def packed(name, body):
+            raw = io.BytesIO()
+            with zipfile.ZipFile(raw, 'w', zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr(name, body)
+            return raw.getvalue()
+        for raw in [b'not a zip', packed('word/media/image.bin', b'x'), packed('word/document.xml', b'<broken>')]:
+            with self.assertRaisesRegex(ValueError, '손상'):
+                decode_document('bad.docx', raw)
+        raw = packed('word/document.xml', b'<!DOCTYPE doc><document/>')
+        with self.assertRaisesRegex(ValueError, '엔티티'):
+            decode_document('entity.docx', raw)
+        xml = '<p xmlns="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><t>' + 'x' * 128001 + '</t></p>'
+        with self.assertRaisesRegex(ValueError, '128,000'):
+            decode_document('text.docx', packed('word/document.xml', xml))
+        raw = packed('word/document.xml', b'<document/>')
+        for error in [RuntimeError('encrypted'), NotImplementedError('compression'), EOFError('truncated')]:
+            with patch.object(zipfile.ZipFile, 'open', side_effect=error):
+                with self.assertRaisesRegex(ValueError, 'DOCX 본문을 읽을 수 없습니다'):
+                    decode_document('unreadable.docx', raw)
+
     def test_docx_and_unsupported_and_bad_quote(self):
         stream = io.BytesIO()
         with zipfile.ZipFile(stream, 'w') as z:
