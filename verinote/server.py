@@ -130,7 +130,7 @@ class Handler(BaseHTTPRequestHandler):
                             value['configured'] = self.server.credentials.public_status()['openrouter']['configured']
                         providers.append(value)
                     default_tokens = self.server.service.cli.execution_options('openrouter').max_tokens if isinstance(self.server.service.cli, CLI) else ExecutionOptions().max_tokens
-                    return self.send(store.settings() | {'document_limits': DOCUMENT_LIMITS, 'providers': providers,
+                    return self.send(store.settings() | {'dictionary': {'relation_type_warning_threshold': self.server.service.relation_type_warning_threshold}, 'document_limits': DOCUMENT_LIMITS, 'providers': providers,
                                      'extraction_token_limits': {'min': MIN_JOB_TOKENS, 'max': MAX_JOB_TOKENS, 'step': 1, 'default': default_tokens},
                                      'answer_budget_policy': {'min_total': MIN_ANSWER_TOKENS + 1024,
                                                               'default_reserve': DEFAULT_ANSWER_TOKENS,
@@ -176,6 +176,8 @@ class Handler(BaseHTTPRequestHandler):
                     doc = store.document(doc_id, version)
                     for item in doc['items']:
                         if item['kind'] == 'ontology':
+                            from .dictionary_type_warnings import type_warnings
+                            item['relation_type_warnings'] = type_warnings(item['payload'], self.server.service.relation_type_warning_threshold)
                             item['dictionary_exclusions'] = self.server.service.dictionary_exclusions(
                                 item['run_id'], document_id=doc_id, version=doc['version'])
                     return self.send(doc)
@@ -262,7 +264,7 @@ def main(argv=None):
     root = args.data_dir.resolve()
     store = Store(root / 'verinote.sqlite3')
     store.recover()
-    service = Service(store, root, credentials=credentials)
+    service = Service(store, root, credentials=credentials, relation_type_warning_threshold=credentials.relation_type_warning_threshold)
     server = Server(('127.0.0.1', args.port), store, service, credentials=credentials)
     print(f'Verinote: http://127.0.0.1:{server.server_port}', flush=True)
     try:

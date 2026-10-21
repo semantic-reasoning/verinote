@@ -63,10 +63,12 @@ def validate_page(value, source):
 
 
 class Service:
-    def __init__(self, store, root, cli=None, *, credentials=None):
+    def __init__(self, store, root, cli=None, *, credentials=None, relation_type_warning_threshold=20):
         from .openrouter import OpenRouter
         from .transports import Credentials
         configured = Credentials.from_server(credentials) if credentials is not None and credentials.openrouter_key() else None
+        from .dictionary_type_warnings import validate_threshold
+        self.relation_type_warning_threshold = validate_threshold(relation_type_warning_threshold)
         self.store, self.root, self.cli = store, Path(root).resolve(), cli or CLI(
             rates=store.usage_rates, http_adapter=OpenRouter(), credentials=configured)
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='verinote-extract')
@@ -84,6 +86,8 @@ class Service:
             result['coverage'] = report
         if kind == 'runs' and owner.get('stage') == 'ontology':
             result['dictionary_exclusions'] = self.dictionary_exclusions(owner['id'], include_items=coverage_details)
+            from .dictionary_type_warnings import read_run_warnings
+            result['relation_type_warnings'] = read_run_warnings(self.root, self.store, owner['id'], include_items=coverage_details)
         if kind == 'runs':
             result['progress'] = analysis_progress(self.root, self.store, owner['id'], report)
         if report is not None and not coverage_details:
@@ -154,13 +158,13 @@ class Service:
             raise ValueError('작업 대기열이 가득 찼습니다.')
         try:
             run = self.store.create_run(document_id, agent, model, stage, expected_version, expected_generation, **({'regenerate': regenerate} if regenerate is not None else {}), **({'execution_options': options} if options is not None else {}))
-            self.pool.submit(self.extract, copy.deepcopy(run), transport)
+            self.pool.submit(self.extract, copy.deepcopy(run), transport, self.relation_type_warning_threshold)
             return run
         except Exception:
             self.slots.release()
             raise
 
-    def extract(self, run, transport=None):
+    def extract(self, run, transport=None, relation_type_warning_threshold=None):
         report = None
         report_ok = True
         checkpoint = None
@@ -171,7 +175,7 @@ class Service:
             doc = self.store.document(run['document_id'], run['version'])
             if run['stage'] == 'ontology':
                 from .dictionary_pipeline import generate_dictionary
-                dictionary, detail = generate_dictionary(self.store, cli, self.root, run, doc)
+                dictionary, detail = generate_dictionary(self.store, cli, self.root, run, doc, relation_type_warning_threshold=self.relation_type_warning_threshold if relation_type_warning_threshold is None else relation_type_warning_threshold)
                 self.store.finish_run(run['id'], dictionary=dictionary, detail=detail)
                 return
             current_contract = run['ontology'].get('extraction_contract', 0) == EXTRACTION_CONTRACT_VERSION
