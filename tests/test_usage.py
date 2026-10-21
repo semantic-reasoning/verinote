@@ -335,6 +335,7 @@ class Lifecycle(unittest.TestCase):
 
     def test_failed_validation_retry_repair_and_multi_round_question(self):
         bad=copy.deepcopy(DICTIONARY);bad['entities'][0]['quote']='원문에 없는 내용'
+        bad['entities'][0]['unexpected']=True  # Structural failures still stop the job.
         first=self.run_outputs([bad],stage='ontology')
         self.assertEqual(first['status'],'error')
         self.assertEqual(first['usage']['details'][0]['status'],'success')

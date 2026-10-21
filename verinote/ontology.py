@@ -26,17 +26,35 @@ def _dictionary_shape(value):
             raise ValueError(f'사전 {key}: JSON 객체가 필요합니다.')
 
 
+def _dictionary_definition(kind, row):
+    """Shared value/definition checks, independent of evidence selection."""
+    from .service import text
+    if kind == 'entities':
+        return {k: text(row.get(k), k) for k in ('id', 'name', 'type')}
+    if kind == 'aliases':
+        return {k: text(row.get(k), k) for k in ('alias', 'entity')}
+    relation = {k: text(row.get(k), k, 1500 if k == 'description' else 200) for k in ('id', 'description')}
+    if not re.fullmatch(r'[a-z][a-z0-9_]{0,99}', relation['id']):
+        raise ValueError('관계 ID는 중복 없는 영문 snake_case여야 합니다.')
+    for key in ('subject_types', 'object_types'):
+        entries = row.get(key)
+        if not isinstance(entries, list) or not 1 <= len(entries) <= 20 or any(not isinstance(t, str) for t in entries):
+            raise ValueError(f'{key}: 사전에 선언된 개체 타입 1~20개가 필요합니다.')
+        relation[key] = sorted(set(entries))
+    return relation
+
+
 def _dictionary_row(kind, row, source, entities):
     """Normalize and ground a row before it can be retained or discarded."""
-    from .service import evidence, text
+    from .service import evidence
+    result = _dictionary_definition(kind, row)
     if kind == 'entities':
-        result = {k: text(row.get(k), k) for k in ('id', 'name', 'type')}
         result['quote'] = evidence(row.get('quote'), source)
         if result['name'] not in result['quote']:
             raise ValueError('개체 name은 해당 원문 인용에 있어야 합니다.')
         return result
     if kind == 'aliases':
-        alias, target = text(row.get('alias'), 'alias'), text(row.get('entity'), 'entity')
+        alias, target = result['alias'], result['entity']
         quote = evidence(row.get('quote'), source)
         if target not in entities:
             raise ValueError('별칭이 선언되지 않은 개체를 가리킵니다.')
@@ -49,14 +67,10 @@ def _dictionary_row(kind, row, source, entities):
         if entities[target]['name'] not in quote:
             raise ValueError('별칭 인용에는 별칭과 개체 name이 함께 있어야 합니다.')
         return {'alias': alias, 'entity': target, 'quote': quote}
-    relation = {k: text(row.get(k), k, 1500 if k == 'description' else 200) for k in ('id', 'description')}
-    if not re.fullmatch(r'[a-z][a-z0-9_]{0,99}', relation['id']):
-        raise ValueError('관계 ID는 중복 없는 영문 snake_case여야 합니다.')
+    relation = result
     types = {e['type'] for e in entities.values()}
     for key in ('subject_types', 'object_types'):
-        entries = row.get(key)
-        if not isinstance(entries, list) or not 1 <= len(entries) <= 20 or any(not isinstance(t, str) for t in entries):
-            raise ValueError(f'{key}: 사전에 선언된 개체 타입 1~20개가 필요합니다.')
+        entries = relation[key]
         unknown = sorted(set(entries) - types)
         if unknown:
             raise ValueError(f'{key}: 관계 {relation["id"]}의 선언되지 않은 타입: {", ".join(t[:200] for t in unknown[:5])}')

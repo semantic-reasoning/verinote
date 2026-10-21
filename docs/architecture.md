@@ -510,3 +510,42 @@ safely reported usage; reasoning content is never substituted for the final answ
 
 References: https://openrouter.ai/docs/guides/best-practices/reasoning-tokens and
 https://openrouter.ai/docs/guides/routing/provider-selection#requiring-providers-to-support-all-parameters
+
+
+### Evidence exclusions during dictionary generation
+
+`dictionary_filter.merge_generated_dictionary` is generation-only. Existing
+strict resolve/merge/approval functions retain their behavior. A shared definition
+validator first checks every wire row's shape, values, identity namespace and
+conflicts against previous definitions and all rows in the same response. Bad
+evidence cannot hide a conflict. Unknown original alias targets/types, malformed
+references, invalid fields and limits are fatal. Only well-shaped missing/reversed
+source references and name/alias grounding failures are excluded. A new alias
+whose entity was excluded and a new relation whose type disappeared are excluded
+as dependencies; surviving previous entities or same-type entities prevent that
+cascade. The retained delta is strictly merged and validated again.
+
+A chunk commits its dictionary, processed offset and exclusion state together.
+Fatal chunks publish none of them. Exclusions add no model calls. HTTP domain
+validation is marked failed for a partially rejected response even if generation
+continues with retained rows; transport success and candidate publication remain
+separate. Only complete document processing publishes a pending dictionary.
+
+`dictionary-exclusions.json` stores run/document/version/source identity, ordered
+source chunk boundaries, exact per-kind/direct/dependent counts, and the first
+500 detail records (kind, response row, bounded identifier, static reason). The
+512KiB bound fits within the existing checkpoint margin; full responses and source
+quotes are not copied. Missing, truncated and zero-exclusion reports are distinct.
+Readers enforce identity, boundaries, count consistency, size and symlink checks.
+The current dictionary item is connected to its origin run without a DB change.
+Warnings shown with an edited dictionary describe generation-time exclusions.
+
+New checkpoint schema 2 pins filter_policy=1 and embeds the bounded audit state.
+Resume inherits exclusions without double counting or charging old calls. Strict
+legacy schema 1 is compatible only when its original full contract and dictionary
+validate; zero-exclusion chunk state is synthesized for its prefix. Unknown policy
+versions or damaged audit state force a fresh start. The existing progress marker
+format stays unchanged; processed characters do not imply semantic completeness.
+Optional sidecar failure warns without invalidating accepted data. A valid
+checkpoint may expose a known prefix count while missing details remain explicitly
+unavailable. The existing explicit approval and strict final validation are kept.
