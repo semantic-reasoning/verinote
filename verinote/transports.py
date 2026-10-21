@@ -4,6 +4,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+MIN_JOB_TOKENS = 1
+MAX_JOB_TOKENS = 65536
+
+
+def validate_job_tokens(value):
+    """Validate only user overrides, not legacy/default execution options."""
+    if type(value) is not int or not MIN_JOB_TOKENS <= value <= MAX_JOB_TOKENS:
+        raise ValueError('토큰 한도는 1~65,536 사이의 정수여야 합니다.')
+    return value
+
 
 @dataclass(frozen=True)
 class ExecutionOptions:

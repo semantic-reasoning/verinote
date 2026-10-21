@@ -27,6 +27,9 @@ from .ontology import (
     quote_label,
 )
 from .progress import analysis_progress
+from .transports import validate_job_tokens
+
+_UNSET_TOKENS = object()
 
 
 def text(value, name, limit=200, *, allow_cr=False):
@@ -99,7 +102,7 @@ class Service:
                 'total_jobs': total, 'truncated': total > len(owners), 'summary': summarize(calls),
                 'groups': [{'agent': key[0], 'model': key[1], 'stage': key[2], 'usage': summarize(group)} for key, group in sorted(groups.items())]}
 
-    def register_transport(self, agent, model, question=None, *, stage=None):
+    def register_transport(self, agent, model, question=None, *, stage=None, max_tokens=_UNSET_TOKENS):
         if agent != 'openrouter':
             return None, copy.copy(self.cli) if isinstance(self.cli, CLI) else self.cli
         from .job_transport import JobTransport, capture_options
@@ -107,6 +110,8 @@ class Service:
         if not isinstance(self.cli, CLI) or not self.cli.ready(agent):
             raise ValueError('OpenRouter HTTP 어댑터 또는 API 자격 증명이 구성되지 않았습니다.')
         options = capture_options(self.cli)
+        if max_tokens is not _UNSET_TOKENS:
+            options['max_tokens'] = validate_job_tokens(max_tokens)
         if stage == 'extract':
             options['timeouts']['default'] = self.cli.limited_timeout(agent, CHUNK_TIMEOUT).effective_timeout(agent)
         key = self.cli._credentials.api_key
@@ -125,11 +130,15 @@ class Service:
             raise ValueError('OpenRouter 자격 증명이 구성되지 않았습니다.')
         return JobTransport(self.cli, job.get('execution_options'))
 
-    def start(self, document_id, agent, model, stage='extract', expected_version=None, expected_generation=None):
+    def start(self, document_id, agent, model, stage='extract', expected_version=None, expected_generation=None, *, max_tokens=_UNSET_TOKENS):
         if agent not in PROVIDERS:
             raise ValueError('지원하지 않는 에이전트')
         model = validate_model(model, agent)
-        options, transport = self.register_transport(agent, model, stage=stage)
+        if max_tokens is not _UNSET_TOKENS:
+            if agent != 'openrouter':
+                raise ValueError('토큰 한도 설정은 OpenRouter 사전 생성·추출에서만 지원합니다.')
+            validate_job_tokens(max_tokens)
+        options, transport = self.register_transport(agent, model, stage=stage, max_tokens=max_tokens)
         if not self.slots.acquire(blocking=False):
             raise ValueError('작업 대기열이 가득 찼습니다.')
         try:
