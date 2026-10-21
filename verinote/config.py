@@ -6,7 +6,7 @@ import tomllib
 from pathlib import Path
 
 MAX_CONFIG_BYTES = 64 * 1024
-TEMPLATE = '# Server-only credentials; edit locally, then restart Verinote.\n[openrouter]\napi_key = ""\n'
+TEMPLATE = '# Server-only settings; edit locally, then restart Verinote.\n[openrouter]\napi_key = ""\n\n[dictionary]\nrelation_type_warning_threshold = 20\n'
 UNSUPPORTED = '이 플랫폼에서는 설정 파일 접근 권한을 검증할 수 없습니다. 파일 없이 CLI를 사용하거나 POSIX/WSL 환경을 사용하세요.'
 
 
@@ -15,9 +15,11 @@ class ConfigError(ValueError):
 
 
 class Credentials:
-    __slots__ = ('__openrouter_key',)
+    __slots__ = ('__openrouter_key', 'relation_type_warning_threshold')
 
-    def __init__(self, openrouter_key=''):
+    def __init__(self, openrouter_key='', *, relation_type_warning_threshold=20):
+        from .dictionary_type_warnings import validate_threshold
+        self.relation_type_warning_threshold = validate_threshold(relation_type_warning_threshold)
         self.__openrouter_key = openrouter_key
 
     def __repr__(self):
@@ -92,12 +94,19 @@ def _load(path):
         raise ConfigError('설정 파일은 64 KiB 이하여야 합니다.')
     value = tomllib.loads(raw.decode('utf-8'))
     provider = value.get('openrouter', {})
-    if set(value) - {'openrouter'} or not isinstance(provider, dict) or set(provider) - {'api_key'}:
-        raise ConfigError('설정에는 [openrouter]와 api_key 항목만 사용할 수 있습니다.')
+    dictionary = value.get('dictionary', {})
+    if (set(value) - {'openrouter', 'dictionary'} or not isinstance(provider, dict) or set(provider) - {'api_key'}
+            or not isinstance(dictionary, dict) or set(dictionary) - {'relation_type_warning_threshold'}):
+        raise ConfigError('설정에는 [openrouter].api_key와 [dictionary].relation_type_warning_threshold만 사용할 수 있습니다.')
     key = provider.get('api_key', '')
     if not isinstance(key, str):
         raise ConfigError('openrouter.api_key는 문자열이어야 합니다.')
-    return Credentials(key.strip())
+    from .dictionary_type_warnings import validate_threshold
+    try:
+        threshold = validate_threshold(dictionary.get('relation_type_warning_threshold', 20))
+    except ValueError:
+        raise ConfigError('dictionary.relation_type_warning_threshold는 1~200 정수여야 합니다.') from None
+    return Credentials(key.strip(), relation_type_warning_threshold=threshold)
 
 
 def load_config(path=None):

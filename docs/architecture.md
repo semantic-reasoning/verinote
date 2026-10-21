@@ -553,3 +553,7 @@ unavailable. The existing explicit approval and strict final validation are kept
 ### 반려 사전 재생성
 
 사전 재생성은 새 item을 추가하지 않고 반려된 ontology item을 새 pending revision으로 교체한다. 시작 요청의 regenerate `{id, revision}`은 rejected 대상과 정확히 일치해야 한다. ontology 단계의 runs.ontology에는 재생성 대상 ID/revision/hash/이전 run_id/document generation을 고정한다(초기 생성은 null). extract 단계의 승인 사전 snapshot과 stage로 구분하며, item.dictionary는 extract 출처에만 붙인다. 완료 트랜잭션은 대상과 문서 토큰을 재검사하고 payload/revision/run_id/감사 이벤트/성공 상태를 함께 저장한다. 기존 이벤트는 이전 내용을, regenerated 이벤트는 이전·새 run 연결을 보존한다. 위키·사실과 이전 추출 snapshot은 변경하지 않는다. 복구 후보는 LIMIT 전에 동일 target으로 제한하고 checkpoint 계약에도 target을 포함한다. 현재 사전의 제외 경고는 새 run에서 조회하며 과거 run의 경고 파일은 유지한다.
+
+### 관계 타입 개수 경고
+
+`[dictionary].relation_type_warning_threshold`는 기본20,1~200 정수의 경고 기준이며 데이터 절단 한도가 아니다. 공통 검증은 20개 상한만 제거하고 선언/형식/충돌/전체 크기 검증을 유지한다. 각 관계의 주어·목적어 타입을 따로 집계하며 최대40관계×2필드 경고를 사전에서 결정적으로 계산한다. 별도 경고 파일 없이 원자적으로 반영된 checkpoint 사전에서 재계산하므로 실패 구간이나 재개로 경고가 중복되지 않는다. 작업 등록 시 Service 숫자 설정을 캡처하고 checkpoint 계약에 정책/기준을 고정한다. 이전 checkpoint는 기본20일 때만 명시적으로 호환한다. 실행 API는 신원/원문 hash/offset/사전 검증 후 당시 기준으로 계산하고 누락·손상은 미확인으로 표시한다. 현재 사전은 현재 서버 기준을 명시해 재평가하므로 설정을 바꿔도 과거 실행 기록의 기준을 바꾸지 않는다. 경고만 있는 응답은 caller validation 성공이며 자동 재호출하지 않는다.

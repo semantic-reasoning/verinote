@@ -11,6 +11,12 @@ from .dictionary_exclusions import (
     write_report,
 )
 from .dictionary_filter import FILTER_POLICY, merge_generated_dictionary
+from .dictionary_type_warnings import (
+    DEFAULT_THRESHOLD,
+    POLICY,
+    type_warnings,
+    validate_threshold,
+)
 from .documents import bounded_spans
 from .ontology import (
     DICTIONARY_CHUNK_SIZE,
@@ -33,7 +39,8 @@ PIPELINE = 'source-spans-v1'
 CHECKPOINT_LIMIT = MAX_DICTIONARY_BYTES + 2 * 1024 * 1024
 
 
-def generate_dictionary(store, cli, root, run, doc):
+def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_threshold=DEFAULT_THRESHOLD):
+    threshold = validate_threshold(relation_type_warning_threshold)
     source = doc['text']
     slices = list(bounded_spans(source, DICTIONARY_CHUNK_SIZE))
     if len(slices) > MAX_DICTIONARY_CALLS:
@@ -45,6 +52,7 @@ def generate_dictionary(store, cli, root, run, doc):
                 'source_sha256': doc['sha256'], 'text_sha256': digest(source.encode()),
                 'agent': run['agent'], 'model': run['model']}
     contract['filter_policy'] = FILTER_POLICY
+    contract.update(type_warning_policy=POLICY, relation_type_warning_threshold=threshold)
     if run['agent'] == 'openrouter':
         from .transports import job_options
         contract['execution_options'] = job_options(run.get('execution_options'))
@@ -71,6 +79,10 @@ def generate_dictionary(store, cli, root, run, doc):
                 raise ValueError('checkpoint HTTP options mismatch')
             offset = value['offset']
             expected = dict(contract)
+            if (isinstance(value['contract'], dict) and 'type_warning_policy' not in value['contract']
+                    and 'relation_type_warning_threshold' not in value['contract'] and threshold == DEFAULT_THRESHOLD):
+                expected.pop('type_warning_policy')
+                expected.pop('relation_type_warning_threshold')
             if value['schema_version'] == 1:
                 expected.pop('filter_policy')  # Strict legacy prefixes excluded no rows.
             if type(value['schema_version']) is not int or value['schema_version'] not in (1, 2) or value['run_id'] != prior['id'] or canonical(value['contract']) != canonical(expected) or type(offset) is not int or offset not in boundaries:
@@ -123,6 +135,9 @@ def generate_dictionary(store, cli, root, run, doc):
         audit = public_report(exclusions, False)
         if audit['total_count']:
             parts.insert(0, f'일부 항목 제외 {audit["total_count"]}개 (직접 {audit["direct_count"]}개 · 연쇄 {audit["dependent_count"]}개). 사전 승인 전 제외 내역을 확인하세요.')
+        breadth = type_warnings(dictionary, threshold)
+        if breadth['field_count']:
+            parts.insert(0, f'관계 타입 권장 기준 {threshold}개 초과: {breadth["relation_count"]}개 관계 · {breadth["field_count"]}개 필드, 모든 타입 보존. 승인 전 확인하세요.')
         if resumed_from:
             parts.append(f'{state["resumed_chars"]:,}자 재사용 · 이전 실행 {resumed_from}')
         return ' · '.join(parts + warnings)
@@ -144,7 +159,8 @@ def generate_dictionary(store, cli, root, run, doc):
             store.run_status(run['id'], 'running', f'사전 생성 · 구간 {index}/{len(slices)} · 호출 제한 {timeout}초 · {summary()}')
             spans = source_spans(chunk)
             payload = {'filename': doc['filename'], 'version': run['version'], 'offset': offset,
-                       'sources': spans, 'dictionary': dictionary_context(dictionary)}
+                       'sources': spans, 'dictionary': dictionary_context(dictionary),
+                       'relation_type_warning_threshold': threshold}
             prompt = bounded_prompt(DICTIONARY_PROMPT, payload)
             state['calls_started'] += 1
             write(folder / 'dictionary-progress.json', state)

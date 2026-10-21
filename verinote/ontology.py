@@ -38,8 +38,8 @@ def _dictionary_definition(kind, row):
         raise ValueError('관계 ID는 중복 없는 영문 snake_case여야 합니다.')
     for key in ('subject_types', 'object_types'):
         entries = row.get(key)
-        if not isinstance(entries, list) or not 1 <= len(entries) <= 20 or any(not isinstance(t, str) for t in entries):
-            raise ValueError(f'{key}: 사전에 선언된 개체 타입 1~20개가 필요합니다.')
+        if not isinstance(entries, list) or not entries or any(not isinstance(t, str) for t in entries):
+            raise ValueError(f'{key}: 사전에 선언된 개체 타입의 비어 있지 않은 문자열 배열이 필요합니다.')
         relation[key] = sorted(set(entries))
     return relation
 
