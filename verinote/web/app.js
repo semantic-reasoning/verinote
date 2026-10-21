@@ -104,7 +104,8 @@ function extractionRequest(d) {
 }
 function extractionControls(d) {
   const dictionary=d.items.find(i=>i.kind==='ontology');
-  return `<h3>1. 사전 생성 → 2. 사전 수정·승인 → 3. 위키·관계 추출</h3><div class="form-grid">${providerSelect()}</div><div id="extract-provider-hint" class="muted">${providerHint(config.selected)}</div>${tokenLimitControls()}<div class="actions"><button class="primary" id="ontology" ${dictionary?'disabled':''}>1. 개체·별칭·관계 사전 생성</button><button class="primary" id="extract" ${d.can_extract?'':'disabled'}>${d.extraction_upgrade?'3. 개선된 방식으로 다시 추출':'3. 승인 사전으로 추출'}</button></div><p class="muted">${!dictionary?'먼저 사전을 생성하세요. 사전 호출은 기본 최대 10분이며, 실패 후 같은 에이전트·모델로 다시 생성하면 검증된 구간부터 이어갑니다.':dictionary.status!=='approved'?'아래 사전에서 이름·별칭·관계 방향과 타입을 확인하고 승인하세요.':d.can_extract?(d.extraction_upgrade?'관계별 점검이 포함된 방식으로 다시 추출할 수 있습니다. 이전 승인 이력은 유지되며 중복 관계가 새 검토 후보로 추가될 수 있습니다.':'사전이 승인되었습니다. 이 사전을 기준으로 추출할 수 있습니다.'):'이 사전 revision의 현재 방식 추출이 완료되었습니다. 변경하려면 사전을 수정·재승인하세요.'} 원문이 선택한 모델 제공자에게 전달됩니다. 기존 결과는 보존하며 새 결과는 검토 대기로 추가합니다.</p>`;
+  const regenerate=dictionary?.status==='rejected';
+  return `<h3>1. 사전 생성 → 2. 사전 수정·승인 → 3. 위키·관계 추출</h3><div class="form-grid">${providerSelect()}</div><div id="extract-provider-hint" class="muted">${providerHint(config.selected)}</div>${tokenLimitControls()}<div class="actions"><button class="primary" id="ontology" ${dictionary&&!regenerate?'disabled':''}>${regenerate?'1. 반려한 사전 다시 생성':'1. 개체·별칭·관계 사전 생성'}</button><button class="primary" id="extract" ${d.can_extract?'':'disabled'}>${d.extraction_upgrade?'3. 개선된 방식으로 다시 추출':'3. 승인 사전으로 추출'}</button></div><p class="muted">${!dictionary?'먼저 사전을 생성하세요. 사전 호출은 기본 최대 10분이며, 실패 후 같은 에이전트·모델로 다시 생성하면 검증된 구간부터 이어갑니다.':regenerate?'사전이 반려되었습니다. 다시 생성하면 기존 내용과 반려 이력은 이력에 남고 새 초안으로 교체됩니다. 실패한 재생성은 같은 반려 리비전에서 검증한 구간만 이어갑니다.':dictionary.status!=='approved'?'아래 사전에서 이름·별칭·관계 방향과 타입을 확인하고 승인하세요.':d.can_extract?(d.extraction_upgrade?'관계별 점검이 포함된 방식으로 다시 추출할 수 있습니다. 이전 승인 이력은 유지되며 중복 관계가 새 검토 후보로 추가될 수 있습니다.':'사전이 승인되었습니다. 이 사전을 기준으로 추출할 수 있습니다.'):'이 사전 revision의 현재 방식 추출이 완료되었습니다. 변경하려면 사전을 수정·재승인하세요.'} 원문이 선택한 모델 제공자에게 전달됩니다. 기존 결과는 보존하며 새 결과는 검토 대기로 추가합니다.</p>`;
 }
 function renderDictionaryExclusions(report) {
   if(!report)return '';
@@ -143,7 +144,10 @@ async function openDoc(id, version) {
     const button=$('#'+stage);
     if(button) button.onclick=()=>attempt(async()=>{
       if(!$('#extract-model').reportValidity())return;
-      const payload=extractionRequest(d);button.disabled=true;
+      const payload=extractionRequest(d);
+      const dictionary=d.items.find(i=>i.kind==='ontology');
+      if(stage==='ontology'&&dictionary?.status==='rejected')payload.regenerate={id:dictionary.id,revision:dictionary.revision};
+      button.disabled=true;
       try {const run=await api(`/api/documents/${id}/${stage}`,'POST',payload);notice('작업을 시작했습니다. 실행 기록에서 진행 상황을 볼 수 있습니다.');if(selectedDoc===d)selectedDoc.latest_run=run;watchRun(run.id,id,d.version,run.status);}
       catch(e){button.disabled=false;$('#extract-provider-hint').innerHTML=providerHint($('#extract-agent').value)+executionGuidance($('#extract-agent').value);throw e;}
     });
@@ -421,7 +425,7 @@ async function loadRuns() {
   $('#runs').innerHTML=rows.map(renderRun).join('')||'<div class="empty">아직 실행 기록이 없습니다.</div>';
   for(const r of rows)if(['queued','running'].includes(r.status))watchRun(r.id,r.document_id,r.version,r.status);
 }
-function renderRun(r){return `<div class="panel" data-run-panel="${esc(r.id)}">${badge(r.status)} <strong>${esc({ontology:'사전 생성',extract:'관계 추출',legacy:'기존 추출'}[r.stage])} · ${esc(r.agent)} / ${esc(r.model||'기본 모델')}</strong>${r.ontology?`<p>기준 사전 r${r.ontology.revision} · ${esc(r.ontology.sha256.slice(0,12))}</p>`:''}${renderDictionaryExclusions(r.dictionary_exclusions)}${renderAnalysisProgress(r)}<div data-coverage-result="${esc(r.id)}">${renderCoverage(r.coverage)}</div>${r.coverage?.available?`<button data-coverage="${esc(r.id)}">관계별 판단·사전 제약 보기</button>`:''}${renderUsage(r.usage)}${r.status==='error'?`<p class="error">${esc(r.detail)}</p>${executionGuidance(r.agent)}`:''}<p class="muted">${esc(date(r.created_at))}</p>${sourceLink(r.document_id,r.version)}<details><summary>실행 메타데이터</summary><pre class="source">${esc(JSON.stringify(r,null,2))}</pre><p class="muted">${providerById(r.agent)?.transport==='http'?'검사된 응답·실행·사용량은 서버 로컬에만 보관:':'프롬프트·stdout·stderr:'} data/runs/${esc(r.id)}/</p></details></div>`;}
+function renderRun(r){return `<div class="panel" data-run-panel="${esc(r.id)}">${badge(r.status)} <strong>${esc({ontology:'사전 생성',extract:'관계 추출',legacy:'기존 추출'}[r.stage])} · ${esc(r.agent)} / ${esc(r.model||'기본 모델')}</strong>${r.ontology?`<p>${r.stage==='ontology'?'재생성 대상 사전':'기준 사전'} r${r.ontology.revision} · ${esc(r.ontology.sha256.slice(0,12))}</p>`:''}${renderDictionaryExclusions(r.dictionary_exclusions)}${renderAnalysisProgress(r)}<div data-coverage-result="${esc(r.id)}">${renderCoverage(r.coverage)}</div>${r.coverage?.available?`<button data-coverage="${esc(r.id)}">관계별 판단·사전 제약 보기</button>`:''}${renderUsage(r.usage)}${r.status==='error'?`<p class="error">${esc(r.detail)}</p>${executionGuidance(r.agent)}`:''}<p class="muted">${esc(date(r.created_at))}</p>${sourceLink(r.document_id,r.version)}<details><summary>실행 메타데이터</summary><pre class="source">${esc(JSON.stringify(r,null,2))}</pre><p class="muted">${providerById(r.agent)?.transport==='http'?'검사된 응답·실행·사용량은 서버 로컬에만 보관:':'프롬프트·stdout·stderr:'} data/runs/${esc(r.id)}/</p></details></div>`;}
 function renderCoverage(c) {
   if(!c)return '';
   if(!c.available)return `<p class="muted">${esc(c.warning)}</p>`;

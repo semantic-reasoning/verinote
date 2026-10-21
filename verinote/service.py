@@ -139,7 +139,7 @@ class Service:
             raise ValueError('OpenRouter 자격 증명이 구성되지 않았습니다.')
         return JobTransport(self.cli, job.get('execution_options'))
 
-    def start(self, document_id, agent, model, stage='extract', expected_version=None, expected_generation=None, *, max_tokens=_UNSET_TOKENS, answer_reserve_tokens=_UNSET_TOKENS):
+    def start(self, document_id, agent, model, stage='extract', expected_version=None, expected_generation=None, *, max_tokens=_UNSET_TOKENS, answer_reserve_tokens=_UNSET_TOKENS, regenerate=None):
         if agent not in PROVIDERS:
             raise ValueError('지원하지 않는 에이전트')
         model = validate_model(model, agent)
@@ -153,7 +153,7 @@ class Service:
         if not self.slots.acquire(blocking=False):
             raise ValueError('작업 대기열이 가득 찼습니다.')
         try:
-            run = self.store.create_run(document_id, agent, model, stage, expected_version, expected_generation, **({'execution_options': options} if options is not None else {}))
+            run = self.store.create_run(document_id, agent, model, stage, expected_version, expected_generation, **({'regenerate': regenerate} if regenerate is not None else {}), **({'execution_options': options} if options is not None else {}))
             self.pool.submit(self.extract, copy.deepcopy(run), transport)
             return run
         except Exception:

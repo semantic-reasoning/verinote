@@ -48,6 +48,8 @@ def generate_dictionary(store, cli, root, run, doc):
     if run['agent'] == 'openrouter':
         from .transports import job_options
         contract['execution_options'] = job_options(run.get('execution_options'))
+    if run.get('ontology'):
+        contract['regeneration_target'] = run['ontology']
     folder = root / 'runs' / run['id']
     folder.mkdir(parents=True, exist_ok=True)
     dictionary: dict[str, list[object]] = {kind: [] for kind in LIMITS}
