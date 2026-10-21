@@ -9,13 +9,21 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from .agents import CLI_PROVIDERS, PROVIDERS, TRANSPORTS, executable, validate_model
+from .agents import (
+    CLI,
+    CLI_PROVIDERS,
+    PROVIDERS,
+    TRANSPORTS,
+    executable,
+    validate_model,
+)
 from .config import ConfigError, Credentials, create_config, load_config
 from .documents import MAX_BYTES, MAX_DOCX_XML_BYTES, MAX_TEXT, decode_document
 from .model_catalog import ModelCatalog
 from .ontology import MAX_DICTIONARY_BYTES
 from .service import Service, text
 from .store import Conflict, Store
+from .transports import MAX_JOB_TOKENS, MIN_JOB_TOKENS, ExecutionOptions
 
 MAX_JSON_BYTES = 6 * 1024 * 1024
 MAX_DICTIONARY_JSON_BYTES = MAX_DICTIONARY_BYTES + 2 * 1024 * 1024
@@ -114,7 +122,9 @@ class Handler(BaseHTTPRequestHandler):
                         else:
                             value['configured'] = self.server.credentials.public_status()['openrouter']['configured']
                         providers.append(value)
-                    return self.send(store.settings() | {'document_limits': DOCUMENT_LIMITS, 'providers': providers})
+                    default_tokens = self.server.service.cli.execution_options('openrouter').max_tokens if isinstance(self.server.service.cli, CLI) else ExecutionOptions().max_tokens
+                    return self.send(store.settings() | {'document_limits': DOCUMENT_LIMITS, 'providers': providers,
+                                     'extraction_token_limits': {'min': MIN_JOB_TOKENS, 'max': MAX_JOB_TOKENS, 'step': 1, 'default': default_tokens}})
                 if method == 'PUT':
                     data = self.body()
                     if not isinstance(data, dict) or set(data) != {'selected', 'models'} or not isinstance(data.get('selected'), str) or data.get('selected') not in PROVIDERS or not isinstance(data.get('models'), dict) or set(data['models']) - set(PROVIDERS):
@@ -171,9 +181,10 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(store.bulk_approve(doc_id, **data))
                 if len(parts) == 4 and parts[3] in ('extract', 'ontology') and method == 'POST':
                     data = self.body()
-                    if set(data) - {'agent', 'model', 'expected_version', 'expected_generation'}:
+                    if set(data) - {'agent', 'model', 'expected_version', 'expected_generation', 'max_tokens'}:
                         raise ValueError('알 수 없는 추출 필드')
-                    return self.send(self.server.service.start(doc_id, data.get('agent'), data.get('model', ''), parts[3], data.get('expected_version'), data.get('expected_generation')), 202)
+                    override = {'max_tokens': data['max_tokens']} if 'max_tokens' in data else {}
+                    return self.send(self.server.service.start(doc_id, data.get('agent'), data.get('model', ''), parts[3], data.get('expected_version'), data.get('expected_generation'), **override), 202)
             if len(parts) == 4 and parts[:2] == ['api', 'items']:
                 if parts[3] == 'review' and method == 'POST':
                     d = self.body(MAX_DICTIONARY_JSON_BYTES)

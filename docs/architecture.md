@@ -422,10 +422,20 @@ or keyless CLI). Model and missing-key errors remain server-authoritative.
 HTTP failure panels preserve the static error and explain local timeout or
 disconnect is neither remote cancellation nor proof of no billing. Manual rerun
 can be charged again. For length/model-limit errors, the user can change the
-explicit model ID; server output-limit changes require an administrator. For
+explicit model ID. Dictionary/extraction controls also expose a per-job token slider. For
 programmatic server construction the existing `CLI(options=ExecutionOptions(
 max_tokens=..., timeout=...))` sets a fixed token cap and explicit timeout for
-all phases. This is not a settings-screen control; defaults without that override
+all phases. Dictionary/extraction POSTs accept an optional `max_tokens` integer
+override from 1 through 65,536 for OpenRouter only; omitted values retain the
+server default, including historical defaults outside that UI range. Explicit
+nulls, booleans, non-integers and CLI overrides fail before registration. The
+advanced-control checkbox defaults off; the slider applies only when explicitly
+enabled. The captured job options fix that value across all chunks and quote
+repairs, and existing checkpoint comparisons reject changed token limits. No DB
+schema or question API changes are introduced. The range is an application input
+bound, not a guarantee of model support or a whole-document cost cap.
+`GET /api/settings` publishes the bounds and effective dispatcher default through
+`extraction_token_limits`. Defaults without a programmatic timeout override
 retain ontology600/other180 seconds. CLI defaults use 600 seconds for
 Antigravity and Copilot, in addition to the 600-second ontology phase.
 Approved-dictionary extraction defaults to 360 seconds per chunk across the initial

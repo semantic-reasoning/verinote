@@ -57,17 +57,38 @@ function syncProviderControls(prefix, reset=false){
   model.placeholder=modelPlaceholder(select.value);model.maxLength=150;
   model.required=providerById(select.value)?.transport==='http';
   const hint=$('#'+prefix+'-provider-hint');if(hint)hint.innerHTML=providerHint(select.value);
+  if(prefix==='extract')syncTokenLimitControls();
 }
 function executionGuidance(agent){
   if(providerById(agent)?.transport!=='http')return '';
-  return '<p class="muted">로컬 timeout·연결 단절은 원격 취소나 미과금을 뜻하지 않습니다. 수동 재실행은 추가 과금될 수 있습니다. 잘림(length)·모델 한도 오류가 나면 모델 한도를 확인하고 모델 ID 또는 서버의 max_tokens 상한을 수동 조정한 뒤 새 작업을 등록하세요. 자동 재전송·모델 교체는 하지 않습니다.</p>';
+  return '<p class="muted">로컬 timeout·연결 단절은 원격 취소나 미과금을 뜻하지 않습니다. 수동 재실행은 추가 과금될 수 있습니다. 잘림(length)·모델 한도 오류가 나면 모델 한도를 확인하세요. 사전 생성·추출은 고급 설정에서 토큰 한도(max_tokens)를 조절하고, 질문은 서버 설정을 조정한 뒤 새 작업을 등록하세요. 자동 재전송·모델 교체는 하지 않습니다.</p>';
 }
 function providerSelect() {
   return `<label>추출 에이전트<select id="extract-agent">${config.providers.map(p=>`<option value="${p.id}" ${config.selected===p.id?'selected':''}>${providerOption(p)}</option>`).join('')}</select></label><label>이 작업의 모델 ID<input id="extract-model" value="${esc(config.models[config.selected]||'')}" maxlength="150" placeholder="${modelPlaceholder(config.selected)}"></label>`;
 }
+function tokenLimitSettings(){return config.extraction_token_limits||{min:1,max:65536,step:1,default:16384};}
+function tokenLimitControls() {
+  const limits=tokenLimitSettings(),initial=Math.max(limits.min,Math.min(limits.max,limits.default));
+  return `<details id="extract-advanced"><summary>고급 설정 · 토큰 한도</summary><p id="extract-token-cli" class="muted">토큰 한도 조절은 OpenRouter에서 사용할 수 있습니다. CLI에는 적용하지 않습니다.</p><div id="extract-token-controls"><label><input type="checkbox" id="extract-token-override"> 이 작업의 토큰 한도 직접 설정</label><label for="extract-max-tokens">요청당 최대 생성 토큰: <output id="extract-token-value" for="extract-max-tokens">${limits.default.toLocaleString()}</output></label><input type="range" id="extract-max-tokens" min="${limits.min}" max="${limits.max}" step="${limits.step}" value="${initial}" disabled><p class="muted">직접 설정하지 않으면 서버 기본값 ${limits.default.toLocaleString()}토큰을 사용합니다. 사전 생성과 승인 사전 추출 중 다음에 시작하는 작업에만 적용하며, 질문에는 적용하지 않습니다. 각 요청의 추론과 답변을 합한 상한으로, 인용 수정 요청에도 같은 값이 적용됩니다. 높이면 처리 시간과 비용이 늘어날 수 있으며 문서 전체 비용 한도가 아닙니다. 모델마다 지원 한도가 다르며, 값을 바꾸면 이전 중간 결과를 재사용하지 못할 수 있습니다.</p></div></details>`;
+}
+function syncTokenLimitControls() {
+  const range=$('#extract-max-tokens'),toggle=$('#extract-token-override');
+  if(!range||!toggle)return;
+  const http=providerById($('#extract-agent').value)?.transport==='http';
+  $('#extract-token-controls').hidden=!http;$('#extract-token-cli').hidden=http;
+  toggle.disabled=!http;range.disabled=!http||!toggle.checked;
+  const update=()=>{$('#extract-token-value').textContent=(toggle.checked?Number(range.value):tokenLimitSettings().default).toLocaleString();};
+  range.oninput=update;toggle.onchange=()=>{range.disabled=!http||!toggle.checked;update();};update();
+}
+function extractionRequest(d) {
+  const agent=$('#extract-agent').value;
+  const body={agent,model:$('#extract-model').value,expected_version:d.version,expected_generation:d.generation};
+  if(providerById(agent)?.transport==='http'&&$('#extract-token-override').checked)body.max_tokens=Number($('#extract-max-tokens').value);
+  return body;
+}
 function extractionControls(d) {
   const dictionary=d.items.find(i=>i.kind==='ontology');
-  return `<h3>1. 사전 생성 → 2. 사전 수정·승인 → 3. 위키·관계 추출</h3><div class="form-grid">${providerSelect()}</div><div id="extract-provider-hint" class="muted">${providerHint(config.selected)}</div><div class="actions"><button class="primary" id="ontology" ${dictionary?'disabled':''}>1. 개체·별칭·관계 사전 생성</button><button class="primary" id="extract" ${d.can_extract?'':'disabled'}>${d.extraction_upgrade?'3. 개선된 방식으로 다시 추출':'3. 승인 사전으로 추출'}</button></div><p class="muted">${!dictionary?'먼저 사전을 생성하세요. 사전 호출은 기본 최대 10분이며, 실패 후 같은 에이전트·모델로 다시 생성하면 검증된 구간부터 이어갑니다.':dictionary.status!=='approved'?'아래 사전에서 이름·별칭·관계 방향과 타입을 확인하고 승인하세요.':d.can_extract?(d.extraction_upgrade?'관계별 점검이 포함된 방식으로 다시 추출할 수 있습니다. 이전 승인 이력은 유지되며 중복 관계가 새 검토 후보로 추가될 수 있습니다.':'사전이 승인되었습니다. 이 사전을 기준으로 추출할 수 있습니다.'):'이 사전 revision의 현재 방식 추출이 완료되었습니다. 변경하려면 사전을 수정·재승인하세요.'} 원문이 선택한 모델 제공자에게 전달됩니다. 기존 결과는 보존하며 새 결과는 검토 대기로 추가합니다.</p>`;
+  return `<h3>1. 사전 생성 → 2. 사전 수정·승인 → 3. 위키·관계 추출</h3><div class="form-grid">${providerSelect()}</div><div id="extract-provider-hint" class="muted">${providerHint(config.selected)}</div>${tokenLimitControls()}<div class="actions"><button class="primary" id="ontology" ${dictionary?'disabled':''}>1. 개체·별칭·관계 사전 생성</button><button class="primary" id="extract" ${d.can_extract?'':'disabled'}>${d.extraction_upgrade?'3. 개선된 방식으로 다시 추출':'3. 승인 사전으로 추출'}</button></div><p class="muted">${!dictionary?'먼저 사전을 생성하세요. 사전 호출은 기본 최대 10분이며, 실패 후 같은 에이전트·모델로 다시 생성하면 검증된 구간부터 이어갑니다.':dictionary.status!=='approved'?'아래 사전에서 이름·별칭·관계 방향과 타입을 확인하고 승인하세요.':d.can_extract?(d.extraction_upgrade?'관계별 점검이 포함된 방식으로 다시 추출할 수 있습니다. 이전 승인 이력은 유지되며 중복 관계가 새 검토 후보로 추가될 수 있습니다.':'사전이 승인되었습니다. 이 사전을 기준으로 추출할 수 있습니다.'):'이 사전 revision의 현재 방식 추출이 완료되었습니다. 변경하려면 사전을 수정·재승인하세요.'} 원문이 선택한 모델 제공자에게 전달됩니다. 기존 결과는 보존하며 새 결과는 검토 대기로 추가합니다.</p>`;
 }
 function renderDictionary(p) {
   return `<h3>2. 추출 기준 사전 검토</h3><p>개체의 정규 ID, 별칭의 동일성, 관계의 의미·방향·타입을 원문과 대조하세요. 사전 승인 후에도 추출된 사실은 별도로 승인합니다.</p><h3>개체 · ${p.entities.length}</h3><p>각 항목이 하나의 개체입니다. <strong>개체 ID</strong>가 관계의 주어·목적어와 조회에 사용됩니다. <strong>원문 명칭</strong>은 문서에 쓰인 이름이고, <strong>개체 유형</strong>은 분류입니다. 같은 ID는 같은 개체로 연결되므로 원문 근거와 함께 확인하세요.</p>${p.entities.map(e=>`<section class="panel"><h4>원문 명칭: ${esc(e.name)}</h4><p class="query-row"><strong>개체 ID:</strong> <code>${esc(e.id)}</code></p><p><strong>개체 유형:</strong> ${esc(e.type)}</p><strong>원문 근거</strong><blockquote class="quote">${esc(e.quote)}</blockquote></section>`).join('')}<h3>별칭 · ${p.aliases.length}</h3>${p.aliases.map(a=>`<details><summary>${esc(a.alias)} → ${esc(a.entity)}</summary><blockquote class="quote">${esc(a.quote)}</blockquote></details>`).join('')}<h3>관계 · ${p.relations.length}</h3>${p.relations.map(r=>`<div><strong>${esc(r.id)}</strong><p>${r.subject_types.map(esc).join(', ')} → ${r.object_types.map(esc).join(', ')}<br>${esc(r.description)}</p><details><summary>원문 근거</summary><blockquote class="quote">${esc(r.quote)}</blockquote></details></div>`).join('')}`;
@@ -95,8 +116,8 @@ async function openDoc(id, version) {
     const button=$('#'+stage);
     if(button) button.onclick=()=>attempt(async()=>{
       if(!$('#extract-model').reportValidity())return;
-      button.disabled=true;
-      try {const run=await api(`/api/documents/${id}/${stage}`,'POST',{agent:$('#extract-agent').value,model:$('#extract-model').value,expected_version:d.version,expected_generation:d.generation});notice('작업을 시작했습니다. 실행 기록에서 진행 상황을 볼 수 있습니다.');if(selectedDoc===d)selectedDoc.latest_run=run;watchRun(run.id,id,d.version,run.status);}
+      const payload=extractionRequest(d);button.disabled=true;
+      try {const run=await api(`/api/documents/${id}/${stage}`,'POST',payload);notice('작업을 시작했습니다. 실행 기록에서 진행 상황을 볼 수 있습니다.');if(selectedDoc===d)selectedDoc.latest_run=run;watchRun(run.id,id,d.version,run.status);}
       catch(e){button.disabled=false;$('#extract-provider-hint').innerHTML=providerHint($('#extract-agent').value)+executionGuidance($('#extract-agent').value);throw e;}
     });
   }
