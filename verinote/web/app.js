@@ -87,7 +87,7 @@ function syncTokenLimitControls() {
   const update=()=>{
     const total=toggle.checked?Number(range.value):tokenLimitSettings().default;
     $('#extract-token-value').textContent=total.toLocaleString();
-    try {const budget=answerBudget(total);$('#extract-answer-budget').textContent=`추론 요청 예산 ${budget.reasoning.toLocaleString()}토큰 · 답변 목표 여유 ${budget.reserve.toLocaleString()}토큰 (엄격한 예약 보장 아님)`;}
+    try {const budget=answerBudget(total);$('#extract-answer-budget').textContent=`추론 요청 예산 ${budget.reasoning.toLocaleString()}토큰 · 답변 목표 여유 ${budget.reserve.toLocaleString()}토큰 / 상한 ${answerBudgetSettings().default_reserve.toLocaleString()}토큰 (총 한도의 절반으로 계산하며 상한 도달 후 유지 · 엄격한 예약 보장 아님)`;}
     catch(error){$('#extract-answer-budget').textContent=error.message;}
   };
   range.oninput=update;toggle.onchange=()=>{range.disabled=!http||!toggle.checked;update();};update();
