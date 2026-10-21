@@ -116,18 +116,22 @@ const nodes={};const context={config:{selected:'openrouter',models:{},providers:
 vm.createContext(context);
 vm.runInContext(source.slice(source.indexOf('function providerById('),source.indexOf('function extractionControls(')),context);
 assert(context.tokenLimitControls().includes('type="range"'));assert(context.tokenLimitControls().includes('고급 설정'));
-for(const id of ['extract-max-tokens','extract-token-override','extract-token-controls','extract-token-cli','extract-token-value','extract-agent','extract-model'])nodes['#'+id]={};
+for(const id of ['extract-max-tokens','extract-token-override','extract-token-controls','extract-token-cli','extract-token-value','extract-answer-budget','extract-agent','extract-model'])nodes['#'+id]={};
 const slider=nodes['#extract-max-tokens'],toggle=nodes['#extract-token-override'];
 nodes['#extract-agent'].value='openrouter';nodes['#extract-model'].value='vendor/model';slider.value='16384';toggle.checked=false;
 context.syncTokenLimitControls();assert(slider.disabled);assert(!nodes['#extract-token-controls'].hidden);
 const doc={version:2,generation:4};assert(!('max_tokens' in context.extractionRequest(doc)));
+assert.equal(context.extractionRequest(doc).answer_reserve_tokens,8192);assert(nodes['#extract-answer-budget'].textContent.includes((4096).toLocaleString()));
 toggle.checked=true;toggle.onchange();assert(!slider.disabled);slider.value='32768';slider.oninput();assert.equal(nodes['#extract-token-value'].textContent,(32768).toLocaleString());
 const captured=context.extractionRequest(doc);assert.equal(captured.max_tokens,32768);assert.equal(captured.agent,'openrouter');
 slider.value='65536';nodes['#extract-agent'].value='agy';context.syncProviderControls('extract',true);
 assert(slider.disabled);assert(toggle.disabled);assert(nodes['#extract-token-controls'].hidden);assert(!('max_tokens' in context.extractionRequest(doc)));assert.equal(captured.max_tokens,32768);
+assert(!('answer_reserve_tokens' in context.extractionRequest(doc)));
 nodes['#extract-agent'].value='openrouter';context.syncProviderControls('extract',true);assert(!slider.disabled);assert.equal(context.extractionRequest(doc).max_tokens,65536);
 toggle.checked=false;context.config.extraction_token_limits.default=70000;context.syncTokenLimitControls();
 assert.equal(nodes['#extract-token-value'].textContent,(70000).toLocaleString());assert(!('max_tokens' in context.extractionRequest(doc)));
+context.config.extraction_token_limits.default=1000;context.syncTokenLimitControls();assert(nodes['#extract-answer-budget'].textContent.includes('2,048'));assert.throws(()=>context.extractionRequest(doc),/2,048/);
+toggle.checked=true;slider.value='2048';toggle.onchange();assert.equal(context.extractionRequest(doc).answer_reserve_tokens,1024);assert(nodes['#extract-answer-budget'].textContent.includes((1024).toLocaleString()));
 assert(source.includes('const payload=extractionRequest(d)'));assert(source.includes("for (const stage of ['ontology','extract'])"));
 '''
         subprocess.run(['node', '-e', script], check=True, cwd=Path(__file__).parents[1])

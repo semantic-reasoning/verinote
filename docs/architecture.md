@@ -358,8 +358,10 @@ credentials/adapter readiness, required model and secret-free input/options/rate
 before acquiring a queue slot or creating a job. This is configuration readiness,
 not authentication, balance or model-access verification. No network probe runs.
 
-Each HTTP job stores `execution_options` containing only
+Each v1 HTTP job stores `execution_options` containing only
 `adapter_contract_version`, `max_tokens`, and `timeouts.default`/`timeouts.ontology`.
+Explicit answer-headroom requests use v2 and additionally pin
+`answer_reserve_tokens` and `reasoning_max_tokens` (described below).
 A nullable `runs.execution_options` column is added by the existing idempotent
 column migration; legacy CLI rows retain null. Questions use their existing
 JSON payload. The strict option allowlist rejects malformed/missing OpenRouter
@@ -473,3 +475,38 @@ Adapters use actual installed capabilities, never hardcoded model names: `agy mo
 Fixed shell-free arguments run in an empty temporary working directory with `OPENROUTER_API_KEY` removed. Claude uses no tools, strict MCP configuration, no setting sources, disabled hooks and no session persistence. Copilot disables auto-update. All five CLI protocols are supported on POSIX and Windows. POSIX process groups or Windows process trees are killed/reaped after inventory, including success; Windows uses reader threads because selectors cannot monitor subprocess pipes there. One 20-second budget reserves time for cleanup; stdout is limited to 1 MiB and discarded stderr to 256 KiB across initialization/notifications/pagination. Raw errors/account/protocol fields never enter API results; only normalized ID/name pairs and static status messages do.
 
 Protocol references: [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python), [Copilot SDK client](https://github.com/github/copilot-sdk/blob/main/python/copilot/client.py), [Codex app-server model/list](https://developers.openai.com/codex/app-server#list-models-modellist). CLI help and actual read-only inventories were also checked locally; no paid generation was needed.
+
+
+### Requested reasoning budget and answer headroom
+
+New document UI dictionary/extraction submissions include `answer_reserve_tokens`
+R = min(8192, floor(T/2)), even when the total-token override is off. The protected
+UI range starts at 2048; a smaller server default is shown as an actionable error
+rather than silently raised. Legacy API overrides remain 1..65536.
+
+An explicit R opts into adapter contract v2. R must be an integer >=1024 and leave
+at least 1024 tokens for reasoning. The pinned budget B is min(4096, T-R). The
+strict v2 snapshot adds `answer_reserve_tokens` and `reasoning_max_tokens` to the
+three v1 keys. Missing, extra or inconsistent fields are rejected. ExecutionOptions
+keeps its original positional arguments and adds optional budget fields; v1 cannot
+carry them. Legacy API omission preserves v1; existing v1 jobs and ordinary
+questions/CLI remain unchanged. No DB migration is needed.
+
+Every v2 call sends `reasoning: {max_tokens: B}` and
+`provider: {require_parameters: true}`; it does not also send effort, enabled or
+exclude. OpenRouter may map a numeric budget to effort for some models. R is
+therefore planned answer headroom and B a requested budget, not evidence of a hard
+cap, reserved visible tokens or successful output. The application does not claim
+per-model numeric-budget capability. Requiring parameters can reject a provider
+that previously accepted a v1 request; failure does not trigger a settings-free
+retry or model change. These routing semantics are part of v2.
+
+The registered T/R/B/version survives queued work, phase selection, limited-timeout
+copies, all chunks and quote repair. Request policy is recorded separately from
+reported token usage and exposed through bounded allowlists. A version or policy
+change invalidates checkpoint reuse; timeout-only extraction changes retain the
+existing exception. Length termination is an explicit token-limit error and keeps
+safely reported usage; reasoning content is never substituted for the final answer.
+
+References: https://openrouter.ai/docs/guides/best-practices/reasoning-tokens and
+https://openrouter.ai/docs/guides/routing/provider-selection#requiring-providers-to-support-all-parameters

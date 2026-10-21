@@ -23,7 +23,14 @@ from .model_catalog import ModelCatalog
 from .ontology import MAX_DICTIONARY_BYTES
 from .service import Service, text
 from .store import Conflict, Store
-from .transports import MAX_JOB_TOKENS, MIN_JOB_TOKENS, ExecutionOptions
+from .transports import (
+    DEFAULT_ANSWER_TOKENS,
+    MAX_JOB_TOKENS,
+    MAX_REASONING_TOKENS,
+    MIN_ANSWER_TOKENS,
+    MIN_JOB_TOKENS,
+    ExecutionOptions,
+)
 
 MAX_JSON_BYTES = 6 * 1024 * 1024
 MAX_DICTIONARY_JSON_BYTES = MAX_DICTIONARY_BYTES + 2 * 1024 * 1024
@@ -124,7 +131,10 @@ class Handler(BaseHTTPRequestHandler):
                         providers.append(value)
                     default_tokens = self.server.service.cli.execution_options('openrouter').max_tokens if isinstance(self.server.service.cli, CLI) else ExecutionOptions().max_tokens
                     return self.send(store.settings() | {'document_limits': DOCUMENT_LIMITS, 'providers': providers,
-                                     'extraction_token_limits': {'min': MIN_JOB_TOKENS, 'max': MAX_JOB_TOKENS, 'step': 1, 'default': default_tokens}})
+                                     'extraction_token_limits': {'min': MIN_JOB_TOKENS, 'max': MAX_JOB_TOKENS, 'step': 1, 'default': default_tokens},
+                                     'answer_budget_policy': {'min_total': MIN_ANSWER_TOKENS + 1024,
+                                                              'default_reserve': DEFAULT_ANSWER_TOKENS,
+                                                              'max_reasoning': MAX_REASONING_TOKENS}})
                 if method == 'PUT':
                     data = self.body()
                     if not isinstance(data, dict) or set(data) != {'selected', 'models'} or not isinstance(data.get('selected'), str) or data.get('selected') not in PROVIDERS or not isinstance(data.get('models'), dict) or set(data['models']) - set(PROVIDERS):
@@ -181,9 +191,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(store.bulk_approve(doc_id, **data))
                 if len(parts) == 4 and parts[3] in ('extract', 'ontology') and method == 'POST':
                     data = self.body()
-                    if set(data) - {'agent', 'model', 'expected_version', 'expected_generation', 'max_tokens'}:
+                    if set(data) - {'agent', 'model', 'expected_version', 'expected_generation', 'max_tokens', 'answer_reserve_tokens'}:
                         raise ValueError('알 수 없는 추출 필드')
-                    override = {'max_tokens': data['max_tokens']} if 'max_tokens' in data else {}
+                    override = {key: data[key] for key in ('max_tokens', 'answer_reserve_tokens') if key in data}
                     return self.send(self.server.service.start(doc_id, data.get('agent'), data.get('model', ''), parts[3], data.get('expected_version'), data.get('expected_generation'), **override), 202)
             if len(parts) == 4 and parts[:2] == ['api', 'items']:
                 if parts[3] == 'review' and method == 'POST':

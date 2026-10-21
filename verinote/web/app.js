@@ -61,15 +61,22 @@ function syncProviderControls(prefix, reset=false){
 }
 function executionGuidance(agent){
   if(providerById(agent)?.transport!=='http')return '';
-  return '<p class="muted">로컬 timeout·연결 단절은 원격 취소나 미과금을 뜻하지 않습니다. 수동 재실행은 추가 과금될 수 있습니다. 잘림(length)·모델 한도 오류가 나면 모델 한도를 확인하세요. 사전 생성·추출은 고급 설정에서 토큰 한도(max_tokens)를 조절하고, 질문은 서버 설정을 조정한 뒤 새 작업을 등록하세요. 자동 재전송·모델 교체는 하지 않습니다.</p>';
+  return '<p class="muted">로컬 timeout·연결 단절은 원격 취소나 미과금을 뜻하지 않습니다. 수동 재실행은 추가 과금될 수 있습니다. 잘림(length)·모델 한도 오류가 나면 모델 한도를 확인하세요. 사전 생성·추출은 고급 설정에서 토큰 한도(max_tokens)와 추론 요청 예산·답변 목표 여유를 확인하고 모델 지원 여부도 확인하세요. 질문은 서버 설정을 조정한 뒤 새 작업을 등록하세요. 자동 재전송·모델 교체는 하지 않습니다.</p>';
 }
 function providerSelect() {
   return `<label>추출 에이전트<select id="extract-agent">${config.providers.map(p=>`<option value="${p.id}" ${config.selected===p.id?'selected':''}>${providerOption(p)}</option>`).join('')}</select></label><label>이 작업의 모델 ID<input id="extract-model" value="${esc(config.models[config.selected]||'')}" maxlength="150" placeholder="${modelPlaceholder(config.selected)}"></label>`;
 }
 function tokenLimitSettings(){return config.extraction_token_limits||{min:1,max:65536,step:1,default:16384};}
+function answerBudgetSettings(){return config.answer_budget_policy||{min_total:2048,default_reserve:8192,max_reasoning:4096};}
+function answerBudget(total) {
+  const policy=answerBudgetSettings();
+  if(!Number.isInteger(total)||total<policy.min_total)throw new Error(`답변과 추론에 쓸 여유가 부족합니다. 고급 설정에서 총 토큰 한도를 ${policy.min_total.toLocaleString()} 이상으로 올려 주세요.`);
+  const reserve=Math.min(policy.default_reserve,Math.floor(total/2));
+  return {reserve,reasoning:Math.min(policy.max_reasoning,total-reserve)};
+}
 function tokenLimitControls() {
-  const limits=tokenLimitSettings(),initial=Math.max(limits.min,Math.min(limits.max,limits.default));
-  return `<details id="extract-advanced"><summary>고급 설정 · 토큰 한도</summary><p id="extract-token-cli" class="muted">토큰 한도 조절은 OpenRouter에서 사용할 수 있습니다. CLI에는 적용하지 않습니다.</p><div id="extract-token-controls"><label><input type="checkbox" id="extract-token-override"> 이 작업의 토큰 한도 직접 설정</label><label for="extract-max-tokens">요청당 최대 생성 토큰: <output id="extract-token-value" for="extract-max-tokens">${limits.default.toLocaleString()}</output></label><input type="range" id="extract-max-tokens" min="${limits.min}" max="${limits.max}" step="${limits.step}" value="${initial}" disabled><p class="muted">직접 설정하지 않으면 서버 기본값 ${limits.default.toLocaleString()}토큰을 사용합니다. 사전 생성과 승인 사전 추출 중 다음에 시작하는 작업에만 적용하며, 질문에는 적용하지 않습니다. 각 요청의 추론과 답변을 합한 상한으로, 인용 수정 요청에도 같은 값이 적용됩니다. 높이면 처리 시간과 비용이 늘어날 수 있으며 문서 전체 비용 한도가 아닙니다. 모델마다 지원 한도가 다르며, 값을 바꾸면 이전 중간 결과를 재사용하지 못할 수 있습니다.</p></div></details>`;
+  const limits=tokenLimitSettings(),minimum=answerBudgetSettings().min_total,initial=Math.max(minimum,Math.min(limits.max,limits.default));
+  return `<details id="extract-advanced"><summary>고급 설정 · 토큰 한도와 답변 여유</summary><p id="extract-token-cli" class="muted">토큰 한도 조절은 OpenRouter에서 사용할 수 있습니다. CLI에는 적용하지 않습니다.</p><div id="extract-token-controls"><label><input type="checkbox" id="extract-token-override"> 이 작업의 토큰 한도 직접 설정</label><label for="extract-max-tokens">요청당 최대 생성 토큰: <output id="extract-token-value" for="extract-max-tokens">${limits.default.toLocaleString()}</output></label><input type="range" id="extract-max-tokens" min="${minimum}" max="${limits.max}" step="${limits.step}" value="${initial}" disabled><p id="extract-answer-budget" role="status"></p><p class="muted">추론이 총 한도를 모두 쓰지 않도록 추론 예산을 요청하고 답변 목표 여유를 계산합니다. 모델에 따라 예산이 추론 강도로 변환되므로 숫자 제한이나 답변 완성을 보장하지는 않습니다. 추론 제어를 지원하는 제공자만 요청하므로 지원 모델이 없으면 실행이 거부될 수 있습니다. 직접 설정하지 않으면 서버 기본값 ${limits.default.toLocaleString()}토큰을 사용합니다. 이 화면에서 시작하는 사전 생성·추출과 인용 수정에 적용하며, 질문과 CLI에는 적용하지 않습니다. 높이면 시간과 비용이 늘어날 수 있고 문서 전체 비용 한도가 아닙니다. 정책이 바뀌면 이전 중간 결과를 재사용하지 못할 수 있습니다.</p></div></details>`;
 }
 function syncTokenLimitControls() {
   const range=$('#extract-max-tokens'),toggle=$('#extract-token-override');
@@ -77,13 +84,22 @@ function syncTokenLimitControls() {
   const http=providerById($('#extract-agent').value)?.transport==='http';
   $('#extract-token-controls').hidden=!http;$('#extract-token-cli').hidden=http;
   toggle.disabled=!http;range.disabled=!http||!toggle.checked;
-  const update=()=>{$('#extract-token-value').textContent=(toggle.checked?Number(range.value):tokenLimitSettings().default).toLocaleString();};
+  const update=()=>{
+    const total=toggle.checked?Number(range.value):tokenLimitSettings().default;
+    $('#extract-token-value').textContent=total.toLocaleString();
+    try {const budget=answerBudget(total);$('#extract-answer-budget').textContent=`추론 요청 예산 ${budget.reasoning.toLocaleString()}토큰 · 답변 목표 여유 ${budget.reserve.toLocaleString()}토큰 (엄격한 예약 보장 아님)`;}
+    catch(error){$('#extract-answer-budget').textContent=error.message;}
+  };
   range.oninput=update;toggle.onchange=()=>{range.disabled=!http||!toggle.checked;update();};update();
 }
 function extractionRequest(d) {
   const agent=$('#extract-agent').value;
   const body={agent,model:$('#extract-model').value,expected_version:d.version,expected_generation:d.generation};
-  if(providerById(agent)?.transport==='http'&&$('#extract-token-override').checked)body.max_tokens=Number($('#extract-max-tokens').value);
+  if(providerById(agent)?.transport==='http'){
+    const total=$('#extract-token-override').checked?Number($('#extract-max-tokens').value):tokenLimitSettings().default;
+    body.answer_reserve_tokens=answerBudget(total).reserve;
+    if($('#extract-token-override').checked)body.max_tokens=total;
+  }
   return body;
 }
 function extractionControls(d) {
