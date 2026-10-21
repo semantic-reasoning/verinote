@@ -173,7 +173,12 @@ class Handler(BaseHTTPRequestHandler):
                 doc_id = parts[2]
                 version = int(params['version'][0]) if 'version' in params else None
                 if len(parts) == 3 and method == 'GET':
-                    return self.send(store.document(doc_id, version))
+                    doc = store.document(doc_id, version)
+                    for item in doc['items']:
+                        if item['kind'] == 'ontology':
+                            item['dictionary_exclusions'] = self.server.service.dictionary_exclusions(
+                                item['run_id'], document_id=doc_id, version=doc['version'])
+                    return self.send(doc)
                 if len(parts) == 4 and parts[3] == 'raw' and method == 'GET':
                     raw, _ = store.raw(doc_id, version or store.document(doc_id)['version'])
                     return self.send(raw, mime='application/octet-stream', headers={'Content-Disposition': 'attachment; filename="original"'})

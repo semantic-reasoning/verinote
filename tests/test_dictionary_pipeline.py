@@ -268,6 +268,7 @@ class Pipeline(unittest.TestCase):
     def test_invalid_delta_not_cached_and_no_retry(self):
         doc=self.new_doc(SOURCE.ljust(4000)+'END')
         bad=copy.deepcopy(DICTIONARY);bad['entities'][0]['quote']='invented'
+        bad['entities'][0]['unexpected']=True  # Malformed rows stay fatal even with bad evidence.
         result,calls=self.run_job(doc,[DICTIONARY,bad])
         self.assertEqual(result['status'],'error');self.assertEqual(len(calls),2)
         self.assertEqual(json.loads(self.checkpoint(result).read_text())['offset'],4000)

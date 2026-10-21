@@ -82,11 +82,17 @@ class Service:
         if kind == 'runs' and owner.get('stage') == 'extract':
             report = read_report(self.root, self.store, owner['id'])
             result['coverage'] = report
+        if kind == 'runs' and owner.get('stage') == 'ontology':
+            result['dictionary_exclusions'] = self.dictionary_exclusions(owner['id'], include_items=coverage_details)
         if kind == 'runs':
             result['progress'] = analysis_progress(self.root, self.store, owner['id'], report)
         if report is not None and not coverage_details:
             report.pop('chunks', None)
         return result
+
+    def dictionary_exclusions(self, run_id, *, document_id=None, version=None, include_items=True):
+        from .dictionary_exclusions import read_report
+        return read_report(self.root, self.store, run_id, document_id=document_id, version=version, include_items=include_items)
 
     def usage_report(self):
         from .usage import job_calls, summarize
