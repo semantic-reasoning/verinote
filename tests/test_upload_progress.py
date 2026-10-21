@@ -25,9 +25,9 @@ from verinote.service import Service
 from verinote.usage import atomic_json
 
 
-def docx(padding=0):
+def docx(padding=0, compression=zipfile.ZIP_STORED):
     stream=io.BytesIO()
-    with zipfile.ZipFile(stream,'w',zipfile.ZIP_STORED) as z:
+    with zipfile.ZipFile(stream,'w',compression) as z:
         z.writestr('word/document.xml','<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>'+SOURCE+'</w:t></w:r></w:p></w:document>')
         if padding:z.writestr('word/media/attachment.bin',b'x'*padding)
     return stream.getvalue()
@@ -37,6 +37,14 @@ class LargeUpload(unittest.TestCase):
     setUp=workflow.HTTP.setUp
     tearDown=workflow.HTTP.tearDown
     request=workflow.HTTP.request
+
+    def test_compressed_large_media_upload_preserves_original(self):
+        raw=docx(20*1024*1024,zipfile.ZIP_DEFLATED)
+        self.assertLess(len(raw),1024*1024)
+        document=self.request('/api/documents','POST',{'title':'compressed media','filename':'media.docx','content_base64':base64.b64encode(raw).decode()})
+        self.assertEqual(document['text'],SOURCE)
+        self.assertEqual(self.store.raw(document['id'],1)[0],raw)
+        self.assertEqual(self.store.runs(),[])
 
     def test_real_large_original_upload_and_immutable_revision(self):
         raw=docx(5*1024*1024)
@@ -204,6 +212,11 @@ class XHR {constructor(){this.upload={};XHR.last=this}open(...args){this.opened=
  {const p=uploadDocument({},()=>{});XHR.last.status=400;XHR.last.responseText='{"error":"too large"}';XHR.last.onload();await assert.rejects(p,/too large/);}
  {const p=uploadDocument({},()=>{});XHR.last.status=201;XHR.last.responseText='bad';XHR.last.onload();await assert.rejects(p,/응답/);}
  assert(!renderProgress(null,'<img>','<script>').includes('value='));assert(!renderProgress(50,'<img>','<script>').includes('<img>'));
+ const failed=renderProgress(null,'원문 등록 실패','<script>본문 XML 초과</script>',true);
+ assert(failed.includes('처리 중단'));assert(failed.includes('본문 XML 초과'));assert(failed.includes('role="status"'));
+ assert(!failed.includes('진행률 확인 중'));assert(!failed.includes('<progress'));assert(!failed.includes('<script>'));
+ assert(renderProgress(null,'처리 중').includes('<progress'));assert(renderProgress(null,'처리 중').includes('진행률 확인 중'));
+ assert(renderProgress(50,'실패','',true).includes('value="50"'));
  const r={stage:'ontology',status:'error',detail:'<script>',progress:{known:true,phase:'error',percent:99,completed_chars:4000,total_chars:4000,completed_chunks:1,total_chunks:1,resumed_chars:0}};
  assert(renderAnalysisProgress(r).includes('실패'));assert(!renderAnalysisProgress(r).includes('value="100"'));
  console.log('ok');
@@ -224,6 +237,8 @@ let notices=[];function notice(...x){notices.push(x)}async function loadLibrary(
  assert.equal(body.document_id,'old');assert.equal(body.expected_version,2);assert.equal(body.expected_generation,7);assert.equal(body.title,'captured');assert.equal(calls,1);
  assert(!uploadBusy);assert.deepEqual(controls.map(c=>c.disabled),[false,true]);
  encodeUploadFile=async()=>{throw Error('read error')};await submitUpload(form);assert(!uploadBusy);assert.deepEqual(controls.map(c=>c.disabled),[false,true]);assert(notices.at(-1)[0].includes('read error'));
+ assert($('#upload-progress').innerHTML.includes('원문 등록 실패'));assert(!$('#upload-progress').innerHTML.includes('진행률 확인 중'));assert(!$('#upload-progress').innerHTML.includes('<progress'));
+ encodeUploadFile=async()=> 'YWJj';await submitUpload(form);assert.equal(calls,2);assert(!uploadBusy);
  console.log('ok');
 })().catch(e=>{console.error(e);process.exitCode=1});
 """

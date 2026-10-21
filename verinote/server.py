@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from .agents import CLI_PROVIDERS, PROVIDERS, TRANSPORTS, executable, validate_model
 from .config import ConfigError, Credentials, create_config, load_config
-from .documents import MAX_BYTES, MAX_TEXT, decode_document
+from .documents import MAX_BYTES, MAX_DOCX_XML_BYTES, MAX_TEXT, decode_document
 from .model_catalog import ModelCatalog
 from .ontology import MAX_DICTIONARY_BYTES
 from .service import Service, text
@@ -21,7 +21,8 @@ MAX_JSON_BYTES = 6 * 1024 * 1024
 MAX_DICTIONARY_JSON_BYTES = MAX_DICTIONARY_BYTES + 2 * 1024 * 1024
 MAX_BASE64_CHARS = ((MAX_BYTES + 2) // 3) * 4
 MAX_UPLOAD_JSON_BYTES = MAX_BASE64_CHARS + 64 * 1024
-DOCUMENT_LIMITS = {'original_bytes': MAX_BYTES, 'text_chars': MAX_TEXT, 'pdf_pages': 200, 'docx_expanded_bytes': 16 * 1024 * 1024}
+# Keep the existing API key; the limit applies only to word/document.xml.
+DOCUMENT_LIMITS = {'original_bytes': MAX_BYTES, 'text_chars': MAX_TEXT, 'pdf_pages': 200, 'docx_expanded_bytes': MAX_DOCX_XML_BYTES}
 
 WEB = Path(__file__).with_name('web')
 

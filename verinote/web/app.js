@@ -108,7 +108,8 @@ function renderItem(item) {
 }
 function renderProgress(percent, label, detail='', failed=false) {
   const value=Number.isFinite(percent)?Math.max(0,Math.min(100,percent)):null;
-  return `<section class="job-progress ${failed?'failed':''}" role="status"><strong>${esc(label)}</strong><progress max="100" ${value===null?'':`value="${value}"`} aria-label="${esc(label)}">${value===null?'처리 중':value+'%'}</progress><p>${value===null?'진행률 확인 중':value+'%'}${detail?' · '+esc(detail):''}</p></section>`;
+  const stopped=failed&&value===null;
+  return `<section class="job-progress ${failed?'failed':''}" role="status"><strong>${esc(label)}</strong>${stopped?'':`<progress max="100" ${value===null?'':`value="${value}"`} aria-label="${esc(label)}">${value===null?'처리 중':value+'%'}</progress>`}<p>${stopped?'처리 중단':value===null?'진행률 확인 중':value+'%'}${detail?' · '+esc(detail):''}</p></section>`;
 }
 function renderAnalysisProgress(run) {
   const p=run.progress||{},stage=run.stage==='ontology'?'사전 생성':'위키·관계 추출';
@@ -335,7 +336,7 @@ async function loadProviderModels(agent) {
 async function loadSettings() {
   config=await api('/api/settings');
   const limits=config.document_limits;
-  $('#upload-limits').textContent=`원본 최대 ${limits.original_bytes/1024/1024} MiB · 추출 본문 ${limits.text_chars.toLocaleString()}자 · PDF ${limits.pdf_pages}쪽 · DOCX 압축 해제 ${limits.docx_expanded_bytes/1024/1024} MiB`;
+  $('#upload-limits').textContent=`원본 최대 ${limits.original_bytes/1024/1024} MiB · 추출 본문 ${limits.text_chars.toLocaleString()}자 · PDF ${limits.pdf_pages}쪽 · DOCX 본문 XML 압축 해제 ${limits.docx_expanded_bytes/1024/1024} MiB`;
   $('#ask-agent').innerHTML=config.providers.map(p=>`<option value="${esc(p.id)}" ${p.id===config.selected?'selected':''}>${providerOption(p)}</option>`).join('');
   $('#ask-model').value=config.models[config.selected]||'';
   syncProviderControls('ask');

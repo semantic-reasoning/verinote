@@ -3,10 +3,12 @@ import io
 import re
 import xml.etree.ElementTree as ET
 import zipfile
+import zlib
 from pathlib import Path
 
 MAX_BYTES = 32 * 1024 * 1024
 MAX_TEXT = 128_000
+MAX_DOCX_XML_BYTES = 16 * 1024 * 1024
 
 
 def decode_document(filename, raw):
@@ -18,9 +20,18 @@ def decode_document(filename, raw):
             text = raw.decode('utf-8-sig')
         elif suffix == '.docx':
             with zipfile.ZipFile(io.BytesIO(raw)) as archive:
-                if sum(i.file_size for i in archive.infolist()) > 16 * 1024 * 1024:
-                    raise ValueError('DOCX 압축 해제 크기는 총 16 MiB까지 지원합니다.')
-                xml = archive.read('word/document.xml')
+                info = archive.getinfo('word/document.xml')
+                limit_error = 'DOCX 본문 XML은 압축 해제 후 16 MiB까지 지원합니다. 문서를 나누어 등록하세요.'
+                if info.file_size > MAX_DOCX_XML_BYTES:
+                    raise ValueError(limit_error)
+                # Only the body is needed; never decompress images or attachments.
+                try:
+                    with archive.open(info) as source:
+                        xml = source.read(MAX_DOCX_XML_BYTES + 1)
+                except (RuntimeError, EOFError, zlib.error) as exc:
+                    raise ValueError('DOCX 본문을 읽을 수 없습니다. 암호화·압축 방식이나 파일 손상을 확인하세요.') from exc
+                if len(xml) > MAX_DOCX_XML_BYTES:
+                    raise ValueError(limit_error)
                 if b'<!DOCTYPE' in xml or b'<!ENTITY' in xml:
                     raise ValueError('DOCX XML 엔티티는 허용하지 않습니다.')
                 root = ET.fromstring(xml)
