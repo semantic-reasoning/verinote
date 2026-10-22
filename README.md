@@ -227,3 +227,9 @@ python -m scripts.openrouter_smoke --allow-network --config ~/.config/verinote/c
 모델 ID의 사용 가능 여부와 가격은 제공자 상태에 따릅니다. 스크립트 성공은 작은 요청의 연결·응답 검증이며 16,384 상한이나 장문 추출 품질 검증이 아닙니다. [검증 기록과 한계](docs/verification.md)를 참고하세요.
 
 에이전트 설정에서 CLI 제공자의 이름이나 선택 버튼을 클릭하면 설치된 CLI가 안내하는 모델 목록을 불러옵니다. 모델 ID 옆의 **사용 가능한 모델**에서 고르면 ID 입력란에 반영되며, **설정 저장**을 눌러 저장합니다. 빈 ID는 CLI 기본 모델입니다. 같은 제공자를 다시 클릭하면 목록을 갱신합니다. 목록에 없는 ID도 직접 입력할 수 있으며 조회 실패가 기존 입력을 지우지 않습니다. 목록은 CLI 버전·로그인 상태에 따라 달라지고 실제 실행 권한을 보장하지 않습니다. OpenRouter는 기존처럼 모델 ID를 직접 입력합니다. 모델 조회는 프롬프트를 전송하지 않으며, 설치된 CLI 제공자 모두 Windows와 POSIX에서 지원합니다.
+
+### 추론 예산과 실제 사용량 확인
+
+OpenRouter 사용량은 출력에 포함된 추론 토큰과 보고된 비추론 출력(출력−추론)을 구분합니다. 숫자가 모두 유효한 호출별 차이만 합산하고 확인된 호출 수를 표시합니다. 실패한 호출도 확인된 토큰·비용을 보존합니다. 추론 요청 예산보다 실제 보고량이 크면 실행 화면에 초과 관측을 표시하며, 보고가 없거나 모순되면 준수 여부 미확인으로 표시합니다. 비추론 출력은 완성된 답변 길이나 실제 예약량이 아닙니다.
+
+`openrouter/auto`·`openrouter/free`는 실제 모델이 바뀔 수 있습니다. 반복적인 예산 초과나 length 종료가 있으면 명시적인 모델 ID를 선택하고 숫자 추론 예산 직접 지원 여부를 확인하세요. 이 앱은 모델 지원 여부를 조회하거나 모델을 자동 변경하지 않습니다. OpenRouter는 일부 모델에서 `reasoning.max_tokens`를 추론 강도로 변환할 수 있습니다. `provider.require_parameters=true`는 지원 제공자 필터이며 숫자 준수나 답변 여유 보장이 아닙니다. 자동 유료 재시도는 하지 않습니다. [공식 추론 문서](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens), [제공자 선택 문서](https://openrouter.ai/docs/guides/routing/provider-selection).

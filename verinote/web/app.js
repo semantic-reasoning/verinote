@@ -56,8 +56,14 @@ function syncProviderControls(prefix, reset=false){
   if(reset)model.value=config.models[select.value]||'';
   model.placeholder=modelPlaceholder(select.value);model.maxLength=150;
   model.required=providerById(select.value)?.transport==='http';
-  const hint=$('#'+prefix+'-provider-hint');if(hint)hint.innerHTML=providerHint(select.value);
+  const hint=$('#'+prefix+'-provider-hint');if(hint)hint.innerHTML=providerHint(select.value)+reasoningModelGuidance(select.value,model.value);
+  model.oninput=()=>syncProviderControls(prefix);
   if(prefix==='extract')syncTokenLimitControls();
+}
+function reasoningModelGuidance(agent,model) {
+  if(agent!=='openrouter')return '';
+  const dynamic=['openrouter/auto','openrouter/free'].includes(model.trim());
+  return `<p class="muted">${dynamic?'자동 라우팅은 실제 모델이 바뀔 수 있습니다. 명시적인 모델 ID를 선택하고 ':''}숫자 추론 예산을 직접 지원하는 모델인지 확인하세요. 이 화면은 지원 여부를 조회하지 않습니다. 일부 모델은 숫자 예산을 추론 강도로 변환하므로 답변 공간을 보장하지 않습니다. 지원 제공자 필터도 예산 준수 보장은 아닙니다.</p>`;
 }
 function executionGuidance(agent){
   if(providerById(agent)?.transport!=='http')return '';
@@ -443,10 +449,17 @@ function renderCoverage(c) {
 }
 function usageStage(stage){return {ontology:'사전 생성',extract:'관계 추출',quote_repair:'인용 보정',question:'질문',legacy:'기존 추출'}[stage]||stage;}
 function usageNumber(value){if(value==null)return '미확인';if(value>0&&value<1e-8)return '<0.00000001';return Number(value).toLocaleString('ko-KR',{maximumFractionDigits:8});}
+function renderReasoningDiagnostic(call) {
+  if(call.transport!=='http')return '';
+  const d=call.reasoning_diagnostic;if(!d)return '';
+  const value=n=>Number.isSafeInteger(n)&&n>=0?n.toLocaleString():'미확인';
+  const status={exceeded:'보고값 기준 추론 요청 예산 초과 관측',within_budget:'보고값이 추론 요청 예산 이하',unknown:'추론 요청 예산 준수 여부 미확인',not_applicable:'추론 요청 예산 비교 미적용'}[d.status]||'추론 요청 예산 준수 여부 미확인';
+  return `<section class="panel" role="status"><strong>${status}</strong><p>총 출력 한도 ${value(d.total_limit)} · 추론 요청 예산 ${value(d.requested_reasoning)} · 답변 목표 여유 ${value(d.answer_target)}</p><p>보고된 출력 ${value(d.reported_output)} · 그중 추론 ${value(d.reported_reasoning)} · 비추론 출력 ${value(d.non_reasoning_output)} 토큰</p><p>종료 사유 ${esc(call.finish_reason||'미확인')}${d.status==='exceeded'?` · 요청 예산보다 ${value(d.excess_tokens)}토큰 많습니다. 명시적 모델 ID와 숫자 추론 예산 지원을 확인하세요.`:''}</p><p class="muted">비추론 출력은 보고된 출력에서 추론을 뺀 값이며 완성된 답변 길이나 예약된 토큰이 아닙니다. 예산 이하라는 관측도 다음 호출의 준수를 보장하지 않습니다.</p></section>`;
+}
 function renderUsage(u){
   if(!u)return '<p class="muted">사용량 기록 없음</p>';
-  const metric=(m,unit='')=>m.value==null?'미확인':`${usageNumber(m.value)}${unit} <small>(${m.known_calls}/${u.calls}개 기록)</small>`;
-  return `<section class="usage-box" aria-label="사용량"><p>확인된 호출 ${u.calls-(u.unknown_call_count_jobs||0)}회${u.unknown_call_count_jobs?` · 호출 횟수 미확인 작업 ${u.unknown_call_count_jobs}개`:''}${u.incomplete_calls?` · 불완전 기록 ${u.incomplete_calls}개`:''}</p><p>입력 ${metric(u.tokens.input,' 토큰')} · 출력 ${metric(u.tokens.output,' 토큰')}</p><p>제공자 보고 비용 ${metric(u.reported_usd,' USD')} · 설정 단가 추정 비용 ${metric(u.estimated_usd,' USD')}</p><p>${u.credits.length?u.credits.map(c=>`${c.provenance==='reported'?'제공자 보고':'설정 단가 추정'} ${esc(c.unit)}: ${metric(c)}`).join('<br>'):'크레딧: 미확인'}</p><p class="muted">입력에는 캐시, 출력에는 추론이 포함됩니다. 보존된 호출 기록의 합계이며, 누락된 로그의 사용량은 포함할 수 없습니다. 미확인은 0이 아니며, 보고 비용과 추정 비용은 합산하지 않습니다. 계정의 실제 청구액·잔액과는 다를 수 있습니다.</p>${u.details?`<details><summary>호출별 사용량과 계산 근거</summary>${u.details.map(c=>`<div class="history-line"><strong>${esc(usageStage(c.stage))}</strong> · ${esc(c.status)} · ${esc(c.resolved_model||c.requested_model||'모델 식별 안 됨')}<p>${(c.warnings||[]).map(esc).join('<br>')}</p><pre class="source">${esc(JSON.stringify(c,null,2))}</pre></div>`).join('')}</details>`:''}</section>`;
+  const metric=(m,unit='')=>m?.value==null?'미확인':`${usageNumber(m.value)}${unit} <small>(${m.known_calls}/${u.calls}개 기록)</small>`;
+  return `<section class="usage-box" aria-label="사용량"><p>확인된 호출 ${u.calls-(u.unknown_call_count_jobs||0)}회${u.unknown_call_count_jobs?` · 호출 횟수 미확인 작업 ${u.unknown_call_count_jobs}개`:''}${u.incomplete_calls?` · 불완전 기록 ${u.incomplete_calls}개`:''}</p><p>입력 ${metric(u.tokens.input,' 토큰')} · 출력 ${metric(u.tokens.output,' 토큰')}</p><p>출력 중 추론 ${metric(u.tokens.reasoning,' 토큰')} · 보고된 비추론 출력 ${u.non_reasoning_output?metric(u.non_reasoning_output,' 토큰'):'미확인'}</p><p>제공자 보고 비용 ${metric(u.reported_usd,' USD')} · 설정 단가 추정 비용 ${metric(u.estimated_usd,' USD')}</p><p>${u.credits.length?u.credits.map(c=>`${c.provenance==='reported'?'제공자 보고':'설정 단가 추정'} ${esc(c.unit)}: ${metric(c)}`).join('<br>'):'크레딧: 미확인'}</p><p class="muted">입력에는 캐시, 출력에는 추론이 포함됩니다. 보존된 호출 기록의 합계이며, 누락된 로그의 사용량은 포함할 수 없습니다. 미확인은 0이 아니며, 보고 비용과 추정 비용은 합산하지 않습니다. 계정의 실제 청구액·잔액과는 다를 수 있습니다.</p>${u.details?u.details.filter(c=>c.reasoning_diagnostic?.status==='exceeded'||(c.finish_reason==='length'&&c.reasoning_diagnostic)).map(renderReasoningDiagnostic).join(''):''}${u.details?`<details><summary>호출별 사용량과 계산 근거</summary>${u.details.map(c=>`<div class="history-line"><strong>${esc(usageStage(c.stage))}</strong> · ${esc(c.status)} · ${esc(c.resolved_model||c.requested_model||'모델 식별 안 됨')}<p>${(c.warnings||[]).map(esc).join('<br>')}</p>${renderReasoningDiagnostic(c)}<pre class="source">${esc(JSON.stringify(c,null,2))}</pre></div>`).join('')}</details>`:''}</section>`;
 }
 function downloadJSON(value,name){const url=URL.createObjectURL(new Blob([JSON.stringify(value,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 async function loadUsageRates(){

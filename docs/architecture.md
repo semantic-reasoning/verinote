@@ -561,3 +561,7 @@ unavailable. The existing explicit approval and strict final validation are kept
 ### 기존 개체와 새 별칭 이름 충돌
 
 생성 필터 v2는 이전 사전에 있던 개체 ID와 정규화된 새 alias가 같고 다른 target을 가리키면 새 alias만 `alias_existing_entity` 직접 제외로 기록한다. 제외할 행도 전체 형식/정의/대상 preflight를 먼저 거쳐 충돌을 숨기지 않는다. 이번 응답에서 처음 생긴 개체와의 충돌, 같은 별칭의 대상 변경, 기존 별칭과 새 개체 충돌은 여전히 중단한다. strict 수정·승인 검증과 identity alias 처리는 유지한다. v1 checkpoint는 이전 사유만 포함하는 감사와 나머지 계약/원문/옵션/재생성 target을 검증한 뒤 재사용하고 새 checkpoint는 v2로 저장한다. 제외 내역은 기존 bounded 승인 전 UI/API에 표시하며 부분 응답의 caller validation은 실패, 생성 작업은 계속하는 기존 정책을 따른다.
+
+### 추론 예산 관측 진단
+
+기존 v2 run.json 요청값과 동일 call ID로 검증된 usage.json 토큰으로 읽기 시 진단을 계산한다. 로그·checkpoint·요청 body·실행 옵션 계약은 바꾸지 않는다. 출력과 추론이 유효하고 추론≤출력일 때만 비추론 차이와 예산 초과를 계산한다. v1은 비교 미적용, 누락/모순은 미확인이다. 요약 비추론 출력은 호출별 유효 차이를 합산하며 부분 추론 합계를 전체 출력에서 빼지 않는다. 성공 응답의 초과는 관측 경고이고 length 실패는 그대로 유지한다. 원시 reasoning/메시지/provider 오류를 공개하지 않는다. UI에는 동적 router와 숫자 예산→effort 변환 가능성을 안내하고 명시적 모델/지원 확인을 유도하되 조회·준수 보장을 주장하지 않는다.
