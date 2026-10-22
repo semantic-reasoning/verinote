@@ -399,6 +399,9 @@ def job_calls(root, kind, owner):
                 if clean['status'] == 'running' and owner['status'] not in ('queued', 'running'):
                     clean['complete'] = False
                     clean['warnings'].append('HTTP 호출 기록이 종료 상태로 저장되지 않았습니다.')
+        if owner['agent'] == 'openrouter':
+            from .reasoning_diagnostics import reasoning_diagnostic
+            clean['reasoning_diagnostic'] = reasoning_diagnostic(clean)
         clean.update(call_id=f'{kind}/{key}/{path}', stage=stage, call_count_known=True)
         calls.append(clean)
     if not calls and kind == 'runs' and owner.get('stage') in ('ontology', 'extract') and owner['status'] == 'success':
@@ -426,6 +429,7 @@ def job_calls(root, kind, owner):
 
 
 def summarize(calls):
+    from .reasoning_diagnostics import non_reasoning_output
     def subtotal(values):
         known = [v for v in values if v is not None]
         return {'value': sum(known) if known else None, 'known_calls': len(known)}
@@ -440,5 +444,6 @@ def summarize(calls):
             'unknown_call_count_jobs': sum(c.get('call_count_known') is False for c in calls),
             'incomplete_calls': sum(not c.get('complete') for c in calls),
             'tokens': {k: subtotal([c['tokens'].get(k) for c in calls]) for k in TOKEN_KEYS},
+            'non_reasoning_output': subtotal([non_reasoning_output(c['tokens']) for c in calls]),
             'reported_usd': subtotal([c.get('reported_usd') for c in calls]),
             'estimated_usd': subtotal([c.get('estimated_usd') for c in calls]), 'credits': credits}
