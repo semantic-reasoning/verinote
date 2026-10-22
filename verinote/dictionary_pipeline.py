@@ -83,13 +83,16 @@ def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_thr
                     and 'relation_type_warning_threshold' not in value['contract'] and threshold == DEFAULT_THRESHOLD):
                 expected.pop('type_warning_policy')
                 expected.pop('relation_type_warning_threshold')
+            if (isinstance(value['contract'], dict) and type(value['contract'].get('filter_policy')) is int
+                    and value['contract']['filter_policy'] == 1):
+                expected['filter_policy'] = 1  # Known v1 prefixes remain valid under v2.
             if value['schema_version'] == 1:
                 expected.pop('filter_policy')  # Strict legacy prefixes excluded no rows.
             if type(value['schema_version']) is not int or value['schema_version'] not in (1, 2) or value['run_id'] != prior['id'] or canonical(value['contract']) != canonical(expected) or type(offset) is not int or offset not in boundaries:
                 raise ValueError('checkpoint identity/boundary')
             candidate_dictionary = validate_dictionary(value['dictionary'], source[:offset])
             if value['schema_version'] == 2:
-                candidate_exclusions = validate_report(value['exclusions'], prior, doc, offset)
+                candidate_exclusions = validate_report(value['exclusions'], prior, doc, offset, filter_policy=value['contract']['filter_policy'])
                 candidate_exclusions['identity'] = identity(run, doc)
             else:
                 candidate_exclusions = new_report(run, doc)
