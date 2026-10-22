@@ -3,7 +3,12 @@ import copy
 import json
 from pathlib import Path
 
-from .dictionary_filter import DEPENDENT, FILTER_POLICY, REASONS
+from .dictionary_filter import (
+    DEPENDENT,
+    FILTER_POLICY,
+    REASONS,
+    SUPPORTED_FILTER_POLICIES,
+)
 from .documents import bounded_spans
 from .ontology import DICTIONARY_CHUNK_SIZE, LIMITS
 from .usage import atomic_json, safe_file
@@ -32,7 +37,9 @@ def add_chunk(report, offset, length, excluded):
     return result
 
 
-def validate_report(value, run, doc, accepted=None):
+def validate_report(value, run, doc, accepted=None, *, filter_policy=FILTER_POLICY):
+    if type(filter_policy) is not int or filter_policy not in SUPPORTED_FILTER_POLICIES:
+        raise ValueError('알 수 없는 사전 제외 정책입니다.')
     if (not isinstance(value, dict) or set(value) != {'schema_version', 'identity', 'chunks', 'items'}
             or type(value['schema_version']) is not int or value['schema_version'] != 1
             or not isinstance(value['identity'], dict) or type(value['identity'].get('version')) is not int
@@ -70,9 +77,12 @@ def validate_report(value, run, doc, accepted=None):
                 or not isinstance(row['identifier'], str) or not 1 <= len(row['identifier']) <= 80
                 or not isinstance(row['code'], str) or row['code'] not in REASONS):
             raise ValueError('사전 제외 기록의 상세 형식 오류')
+        if filter_policy == 1 and row['code'] == 'alias_existing_entity':
+            raise ValueError('이전 정책에 없는 사전 제외 사유입니다.')
         position = (row['chunk'], list(LIMITS).index(row['kind']), row['row'])
         expected_kind = {'entity_evidence': 'entities', 'alias_evidence': 'aliases',
-                         'excluded_entity': 'aliases', 'excluded_type': 'relations'}.get(row['code'])
+                         'excluded_entity': 'aliases', 'excluded_type': 'relations',
+                         'alias_existing_entity': 'aliases'}.get(row['code'])
         if expected_kind is not None and row['kind'] != expected_kind:
             raise ValueError('사전 제외 사유와 항목 종류가 일치하지 않습니다.')
         if position in seen or position < previous:
@@ -149,9 +159,10 @@ def read_report(root, store, run_id, *, document_id=None, version=None, include_
                 or type(checkpoint.get('offset')) is not int
                 or not isinstance(checkpoint.get('contract'), dict)
                 or type(checkpoint['contract'].get('filter_policy')) is not int
-                or checkpoint['contract']['filter_policy'] != FILTER_POLICY):
+                or checkpoint['contract']['filter_policy'] not in SUPPORTED_FILTER_POLICIES):
             return unavailable
-        value = validate_report(checkpoint.get('exclusions'), run, doc, checkpoint['offset'])
+        value = validate_report(checkpoint.get('exclusions'), run, doc, checkpoint['offset'],
+                                filter_policy=checkpoint['contract']['filter_policy'])
         summary = public_report(value, False)
         return summary | unavailable | {'total_count': summary['total_count'], 'partial': True}
     except (OSError, ValueError, KeyError, TypeError, RecursionError):

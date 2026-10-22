@@ -557,3 +557,7 @@ unavailable. The existing explicit approval and strict final validation are kept
 ### 관계 타입 개수 경고
 
 `[dictionary].relation_type_warning_threshold`는 기본20,1~200 정수의 경고 기준이며 데이터 절단 한도가 아니다. 공통 검증은 20개 상한만 제거하고 선언/형식/충돌/전체 크기 검증을 유지한다. 각 관계의 주어·목적어 타입을 따로 집계하며 최대40관계×2필드 경고를 사전에서 결정적으로 계산한다. 별도 경고 파일 없이 원자적으로 반영된 checkpoint 사전에서 재계산하므로 실패 구간이나 재개로 경고가 중복되지 않는다. 작업 등록 시 Service 숫자 설정을 캡처하고 checkpoint 계약에 정책/기준을 고정한다. 이전 checkpoint는 기본20일 때만 명시적으로 호환한다. 실행 API는 신원/원문 hash/offset/사전 검증 후 당시 기준으로 계산하고 누락·손상은 미확인으로 표시한다. 현재 사전은 현재 서버 기준을 명시해 재평가하므로 설정을 바꿔도 과거 실행 기록의 기준을 바꾸지 않는다. 경고만 있는 응답은 caller validation 성공이며 자동 재호출하지 않는다.
+
+### 기존 개체와 새 별칭 이름 충돌
+
+생성 필터 v2는 이전 사전에 있던 개체 ID와 정규화된 새 alias가 같고 다른 target을 가리키면 새 alias만 `alias_existing_entity` 직접 제외로 기록한다. 제외할 행도 전체 형식/정의/대상 preflight를 먼저 거쳐 충돌을 숨기지 않는다. 이번 응답에서 처음 생긴 개체와의 충돌, 같은 별칭의 대상 변경, 기존 별칭과 새 개체 충돌은 여전히 중단한다. strict 수정·승인 검증과 identity alias 처리는 유지한다. v1 checkpoint는 이전 사유만 포함하는 감사와 나머지 계약/원문/옵션/재생성 target을 검증한 뒤 재사용하고 새 checkpoint는 v2로 저장한다. 제외 내역은 기존 bounded 승인 전 UI/API에 표시하며 부분 응답의 caller validation은 실패, 생성 작업은 계속하는 기존 정책을 따른다.

@@ -1,4 +1,4 @@
-"""Generation-only evidence filtering; definition and format failures stay fatal."""
+"""Generation-only filtering with a narrow prior-entity alias exception."""
 from .ontology import (
     LIMITS,
     _dictionary_definition,
@@ -7,10 +7,12 @@ from .ontology import (
     validate_dictionary,
 )
 
-FILTER_POLICY = 1
+FILTER_POLICY = 2
+SUPPORTED_FILTER_POLICIES = (1, FILTER_POLICY)
 REASONS = {
     'reference': '선택한 원문 구간이 없거나 순서가 잘못되었습니다.',
     'entity_evidence': '선택한 원문에 개체 이름이 없습니다.',
+    'alias_existing_entity': '기존 개체 ID와 별칭 이름이 같아 새 별칭만 제외했습니다.',
     'alias_evidence': '선택한 원문에 별칭과 정규 이름의 근거가 없습니다.',
     'excluded_entity': '근거 부족으로 제외된 개체를 가리키는 별칭입니다.',
     'excluded_type': '근거 부족으로 제외된 개체의 타입에 의존하는 관계입니다.',
@@ -19,7 +21,7 @@ DEPENDENT = {'excluded_entity', 'excluded_type'}
 
 
 def merge_generated_dictionary(previous, output, spans, source, chunk):
-    """Preflight everything first; then discard only explicit evidence failures."""
+    """Preflight everything first; preserve prior entities and discard unsafe aliases."""
     _dictionary_shape(output)
     previous = validate_dictionary(previous, source)
     definitions: dict[str, list[dict]] = {kind: [] for kind in LIMITS}
@@ -48,13 +50,18 @@ def merge_generated_dictionary(previous, output, spans, source, chunk):
     # Check all dependencies before any evidence-based exclusion can hide them.
     all_types = {row['type'] for row in all_entities.values()}
     aliases = {row['alias']: row['entity'] for row in previous['aliases']}
+    previous_entity_ids = {row['id'] for row in previous['entities']}
+    namespace_exclusions = set()
     for index, row in enumerate(definitions['aliases'], 1):
         if row['entity'] not in all_entities:
             raise ValueError(f'aliases[{index}]: 선언되지 않은 개체를 가리킵니다.')
         if row['alias'] != row['entity']:
-            if row['alias'] in all_entities or aliases.get(row['alias'], row['entity']) != row['entity']:
+            if row['alias'] in previous_entity_ids:
+                namespace_exclusions.add(index)
+            elif row['alias'] in all_entities or aliases.get(row['alias'], row['entity']) != row['entity']:
                 raise ValueError(f'사전 정의 충돌: aliases[{index}] · 별칭 이름이 중복됩니다.')
-            aliases[row['alias']] = row['entity']
+            else:
+                aliases[row['alias']] = row['entity']
     if set(aliases) & set(all_entities):
         raise ValueError('사전 정의 충돌: 별칭과 개체 ID가 중복됩니다.')
     for index, row in enumerate(definitions['relations'], 1):
@@ -69,7 +76,10 @@ def merge_generated_dictionary(previous, output, spans, source, chunk):
         for index, (row, definition) in enumerate(zip(output[kind], definitions[kind], strict=True), 1):
             start, end = row['quote_ref']
             code = None
-            if start not in positions or end not in positions or positions[start] > positions[end]:
+            if kind == 'aliases' and index in namespace_exclusions:
+                code = 'alias_existing_entity'
+                quote = ''
+            elif start not in positions or end not in positions or positions[start] > positions[end]:
                 code = 'reference'
                 quote = ''
             else:
