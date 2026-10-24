@@ -1,0 +1,495 @@
+{
+  "schema_version": 1,
+  "mode": "fake",
+  "synthetic_responses": true,
+  "status": "completed",
+  "stop_reason": null,
+  "conditions": {
+    "agent": "agy",
+    "requested_model": "synthetic-oracle-v1",
+    "scenario": "failure",
+    "package_version": "0.1.0",
+    "cli_version": null,
+    "cli_version_source": "unknown_not_probed",
+    "effective_timeout_seconds": 30.0,
+    "max_output_bytes": 1048576,
+    "chunk_size": 8000,
+    "input_reuse": "fresh_store_per_repetition",
+    "limits": {
+      "requests": 60,
+      "repetitions": 3,
+      "seconds": 120.0,
+      "tokens": 100000,
+      "missing_usage": "stop"
+    },
+    "dataset_version": 1,
+    "evaluator_version": 1,
+    "extraction_contract": 1,
+    "prompt_sha256": "01f1cd0fdd8ee0d4063d7de559a6d74b2b79f27ad5b0313b2be36e365e815e65",
+    "repair_prompt_sha256": "59b4172e55f90dc32ee2f2bab351f80f6db446e79487ec74235bf7fcb3e9aea0",
+    "human_review": {
+      "status": "approved",
+      "evidence": "사용자 확인: “표를 검토했고 정답 기준이 맞습니다”. docs/extraction-evaluation-review.md 참조."
+    },
+    "cases": [
+      {
+        "id": "short",
+        "source_sha256": "79733f4de70a615dc31ba44a3714d5e9f1778d51d37c6a1ef8dd03eb140c86d4",
+        "case_sha256": "85055204163433bebd71e52c2a8b3831842d7a0a4fa6f6e0d3e48acb831560d1",
+        "dictionary_sha256": "9e2dd298b3fc0d0ff72b821e26eb53a158553b1ea926b56e764631e6ebc7b137"
+      }
+    ]
+  },
+  "repetitions": [
+    {
+      "repetition": 1,
+      "case_id": "short",
+      "status": "error",
+      "seconds": 0.031186458189040422,
+      "quality": {
+        "validated_chunks": 0,
+        "total_chunks": 1,
+        "complete": false,
+        "passed": false,
+        "evaluation": {
+          "schema_version": 1,
+          "evaluator_version": 1,
+          "dataset_version": 1,
+          "case_id": "short",
+          "source_sha256": "79733f4de70a615dc31ba44a3714d5e9f1778d51d37c6a1ef8dd03eb140c86d4",
+          "case_sha256": "85055204163433bebd71e52c2a8b3831842d7a0a4fa6f6e0d3e48acb831560d1",
+          "gold_count": 2,
+          "prediction_count": 0,
+          "raw_prediction_count": 0,
+          "true_positive_count": 0,
+          "false_positive_count": 0,
+          "false_negative_count": 2,
+          "grounded_true_positive_count": 0,
+          "precision": {
+            "value": null,
+            "numerator": 0,
+            "denominator": 0,
+            "reason": "not_applicable"
+          },
+          "recall": {
+            "value": 0.0,
+            "numerator": 0,
+            "denominator": 2,
+            "reason": null
+          },
+          "grounded_precision": {
+            "value": null,
+            "numerator": 0,
+            "denominator": 0,
+            "reason": "not_applicable"
+          },
+          "grounded_recall": {
+            "value": 0.0,
+            "numerator": 0,
+            "denominator": 2,
+            "reason": null
+          },
+          "citation_accuracy": {
+            "value": null,
+            "numerator": 0,
+            "denominator": 0,
+            "reason": "not_applicable"
+          },
+          "true_positives": [],
+          "false_negatives": [
+            "short-1",
+            "short-2"
+          ],
+          "false_positives": [],
+          "grounded_missing": [
+            "short-1",
+            "short-2"
+          ],
+          "invalid_facts": [],
+          "citation_errors": [],
+          "duplicates": [],
+          "quote_ambiguities": [],
+          "no_relation_case_pass": null,
+          "passed": false
+        }
+      },
+      "document_timing": {
+        "available": true,
+        "summary": {
+          "queue_seconds": 0.001165,
+          "total_seconds": 0.005484,
+          "worker_seconds": 0.004319,
+          "restore_seconds": 0.0005429999999999999,
+          "publish_seconds": null,
+          "new_call_attempts": 1,
+          "chunks": [
+            {
+              "index": 1,
+              "offset": 0,
+              "length": 127,
+              "reused": false,
+              "total_seconds": 0.0021007910000000003,
+              "request_seconds": 0.0011475000000000005,
+              "validation_with_bookkeeping_seconds": null,
+              "repair_request_seconds": null,
+              "repair_validation_with_bookkeeping_seconds": null,
+              "repair_other_seconds": null,
+              "other_seconds": 0.0009532909999999998,
+              "new_call_attempts": 1
+            }
+          ],
+          "worker_other_seconds": 0.0016752089999999996
+        },
+        "status": "error",
+        "error_code": "error"
+      },
+      "attempt_start": 1,
+      "attempt_count": 1
+    },
+    {
+      "repetition": 2,
+      "case_id": "short",
+      "status": "error",
+      "seconds": 0.022198375081643462,
+      "quality": {
+        "validated_chunks": 0,
+        "total_chunks": 1,
+        "complete": false,
+        "passed": false,
+        "evaluation": {
+          "schema_version": 1,
+          "evaluator_version": 1,
+          "dataset_version": 1,
+          "case_id": "short",
+          "source_sha256": "79733f4de70a615dc31ba44a3714d5e9f1778d51d37c6a1ef8dd03eb140c86d4",
+          "case_sha256": "85055204163433bebd71e52c2a8b3831842d7a0a4fa6f6e0d3e48acb831560d1",
+          "gold_count": 2,
+          "prediction_count": 0,
+          "raw_prediction_count": 0,
+          "true_positive_count": 0,
+          "false_positive_count": 0,
+          "false_negative_count": 2,
+          "grounded_true_positive_count": 0,
+          "precision": {
+            "value": null,
+            "numerator": 0,
+            "denominator": 0,
+            "reason": "not_applicable"
+          },
+          "recall": {
+            "value": 0.0,
+            "numerator": 0,
+            "denominator": 2,
+            "reason": null
+          },
+          "grounded_precision": {
+            "value": null,
+            "numerator": 0,
+            "denominator": 0,
+            "reason": "not_applicable"
+          },
+          "grounded_recall": {
+            "value": 0.0,
+            "numerator": 0,
+            "denominator": 2,
+            "reason": null
+          },
+          "citation_accuracy": {
+            "value": null,
+            "numerator": 0,
+            "denominator": 0,
+            "reason": "not_applicable"
+          },
+          "true_positives": [],
+          "false_negatives": [
+            "short-1",
+            "short-2"
+          ],
+          "false_positives": [],
+          "grounded_missing": [
+            "short-1",
+            "short-2"
+          ],
+          "invalid_facts": [],
+          "citation_errors": [],
+          "duplicates": [],
+          "quote_ambiguities": [],
+          "no_relation_case_pass": null,
+          "passed": false
+        }
+      },
+      "document_timing": {
+        "available": true,
+        "summary": {
+          "queue_seconds": 0.000872125,
+          "total_seconds": 0.004896667,
+          "worker_seconds": 0.004024542000000001,
+          "restore_seconds": 0.0004992500000000001,
+          "publish_seconds": null,
+          "new_call_attempts": 1,
+          "chunks": [
+            {
+              "index": 1,
+              "offset": 0,
+              "length": 127,
+              "reused": false,
+              "total_seconds": 0.001916792,
+              "request_seconds": 0.001111959,
+              "validation_with_bookkeeping_seconds": null,
+              "repair_request_seconds": null,
+              "repair_validation_with_bookkeeping_seconds": null,
+              "repair_other_seconds": null,
+              "other_seconds": 0.000804833,
+              "new_call_attempts": 1
+            }
+          ],
+          "worker_other_seconds": 0.0016085000000000006
+        },
+        "status": "error",
+        "error_code": "error"
+      },
+      "attempt_start": 2,
+      "attempt_count": 1
+    },
+    {
+      "repetition": 3,
+      "case_id": "short",
+      "status": "error",
+      "seconds": 0.022720417007803917,
+      "quality": {
+        "validated_chunks": 0,
+        "total_chunks": 1,
+        "complete": false,
+        "passed": false,
+        "evaluation": {
+          "schema_version": 1,
+          "evaluator_version": 1,
+          "dataset_version": 1,
+          "case_id": "short",
+          "source_sha256": "79733f4de70a615dc31ba44a3714d5e9f1778d51d37c6a1ef8dd03eb140c86d4",
+          "case_sha256": "85055204163433bebd71e52c2a8b3831842d7a0a4fa6f6e0d3e48acb831560d1",
+          "gold_count": 2,
+          "prediction_count": 0,
+          "raw_prediction_count": 0,
+          "true_positive_count": 0,
+          "false_positive_count": 0,
+          "false_negative_count": 2,
+          "grounded_true_positive_count": 0,
+          "precision": {
+            "value": null,
+            "numerator": 0,
+            "denominator": 0,
+            "reason": "not_applicable"
+          },
+          "recall": {
+            "value": 0.0,
+            "numerator": 0,
+            "denominator": 2,
+            "reason": null
+          },
+          "grounded_precision": {
+            "value": null,
+            "numerator": 0,
+            "denominator": 0,
+            "reason": "not_applicable"
+          },
+          "grounded_recall": {
+            "value": 0.0,
+            "numerator": 0,
+            "denominator": 2,
+            "reason": null
+          },
+          "citation_accuracy": {
+            "value": null,
+            "numerator": 0,
+            "denominator": 0,
+            "reason": "not_applicable"
+          },
+          "true_positives": [],
+          "false_negatives": [
+            "short-1",
+            "short-2"
+          ],
+          "false_positives": [],
+          "grounded_missing": [
+            "short-1",
+            "short-2"
+          ],
+          "invalid_facts": [],
+          "citation_errors": [],
+          "duplicates": [],
+          "quote_ambiguities": [],
+          "no_relation_case_pass": null,
+          "passed": false
+        }
+      },
+      "document_timing": {
+        "available": true,
+        "summary": {
+          "queue_seconds": 0.000868791,
+          "total_seconds": 0.005070125,
+          "worker_seconds": 0.004201334,
+          "restore_seconds": 0.000507125,
+          "publish_seconds": null,
+          "new_call_attempts": 1,
+          "chunks": [
+            {
+              "index": 1,
+              "offset": 0,
+              "length": 127,
+              "reused": false,
+              "total_seconds": 0.002069583,
+              "request_seconds": 0.0011903750000000005,
+              "validation_with_bookkeeping_seconds": null,
+              "repair_request_seconds": null,
+              "repair_validation_with_bookkeeping_seconds": null,
+              "repair_other_seconds": null,
+              "other_seconds": 0.0008792079999999994,
+              "new_call_attempts": 1
+            }
+          ],
+          "worker_other_seconds": 0.0016246260000000005
+        },
+        "status": "error",
+        "error_code": "error"
+      },
+      "attempt_start": 3,
+      "attempt_count": 1
+    }
+  ],
+  "attempts": [
+    {
+      "attempt": 1,
+      "chunk": 1,
+      "repair": false,
+      "status": "error",
+      "tokens": {
+        "input": 100,
+        "output": 20,
+        "cache_read": 0,
+        "cache_write": 0,
+        "reasoning": 0
+      },
+      "usage_complete": true,
+      "reported_usd": null,
+      "estimated_usd": null,
+      "reported_credits": null,
+      "estimated_credits": null,
+      "credit_unit_sha256": null,
+      "estimated_credit_unit_sha256": null,
+      "cli_call_id": "3d41bd976fbb415ca0ff0d16f9ee5834",
+      "cli_timing": null,
+      "wrapper_seconds": 0.0008139591664075851
+    },
+    {
+      "attempt": 2,
+      "chunk": 1,
+      "repair": false,
+      "status": "error",
+      "tokens": {
+        "input": 100,
+        "output": 20,
+        "cache_read": 0,
+        "cache_write": 0,
+        "reasoning": 0
+      },
+      "usage_complete": true,
+      "reported_usd": null,
+      "estimated_usd": null,
+      "reported_credits": null,
+      "estimated_credits": null,
+      "credit_unit_sha256": null,
+      "estimated_credit_unit_sha256": null,
+      "cli_call_id": "050102d4e9dc410aab51d1fc472b2f29",
+      "cli_timing": null,
+      "wrapper_seconds": 0.0007398338057100773
+    },
+    {
+      "attempt": 3,
+      "chunk": 1,
+      "repair": false,
+      "status": "error",
+      "tokens": {
+        "input": 100,
+        "output": 20,
+        "cache_read": 0,
+        "cache_write": 0,
+        "reasoning": 0
+      },
+      "usage_complete": true,
+      "reported_usd": null,
+      "estimated_usd": null,
+      "reported_credits": null,
+      "estimated_credits": null,
+      "credit_unit_sha256": null,
+      "estimated_credit_unit_sha256": null,
+      "cli_call_id": "72e380e647194bd085ac9655513c53ae",
+      "cli_timing": null,
+      "wrapper_seconds": 0.0007463749498128891
+    }
+  ],
+  "budget": {
+    "requests_started": 3,
+    "observed_tokens_lower_bound": 360,
+    "unknown_usage_calls": 0,
+    "token_usage_verified": true,
+    "token_hard_cap_guaranteed": false,
+    "stop_reason": null,
+    "elapsed_seconds": 0.08661412494257092
+  },
+  "summary": {
+    "completed_case_runs": 3,
+    "successful_repetitions": 0,
+    "failed_repetitions": 3,
+    "success_seconds": {
+      "count": 0,
+      "min": null,
+      "max": null,
+      "mean": null,
+      "median": null,
+      "population_stddev": null
+    },
+    "failure_seconds": {
+      "count": 3,
+      "min": 0.022198375081643462,
+      "max": 0.031186458189040422,
+      "mean": 0.025368416759495933,
+      "median": 0.022720417007803917,
+      "population_stddev": 0.004119493213174762
+    },
+    "per_case": [
+      {
+        "case_id": "short",
+        "success_seconds": {
+          "count": 0,
+          "min": null,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "population_stddev": null
+        },
+        "failure_seconds": {
+          "count": 3,
+          "min": 0.022198375081643462,
+          "max": 0.031186458189040422,
+          "mean": 0.025368416759495933,
+          "median": 0.022720417007803917,
+          "population_stddev": 0.004119493213174762
+        }
+      }
+    ],
+    "call_timing_available": 0,
+    "document_timing_available": 3,
+    "failed_attempts": 3,
+    "credits": [],
+    "repair_attempts": 0,
+    "reported_usd": {
+      "known_calls": 0,
+      "value": null
+    },
+    "estimated_usd": {
+      "known_calls": 0,
+      "value": null
+    }
+  }
+}

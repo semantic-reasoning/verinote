@@ -42,3 +42,5 @@ CLI 인증은 기존 CLI 방식으로 처리한다. Verinote 사용자 설정·�
 정상·실패·한도 중단 모두 보고서를 기록한다. `status: completed`는 계획된 반복이 끝났다는 뜻이며, 개별 실행은 실패할 수 있다. `stopped`이면 `stop_reason`과 실제 attempt 수를 확인한다. 성공 실행만 종료 코드 0, 실패·중단은 1, 설정·저장 실패는 2다. 매 호출과 반복 뒤 원자적으로 갱신하므로 중간 파일의 `running`은 부분 결과다. 디스크 오류가 나면 마지막 정상 파일을 보존하고 정적 오류 메시지를 반환한다. 저장장치가 처음부터 쓰기 불가능하면 보고서를 새로 만들 수 없다.
 
 가짜 결과 예제는 [benchmarks/extraction/examples](../benchmarks/extraction/examples)의 `benchmark-fake-*.json`에 있다. 동일 조건은 위 명령 또는 보고서의 `conditions`를 사용해 재실행한다. 시간·호출 ID는 재실행마다 달라진다. API 사용자는 `verinote.extraction_benchmark.measure(output, cases=..., limits=Limits(...))`를 호출할 수 있다. `caller_factory`와 `clock`은 오프라인 검증용 주입 지점이다. 실제 호출을 주입하면서 fake로 표시해서는 안 된다.
+
+실제 가짜 응답 반복 실행의 결과·시간 편차·추가 측정 계획은 [#728 결과 보고서](extraction-performance-results.md)에 정리했다.
