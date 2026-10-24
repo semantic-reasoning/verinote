@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "dataset_version": 1,
+  "case_id": "short",
+  "category": "short",
+  "source": "Atlas directly calls Billing.\nBilling directly calls Ledger.\nAtlas does not directly call Ledger.\nBilling is also called BILL.\n",
+  "source_sha256": "79733f4de70a615dc31ba44a3714d5e9f1778d51d37c6a1ef8dd03eb140c86d4",
+  "dictionary": {
+    "entities": [
+      {
+        "id": "Atlas",
+        "name": "Atlas",
+        "type": "Service",
+        "quote": "Atlas directly calls Billing."
+      },
+      {
+        "id": "Billing",
+        "name": "Billing",
+        "type": "Service",
+        "quote": "Atlas directly calls Billing."
+      },
+      {
+        "id": "Ledger",
+        "name": "Ledger",
+        "type": "Service",
+        "quote": "Billing directly calls Ledger."
+      }
+    ],
+    "aliases": [
+      {
+        "alias": "BILL",
+        "entity": "Billing",
+        "quote": "Billing is also called BILL."
+      }
+    ],
+    "relations": [
+      {
+        "id": "calls",
+        "description": "An explicitly stated direct service call. Excludes hypothetical, negated, reverse and transitive calls.",
+        "subject_types": [
+          "Service"
+        ],
+        "object_types": [
+          "Service"
+        ],
+        "quote": "Atlas directly calls Billing."
+      }
+    ]
+  },
+  "gold": [
+    {
+      "id": "short-1",
+      "variants": [
+        [
+          "Atlas",
+          "calls",
+          "Billing"
+        ],
+        [
+          "Atlas",
+          "calls",
+          "BILL"
+        ]
+      ],
+      "evidence": [
+        {
+          "start": 0,
+          "end": 29,
+          "text": "Atlas directly calls Billing."
+        }
+      ],
+      "sample_quote": "Atlas directly calls Billing."
+    },
+    {
+      "id": "short-2",
+      "variants": [
+        [
+          "Billing",
+          "calls",
+          "Ledger"
+        ]
+      ],
+      "evidence": [
+        {
+          "start": 30,
+          "end": 60,
+          "text": "Billing directly calls Ledger."
+        }
+      ],
+      "sample_quote": "Billing directly calls Ledger."
+    }
+  ],
+  "forbidden": [
+    [
+      "Atlas",
+      "calls",
+      "Ledger"
+    ],
+    [
+      "Billing",
+      "calls",
+      "Atlas"
+    ]
+  ],
+  "notes": "All and only two explicit direct calls are gold. The negated/transitive Atlas→Ledger is forbidden; aliases are exact."
+}

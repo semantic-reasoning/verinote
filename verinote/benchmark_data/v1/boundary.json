@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "dataset_version": 1,
+  "case_id": "boundary",
+  "category": "boundary",
+  "source": "Neutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeutral synthetic padding; no additional relationships.\nNeu\nHypothetical example only: Atlas calls Billing.\n                                                   \nActual configuration: Atlas calls Billing.\nAnother hypothetical example: Atlas calls Billing.\n",
+  "source_sha256": "2e7f61628ac20bea53fd48afefd07548c7f5511290d34fd4f6d038e71b8fcf80",
+  "dictionary": {
+    "entities": [
+      {
+        "id": "Atlas",
+        "name": "Atlas",
+        "type": "Service",
+        "quote": "Hypothetical example only: Atlas calls Billing."
+      },
+      {
+        "id": "Billing",
+        "name": "Billing",
+        "type": "Service",
+        "quote": "Hypothetical example only: Atlas calls Billing."
+      }
+    ],
+    "aliases": [],
+    "relations": [
+      {
+        "id": "calls",
+        "description": "An explicitly stated direct service call. Excludes hypothetical, negated, reverse and transitive calls.",
+        "subject_types": [
+          "Service"
+        ],
+        "object_types": [
+          "Service"
+        ],
+        "quote": "Hypothetical example only: Atlas calls Billing."
+      }
+    ]
+  },
+  "gold": [
+    {
+      "id": "boundary-1",
+      "variants": [
+        [
+          "Atlas",
+          "calls",
+          "Billing"
+        ]
+      ],
+      "evidence": [
+        {
+          "start": 8022,
+          "end": 8042,
+          "text": "Atlas calls Billing."
+        }
+      ],
+      "sample_quote": "Actual configuration: Atlas calls Billing."
+    }
+  ],
+  "forbidden": [
+    [
+      "Billing",
+      "calls",
+      "Atlas"
+    ]
+  ],
+  "notes": "Only the actual configuration in chunk 2 is gold. Identical short quote is hypothetical in chunk 1 and ambiguous within chunk 2; quote the actual configuration with context."
+}

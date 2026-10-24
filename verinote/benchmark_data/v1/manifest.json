@@ -1,0 +1,36 @@
+{
+  "dataset_version": 1,
+  "chunk_size": 8000,
+  "extraction_contract": 1,
+  "human_review": {
+    "status": "approved",
+    "evidence": "사용자 확인: “표를 검토했고 정답 기준이 맞습니다”. docs/extraction-evaluation-review.md 참조."
+  },
+  "cases": [
+    {
+      "id": "boundary",
+      "file": "boundary.json",
+      "sha256": "af1e36183ecd46be991dbb77473fd35bdbd190f1d5ae074fe0227ac9a248b14f"
+    },
+    {
+      "id": "dense",
+      "file": "dense.json",
+      "sha256": "cb6a45e0bcdc9d7caafa79529791690366734d49df92b82c01fa4f23434241ae"
+    },
+    {
+      "id": "long",
+      "file": "long.json",
+      "sha256": "66322380e9752c7230b8e6357e35aadc6a1996967bb90bc60c96e3f26a0c4d72"
+    },
+    {
+      "id": "none",
+      "file": "none.json",
+      "sha256": "20d17b046cc9a2396374ca39f3b96c39adbc50807e64ed23ca749ce0ee8341a8"
+    },
+    {
+      "id": "short",
+      "file": "short.json",
+      "sha256": "85055204163433bebd71e52c2a8b3831842d7a0a4fa6f6e0d3e48acb831560d1"
+    }
+  ]
+}

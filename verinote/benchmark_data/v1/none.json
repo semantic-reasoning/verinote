@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "dataset_version": 1,
+  "case_id": "none",
+  "category": "none",
+  "source": "Atlas and Billing are mentioned. No direct service call is stated.\n",
+  "source_sha256": "09da66e9641414fb667c11e7f1e21d4ef57470a9f10904fa4cee74cfc5bfd765",
+  "dictionary": {
+    "entities": [
+      {
+        "id": "Atlas",
+        "name": "Atlas",
+        "type": "Service",
+        "quote": "Atlas and Billing are mentioned. No direct service call is stated."
+      },
+      {
+        "id": "Billing",
+        "name": "Billing",
+        "type": "Service",
+        "quote": "Atlas and Billing are mentioned. No direct service call is stated."
+      }
+    ],
+    "aliases": [],
+    "relations": [
+      {
+        "id": "calls",
+        "description": "An explicitly stated direct service call. Excludes hypothetical, negated, reverse and transitive calls.",
+        "subject_types": [
+          "Service"
+        ],
+        "object_types": [
+          "Service"
+        ],
+        "quote": "Atlas and Billing are mentioned. No direct service call is stated."
+      }
+    ]
+  },
+  "gold": [],
+  "forbidden": [
+    [
+      "Atlas",
+      "calls",
+      "Billing"
+    ],
+    [
+      "Billing",
+      "calls",
+      "Atlas"
+    ]
+  ],
+  "notes": "The dictionary defines a possible relation but the document asserts none."
+}

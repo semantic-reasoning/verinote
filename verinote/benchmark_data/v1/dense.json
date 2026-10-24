@@ -1,0 +1,215 @@
+{
+  "schema_version": 1,
+  "dataset_version": 1,
+  "case_id": "dense",
+  "category": "dense",
+  "source": "S0 directly calls S1.\nS1 directly calls S2.\nS2 directly calls S3.\nS3 directly calls S4.\nS4 directly calls S5.\nS5 directly calls S6.\nS6 directly calls S7.\nNo other direct calls are stated.\n",
+  "source_sha256": "72a40739d4e7795874ffe9e993b5967525b822f2511576fa2faf2512ae7315df",
+  "dictionary": {
+    "entities": [
+      {
+        "id": "S0",
+        "name": "S0",
+        "type": "Service",
+        "quote": "S0 directly calls S1."
+      },
+      {
+        "id": "S1",
+        "name": "S1",
+        "type": "Service",
+        "quote": "S0 directly calls S1."
+      },
+      {
+        "id": "S2",
+        "name": "S2",
+        "type": "Service",
+        "quote": "S1 directly calls S2."
+      },
+      {
+        "id": "S3",
+        "name": "S3",
+        "type": "Service",
+        "quote": "S2 directly calls S3."
+      },
+      {
+        "id": "S4",
+        "name": "S4",
+        "type": "Service",
+        "quote": "S3 directly calls S4."
+      },
+      {
+        "id": "S5",
+        "name": "S5",
+        "type": "Service",
+        "quote": "S4 directly calls S5."
+      },
+      {
+        "id": "S6",
+        "name": "S6",
+        "type": "Service",
+        "quote": "S5 directly calls S6."
+      },
+      {
+        "id": "S7",
+        "name": "S7",
+        "type": "Service",
+        "quote": "S6 directly calls S7."
+      }
+    ],
+    "aliases": [],
+    "relations": [
+      {
+        "id": "calls",
+        "description": "An explicitly stated direct service call. Excludes hypothetical, negated, reverse and transitive calls.",
+        "subject_types": [
+          "Service"
+        ],
+        "object_types": [
+          "Service"
+        ],
+        "quote": "S0 directly calls S1."
+      }
+    ]
+  },
+  "gold": [
+    {
+      "id": "dense-1",
+      "variants": [
+        [
+          "S0",
+          "calls",
+          "S1"
+        ]
+      ],
+      "evidence": [
+        {
+          "start": 0,
+          "end": 21,
+          "text": "S0 directly calls S1."
+        }
+      ],
+      "sample_quote": "S0 directly calls S1."
+    },
+    {
+      "id": "dense-2",
+      "variants": [
+        [
+          "S1",
+          "calls",
+          "S2"
+        ]
+      ],
+      "evidence": [
+        {
+          "start": 22,
+          "end": 43,
+          "text": "S1 directly calls S2."
+        }
+      ],
+      "sample_quote": "S1 directly calls S2."
+    },
+    {
+      "id": "dense-3",
+      "variants": [
+        [
+          "S2",
+          "calls",
+          "S3"
+        ]
+      ],
+      "evidence": [
+        {
+          "start": 44,
+          "end": 65,
+          "text": "S2 directly calls S3."
+        }
+      ],
+      "sample_quote": "S2 directly calls S3."
+    },
+    {
+      "id": "dense-4",
+      "variants": [
+        [
+          "S3",
+          "calls",
+          "S4"
+        ]
+      ],
+      "evidence": [
+        {
+          "start": 66,
+          "end": 87,
+          "text": "S3 directly calls S4."
+        }
+      ],
+      "sample_quote": "S3 directly calls S4."
+    },
+    {
+      "id": "dense-5",
+      "variants": [
+        [
+          "S4",
+          "calls",
+          "S5"
+        ]
+      ],
+      "evidence": [
+        {
+          "start": 88,
+          "end": 109,
+          "text": "S4 directly calls S5."
+        }
+      ],
+      "sample_quote": "S4 directly calls S5."
+    },
+    {
+      "id": "dense-6",
+      "variants": [
+        [
+          "S5",
+          "calls",
+          "S6"
+        ]
+      ],
+      "evidence": [
+        {
+          "start": 110,
+          "end": 131,
+          "text": "S5 directly calls S6."
+        }
+      ],
+      "sample_quote": "S5 directly calls S6."
+    },
+    {
+      "id": "dense-7",
+      "variants": [
+        [
+          "S6",
+          "calls",
+          "S7"
+        ]
+      ],
+      "evidence": [
+        {
+          "start": 132,
+          "end": 153,
+          "text": "S6 directly calls S7."
+        }
+      ],
+      "sample_quote": "S6 directly calls S7."
+    }
+  ],
+  "forbidden": [
+    [
+      "S0",
+      "calls",
+      "S2"
+    ],
+    [
+      "S1",
+      "calls",
+      "S0"
+    ]
+  ],
+  "notes": "Exactly seven adjacent directed edges. Transitive and reverse edges are not facts."
+}
