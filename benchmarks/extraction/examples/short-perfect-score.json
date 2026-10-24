@@ -1,0 +1,62 @@
+{
+  "case_id": "short",
+  "case_sha256": "85055204163433bebd71e52c2a8b3831842d7a0a4fa6f6e0d3e48acb831560d1",
+  "citation_accuracy": {
+    "denominator": 2,
+    "numerator": 2,
+    "reason": null,
+    "value": 1.0
+  },
+  "citation_errors": [],
+  "dataset_human_review": {
+    "evidence": "사용자 확인: “표를 검토했고 정답 기준이 맞습니다”. docs/extraction-evaluation-review.md 참조.",
+    "status": "approved"
+  },
+  "dataset_version": 1,
+  "duplicates": [],
+  "evaluator_version": 1,
+  "false_negative_count": 0,
+  "false_negatives": [],
+  "false_positive_count": 0,
+  "false_positives": [],
+  "gold_count": 2,
+  "grounded_missing": [],
+  "grounded_precision": {
+    "denominator": 2,
+    "numerator": 2,
+    "reason": null,
+    "value": 1.0
+  },
+  "grounded_recall": {
+    "denominator": 2,
+    "numerator": 2,
+    "reason": null,
+    "value": 1.0
+  },
+  "grounded_true_positive_count": 2,
+  "invalid_facts": [],
+  "no_relation_case_pass": null,
+  "passed": true,
+  "precision": {
+    "denominator": 2,
+    "numerator": 2,
+    "reason": null,
+    "value": 1.0
+  },
+  "prediction_count": 2,
+  "quote_ambiguities": [],
+  "raw_prediction_count": 2,
+  "recall": {
+    "denominator": 2,
+    "numerator": 2,
+    "reason": null,
+    "value": 1.0
+  },
+  "schema_version": 1,
+  "source_sha256": "79733f4de70a615dc31ba44a3714d5e9f1778d51d37c6a1ef8dd03eb140c86d4",
+  "true_positive_count": 2,
+  "true_positives": [
+    "short-1",
+    "short-2"
+  ]
+}

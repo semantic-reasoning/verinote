@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "dataset_version": 1,
+  "case_id": "short",
+  "chunk_index": 1,
+  "scenario": "prefixed_quote",
+  "bad_output": {
+    "title": "Synthetic extraction fixture",
+    "claims": [
+      {
+        "heading": "Fixture",
+        "text": "Atlas directly calls Billing.",
+        "quote": "Atlas directly calls Billing."
+      }
+    ],
+    "facts": [
+      {
+        "subject": "Atlas",
+        "predicate": "calls",
+        "object": "Billing",
+        "quote": "According to the document, Atlas directly calls Billing."
+      },
+      {
+        "subject": "Billing",
+        "predicate": "calls",
+        "object": "Ledger",
+        "quote": "Billing directly calls Ledger."
+      }
+    ],
+    "coverage": [
+      {
+        "predicate": "calls",
+        "fact_indices": [
+          0,
+          1
+        ],
+        "claim_indices": [],
+        "status": "extracted",
+        "reason": "Synthetic fixture annotation"
+      }
+    ],
+    "dictionary_gaps": []
+  },
+  "expected_repair": {
+    "repairs": [
+      {
+        "path": "facts.0.quote",
+        "quote": "Atlas directly calls Billing."
+      }
+    ]
+  },
+  "expected_output": {
+    "title": "Synthetic extraction fixture",
+    "claims": [
+      {
+        "heading": "Fixture",
+        "text": "Atlas directly calls Billing.",
+        "quote": "Atlas directly calls Billing."
+      }
+    ],
+    "facts": [
+      {
+        "subject": "Atlas",
+        "predicate": "calls",
+        "object": "Billing",
+        "quote": "Atlas directly calls Billing."
+      },
+      {
+        "subject": "Billing",
+        "predicate": "calls",
+        "object": "Ledger",
+        "quote": "Billing directly calls Ledger."
+      }
+    ],
+    "coverage": [
+      {
+        "predicate": "calls",
+        "fact_indices": [
+          0,
+          1
+        ],
+        "claim_indices": [],
+        "status": "extracted",
+        "reason": "Synthetic fixture annotation"
+      }
+    ],
+    "dictionary_gaps": []
+  },
+  "notes": "Deliberate fault injection only; a directly correct model response is equally valid."
+}

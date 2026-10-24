@@ -1,0 +1,38 @@
+{
+  "case_id": "short",
+  "chunks": [
+    {
+      "index": 1,
+      "output": {
+        "title": "Synthetic extraction fixture",
+        "claims": [
+          {
+            "heading": "Fixture",
+            "text": "Atlas directly calls Billing.",
+            "quote": "Atlas directly calls Billing."
+          }
+        ],
+        "facts": [
+          {
+            "subject": "Atlas",
+            "predicate": "calls",
+            "object": "Billing",
+            "quote": "Atlas directly calls Billing."
+          }
+        ],
+        "coverage": [
+          {
+            "predicate": "calls",
+            "fact_indices": [
+              0
+            ],
+            "claim_indices": [],
+            "status": "extracted",
+            "reason": "Synthetic fixture annotation"
+          }
+        ],
+        "dictionary_gaps": []
+      }
+    }
+  ]
+}

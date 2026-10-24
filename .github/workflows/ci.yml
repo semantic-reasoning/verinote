@@ -58,3 +58,6 @@ jobs:
           python -m venv .smoke
           .smoke/bin/pip install dist/*.whl
           .smoke/bin/verinote --help
+
+          cd "$(mktemp -d)"
+          "$GITHUB_WORKSPACE/.smoke/bin/python" -c "from verinote.extraction_evaluation import load_manifest, load_case, ideal_outputs, evaluate_case; cases=[load_case(r['id']) for r in load_manifest()['cases']]; assert len(cases)==5; assert all(evaluate_case(c, ideal_outputs(c))['passed'] for c in cases)"
