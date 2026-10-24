@@ -569,3 +569,7 @@ unavailable. The existing explicit approval and strict final validation are kept
 ### CLI 단일 호출 시간
 
 CLI 경로는 stdout 파일과 기존 polling을 유지한 채 별도 monotonic_ns 관측을 기록한다. run/usage/timing의 cli_call_id가 같은 경우만 연결하며 토큰·비용은 기존 기록에서 한 번만 집계한다. 계측 실패는 결과·예외·timeout/kill 동작과 분리하고 HTTP 실행은 변경하지 않는다. 필드·오차·null·구간 중첩 계약은 [cli-timing.md](cli-timing.md)에 정의한다. 문서·청크·인용 수정 집계는 이 레이어 밖에서 수행한다.
+
+### CLI 승인 사전 추출 시간 집계
+
+등록 직전 단조시계 기준점을 worker에 전달하고 CLI extract에만 선택적 span을 붙인다. 8000자 순차 처리/보정 한도/공유 deadline/전체 성공 후 후보 등록과 checkpoint 계약은 그대로다. orchestration 호출 span은 #724 cli_call_id로 연결하되 그 내부 시간·사용량을 중복 합산하지 않는다. 재사용 청크는 과거 시간 null, 현재 restore 검증은 별도다. 파일·신원/경계/nesting 검증·비가산 부모와 leaf 차감 계약은 [extraction-timing.md](extraction-timing.md)에 정의한다. UI·API나 DB 변경은 추가하지 않는다.
