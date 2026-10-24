@@ -1,0 +1,381 @@
+"""Isolated, budgeted measurements through the production extraction Service."""
+import copy
+import hashlib
+import json
+import math
+import statistics
+import sys
+import tempfile
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
+from typing import Any
+from uuid import uuid4
+
+from .agents import CLI, CLI_PROVIDERS, validate_model
+from .cli_timing import read_cli_timing
+from .documents import chunks
+from .extraction_checkpoint import CHECKPOINT_LIMIT, ExtractionCheckpoint
+from .extraction_evaluation import (
+    DATA_ROOT,
+    _read,
+    evaluate_case,
+    ideal_outputs,
+    load_case,
+    load_manifest,
+)
+from .extraction_timing import read_extraction_timing
+from .ontology import (
+    EXTRACTION_CONTRACT_VERSION,
+    EXTRACTION_PROMPT,
+    QUOTE_REPAIR_PROMPT,
+)
+from .service import Service
+from .store import Store, digest
+from .usage import TOKEN_KEYS, amount, atomic_json, empty_usage, number
+
+MAX_REPORT_BYTES = 8 * 1024 * 1024
+
+
+def sha(value):
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+@dataclass(frozen=True)
+class Limits:
+    requests: int = 40
+    repetitions: int = 2
+    seconds: float = 120
+    tokens: int = 100000
+    missing_usage: str = 'stop'
+
+    def __post_init__(self):
+        for value, upper in ((self.requests, 1000), (self.repetitions, 100), (self.tokens, 10**12)):
+            if type(value) is not int or not 1 <= value <= upper: raise ValueError('측정 한도 오류')
+        if type(self.seconds) not in (int, float) or not math.isfinite(self.seconds) or not 0 < self.seconds <= 86400:
+            raise ValueError('전체 시간 한도 오류')
+        if self.missing_usage not in ('stop', 'continue'): raise ValueError('사용량 누락 정책 오류')
+
+
+class Stopped(RuntimeError): pass
+
+
+class Budget:
+    """One admission ledger shared by all timeout clones and repetitions."""
+    def __init__(self, limits, *, clock=None):
+        self.limits, self.clock = limits, clock or time.monotonic
+        self.started = self.clock(); self.deadline = self.started + limits.seconds
+        self.lock = threading.RLock()
+        self.reason = None; self.attempts = []; self.observed_tokens = 0; self.unknown_usage = 0
+
+    def stop(self, reason):
+        with self.lock:
+            if self.reason is None: self.reason = reason
+
+    def remaining(self): return max(0, self.deadline-self.clock())
+
+    def check(self):
+        with self.lock:
+            if self.remaining() <= 0: self.stop('time_limit')
+            if len(self.attempts) >= self.limits.requests: self.stop('request_limit')
+            if self.observed_tokens >= self.limits.tokens: self.stop('token_limit')
+            if self.reason: raise Stopped(self.reason)
+
+    def reserve(self, chunk, repair):
+        with self.lock:
+            self.check()
+            row = {'attempt': len(self.attempts)+1, 'chunk': chunk, 'repair': repair, 'status': 'running',
+                   'tokens': dict.fromkeys(TOKEN_KEYS), 'usage_complete': False, 'reported_usd': None,
+                   'estimated_usd': None, 'reported_credits': None, 'estimated_credits': None,
+                   'credit_unit_sha256': None, 'estimated_credit_unit_sha256': None, 'cli_call_id': None, 'cli_timing': None}
+            self.attempts.append(row)
+            return row
+
+    def finish(self, row, usage):
+        with self.lock:
+            row.update(usage)
+            counts = [row['tokens'][k] for k in ('input', 'output')]
+            self.observed_tokens += sum(n for n in counts if n is not None)
+            known = row['usage_complete'] and all(n is not None for n in counts)
+            if not known:
+                self.unknown_usage += 1
+                if self.limits.missing_usage == 'stop': self.stop('usage_unknown')
+            if self.observed_tokens >= self.limits.tokens: self.stop('token_limit')
+            if self.remaining() <= 0: self.stop('time_limit')
+
+    def summary(self):
+        with self.lock:
+            return {'requests_started': len(self.attempts), 'observed_tokens_lower_bound': self.observed_tokens,
+                    'unknown_usage_calls': self.unknown_usage, 'token_usage_verified': self.unknown_usage == 0,
+                    'token_hard_cap_guaranteed': False, 'stop_reason': self.reason,
+                    'elapsed_seconds': max(0, self.clock()-self.started)}
+
+
+def call_metrics(folder, agent, model):
+    """Numbers and verified identifiers only; no provider text reaches exports."""
+    clean: dict = {'tokens': dict.fromkeys(TOKEN_KEYS), 'usage_complete': False, 'reported_usd': None,
+             'estimated_usd': None, 'reported_credits': None, 'estimated_credits': None,
+                   'credit_unit_sha256': None, 'estimated_credit_unit_sha256': None, 'cli_call_id': None, 'cli_timing': None}
+    try:
+        usage, meta = _read(Path(folder)/'usage.json'), _read(Path(folder)/'run.json')
+        cid = usage.get('cli_call_id')
+        if (not isinstance(cid, str) or len(cid) != 32 or any(c not in '0123456789abcdef' for c in cid)
+                or meta.get('cli_call_id') != cid or meta.get('agent') != agent or meta.get('model') != model
+                or usage.get('agent') != agent or usage.get('requested_model') != model
+                or type(usage.get('schema_version')) is not int or usage['schema_version'] != 1
+                or not isinstance(usage.get('tokens'), dict)): return clean
+        clean.update(tokens={k: number(usage['tokens'].get(k), True) for k in TOKEN_KEYS},
+                     usage_complete=usage.get('complete') is True, cli_call_id=cid,
+                     reported_usd=amount(usage.get('reported_usd')), estimated_usd=amount(usage.get('estimated_usd')))
+        for provenance in ('reported', 'estimated'):
+            clean[provenance+'_credits'] = amount(usage.get(provenance+'_credits'))
+            key = 'credit_unit' if provenance == 'reported' else 'estimated_credit_unit'
+            unit = usage.get(key)
+            clean[key+'_sha256'] = sha(unit) if isinstance(unit, str) and unit else None
+        if any(clean['tokens'][k] is None for k in TOKEN_KEYS[:4]): clean['usage_complete'] = False
+        t = clean['tokens']
+        if ((all(t[k] is not None for k in ('input', 'cache_read', 'cache_write')) and t['cache_read']+t['cache_write'] > t['input'])
+                or (t['reasoning'] is not None and t['output'] is not None and t['reasoning'] > t['output'])):
+            clean['usage_complete'] = False
+    except (OSError, ValueError, TypeError, KeyError, AttributeError): pass
+    timing = read_cli_timing(folder, '.')
+    if timing.get('available') and timing['cli_call_id'] == clean['cli_call_id'] and timing['agent'] == agent and timing['model'] == model:
+        clean['cli_timing'] = {k: timing[k] for k in ('status', 'error_code', 'exit_code', 'offsets_seconds', 'settings')}
+    return clean
+
+
+class BudgetCaller:
+    def __init__(self, caller, budget, notify=None): self.caller, self.budget, self.notify = caller, budget, notify
+    def limited_timeout(self, agent, seconds):
+        return BudgetCaller(self.caller.limited_timeout(agent, seconds), self.budget, self.notify)
+    def complete(self, agent, model, prompt, folder):
+        folder = Path(folder); repair = folder.name == 'quote-repair'
+        chunk = int(folder.parent.name if repair else folder.name)
+        row = self.budget.reserve(chunk, repair)
+        previous = call_metrics(folder, agent, model)['cli_call_id']
+        started = self.budget.clock()
+        try:
+            # Re-check after reservation and immediately before dispatch, including timeout cloning.
+            remaining = self.budget.remaining()
+            if remaining <= 0: self.budget.stop('time_limit'); raise Stopped('time_limit')
+            caller = self.caller.limited_timeout(agent, remaining)
+            if self.budget.reason: raise Stopped(self.budget.reason)
+            output = caller.complete(agent, model, prompt, folder)
+            row['status'] = 'success'
+            return output
+        except BaseException:
+            row['status'] = 'error'
+            raise
+        finally:
+            metrics = call_metrics(folder, agent, model)
+            if previous is not None and metrics['cli_call_id'] == previous:
+                metrics = {'tokens': dict.fromkeys(TOKEN_KEYS), 'usage_complete': False,
+                           'reported_usd': None, 'estimated_usd': None, 'reported_credits': None, 'estimated_credits': None,
+                           'credit_unit_sha256': None, 'estimated_credit_unit_sha256': None, 'cli_call_id': None, 'cli_timing': None}
+            with self.budget.lock:
+                row['wrapper_seconds'] = max(0, self.budget.clock()-started)
+                self.budget.finish(row, metrics)
+            if self.notify is not None: self.notify()
+
+
+class FakeCLI(CLI):
+    """Labeled synthetic oracle, exercising normal validation and repair paths."""
+    def __init__(self, case, scenario):
+        super().__init__()
+        self.outputs = ideal_outputs(case); self.scenario = scenario
+        self.state = {'calls': 0}; self.case = case
+    def complete(self, agent, model, prompt, folder, *, phase=None):
+        folder = Path(folder); folder.mkdir(parents=True, exist_ok=True)
+        self.state['calls'] += 1
+        repair = folder.name == 'quote-repair'; index = int(folder.parent.name if repair else folder.name)
+        cid = uuid4().hex
+        usage = empty_usage(agent, model)
+        usage.update(cli_call_id=cid, tokens={'input': 100, 'output': 20, 'cache_read': 0, 'cache_write': 0, 'reasoning': 0},
+                     complete=True, status='success')
+        atomic_json(folder/'run.json', {'cli_call_id': cid, 'agent': agent, 'model': model, 'status': 'error' if self.scenario in ('failure', 'timeout') else 'success',
+            'phase': None, 'timeout_seconds': self.effective_timeout(agent)})
+        atomic_json(folder/'usage.json', usage)
+        if self.scenario == 'failure' or self.scenario == 'timeout':
+            usage['status'] = 'error'; atomic_json(folder/'usage.json', usage)
+            if self.scenario == 'timeout': raise TimeoutError('synthetic timeout')
+            raise ValueError('synthetic failure')
+        if repair:
+            result = _read(DATA_ROOT/'repair-cases'/'prefixed_quote.json')['expected_repair']
+        else:
+            result = copy.deepcopy(self.outputs[index-1]['output'])
+            if self.scenario == 'repair' and index == 1:
+                result = _read(DATA_ROOT/'repair-cases'/'prefixed_quote.json')['bad_output']
+        return result
+
+
+def distribution(values):
+    return {'count': len(values), 'min': min(values) if values else None, 'max': max(values) if values else None,
+            'mean': statistics.mean(values) if values else None, 'median': statistics.median(values) if values else None,
+            'population_stddev': statistics.pstdev(values) if values else None}
+
+
+def quality_report(case, root, run):
+    outputs = []
+    try:
+        value = _read(root/'runs'/run['id']/'extraction-checkpoint.json', CHECKPOINT_LIMIT)
+        contract = value['contract']; pin = run['ontology']
+        expected = {'document_id': run['document_id'], 'version': run['version'], 'text_sha256': digest(case['source'].encode()),
+                    'source_sha256': digest(case['source'].encode()), 'agent': run['agent'], 'model': run['model'],
+                    'dictionary_payload_sha256': digest(pin['payload']), 'prompt': digest(EXTRACTION_PROMPT.encode()),
+                    'repair_prompt': digest(QUOTE_REPAIR_PROMPT.encode()), 'chunk_size': 8000,
+                    'dictionary': {k: pin[k] for k in ('id', 'revision', 'sha256', 'extraction_contract')}}
+        if (value['run_id'] != run['id'] or value['schema_version'] != 1 or any(contract.get(k) != v for k, v in expected.items())
+                or not isinstance(value['outputs'], list) or not 1 <= len(value['outputs']) <= len(list(chunks(case['source'])))):
+            raise ValueError('checkpoint identity')
+        validator = ExtractionCheckpoint.__new__(ExtractionCheckpoint); validator.run = run
+        for index, output in enumerate(value['outputs'], 1):
+            validator.validated(output, list(chunks(case['source']))[index-1][1])
+            outputs.append({'index': index, 'output': output})
+    except (OSError, ValueError, KeyError, TypeError, AttributeError): outputs = []
+    result = evaluate_case(case, outputs)
+    # No untrusted triple/quote/provider text is exported, even inside nested evaluation rows.
+    result['false_positives'] = [{'triple_sha256': sha(r['triple']), 'forbidden': r['forbidden'], 'chunk': r['chunk'], 'row': r['row']} for r in result['false_positives']]
+    result['duplicates'] = [{k: r[k] for k in ('chunk', 'row', 'gold_id')} | {'triple_sha256': sha(r['triple'])} for r in result['duplicates']]
+    complete = run['status'] == 'success' and len(outputs) == len(list(chunks(case['source'])))
+    return {'validated_chunks': len(outputs), 'total_chunks': len(list(chunks(case['source']))),
+            'complete': complete, 'passed': complete and result['passed'], 'evaluation': result}
+
+
+class ReportWriter:
+    def __init__(self, folder):
+        self.folder = Path(folder)
+        if self.folder.is_symlink() or self.folder.exists(): raise ValueError('새 결과 폴더가 필요합니다.')
+        parent = self.folder.parent
+        if not parent.is_dir() or any(p.is_symlink() for p in (parent, *parent.parents)): raise ValueError('안전한 결과 부모 폴더가 필요합니다.')
+        self.folder.mkdir(mode=0o700); self.path = self.folder/'report.json'
+    def write(self, report):
+        raw = json.dumps(report, ensure_ascii=False, allow_nan=False).encode()
+        if len(raw) > MAX_REPORT_BYTES: raise ValueError('측정 결과 크기 제한')
+        if self.path.is_symlink() or self.path.with_suffix('.json.tmp').is_symlink(): raise ValueError('결과 파일 종류 오류')
+        atomic_json(self.path, report)
+
+
+class _Executor(ThreadPoolExecutor):
+    future: Any = None
+
+    def submit(self, fn, /, *args, **kwargs):
+        self.future = super().submit(fn, *args, **kwargs)
+        return self.future
+
+
+def measure(output, *, cases=('short', 'long'), scenario='normal', mode='fake', agent='agy', model='',
+            limits=None, timeout=30, caller_factory=None, clock=None):
+    """No config/user-root parameter: only versioned bundled synthetic documents."""
+    limits = limits or Limits()
+    if mode not in ('fake', 'cli') or agent not in CLI_PROVIDERS: raise ValueError('측정 실행 모드·에이전트 오류')
+    model = validate_model(model, agent)
+    if mode == 'cli' and not model: raise ValueError('실제 측정에는 명시적인 모델 ID가 필요합니다.')
+    if scenario not in ('normal', 'repair', 'failure', 'timeout') or (mode == 'cli' and scenario != 'normal'): raise ValueError('측정 시나리오 오류')
+    if not isinstance(cases, (tuple, list)) or not 1 <= len(cases) <= 5 or len(set(cases)) != len(cases): raise ValueError('측정 자료 목록 오류')
+    fixtures = [load_case(k) for k in cases]
+    if scenario == 'repair' and cases != ('short',) and cases != ['short']: raise ValueError('보정 예제는 short만 지원합니다.')
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 360: raise ValueError('호출 시간 한도 오류')
+    writer = ReportWriter(output); budget = Budget(limits, clock=clock)
+    try: package_version = version('verinote')
+    except PackageNotFoundError: package_version = None
+    report = {'schema_version': 1, 'mode': mode, 'synthetic_responses': mode == 'fake', 'status': 'running',
+              'stop_reason': None, 'conditions': {'agent': agent, 'requested_model': model, 'scenario': scenario,
+              'package_version': package_version, 'cli_version': None, 'cli_version_source': 'unknown_not_probed',
+              'effective_timeout_seconds': timeout, 'max_output_bytes': 1024*1024, 'chunk_size': 8000,
+              'input_reuse': 'fresh_store_per_repetition', 'limits': vars(limits),
+              'dataset_version': 1, 'evaluator_version': 1, 'extraction_contract': EXTRACTION_CONTRACT_VERSION,
+              'prompt_sha256': digest(EXTRACTION_PROMPT.encode()), 'repair_prompt_sha256': digest(QUOTE_REPAIR_PROMPT.encode()),
+              'human_review': load_manifest()['human_review'], 'cases': [{'id': c['case_id'], 'source_sha256': c['source_sha256'],
+              'case_sha256': sha(c), 'dictionary_sha256': sha(c['dictionary'])} for c in fixtures]},
+              'repetitions': [], 'attempts': budget.attempts, 'budget': budget.summary(), 'summary': None}
+    def save():
+        with budget.lock:
+            report['budget'] = budget.summary()
+            try: writer.write(report)
+            except (OSError, ValueError): budget.stop('report_write_failed'); raise Stopped('report_write_failed') from None
+    save()
+    try:
+        for repetition in range(1, limits.repetitions+1):
+            for case in fixtures:
+                budget.check()
+                row = {'repetition': repetition, 'case_id': case['case_id'], 'status': 'running', 'seconds': None,
+                       'quality': None, 'document_timing': None, 'attempt_start': len(budget.attempts)+1, 'attempt_count': 0}
+                report['repetitions'].append(row); save(); start = budget.clock()
+                with tempfile.TemporaryDirectory(prefix='verinote-benchmark-') as temp:
+                    root = Path(temp); store = Store(root/'state.sqlite3')
+                    service = None; run = None
+                    try:
+                        doc = store.register('Synthetic '+case['case_id'], 'synthetic.md', case['source'].encode(), case['source'])
+                        seed = store.create_run(doc['id'], agent, model, 'ontology', 1, 1)
+                        store.run_status(seed['id'], 'running'); store.finish_run(seed['id'], dictionary=case['dictionary'])
+                        item = next(i for i in store.document(doc['id'])['items'] if i['kind'] == 'ontology')
+                        store.review(item['id'], item['revision'], 'approved', 'Synthetic fixture', 'Versioned human-reviewed gold')
+                        base = caller_factory(case) if caller_factory else (FakeCLI(case, scenario) if mode == 'fake' else CLI(timeout=timeout))
+                        base.timeout = timeout
+                        service = Service(store, root, BudgetCaller(base, budget, save))
+                        service.pool.shutdown(wait=True)
+                        pool = _Executor(max_workers=1, thread_name_prefix='verinote-benchmark')
+                        service.pool = pool
+                        budget.check()
+                        run = service.start(doc['id'], agent, model, expected_version=1, expected_generation=1)
+                        # Poll normal Service state; cancellation closes admission before joining a worker.
+                        while not pool.future.done():
+                            if budget.remaining() <= 0: budget.stop('time_limit')
+                            time.sleep(.01)
+                        pool.future.result()
+                        service.pool.shutdown(wait=True)
+                    except BaseException:
+                        budget.stop('interrupted' if sys.exc_info()[0] is KeyboardInterrupt else 'runner_error')
+                        row['status'] = 'error'
+                        raise
+                    finally:
+                        if service is not None: service.pool.shutdown(wait=True)
+                        # Worker may validate a prefix while the main thread is interrupted.
+                        # Read only after its final records exist, before removing its root.
+                        if run is not None:
+                            try:
+                                run = store.run(run['id'])
+                                if run['status'] in ('success', 'error'): row['status'] = run['status']
+                                row['quality'] = quality_report(case, root, run)
+                                timing = read_extraction_timing(root, store, run['id'])
+                                row['document_timing'] = ({'available': True, 'summary': timing['summary'],
+                                    'status': timing['status'], 'error_code': timing['error_code']} if timing['available'] else {'available': False})
+                            except Exception:
+                                budget.stop('result_read_failed')
+                        if budget.remaining() <= 0: budget.stop('time_limit')
+                        row['seconds'] = max(0, budget.clock()-start)
+                        row['attempt_count'] = len(budget.attempts)-row['attempt_start']+1
+                save()
+    except Stopped: pass
+    except KeyboardInterrupt: budget.stop('interrupted')
+    except Exception: budget.stop('runner_error')
+    finally:
+        with budget.lock:
+            report['stop_reason'] = budget.reason
+            report['status'] = 'stopped' if budget.reason else 'completed'
+            report['budget'] = budget.summary()
+            report['summary'] = {'completed_case_runs': sum(r['status'] != 'running' for r in report['repetitions']),
+                'successful_repetitions': sum(r['status'] == 'success' for r in report['repetitions']),
+                'failed_repetitions': sum(r['status'] == 'error' for r in report['repetitions']),
+                'success_seconds': distribution([r['seconds'] for r in report['repetitions'] if r['status'] == 'success']),
+                'failure_seconds': distribution([r['seconds'] for r in report['repetitions'] if r['status'] == 'error']),
+                'per_case': [{'case_id': c['case_id'], 'success_seconds': distribution([r['seconds'] for r in report['repetitions'] if r['case_id'] == c['case_id'] and r['status'] == 'success']),
+                              'failure_seconds': distribution([r['seconds'] for r in report['repetitions'] if r['case_id'] == c['case_id'] and r['status'] == 'error'])} for c in fixtures],
+                'call_timing_available': sum(a['cli_timing'] is not None for a in budget.attempts),
+                'document_timing_available': sum(r['document_timing'] is not None and r['document_timing']['available'] for r in report['repetitions']),
+                'failed_attempts': sum(a['status'] == 'error' for a in budget.attempts),
+                'credits': [{'provenance': provenance, 'unit_sha256': unit,
+                             'value': sum(a[provenance+'_credits'] for a in budget.attempts if a[key] == unit and a[provenance+'_credits'] is not None),
+                             'known_calls': sum(a[key] == unit and a[provenance+'_credits'] is not None for a in budget.attempts)}
+                            for provenance, key in (('reported', 'credit_unit_sha256'), ('estimated', 'estimated_credit_unit_sha256'))
+                            for unit in sorted({a[key] for a in budget.attempts if a[key] is not None and a[provenance+'_credits'] is not None})],
+                'repair_attempts': sum(a['repair'] for a in budget.attempts),
+                'reported_usd': {'known_calls': sum(a['reported_usd'] is not None for a in budget.attempts),
+                                 'value': sum(a['reported_usd'] for a in budget.attempts if a['reported_usd'] is not None) if any(a['reported_usd'] is not None for a in budget.attempts) else None},
+                'estimated_usd': {'known_calls': sum(a['estimated_usd'] is not None for a in budget.attempts),
+                                 'value': sum(a['estimated_usd'] for a in budget.attempts if a['estimated_usd'] is not None) if any(a['estimated_usd'] is not None for a in budget.attempts) else None}}
+        save()
+    return report
