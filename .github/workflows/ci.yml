@@ -44,21 +44,43 @@ jobs:
 
   packaging-smoke:
     runs-on: ubuntu-26.04
+    strategy:
+      matrix:
+        backend: ["setuptools==77.0.3", "setuptools"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install pinned build tool
-        run: pip install build==1.6.1
-      - name: Build distributions
-        run: python -m build
-      - name: Smoke test installed wheel
+      - name: Install isolated build tools
         run: |
-          python -m venv .smoke
-          .smoke/bin/pip install dist/*.whl
-          .smoke/bin/verinote --help
-
-          cd "$(mktemp -d)"
-          "$GITHUB_WORKSPACE/.smoke/bin/python" -c "from verinote.extraction_evaluation import load_manifest, load_case, ideal_outputs, evaluate_case; cases=[load_case(r['id']) for r in load_manifest()['cases']]; assert len(cases)==5; assert all(evaluate_case(c, ideal_outputs(c))['passed'] for c in cases)"
-          "$GITHUB_WORKSPACE/.smoke/bin/python" -c "from pathlib import Path; from verinote.extraction_benchmark import measure, Limits; r=measure(Path.cwd()/'benchmark-smoke', cases=['short'], limits=Limits(repetitions=1)); assert r['mode']=='fake' and r['repetitions'][0]['quality']['passed']"
+          python -m venv .build-env
+          .build-env/bin/pip install build==1.6.1 wheel==0.48.0 "${{ matrix.backend }}"
+      - name: Build and verify both distribution paths
+        run: |
+          build_package() {
+            .build-env/bin/python -c "import setuptools; print('Build backend:', setuptools.__version__)"
+            .build-env/bin/python -m build --no-isolation "$@"
+          }
+          build_package --sdist --outdir dist/sdist > sdist.log 2>&1 || { cat sdist.log; exit 1; }
+          build_package --wheel --outdir dist/direct > direct.log 2>&1 || { cat direct.log; exit 1; }
+          cat sdist.log direct.log
+          .build-env/bin/python scripts/check_distribution.py --sdist dist/sdist/*.tar.gz --wheels dist/direct/*.whl --build-logs sdist.log direct.log
+          mkdir .from-sdist
+          .build-env/bin/python -c "import glob, tarfile; tarfile.open(glob.glob('dist/sdist/*.tar.gz')[0]).extractall('.from-sdist', filter='data')"
+          build_package .from-sdist/verinote-* --wheel --outdir "$GITHUB_WORKSPACE/dist/from-sdist" > from-sdist.log 2>&1 || { cat from-sdist.log; exit 1; }
+          cat from-sdist.log
+          .build-env/bin/python scripts/check_distribution.py --sdist dist/sdist/*.tar.gz --wheels dist/direct/*.whl dist/from-sdist/*.whl --build-logs sdist.log direct.log from-sdist.log
+      - name: Smoke test each installed wheel outside checkout
+        run: |
+          unset PYTHONPATH
+          for kind in direct from-sdist; do
+            python -m venv ".smoke-$kind"
+            ".smoke-$kind/bin/pip" install dist/"$kind"/*.whl
+            smoke="$GITHUB_WORKSPACE/.smoke-$kind/bin/python"
+            (cd "$(mktemp -d)" &&
+              "$GITHUB_WORKSPACE/.smoke-$kind/bin/verinote" --help &&
+              "$smoke" -c "import sys, verinote; from pathlib import Path; from importlib.resources import files; assert Path(verinote.__file__).resolve().is_relative_to(Path(sys.prefix).resolve()); assert '<html' in files('verinote').joinpath('web/index.html').read_text().lower()" &&
+              "$smoke" -c "from verinote.extraction_evaluation import load_manifest, load_case, ideal_outputs, evaluate_case; cases=[load_case(r['id']) for r in load_manifest()['cases']]; assert len(cases)==5; assert all(evaluate_case(c, ideal_outputs(c))['passed'] for c in cases)" &&
+              "$smoke" -c "from pathlib import Path; from verinote.extraction_benchmark import measure, Limits; r=measure(Path.cwd()/'benchmark-smoke', cases=['short'], limits=Limits(repetitions=1)); assert r['mode']=='fake' and r['repetitions'][0]['quality']['passed']")
+          done
