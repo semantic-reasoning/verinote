@@ -61,3 +61,4 @@ jobs:
 
           cd "$(mktemp -d)"
           "$GITHUB_WORKSPACE/.smoke/bin/python" -c "from verinote.extraction_evaluation import load_manifest, load_case, ideal_outputs, evaluate_case; cases=[load_case(r['id']) for r in load_manifest()['cases']]; assert len(cases)==5; assert all(evaluate_case(c, ideal_outputs(c))['passed'] for c in cases)"
+          "$GITHUB_WORKSPACE/.smoke/bin/python" -c "from pathlib import Path; from verinote.extraction_benchmark import measure, Limits; r=measure(Path.cwd()/'benchmark-smoke', cases=['short'], limits=Limits(repetitions=1)); assert r['mode']=='fake' and r['repetitions'][0]['quality']['passed']"

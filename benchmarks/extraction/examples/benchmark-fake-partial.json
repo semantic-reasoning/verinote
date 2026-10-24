@@ -1,0 +1,253 @@
+{
+  "schema_version": 1,
+  "mode": "fake",
+  "synthetic_responses": true,
+  "status": "stopped",
+  "stop_reason": "request_limit",
+  "conditions": {
+    "agent": "agy",
+    "requested_model": "",
+    "scenario": "normal",
+    "package_version": "0.1.0",
+    "cli_version": null,
+    "cli_version_source": "unknown_not_probed",
+    "effective_timeout_seconds": 30,
+    "max_output_bytes": 1048576,
+    "chunk_size": 8000,
+    "input_reuse": "fresh_store_per_repetition",
+    "limits": {
+      "requests": 1,
+      "repetitions": 1,
+      "seconds": 120,
+      "tokens": 100000,
+      "missing_usage": "stop"
+    },
+    "dataset_version": 1,
+    "evaluator_version": 1,
+    "extraction_contract": 1,
+    "prompt_sha256": "01f1cd0fdd8ee0d4063d7de559a6d74b2b79f27ad5b0313b2be36e365e815e65",
+    "repair_prompt_sha256": "59b4172e55f90dc32ee2f2bab351f80f6db446e79487ec74235bf7fcb3e9aea0",
+    "human_review": {
+      "status": "approved",
+      "evidence": "사용자 확인: “표를 검토했고 정답 기준이 맞습니다”. docs/extraction-evaluation-review.md 참조."
+    },
+    "cases": [
+      {
+        "id": "long",
+        "source_sha256": "cda309a9b6447b8d6722317a21f339327632139f185807f7ac6259abdaecc299",
+        "case_sha256": "66322380e9752c7230b8e6357e35aadc6a1996967bb90bc60c96e3f26a0c4d72",
+        "dictionary_sha256": "9f0d651c8bc9e204630edc3a5d7779d760dd411e89495c209cb25c0a6ad55d73"
+      }
+    ]
+  },
+  "repetitions": [
+    {
+      "repetition": 1,
+      "case_id": "long",
+      "status": "error",
+      "seconds": 0.021778583992272615,
+      "quality": {
+        "validated_chunks": 1,
+        "total_chunks": 2,
+        "complete": false,
+        "passed": false,
+        "evaluation": {
+          "schema_version": 1,
+          "evaluator_version": 1,
+          "dataset_version": 1,
+          "case_id": "long",
+          "source_sha256": "cda309a9b6447b8d6722317a21f339327632139f185807f7ac6259abdaecc299",
+          "case_sha256": "66322380e9752c7230b8e6357e35aadc6a1996967bb90bc60c96e3f26a0c4d72",
+          "gold_count": 2,
+          "prediction_count": 1,
+          "raw_prediction_count": 1,
+          "true_positive_count": 1,
+          "false_positive_count": 0,
+          "false_negative_count": 1,
+          "grounded_true_positive_count": 1,
+          "precision": {
+            "value": 1.0,
+            "numerator": 1,
+            "denominator": 1,
+            "reason": null
+          },
+          "recall": {
+            "value": 0.5,
+            "numerator": 1,
+            "denominator": 2,
+            "reason": null
+          },
+          "grounded_precision": {
+            "value": 1.0,
+            "numerator": 1,
+            "denominator": 1,
+            "reason": null
+          },
+          "grounded_recall": {
+            "value": 0.5,
+            "numerator": 1,
+            "denominator": 2,
+            "reason": null
+          },
+          "citation_accuracy": {
+            "value": 1.0,
+            "numerator": 1,
+            "denominator": 1,
+            "reason": null
+          },
+          "true_positives": [
+            "long-1"
+          ],
+          "false_negatives": [
+            "long-2"
+          ],
+          "false_positives": [],
+          "grounded_missing": [
+            "long-2"
+          ],
+          "invalid_facts": [],
+          "citation_errors": [],
+          "duplicates": [],
+          "quote_ambiguities": [],
+          "no_relation_case_pass": null,
+          "passed": false
+        }
+      },
+      "document_timing": {
+        "available": true,
+        "summary": {
+          "queue_seconds": 0.000890125,
+          "total_seconds": 0.00618525,
+          "worker_seconds": 0.0052951249999999995,
+          "restore_seconds": 0.0004803750000000001,
+          "publish_seconds": null,
+          "new_call_attempts": 2,
+          "chunks": [
+            {
+              "index": 1,
+              "offset": 0,
+              "length": 8000,
+              "reused": false,
+              "total_seconds": 0.0024458330000000006,
+              "request_seconds": 0.0009209999999999999,
+              "validation_with_bookkeeping_seconds": 0.0006315000000000001,
+              "repair_request_seconds": null,
+              "repair_validation_with_bookkeeping_seconds": null,
+              "repair_other_seconds": null,
+              "other_seconds": 0.0008933330000000005,
+              "new_call_attempts": 1
+            },
+            {
+              "index": 2,
+              "offset": 8000,
+              "length": 68,
+              "reused": false,
+              "total_seconds": 0.0007919579999999997,
+              "request_seconds": 1.2541999999999935e-05,
+              "validation_with_bookkeeping_seconds": null,
+              "repair_request_seconds": null,
+              "repair_validation_with_bookkeeping_seconds": null,
+              "repair_other_seconds": null,
+              "other_seconds": 0.0007794159999999998,
+              "new_call_attempts": 1
+            }
+          ],
+          "worker_other_seconds": 0.0015769589999999993
+        },
+        "status": "error",
+        "error_code": "error"
+      },
+      "attempt_start": 1,
+      "attempt_count": 1
+    }
+  ],
+  "attempts": [
+    {
+      "attempt": 1,
+      "chunk": 1,
+      "repair": false,
+      "status": "success",
+      "tokens": {
+        "input": 100,
+        "output": 20,
+        "cache_read": 0,
+        "cache_write": 0,
+        "reasoning": 0
+      },
+      "usage_complete": true,
+      "reported_usd": null,
+      "estimated_usd": null,
+      "reported_credits": null,
+      "estimated_credits": null,
+      "credit_unit_sha256": null,
+      "estimated_credit_unit_sha256": null,
+      "cli_call_id": "c73416acae0c49ebb356047617898a49",
+      "cli_timing": null,
+      "wrapper_seconds": 0.0006088339723646641
+    }
+  ],
+  "budget": {
+    "requests_started": 1,
+    "observed_tokens_lower_bound": 120,
+    "unknown_usage_calls": 0,
+    "token_usage_verified": true,
+    "token_hard_cap_guaranteed": false,
+    "stop_reason": "request_limit",
+    "elapsed_seconds": 0.023632916854694486
+  },
+  "summary": {
+    "completed_case_runs": 1,
+    "successful_repetitions": 0,
+    "failed_repetitions": 1,
+    "success_seconds": {
+      "count": 0,
+      "min": null,
+      "max": null,
+      "mean": null,
+      "median": null,
+      "population_stddev": null
+    },
+    "failure_seconds": {
+      "count": 1,
+      "min": 0.021778583992272615,
+      "max": 0.021778583992272615,
+      "mean": 0.021778583992272615,
+      "median": 0.021778583992272615,
+      "population_stddev": 0.0
+    },
+    "per_case": [
+      {
+        "case_id": "long",
+        "success_seconds": {
+          "count": 0,
+          "min": null,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "population_stddev": null
+        },
+        "failure_seconds": {
+          "count": 1,
+          "min": 0.021778583992272615,
+          "max": 0.021778583992272615,
+          "mean": 0.021778583992272615,
+          "median": 0.021778583992272615,
+          "population_stddev": 0.0
+        }
+      }
+    ],
+    "call_timing_available": 0,
+    "document_timing_available": 1,
+    "failed_attempts": 0,
+    "credits": [],
+    "repair_attempts": 0,
+    "reported_usd": {
+      "known_calls": 0,
+      "value": null
+    },
+    "estimated_usd": {
+      "known_calls": 0,
+      "value": null
+    }
+  }
+}
