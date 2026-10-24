@@ -227,6 +227,14 @@ class CLI:
                 raise
             record.adapter_finished(True)
             return parsed
+        from .cli_timing import start_timing
+        timing = start_timing(agent, model, phase, timeout, self.max_output)
+        try:
+            return self._complete_cli(agent, model, prompt, folder, phase, timing)
+        finally:
+            timing.finish(folder)
+
+    def _complete_cli(self, agent, model, prompt, folder, phase, timing):
         folder = Path(folder)
         folder.mkdir(parents=True, exist_ok=True)
         (folder / 'prompt.txt').write_text(prompt, encoding='utf-8')
@@ -235,8 +243,9 @@ class CLI:
         if agent == 'copilot':
             args[1:1] = ['--usage-output-file', str(usage_path.resolve())]
         usage = empty_usage(agent, model, self.rates().get(agent))
+        usage['cli_call_id'] = timing.call_id
         timeout = self.effective_timeout(agent, phase)
-        meta = {'agent': agent, 'model': model, 'phase': phase, 'prompt_sha256': digest(prompt.encode()), 'started_at': now(), 'status': 'running', 'timeout_seconds': timeout}
+        meta = {'cli_call_id': timing.call_id, 'agent': agent, 'model': model, 'phase': phase, 'prompt_sha256': digest(prompt.encode()), 'started_at': now(), 'status': 'running', 'timeout_seconds': timeout}
         def record_meta(status, **fields):
             meta.update(status=status, **fields)
             atomic_json(folder / 'run.json', meta)
@@ -261,10 +270,12 @@ class CLI:
         record_meta('running')
         proc = None
         captured = False
+        timing_error = 'executable_missing'
         try:
             args[0] = executable(agent)
             if not args[0]:
                 raise ValueError(f'{PROVIDERS[agent]} CLI가 설치되지 않았습니다.')
+            timing_error = 'preparation'
             work = folder / 'work'
             work.mkdir(exist_ok=True)
             with (folder / 'stdout.txt').open('wb') as out, (folder / 'stderr.txt').open('wb') as err, (folder / 'stdin.txt').open('wb+') as inp:
@@ -272,21 +283,33 @@ class CLI:
                 child_env = os.environ.copy()
                 child_env.pop('OPENROUTER_API_KEY', None)
                 process_options = {'creationflags': getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0)} if os.name == 'nt' else {'start_new_session': True}
+                timing_error = 'spawn'
+                timing.mark('spawn_requested')
                 proc = subprocess.Popen(args, stdin=inp, stdout=out, stderr=err, cwd=work, env=child_env, **process_options)
+                timing.mark('spawn_returned')
+                timing_error = 'process'
                 usage['status'] = 'running'
                 atomic_json(folder / 'usage.json', usage)
                 deadline = time.monotonic() + timeout
                 while proc.poll() is None:
+                    timing.observe_stdout(folder / 'stdout.txt')
                     if time.monotonic() > deadline:
                         raise TimeoutError(f'CLI 실행 시간 제한 초과 ({timeout}초)')
                     if out.tell() + err.tell() > self.max_output or (usage_path.exists() and usage_path.stat().st_size > MAX_METADATA):
+                        timing_error = 'output_limit'
                         raise ValueError('CLI 응답 크기 제한 초과')
                     time.sleep(.05)
+                timing.mark('exit_observed')
+                timing.observe_stdout(folder / 'stdout.txt')
                 if out.tell() + err.tell() > self.max_output or (usage_path.exists() and usage_path.stat().st_size > MAX_METADATA):
+                    timing_error = 'output_limit'
                     raise ValueError('CLI 응답 크기 제한 초과')
+            timing_error = 'interpretation'
+            timing.mark('interpret_started')
             response, provider_error = capture()
             captured = True
             if proc.returncode:
+                timing_error = 'exit_nonzero'
                 raise ValueError(f'CLI 종료 코드 {proc.returncode}. 실행 로그의 stderr를 확인하세요.')
             if provider_error or response is None:
                 raise ValueError(provider_error or 'CLI의 최종 응답을 읽지 못했습니다.')
@@ -294,12 +317,22 @@ class CLI:
                 result, normalizations = parse_response(agent, response)
             except json.JSONDecodeError as exc:
                 raise json.JSONDecodeError(f'{PROVIDERS[agent]} 최종 JSON 응답 형식 오류: {exc.msg}', exc.doc, exc.pos) from exc
+            timing.mark('interpret_completed')
+            timing.outcome('success', exit_code=proc.returncode)
             usage['status'] = 'success'
+            timing_error = 'recording'
             record_meta('success', returncode=proc.returncode, response_normalizations=normalizations)
             return result
         except Exception as exc:
+            timing.outcome('not_started' if proc is None else 'timeout' if isinstance(exc, TimeoutError) else 'error',
+                           'timeout' if isinstance(exc, TimeoutError) and proc is not None else timing_error)
             if proc and proc.poll() is None:
                 _kill_process_tree(proc)
+            if proc is not None:
+                timing.mark('exit_observed')
+                timing.observe_stdout(folder / 'stdout.txt')
+                timing.outcome('timeout' if isinstance(exc, TimeoutError) else 'error',
+                               'timeout' if isinstance(exc, TimeoutError) else timing_error, proc.returncode)
             if not captured:
                 try:
                     capture()

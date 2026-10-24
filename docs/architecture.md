@@ -565,3 +565,7 @@ unavailable. The existing explicit approval and strict final validation are kept
 ### 추론 예산 관측 진단
 
 기존 v2 run.json 요청값과 동일 call ID로 검증된 usage.json 토큰으로 읽기 시 진단을 계산한다. 로그·checkpoint·요청 body·실행 옵션 계약은 바꾸지 않는다. 출력과 추론이 유효하고 추론≤출력일 때만 비추론 차이와 예산 초과를 계산한다. v1은 비교 미적용, 누락/모순은 미확인이다. 요약 비추론 출력은 호출별 유효 차이를 합산하며 부분 추론 합계를 전체 출력에서 빼지 않는다. 성공 응답의 초과는 관측 경고이고 length 실패는 그대로 유지한다. 원시 reasoning/메시지/provider 오류를 공개하지 않는다. UI에는 동적 router와 숫자 예산→effort 변환 가능성을 안내하고 명시적 모델/지원 확인을 유도하되 조회·준수 보장을 주장하지 않는다.
+
+### CLI 단일 호출 시간
+
+CLI 경로는 stdout 파일과 기존 polling을 유지한 채 별도 monotonic_ns 관측을 기록한다. run/usage/timing의 cli_call_id가 같은 경우만 연결하며 토큰·비용은 기존 기록에서 한 번만 집계한다. 계측 실패는 결과·예외·timeout/kill 동작과 분리하고 HTTP 실행은 변경하지 않는다. 필드·오차·null·구간 중첩 계약은 [cli-timing.md](cli-timing.md)에 정의한다. 문서·청크·인용 수정 집계는 이 레이어 밖에서 수행한다.

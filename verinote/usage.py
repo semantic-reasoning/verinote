@@ -399,6 +399,10 @@ def job_calls(root, kind, owner):
                 if clean['status'] == 'running' and owner['status'] not in ('queued', 'running'):
                     clean['complete'] = False
                     clean['warnings'].append('HTTP 호출 기록이 종료 상태로 저장되지 않았습니다.')
+        if owner['agent'] != 'openrouter':
+            cli_id = usage.get('cli_call_id')
+            clean['cli_call_id'] = cli_id if (isinstance(cli_id, str) and re.fullmatch(r'[a-f0-9]{32}', cli_id)
+                                             and isinstance(metadata, dict) and metadata.get('cli_call_id') == cli_id) else None
         if owner['agent'] == 'openrouter':
             from .reasoning_diagnostics import reasoning_diagnostic
             clean['reasoning_diagnostic'] = reasoning_diagnostic(clean)
