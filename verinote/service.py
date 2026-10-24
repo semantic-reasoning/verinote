@@ -156,15 +156,23 @@ class Service:
         options, transport = self.register_transport(agent, model, stage=stage, max_tokens=max_tokens, answer_reserve_tokens=answer_reserve_tokens)
         if not self.slots.acquire(blocking=False):
             raise ValueError('작업 대기열이 가득 찼습니다.')
+        from .extraction_timing import create_timing
+        timing = create_timing(self.root, agent, stage)
         try:
             run = self.store.create_run(document_id, agent, model, stage, expected_version, expected_generation, **({'regenerate': regenerate} if regenerate is not None else {}), **({'execution_options': options} if options is not None else {}))
-            self.pool.submit(self.extract, copy.deepcopy(run), transport, self.relation_type_warning_threshold)
+            timing.bind(run)
+            self.pool.submit(self.extract, copy.deepcopy(run), transport, self.relation_type_warning_threshold, timing)
             return run
         except Exception:
             self.slots.release()
             raise
 
-    def extract(self, run, transport=None, relation_type_warning_threshold=None):
+    def extract(self, run, transport=None, relation_type_warning_threshold=None, timing=None):
+        from .extraction_timing import create_timing, error_kind
+        if timing is None:
+            timing = create_timing(self.root, run['agent'], run['stage'], submitted=False)
+            timing.bind(run)
+        timing.worker_start()
         report = None
         report_ok = True
         checkpoint = None
@@ -178,26 +186,31 @@ class Service:
                 dictionary, detail = generate_dictionary(self.store, cli, self.root, run, doc, relation_type_warning_threshold=self.relation_type_warning_threshold if relation_type_warning_threshold is None else relation_type_warning_threshold)
                 self.store.finish_run(run['id'], dictionary=dictionary, detail=detail)
                 return
+            timing.configure(doc)
             current_contract = run['ontology'].get('extraction_contract', 0) == EXTRACTION_CONTRACT_VERSION
-            if current_contract:
-                report = new_report(run, len(doc['text']))
-                checkpoint = ExtractionCheckpoint(self.store, self.root, run, doc)
-            claims: list[object] = []
-            facts: list[object] = []
-            repair_calls, repaired_quotes, repair_locations = 0, 0, []
-            if checkpoint is not None:
-                assert report is not None
-                for index, output in enumerate(checkpoint.outputs):
-                    offset, chunk = checkpoint.slices[index]
-                    claims.extend(output['claims'])
-                    facts.extend(output['facts'])
-                    report['chunks'].append(chunk_report(output, offset, len(chunk)))
-                if checkpoint.outputs:
-                    report_ok = write_report(self.root, report)
+            with timing.section('restore'):
+                if current_contract:
+                    report = new_report(run, len(doc['text']))
+                    checkpoint = ExtractionCheckpoint(self.store, self.root, run, doc)
+                claims: list[object] = []
+                facts: list[object] = []
+                repair_calls, repaired_quotes, repair_locations = 0, 0, []
+                if checkpoint is not None:
+                    assert report is not None
+                    for index, output in enumerate(checkpoint.outputs):
+                        offset, chunk = checkpoint.slices[index]
+                        claims.extend(output['claims'])
+                        facts.extend(output['facts'])
+                        report['chunks'].append(chunk_report(output, offset, len(chunk)))
+                    if checkpoint.outputs:
+                        report_ok = write_report(self.root, report)
+            timing.reuse(checkpoint.resumed_chunks if checkpoint is not None else 0,
+                         checkpoint.state['resumed_from'] if checkpoint is not None else None)
             for index, (offset, chunk) in enumerate(chunks(doc['text']), 1):
                 if checkpoint is not None and index <= checkpoint.resumed_chunks:
                     continue
                 active_chunk = index
+                timing.begin_chunk(index)
                 label = '승인 사전으로 추출'
                 self.store.run_status(run['id'], 'running', f'{label} · 청크 {index}/{(len(doc["text"]) + 7999) // 8000} · 청크 제한 {CHUNK_TIMEOUT}초'
                                       + (f' · {checkpoint.summary()}' if checkpoint is not None else ''))
@@ -213,10 +226,11 @@ class Service:
                     limited = cli.limited_timeout(run['agent'], remaining) if hasattr(cli, 'limited_timeout') else cli
                     if checkpoint is not None:
                         checkpoint.begin_call()
-                    return limited.complete(run['agent'], run['model'], prompt, target)
+                    with timing.call(index, target != folder):  # noqa: B023 (same-iteration call folder/index)
+                        return limited.complete(run['agent'], run['model'], prompt, target)
 
                 output = complete_chunk(prompt, folder)
-                with caller_validation(cli, folder, run['agent']) as validation:
+                with caller_validation(cli, folder, run['agent']) as validation, timing.section('validation_with_bookkeeping', index):
                     if time.monotonic() > deadline:
                         raise TimeoutError(f'청크 실행 시간 제한 초과 ({CHUNK_TIMEOUT}초)')
                     try:
@@ -230,23 +244,24 @@ class Service:
                                 raise ValueError(f'{locations}: 원문에 없는 인용입니다. 문서당 인용 보정 {MAX_QUOTE_REPAIR_CALLS}회 한도에 도달했습니다.')
                             self.store.run_status(run['id'], 'running', f'청크 {index} · {locations}: 원문 인용 보정 중 (추가 호출 {repair_calls + 1}/{MAX_QUOTE_REPAIR_CALLS})')
                             try:
-                                repair_prompt = bounded_prompt(QUOTE_REPAIR_PROMPT, payload | {
-                                    'issues': issues, 'approved_dictionary': run['ontology']})
-                                repair_calls += 1
-                                repair_folder = folder / 'quote-repair'
-                                response = complete_chunk(repair_prompt, repair_folder)
-                                with caller_validation(cli, repair_folder, run['agent']):
-                                    if time.monotonic() > deadline:
-                                        raise TimeoutError(f'청크 실행 시간 제한 초과 ({CHUNK_TIMEOUT}초)')
-                                    output, changes = apply_quote_repairs(output, chunk, issues, response)
-                                    # Recheck the whole response; a repair cannot bypass any vocabulary/shape gate.
-                                    if extraction_quote_issues(output, chunk, run['ontology']['payload'], require_coverage=current_contract):
-                                        raise ValueError('보정 후에도 원문과 일치하지 않는 인용이 있습니다.')
-                                    validate_page(output, chunk)
-                                    for fact in output['facts']:
-                                        dictionary_fact(fact, chunk, run['ontology']['payload'])
-                                    repair_folder.mkdir(parents=True, exist_ok=True)
-                                    (repair_folder / 'changes.json').write_text(json.dumps(changes, ensure_ascii=False, indent=2), encoding='utf-8')
+                                with timing.section('repair', index):
+                                    repair_prompt = bounded_prompt(QUOTE_REPAIR_PROMPT, payload | {
+                                        'issues': issues, 'approved_dictionary': run['ontology']})
+                                    repair_calls += 1
+                                    repair_folder = folder / 'quote-repair'
+                                    response = complete_chunk(repair_prompt, repair_folder)
+                                    with caller_validation(cli, repair_folder, run['agent']), timing.section('repair_validation_with_bookkeeping', index):
+                                        if time.monotonic() > deadline:
+                                            raise TimeoutError(f'청크 실행 시간 제한 초과 ({CHUNK_TIMEOUT}초)')
+                                        output, changes = apply_quote_repairs(output, chunk, issues, response)
+                                        # Recheck the whole response; a repair cannot bypass any vocabulary/shape gate.
+                                        if extraction_quote_issues(output, chunk, run['ontology']['payload'], require_coverage=current_contract):
+                                            raise ValueError('보정 후에도 원문과 일치하지 않는 인용이 있습니다.')
+                                        validate_page(output, chunk)
+                                        for fact in output['facts']:
+                                            dictionary_fact(fact, chunk, run['ontology']['payload'])
+                                        repair_folder.mkdir(parents=True, exist_ok=True)
+                                        (repair_folder / 'changes.json').write_text(json.dumps(changes, ensure_ascii=False, indent=2), encoding='utf-8')
                             except Exception as exc:
                                 raise ValueError(f'{locations}: 인용 보정 실패 (청크당 1회). {exc}') from exc
                             repaired_quotes += len(changes)
@@ -263,6 +278,7 @@ class Service:
                         report_ok = write_report(self.root, report)
                     if checkpoint is not None:
                         checkpoint.accept(output, chunk)
+                timing.end_chunk()
             active_chunk = None
             unique = {json.dumps(f, sort_keys=True, ensure_ascii=False): f for f in facts}
             detail = (f'원문 인용 {repaired_quotes}개 보정 · 추가 호출 {repair_calls}회 ({"; ".join(repair_locations)}). 의미가 맞는지 원문과 대조한 뒤 승인하세요.'
@@ -274,8 +290,12 @@ class Service:
             if checkpoint is not None:
                 checkpoint.finish('complete')
                 detail += ' ' + checkpoint.summary()
-            self.store.finish_run(run['id'], {'title': doc['title'], 'claims': claims}, list(unique.values()), detail=detail[:2000])
+            with timing.section('publish'):
+                self.store.finish_run(run['id'], {'title': doc['title'], 'claims': claims}, list(unique.values()), detail=detail[:2000])
+            timing.outcome('success')
         except Exception as exc:
+            timing.end_chunk(error_kind(exc))
+            timing.outcome('error', error_kind(exc))
             if report is not None:
                 write_report(self.root, report)
             detail = str(exc)
@@ -287,6 +307,7 @@ class Service:
             self.store.run_status(run['id'], 'error', detail[:2000])
         finally:
             self.slots.release()
+            timing.finish()
 
     def query(self, request):
         if not isinstance(request, dict) or set(request) - {'snapshot', 'action', 'subject', 'predicate', 'target'}:

@@ -235,3 +235,5 @@ OpenRouter 사용량은 출력에 포함된 추론 토큰과 보고된 비추론
 `openrouter/auto`·`openrouter/free`는 실제 모델이 바뀔 수 있습니다. 반복적인 예산 초과나 length 종료가 있으면 명시적인 모델 ID를 선택하고 숫자 추론 예산 직접 지원 여부를 확인하세요. 이 앱은 모델 지원 여부를 조회하거나 모델을 자동 변경하지 않습니다. OpenRouter는 일부 모델에서 `reasoning.max_tokens`를 추론 강도로 변환할 수 있습니다. `provider.require_parameters=true`는 지원 제공자 필터이며 숫자 준수나 답변 여유 보장이 아닙니다. 자동 유료 재시도는 하지 않습니다. [공식 추론 문서](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens), [제공자 선택 문서](https://openrouter.ai/docs/guides/routing/provider-selection).
 
 CLI 호출에는 선택적 `cli-timing.json` 진단 기록을 남깁니다. 측정 저장 실패는 추출 결과를 바꾸지 않으며 첫 stdout은 모델 추론 시작을 뜻하지 않습니다. [형식·읽기 함수·시간의 포함 관계](docs/cli-timing.md)를 참고하세요.
+
+승인 사전으로 CLI 추출할 때는 별도 `extraction-timing.json`에 대기·복구 검증·청크 호출/검증/인용 보정·후보 등록 구간을 기록합니다. 재사용 청크의 과거 시간·비용은 새 실행에 합산하지 않습니다. [문서 시간 형식과 읽기 함수](docs/extraction-timing.md)를 참고하세요.
