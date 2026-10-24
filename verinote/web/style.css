@@ -11,3 +11,4 @@
 
 .provider-name{cursor:pointer}.provider-name strong,.provider-name span{display:block}.provider-name span{margin-top:7px}.model-fields{display:grid;grid-template-columns:1fr 1fr;gap:10px;min-width:0}.model-fields input,.model-fields select{min-width:0}.catalog-status{grid-column:1/-1;margin:0}.model-fields>label{min-width:0}@media(max-width:1000px){.model-fields{grid-template-columns:1fr}}@media(max-width:620px){.provider-row>.model-fields{grid-column:2}}
 .model-fields>label:only-child{grid-column:1/-1}
+.item.answer-unknown{background:#fff8e8;border-color:#d9b970;color:#624b1e}.answer-unknown>.badge{background:#f3dfab;color:#624b1e}
