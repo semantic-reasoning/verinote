@@ -233,3 +233,5 @@ python -m scripts.openrouter_smoke --allow-network --config ~/.config/verinote/c
 OpenRouter 사용량은 출력에 포함된 추론 토큰과 보고된 비추론 출력(출력−추론)을 구분합니다. 숫자가 모두 유효한 호출별 차이만 합산하고 확인된 호출 수를 표시합니다. 실패한 호출도 확인된 토큰·비용을 보존합니다. 추론 요청 예산보다 실제 보고량이 크면 실행 화면에 초과 관측을 표시하며, 보고가 없거나 모순되면 준수 여부 미확인으로 표시합니다. 비추론 출력은 완성된 답변 길이나 실제 예약량이 아닙니다.
 
 `openrouter/auto`·`openrouter/free`는 실제 모델이 바뀔 수 있습니다. 반복적인 예산 초과나 length 종료가 있으면 명시적인 모델 ID를 선택하고 숫자 추론 예산 직접 지원 여부를 확인하세요. 이 앱은 모델 지원 여부를 조회하거나 모델을 자동 변경하지 않습니다. OpenRouter는 일부 모델에서 `reasoning.max_tokens`를 추론 강도로 변환할 수 있습니다. `provider.require_parameters=true`는 지원 제공자 필터이며 숫자 준수나 답변 여유 보장이 아닙니다. 자동 유료 재시도는 하지 않습니다. [공식 추론 문서](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens), [제공자 선택 문서](https://openrouter.ai/docs/guides/routing/provider-selection).
+
+CLI 호출에는 선택적 `cli-timing.json` 진단 기록을 남깁니다. 측정 저장 실패는 추출 결과를 바꾸지 않으며 첫 stdout은 모델 추론 시작을 뜻하지 않습니다. [형식·읽기 함수·시간의 포함 관계](docs/cli-timing.md)를 참고하세요.
