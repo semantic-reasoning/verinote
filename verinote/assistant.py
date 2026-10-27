@@ -21,6 +21,7 @@ PROMPT = '''한국어로 질문에 답하는 근거 기반 위키 도우미입�
 총 6회 중 탐색은 최대 5회이며 마지막 회차는 답변 전용입니다. 입력의 answer_only=true이면 도구 요청 없이 반드시 answer만 출력하세요. 이미 받은 근거로 답하고 부족하거나 읽지 못한 부분은 unknowns에 한정해서 적으세요. 답변 전용 회차에는 추가 조회를 실행할 수 없습니다. exploration_rounds_remaining은 현재 회차를 포함한 남은 탐색 회차, tool_slots_remaining은 남은 도구 요청 수입니다. 남은 탐색이 1회이면 이번 조회 결과로 다음 회차에 답해야 합니다.
 첫 탐색에서 독립적인 query_graph와 승인 지식 검색을 함께 요청하세요. 검색어는 카탈로그의 문서명·개체명·짧은 핵심어를 우선 사용하세요. 빈 결과에 긴 질문 문장을 조금씩 바꿔 반복하지 말고 문서 ID와 핵심어로 좁히세요. 이미 읽은 승인 근거로 답할 수 있으면 불필요한 이어 읽기를 멈추세요.
 도구(회당 1~3개):
+모든 도구 인자는 반드시 arguments 객체 안에 넣으세요. 예: {"tools":[{"name":"search_knowledge","arguments":{"query":"핵심어"}},{"name":"read_wiki","arguments":{"page_id":"검색된 페이지 ID"}}]}. 읽기 요청에는 실제로 받은 ID를 사용하세요.
 query_graph: action direct/downstream/upstream/path, subject/predicate/target 문자열. direct는 직접 관계, downstream은 subject에서 도달, upstream은 subject로 도달하는 출발점, path는 subject에서 target. 전이는 predicate 필수. direct의 target은 사용하지 말 것.
 search_knowledge: query 문자열, document_id 선택, offset(결과 인덱스, 기본0). 승인 위키 제목·주장과 승인 사전 개체·별칭·관계 정의를 검색하고 문서 메타데이터도 찾습니다. 20개씩 next_offset으로 이어 검색합니다. lookup_id(K1 등)는 fallback 검증용이며 인용 불가. knowledge_version이 null이면 옛 스냅샷이며 wiki_status가 문서별 승인·일치 위키 수를 알려줍니다. ontology 결과는 어휘/스키마 안내일 뿐 관계 사실이 아닙니다.
 전체 검색어로 승인 지식을 찾지 못하면 질문 안의 문서명·승인 개체·별칭으로 후보를 찾습니다. match_mode=catalog와 matched_terms는 탐색 안내이며 근거가 아닙니다. 위키 후보가 먼저 나옵니다. anchors_truncated=true이면 검색 범위를 문서 ID·짧은 이름으로 좁히세요. 이때 next_offset이 없어도 완전한 검색이 아닙니다.
@@ -238,13 +239,19 @@ class Assistant:
         return {'lookup_id': lookup_id, 'reason': reason, 'detail': detail, 'wiki_evidence_ids': ids}
 
     def execute(self, call):
-        if not isinstance(call, dict) or set(call) != {'name', 'arguments'} or not isinstance(call['arguments'], dict):
-            raise ValueError('도구 요청 형식 오류')
-        name, args = call['name'], dict(call['arguments'])
         allowed = {'query_graph': {'action', 'subject', 'predicate', 'target'},
                    'search_knowledge': {'query', 'document_id', 'offset'}, 'read_wiki': {'page_id', 'offset'},
                    'search_documents': {'query', 'mode', 'document_id', 'fallback'},
                    'read_document': {'document_id', 'offset', 'fallback'}}
+        # Some models flatten arguments despite the prompt. Accept only the
+        # unambiguous allowlisted form, then use the same semantic validation.
+        if isinstance(call, dict) and 'arguments' not in call:
+            name = call.get('name')
+            if isinstance(name, str) and name in allowed and not (set(call) - {'name'} - allowed[name]):
+                call = {'name': name, 'arguments': {k: v for k, v in call.items() if k != 'name'}}
+        if not isinstance(call, dict) or set(call) != {'name', 'arguments'} or not isinstance(call['arguments'], dict):
+            raise ValueError('도구 요청 형식 오류')
+        name, args = call['name'], dict(call['arguments'])
         entry = {'name': name, 'arguments': args, 'status': 'running'}
         self.trace.append(entry)
         self.progress(self.trace, self.evidence)
