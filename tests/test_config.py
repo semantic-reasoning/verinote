@@ -287,6 +287,55 @@ class ConfigStartup(unittest.TestCase):
         self.assertEqual(credentials.openrouter_key(), SENTINEL)
         self.assertNotIn(SENTINEL, repr(credentials))
 
+    def test_macos_discovers_xdg_config_at_startup(self):
+        home = Path(self.temp.name)
+        with patch('verinote.config.Path.home', return_value=home), patch('verinote.config.sys.platform', 'darwin'):
+            for xdg in ('', 'relative', str(home / 'custom')):
+                with self.subTest(xdg=xdg), patch.dict(os.environ, {'XDG_CONFIG_HOME': xdg}):
+                    base = Path(xdg) if os.path.isabs(xdg) else home / '.config'
+                    selected = base / 'verinote/config.toml'
+                    selected.parent.mkdir(parents=True, exist_ok=True)
+                    selected.write_text(f'[openrouter]\napi_key = "{SENTINEL}"\n')
+                    selected.chmod(0o600)
+                    credentials = self.start_fake_server([])
+                    self.assertEqual(credentials.openrouter_key(), SENTINEL)
+                    with self.assertRaises(ConfigError):
+                        create_config()
+                    selected.unlink()
+
+    def test_macos_config_precedence_and_invalid_files_do_not_fall_back(self):
+        home = Path(self.temp.name)
+        native = home / 'Library/Application Support/verinote/config.toml'
+        fallback = home / '.config/verinote/config.toml'
+        with patch('verinote.config.Path.home', return_value=home), patch('verinote.config.sys.platform', 'darwin'), patch.dict(os.environ, {'XDG_CONFIG_HOME': ''}):
+            self.assertEqual(create_config(), native)
+            create_config(fallback)
+            fallback.write_text(f'[openrouter]\napi_key = "{SENTINEL}"\n')
+            self.assertFalse(load_config().public_status()['openrouter']['configured'])
+            self.assertEqual(load_config(fallback).openrouter_key(), SENTINEL)
+            with self.assertRaises(ConfigError):
+                load_config(self.path)
+            for invalid in ('bad toml', '[openrouter]\napi_key = 42'):
+                native.write_text(invalid)
+                with self.assertRaises(ConfigError):
+                    load_config()
+            native.write_text(config.TEMPLATE)
+            native.chmod(0o644)
+            with self.assertRaises(ConfigError):
+                load_config()
+            native.unlink()
+            native.symlink_to(home / 'missing')
+            with self.assertRaises(ConfigError):
+                load_config()
+            native.unlink()
+            fallback.chmod(0o644)
+            with self.assertRaises(ConfigError):
+                load_config()
+            fallback.unlink()
+            fallback.symlink_to(home / 'missing')
+            with self.assertRaises(ConfigError):
+                load_config()
+
     def test_server_constructor_preserves_old_callers_and_explicit_injection(self):
         with patch('verinote.server.ThreadingHTTPServer.__init__'):
             legacy = Server(('127.0.0.1', 0), Mock(), Mock())
