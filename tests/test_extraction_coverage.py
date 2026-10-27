@@ -19,6 +19,7 @@ from test_workflow import (
 from verinote.extraction_coverage import (
     MAX_REPORT_BYTES,
     read_report,
+    repair_missing_indices,
     validate_accounting,
     write_report,
 )
@@ -30,10 +31,51 @@ from verinote.ontology import (
     extraction_quote_issues,
 )
 from verinote.service import Service
-from verinote.store import Conflict, canonical
+from verinote.store import Conflict, canonical, digest
 
 
 class Accounting(unittest.TestCase):
+    def test_missing_subset_indices_only_append_and_preserve_everything_else(self):
+        for supplied in ([], [2], [2, 0], [2, 0, 1]):
+            value = extraction_response([FACTS[0]] * 3)
+            value['coverage'][0]['fact_indices'] = supplied
+            before = copy.deepcopy(value)
+            result, changes = repair_missing_indices(value, DICTIONARY)
+            expected = supplied + [i for i in range(3) if i not in supplied]
+            self.assertEqual(result['coverage'][0]['fact_indices'], expected)
+            self.assertEqual(value, before)
+            restored = copy.deepcopy(result); restored['coverage'][0]['fact_indices'] = supplied
+            self.assertEqual(restored, before)
+            self.assertEqual(len(changes), int(len(supplied) < 3))
+            self.assertEqual(repair_missing_indices(result, DICTIONARY), (result, []))
+            validate_accounting(result, DICTIONARY)
+
+    def test_local_repair_does_not_hide_conflicts_or_other_invalid_fields(self):
+        mutations = [
+            lambda v: v['coverage'][0].update(fact_indices=[0, 0]),
+            lambda v: v['coverage'][0].update(fact_indices=[True]),
+            lambda v: v['coverage'][0].update(fact_indices=[-1]),
+            lambda v: v['coverage'][0].update(fact_indices=[2]),
+            lambda v: v['coverage'][0].update(status='no_evidence'),
+            lambda v: v['coverage'][0].update(predicate='unknown'),
+            lambda v: v['coverage'][0].update(claim_indices=[True]),
+            lambda v: v['coverage'][0].update(reason=''),
+            lambda v: v['coverage'].append(copy.deepcopy(v['coverage'][0])),
+            lambda v: v.update(dictionary_gaps=[{'code':'unknown','detail':'bad','claim_indices':[0]}]),
+            lambda v: v.update(facts=[]),
+        ]
+        for mutate in mutations:
+            value = extraction_response(); value['coverage'][0]['fact_indices'] = []
+            mutate(value); before = copy.deepcopy(value)
+            with self.subTest(mutate=mutate), self.assertRaises(ValueError):
+                repair_missing_indices(value, DICTIONARY)
+            self.assertEqual(value, before)
+        dictionary = DICTIONARY | {'relations': [*DICTIONARY['relations'], DICTIONARY['relations'][0] | {'id':'other'}]}
+        value = extraction_response(dictionary=dictionary)
+        value['coverage'][0]['fact_indices'] = []
+        value['coverage'][1].update(status='extracted', fact_indices=[0])
+        with self.assertRaises(ValueError): repair_missing_indices(value, dictionary)
+
     def test_zero_facts_zero_predicates_and_all_statuses(self):
         for dictionary in (DICTIONARY, DICTIONARY | {'relations': []}):
             value = extraction_response([], dictionary)
@@ -107,6 +149,42 @@ class CoverageWorkflow(unittest.TestCase):
 
     def report(self, run):
         return read_report(self.root, self.store, run['id'])
+
+    def test_local_repair_audits_original_response_without_an_extra_call(self):
+        value = extraction_response(); value['coverage'][0]['fact_indices'] = []
+        original = copy.deepcopy(value)
+        run, doc, calls = self.execute([value])
+        self.assertEqual(run['status'], 'success', run['detail']); self.assertEqual(len(calls), 1)
+        self.assertIn('인덱스 1건 로컬 보정', run['detail'])
+        audit = json.loads((self.root/'runs'/run['id']/'1/coverage-repair.json').read_text())
+        self.assertEqual((audit['identity']['run_id'], audit['chunk'], audit['offset']), (run['id'], 1, 0))
+        self.assertEqual(audit['source_sha256'], doc['sha256'])
+        self.assertEqual(audit['identity']['sha256'], run['ontology']['sha256'])
+        self.assertEqual(audit['before_sha256'], digest(original))
+        self.assertEqual(audit['after_sha256'], digest(extraction_response()))
+        self.assertEqual(audit['changes'][0]['before'], [])
+        self.assertEqual(audit['changes'][0]['after'], [0, 1])
+        self.assertEqual(self.report(run)['chunks'][0]['coverage'][0]['fact_indices'], [0, 1])
+        self.assertTrue(all(i['status']=='pending' for i in doc['items'] if i['kind']!='ontology'))
+        self.assertEqual(self.store.snapshot()['facts'], [])
+
+    def test_accounting_repair_keeps_quote_repair_and_fails_before_it_if_audit_cannot_save(self):
+        value = extraction_response(); value['coverage'][0]['fact_indices'] = []
+        value['facts'][0]['quote'] = 'absent'
+        repair = {'repairs':[{'path':'facts.0.quote','quote':FACTS[0]['quote']}]}
+        run, _, calls = self.execute([value, repair])
+        self.assertEqual(run['status'], 'success', run['detail']); self.assertEqual(len(calls), 2)
+        self.assertIn('인덱스 1건 로컬 보정', run['detail']); self.assertIn('원문 인용 1개 보정', run['detail'])
+        from verinote.usage import atomic_json
+        def write(path, data):
+            if Path(path).name == 'coverage-repair.json': raise OSError('disk unavailable')
+            atomic_json(path, data)
+        with patch('verinote.extraction_coverage.atomic_json', side_effect=write):
+            run, doc, calls = self.execute([value, repair])
+        self.assertEqual(run['status'], 'error'); self.assertIn('인덱스 보정 기록 저장 실패', run['detail'])
+        self.assertEqual(len(calls), 1); self.assertEqual([i['kind'] for i in doc['items']], ['ontology'])
+        self.assertFalse((self.root/'runs'/run['id']/'extraction-checkpoint.json').exists())
+        self.assertNotIn('1건 로컬 보정', run['detail'])
 
     def test_same_call_technical_enumeration_aliases_and_compact_pin(self):
         source = '제안된 설계에서 제어기 C는 센서 A와 센서 B로 구성된다. C는 연산기를 사용한다. 장애 시 센서 A를 차단할 수 있다. 센서 B는 차단하지 않는다.'

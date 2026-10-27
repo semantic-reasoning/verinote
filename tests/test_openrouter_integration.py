@@ -137,6 +137,26 @@ class Integration(unittest.TestCase):
             self.assertEqual(CLI().complete('agy','','synthetic',self.root/'cli-audit'),{'key_present':False})
         self.audit()
 
+    def test_coverage_reference_repair_preserves_raw_response_and_call_verdict(self):
+        doc = self.upload()
+        value = extraction_response(); value['coverage'][0]['fact_indices'] = []
+        fixture = Fixture([dictionary, value])
+        with patch('verinote.openrouter._HTTPS', side_effect=fixture):
+            self.finish(self.start(doc)); self.approve(doc)
+            run = self.finish(self.start(doc, 'extract'))
+        self.assertEqual(run['status'], 'success', run['detail']); self.assertEqual(len(fixture.requests), 2)
+        folder = self.root/'runs'/run['id']/'1'
+        raw = json.loads((folder/'response.json').read_text())
+        original = json.loads(raw['choices'][0]['message']['content'])
+        self.assertEqual(original['coverage'][0]['fact_indices'], [])
+        audit = json.loads((folder/'coverage-repair.json').read_text())
+        meta = json.loads((folder/'run.json').read_text())
+        self.assertEqual(audit['provider_call_id'], meta['provider_call_id'])
+        self.assertEqual(meta['caller_validation_status'], 'failed')
+        self.assertEqual(run['coverage']['chunks'][0]['coverage'][0]['fact_indices'], [0, 1])
+        self.assertEqual(self.store.snapshot()['facts'], [])
+        self.audit()
+
     def test_api_resume_pinning_and_mismatch_do_not_rebill_reuse(self):
         doc=self.upload(SOURCE.ljust(4000)+'B'*30)
         fixture=Fixture([dictionary, TimeoutError('synthetic timeout'), {'entities':[],'aliases':[],'relations':[]}])

@@ -60,6 +60,39 @@ class ExtractionRecovery(unittest.TestCase):
     def checkpoint(self, run):
         return self.root / 'runs' / run['id'] / 'extraction-checkpoint.json'
 
+    def test_five_chunk_prefix_and_locally_corrected_sixth_chunk_resume_without_recounting(self):
+        source = SOURCE.ljust(8000)*6 + SOURCE.ljust(3947)
+        doc = self.store.register('retry', 'retry.md', source.encode(), source)
+        approved_dictionary(self.store, doc['id'])
+        first, _ = self.execute(doc, [extraction_response()]*5 + [TimeoutError('stop')])
+        self.assertEqual(len(json.loads(self.checkpoint(first).read_text())['outputs']), 5)
+        value = extraction_response(); value['coverage'][0]['fact_indices'] = []
+        second, calls = self.execute(doc, [value, TimeoutError('last chunk failed')])
+        self.assertEqual([c['payload']['offset'] for c in calls], [40000, 48000])
+        self.assertIn('5청크 재사용', second['detail']); self.assertIn('인덱스 1건 로컬 보정', second['detail'])
+        saved = json.loads(self.checkpoint(second).read_text())
+        self.assertEqual(len(saved['outputs']), 6)
+        self.assertEqual(saved['outputs'][5]['coverage'][0]['fact_indices'], [0, 1])
+        audit = self.root/'runs'/second['id']/'6/coverage-repair.json'
+        before = audit.read_bytes()
+        final, calls = self.execute(doc, [extraction_response()])
+        self.assertEqual(final['status'], 'success', final['detail'])
+        self.assertEqual([c['payload']['offset'] for c in calls], [48000])
+        self.assertIn('6청크 재사용', final['detail']); self.assertNotIn('로컬 보정', final['detail'])
+        self.assertEqual(audit.read_bytes(), before)
+        self.assertEqual(self.store.snapshot()['facts'], [])
+
+    def test_missing_indices_in_persisted_checkpoint_are_not_repaired(self):
+        doc = self.document()
+        first, _ = self.execute(doc, [extraction_response(), TimeoutError('stop')])
+        saved = json.loads(self.checkpoint(first).read_text())
+        saved['outputs'][0]['coverage'][0]['fact_indices'] = []
+        self.checkpoint(first).write_text(json.dumps(saved))
+        final, calls = self.execute(doc, [extraction_response(), extraction_response()])
+        self.assertEqual(final['status'], 'success', final['detail'])
+        self.assertEqual([c['payload']['offset'] for c in calls], [0, 8000])
+        self.assertFalse((self.root/'runs'/final['id']/'1/coverage-repair.json').exists())
+
     def test_repeated_failures_resume_failed_chunk_and_publish_once(self):
         doc = self.document(3)
         first, calls = self.execute(doc, [extraction_response(), TimeoutError('timeout')])
