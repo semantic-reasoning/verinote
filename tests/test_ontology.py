@@ -128,6 +128,22 @@ class DictionaryContract(unittest.TestCase):
         self.assertLess(len(json.dumps(dictionary_context(valid),ensure_ascii=False,separators=(',',':')).encode()),
                         MAX_DICTIONARY_CONTEXT_BYTES)
 
+    def test_accumulated_counts_preserve_entities_aliases_and_relations(self):
+        source = ' '.join(f'E{i}' for i in range(201)) + ' ' + ' '.join(f'E0 A{i}' for i in range(401))
+        rows = {
+            'entities': [{'id': f'E{i}', 'name': f'E{i}', 'type': 'T', 'quote': f'E{i}'} for i in range(201)],
+            'aliases': [{'alias': f'A{i}', 'entity': 'E0', 'quote': f'E0 A{i}'} for i in range(401)],
+            'relations': [{'id': f'r_{i}', 'description': 'Direct relation', 'subject_types': ['T'],
+                           'object_types': ['T'], 'quote': 'E0'} for i in range(41)]}
+        limits = {'entities': 200, 'aliases': 400, 'relations': 40}
+        previous = {kind: values[:limits[kind]] for kind, values in rows.items()}
+        delta = {kind: values[limits[kind]:] for kind, values in rows.items()}
+        self.assertEqual(merge_dictionary(previous, delta, source, source), rows)
+        for kind in limits:
+            oversized = dict(delta, **{kind: rows[kind]})
+            with self.subTest(kind=kind), self.assertRaisesRegex(ValueError, '구간 응답.*최대'):
+                merge_dictionary(previous, oversized, source, source)
+
 
 class OntologyWorkflow(unittest.TestCase):
     setUp=workflow.Workflow.setUp
@@ -487,5 +503,5 @@ class DictionaryMergeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'중복'):merge_dictionary({'entities':[],'aliases':[],'relations':[]},bad,self.q1,self.q1)
         source=' '.join(f'개체{i}' for i in range(201))
         entities=[{'id':f'개체{i}','name':f'개체{i}','type':'T','quote':f'개체{i}'} for i in range(201)]
-        with self.assertRaisesRegex(ValueError,'최대'):
-            merge_dictionary({'entities':entities[:200],'aliases':[],'relations':[]},{'entities':entities[200:],'aliases':[],'relations':[]},source,source)
+        merged=merge_dictionary({'entities':entities[:200],'aliases':[],'relations':[]},{'entities':entities[200:],'aliases':[],'relations':[]},source,source)
+        self.assertEqual(merged['entities'],entities)

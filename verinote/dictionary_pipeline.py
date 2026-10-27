@@ -10,7 +10,11 @@ from .dictionary_exclusions import (
     validate_report,
     write_report,
 )
-from .dictionary_filter import FILTER_POLICY, merge_generated_dictionary
+from .dictionary_filter import (
+    FILTER_POLICY,
+    SUPPORTED_FILTER_POLICIES,
+    merge_generated_dictionary,
+)
 from .dictionary_type_warnings import (
     DEFAULT_THRESHOLD,
     POLICY,
@@ -37,6 +41,9 @@ from .usage import atomic_json, safe_file
 
 PIPELINE = 'source-spans-v1'
 CHECKPOINT_LIMIT = MAX_DICTIONARY_BYTES + 2 * 1024 * 1024
+# The immediate predecessor differs only in describing per-chunk counts as
+# document totals. Its validated prefixes remain valid under the larger totals.
+PREVIOUS_COUNT_LIMIT_PROMPT = '566ed32738c94c60f2fa2c059683260c9859356c671b60bc73ccd2cf9ba5018f'
 
 
 def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_threshold=DEFAULT_THRESHOLD):
@@ -79,13 +86,15 @@ def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_thr
                 raise ValueError('checkpoint HTTP options mismatch')
             offset = value['offset']
             expected = dict(contract)
+            if isinstance(value['contract'], dict) and value['contract'].get('prompt') == PREVIOUS_COUNT_LIMIT_PROMPT:
+                expected['prompt'] = PREVIOUS_COUNT_LIMIT_PROMPT
             if (isinstance(value['contract'], dict) and 'type_warning_policy' not in value['contract']
                     and 'relation_type_warning_threshold' not in value['contract'] and threshold == DEFAULT_THRESHOLD):
                 expected.pop('type_warning_policy')
                 expected.pop('relation_type_warning_threshold')
             if (isinstance(value['contract'], dict) and type(value['contract'].get('filter_policy')) is int
-                    and value['contract']['filter_policy'] == 1):
-                expected['filter_policy'] = 1  # Known v1 prefixes remain valid under v2.
+                    and value['contract']['filter_policy'] in SUPPORTED_FILTER_POLICIES):
+                expected['filter_policy'] = value['contract']['filter_policy']  # Revalidate known older prefixes.
             if value['schema_version'] == 1:
                 expected.pop('filter_policy')  # Strict legacy prefixes excluded no rows.
             if type(value['schema_version']) is not int or value['schema_version'] not in (1, 2) or value['run_id'] != prior['id'] or canonical(value['contract']) != canonical(expected) or type(offset) is not int or offset not in boundaries:

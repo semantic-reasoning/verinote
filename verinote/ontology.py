@@ -14,14 +14,17 @@ MAX_DICTIONARY_CALLS = 64
 SOURCE_SPAN_SIZE = 400
 SOURCE_SPAN_MIN_SIZE = 32
 LIMITS = {'entities': 200, 'aliases': 400, 'relations': 40}
+DICTIONARY_TOTAL_LIMITS = {kind: limit * MAX_DICTIONARY_CALLS for kind, limit in LIMITS.items()}
 
 
-def _dictionary_shape(value):
+def _dictionary_shape(value, *, per_chunk=False):
     if not isinstance(value, dict) or set(value) != set(LIMITS):
         raise ValueError('사전에는 entities, aliases, relations 배열이 필요합니다.')
-    for key, limit in LIMITS.items():
+    limits = LIMITS if per_chunk else DICTIONARY_TOTAL_LIMITS
+    scope = '구간 응답' if per_chunk else '누적 사전'
+    for key, limit in limits.items():
         if not isinstance(value[key], list) or len(value[key]) > limit:
-            raise ValueError(f'사전 {key}: 최대 {limit}개입니다.')
+            raise ValueError(f'{scope} {key}: 최대 {limit}개입니다.')
         if any(not isinstance(row, dict) for row in value[key]):
             raise ValueError(f'사전 {key}: JSON 객체가 필요합니다.')
 
@@ -119,7 +122,7 @@ def validate_dictionary(value, source):
 def merge_dictionary(previous, delta, source, chunk):
     """Validate every incoming row; merge equal definitions with first evidence."""
     from .service import evidence
-    _dictionary_shape(delta)
+    _dictionary_shape(delta, per_chunk=True)
     previous = validate_dictionary(previous, source)
     merged = {key: list(previous[key]) for key in LIMITS}
     entities = {e['id']: e for e in previous['entities']}
@@ -307,11 +310,14 @@ DICTIONARY_PROMPT = '''원문에서 개체·별칭·관계 사전의 검토용 �
 서로 다른 FSM의 같은 상태명은 '주체 FSM:활성 상태'처럼 범위를 명시하세요. name은 원문에 존재해야 합니다.
 별칭은 원문이 동일 개체라고 명시하는 경우만 선언하세요. 개체 ID 자체를 별칭으로 반복하지 마세요. 자기 자신을 가리키는 매핑은 사전에 추가되지 않습니다. 문자열 유사성, 약어 추측, DB와 서비스 혼동은 금지합니다.
 관계 정의에는 방향과 타입, 조건·부정·시점·설계 가정의 처리, 제외 대상을 명시하세요. 내부 서비스 직접 호출 의존은 depends_on, 서비스 운영 책임은 owned_by처럼 일관된 이름을 제안하세요. 문서 담당자와 서비스 소유자는 다릅니다. API 호출과 API 소유 서비스도 구분하세요.
+관계의 subject_types와 object_types는 기존 dictionary.entities와 이번 응답 entities의 type 값만 사용할 수 있는 비어 있지 않은 배열입니다. 각 문자열은 선언된 type과 정확히 일치해야 합니다. 개체 id나 name을 넣거나 상위·유사 타입을 추측해 추가하지 마세요. 별도의 타입 선언이나 타입 상속은 지원하지 않습니다.
+예: 개체 타입에 '도서', '사람', '회사'만 있으면 authored_by의 subject_types는 ['도서']이며 ['도서','저작물']은 잘못된 값입니다. 고용 관계의 object_types도 ['회사']이며 ['회사','조직']은 잘못된 값입니다. 기존 개체 타입은 바꾸지 마세요.
+출력 전 모든 관계의 양쪽 타입이 기존·신규 개체에 실제 선언되어 있는지 확인하세요. 필요한 개체가 이번 원문에 있으면 정확한 name과 quote_ref를 갖춘 개체로 선언하세요. 타입을 맞추기 위한 가짜 개체는 만들지 말고, 근거 있는 개체 타입으로 표현할 수 없는 관계는 제안하지 마세요.
 특허·기술 문서의 구성요소·상태 등 나열된 개체는 빠뜨리지 마세요. 이 사전은 사람이 수정·승인한 뒤 사용합니다.
 기존 사전은 문맥입니다. 이번 청크에 새로 등장한 항목만 반환하고 기존 ID·정의를 재정의하지 마세요. 추가가 없으면 빈 배열을 반환하세요. 같은 정의를 인용만 바꿔 반복하지 마세요. 앱은 각 근거를 검증한 뒤 동일 정의를 합치고 첫 인용을 유지합니다.
 sources는 원문의 연속 구간입니다. quote_ref에는 이번 sources에 있는 시작·끝 id 문자열을 순서대로 넣으세요. 한 구간이면 같은 id를 두 번 쓰세요. 앱이 그 범위의 원문을 그대로 복원합니다. quote 문자열이나 문자 위치를 생성하지 마세요. name은 선택 구간에 그대로 있어야 하며 별칭 구간에는 alias와 정규 name이 모두 있어야 합니다. 가능한 짧고 충분한 구간을 고르세요.
 기존 사전은 인용을 생략한 어휘·정의 문맥입니다. 기존 항목을 출력하지 마세요. 설명은 필요한 의미·조건을 간결하게 쓰고 해설이나 계획 없이 JSON만 반환하세요.
-전체 한도: 개체 200개, 별칭 400개, 관계 40개. 인용을 제외한 사전 정의 문맥은 UTF-8 60,000바이트, 검증된 전체 사전과 인용은 UTF-8 24 MiB 이내입니다. 인용은 이번 청크에서 가져오세요.
+이번 구간 응답 한도: 개체 200개, 별칭 400개, 관계 40개. 기존 사전 항목은 이 개수에 포함하지 않습니다. 문서 전체 누적 사전은 최대 64개 구간의 항목을 보존하며 인용을 제외한 사전 정의 문맥은 UTF-8 60,000바이트, 검증된 전체 사전과 인용은 UTF-8 24 MiB 이내입니다. 인용은 이번 청크에서 가져오세요.
 입력(JSON):
 '''
 
