@@ -13,7 +13,14 @@ from .call_validation import caller_validation
 from .documents import chunks
 from .engine import query
 from .extraction_checkpoint import CHUNK_TIMEOUT, ExtractionCheckpoint
-from .extraction_coverage import chunk_report, new_report, read_report, write_report
+from .extraction_coverage import (
+    chunk_report,
+    new_report,
+    read_report,
+    repair_missing_indices,
+    write_repair_audit,
+    write_report,
+)
 from .ontology import (
     EXTRACTION_CONTRACT_VERSION,
     EXTRACTION_PROMPT,
@@ -190,6 +197,7 @@ class Service:
         report_ok = True
         checkpoint = None
         active_chunk = None
+        coverage_repairs = 0
         try:
             cli = transport if transport is not None else self.job_cli(run)
             self.store.run_status(run['id'], 'running')
@@ -247,7 +255,14 @@ class Service:
                     if time.monotonic() > deadline:
                         raise TimeoutError(f'청크 실행 시간 제한 초과 ({CHUNK_TIMEOUT}초)')
                     try:
-                        issues = extraction_quote_issues(output, chunk, run['ontology']['payload'], require_coverage=current_contract)
+                        issues = extraction_quote_issues(output, chunk, run['ontology']['payload'])
+                        if current_contract:
+                            normalized, accounting_changes = repair_missing_indices(output, run['ontology']['payload'])
+                            if accounting_changes:
+                                validation.reject()
+                                write_repair_audit(self.root, run, doc, index, offset, output, normalized, accounting_changes)
+                                coverage_repairs += len(accounting_changes)
+                            output = normalized
                         if issues:
                             validation.reject()
                             locations = ', '.join(quote_label(issue['path']) for issue in issues[:5])
@@ -303,6 +318,8 @@ class Service:
             if checkpoint is not None:
                 checkpoint.finish('complete')
                 detail += ' ' + checkpoint.summary()
+            if coverage_repairs:
+                detail += f' · 이번 실행 추출 점검 인덱스 {coverage_repairs}건 로컬 보정 (보정용 모델 호출 없음)'
             with timing.section('publish'):
                 self.store.finish_run(run['id'], {'title': doc['title'], 'claims': claims}, list(unique.values()), detail=detail[:2000])
             timing.outcome('success')
@@ -314,6 +331,8 @@ class Service:
             detail = str(exc)
             if active_chunk is not None:
                 detail = f'청크 {active_chunk} · {detail}'
+            if coverage_repairs:
+                detail += f' · 이번 실행 추출 점검 인덱스 {coverage_repairs}건 로컬 보정 (보정용 모델 호출 없음)'
             if checkpoint is not None:
                 checkpoint.finish('error')
                 detail += f' · {checkpoint.summary()} · 같은 문서 버전·승인 사전·에이전트·모델로 다시 추출하면 검증 완료 청크 다음부터 이어갑니다.'

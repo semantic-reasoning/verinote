@@ -10,6 +10,7 @@ from .usage import atomic_json, safe_file
 MAX_REPORT_BYTES = 2 * 1024 * 1024
 STATUSES = {'extracted', 'no_evidence', 'not_representable', 'limit_reached'}
 GAP_CODES = {'missing_entity', 'missing_relation', 'type_mismatch', 'qualifier_not_representable'}
+MAX_REPAIR_BYTES = 64 * 1024
 
 
 def integer(value, minimum, maximum):
@@ -67,6 +68,65 @@ def validate_accounting(value, dictionary):
         if not indices(gap['claim_indices'], len(claims)):
             raise ValueError('추출 점검: 사전 제약의 근거 claim_indices가 필요합니다.')
     return copy.deepcopy({'coverage': rows, 'dictionary_gaps': gaps})
+
+
+def repair_missing_indices(value, dictionary):
+    """Normalize only fresh, shape-preflighted output; persisted data stays strict."""
+    result = copy.deepcopy(value)
+    changes = []
+    rows = result.get('coverage')
+    predicates = {r['id'] for r in dictionary['relations']}
+    if isinstance(rows, list):
+        for index, row in enumerate(rows):
+            if (not isinstance(row, dict) or row.get('status') != 'extracted'
+                    or not isinstance(row.get('predicate'), str) or row['predicate'] not in predicates):
+                continue
+            before = indices(row.get('fact_indices'), len(result['facts']))
+            expected = [i for i, fact in enumerate(result['facts']) if fact['predicate'] == row['predicate']]
+            if set(before) < set(expected):
+                after = before + [i for i in expected if i not in before]
+                row['fact_indices'] = after
+                changes.append({'row': index, 'predicate': row['predicate'], 'before': before, 'after': after})
+    # No partial repair may hide another malformed or contradictory field.
+    validate_accounting(result, dictionary)
+    return result, changes
+
+
+def write_repair_audit(root, run, doc, chunk, offset, before, after, changes):
+    """Mandatory provenance for a mechanical repair, not acceptance of its facts."""
+    from .store import digest
+    try:
+        if not 1 <= len(changes) <= MAX_FACTS:
+            raise ValueError('coverage repair count')
+        folder = Path(root)
+        for part in (None, 'runs', run['id'], str(chunk)):
+            if part is not None:
+                folder = folder / part
+            if folder.is_symlink():
+                raise ValueError('coverage repair symlink')
+        path = folder / 'coverage-repair.json'
+        if path.is_symlink() or path.with_suffix('.json.tmp').is_symlink():
+            raise ValueError('coverage repair symlink')
+        audit = {'schema_version': 1, 'identity': identity(run), 'chunk': chunk, 'offset': offset,
+                 'source_sha256': doc['sha256'], 'text_sha256': digest(doc['text'].encode()),
+                 'before_sha256': digest(before), 'after_sha256': digest(after),
+                 'scope': 'mechanical_indices_only_not_chunk_acceptance', 'changes': changes}
+        raw = safe_file(folder, 'run.json', 16384)
+        try:
+            meta = json.loads(raw) if raw else None
+        except (ValueError, TypeError, RecursionError):
+            meta = None
+        if isinstance(meta, dict):
+            for key in ('cli_call_id', 'provider_call_id'):
+                call_id = meta.get(key)
+                if isinstance(call_id, str) and 1 <= len(call_id) <= 200:
+                    audit[key] = call_id
+        if len(json.dumps(audit, ensure_ascii=False, indent=2).encode()) > MAX_REPAIR_BYTES:
+            raise ValueError('coverage repair size')
+        folder.mkdir(parents=True, exist_ok=True)
+        atomic_json(path, audit)
+    except (OSError, ValueError, TypeError) as exc:
+        raise ValueError('추출 점검 인덱스 보정 기록 저장 실패: 이번 청크는 확정하지 않았습니다.') from exc
 
 
 def identity(run):
