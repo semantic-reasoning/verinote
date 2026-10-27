@@ -11,7 +11,7 @@ from test_ontology import wire_dictionary
 from test_workflow import DICTIONARY, SOURCE
 
 from verinote.agents import CLI, CLI_PROVIDERS
-from verinote.dictionary_pipeline import CHECKPOINT_LIMIT
+from verinote.dictionary_pipeline import CHECKPOINT_LIMIT, PREVIOUS_COUNT_LIMIT_PROMPT
 from verinote.documents import bounded_spans, chunks
 from verinote.ontology import (
     MAX_DICTIONARY_BYTES,
@@ -223,9 +223,36 @@ class Pipeline(unittest.TestCase):
         marker=self.root/'runs'/second['id']/'dictionary-progress.json';marker.unlink()
         self.assertFalse(job_calls(self.root,'runs',second)[0]['call_count_known'])
 
+    def test_old_count_limit_checkpoint_resumes_and_preserves_over_200_entities(self):
+        groups = [[f'entity-{i:03}' for i in range(start, end)]
+                  for start, end in ((0, 200), (200, 220), (220, 221))]
+        chunks = [' '.join(names).ljust(4000) for names in groups[:2]] + [' '.join(groups[2])]
+        outputs = [{'entities': [{'id': name, 'name': name, 'type': 'Thing', 'quote': name} for name in names],
+                    'aliases': [], 'relations': []} for names in groups]
+        doc = self.new_doc(''.join(chunks))
+        first, _ = self.run_job(doc, [outputs[0], TimeoutError('stop')])
+        checkpoint = self.checkpoint(first)
+        value = json.loads(checkpoint.read_text())
+        value['contract']['prompt'] = PREVIOUS_COUNT_LIMIT_PROMPT
+        checkpoint.write_text(json.dumps(value))
+
+        second, calls = self.run_job(doc, [outputs[1], TimeoutError('stop')])
+        self.assertEqual([call['offset'] for call in calls], [4000, 8000])
+        self.assertEqual(second['status'], 'error')
+        self.assertIn(first['id'], second['detail'])
+        self.assertEqual(len(json.loads(self.checkpoint(second).read_text())['dictionary']['entities']), 220)
+
+        third, calls = self.run_job(doc, [outputs[2]])
+        self.assertEqual(third['status'], 'success', third['detail'])
+        self.assertEqual([call['offset'] for call in calls], [8000])
+        item = self.store.document(doc['id'])['items'][0]
+        self.assertEqual(item['status'], 'pending')
+        self.assertEqual([row['id'] for row in item['payload']['entities']], sum(groups, []))
+        self.store.review(item['id'], item['revision'], 'approved', 'Reviewer', 'Verified all entities')
+
     def test_invalid_checkpoint_restarts_with_visible_reason(self):
         mutations=[lambda v:v.update(offset=True), lambda v:v.update(offset=3999),lambda v:v.update(offset=99999),
-                   lambda v:v['contract'].update(pipeline='old'),lambda v:v['contract'].update(agent='other'),
+                   lambda v:v['contract'].update(pipeline='old'),lambda v:v['contract'].update(prompt='unknown'),lambda v:v['contract'].update(agent='other'),
                    lambda v:v['contract'].update(model='other'),lambda v:v['contract'].update(version=True),
                    lambda v:v['contract'].update(source_sha256='wrong'),lambda v:v.update(run_id='a'*32),
                    lambda v:v['dictionary']['entities'][0].update(quote='not in prefix')]

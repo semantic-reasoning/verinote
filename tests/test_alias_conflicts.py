@@ -1,4 +1,4 @@
-"""Only new aliases colliding with prior entity IDs are recoverable."""
+"""Prior entity IDs and alias targets survive conflicting generated aliases."""
 import copy
 import json
 import unittest
@@ -16,7 +16,7 @@ from verinote.dictionary_exclusions import (
     read_report,
     validate_report,
 )
-from verinote.dictionary_filter import merge_generated_dictionary
+from verinote.dictionary_filter import FILTER_POLICY, merge_generated_dictionary
 from verinote.documents import bounded_spans
 from verinote.ontology import source_spans, validate_dictionary
 from verinote.service import Service
@@ -33,6 +33,11 @@ def output(payload, mode='collision'):
         return {'entities': [{k: v for k, v in PREVIOUS['entities'][0].items() if k != 'quote'} | {'quote_ref': ref}],
                 'aliases': [], 'relations': []}
     if mode == 'empty': return copy.deepcopy(EMPTY)
+    if mode in ('alias_initial', 'alias_changed'):
+        return {'entities': [
+            {'id': name, 'name': name, 'type': '인물', 'quote_ref': ref} for name in ('이경록', '김철수')],
+            'aliases': [{'alias': '경록', 'entity': '이경록' if mode == 'alias_initial' else '김철수', 'quote_ref': ref}],
+            'relations': []}
     return {'entities': [{'id': '이경록', 'name': '이경록', 'type': '인물', 'quote_ref': ref}],
             'aliases': [{'alias': '경록', 'entity': '이경록', 'quote_ref': ref},
                         {'alias': '테디노트', 'entity': '이경록', 'quote_ref': ref}], 'relations': []}
@@ -71,14 +76,56 @@ class Filter(unittest.TestCase):
             value = self.sample(); mutate(value)
             with self.subTest(mutate=mutate), self.assertRaises(ValueError): self.merge(value)
 
-    def test_old_alias_target_and_reverse_namespace_conflicts_stay_fatal(self):
+    def test_old_alias_target_is_preserved_and_reverse_namespace_conflict_stays_fatal(self):
         previous = copy.deepcopy(PREVIOUS)
         previous['entities'].append({'id': '이경록', 'name': '이경록', 'type': '인물', 'quote': SOURCE})
         previous['aliases'] = [{'alias': '경록', 'entity': '이경록', 'quote': SOURCE}]
         value = self.sample(); value['aliases'][0]['entity'] = '테디노트'
-        with self.assertRaisesRegex(ValueError, '충돌'): self.merge(value, previous)
+        before = copy.deepcopy((previous, value))
+        merged, excluded = self.merge(value, previous)
+        self.assertEqual(merged['aliases'], previous['aliases'])
+        self.assertEqual([row['code'] for row in excluded], ['alias_existing_target', 'alias_existing_entity'])
+        self.assertEqual((previous, value), before)
+        invalid = copy.deepcopy(merged); invalid['aliases'].append({'alias': '경록', 'entity': '테디노트', 'quote': SOURCE})
+        with self.assertRaises(ValueError): validate_dictionary(invalid, SOURCE)
         value = self.sample(); value['entities'].append({'id': '경록', 'name': '이경록', 'type': '인물', 'quote_ref': value['entities'][0]['quote_ref']})
         with self.assertRaisesRegex(ValueError, '충돌'): self.merge(value, previous)
+
+    def test_target_exclusion_does_not_hide_invalid_dependencies_or_same_response_conflicts(self):
+        previous = copy.deepcopy(PREVIOUS)
+        previous['aliases'] = [{'alias': '테디', 'entity': '테디노트', 'quote': SOURCE}]
+        for mutate in (lambda v: v['aliases'][0].update(entity='unknown'),
+                       lambda v: v['aliases'][0].update(quote_ref=[1, 2]),
+                       lambda v: v['aliases'][0].update(extra=True),
+                       lambda v: v['aliases'].append(v['aliases'][0] | {'entity': '테디노트'})):
+            value = self.sample()
+            value['aliases'] = [{'alias': '테디', 'entity': '이경록', 'quote_ref': value['entities'][0]['quote_ref']}]
+            mutate(value)
+            with self.subTest(mutate=mutate), self.assertRaises(ValueError):
+                self.merge(value, previous)
+
+    def test_target_exclusion_audit_is_only_valid_in_v3_for_aliases(self):
+        run = {'id': 'r', 'document_id': 'd', 'version': 1}; doc = {'text': SOURCE, 'sha256': 'hash'}
+        report = add_chunk(new_report(run, doc), 0, len(SOURCE),
+                           [{'kind': 'aliases', 'row': 1, 'identifier': 'Response', 'code': 'alias_existing_target'}])
+        validate_report(report, run, doc, len(SOURCE))
+        self.assertEqual(public_report(report)['direct_count'], 1)
+        for policy in (1, 2):
+            with self.subTest(policy=policy), self.assertRaises(ValueError):
+                validate_report(report, run, doc, filter_policy=policy)
+        wrong = copy.deepcopy(report); wrong['items'][0]['kind'] = 'entities'
+        with self.assertRaises(ValueError): validate_report(wrong, run, doc)
+
+    def test_undeclared_relation_audit_rejects_old_policies_and_wrong_kind(self):
+        run = {'id': 'r', 'document_id': 'd', 'version': 1}; doc = {'text': SOURCE, 'sha256': 'hash'}
+        report = add_chunk(new_report(run, doc), 0, len(SOURCE),
+                           [{'kind': 'relations', 'row': 1, 'identifier': 'invalid_relation', 'code': 'relation_undeclared_type'}])
+        validate_report(report, run, doc, len(SOURCE))
+        for policy in (1, 2):
+            with self.subTest(policy=policy), self.assertRaises(ValueError):
+                validate_report(report, run, doc, filter_policy=policy)
+        report['items'][0]['kind'] = 'aliases'
+        with self.assertRaises(ValueError): validate_report(report, run, doc)
 
     def test_normalization_identity_and_prior_reference_errors(self):
         value = self.sample(); value['aliases'][1].update(alias=' 테디노트 ', entity=' 이경록 ')
@@ -130,7 +177,7 @@ class Pipeline(unittest.TestCase):
         text = (SOURCE.ljust(3988, 'x') + '\n') * 2 + SOURCE.ljust(1058, 'x')
         return self.store.register('fixture', 'fixture.md', text.encode(), text)
 
-    def test_v1_3989_prefix_resumes_and_saves_v2_audit_without_extra_calls(self):
+    def test_v1_3989_prefix_resumes_and_saves_current_audit_without_extra_calls(self):
         doc = self.new_doc(); first, _ = self.execute(doc, ['initial', ValueError('stop')])
         path = self.checkpoint(first); saved = json.loads(path.read_text()); saved['contract']['filter_policy'] = 1
         path.write_text(json.dumps(saved))
@@ -139,12 +186,34 @@ class Pipeline(unittest.TestCase):
         second, calls = self.execute(doc, ['collision', 'empty'])
         self.assertEqual(second['status'], 'success', second['detail']); self.assertEqual(calls, [3989, 7978])
         self.assertIn('3,989자 재사용', second['detail'])
-        saved = json.loads(self.checkpoint(second).read_text()); self.assertEqual(saved['contract']['filter_policy'], 2)
+        saved = json.loads(self.checkpoint(second).read_text()); self.assertEqual(saved['contract']['filter_policy'], FILTER_POLICY)
         audit = read_report(self.root, self.store, second['id'])
         self.assertEqual(audit['total_count'], 1); self.assertEqual(audit['items'][0]['code'], 'alias_existing_entity')
         item = self.store.document(doc['id'])['items'][0]
         self.assertEqual(item['status'], 'pending'); self.assertEqual([a['alias'] for a in item['payload']['aliases']], ['경록'])
         self.assertIn('기존 개체 ID', audit['items'][0]['reason'])
+
+    def test_v2_alias_target_checkpoint_resumes_and_exclusion_survives_another_resume(self):
+        doc = self.new_doc()
+        first, _ = self.execute(doc, ['alias_initial', ValueError('stop')])
+        path = self.checkpoint(first); saved = json.loads(path.read_text())
+        saved['contract']['filter_policy'] = 2; path.write_text(json.dumps(saved))
+        second, calls = self.execute(doc, ['alias_changed', ValueError('stop')])
+        self.assertEqual(calls, [3989, 7978])
+        self.assertEqual(second['status'], 'error')
+        saved = json.loads(self.checkpoint(second).read_text())
+        self.assertEqual(saved['offset'], 7978)
+        self.assertEqual(saved['contract']['filter_policy'], FILTER_POLICY)
+        third, calls = self.execute(doc, ['empty'])
+        self.assertEqual(third['status'], 'success', third['detail'])
+        self.assertEqual(calls, [7978])
+        report = read_report(self.root, self.store, third['id'])
+        self.assertEqual(report['total_count'], 1)
+        self.assertEqual(report['items'][0]['code'], 'alias_existing_target')
+        item = self.store.document(doc['id'])['items'][0]
+        self.assertEqual(item['status'], 'pending')
+        self.assertEqual(item['payload']['aliases'][0]['entity'], '이경록')
+        self.assertEqual(len(item['payload']['entities']), 2)
 
     def test_v1_cannot_claim_new_reason_and_unknown_policies_restart(self):
         for policy in (1, 99):
@@ -184,6 +253,33 @@ class PublicWarning(unittest.TestCase):
         item = self.request('/api/documents/' + doc['id'])['items'][0]
         self.assertEqual(item['status'], 'pending'); self.assertEqual(item['dictionary_exclusions']['total_count'], 1)
         self.assertIn('기존 개체 ID', item['dictionary_exclusions']['items'][0]['reason'])
+        self.audit()
+
+    def test_alias_target_and_unknown_relation_are_visible_before_approval(self):
+        doc = self.upload(SOURCE.ljust(3988, 'x') + '\n' + SOURCE)
+
+        def initial(prompt):
+            return output(json.loads(prompt.split('입력(JSON):\n', 1)[1]), 'alias_initial')
+
+        def conflicting(prompt):
+            payload = json.loads(prompt.split('입력(JSON):\n', 1)[1])
+            value = output(payload, 'alias_changed')
+            value['relations'] = [{'id': 'invalid_relation', 'description': 'Unusable type',
+                'subject_types': ['인물'], 'object_types': ['미선언'], 'quote_ref': [payload['sources'][0]['id']] * 2}]
+            return value
+
+        with patch('verinote.openrouter._HTTPS', side_effect=Fixture([initial, conflicting])):
+            run = self.finish(self.start(doc))
+        self.assertEqual(run['status'], 'success', run['detail'])
+        self.assertEqual([c['caller_validation_status'] for c in run['usage']['details']], ['success', 'failed'])
+        item = self.request('/api/documents/' + doc['id'])['items'][0]
+        self.assertEqual(item['status'], 'pending')
+        self.assertEqual(item['payload']['aliases'][0]['entity'], '이경록')
+        self.assertEqual(item['payload']['relations'], [])
+        report = item['dictionary_exclusions']
+        self.assertEqual(report['total_count'], 2)
+        self.assertEqual([row['code'] for row in report['items']], ['alias_existing_target', 'relation_undeclared_type'])
+        self.assertTrue(all('승인 전' in row['reason'] for row in report['items']))
         self.audit()
 
 

@@ -100,7 +100,7 @@ class FilterRules(unittest.TestCase):
                        lambda o: o['entities'][1].update(quote_ref=[1, 2]),
                        lambda o: o['entities'][1].update(extra='field'),
                        lambda o: o['aliases'][0].update(entity='never-declared'),
-                       lambda o: o['relations'][0].update(object_types=['never-declared']),
+                       lambda o: o['relations'][0].update(object_types=[]),
                        lambda o: o['relations'][0].update(id='bad relation')):
             source, spans, output = self.sample(); change(output)
             with self.subTest(change=change), self.assertRaises(ValueError):
@@ -113,6 +113,17 @@ class FilterRules(unittest.TestCase):
             merged, excluded = merge_generated_dictionary(EMPTY, output, spans, source, source)
             self.assertEqual(excluded[0]['code'], 'reference')
             self.assertEqual([r['id'] for r in merged['entities']], ['a'])
+
+    def test_undeclared_types_exclude_whole_relation_without_rewriting_types(self):
+        for field in ('subject_types', 'object_types'):
+            source, spans, output = self.sample(shared_type=True)
+            output['relations'][0][field] = ['Service', 'Organization']
+            before = json.dumps(output, sort_keys=True)
+            merged, excluded = merge_generated_dictionary(EMPTY, output, spans, source, source)
+            self.assertEqual(merged['relations'], [])
+            self.assertEqual(excluded[-1], {'kind': 'relations', 'row': 1, 'identifier': 'links',
+                                            'code': 'relation_undeclared_type'})
+            self.assertEqual(json.dumps(output, sort_keys=True), before)
 
 
 class Generation(unittest.TestCase):
@@ -166,7 +177,7 @@ class Generation(unittest.TestCase):
         doc = self.new_doc(SOURCE.ljust(4000) + SOURCE)
         def fatal(payload):
             result = bad_name(payload)
-            result['relations'] = [{'id': 'broken', 'description': 'Unknown type', 'subject_types': ['Unknown'],
+            result['relations'] = [{'id': 'broken', 'description': 'Malformed types', 'subject_types': [],
                                     'object_types': ['Unknown'], 'quote_ref': [payload['sources'][0]['id']] * 2}]
             return result
         run, _ = self.run_job(doc, [DICTIONARY, fatal])
@@ -175,6 +186,30 @@ class Generation(unittest.TestCase):
         self.assertEqual(saved['offset'], 4000)
         self.assertEqual(read_report(self.root, self.store, run['id'])['total_count'], 0)
         self.assertEqual(self.store.document(doc['id'])['items'], [])
+
+    def test_unknown_relation_type_is_audited_without_retry_and_valid_items_stay_pending(self):
+        source = 'Example Book was written by Alice.'
+        doc = self.new_doc(source)
+
+        def generated(payload):
+            ref = [payload['sources'][0]['id']] * 2
+            return {'entities': [
+                {'id': 'Example Book', 'name': 'Example Book', 'type': 'Book', 'quote_ref': ref},
+                {'id': 'Alice', 'name': 'Alice', 'type': 'Person', 'quote_ref': ref}],
+                'aliases': [], 'relations': [{'id': 'authored_by', 'description': 'Book author',
+                    'subject_types': ['Book', 'Work'], 'object_types': ['Person'], 'quote_ref': ref}]}
+
+        run, calls = self.run_job(doc, [generated])
+        self.assertEqual(run['status'], 'success', run['detail'])
+        self.assertIn('일부 항목 제외 1개', run['detail'])
+        self.assertEqual(len(calls), 1)
+        item = self.store.document(doc['id'])['items'][0]
+        self.assertEqual(item['status'], 'pending')
+        self.assertEqual(len(item['payload']['entities']), 2)
+        self.assertEqual(item['payload']['relations'], [])
+        report = read_report(self.root, self.store, run['id'])
+        self.assertEqual(report['items'][0]['identifier'], 'authored_by')
+        self.assertEqual(report['items'][0]['code'], 'relation_undeclared_type')
 
     def test_strict_legacy_checkpoint_reuses_validated_prefix(self):
         doc = self.new_doc(SOURCE.ljust(4000) + SOURCE)
