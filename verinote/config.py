@@ -41,6 +41,21 @@ def default_config_path():
         base = Path(os.environ.get('APPDATA') or Path.home() / 'AppData' / 'Roaming')
     elif sys.platform == 'darwin':
         base = Path.home() / 'Library' / 'Application Support'
+        native = base / 'verinote' / 'config.toml'
+        xdg = os.environ.get('XDG_CONFIG_HOME', '')
+        fallback_base = Path(xdg) if os.path.isabs(xdg) else Path.home() / '.config'
+        fallback = fallback_base / 'verinote' / 'config.toml'
+        # Only absence permits fallback. Keep invalid files (including dangling
+        # symlinks) selected so the loader rejects them instead of hiding errors.
+        try:
+            native.lstat()
+        except FileNotFoundError:
+            try:
+                fallback.lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                return fallback
     else:
         xdg = os.environ.get('XDG_CONFIG_HOME', '')
         base = Path(xdg) if os.path.isabs(xdg) else Path.home() / '.config'

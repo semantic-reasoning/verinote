@@ -21,11 +21,11 @@ python -m verinote
 
 ### 서버 전용 비밀 설정 파일
 
-서버 자격 증명은 SQLite의 에이전트·모델·단가 설정과 별도로 TOML 파일에 보관합니다. 설정 화면에서 로컬 CLI 5종 또는 **OpenRouter (API)**를 선택해 사전·추출·인용 보정·질문을 실행합니다. API에는 실행 파일 설치가 필요하지 않습니다. 기본 위치는 다음과 같습니다.
+서버 자격 증명은 SQLite의 에이전트·모델·단가 설정과 별도로 TOML 파일에 보관합니다. 설정 화면에서 로컬 CLI 5종 또는 **OpenRouter (API)**를 선택해 사전·추출·인용 보정·질문을 실행합니다. API에는 실행 파일 설치가 필요하지 않습니다. 기본 위치는 다음과 같습니다. macOS에서 두 위치 모두 파일이 없으면 `--init-config`는 `~/Library/Application Support/verinote/config.toml`을 생성합니다. 우선 경로에 파일이 있으면 빈 키·형식·권한 오류가 있어도 다른 파일로 대체하지 않습니다.
 
 | 환경 | 기본 경로 |
 | --- | --- |
-| macOS | `~/Library/Application Support/verinote/config.toml` |
+| macOS | `~/Library/Application Support/verinote/config.toml` 우선, 없으면 절대 경로인 `$XDG_CONFIG_HOME/verinote/config.toml` 또는 `~/.config/verinote/config.toml`의 기존 파일 |
 | Linux/기타 POSIX | 절대 경로인 `XDG_CONFIG_HOME` 아래 `verinote/config.toml`, 없거나 상대 경로이면 `~/.config/verinote/config.toml` |
 | Windows | `%APPDATA%/verinote/config.toml` (`APPDATA`가 없으면 `~/AppData/Roaming/verinote/config.toml`) |
 
@@ -208,7 +208,7 @@ node --check verinote/web/app.js
 
 ## OpenRouter 실행과 비용
 
-설정 화면에서 OpenRouter를 기본으로 고를 때는 공백이 아닌 모델 ID를 입력하세요. 모델은 제공자별로 저장하고 추출·질문에서 작업별로 바꿀 수 있습니다. 키가 없어도 설정은 저장되지만 실행은 작업 등록 전에 거부됩니다. **키 설정됨**은 파일의 값 존재 여부일 뿐 인증·잔액·모델 접근 검사가 아닙니다. macOS에서도 `~/.config/verinote/config.toml`처럼 다른 위치를 쓰려면 `python -m verinote --config ~/.config/verinote/config.toml`로 명시하세요. 파일 편집 후에는 서버를 재시작해야 합니다.
+설정 화면에서 OpenRouter를 기본으로 고를 때는 공백이 아닌 모델 ID를 입력하세요. 모델은 제공자별로 저장하고 추출·질문에서 작업별로 바꿀 수 있습니다. 키가 없어도 설정은 저장되지만 실행은 작업 등록 전에 거부됩니다. **키 설정됨**은 파일의 값 존재 여부일 뿐 인증·잔액·모델 접근 검사가 아닙니다. macOS에서도 기본 Library 경로에 파일이 없으면 `~/.config/verinote/config.toml`을 자동으로 읽습니다. 절대 경로인 `XDG_CONFIG_HOME`이 있으면 `~/.config` 대신 그 경로를 사용합니다. 특정 파일을 우선 사용하려면 `python -m verinote --config ~/.config/verinote/config.toml`로 명시하세요. 파일 편집 후에는 서버를 재시작해야 합니다.
 
 원문·사전·질문 등 프롬프트는 OpenRouter와 라우팅된 모델 제공자에게 전달되며 과금될 수 있습니다. 앱은 고정 HTTPS endpoint에 `stream: false`와 초기 `max_tokens: 16384`를 보냅니다. 이 상한은 모델별 지원 한도나 충분한 응답 길이를 보장하지 않습니다. 사전 생성과 승인 사전 추출에서는 **고급 설정 → 이 작업의 토큰 한도 직접 설정**을 켜고 슬라이더로 요청당 2,048~65,536토큰을 선택할 수 있습니다. 선택하지 않으면 서버 기본값을 유지합니다. 추론과 실제 답변이 이 한도를 함께 사용하며 인용 보정에도 같은 값이 적용됩니다. 질문과 CLI에는 적용하지 않습니다. 모델별 지원 한도는 별도로 확인해야 하며 값을 높이면 시간과 비용이 늘어날 수 있습니다. 이는 문서 전체 비용 한도가 아닙니다. 한도를 바꾸면 기존 중간 결과를 재사용하지 못할 수 있습니다. 서버 관리자는 생성자의 `ExecutionOptions`로 기본값을 조정할 수 있습니다. 화면에서 시작하는 사전 생성·추출은 답변 목표 여유도 함께 설정합니다. 작업 등록 당시 agent/model/상한/단계별 timeout을 고정합니다. 기본 deadline은 사전 호출당 600초, 추출 청크당 360초, 질문 호출당 180초입니다. 명시적 override가 우선하되 추출은 360초를 넘기지 않습니다. 응답 본문은 기본 1 MiB, 메타데이터는 256 KiB로 제한합니다. JSON 텍스트 지시와 기존 로컬 검증을 사용하며 native tool calling이나 구조화 출력 옵션을 추가하지 않습니다.
 
