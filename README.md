@@ -70,7 +70,7 @@ python -m verinote
 
 | UI 이름 | 실행 방식 | 모델 선택 |
 | --- | --- | --- |
-| Claude | `claude --output-format json --tools '' --strict-mcp-config -p PROMPT` | `--model ID` |
+| Claude | 상시 `claude -p --input-format stream-json --output-format stream-json` 프로세스 재사용, 요청마다 대화 초기화 | `--model ID` |
 | Antigravity | `agy --output-format json --mode plan --sandbox --disable-slash-commands -p PROMPT` | `--model ID` |
 | GitHub Copilot | `copilot --silent --usage-output-file PATH --available-tools '' --disable-builtin-mcps -p PROMPT` (Windows에서는 prompt를 stdin으로 전달) | `--model ID` |
 | Cursor | `cursor-agent --output-format stream-json --mode ask --sandbox enabled --trust -p PROMPT` | `--model ID` |
@@ -237,3 +237,5 @@ OpenRouter 사용량은 출력에 포함된 추론 토큰과 보고된 비추론
 CLI 호출에는 선택적 `cli-timing.json` 진단 기록을 남깁니다. 측정 저장 실패는 추출 결과를 바꾸지 않으며 첫 stdout은 모델 추론 시작을 뜻하지 않습니다. [형식·읽기 함수·시간의 포함 관계](docs/cli-timing.md)를 참고하세요.
 
 승인 사전으로 CLI 추출할 때는 별도 `extraction-timing.json`에 대기·복구 검증·청크 호출/검증/인용 보정·후보 등록 구간을 기록합니다. 재사용 청크의 과거 시간·비용은 새 실행에 합산하지 않습니다. [문서 시간 형식과 읽기 함수](docs/extraction-timing.md)를 참고하세요.
+
+Claude는 동일 모델의 후속 요청에서 프로세스를 재사용합니다. 요청마다 `/clear` 완료를 확인해 문서·청크 간 대화 이력이 섞이지 않도록 합니다. 실패한 요청은 자동 재전송하지 않습니다. 지원 버전·종료 방법·단발 실행 선택은 [Claude 프로세스 재사용](docs/claude-worker.md)을 참고하세요.

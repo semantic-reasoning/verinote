@@ -302,7 +302,7 @@ class ExtractionDeadlines(unittest.TestCase):
                      patch('verinote.agents._kill_process_tree') as kill:
                     folder = Path(tmp) / str(index)
                     with self.assertRaisesRegex(TimeoutError, '360초'):
-                        CLI().limited_timeout(agent, 360).complete(agent, '', 'synthetic', folder)
+                        CLI(persistent=False).limited_timeout(agent, 360).complete(agent, '', 'synthetic', folder)
                     kill.assert_called_once_with(proc)
                     meta = json.loads((folder / 'run.json').read_text(encoding='utf-8'))
                     self.assertEqual(meta['timeout_seconds'], 360)

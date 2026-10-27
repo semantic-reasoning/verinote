@@ -68,7 +68,7 @@ def command(agent, model, prompt):
     return (args + ['-'], prompt) if agent == 'codex' else (args + ['-p', prompt], '')
 
 
-def _kill_process_tree(proc):
+def _kill_process_tree(proc, *, timeout=None):
     if os.name == 'nt':
         try:
             subprocess.run(['taskkill', '/PID', str(proc.pid), '/T', '/F'],
@@ -83,7 +83,13 @@ def _kill_process_tree(proc):
             os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-    proc.wait()
+        except PermissionError:
+            if proc.poll() is None:
+                raise
+    if timeout is None:
+        proc.wait()
+    else:
+        proc.wait(timeout=timeout)
 
 
 def parse_response(agent, response):
@@ -116,7 +122,7 @@ def parse_response(agent, response):
 
 class CLI:
     def __init__(self, timeout=None, max_output=1024 * 1024, rates=None, *,
-                 http_adapter=None, credentials=None, sink=None, options=None):
+                 http_adapter=None, credentials=None, sink=None, options=None, persistent=True):
         self.timeout, self.max_output = timeout, max_output
         self.rates: Callable[[], Any] = rates or (lambda: {})
         self.http_adapter, self._credentials, self.sink = http_adapter, credentials, sink
@@ -127,6 +133,19 @@ class CLI:
         if options is not None and timeout is not None and timeout != options.timeout:
             raise ValueError('고정 옵션과 timeout override가 일치해야 합니다.')
         self.options = options
+        from .claude_worker import Manager
+        self._claude = Manager() if persistent else None
+
+    def close(self):
+        """Close the shared worker, including workers used by limited_timeout copies."""
+        if self._claude is not None:
+            self._claude.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
 
     def effective_timeout(self, agent, phase=None):
         if agent not in PROVIDERS:
@@ -230,9 +249,94 @@ class CLI:
         from .cli_timing import start_timing
         timing = start_timing(agent, model, phase, timeout, self.max_output)
         try:
+            if agent == 'claude' and self._claude is not None:
+                timing.persistent()
+                return self._complete_persistent(model, prompt, folder, phase, timing)
             return self._complete_cli(agent, model, prompt, folder, phase, timing)
         finally:
             timing.finish(folder)
+
+    def _complete_persistent(self, model, prompt, folder, phase, timing):
+        from .claude_worker import Exchange
+        assert self._claude is not None
+        timeout = self.effective_timeout('claude', phase)
+        deadline = time.monotonic() + timeout
+        folder = Path(folder)
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / 'prompt.txt').write_text(prompt, encoding='utf-8')
+        usage = empty_usage('claude', model, self.rates().get('claude'))
+        usage.update(cli_call_id=timing.call_id, started_at=now())
+        meta = dict(cli_call_id=timing.call_id, agent='claude', model=model, phase=phase,
+                    prompt_sha256=digest(prompt.encode()), started_at=usage['started_at'],
+                    status='running', timeout_seconds=timeout, transport_mode='persistent',
+                    process_reused=None, returncode=None)
+        atomic_json(folder / 'usage.json', usage)
+        atomic_json(folder / 'run.json', meta)
+        worker = None
+        error_code = 'preparation'
+        try:
+            if prompt.lstrip().startswith('/'):
+                raise ValueError('Claude 지속 연결에는 명령 대신 일반 요청문이 필요합니다.')
+            binary = executable('claude')
+            if not binary:
+                error_code = 'executable_missing'
+                raise ValueError('Claude CLI가 설치되지 않았습니다.')
+            error_code = 'process'
+            with self._claude.acquire(binary, model, deadline, timing) as worker:
+                meta['process_reused'] = timing.is_reused()
+                usage['status'] = 'running'
+                atomic_json(folder / 'usage.json', usage)
+                with (folder / 'stream.jsonl').open('wb') as stream, (folder / 'stderr.txt').open('wb') as stderr:
+                    exchange = Exchange(worker, deadline, self._claude.closed, self.max_output, stream, stderr, timing)
+                    exchange.send('/clear')
+                    exchange.terminal(reset=True)
+                    timing.mark('reset_completed')
+                    exchange.inference = True
+                    exchange.send(prompt)
+                    timing.mark('request_sent')
+                    envelope = exchange.terminal()
+                    timing.mark('response_received')
+                    # Keep the existing single-result decoder and per-call usage contract.
+                    raw = json.dumps(envelope, ensure_ascii=False)
+                    (folder / 'stdout.txt').write_text(raw, encoding='utf-8')
+                    timing.mark('interpret_started')
+                    error_code = 'interpretation'
+                    response, parsed, provider_error = decode_transport('claude', raw)
+                    usage.update({k: v for k, v in parsed.items() if k not in ('requested_model', 'rate_snapshot', 'status', 'schema_version')})
+                    calculate(usage)
+                    if provider_error or response is None or envelope.get('subtype') != 'success':
+                        raise ValueError(provider_error or 'Claude 실행 실패')
+                    result, normalizations = parse_response('claude', response)
+                    timing.mark('interpret_completed')
+                    timing.outcome('success')
+                    usage['status'] = 'success'
+                    meta.update(status='success', response_normalizations=normalizations)
+                    error_code = 'recording'
+                    atomic_json(folder / 'run.json', meta)
+                    return result
+        except BaseException as exc:
+            status = 'timeout' if isinstance(exc, TimeoutError) else 'error' if worker is not None else 'not_started'
+            if isinstance(exc, TimeoutError):
+                error_code = 'timeout'
+            elif '크기 제한' in str(exc):
+                error_code = 'output_limit'
+            code = worker.proc.poll() if worker is not None else None
+            if code is not None:
+                timing.mark('exit_observed')
+            timing.outcome(status, error_code, code)
+            usage['status'] = 'not_started' if status == 'not_started' else 'error'
+            meta.update(status='error', error=str(exc), returncode=code, process_reused=timing.is_reused())
+            try:
+                atomic_json(folder / 'run.json', meta)
+            except OSError:
+                pass
+            raise
+        finally:
+            usage['finished_at'] = now()
+            try:
+                atomic_json(folder / 'usage.json', usage)
+            except OSError:
+                pass
 
     def _complete_cli(self, agent, model, prompt, folder, phase, timing):
         folder = Path(folder)

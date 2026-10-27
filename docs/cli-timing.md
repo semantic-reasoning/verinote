@@ -1,4 +1,4 @@
-# CLI 호출 시간 기록 (형식 1)
+# CLI 호출 시간 기록 (형식 1·2)
 
 `verinote.cli_timing.read_cli_timing(root, relative_folder)`로 호출 폴더의
 `cli-timing.json`을 읽는다. 예: `read_cli_timing(root, 'runs/<실행 ID>/1')`.
@@ -72,3 +72,18 @@ CLI 버전은 별도 확인 자료가 없어 `cli_version:null`, `cli_version_so
 
 검증 명령: `python -m unittest discover -s tests -p test_cli_timing.py`.
 가짜 프로그램만 사용하며 모델·네트워크·API 키가 필요 없다.
+
+## 지속 프로세스: 형식 2
+
+위 형식 1은 단발 실행에 그대로 적용한다. Claude 지속 연결은 `schema_version: 2`와 `process_reused`(미획득 null, 새 프로세스 false, 재사용 true)를 기록하며 다음 offset을 추가한다.
+
+| 필드 | 의미 |
+| --- | --- |
+| worker_acquired | 공유 worker 잠금 획득, 모델 교체·시작 전 |
+| reset_completed | 대화 초기화와 0 사용량 기준선 확인 완료 |
+| request_sent | 애플리케이션 프롬프트 쓰기 완료 |
+| response_received | 같은 세션의 terminal result 수신 완료 |
+
+첫 stdout은 애플리케이션 요청을 보낸 후 관측한 스트림 출력이며 초기화 출력은 제외한다. 정상 호출은 worker가 살아 있으므로 exit_code와 exit_observed가 null이다. 재사용이면 spawn_requested/spawn_returned도 null이다. 오류로 실제 프로세스를 종료한 경우에만 종료 코드·시점을 기록한다. 초기화·대기 실패는 response_received가 null이다.
+
+reader는 형식 2에서 `worker_wait`(획득 offset), `reset`(획득→초기화 완료, 새 프로세스 시작 포함), `response_wait`(입력 전송 완료→result)를 추가한다. stdin 쓰기나 파일 기록은 별도 구간이 아니므로 구간 합계가 total과 같다고 가정하지 않는다. `run.json.transport_mode=persistent`와 재사용 여부도 교차 확인한다. 형식 2 검증은 `python -m unittest discover -s tests -p test_claude_worker.py`로 수행한다.

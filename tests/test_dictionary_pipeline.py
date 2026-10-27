@@ -108,7 +108,7 @@ class SpanContract(unittest.TestCase):
                 self.assertEqual(CLI(timeout=override).effective_timeout(agent,'ontology'),override)
 
     def test_ontology_deadline_logged_and_process_group_killed(self):
-        cli=CLI()
+        cli=CLI(persistent=False)
         with tempfile.TemporaryDirectory() as tmp:
             for index, agent in enumerate(CLI_PROVIDERS):
                 proc=Mock(pid=12345,returncode=-9);proc.poll.return_value=None

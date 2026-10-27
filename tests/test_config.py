@@ -271,8 +271,16 @@ class ConfigStartup(unittest.TestCase):
             main(args)
             store.return_value.recover.assert_called_once()
             server.return_value.server_close.assert_called_once()
-            service.return_value.pool.shutdown.assert_called_once_with(wait=True)
+            service.return_value.close.assert_called_once_with()
             return server.call_args.kwargs['credentials']
+
+    def test_server_startup_failure_closes_service(self):
+        with patch('verinote.server.load_config'), patch('verinote.server.Store'), \
+                patch('verinote.server.Service') as service, \
+                patch('verinote.server.Server', side_effect=OSError('port busy')):
+            with self.assertRaisesRegex(OSError, 'port busy'):
+                main([])
+            service.return_value.close.assert_called_once_with()
 
     def test_missing_default_preserves_normal_startup(self):
         with patch('verinote.config.default_config_path', return_value=self.path):

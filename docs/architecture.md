@@ -573,3 +573,7 @@ CLI 경로는 stdout 파일과 기존 polling을 유지한 채 별도 monotonic_
 ### CLI 승인 사전 추출 시간 집계
 
 등록 직전 단조시계 기준점을 worker에 전달하고 CLI extract에만 선택적 span을 붙인다. 8000자 순차 처리/보정 한도/공유 deadline/전체 성공 후 후보 등록과 checkpoint 계약은 그대로다. orchestration 호출 span은 #724 cli_call_id로 연결하되 그 내부 시간·사용량을 중복 합산하지 않는다. 재사용 청크는 과거 시간 null, 현재 restore 검증은 별도다. 파일·신원/경계/nesting 검증·비가산 부모와 leaf 차감 계약은 [extraction-timing.md](extraction-timing.md)에 정의한다. UI·API나 DB 변경은 추가하지 않는다.
+
+## Claude 프로세스 수명
+
+`CLI`가 소유한 단일 Claude worker manager를 작업별 shallow copy와 timeout 제한 복사본이 공유한다. 매 요청의 대화 초기화와 결과 수신을 잠금으로 직렬화하며, 요청별 deadline에는 잠금 대기도 포함된다. 모델·실행 파일 변경 또는 실패 시 프로세스를 폐기한다. `Service.close()`는 작업을 마친 뒤 CLI를 닫고 서버 시작 실패·정상 종료에서도 호출된다. 프로토콜·사용량·시간 기록의 상세 계약은 [Claude 프로세스 재사용](claude-worker.md)에 있다.

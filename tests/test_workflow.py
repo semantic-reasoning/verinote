@@ -314,7 +314,7 @@ class ImportAndCLI(unittest.TestCase):
                 CLI().complete('agy','','test',root/'missing')
 
     def test_provider_deadlines_and_explicit_overrides(self):
-        shared = CLI()
+        shared = CLI(persistent=False)
         # Reuse the instance across providers in both orders; clock starts above zero.
         cases = [(shared, agent, 600 if agent in ('agy', 'copilot') else 180, elapsed, elapsed > (600 if agent in ('agy', 'copilot') else 180))
                  for agent in ['copilot', 'agy', 'claude', 'cursor', 'codex', 'agy']
