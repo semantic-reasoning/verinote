@@ -112,9 +112,9 @@ POST `/api/documents/{id}/delete-latest`, `/delete`는 정확히 `{expected_vers
 
 사전 생성은 최대 4,000자 구간(최대 64개)과 인용문을 제외한 기존 사전 문맥으로 추가 항목을 요청한다. 구간 분할은 후반부의 문장/줄 경계를 우선하며 모든 문자를 정확히 보존한다. 각 구간을 다시 32자 이후 첫 문장/줄 경계를 우선하는 최대 400자 source span으로 나누고 내용 해시를 포함한 ID를 부여한다. 모델의 `quote_ref:[시작ID,끝ID]`를 현재 구간의 ID 목록으로 검증하고 연속 원문으로 복원한다. 숫자 문자 오프셋 추측·이전 구간 ID·literal quote 대체 응답은 허용하지 않는다. 저장/검토 사전은 기존 literal quote 형식이다. CRLF 인용도 원문 그대로 검증한다. 전체 사전의 이름·별칭·타입·정의 충돌 검증은 유지한다. 경계를 가로지르는 의미의 손실 가능성은 남는다.
 
-사전 호출만 `CLI.complete(..., phase='ontology')`로 600초 기본 제한을 적용한다. 명시적 CLI timeout은 우선하며 다른 단계 기본값은 바꾸지 않는다. 자동 재시도는 없다. 성공적으로 병합·검증한 구간만 `runs/{id}/dictionary-checkpoint.json`에 atomic replace로 저장한다. `dictionary-progress.json`에는 완료/재사용 글자 수, 이전 실행 ID, 실제 시작 호출 수를 별도로 기록한다. 체크포인트 쓰기 실패는 경고를 유지하고 유효한 메모리 결과의 최종 저장을 막지 않는다.
+사전 호출만 `CLI.complete(..., phase='ontology')`로 600초 기본 제한을 적용한다. 명시적 CLI timeout은 우선하며 다른 단계 기본값은 바꾸지 않는다. 자동 재시도는 없다. 성공적으로 병합·검증한 구간만 `runs/{id}/dictionary-checkpoint.json`에 atomic replace로 저장한다. `dictionary-progress.json`에는 완료/재사용 글자 수, 이전 실행 ID, 실제 시작 호출 수를 별도로 기록한다. schema 3 체크포인트는 사전·offset·제외·조정 감사 상태를 함께 저장한다. 저장에 실패한 구간은 진행률이나 최종 후보에 반영하지 않는다. 선택적 진행 표시 파일 쓰기는 경고로 처리한다.
 
-재시도는 DB에서 같은 문서 버전·에이전트·요청 모델의 error/interrupted 실행 최대 8개를 조회한다. symlink 경로/파일 및 26 MiB 초과 파일을 거부한다. 스키마·소유 실행·문서/원문 해시·프롬프트/처리 버전·분할 크기와 결정적 완료 경계를 확인하고, 완료 prefix 전체로 사전을 다시 검증한다. 호환되지 않는 기록은 제외하고 그 이유를 상세에 남긴다. 상속한 진행도 새 실행에 저장하여 반복 재시도를 지원한다. 삭제된 DB 실행은 파일 정리가 지연되어도 재사용할 수 없다. SQL 마이그레이션은 없으며 과거 실행에 복구 파일이 없으면 새로 처리한다. 요청 모델이 빈 문자열인 경우 제공자의 실제 기본 모델 변경은 검출하지 못한다.
+재시도는 DB에서 같은 문서 버전·에이전트·요청 모델의 error/interrupted 실행 최대 8개를 조회한다. symlink 경로/파일 및 30 MiB 초과 파일을 거부한다. 스키마·소유 실행·문서/원문 해시·프롬프트/처리 버전·분할 크기와 결정적 완료 경계를 확인하고, 완료 prefix 전체로 사전을 다시 검증한다. 호환되지 않는 기록은 제외하고 그 이유를 상세에 남긴다. 상속한 진행도 새 실행에 저장하여 반복 재시도를 지원한다. 삭제된 DB 실행은 파일 정리가 지연되어도 재사용할 수 없다. SQL 마이그레이션은 없으며 과거 실행에 복구 파일이 없으면 새로 처리한다. 요청 모델이 빈 문자열인 경우 제공자의 실제 기본 모델 변경은 검출하지 못한다.
 
 완료된 prefix의 재사용은 추가 모델 호출이 아니며 기존 호출 로그를 복사하지 않는다. 모든 실제 호출은 현재 실행의 구간 번호 폴더에 기록한다. 전체 완료 prefix만 재사용한 성공 실행은 명시적인 완료 marker로 새 호출 0회를 확인한다. marker가 없거나 손상되면 미확인으로 남긴다. 최종 `finish_run`은 전체 원문 검증·실행 상태·사전 유일성을 재검사한 후 하나의 pending 사전을 저장한다. 관계 추출은 모든 청크에 동일한 승인 사전을 보내며 청크당 80개 사실까지 검증한다. 프롬프트 UTF-8 상한은 120,000바이트다.
 
@@ -145,7 +145,7 @@ POST `/api/documents/{id}/delete-latest`, `/delete`는 정확히 `{expected_vers
 
 ## 사전 중복과 정의 충돌
 
-`merge_dictionary`는 기존 사전을 재검증하고 모든 새 항목을 정규화·검증한 뒤 합친다. 개체의 ID/name/type, 별칭의 alias/entity, 관계의 ID/description/subject_types/object_types가 같으면 인용 차이는 정의 충돌이 아니다. 문자열은 기존의 양끝 공백 정리만 적용하고 관계 타입 배열은 기존 규칙대로 정렬된 집합으로 비교한다. 유사 표현·대소문자·관계 설명을 추측해 같은 뜻으로 합치지 않는다. 첫 유효 인용을 유지하므로 추가 인용을 모두 저장하는 기능은 아니다.
+`merge_dictionary`는 직접 사용하는 엄격 병합 계약이며, 자동 생성은 아래의 조정 필터 v4를 사용한다. 엄격 병합은 기존 사전을 재검증하고 모든 새 항목을 정규화·검증한 뒤 합친다. 개체의 ID/name/type, 별칭의 alias/entity, 관계의 ID/description/subject_types/object_types가 같으면 인용 차이는 정의 충돌이 아니다. 문자열은 기존의 양끝 공백 정리만 적용하고 관계 타입 배열은 기존 규칙대로 정렬된 집합으로 비교한다. 유사 표현·대소문자·관계 설명을 추측해 같은 뜻으로 합치지 않는다. 첫 유효 인용을 유지하므로 추가 인용을 모두 저장하는 기능은 아니다.
 
 중복으로 버리는 항목도 근거·이름·별칭·타입 검사를 거친다. 정확한 자기 ID 매핑만 대상 개체의 존재와 ID를 포함한 원문 근거를 확인한 뒤 제외하며, 이 경우 정규 표시 명칭은 개체 자체의 근거로 검증한다. 실제 별칭은 별칭과 정규 명칭이 같은 인용에 있어야 한다. 입력 개수 한도와 최종 전체 개수/크기/충돌 검사는 유지하며 직접 JSON 검토 입력의 중복 개체·실제 별칭·관계 선언은 계속 거부한다.
 
@@ -516,14 +516,14 @@ https://openrouter.ai/docs/guides/routing/provider-selection#requiring-providers
 
 `dictionary_filter.merge_generated_dictionary` is generation-only. Existing
 strict resolve/merge/approval functions retain their behavior. A shared definition
-validator first checks every wire row's shape, values, identity namespace and
-conflicts against previous definitions and all rows in the same response. Bad
-evidence cannot hide a conflict. Unknown original alias targets/types, malformed
-references, invalid fields and limits are fatal. Only well-shaped missing/reversed
-source references and name/alias grounding failures are excluded. A new alias
+validator first checks every wire row's shape, values and declared alias targets.
+Malformed references/fields, unknown original alias targets and resource limits
+remain fatal. Missing/reversed source references, grounding failures and undeclared
+relation types are excluded. Semantic definition and namespace conflicts are
+reconciled or retained as deferred proposals rather than aborting the document. A new alias
 whose entity was excluded and a new relation whose type disappeared are excluded
 as dependencies; surviving previous entities or same-type entities prevent that
-cascade. The retained delta is strictly merged and validated again.
+cascade. The retained draft is strictly validated after generation-only reconciliation (see below).
 
 A chunk commits its dictionary, processed offset and exclusion state together.
 Fatal chunks publish none of them. Exclusions add no model calls. HTTP domain
@@ -540,7 +540,7 @@ Readers enforce identity, boundaries, count consistency, size and symlink checks
 The current dictionary item is connected to its origin run without a DB change.
 Warnings shown with an edited dictionary describe generation-time exclusions.
 
-New checkpoint schema 2 pins filter_policy=1 and embeds the bounded audit state.
+The original filter used checkpoint schema 2 with filter_policy=1. Current generation writes schema 3 with filter_policy=4 and reconciliation_policy=1, embedding both audits.
 Resume inherits exclusions without double counting or charging old calls. Strict
 legacy schema 1 is compatible only when its original full contract and dictionary
 validate; zero-exclusion chunk state is synthesized for its prefix. Unknown policy
@@ -560,7 +560,9 @@ unavailable. The existing explicit approval and strict final validation are kept
 
 ### 기존 개체와 새 별칭 이름 충돌
 
-생성 필터 v3는 이전 사전에 있던 개체 ID와 정규화된 새 alias가 같고 다른 target을 가리키면 새 alias만 `alias_existing_entity` 직접 제외로 기록한다. 기존 별칭의 target을 바꾸는 새 alias는 `alias_existing_target`으로 제외하고 기존 매핑을 유지한다. 기존·신규 개체에 선언되지 않은 타입을 사용하는 새 관계는 `relation_undeclared_type`으로 후보 전체를 제외한다. 타입 배열 일부를 잘라내거나 가짜 개체를 만들지 않는다. 제외할 행도 전체 형식/정의/대상 preflight를 먼저 거친다. 이번 응답 내부의 상충하는 별칭, 새 개체와의 이름 충돌, 기존 별칭과 새 개체 충돌, 개체·관계 정의 충돌은 여전히 중단한다. strict 수정·승인 검증과 identity alias 처리는 유지한다. v1/v2 checkpoint는 해당 정책 사유만 포함하는 감사와 나머지 계약/원문/옵션/재생성 target을 검증한 뒤 재사용하고 새 checkpoint는 filter_policy=3으로 저장한다. 제외 내역은 기존 bounded 승인 전 UI/API에 표시하며 부분 응답의 caller validation은 실패, 생성 작업은 계속하는 기존 정책을 따른다.
+생성 필터 v4는 구조·참조 preflight와 근거 제외를 유지하면서 의미 충돌을 보류 제안으로 기록한다. 명시적 revisions는 구간 시작 시점의 불변 before와 비교하고, 모든 변경·의존 항목이 함께 엄격 검증될 때만 한 묶음으로 반영한다. 개체 ID를 가리키는 명시적 alias는 같은 타입·양쪽 이름의 근거가 있으면 연결 성분 단위로 중복 개체를 정규화한다. 순환·경쟁 대상·조정과 겹친 대상·유효하지 않은 의존 별칭은 보류하며 문자열 유사성으로 통합하지 않는다.
+
+새 schema 3 체크포인트에 filter_policy=4와 reconciliation_policy=1, 적용/보류 감사 기록을 사전과 함께 저장한다. v1/v2는 기존 정책·허용된 이전 프롬프트·원문·옵션·재생성 대상을 검증한 뒤 재사용하며 이전 구간의 조정 이력은 미확인 범위로 표시한다. 기존 체크포인트·승인 사전·snapshot을 다시 쓰지 않는다. API/UI는 실행 출처별 변경 전후와 근거를 제공하며, 최대 20개 상세와 전체 건수·생략 건수를 구분한다. [상세 조정 계약](dictionary-reconciliation.md)을 참조한다.
 
 ### 추론 예산 관측 진단
 

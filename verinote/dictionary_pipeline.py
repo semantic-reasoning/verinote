@@ -1,6 +1,7 @@
 """Compact, resumable dictionary generation; checkpoints are never approvals."""
 import json
 
+from . import dictionary_reconciliation as reconciliation
 from .call_validation import caller_validation
 from .dictionary_exclusions import (
     add_chunk,
@@ -13,7 +14,7 @@ from .dictionary_exclusions import (
 from .dictionary_filter import (
     FILTER_POLICY,
     SUPPORTED_FILTER_POLICIES,
-    merge_generated_dictionary,
+    reconcile_generated_dictionary,
 )
 from .dictionary_type_warnings import (
     DEFAULT_THRESHOLD,
@@ -40,10 +41,11 @@ from .store import canonical, digest
 from .usage import atomic_json, safe_file
 
 PIPELINE = 'source-spans-v1'
-CHECKPOINT_LIMIT = MAX_DICTIONARY_BYTES + 2 * 1024 * 1024
+CHECKPOINT_LIMIT = MAX_DICTIONARY_BYTES + 6 * 1024 * 1024
 # The immediate predecessor differs only in describing per-chunk counts as
 # document totals. Its validated prefixes remain valid under the larger totals.
 PREVIOUS_COUNT_LIMIT_PROMPT = '566ed32738c94c60f2fa2c059683260c9859356c671b60bc73ccd2cf9ba5018f'
+PREVIOUS_IMMUTABLE_PROMPT = '0e2a3892fe24a0ca48994dfa347ee40c9dc9a06b14ed76e53a43002cdfccba63'
 
 
 def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_threshold=DEFAULT_THRESHOLD):
@@ -59,6 +61,7 @@ def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_thr
                 'source_sha256': doc['sha256'], 'text_sha256': digest(source.encode()),
                 'agent': run['agent'], 'model': run['model']}
     contract['filter_policy'] = FILTER_POLICY
+    contract['reconciliation_policy'] = reconciliation.POLICY
     contract.update(type_warning_policy=POLICY, relation_type_warning_threshold=threshold)
     if run['agent'] == 'openrouter':
         from .transports import job_options
@@ -69,6 +72,7 @@ def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_thr
     folder.mkdir(parents=True, exist_ok=True)
     dictionary: dict[str, list[object]] = {kind: [] for kind in LIMITS}
     exclusions = new_report(run, doc)
+    reconciliations = reconciliation.new_report(run, doc)
     accepted, resumed_from, warnings = 0, None, []
     skipped = 0
     option_mismatches = 0
@@ -77,8 +81,10 @@ def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_thr
         try:
             value = json.loads(raw) if raw else None
             fields = {'schema_version', 'run_id', 'contract', 'offset', 'dictionary', 'resumed_from'}
-            if isinstance(value, dict) and value.get('schema_version') == 2:
+            if isinstance(value, dict) and value.get('schema_version') in (2, 3):
                 fields.add('exclusions')
+            if isinstance(value, dict) and value.get('schema_version') == 3:
+                fields.add('reconciliations')
             if not isinstance(value, dict) or set(value) != fields:
                 raise ValueError('checkpoint shape')
             if run['agent'] == 'openrouter' and isinstance(value['contract'], dict) and value['contract'].get('execution_options') != contract['execution_options']:
@@ -86,21 +92,23 @@ def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_thr
                 raise ValueError('checkpoint HTTP options mismatch')
             offset = value['offset']
             expected = dict(contract)
-            if isinstance(value['contract'], dict) and value['contract'].get('prompt') == PREVIOUS_COUNT_LIMIT_PROMPT:
-                expected['prompt'] = PREVIOUS_COUNT_LIMIT_PROMPT
+            if value['schema_version'] in (1, 2):
+                expected.pop('reconciliation_policy')
+                if isinstance(value['contract'], dict) and value['contract'].get('prompt') in (PREVIOUS_COUNT_LIMIT_PROMPT, PREVIOUS_IMMUTABLE_PROMPT):
+                    expected['prompt'] = value['contract']['prompt']
             if (isinstance(value['contract'], dict) and 'type_warning_policy' not in value['contract']
                     and 'relation_type_warning_threshold' not in value['contract'] and threshold == DEFAULT_THRESHOLD):
                 expected.pop('type_warning_policy')
                 expected.pop('relation_type_warning_threshold')
-            if (isinstance(value['contract'], dict) and type(value['contract'].get('filter_policy')) is int
+            if (value['schema_version'] in (1, 2) and isinstance(value['contract'], dict) and type(value['contract'].get('filter_policy')) is int
                     and value['contract']['filter_policy'] in SUPPORTED_FILTER_POLICIES):
                 expected['filter_policy'] = value['contract']['filter_policy']  # Revalidate known older prefixes.
             if value['schema_version'] == 1:
                 expected.pop('filter_policy')  # Strict legacy prefixes excluded no rows.
-            if type(value['schema_version']) is not int or value['schema_version'] not in (1, 2) or value['run_id'] != prior['id'] or canonical(value['contract']) != canonical(expected) or type(offset) is not int or offset not in boundaries:
+            if type(value['schema_version']) is not int or value['schema_version'] not in (1, 2, 3) or value['run_id'] != prior['id'] or canonical(value['contract']) != canonical(expected) or type(offset) is not int or offset not in boundaries:
                 raise ValueError('checkpoint identity/boundary')
             candidate_dictionary = validate_dictionary(value['dictionary'], source[:offset])
-            if value['schema_version'] == 2:
+            if value['schema_version'] in (2, 3):
                 candidate_exclusions = validate_report(value['exclusions'], prior, doc, offset, filter_policy=value['contract']['filter_policy'])
                 candidate_exclusions['identity'] = identity(run, doc)
             else:
@@ -109,7 +117,16 @@ def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_thr
                     if start >= offset:
                         break
                     candidate_exclusions = add_chunk(candidate_exclusions, start, len(chunk), [])
-            dictionary, exclusions = candidate_dictionary, candidate_exclusions
+            if value['schema_version'] == 3:
+                candidate_reconciliations = reconciliation.validate_report(value['reconciliations'], prior, doc, offset)
+                candidate_reconciliations['identity'] = reconciliation.identity(run, doc)
+            else:
+                candidate_reconciliations = reconciliation.new_report(run, doc)
+                for start, chunk in slices:
+                    if start >= offset: break
+                    candidate_reconciliations = reconciliation.add_chunk(candidate_reconciliations, start, len(chunk), [])
+                candidate_reconciliations['legacy_chars'] = offset
+            dictionary, exclusions, reconciliations = candidate_dictionary, candidate_exclusions, candidate_reconciliations
             accepted, resumed_from = offset, prior['id']
             break
         except (ValueError, TypeError, KeyError, UnicodeError):
@@ -132,19 +149,27 @@ def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_thr
                 warnings.append(warning)
             return False
 
-    def checkpoint():
-        if not accepted:
+    def checkpoint(candidate, candidate_exclusions, candidate_reconciliations, offset):
+        if not offset:
             return
-        value = {'schema_version': 2, 'run_id': run['id'], 'contract': contract, 'offset': accepted,
-                 'dictionary': dictionary, 'resumed_from': resumed_from, 'exclusions': exclusions}
+        validate_report(candidate_exclusions, run, doc, offset)
+        reconciliation.validate_report(candidate_reconciliations, run, doc, offset)
+        value = {'schema_version': 3, 'run_id': run['id'], 'contract': contract, 'offset': offset,
+                 'dictionary': candidate, 'resumed_from': resumed_from, 'exclusions': candidate_exclusions,
+                 'reconciliations': candidate_reconciliations}
         if len(json.dumps(value, ensure_ascii=False).encode()) > CHECKPOINT_LIMIT:
-            warnings.append('복구 기록 크기 초과: 진행 상태를 저장하지 못했습니다.')
-            return
-        write(folder / 'dictionary-checkpoint.json', value)
+            raise ValueError('사전 조정·복구 기록 크기 제한 초과')
+        try:
+            atomic_json(folder / 'dictionary-checkpoint.json', value)
+        except OSError as exc:
+            raise ValueError('사전 조정·복구 기록 저장 실패: 이번 구간은 확정하지 않았습니다. 재시도하세요.') from exc
 
     def summary():
         parts = [f'검증 완료 {accepted:,}/{len(source):,}자 · 새 호출 {state["calls_started"]}회']
         audit = public_report(exclusions, False)
+        changes = reconciliation.public_report(reconciliations, False)
+        if changes['total_count']:
+            parts.insert(0, f'사전 조정 {changes["applied"]}건 · 보류 {changes["deferred"]}건. 승인 전 변경 전후와 근거를 확인하세요.')
         if audit['total_count']:
             parts.insert(0, f'일부 항목 제외 {audit["total_count"]}개 (직접 {audit["direct_count"]}개 · 연쇄 {audit["dependent_count"]}개). 사전 승인 전 제외 내역을 확인하세요.')
         breadth = type_warnings(dictionary, threshold)
@@ -160,10 +185,10 @@ def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_thr
             warnings.append(warning)
 
     # Preserve inherited validated progress even if this retry fails on its first call.
-    checkpoint()
     save_exclusions()
     write(folder / 'dictionary-progress.json', state)
     try:
+        checkpoint(dictionary, exclusions, reconciliations, accepted)
         for index, (offset, chunk) in enumerate(slices, 1):
             if offset < accepted:
                 continue
@@ -179,16 +204,18 @@ def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_thr
             try:
                 output = cli.complete(run['agent'], run['model'], prompt, folder / str(index), phase='ontology')
                 with caller_validation(cli, folder / str(index), run['agent']) as validation:
-                    merged, excluded = merge_generated_dictionary(dictionary, output, spans, source[:offset + len(chunk)], chunk)
-                    if excluded:
+                    merged, excluded, changes = reconcile_generated_dictionary(dictionary, output, spans, source[:offset + len(chunk)], chunk)
+                    if excluded or any(row['status'] == 'deferred' for row in changes):
                         validation.reject()
                     next_exclusions = add_chunk(exclusions, offset, len(chunk), excluded)
+                    next_reconciliations = reconciliation.add_chunk(reconciliations, offset, len(chunk), changes)
+                    checkpoint(merged, next_exclusions, next_reconciliations, offset + len(chunk))
             except Exception as exc:
                 raise ValueError(f'사전 구간 {index}/{len(slices)} · {exc}') from exc
             dictionary, accepted = merged, offset + len(chunk)
             exclusions = next_exclusions
+            reconciliations = next_reconciliations
             state['completed_chars'] = accepted
-            checkpoint()
             save_exclusions()
             write(folder / 'dictionary-progress.json', state)
         state['status'] = 'complete'

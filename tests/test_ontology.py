@@ -249,7 +249,7 @@ class OntologyWorkflow(unittest.TestCase):
         class Fake:
             def complete(self,agent,model,prompt,folder,**kwargs):
                 prompts.append(prompt)
-                return wire_dictionary(DICTIONARY, prompt) if '기존 사전은 문맥' in prompt else extraction_response([FACTS[0]]*MAX_FACTS)
+                return wire_dictionary(DICTIONARY, prompt) if 'sources' in json.loads(prompt.split('입력(JSON):\n',1)[1]) else extraction_response([FACTS[0]]*MAX_FACTS)
         service=Service(self.store,self.root,Fake())
         run=service.start(self.doc['id'],'agy','',stage='ontology',expected_version=1,expected_generation=1)
         service.pool.shutdown(wait=True)
@@ -268,7 +268,7 @@ class OntologyWorkflow(unittest.TestCase):
             service=Service(self.store,self.root,Fake());run=service.start(self.doc['id'],'agy','',expected_version=1,expected_generation=1);service.pool.shutdown(wait=True)
         self.assertEqual(self.store.run(run['id'])['status'],'error')
 
-    def test_multichunk_dictionary_failure_leaves_no_partial_candidate(self):
+    def test_multichunk_dictionary_conflict_is_deferred_before_approval(self):
         source=SOURCE.ljust(4000)+SOURCE
         doc=self.store.register('long','long.md',source.encode(),source)
         class Fake:
@@ -278,9 +278,12 @@ class OntologyWorkflow(unittest.TestCase):
                 if self.calls==1:return wire_dictionary(DICTIONARY, args[2])
                 return wire_dictionary({'entities':[DICTIONARY['entities'][0]|{'type':'Other'}],'aliases':[],'relations':[]}, args[2])
         service=Service(self.store,self.root,Fake());run=service.start(doc['id'],'agy','',stage='ontology',expected_version=1,expected_generation=1);service.pool.shutdown(wait=True)
-        self.assertEqual(self.store.run(run['id'])['status'],'error')
-        self.assertIn('충돌',self.store.run(run['id'])['detail'])
-        self.assertEqual(self.store.document(doc['id'])['items'],[])
+        self.assertEqual(self.store.run(run['id'])['status'],'success')
+        item=self.store.document(doc['id'])['items'][0]
+        self.assertEqual(item['status'],'pending')
+        self.assertEqual(item['payload'],DICTIONARY)
+        self.assertEqual(service.dictionary_reconciliations(run['id'])['deferred'],1)
+        self.assertEqual(self.store.snapshot()['facts'],[])
 
     def test_more_than_twenty_explicit_states_are_saved(self):
         states=[f'상태{i:02}' for i in range(25)]
