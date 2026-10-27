@@ -12,6 +12,7 @@ MAX_TIMING_BYTES = 8192
 POLL_SECONDS = .05
 MARKS = ('spawn_requested', 'spawn_returned', 'first_stdout', 'exit_observed',
          'interpret_started', 'interpret_completed', 'finished')
+PERSISTENT_MARKS = (*MARKS, 'worker_acquired', 'reset_completed', 'request_sent', 'response_received')
 ERRORS = ('preparation', 'executable_missing', 'spawn', 'exit_nonzero', 'timeout', 'output_limit', 'interpretation', 'process', 'recording')
 
 
@@ -48,6 +49,16 @@ class CallTiming:
         except Exception:
             self.disabled = True
 
+    def persistent(self):
+        self.value.update(schema_version=2, process_reused=None)
+        self.value['offsets_seconds'] = dict.fromkeys(PERSISTENT_MARKS)
+
+    def reused(self, value):
+        self.value['process_reused'] = value
+
+    def is_reused(self):
+        return self.value.get('process_reused')
+
     def observe_stdout(self, path):
         try:
             if self.disabled or self.value['offsets_seconds']['first_stdout'] is not None:
@@ -77,7 +88,10 @@ class CallTiming:
 def validate_timing(value):
     keys = {'schema_version', 'cli_call_id', 'agent', 'model', 'phase', 'cli_version', 'cli_version_source',
             'settings', 'status', 'error_code', 'exit_code', 'offsets_seconds'}
-    if not isinstance(value, dict) or set(value) != keys or type(value['schema_version']) is not int or value['schema_version'] != 1:
+    persistent = isinstance(value, dict) and value.get('schema_version') == 2
+    if persistent:
+        keys.add('process_reused')
+    if not isinstance(value, dict) or set(value) != keys or type(value['schema_version']) is not int or value['schema_version'] not in (1, 2):
         raise ValueError('timing schema')
     if (not isinstance(value['cli_call_id'], str) or not re.fullmatch(r'[a-f0-9]{32}', value['cli_call_id'])
             or value['agent'] not in AGENTS - {'openrouter'}
@@ -91,13 +105,15 @@ def validate_timing(value):
             or type(settings['max_output_bytes']) is not int or settings['max_output_bytes'] <= 0
             or type(settings['timeout_seconds']) not in (int, float) or not 0 <= settings['timeout_seconds'] <= 10**9 or not math.isfinite(settings['timeout_seconds']) or type(settings['stdout_poll_seconds']) not in (int, float)
             or settings['stdout_poll_seconds'] != POLL_SECONDS
-            or not isinstance(marks, dict) or set(marks) != set(MARKS)):
+            or not isinstance(marks, dict) or set(marks) != set(PERSISTENT_MARKS if persistent else MARKS)):
         raise ValueError('timing settings')
     for number in marks.values():
         if number is not None and (type(number) not in (int, float) or not 0 <= number <= 10**9 or not math.isfinite(number)):
             raise ValueError('timing offsets')
     if marks['finished'] is None or any(n is not None and n > marks['finished'] for n in marks.values()):
         raise ValueError('timing end')
+    if persistent:
+        return _validate_persistent(value)
     chain = [marks[k] for k in ('spawn_requested', 'spawn_returned', 'exit_observed', 'interpret_started', 'interpret_completed')]
     if any(chain[i] is None and any(n is not None for n in chain[i + 1:]) for i in range(len(chain))):
         raise ValueError('timing missing predecessor')
@@ -130,6 +146,37 @@ def validate_timing(value):
     return value
 
 
+def _validate_persistent(value):
+    marks = value['offsets_seconds']
+    reused = value['process_reused']
+    if value['agent'] != 'claude' or (reused is not None and type(reused) is not bool):
+        raise ValueError('persistent identity')
+    chain = [marks[k] for k in ('worker_acquired', 'reset_completed', 'request_sent', 'response_received',
+                               'interpret_started', 'interpret_completed')]
+    known = [v for v in chain if v is not None]
+    if known != sorted(known) or any(chain[i] is None and any(v is not None for v in chain[i+1:]) for i in range(len(chain))):
+        raise ValueError('persistent turn order')
+    if reused is True and any(marks[k] is not None for k in ('spawn_requested', 'spawn_returned')):
+        raise ValueError('reused process spawned')
+    if marks['spawn_returned'] is not None and (marks['spawn_requested'] is None or marks['spawn_returned'] < marks['spawn_requested']):
+        raise ValueError('persistent spawn order')
+    if marks['reset_completed'] is not None and (reused is None or (reused is False and marks['spawn_returned'] is None)):
+        raise ValueError('persistent worker missing')
+    status, error, code = value['status'], value['error_code'], value['exit_code']
+    if status not in ('success', 'not_started', 'error', 'timeout') or error not in (None, *ERRORS):
+        raise ValueError('persistent result')
+    if code is not None and type(code) is not int:
+        raise ValueError('persistent exit')
+    if (code is None) != (marks['exit_observed'] is None):
+        raise ValueError('persistent exit observation')
+    if status == 'success':
+        if error is not None or code is not None or marks['interpret_completed'] is None:
+            raise ValueError('persistent success')
+    elif error is None or (status == 'timeout') != (error == 'timeout'):
+        raise ValueError('persistent failure')
+    return value
+
+
 def read_cli_timing(root, relative_folder):
     """Read only a bounded record linked to the same run and usage call ID."""
     unavailable = {'available': False, 'reason': 'CLI 호출 측정 기록을 확인할 수 없습니다.'}
@@ -154,10 +201,16 @@ def read_cli_timing(root, relative_folder):
         marks = value['offsets_seconds']
         def elapsed(start, end):
             return marks[end] - marks[start] if marks[start] is not None and marks[end] is not None else None
-        return {'available': True, **value, 'durations_seconds': {
+        durations = {
             'spawn': elapsed('spawn_requested', 'spawn_returned'),
             'process_observed': elapsed('spawn_returned', 'exit_observed'),
-            'interpret': elapsed('interpret_started', 'interpret_completed'), 'total': marks['finished']}}
+            'interpret': elapsed('interpret_started', 'interpret_completed'), 'total': marks['finished']}
+        if value['schema_version'] == 2:
+            if run.get('transport_mode') != 'persistent' or run.get('process_reused') != value['process_reused']:
+                return unavailable
+            durations.update(worker_wait=marks['worker_acquired'], reset=elapsed('worker_acquired', 'reset_completed'),
+                             response_wait=elapsed('request_sent', 'response_received'))
+        return {'available': True, **value, 'durations_seconds': durations}
     except (OSError, ValueError, TypeError, KeyError, RecursionError):
         return unavailable
 
@@ -169,6 +222,9 @@ class _UnavailableTiming:
     def observe_stdout(self, path): pass
     def outcome(self, status, error_code=None, exit_code=None): pass
     def finish(self, folder): pass
+    def persistent(self): pass
+    def reused(self, value): pass
+    def is_reused(self): return None
 
 
 def start_timing(agent, model, phase, timeout, max_output):

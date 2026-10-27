@@ -265,15 +265,19 @@ def main(argv=None):
     store = Store(root / 'verinote.sqlite3')
     store.recover()
     service = Service(store, root, credentials=credentials, relation_type_warning_threshold=credentials.relation_type_warning_threshold)
-    server = Server(('127.0.0.1', args.port), store, service, credentials=credentials)
-    print(f'Verinote: http://127.0.0.1:{server.server_port}', flush=True)
+    server = None
     try:
+        server = Server(('127.0.0.1', args.port), store, service, credentials=credentials)
+        print(f'Verinote: http://127.0.0.1:{server.server_port}', flush=True)
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
-        server.server_close()
-        service.pool.shutdown(wait=True)
+        try:
+            if server is not None:
+                server.server_close()
+        finally:
+            service.close()
 
 
 if __name__ == '__main__':

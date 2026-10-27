@@ -313,7 +313,8 @@ def measure(output, *, cases=('short', 'long'), scenario='normal', mode='fake', 
                         store.run_status(seed['id'], 'running'); store.finish_run(seed['id'], dictionary=case['dictionary'])
                         item = next(i for i in store.document(doc['id'])['items'] if i['kind'] == 'ontology')
                         store.review(item['id'], item['revision'], 'approved', 'Synthetic fixture', 'Versioned human-reviewed gold')
-                        base = caller_factory(case) if caller_factory else (FakeCLI(case, scenario) if mode == 'fake' else CLI(timeout=timeout))
+                        # Preserve this benchmark's documented fresh-process baseline.
+                        base = caller_factory(case) if caller_factory else (FakeCLI(case, scenario) if mode == 'fake' else CLI(timeout=timeout, persistent=False))
                         base.timeout = timeout
                         service = Service(store, root, BudgetCaller(base, budget, save))
                         service.pool.shutdown(wait=True)

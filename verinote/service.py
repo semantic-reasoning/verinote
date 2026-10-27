@@ -76,6 +76,14 @@ class Service:
         self.cleanup_lock = threading.Lock()
         self.cleanup_logs()
 
+    def close(self):
+        """Drain submitted work before closing the shared transport."""
+        try:
+            self.pool.shutdown(wait=True)
+        finally:
+            if hasattr(self.cli, 'close'):
+                self.cli.close()
+
     def with_usage(self, kind, owner, *, coverage_details=True):
         from .usage import job_calls, summarize
         calls = job_calls(self.root, kind, owner)

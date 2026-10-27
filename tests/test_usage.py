@@ -159,7 +159,7 @@ class Transport(unittest.TestCase):
                     rates[agent]['input'] = 777  # Settings change after the invocation snapshot.  # noqa: B023 (intentional: same-iteration rates/agent)
                     return str(script)  # noqa: B023 (intentional: same-iteration script)
                 with patch('verinote.agents.executable', side_effect=launching):
-                    self.assertEqual(CLI(rates=lambda:rates).complete(agent,'','synthetic',root/agent), {'ok':True})  # noqa: B023 (intentional: same-iteration rates)
+                    self.assertEqual(CLI(rates=lambda:rates, persistent=False).complete(agent,'','synthetic',root/agent), {'ok':True})  # noqa: B023 (intentional: same-iteration rates)
                 u = json.loads((root/agent/'usage.json').read_text())
                 self.assertEqual(u['status'],'success'); self.assertTrue(u['complete'])
                 self.assertEqual(u['rate_snapshot'],RATE)
