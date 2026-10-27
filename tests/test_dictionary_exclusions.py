@@ -73,25 +73,18 @@ class FilterRules(unittest.TestCase):
         self.assertEqual(len(merged['aliases']), 1); self.assertEqual(len(merged['relations']), 1)
         self.assertEqual(len(excluded), 1)
 
-    def test_conflicts_cannot_be_laundered_by_invalid_evidence(self):
+    def test_invalid_evidence_never_changes_prior_definitions(self):
         source, spans, output = self.sample()
         previous = {'entities': [{'id': 'a', 'name': 'Alpha', 'type': 'Service', 'quote': spans[0]['text']}], 'aliases': [], 'relations': []}
         output['entities'][0].update(type='Changed', quote_ref=['missing', 'missing'])
-        with self.assertRaisesRegex(ValueError, '충돌'):
-            merge_generated_dictionary(previous, output, spans, source, source)
+        merged, excluded = merge_generated_dictionary(previous, output, spans, source, source)
+        self.assertEqual(merged['entities'][0], previous['entities'][0] | {'quote': previous['entities'][0]['quote'].strip()})
+        self.assertIn('reference', [r['code'] for r in excluded])
         source, spans, output = self.sample()
-        duplicate = dict(output['entities'][0], name='Invented', quote_ref=['missing'] * 2)
-        output['entities'].append(duplicate)
-        with self.assertRaisesRegex(ValueError, '충돌'):
-            merge_generated_dictionary(EMPTY, output, spans, source, source)
-        source, spans, output = self.sample()
-        output['aliases'].append(dict(output['aliases'][0], entity='a', quote_ref=['missing'] * 2))
-        with self.assertRaisesRegex(ValueError, '충돌'):
-            merge_generated_dictionary(EMPTY, output, spans, source, source)
-        source, spans, output = self.sample()
-        output['relations'].append(dict(output['relations'][0], description='Different', quote_ref=['missing'] * 2))
-        with self.assertRaisesRegex(ValueError, '충돌'):
-            merge_generated_dictionary(EMPTY, output, spans, source, source)
+        output['entities'].append(dict(output['entities'][0], name='Invented', quote_ref=['missing'] * 2))
+        merged, excluded = merge_generated_dictionary(EMPTY, output, spans, source, source)
+        self.assertNotIn('a', [r['id'] for r in merged['entities']])
+        self.assertTrue(excluded)
 
     def test_structure_values_and_original_unknown_dependencies_remain_fatal(self):
         for change in (lambda o: o['entities'][1].update(name=123),
@@ -215,7 +208,7 @@ class Generation(unittest.TestCase):
         doc = self.new_doc(SOURCE.ljust(4000) + SOURCE)
         first, _ = self.run_job(doc, [DICTIONARY, TimeoutError('fixture timeout')])
         path = self.checkpoint(first); saved = json.loads(path.read_text())
-        saved['schema_version'] = 1; saved.pop('exclusions'); saved['contract'].pop('filter_policy')
+        saved['schema_version'] = 1; saved.pop('exclusions'); saved.pop('reconciliations'); saved['contract'].pop('filter_policy'); saved['contract'].pop('reconciliation_policy')
         path.write_text(json.dumps(saved))
         second, calls = self.run_job(doc, [DICTIONARY])
         self.assertEqual(second['status'], 'success', second['detail'])
@@ -298,6 +291,27 @@ class PublicWarnings(unittest.TestCase):
     finish = integration.Integration.finish
     start = integration.Integration.start
     audit = integration.Integration.audit
+
+    def test_reconciliation_is_visible_in_run_and_pending_document(self):
+        doc = self.upload('Alpha Beta are the same concept.')
+        def output(prompt):
+            payload = json.loads(prompt.split('입력(JSON):\n', 1)[1])
+            ref = [payload['sources'][0]['id']] * 2
+            return dict(entities=[dict(id=k, name=k, type='Concept', quote_ref=ref) for k in ('Alpha','Beta')],
+                        aliases=[dict(alias='Alpha',entity='Beta',quote_ref=ref)],relations=[])
+        with patch('verinote.openrouter._HTTPS', side_effect=Fixture([output])):
+            run = self.finish(self.start(doc))
+        self.assertEqual(run['status'],'success',run['detail'])
+        self.assertEqual(run['dictionary_reconciliations']['applied'],1)
+        item = self.request('/api/documents/'+doc['id'])['items'][0]
+        self.assertEqual(item['status'],'pending')
+        report = item['dictionary_reconciliations']
+        self.assertEqual(report['items'][0]['before']['id'],'Alpha')
+        self.assertEqual(report['items'][0]['after']['entity'],'Beta')
+        summary = self.request('/api/runs')[0]['dictionary_reconciliations']
+        self.assertEqual(summary['applied'],1); self.assertFalse(summary['details_loaded'])
+        self.assertEqual(summary['items'],[]); self.assertEqual(self.store.snapshot()['facts'],[])
+        self.audit()
 
     def test_warning_visible_before_approval_and_call_verdict_is_failed(self):
         doc = self.upload()

@@ -233,6 +233,7 @@ class Pipeline(unittest.TestCase):
         first, _ = self.run_job(doc, [outputs[0], TimeoutError('stop')])
         checkpoint = self.checkpoint(first)
         value = json.loads(checkpoint.read_text())
+        value['schema_version'] = 2; value.pop('reconciliations'); value['contract'].pop('reconciliation_policy')
         value['contract']['prompt'] = PREVIOUS_COUNT_LIMIT_PROMPT
         checkpoint.write_text(json.dumps(value))
 
@@ -278,7 +279,7 @@ class Pipeline(unittest.TestCase):
             self.assertEqual(result['status'],'success');self.assertEqual(calls[0]['offset'],0)
             self.assertIn('제외',result['detail'])
 
-    def test_checkpoint_write_failures_preserve_success(self):
+    def test_checkpoint_write_failures_do_not_publish_unaudited_draft(self):
         for fail_at in (1,2):
             doc=self.new_doc(SOURCE.ljust(4000)+'END');writes=0
             def write(path,value):
@@ -289,8 +290,8 @@ class Pipeline(unittest.TestCase):
                 atomic_json(path,value)
             with patch('verinote.dictionary_pipeline.atomic_json',side_effect=write):
                 result,calls=self.run_job(doc,[DICTIONARY,EMPTY])
-            self.assertEqual(result['status'],'success',result['detail']);self.assertIn('저장 실패',result['detail'])
-            self.assertEqual(len(self.store.document(doc['id'])['items']),1)
+            self.assertEqual(result['status'],'error',result['detail']);self.assertIn('저장 실패',result['detail'])
+            self.assertEqual(self.store.document(doc['id'])['items'],[])
 
     def test_invalid_delta_not_cached_and_no_retry(self):
         doc=self.new_doc(SOURCE.ljust(4000)+'END')
@@ -381,9 +382,9 @@ class Pipeline(unittest.TestCase):
         doc=self.new_doc(source.ljust(4000)+sample.q1)
         conflict=sample.dictionary();conflict['entities'][0]['type']='Device'
         result,calls=self.run_job(doc,[dictionary,conflict])
-        self.assertEqual(result['status'],'error');self.assertIn('기존 사전과 현재 구간 사이',result['detail'])
-        self.assertEqual(json.loads(self.checkpoint(result).read_text())['offset'],4000)
-        self.assertEqual(self.store.document(doc['id'])['items'],[])
+        self.assertEqual(result['status'],'success',result['detail']);self.assertIn('보류',result['detail'])
+        self.assertEqual(json.loads(self.checkpoint(result).read_text())['offset'],len(doc['text']))
+        self.assertEqual(self.store.document(doc['id'])['items'][0]['status'],'pending')
 
     def test_old_merge_contract_restarts_visibly(self):
         doc=self.new_doc(SOURCE.ljust(4000)+'END')

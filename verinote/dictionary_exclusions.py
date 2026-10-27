@@ -81,10 +81,13 @@ def validate_report(value, run, doc, accepted=None, *, filter_policy=FILTER_POLI
             raise ValueError('이전 정책에 없는 사전 제외 사유입니다.')
         if filter_policy < 3 and row['code'] in {'alias_existing_target', 'relation_undeclared_type'}:
             raise ValueError('이전 정책에 없는 사전 제외 사유입니다.')
+        if filter_policy < 4 and row['code'] in {'definition_conflict', 'entity_alias_conflict'}:
+            raise ValueError('이전 정책에 없는 사전 제외 사유입니다.')
         position = (row['chunk'], list(LIMITS).index(row['kind']), row['row'])
         expected_kind = {'entity_evidence': 'entities', 'alias_evidence': 'aliases',
                          'excluded_entity': 'aliases', 'excluded_type': 'relations',
                          'alias_existing_entity': 'aliases', 'alias_existing_target': 'aliases',
+                         'entity_alias_conflict': 'entities',
                          'relation_undeclared_type': 'relations'}.get(row['code'])
         if expected_kind is not None and row['kind'] != expected_kind:
             raise ValueError('사전 제외 사유와 항목 종류가 일치하지 않습니다.')
@@ -158,7 +161,7 @@ def read_report(root, store, run_id, *, document_id=None, version=None, include_
         raw = safe_file(root, f'runs/{run_id}/dictionary-checkpoint.json', CHECKPOINT_LIMIT)
         checkpoint = json.loads(raw) if raw else None
         if (not isinstance(checkpoint, dict) or checkpoint.get('run_id') != run_id
-                or type(checkpoint.get('schema_version')) is not int or checkpoint['schema_version'] != 2
+                or type(checkpoint.get('schema_version')) is not int or checkpoint['schema_version'] not in (2, 3)
                 or type(checkpoint.get('offset')) is not int
                 or not isinstance(checkpoint.get('contract'), dict)
                 or type(checkpoint['contract'].get('filter_policy')) is not int

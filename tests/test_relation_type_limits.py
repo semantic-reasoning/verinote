@@ -67,8 +67,9 @@ class TypePolicy(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ValueError): validate_dictionary(value, SOURCE)
         payload = wire({'sources': source_spans(SOURCE)})
         payload['relations'][0]['description'] = 'Conflicting description'
-        with self.assertRaisesRegex(ValueError, '충돌'):
-            merge_generated_dictionary(dictionary(), payload, source_spans(SOURCE), SOURCE, SOURCE)
+        merged, excluded = merge_generated_dictionary(dictionary(), payload, source_spans(SOURCE), SOURCE, SOURCE)
+        self.assertEqual(merged, validate_dictionary(dictionary(), SOURCE))
+        self.assertEqual(excluded[0]['code'], 'definition_conflict')
         huge = dictionary(200)
         for entity in huge['entities']: entity['id'] += 'x' * 180
         with patch('verinote.ontology.MAX_DICTIONARY_CONTEXT_BYTES', 1000), self.assertRaisesRegex(ValueError, '문맥'):

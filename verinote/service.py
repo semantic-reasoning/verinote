@@ -94,6 +94,7 @@ class Service:
             result['coverage'] = report
         if kind == 'runs' and owner.get('stage') == 'ontology':
             result['dictionary_exclusions'] = self.dictionary_exclusions(owner['id'], include_items=coverage_details)
+            result['dictionary_reconciliations'] = self.dictionary_reconciliations(owner['id'], include_items=coverage_details)
             from .dictionary_type_warnings import read_run_warnings
             result['relation_type_warnings'] = read_run_warnings(self.root, self.store, owner['id'], include_items=coverage_details)
         if kind == 'runs':
@@ -104,6 +105,10 @@ class Service:
 
     def dictionary_exclusions(self, run_id, *, document_id=None, version=None, include_items=True):
         from .dictionary_exclusions import read_report
+        return read_report(self.root, self.store, run_id, document_id=document_id, version=version, include_items=include_items)
+
+    def dictionary_reconciliations(self, run_id, *, document_id=None, version=None, include_items=True):
+        from .dictionary_reconciliation import read_report
         return read_report(self.root, self.store, run_id, document_id=document_id, version=version, include_items=include_items)
 
     def usage_report(self):

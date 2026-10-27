@@ -1,4 +1,4 @@
-"""Prior entity IDs and alias targets survive conflicting generated aliases."""
+"""Ambiguous aliases are deferred while grounded revisions can correct drafts."""
 import copy
 import json
 import unittest
@@ -61,22 +61,21 @@ class Filter(unittest.TestCase):
         invalid = copy.deepcopy(merged); invalid['aliases'].append({'alias': '테디노트', 'entity': '이경록', 'quote': SOURCE})
         with self.assertRaises(ValueError): validate_dictionary(invalid, SOURCE)
 
-    def test_same_response_new_entity_collision_stays_fatal(self):
+    def test_same_response_different_type_collision_is_deferred(self):
         value = self.sample(); value['entities'].insert(0, output({'sources': source_spans(SOURCE)}, 'initial')['entities'][0])
-        with self.assertRaisesRegex(ValueError, '충돌'): self.merge(value, EMPTY)
+        merged, excluded = self.merge(value, EMPTY)
+        self.assertEqual(len(merged['entities']), 2); self.assertEqual(excluded[0]['code'], 'definition_conflict')
         merged, excluded = self.merge(value)
         self.assertEqual(len(merged['entities']), 2); self.assertEqual(len(excluded), 1)
 
     def test_conflicts_and_malformed_rows_cannot_be_hidden_by_exclusion(self):
-        for mutate in (lambda v: v['aliases'].append(v['aliases'][1] | {'entity': '테디노트'}),
-                       lambda v: v['aliases'][1].update(entity='unknown'),
+        for mutate in (lambda v: v['aliases'][1].update(entity='unknown'),
                        lambda v: v['aliases'][1].update(quote_ref=[1, 2]),
-                       lambda v: v['aliases'][1].update(extra=True),
-                       lambda v: v['entities'].append(output({'sources': source_spans(SOURCE)}, 'initial')['entities'][0] | {'type': '다른타입'})):
+                       lambda v: v['aliases'][1].update(extra=True)):
             value = self.sample(); mutate(value)
             with self.subTest(mutate=mutate), self.assertRaises(ValueError): self.merge(value)
 
-    def test_old_alias_target_is_preserved_and_reverse_namespace_conflict_stays_fatal(self):
+    def test_old_alias_target_and_reverse_namespace_are_deferred(self):
         previous = copy.deepcopy(PREVIOUS)
         previous['entities'].append({'id': '이경록', 'name': '이경록', 'type': '인물', 'quote': SOURCE})
         previous['aliases'] = [{'alias': '경록', 'entity': '이경록', 'quote': SOURCE}]
@@ -89,15 +88,16 @@ class Filter(unittest.TestCase):
         invalid = copy.deepcopy(merged); invalid['aliases'].append({'alias': '경록', 'entity': '테디노트', 'quote': SOURCE})
         with self.assertRaises(ValueError): validate_dictionary(invalid, SOURCE)
         value = self.sample(); value['entities'].append({'id': '경록', 'name': '이경록', 'type': '인물', 'quote_ref': value['entities'][0]['quote_ref']})
-        with self.assertRaisesRegex(ValueError, '충돌'): self.merge(value, previous)
+        merged, excluded = self.merge(value, previous)
+        self.assertEqual(merged['aliases'], previous['aliases'])
+        self.assertIn('entity_alias_conflict', [r['code'] for r in excluded])
 
     def test_target_exclusion_does_not_hide_invalid_dependencies_or_same_response_conflicts(self):
         previous = copy.deepcopy(PREVIOUS)
         previous['aliases'] = [{'alias': '테디', 'entity': '테디노트', 'quote': SOURCE}]
         for mutate in (lambda v: v['aliases'][0].update(entity='unknown'),
                        lambda v: v['aliases'][0].update(quote_ref=[1, 2]),
-                       lambda v: v['aliases'][0].update(extra=True),
-                       lambda v: v['aliases'].append(v['aliases'][0] | {'entity': '테디노트'})):
+                       lambda v: v['aliases'][0].update(extra=True)):
             value = self.sample()
             value['aliases'] = [{'alias': '테디', 'entity': '이경록', 'quote_ref': value['entities'][0]['quote_ref']}]
             mutate(value)
@@ -136,7 +136,7 @@ class Filter(unittest.TestCase):
         self.assertEqual(excluded, []); self.assertEqual([r['alias'] for r in merged['aliases']], ['경록'])
         value = self.sample(); value['aliases'][1]['quote_ref'] = ['missing'] * 2
         _, excluded = self.merge(value)
-        self.assertEqual(excluded[0]['code'], 'alias_existing_entity')
+        self.assertEqual(excluded[0]['code'], 'reference')
 
     def test_audit_kind_policy_and_cap_validation(self):
         source = (SOURCE.ljust(3988, 'x') + '\n') * 2 + SOURCE.ljust(1058, 'x')
@@ -180,6 +180,7 @@ class Pipeline(unittest.TestCase):
     def test_v1_3989_prefix_resumes_and_saves_current_audit_without_extra_calls(self):
         doc = self.new_doc(); first, _ = self.execute(doc, ['initial', ValueError('stop')])
         path = self.checkpoint(first); saved = json.loads(path.read_text()); saved['contract']['filter_policy'] = 1
+        saved['schema_version'] = 2; saved.pop('reconciliations'); saved['contract'].pop('reconciliation_policy')
         path.write_text(json.dumps(saved))
         (path.parent / 'dictionary-exclusions.json').unlink()
         self.assertTrue(read_report(self.root, self.store, first['id'])['partial'])
@@ -197,7 +198,7 @@ class Pipeline(unittest.TestCase):
         doc = self.new_doc()
         first, _ = self.execute(doc, ['alias_initial', ValueError('stop')])
         path = self.checkpoint(first); saved = json.loads(path.read_text())
-        saved['contract']['filter_policy'] = 2; path.write_text(json.dumps(saved))
+        saved['contract']['filter_policy'] = 2; saved['schema_version'] = 2; saved.pop('reconciliations'); saved['contract'].pop('reconciliation_policy'); path.write_text(json.dumps(saved))
         second, calls = self.execute(doc, ['alias_changed', ValueError('stop')])
         self.assertEqual(calls, [3989, 7978])
         self.assertEqual(second['status'], 'error')

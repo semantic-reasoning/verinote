@@ -180,6 +180,8 @@ class Handler(BaseHTTPRequestHandler):
                             item['relation_type_warnings'] = type_warnings(item['payload'], self.server.service.relation_type_warning_threshold)
                             item['dictionary_exclusions'] = self.server.service.dictionary_exclusions(
                                 item['run_id'], document_id=doc_id, version=doc['version'])
+                            item['dictionary_reconciliations'] = self.server.service.dictionary_reconciliations(
+                                item['run_id'], document_id=doc_id, version=doc['version'])
                     return self.send(doc)
                 if len(parts) == 4 and parts[3] == 'raw' and method == 'GET':
                     raw, _ = store.raw(doc_id, version or store.document(doc_id)['version'])
