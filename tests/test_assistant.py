@@ -79,6 +79,61 @@ class AssistantTests(unittest.TestCase):
         job, _ = self.ask([tool(subject='없는 서비스'), {'answer': {'claims': [], 'unknowns': ['현재 승인 스냅샷에서 확인할 수 없습니다.']}}])
         self.assertEqual(job['status'], 'success')
 
+    def test_flattened_search_in_mixed_batch_can_finish_answer(self):
+        self.approve(self.extract())
+        requests = batch(tool(subject='주문'), tool(action='upstream', subject='원장', predicate='depends_on'))
+        requests['tools'].append({'name': 'search_knowledge', 'query': '주문'})
+        with patch('verinote.assistant.engine.query', wraps=engine.query) as query:
+            job, fake = self.ask([requests, answer()])
+        self.assertEqual(job['status'], 'success', job['error'])
+        self.assertEqual((query.call_count, len(fake.calls)), (2, 2))
+        search = job['trace'][2]
+        self.assertEqual(search['arguments'], {'query': '주문'})
+        self.assertEqual(search['status'], 'success')
+        self.assertIn('lookup_id', search['result'])
+        self.assertIn('K1', fake.calls[1][2])
+
+    def test_flattened_graph_shares_canonical_reuse_and_budgets(self):
+        self.approve(self.extract())
+        flat = {'tools': [{'name': 'query_graph', 'subject': '주문'}]}
+        with patch('verinote.assistant.engine.query', wraps=engine.query) as query:
+            job, _ = self.ask([flat, tool(subject='주문'), answer()])
+        self.assertEqual(job['status'], 'success', job['error'])
+        self.assertEqual(query.call_count, 1)
+        self.assertEqual(job['trace'][1]['reused_from'], 1)
+        job, fake = self.ask([batch(flat, flat, flat)] * 4)
+        self.assertEqual(job['status'], 'error')
+        self.assertIn('도구 요청 개수', job['error'])
+        self.assertEqual((len(fake.calls), len(job['trace'])), (4, 9))
+
+    def test_flattened_calls_preserve_rejections(self):
+        cases = [None, [], 'query_graph', {}, {'name': []},
+                 {'name': 'execute', 'code': 'bad'}, {'name': 'query_graph', 'code': 'bad'},
+                 {'name': 'search_knowledge', 'query': 42},
+                 {'name': 'query_graph', 'subject': []},
+                 {'name': 'query_graph', 'arguments': None},
+                 {'name': 'query_graph', 'arguments': '{}'},
+                 {'name': 'query_graph', 'arguments': {'subject': '주문'}, 'subject': '주문'}]
+        for call in cases:
+            with self.subTest(call=call):
+                assistant = Assistant(self.store, None, self.store.snapshot(), {}, self.root, lambda *a: None)
+                with patch('verinote.assistant.engine.query') as query:
+                    with self.assertRaises(ValueError):
+                        assistant.execute(call)
+                    query.assert_not_called()
+                self.assertEqual(assistant.evidence, {})
+
+    def test_flattened_source_still_requires_delivered_authorization(self):
+        flat = {'tools': [{'name': 'read_document', 'document_id': self.doc['id'], 'fallback': fallback()}]}
+        with patch.object(self.store, 'source_text', side_effect=AssertionError('unauthorized source read')):
+            job, _ = self.ask([flat])
+        self.assertEqual(job['status'], 'error')
+        self.assertIn('검색 결과를 먼저', job['error'])
+        self.assertEqual(job['evidence'], {})
+        job, _ = self.ask([tool(), {'tools': [{'name': 'search_documents', 'query': '주문'}]}, answer(kind='source')])
+        self.assertEqual(job['status'], 'error')
+        self.assertIn('근거', job['error'])
+
     def test_reject_invalid_model_contracts(self):
         self.approve(self.extract())
         cases = [[answer()], [tool(),answer(ids=['invented'])], [tool(),answer(kind='source')],
