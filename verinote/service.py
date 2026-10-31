@@ -174,6 +174,10 @@ class Service:
                 'groups': [{'agent': key[0], 'model': key[1], 'stage': key[2], 'usage': summarize(group)} for key, group in sorted(groups.items())]}
 
     def register_transport(self, agent, model, question=None, *, stage=None, max_tokens=_UNSET_TOKENS, answer_reserve_tokens=_UNSET_TOKENS):
+        if agent == 'ollama':
+            from .ollama import Job
+            caller = Job(self.cli, model=model)
+            return caller.options, caller
         if agent != 'openrouter':
             return None, copy.copy(self.cli) if isinstance(self.cli, CLI) else self.cli
         from .job_transport import JobTransport, capture_options
@@ -197,6 +201,9 @@ class Service:
         return options, JobTransport(self.cli, options, rates=rates)
 
     def job_cli(self, job):
+        if job['agent'] == 'ollama':
+            from .ollama import Job
+            return Job(self.cli, job.get('execution_options'))
         if job['agent'] != 'openrouter':
             return self.cli
         from .job_transport import JobTransport

@@ -17,8 +17,8 @@ from .store import digest, now
 from .transports import Credentials, ExecutionOptions, HTTPResult
 from .usage import MAX_METADATA, atomic_json, calculate, decode_transport, empty_usage
 
-PROVIDERS = {'claude': 'Claude', 'agy': 'Antigravity', 'copilot': 'GitHub Copilot', 'cursor': 'Cursor', 'codex': 'Codex', 'openrouter': 'OpenRouter (API)'}
-TRANSPORTS = {agent: ('http' if agent == 'openrouter' else 'cli') for agent in PROVIDERS}
+PROVIDERS = {'claude': 'Claude', 'agy': 'Antigravity', 'copilot': 'GitHub Copilot', 'cursor': 'Cursor', 'codex': 'Codex', 'openrouter': 'OpenRouter (API)', 'ollama': 'Ollama (로컬 API)'}
+TRANSPORTS = {agent: ('http' if agent == 'openrouter' else 'local_http' if agent == 'ollama' else 'cli') for agent in PROVIDERS}
 CLI_PROVIDERS = {agent: name for agent, name in PROVIDERS.items() if TRANSPORTS[agent] == 'cli'}
 
 
@@ -45,8 +45,8 @@ def validate_model(model, agent=None):
     if not isinstance(model, str) or len(model) > 150 or (model and (model.startswith('-') or not re.fullmatch(r'[\w./:@+\[\],= -]+', model))):
         raise ValueError('모델 ID 형식이 올바르지 않습니다.')
     model = model.strip()
-    if agent == 'openrouter' and not model:
-        raise ValueError('OpenRouter 모델 ID가 필요합니다.')
+    if agent in ('openrouter', 'ollama') and not model:
+        raise ValueError(('Ollama' if agent == 'ollama' else 'OpenRouter') + ' 모델 ID가 필요합니다.')
     return model
 
 
@@ -176,6 +176,9 @@ class CLI:
     def ready(self, agent):
         if agent not in PROVIDERS:
             raise ValueError('지원하지 않는 에이전트')
+        if agent == 'ollama':
+            from .ollama import ready
+            return ready()
         if TRANSPORTS[agent] == 'cli':
             return bool(executable(agent))
         return bool(self.http_adapter is not None and self._credentials is not None
@@ -190,6 +193,11 @@ class CLI:
             raise ValueError('지원하지 않는 에이전트')
         model = validate_model(model, agent)
         timeout = self.effective_timeout(agent, phase)
+        if agent == 'ollama':
+            from .ollama import Job
+            job = Job(self)
+            job.options['timeouts']['ontology' if phase == 'ontology' else 'default'] = timeout
+            return job.complete(agent, model, prompt, folder, phase=phase)
         if TRANSPORTS[agent] == 'http':
             if not self.ready(agent):
                 raise ValueError('OpenRouter HTTP 어댑터 또는 API 자격 증명이 구성되지 않았습니다.')

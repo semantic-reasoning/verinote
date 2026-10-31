@@ -63,7 +63,7 @@ def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_thr
     contract['filter_policy'] = FILTER_POLICY
     contract['reconciliation_policy'] = reconciliation.POLICY
     contract.update(type_warning_policy=POLICY, relation_type_warning_threshold=threshold)
-    if run['agent'] == 'openrouter':
+    if run['agent'] in ('openrouter', 'ollama'):
         from .transports import job_options
         contract['execution_options'] = job_options(run.get('execution_options'))
     if run.get('ontology'):
@@ -87,7 +87,7 @@ def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_thr
                 fields.add('reconciliations')
             if not isinstance(value, dict) or set(value) != fields:
                 raise ValueError('checkpoint shape')
-            if run['agent'] == 'openrouter' and isinstance(value['contract'], dict) and value['contract'].get('execution_options') != contract['execution_options']:
+            if run['agent'] in ('openrouter', 'ollama') and isinstance(value['contract'], dict) and value['contract'].get('execution_options') != contract['execution_options']:
                 option_mismatches += 1
                 raise ValueError('checkpoint HTTP options mismatch')
             offset = value['offset']

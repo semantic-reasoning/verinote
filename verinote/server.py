@@ -118,6 +118,10 @@ class Handler(BaseHTTPRequestHandler):
                 mime = {'index.html': 'text/html; charset=utf-8', 'app.js': 'text/javascript; charset=utf-8', 'style.css': 'text/css; charset=utf-8'}[name]
                 return self.send((WEB / name).read_bytes(), mime=mime)
             if len(parts) == 4 and parts[:2] == ['api', 'providers'] and parts[3] == 'models' and method == 'POST':
+                if parts[2] == 'ollama':
+                    if self.body(): raise ValueError('빈 JSON 객체가 필요합니다.')
+                    from .ollama import catalog
+                    return self.send({'status': 'ok', 'models': catalog(), 'message': '로컬 Ollama에 설치된 모델입니다.'})
                 if parts[2] not in CLI_PROVIDERS:
                     raise ValueError('CLI 제공자의 모델 목록만 조회할 수 있습니다.')
                 if self.body():
@@ -128,7 +132,10 @@ class Handler(BaseHTTPRequestHandler):
                     providers = []
                     for key, name in PROVIDERS.items():
                         value: dict[str, object] = {'id': key, 'name': name, 'transport': TRANSPORTS[key]}
-                        if TRANSPORTS[key] == 'cli':
+                        if key == 'ollama':
+                            from .ollama import ready
+                            value['available'] = ready()
+                        elif TRANSPORTS[key] == 'cli':
                             value['installed'] = bool(executable(key))
                         else:
                             value['configured'] = self.server.credentials.public_status()['openrouter']['configured']
@@ -145,8 +152,9 @@ class Handler(BaseHTTPRequestHandler):
                     if not isinstance(data, dict) or set(data) != {'selected', 'models'} or not isinstance(data.get('selected'), str) or data.get('selected') not in PROVIDERS or not isinstance(data.get('models'), dict) or set(data['models']) - set(PROVIDERS):
                         raise ValueError('에이전트 설정 형식 오류')
                     models = {key: validate_model(value) for key, value in data['models'].items()}
-                    if data['selected'] == 'openrouter':
-                        models['openrouter'] = validate_model(data['models'].get('openrouter', ''), 'openrouter')
+                    if data['selected'] in ('openrouter', 'ollama'):
+                        chosen = data['selected']
+                        models[chosen] = validate_model(data['models'].get(chosen, ''), chosen)
                     return self.send(store.save_settings({'selected': data['selected'], 'models': models}))
             if route.path == '/api/usage-rates':
                 if method == 'GET':

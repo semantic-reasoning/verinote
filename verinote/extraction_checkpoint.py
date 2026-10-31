@@ -45,7 +45,7 @@ class ExtractionCheckpoint:
             'dictionary': {key: pin[key] for key in ('id', 'revision', 'sha256', 'extraction_contract')},
             'dictionary_payload_sha256': digest(pin['payload']),
         }
-        if run['agent'] == 'openrouter':
+        if run['agent'] in ('openrouter', 'ollama'):
             from .transports import job_options
             self.contract['execution_options'] = job_options(run.get('execution_options'))
         if run.get('extraction_options') is not None:

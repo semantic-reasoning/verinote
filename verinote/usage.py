@@ -5,7 +5,7 @@ import math
 import re
 from pathlib import Path
 
-AGENTS = {'agy', 'claude', 'copilot', 'cursor', 'codex', 'openrouter'}
+AGENTS = {'agy', 'claude', 'copilot', 'cursor', 'codex', 'openrouter', 'ollama'}
 TOKEN_KEYS = ('input', 'output', 'cache_read', 'cache_write', 'reasoning')
 PRICE_KEYS = ('input', 'output', 'cache_read', 'cache_write')
 MAX_METADATA = 256 * 1024
@@ -353,10 +353,13 @@ def job_calls(root, kind, owner):
         try:
             value = json.loads(data) if data else None
             if isinstance(value, dict) and type(value.get('schema_version')) is int and value['schema_version'] == 1 and value.get('agent') == owner['agent'] and value.get('status') in ('starting', 'running', 'success', 'error', 'not_started') and isinstance(value.get('tokens'), dict):
-                if owner['agent'] != 'openrouter' or (isinstance(metadata, dict) and metadata.get('transport') == 'http'
+                if owner['agent'] not in ('openrouter', 'ollama') or (isinstance(metadata, dict) and metadata.get('transport') == ('local_http' if owner['agent'] == 'ollama' else 'http')
                         and isinstance(metadata.get('provider_call_id'), str)
                         and re.fullmatch(r'[a-f0-9]{32}', metadata['provider_call_id'])
-                        and value.get('provider_call_id') == metadata['provider_call_id']):
+                        and value.get('provider_call_id') == metadata['provider_call_id']
+                        and (owner['agent'] != 'ollama' or (metadata.get('agent') == 'ollama'
+                             and metadata.get('model') == owner.get('model')
+                             and value.get('requested_model') == owner.get('model')))):
                     usage = value
         except (ValueError, UnicodeError):
             pass
@@ -385,7 +388,7 @@ def job_calls(root, kind, owner):
         except ValueError:
             clean['rate_snapshot'] = None
         clean['tokens'] = {k: number(usage['tokens'].get(k), True) for k in TOKEN_KEYS}
-        if any(clean['tokens'][k] is None for k in PRICE_KEYS):
+        if any(clean['tokens'][k] is None for k in (('input', 'output') if owner['agent'] == 'ollama' else PRICE_KEYS)):
             clean['complete'] = False
         for k in ('reported_usd', 'reported_credits', 'estimated_usd', 'estimated_credits'):
             clean[k] = amount(usage.get(k))
