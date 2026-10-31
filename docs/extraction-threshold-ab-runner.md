@@ -15,6 +15,8 @@ PYTHONPATH=. python scripts/benchmark_extraction_threshold_ab.py evaluate /path/
 
 ## 별도 승인 후 실행
 
+구체적인 모델·요청·시간·관측 토큰 예산과 계산 근거는 [v2 실측 예산 제안](extraction-threshold-ab-budget.md)에 있다. 제안은 아직 호출 승인이 아니다.
+
 실모델 실행에는 깨끗한 checkout, 설치된 Claude CLI, Sonnet 요청 모델, 구체적인 요청·wall 시간·관측 입출력 토큰 예산의 별도 승인이 필요하다. 아래는 인자 형식이며 실행 승인이나 확정 예산이 아니다.
 
 ```sh
