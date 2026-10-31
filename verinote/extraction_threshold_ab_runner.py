@@ -304,8 +304,27 @@ def evaluate_saved(root):
     """No subprocesses, model calls or database writes. Ignore the saved verdict."""
     root = Path(root).resolve()
     try:
-        if _read(root/'index.json', MAX_REPORT_BYTES) != file_index(root, excluded=('index.json', 'evaluation.json')):
-            raise ValueError('artifact_hash_mismatch')
+        retained_index = _read(root/'index.json', MAX_REPORT_BYTES)
+        if (not isinstance(retained_index, dict) or any(
+                not isinstance(path, str) or not path or path.startswith('/') or '..' in path.split('/')
+                or not isinstance(value, dict) or set(value) != {'bytes', 'sha256'}
+                or type(value['bytes']) is not int or value['bytes'] < 0
+                or not isinstance(value['sha256'], str) or not re.fullmatch(r'[a-f0-9]{64}', value['sha256'])
+                for path, value in retained_index.items())):
+            raise ValueError('artifact_index_format')
+        # Establish the shared trust basis without reading later document files.
+        # Their corruption must not erase independently verified earlier failures.
+        if (root/'documents').is_symlink(): raise ValueError('documents_symlink')
+        metadata_index = {}
+        for path in root.iterdir():
+            if path.name in ('documents', 'index.json', 'evaluation.json'): continue
+            if path.is_symlink(): raise ValueError('metadata_symlink')
+            if path.is_dir():
+                metadata_index.update({path.name+'/'+key: value for key, value in file_index(path).items()})
+            elif path.is_file():
+                metadata_index[path.name] = {'bytes': path.stat().st_size, 'sha256': _hash(path)}
+        if {key: value for key, value in retained_index.items() if not key.startswith('documents/')} != metadata_index:
+            raise ValueError('metadata_hash_mismatch')
         report = _read(root/'report.json', MAX_REPORT_BYTES)
         if (report.get('schema_version') != 2 or not isinstance(report.get('documents'), list) or not isinstance(report.get('attempts'), list)
                 or report.get('cold_boundary') != COLD_BOUNDARY or report.get('synthetic_responses') is not report['environment']['synthetic']):
@@ -320,7 +339,12 @@ def evaluate_saved(root):
             if any(type(row.get(k)) is not type(v) or row.get(k) != v for k, v in expected.items()): raise ValueError('planned_document')
             if row['artifact'] != 'documents/'+expected['key'] or row['attempt_start'] != next_attempt: raise ValueError('artifact_linkage')
             artifact = root/row['artifact']
-            if row['artifact_files'] != file_index(artifact): raise ValueError('document_hash')
+            if artifact.is_symlink(): raise ValueError('document_symlink')
+            document_index = file_index(artifact)
+            retained_document_index = {key[len(row['artifact'])+1:]: value for key, value in retained_index.items()
+                                       if key.startswith(row['artifact']+'/')}
+            if row['artifact_files'] != document_index or retained_document_index != document_index:
+                raise ValueError('document_hash')
             if (any(type(row.get(k)) not in (int, float) or not math.isfinite(row[k]) for k in ('elapsed_start', 'elapsed_end', 'elapsed_seconds'))
                     or row['elapsed_end'] < row['elapsed_start'] or row['elapsed_seconds'] != row['elapsed_end']-row['elapsed_start']
                     or row['phase'] == 'cold' and (type(row['cleanup_succeeded']) is not bool
@@ -339,6 +363,8 @@ def evaluate_saved(root):
     result = evaluate_report(report)
     if not invalid:
         try:
+            if retained_index != file_index(root, excluded=('index.json', 'evaluation.json')):
+                raise ValueError('artifact_hash_mismatch')
             verify_budget(report)
             expected_usage = {p.relative_to(root).as_posix() for row in verified for p in (root/row['artifact']).rglob('usage.json')}
             if expected_usage != {p.relative_to(root).as_posix() for p in root.rglob('usage.json')}:
