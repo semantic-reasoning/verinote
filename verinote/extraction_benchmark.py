@@ -65,42 +65,96 @@ class Stopped(RuntimeError): pass
 
 
 class Budget:
-    """One admission ledger shared by all timeout clones and repetitions."""
+    """One ledger: capacity rejection does not revoke a previously reserved slot."""
     def __init__(self, limits, *, clock=None):
         self.limits, self.clock = limits, clock or time.monotonic
         self.started = self.clock(); self.deadline = self.started + limits.seconds
         self.lock = threading.RLock()
-        self.reason = None; self.attempts = []; self.observed_tokens = 0; self.unknown_usage = 0
+        self._stop_reason = None; self.capacity_exhausted = False
+        self.attempts = []; self.observed_tokens = 0; self.unknown_usage = 0
+        self._states = {}
+
+    @property
+    def reason(self):
+        with self.lock:
+            return self._stop_reason or ('request_limit' if self.capacity_exhausted else None)
 
     def stop(self, reason):
         with self.lock:
-            if self.reason is None: self.reason = reason
+            if self._stop_reason is None: self._stop_reason = reason
 
     def remaining(self): return max(0, self.deadline-self.clock())
 
+    def _check_terminal(self):
+        if self.remaining() <= 0: self.stop('time_limit')
+        if self.observed_tokens >= self.limits.tokens: self.stop('token_limit')
+        if self._stop_reason: raise Stopped(self._stop_reason)
+
     def check(self):
         with self.lock:
-            if self.remaining() <= 0: self.stop('time_limit')
-            if len(self.attempts) >= self.limits.requests: self.stop('request_limit')
-            if self.observed_tokens >= self.limits.tokens: self.stop('token_limit')
-            if self.reason: raise Stopped(self.reason)
+            self._check_terminal()
+            if len(self.attempts) >= self.limits.requests:
+                self.capacity_exhausted = True
+                raise Stopped('request_limit')
 
-    def reserve(self, chunk, repair):
+    def reserve(self, chunk, repair, *, identity=None, purpose='measurement'):
+        identity = dict(identity or {})
+        if (set(identity) - {'owner_id', 'case_id', 'repetition'}
+                or any(type(v) not in (int, str) for v in identity.values())
+                or purpose not in ('measurement', 'warmup')
+                or type(chunk) is not int or chunk < 1 or type(repair) is not bool):
+            raise ValueError('attempt metadata')
         with self.lock:
             self.check()
             row = {'attempt': len(self.attempts)+1, 'chunk': chunk, 'repair': repair, 'status': 'running',
+                   'purpose': purpose, 'request_kind': 'repair' if repair else ('warmup' if purpose == 'warmup' else 'initial'),
+                   'admission_state': 'reserved', 'dispatch_authorized': False, 'blocked_reason': None,
                    'tokens': dict.fromkeys(TOKEN_KEYS), 'usage_complete': False, 'reported_usd': None,
                    'estimated_usd': None, 'reported_credits': None, 'estimated_credits': None,
-                   'credit_unit_sha256': None, 'estimated_credit_unit_sha256': None, 'cli_call_id': None, 'cli_timing': None}
+                   'credit_unit_sha256': None, 'estimated_credit_unit_sha256': None, 'cli_call_id': None, 'cli_timing': None,
+                   **identity}
             self.attempts.append(row)
+            self._states[id(row)] = 'reserved'
             return row
 
-    def finish(self, row, usage):
+    def _require(self, row, state):
+        if (not any(item is row for item in self.attempts) or self._states.get(id(row)) != state):
+            raise ValueError('attempt ownership/state')
+
+    def authorize_dispatch(self, row):
+        """Linearization of adapter admission, not evidence of provider transmission."""
         with self.lock:
-            row.update(usage)
-            counts = [row['tokens'][k] for k in ('input', 'output')]
+            self._require(row, 'reserved')
+            self._check_terminal()
+            self._states[id(row)] = 'authorized'
+            row.update(admission_state='authorized', dispatch_authorized=True)
+
+    def block(self, row, *, seconds=0):
+        with self.lock:
+            self._require(row, 'reserved')
+            self._states[id(row)] = 'blocked'
+            row.update(admission_state='blocked', status='blocked', wrapper_seconds=seconds,
+                       blocked_reason=self._stop_reason or 'adapter_setup_failed', process_observation='unknown')
+
+    def finish(self, row, usage, *, status='success', seconds=0, observation='unknown'):
+        with self.lock:
+            self._require(row, 'authorized')
+            if status not in ('success', 'error'): raise ValueError('attempt status')
+            # Only the same numeric export contract can modify usage fields.
+            fields = {'tokens', 'usage_complete', 'reported_usd', 'estimated_usd', 'reported_credits',
+                      'estimated_credits', 'credit_unit_sha256', 'estimated_credit_unit_sha256', 'cli_call_id', 'cli_timing'}
+            if set(usage) - fields: raise ValueError('attempt usage fields')
+            data = copy.deepcopy(usage)
+            if (not isinstance(data.get('tokens'), dict) or set(data['tokens']) != set(TOKEN_KEYS)
+                    or any(n is not None and number(n, True) is None for n in data['tokens'].values())
+                    or type(data.get('usage_complete')) is not bool):
+                raise ValueError('attempt usage values')
+            counts = [data['tokens'][k] for k in ('input', 'output')]
+            known = data['usage_complete'] and all(n is not None for n in counts)
+            row.update(data)
+            row.update(admission_state='finished', status=status, wrapper_seconds=seconds, process_observation=observation)
+            self._states[id(row)] = 'finished'
             self.observed_tokens += sum(n for n in counts if n is not None)
-            known = row['usage_complete'] and all(n is not None for n in counts)
             if not known:
                 self.unknown_usage += 1
                 if self.limits.missing_usage == 'stop': self.stop('usage_unknown')
@@ -109,8 +163,12 @@ class Budget:
 
     def summary(self):
         with self.lock:
-            return {'requests_started': len(self.attempts), 'observed_tokens_lower_bound': self.observed_tokens,
-                    'unknown_usage_calls': self.unknown_usage, 'token_usage_verified': self.unknown_usage == 0,
+            states = list(self._states.values())
+            pending = sum(state in ('reserved', 'authorized') for state in states)
+            return {'requests_started': len(self.attempts), 'dispatch_authorized': sum(state in ('authorized', 'finished') for state in states),
+                    'blocked_before_dispatch': states.count('blocked'), 'finished': states.count('finished'),
+                    'pending': pending, 'observed_tokens_lower_bound': self.observed_tokens,
+                    'unknown_usage_calls': self.unknown_usage, 'token_usage_verified': self.unknown_usage == 0 and pending == 0,
                     'token_hard_cap_guaranteed': False, 'stop_reason': self.reason,
                     'elapsed_seconds': max(0, self.clock()-self.started)}
 
@@ -150,10 +208,11 @@ def call_metrics(folder, agent, model):
 
 
 class BudgetCaller:
-    def __init__(self, caller, budget, notify=None, *, owns_caller=False, identity=None, lifecycle=None):
+    def __init__(self, caller, budget, notify=None, *, owns_caller=False, identity=None, lifecycle=None, purpose='measurement'):
         self.caller, self.budget, self.notify = caller, budget, notify
         self.owns_caller, self.closed = owns_caller, False
-        self.identity = identity or {}
+        self.identity = dict(identity or {})
+        self.purpose = purpose
         self.lifecycle = lifecycle if lifecycle is not None else {'observed': False}
 
     def close(self):
@@ -163,50 +222,60 @@ class BudgetCaller:
 
     def limited_timeout(self, agent, seconds):
         return BudgetCaller(self.caller.limited_timeout(agent, seconds), self.budget, self.notify,
-                            identity=self.identity, lifecycle=self.lifecycle)
+                            identity=self.identity, lifecycle=self.lifecycle, purpose=self.purpose)
 
     def process_observation(self, timing):
-        if not timing or timing['schema_version'] != 2:
+        with self.budget.lock:
+            if not timing or timing['schema_version'] != 2:
+                return 'unknown'
+            if timing['process_reused'] is True:
+                self.lifecycle['observed'] = True
+                return 'reused'
+            if timing['process_reused'] is False and timing['offsets_seconds']['spawn_returned'] is not None:
+                state = 'restarted' if self.lifecycle['observed'] else 'started'
+                self.lifecycle['observed'] = True
+                return state
             return 'unknown'
-        if timing['process_reused'] is True:
-            self.lifecycle['observed'] = True
-            return 'reused'
-        if timing['process_reused'] is False and timing['offsets_seconds']['spawn_returned'] is not None:
-            state = 'restarted' if self.lifecycle['observed'] else 'started'
-            self.lifecycle['observed'] = True
-            return state
-        return 'unknown'
 
     def complete(self, agent, model, prompt, folder):
         folder = Path(folder); repair = folder.name == 'quote-repair'
         chunk = int(folder.parent.name if repair else folder.name)
-        row = self.budget.reserve(chunk, repair)
-        row.update(self.identity)
-        previous = call_metrics(folder, agent, model)['cli_call_id']
+        row = self.budget.reserve(chunk, repair, identity=self.identity, purpose=self.purpose)
         started = self.budget.clock()
+        dispatched, status, primary_error = False, 'error', False
+        previous = None
         try:
-            # Re-check after reservation and immediately before dispatch, including timeout cloning.
+            previous = call_metrics(folder, agent, model)['cli_call_id']
             remaining = self.budget.remaining()
             if remaining <= 0: self.budget.stop('time_limit'); raise Stopped('time_limit')
             caller = self.caller.limited_timeout(agent, remaining)
-            if self.budget.reason: raise Stopped(self.budget.reason)
+            self.budget.authorize_dispatch(row)
+            dispatched = True
             output = caller.complete(agent, model, prompt, folder)
-            row['status'] = 'success'
+            status = 'success'
             return output
         except BaseException:
-            row['status'] = 'error'
+            primary_error = True
             raise
         finally:
-            metrics = call_metrics(folder, agent, model)
-            if previous is not None and metrics['cli_call_id'] == previous:
-                metrics = {'tokens': dict.fromkeys(TOKEN_KEYS), 'usage_complete': False,
-                           'reported_usd': None, 'estimated_usd': None, 'reported_credits': None, 'estimated_credits': None,
-                           'credit_unit_sha256': None, 'estimated_credit_unit_sha256': None, 'cli_call_id': None, 'cli_timing': None}
-            with self.budget.lock:
-                row['wrapper_seconds'] = max(0, self.budget.clock()-started)
-                self.budget.finish(row, metrics)
-                row['process_observation'] = self.process_observation(metrics['cli_timing'])
-            if self.notify is not None: self.notify()
+            if dispatched:
+                metrics = call_metrics(folder, agent, model)
+                if previous is not None and metrics['cli_call_id'] == previous:
+                    metrics = {'tokens': dict.fromkeys(TOKEN_KEYS), 'usage_complete': False,
+                               'reported_usd': None, 'estimated_usd': None, 'reported_credits': None, 'estimated_credits': None,
+                               'credit_unit_sha256': None, 'estimated_credit_unit_sha256': None, 'cli_call_id': None, 'cli_timing': None}
+                with self.budget.lock:
+                    observation = self.process_observation(metrics['cli_timing'])
+                    self.budget.finish(row, metrics, status=status, seconds=max(0, self.budget.clock()-started), observation=observation)
+            else:
+                self.budget.block(row, seconds=max(0, self.budget.clock()-started))
+            if self.notify is not None:
+                # Serialize callbacks/snapshots with every row update, never with model work.
+                with self.budget.lock:
+                    try: self.notify()
+                    except Exception:
+                        self.budget.stop('report_write_failed')
+                        if not primary_error: raise Stopped('report_write_failed') from None
 
 
 class FakeCLI(CLI):
@@ -279,11 +348,13 @@ class ReportWriter:
         parent = self.folder.parent
         if not parent.is_dir() or any(p.is_symlink() for p in (parent, *parent.parents)): raise ValueError('안전한 결과 부모 폴더가 필요합니다.')
         self.folder.mkdir(mode=0o700); self.path = self.folder/'report.json'
+        self.lock = threading.RLock()
     def write(self, report):
-        raw = json.dumps(report, ensure_ascii=False, allow_nan=False).encode()
-        if len(raw) > MAX_REPORT_BYTES: raise ValueError('측정 결과 크기 제한')
-        if self.path.is_symlink() or self.path.with_suffix('.json.tmp').is_symlink(): raise ValueError('결과 파일 종류 오류')
-        atomic_json(self.path, report)
+        with self.lock:
+            raw = json.dumps(report, ensure_ascii=False, allow_nan=False).encode()
+            if len(raw) > MAX_REPORT_BYTES: raise ValueError('측정 결과 크기 제한')
+            if self.path.is_symlink() or self.path.with_suffix('.json.tmp').is_symlink(): raise ValueError('결과 파일 종류 오류')
+            atomic_json(self.path, report)
 
 
 class _Executor(ThreadPoolExecutor):
@@ -318,7 +389,7 @@ def measure(output, *, cases=('short', 'long'), scenario='normal', mode='fake', 
     writer = ReportWriter(output); budget = Budget(limits, clock=clock)
     try: package_version = version('verinote')
     except PackageNotFoundError: package_version = None
-    report = {'schema_version': 2, 'mode': mode, 'synthetic_responses': mode == 'fake', 'status': 'running',
+    report = {'schema_version': 3, 'mode': mode, 'synthetic_responses': mode == 'fake', 'status': 'running',
               'stop_reason': None, 'conditions': {'agent': agent, 'requested_model': model, 'scenario': scenario,
               'package_version': package_version, 'cli_version': cli_version,
               'cli_version_source': 'operator_supplied_unverified' if cli_version else 'unknown_not_probed',
@@ -336,7 +407,7 @@ def measure(output, *, cases=('short', 'long'), scenario='normal', mode='fake', 
     def save():
         with budget.lock:
             report['budget'] = budget.summary()
-            try: writer.write(report)
+            try: writer.write(copy.deepcopy(report))
             except (OSError, ValueError): budget.stop('report_write_failed'); raise Stopped('report_write_failed') from None
     def close(resource):
         if resource is None: return
