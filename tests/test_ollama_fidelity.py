@@ -110,3 +110,56 @@ class FidelityDiagnosis(unittest.TestCase):
         # Test the identity boundary without mutating any retained artifact.
         with patch('verinote.ollama_fidelity.file_index', return_value={'report.json': {'sha256': '0'*64}}), self.assertRaises(ValueError):
             diagnose()
+
+
+class FidelityCandidate(unittest.TestCase):
+    def setUp(self):
+        from verinote.ontology import (
+            bounded_prompt,
+            dictionary_context,
+            extraction_prompts,
+        )
+        case = load_case('short', DATA_ROOT/'v2')
+        self.payload = {'filename': 'synthetic.md', 'version': 1, 'offset': 0, 'text': case['source'],
+                        'approved_dictionary': {'payload': dictionary_context(case['dictionary'])}}
+        self.base = bounded_prompt(extraction_prompts(2)[0], self.payload)
+
+    def test_compiler_preserves_input_and_uses_only_approved_relation_ids(self):
+        import json
+
+        from verinote import ollama_fidelity as f
+        with patch.object(f, 'evaluate_case', side_effect=AssertionError('gold')), patch.object(f, 'load_case', side_effect=AssertionError('fixture')), patch.object(f, 'diagnose', side_effect=AssertionError('history')):
+            effective = f.compile_prompt(self.base)
+        original_header, original_input = self.base.split('입력(JSON):\n', 1)
+        header, actual_input = effective.split('입력(JSON):\n', 1)
+        self.assertEqual(actual_input, original_input); self.assertTrue(header.startswith(original_header))
+        self.assertIn(json.dumps(['calls', 'archives', 'mirrors'], ensure_ascii=False), header)
+        self.assertNotIn('S0', f.TEMPLATE); self.assertNotIn('archives', f.TEMPLATE)
+        self.assertLess(len(effective.encode()), 32768-4096-1024)
+        self.assertEqual(f.compile_prompt(self.base), effective)
+        self.assertNotEqual(f.template_hash(), '0'*64)
+
+    def test_snapshot_is_explicit_strict_and_template_bound(self):
+        from verinote import ollama_fidelity as f
+        from verinote.agents import CLI
+        from verinote.ollama import DEFAULTS, options
+        from verinote.transports import job_options
+        baseline = options(); candidate = f.candidate_options(baseline)
+        self.assertEqual(baseline, DEFAULTS)
+        self.assertEqual(candidate['schema_version'], 2)
+        self.assertEqual(job_options(candidate), candidate)
+        self.assertEqual(CLI(persistent=False).ollama_fidelity, False)
+        for key, wrong in [('candidate_id', 'unknown'), ('candidate_template_sha256', '0'*64)]:
+            bad = copy.deepcopy(candidate); bad[key] = wrong
+            with self.subTest(key=key), self.assertRaises(ValueError): options(bad)
+        with patch.object(f, 'TEMPLATE', f.TEMPLATE+'changed'), self.assertRaises(ValueError): options(candidate)
+        with self.assertRaises(TypeError): CLI(persistent=False, ollama_fidelity='yes')
+
+    def test_nonproduction_or_annotation_payloads_are_rejected(self):
+        from verinote import ollama_fidelity as f
+        from verinote.ontology import bounded_prompt, extraction_prompts
+        with self.assertRaises(ValueError): f.compile_prompt('not a production extraction prompt')
+        for key in ('gold', 'annotations', 'expected_statuses'):
+            payload = copy.deepcopy(self.payload); payload[key] = []
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                f.compile_prompt(bounded_prompt(extraction_prompts(2)[0], payload))

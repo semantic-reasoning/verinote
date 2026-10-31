@@ -19,9 +19,16 @@ DEFAULTS = {'provider': 'ollama', 'schema_version': 1, 'endpoint': ENDPOINT,
 
 def options(value=None):
     value = copy.deepcopy(DEFAULTS if value is None else value)
-    if not isinstance(value, dict) or set(value) != set(DEFAULTS): raise ValueError('Ollama 실행 옵션 형식 오류')
+    candidate = isinstance(value, dict) and type(value.get('schema_version')) is int and value['schema_version'] == 2
+    required = set(DEFAULTS) | ({'candidate_id', 'candidate_template_sha256'} if candidate else set())
+    if not isinstance(value, dict) or set(value) != required: raise ValueError('Ollama 실행 옵션 형식 오류')
     if any(value[k] != DEFAULTS[k] or type(value[k]) is not type(DEFAULTS[k])
-           for k in DEFAULTS if k not in ('timeouts', 'model', 'model_digest')): raise ValueError('지원하지 않는 Ollama 생성 옵션')
+           for k in DEFAULTS if k not in ('timeouts', 'model', 'model_digest', 'schema_version')): raise ValueError('지원하지 않는 Ollama 생성 옵션')
+    if type(value['schema_version']) is not int or value['schema_version'] not in (1, 2): raise ValueError('Ollama 옵션 version 오류')
+    if candidate:
+        from .ollama_fidelity import CANDIDATE_ID, template_hash
+        if value['candidate_id'] != CANDIDATE_ID or value['candidate_template_sha256'] != template_hash():
+            raise ValueError('Ollama 후보 identity 오류')
     if not isinstance(value['timeouts'], dict) or set(value['timeouts']) != {'default', 'ontology'}:
         raise ValueError('Ollama timeout 형식 오류')
     for v in value['timeouts'].values():
@@ -113,12 +120,19 @@ class Job:
         model = validate_model(model, 'ollama')
         timeout = self.effective_timeout(agent, phase)
         folder = Path(folder); folder.mkdir(parents=True, exist_ok=True)
+        original_prompt = prompt
+        if self.options['schema_version'] == 2 and phase is None and folder.name != 'quote-repair':
+            from .ollama_fidelity import compile_prompt
+            prompt = compile_prompt(prompt)
         call_id = uuid4().hex
         usage = empty_usage('ollama', model, self.rates().get('ollama'))
         usage.update(provider_call_id=call_id, cli_call_id=call_id, started_at=now(), source='ollama_api')
         meta = {'agent': 'ollama', 'model': model, 'transport': 'local_http', 'provider_call_id': call_id,
                 'cli_call_id': call_id, 'prompt_sha256': digest(prompt.encode()), 'started_at': usage['started_at'],
                 'status': 'running', 'execution_options': copy.deepcopy(self.options)}
+        if self.options['schema_version'] == 2:
+            meta['original_prompt_sha256'] = digest(original_prompt.encode())
+            if original_prompt != prompt: (folder/'original-prompt.txt').write_text(original_prompt, encoding='utf-8')
         atomic_json(folder/'run.json', meta); atomic_json(folder/'usage.json', usage)
         started = time.monotonic()
         try:
