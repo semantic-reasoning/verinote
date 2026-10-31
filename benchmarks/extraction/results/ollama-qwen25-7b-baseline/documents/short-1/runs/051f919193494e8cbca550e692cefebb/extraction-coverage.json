@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "run_id": "051f919193494e8cbca550e692cefebb",
+    "document_id": "b8f119dd3db843bcbfe6ab3ce6c109cf",
+    "version": 1,
+    "dictionary_id": "3ba9a3c3e5a84d8e995710e205664351",
+    "revision": 2,
+    "sha256": "dbde0eb9ee122726dbc1cc69d3895265e5e70462fd3981406fe3ea2160cc063a",
+    "extraction_contract": 2
+  },
+  "source_length": 510,
+  "chunks": []
+}

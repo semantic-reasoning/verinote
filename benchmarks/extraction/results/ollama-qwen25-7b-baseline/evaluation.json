@@ -1,0 +1,28 @@
+{
+  "verdict": "failed",
+  "reasons": [
+    "extraction_failed:short-1",
+    "incomplete_baseline"
+  ],
+  "series": [
+    {
+      "case_id": "three",
+      "completed_repetitions": 0,
+      "seconds": null
+    },
+    {
+      "case_id": "four",
+      "completed_repetitions": 0,
+      "seconds": null
+    },
+    {
+      "case_id": "eight",
+      "completed_repetitions": 0,
+      "seconds": null
+    }
+  ],
+  "unverified_other_records": false,
+  "provider_cache_state": "unknown",
+  "reported_usd": null,
+  "comparison_scope": "local sequential baseline only; no Sonnet acceptance or speedup claim"
+}

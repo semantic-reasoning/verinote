@@ -1,0 +1,28 @@
+{
+  "agent": "ollama",
+  "model": "qwen2.5:7b",
+  "transport": "local_http",
+  "provider_call_id": "75101d04b4a14a2ca8a37cbaebdd8d1c",
+  "cli_call_id": "75101d04b4a14a2ca8a37cbaebdd8d1c",
+  "prompt_sha256": "335416af14ad7e1594fd6b927549474d8c3d316fb6100de4435b81bc21d3066a",
+  "started_at": "2026-10-31T09:47:04.614877+00:00",
+  "status": "success",
+  "execution_options": {
+    "provider": "ollama",
+    "schema_version": 1,
+    "endpoint": "http://127.0.0.1:11434",
+    "num_ctx": 32768,
+    "num_predict": 4096,
+    "temperature": 0,
+    "keep_alive": "5m",
+    "timeouts": {
+      "default": 180,
+      "ontology": 600
+    },
+    "model": "qwen2.5:7b",
+    "model_digest": "845dbda0ea48ed749caafd9e6037047aa19acfcfd82e704d7ca97d631a0b697e"
+  },
+  "model_digest": "845dbda0ea48ed749caafd9e6037047aa19acfcfd82e704d7ca97d631a0b697e",
+  "finished_at": "2026-10-31T09:47:17.110957+00:00",
+  "seconds": 12.495706583024003
+}

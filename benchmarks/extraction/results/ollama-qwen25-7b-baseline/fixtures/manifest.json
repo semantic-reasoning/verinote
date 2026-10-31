@@ -1,0 +1,31 @@
+{
+  "dataset_version": 2,
+  "chunk_size": 8000,
+  "extraction_contract": 2,
+  "human_review": {
+    "status": "pending",
+    "evidence": null
+  },
+  "cases": [
+    {
+      "id": "short",
+      "file": "short.json",
+      "sha256": "7767bf109671fccaad2227b87355f26d586438e5eacc030d1152d25c38cec619"
+    },
+    {
+      "id": "three",
+      "file": "three.json",
+      "sha256": "b0c9b0bae8fd8f86c3434c961034c791e265810016af5f8439056d269b6bf4de"
+    },
+    {
+      "id": "four",
+      "file": "four.json",
+      "sha256": "2a4fa0112a1407e05cb9f2da62ed4c1273ab03d4b66aa7844b3510c0e68f3b98"
+    },
+    {
+      "id": "eight",
+      "file": "eight.json",
+      "sha256": "a118d68b30fbed587bcb94df823db2aeecca2a4e38495d4419cb3c29dce49899"
+    }
+  ]
+}
