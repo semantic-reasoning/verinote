@@ -66,7 +66,7 @@ python scripts/benchmark_extraction.py --output ./benchmark-batch --mode cli --a
 
 ## report.json 읽기
 
-새 결과 폴더에는 버전 2의 `report.json`만 남는다. 기존 버전 1 결과는 수정하지 않는다. v1에는 프로세스 수명 정보가 없으므로 해당 필드를 읽는 소비자는 `schema_version`을 확인하고 부재를 unknown으로 해석해야 한다. 과거 결과를 cold/warm/persistent로 소급 분류하지 않는다. v2는 기존 시간·품질·사용량 필드를 보존하고 수명 및 정리 정보를 추가한다. `conditions`에 자료/사전/추출·보정 요청문 해시, 평가·계약 버전, 사람 검토 상태, 요청 모델, 안전한 설정, 분할 크기, 반복 수와 새 저장소 조건을 고정한다. `attempts`는 시도 순서·청크·보정 여부·성공/실패·토큰·비용·검증된 CLI 호출 ID와 #724 시간 기록(미확인 시 null), 측정 wrapper 경과 시간을 담는다. #725의 문서별 집계는 `repetitions[].document_timing`에 연결한다. 시간과 usage가 서로 독립적으로 미확인일 수 있다.
+새 결과 폴더에는 버전 3의 `report.json`만 남는다. 기존 버전 1·2 결과는 수정하지 않는다. v1에는 프로세스 수명 정보가 없으므로 해당 필드를 읽는 소비자는 `schema_version`을 확인하고 부재를 unknown으로 해석해야 한다. 과거 결과를 cold/warm/persistent로 소급 분류하지 않는다. v2는 기존 시간·품질·사용량 필드를 보존하고 수명 및 정리 정보를 추가한다. `conditions`에 자료/사전/추출·보정 요청문 해시, 평가·계약 버전, 사람 검토 상태, 요청 모델, 안전한 설정, 분할 크기, 반복 수와 새 저장소 조건을 고정한다. `attempts`는 시도 순서·청크·보정 여부·성공/실패·토큰·비용·검증된 CLI 호출 ID와 #724 시간 기록(미확인 시 null), 측정 wrapper 경과 시간을 담는다. #725의 문서별 집계는 `repetitions[].document_timing`에 연결한다. 시간과 usage가 서로 독립적으로 미확인일 수 있다.
 
 `repetitions`의 각 행은 자료 하나의 반복 실행이다. `quality`는 현재 run에 속한 검증된 checkpoint prefix를 #726 평가기로 점수화한다. 실패로 1/2청크만 검증됐다면 `complete: false`이고, recall 분모는 **전체 문서 정답**이다. 유효 prefix가 없는 경우에도 빈 결과의 누락을 평가한다. 실행 성공과 정답 평가의 `passed`는 별개다. 상위 `quality.passed`는 전체 청크 완료와 평가 통과를 모두 요구한다. 실제 원문·인용·잘못된 triple 문자열은 내보내지 않으며, 추가 관계는 해시와 위치로 식별한다. 합성 원문은 버전 고정 자료에서 별도로 대조한다.
 
@@ -77,3 +77,43 @@ python scripts/benchmark_extraction.py --output ./benchmark-batch --mode cli --a
 가짜 결과 예제는 [benchmarks/extraction/examples](../benchmarks/extraction/examples)의 `benchmark-fake-*.json`에 있다. 동일 조건은 위 명령 또는 보고서의 `conditions`를 사용해 재실행한다. 시간·호출 ID는 재실행마다 달라진다. API 사용자는 `verinote.extraction_benchmark.measure(output, cases=..., limits=Limits(...))`를 호출할 수 있다. `caller_factory`와 `clock`은 오프라인 검증용 주입 지점이다. factory는 문서별로 새 caller를 반환해야 하며, benchmark가 그 caller를 닫는다. `batch`와 factory의 조합은 첫 문서에 종속된 응답 객체를 다른 문서에서 재사용할 위험이 있어 거부한다. batch 통합 테스트는 실제 CLI 생성자를 유지하고 실행 파일과 명령만 가짜 subprocess로 바꾼다. 실제 호출을 주입하면서 fake로 표시해서는 안 된다.
 
 실제 가짜 응답 반복 실행의 결과·시간 편차·추가 측정 계획은 [#728 결과 보고서](extraction-performance-results.md)에 정리했다.
+
+
+## 동시 admission 장부 (보고서 v3)
+
+실제 Service는 계속 순차이며 이 절은 후속 독립 worker/scheduler의 공유 예산 계약이다.
+`Budget`와 timeout 복사본은 하나의 RLock·deadline·예약 상한·관측 토큰 장부를 공유한다.
+모델 호출이나 context 본문 동안 이 잠금을 유지하지 않으며 두 adapter의 실제 중첩을 fake barrier로 검증한다.
+
+상태 전이는 `reserved → authorized → finished` 또는 `reserved → blocked`다.
+예약은 슬롯을 소비하고 환불하지 않는다. identity는 owner_id/case_id/repetition의 scalar 복사본만 받으며
+상태·토큰·attempt 번호를 덮어쓸 수 없다. `purpose=measurement|warmup`과
+`request_kind=initial|repair|warmup`을 기록한다. warm-up의 보정은 purpose=warmup/request_kind=repair다.
+이번 변경은 warm-up을 실행하지 않고 미래 harness가 같은 예산으로 예약할 수 있게 한다.
+
+새 예약 용량 소진은 전역 중단과 별개다. N개 정상 예약 뒤 N+1 예약이 거절되어도 이미 확보한 슬롯은
+허용될 수 있다. explicit/time/token/usage/report 중단은 아직 허용하지 않은 예약을 막는다.
+terminal 중단 사유가 있으면 진단용 request_limit보다 우선하며 첫 terminal 사유를 유지한다.
+`authorize_dispatch()`는 stop/time/token과 예약 소유권을 원자적으로 검사한다. 이 시점은 **adapter 진입 허용**이지
+실제 네트워크 전송·처리·과금 증거가 아니다. 허용 전에 중단되면 호출하지 않는다. 허용 뒤 발생한 중단은
+이미 허용한 호출을 소급 취소하지 않으며 최종 응답/실패/사용량을 수집한다.
+
+`finish()`는 장부가 발행한 authorized attempt만 한 번 확정한다. foreign/duplicate 완료는 오류이며 재집계하지 않는다.
+`blocked`는 실제 adapter를 호출하지 않았으므로 unknown_usage_calls에 넣지 않지만 비용/토큰을 임의의 0으로 채우지도 않는다.
+허용한 호출의 사용량 누락은 기존 missing_usage 정책을 적용한다. 토큰은 사후 관측이며 여러 in-flight 호출이
+종료하면서 한도를 초과할 수 있다. hard cap 보장이 아니다.
+
+v3의 `budget.requests_started`는 이전과 같이 **예약 수**다. `dispatch_authorized`, `blocked_before_dispatch`,
+`finished`, `pending`을 별도 집계한다. `token_usage_verified`는 pending=0이고 허용된 호출의 사용량이 모두 확인됐을 때만 true다.
+각 attempt에 admission_state/dispatch_authorized/blocked_reason/purpose/request_kind를 추가한다.
+기존 v1/v2에 이 필드가 없으면 unknown으로 읽고 예약 수를 전송 수로 소급 해석하지 않는다.
+
+attempt 갱신·lifecycle 갱신·notify snapshot과 저장을 같은 예산 잠금으로 직렬화한다.
+ReportWriter도 자체 잠금으로 같은 임시 파일의 쓰기 경쟁을 막는다. snapshot 생성과 저장을 분리해 오래된 상태가
+나중에 덮어쓰지 않으며 저장 실패는 신규 admission을 막되 이미 허용된 호출의 완료·사용량 반영을 막지 않는다.
+callback 실패가 원래 호출 예외를 덮지 않는다. 정상 파일은 atomic replace 전 오류에서 보존한다.
+현재 process_observation의 lifecycle은 단일 manager 단위다. #753에서 여러 독립 worker를 연결할 때에는 worker별
+실제 identity에 따라 시작/재시작 관측을 분리해야 하며 한 bool로 두 worker의 시작을 재시작이라고 추정하면 안 된다.
+
+검증: `python -m unittest discover -s tests -p 'test_extraction_budget*.py'` 및 기존 benchmark 테스트.
+실제 모델·추가 비용 없이 cap 경쟁, 중단 전후, 역순 완료·중복 방지, in-flight 사용량, callback/저장 경합을 검증한다.

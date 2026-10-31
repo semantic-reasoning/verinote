@@ -1,4 +1,4 @@
-# 승인 사전 CLI 추출 시간 (형식 1)
+# 승인 사전 CLI 추출 시간 (형식 1·2)
 
 `read_extraction_timing(root, store, run_id)`를
 `verinote.extraction_timing`에서 가져와 읽는다. 파일은
@@ -94,3 +94,49 @@ ID/hash와 청크 길이는 예시이므로 실제 reader에는 해당 저장소
 
 실행: `python -m unittest discover -s tests -p test_extraction_timing.py`.
 실제 모델·네트워크·API 키가 필요 없다. 이는 계측 도구 검증이며 실제 모델 성능은 미측정이다.
+
+## 명시적 동시 기록 형식 2
+
+기본 `ExtractionTiming(..., schema_version=1)`와 Service의 순차 실행은 유지한다.
+후속 scheduler는 `ExtractionTiming(..., schema_version=2)` 또는
+`create_timing(..., schema_version=2)`로 선택한다. 이 변경만으로 실제 추출이 병렬화되지는 않는다.
+형식 1의 reader는 기존 비중첩·순차 규칙을 그대로 적용한다. 형식 2는 128 KiB·16청크·128 span으로 제한한다.
+
+초기화·bind·configure·restore·reuse 후 coordinator가 청크 번호 순으로
+`begin_chunk(index)`를 호출한다. 청크별 context manager는 서로 다른 worker에서 겹쳐 실행할 수 있다.
+종료는 `end_chunk(status='success', index=index)`로 식별한다. 여러 활성 청크에서 index를
+생략하면 계측을 무효화한다. `(kind, chunk)`가 span identity이며 동일 조합은 중복할 수 없다.
+원문 경계·재사용 prefix·run identity와 검증된 CLI call ID 연결은 형식 1과 같다.
+앞 청크 실패 뒤 이미 시작한 뒤 청크의 성공도 기록할 수 있지만, 이는 checkpoint prefix 정책을 바꾸지 않는다.
+
+형식 2가 추가하는 `section(kind, index)` 구간:
+
+| kind | 부모·순서 | 의미 |
+|---|---|---|
+| `worker_wait` | `request` 내부 | 최초 요청의 lease 획득 대기 |
+| `repair_worker_wait` | `repair_request` 내부 | 보정 요청의 lease 획득 대기 |
+| `order_wait` | `chunk` 내부, 최초 request 뒤·validation 앞 | 번호순 확정 차례 대기 |
+
+실제 lease/scheduler는 후속 #753/#754에서 연결한다. 이번 Service에는 가짜 대기를 기록하지 않는다.
+restore는 모든 새 청크 전에 끝나고 publish는 시작한 모든 청크가 끝난 후 시작해야 한다.
+청크 시작 번호는 재사용 prefix 다음부터 연속한다. 서로 다른 청크는 겹치거나 역순 종료할 수 있다.
+같은 청크의 단계 중첩·부모 포함·상태·보정 1회/문서 2회·중복 call ID는 검증한다.
+
+형식 2 summary는 기존 wall time 및 청크별 필드에 다음을 더한다.
+
+- `chunk_work_seconds`: 청크 span 길이의 합. `chunk_wall_seconds`: 구간 합집합 길이.
+- `request_work_seconds`: 최초·보정 요청 길이의 합. `request_wall_seconds`: 이 요청 구간의 합집합 길이.
+- 청크별 `order_wait_seconds`, `worker_wait_seconds`, `repair_worker_wait_seconds`.
+- `worker_other_seconds`는 worker wall time에서 restore/chunk/publish **합집합**을 뺀다.
+
+누적 작업시간은 wall time보다 클 수 있다. lease wait는 request에 포함되므로 다시 더하거나 차감하지 않는다.
+order wait는 request 밖의 가산 leaf이며 청크 other 계산에서 차감한다. 겹치거나 맞닿는 interval을 병합하고
+비어 있는 단계는 null, 실제 0초 구간은 0으로 둔다. 재사용 청크의 과거 시간·비용은 합산하지 않는다.
+
+RLock은 시계·메타데이터 갱신에만 사용하며 context 본문, 모델 호출, CLI 기록 읽기에는 유지하지 않는다.
+coordinator가 모든 worker를 drain한 뒤 outcome/finish를 호출해야 한다. finish는 snapshot을 확정한 뒤
+잠금 밖에서 검증·저장하며 반복 finish는 다시 쓰지 않는다. 열린 span·시계 오류·한도 초과·쓰기 실패는
+기록 unavailable일 뿐 원래 결과/예외/정리를 바꾸지 않는다. 이미 finish한 recorder를 새 실행에 재사용하지 않는다.
+
+검증: `python -m unittest discover -s tests -p 'test_extraction_timing*.py'`.
+가짜 시계와 barrier로 중첩·역순 종료·비가산 wait·보정·timeout·재개·손상·실패 비간섭을 검증한다.
