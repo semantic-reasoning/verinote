@@ -162,6 +162,151 @@ class ThresholdRunner(unittest.TestCase):
         self.assertEqual(result['verdict'], 'inconclusive')
         self.assertNotIn('artifact_verification_failed', evaluate_saved(self.output)['reasons'])
 
+    def retained_violation(self, *, real_classification=False):
+        report, _ = self.run_fake(7)
+        row = report['documents'][0]
+        artifact = self.output/row['artifact']
+        with closing(sqlite3.connect(artifact/'state.sqlite3')) as db:
+            db.execute("UPDATE items SET status='approved' WHERE kind='fact'"); db.commit()
+        row['safety'] = {'complete': True, 'passed': False, 'violations': ['human_approval_contract']}
+        row['artifact_files'] = file_index(artifact)
+        if real_classification:
+            # Fabricated classification control only: no provider is contacted.
+            # Exercise the real-evidence decision branch with local fake artifacts.
+            report['synthetic_responses'] = False
+            report['environment'].update(synthetic=False, revision='a'*40, tree='b'*40,
+                cli_version='2.1.311', cli_version_source='cli_version_command')
+            report['limits']['requests'] = 856
+            atomic_json(self.output/'environment.json', report['environment'])
+            atomic_json(self.output/'limits.json', report['limits'])
+        self.reindex(report)
+        return report, 'safety:'+row['key']
+
+    def test_verified_prefix_failure_survives_later_damage_in_both_classifications(self):
+        for real in (False, True):
+            self.output = self.root/str(real)
+            report, reason = self.retained_violation(real_classification=real)
+            expected = 'rejected' if real else 'inconclusive'
+            baseline = evaluate_saved(self.output)
+            self.assertIn(reason, baseline['reasons']); self.assertEqual(baseline['verdict'], expected)
+            later = self.output/report['documents'][1]['artifact']/'state.sqlite3'
+            original = later.read_bytes()
+            for mutation in ('contents', 'missing', 'symlink'):
+                with self.subTest(real=real, mutation=mutation):
+                    if mutation == 'contents': later.write_bytes(b'corrupt later database')
+                    else:
+                        later.unlink()
+                        if mutation == 'symlink': later.symlink_to(self.output/'report.json')
+                    result = evaluate_saved(self.output)
+                    self.assertEqual(result['verdict'], expected)
+                    self.assertIn(reason, result['reasons'])
+                    self.assertIn('artifact_verification_failed', result['reasons'])
+                    self.assertTrue(result['unverified_other_records'])
+                    if later.is_symlink(): later.unlink()
+                    later.write_bytes(original)
+
+    def test_damaged_first_document_never_supplies_a_confirmed_violation(self):
+        report, reason = self.retained_violation(real_classification=True)
+        first = self.output/report['documents'][0]['artifact']/'state.sqlite3'
+        first.write_bytes(b'corrupt first database')
+        result = evaluate_saved(self.output)
+        self.assertEqual(result['verdict'], 'inconclusive')
+        self.assertNotIn(reason, result['reasons'])
+
+    def test_document_directory_symlinks_cannot_supply_trusted_evidence(self):
+        report, reason = self.retained_violation(real_classification=True)
+        for relative, trusted_prefix in [('documents', False), (report['documents'][0]['artifact'], False),
+                                         (report['documents'][1]['artifact'], True)]:
+            with self.subTest(path=relative):
+                source = self.output/relative; moved = self.root/'moved-evidence'
+                source.rename(moved); source.symlink_to(moved, target_is_directory=True)
+                try:
+                    result = evaluate_saved(self.output)
+                    self.assertEqual(result['verdict'], 'rejected' if trusted_prefix else 'inconclusive')
+                    self.assertEqual(reason in result['reasons'], trusted_prefix)
+                    self.assertIn('artifact_verification_failed', result['reasons'])
+                finally:
+                    source.unlink(); moved.rename(source)
+
+    def test_metadata_and_index_damage_cannot_supply_a_trusted_prefix(self):
+        report, reason = self.retained_violation(real_classification=True)
+        paths = ['report.json', 'environment.json', 'plan.json', 'limits.json', 'prompts.json',
+                 'fixtures/three.json', 'implementation/verinote/extraction_threshold_ab_runner.py', 'index.json']
+        for relative in paths:
+            path = self.output/relative; original = path.read_bytes()
+            with self.subTest(path=relative):
+                path.write_bytes(b'{}')
+                result = evaluate_saved(self.output)
+                self.assertEqual(result['verdict'], 'inconclusive')
+                self.assertNotIn(reason, result['reasons'])
+                path.write_bytes(original)
+        index = self.output/'index.json'; original = index.read_bytes(); index.unlink()
+        self.assertEqual(evaluate_saved(self.output)['verdict'], 'inconclusive')
+        index.write_bytes(original)
+        # Updating the top-level hash cannot bypass the semantic manifest checks.
+        atomic_json(self.output/'plan.json', {})
+        self.reindex(report)
+        self.assertEqual(evaluate_saved(self.output)['verdict'], 'inconclusive')
+
+    def test_retained_global_document_index_is_required_even_with_valid_row_index(self):
+        report, reason = self.retained_violation(real_classification=True)
+        index = json.loads((self.output/'index.json').read_text())
+        del index[report['documents'][0]['artifact']+'/state.sqlite3']
+        atomic_json(self.output/'index.json', index)
+        result = evaluate_saved(self.output)
+        self.assertEqual(result['verdict'], 'inconclusive')
+        self.assertNotIn(reason, result['reasons'])
+
+    def test_quote_repair_raw_evidence_is_reassessed(self):
+        script = self.script.read_text()
+        script = script.replace("dictionary=payload['approved_dictionary']['payload']",
+            "dictionary={name:[{k:v for k,v in row.items() if k!='quote'} for row in rows] for name,rows in payload['approved_dictionary']['payload'].items()}")
+        script = script.replace("    history.append(text);value=result(json.dumps(body))", """    if 'issues' in payload:
+        repaired=[]
+        for issue in payload['issues']:
+            kind,number,field=issue['path'].split('.')
+            repaired.append({'path':issue['path'],'quote':body[kind][int(number)][field]})
+        body={'repairs':repaired}
+    elif payload['offset']==0:
+        body['facts'][0]['quote']='deliberately absent quotation'
+    history.append(text);value=result(json.dumps(body))""")
+        self.script.write_text(script)
+        report, result = self.run_fake(4)
+        self.assertEqual([a['repair'] for a in report['attempts']], [False, True, False, False])
+        row = report['documents'][0]
+        self.assertTrue(row['quality']['passed'] and row['safety']['passed'])
+        self.assertEqual(evaluate_saved(self.output), result)
+        repair = self.output/row['artifact']/'runs'/row['run_id']/'1'/'quote-repair'
+        (repair/'usage.json').unlink()
+        self.assertIn('artifact_verification_failed', evaluate_saved(self.output)['reasons'])
+
+    def test_failed_later_chunk_keeps_no_partial_publication(self):
+        self.script.write_text(self.script.read_text().replace(
+            '    history.append(text);value=result(json.dumps(body))',
+            "    if payload['offset'] != 0: body={}\n    history.append(text);value=result(json.dumps(body))"))
+        report, result = self.run_fake()
+        self.assertEqual(len(report['attempts']), 2)
+        row = report['documents'][0]; self.assertEqual(row['status'], 'error')
+        with closing(sqlite3.connect(self.output/row['artifact']/'state.sqlite3')) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM items WHERE kind!='ontology'").fetchone()[0], 0)
+        self.assertEqual(report['budget']['pending'], 0)
+        self.assertTrue(all(o.closed for o in self.owners))
+        self.assertEqual(evaluate_saved(self.output), result)
+
+    def test_document_index_write_failure_keeps_finished_usage_and_cleanup(self):
+        def fail_document_index(root, **kwargs):
+            if Path(root).parent.name == 'documents': raise OSError('recording failure')
+            return file_index(root, **kwargs)
+        with patch('verinote.extraction_threshold_ab_runner.file_index', side_effect=fail_document_index):
+            report, result = self.run_fake()
+        self.assertEqual(report['status'], 'stopped')
+        self.assertEqual(len(report['documents']), 1)
+        self.assertEqual(len(report['attempts']), 3)
+        self.assertEqual(report['budget']['pending'], 0)
+        self.assertEqual(len(list(self.output.rglob('usage.json'))), 3)
+        self.assertTrue(all(o.closed for o in self.owners))
+        self.assertEqual(result['verdict'], 'inconclusive')
+
     def test_unknown_cost_and_wrong_model_family_stop_admission(self):
         script = self.script.read_text()
         for name, replacement, reason in (

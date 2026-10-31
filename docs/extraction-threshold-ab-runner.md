@@ -39,3 +39,5 @@ Cold 시간은 Store 및 owner 준비 전부터 원본 기반 품질·게시 안
 개인 owner factory를 사용하는 테스트 결과는 항상 synthetic이며 채택할 수 없다. 원본 해시는 실수·누락·요약 불일치를 탐지하지만 서명이나 악의적 전체 위조 방지는 아니다. 모델 응답의 비용은 CLI reported 값이며 청구서 검증이 아니다. provider cache 상태는 unknown이다.
 
 원본이 불완전하면 inconclusive로 남기고, 검증된 앞선 품질·게시 안전성 또는 완전 비교의 실패는 이후의 미완료 때문에 지우지 않는다. 원본·요약의 예산 수치, 미계상 usage 파일과 계획 밖 문서도 검사한다. 코드의 증거 형식이나 현재 fixture/계약이 달라지면 재평가가 불가능할 수 있으므로 같은 revision에서 재평가한다. 실제 판정과 운영 채택은 각각 #768과 #756에 남는다.
+
+후속 문서가 손상되거나 누락되어도 report와 공통 manifest의 retained hash가 온전하고, 앞 문서의 global index·문서별 index·현재 원본 및 내용 검증이 모두 일치하면 그 연속 구간의 확인된 실패는 유지한다. 첫 미검증 문서 이후는 판정에서 제외하고 `unverified_other_records`를 표시한다. report/index/공통 manifest 자체가 검증되지 않으면 앞선 요약의 실패 플래그도 신뢰하지 않는다. 이 불완전 경로에서는 accepted를 반환하지 않는다.
