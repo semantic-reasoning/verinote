@@ -1,0 +1,219 @@
+{
+  "schema_version": 2,
+  "synthetic": false,
+  "identity": {
+    "version": {
+      "version": "0.40.13"
+    },
+    "models": [
+      {
+        "id": "qwen2.5vl:3b",
+        "name": "qwen2.5vl:3b",
+        "digest": "79d4979787523c92629bc043c0584a5132d6758e40b429586203a6b1094cb6f8"
+      },
+      {
+        "id": "qwen3.8:27b-mlx",
+        "name": "qwen3.8:27b-mlx",
+        "digest": "5642e97495e1a088883805981563dcdc4a040c2f53388b7a41d1f24d3622cf7e"
+      },
+      {
+        "id": "llama3.2-vision:90b",
+        "name": "llama3.2-vision:90b",
+        "digest": "bee2a956f3a8be0bb75573def7b772f841558f21249bd6396b0f5838e974e064"
+      },
+      {
+        "id": "hf.co/TheBloke/Llama-2-7B-Chat-GGUF:Q8_0",
+        "name": "hf.co/TheBloke/Llama-2-7B-Chat-GGUF:Q8_0",
+        "digest": "6ab8dcde0cf8391d3da59c2dfc68177fddc46f5e64482e3f138cf1878fd35ab8"
+      },
+      {
+        "id": "hf.co/unsloth/Llama-3.1-8B-Instruct-GGUF:UD-Q4_K_XL",
+        "name": "hf.co/unsloth/Llama-3.1-8B-Instruct-GGUF:UD-Q4_K_XL",
+        "digest": "a2a4a0f5e47d42d71ed1a211e66abd7eb7ac0c9cb5cbd326489dda8fcf3993c9"
+      },
+      {
+        "id": "qwen3.6:latest",
+        "name": "qwen3.6:latest",
+        "digest": "07d35212591fc27746f0a317c975a6d68754fb38e9053d82e25f06057af28522"
+      },
+      {
+        "id": "qwen3:8b",
+        "name": "qwen3:8b",
+        "digest": "500a1f067a9f782620b40bee6f7b0c89e17ae61f686b92c24933e4ca4b2b8b41"
+      },
+      {
+        "id": "llava:7b",
+        "name": "llava:7b",
+        "digest": "8dd30f6b0cb19f555f2c7a7ebda861449ea2cc76bf1f44e262931f45fc81d081"
+      },
+      {
+        "id": "qwen3.5:9b",
+        "name": "qwen3.5:9b",
+        "digest": "6488c96fa5faab64bb65cbd30d4289e20e6130ef535a93ef9a49f42eda893ea7"
+      },
+      {
+        "id": "qwen2.5:7b",
+        "name": "qwen2.5:7b",
+        "digest": "845dbda0ea48ed749caafd9e6037047aa19acfcfd82e704d7ca97d631a0b697e"
+      },
+      {
+        "id": "nomic-embed-text:latest",
+        "name": "nomic-embed-text:latest",
+        "digest": "0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f"
+      },
+      {
+        "id": "qwen2.5:3b",
+        "name": "qwen2.5:3b",
+        "digest": "357c53fb659c5076de1d65ccb0b397446227b71a42be9d1603d46168015c9e4b"
+      },
+      {
+        "id": "qwen3:30b-a3b",
+        "name": "qwen3:30b-a3b",
+        "digest": "2ee832bc15b549ed17a6b83de0e0d3eab226b5e727ca046d22e11a2b50d9cd0c"
+      },
+      {
+        "id": "qwen3:latest",
+        "name": "qwen3:latest",
+        "digest": "e4b5fd7f8af048d3c02e0357274238a9e93da51936665599ccb957aa42bfe173"
+      },
+      {
+        "id": "llama3.2-vision:latest",
+        "name": "llama3.2-vision:latest",
+        "digest": "085a1fdae525a3804ac95416b38498099c241defd0f1efc71dcca7f63190ba3d"
+      },
+      {
+        "id": "gemma3:latest",
+        "name": "gemma3:latest",
+        "digest": "a2af6cc3eb7fa8be8504abaf9b04e88f17a119ec3f04a3addf55f92841195f5a"
+      },
+      {
+        "id": "deepseek-coder-v2:16b",
+        "name": "deepseek-coder-v2:16b",
+        "digest": "63fb193b3a9b4322a18e8c6b250ca2e70a5ff531e962dbf95ba089b2566f2fa5"
+      }
+    ]
+  },
+  "options": {
+    "provider": "ollama",
+    "schema_version": 1,
+    "endpoint": "http://127.0.0.1:11434",
+    "num_ctx": 32768,
+    "num_predict": 4096,
+    "temperature": 0,
+    "keep_alive": "5m",
+    "timeouts": {
+      "default": 180,
+      "ontology": 600
+    },
+    "model": "qwen3.8:27b-mlx",
+    "model_digest": "5642e97495e1a088883805981563dcdc4a040c2f53388b7a41d1f24d3622cf7e"
+  },
+  "python": "3.15.0",
+  "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "invocation": [
+    "scripts/benchmark_extraction_ollama.py",
+    "run",
+    "--output",
+    "benchmarks/extraction/results/ollama-qwen38-27b-mlx-baseline",
+    "--model",
+    "qwen3.8:27b-mlx",
+    "--max-requests",
+    "65",
+    "--max-seconds",
+    "14400",
+    "--max-tokens",
+    "2500000",
+    "--allow-model-calls"
+  ],
+  "revision": "d148c0d4bffd67a6ae2458101c45f03ce70211c2",
+  "tree": "a1f276c8733d3520c35152a7762cd321075b22aa",
+  "source_hashes": {
+    "docs/extraction-ollama-qwen38-contract.md": "0e88a325797ac92ad34ddd49f2d7c37438a5e73b99682ac95bc15d915ddc6031",
+    "scripts/benchmark_extraction_ollama.py": "bbde71017c48d57ec37545149e358e76abed90a74e9e613db1a38e1a54931df7",
+    "verinote/__init__.py": "c206293ad1b7846e7b29b55763f8534c45b6c34716b100a929733cecbc5ba126",
+    "verinote/__main__.py": "ddd60a1df996b2b744c45953165711e5afe2711f5f0249f4e98875e1342411df",
+    "verinote/agents.py": "389623c59c2f36fed9bba5896cf875c55d571192ee7fdf2b923160b4cb558e48",
+    "verinote/assistant.py": "d5942aad33006765e1528e67b836e996ec825fc1e5c5862a1cb130ac42b0db4f",
+    "verinote/call_validation.py": "90c1b60f5b61872815ad999f926b0206be1b60b4d4cd71464a538e4a3bf69124",
+    "verinote/claude_worker.py": "af3c2cb28aac26bdd26bd0ecca9b2b2b01dc6299423ce278dcd2678a055d5c58",
+    "verinote/cli_timing.py": "4f4dd29b3116fe98f41b6c2ba520bdcb79ccbdaa09ecb90cac253b8bbf80dfe3",
+    "verinote/config.py": "56dd668b17cf7afc40953695d378bca7b96b5c29493e41e2f13fabe2304dc429",
+    "verinote/dictionary_exclusions.py": "5e565ecf6d2f331472f612972ec21bffa17db48bff9be9fbafacbeb201d583f7",
+    "verinote/dictionary_filter.py": "756242dab5c87706a81e0b3480c4fca16ca12258124cf2d47a7bdb91eb76c3c5",
+    "verinote/dictionary_pipeline.py": "b550c420899c6a92b1264a0946e165e3e152bc29180169f882a7f47753c08bcd",
+    "verinote/dictionary_reconciliation.py": "6a724193b5cb65b1208dce9f2cee1eff56ed0e9cf5976e2cedc5d12c3901f2f4",
+    "verinote/dictionary_type_warnings.py": "fc81d870aac82a66795e3aa1cdb422053033b7ff5de6eddba428864cbf859733",
+    "verinote/documents.py": "d4f4e7bbdc1751f0a2771ed69aba236f255fd4431c9ebc913d8c9ee286b9b3dd",
+    "verinote/engine.py": "4f5e718986462efd4157063f2a86b1d47b0133fd565d7783b599f34e4a0c38b9",
+    "verinote/extraction_ab.py": "9ac6672c4e2c18c8d295d9c783d39440f53efa3697ac11c66d046c6e2ba197ef",
+    "verinote/extraction_ab_runner.py": "d2ef1d6f2ba8c9b2302507dd994fd899efe5672377b2bb8c390b1355b0aa7bc3",
+    "verinote/extraction_benchmark.py": "25be452e5814fd0b59f8f5603bd5760b5143d2d50047c11e38193ae34d151e42",
+    "verinote/extraction_checkpoint.py": "e681e43cbc38ad9dbd4a63b196f8b546d5a90d7eb79cfce7af070b1977936df2",
+    "verinote/extraction_coverage.py": "607fc39ee3b4fbb548f3e500e76ce5e46ecdc078e5728d4721bae48005ff3675",
+    "verinote/extraction_diagnostics.py": "058d43c8b4c9b6bb9fae7d3440e80d63d59c35d701bbaeea0e6d92cd7879147e",
+    "verinote/extraction_evaluation.py": "6d80470bdd6a4b531aa95dc2afab14a8d89e457416d98c3072a489d25b090a57",
+    "verinote/extraction_ollama_benchmark.py": "1cb9cb6f0ab47969ea4f6b8865bf628fe963e3006c738e343b7ea95cb9ae9e61",
+    "verinote/extraction_options.py": "b2e32ae0fc0df6a1747004621418528e9204f8a28f2bd2ded2bc205bee37aab9",
+    "verinote/extraction_scheduler.py": "25b1d48adbf67992be42e6d87750352d0982c85e45032f6b35f70f1a6597ac33",
+    "verinote/extraction_threshold_ab.py": "d61cbe31097184c12b3f00acd8b5f6d8654d12743b48b55a64320556ead8601f",
+    "verinote/extraction_threshold_ab_runner.py": "06b36bcd2ab06352e387e9a314373856562f67714268d2730e763ad92e4b5c9d",
+    "verinote/extraction_threshold_artifacts.py": "1b5d1c2502f670f721751b01ae26362a0f7728bc9a5e00fe0e2b0bcdad5fd952",
+    "verinote/extraction_threshold_evaluation.py": "5ad13c0bb24b2f93667bfe409323d50029b1659d9043adb7fe9a1ff4e9f4772f",
+    "verinote/extraction_timing.py": "d7f8c79cd18a12840456659c306f68f741588203bcc61baf932a70cc6d7d2d51",
+    "verinote/extraction_transport.py": "ea286a620f3f14b2ae8b2f85d6447acdb16bde8abe3efb73def8e4e058b5059d",
+    "verinote/http_records.py": "419dea74ffc6de327f0033ea764b78de553cdf8e99e4b944a343955945c057ce",
+    "verinote/job_transport.py": "1d51a03104feed93e34f18234b51d508c73233012bbbb832f4c8514c677b9265",
+    "verinote/model_catalog.py": "b1f549bcf468382d2eb14b6c0101bf0ee3bac5b12d0d13c34b3c5408734d69c7",
+    "verinote/ollama.py": "58cb3387f9c89f1180ad3363bce127badf0be735b52d20a2d932fd1378ebf183",
+    "verinote/ontology.py": "4da5dd8c996752c04a4d00c28fc1f1bb1a22cb3940ddd8976e43f32b2f42da78",
+    "verinote/openrouter.py": "8cd16bb5f1420ca19dcfdffc19478689a8eaeb5364e8106a56996427f947c18f",
+    "verinote/progress.py": "900593508c2fcd13c2bc0bd922eec1e15dd714611858e713e3365590380aca45",
+    "verinote/reasoning_diagnostics.py": "30d06abef62e6e3d9a6bd6dd4cdbb974a7cc08d60f42383802a583a710be33c3",
+    "verinote/server.py": "a9ca756fdbef7b882779233336ccf050c678f9f81215fb601319ad2fa455cc7d",
+    "verinote/service.py": "d9de42483d054c00621997ec0b1bd55f45c0042133516b1f118ce7828a1f4d9d",
+    "verinote/store.py": "00df0b4371c084bd8719c3b57716d8b89d574ce5eb22f7cbfd019fc77d8daabe",
+    "verinote/transports.py": "932f8231cb8f258e99aed3551b6167d063a5175b16e9567411f11b05760bd8b4",
+    "verinote/usage.py": "0ad9f7c6c6f785bf1a3a593c3e3dab652aa1d74912be97a264a172c6de54ee0d"
+  },
+  "dataset_manifest": {
+    "dataset_version": 2,
+    "chunk_size": 8000,
+    "extraction_contract": 2,
+    "human_review": {
+      "status": "pending",
+      "evidence": null
+    },
+    "cases": [
+      {
+        "id": "short",
+        "file": "short.json",
+        "sha256": "7767bf109671fccaad2227b87355f26d586438e5eacc030d1152d25c38cec619"
+      },
+      {
+        "id": "three",
+        "file": "three.json",
+        "sha256": "b0c9b0bae8fd8f86c3434c961034c791e265810016af5f8439056d269b6bf4de"
+      },
+      {
+        "id": "four",
+        "file": "four.json",
+        "sha256": "2a4fa0112a1407e05cb9f2da62ed4c1273ab03d4b66aa7844b3510c0e68f3b98"
+      },
+      {
+        "id": "eight",
+        "file": "eight.json",
+        "sha256": "a118d68b30fbed587bcb94df823db2aeecca2a4e38495d4419cb3c29dce49899"
+      }
+    ]
+  },
+  "cases": {
+    "short": "7767bf109671fccaad2227b87355f26d586438e5eacc030d1152d25c38cec619",
+    "three": "b0c9b0bae8fd8f86c3434c961034c791e265810016af5f8439056d269b6bf4de",
+    "four": "2a4fa0112a1407e05cb9f2da62ed4c1273ab03d4b66aa7844b3510c0e68f3b98",
+    "eight": "a118d68b30fbed587bcb94df823db2aeecca2a4e38495d4419cb3c29dce49899"
+  },
+  "prompts": {
+    "extraction": "39db0e9639b65d9aa2f342fdfb80934b3cfee99c54363caff55a8d4d5725fa62",
+    "repair": "d0aa5b0658b5dc42d3dcd64cb1c01e2f023e4f8fa2cfe4868e3fd361132cbc78"
+  }
+}

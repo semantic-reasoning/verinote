@@ -1,0 +1,107 @@
+{
+  "schema_version": 2,
+  "documents": [
+    {
+      "key": "short-1",
+      "case_id": "short",
+      "repetition": 1,
+      "purpose": "preparation",
+      "chunks": 1
+    },
+    {
+      "key": "three-1",
+      "case_id": "three",
+      "repetition": 1,
+      "purpose": "measurement",
+      "chunks": 3
+    },
+    {
+      "key": "three-2",
+      "case_id": "three",
+      "repetition": 2,
+      "purpose": "measurement",
+      "chunks": 3
+    },
+    {
+      "key": "three-3",
+      "case_id": "three",
+      "repetition": 3,
+      "purpose": "measurement",
+      "chunks": 3
+    },
+    {
+      "key": "four-1",
+      "case_id": "four",
+      "repetition": 1,
+      "purpose": "measurement",
+      "chunks": 4
+    },
+    {
+      "key": "four-2",
+      "case_id": "four",
+      "repetition": 2,
+      "purpose": "measurement",
+      "chunks": 4
+    },
+    {
+      "key": "four-3",
+      "case_id": "four",
+      "repetition": 3,
+      "purpose": "measurement",
+      "chunks": 4
+    },
+    {
+      "key": "eight-1",
+      "case_id": "eight",
+      "repetition": 1,
+      "purpose": "measurement",
+      "chunks": 8
+    },
+    {
+      "key": "eight-2",
+      "case_id": "eight",
+      "repetition": 2,
+      "purpose": "measurement",
+      "chunks": 8
+    },
+    {
+      "key": "eight-3",
+      "case_id": "eight",
+      "repetition": 3,
+      "purpose": "measurement",
+      "chunks": 8
+    }
+  ],
+  "initial_requests": 46,
+  "maximum_repairs": 19,
+  "limits": {
+    "requests": 65,
+    "seconds": 14400,
+    "tokens": 2500000
+  },
+  "model": "qwen3.8:27b-mlx",
+  "model_digest": "5642e97495e1a088883805981563dcdc4a040c2f53388b7a41d1f24d3622cf7e",
+  "ollama_version": "0.40.13",
+  "options": {
+    "provider": "ollama",
+    "schema_version": 1,
+    "endpoint": "http://127.0.0.1:11434",
+    "num_ctx": 32768,
+    "num_predict": 4096,
+    "temperature": 0,
+    "keep_alive": "5m",
+    "timeouts": {
+      "default": 180,
+      "ontology": 600
+    },
+    "model": "qwen3.8:27b-mlx",
+    "model_digest": "5642e97495e1a088883805981563dcdc4a040c2f53388b7a41d1f24d3622cf7e"
+  },
+  "concurrency": 1,
+  "automatic_retry": false,
+  "provider_cache_state": "unknown",
+  "temperature_interpretation": "no determinism guarantee",
+  "profile": "qwen38-v2",
+  "gold_failure_policy": "continue_after_safe_service_success",
+  "thinking_policy": "model_default"
+}
