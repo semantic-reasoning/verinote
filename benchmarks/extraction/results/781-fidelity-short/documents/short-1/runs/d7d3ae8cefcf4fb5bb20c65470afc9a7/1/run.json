@@ -1,0 +1,31 @@
+{
+  "agent": "ollama",
+  "model": "qwen3.8:27b-mlx",
+  "transport": "local_http",
+  "provider_call_id": "317ba744c7b74282823ab30e5c10cde5",
+  "cli_call_id": "317ba744c7b74282823ab30e5c10cde5",
+  "prompt_sha256": "19d879b620d182792f423eb62ad8dd8b6dfff3339879791a903b867a864debd5",
+  "started_at": "2026-10-31T11:30:32.466880+00:00",
+  "status": "success",
+  "execution_options": {
+    "provider": "ollama",
+    "schema_version": 2,
+    "endpoint": "http://127.0.0.1:11434",
+    "num_ctx": 32768,
+    "num_predict": 4096,
+    "temperature": 0,
+    "keep_alive": "5m",
+    "timeouts": {
+      "default": 180,
+      "ontology": 600
+    },
+    "model": "qwen3.8:27b-mlx",
+    "model_digest": "5642e97495e1a088883805981563dcdc4a040c2f53388b7a41d1f24d3622cf7e",
+    "candidate_id": "ollama_fidelity_checklist_v1",
+    "candidate_template_sha256": "94b0982ea3b35f298818e8d45d95c4796438f939049acaaa28b8c62b4ba785b2"
+  },
+  "original_prompt_sha256": "5ab6e9eb6a365143b02984e14279ca0bbac8e679ef3887b61e2ba6c127d252cd",
+  "model_digest": "5642e97495e1a088883805981563dcdc4a040c2f53388b7a41d1f24d3622cf7e",
+  "finished_at": "2026-10-31T11:33:08.383293+00:00",
+  "seconds": 155.91572312498465
+}

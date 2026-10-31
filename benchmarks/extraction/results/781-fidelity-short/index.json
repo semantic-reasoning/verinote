@@ -1,0 +1,278 @@
+{
+  "documents/short-1/runs/d7d3ae8cefcf4fb5bb20c65470afc9a7/1/identity-after.json": {
+    "bytes": 2877,
+    "sha256": "ab812767d2e439217c946608c5f6e5bb6b05220300e668b5ea463b2b27dcb1f0"
+  },
+  "documents/short-1/runs/d7d3ae8cefcf4fb5bb20c65470afc9a7/1/original-prompt.txt": {
+    "bytes": 6564,
+    "sha256": "5ab6e9eb6a365143b02984e14279ca0bbac8e679ef3887b61e2ba6c127d252cd"
+  },
+  "documents/short-1/runs/d7d3ae8cefcf4fb5bb20c65470afc9a7/1/prompt.txt": {
+    "bytes": 8172,
+    "sha256": "19d879b620d182792f423eb62ad8dd8b6dfff3339879791a903b867a864debd5"
+  },
+  "documents/short-1/runs/d7d3ae8cefcf4fb5bb20c65470afc9a7/1/response.json": {
+    "bytes": 75157,
+    "sha256": "8b6c6fae4a09430405b6a500fa849386ff814dc3ff6c3ba1e5aa7c2100086284"
+  },
+  "documents/short-1/runs/d7d3ae8cefcf4fb5bb20c65470afc9a7/1/run.json": {
+    "bytes": 1180,
+    "sha256": "108a4c4057a0f386f067ef2f2402a54f389979d1b426b42154ad369c00979dd1"
+  },
+  "documents/short-1/runs/d7d3ae8cefcf4fb5bb20c65470afc9a7/1/usage.json": {
+    "bytes": 942,
+    "sha256": "8f0ed4d188810ce669e6530e465968bafb07c7998df1bb22c92c0c54dc9edd20"
+  },
+  "documents/short-1/runs/d7d3ae8cefcf4fb5bb20c65470afc9a7/extraction-checkpoint.json": {
+    "bytes": 5670,
+    "sha256": "6e42ebef7c2c3155a1e216ad07a4c06ba35f6b95245da7aaf0d11db37a615c3d"
+  },
+  "documents/short-1/runs/d7d3ae8cefcf4fb5bb20c65470afc9a7/extraction-coverage.json": {
+    "bytes": 2328,
+    "sha256": "402f14e2f8f7da2da82d76d000df4210d3366509c0a118e32a750abf15112b57"
+  },
+  "documents/short-1/runs/d7d3ae8cefcf4fb5bb20c65470afc9a7/extraction-progress.json": {
+    "bytes": 253,
+    "sha256": "2d3b183c1771bb00782d1639f1f000a708c44fa17fcce2d0df08bec30148b34f"
+  },
+  "documents/short-1/runs/d7d3ae8cefcf4fb5bb20c65470afc9a7/extraction-timing.json": {
+    "bytes": 1451,
+    "sha256": "5c19927bb9753f0d47fbd8d42f1eac8df251fb661b5ba24d6ef42643cd298c2f"
+  },
+  "documents/short-1/state.sqlite3": {
+    "bytes": 98304,
+    "sha256": "51aebad592e8105cf39265b51a795313df2be5c442356100dbf117af3926b8b4"
+  },
+  "environment.json": {
+    "bytes": 10420,
+    "sha256": "71c7fdfa5a913e5dec143a3f43b9d40ed605d4399bc1fd55f828a2851e38af89"
+  },
+  "fixtures/eight.json": {
+    "bytes": 173042,
+    "sha256": "73fd89145aa09936bace1d57d7f4588b83d159f6417e0887d7f57d022a336f2d"
+  },
+  "fixtures/four.json": {
+    "bytes": 87521,
+    "sha256": "da50e124cad12e301304da5836ce279a0e5395d2e1499e73fdfc4be1c4389759"
+  },
+  "fixtures/manifest.json": {
+    "bytes": 743,
+    "sha256": "3b0ccf2578daaeb91e4dfc0345feda0edb9b7f1f179157ede807dbc513e4a49b"
+  },
+  "fixtures/short.json": {
+    "bytes": 6289,
+    "sha256": "5eee5a117aebb414ff1115a6853c535c97ccdcf0945940bb0a891e9ef4bda94e"
+  },
+  "fixtures/three.json": {
+    "bytes": 66167,
+    "sha256": "d536e64161fe4961cc577d3a53b1c91c3a659a06d50fd8ea4775389e2267d545"
+  },
+  "implementation/docs/ollama-fidelity-candidate-contract.md": {
+    "bytes": 4193,
+    "sha256": "f7fd51162db3d17b500b8b61c017fa8a47ffb3eb0ab62e0281f3b5ea66e3e74f"
+  },
+  "implementation/scripts/evaluate_ollama_fidelity.py": {
+    "bytes": 2131,
+    "sha256": "f7d295bf37c7683f14a9db305f5b1d1a221d1200427f250c523f07c8f2056677"
+  },
+  "implementation/verinote/__init__.py": {
+    "bytes": 78,
+    "sha256": "c206293ad1b7846e7b29b55763f8534c45b6c34716b100a929733cecbc5ba126"
+  },
+  "implementation/verinote/__main__.py": {
+    "bytes": 33,
+    "sha256": "ddd60a1df996b2b744c45953165711e5afe2711f5f0249f4e98875e1342411df"
+  },
+  "implementation/verinote/agents.py": {
+    "bytes": 24792,
+    "sha256": "6fbbb6fa031074f39f3dba3bf2079766f6104a8bca33ec8a4a83b7c4c58432f3"
+  },
+  "implementation/verinote/assistant.py": {
+    "bytes": 32608,
+    "sha256": "d5942aad33006765e1528e67b836e996ec825fc1e5c5862a1cb130ac42b0db4f"
+  },
+  "implementation/verinote/call_validation.py": {
+    "bytes": 1129,
+    "sha256": "90c1b60f5b61872815ad999f926b0206be1b60b4d4cd71464a538e4a3bf69124"
+  },
+  "implementation/verinote/claude_worker.py": {
+    "bytes": 14750,
+    "sha256": "af3c2cb28aac26bdd26bd0ecca9b2b2b01dc6299423ce278dcd2678a055d5c58"
+  },
+  "implementation/verinote/cli_timing.py": {
+    "bytes": 12669,
+    "sha256": "4f4dd29b3116fe98f41b6c2ba520bdcb79ccbdaa09ecb90cac253b8bbf80dfe3"
+  },
+  "implementation/verinote/config.py": {
+    "bytes": 8578,
+    "sha256": "56dd668b17cf7afc40953695d378bca7b96b5c29493e41e2f13fabe2304dc429"
+  },
+  "implementation/verinote/dictionary_exclusions.py": {
+    "bytes": 10261,
+    "sha256": "5e565ecf6d2f331472f612972ec21bffa17db48bff9be9fbafacbeb201d583f7"
+  },
+  "implementation/verinote/dictionary_filter.py": {
+    "bytes": 8891,
+    "sha256": "756242dab5c87706a81e0b3480c4fca16ca12258124cf2d47a7bdb91eb76c3c5"
+  },
+  "implementation/verinote/dictionary_pipeline.py": {
+    "bytes": 13160,
+    "sha256": "b550c420899c6a92b1264a0946e165e3e152bc29180169f882a7f47753c08bcd"
+  },
+  "implementation/verinote/dictionary_reconciliation.py": {
+    "bytes": 15155,
+    "sha256": "6a724193b5cb65b1208dce9f2cee1eff56ed0e9cf5976e2cedc5d12c3901f2f4"
+  },
+  "implementation/verinote/dictionary_type_warnings.py": {
+    "bytes": 4068,
+    "sha256": "fc81d870aac82a66795e3aa1cdb422053033b7ff5de6eddba428864cbf859733"
+  },
+  "implementation/verinote/documents.py": {
+    "bytes": 4052,
+    "sha256": "d4f4e7bbdc1751f0a2771ed69aba236f255fd4431c9ebc913d8c9ee286b9b3dd"
+  },
+  "implementation/verinote/engine.py": {
+    "bytes": 3612,
+    "sha256": "4f5e718986462efd4157063f2a86b1d47b0133fd565d7783b599f34e4a0c38b9"
+  },
+  "implementation/verinote/extraction_ab.py": {
+    "bytes": 15636,
+    "sha256": "9ac6672c4e2c18c8d295d9c783d39440f53efa3697ac11c66d046c6e2ba197ef"
+  },
+  "implementation/verinote/extraction_ab_runner.py": {
+    "bytes": 20214,
+    "sha256": "d2ef1d6f2ba8c9b2302507dd994fd899efe5672377b2bb8c390b1355b0aa7bc3"
+  },
+  "implementation/verinote/extraction_benchmark.py": {
+    "bytes": 39178,
+    "sha256": "25be452e5814fd0b59f8f5603bd5760b5143d2d50047c11e38193ae34d151e42"
+  },
+  "implementation/verinote/extraction_checkpoint.py": {
+    "bytes": 6773,
+    "sha256": "e681e43cbc38ad9dbd4a63b196f8b546d5a90d7eb79cfce7af070b1977936df2"
+  },
+  "implementation/verinote/extraction_coverage.py": {
+    "bytes": 13043,
+    "sha256": "607fc39ee3b4fbb548f3e500e76ce5e46ecdc078e5728d4721bae48005ff3675"
+  },
+  "implementation/verinote/extraction_diagnostics.py": {
+    "bytes": 6485,
+    "sha256": "058d43c8b4c9b6bb9fae7d3440e80d63d59c35d701bbaeea0e6d92cd7879147e"
+  },
+  "implementation/verinote/extraction_evaluation.py": {
+    "bytes": 17117,
+    "sha256": "6d80470bdd6a4b531aa95dc2afab14a8d89e457416d98c3072a489d25b090a57"
+  },
+  "implementation/verinote/extraction_ollama_benchmark.py": {
+    "bytes": 38655,
+    "sha256": "1cb9cb6f0ab47969ea4f6b8865bf628fe963e3006c738e343b7ea95cb9ae9e61"
+  },
+  "implementation/verinote/extraction_options.py": {
+    "bytes": 3384,
+    "sha256": "b2e32ae0fc0df6a1747004621418528e9204f8a28f2bd2ded2bc205bee37aab9"
+  },
+  "implementation/verinote/extraction_scheduler.py": {
+    "bytes": 4541,
+    "sha256": "25b1d48adbf67992be42e6d87750352d0982c85e45032f6b35f70f1a6597ac33"
+  },
+  "implementation/verinote/extraction_threshold_ab.py": {
+    "bytes": 14360,
+    "sha256": "d61cbe31097184c12b3f00acd8b5f6d8654d12743b48b55a64320556ead8601f"
+  },
+  "implementation/verinote/extraction_threshold_ab_runner.py": {
+    "bytes": 25392,
+    "sha256": "06b36bcd2ab06352e387e9a314373856562f67714268d2730e763ad92e4b5c9d"
+  },
+  "implementation/verinote/extraction_threshold_artifacts.py": {
+    "bytes": 7693,
+    "sha256": "1b5d1c2502f670f721751b01ae26362a0f7728bc9a5e00fe0e2b0bcdad5fd952"
+  },
+  "implementation/verinote/extraction_threshold_evaluation.py": {
+    "bytes": 8473,
+    "sha256": "5ad13c0bb24b2f93667bfe409323d50029b1659d9043adb7fe9a1ff4e9f4772f"
+  },
+  "implementation/verinote/extraction_timing.py": {
+    "bytes": 21853,
+    "sha256": "d7f8c79cd18a12840456659c306f68f741588203bcc61baf932a70cc6d7d2d51"
+  },
+  "implementation/verinote/extraction_transport.py": {
+    "bytes": 6568,
+    "sha256": "ea286a620f3f14b2ae8b2f85d6447acdb16bde8abe3efb73def8e4e058b5059d"
+  },
+  "implementation/verinote/http_records.py": {
+    "bytes": 10852,
+    "sha256": "419dea74ffc6de327f0033ea764b78de553cdf8e99e4b944a343955945c057ce"
+  },
+  "implementation/verinote/job_transport.py": {
+    "bytes": 2675,
+    "sha256": "1d51a03104feed93e34f18234b51d508c73233012bbbb832f4c8514c677b9265"
+  },
+  "implementation/verinote/model_catalog.py": {
+    "bytes": 13960,
+    "sha256": "b1f549bcf468382d2eb14b6c0101bf0ee3bac5b12d0d13c34b3c5408734d69c7"
+  },
+  "implementation/verinote/ollama.py": {
+    "bytes": 10182,
+    "sha256": "9fa575e776e0716d3a6553485baaa4832f9966bafc7886ce3f578ae3d6e867bf"
+  },
+  "implementation/verinote/ollama_fidelity.py": {
+    "bytes": 7571,
+    "sha256": "4876af97135e4fa3d227841badd14eaac3457831c181032e6835ddb2bc888906"
+  },
+  "implementation/verinote/ollama_fidelity_evaluation.py": {
+    "bytes": 35460,
+    "sha256": "920d1ad46ad994459cc35eb05895e0ac2d168e45dfde964748c33ef743665e16"
+  },
+  "implementation/verinote/ontology.py": {
+    "bytes": 29243,
+    "sha256": "4da5dd8c996752c04a4d00c28fc1f1bb1a22cb3940ddd8976e43f32b2f42da78"
+  },
+  "implementation/verinote/openrouter.py": {
+    "bytes": 16462,
+    "sha256": "8cd16bb5f1420ca19dcfdffc19478689a8eaeb5364e8106a56996427f947c18f"
+  },
+  "implementation/verinote/progress.py": {
+    "bytes": 5471,
+    "sha256": "900593508c2fcd13c2bc0bd922eec1e15dd714611858e713e3365590380aca45"
+  },
+  "implementation/verinote/reasoning_diagnostics.py": {
+    "bytes": 1845,
+    "sha256": "30d06abef62e6e3d9a6bd6dd4cdbb974a7cc08d60f42383802a583a710be33c3"
+  },
+  "implementation/verinote/server.py": {
+    "bytes": 18163,
+    "sha256": "a9ca756fdbef7b882779233336ccf050c678f9f81215fb601319ad2fa455cc7d"
+  },
+  "implementation/verinote/service.py": {
+    "bytes": 33838,
+    "sha256": "f7c5980ceab3a4b42087a4cb9956239839ec160d7f5dfb98d60e8f4149a1b675"
+  },
+  "implementation/verinote/store.py": {
+    "bytes": 36982,
+    "sha256": "00df0b4371c084bd8719c3b57716d8b89d574ce5eb22f7cbfd019fc77d8daabe"
+  },
+  "implementation/verinote/transports.py": {
+    "bytes": 6469,
+    "sha256": "932f8231cb8f258e99aed3551b6167d063a5175b16e9567411f11b05760bd8b4"
+  },
+  "implementation/verinote/usage.py": {
+    "bytes": 27150,
+    "sha256": "0ad9f7c6c6f785bf1a3a593c3e3dab652aa1d74912be97a264a172c6de54ee0d"
+  },
+  "limits.json": {
+    "bytes": 57,
+    "sha256": "1390cefafb9527ca5edd8d8c4075db88a0136fc493f3ac3f40488e680b95a4c4"
+  },
+  "plan.json": {
+    "bytes": 1234,
+    "sha256": "c330034727e25c57590d199fc79e5b0fc3f908fee17f8213f15f17315b6a0f06"
+  },
+  "prompts.json": {
+    "bytes": 7665,
+    "sha256": "b5053fdd4bc64f280d280227f1521f5f0ad421368d923aa0e135e4913e902b58"
+  },
+  "report.json": {
+    "bytes": 19403,
+    "sha256": "c4c6ebcbcd78ef189adbc06e08f6dfc242479a621e0de2f416056b0ec9c2c68d"
+  }
+}

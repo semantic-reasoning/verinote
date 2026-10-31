@@ -1,0 +1,103 @@
+{
+  "verdict": "rejected",
+  "reasons": [
+    "finite_gold_failed"
+  ],
+  "production": {
+    "complete": true,
+    "passed": true,
+    "reason": null
+  },
+  "quality": {
+    "validated_chunks": 1,
+    "total_chunks": 1,
+    "complete": true,
+    "passed": false,
+    "evaluation": {
+      "schema_version": 1,
+      "evaluator_version": 2,
+      "dataset_version": 2,
+      "case_id": "short",
+      "source_sha256": "864fa34331fde90e74a3f86be122a35224fe9cac97c1f5b718ac3282f88d4620",
+      "case_sha256": "7767bf109671fccaad2227b87355f26d586438e5eacc030d1152d25c38cec619",
+      "gold_count": 1,
+      "prediction_count": 1,
+      "raw_prediction_count": 1,
+      "true_positive_count": 1,
+      "false_positive_count": 0,
+      "false_negative_count": 0,
+      "grounded_true_positive_count": 1,
+      "precision": {
+        "value": 1.0,
+        "numerator": 1,
+        "denominator": 1,
+        "reason": null
+      },
+      "recall": {
+        "value": 1.0,
+        "numerator": 1,
+        "denominator": 1,
+        "reason": null
+      },
+      "grounded_precision": {
+        "value": 1.0,
+        "numerator": 1,
+        "denominator": 1,
+        "reason": null
+      },
+      "grounded_recall": {
+        "value": 1.0,
+        "numerator": 1,
+        "denominator": 1,
+        "reason": null
+      },
+      "citation_accuracy": {
+        "value": 1.0,
+        "numerator": 1,
+        "denominator": 1,
+        "reason": null
+      },
+      "true_positives": [
+        "short-call-1"
+      ],
+      "false_negatives": [],
+      "false_positives": [],
+      "grounded_missing": [],
+      "invalid_facts": [],
+      "citation_errors": [],
+      "duplicates": [],
+      "quote_ambiguities": [],
+      "no_relation_case_pass": null,
+      "passed": false,
+      "annotation_errors": [
+        {
+          "chunk": 1,
+          "reason": "coverage_semantics",
+          "predicate": "calls"
+        },
+        {
+          "chunk": 1,
+          "reason": "gap_completeness"
+        }
+      ],
+      "complete": true
+    }
+  },
+  "safety": {
+    "complete": true,
+    "passed": true,
+    "violations": [],
+    "production": {
+      "complete": true,
+      "passed": true,
+      "reason": null
+    }
+  },
+  "observed_tokens": 5851,
+  "requests": 1,
+  "seconds": 156.04831624997314,
+  "reported_usd": null,
+  "cache_tokens": null,
+  "candidate_id": "ollama_fidelity_checklist_v1",
+  "scope": "one finite short fixture; not general semantic fidelity or operational acceptance"
+}
