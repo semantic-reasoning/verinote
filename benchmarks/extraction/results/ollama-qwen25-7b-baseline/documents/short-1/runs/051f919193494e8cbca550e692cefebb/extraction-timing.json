@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "run_id": "051f919193494e8cbca550e692cefebb",
+    "document_id": "b8f119dd3db843bcbfe6ab3ce6c109cf",
+    "version": 1,
+    "source_sha256": "864fa34331fde90e74a3f86be122a35224fe9cac97c1f5b718ac3282f88d4620"
+  },
+  "agent": "ollama",
+  "model": "qwen2.5:7b",
+  "submitted_observed": true,
+  "worker_started": 0.001272084,
+  "worker_finished": 12.548954084,
+  "status": "error",
+  "error_code": "error",
+  "resumed_from": null,
+  "chunks": [
+    {
+      "index": 1,
+      "offset": 0,
+      "length": 510,
+      "reused": false
+    }
+  ],
+  "spans": [
+    {
+      "kind": "restore",
+      "chunk": null,
+      "start": 0.002219584,
+      "end": 0.0028625,
+      "status": "success",
+      "cli_call_id": null
+    },
+    {
+      "kind": "chunk",
+      "chunk": 1,
+      "start": 0.003518,
+      "end": 12.545599084,
+      "status": "error",
+      "cli_call_id": null
+    },
+    {
+      "kind": "request",
+      "chunk": 1,
+      "start": 0.004336709,
+      "end": 12.544668292,
+      "status": "success",
+      "cli_call_id": null
+    },
+    {
+      "kind": "validation_with_bookkeeping",
+      "chunk": 1,
+      "start": 12.54535,
+      "end": 12.545551167,
+      "status": "error",
+      "cli_call_id": null
+    }
+  ]
+}

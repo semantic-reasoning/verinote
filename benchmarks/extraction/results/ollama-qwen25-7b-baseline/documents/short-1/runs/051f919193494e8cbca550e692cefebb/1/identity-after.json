@@ -1,0 +1,92 @@
+{
+  "version": {
+    "version": "0.40.13"
+  },
+  "models": [
+    {
+      "id": "qwen2.5vl:3b",
+      "name": "qwen2.5vl:3b",
+      "digest": "79d4979787523c92629bc043c0584a5132d6758e40b429586203a6b1094cb6f8"
+    },
+    {
+      "id": "qwen3.8:27b-mlx",
+      "name": "qwen3.8:27b-mlx",
+      "digest": "5642e97495e1a088883805981563dcdc4a040c2f53388b7a41d1f24d3622cf7e"
+    },
+    {
+      "id": "llama3.2-vision:90b",
+      "name": "llama3.2-vision:90b",
+      "digest": "bee2a956f3a8be0bb75573def7b772f841558f21249bd6396b0f5838e974e064"
+    },
+    {
+      "id": "hf.co/TheBloke/Llama-2-7B-Chat-GGUF:Q8_0",
+      "name": "hf.co/TheBloke/Llama-2-7B-Chat-GGUF:Q8_0",
+      "digest": "6ab8dcde0cf8391d3da59c2dfc68177fddc46f5e64482e3f138cf1878fd35ab8"
+    },
+    {
+      "id": "hf.co/unsloth/Llama-3.1-8B-Instruct-GGUF:UD-Q4_K_XL",
+      "name": "hf.co/unsloth/Llama-3.1-8B-Instruct-GGUF:UD-Q4_K_XL",
+      "digest": "a2a4a0f5e47d42d71ed1a211e66abd7eb7ac0c9cb5cbd326489dda8fcf3993c9"
+    },
+    {
+      "id": "qwen3.6:latest",
+      "name": "qwen3.6:latest",
+      "digest": "07d35212591fc27746f0a317c975a6d68754fb38e9053d82e25f06057af28522"
+    },
+    {
+      "id": "qwen3:8b",
+      "name": "qwen3:8b",
+      "digest": "500a1f067a9f782620b40bee6f7b0c89e17ae61f686b92c24933e4ca4b2b8b41"
+    },
+    {
+      "id": "llava:7b",
+      "name": "llava:7b",
+      "digest": "8dd30f6b0cb19f555f2c7a7ebda861449ea2cc76bf1f44e262931f45fc81d081"
+    },
+    {
+      "id": "qwen3.5:9b",
+      "name": "qwen3.5:9b",
+      "digest": "6488c96fa5faab64bb65cbd30d4289e20e6130ef535a93ef9a49f42eda893ea7"
+    },
+    {
+      "id": "qwen2.5:7b",
+      "name": "qwen2.5:7b",
+      "digest": "845dbda0ea48ed749caafd9e6037047aa19acfcfd82e704d7ca97d631a0b697e"
+    },
+    {
+      "id": "nomic-embed-text:latest",
+      "name": "nomic-embed-text:latest",
+      "digest": "0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f"
+    },
+    {
+      "id": "qwen2.5:3b",
+      "name": "qwen2.5:3b",
+      "digest": "357c53fb659c5076de1d65ccb0b397446227b71a42be9d1603d46168015c9e4b"
+    },
+    {
+      "id": "qwen3:30b-a3b",
+      "name": "qwen3:30b-a3b",
+      "digest": "2ee832bc15b549ed17a6b83de0e0d3eab226b5e727ca046d22e11a2b50d9cd0c"
+    },
+    {
+      "id": "qwen3:latest",
+      "name": "qwen3:latest",
+      "digest": "e4b5fd7f8af048d3c02e0357274238a9e93da51936665599ccb957aa42bfe173"
+    },
+    {
+      "id": "llama3.2-vision:latest",
+      "name": "llama3.2-vision:latest",
+      "digest": "085a1fdae525a3804ac95416b38498099c241defd0f1efc71dcca7f63190ba3d"
+    },
+    {
+      "id": "gemma3:latest",
+      "name": "gemma3:latest",
+      "digest": "a2af6cc3eb7fa8be8504abaf9b04e88f17a119ec3f04a3addf55f92841195f5a"
+    },
+    {
+      "id": "deepseek-coder-v2:16b",
+      "name": "deepseek-coder-v2:16b",
+      "digest": "63fb193b3a9b4322a18e8c6b250ca2e70a5ff531e962dbf95ba089b2566f2fa5"
+    }
+  ]
+}
