@@ -1,0 +1,21 @@
+{
+  "cli_call_id": "be2535312d064dc383a2a04f4b49f54e",
+  "agent": "claude",
+  "model": "sonnet",
+  "phase": null,
+  "prompt_sha256": "15b4183203b1890c63707bcbbfd2a18e61538a99a31a2ae4732c0540e361bcb2",
+  "started_at": "2026-10-31T06:45:54.989127+00:00",
+  "status": "success",
+  "timeout_seconds": 90,
+  "transport_mode": "persistent",
+  "process_reused": true,
+  "returncode": null,
+  "worker_scope": "extraction_pool",
+  "worker_identity": {
+    "pool_id": "8014021b34814a6aa9b20c1d90bb99b2",
+    "slot_id": 1,
+    "worker_id": "82c8025f796f4dc19454e54c6c07a280",
+    "generation": 1
+  },
+  "response_normalizations": []
+}

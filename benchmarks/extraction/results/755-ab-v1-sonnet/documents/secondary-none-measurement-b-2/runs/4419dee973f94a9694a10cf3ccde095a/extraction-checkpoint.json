@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "run_id": "4419dee973f94a9694a10cf3ccde095a",
+  "contract": {
+    "pipeline": "approved-extraction-v1",
+    "prompt": "01f1cd0fdd8ee0d4063d7de559a6d74b2b79f27ad5b0313b2be36e365e815e65",
+    "repair_prompt": "59b4172e55f90dc32ee2f2bab351f80f6db446e79487ec74235bf7fcb3e9aea0",
+    "chunk_size": 8000,
+    "chunk_timeout": 360,
+    "document_id": "7ea72d023d1a479593f49d2bf1eeeb11",
+    "version": 1,
+    "source_sha256": "09da66e9641414fb667c11e7f1e21d4ef57470a9f10904fa4cee74cfc5bfd765",
+    "text_sha256": "09da66e9641414fb667c11e7f1e21d4ef57470a9f10904fa4cee74cfc5bfd765",
+    "agent": "claude",
+    "model": "sonnet",
+    "dictionary": {
+      "id": "fc5c92775ea34f9f9b440bc3da02ba7f",
+      "revision": 2,
+      "sha256": "96c68114c7dfda44c5898d339082adb58317b4ade366eda65f63761b0eac65ef",
+      "extraction_contract": 1
+    },
+    "dictionary_payload_sha256": "96c68114c7dfda44c5898d339082adb58317b4ade366eda65f63761b0eac65ef",
+    "extraction_options": {
+      "concurrency": 2,
+      "document_generation": 1,
+      "schema_version": 1,
+      "transport": {
+        "binary": "/Users/joykim/.local/share/claude/versions/2.1.311",
+        "model": "sonnet",
+        "capacity": 2,
+        "timeout": 90,
+        "max_output": 1048576,
+        "rate": null
+      }
+    }
+  },
+  "outputs": [
+    {
+      "title": "Atlas와 Billing 언급",
+      "claims": [
+        {
+          "heading": "서비스 언급",
+          "text": "원문은 Atlas와 Billing이 언급된다고 밝히지만, 두 서비스 사이의 직접적인 서비스 호출은 명시되어 있지 않다고 서술한다.",
+          "quote": "Atlas and Billing are mentioned. No direct service call is stated."
+        }
+      ],
+      "facts": [],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [],
+          "claim_indices": [
+            0
+          ],
+          "status": "no_evidence",
+          "reason": "원문이 직접 서비스 호출이 명시되지 않았다고 밝히고 있음"
+        }
+      ],
+      "dictionary_gaps": []
+    }
+  ]
+}

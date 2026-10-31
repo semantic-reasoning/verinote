@@ -1,0 +1,75 @@
+{
+  "schema_version": 2,
+  "identity": {
+    "run_id": "4419dee973f94a9694a10cf3ccde095a",
+    "document_id": "7ea72d023d1a479593f49d2bf1eeeb11",
+    "version": 1,
+    "source_sha256": "09da66e9641414fb667c11e7f1e21d4ef57470a9f10904fa4cee74cfc5bfd765"
+  },
+  "agent": "claude",
+  "model": "sonnet",
+  "submitted_observed": true,
+  "worker_started": 0.001133166,
+  "worker_finished": 2.553553375,
+  "status": "success",
+  "error_code": null,
+  "resumed_from": null,
+  "chunks": [
+    {
+      "index": 1,
+      "offset": 0,
+      "length": 67,
+      "reused": false
+    }
+  ],
+  "spans": [
+    {
+      "kind": "restore",
+      "chunk": null,
+      "start": 0.002004125,
+      "end": 0.002573583,
+      "status": "success",
+      "cli_call_id": null
+    },
+    {
+      "kind": "chunk",
+      "chunk": 1,
+      "start": 0.002615208,
+      "end": 2.552201958,
+      "status": "success",
+      "cli_call_id": null
+    },
+    {
+      "kind": "request",
+      "chunk": 1,
+      "start": 0.002893583,
+      "end": 2.549898041,
+      "status": "success",
+      "cli_call_id": "2ae60fd1cc6946a1b68047f2bef0aae9"
+    },
+    {
+      "kind": "order_wait",
+      "chunk": 1,
+      "start": 2.550251875,
+      "end": 2.550277041,
+      "status": "success",
+      "cli_call_id": null
+    },
+    {
+      "kind": "validation_with_bookkeeping",
+      "chunk": 1,
+      "start": 2.551272875,
+      "end": 2.552196916,
+      "status": "success",
+      "cli_call_id": null
+    },
+    {
+      "kind": "publish",
+      "chunk": null,
+      "start": 2.552253875,
+      "end": 2.553294166,
+      "status": "success",
+      "cli_call_id": null
+    }
+  ]
+}

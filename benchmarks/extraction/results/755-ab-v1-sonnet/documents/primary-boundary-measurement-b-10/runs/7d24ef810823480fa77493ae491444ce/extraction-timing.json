@@ -1,0 +1,113 @@
+{
+  "schema_version": 2,
+  "identity": {
+    "run_id": "7d24ef810823480fa77493ae491444ce",
+    "document_id": "c67dc6f7ea454c2cbb169332cb87cc4b",
+    "version": 1,
+    "source_sha256": "2e7f61628ac20bea53fd48afefd07548c7f5511290d34fd4f6d038e71b8fcf80"
+  },
+  "agent": "claude",
+  "model": "sonnet",
+  "submitted_observed": true,
+  "worker_started": 0.001105666,
+  "worker_finished": 3.992148875,
+  "status": "success",
+  "error_code": null,
+  "resumed_from": null,
+  "chunks": [
+    {
+      "index": 1,
+      "offset": 0,
+      "length": 8000,
+      "reused": false
+    },
+    {
+      "index": 2,
+      "offset": 8000,
+      "length": 94,
+      "reused": false
+    }
+  ],
+  "spans": [
+    {
+      "kind": "restore",
+      "chunk": null,
+      "start": 0.002219583,
+      "end": 0.002904166,
+      "status": "success",
+      "cli_call_id": null
+    },
+    {
+      "kind": "chunk",
+      "chunk": 1,
+      "start": 0.002994208,
+      "end": 3.988701458,
+      "status": "success",
+      "cli_call_id": null
+    },
+    {
+      "kind": "request",
+      "chunk": 1,
+      "start": 0.003304208,
+      "end": 3.986481333,
+      "status": "success",
+      "cli_call_id": "4e9f988c2c1d4243a5fd881026342864"
+    },
+    {
+      "kind": "chunk",
+      "chunk": 2,
+      "start": 0.003371125,
+      "end": 3.990424083,
+      "status": "success",
+      "cli_call_id": null
+    },
+    {
+      "kind": "request",
+      "chunk": 2,
+      "start": 0.0039905,
+      "end": 3.249176541,
+      "status": "success",
+      "cli_call_id": "fb320c35c81d4a1d99c6e7d5d4d75665"
+    },
+    {
+      "kind": "order_wait",
+      "chunk": 2,
+      "start": 3.249608166,
+      "end": 3.988703833,
+      "status": "success",
+      "cli_call_id": null
+    },
+    {
+      "kind": "order_wait",
+      "chunk": 1,
+      "start": 3.986868375,
+      "end": 3.986900666,
+      "status": "success",
+      "cli_call_id": null
+    },
+    {
+      "kind": "validation_with_bookkeeping",
+      "chunk": 1,
+      "start": 3.987731958,
+      "end": 3.988696916,
+      "status": "success",
+      "cli_call_id": null
+    },
+    {
+      "kind": "validation_with_bookkeeping",
+      "chunk": 2,
+      "start": 3.989414375,
+      "end": 3.990420041,
+      "status": "success",
+      "cli_call_id": null
+    },
+    {
+      "kind": "publish",
+      "chunk": null,
+      "start": 3.990514,
+      "end": 3.991913875,
+      "status": "success",
+      "cli_call_id": null
+    }
+  ]
+}

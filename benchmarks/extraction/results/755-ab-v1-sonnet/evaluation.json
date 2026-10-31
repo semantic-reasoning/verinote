@@ -1,0 +1,368 @@
+{
+  "verdict": "rejected",
+  "reasons": [
+    "quality:cold-boundary-measurement-a-3",
+    "incomplete_execution"
+  ],
+  "resolved_models": [
+    "claude-sonnet-5-5"
+  ],
+  "synthetic_responses": false,
+  "comparisons": [
+    {
+      "phase": "primary",
+      "case_id": "long",
+      "verdict": "accepted",
+      "reasons": [],
+      "statistics": {
+        "median": 0.5306555224164411,
+        "ratios": [
+          0.49884986548318566,
+          0.4767198068952313,
+          0.5423724708422456,
+          0.5042478673965615,
+          0.6805478943515921,
+          0.4617519840056436,
+          0.5189385739906365,
+          0.5481491041334826,
+          0.7286061360962576,
+          0.5517715720639831
+        ],
+        "bootstrap_95": [
+          0.4904838371458964,
+          0.6143484992425374
+        ]
+      },
+      "measurement_totals": {
+        "A": {
+          "reported_usd": 0.397806,
+          "tokens": 133811,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        },
+        "B": {
+          "reported_usd": 0.398962,
+          "tokens": 133980,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        }
+      },
+      "measurement_ratios": {
+        "reported_usd": 1.0029059390758308,
+        "tokens": 1.001262975390663
+      },
+      "warmup_totals": {
+        "A": {
+          "reported_usd": 0.0230889,
+          "tokens": 5557,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        },
+        "B": {
+          "reported_usd": 0.0467718,
+          "tokens": 11174,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        }
+      },
+      "series_ratios": {
+        "reported_usd": 1.0590144950675335,
+        "tokens": 1.0415159864531314
+      }
+    },
+    {
+      "phase": "primary",
+      "case_id": "boundary",
+      "verdict": "accepted",
+      "reasons": [],
+      "statistics": {
+        "median": 0.515214087381892,
+        "ratios": [
+          0.512093089095432,
+          0.5132058245058914,
+          0.5878467682022055,
+          0.5172223502578926,
+          0.5120858218743497,
+          0.5358420287796535,
+          0.5051608703586891,
+          0.4641509248436393,
+          0.7032646045953267,
+          0.5589905772573671
+        ],
+        "bootstrap_95": [
+          0.5086269797270606,
+          0.5618443984909295
+        ]
+      },
+      "measurement_totals": {
+        "A": {
+          "reported_usd": 0.407874,
+          "tokens": 134600,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        },
+        "B": {
+          "reported_usd": 0.408763,
+          "tokens": 134718,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        }
+      },
+      "measurement_ratios": {
+        "reported_usd": 1.0021795946787488,
+        "tokens": 1.0008766716196136
+      },
+      "warmup_totals": {
+        "A": {
+          "reported_usd": 0.0235329,
+          "tokens": 5602,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        },
+        "B": {
+          "reported_usd": 0.046773800000000004,
+          "tokens": 11176,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        }
+      },
+      "series_ratios": {
+        "reported_usd": 1.055933041404762,
+        "tokens": 1.0405985649277472
+      }
+    },
+    {
+      "phase": "secondary",
+      "case_id": "short",
+      "verdict": "accepted",
+      "reasons": [],
+      "statistics": {
+        "median": 0.9692932698983487,
+        "ratios": [
+          1.0084384276052258,
+          0.9642655034569858,
+          0.9692932698983487
+        ],
+        "bootstrap_95": null
+      },
+      "measurement_totals": {
+        "A": {
+          "reported_usd": 0.0511727,
+          "tokens": 16757,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        },
+        "B": {
+          "reported_usd": 0.051286700000000005,
+          "tokens": 16769,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        }
+      },
+      "measurement_ratios": {
+        "reported_usd": 1.002227750343445,
+        "tokens": 1.0007161186369875
+      },
+      "warmup_totals": {
+        "A": {
+          "reported_usd": 0.0235289,
+          "tokens": 5604,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        },
+        "B": {
+          "reported_usd": 0.0467758,
+          "tokens": 11175,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        }
+      },
+      "series_ratios": null
+    },
+    {
+      "phase": "secondary",
+      "case_id": "dense",
+      "verdict": "rejected",
+      "reasons": [
+        "latency_median"
+      ],
+      "statistics": {
+        "median": 1.1264283428747919,
+        "ratios": [
+          1.1264283428747919,
+          1.1739671492693413,
+          0.8439120862878622
+        ],
+        "bootstrap_95": null
+      },
+      "measurement_totals": {
+        "A": {
+          "reported_usd": 0.05294070000000001,
+          "tokens": 17136,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        },
+        "B": {
+          "reported_usd": 0.053493,
+          "tokens": 17196,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        }
+      },
+      "measurement_ratios": {
+        "reported_usd": 1.0104324272251781,
+        "tokens": 1.003501400560224
+      },
+      "warmup_totals": {
+        "A": {
+          "reported_usd": 0.0236289,
+          "tokens": 5611,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        },
+        "B": {
+          "reported_usd": 0.0474918,
+          "tokens": 11249,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        }
+      },
+      "series_ratios": null
+    },
+    {
+      "phase": "secondary",
+      "case_id": "none",
+      "verdict": "accepted",
+      "reasons": [],
+      "statistics": {
+        "median": 0.9678837324356795,
+        "ratios": [
+          1.064148343239971,
+          0.9678837324356795,
+          0.9516282649490512
+        ],
+        "bootstrap_95": null
+      },
+      "measurement_totals": {
+        "A": {
+          "reported_usd": 0.0398241,
+          "tokens": 15471,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        },
+        "B": {
+          "reported_usd": 0.0394887,
+          "tokens": 15447,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        }
+      },
+      "measurement_ratios": {
+        "reported_usd": 0.9915779640971171,
+        "tokens": 0.9984487104905954
+      },
+      "warmup_totals": {
+        "A": {
+          "reported_usd": 0.0230549,
+          "tokens": 5553,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        },
+        "B": {
+          "reported_usd": 0.0465718,
+          "tokens": 11154,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        }
+      },
+      "series_ratios": null
+    },
+    {
+      "phase": "cold",
+      "case_id": "long",
+      "verdict": "rejected",
+      "reasons": [
+        "measurement_cost_or_tokens"
+      ],
+      "statistics": {
+        "median": 0.5480585179555888,
+        "ratios": [
+          0.6060641138832286,
+          0.5480585179555888,
+          0.5437092810747676
+        ],
+        "bootstrap_95": null
+      },
+      "measurement_totals": {
+        "A": {
+          "reported_usd": 0.13823760000000002,
+          "tokens": 40146,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        },
+        "B": {
+          "reported_usd": 0.1575254,
+          "tokens": 40181,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        }
+      },
+      "measurement_ratios": {
+        "reported_usd": 1.139526438537706,
+        "tokens": 1.0008718178647935
+      },
+      "warmup_totals": {
+        "A": {
+          "reported_usd": 0,
+          "tokens": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        },
+        "B": {
+          "reported_usd": 0,
+          "tokens": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        }
+      },
+      "series_ratios": null
+    },
+    {
+      "phase": "cold",
+      "case_id": "boundary",
+      "verdict": "inconclusive",
+      "reasons": [
+        "completion_quality_model_or_usage"
+      ],
+      "statistics": null,
+      "measurement_totals": null,
+      "measurement_ratios": null,
+      "warmup_totals": null,
+      "series_ratios": null
+    }
+  ]
+}

@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "run_id": "eae3d0f67ce54861bb690ad73a5ea779",
+  "contract": {
+    "pipeline": "approved-extraction-v1",
+    "prompt": "01f1cd0fdd8ee0d4063d7de559a6d74b2b79f27ad5b0313b2be36e365e815e65",
+    "repair_prompt": "59b4172e55f90dc32ee2f2bab351f80f6db446e79487ec74235bf7fcb3e9aea0",
+    "chunk_size": 8000,
+    "chunk_timeout": 360,
+    "document_id": "e18dd5db885e4b5c960a6c6da2494433",
+    "version": 1,
+    "source_sha256": "cda309a9b6447b8d6722317a21f339327632139f185807f7ac6259abdaecc299",
+    "text_sha256": "cda309a9b6447b8d6722317a21f339327632139f185807f7ac6259abdaecc299",
+    "agent": "claude",
+    "model": "sonnet",
+    "dictionary": {
+      "id": "1b6b4198407d46b4935bbfa5829ba3aa",
+      "revision": 2,
+      "sha256": "9f0d651c8bc9e204630edc3a5d7779d760dd411e89495c209cb25c0a6ad55d73",
+      "extraction_contract": 1
+    },
+    "dictionary_payload_sha256": "9f0d651c8bc9e204630edc3a5d7779d760dd411e89495c209cb25c0a6ad55d73",
+    "extraction_options": {
+      "concurrency": 1,
+      "document_generation": 1,
+      "schema_version": 1,
+      "transport": {
+        "binary": "/Users/joykim/.local/share/claude/versions/2.1.311",
+        "model": "sonnet",
+        "capacity": 1,
+        "timeout": 90,
+        "max_output": 1048576,
+        "rate": null
+      }
+    }
+  },
+  "outputs": [
+    {
+      "title": "Atlas와 Billing의 서비스 호출 관계",
+      "claims": [
+        {
+          "heading": "Atlas의 Billing 직접 호출",
+          "text": "원문은 Atlas 서비스가 Billing 서비스를 직접 호출한다고 명시한다. 나머지 문장은 추가 관계가 없는 중립적 채움 문장이다.",
+          "quote": "Atlas directly calls Billing."
+        }
+      ],
+      "facts": [
+        {
+          "subject": "Atlas",
+          "predicate": "calls",
+          "object": "Billing",
+          "quote": "Atlas directly calls Billing."
+        }
+      ],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [
+            0
+          ],
+          "claim_indices": [
+            0
+          ],
+          "status": "extracted",
+          "reason": "Atlas가 Billing을 직접 호출한다고 명시됨"
+        }
+      ],
+      "dictionary_gaps": []
+    },
+    {
+      "title": "Billing과 Ledger의 직접 호출 관계",
+      "claims": [
+        {
+          "heading": "Billing의 Ledger 직접 호출",
+          "text": "원문은 Billing이 Ledger를 직접 호출한다고 명시한다.",
+          "quote": "Billing directly calls Ledger."
+        },
+        {
+          "heading": "Atlas의 Ledger 직접 호출 부정",
+          "text": "원문은 Atlas가 Ledger를 직접 호출하지 않는다고 명시한다. 부정된 호출이므로 calls 관계 사실로 추출하지 않는다.",
+          "quote": "Atlas does not directly call Ledger."
+        }
+      ],
+      "facts": [
+        {
+          "subject": "Billing",
+          "predicate": "calls",
+          "object": "Ledger",
+          "quote": "Billing directly calls Ledger."
+        }
+      ],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [
+            0
+          ],
+          "claim_indices": [
+            0,
+            1
+          ],
+          "status": "extracted",
+          "reason": "Billing→Ledger 직접 호출만 추출, Atlas의 부정 호출은 제외"
+        }
+      ],
+      "dictionary_gaps": []
+    }
+  ]
+}

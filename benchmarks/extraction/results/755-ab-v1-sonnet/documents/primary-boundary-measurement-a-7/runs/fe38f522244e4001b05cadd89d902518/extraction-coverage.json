@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "run_id": "fe38f522244e4001b05cadd89d902518",
+    "document_id": "dc238aa0c5a74e1fb13b3c8652d244da",
+    "version": 1,
+    "dictionary_id": "52f9e16312a24ec8a03537a47485a254",
+    "revision": 2,
+    "sha256": "e5a10560901c5de8418f9ab46028ff1a53a25bba5fb9f8ab81ff9ee9a68eb31b",
+    "extraction_contract": 1
+  },
+  "source_length": 8094,
+  "chunks": [
+    {
+      "offset": 0,
+      "length": 8000,
+      "claim_count": 1,
+      "fact_predicates": [],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [],
+          "claim_indices": [
+            0
+          ],
+          "status": "not_representable",
+          "reason": "Atlas→Billing 호출은 가정 예시로 명시되어 calls 정의에서 제외됨"
+        }
+      ],
+      "dictionary_gaps": []
+    },
+    {
+      "offset": 8000,
+      "length": 94,
+      "claim_count": 2,
+      "fact_predicates": [
+        "calls"
+      ],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [
+            0
+          ],
+          "claim_indices": [
+            0,
+            1
+          ],
+          "status": "extracted",
+          "reason": "실제 구성 문장에서 Atlas→Billing 호출을 추출했고 가정적 예시는 제외함"
+        }
+      ],
+      "dictionary_gaps": []
+    }
+  ]
+}

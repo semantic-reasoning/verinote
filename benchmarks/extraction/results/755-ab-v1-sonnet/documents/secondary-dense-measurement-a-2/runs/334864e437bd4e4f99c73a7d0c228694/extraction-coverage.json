@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "run_id": "334864e437bd4e4f99c73a7d0c228694",
+    "document_id": "7e10e81c83834089aae3fc6828722d41",
+    "version": 1,
+    "dictionary_id": "2a8ab8cd211942d0a024a73c2a6fa77e",
+    "revision": 2,
+    "sha256": "84c45bb86dab664b0c5fef0235007c4e1097357fa94018cf740f31c903b90619",
+    "extraction_contract": 1
+  },
+  "source_length": 188,
+  "chunks": [
+    {
+      "offset": 0,
+      "length": 188,
+      "claim_count": 1,
+      "fact_predicates": [
+        "calls",
+        "calls",
+        "calls",
+        "calls",
+        "calls",
+        "calls",
+        "calls"
+      ],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ],
+          "claim_indices": [
+            0
+          ],
+          "status": "extracted",
+          "reason": "명시된 직접 호출 7건을 모두 추출했고 전이 호출은 제외함"
+        }
+      ],
+      "dictionary_gaps": []
+    }
+  ]
+}

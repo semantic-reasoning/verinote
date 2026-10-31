@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "run_id": "174ac79845f24df6b4a9050bf249ed83",
+    "document_id": "2a2835b8590c4143b1ab846b55deb7eb",
+    "version": 1,
+    "dictionary_id": "f2550c399c0845a0b6dc79da6f96523a",
+    "revision": 2,
+    "sha256": "e5a10560901c5de8418f9ab46028ff1a53a25bba5fb9f8ab81ff9ee9a68eb31b",
+    "extraction_contract": 1
+  },
+  "source_length": 8094,
+  "chunks": [
+    {
+      "offset": 0,
+      "length": 8000,
+      "claim_count": 1,
+      "fact_predicates": [],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [],
+          "claim_indices": [
+            0
+          ],
+          "status": "not_representable",
+          "reason": "Atlas→Billing 호출은 가상 예시로 명시되어 calls 정의상 제외됨"
+        }
+      ],
+      "dictionary_gaps": [
+        {
+          "code": "qualifier_not_representable",
+          "detail": "'가상 예시' 한정어가 붙은 호출은 calls 관계로 표현할 수 없어 claims에만 보존함",
+          "claim_indices": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "offset": 8000,
+      "length": 94,
+      "claim_count": 2,
+      "fact_predicates": [
+        "calls"
+      ],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [
+            0
+          ],
+          "claim_indices": [
+            0,
+            1
+          ],
+          "status": "extracted",
+          "reason": "실제 구성 문장만 사실로 추출했고 가정적 예시 문장은 제외함"
+        }
+      ],
+      "dictionary_gaps": []
+    }
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "run_id": "92b0b71b72e14e9ab12c008f365b8b29",
+    "document_id": "e4161deacfd64de3b7c5d7127979425a",
+    "version": 1,
+    "dictionary_id": "a2867ca8db7048a2b38ff0a13d5ed5e3",
+    "revision": 2,
+    "sha256": "e5a10560901c5de8418f9ab46028ff1a53a25bba5fb9f8ab81ff9ee9a68eb31b",
+    "extraction_contract": 1
+  },
+  "source_length": 8094,
+  "chunks": [
+    {
+      "offset": 0,
+      "length": 8000,
+      "claim_count": 1,
+      "fact_predicates": [],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [],
+          "claim_indices": [
+            0
+          ],
+          "status": "not_representable",
+          "reason": "Atlas→Billing 호출은 가상 예시로 명시되어 calls 정의상 제외됨"
+        }
+      ],
+      "dictionary_gaps": []
+    },
+    {
+      "offset": 8000,
+      "length": 94,
+      "claim_count": 2,
+      "fact_predicates": [
+        "calls"
+      ],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [
+            0
+          ],
+          "claim_indices": [
+            0,
+            1
+          ],
+          "status": "extracted",
+          "reason": "실제 구성 문장만 추출했고 가상 예시 문장은 제외 기준에 따라 제외함"
+        }
+      ],
+      "dictionary_gaps": []
+    }
+  ]
+}

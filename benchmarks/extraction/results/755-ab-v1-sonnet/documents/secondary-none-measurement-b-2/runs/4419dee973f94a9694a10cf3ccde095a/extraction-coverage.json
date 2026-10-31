@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "run_id": "4419dee973f94a9694a10cf3ccde095a",
+    "document_id": "7ea72d023d1a479593f49d2bf1eeeb11",
+    "version": 1,
+    "dictionary_id": "fc5c92775ea34f9f9b440bc3da02ba7f",
+    "revision": 2,
+    "sha256": "96c68114c7dfda44c5898d339082adb58317b4ade366eda65f63761b0eac65ef",
+    "extraction_contract": 1
+  },
+  "source_length": 67,
+  "chunks": [
+    {
+      "offset": 0,
+      "length": 67,
+      "claim_count": 1,
+      "fact_predicates": [],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [],
+          "claim_indices": [
+            0
+          ],
+          "status": "no_evidence",
+          "reason": "원문이 직접 서비스 호출이 명시되지 않았다고 밝히고 있음"
+        }
+      ],
+      "dictionary_gaps": []
+    }
+  ]
+}

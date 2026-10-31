@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "run_id": "5af038ad6baf4a7bbb860b0d012b0b6a",
+    "document_id": "4bcf0f3408be4a3996bd5f96123127fb",
+    "version": 1,
+    "dictionary_id": "afef55834bcf4e72806d10940c6bda8f",
+    "revision": 2,
+    "sha256": "9e2dd298b3fc0d0ff72b821e26eb53a158553b1ea926b56e764631e6ebc7b137",
+    "extraction_contract": 1
+  },
+  "source_length": 127,
+  "chunks": [
+    {
+      "offset": 0,
+      "length": 127,
+      "claim_count": 4,
+      "fact_predicates": [
+        "calls",
+        "calls"
+      ],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [
+            0,
+            1
+          ],
+          "claim_indices": [
+            0,
+            1,
+            2
+          ],
+          "status": "extracted",
+          "reason": "직접 호출 두 건 추출. Atlas→Ledger는 부정 진술이라 제외."
+        }
+      ],
+      "dictionary_gaps": []
+    }
+  ]
+}

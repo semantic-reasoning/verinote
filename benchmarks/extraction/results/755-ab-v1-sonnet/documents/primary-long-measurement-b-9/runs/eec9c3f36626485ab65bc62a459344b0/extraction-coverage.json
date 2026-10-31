@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "run_id": "eec9c3f36626485ab65bc62a459344b0",
+    "document_id": "71210e7e155a4a68aed5ee74111a6bb3",
+    "version": 1,
+    "dictionary_id": "bed60e40a0bb49379dbf04be01fc8fcf",
+    "revision": 2,
+    "sha256": "9f0d651c8bc9e204630edc3a5d7779d760dd411e89495c209cb25c0a6ad55d73",
+    "extraction_contract": 1
+  },
+  "source_length": 8068,
+  "chunks": [
+    {
+      "offset": 0,
+      "length": 8000,
+      "claim_count": 1,
+      "fact_predicates": [
+        "calls"
+      ],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [
+            0
+          ],
+          "claim_indices": [
+            0
+          ],
+          "status": "extracted",
+          "reason": "Atlas가 Billing을 직접 호출한다는 명시적 근거가 있음"
+        }
+      ],
+      "dictionary_gaps": []
+    },
+    {
+      "offset": 8000,
+      "length": 68,
+      "claim_count": 2,
+      "fact_predicates": [
+        "calls"
+      ],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [
+            0
+          ],
+          "claim_indices": [
+            0,
+            1
+          ],
+          "status": "extracted",
+          "reason": "Billing→Ledger만 추출; Atlas→Ledger는 부정문이라 제외"
+        }
+      ],
+      "dictionary_gaps": []
+    }
+  ]
+}
