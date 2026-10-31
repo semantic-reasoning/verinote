@@ -1,0 +1,2742 @@
+{
+  "schema_version": 1,
+  "input_hashes": {
+    "report.json": "5379d55927e8830d2c7a400d22d2bc5c96d36b6799080970d5a2bbed732fb5cc",
+    "index.json": "6a82ce9df18ad93f2c7a8990619daac38eb4025819d904b7894b9c79c9cd3ef1",
+    "environment.json": "fbb56ce3c95e7f3f61a8652721fd6aa55b961dbd6fbe5b513949e5fe95cd4851",
+    "plan.json": "2075de4d752128d49d1437dfb8f29d9a19d14f7335c2dc1f0a47ce197545b922"
+  },
+  "verdict": "rejected",
+  "comparisons": [
+    {
+      "phase": "primary",
+      "case_id": "long",
+      "verdict": "accepted",
+      "reasons": [],
+      "statistics": {
+        "median": 0.5306555224164411,
+        "ratios": [
+          0.49884986548318566,
+          0.4767198068952313,
+          0.5423724708422456,
+          0.5042478673965615,
+          0.6805478943515921,
+          0.4617519840056436,
+          0.5189385739906365,
+          0.5481491041334826,
+          0.7286061360962576,
+          0.5517715720639831
+        ],
+        "bootstrap_95": [
+          0.4904838371458964,
+          0.6143484992425374
+        ]
+      },
+      "measurement_totals": {
+        "A": {
+          "reported_usd": 0.397806,
+          "tokens": 133811,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        },
+        "B": {
+          "reported_usd": 0.398962,
+          "tokens": 133980,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        }
+      },
+      "measurement_ratios": {
+        "reported_usd": 1.0029059390758308,
+        "tokens": 1.001262975390663
+      },
+      "warmup_totals": {
+        "A": {
+          "reported_usd": 0.0230889,
+          "tokens": 5557,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        },
+        "B": {
+          "reported_usd": 0.0467718,
+          "tokens": 11174,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        }
+      },
+      "series_ratios": {
+        "reported_usd": 1.0590144950675335,
+        "tokens": 1.0415159864531314
+      }
+    },
+    {
+      "phase": "primary",
+      "case_id": "boundary",
+      "verdict": "accepted",
+      "reasons": [],
+      "statistics": {
+        "median": 0.515214087381892,
+        "ratios": [
+          0.512093089095432,
+          0.5132058245058914,
+          0.5878467682022055,
+          0.5172223502578926,
+          0.5120858218743497,
+          0.5358420287796535,
+          0.5051608703586891,
+          0.4641509248436393,
+          0.7032646045953267,
+          0.5589905772573671
+        ],
+        "bootstrap_95": [
+          0.5086269797270606,
+          0.5618443984909295
+        ]
+      },
+      "measurement_totals": {
+        "A": {
+          "reported_usd": 0.407874,
+          "tokens": 134600,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        },
+        "B": {
+          "reported_usd": 0.408763,
+          "tokens": 134718,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        }
+      },
+      "measurement_ratios": {
+        "reported_usd": 1.0021795946787488,
+        "tokens": 1.0008766716196136
+      },
+      "warmup_totals": {
+        "A": {
+          "reported_usd": 0.0235329,
+          "tokens": 5602,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        },
+        "B": {
+          "reported_usd": 0.046773800000000004,
+          "tokens": 11176,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        }
+      },
+      "series_ratios": {
+        "reported_usd": 1.055933041404762,
+        "tokens": 1.0405985649277472
+      }
+    },
+    {
+      "phase": "secondary",
+      "case_id": "short",
+      "verdict": "accepted",
+      "reasons": [],
+      "statistics": {
+        "median": 0.9692932698983487,
+        "ratios": [
+          1.0084384276052258,
+          0.9642655034569858,
+          0.9692932698983487
+        ],
+        "bootstrap_95": null
+      },
+      "measurement_totals": {
+        "A": {
+          "reported_usd": 0.0511727,
+          "tokens": 16757,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        },
+        "B": {
+          "reported_usd": 0.051286700000000005,
+          "tokens": 16769,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        }
+      },
+      "measurement_ratios": {
+        "reported_usd": 1.002227750343445,
+        "tokens": 1.0007161186369875
+      },
+      "warmup_totals": {
+        "A": {
+          "reported_usd": 0.0235289,
+          "tokens": 5604,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        },
+        "B": {
+          "reported_usd": 0.0467758,
+          "tokens": 11175,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        }
+      },
+      "series_ratios": null
+    },
+    {
+      "phase": "secondary",
+      "case_id": "dense",
+      "verdict": "rejected",
+      "reasons": [
+        "latency_median"
+      ],
+      "statistics": {
+        "median": 1.1264283428747919,
+        "ratios": [
+          1.1264283428747919,
+          1.1739671492693413,
+          0.8439120862878622
+        ],
+        "bootstrap_95": null
+      },
+      "measurement_totals": {
+        "A": {
+          "reported_usd": 0.05294070000000001,
+          "tokens": 17136,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        },
+        "B": {
+          "reported_usd": 0.053493,
+          "tokens": 17196,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        }
+      },
+      "measurement_ratios": {
+        "reported_usd": 1.0104324272251781,
+        "tokens": 1.003501400560224
+      },
+      "warmup_totals": {
+        "A": {
+          "reported_usd": 0.0236289,
+          "tokens": 5611,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        },
+        "B": {
+          "reported_usd": 0.0474918,
+          "tokens": 11249,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        }
+      },
+      "series_ratios": null
+    },
+    {
+      "phase": "secondary",
+      "case_id": "none",
+      "verdict": "accepted",
+      "reasons": [],
+      "statistics": {
+        "median": 0.9678837324356795,
+        "ratios": [
+          1.064148343239971,
+          0.9678837324356795,
+          0.9516282649490512
+        ],
+        "bootstrap_95": null
+      },
+      "measurement_totals": {
+        "A": {
+          "reported_usd": 0.0398241,
+          "tokens": 15471,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        },
+        "B": {
+          "reported_usd": 0.0394887,
+          "tokens": 15447,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        }
+      },
+      "measurement_ratios": {
+        "reported_usd": 0.9915779640971171,
+        "tokens": 0.9984487104905954
+      },
+      "warmup_totals": {
+        "A": {
+          "reported_usd": 0.0230549,
+          "tokens": 5553,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        },
+        "B": {
+          "reported_usd": 0.0465718,
+          "tokens": 11154,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        }
+      },
+      "series_ratios": null
+    },
+    {
+      "phase": "cold",
+      "case_id": "long",
+      "verdict": "rejected",
+      "reasons": [
+        "measurement_cost_or_tokens"
+      ],
+      "statistics": {
+        "median": 0.5480585179555888,
+        "ratios": [
+          0.6060641138832286,
+          0.5480585179555888,
+          0.5437092810747676
+        ],
+        "bootstrap_95": null
+      },
+      "measurement_totals": {
+        "A": {
+          "reported_usd": 0.13823760000000002,
+          "tokens": 40146,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        },
+        "B": {
+          "reported_usd": 0.1575254,
+          "tokens": 40181,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        }
+      },
+      "measurement_ratios": {
+        "reported_usd": 1.139526438537706,
+        "tokens": 1.0008718178647935
+      },
+      "warmup_totals": {
+        "A": {
+          "reported_usd": 0,
+          "tokens": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        },
+        "B": {
+          "reported_usd": 0,
+          "tokens": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "repairs": 0
+        }
+      },
+      "series_ratios": null
+    },
+    {
+      "phase": "cold",
+      "case_id": "boundary",
+      "verdict": "inconclusive",
+      "reasons": [
+        "completion_quality_model_or_usage"
+      ],
+      "statistics": null,
+      "measurement_totals": null,
+      "measurement_ratios": null,
+      "warmup_totals": null,
+      "series_ratios": null
+    }
+  ],
+  "timing": [
+    {
+      "key": "primary-long-warmup-a-1",
+      "phase": "primary",
+      "case_id": "long",
+      "purpose": "warmup",
+      "arm": "A",
+      "pair": 0,
+      "service_total": 4.872547125,
+      "request_work": 4.862710165999999,
+      "request_wall": 4.862710165999999,
+      "explicit_local_wall": 0.004078206999999438,
+      "unattributed_wall": 0.005758752000001088,
+      "cli_work": {
+        "response_wait": 3.8968567499999995,
+        "reset": 0.958372959,
+        "worker_wait": 0.000634166
+      },
+      "output_tokens": 566,
+      "call_ids": [
+        "b80189ac4ff846f9a52f0b8347167fcc"
+      ]
+    },
+    {
+      "key": "primary-long-warmup-b-1",
+      "phase": "primary",
+      "case_id": "long",
+      "purpose": "warmup",
+      "arm": "B",
+      "pair": 0,
+      "service_total": 4.719613375,
+      "request_work": 4.708685625,
+      "request_wall": 4.708685625,
+      "explicit_local_wall": 0.004904165999999871,
+      "unattributed_wall": 0.00602358399999936,
+      "cli_work": {
+        "response_wait": 4.0651744579999995,
+        "reset": 0.632610875,
+        "worker_wait": 0.000711667
+      },
+      "output_tokens": 577,
+      "call_ids": [
+        "448fea8c2d0d41958875e10cfdfcbe47"
+      ]
+    },
+    {
+      "key": "primary-long-warmup-b-2",
+      "phase": "primary",
+      "case_id": "long",
+      "purpose": "warmup",
+      "arm": "B",
+      "pair": 0,
+      "service_total": 5.045014833,
+      "request_work": 5.03554625,
+      "request_wall": 5.03554625,
+      "explicit_local_wall": 0.003989874999999775,
+      "unattributed_wall": 0.005478708000000054,
+      "cli_work": {
+        "response_wait": 4.392129583,
+        "reset": 0.634945584,
+        "worker_wait": 0.000765958
+      },
+      "output_tokens": 614,
+      "call_ids": [
+        "2ea20e6c6d6f4b69ad788dab18e24462"
+      ]
+    },
+    {
+      "key": "primary-long-measurement-b-1",
+      "phase": "primary",
+      "case_id": "long",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 1,
+      "service_total": 2.892520875,
+      "request_work": 5.496418499999999,
+      "request_wall": 2.8836169999999997,
+      "explicit_local_wall": 0.005391460000000353,
+      "unattributed_wall": 0.004993957000000382,
+      "cli_work": {
+        "response_wait": 5.4566475830000005,
+        "reset": 0.022779001,
+        "worker_wait": 0.00168075
+      },
+      "output_tokens": 659,
+      "call_ids": [
+        "7789a6f11c65451d8807ab4dd0c69f78",
+        "487a51fec39b47ad91a5386de2fb388a"
+      ]
+    },
+    {
+      "key": "primary-long-measurement-a-1",
+      "phase": "primary",
+      "case_id": "long",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 1,
+      "service_total": 5.798379583,
+      "request_work": 5.7866849170000005,
+      "request_wall": 5.7866849170000005,
+      "explicit_local_wall": 0.0047103739999999955,
+      "unattributed_wall": 0.006984291999999392,
+      "cli_work": {
+        "response_wait": 5.745473167,
+        "reset": 0.026647249999999997,
+        "worker_wait": 0.001591125
+      },
+      "output_tokens": 680,
+      "call_ids": [
+        "a365821999bc46eea2b88538317947db",
+        "3f46da05645e4e23944b5ac57e201e29"
+      ]
+    },
+    {
+      "key": "primary-long-measurement-b-2",
+      "phase": "primary",
+      "case_id": "long",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 2,
+      "service_total": 3.287902959,
+      "request_work": 6.019516583,
+      "request_wall": 3.278256958,
+      "explicit_local_wall": 0.005806332999999819,
+      "unattributed_wall": 0.005229001000000011,
+      "cli_work": {
+        "response_wait": 5.9853135,
+        "reset": 0.016906833,
+        "worker_wait": 0.001520791
+      },
+      "output_tokens": 659,
+      "call_ids": [
+        "12f67d88e3e8482a9eb29caa738e9d19",
+        "46d75d9dcaf042ec8573c263bb180430"
+      ]
+    },
+    {
+      "key": "primary-long-measurement-a-2",
+      "phase": "primary",
+      "case_id": "long",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 2,
+      "service_total": 6.896929625,
+      "request_work": 6.8854028750000005,
+      "request_wall": 6.8854028750000005,
+      "explicit_local_wall": 0.004831417000000898,
+      "unattributed_wall": 0.006695332999998804,
+      "cli_work": {
+        "response_wait": 6.854005041000001,
+        "reset": 0.017665541,
+        "worker_wait": 0.001512417
+      },
+      "output_tokens": 646,
+      "call_ids": [
+        "508a7b9af4584b628c7d2a12b5005bd8",
+        "96040611548f4d44af614c73b78bffcc"
+      ]
+    },
+    {
+      "key": "primary-long-measurement-a-3",
+      "phase": "primary",
+      "case_id": "long",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 3,
+      "service_total": 5.401459083,
+      "request_work": 5.387654207000001,
+      "request_wall": 5.387654207000001,
+      "explicit_local_wall": 0.005772582999999875,
+      "unattributed_wall": 0.008032293000000301,
+      "cli_work": {
+        "response_wait": 5.322652583,
+        "reset": 0.047022042,
+        "worker_wait": 0.002167999
+      },
+      "output_tokens": 634,
+      "call_ids": [
+        "eeefe9ffcd6244cabf040c719f48701e",
+        "f1ae1a83903940e58efa54b5c259b5dc"
+      ]
+    },
+    {
+      "key": "primary-long-measurement-b-3",
+      "phase": "primary",
+      "case_id": "long",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 3,
+      "service_total": 2.929602709,
+      "request_work": 5.527838417,
+      "request_wall": 2.921426625,
+      "explicit_local_wall": 0.004922458999999808,
+      "unattributed_wall": 0.004385667000000204,
+      "cli_work": {
+        "response_wait": 5.476048417,
+        "reset": 0.037864124,
+        "worker_wait": 0.0013867509999999999
+      },
+      "output_tokens": 665,
+      "call_ids": [
+        "1bd4bc752d9e4a9ead0fd3f4e78bcc38",
+        "af82d4295d8d44d7a2938efc5004f53c"
+      ]
+    },
+    {
+      "key": "primary-long-measurement-a-4",
+      "phase": "primary",
+      "case_id": "long",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 4,
+      "service_total": 5.707437459,
+      "request_work": 5.695071958,
+      "request_wall": 5.695071958,
+      "explicit_local_wall": 0.005092415999999243,
+      "unattributed_wall": 0.007273085000001345,
+      "cli_work": {
+        "response_wait": 5.663298417,
+        "reset": 0.015895584,
+        "worker_wait": 0.001726375
+      },
+      "output_tokens": 655,
+      "call_ids": [
+        "1bdb03c581de4037af808df4f7129da9",
+        "41bc9fb1c6ef441685d84d969df20f99"
+      ]
+    },
+    {
+      "key": "primary-long-measurement-b-4",
+      "phase": "primary",
+      "case_id": "long",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 4,
+      "service_total": 2.877963167,
+      "request_work": 5.578603625,
+      "request_wall": 2.870024083,
+      "explicit_local_wall": 0.004625957999999653,
+      "unattributed_wall": 0.004516167999999876,
+      "cli_work": {
+        "response_wait": 5.526876208,
+        "reset": 0.037432168,
+        "worker_wait": 0.002079083
+      },
+      "output_tokens": 664,
+      "call_ids": [
+        "39b9f78628ac442cbce483d366681cd7",
+        "f80874f41b4e4946a7b9a07be3609bfc"
+      ]
+    },
+    {
+      "key": "primary-long-measurement-b-5",
+      "phase": "primary",
+      "case_id": "long",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 5,
+      "service_total": 3.793295417,
+      "request_work": 6.524961833,
+      "request_wall": 3.7866395,
+      "explicit_local_wall": 0.0037237089999995945,
+      "unattributed_wall": 0.003890124000000217,
+      "cli_work": {
+        "response_wait": 6.498090208,
+        "reset": 0.013802208,
+        "worker_wait": 0.001645167
+      },
+      "output_tokens": 736,
+      "call_ids": [
+        "77c351fcdef643d98798d8ae868d9051",
+        "c5de935b70fe418ca8489c291da99c63"
+      ]
+    },
+    {
+      "key": "primary-long-measurement-a-5",
+      "phase": "primary",
+      "case_id": "long",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 5,
+      "service_total": 5.573884584,
+      "request_work": 5.564307749999999,
+      "request_wall": 5.564307749999999,
+      "explicit_local_wall": 0.003985207999999018,
+      "unattributed_wall": 0.005591626000001071,
+      "cli_work": {
+        "response_wait": 5.5378406259999995,
+        "reset": 0.013576709000000001,
+        "worker_wait": 0.001209333
+      },
+      "output_tokens": 690,
+      "call_ids": [
+        "f35e8bba8f0a49bab40a9ef57c17e956",
+        "68a75fb9bb2148a38334a48f423b9b7c"
+      ]
+    },
+    {
+      "key": "primary-long-measurement-a-6",
+      "phase": "primary",
+      "case_id": "long",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 6,
+      "service_total": 6.182993375,
+      "request_work": 6.172592626,
+      "request_wall": 6.172592626,
+      "explicit_local_wall": 0.0043285830000005885,
+      "unattributed_wall": 0.006072165999999157,
+      "cli_work": {
+        "response_wait": 6.140478625,
+        "reset": 0.015795875,
+        "worker_wait": 0.0014192089999999998
+      },
+      "output_tokens": 659,
+      "call_ids": [
+        "72a8601e27f442458a7790977d0d1a36",
+        "e926abaa5f8c41b1b9c3a586b6a25826"
+      ]
+    },
+    {
+      "key": "primary-long-measurement-b-6",
+      "phase": "primary",
+      "case_id": "long",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 6,
+      "service_total": 2.855009458,
+      "request_work": 5.573016916,
+      "request_wall": 2.8463805410000003,
+      "explicit_local_wall": 0.00555812300000006,
+      "unattributed_wall": 0.004840126999999583,
+      "cli_work": {
+        "response_wait": 5.538088792,
+        "reset": 0.015387667,
+        "worker_wait": 0.0015397499999999999
+      },
+      "output_tokens": 673,
+      "call_ids": [
+        "97e8dc55bfc24d8c9aed35b350f514e0",
+        "3f54a2568348411d95a1ebdd1a28c19a"
+      ]
+    },
+    {
+      "key": "primary-long-measurement-a-7",
+      "phase": "primary",
+      "case_id": "long",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 7,
+      "service_total": 5.400240459,
+      "request_work": 5.387176542000001,
+      "request_wall": 5.387176542000001,
+      "explicit_local_wall": 0.0051786249999993626,
+      "unattributed_wall": 0.007885292000000987,
+      "cli_work": {
+        "response_wait": 5.3207836660000005,
+        "reset": 0.042298125,
+        "worker_wait": 0.001727125
+      },
+      "output_tokens": 666,
+      "call_ids": [
+        "25d1ba9c0ba442fcb663617ac5e282a0",
+        "50e27cb7725c4cd0b0c6bb8530bbef6b"
+      ]
+    },
+    {
+      "key": "primary-long-measurement-b-7",
+      "phase": "primary",
+      "case_id": "long",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 7,
+      "service_total": 2.802393083,
+      "request_work": 5.371256125,
+      "request_wall": 2.794697959,
+      "explicit_local_wall": 0.004637583000000244,
+      "unattributed_wall": 0.00424462400000003,
+      "cli_work": {
+        "response_wait": 5.311687374,
+        "reset": 0.038143999000000005,
+        "worker_wait": 0.0013127920000000001
+      },
+      "output_tokens": 651,
+      "call_ids": [
+        "99604f077db64a96b37599554bdd7440",
+        "fb087cc5493640eebed619b1456e0797"
+      ]
+    },
+    {
+      "key": "primary-long-measurement-a-8",
+      "phase": "primary",
+      "case_id": "long",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 8,
+      "service_total": 5.364432208,
+      "request_work": 5.350425583,
+      "request_wall": 5.350425583,
+      "explicit_local_wall": 0.006217082999999677,
+      "unattributed_wall": 0.00778954200000026,
+      "cli_work": {
+        "response_wait": 5.305172418,
+        "reset": 0.016592666,
+        "worker_wait": 0.001496167
+      },
+      "output_tokens": 642,
+      "call_ids": [
+        "8ae8371951a24121a5fb1f7925e10be5",
+        "7c5dd82960724a2dabe4dc2efc465689"
+      ]
+    },
+    {
+      "key": "primary-long-measurement-b-8",
+      "phase": "primary",
+      "case_id": "long",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 8,
+      "service_total": 2.940508709,
+      "request_work": 5.684653583,
+      "request_wall": 2.93075975,
+      "explicit_local_wall": 0.00547279200000024,
+      "unattributed_wall": 0.0054811249999993095,
+      "cli_work": {
+        "response_wait": 5.61379375,
+        "reset": 0.0466285,
+        "worker_wait": 0.0017894579999999998
+      },
+      "output_tokens": 641,
+      "call_ids": [
+        "a433fca2e3854a4196444339f40820f6",
+        "2f6a6c43e55e4a5f9c066ee1a7debc7b"
+      ]
+    },
+    {
+      "key": "primary-long-measurement-b-9",
+      "phase": "primary",
+      "case_id": "long",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 9,
+      "service_total": 3.876459875,
+      "request_work": 6.4304755,
+      "request_wall": 3.868370583,
+      "explicit_local_wall": 0.004874459000000297,
+      "unattributed_wall": 0.004582167000000137,
+      "cli_work": {
+        "response_wait": 6.392070916,
+        "reset": 0.017171084000000003,
+        "worker_wait": 0.001444833
+      },
+      "output_tokens": 665,
+      "call_ids": [
+        "c470c83e1bd84b15ae9c7d6a13d9ac5b",
+        "94e65a83f885484d945c0f6ee111c9be"
+      ]
+    },
+    {
+      "key": "primary-long-measurement-a-9",
+      "phase": "primary",
+      "case_id": "long",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 9,
+      "service_total": 5.32037775,
+      "request_work": 5.307045373999999,
+      "request_wall": 5.307045373999999,
+      "explicit_local_wall": 0.005936666999999603,
+      "unattributed_wall": 0.00739570900000075,
+      "cli_work": {
+        "response_wait": 5.268035583,
+        "reset": 0.014950459,
+        "worker_wait": 0.001539874
+      },
+      "output_tokens": 645,
+      "call_ids": [
+        "7efb43d7e36c4c0986ea0797cffa0343",
+        "517f12e279bd499ab81eb365e73021ca"
+      ]
+    },
+    {
+      "key": "primary-long-measurement-b-10",
+      "phase": "primary",
+      "case_id": "long",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 10,
+      "service_total": 3.13214825,
+      "request_work": 5.681665666,
+      "request_wall": 3.125405041,
+      "explicit_local_wall": 0.003801708000000158,
+      "unattributed_wall": 0.0038446260000002397,
+      "cli_work": {
+        "response_wait": 5.645743876,
+        "reset": 0.016954583000000002,
+        "worker_wait": 0.00152825
+      },
+      "output_tokens": 671,
+      "call_ids": [
+        "6b1cac7e565a45b4a9c1ba464da45053",
+        "3b4916f54e0145c9b9f70cc2d26f2d85"
+      ]
+    },
+    {
+      "key": "primary-long-measurement-a-10",
+      "phase": "primary",
+      "case_id": "long",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 10,
+      "service_total": 5.676530667,
+      "request_work": 5.665165791,
+      "request_wall": 5.665165791,
+      "explicit_local_wall": 0.004493083000000342,
+      "unattributed_wall": 0.006871792999999293,
+      "cli_work": {
+        "response_wait": 5.60199825,
+        "reset": 0.039916251,
+        "worker_wait": 0.002170833
+      },
+      "output_tokens": 674,
+      "call_ids": [
+        "5d6510ceaff448818152aaec9deb2731",
+        "c9bfbebbe4f54b8dbeccfecc61449190"
+      ]
+    },
+    {
+      "key": "primary-boundary-warmup-a-1",
+      "phase": "primary",
+      "case_id": "boundary",
+      "purpose": "warmup",
+      "arm": "A",
+      "pair": 0,
+      "service_total": 4.697045,
+      "request_work": 4.688738666,
+      "request_wall": 4.688738666,
+      "explicit_local_wall": 0.0036609999999995518,
+      "unattributed_wall": 0.004645334000001,
+      "cli_work": {
+        "response_wait": 4.063752792000001,
+        "reset": 0.61248975,
+        "worker_wait": 0.000495625
+      },
+      "output_tokens": 610,
+      "call_ids": [
+        "ca84da0574274ebdb6b7f13c7c4ba3ea"
+      ]
+    },
+    {
+      "key": "primary-boundary-warmup-b-1",
+      "phase": "primary",
+      "case_id": "boundary",
+      "purpose": "warmup",
+      "arm": "B",
+      "pair": 0,
+      "service_total": 5.048161958,
+      "request_work": 5.039398584,
+      "request_wall": 5.039398584,
+      "explicit_local_wall": 0.004001041999999953,
+      "unattributed_wall": 0.004762332000000313,
+      "cli_work": {
+        "response_wait": 4.421617083,
+        "reset": 0.603225625,
+        "worker_wait": 0.000520875
+      },
+      "output_tokens": 611,
+      "call_ids": [
+        "39efddfd3b4d479089ac8b3a2ea595ac"
+      ]
+    },
+    {
+      "key": "primary-boundary-warmup-b-2",
+      "phase": "primary",
+      "case_id": "boundary",
+      "purpose": "warmup",
+      "arm": "B",
+      "pair": 0,
+      "service_total": 4.679531208,
+      "request_work": 4.669604458,
+      "request_wall": 4.669604458,
+      "explicit_local_wall": 0.0040809169999992505,
+      "unattributed_wall": 0.005845833000000411,
+      "cli_work": {
+        "response_wait": 3.9782647079999998,
+        "reset": 0.675738458,
+        "worker_wait": 0.000697625
+      },
+      "output_tokens": 579,
+      "call_ids": [
+        "a1476178f1f443e78e4addaf6feb2ecf"
+      ]
+    },
+    {
+      "key": "primary-boundary-measurement-a-1",
+      "phase": "primary",
+      "case_id": "boundary",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 1,
+      "service_total": 7.000916584,
+      "request_work": 6.987253917,
+      "request_wall": 6.987253917,
+      "explicit_local_wall": 0.005199583000001053,
+      "unattributed_wall": 0.008463083999998844,
+      "cli_work": {
+        "response_wait": 6.942659375,
+        "reset": 0.019553958,
+        "worker_wait": 0.0016797919999999998
+      },
+      "output_tokens": 809,
+      "call_ids": [
+        "70196796cc264726bb79af2e7d43417f",
+        "96db24b14f7b410da0d94c2b391d3f98"
+      ]
+    },
+    {
+      "key": "primary-boundary-measurement-b-1",
+      "phase": "primary",
+      "case_id": "boundary",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 1,
+      "service_total": 3.585121,
+      "request_work": 7.004382416,
+      "request_wall": 3.576407916,
+      "explicit_local_wall": 0.004897248999999733,
+      "unattributed_wall": 0.0052118770000002534,
+      "cli_work": {
+        "response_wait": 6.963299041,
+        "reset": 0.017736375000000002,
+        "worker_wait": 0.001642875
+      },
+      "output_tokens": 852,
+      "call_ids": [
+        "be2535312d064dc383a2a04f4b49f54e",
+        "205ad8d982d94a8d85e24e2e7f570a88"
+      ]
+    },
+    {
+      "key": "primary-boundary-measurement-b-2",
+      "phase": "primary",
+      "case_id": "boundary",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 2,
+      "service_total": 3.65459175,
+      "request_work": 7.282248999,
+      "request_wall": 3.645850958,
+      "explicit_local_wall": 0.003939707000000451,
+      "unattributed_wall": 0.004801084999999539,
+      "cli_work": {
+        "response_wait": 7.235653584,
+        "reset": 0.016294250000000003,
+        "worker_wait": 0.0014555409999999999
+      },
+      "output_tokens": 853,
+      "call_ids": [
+        "fa1fd49db5f244719de5294e388901c7",
+        "e6222e734e6c4000a85202d759ccc567"
+      ]
+    },
+    {
+      "key": "primary-boundary-measurement-a-2",
+      "phase": "primary",
+      "case_id": "boundary",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 2,
+      "service_total": 7.121103416,
+      "request_work": 7.108703041,
+      "request_wall": 7.108703041,
+      "explicit_local_wall": 0.005049625999999171,
+      "unattributed_wall": 0.007350749000001322,
+      "cli_work": {
+        "response_wait": 7.028162876,
+        "reset": 0.049223417,
+        "worker_wait": 0.001750375
+      },
+      "output_tokens": 863,
+      "call_ids": [
+        "51ea946a66ac4947aa6046642991a6c2",
+        "223a49942ec24d6ca76e0d0f42b9f4ac"
+      ]
+    },
+    {
+      "key": "primary-boundary-measurement-b-3",
+      "phase": "primary",
+      "case_id": "boundary",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 3,
+      "service_total": 3.595972209,
+      "request_work": 7.05869225,
+      "request_wall": 3.588026042,
+      "explicit_local_wall": 0.0045500410000000845,
+      "unattributed_wall": 0.004540750999999954,
+      "cli_work": {
+        "response_wait": 6.993515666,
+        "reset": 0.037693708000000006,
+        "worker_wait": 0.0016022509999999998
+      },
+      "output_tokens": 817,
+      "call_ids": [
+        "77704575efaa4c5e9af3fbfe5d982c72",
+        "3bf3a900fde345c8bbc2880a8dfb1384"
+      ]
+    },
+    {
+      "key": "primary-boundary-measurement-a-3",
+      "phase": "primary",
+      "case_id": "boundary",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 3,
+      "service_total": 6.117193125,
+      "request_work": 6.104688750000001,
+      "request_wall": 6.104688750000001,
+      "explicit_local_wall": 0.005094541999999435,
+      "unattributed_wall": 0.007409832999999644,
+      "cli_work": {
+        "response_wait": 6.0526072079999995,
+        "reset": 0.017736374000000003,
+        "worker_wait": 0.0016762930000000001
+      },
+      "output_tokens": 739,
+      "call_ids": [
+        "e111058c2c7046e8a6d6045cf75c7cb3",
+        "080191f3572740a4ad2c9786cacabb3d"
+      ]
+    },
+    {
+      "key": "primary-boundary-measurement-a-4",
+      "phase": "primary",
+      "case_id": "boundary",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 4,
+      "service_total": 6.277881583,
+      "request_work": 6.2658334159999995,
+      "request_wall": 6.2658334159999995,
+      "explicit_local_wall": 0.00489208400000041,
+      "unattributed_wall": 0.007156082999999924,
+      "cli_work": {
+        "response_wait": 6.218080541999999,
+        "reset": 0.014259125000000001,
+        "worker_wait": 0.001668042
+      },
+      "output_tokens": 696,
+      "call_ids": [
+        "5e464431c6e04d329984e1e6ee5694ea",
+        "a2bca69549f24323bd97de90f504cc22"
+      ]
+    },
+    {
+      "key": "primary-boundary-measurement-b-4",
+      "phase": "primary",
+      "case_id": "boundary",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 4,
+      "service_total": 3.247060667,
+      "request_work": 5.983136791,
+      "request_wall": 3.234772583,
+      "explicit_local_wall": 0.005706583000000516,
+      "unattributed_wall": 0.0065815009999994345,
+      "cli_work": {
+        "response_wait": 5.908973166000001,
+        "reset": 0.037648957999999996,
+        "worker_wait": 0.001977625
+      },
+      "output_tokens": 632,
+      "call_ids": [
+        "0347629b08d4462e9cc609dc681de62d",
+        "74831aea6c0d49c2858a9f667955a6e4"
+      ]
+    },
+    {
+      "key": "primary-boundary-measurement-a-5",
+      "phase": "primary",
+      "case_id": "boundary",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 5,
+      "service_total": 6.973822333,
+      "request_work": 6.962115166999999,
+      "request_wall": 6.962115166999999,
+      "explicit_local_wall": 0.005108750999999965,
+      "unattributed_wall": 0.006598415000000912,
+      "cli_work": {
+        "response_wait": 6.909620958,
+        "reset": 0.014066834,
+        "worker_wait": 0.001606207
+      },
+      "output_tokens": 832,
+      "call_ids": [
+        "fb84a71753074dd791cc37e03d43d157",
+        "7288e7d663414951b0215e36ad5872cc"
+      ]
+    },
+    {
+      "key": "primary-boundary-measurement-b-5",
+      "phase": "primary",
+      "case_id": "boundary",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 5,
+      "service_total": 3.571195541,
+      "request_work": 6.997621624000001,
+      "request_wall": 3.561071708,
+      "explicit_local_wall": 0.004758333000000014,
+      "unattributed_wall": 0.005365499999999912,
+      "cli_work": {
+        "response_wait": 6.948732249999999,
+        "reset": 0.015300334,
+        "worker_wait": 0.001661124
+      },
+      "output_tokens": 788,
+      "call_ids": [
+        "cea82f9fe4f04d9d9583bd0dea996917",
+        "90864b0d667e4a79a32bf343fe6bc0f7"
+      ]
+    },
+    {
+      "key": "primary-boundary-measurement-b-6",
+      "phase": "primary",
+      "case_id": "boundary",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 6,
+      "service_total": 4.269232459,
+      "request_work": 7.444897625,
+      "request_wall": 4.262093042,
+      "explicit_local_wall": 0.004316082999999997,
+      "unattributed_wall": 0.004150584000000457,
+      "cli_work": {
+        "response_wait": 7.393752917,
+        "reset": 0.018598916,
+        "worker_wait": 0.00157375
+      },
+      "output_tokens": 766,
+      "call_ids": [
+        "d40910a2439e4f2d8978b2401842589e",
+        "b017a749302b4614b223acf93f18b105"
+      ]
+    },
+    {
+      "key": "primary-boundary-measurement-a-6",
+      "phase": "primary",
+      "case_id": "boundary",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 6,
+      "service_total": 7.967334083,
+      "request_work": 7.955777124,
+      "request_wall": 7.955777124,
+      "explicit_local_wall": 0.004759624999999568,
+      "unattributed_wall": 0.006797333999999822,
+      "cli_work": {
+        "response_wait": 7.8791428329999995,
+        "reset": 0.037172417,
+        "worker_wait": 0.001924083
+      },
+      "output_tokens": 870,
+      "call_ids": [
+        "ca57ce194f7f4e039c6f8c66b1d77c15",
+        "6aeeed5ab9e54b9c83d0af2e0ded80d9"
+      ]
+    },
+    {
+      "key": "primary-boundary-measurement-b-7",
+      "phase": "primary",
+      "case_id": "boundary",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 7,
+      "service_total": 3.378953833,
+      "request_work": 6.722876584,
+      "request_wall": 3.371928042,
+      "explicit_local_wall": 0.004394291999999399,
+      "unattributed_wall": 0.00407216600000071,
+      "cli_work": {
+        "response_wait": 6.652809625,
+        "reset": 0.036773667,
+        "worker_wait": 0.001541833
+      },
+      "output_tokens": 773,
+      "call_ids": [
+        "b51dead69b884816b765a9678ae33afe",
+        "a312cdf37640400a9483df5d7eca234c"
+      ]
+    },
+    {
+      "key": "primary-boundary-measurement-a-7",
+      "phase": "primary",
+      "case_id": "boundary",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 7,
+      "service_total": 6.688866916,
+      "request_work": 6.677246500000001,
+      "request_wall": 6.677246500000001,
+      "explicit_local_wall": 0.004855835000000641,
+      "unattributed_wall": 0.0067645809999987705,
+      "cli_work": {
+        "response_wait": 6.620260249999999,
+        "reset": 0.016389042,
+        "worker_wait": 0.0016970420000000002
+      },
+      "output_tokens": 694,
+      "call_ids": [
+        "5d76efed30c54c958c31d5260f259efc",
+        "4aa3f33ce51f44abafc892ec713b89ac"
+      ]
+    },
+    {
+      "key": "primary-boundary-measurement-a-8",
+      "phase": "primary",
+      "case_id": "boundary",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 8,
+      "service_total": 7.297970125,
+      "request_work": 7.287550625,
+      "request_wall": 7.287550625,
+      "explicit_local_wall": 0.004061167999999495,
+      "unattributed_wall": 0.006358332000000466,
+      "cli_work": {
+        "response_wait": 7.245191667,
+        "reset": 0.01271175,
+        "worker_wait": 0.0015891260000000002
+      },
+      "output_tokens": 781,
+      "call_ids": [
+        "45460313130444478859e658c53eadfe",
+        "d5cec05500d84283bf881077e3b01379"
+      ]
+    },
+    {
+      "key": "primary-boundary-measurement-b-8",
+      "phase": "primary",
+      "case_id": "boundary",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 8,
+      "service_total": 3.387359583,
+      "request_work": 6.702093042,
+      "request_wall": 3.37996375,
+      "explicit_local_wall": 0.004679041000000159,
+      "unattributed_wall": 0.004250499999999935,
+      "cli_work": {
+        "response_wait": 6.618208541,
+        "reset": 0.039853875,
+        "worker_wait": 0.0022057500000000002
+      },
+      "output_tokens": 770,
+      "call_ids": [
+        "fd69ce61a8ff47de843d6a26f628e439",
+        "2afecfac14fa434cb0dccb56c9321518"
+      ]
+    },
+    {
+      "key": "primary-boundary-measurement-a-9",
+      "phase": "primary",
+      "case_id": "boundary",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 9,
+      "service_total": 6.469094,
+      "request_work": 6.458539999999999,
+      "request_wall": 6.458539999999999,
+      "explicit_local_wall": 0.004520166999999823,
+      "unattributed_wall": 0.006033833000000932,
+      "cli_work": {
+        "response_wait": 6.3568155,
+        "reset": 0.041918000999999996,
+        "worker_wait": 0.0013908739999999998
+      },
+      "output_tokens": 642,
+      "call_ids": [
+        "919df34eebc64bad84055bbbf1a45b7e",
+        "4d0e523d5fad44ccbcdd6b84d4a70966"
+      ]
+    },
+    {
+      "key": "primary-boundary-measurement-b-9",
+      "phase": "primary",
+      "case_id": "boundary",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 9,
+      "service_total": 4.549484834,
+      "request_work": 8.26716525,
+      "request_wall": 4.540558249999999,
+      "explicit_local_wall": 0.0038673339999994874,
+      "unattributed_wall": 0.005059250000001292,
+      "cli_work": {
+        "response_wait": 8.208711916999999,
+        "reset": 0.014094833000000001,
+        "worker_wait": 0.001507042
+      },
+      "output_tokens": 786,
+      "call_ids": [
+        "dafb2613f54f4ba2a770dd38d92c9023",
+        "8303af5b0cb340b381307b615d31d8ce"
+      ]
+    },
+    {
+      "key": "primary-boundary-measurement-b-10",
+      "phase": "primary",
+      "case_id": "boundary",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 10,
+      "service_total": 3.992148875,
+      "request_work": 7.228363166,
+      "request_wall": 3.983177125,
+      "explicit_local_wall": 0.004055081999999861,
+      "unattributed_wall": 0.004916667999999902,
+      "cli_work": {
+        "response_wait": 7.151704875,
+        "reset": 0.037685917,
+        "worker_wait": 0.0019007910000000002
+      },
+      "output_tokens": 795,
+      "call_ids": [
+        "4e9f988c2c1d4243a5fd881026342864",
+        "fb320c35c81d4a1d99c6e7d5d4d75665"
+      ]
+    },
+    {
+      "key": "primary-boundary-measurement-a-10",
+      "phase": "primary",
+      "case_id": "boundary",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 10,
+      "service_total": 7.1417105,
+      "request_work": 7.127225042,
+      "request_wall": 7.127225042,
+      "explicit_local_wall": 0.0058466259999992625,
+      "unattributed_wall": 0.008638832000000818,
+      "cli_work": {
+        "response_wait": 7.053892832999999,
+        "reset": 0.016783417000000002,
+        "worker_wait": 0.001846333
+      },
+      "output_tokens": 830,
+      "call_ids": [
+        "01437d9f2aa84593b0be54a51dc60891",
+        "73535d1ac3fd43439c3bb718df63e7c8"
+      ]
+    },
+    {
+      "key": "secondary-short-warmup-a-1",
+      "phase": "secondary",
+      "case_id": "short",
+      "purpose": "warmup",
+      "arm": "A",
+      "pair": 0,
+      "service_total": 4.703113875,
+      "request_work": 4.694566333,
+      "request_wall": 4.694566333,
+      "explicit_local_wall": 0.003937456999999747,
+      "unattributed_wall": 0.004610084999999486,
+      "cli_work": {
+        "response_wait": 4.045611375,
+        "reset": 0.631445084,
+        "worker_wait": 0.000505333
+      },
+      "output_tokens": 608,
+      "call_ids": [
+        "f9ea12bfa1574a4ab2022940431c3873"
+      ]
+    },
+    {
+      "key": "secondary-short-warmup-b-1",
+      "phase": "secondary",
+      "case_id": "short",
+      "purpose": "warmup",
+      "arm": "B",
+      "pair": 0,
+      "service_total": 4.904112833,
+      "request_work": 4.895699167,
+      "request_wall": 4.895699167,
+      "explicit_local_wall": 0.0033816250000005244,
+      "unattributed_wall": 0.005032040999999765,
+      "cli_work": {
+        "response_wait": 4.212229459,
+        "reset": 0.667713792,
+        "worker_wait": 0.000608583
+      },
+      "output_tokens": 612,
+      "call_ids": [
+        "b34736986e204c1da336abad7b761f19"
+      ]
+    },
+    {
+      "key": "secondary-short-warmup-b-2",
+      "phase": "secondary",
+      "case_id": "short",
+      "purpose": "warmup",
+      "arm": "B",
+      "pair": 0,
+      "service_total": 4.7393575,
+      "request_work": 4.730514125,
+      "request_wall": 4.730514125,
+      "explicit_local_wall": 0.00366079200000078,
+      "unattributed_wall": 0.005182582999998964,
+      "cli_work": {
+        "response_wait": 4.065827417,
+        "reset": 0.641879709,
+        "worker_wait": 0.000613583
+      },
+      "output_tokens": 579,
+      "call_ids": [
+        "1bf5d8071fe849bda13ada25afcda6fb"
+      ]
+    },
+    {
+      "key": "secondary-short-measurement-a-1",
+      "phase": "secondary",
+      "case_id": "short",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 1,
+      "service_total": 4.265264417,
+      "request_work": 4.256683,
+      "request_wall": 4.256683,
+      "explicit_local_wall": 0.0038909160000004453,
+      "unattributed_wall": 0.0046905009999997915,
+      "cli_work": {
+        "response_wait": 4.223212458000001,
+        "reset": 0.008760958000000001,
+        "worker_wait": 0.000513834
+      },
+      "output_tokens": 614,
+      "call_ids": [
+        "58e971497ef64e8bbe3e1d531316b22f"
+      ]
+    },
+    {
+      "key": "secondary-short-measurement-b-1",
+      "phase": "secondary",
+      "case_id": "short",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 1,
+      "service_total": 4.301256542,
+      "request_work": 4.2929816249999995,
+      "request_wall": 4.2929816249999995,
+      "explicit_local_wall": 0.0035387499999999,
+      "unattributed_wall": 0.0047361670000007905,
+      "cli_work": {
+        "response_wait": 4.2557610839999995,
+        "reset": 0.008897792,
+        "worker_wait": 0.000635166
+      },
+      "output_tokens": 616,
+      "call_ids": [
+        "5d46e896674745398e4fd1c3407d2c4b"
+      ]
+    },
+    {
+      "key": "secondary-short-measurement-b-2",
+      "phase": "secondary",
+      "case_id": "short",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 2,
+      "service_total": 4.001878541,
+      "request_work": 3.993014584,
+      "request_wall": 3.993014584,
+      "explicit_local_wall": 0.004062332999999617,
+      "unattributed_wall": 0.004801624000000171,
+      "cli_work": {
+        "response_wait": 3.9556365419999997,
+        "reset": 0.006851375,
+        "worker_wait": 0.000615792
+      },
+      "output_tokens": 595,
+      "call_ids": [
+        "02df0145c1114b14a72e667d8bbbd145"
+      ]
+    },
+    {
+      "key": "secondary-short-measurement-a-2",
+      "phase": "secondary",
+      "case_id": "short",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 2,
+      "service_total": 4.15018325,
+      "request_work": 4.141429292,
+      "request_wall": 4.141429292,
+      "explicit_local_wall": 0.004140707999999823,
+      "unattributed_wall": 0.004613250000001123,
+      "cli_work": {
+        "response_wait": 4.105774332999999,
+        "reset": 0.008325166,
+        "worker_wait": 0.000605167
+      },
+      "output_tokens": 571,
+      "call_ids": [
+        "93c6f35008c046129470fdb08cb569c9"
+      ]
+    },
+    {
+      "key": "secondary-short-measurement-a-3",
+      "phase": "secondary",
+      "case_id": "short",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 3,
+      "service_total": 4.218324666,
+      "request_work": 4.210112125,
+      "request_wall": 4.210112125,
+      "explicit_local_wall": 0.0037700420000006075,
+      "unattributed_wall": 0.0044424989999996,
+      "cli_work": {
+        "response_wait": 4.149210459,
+        "reset": 0.0292555,
+        "worker_wait": 0.000541375
+      },
+      "output_tokens": 599,
+      "call_ids": [
+        "4dcdec30924b441d94ba4f64f9e177fa"
+      ]
+    },
+    {
+      "key": "secondary-short-measurement-b-3",
+      "phase": "secondary",
+      "case_id": "short",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 3,
+      "service_total": 4.088793709,
+      "request_work": 4.081097875,
+      "request_wall": 4.081097875,
+      "explicit_local_wall": 0.0034374570000000734,
+      "unattributed_wall": 0.004258376999999314,
+      "cli_work": {
+        "response_wait": 4.0146665,
+        "reset": 0.035995624999999996,
+        "worker_wait": 0.000529042
+      },
+      "output_tokens": 584,
+      "call_ids": [
+        "44a2ec6e7b9743a380daef7222155a9a"
+      ]
+    },
+    {
+      "key": "secondary-dense-warmup-a-1",
+      "phase": "secondary",
+      "case_id": "dense",
+      "purpose": "warmup",
+      "arm": "A",
+      "pair": 0,
+      "service_total": 4.887125333,
+      "request_work": 4.8796114170000005,
+      "request_wall": 4.8796114170000005,
+      "explicit_local_wall": 0.0034097080000005005,
+      "unattributed_wall": 0.004104207999999332,
+      "cli_work": {
+        "response_wait": 4.32235925,
+        "reset": 0.533038,
+        "worker_wait": 0.000509833
+      },
+      "output_tokens": 620,
+      "call_ids": [
+        "d4ead1558b284550beb0160e031fe370"
+      ]
+    },
+    {
+      "key": "secondary-dense-warmup-b-1",
+      "phase": "secondary",
+      "case_id": "dense",
+      "purpose": "warmup",
+      "arm": "B",
+      "pair": 0,
+      "service_total": 4.855543417,
+      "request_work": 4.848139041,
+      "request_wall": 4.848139041,
+      "explicit_local_wall": 0.003189041999999554,
+      "unattributed_wall": 0.004215334000000404,
+      "cli_work": {
+        "response_wait": 4.266864667,
+        "reset": 0.560469583,
+        "worker_wait": 0.000479375
+      },
+      "output_tokens": 617,
+      "call_ids": [
+        "31fdc251485f4e89ac8a9f93fa018cd1"
+      ]
+    },
+    {
+      "key": "secondary-dense-warmup-b-2",
+      "phase": "secondary",
+      "case_id": "dense",
+      "purpose": "warmup",
+      "arm": "B",
+      "pair": 0,
+      "service_total": 4.821040042,
+      "request_work": 4.8130567079999995,
+      "request_wall": 4.8130567079999995,
+      "explicit_local_wall": 0.00333062499999909,
+      "unattributed_wall": 0.004652709000001032,
+      "cli_work": {
+        "response_wait": 4.200042916999999,
+        "reset": 0.588988,
+        "worker_wait": 0.000752917
+      },
+      "output_tokens": 644,
+      "call_ids": [
+        "8b59c00083374faf83c2b7f1b85c8f89"
+      ]
+    },
+    {
+      "key": "secondary-dense-measurement-b-1",
+      "phase": "secondary",
+      "case_id": "dense",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 1,
+      "service_total": 4.264068209,
+      "request_work": 4.25541225,
+      "request_wall": 4.25541225,
+      "explicit_local_wall": 0.004061499999999639,
+      "unattributed_wall": 0.004594459000000661,
+      "cli_work": {
+        "response_wait": 4.2126427920000005,
+        "reset": 0.008154040999999999,
+        "worker_wait": 0.000478792
+      },
+      "output_tokens": 614,
+      "call_ids": [
+        "46b02f62aa3f41d991b301e0d7b80607"
+      ]
+    },
+    {
+      "key": "secondary-dense-measurement-a-1",
+      "phase": "secondary",
+      "case_id": "dense",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 1,
+      "service_total": 3.785476667,
+      "request_work": 3.776322916,
+      "request_wall": 3.776322916,
+      "explicit_local_wall": 0.004266333999999783,
+      "unattributed_wall": 0.004887417000000394,
+      "cli_work": {
+        "response_wait": 3.735737084,
+        "reset": 0.008152541000000001,
+        "worker_wait": 0.000496584
+      },
+      "output_tokens": 573,
+      "call_ids": [
+        "80dac1ddb08f4608bb7dd3f21176f649"
+      ]
+    },
+    {
+      "key": "secondary-dense-measurement-a-2",
+      "phase": "secondary",
+      "case_id": "dense",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 2,
+      "service_total": 3.925080125,
+      "request_work": 3.916516125,
+      "request_wall": 3.916516125,
+      "explicit_local_wall": 0.004030708000000005,
+      "unattributed_wall": 0.004533292000000078,
+      "cli_work": {
+        "response_wait": 3.8719140839999997,
+        "reset": 0.008103708,
+        "worker_wait": 0.000488583
+      },
+      "output_tokens": 572,
+      "call_ids": [
+        "03d88a3d3f534d01a5c9d8ac3ab2e144"
+      ]
+    },
+    {
+      "key": "secondary-dense-measurement-b-2",
+      "phase": "secondary",
+      "case_id": "dense",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 2,
+      "service_total": 4.607915125,
+      "request_work": 4.599877458,
+      "request_wall": 4.599877458,
+      "explicit_local_wall": 0.003656000000000116,
+      "unattributed_wall": 0.004381666999999645,
+      "cli_work": {
+        "response_wait": 4.560453375,
+        "reset": 0.007226290999999999,
+        "worker_wait": 0.000563334
+      },
+      "output_tokens": 680,
+      "call_ids": [
+        "830f1d2b1ca348b3a32423539f852409"
+      ]
+    },
+    {
+      "key": "secondary-dense-measurement-b-3",
+      "phase": "secondary",
+      "case_id": "dense",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 3,
+      "service_total": 3.939658,
+      "request_work": 3.93136875,
+      "request_wall": 3.93136875,
+      "explicit_local_wall": 0.003683082999999655,
+      "unattributed_wall": 0.004606167000000383,
+      "cli_work": {
+        "response_wait": 3.896412542,
+        "reset": 0.007362042000000001,
+        "worker_wait": 0.000554041
+      },
+      "output_tokens": 586,
+      "call_ids": [
+        "8cb7fb572ca84e58b0de1e83d685628d"
+      ]
+    },
+    {
+      "key": "secondary-dense-measurement-a-3",
+      "phase": "secondary",
+      "case_id": "dense",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 3,
+      "service_total": 4.6683275,
+      "request_work": 4.661670917,
+      "request_wall": 4.661670917,
+      "explicit_local_wall": 0.0025642900000005363,
+      "unattributed_wall": 0.0040922929999993585,
+      "cli_work": {
+        "response_wait": 4.601994041999999,
+        "reset": 0.031588375,
+        "worker_wait": 0.000659208
+      },
+      "output_tokens": 681,
+      "call_ids": [
+        "19efeb94e1dd41ea8a43a84b2de359c5"
+      ]
+    },
+    {
+      "key": "secondary-none-warmup-a-1",
+      "phase": "secondary",
+      "case_id": "none",
+      "purpose": "warmup",
+      "arm": "A",
+      "pair": 0,
+      "service_total": 4.479334083,
+      "request_work": 4.472252791,
+      "request_wall": 4.472252791,
+      "explicit_local_wall": 0.002880459000000509,
+      "unattributed_wall": 0.004200832999999626,
+      "cli_work": {
+        "response_wait": 3.8019595419999996,
+        "reset": 0.65035425,
+        "worker_wait": 0.00053825
+      },
+      "output_tokens": 563,
+      "call_ids": [
+        "db259f9c901b441f89e7c56c972c8188"
+      ]
+    },
+    {
+      "key": "secondary-none-warmup-b-1",
+      "phase": "secondary",
+      "case_id": "none",
+      "purpose": "warmup",
+      "arm": "B",
+      "pair": 0,
+      "service_total": 4.548544334,
+      "request_work": 4.541642958,
+      "request_wall": 4.541642958,
+      "explicit_local_wall": 0.0028960829999998506,
+      "unattributed_wall": 0.0040052930000005205,
+      "cli_work": {
+        "response_wait": 3.893053333,
+        "reset": 0.625632916,
+        "worker_wait": 0.000497125
+      },
+      "output_tokens": 558,
+      "call_ids": [
+        "19afccb5496c4a47ab2e4416cfdadbbd"
+      ]
+    },
+    {
+      "key": "secondary-none-warmup-b-2",
+      "phase": "secondary",
+      "case_id": "none",
+      "purpose": "warmup",
+      "arm": "B",
+      "pair": 0,
+      "service_total": 4.790143916,
+      "request_work": 4.780828625,
+      "request_wall": 4.780828625,
+      "explicit_local_wall": 0.004037957999999614,
+      "unattributed_wall": 0.005277333000000439,
+      "cli_work": {
+        "response_wait": 4.189603333,
+        "reset": 0.566376334,
+        "worker_wait": 0.00061775
+      },
+      "output_tokens": 613,
+      "call_ids": [
+        "a8926c69e2394c198c570ef35dffac9a"
+      ]
+    },
+    {
+      "key": "secondary-none-measurement-a-1",
+      "phase": "secondary",
+      "case_id": "none",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 1,
+      "service_total": 2.244196042,
+      "request_work": 2.236910042,
+      "request_wall": 2.236910042,
+      "explicit_local_wall": 0.003030041000000227,
+      "unattributed_wall": 0.004255958999999976,
+      "cli_work": {
+        "response_wait": 2.2018989999999996,
+        "reset": 0.009071125,
+        "worker_wait": 0.000493375
+      },
+      "output_tokens": 235,
+      "call_ids": [
+        "d57c146c4bc74ed5b83b66110e4a7c1e"
+      ]
+    },
+    {
+      "key": "secondary-none-measurement-b-1",
+      "phase": "secondary",
+      "case_id": "none",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 1,
+      "service_total": 2.3881575,
+      "request_work": 2.378308042,
+      "request_wall": 2.378308042,
+      "explicit_local_wall": 0.005637124000000125,
+      "unattributed_wall": 0.004212333999999984,
+      "cli_work": {
+        "response_wait": 2.352029041,
+        "reset": 0.008026249999999999,
+        "worker_wait": 0.000508875
+      },
+      "output_tokens": 234,
+      "call_ids": [
+        "6d8add4fc6c0481eaa9c45fe975214e5"
+      ]
+    },
+    {
+      "key": "secondary-none-measurement-b-2",
+      "phase": "secondary",
+      "case_id": "none",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 2,
+      "service_total": 2.553553375,
+      "request_work": 2.547004458,
+      "request_wall": 2.547004458,
+      "explicit_local_wall": 0.0025337900000004573,
+      "unattributed_wall": 0.004015126999999286,
+      "cli_work": {
+        "response_wait": 2.520357875,
+        "reset": 0.008739625,
+        "worker_wait": 0.00057225
+      },
+      "output_tokens": 240,
+      "call_ids": [
+        "2ae60fd1cc6946a1b68047f2bef0aae9"
+      ]
+    },
+    {
+      "key": "secondary-none-measurement-a-2",
+      "phase": "secondary",
+      "case_id": "none",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 2,
+      "service_total": 2.63828525,
+      "request_work": 2.6307215,
+      "request_wall": 2.6307215,
+      "explicit_local_wall": 0.0033784579999999375,
+      "unattributed_wall": 0.004185292000000285,
+      "cli_work": {
+        "response_wait": 2.600151083,
+        "reset": 0.00732425,
+        "worker_wait": 0.000554916
+      },
+      "output_tokens": 277,
+      "call_ids": [
+        "bf2fa04c6b524c85b5efeb29c90fab91"
+      ]
+    },
+    {
+      "key": "secondary-none-measurement-a-3",
+      "phase": "secondary",
+      "case_id": "none",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 3,
+      "service_total": 2.400731375,
+      "request_work": 2.394208292,
+      "request_wall": 2.394208292,
+      "explicit_local_wall": 0.0026569170000000125,
+      "unattributed_wall": 0.003866165999999893,
+      "cli_work": {
+        "response_wait": 2.3644421660000003,
+        "reset": 0.0068771660000000005,
+        "worker_wait": 0.0005765
+      },
+      "output_tokens": 234,
+      "call_ids": [
+        "03c03b1af52d40fdb2891bdb60e0565f"
+      ]
+    },
+    {
+      "key": "secondary-none-measurement-b-3",
+      "phase": "secondary",
+      "case_id": "none",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 3,
+      "service_total": 2.284603833,
+      "request_work": 2.2769219580000004,
+      "request_wall": 2.2769219580000004,
+      "explicit_local_wall": 0.0033301240000001,
+      "unattributed_wall": 0.004351750999999293,
+      "cli_work": {
+        "response_wait": 2.2412051670000004,
+        "reset": 0.008142374999999999,
+        "worker_wait": 0.000662584
+      },
+      "output_tokens": 236,
+      "call_ids": [
+        "64983b9688d74096ac2086ee08c28055"
+      ]
+    },
+    {
+      "key": "cold-long-measurement-a-1",
+      "phase": "cold",
+      "case_id": "long",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 1,
+      "service_total": 6.000576833,
+      "request_work": 5.988878917000001,
+      "request_wall": 5.988878917000001,
+      "explicit_local_wall": 0.004765500000000177,
+      "unattributed_wall": 0.006932415999999719,
+      "cli_work": {
+        "response_wait": 5.293579792,
+        "reset": 0.643358249,
+        "worker_wait": 0.001307293
+      },
+      "output_tokens": 660,
+      "call_ids": [
+        "25f9306d7ec74a1cb7a8a9d808f7b95f",
+        "2f18271f32904cd69a1b10dbee4a0ce6"
+      ]
+    },
+    {
+      "key": "cold-long-measurement-b-1",
+      "phase": "cold",
+      "case_id": "long",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 1,
+      "service_total": 3.626556833,
+      "request_work": 6.969861459,
+      "request_wall": 3.6189541249999997,
+      "explicit_local_wall": 0.005344290999999731,
+      "unattributed_wall": 0.0042848330000007095,
+      "cli_work": {
+        "response_wait": 5.602390873999999,
+        "reset": 1.3193634159999998,
+        "worker_wait": 0.0029667089999999997
+      },
+      "output_tokens": 703,
+      "call_ids": [
+        "4b48886a33554e5d90b0a1d5ce2ed708",
+        "e64f393701b447c1b571f2c4e92996f5"
+      ]
+    },
+    {
+      "key": "cold-long-measurement-b-2",
+      "phase": "cold",
+      "case_id": "long",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 2,
+      "service_total": 3.403727916,
+      "request_work": 6.445444333,
+      "request_wall": 3.394917125,
+      "explicit_local_wall": 0.004491166000000765,
+      "unattributed_wall": 0.005398165999999094,
+      "cli_work": {
+        "response_wait": 5.156513834,
+        "reset": 1.242083959,
+        "worker_wait": 0.0051112910000000004
+      },
+      "output_tokens": 648,
+      "call_ids": [
+        "c9567d4f1c474b9aadfa360c632d5615",
+        "94bace9e1f974c60b15eda65bf6c97ed"
+      ]
+    },
+    {
+      "key": "cold-long-measurement-a-2",
+      "phase": "cold",
+      "case_id": "long",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 2,
+      "service_total": 6.240908917,
+      "request_work": 6.2301231249999995,
+      "request_wall": 6.2301231249999995,
+      "explicit_local_wall": 0.004651457999999732,
+      "unattributed_wall": 0.006134334000000408,
+      "cli_work": {
+        "response_wait": 5.529882167,
+        "reset": 0.649413792,
+        "worker_wait": 0.0013523749999999998
+      },
+      "output_tokens": 641,
+      "call_ids": [
+        "69b9436e39d1427190d3964fdb5bfbfd",
+        "dcb9c115f7174ea5ad9d39000b8de2bf"
+      ]
+    },
+    {
+      "key": "cold-long-measurement-a-3",
+      "phase": "cold",
+      "case_id": "long",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 3,
+      "service_total": 6.423881292,
+      "request_work": 6.413631500999999,
+      "request_wall": 6.413631500999999,
+      "explicit_local_wall": 0.004277415000000554,
+      "unattributed_wall": 0.0059723759999998904,
+      "cli_work": {
+        "response_wait": 5.715599084,
+        "reset": 0.647882375,
+        "worker_wait": 0.0013632499999999999
+      },
+      "output_tokens": 670,
+      "call_ids": [
+        "7d97bd1499ef419da4766a2efd7af097",
+        "f94755b834174d31a6fc7abe8e96f79b"
+      ]
+    },
+    {
+      "key": "cold-long-measurement-b-3",
+      "phase": "cold",
+      "case_id": "long",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 3,
+      "service_total": 3.48462825,
+      "request_work": 6.67849275,
+      "request_wall": 3.477428917,
+      "explicit_local_wall": 0.004171582999999752,
+      "unattributed_wall": 0.004131916000000402,
+      "cli_work": {
+        "response_wait": 5.516007542,
+        "reset": 1.110739792,
+        "worker_wait": 0.002983916
+      },
+      "output_tokens": 651,
+      "call_ids": [
+        "86956e9e954645589950972e0210618a",
+        "c3665ab7177b4c1f908ddf209b76d743"
+      ]
+    },
+    {
+      "key": "cold-boundary-measurement-b-1",
+      "phase": "cold",
+      "case_id": "boundary",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 1,
+      "service_total": 4.107822958,
+      "request_work": 8.127453459,
+      "request_wall": 4.098575917,
+      "explicit_local_wall": 0.004313083000000565,
+      "unattributed_wall": 0.0049339579999996275,
+      "cli_work": {
+        "response_wait": 6.908997583,
+        "reset": 1.167917542,
+        "worker_wait": 0.003298
+      },
+      "output_tokens": 799,
+      "call_ids": [
+        "a075badaa8f44dee8b9558136b0ca693",
+        "2b103dd44a0d4aa9be62dd8d2f04b17f"
+      ]
+    },
+    {
+      "key": "cold-boundary-measurement-a-1",
+      "phase": "cold",
+      "case_id": "boundary",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 1,
+      "service_total": 7.456925833,
+      "request_work": 7.446051125,
+      "request_wall": 7.446051125,
+      "explicit_local_wall": 0.004262208999999503,
+      "unattributed_wall": 0.006612499000000049,
+      "cli_work": {
+        "response_wait": 6.766123833,
+        "reset": 0.61752775,
+        "worker_wait": 0.001369042
+      },
+      "output_tokens": 816,
+      "call_ids": [
+        "741488fbce8b4f848856d6e7ca1f5555",
+        "8b6bda221991493094c56948a23e2a23"
+      ]
+    },
+    {
+      "key": "cold-boundary-measurement-a-2",
+      "phase": "cold",
+      "case_id": "boundary",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 2,
+      "service_total": 7.022749458,
+      "request_work": 7.008971541999999,
+      "request_wall": 7.008971541999999,
+      "explicit_local_wall": 0.006317624999999342,
+      "unattributed_wall": 0.007460291000001007,
+      "cli_work": {
+        "response_wait": 6.385918251,
+        "reset": 0.549626167,
+        "worker_wait": 0.0018023330000000001
+      },
+      "output_tokens": 737,
+      "call_ids": [
+        "0ff2f9c46bb24e5e9971d0a686f5f849",
+        "d0e8112bf025462dacb071a67ccd6847"
+      ]
+    },
+    {
+      "key": "cold-boundary-measurement-b-2",
+      "phase": "cold",
+      "case_id": "boundary",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 2,
+      "service_total": 4.193798291,
+      "request_work": 8.065261833000001,
+      "request_wall": 4.185965875,
+      "explicit_local_wall": 0.004923665999999358,
+      "unattributed_wall": 0.004173708000000609,
+      "cli_work": {
+        "response_wait": 6.879844501000001,
+        "reset": 1.12127825,
+        "worker_wait": 0.003147917
+      },
+      "output_tokens": 817,
+      "call_ids": [
+        "12dfa15dabaa4b76b42dab2b92ead1d1",
+        "441303150bee49bea3f630438570fe77"
+      ]
+    },
+    {
+      "key": "cold-boundary-measurement-b-3",
+      "phase": "cold",
+      "case_id": "boundary",
+      "purpose": "measurement",
+      "arm": "B",
+      "pair": 3,
+      "service_total": 4.411547875,
+      "request_work": 8.048529417,
+      "request_wall": 4.401975792,
+      "explicit_local_wall": 0.003976581999998972,
+      "unattributed_wall": 0.0055955010000010574,
+      "cli_work": {
+        "response_wait": 6.6375184990000005,
+        "reset": 1.3403001250000002,
+        "worker_wait": 0.001388958
+      },
+      "output_tokens": 741,
+      "call_ids": [
+        "c7449abb8e6c4554925a977650d8489a",
+        "e6f63f1a8be045008699a6c0c80bc7cd"
+      ]
+    },
+    {
+      "key": "cold-boundary-measurement-a-3",
+      "phase": "cold",
+      "case_id": "boundary",
+      "purpose": "measurement",
+      "arm": "A",
+      "pair": 3,
+      "service_total": 7.640372542,
+      "request_work": 7.626780833,
+      "request_wall": 7.626780833,
+      "explicit_local_wall": 0.005266291999999502,
+      "unattributed_wall": 0.008325417000000002,
+      "cli_work": {
+        "response_wait": 6.877186958,
+        "reset": 0.676560166,
+        "worker_wait": 0.001428625
+      },
+      "output_tokens": 797,
+      "call_ids": [
+        "403b26925f384a85bf581115149baa8b",
+        "e4289a5b3d8f4998ac181d3f16ecadc6"
+      ]
+    }
+  ],
+  "cold_long_calls": [
+    {
+      "key": "cold-long-measurement-a-1",
+      "pair": 1,
+      "arm": "A",
+      "chunk": 1,
+      "repair": false,
+      "call_id": "25f9306d7ec74a1cb7a8a9d808f7b95f",
+      "tokens": {
+        "input": 7784,
+        "output": 288,
+        "cache_read": 649,
+        "cache_write": 7133,
+        "reasoning": 0
+      },
+      "reported_usd": 0.0314809
+    },
+    {
+      "key": "cold-long-measurement-a-1",
+      "pair": 1,
+      "arm": "A",
+      "chunk": 2,
+      "repair": false,
+      "call_id": "2f18271f32904cd69a1b10dbee4a0ce6",
+      "tokens": {
+        "input": 4951,
+        "output": 372,
+        "cache_read": 2270,
+        "cache_write": 2679,
+        "reasoning": 0
+      },
+      "reported_usd": 0.014667
+    },
+    {
+      "key": "cold-long-measurement-b-1",
+      "pair": 1,
+      "arm": "B",
+      "chunk": 1,
+      "repair": false,
+      "call_id": "4b48886a33554e5d90b0a1d5ce2ed708",
+      "tokens": {
+        "input": 7781,
+        "output": 312,
+        "cache_read": 649,
+        "cache_write": 7130,
+        "reasoning": 0
+      },
+      "reported_usd": 0.0317089
+    },
+    {
+      "key": "cold-long-measurement-b-1",
+      "pair": 1,
+      "arm": "B",
+      "chunk": 2,
+      "repair": false,
+      "call_id": "e64f393701b447c1b571f2c4e92996f5",
+      "tokens": {
+        "input": 4948,
+        "output": 391,
+        "cache_read": 649,
+        "cache_write": 4297,
+        "reasoning": 0
+      },
+      "reported_usd": 0.0211669
+    },
+    {
+      "key": "cold-long-measurement-b-2",
+      "pair": 2,
+      "arm": "B",
+      "chunk": 1,
+      "repair": false,
+      "call_id": "c9567d4f1c474b9aadfa360c632d5615",
+      "tokens": {
+        "input": 7779,
+        "output": 275,
+        "cache_read": 649,
+        "cache_write": 7128,
+        "reasoning": 0
+      },
+      "reported_usd": 0.0313309
+    },
+    {
+      "key": "cold-long-measurement-b-2",
+      "pair": 2,
+      "arm": "B",
+      "chunk": 2,
+      "repair": false,
+      "call_id": "94bace9e1f974c60b15eda65bf6c97ed",
+      "tokens": {
+        "input": 4950,
+        "output": 373,
+        "cache_read": 649,
+        "cache_write": 4299,
+        "reasoning": 0
+      },
+      "reported_usd": 0.0209949
+    },
+    {
+      "key": "cold-long-measurement-a-2",
+      "pair": 2,
+      "arm": "A",
+      "chunk": 1,
+      "repair": false,
+      "call_id": "69b9436e39d1427190d3964fdb5bfbfd",
+      "tokens": {
+        "input": 7776,
+        "output": 284,
+        "cache_read": 649,
+        "cache_write": 7125,
+        "reasoning": 0
+      },
+      "reported_usd": 0.031408900000000003
+    },
+    {
+      "key": "cold-long-measurement-a-2",
+      "pair": 2,
+      "arm": "A",
+      "chunk": 2,
+      "repair": false,
+      "call_id": "dcb9c115f7174ea5ad9d39000b8de2bf",
+      "tokens": {
+        "input": 4943,
+        "output": 357,
+        "cache_read": 2269,
+        "cache_write": 2672,
+        "reasoning": 0
+      },
+      "reported_usd": 0.014488899999999999
+    },
+    {
+      "key": "cold-long-measurement-a-3",
+      "pair": 3,
+      "arm": "A",
+      "chunk": 1,
+      "repair": false,
+      "call_id": "7d97bd1499ef419da4766a2efd7af097",
+      "tokens": {
+        "input": 7777,
+        "output": 294,
+        "cache_read": 649,
+        "cache_write": 7126,
+        "reasoning": 0
+      },
+      "reported_usd": 0.0315129
+    },
+    {
+      "key": "cold-long-measurement-a-3",
+      "pair": 3,
+      "arm": "A",
+      "chunk": 2,
+      "repair": false,
+      "call_id": "f94755b834174d31a6fc7abe8e96f79b",
+      "tokens": {
+        "input": 4944,
+        "output": 376,
+        "cache_read": 2270,
+        "cache_write": 2672,
+        "reasoning": 0
+      },
+      "reported_usd": 0.014679
+    },
+    {
+      "key": "cold-long-measurement-b-3",
+      "pair": 3,
+      "arm": "B",
+      "chunk": 1,
+      "repair": false,
+      "call_id": "86956e9e954645589950972e0210618a",
+      "tokens": {
+        "input": 7777,
+        "output": 287,
+        "cache_read": 649,
+        "cache_write": 7126,
+        "reasoning": 0
+      },
+      "reported_usd": 0.0314429
+    },
+    {
+      "key": "cold-long-measurement-b-3",
+      "pair": 3,
+      "arm": "B",
+      "chunk": 2,
+      "repair": false,
+      "call_id": "c3665ab7177b4c1f908ddf209b76d743",
+      "tokens": {
+        "input": 4944,
+        "output": 364,
+        "cache_read": 649,
+        "cache_write": 4293,
+        "reasoning": 0
+      },
+      "reported_usd": 0.0208809
+    }
+  ],
+  "quote_failures": [
+    {
+      "key": "cold-boundary-measurement-a-3",
+      "source_sha256": "2e7f61628ac20bea53fd48afefd07548c7f5511290d34fd4f6d038e71b8fcf80",
+      "case_sha256": "af1e36183ecd46be991dbb77473fd35bdbd190f1d5ae074fe0227ac9a248b14f",
+      "original_outputs": [
+        {
+          "index": 1,
+          "output": {
+            "title": "합성 문서: Atlas와 Billing의 가정적 호출 예시",
+            "claims": [
+              {
+                "heading": "가정적 호출 예시의 한계",
+                "text": "원문은 Atlas가 Billing을 호출한다는 문장을 제시하지만 'Hypothetical example only'로 명시된 가정적 예시이다. 승인된 calls 관계는 가정적 호출을 제외하므로 실제 서비스 호출 사실로 추출하지 않는다.",
+                "quote": "Hypothetical example only: Atlas calls Billing."
+              }
+            ],
+            "facts": [],
+            "coverage": [
+              {
+                "predicate": "calls",
+                "fact_indices": [],
+                "claim_indices": [
+                  0
+                ],
+                "status": "not_representable",
+                "reason": "가정적 예시라 calls 정의의 제외 기준에 해당하여 사실로 추출 불가"
+              }
+            ],
+            "dictionary_gaps": [
+              {
+                "code": "qualifier_not_representable",
+                "detail": "'Hypothetical example only' 한정어가 붙은 호출은 calls 관계로 표현할 수 없다.",
+                "claim_indices": [
+                  0
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "index": 2,
+          "output": {
+            "title": "Atlas와 Billing의 서비스 호출 관계",
+            "claims": [
+              {
+                "heading": "Atlas의 Billing 호출",
+                "text": "원문은 'Actual configuration'이라는 표현으로 Atlas가 Billing을 호출하는 실제 구성을 직접 명시한다. 이는 승인된 calls 관계(Service→Service)의 정의에 부합한다.",
+                "quote": "Actual configuration: Atlas calls Billing."
+              },
+              {
+                "heading": "가정적 예시의 제외",
+                "text": "두 번째 문장은 'Another hypothetical example'로 표시된 가정적 예시이므로 실제 호출 사실로 추출하지 않았다. calls 정의가 가정적 호출을 제외한다.",
+                "quote": "Another hypothetical example: Atlas calls Billing."
+              }
+            ],
+            "facts": [
+              {
+                "subject": "Atlas",
+                "predicate": "calls",
+                "object": "Billing",
+                "quote": "Atlas calls Billing."
+              }
+            ],
+            "coverage": [
+              {
+                "predicate": "calls",
+                "fact_indices": [
+                  0
+                ],
+                "claim_indices": [
+                  0,
+                  1
+                ],
+                "status": "extracted",
+                "reason": "실제 구성 문장에서 직접 호출을 추출했고, 가정적 예시 문장은 제외함"
+              }
+            ],
+            "dictionary_gaps": []
+          }
+        }
+      ],
+      "gold": [
+        {
+          "id": "boundary-1",
+          "variants": [
+            [
+              "Atlas",
+              "calls",
+              "Billing"
+            ]
+          ],
+          "evidence": [
+            {
+              "start": 8022,
+              "end": 8042,
+              "text": "Atlas calls Billing."
+            }
+          ],
+          "sample_quote": "Actual configuration: Atlas calls Billing."
+        }
+      ],
+      "production_preflight_issues": [
+        [],
+        []
+      ],
+      "original_evaluation": {
+        "schema_version": 1,
+        "evaluator_version": 1,
+        "dataset_version": 1,
+        "case_id": "boundary",
+        "source_sha256": "2e7f61628ac20bea53fd48afefd07548c7f5511290d34fd4f6d038e71b8fcf80",
+        "case_sha256": "af1e36183ecd46be991dbb77473fd35bdbd190f1d5ae074fe0227ac9a248b14f",
+        "gold_count": 1,
+        "prediction_count": 1,
+        "raw_prediction_count": 1,
+        "true_positive_count": 1,
+        "false_positive_count": 0,
+        "false_negative_count": 0,
+        "grounded_true_positive_count": 0,
+        "precision": {
+          "value": 1.0,
+          "numerator": 1,
+          "denominator": 1,
+          "reason": null
+        },
+        "recall": {
+          "value": 1.0,
+          "numerator": 1,
+          "denominator": 1,
+          "reason": null
+        },
+        "grounded_precision": {
+          "value": 0.0,
+          "numerator": 0,
+          "denominator": 1,
+          "reason": null
+        },
+        "grounded_recall": {
+          "value": 0.0,
+          "numerator": 0,
+          "denominator": 1,
+          "reason": null
+        },
+        "citation_accuracy": {
+          "value": 0.0,
+          "numerator": 0,
+          "denominator": 1,
+          "reason": null
+        },
+        "true_positives": [
+          "boundary-1"
+        ],
+        "false_negatives": [],
+        "false_positives": [],
+        "grounded_missing": [
+          "boundary-1"
+        ],
+        "invalid_facts": [],
+        "citation_errors": [
+          {
+            "chunk": 2,
+            "row": 1,
+            "gold_id": "boundary-1",
+            "reason": "ambiguous_occurrence"
+          }
+        ],
+        "duplicates": [],
+        "quote_ambiguities": [
+          {
+            "chunk": 2,
+            "row": 1,
+            "occurrences": [
+              [
+                8022,
+                8042
+              ],
+              [
+                8073,
+                8093
+              ]
+            ],
+            "reason": "literal_quote_has_multiple_occurrences"
+          }
+        ],
+        "no_relation_case_pass": null,
+        "passed": false
+      },
+      "separate_context_control_evaluation": {
+        "schema_version": 1,
+        "evaluator_version": 1,
+        "dataset_version": 1,
+        "case_id": "boundary",
+        "source_sha256": "2e7f61628ac20bea53fd48afefd07548c7f5511290d34fd4f6d038e71b8fcf80",
+        "case_sha256": "af1e36183ecd46be991dbb77473fd35bdbd190f1d5ae074fe0227ac9a248b14f",
+        "gold_count": 1,
+        "prediction_count": 1,
+        "raw_prediction_count": 1,
+        "true_positive_count": 1,
+        "false_positive_count": 0,
+        "false_negative_count": 0,
+        "grounded_true_positive_count": 1,
+        "precision": {
+          "value": 1.0,
+          "numerator": 1,
+          "denominator": 1,
+          "reason": null
+        },
+        "recall": {
+          "value": 1.0,
+          "numerator": 1,
+          "denominator": 1,
+          "reason": null
+        },
+        "grounded_precision": {
+          "value": 1.0,
+          "numerator": 1,
+          "denominator": 1,
+          "reason": null
+        },
+        "grounded_recall": {
+          "value": 1.0,
+          "numerator": 1,
+          "denominator": 1,
+          "reason": null
+        },
+        "citation_accuracy": {
+          "value": 1.0,
+          "numerator": 1,
+          "denominator": 1,
+          "reason": null
+        },
+        "true_positives": [
+          "boundary-1"
+        ],
+        "false_negatives": [],
+        "false_positives": [],
+        "grounded_missing": [],
+        "invalid_facts": [],
+        "citation_errors": [],
+        "duplicates": [],
+        "quote_ambiguities": [],
+        "no_relation_case_pass": null,
+        "passed": true
+      }
+    }
+  ],
+  "accounting": {
+    "calls": 137,
+    "tokens": 880878,
+    "reported_usd": 2.8507081
+  },
+  "interpretation": {
+    "tokens": "input includes cache_read and cache_write; do not add cache tokens again",
+    "timing": "work sums may overlap; CLI response/reset/wait are nested inside request, not additive to it",
+    "cost": "reported USD, not recalculated pricing; provider cache causality is unknown"
+  }
+}
