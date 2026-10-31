@@ -68,6 +68,8 @@ class Store:
                 db.execute('ALTER TABLE runs ADD COLUMN ontology TEXT')
             if 'execution_options' not in run_columns:
                 db.execute('ALTER TABLE runs ADD COLUMN execution_options TEXT')
+            if 'extraction_options' not in run_columns:
+                db.execute('ALTER TABLE runs ADD COLUMN extraction_options TEXT')
 
     @contextmanager
     def connect(self, write=False):
@@ -232,12 +234,16 @@ class Store:
         owners = sorted(runs + questions, key=lambda r: (r['created_at'], r['id']), reverse=True)
         return owners[:limit], total
 
-    def create_run(self, document_id, agent, model, stage='extract', expected_version=None, expected_generation=None, *, execution_options=None, regenerate=None):
+    def create_run(self, document_id, agent, model, stage='extract', expected_version=None, expected_generation=None, *, execution_options=None, extraction_options=None, regenerate=None):
         if stage not in ('ontology', 'extract'):
             raise ValueError('지원하지 않는 추출 단계')
         if execution_options is not None:
             from .transports import job_options
             execution_options = job_options(execution_options)
+        if extraction_options is not None:
+            from .extraction_options import extraction_options as checked_extraction
+            if execution_options is not None: raise ValueError('HTTP와 CLI 추출 옵션을 함께 사용할 수 없습니다.')
+            extraction_options = checked_extraction(extraction_options, registered=False, agent=agent, stage=stage, model=model)
         if regenerate is not None:
             if (stage != 'ontology' or not isinstance(regenerate, dict) or set(regenerate) != {'id', 'revision'}
                     or not isinstance(regenerate['id'], str) or not regenerate['id'] or len(regenerate['id']) > 200
@@ -270,9 +276,11 @@ class Store:
                     old = json.loads(prior[0])
                     if extraction_key(old) == extraction_key(pinned):
                         raise Conflict('이 승인 사전 revision과 추출 방식으로 이미 추출했습니다. 사전 수정·재승인 후 다시 추출하세요.')
+            if extraction_options is not None:
+                extraction_options['document_generation'] = doc['generation']
             try:
-                db.execute('INSERT INTO runs(id,document_id,version,agent,model,status,detail,created_at,stage,ontology,execution_options) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
-                           (run_id, document_id, doc['current_version'], agent, model, 'queued', '', now(), stage, canonical(pinned) if pinned else None, canonical(execution_options) if execution_options is not None else None))
+                db.execute('INSERT INTO runs(id,document_id,version,agent,model,status,detail,created_at,stage,ontology,execution_options,extraction_options) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+                           (run_id, document_id, doc['current_version'], agent, model, 'queued', '', now(), stage, canonical(pinned) if pinned else None, canonical(execution_options) if execution_options is not None else None, canonical(extraction_options) if extraction_options is not None else None))
             except sqlite3.IntegrityError as exc:
                 raise Conflict('이 문서는 이미 추출 중입니다.') from exc
         return self.run(run_id)
@@ -282,6 +290,11 @@ class Store:
         value = dict(row)
         value['ontology'] = json.loads(value['ontology']) if value['ontology'] else None
         value['execution_options'] = json.loads(value['execution_options']) if value.get('execution_options') else None
+        if value.get('extraction_options') is not None:
+            from .extraction_options import extraction_options
+            value['extraction_options'] = extraction_options(json.loads(value['extraction_options']), agent=value['agent'], stage=value['stage'], model=value['model'])
+        else:
+            value['extraction_options'] = None
         return value
 
     def run(self, run_id):
@@ -316,6 +329,14 @@ class Store:
             run = db.execute('SELECT * FROM runs WHERE id=?', (run_id,)).fetchone()
             if not run or run['status'] != 'running':
                 raise Conflict('실행 상태가 변경되었습니다.')
+            if run['extraction_options'] is not None:
+                from .extraction_options import extraction_options as checked_extraction
+                options = checked_extraction(json.loads(run['extraction_options']), agent=run['agent'], stage=run['stage'], model=run['model'])
+                current_doc = db.execute('SELECT current_version,generation FROM documents WHERE id=?', (run['document_id'],)).fetchone()
+                if current_doc is None or current_doc['current_version'] != run['version']:
+                    raise Conflict('추출 중 문서 버전이 변경되었습니다. 다시 추출하세요.')
+                if options['document_generation'] != current_doc['generation']:
+                    raise Conflict('추출 중 문서가 변경되었습니다. 다시 추출하세요.')
             from .service import text, validate_fact, validate_page
             detail = text(detail, '실행 상세', 2000) if detail else ''
             from .ontology import dictionary_fact, validate_dictionary

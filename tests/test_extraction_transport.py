@@ -143,7 +143,7 @@ class ExtractionWorkers(unittest.TestCase):
         self.release('b'); self.assertEqual(b.result(timeout=3)['pid'], p2)
 
     def test_frozen_settings_pinned_binary_and_default_timeout_semantics(self):
-        rate = {'model': 'fake-model', 'input': 1, 'output': 1, 'cache_read': 0, 'cache_write': 0, 'credit_unit': '', 'usd_per_credit': 1}
+        rate = {'model': 'fake-model', 'input': 1, 'output': 1, 'cache_read': 0, 'cache_write': 0, 'credit_unit': '', 'usd_per_credit': None}
         base = CLI(rates=lambda: {'claude': rate}); self.addCleanup(base.close)
         owner = ExtractionTransport.from_cli(base, 'model'); self.addCleanup(owner.close)
         self.assertEqual(owner.effective_timeout('claude'), 180)

@@ -240,6 +240,9 @@ class BudgetCaller:
             self.closed = True
             if hasattr(self.caller, 'close'): self.caller.close()
 
+    @property
+    def extraction_spec(self): return self.caller.identity
+
     def limited_timeout(self, agent, seconds):
         return BudgetCaller(self.caller.limited_timeout(agent, seconds), self.budget, self.notify,
                             identity=self.identity, lifecycle=self.lifecycle, purpose=self.purpose)
@@ -393,7 +396,7 @@ class _Executor(ThreadPoolExecutor):
 
 
 def measure(output, *, cases=('short', 'long'), scenario='normal', mode='fake', agent='agy', model='',
-            limits=None, timeout=30, caller_factory=None, clock=None, process_mode='oneshot', cli_version=None):
+            limits=None, timeout=30, caller_factory=None, clock=None, process_mode='oneshot', cli_version=None, extraction_concurrency=None):
     """No config/user-root parameter: only versioned bundled synthetic documents."""
     limits = limits or Limits()
     if mode not in ('fake', 'cli') or agent not in CLI_PROVIDERS: raise ValueError('측정 실행 모드·에이전트 오류')
@@ -413,6 +416,11 @@ def measure(output, *, cases=('short', 'long'), scenario='normal', mode='fake', 
     fixtures = [load_case(k) for k in cases]
     if scenario == 'repair' and cases != ('short',) and cases != ['short']: raise ValueError('보정 예제는 short만 지원합니다.')
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 360: raise ValueError('호출 시간 한도 오류')
+    if extraction_concurrency is not None:
+        if (type(extraction_concurrency) is not int or extraction_concurrency not in (1, 2)
+                or mode != 'cli' or agent != 'claude' or process_mode not in ('document', 'batch')
+                or caller_factory is not None):
+            raise ValueError('병렬 추출 측정은 명시적 Claude CLI document/batch 모드만 지원합니다.')
     writer = ReportWriter(output); budget = Budget(limits, clock=clock)
     try: package_version = version('verinote')
     except PackageNotFoundError: package_version = None
@@ -420,7 +428,7 @@ def measure(output, *, cases=('short', 'long'), scenario='normal', mode='fake', 
               'stop_reason': None, 'conditions': {'agent': agent, 'requested_model': model, 'scenario': scenario,
               'package_version': package_version, 'cli_version': cli_version,
               'cli_version_source': 'operator_supplied_unverified' if cli_version else 'unknown_not_probed',
-              'process_mode': process_mode, 'owner_scope': 'batch' if process_mode == 'batch' else 'document',
+              'extraction_concurrency': extraction_concurrency, 'process_mode': process_mode, 'owner_scope': 'batch' if process_mode == 'batch' else 'document',
               'provider_cache_state': 'unknown', 'warmup': 'none',
               'row_seconds_includes_transport_close': process_mode != 'batch',
               'effective_timeout_seconds': timeout, 'max_output_bytes': 1024*1024, 'chunk_size': 8000,
@@ -444,6 +452,10 @@ def measure(output, *, cases=('short', 'long'), scenario='normal', mode='fake', 
             report['cleanup_errors'] += 1
             budget.stop('cleanup_error')
 
+    def experiment_transport():
+        from .extraction_transport import ExtractionTransport
+        return ExtractionTransport.from_cli(CLI(timeout=timeout, persistent=False), model, capacity=extraction_concurrency)
+
     batch_owner = None
     save()
     try:
@@ -464,21 +476,21 @@ def measure(output, *, cases=('short', 'long'), scenario='normal', mode='fake', 
                         store.review(item['id'], item['revision'], 'approved', 'Synthetic fixture', 'Versioned human-reviewed gold')
                         if process_mode == 'batch':
                             if batch_owner is None:
-                                batch_owner = BudgetCaller(CLI(timeout=timeout), budget, owns_caller=True)
+                                batch_owner = BudgetCaller(experiment_transport() if extraction_concurrency is not None else CLI(timeout=timeout), budget, owns_caller=True)
                             caller = BudgetCaller(batch_owner.caller, budget, save, lifecycle=batch_owner.lifecycle,
                                                   identity={'owner_id': 1, 'case_id': case['case_id'], 'repetition': repetition})
                         else:
-                            base = caller_factory(case) if caller_factory else (FakeCLI(case, scenario) if mode == 'fake'
+                            base = experiment_transport() if extraction_concurrency is not None else caller_factory(case) if caller_factory else (FakeCLI(case, scenario) if mode == 'fake'
                                     else CLI(timeout=timeout, persistent=process_mode == 'document'))
                             caller = BudgetCaller(base, budget, save, owns_caller=True,
                                                   identity={'owner_id': len(report['repetitions']), 'case_id': case['case_id'], 'repetition': repetition})
                             base.timeout = timeout
-                        service = Service(store, root, caller)
+                        service = Service(store, root, caller, extraction_caller=caller if extraction_concurrency is not None else None)
                         service.pool.shutdown(wait=True)
                         pool = _Executor(max_workers=1, thread_name_prefix='verinote-benchmark')
                         service.pool = pool
                         budget.check()
-                        run = service.start(doc['id'], agent, model, expected_version=1, expected_generation=1)
+                        run = service.start(doc['id'], agent, model, expected_version=1, expected_generation=1, extraction_concurrency=extraction_concurrency)
                         # Poll normal Service state; cancellation closes admission before joining a worker.
                         while not pool.future.done():
                             if budget.remaining() <= 0: budget.stop('time_limit')

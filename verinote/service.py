@@ -5,7 +5,9 @@ import re
 import shutil
 import threading
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from pathlib import Path
 
 from .agents import CLI, PROVIDERS, validate_model
@@ -70,7 +72,7 @@ def validate_page(value, source):
 
 
 class Service:
-    def __init__(self, store, root, cli=None, *, credentials=None, relation_type_warning_threshold=20):
+    def __init__(self, store, root, cli=None, *, credentials=None, relation_type_warning_threshold=20, extraction_caller=None):
         from .openrouter import OpenRouter
         from .transports import Credentials
         configured = Credentials.from_server(credentials) if credentials is not None and credentials.openrouter_key() else None
@@ -81,37 +83,53 @@ class Service:
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='verinote-extract')
         self.slots = threading.BoundedSemaphore(8)
         self.extraction_lock = threading.RLock()
+        self.extraction_caller = extraction_caller
         self.extraction_owner = None
         self.closed = False
+        self.draining = False
+        self.close_lock = threading.Lock()
+        self.registered_extractions = {}
         self.cleanup_lock = threading.Lock()
         self.cleanup_logs()
 
-    def extraction_transport(self, model, *, capacity=2):
-        """Explicit factory for the future scheduler; does not change start()/job_cli()."""
-        from .extraction_transport import ExtractionSpec, ExtractionTransport
+    def extraction_transport(self, model, *, capacity=2, spec=None):
+        """Public factory rejects admission once graceful shutdown begins."""
+        from .extraction_transport import ExtractionSpec
         with self.extraction_lock:
             if self.closed: raise ValueError('Service가 닫혔습니다.')
-            spec = ExtractionSpec.capture(self.cli, model, capacity)
-            if self.extraction_owner is not None:
-                if self.extraction_owner.identity == spec and not self.extraction_owner.closed:
-                    return self.extraction_owner.view()
-                self.extraction_owner.retire_if_idle()
-                self.extraction_owner = None
-            self.extraction_owner = ExtractionTransport(spec)
-            return self.extraction_owner.view()
+            return self._extraction_transport(spec or ExtractionSpec.capture(self.cli, model, capacity))
+
+    def _registered_extraction_transport(self, run, spec):
+        with self.extraction_lock:
+            if (run['id'] not in self.registered_extractions
+                    or self.registered_extractions[run['id']] != run['extraction_options']
+                    or (self.closed and not self.draining)):
+                raise ValueError('등록된 추출 실행이 아닙니다.')
+            return self._extraction_transport(spec)
+
+    def _extraction_transport(self, spec):
+        from .extraction_transport import ExtractionTransport
+        if self.extraction_owner is not None:
+            if self.extraction_owner.identity == spec and not self.extraction_owner.closed:
+                return self.extraction_owner.view()
+            self.extraction_owner.retire_if_idle()
+            self.extraction_owner = None
+        self.extraction_owner = ExtractionTransport(spec)
+        return self.extraction_owner.view()
 
     def close(self):
-        """Drain submitted work, then attempt every owned transport cleanup."""
-        with self.extraction_lock:
-            self.closed = True
-        try:
+        """One closer drains all registered work before attempting owner cleanup."""
+        with self.close_lock:
+            with self.extraction_lock:
+                self.closed = self.draining = True
+            # If waiting is interrupted, retain owners and drain permission for a retry.
             self.pool.shutdown(wait=True)
-        finally:
-            try:
-                with self.extraction_lock:
+            with self.extraction_lock:
+                self.draining = False
+                try:
                     if self.extraction_owner is not None: self.extraction_owner.close()
-            finally:
-                if hasattr(self.cli, 'close'): self.cli.close()
+                finally:
+                    if hasattr(self.cli, 'close'): self.cli.close()
 
     def with_usage(self, kind, owner, *, coverage_details=True):
         from .usage import job_calls, summarize
@@ -185,34 +203,56 @@ class Service:
             raise ValueError('OpenRouter 자격 증명이 구성되지 않았습니다.')
         return JobTransport(self.cli, job.get('execution_options'))
 
-    def start(self, document_id, agent, model, stage='extract', expected_version=None, expected_generation=None, *, max_tokens=_UNSET_TOKENS, answer_reserve_tokens=_UNSET_TOKENS, regenerate=None):
+    def start(self, document_id, agent, model, stage='extract', expected_version=None, expected_generation=None, *, max_tokens=_UNSET_TOKENS, answer_reserve_tokens=_UNSET_TOKENS, regenerate=None, extraction_concurrency=None):
         if agent not in PROVIDERS:
             raise ValueError('지원하지 않는 에이전트')
         model = validate_model(model, agent)
-        if max_tokens is not _UNSET_TOKENS:
-            if agent != 'openrouter':
-                raise ValueError('토큰 한도 설정은 OpenRouter 사전 생성·추출에서만 지원합니다.')
-            validate_job_tokens(max_tokens)
-        if answer_reserve_tokens is not _UNSET_TOKENS and agent != 'openrouter':
-            raise ValueError('답변 여유 설정은 OpenRouter 사전 생성·추출에서만 지원합니다.')
-        options, transport = self.register_transport(agent, model, stage=stage, max_tokens=max_tokens, answer_reserve_tokens=answer_reserve_tokens)
-        if not self.slots.acquire(blocking=False):
-            raise ValueError('작업 대기열이 가득 찼습니다.')
-        from .extraction_timing import create_timing
-        timing = create_timing(self.root, agent, stage)
-        try:
-            run = self.store.create_run(document_id, agent, model, stage, expected_version, expected_generation, **({'regenerate': regenerate} if regenerate is not None else {}), **({'execution_options': options} if options is not None else {}))
-            timing.bind(run)
-            self.pool.submit(self.extract, copy.deepcopy(run), transport, self.relation_type_warning_threshold, timing)
-            return run
-        except Exception:
-            self.slots.release()
-            raise
+        with self.extraction_lock:
+            if self.closed: raise ValueError('Service가 닫혔습니다.')
+            if max_tokens is not _UNSET_TOKENS:
+                if agent != 'openrouter':
+                    raise ValueError('토큰 한도 설정은 OpenRouter 사전 생성·추출에서만 지원합니다.')
+                validate_job_tokens(max_tokens)
+            if answer_reserve_tokens is not _UNSET_TOKENS and agent != 'openrouter':
+                raise ValueError('답변 여유 설정은 OpenRouter 사전 생성·추출에서만 지원합니다.')
+            experiment = None
+            if extraction_concurrency is not None:
+                from .extraction_options import experiment_request
+                from .extraction_transport import ExtractionSpec
+                if agent != 'claude' or stage != 'extract':
+                    raise ValueError('병렬 추출은 Claude 추출에서만 지원합니다.')
+                if type(extraction_concurrency) is not int or extraction_concurrency not in (1, 2):
+                    raise ValueError('추출 worker 수는 1 또는 2여야 합니다.')
+                spec = (self.extraction_caller.extraction_spec if self.extraction_caller is not None
+                        else ExtractionSpec.capture(self.cli, model, extraction_concurrency))
+                if spec.model != model or spec.capacity != extraction_concurrency:
+                    raise ValueError('추출 호출자 계약 불일치')
+                experiment = experiment_request(spec)
+            options, transport = self.register_transport(agent, model, stage=stage, max_tokens=max_tokens, answer_reserve_tokens=answer_reserve_tokens)
+            if not self.slots.acquire(blocking=False):
+                raise ValueError('작업 대기열이 가득 찼습니다.')
+            from .extraction_timing import create_timing
+            timing = create_timing(self.root, agent, stage, schema_version=2 if experiment else 1)
+            run = None
+            try:
+                run = self.store.create_run(document_id, agent, model, stage, expected_version, expected_generation, **({'regenerate': regenerate} if regenerate is not None else {}), **({'execution_options': options} if options is not None else {}), **({'extraction_options': experiment} if experiment is not None else {}))
+                timing.bind(run)
+                if experiment is not None: self.registered_extractions[run['id']] = copy.deepcopy(run['extraction_options'])
+                self.pool.submit(self.extract, copy.deepcopy(run), transport, self.relation_type_warning_threshold, timing)
+                return run
+            except Exception as exc:
+                try:
+                    if run is not None:
+                        self.registered_extractions.pop(run['id'], None)
+                        self.store.run_status(run['id'], 'error', str(exc)[:2000])
+                finally:
+                    self.slots.release()
+                raise
 
     def extract(self, run, transport=None, relation_type_warning_threshold=None, timing=None):
         from .extraction_timing import create_timing, error_kind
         if timing is None:
-            timing = create_timing(self.root, run['agent'], run['stage'], submitted=False)
+            timing = create_timing(self.root, run['agent'], run['stage'], submitted=False, schema_version=2 if run.get('extraction_options') is not None else 1)
             timing.bind(run)
         timing.worker_start()
         report = None
@@ -220,8 +260,22 @@ class Service:
         checkpoint = None
         active_chunk = None
         coverage_repairs = 0
+        published = False
+        scheduler = None
         try:
-            cli = transport if transport is not None else self.job_cli(run)
+            experiment = run.get('extraction_options')
+            if experiment is not None:
+                from .extraction_options import extraction_options
+                from .extraction_transport import ExtractionSpec
+                experiment = extraction_options(experiment, agent=run['agent'], stage=run['stage'], model=run['model'])
+                spec = ExtractionSpec.from_dict(experiment['transport'])
+                if self.extraction_caller is not None:
+                    if self.extraction_caller.extraction_spec != spec: raise ValueError('추출 호출자 계약 불일치')
+                    cli = self.extraction_caller
+                else:
+                    cli = self._registered_extraction_transport(run, spec)
+            else:
+                cli = transport if transport is not None else self.job_cli(run)
             self.store.run_status(run['id'], 'running')
             doc = self.store.document(run['document_id'], run['version'])
             if run['stage'] == 'ontology':
@@ -249,86 +303,105 @@ class Service:
                         report_ok = write_report(self.root, report)
             timing.reuse(checkpoint.resumed_chunks if checkpoint is not None else 0,
                          checkpoint.state['resumed_from'] if checkpoint is not None else None)
-            for index, (offset, chunk) in enumerate(chunks(doc['text']), 1):
-                if checkpoint is not None and index <= checkpoint.resumed_chunks:
-                    continue
-                active_chunk = index
-                timing.begin_chunk(index)
-                label = '승인 사전으로 추출'
-                self.store.run_status(run['id'], 'running', f'{label} · 청크 {index}/{(len(doc["text"]) + 7999) // 8000} · 청크 제한 {CHUNK_TIMEOUT}초'
-                                      + (f' · {checkpoint.summary()}' if checkpoint is not None else ''))
+            from .extraction_scheduler import ChunkScheduler, ChunkTask
+
+            def prepare(raw):
+                index, (offset, chunk) = raw
                 payload = {'filename': doc['filename'], 'version': doc['version'], 'offset': offset, 'text': chunk}
                 prompt = bounded_prompt(EXTRACTION_PROMPT, payload | {'approved_dictionary': run['ontology'] | {'payload': dictionary_context(run['ontology']['payload'])}})
                 folder = self.root / 'runs' / run['id'] / str(index)
-                deadline = time.monotonic() + CHUNK_TIMEOUT
+                return ChunkTask(index, offset, chunk, payload, prompt, folder, time.monotonic() + CHUNK_TIMEOUT)
 
-                def complete_chunk(prompt, target):
-                    remaining = deadline - time.monotonic()  # noqa: B023 (intentional: same-iteration deadline)
-                    if remaining <= 0:
-                        raise TimeoutError(f'청크 실행 시간 제한 초과 ({CHUNK_TIMEOUT}초)')
-                    limited = cli.limited_timeout(run['agent'], remaining) if hasattr(cli, 'limited_timeout') else cli
-                    if checkpoint is not None:
-                        checkpoint.begin_call()
-                    with timing.call(index, target != folder):  # noqa: B023 (same-iteration call folder/index)
-                        return limited.complete(run['agent'], run['model'], prompt, target)
+            def call_task(task, prompt, target):
+                remaining = task.deadline - time.monotonic()
+                if remaining <= 0: raise TimeoutError(f'청크 실행 시간 제한 초과 ({CHUNK_TIMEOUT}초)')
+                limited = cli.limited_timeout(run['agent'], remaining) if hasattr(cli, 'limited_timeout') else cli
+                with timing.call(task.index, target != task.folder):
+                    return limited.complete(run['agent'], run['model'], prompt, target)
 
-                output = complete_chunk(prompt, folder)
-                with caller_validation(cli, folder, run['agent']) as validation, timing.section('validation_with_bookkeeping', index):
-                    if time.monotonic() > deadline:
-                        raise TimeoutError(f'청크 실행 시간 제한 초과 ({CHUNK_TIMEOUT}초)')
-                    try:
-                        issues = extraction_quote_issues(output, chunk, run['ontology']['payload'])
-                        if current_contract:
-                            normalized, accounting_changes = repair_missing_indices(output, run['ontology']['payload'])
-                            if accounting_changes:
+            def begin_call():
+                if checkpoint is not None: checkpoint.begin_call()
+
+            remaining_chunks = [(i, pair) for i, pair in enumerate(chunks(doc['text']), 1)
+                                if checkpoint is None or i > checkpoint.resumed_chunks]
+            iterator: Iterator[ChunkTask]
+            if experiment is not None:
+                scheduler = ChunkScheduler(remaining_chunks, experiment['concurrency'], prepare, call_task, begin_call, timing)
+                iterator = scheduler
+            else:
+                iterator = map(prepare, remaining_chunks)
+            with scheduler if scheduler is not None else nullcontext():
+                for task in iterator:
+                    index, offset, chunk = task.index, task.offset, task.text
+                    payload, folder, deadline = task.payload, task.folder, task.deadline
+                    active_chunk = index
+                    if scheduler is None: timing.begin_chunk(index)
+                    self.store.run_status(run['id'], 'running', f'승인 사전으로 추출 · 청크 {index}/{(len(doc["text"]) + 7999) // 8000} · 청크 제한 {CHUNK_TIMEOUT}초'
+                                          + (f' · {checkpoint.summary()}' if checkpoint is not None else ''))
+
+                    def complete_chunk(prompt, target):
+                        if scheduler is not None: return scheduler.repair(task, prompt, target)  # noqa: B023
+                        begin_call()
+                        return call_task(task, prompt, target)  # noqa: B023
+
+                    output = task.output if scheduler is not None else complete_chunk(task.prompt, folder)
+                    with caller_validation(cli, folder, run['agent']) as validation, timing.section('validation_with_bookkeeping', index):
+                        if time.monotonic() > deadline:
+                            raise TimeoutError(f'청크 실행 시간 제한 초과 ({CHUNK_TIMEOUT}초)')
+                        try:
+                            issues = extraction_quote_issues(output, chunk, run['ontology']['payload'])
+                            if current_contract:
+                                normalized, accounting_changes = repair_missing_indices(output, run['ontology']['payload'])
+                                if accounting_changes:
+                                    validation.reject()
+                                    write_repair_audit(self.root, run, doc, index, offset, output, normalized, accounting_changes)
+                                    coverage_repairs += len(accounting_changes)
+                                output = normalized
+                            if issues:
                                 validation.reject()
-                                write_repair_audit(self.root, run, doc, index, offset, output, normalized, accounting_changes)
-                                coverage_repairs += len(accounting_changes)
-                            output = normalized
-                        if issues:
-                            validation.reject()
-                            locations = ', '.join(quote_label(issue['path']) for issue in issues[:5])
-                            if len(issues) > 5:
-                                locations += f' 외 {len(issues) - 5}개'
-                            if repair_calls >= MAX_QUOTE_REPAIR_CALLS:
-                                raise ValueError(f'{locations}: 원문에 없는 인용입니다. 문서당 인용 보정 {MAX_QUOTE_REPAIR_CALLS}회 한도에 도달했습니다.')
-                            self.store.run_status(run['id'], 'running', f'청크 {index} · {locations}: 원문 인용 보정 중 (추가 호출 {repair_calls + 1}/{MAX_QUOTE_REPAIR_CALLS})')
-                            try:
-                                with timing.section('repair', index):
-                                    repair_prompt = bounded_prompt(QUOTE_REPAIR_PROMPT, payload | {
-                                        'issues': issues, 'approved_dictionary': run['ontology']})
-                                    repair_calls += 1
-                                    repair_folder = folder / 'quote-repair'
-                                    response = complete_chunk(repair_prompt, repair_folder)
-                                    with caller_validation(cli, repair_folder, run['agent']), timing.section('repair_validation_with_bookkeeping', index):
-                                        if time.monotonic() > deadline:
-                                            raise TimeoutError(f'청크 실행 시간 제한 초과 ({CHUNK_TIMEOUT}초)')
-                                        output, changes = apply_quote_repairs(output, chunk, issues, response)
-                                        # Recheck the whole response; a repair cannot bypass any vocabulary/shape gate.
-                                        if extraction_quote_issues(output, chunk, run['ontology']['payload'], require_coverage=current_contract):
-                                            raise ValueError('보정 후에도 원문과 일치하지 않는 인용이 있습니다.')
-                                        validate_page(output, chunk)
-                                        for fact in output['facts']:
-                                            dictionary_fact(fact, chunk, run['ontology']['payload'])
-                                        repair_folder.mkdir(parents=True, exist_ok=True)
-                                        (repair_folder / 'changes.json').write_text(json.dumps(changes, ensure_ascii=False, indent=2), encoding='utf-8')
-                            except Exception as exc:
-                                raise ValueError(f'{locations}: 인용 보정 실패 (청크당 1회). {exc}') from exc
-                            repaired_quotes += len(changes)
-                            repair_locations.append(f'청크 {index}: {locations}')
-                        page = validate_page(output, chunk)
-                    except ValueError as exc:
-                        raise ValueError(f'청크 {index} · {exc}') from exc
-                    claims.extend(page['claims'])
-                    facts.extend(dictionary_fact(f, chunk, run['ontology']['payload']) for f in output['facts'])
-                    if time.monotonic() > deadline:
-                        raise TimeoutError(f'청크 실행 시간 제한 초과 ({CHUNK_TIMEOUT}초)')
-                    if report is not None:
-                        report['chunks'].append(chunk_report(output, offset, len(chunk)))
-                        report_ok = write_report(self.root, report)
-                    if checkpoint is not None:
-                        checkpoint.accept(output, chunk)
-                timing.end_chunk()
+                                locations = ', '.join(quote_label(issue['path']) for issue in issues[:5])
+                                if len(issues) > 5:
+                                    locations += f' 외 {len(issues) - 5}개'
+                                if repair_calls >= MAX_QUOTE_REPAIR_CALLS:
+                                    raise ValueError(f'{locations}: 원문에 없는 인용입니다. 문서당 인용 보정 {MAX_QUOTE_REPAIR_CALLS}회 한도에 도달했습니다.')
+                                self.store.run_status(run['id'], 'running', f'청크 {index} · {locations}: 원문 인용 보정 중 (추가 호출 {repair_calls + 1}/{MAX_QUOTE_REPAIR_CALLS})')
+                                try:
+                                    with timing.section('repair', index):
+                                        repair_prompt = bounded_prompt(QUOTE_REPAIR_PROMPT, payload | {
+                                            'issues': issues, 'approved_dictionary': run['ontology']})
+                                        repair_calls += 1
+                                        repair_folder = folder / 'quote-repair'
+                                        response = complete_chunk(repair_prompt, repair_folder)
+                                        with caller_validation(cli, repair_folder, run['agent']), timing.section('repair_validation_with_bookkeeping', index):
+                                            if time.monotonic() > deadline:
+                                                raise TimeoutError(f'청크 실행 시간 제한 초과 ({CHUNK_TIMEOUT}초)')
+                                            output, changes = apply_quote_repairs(output, chunk, issues, response)
+                                            # Recheck the whole response; a repair cannot bypass any vocabulary/shape gate.
+                                            if extraction_quote_issues(output, chunk, run['ontology']['payload'], require_coverage=current_contract):
+                                                raise ValueError('보정 후에도 원문과 일치하지 않는 인용이 있습니다.')
+                                            validate_page(output, chunk)
+                                            for fact in output['facts']:
+                                                dictionary_fact(fact, chunk, run['ontology']['payload'])
+                                            repair_folder.mkdir(parents=True, exist_ok=True)
+                                            (repair_folder / 'changes.json').write_text(json.dumps(changes, ensure_ascii=False, indent=2), encoding='utf-8')
+                                except Exception as exc:
+                                    raise ValueError(f'{locations}: 인용 보정 실패 (청크당 1회). {exc}') from exc
+                                repaired_quotes += len(changes)
+                                repair_locations.append(f'청크 {index}: {locations}')
+                            page = validate_page(output, chunk)
+                        except ValueError as exc:
+                            raise ValueError(f'청크 {index} · {exc}') from exc
+                        claims.extend(page['claims'])
+                        facts.extend(dictionary_fact(f, chunk, run['ontology']['payload']) for f in output['facts'])
+                        if time.monotonic() > deadline:
+                            raise TimeoutError(f'청크 실행 시간 제한 초과 ({CHUNK_TIMEOUT}초)')
+                        with scheduler.accepting(task) if scheduler is not None else nullcontext():
+                            if report is not None:
+                                report['chunks'].append(chunk_report(output, offset, len(chunk)))
+                                report_ok = write_report(self.root, report)
+                            if checkpoint is not None:
+                                checkpoint.accept(output, chunk, before_accept=(lambda task=task: scheduler.check(task)) if scheduler is not None else None)
+                    timing.end_chunk(index=index)
             active_chunk = None
             unique = {json.dumps(f, sort_keys=True, ensure_ascii=False): f for f in facts}
             detail = (f'원문 인용 {repaired_quotes}개 보정 · 추가 호출 {repair_calls}회 ({"; ".join(repair_locations)}). 의미가 맞는지 원문과 대조한 뒤 승인하세요.'
@@ -338,14 +411,21 @@ class Service:
                 if not report_ok:
                     detail += ' 관계별 추출 점검 기록 저장 실패: 보고서를 사용할 수 없습니다.'
             if checkpoint is not None:
-                checkpoint.finish('complete')
                 detail += ' ' + checkpoint.summary()
             if coverage_repairs:
                 detail += f' · 이번 실행 추출 점검 인덱스 {coverage_repairs}건 로컬 보정 (보정용 모델 호출 없음)'
             with timing.section('publish'):
                 self.store.finish_run(run['id'], {'title': doc['title'], 'claims': claims}, list(unique.values()), detail=detail[:2000])
+                published = True
+            if checkpoint is not None: checkpoint.finish('complete')
             timing.outcome('success')
         except Exception as exc:
+            if published:
+                timing.outcome('success')
+                return
+            from .extraction_scheduler import ChunkFailure
+            if isinstance(exc, ChunkFailure):
+                active_chunk, exc = exc.index, exc.cause
             timing.end_chunk(error_kind(exc))
             timing.outcome('error', error_kind(exc))
             if report is not None:
@@ -360,6 +440,8 @@ class Service:
                 detail += f' · {checkpoint.summary()} · 같은 문서 버전·승인 사전·에이전트·모델로 다시 추출하면 검증 완료 청크 다음부터 이어갑니다.'
             self.store.run_status(run['id'], 'error', detail[:2000])
         finally:
+            with self.extraction_lock:
+                self.registered_extractions.pop(run['id'], None)
             self.slots.release()
             timing.finish()
 

@@ -48,6 +48,9 @@ class ExtractionCheckpoint:
         if run['agent'] == 'openrouter':
             from .transports import job_options
             self.contract['execution_options'] = job_options(run.get('execution_options'))
+        if run.get('extraction_options') is not None:
+            from .extraction_options import extraction_options
+            self.contract['extraction_options'] = extraction_options(run['extraction_options'], agent=run['agent'], stage=run['stage'], model=run['model'])
         previous, skipped = None, 0
         for prior in store.extraction_retries(run):
             raw = safe_file(root, f'runs/{prior["id"]}/extraction-checkpoint.json', CHECKPOINT_LIMIT)
@@ -107,8 +110,10 @@ class ExtractionCheckpoint:
         self.state['calls_started'] += 1
         self.write('extraction-progress.json', self.state, 8192)
 
-    def accept(self, output, chunk):
-        self.outputs.append(self.validated(output, chunk))
+    def accept(self, output, chunk, *, before_accept=None):
+        validated = self.validated(output, chunk)
+        if before_accept is not None: before_accept()
+        self.outputs.append(validated)
         self.state['completed_chars'] += len(chunk)
         self.save()
 

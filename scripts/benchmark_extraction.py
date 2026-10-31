@@ -15,6 +15,7 @@ def main(argv=None):
     parser.add_argument('--agent', choices=sorted(CLI_PROVIDERS), default='agy')
     parser.add_argument('--model', default='')
     parser.add_argument('--process-mode', choices=['oneshot', 'document', 'batch'], default='oneshot')
+    parser.add_argument('--extraction-concurrency', type=int, choices=[1, 2], help='experimental bounded scheduler; Claude document/batch only')
     parser.add_argument('--cli-version', help='operator-supplied version, not independently verified')
     parser.add_argument('--scenario', choices=['normal', 'repair', 'failure', 'timeout'], default='normal')
     parser.add_argument('--repetitions', type=int, default=2)
@@ -29,7 +30,7 @@ def main(argv=None):
     try:
         report = measure(args.output, cases=args.cases, scenario=args.scenario, mode=args.mode,
                          agent=args.agent, model=args.model, timeout=args.call_timeout,
-                         process_mode=args.process_mode, cli_version=args.cli_version,
+                         process_mode=args.process_mode, cli_version=args.cli_version, extraction_concurrency=args.extraction_concurrency,
                          limits=Limits(args.max_requests, args.repetitions, args.max_seconds, args.max_tokens, args.missing_usage))
     except (OSError, ValueError, RuntimeError):
         parser.exit(2, '측정 설정 또는 결과 저장 실패. 기존 부분 report.json이 있으면 확인하세요.\n')

@@ -7,6 +7,7 @@ from pathlib import Path
 from .agents import CLI, executable, validate_model
 from .claude_worker import ExtractionPool
 from .transports import ExecutionOptions
+from .usage import validate_rates
 
 
 @dataclass(frozen=True)
@@ -28,7 +29,30 @@ class ExtractionSpec:
         if type(cli.max_output) is not int or cli.max_output <= 0: raise ValueError('CLI 출력 한도 오류')
         ExecutionOptions(timeout=cli.effective_timeout('claude'))
         rate = copy.deepcopy(cli.rates().get('claude'))
-        return cls(str(Path(binary).resolve()), model, capacity, cli.timeout, cli.max_output,
+        spec = cls(str(Path(binary).resolve()), model, capacity, cli.timeout, cli.max_output,
+                   json.dumps(rate, sort_keys=True, allow_nan=False))
+        return cls.from_dict(spec.to_dict())
+
+
+    def to_dict(self):
+        return {'binary': self.binary, 'model': self.model, 'capacity': self.capacity, 'timeout': self.timeout,
+                'max_output': self.max_output, 'rate': json.loads(self.rate_json)}
+
+    @classmethod
+    def from_dict(cls, value):
+        if (not isinstance(value, dict) or set(value) != {'binary', 'model', 'capacity', 'timeout', 'max_output', 'rate'}
+                or not isinstance(value['binary'], str) or not 1 <= len(value['binary']) <= 4096
+                or any(ord(c) < 32 for c in value['binary']) or not Path(value['binary']).is_absolute()
+                or type(value['capacity']) is not int or value['capacity'] not in (1, 2)
+                or type(value['max_output']) is not int or value['max_output'] <= 0):
+            raise ValueError('추출 transport 계약 오류')
+        model = validate_model(value['model'], 'claude')
+        if value['timeout'] is not None: ExecutionOptions(timeout=value['timeout'])
+        rate = copy.deepcopy(value['rate'])
+        if rate is not None: rate = validate_rates({'claude': rate})['claude']
+        if len(json.dumps(value, ensure_ascii=False, allow_nan=False).encode()) > 8192:
+            raise ValueError('추출 transport 계약 크기 제한')
+        return cls(value['binary'], model, value['capacity'], value['timeout'], value['max_output'],
                    json.dumps(rate, sort_keys=True, allow_nan=False))
 
 
