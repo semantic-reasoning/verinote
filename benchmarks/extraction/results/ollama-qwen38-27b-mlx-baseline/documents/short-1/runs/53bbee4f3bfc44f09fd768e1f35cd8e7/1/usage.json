@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "agent": "ollama",
+  "requested_model": "qwen3.8:27b-mlx",
+  "resolved_model": "qwen3.8:27b-mlx",
+  "tokens": {
+    "input": 1581,
+    "output": 3234,
+    "cache_read": null,
+    "cache_write": null,
+    "reasoning": null
+  },
+  "reported_usd": null,
+  "reported_credits": null,
+  "credit_unit": null,
+  "estimated_usd": null,
+  "estimated_credits": null,
+  "estimated_credit_unit": null,
+  "rate_snapshot": null,
+  "rate_basis": null,
+  "complete": true,
+  "status": "success",
+  "warnings": [],
+  "source": "ollama_api",
+  "provider_call_id": "cb6f65d639a042d09a16f44c6c914ad0",
+  "cli_call_id": "cb6f65d639a042d09a16f44c6c914ad0",
+  "started_at": "2026-10-31T10:20:36.774653+00:00",
+  "provider_timings_ns": {
+    "total_duration": 137416958875,
+    "load_duration": 2413525833,
+    "prompt_eval_duration": 9111458167,
+    "eval_duration": 125889031958
+  },
+  "finished_at": "2026-10-31T10:22:54.236094+00:00"
+}

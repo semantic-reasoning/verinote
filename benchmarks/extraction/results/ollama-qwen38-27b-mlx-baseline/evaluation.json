@@ -1,0 +1,42 @@
+{
+  "verdict": "failed",
+  "reasons": [
+    "quality:short-1",
+    "extraction_failed:three-1",
+    "incomplete_baseline"
+  ],
+  "series": [
+    {
+      "case_id": "three",
+      "completed_repetitions": 0,
+      "seconds": null,
+      "attempted_repetitions": 1,
+      "service_completed_repetitions": 0,
+      "gold_passed_repetitions": 0,
+      "latency_scope": "all service-completed repetitions including gold failures"
+    },
+    {
+      "case_id": "four",
+      "completed_repetitions": 0,
+      "seconds": null,
+      "attempted_repetitions": 0,
+      "service_completed_repetitions": 0,
+      "gold_passed_repetitions": 0,
+      "latency_scope": "all service-completed repetitions including gold failures"
+    },
+    {
+      "case_id": "eight",
+      "completed_repetitions": 0,
+      "seconds": null,
+      "attempted_repetitions": 0,
+      "service_completed_repetitions": 0,
+      "gold_passed_repetitions": 0,
+      "latency_scope": "all service-completed repetitions including gold failures"
+    }
+  ],
+  "unverified_other_records": false,
+  "provider_cache_state": "unknown",
+  "reported_usd": null,
+  "comparison_scope": "local sequential baseline only; no Sonnet acceptance or speedup claim",
+  "execution_complete": false
+}

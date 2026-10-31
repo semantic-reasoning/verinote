@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "run_id": "01b081304a474a8083a54380b2131d4c",
+    "document_id": "5891f5381d0347a6aff184f4f3724c48",
+    "version": 1,
+    "source_sha256": "5232dcdf0e93d70ba389f232053c0bccf3138b30e6c5efc27fc8bcf0e5ae8bbd"
+  },
+  "agent": "ollama",
+  "model": "qwen3.8:27b-mlx",
+  "submitted_observed": true,
+  "worker_started": 0.001605959,
+  "worker_finished": 180.065788125,
+  "status": "error",
+  "error_code": "timeout",
+  "resumed_from": null,
+  "chunks": [
+    {
+      "index": 1,
+      "offset": 0,
+      "length": 8000,
+      "reused": false
+    },
+    {
+      "index": 2,
+      "offset": 8000,
+      "length": 8000,
+      "reused": false
+    },
+    {
+      "index": 3,
+      "offset": 16000,
+      "length": 8000,
+      "reused": false
+    }
+  ],
+  "spans": [
+    {
+      "kind": "restore",
+      "chunk": null,
+      "start": 0.002805792,
+      "end": 0.003577959,
+      "status": "success",
+      "cli_call_id": null
+    },
+    {
+      "kind": "chunk",
+      "chunk": 1,
+      "start": 0.0036915,
+      "end": 180.06245275,
+      "status": "timeout",
+      "cli_call_id": null
+    },
+    {
+      "kind": "request",
+      "chunk": 1,
+      "start": 0.004596459,
+      "end": 180.061711834,
+      "status": "timeout",
+      "cli_call_id": null
+    }
+  ]
+}

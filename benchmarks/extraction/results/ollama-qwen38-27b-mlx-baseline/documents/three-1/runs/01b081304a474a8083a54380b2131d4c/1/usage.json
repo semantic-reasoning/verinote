@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "agent": "ollama",
+  "requested_model": "qwen3.8:27b-mlx",
+  "resolved_model": null,
+  "tokens": {
+    "input": null,
+    "output": null,
+    "cache_read": null,
+    "cache_write": null,
+    "reasoning": null
+  },
+  "reported_usd": null,
+  "reported_credits": null,
+  "credit_unit": null,
+  "estimated_usd": null,
+  "estimated_credits": null,
+  "estimated_credit_unit": null,
+  "rate_snapshot": null,
+  "rate_basis": null,
+  "complete": false,
+  "status": "error",
+  "warnings": [],
+  "source": "ollama_api",
+  "provider_call_id": "6fd3d350fe9e4eef88c5c841ac35ee88",
+  "cli_call_id": "6fd3d350fe9e4eef88c5c841ac35ee88",
+  "started_at": "2026-10-31T10:22:54.357254+00:00",
+  "finished_at": "2026-10-31T10:25:54.360025+00:00"
+}
