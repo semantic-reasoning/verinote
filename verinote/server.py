@@ -19,6 +19,7 @@ from .agents import (
 )
 from .config import ConfigError, Credentials, create_config, load_config
 from .documents import MAX_BYTES, MAX_DOCX_XML_BYTES, MAX_TEXT, decode_document
+from .extraction_options import CHUNK_THRESHOLD_POLICY
 from .model_catalog import ModelCatalog
 from .ontology import MAX_DICTIONARY_BYTES
 from .service import Service, text
@@ -45,7 +46,10 @@ WEB = Path(__file__).with_name('web')
 class Server(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, store, service, *, credentials=None):
+    def __init__(self, address, store, service, *, credentials=None, claude_extraction_policy=None):
+        if claude_extraction_policy not in (None, CHUNK_THRESHOLD_POLICY):
+            raise ValueError('지원하지 않는 서버 추출 정책')
+        self.claude_extraction_policy = claude_extraction_policy
         self.store, self.service = store, service
         self.model_catalog = ModelCatalog()
         self.credentials = credentials if credentials is not None else Credentials()
@@ -131,6 +135,7 @@ class Handler(BaseHTTPRequestHandler):
                         providers.append(value)
                     default_tokens = self.server.service.cli.execution_options('openrouter').max_tokens if isinstance(self.server.service.cli, CLI) else ExecutionOptions().max_tokens
                     return self.send(store.settings() | {'dictionary': {'relation_type_warning_threshold': self.server.service.relation_type_warning_threshold}, 'document_limits': DOCUMENT_LIMITS, 'providers': providers,
+                                     'extraction_policy': {'policy': self.server.claude_extraction_policy, 'agent': 'claude', 'stage': 'extract', 'source': 'server_startup'},
                                      'extraction_token_limits': {'min': MIN_JOB_TOKENS, 'max': MAX_JOB_TOKENS, 'step': 1, 'default': default_tokens},
                                      'answer_budget_policy': {'min_total': MIN_ANSWER_TOKENS + 1024,
                                                               'default_reserve': DEFAULT_ANSWER_TOKENS,
@@ -205,6 +210,8 @@ class Handler(BaseHTTPRequestHandler):
                     if 'regenerate' in data and data['regenerate'] is None:
                         raise ValueError('사전 재생성에는 id와 revision이 필요합니다.')
                     override = {key: data[key] for key in ('max_tokens', 'answer_reserve_tokens', 'regenerate') if key in data}
+                    if data.get('agent') == 'claude' and parts[3] == 'extract' and self.server.claude_extraction_policy is not None:
+                        override['extraction_policy'] = self.server.claude_extraction_policy
                     return self.send(self.server.service.start(doc_id, data.get('agent'), data.get('model', ''), parts[3], data.get('expected_version'), data.get('expected_generation'), **override), 202)
             if len(parts) == 4 and parts[:2] == ['api', 'items']:
                 if parts[3] == 'review' and method == 'POST':
@@ -251,6 +258,7 @@ def main(argv=None):
             stream.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser(description='Verinote — versioned evidence wiki')
     parser.add_argument('--port', type=int, default=8765)
+    parser.add_argument('--claude-extraction-policy', choices=[CHUNK_THRESHOLD_POLICY], help='Claude 웹 추출에 적용할 명시적 실험 정책 (기본 비활성)')
     parser.add_argument('--data-dir', type=Path, default=Path('data'))
     parser.add_argument('--config', type=Path, help='서버 전용 TOML 설정 파일 경로')
     parser.add_argument('--init-config', action='store_true', help='빈 비밀 설정 파일을 안전하게 생성하고 종료')
@@ -269,8 +277,9 @@ def main(argv=None):
     service = Service(store, root, credentials=credentials, relation_type_warning_threshold=credentials.relation_type_warning_threshold)
     server = None
     try:
-        server = Server(('127.0.0.1', args.port), store, service, credentials=credentials)
+        server = Server(('127.0.0.1', args.port), store, service, credentials=credentials, claude_extraction_policy=args.claude_extraction_policy)
         print(f'Verinote: http://127.0.0.1:{server.server_port}', flush=True)
+        print(f'Extraction policy: {args.claude_extraction_policy or "disabled"} (agent=claude, stage=extract, source=server_startup)', flush=True)
         server.serve_forever()
     except KeyboardInterrupt:
         pass
