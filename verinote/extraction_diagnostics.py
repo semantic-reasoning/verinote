@@ -27,7 +27,7 @@ def interval_union(intervals):
 def known_sum(values):
     values = list(values)
     if any(type(v) not in (int, float) or not math.isfinite(v) or v < 0 for v in values): return None
-    return sum(values)
+    return sum(values) if all(type(v) is int for v in values) else math.fsum(values)
 
 
 def diagnose_saved(root):
@@ -55,7 +55,7 @@ def diagnose_saved(root):
         'timing': [], 'cold_long_calls': [], 'quote_failures': [],
         'accounting': {'calls': len(report['attempts']),
             'tokens': sum(a['tokens']['input']+a['tokens']['output'] for a in report['attempts']),
-            'reported_usd': sum(a['reported_usd'] for a in report['attempts'])},
+            'reported_usd': known_sum(a['reported_usd'] for a in report['attempts'])},
         'interpretation': {
             'tokens': 'input includes cache_read and cache_write; do not add cache tokens again',
             'timing': 'work sums may overlap; CLI response/reset/wait are nested inside request, not additive to it',
@@ -70,7 +70,7 @@ def diagnose_saved(root):
         total = row['document_timing']['summary']['total_seconds']
         result['timing'].append({'key': row['key'], 'phase': row['phase'], 'case_id': row['case_id'],
             'purpose': row['purpose'], 'arm': row['arm'], 'pair': row['pair'], 'service_total': total,
-            'request_work': sum(stop-start for start, stop in requests), 'request_wall': interval_union(requests),
+            'request_work': known_sum(stop-start for start, stop in requests), 'request_wall': interval_union(requests),
             'explicit_local_wall': interval_union(local),
             'unattributed_wall': max(0, total-interval_union(requests+local)),
             'cli_work': {key: known_sum(a['cli_timing']['durations_seconds'].get(key) for a in values)
