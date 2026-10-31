@@ -417,6 +417,9 @@ class _Executor(ThreadPoolExecutor):
         return self.future
 
 
+SYNTHETIC_REVIEW_REASON_V2 = 'Synthetic dictionary approved for benchmark execution; gold review is recorded separately in the v2 manifest'
+
+
 def execute_document(root, case, make_caller, budget, row, close, *, agent, model, extraction_concurrency=None, extraction_policy=None, registration_cli=None):
     """One fresh synthetic Store and the production Service; caller controls artifact lifetime."""
     store = Store(Path(root)/'state.sqlite3')
@@ -426,7 +429,8 @@ def execute_document(root, case, make_caller, budget, row, close, *, agent, mode
         seed = store.create_run(doc['id'], agent, model, 'ontology', 1, 1)
         store.run_status(seed['id'], 'running'); store.finish_run(seed['id'], dictionary=case['dictionary'])
         item = next(i for i in store.document(doc['id'])['items'] if i['kind'] == 'ontology')
-        store.review(item['id'], item['revision'], 'approved', 'Synthetic fixture', 'Versioned human-reviewed gold')
+        store.review(item['id'], item['revision'], 'approved', 'Synthetic fixture',
+                     SYNTHETIC_REVIEW_REASON_V2 if case['dataset_version'] == 2 else 'Versioned human-reviewed gold')
         if extraction_policy is not None:
             def supply(spec):
                 nonlocal caller
@@ -444,6 +448,9 @@ def execute_document(root, case, make_caller, budget, row, close, *, agent, mode
                             extraction_concurrency=extraction_concurrency, extraction_policy=extraction_policy)
         row.update(run_id=run['id'], document_id=doc['id'])
         if extraction_policy is not None: row['extraction_options'] = copy.deepcopy(run['extraction_options'])
+        if case['dataset_version'] == 2:
+            row['extraction_options'] = copy.deepcopy(run['extraction_options'])
+            row['extraction_contract'] = run['ontology']['extraction_contract']
         while not pool.future.done():
             if budget.remaining() <= 0: budget.stop('time_limit')
             time.sleep(.01)
