@@ -88,7 +88,7 @@ def diagnose_saved(root):
         outputs = [{'index': i, 'output': output} for i, output in enumerate(checkpoint['outputs'], 1)]
         score = evaluate_case(case, outputs)
         if score != row['quality']['evaluation']: raise ValueError('quote evidence mismatch')
-        preflight = [extraction_quote_issues(o['output'], text, case['dictionary'], require_coverage=True)
+        preflight = [extraction_quote_issues(o['output'], text, case['dictionary'], require_coverage=True, contract_version=checkpoint['contract']['dictionary']['extraction_contract'])
                      for o, (_, text) in zip(outputs, chunks(case['source']), strict=True)]
         control = copy.deepcopy(outputs)
         for error in score['citation_errors']:

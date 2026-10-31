@@ -37,7 +37,7 @@ class DurableExperiment(unittest.TestCase):
         oracle = {}
         for name in ('short', 'long', 'dense', 'none', 'boundary'):
             case = load_case(name)
-            for (offset, text), output in zip(chunks(case['source']), ideal_outputs(case), strict=True):
+            for (offset, text), output in zip(chunks(case['source']), ideal_outputs(case, contract_version=2), strict=True):
                 key = json.dumps({'text': text, 'offset': offset, 'dictionary': dictionary_context(case['dictionary'])}, sort_keys=True)
                 oracle[key] = output['output']
         (self.root/'oracle.json').write_text(json.dumps(oracle))
