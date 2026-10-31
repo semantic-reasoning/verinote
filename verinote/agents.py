@@ -133,8 +133,9 @@ class CLI:
         if options is not None and timeout is not None and timeout != options.timeout:
             raise ValueError('고정 옵션과 timeout override가 일치해야 합니다.')
         self.options = options
-        from .claude_worker import Manager
-        self._claude = Manager() if persistent else None
+        from .claude_worker import ExtractionPool, Manager
+        self._claude: Manager | ExtractionPool | None = Manager() if persistent else None
+        self._pinned_claude_binary: str | None = None
 
     def close(self):
         """Close the shared worker, including workers used by limited_timeout copies."""
@@ -272,22 +273,29 @@ class CLI:
                     process_reused=None, returncode=None)
         atomic_json(folder / 'usage.json', usage)
         atomic_json(folder / 'run.json', meta)
+        if getattr(self._claude, 'pool_id', None) is not None:
+            meta['worker_scope'] = usage['worker_scope'] = 'extraction_pool'
+            meta['worker_identity'] = usage['worker_identity'] = None
         worker = None
         error_code = 'preparation'
         try:
             if prompt.lstrip().startswith('/'):
                 raise ValueError('Claude 지속 연결에는 명령 대신 일반 요청문이 필요합니다.')
-            binary = executable('claude')
+            binary = self._pinned_claude_binary or executable('claude')
             if not binary:
                 error_code = 'executable_missing'
                 raise ValueError('Claude CLI가 설치되지 않았습니다.')
             error_code = 'process'
             with self._claude.acquire(binary, model, deadline, timing) as worker:
+                if worker.extraction_identity is not None:
+                    meta['worker_identity'] = copy.deepcopy(worker.extraction_identity)
+                    usage['worker_identity'] = copy.deepcopy(worker.extraction_identity)
                 meta['process_reused'] = timing.is_reused()
                 usage['status'] = 'running'
                 atomic_json(folder / 'usage.json', usage)
                 with (folder / 'stream.jsonl').open('wb') as stream, (folder / 'stderr.txt').open('wb') as stderr:
-                    exchange = Exchange(worker, deadline, self._claude.closed, self.max_output, stream, stderr, timing)
+                    closed = worker.manager_closed if worker.manager_closed is not None else self._claude.closed
+                    exchange = Exchange(worker, deadline, closed, self.max_output, stream, stderr, timing)
                     exchange.send('/clear')
                     exchange.terminal(reset=True)
                     timing.mark('reset_completed')

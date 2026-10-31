@@ -9,6 +9,7 @@ import threading
 import time
 import weakref
 from contextlib import contextmanager
+from uuid import uuid4
 
 _MANAGERS: weakref.WeakSet['Manager'] = weakref.WeakSet()
 
@@ -31,6 +32,9 @@ def command(binary, model):
 
 class Worker:
     def __init__(self, binary, model, timing):
+        self.worker_id = uuid4().hex
+        self.extraction_identity: dict | None = None
+        self.manager_closed: threading.Event | None = None
         self.key = (binary, model)
         self.session = None
         self.buffer = b''
@@ -229,11 +233,12 @@ class Manager:
             if time.monotonic() >= deadline:
                 raise TimeoutError('CLI 실행 시간 제한 초과 (worker 대기)')
             timing.mark('worker_acquired')
-            if self.worker is not None and (self.worker.key != (binary, model) or self.worker.proc.poll() is not None):
+            if self.worker is not None and (self.worker.key != (binary, model) or self.worker.proc.poll() is not None or self.worker.stopped.is_set()):
                 self.retire()
             timing.reused(self.worker is not None)
             if self.worker is None:
                 self.worker = Worker(binary, model, timing)
+                self.worker.manager_closed = self.closed
             try:
                 yield self.worker
             except BaseException:
@@ -244,8 +249,10 @@ class Manager:
 
     def retire(self):
         if self.worker is not None:
-            worker, self.worker = self.worker, None
+            worker = self.worker
+            worker.stopped.set()
             worker.close()
+            self.worker = None
 
     def close(self):
         self.closed.set()  # Active exchange sees this without waiting for the lock.
@@ -254,3 +261,77 @@ class Manager:
 
     def __del__(self):
         self.close()
+
+
+class ExtractionPool:
+    """Dedicated bounded managers; lease and exchange share one absolute deadline."""
+    def __init__(self, binary, model, capacity=2):
+        if type(capacity) is not int or capacity not in (1, 2): raise ValueError('추출 worker 수는 1 또는 2여야 합니다.')
+        self.binary, self.model, self.capacity = binary, model, capacity
+        self.pool_id = uuid4().hex
+        self.closed = threading.Event()
+        self.condition = threading.Condition()
+        self.managers = [Manager() for _ in range(capacity)]
+        self.leased = set()
+        self.waiting = 0
+        self.generations = [0] * capacity
+        self.worker_ids: list[str | None] = [None] * capacity
+
+    @contextmanager
+    def acquire(self, binary, model, deadline, timing):
+        if (binary, model) != (self.binary, self.model): raise ValueError('고정 추출 worker 조건이 다릅니다.')
+        slot = None
+        with self.condition:
+            self.waiting += 1
+            try:
+                while True:
+                    if self.closed.is_set() or any(manager.closed.is_set() for manager in self.managers):
+                        raise ValueError('추출 worker가 닫혔습니다.')
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0: raise TimeoutError('CLI 실행 시간 제한 초과 (추출 worker 대기)')
+                    slot = next((i for i in range(self.capacity) if i not in self.leased), None)
+                    if slot is not None:
+                        self.leased.add(slot)
+                        break
+                    self.condition.wait(timeout=min(.05, remaining))
+            finally:
+                self.waiting -= 1
+        try:
+            with self.managers[slot].acquire(binary, model, deadline, timing) as worker:
+                with self.condition:
+                    if self.worker_ids[slot] != worker.worker_id:
+                        self.generations[slot] += 1
+                        self.worker_ids[slot] = worker.worker_id
+                    # The worker is exclusive to this lease; no shared current-slot pointer.
+                    worker.extraction_identity = {'pool_id': self.pool_id, 'slot_id': slot+1,
+                                                  'worker_id': worker.worker_id, 'generation': self.generations[slot]}
+                yield worker
+        finally:
+            with self.condition:
+                self.leased.remove(slot)
+                self.condition.notify_all()
+
+    def _mark_closed(self):
+        # Caller holds condition; signal all active exchanges before joining any manager.
+        self.closed.set()
+        for manager in self.managers: manager.closed.set()
+        self.condition.notify_all()
+
+    def _close_managers(self):
+        error = None
+        for manager in self.managers:
+            try: manager.close()
+            except Exception as exc:
+                if error is None: error = exc
+        if error is not None: raise error
+
+    def retire_if_idle(self):
+        """Atomic admission closure for identity replacement, not a racy idle probe."""
+        with self.condition:
+            if self.leased or self.waiting: raise ValueError('사용 중인 추출 worker 조건은 변경할 수 없습니다.')
+            self._mark_closed()
+        self._close_managers()
+
+    def close(self):
+        with self.condition: self._mark_closed()
+        self._close_managers()

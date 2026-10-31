@@ -80,16 +80,38 @@ class Service:
             rates=store.usage_rates, http_adapter=OpenRouter(), credentials=configured)
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='verinote-extract')
         self.slots = threading.BoundedSemaphore(8)
+        self.extraction_lock = threading.RLock()
+        self.extraction_owner = None
+        self.closed = False
         self.cleanup_lock = threading.Lock()
         self.cleanup_logs()
 
+    def extraction_transport(self, model, *, capacity=2):
+        """Explicit factory for the future scheduler; does not change start()/job_cli()."""
+        from .extraction_transport import ExtractionSpec, ExtractionTransport
+        with self.extraction_lock:
+            if self.closed: raise ValueError('Service가 닫혔습니다.')
+            spec = ExtractionSpec.capture(self.cli, model, capacity)
+            if self.extraction_owner is not None:
+                if self.extraction_owner.identity == spec and not self.extraction_owner.closed:
+                    return self.extraction_owner.view()
+                self.extraction_owner.retire_if_idle()
+                self.extraction_owner = None
+            self.extraction_owner = ExtractionTransport(spec)
+            return self.extraction_owner.view()
+
     def close(self):
-        """Drain submitted work before closing the shared transport."""
+        """Drain submitted work, then attempt every owned transport cleanup."""
+        with self.extraction_lock:
+            self.closed = True
         try:
             self.pool.shutdown(wait=True)
         finally:
-            if hasattr(self.cli, 'close'):
-                self.cli.close()
+            try:
+                with self.extraction_lock:
+                    if self.extraction_owner is not None: self.extraction_owner.close()
+            finally:
+                if hasattr(self.cli, 'close'): self.cli.close()
 
     def with_usage(self, kind, owner, *, coverage_details=True):
         from .usage import job_calls, summarize
