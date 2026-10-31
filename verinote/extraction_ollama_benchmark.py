@@ -8,6 +8,8 @@ import shutil
 import sqlite3
 import statistics
 import time
+from contextvars import ContextVar
+from dataclasses import dataclass
 from pathlib import Path
 
 from . import ollama
@@ -40,38 +42,70 @@ from .store import Store, canonical, digest
 from .usage import atomic_json, number
 
 REPO = Path(__file__).resolve().parents[1]
-MODEL = 'qwen2.5:7b'
-MODEL_DIGEST = '845dbda0ea48ed749caafd9e6037047aa19acfcfd82e704d7ca97d631a0b697e'
-VERSION = '0.40.13'
-LIMITS = {'requests': 65, 'seconds': 3600, 'tokens': 2500000}
-CONTRACT = 'docs/extraction-ollama-baseline-contract.md'
+@dataclass(frozen=True)
+class Profile:
+    name: str
+    schema: int
+    model: str
+    model_digest: str
+    seconds: int
+    contract: str
+    continue_gold_failure: bool
+    version: str = '0.40.13'
+
+    @property
+    def limits(self): return {'requests': 65, 'seconds': self.seconds, 'tokens': 2500000}
+
+
+LEGACY = Profile('qwen25-v1', 1, 'qwen2.5:7b',
+    '845dbda0ea48ed749caafd9e6037047aa19acfcfd82e704d7ca97d631a0b697e',
+    3600, 'docs/extraction-ollama-baseline-contract.md', False)
+CURRENT = Profile('qwen38-v2', 2, 'qwen3.8:27b-mlx',
+    '5642e97495e1a088883805981563dcdc4a040c2f53388b7a41d1f24d3622cf7e',
+    14400, 'docs/extraction-ollama-qwen38-contract.md', True)
+_ACTIVE = ContextVar('ollama_baseline_profile', default=CURRENT)
+
+
+def _profile(): return _ACTIVE.get()
+
+
+MODEL = CURRENT.model
+MODEL_DIGEST = CURRENT.model_digest
+VERSION = CURRENT.version
+LIMITS = CURRENT.limits
+CONTRACT = CURRENT.contract
 SCRIPT = 'scripts/benchmark_extraction_ollama.py'
+KNOWN_SOURCE_PATHS = ('verinote/__init__.py', 'verinote/__main__.py', 'verinote/agents.py', 'verinote/assistant.py', 'verinote/call_validation.py', 'verinote/claude_worker.py', 'verinote/cli_timing.py', 'verinote/config.py', 'verinote/dictionary_exclusions.py', 'verinote/dictionary_filter.py', 'verinote/dictionary_pipeline.py', 'verinote/dictionary_reconciliation.py', 'verinote/dictionary_type_warnings.py', 'verinote/documents.py', 'verinote/engine.py', 'verinote/extraction_ab.py', 'verinote/extraction_ab_runner.py', 'verinote/extraction_benchmark.py', 'verinote/extraction_checkpoint.py', 'verinote/extraction_coverage.py', 'verinote/extraction_diagnostics.py', 'verinote/extraction_evaluation.py', 'verinote/extraction_ollama_benchmark.py', 'verinote/extraction_options.py', 'verinote/extraction_scheduler.py', 'verinote/extraction_threshold_ab.py', 'verinote/extraction_threshold_ab_runner.py', 'verinote/extraction_threshold_artifacts.py', 'verinote/extraction_threshold_evaluation.py', 'verinote/extraction_timing.py', 'verinote/extraction_transport.py', 'verinote/http_records.py', 'verinote/job_transport.py', 'verinote/model_catalog.py', 'verinote/ollama.py', 'verinote/ontology.py', 'verinote/openrouter.py', 'verinote/progress.py', 'verinote/reasoning_diagnostics.py', 'verinote/server.py', 'verinote/service.py', 'verinote/store.py', 'verinote/transports.py', 'verinote/usage.py')
 
 
 def execution_options():
-    return ollama.options() | {'model': MODEL, 'model_digest': MODEL_DIGEST}
+    return ollama.options() | {'model': _profile().model, 'model_digest': _profile().model_digest}
 
 
 def plan():
-    return {'schema_version': 1, 'documents': [
+    value = {'schema_version': _profile().schema, 'documents': [
         {'key': f'{name}-{rep}', 'case_id': name, 'repetition': rep,
          'purpose': 'preparation' if name == 'short' else 'measurement',
          'chunks': {'short': 1, 'three': 3, 'four': 4, 'eight': 8}[name]}
         for name in ('short', 'three', 'four', 'eight')
         for rep in range(1, 2 if name == 'short' else 4)],
-        'initial_requests': 46, 'maximum_repairs': 19, 'limits': dict(LIMITS),
-        'model': MODEL, 'model_digest': MODEL_DIGEST, 'ollama_version': VERSION,
+        'initial_requests': 46, 'maximum_repairs': 19, 'limits': dict(_profile().limits),
+        'model': _profile().model, 'model_digest': _profile().model_digest, 'ollama_version': _profile().version,
         'options': execution_options(), 'concurrency': 1, 'automatic_retry': False,
         'provider_cache_state': 'unknown', 'temperature_interpretation': 'no determinism guarantee'}
+    if _profile().schema == 2:
+        value.update(profile=_profile().name, gold_failure_policy='continue_after_safe_service_success',
+                     thinking_policy='model_default')
+    return value
 
 
 def _sources():
-    return sorted([*(p.relative_to(REPO).as_posix() for p in (REPO/'verinote').glob('*.py')), CONTRACT, SCRIPT])
+    return sorted([*KNOWN_SOURCE_PATHS, _profile().contract, SCRIPT])
 
 
 def _identity_matches(value):
-    return (value.get('version', {}).get('version') == VERSION
-            and any(m['id'] == MODEL and m['digest'] == MODEL_DIGEST for m in value.get('models', [])))
+    return (value.get('version', {}).get('version') == _profile().version
+            and any(m['id'] == _profile().model and m['digest'] == _profile().model_digest for m in value.get('models', [])))
 
 
 def _identity():
@@ -85,12 +119,13 @@ class Ledger:
     """Sequential admission; a finished in-flight call always contributes usage."""
     def __init__(self, clock=None):
         self.clock = clock or time.monotonic
+        self.profile = _profile()
         self.started = self.clock(); self.reason = None; self.attempts = []; self.source_hashes = {}
 
     def stop(self, reason):
         if self.reason is None: self.reason = reason
 
-    def remaining(self): return max(0, LIMITS['seconds']-(self.clock()-self.started))
+    def remaining(self): return max(0, self.profile.seconds-(self.clock()-self.started))
 
     def summary(self):
         counts = [v for a in self.attempts for v in (a.get('input_tokens'), a.get('output_tokens')) if v is not None]
@@ -104,13 +139,14 @@ class Ledger:
         if any(not (REPO/p).is_file() or _hash(REPO/p) != value for p, value in self.source_hashes.items()):
             self.stop('source_changed')
         if self.remaining() <= 0: self.stop('time_limit')
-        if self.summary()['observed_tokens'] >= LIMITS['tokens']: self.stop('token_limit')
-        if len(self.attempts) >= LIMITS['requests']: self.stop('request_limit')
+        if self.summary()['observed_tokens'] >= self.profile.limits['tokens']: self.stop('token_limit')
+        if len(self.attempts) >= self.profile.limits['requests']: self.stop('request_limit')
         if self.reason: raise Stopped(self.reason)
 
 
-def call_evidence(folder, model=MODEL):
+def call_evidence(folder, model=None):
     """Recompute usage directly from the retained API body, with linked call IDs."""
+    model = _profile().model if model is None else model
     folder = Path(folder)
     meta = _read(folder/'run.json'); usage = _read(folder/'usage.json')
     cid = meta.get('provider_call_id')
@@ -149,6 +185,7 @@ def call_evidence(folder, model=MODEL):
 class Caller:
     def __init__(self, job, ledger, row, save):
         self.job, self.ledger, self.row, self.save = job, ledger, row, save
+        self.profile = ledger.profile
 
     def limited_timeout(self, agent, seconds):
         return Caller(self.job.limited_timeout(agent, seconds), self.ledger, self.row, self.save)
@@ -156,6 +193,11 @@ class Caller:
     def close(self): self.job.close()
 
     def complete(self, agent, model, prompt, folder):
+        token = _ACTIVE.set(self.profile)
+        try: return self._complete(agent, model, prompt, folder)
+        finally: _ACTIVE.reset(token)
+
+    def _complete(self, agent, model, prompt, folder):
         ledger = self.ledger; ledger.check()
         folder = Path(folder); repair = folder.name == 'quote-repair'
         chunk = int(folder.parent.name if repair else folder.name)
@@ -187,12 +229,12 @@ class Caller:
                 ledger.stop('model_identity_unknown')
             try:
                 row.update(call_evidence(folder))
-                if row['resolved_model'] != MODEL or row['model_digest'] != MODEL_DIGEST:
+                if row['resolved_model'] != _profile().model or row['model_digest'] != _profile().model_digest:
                     ledger.stop('model_changed')
                 if row['input_tokens'] is None or row['output_tokens'] is None: ledger.stop('usage_unknown')
             except (OSError, ValueError, KeyError, TypeError): ledger.stop('call_evidence_unknown')
             if ledger.remaining() <= 0: ledger.stop('time_limit')
-            if ledger.summary()['observed_tokens'] >= LIMITS['tokens']: ledger.stop('token_limit')
+            if ledger.summary()['observed_tokens'] >= _profile().limits['tokens']: ledger.stop('token_limit')
             try: self.save()
             except Exception:
                 ledger.stop('report_write_failed'); raise
@@ -201,12 +243,16 @@ class Caller:
 class BaselineService(Service):
     def __init__(self, *args, ledger, row, save, **kwargs):
         self.ledger, self.row, self.save = ledger, row, save
+        self.profile = ledger.profile
         super().__init__(*args, **kwargs)
 
     def register_transport(self, *args, **kwargs):
-        options, job = super().register_transport(*args, **kwargs)
-        if options != execution_options(): raise ValueError('baseline options mismatch')
-        return options, Caller(job, self.ledger, self.row, self.save)
+        token = _ACTIVE.set(self.profile)
+        try:
+            options, job = super().register_transport(*args, **kwargs)
+            if options != execution_options(): raise ValueError('baseline options mismatch')
+            return options, Caller(job, self.ledger, self.row, self.save)
+        finally: _ACTIVE.reset(token)
 
 
 def _timing(root, store, run_id):
@@ -217,7 +263,7 @@ def _timing(root, store, run_id):
 def verify_document(root, row, attempts, case):
     store = EvidenceStore(root/'state.sqlite3')
     run = store.run(row['run_id']); doc = store.document(run['document_id'], run['version'])
-    if (run['agent'] != 'ollama' or run['model'] != MODEL or run['stage'] != 'extract' or run['version'] != 1
+    if (run['agent'] != 'ollama' or run['model'] != _profile().model or run['stage'] != 'extract' or run['version'] != 1
             or run['document_id'] != row['document_id'] or run['status'] != row['status']
             or run.get('execution_options') != execution_options() or run.get('extraction_options') is not None
             or run['ontology']['payload'] != case['dictionary'] or run['ontology']['sha256'] != digest(case['dictionary'])
@@ -259,7 +305,7 @@ def verify_document(root, row, attempts, case):
                 or attempt['status'] != metrics['provider_status']):
             raise ValueError('attempt linkage')
         ids.add(metrics['provider_call_id'])
-        if metrics['model_digest'] != MODEL_DIGEST or metrics['resolved_model'] not in (None, MODEL): raise ValueError('model identity')
+        if metrics['model_digest'] != _profile().model_digest or metrics['resolved_model'] not in (None, _profile().model): raise ValueError('model identity')
         offset, text = slices[index-1]
         payload = {'filename': doc['filename'], 'version': 1, 'offset': offset, 'text': text}
         if attempt['repair']:
@@ -305,6 +351,12 @@ def verify_document(root, row, attempts, case):
 
 
 def run(output, *, synthetic=False, clock=None, invocation=None):
+    token = _ACTIVE.set(CURRENT)
+    try: return _run(output, synthetic=synthetic, clock=clock, invocation=invocation)
+    finally: _ACTIVE.reset(token)
+
+
+def _run(output, *, synthetic=False, clock=None, invocation=None):
     """Only this entrypoint contacts Ollama; synthetic is for injected test responses."""
     if type(synthetic) is not bool: raise ValueError('synthetic flag')
     if not synthetic and _command(['git', 'status', '--porcelain'], REPO): raise ValueError('clean checkout required')
@@ -317,16 +369,16 @@ def run(output, *, synthetic=False, clock=None, invocation=None):
     for relative in source_hashes:
         dest = root/'implementation'/relative; dest.parent.mkdir(parents=True, exist_ok=True); shutil.copyfile(REPO/relative, dest)
     prompts = dict(zip(('extraction', 'repair'), extraction_prompts(2), strict=True))
-    environment = {'schema_version': 1, 'synthetic': synthetic, 'identity': identity, 'options': execution_options(),
+    environment = {'schema_version': _profile().schema, 'synthetic': synthetic, 'identity': identity, 'options': execution_options(),
                    'python': platform.python_version(), 'platform': platform.platform(), 'invocation': invocation or ['python_api', 'run'],
                    'revision': None if synthetic else _command(['git', 'rev-parse', 'HEAD'], REPO),
                    'tree': None if synthetic else _command(['git', 'rev-parse', 'HEAD^{tree}'], REPO),
                    'source_hashes': source_hashes, 'dataset_manifest': load_manifest(DATA_ROOT/'v2'),
                    'cases': {name: sha(load_case(name, DATA_ROOT/'v2')) for name in ('short', 'three', 'four', 'eight')},
                    'prompts': {k: digest(v.encode()) for k, v in prompts.items()}}
-    for name, value in [('plan', plan()), ('environment', environment), ('prompts', prompts), ('limits', LIMITS)]:
+    for name, value in [('plan', plan()), ('environment', environment), ('prompts', prompts), ('limits', _profile().limits)]:
         atomic_json(root/(name+'.json'), value)
-    report = {'schema_version': 1, 'environment': environment, 'plan': plan(), 'limits': dict(LIMITS),
+    report = {'schema_version': _profile().schema, 'environment': environment, 'plan': plan(), 'limits': dict(_profile().limits),
               'synthetic_responses': synthetic, 'documents': [], 'attempts': ledger.attempts,
               'status': 'running', 'stop_reason': None, 'budget': ledger.summary()}
     def save():
@@ -344,13 +396,13 @@ def run(output, *, synthetic=False, clock=None, invocation=None):
             case = load_case(entry['case_id'], root/'fixtures')
             try:
                 doc = store.register('Synthetic '+entry['key'], 'synthetic.md', case['source'].encode(), case['source'])
-                seed = store.create_run(doc['id'], 'ollama', MODEL, 'ontology', 1, 1)
+                seed = store.create_run(doc['id'], 'ollama', _profile().model, 'ontology', 1, 1)
                 store.run_status(seed['id'], 'running'); store.finish_run(seed['id'], dictionary=case['dictionary'])
                 item = next(i for i in store.document(doc['id'])['items'] if i['kind'] == 'ontology')
                 store.review(item['id'], item['revision'], 'approved', 'Synthetic fixture', SYNTHETIC_REVIEW_REASON_V2)
                 service = BaselineService(store, artifact, CLI(), ledger=ledger, row=row, save=save)
                 service.pool.shutdown(wait=True); service.pool = _Executor(max_workers=1)
-                job = service.start(doc['id'], 'ollama', MODEL, expected_version=1, expected_generation=1)
+                job = service.start(doc['id'], 'ollama', _profile().model, expected_version=1, expected_generation=1)
                 row.update(run_id=job['id'], document_id=doc['id'])
                 service.pool.future.result()
             finally:
@@ -367,7 +419,8 @@ def run(output, *, synthetic=False, clock=None, invocation=None):
                         ledger.stop('document_evidence_unknown')
                 row['seconds'] = max(0, ledger.clock()-started)
                 row['artifact_files'] = file_index(artifact); save()
-            if row['status'] != 'success' or not row['quality']['passed'] or not (row['safety'] or {}).get('passed'):
+            if (row['status'] != 'success' or not (row['safety'] or {}).get('passed')
+                    or not row['quality']['passed'] and not _profile().continue_gold_failure):
                 ledger.stop('document_failed')
             if ledger.reason: break
     except Stopped: pass
@@ -387,6 +440,7 @@ def run(output, *, synthetic=False, clock=None, invocation=None):
         report.update(status='stopped' if ledger.reason else 'completed', stop_reason=ledger.reason)
         save()
         if ledger.reason and result.get('series'):
+            if 'execution_complete' in result: result['execution_complete'] = False
             if 'incomplete_baseline' not in result['reasons']:
                 position = result['reasons'].index('synthetic_only') if 'synthetic_only' in result['reasons'] else len(result['reasons'])
                 result['reasons'].insert(position, 'incomplete_baseline')
@@ -399,12 +453,13 @@ def run(output, *, synthetic=False, clock=None, invocation=None):
 
 def _verify_manifest(root, report):
     env = report['environment']
-    if (report['schema_version'] != 1 or report['plan'] != plan() or report['limits'] != LIMITS
-            or _read(root/'plan.json') != plan() or _read(root/'limits.json') != LIMITS
+    if (type(report['schema_version']) is not int or type(env.get('schema_version')) is not int
+            or report['schema_version'] != _profile().schema or env.get('schema_version') != _profile().schema or report['plan'] != plan() or report['limits'] != _profile().limits
+            or _read(root/'plan.json') != plan() or _read(root/'limits.json') != _profile().limits
             or _read(root/'environment.json') != env or env['options'] != execution_options()
             or type(env['synthetic']) is not bool or report['synthetic_responses'] is not env['synthetic']
-            or env['identity']['version'].get('version') != VERSION
-            or not any(m['id'] == MODEL and m['digest'] == MODEL_DIGEST for m in env['identity']['models'])):
+            or env['identity']['version'].get('version') != _profile().version
+            or not any(m['id'] == _profile().model and m['digest'] == _profile().model_digest for m in env['identity']['models'])):
         raise ValueError('manifest contract')
     if (not isinstance(env.get('invocation'), list) or not env['invocation']
             or any(not isinstance(a, str) for a in env['invocation'])
@@ -420,10 +475,25 @@ def _verify_manifest(root, report):
         if case != load_case(name, DATA_ROOT/'v2') or env['cases'][name] != sha(case): raise ValueError('fixture contract')
     if set(env['source_hashes']) != set(_sources()) or set(file_index(root/'implementation')) != set(_sources()): raise ValueError('source inventory')
     for p, value in env['source_hashes'].items():
-        if _hash(root/'implementation'/p) != value or _hash(REPO/p) != value: raise ValueError('source identity')
+        if _hash(root/'implementation'/p) != value: raise ValueError('source identity')
+        if p == _profile().contract and _hash(REPO/p) != value: raise ValueError('recognized contract identity')
 
 
 def evaluate(root):
+    try:
+        candidate = _read(Path(root)/'report.json', MAX_REPORT_BYTES)
+        selected = next((p for p in (CURRENT, LEGACY) if candidate.get('schema_version') == p.schema
+                         and candidate.get('plan', {}).get('model') == p.model
+                         and candidate.get('plan', {}).get('model_digest') == p.model_digest), None)
+        if selected is None: raise ValueError('unknown baseline profile')
+    except (OSError, ValueError, TypeError, AttributeError):
+        return {'verdict': 'inconclusive', 'reasons': ['artifact_verification_failed'], 'series': []}
+    token = _ACTIVE.set(selected)
+    try: return _evaluate(root)
+    finally: _ACTIVE.reset(token)
+
+
+def _evaluate(root):
     """Read-only: no HTTP, subprocess, Store migration, or saved-verdict trust."""
     root = Path(root).resolve(); verified = []; invalid = False
     try:
@@ -476,7 +546,7 @@ def evaluate(root):
         try:
             if retained != file_index(root, excluded=('index.json', 'evaluation.json')): raise ValueError('global index')
             attempts = report['attempts']; budget = report['budget']
-            if (next_attempt-1 != len(attempts) or budget['requests'] != len(attempts) or len(attempts) > LIMITS['requests']
+            if (next_attempt-1 != len(attempts) or budget['requests'] != len(attempts) or len(attempts) > _profile().limits['requests']
                     or budget['pending'] != 0 or budget['finished'] != len(attempts)
                     or budget['observed_tokens'] != sum(a.get(k) or 0 for a in attempts for k in ('input_tokens', 'output_tokens'))
                     or budget['unknown_usage_calls'] != sum(a.get('input_tokens') is None or a.get('output_tokens') is None for a in attempts)
@@ -486,25 +556,35 @@ def evaluate(root):
                     or budget['elapsed_seconds'] < 0 or budget['token_hard_cap_guaranteed'] is not False
                     or budget['reported_usd'] is not None or budget['cache_tokens'] is not None
                     or report['status'] not in ('completed', 'stopped')
-                    or report['status'] == 'completed' and (budget['elapsed_seconds'] >= LIMITS['seconds']
-                        or budget['observed_tokens'] >= LIMITS['tokens'] or report['stop_reason'] is not None)):
+                    or report['status'] == 'completed' and (budget['elapsed_seconds'] >= _profile().limits['seconds']
+                        or budget['observed_tokens'] >= _profile().limits['tokens'] or report['stop_reason'] is not None)):
                 raise ValueError('budget completion')
         except (OSError, ValueError, KeyError, TypeError): invalid = True
     if invalid: reasons.append('artifact_verification_failed')
-    complete = (not invalid and len(verified) == 10 and report['status'] == 'completed' and report['stop_reason'] is None
-                and all(r['status'] == 'success' and r['quality']['passed'] and r['safety']['passed'] for r in verified)
+    execution_complete = (not invalid and len(verified) == 10 and report['status'] == 'completed' and report['stop_reason'] is None
+                and all(r['status'] == 'success' and r['safety']['passed'] for r in verified)
                 and all(a.get('input_tokens') is not None and a.get('output_tokens') is not None
-                        and a.get('resolved_model') == MODEL and a.get('model_digest') == MODEL_DIGEST
+                        and a.get('resolved_model') == _profile().model and a.get('model_digest') == _profile().model_digest
                         and a.get('identity_after_verified') is True for a in report['attempts']))
-    if not complete: reasons.append('incomplete_baseline')
+    complete = execution_complete and all(r['quality']['passed'] for r in verified)
+    if not (execution_complete if _profile().schema == 2 else complete): reasons.append('incomplete_baseline')
     if report['synthetic_responses']: reasons.append('synthetic_only')
     verdict = 'failed' if failed else 'complete' if complete else 'inconclusive'
     if report['synthetic_responses']: verdict = 'inconclusive'
     series = []
     for name in ('three', 'four', 'eight'):
-        values = [r['seconds'] for r in verified if r['case_id'] == name and r['status'] == 'success' and r['quality']['passed'] and r['safety']['passed']]
+        members = [r for r in verified if r['case_id'] == name]
+        values = [r['seconds'] for r in members if r['status'] == 'success' and r['safety']['passed']
+                  and (_profile().schema == 2 or r['quality']['passed'])]
         series.append({'case_id': name, 'completed_repetitions': len(values), 'seconds':
                        {'median': statistics.median(values), 'min': min(values), 'max': max(values)} if len(values) == 3 else None})
-    return {'verdict': verdict, 'reasons': reasons, 'series': series, 'unverified_other_records': invalid,
+        if _profile().schema == 2:
+            series[-1].update(attempted_repetitions=len(members), service_completed_repetitions=len(values),
+                              gold_passed_repetitions=sum(r['quality']['passed'] is True for r in members),
+                              latency_scope='all service-completed repetitions including gold failures')
+    result = {'verdict': verdict, 'reasons': reasons, 'series': series, 'unverified_other_records': invalid,
             'provider_cache_state': 'unknown', 'reported_usd': None,
             'comparison_scope': 'local sequential baseline only; no Sonnet acceptance or speedup claim'}
+
+    if _profile().schema == 2: result['execution_complete'] = execution_complete
+    return result
