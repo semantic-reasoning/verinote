@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "revision": "11c2d79bf7f2de6bbc18639341972235563ab31a",
+  "started_at": "2026-10-31T02:53:45.940911+00:00",
+  "requested_model": "sonnet",
+  "resolved_model": "unknown_not_exported",
+  "cli_version_observed": "2.1.311",
+  "limits": {
+    "requests": 90,
+    "seconds": 1800,
+    "observed_tokens": 300000
+  },
+  "order": [
+    "oneshot",
+    "document",
+    "batch"
+  ],
+  "runs": [
+    {
+      "mode": "oneshot",
+      "argv": [
+        "/Users/joykim/git/semantic-reasoning/verinote/.venv/bin/python",
+        "scripts/benchmark_extraction.py",
+        "--output",
+        "/Users/joykim/git/semantic-reasoning/verinote/benchmarks/extraction/results/750/oneshot",
+        "--mode",
+        "cli",
+        "--allow-model-calls",
+        "--agent",
+        "claude",
+        "--model",
+        "sonnet",
+        "--cli-version",
+        "2.1.311",
+        "--process-mode",
+        "oneshot",
+        "--cases",
+        "short",
+        "long",
+        "dense",
+        "none",
+        "boundary",
+        "--repetitions",
+        "3",
+        "--max-requests",
+        "30",
+        "--max-seconds",
+        "600",
+        "--max-tokens",
+        "100000",
+        "--call-timeout",
+        "90",
+        "--missing-usage",
+        "stop"
+      ],
+      "started_at": "2026-10-31T02:53:45.941372+00:00",
+      "status": "stopped",
+      "exit_code": 1,
+      "stop_reason": "token_limit",
+      "report_sha256": "404a0fd05dcf4b19f690723d1ff2af4fbb70180cc2bafd228bc2dd5b35725a3f"
+    }
+  ],
+  "status": "stopped",
+  "elapsed_seconds": 209.38422120804898,
+  "requests_started": 12,
+  "observed_tokens_lower_bound": 101801,
+  "stop_reason": "token_limit"
+}
