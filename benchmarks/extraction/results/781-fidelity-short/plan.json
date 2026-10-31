@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "candidate_id": "ollama_fidelity_checklist_v1",
+  "template_sha256": "94b0982ea3b35f298818e8d45d95c4796438f939049acaaa28b8c62b4ba785b2",
+  "documents": [
+    {
+      "key": "short-1",
+      "case_id": "short",
+      "repetition": 1,
+      "chunks": 1
+    }
+  ],
+  "initial_requests": 1,
+  "maximum_repairs": 1,
+  "limits": {
+    "requests": 2,
+    "seconds": 600,
+    "tokens": 100000
+  },
+  "model": "qwen3.8:27b-mlx",
+  "model_digest": "5642e97495e1a088883805981563dcdc4a040c2f53388b7a41d1f24d3622cf7e",
+  "ollama_version": "0.40.13",
+  "options": {
+    "provider": "ollama",
+    "schema_version": 2,
+    "endpoint": "http://127.0.0.1:11434",
+    "num_ctx": 32768,
+    "num_predict": 4096,
+    "temperature": 0,
+    "keep_alive": "5m",
+    "timeouts": {
+      "default": 180,
+      "ontology": 600
+    },
+    "model": "qwen3.8:27b-mlx",
+    "model_digest": "5642e97495e1a088883805981563dcdc4a040c2f53388b7a41d1f24d3622cf7e",
+    "candidate_id": "ollama_fidelity_checklist_v1",
+    "candidate_template_sha256": "94b0982ea3b35f298818e8d45d95c4796438f939049acaaa28b8c62b4ba785b2"
+  },
+  "concurrency": 1,
+  "automatic_retry": false,
+  "thinking_policy": "model_default",
+  "provider_cache_state": "unknown"
+}

@@ -1,0 +1,146 @@
+{
+  "schema_version": 1,
+  "run_id": "d7d3ae8cefcf4fb5bb20c65470afc9a7",
+  "contract": {
+    "pipeline": "approved-extraction-v1",
+    "prompt": "39db0e9639b65d9aa2f342fdfb80934b3cfee99c54363caff55a8d4d5725fa62",
+    "repair_prompt": "d0aa5b0658b5dc42d3dcd64cb1c01e2f023e4f8fa2cfe4868e3fd361132cbc78",
+    "chunk_size": 8000,
+    "chunk_timeout": 360,
+    "document_id": "1c9ee2e2c19f4db0871fab40a21051ee",
+    "version": 1,
+    "source_sha256": "864fa34331fde90e74a3f86be122a35224fe9cac97c1f5b718ac3282f88d4620",
+    "text_sha256": "864fa34331fde90e74a3f86be122a35224fe9cac97c1f5b718ac3282f88d4620",
+    "agent": "ollama",
+    "model": "qwen3.8:27b-mlx",
+    "dictionary": {
+      "id": "5c694bbca6b74525887a3fb8393c46fe",
+      "revision": 2,
+      "sha256": "dbde0eb9ee122726dbc1cc69d3895265e5e70462fd3981406fe3ea2160cc063a",
+      "extraction_contract": 2
+    },
+    "dictionary_payload_sha256": "dbde0eb9ee122726dbc1cc69d3895265e5e70462fd3981406fe3ea2160cc063a",
+    "execution_options": {
+      "candidate_id": "ollama_fidelity_checklist_v1",
+      "candidate_template_sha256": "94b0982ea3b35f298818e8d45d95c4796438f939049acaaa28b8c62b4ba785b2",
+      "endpoint": "http://127.0.0.1:11434",
+      "keep_alive": "5m",
+      "model": "qwen3.8:27b-mlx",
+      "model_digest": "5642e97495e1a088883805981563dcdc4a040c2f53388b7a41d1f24d3622cf7e",
+      "num_ctx": 32768,
+      "num_predict": 4096,
+      "provider": "ollama",
+      "schema_version": 2,
+      "temperature": 0,
+      "timeouts": {
+        "default": 180,
+        "ontology": 600
+      }
+    }
+  },
+  "outputs": [
+    {
+      "title": "구간 1: 현재 구성과 표현 제약",
+      "claims": [
+        {
+          "heading": "현재 실제 구성",
+          "text": "S0는 S1를 직접 호출하는 것이 현재 실제 구성으로 명시됨.",
+          "quote": "구간 1 현재 실제 구성: S0는 S1를 직접 호출한다."
+        },
+        {
+          "heading": "가정 예시(실제 아님)",
+          "text": "S0가 S1를 직접 호출한다는 서술은 가정 예시로 표시되어 실제 사실이 아님.",
+          "quote": "구간 1 가정 예시(실제 아님): S0는 S1를 직접 호출한다."
+        },
+        {
+          "heading": "부정",
+          "text": "S1는 S0를 직접 호출하지 않는다고 명시되어 calls 역방향 관계 없음.",
+          "quote": "구간 1 부정: S1는 S0를 직접 호출하지 않는다."
+        },
+        {
+          "heading": "조건부 호출",
+          "text": "S0는 S2를 장애 발생 시에만 직접 호출하며, 현재 무조건 호출이 아님.",
+          "quote": "구간 1 조건: 장애가 발생할 때만 S0는 S2를 직접 호출한다. 현재 무조건 호출은 아니다."
+        },
+        {
+          "heading": "과거 보관(중단)",
+          "text": "S0는 2020년에 S1를 직접 보관했으나 2025년부터 중단되어 현재 보관이 아님.",
+          "quote": "구간 1 과거 기록: 2020년에 S0는 S1를 직접 보관했다. 2025년부터 그 보관은 중단되었다."
+        },
+        {
+          "heading": "미등록 대상",
+          "text": "Outside1는 승인 개체에 없으므로 S0의 Outside1 호출은 추출 불가.",
+          "quote": "구간 1 미등록 대상: S0는 Outside1를 직접 호출한다. Outside1는 승인 개체에 없다."
+        },
+        {
+          "heading": "미등록 관계(소유)",
+          "text": "S0가 S1를 소유한다는 서술은 승인 관계에 없으므로 추출 불가.",
+          "quote": "구간 1 소유: S0는 S1를 소유한다. 소유는 승인 관계에 없다."
+        }
+      ],
+      "facts": [
+        {
+          "subject": "S0",
+          "predicate": "calls",
+          "object": "S1",
+          "quote": "구간 1 현재 실제 구성: S0는 S1를 직접 호출한다."
+        }
+      ],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [
+            0
+          ],
+          "claim_indices": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "status": "extracted",
+          "reason": "현재 무조건 직접 호출 1건 추출. 가정·부정·조건은 calls 정의상 제외됨."
+        },
+        {
+          "predicate": "archives",
+          "fact_indices": [],
+          "claim_indices": [
+            4
+          ],
+          "status": "not_representable",
+          "reason": "2020년 보관은 2025년 중단되어 과거·종료 조건으로 archives(현재 무조건)에 표현 불가."
+        },
+        {
+          "predicate": "mirrors",
+          "fact_indices": [],
+          "claim_indices": [],
+          "status": "no_evidence",
+          "reason": "원문에 직접 복제 근거가 없다고 명시되어 있어 mirrors 사실 없음."
+        }
+      ],
+      "dictionary_gaps": [
+        {
+          "code": "missing_entity",
+          "detail": "Outside1는 승인 개체 목록(S0,S1,S2)에 없어 S0→Outside1 calls를 표현할 수 없음.",
+          "claim_indices": [
+            5
+          ]
+        },
+        {
+          "code": "missing_relation",
+          "detail": "소유(ownership) 관계가 승인 관계(calls,archives,mirrors)에 없어 S0가 S1를 소유하는 서술을 표현할 수 없음.",
+          "claim_indices": [
+            6
+          ]
+        },
+        {
+          "code": "qualifier_not_representable",
+          "detail": "장애 발생 시에만 S0가 S2를 호출하는 조건부 호출은 calls의 무조건적 직접 호출 정의에 부합하지 않아 표현 불가.",
+          "claim_indices": [
+            3
+          ]
+        }
+      ]
+    }
+  ]
+}
