@@ -58,8 +58,9 @@ def _citation(case, quote, index, gold=None):
 def validate_case(case):
     keys = {'schema_version', 'dataset_version', 'case_id', 'category', 'source', 'source_sha256',
             'dictionary', 'gold', 'forbidden', 'notes'}
+    if isinstance(case, dict) and case.get('dataset_version') == 2: keys.add('annotations')
     if (not isinstance(case, dict) or set(case) != keys or type(case['schema_version']) is not int or case['schema_version'] != 1
-            or type(case['dataset_version']) is not int or case['dataset_version'] != DATASET_VERSION
+            or type(case['dataset_version']) is not int or case['dataset_version'] not in (1, 2)
             or not isinstance(case['case_id'], str) or not case['case_id'].replace('_', '').isalnum()
             or not isinstance(case['source'], str) or not 1 <= len(case['source']) <= 128000
             or case['source_sha256'] != _sha(case['source'])
@@ -94,6 +95,9 @@ def validate_case(case):
         key = _canonical(case, _triple(triple))
         if key in variants or key in forbidden: raise ValueError('금지 관계와 정답/다른 금지 관계 중복')
         forbidden.add(key)
+    if case['dataset_version'] == 2:
+        from .extraction_threshold_evaluation import validate_annotations
+        validate_annotations(case)
     return case
 
 
@@ -101,9 +105,9 @@ def load_manifest(root=None):
     root = Path(root) if root is not None else DATA_ROOT / 'v1'
     manifest = _read(root / 'manifest.json')
     if (not isinstance(manifest, dict) or set(manifest) != {'dataset_version', 'chunk_size', 'extraction_contract', 'human_review', 'cases'}
-            or type(manifest['dataset_version']) is not int or manifest['dataset_version'] != DATASET_VERSION
+            or type(manifest['dataset_version']) is not int or manifest['dataset_version'] not in (1, 2)
             or type(manifest['chunk_size']) is not int or manifest['chunk_size'] != 8000
-            or type(manifest['extraction_contract']) is not int or manifest['extraction_contract'] != 1
+            or type(manifest['extraction_contract']) is not int or manifest['extraction_contract'] != manifest['dataset_version']
             or not isinstance(manifest['cases'], list) or not 1 <= len(manifest['cases']) <= 32
             or not isinstance(manifest['human_review'], dict) or set(manifest['human_review']) != {'status', 'evidence'}
             or manifest['human_review'].get('status') not in ('pending', 'approved')):
@@ -129,7 +133,8 @@ def load_case(case_id, root=None):
     if entry is None: raise ValueError('평가 자료 ID를 찾을 수 없습니다.')
     case = _read(root / entry['file'])
     raw = json.dumps(case, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
-    if _sha(raw) != entry['sha256'] or case.get('case_id') != case_id: raise ValueError('평가 자료 hash 오류')
+    if (_sha(raw) != entry['sha256'] or case.get('case_id') != case_id
+            or case.get('dataset_version') != manifest['dataset_version']): raise ValueError('평가 자료 hash 오류')
     return validate_case(case)
 
 
@@ -172,7 +177,7 @@ def evaluate_case(case, chunk_outputs):
     extras = sorted((u for u in units.values() if u['gold_id'] is None), key=lambda u: tuple(u['triple']))
     missing = sorted(set(golds)-set(matched)); grounded_missing = sorted(set(golds)-set(grounded))
     denominator = len(units)+len(invalid)
-    return {'schema_version': 1, 'evaluator_version': EVALUATOR_VERSION, 'dataset_version': DATASET_VERSION,
+    result = {'schema_version': 1, 'evaluator_version': case['dataset_version'], 'dataset_version': case['dataset_version'],
             'case_id': case['case_id'], 'source_sha256': case['source_sha256'],
             'case_sha256': _sha(json.dumps(case, ensure_ascii=False, sort_keys=True, separators=(',', ':'))),
             'gold_count': len(golds), 'prediction_count': denominator, 'raw_prediction_count': sum(len(c['output']['facts']) for c in chunk_outputs),
@@ -186,10 +191,18 @@ def evaluate_case(case, chunk_outputs):
             'duplicates': duplicates, 'quote_ambiguities': ambiguities,
             'no_relation_case_pass': denominator == 0 if not golds else None,
             'passed': not (missing or extras or invalid or citation_errors or duplicates)}
+    if case['dataset_version'] == 2:
+        from .extraction_threshold_evaluation import evaluate_annotations
+        result.update(evaluate_annotations(case, chunk_outputs, result['passed']))
+    return result
 
 
 def ideal_outputs(case, *, contract_version=1):
     """Deterministic synthetic oracle for tests/runners; not an evaluator repair."""
+    if case['dataset_version'] == 2:
+        from .extraction_threshold_evaluation import annotated_outputs
+        if contract_version != 2: raise ValueError('dataset v2 requires extraction contract v2')
+        return annotated_outputs(case)
     from .ontology import extraction_quote_issues
     from .service import validate_page
     result = []
@@ -222,18 +235,20 @@ def evaluate_many(results):
     results = list(results)
     if len(results) > 1024: raise ValueError('평가 집계 개수 오류')
     for row in results:
-        if (not isinstance(row, dict) or row.get('evaluator_version') != EVALUATOR_VERSION
+        if (not isinstance(row, dict) or row.get('evaluator_version') not in (1, 2)
                 or type(row.get('evaluator_version')) is not int or type(row.get('dataset_version')) is not int
-                or row.get('dataset_version') != DATASET_VERSION
+                or row.get('dataset_version') != row.get('evaluator_version')
                 or any(type(row.get(k)) is not int or not 0 <= row[k] <= 1280 for k in
                        ('true_positive_count', 'false_positive_count', 'false_negative_count', 'gold_count', 'prediction_count', 'grounded_true_positive_count'))
                 or row['true_positive_count'] + row['false_negative_count'] != row['gold_count']
                 or row['true_positive_count'] + row['false_positive_count'] != row['prediction_count']
                 or row['grounded_true_positive_count'] > row['true_positive_count']):
             raise ValueError('평가 집계 입력 오류')
+    versions = {r['dataset_version'] for r in results}
+    if len(versions) > 1: raise ValueError('평가 자료 버전 혼합 오류')
     tp, fp, fn = (sum(r[key] for r in results) for key in ('true_positive_count', 'false_positive_count', 'false_negative_count'))
     grounded = sum(r['grounded_true_positive_count'] for r in results)
-    return {'schema_version': 1, 'evaluator_version': EVALUATOR_VERSION, 'cases': results,
+    return {'schema_version': 1, 'evaluator_version': next(iter(versions), EVALUATOR_VERSION), 'cases': results,
             'micro_grounded_precision': metric(grounded, tp+fp), 'micro_grounded_recall': metric(grounded, tp+fn),
             'micro_citation_accuracy': metric(grounded, tp),
             'micro_precision': metric(tp, tp+fp), 'micro_recall': metric(tp, tp+fn)}

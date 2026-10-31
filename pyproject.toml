@@ -15,7 +15,7 @@ dependencies = ["pyrewire>=1.1.2,<2", "pypdf>=5,<7"]
 verinote = "verinote.server:main"
 
 [tool.setuptools.package-data]
-verinote = ["rules.dl", "web/*", "benchmark_data/v1/*.json", "benchmark_data/repair-cases/*.json"]
+verinote = ["rules.dl", "web/*", "benchmark_data/v1/*.json", "benchmark_data/v2/*.json", "benchmark_data/repair-cases/*.json"]
 
 [tool.setuptools.packages.find]
 include = ["verinote*"]
