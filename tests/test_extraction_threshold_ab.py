@@ -4,7 +4,12 @@ import unittest
 
 from verinote.extraction_benchmark import sha
 from verinote.extraction_options import CHUNK_THRESHOLD_POLICY
-from verinote.extraction_threshold_ab import evaluate_report, experiment_plan
+from verinote.extraction_threshold_ab import (
+    evaluate_report,
+    experiment_plan,
+    resolved_sonnet_model,
+    sonnet_model,
+)
 from verinote.extraction_transport import ExtractionSpec
 
 MODEL = 'claude-sonnet-5-5'
@@ -61,6 +66,18 @@ def repair(report, row, chunk=1):
 
 
 class ThresholdContract(unittest.TestCase):
+    def test_sonnet_family_required_for_requested_and_resolved_models(self):
+        for model in ('sonnet', MODEL, 'claude-3-sonnet-20240229'):
+            self.assertEqual(sonnet_model(model), model)
+        for model in ('haiku', 'claude-haiku-4-5', 'claude-sonnet-4-latest'):
+            with self.assertRaises(ValueError): sonnet_model(model)
+            self.assertFalse(resolved_sonnet_model(model))
+        report = perfect_report()
+        for attempt in report['attempts']: attempt['resolved_model'] = 'claude-haiku-4-5'
+        result = evaluate_report(report)
+        self.assertEqual(result['verdict'], 'inconclusive')
+        self.assertIn('model_family', result['reasons'])
+
     def test_plan_counts_order_policy_and_owners(self):
         plan = experiment_plan(); docs = plan['documents']
         self.assertEqual([(s['phase'], s['chunks']) for s in plan['series']],

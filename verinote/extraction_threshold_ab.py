@@ -1,6 +1,8 @@
 """Frozen threshold A/B contract v2. Pure evaluation, never model calls."""
 import random
+import re
 
+from .agents import validate_model
 from .extraction_ab import (
     _attempts,
     _identity,
@@ -13,6 +15,17 @@ from .extraction_ab import (
 )
 from .extraction_benchmark import resolved_model, sha
 from .extraction_options import CHUNK_THRESHOLD_POLICY, extraction_options
+
+
+def resolved_sonnet_model(value):
+    return resolved_model(value) is not None and re.fullmatch(r'claude-(?:[0-9]+-)*sonnet-[0-9]+(?:[.-][0-9a-z]+)*', value) is not None
+
+
+def sonnet_model(value):
+    value = validate_model(value, 'claude')
+    if value != 'sonnet' and not resolved_sonnet_model(value):
+        raise ValueError('threshold experiment requires an explicit Sonnet model')
+    return value
 
 
 def experiment_plan():
@@ -51,6 +64,7 @@ def experiment_plan():
 def validate_policy(row):
     """Warm-up's explicit capacity is an exception only for planned warm-up rows."""
     options = extraction_options(row.get('extraction_options'))
+    sonnet_model(options['transport']['model'])
     if row.get('extraction_contract') != 2 or type(row.get('extraction_contract')) is not int:
         raise ValueError('extraction_contract')
     if options['concurrency'] != row['concurrency'] or options['document_generation'] != 1:
@@ -128,6 +142,7 @@ def evaluate_report(report):
     comparisons = []; violations = []
     models = {v.get('resolved_model') for v in attempts if isinstance(v, dict) and resolved_model(v.get('resolved_model')) is not None}
     if len(models) != 1: reasons.append('model_mismatch_or_unknown')
+    if any(not resolved_sonnet_model(model) for model in models): reasons.append('model_family')
     configurations = set()
     for key, row in actual.items():
         if key in invalid: continue
@@ -169,7 +184,8 @@ def evaluate_report(report):
                 local_models.update(v['resolved_model'] for v in values)
                 by_arm[row['arm']][row['purpose']].extend(values)
                 validate_lifecycle(row, values, warmed)
-            if len(local_models) != 1 or len(transports) != 1: raise ValueError('model_or_transport_mismatch')
+            if len(local_models) != 1 or len(transports) != 1 or any(not resolved_sonnet_model(model) for model in local_models):
+                raise ValueError('model_or_transport_mismatch')
             ratios = []
             for pair in range(1, 11):
                 times = {}
