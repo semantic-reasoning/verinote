@@ -20,7 +20,40 @@ python scripts/benchmark_extraction.py --output ./benchmark-partial --cases long
 
 실제 실행은 별도 승인 후 `--mode cli --allow-model-calls --agent <provider> --model <explicit-model-id>`를 함께 지정한다. 지원 provider는 agy, claude, copilot, cursor, codex다. HTTP/OpenRouter 실험과 effort 변경은 이 도구의 범위 밖이다. 예를 들어 앞의 정상 명령에 이 네 옵션을 추가할 수 있다. 도구는 실제 모델을 자동 호출하거나 실패 시 다른 모델로 바꾸지 않는다. 이 구현을 검증하는 동안 실제 모델을 호출하지 않았다.
 
-CLI 인증은 기존 CLI 방식으로 처리한다. Verinote 사용자 설정·원본 문서·사용자 DB를 읽지 않는다. CLI 자체가 관리하는 인증·캐시·계정 사용량은 그 CLI의 동작을 따른다. 결과에는 실행 모드, 요청 모델, timeout·출력 크기 등 허용한 설정만 기록한다. CLI 버전은 자동 탐색하지 않아 `null / unknown_not_probed`다. 알 수 없는 제공자 기본 설정이나 실제 해석된 모델도 추정하지 않는다.
+CLI 인증은 기존 CLI 방식으로 처리한다. Verinote 사용자 설정·원본 문서·사용자 DB를 읽지 않는다. CLI 자체가 관리하는 인증·캐시·계정 사용량은 그 CLI의 동작을 따른다. 결과에는 실행 모드, 요청 모델, timeout·출력 크기 등 허용한 설정만 기록한다. CLI 버전은 자동 탐색하지 않아 기본은 `null / unknown_not_probed`다. 별도 확인한 버전은 `--cli-version 2.1.311`처럼 전달할 수 있다(영문·숫자·`.`·`+`·`_`·`-`, 1~80자). 이 값은 `operator_supplied_unverified`로 기록하며 도구가 설치 버전을 검증했다는 뜻이 아니다. 알 수 없는 제공자 기본 설정이나 실제 해석된 모델도 추정하지 않는다.
+
+## 프로세스 수명 비교
+
+`--process-mode`의 기본값은 `oneshot`이다. 기존 fake 및 실제 CLI 단발 기준선은 유지한다. `document`와 `batch`는 `--mode cli --agent claude`에서만 지원하며 잘못된 조합은 결과 폴더 생성 전에 거부한다. 승인된 실모델 실험에서 다음 명령의 `MODEL_ID`와 버전은 실제 확인한 값으로 바꾼다.
+
+```sh
+python scripts/benchmark_extraction.py --output ./benchmark-oneshot --mode cli --allow-model-calls --agent claude --model MODEL_ID --process-mode oneshot --cases short long --repetitions 2 --max-requests 20 --max-seconds 600 --max-tokens 100000 --call-timeout 90
+python scripts/benchmark_extraction.py --output ./benchmark-document --mode cli --allow-model-calls --agent claude --model MODEL_ID --process-mode document --cases short long --repetitions 2 --max-requests 20 --max-seconds 600 --max-tokens 100000 --call-timeout 90
+python scripts/benchmark_extraction.py --output ./benchmark-batch --mode cli --allow-model-calls --agent claude --model MODEL_ID --process-mode batch --cases short long --repetitions 2 --max-requests 20 --max-seconds 600 --max-tokens 100000 --call-timeout 90
+```
+
+각 명령은 별도 배치와 예산이다. 이 예시는 호출 승인이나 권장 실험 표본 수가 아니다. 모델 호출 없이 세 모드의 수명을 검사하려면 `python -m unittest discover -s tests -p test_benchmark_persistent.py`를 실행한다.
+
+| 모드 | 프로세스와 owner 수명 | 문서 경계 |
+|---|---|---|
+| oneshot | 문서 owner, 요청마다 새 subprocess | 매번 새 DB·사전·checkpoint |
+| document | 문서 owner, 같은 문서의 청크·보정에서 worker 재사용 | 문서 종료 시 close, 다음 문서는 새 worker |
+| batch | 배치 owner, 문서 사이에도 worker 재사용 | DB·사전·checkpoint만 새로 생성, worker는 배치 종료 시 close |
+
+매 Claude persistent 요청은 기존 `/clear` 확인을 거친다. `BudgetCaller`의 owner만 실제 caller를 닫고 timeout 복사본은 비소유 view다. document/oneshot Service는 owner를 닫지만 batch의 문서 Service는 비소유 wrapper를 닫으므로 다음 문서의 worker를 종료하지 않는다. 생성 중 오류, 정상 종료, timeout, 중단, 호출 예산 소진, 결과 저장 실패에도 owner를 회수한다. 시작한 호출의 usage 수집과 Service drain 후 임시 로그를 삭제한다. cleanup 오류는 원시 예외 대신 `cleanup_errors`에 집계하고 `stopped`로 보고한다. 먼저 발생한 stop reason은 보존하며 정리 오류만 있으면 `cleanup_error`다.
+
+`conditions.process_mode`, `owner_scope`, `provider_cache_state: unknown`, `warmup: none`를 기록한다. 숨은 warm-up 호출은 추가하지 않는다. 최초 측정 요청도 예산에 포함된다. 프로세스 재사용은 provider prompt cache 적중이나 OS cache 초기화를 의미하지 않는다.
+
+각 attempt는 `case_id`, `repetition`, `owner_id`로 문서와 수명 소유자를 연결한다. CLI timing v2의 실제 `process_reused`, `spawn_returned`와 이전 동일 owner의 관측으로 `process_observation`을 분류한다.
+
+- `started`: 동일 owner에서 처음 관측한 persistent 프로세스 시작(cold).
+- `reused`: 실제 동일 worker 재사용 관측(warm). 문서 순서나 옵션 이름으로 추정하지 않는다.
+- `restarted`: 같은 owner에서 이전 프로세스 관측 이후 새 시작(cold). 재시작의 원인은 이 분류만으로 단정하지 않는다.
+- `unknown`: 검증된 v2 시작/재사용 근거가 없음. fake·v1 단발 기록·누락/신원 불일치도 포함한다. v1 단발 시작 시간은 기존 offsets/durations로 확인할 수 있지만 persistent 재시작으로 분류하지 않는다.
+
+`attempts[].cli_timing`은 schema version, process_reused, offsets와 durations를 보존한다. 재사용 호출의 spawn/정상 종료 exit 값은 null이며 0으로 바꾸지 않는다. 실제 모델·설정을 확인하지 못한 값도 임의로 채우지 않는다.
+
+문서별 `seconds`는 임시 저장소 생성 직전부터 Service drain/정리와 평가 수집까지이며 임시 폴더 삭제 시간은 제외한다. document/oneshot는 해당 transport close를 포함하지만 batch는 문서마다 닫지 않는다(`conditions.row_seconds_includes_transport_close`). batch 최종 close는 `batch_teardown_seconds`로 별도 기록하고 전체 `budget.elapsed_seconds`에 포함한다. 문서·batch 간 수명 차이를 숨겨 문서별 시간만으로 속도 향상을 판단하지 않는다. `document_timing`은 기존 접수–worker 종료 정의로 이 outer teardown을 포함하지 않는다.
 
 ## 한도의 의미
 
@@ -33,7 +66,7 @@ CLI 인증은 기존 CLI 방식으로 처리한다. Verinote 사용자 설정·�
 
 ## report.json 읽기
 
-새 결과 폴더에는 버전 1의 `report.json`만 남는다. `conditions`에 자료/사전/추출·보정 요청문 해시, 평가·계약 버전, 사람 검토 상태, 요청 모델, 안전한 설정, 분할 크기, 반복 수와 새 저장소 조건을 고정한다. `attempts`는 시도 순서·청크·보정 여부·성공/실패·토큰·비용·검증된 CLI 호출 ID와 #724 시간 기록(미확인 시 null), 측정 wrapper 경과 시간을 담는다. #725의 문서별 집계는 `repetitions[].document_timing`에 연결한다. 시간과 usage가 서로 독립적으로 미확인일 수 있다.
+새 결과 폴더에는 버전 2의 `report.json`만 남는다. 기존 버전 1 결과는 수정하지 않는다. v1에는 프로세스 수명 정보가 없으므로 해당 필드를 읽는 소비자는 `schema_version`을 확인하고 부재를 unknown으로 해석해야 한다. 과거 결과를 cold/warm/persistent로 소급 분류하지 않는다. v2는 기존 시간·품질·사용량 필드를 보존하고 수명 및 정리 정보를 추가한다. `conditions`에 자료/사전/추출·보정 요청문 해시, 평가·계약 버전, 사람 검토 상태, 요청 모델, 안전한 설정, 분할 크기, 반복 수와 새 저장소 조건을 고정한다. `attempts`는 시도 순서·청크·보정 여부·성공/실패·토큰·비용·검증된 CLI 호출 ID와 #724 시간 기록(미확인 시 null), 측정 wrapper 경과 시간을 담는다. #725의 문서별 집계는 `repetitions[].document_timing`에 연결한다. 시간과 usage가 서로 독립적으로 미확인일 수 있다.
 
 `repetitions`의 각 행은 자료 하나의 반복 실행이다. `quality`는 현재 run에 속한 검증된 checkpoint prefix를 #726 평가기로 점수화한다. 실패로 1/2청크만 검증됐다면 `complete: false`이고, recall 분모는 **전체 문서 정답**이다. 유효 prefix가 없는 경우에도 빈 결과의 누락을 평가한다. 실행 성공과 정답 평가의 `passed`는 별개다. 상위 `quality.passed`는 전체 청크 완료와 평가 통과를 모두 요구한다. 실제 원문·인용·잘못된 triple 문자열은 내보내지 않으며, 추가 관계는 해시와 위치로 식별한다. 합성 원문은 버전 고정 자료에서 별도로 대조한다.
 
@@ -41,6 +74,6 @@ CLI 인증은 기존 CLI 방식으로 처리한다. Verinote 사용자 설정·�
 
 정상·실패·한도 중단 모두 보고서를 기록한다. `status: completed`는 계획된 반복이 끝났다는 뜻이며, 개별 실행은 실패할 수 있다. `stopped`이면 `stop_reason`과 실제 attempt 수를 확인한다. 성공 실행만 종료 코드 0, 실패·중단은 1, 설정·저장 실패는 2다. 매 호출과 반복 뒤 원자적으로 갱신하므로 중간 파일의 `running`은 부분 결과다. 디스크 오류가 나면 마지막 정상 파일을 보존하고 정적 오류 메시지를 반환한다. 저장장치가 처음부터 쓰기 불가능하면 보고서를 새로 만들 수 없다.
 
-가짜 결과 예제는 [benchmarks/extraction/examples](../benchmarks/extraction/examples)의 `benchmark-fake-*.json`에 있다. 동일 조건은 위 명령 또는 보고서의 `conditions`를 사용해 재실행한다. 시간·호출 ID는 재실행마다 달라진다. API 사용자는 `verinote.extraction_benchmark.measure(output, cases=..., limits=Limits(...))`를 호출할 수 있다. `caller_factory`와 `clock`은 오프라인 검증용 주입 지점이다. 실제 호출을 주입하면서 fake로 표시해서는 안 된다.
+가짜 결과 예제는 [benchmarks/extraction/examples](../benchmarks/extraction/examples)의 `benchmark-fake-*.json`에 있다. 동일 조건은 위 명령 또는 보고서의 `conditions`를 사용해 재실행한다. 시간·호출 ID는 재실행마다 달라진다. API 사용자는 `verinote.extraction_benchmark.measure(output, cases=..., limits=Limits(...))`를 호출할 수 있다. `caller_factory`와 `clock`은 오프라인 검증용 주입 지점이다. factory는 문서별로 새 caller를 반환해야 하며, benchmark가 그 caller를 닫는다. `batch`와 factory의 조합은 첫 문서에 종속된 응답 객체를 다른 문서에서 재사용할 위험이 있어 거부한다. batch 통합 테스트는 실제 CLI 생성자를 유지하고 실행 파일과 명령만 가짜 subprocess로 바꾼다. 실제 호출을 주입하면서 fake로 표시해서는 안 된다.
 
 실제 가짜 응답 반복 실행의 결과·시간 편차·추가 측정 계획은 [#728 결과 보고서](extraction-performance-results.md)에 정리했다.

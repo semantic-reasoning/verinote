@@ -30,7 +30,9 @@ class Command(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp).resolve()
             for args in [('--mode','cli','--model','m'),('--mode','cli','--allow-model-calls'),('--agent','openrouter'),
-                         ('--max-requests','0'),('--max-seconds','nan'),('--cases','../private')]:
+                         ('--process-mode','document'),('--process-mode','invalid'),
+                         ('--mode','cli','--allow-model-calls','--agent','agy','--model','m','--process-mode','batch'),
+                         ('--cli-version','1.0'),('--max-requests','0'),('--max-seconds','nan'),('--cases','../private')]:
                 result=self.invoke(root/'out',*args)
                 self.assertEqual(result.returncode,2)
                 self.assertNotIn('Traceback',result.stderr)
