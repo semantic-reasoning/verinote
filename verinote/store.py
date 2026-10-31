@@ -277,7 +277,10 @@ class Store:
                     if extraction_key(old) == extraction_key(pinned):
                         raise Conflict('이 승인 사전 revision과 추출 방식으로 이미 추출했습니다. 사전 수정·재승인 후 다시 추출하세요.')
             if extraction_options is not None:
-                extraction_options['document_generation'] = doc['generation']
+                from .extraction_options import bind_extraction_options
+                source = db.execute('SELECT text FROM versions WHERE document_id=? AND version=?',
+                                    (document_id, doc['current_version'])).fetchone()
+                extraction_options = bind_extraction_options(extraction_options, source['text'], doc['generation'])
             try:
                 db.execute('INSERT INTO runs(id,document_id,version,agent,model,status,detail,created_at,stage,ontology,execution_options,extraction_options) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
                            (run_id, document_id, doc['current_version'], agent, model, 'queued', '', now(), stage, canonical(pinned) if pinned else None, canonical(execution_options) if execution_options is not None else None, canonical(extraction_options) if extraction_options is not None else None))

@@ -243,17 +243,19 @@ def _worker_identity(meta, usage):
 
 
 class BudgetCaller:
-    def __init__(self, caller, budget, notify=None, *, owns_caller=False, identity=None, lifecycle=None, purpose='measurement'):
+    def __init__(self, caller, budget, notify=None, *, owns_caller=False, identity=None, lifecycle=None, purpose='measurement', retry_close=False):
         self.caller, self.budget, self.notify = caller, budget, notify
         self.owns_caller, self.closed = owns_caller, False
+        self.retry_close = retry_close
         self.identity = dict(identity or {})
         self.purpose = purpose
         self.lifecycle = lifecycle if lifecycle is not None else {'observed': False}
 
     def close(self):
         if self.owns_caller and not self.closed:
-            self.closed = True
+            if not self.retry_close: self.closed = True
             if hasattr(self.caller, 'close'): self.caller.close()
+            self.closed = True
 
     @property
     def extraction_spec(self): return self.caller.identity
@@ -370,7 +372,10 @@ def quality_report(case, root, run):
                     'dictionary_payload_sha256': digest(pin['payload']), 'prompt': digest(prompt.encode()),
                     'repair_prompt': digest(repair_prompt.encode()), 'chunk_size': 8000,
                     'dictionary': {k: pin[k] for k in ('id', 'revision', 'sha256', 'extraction_contract')}}
-        if run.get('extraction_options') is not None: expected['extraction_options'] = run['extraction_options']
+        if run.get('extraction_options') is not None:
+            from .extraction_options import validate_extraction_source
+            validate_extraction_source(run['extraction_options'], case['source'])
+            expected['extraction_options'] = run['extraction_options']
         if (value['run_id'] != run['id'] or value['schema_version'] != 1 or any(contract.get(k) != v for k, v in expected.items())
                 or not isinstance(value['outputs'], list) or not 1 <= len(value['outputs']) <= len(list(chunks(case['source'])))):
             raise ValueError('checkpoint identity')
@@ -412,7 +417,7 @@ class _Executor(ThreadPoolExecutor):
         return self.future
 
 
-def execute_document(root, case, make_caller, budget, row, close, *, agent, model, extraction_concurrency=None):
+def execute_document(root, case, make_caller, budget, row, close, *, agent, model, extraction_concurrency=None, extraction_policy=None, registration_cli=None):
     """One fresh synthetic Store and the production Service; caller controls artifact lifetime."""
     store = Store(Path(root)/'state.sqlite3')
     service = None; run = None; caller = None
@@ -422,14 +427,23 @@ def execute_document(root, case, make_caller, budget, row, close, *, agent, mode
         store.run_status(seed['id'], 'running'); store.finish_run(seed['id'], dictionary=case['dictionary'])
         item = next(i for i in store.document(doc['id'])['items'] if i['kind'] == 'ontology')
         store.review(item['id'], item['revision'], 'approved', 'Synthetic fixture', 'Versioned human-reviewed gold')
-        caller = make_caller()
-        service = Service(store, root, caller, extraction_caller=caller if extraction_concurrency is not None else None)
+        if extraction_policy is not None:
+            def supply(spec):
+                nonlocal caller
+                caller = make_caller(spec)
+                return caller
+            service = Service(store, root, registration_cli or CLI(), extraction_caller_factory=supply)
+        else:
+            caller = make_caller()
+            service = Service(store, root, caller, extraction_caller=caller if extraction_concurrency is not None else None)
         service.pool.shutdown(wait=True)
         pool = _Executor(max_workers=1, thread_name_prefix='verinote-benchmark')
         service.pool = pool
         budget.check()
-        run = service.start(doc['id'], agent, model, expected_version=1, expected_generation=1, extraction_concurrency=extraction_concurrency)
+        run = service.start(doc['id'], agent, model, expected_version=1, expected_generation=1,
+                            extraction_concurrency=extraction_concurrency, extraction_policy=extraction_policy)
         row.update(run_id=run['id'], document_id=doc['id'])
+        if extraction_policy is not None: row['extraction_options'] = copy.deepcopy(run['extraction_options'])
         while not pool.future.done():
             if budget.remaining() <= 0: budget.stop('time_limit')
             time.sleep(.01)
@@ -455,7 +469,7 @@ def execute_document(root, case, make_caller, budget, row, close, *, agent, mode
 
 
 def measure(output, *, cases=('short', 'long'), scenario='normal', mode='fake', agent='agy', model='',
-            limits=None, timeout=30, caller_factory=None, clock=None, process_mode='oneshot', cli_version=None, extraction_concurrency=None):
+            limits=None, timeout=30, caller_factory=None, clock=None, process_mode='oneshot', cli_version=None, extraction_concurrency=None, extraction_policy=None):
     """No config/user-root parameter: only versioned bundled synthetic documents."""
     limits = limits or Limits()
     if mode not in ('fake', 'cli') or agent not in CLI_PROVIDERS: raise ValueError('측정 실행 모드·에이전트 오류')
@@ -480,6 +494,11 @@ def measure(output, *, cases=('short', 'long'), scenario='normal', mode='fake', 
                 or mode != 'cli' or agent != 'claude' or process_mode not in ('document', 'batch')
                 or caller_factory is not None):
             raise ValueError('병렬 추출 측정은 명시적 Claude CLI document/batch 모드만 지원합니다.')
+    if extraction_policy is not None:
+        from .extraction_options import CHUNK_THRESHOLD_POLICY
+        if (extraction_policy != CHUNK_THRESHOLD_POLICY or extraction_concurrency is not None
+                or mode != 'cli' or agent != 'claude' or process_mode not in ('document', 'batch') or caller_factory is not None):
+            raise ValueError('추출 정책은 명시적 Claude CLI document/batch 모드에서 동시성 옵션 없이 지원합니다.')
     writer = ReportWriter(output); budget = Budget(limits, clock=clock)
     try: package_version = version('verinote')
     except PackageNotFoundError: package_version = None
@@ -487,9 +506,11 @@ def measure(output, *, cases=('short', 'long'), scenario='normal', mode='fake', 
               'stop_reason': None, 'conditions': {'agent': agent, 'requested_model': model, 'scenario': scenario,
               'package_version': package_version, 'cli_version': cli_version,
               'cli_version_source': 'operator_supplied_unverified' if cli_version else 'unknown_not_probed',
-              'extraction_concurrency': extraction_concurrency, 'process_mode': process_mode, 'owner_scope': 'batch' if process_mode == 'batch' else 'document',
+              'extraction_concurrency': extraction_concurrency, 'extraction_policy': extraction_policy,
+              'process_mode': process_mode, 'owner_scope': 'batch' if process_mode == 'batch' else 'document',
               'provider_cache_state': 'unknown', 'warmup': 'none',
               'row_seconds_includes_transport_close': process_mode != 'batch',
+              'row_seconds_includes_previous_owner_close': extraction_policy is not None and process_mode == 'batch',
               'effective_timeout_seconds': timeout, 'max_output_bytes': 1024*1024, 'chunk_size': 8000,
               'input_reuse': 'fresh_store_per_repetition', 'limits': vars(limits),
               'dataset_version': 1, 'evaluator_version': 1, 'extraction_contract': EXTRACTION_CONTRACT_VERSION,
@@ -511,11 +532,13 @@ def measure(output, *, cases=('short', 'long'), scenario='normal', mode='fake', 
             report['cleanup_errors'] += 1
             budget.stop('cleanup_error')
 
-    def experiment_transport():
+    def experiment_transport(spec=None):
         from .extraction_transport import ExtractionTransport
+        if spec is not None: return ExtractionTransport(spec)
         return ExtractionTransport.from_cli(CLI(timeout=timeout, persistent=False), model, capacity=extraction_concurrency)
 
     batch_owner = None
+    batch_owner_id = 0
     save()
     try:
         for repetition in range(1, limits.repetitions+1):
@@ -526,15 +549,22 @@ def measure(output, *, cases=('short', 'long'), scenario='normal', mode='fake', 
                 report['repetitions'].append(row); save(); start = budget.clock()
                 with tempfile.TemporaryDirectory(prefix='verinote-benchmark-') as temp:
                     root = Path(temp)
-                    def make_caller(case=case, repetition=repetition):
-                        nonlocal batch_owner
+                    def make_caller(spec=None, case=case, repetition=repetition, row=row):
+                        nonlocal batch_owner, batch_owner_id
                         if process_mode == 'batch':
+                            if spec is not None and batch_owner is not None and batch_owner.extraction_spec != spec:
+                                replacement_started = budget.clock()
+                                close(batch_owner)
+                                row['owner_replacement_seconds'] = max(0, budget.clock()-replacement_started)
+                                budget.check()  # Cleanup failure is terminal; never overlap different pools.
+                                batch_owner = None
                             if batch_owner is None:
-                                batch_owner = BudgetCaller(experiment_transport() if extraction_concurrency is not None else CLI(timeout=timeout), budget, owns_caller=True)
+                                batch_owner = BudgetCaller(experiment_transport(spec) if spec is not None or extraction_concurrency is not None else CLI(timeout=timeout), budget, owns_caller=True, retry_close=spec is not None)
+                                batch_owner_id += 1
                             caller = BudgetCaller(batch_owner.caller, budget, save, lifecycle=batch_owner.lifecycle,
-                                                  identity={'owner_id': 1, 'case_id': case['case_id'], 'repetition': repetition})
+                                                  identity={'owner_id': batch_owner_id, 'case_id': case['case_id'], 'repetition': repetition})
                         else:
-                            base = experiment_transport() if extraction_concurrency is not None else caller_factory(case) if caller_factory else (FakeCLI(case, scenario) if mode == 'fake'
+                            base = experiment_transport(spec) if spec is not None or extraction_concurrency is not None else caller_factory(case) if caller_factory else (FakeCLI(case, scenario) if mode == 'fake'
                                     else CLI(timeout=timeout, persistent=process_mode == 'document'))
                             caller = BudgetCaller(base, budget, save, owns_caller=True,
                                                   identity={'owner_id': len(report['repetitions']), 'case_id': case['case_id'], 'repetition': repetition})
@@ -542,7 +572,8 @@ def measure(output, *, cases=('short', 'long'), scenario='normal', mode='fake', 
                         return caller
                     try:
                         execute_document(root, case, make_caller, budget, row, close,
-                                         agent=agent, model=model, extraction_concurrency=extraction_concurrency)
+                                         agent=agent, model=model, extraction_concurrency=extraction_concurrency,
+                                         extraction_policy=extraction_policy, registration_cli=CLI(timeout=timeout, persistent=False) if extraction_policy is not None else None)
                     finally:
                         if budget.remaining() <= 0: budget.stop('time_limit')
                         row['seconds'] = max(0, budget.clock()-start)

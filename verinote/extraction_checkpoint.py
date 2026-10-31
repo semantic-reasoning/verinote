@@ -49,8 +49,12 @@ class ExtractionCheckpoint:
             from .transports import job_options
             self.contract['execution_options'] = job_options(run.get('execution_options'))
         if run.get('extraction_options') is not None:
-            from .extraction_options import extraction_options
+            from .extraction_options import (
+                extraction_options,
+                validate_extraction_source,
+            )
             self.contract['extraction_options'] = extraction_options(run['extraction_options'], agent=run['agent'], stage=run['stage'], model=run['model'])
+            validate_extraction_source(self.contract['extraction_options'], doc['text'])
         previous, skipped = None, 0
         for prior in store.extraction_retries(run):
             raw = safe_file(root, f'runs/{prior["id"]}/extraction-checkpoint.json', CHECKPOINT_LIMIT)
