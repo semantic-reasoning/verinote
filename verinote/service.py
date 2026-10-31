@@ -70,7 +70,9 @@ def validate_page(value, source):
 
 
 class Service:
-    def __init__(self, store, root, cli=None, *, credentials=None, relation_type_warning_threshold=20, extraction_caller=None):
+    def __init__(self, store, root, cli=None, *, credentials=None, relation_type_warning_threshold=20, extraction_caller=None, extraction_caller_factory=None):
+        if extraction_caller_factory is not None and (extraction_caller is not None or not callable(extraction_caller_factory)):
+            raise ValueError('추출 호출자 공급 계약 오류')
         from .openrouter import OpenRouter
         from .transports import Credentials
         configured = Credentials.from_server(credentials) if credentials is not None and credentials.openrouter_key() else None
@@ -82,6 +84,7 @@ class Service:
         self.slots = threading.BoundedSemaphore(8)
         self.extraction_lock = threading.RLock()
         self.extraction_caller = extraction_caller
+        self.extraction_caller_factory = extraction_caller_factory
         self.extraction_owner = None
         self.closed = False
         self.draining = False
@@ -201,7 +204,7 @@ class Service:
             raise ValueError('OpenRouter 자격 증명이 구성되지 않았습니다.')
         return JobTransport(self.cli, job.get('execution_options'))
 
-    def start(self, document_id, agent, model, stage='extract', expected_version=None, expected_generation=None, *, max_tokens=_UNSET_TOKENS, answer_reserve_tokens=_UNSET_TOKENS, regenerate=None, extraction_concurrency=None):
+    def start(self, document_id, agent, model, stage='extract', expected_version=None, expected_generation=None, *, max_tokens=_UNSET_TOKENS, answer_reserve_tokens=_UNSET_TOKENS, regenerate=None, extraction_concurrency=None, extraction_policy=None):
         if agent not in PROVIDERS:
             raise ValueError('지원하지 않는 에이전트')
         model = validate_model(model, agent)
@@ -214,18 +217,20 @@ class Service:
             if answer_reserve_tokens is not _UNSET_TOKENS and agent != 'openrouter':
                 raise ValueError('답변 여유 설정은 OpenRouter 사전 생성·추출에서만 지원합니다.')
             experiment = None
-            if extraction_concurrency is not None:
-                from .extraction_options import experiment_request
+            if extraction_concurrency is not None and extraction_policy is not None:
+                raise ValueError('추출 동시성과 정책은 함께 지정할 수 없습니다.')
+            if extraction_concurrency is not None or extraction_policy is not None:
+                from .extraction_options import experiment_request, policy_request
                 from .extraction_transport import ExtractionSpec
                 if agent != 'claude' or stage != 'extract':
                     raise ValueError('병렬 추출은 Claude 추출에서만 지원합니다.')
-                if type(extraction_concurrency) is not int or extraction_concurrency not in (1, 2):
+                if extraction_policy is None and (type(extraction_concurrency) is not int or extraction_concurrency not in (1, 2)):
                     raise ValueError('추출 worker 수는 1 또는 2여야 합니다.')
                 spec = (self.extraction_caller.extraction_spec if self.extraction_caller is not None
-                        else ExtractionSpec.capture(self.cli, model, extraction_concurrency))
-                if spec.model != model or spec.capacity != extraction_concurrency:
+                        else ExtractionSpec.capture(self.cli, model, extraction_concurrency if extraction_policy is None else 1))
+                if spec.model != model or (extraction_policy is None and spec.capacity != extraction_concurrency):
                     raise ValueError('추출 호출자 계약 불일치')
-                experiment = experiment_request(spec)
+                experiment = experiment_request(spec) if extraction_policy is None else policy_request(spec, extraction_policy)
             options, transport = self.register_transport(agent, model, stage=stage, max_tokens=max_tokens, answer_reserve_tokens=answer_reserve_tokens)
             if not self.slots.acquire(blocking=False):
                 raise ValueError('작업 대기열이 가득 찼습니다.')
@@ -263,13 +268,17 @@ class Service:
         try:
             experiment = run.get('extraction_options')
             if experiment is not None:
-                from .extraction_options import extraction_options
+                from .extraction_options import (
+                    extraction_options,
+                    validate_extraction_source,
+                )
                 from .extraction_transport import ExtractionSpec
                 experiment = extraction_options(experiment, agent=run['agent'], stage=run['stage'], model=run['model'])
+                validate_extraction_source(experiment, self.store.document(run['document_id'], run['version'])['text'])
                 spec = ExtractionSpec.from_dict(experiment['transport'])
-                if self.extraction_caller is not None:
-                    if self.extraction_caller.extraction_spec != spec: raise ValueError('추출 호출자 계약 불일치')
-                    cli = self.extraction_caller
+                if self.extraction_caller_factory is not None or self.extraction_caller is not None:
+                    cli = self.extraction_caller_factory(spec) if self.extraction_caller_factory is not None else self.extraction_caller
+                    if cli.extraction_spec != spec: raise ValueError('추출 호출자 계약 불일치')
                 else:
                     cli = self._registered_extraction_transport(run, spec)
             else:
@@ -337,7 +346,8 @@ class Service:
                     active_chunk = index
                     if scheduler is None: timing.begin_chunk(index)
                     self.store.run_status(run['id'], 'running', f'승인 사전으로 추출 · 청크 {index}/{(len(doc["text"]) + 7999) // 8000} · 청크 제한 {CHUNK_TIMEOUT}초'
-                                          + (f' · {checkpoint.summary()}' if checkpoint is not None else ''))
+                                          + (f' · {checkpoint.summary()}' if checkpoint is not None else '')
+                                          + (f' · {experiment["policy"]} · 전체 {experiment["original_chunk_count"]}청크 · 동시 {experiment["concurrency"]}' if experiment and experiment['schema_version']==2 else ''))
 
                     def complete_chunk(prompt, target):
                         if scheduler is not None: return scheduler.repair(task, prompt, target)  # noqa: B023

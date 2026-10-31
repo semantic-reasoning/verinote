@@ -38,6 +38,30 @@ remain pending human approval.
 
 ## Isolated benchmark
 
+### Original-document chunk threshold candidate
+
+`Service.start(..., extraction_policy='chunk_threshold_v1')` selects one worker
+for one to three chunks and two workers for four or more chunks. The count uses
+the entire stored source and production `chunks()` inside the registration
+transaction. Cold runs use the same rule. There is no readiness condition.
+The option is experimental, off by default, exclusive with explicit concurrency,
+and unavailable through HTTP.
+
+Schema 2 stores the policy, original chunk count, chosen concurrency, transport
+snapshot and document generation. Execution validates the original source before
+creating a caller; resuming a checkpoint never selects concurrency from the
+remaining suffix. Schema 1 explicit-concurrency runs retain their contract.
+
+The benchmark flag `--extraction-policy chunk_threshold_v1` uses the registered
+decision to create its transport. In batch mode a capacity change closes the old
+pool before creating the next; replacement time and a new owner ID are recorded.
+All initial and repair calls retain the shared request/time/token budget. Cleanup
+failure stops admission. This local implementation does not establish a speedup:
+the new experiment follows `extraction-chunk-threshold-ab-contract.md`, and real
+model calls require separate approval of a concrete budget.
+
+### Explicit concurrency
+
 After separately approving a real-call budget, use the existing benchmark CLI
 with `--mode cli --agent claude --model <explicit-model>`,
 `--process-mode document|batch`, and `--extraction-concurrency 1|2`.
