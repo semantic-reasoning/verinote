@@ -45,7 +45,7 @@ for one to three chunks and two workers for four or more chunks. The count uses
 the entire stored source and production `chunks()` inside the registration
 transaction. Cold runs use the same rule. There is no readiness condition.
 The option is experimental, off by default, exclusive with explicit concurrency,
-and unavailable through HTTP.
+and unavailable as an HTTP request option.
 
 Schema 2 stores the policy, original chunk count, chosen concurrency, transport
 snapshot and document generation. Execution validates the original source before
@@ -59,6 +59,20 @@ All initial and repair calls retain the shared request/time/token budget. Cleanu
 failure stops admission. This local implementation does not establish a speedup:
 the new experiment follows `extraction-chunk-threshold-ab-contract.md`, and real
 model calls require separate approval of a concrete budget.
+
+### Local web opt-in
+
+Start the local server with `python -m verinote --data-dir data --port 8765
+--claude-extraction-policy chunk_threshold_v1` to apply this policy to Claude web
+extraction. Other providers, dictionary generation and questions are unchanged.
+The startup log and GET `/api/settings` expose the policy and its startup source.
+Clients cannot set or override it through request JSON.
+
+Remove the flag and restart to restore the default for subsequent registrations.
+Already registered runs retain their frozen contracts. Opt-in extraction uses the
+experimental publication checks for the current document version and generation.
+Local activation does not establish measured performance or general adoption;
+the separate frozen experiment and real-call approval requirements still apply.
 
 ### Explicit concurrency
 
