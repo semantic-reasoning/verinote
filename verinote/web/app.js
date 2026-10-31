@@ -42,11 +42,12 @@ async function renderDocs() {
   $('#documents').innerHTML = matches.length ? matches.map(d => `<button class="doc-card" data-doc="${d.id}"><span class="badge">DOCUMENT · v${d.current_version}</span><h3>${esc(d.title)}</h3><p>${esc(d.filename)}</p><div class="meta">${esc(date(d.created_at))} &nbsp; ↗ 열기</div></button>`).join('') : `<div class="empty"><h3>${search?'일치하는 문서가 없습니다.':'첫 문서에서 시작하세요.'}</h3><p>원문을 등록하면, 근거가 연결된 나만의 위키를 만들 수 있습니다.</p></div>`;
 }
 function providerById(id){return config?.providers?.find(p=>p.id===id);}
-function providerStatus(p){return p.transport==='http'?(p.configured?'키 설정됨 · 인증/잔액/접근 미확인':'키 미설정'):(p.installed?'설치됨':'미설치');}
+function providerStatus(p){if(p.id==='ollama')return p.available?'로컬 서버 연결됨':'로컬 서버 연결 안 됨';return p.transport==='http'?(p.configured?'키 설정됨 · 인증/잔액/접근 미확인':'키 미설정'):(p.installed?'설치됨':'미설치');}
 function providerOption(p){return `${esc(p.name)} · ${providerStatus(p)}`;}
-function modelPlaceholder(id){return providerById(id)?.transport==='http'?'필수 · provider/model ID':'CLI 기본 모델';}
+function modelPlaceholder(id){if(id==='ollama')return '필수 · 설치된 모델 ID';return providerById(id)?.transport==='http'?'필수 · provider/model ID':'CLI 기본 모델';}
 function providerHint(id){
   const p=providerById(id);
+  if(id==='ollama')return '127.0.0.1:11434의 로컬 Ollama를 사용합니다. 설치된 모델 ID가 필요하며 원문·사전·질문을 로컬 서버에 전달합니다. 모델은 자동 다운로드하지 않습니다.';
   if(p?.transport==='http')return `${providerStatus(p)}. 비어 있지 않은 모델 ID가 필요합니다. 원문·사전·질문 등 프롬프트가 OpenRouter와 라우팅된 모델 제공자에게 전달되며 API 과금이 발생할 수 있습니다. <a href="#openrouter-setup" data-open-settings>서버 키 파일 준비 방법</a>`;
   return '로그인된 로컬 CLI를 사용합니다. 모델을 비우면 CLI 기본 모델입니다. 설치 여부는 로그인이나 모델 접근 권한을 보장하지 않습니다. 원문과 질문이 선택한 모델 제공자에게 전달됩니다.';
 }
@@ -55,7 +56,7 @@ function syncProviderControls(prefix, reset=false){
   if(!select||!model)return;
   if(reset)model.value=config.models[select.value]||'';
   model.placeholder=modelPlaceholder(select.value);model.maxLength=150;
-  model.required=providerById(select.value)?.transport==='http';
+  model.required=['http','local_http'].includes(providerById(select.value)?.transport);
   const hint=$('#'+prefix+'-provider-hint');if(hint)hint.innerHTML=providerHint(select.value)+reasoningModelGuidance(select.value,model.value);
   model.oninput=()=>syncProviderControls(prefix);
   if(prefix==='extract')syncTokenLimitControls();
@@ -364,12 +365,12 @@ $('#review-form').onsubmit=e=>{e.preventDefault();attempt(async()=>{
 let modelCatalogEpoch=0;
 const modelCatalogPending=new Map();
 function cliModelPicker(p) {
-  if(p.transport!=='cli')return '';
+  if(p.transport!=='cli'&&p.id!=='ollama')return '';
   return `<label>사용 가능한 모델<select data-model-catalog="${p.id}" aria-describedby="catalog-status-${p.id}" disabled><option>제공자를 클릭해 불러오기</option></select></label><p id="catalog-status-${p.id}" class="muted catalog-status" role="status" aria-live="polite">목록에서 고르거나 모델 ID를 직접 입력하세요.</p>`;
 }
 async function loadProviderModels(agent) {
   const epoch=modelCatalogEpoch,select=$(`[data-model-catalog="${agent}"]`),status=$(`#catalog-status-${agent}`);
-  if(!select||providerById(agent)?.transport!=='cli')return;
+  if(!select||(providerById(agent)?.transport!=='cli'&&agent!=='ollama'))return;
   select.disabled=true;status.textContent='사용 가능한 모델을 불러오는 중…';
   try {
     let pending=modelCatalogPending.get(agent);
@@ -384,7 +385,7 @@ async function loadProviderModels(agent) {
     if(result.status!=='ok'){
       select.innerHTML='<option>목록을 불러올 수 없음</option>';return;
     }
-    select.innerHTML='<option value="" disabled selected>모델을 선택하세요</option><option value="">CLI 기본 모델</option>'+result.models.map(m=>`<option value="${esc(m.id)}">${esc(m.name)} · ${esc(m.id)}</option>`).join('');
+    select.innerHTML='<option value="" disabled selected>모델을 선택하세요</option>'+(agent==='ollama'?'':'<option value="">CLI 기본 모델</option>')+result.models.map(m=>`<option value="${esc(m.id)}">${esc(m.name)} · ${esc(m.id)}</option>`).join('');
     const input=$(`[name="model-${agent}"]`);
     if(input.value&&result.models.some(m=>m.id===input.value))select.value=input.value;
     select.disabled=false;
@@ -412,9 +413,9 @@ async function loadSettings() {
   $('#ask-model').value=config.models[config.selected]||'';
   syncProviderControls('ask');
   modelCatalogEpoch++;
-  $('#provider-settings').innerHTML=config.providers.map(p=>`<div class="provider-row"><input type="radio" id="provider-${p.id}" name="selected" value="${p.id}" ${config.selected===p.id?'checked':''} aria-label="${esc(p.name)} 기본 선택"><label class="provider-name" for="provider-${p.id}"><strong>${esc(p.name)}</strong><span class="muted">${providerStatus(p)}</span></label><div class="model-fields"><label>모델 ID<input name="model-${p.id}" value="${esc(config.models[p.id]||'')}" maxlength="150" placeholder="${modelPlaceholder(p.id)}" ${p.transport==='http'&&config.selected===p.id?'required':''}></label>${cliModelPicker(p)}</div></div>`).join('');
+  $('#provider-settings').innerHTML=config.providers.map(p=>`<div class="provider-row"><input type="radio" id="provider-${p.id}" name="selected" value="${p.id}" ${config.selected===p.id?'checked':''} aria-label="${esc(p.name)} 기본 선택"><label class="provider-name" for="provider-${p.id}"><strong>${esc(p.name)}</strong><span class="muted">${providerStatus(p)}</span></label><div class="model-fields"><label>모델 ID<input name="model-${p.id}" value="${esc(config.models[p.id]||'')}" maxlength="150" placeholder="${modelPlaceholder(p.id)}" ${['http','local_http'].includes(p.transport)&&config.selected===p.id?'required':''}></label>${cliModelPicker(p)}</div></div>`).join('');
   for(const radio of document.querySelectorAll('[name=selected]')){
-    radio.onchange=()=>{const model=$('[name="model-openrouter"]');if(model)model.required=radio.value==='openrouter';};
+    radio.onchange=()=>{for(const id of ['openrouter','ollama']){const model=$(`[name="model-${id}"]`);if(model)model.required=radio.value===id;}};
     radio.onclick=()=>loadProviderModels(radio.value);
   }
   await loadUsageRates();

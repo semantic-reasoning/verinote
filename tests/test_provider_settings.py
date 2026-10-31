@@ -32,12 +32,14 @@ class Settings(unittest.TestCase):
     def test_transport_fields_presence_only_no_http_executable_lookup(self):
         for configured in (False, True):
             self.server.credentials = Credentials(KEY if configured else '')
-            with patch('verinote.server.executable', return_value='/fake') as executable:
+            with patch('verinote.server.executable', return_value='/fake') as executable, patch('verinote.ollama.ready', return_value=True):
                 value = self.request('/api/settings')
             self.assertEqual({call.args[0] for call in executable.call_args_list}, set(CLI_PROVIDERS))
             api = next(p for p in value['providers'] if p['id']=='openrouter')
             self.assertEqual(api, {'id':'openrouter','name':'OpenRouter (API)','transport':'http','configured':configured})
-            self.assertTrue(all(p['transport']=='cli' and p['installed'] is True and 'configured' not in p for p in value['providers'] if p['id']!='openrouter'))
+            self.assertTrue(all(p['transport']=='cli' and p['installed'] is True and 'configured' not in p for p in value['providers'] if p['id'] not in ('openrouter','ollama')))
+            local = next(p for p in value['providers'] if p['id']=='ollama')
+            self.assertEqual(local, {'id':'ollama','name':'Ollama (로컬 API)','transport':'local_http','available':True})
             text=json.dumps(value); self.assertNotIn(KEY,text);self.assertNotIn(digest(KEY.encode()),text)
             self.assertNotIn('config.toml',text)
 

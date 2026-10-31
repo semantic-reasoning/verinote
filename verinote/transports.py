@@ -113,6 +113,9 @@ class HTTPAdapter(Protocol):
 
 def job_options(value):
     """Strict secret-free persisted HTTP job snapshot; legacy CLI uses null."""
+    if isinstance(value, dict) and value.get('provider') == 'ollama':
+        from .ollama import options
+        return options(value)
     required = {'adapter_contract_version', 'max_tokens', 'timeouts'}
     if isinstance(value, dict) and value.get('adapter_contract_version') == 2:
         required |= {'reasoning_max_tokens', 'answer_reserve_tokens'}

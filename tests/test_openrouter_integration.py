@@ -42,6 +42,8 @@ class Integration(unittest.TestCase):
         self.addCleanup(self.close)
         self.url = f'http://127.0.0.1:{self.server.server_port}'
         self.public = []
+        local_status = patch('verinote.ollama.ready', return_value=False)
+        local_status.start(); self.addCleanup(local_status.stop)
         # Any accidental network socket, including an unmocked provider, fails.
         real_connect = socket.socket.connect
         port = self.server.server_port
