@@ -162,6 +162,68 @@ class ThresholdRunner(unittest.TestCase):
         self.assertEqual(result['verdict'], 'inconclusive')
         self.assertNotIn('artifact_verification_failed', evaluate_saved(self.output)['reasons'])
 
+    def test_successful_repair_retains_raw_usage_and_checkpoint_evidence(self):
+        script = self.script.read_text().replace("dictionary=payload['approved_dictionary']['payload']",
+            "dictionary={k:[{a:b for a,b in r.items() if a!='quote'} for r in rows] for k,rows in payload['approved_dictionary']['payload'].items()}")
+        script = script.replace("    history.append(text);value=result(json.dumps(body))", """    if 'issues' in payload:
+        body={'repairs':[{'path':issue['path'],'quote':body[issue['path'].split('.')[0]][int(issue['path'].split('.')[1])]['quote']} for issue in payload['issues']]}
+    elif payload['offset']==0:
+        body['facts'][0]['quote']='synthetic missing quote'
+    history.append(text);value=result(json.dumps(body))""")
+        self.script.write_text(script)
+        report, result = self.run_fake(4)
+        first = report['documents'][0]
+        self.assertEqual(first['status'], 'success')
+        self.assertTrue(first['quality']['passed']); self.assertTrue(first['safety']['passed'])
+        self.assertEqual([a['repair'] for a in report['attempts']], [False, True, False, False])
+        self.assertEqual(report['budget']['pending'], 0)
+        repair = self.output/first['artifact']/'runs'/first['run_id']/'1'/'quote-repair'
+        self.assertTrue(all((repair/name).is_file() for name in ('stdout.txt', 'usage.json', 'changes.json')))
+        self.assertEqual(evaluate_saved(self.output), result)
+
+    def test_failed_extraction_publishes_no_partial_candidates(self):
+        self.script.write_text(self.script.read_text().replace(
+            "    history.append(text);value=result(json.dumps(body))",
+            "    if payload['offset']>0: body={'invalid':'shape'}\n    history.append(text);value=result(json.dumps(body))"))
+        report, result = self.run_fake()
+        self.assertEqual(len(report['attempts']), 2)
+        row = report['documents'][0]
+        self.assertEqual(row['status'], 'error')
+        with closing(sqlite3.connect(self.output/row['artifact']/'state.sqlite3')) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM items WHERE kind!='ontology'").fetchone()[0], 0)
+        self.assertEqual(report['budget']['pending'], 0)
+        self.assertTrue(all(owner.closed for owner in self.owners))
+        self.assertEqual(evaluate_saved(self.output), result)
+
+    def test_later_corruption_preserves_independently_verified_earlier_violation(self):
+        report, _ = self.run_fake(7)
+        # Construct retained evidence with a real publication violation, then damage
+        # only a later document without updating any retained index or summary.
+        first = report['documents'][0]
+        with closing(sqlite3.connect(self.output/first['artifact']/'state.sqlite3')) as db:
+            db.execute("UPDATE items SET status='approved' WHERE kind='fact'"); db.commit()
+        first['safety'] = {'complete': True, 'passed': False, 'violations': ['human_approval_contract']}
+        first['artifact_files'] = file_index(self.output/first['artifact'])
+        self.reindex(report)
+        reason = 'safety:'+first['key']
+        self.assertIn(reason, evaluate_saved(self.output)['reasons'])
+        second = report['documents'][1]
+        (self.output/second['artifact']/'state.sqlite3').write_bytes(b'damaged later evidence')
+        result = evaluate_saved(self.output)
+        self.assertIn(reason, result['reasons'])
+        self.assertTrue(result['unverified_other_records'])
+        self.assertIn('artifact_verification_failed', result['reasons'])
+        # Synthetic execution remains inconclusive even with a verified violation.
+        self.assertEqual(result['verdict'], 'inconclusive')
+
+        # A whole-root scan can fail before reaching document verification.
+        # The earlier violation must survive this corruption class as well.
+        later_db = self.output/second['artifact']/'state.sqlite3'
+        later_db.unlink(); later_db.symlink_to(self.root/'missing-database')
+        result = evaluate_saved(self.output)
+        self.assertIn(reason, result['reasons'])
+        self.assertTrue(result['unverified_other_records'])
+
     def test_unknown_cost_and_wrong_model_family_stop_admission(self):
         script = self.script.read_text()
         for name, replacement, reason in (
@@ -232,6 +294,24 @@ class ThresholdRunner(unittest.TestCase):
             self.run_fake()
         self.assertEqual(self.owners, [])
         self.assertFalse(list(self.output.rglob('usage.json')))
+
+    def test_document_index_failure_stops_and_preserves_finished_call_evidence(self):
+        failed = False
+        def indexing(root, **kwargs):
+            nonlocal failed
+            if Path(root).parent.name == 'documents' and not failed:
+                failed = True
+                raise OSError('synthetic recording failure')
+            return file_index(root, **kwargs)
+        with patch('verinote.extraction_threshold_ab_runner.file_index', side_effect=indexing):
+            report, result = self.run_fake()
+        self.assertEqual(report['status'], 'stopped')
+        self.assertEqual(len(report['documents']), 1)
+        self.assertEqual(len(report['attempts']), 3)
+        self.assertEqual(report['budget']['pending'], 0)
+        self.assertEqual(len(list(self.output.rglob('usage.json'))), 3)
+        self.assertTrue(all(owner.closed for owner in self.owners))
+        self.assertEqual(result['verdict'], 'inconclusive')
 
     def test_verified_unsafe_publication_is_not_a_successful_safety_check(self):
         original = Store.finish_run

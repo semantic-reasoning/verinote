@@ -304,9 +304,16 @@ def evaluate_saved(root):
     """No subprocesses, model calls or database writes. Ignore the saved verdict."""
     root = Path(root).resolve()
     try:
-        if _read(root/'index.json', MAX_REPORT_BYTES) != file_index(root, excluded=('index.json', 'evaluation.json')):
-            raise ValueError('artifact_hash_mismatch')
+        retained_index = _read(root/'index.json', MAX_REPORT_BYTES)
         report = _read(root/'report.json', MAX_REPORT_BYTES)
+        report_identity = {'bytes': (root/'report.json').stat().st_size, 'sha256': _hash(root/'report.json')}
+        if not isinstance(retained_index, dict) or retained_index.get('report.json') != report_identity:
+            raise ValueError('report_hash_mismatch')
+        try:
+            current_index = file_index(root, excluded=('index.json', 'evaluation.json'))
+        except (OSError, ValueError):
+            current_index = None  # A later unreadable artifact cannot erase intact earlier evidence.
+        index_mismatch = retained_index != current_index
         if (report.get('schema_version') != 2 or not isinstance(report.get('documents'), list) or not isinstance(report.get('attempts'), list)
                 or report.get('cold_boundary') != COLD_BOUNDARY or report.get('synthetic_responses') is not report['environment']['synthetic']):
             raise ValueError('measurement_contract')
@@ -320,7 +327,11 @@ def evaluate_saved(root):
             if any(type(row.get(k)) is not type(v) or row.get(k) != v for k, v in expected.items()): raise ValueError('planned_document')
             if row['artifact'] != 'documents/'+expected['key'] or row['attempt_start'] != next_attempt: raise ValueError('artifact_linkage')
             artifact = root/row['artifact']
-            if row['artifact_files'] != file_index(artifact): raise ValueError('document_hash')
+            document_index = file_index(artifact)
+            retained_document_index = {p[len(row['artifact'])+1:]: value for p, value in retained_index.items()
+                                       if p.startswith(row['artifact']+'/')}
+            if row['artifact_files'] != document_index or retained_document_index != document_index:
+                raise ValueError('document_hash')
             if (any(type(row.get(k)) not in (int, float) or not math.isfinite(row[k]) for k in ('elapsed_start', 'elapsed_end', 'elapsed_seconds'))
                     or row['elapsed_end'] < row['elapsed_start'] or row['elapsed_seconds'] != row['elapsed_end']-row['elapsed_start']
                     or row['phase'] == 'cold' and (type(row['cleanup_succeeded']) is not bool
@@ -348,7 +359,7 @@ def evaluate_saved(root):
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             invalid = True
             result['reasons'].append('budget_verification_failed')
-    if invalid:
+    if invalid or index_mismatch:
         result['reasons'].append('artifact_verification_failed'); result['unverified_other_records'] = True
         if result['verdict'] != 'rejected': result['verdict'] = 'inconclusive'
     return result
