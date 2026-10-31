@@ -28,10 +28,10 @@ class OllamaBaseline(unittest.TestCase):
         self.api = patch('verinote.ollama.request', side_effect=self.request).start(); self.addCleanup(patch.stopall)
 
     def request(self, path, payload=None, **kwargs):
-        if path == '/api/version': return {'version': benchmark.VERSION}
+        if path == '/api/version': return {'version': benchmark._profile().version}
         if path == '/api/tags':
-            digest = '0'*64 if self.mode == 'digest' and self.generation_count else benchmark.MODEL_DIGEST
-            return {'models': [{'name': benchmark.MODEL, 'digest': digest}]}
+            digest = '0'*64 if self.mode == 'digest' and self.generation_count else benchmark._profile().model_digest
+            return {'models': [{'name': benchmark._profile().model, 'digest': digest}]}
         self.assertEqual(path, '/api/generate'); self.generation_count += 1
         self.calls.append(copy.deepcopy(payload))
         data = json.loads(payload['prompt'].split('입력(JSON):\n')[1])
@@ -40,8 +40,10 @@ class OllamaBaseline(unittest.TestCase):
             value['facts'][0]['quote'] = 'not in source'
         elif 'issues' in data:
             value = {'repairs': [{'path': issue['path'], 'quote': value[issue['path'].split('.')[0]][int(issue['path'].split('.')[1])]['quote']} for issue in data['issues']]}
+        if self.mode == 'gold' and 'coverage' in value:
+            next(row for row in value['coverage'] if row['predicate'] == 'archives')['status'] = 'no_evidence'
         if self.mode == 'failure' and self.generation_count == 3: value = {}
-        response = {'model': benchmark.MODEL, 'done': True, 'done_reason': 'stop',
+        response = {'model': benchmark._profile().model, 'done': True, 'done_reason': 'stop',
                     'response': json.dumps(value, ensure_ascii=False), 'prompt_eval_count': 100, 'eval_count': 50,
                     'total_duration': 10000000, 'load_duration': 1000000,
                     'prompt_eval_duration': 2000000, 'eval_duration': 7000000}
@@ -159,7 +161,7 @@ class OllamaBaseline(unittest.TestCase):
 
     def test_time_and_request_limits_block_before_admission(self):
         clock = [0]
-        ledger = benchmark.Ledger(lambda: clock[0]); clock[0] = 3600
+        ledger = benchmark.Ledger(lambda: clock[0]); clock[0] = benchmark.LIMITS['seconds']
         with self.assertRaises(benchmark.Stopped): ledger.check()
         self.assertEqual(ledger.reason, 'time_limit')
         ledger = benchmark.Ledger()
@@ -204,19 +206,77 @@ class OllamaBaseline(unittest.TestCase):
             nonlocal charged
             value = file_index(root, **kwargs)
             if Path(root) == self.output and not charged:
-                charged = True; clock[0] += 3598
+                charged = True; clock[0] += benchmark.LIMITS['seconds']-2
             return value
         def assessing(root):
             value = original_evaluate(root); clock[0] += 7
             return value
         with patch.object(benchmark, 'file_index', side_effect=indexing), patch.object(benchmark, 'evaluate', side_effect=assessing):
             report, result = benchmark.run(self.output, synthetic=True, clock=lambda: clock[0])
-        self.assertEqual(report['budget']['elapsed_seconds'], 3605)
+        self.assertEqual(report['budget']['elapsed_seconds'], benchmark.LIMITS['seconds']+5)
         self.assertEqual(report['status'], 'stopped')
         self.assertEqual(report['stop_reason'], 'time_limit')
         self.assertIn('incomplete_baseline', result['reasons'])
         self.assertEqual(result['verdict'], 'inconclusive')
         self.assertEqual(original_evaluate(self.output), result)
+
+
+    def test_gold_failure_continues_and_latency_does_not_select_only_passes(self):
+        self.mode = 'gold'
+        report, result = self.run_fake()
+        self.assertEqual(report['status'], 'completed', report['stop_reason'])
+        self.assertEqual(self.generation_count, 46)
+        self.assertTrue(all(r['status'] == 'success' and not r['quality']['passed'] for r in report['documents']))
+        self.assertTrue(result['execution_complete'])
+        for series in result['series']:
+            self.assertEqual(series['attempted_repetitions'], 3)
+            self.assertEqual(series['service_completed_repetitions'], 3)
+            self.assertEqual(series['gold_passed_repetitions'], 0)
+            self.assertIsNotNone(series['seconds'])
+        report['synthetic_responses'] = False
+        report['environment'].update(synthetic=False, revision='a'*40, tree='b'*40)
+        atomic_json(self.output/'environment.json', report['environment']); self.reindex(report)
+        checked = benchmark.evaluate(self.output)
+        self.assertEqual(checked['verdict'], 'failed')
+        self.assertNotIn('incomplete_baseline', checked['reasons'])
+
+    def test_profile_is_pinned_across_real_worker_threads_and_restored(self):
+        token = benchmark._ACTIVE.set(benchmark.LEGACY)
+        try:
+            self.mode = 'repair'
+            report, result = self.run_fake()
+            self.assertIs(benchmark._profile(), benchmark.LEGACY)
+            self.assertEqual(report['plan']['model'], benchmark.CURRENT.model)
+            self.assertEqual(report['limits']['seconds'], 14400)
+            self.assertEqual(self.generation_count, 47)
+            self.assertEqual(benchmark.evaluate(self.output), result)
+            self.assertIs(benchmark._profile(), benchmark.LEGACY)
+            self.output = self.root/'exception'; self.mode = 'timeout'; self.generation_count = 0
+            stopped, _ = self.run_fake()
+            self.assertEqual(stopped['status'], 'stopped')
+            self.assertIs(benchmark._profile(), benchmark.LEGACY)
+        finally: benchmark._ACTIVE.reset(token)
+
+    def test_legacy_quality_stop_and_retained_actual_evidence_are_unchanged(self):
+        token = benchmark._ACTIVE.set(benchmark.LEGACY)
+        try:
+            self.mode = 'gold'
+            report, _ = benchmark._run(self.output, synthetic=True)
+            self.assertEqual(report['status'], 'stopped')
+            self.assertEqual(self.generation_count, 1)
+            self.assertEqual(report['stop_reason'], 'document_failed')
+        finally: benchmark._ACTIVE.reset(token)
+        historical = Path(__file__).resolve().parents[1]/'benchmarks/extraction/results/ollama-qwen25-7b-baseline'
+        before = file_index(historical)
+        with patch('verinote.ollama.request', side_effect=AssertionError('offline HTTP')), patch('subprocess.run', side_effect=AssertionError('offline subprocess')):
+            self.assertEqual(benchmark.evaluate(historical), json.loads((historical/'evaluation.json').read_text()))
+        self.assertEqual(before, file_index(historical))
+
+    def test_unknown_or_inconsistent_profile_is_not_interpreted(self):
+        report, _ = self.run_fake()
+        report['plan']['profile'] = 'unknown'
+        atomic_json(self.output/'plan.json', report['plan']); self.reindex(report)
+        self.assertEqual(benchmark.evaluate(self.output)['verdict'], 'inconclusive')
 
 
 if __name__ == '__main__': unittest.main()

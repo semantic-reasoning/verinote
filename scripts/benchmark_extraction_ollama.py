@@ -1,4 +1,4 @@
-"""Plan, run the explicitly authorized local baseline, or reassess retained evidence."""
+"""Plan the current model profile, run its local baseline, or reassess supported historical evidence."""
 import argparse
 import json
 import subprocess
