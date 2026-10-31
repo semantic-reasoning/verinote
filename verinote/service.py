@@ -176,7 +176,11 @@ class Service:
     def register_transport(self, agent, model, question=None, *, stage=None, max_tokens=_UNSET_TOKENS, answer_reserve_tokens=_UNSET_TOKENS):
         if agent == 'ollama':
             from .ollama import Job
-            caller = Job(self.cli, model=model)
+            snapshot = None
+            if stage == 'extract' and getattr(self.cli, 'ollama_fidelity', False):
+                from .ollama_fidelity import candidate_options
+                snapshot = candidate_options()
+            caller = Job(self.cli, snapshot, model=model)
             return caller.options, caller
         if agent != 'openrouter':
             return None, copy.copy(self.cli) if isinstance(self.cli, CLI) else self.cli

@@ -55,14 +55,14 @@ class OllamaService(unittest.TestCase):
                 else: output = {'answer': {'claims': [], 'unknowns': ['승인된 근거가 없습니다.']}}
                 return {'model': 'qwen2.5:7b', 'response': json.dumps(output), 'done': True,
                         'done_reason': 'stop', 'prompt_eval_count': 100, 'eval_count': 20}
-            cli = CLI(persistent=False); service = Service(store, root, cli)
+            cli = CLI(persistent=False, ollama_fidelity=True); service = Service(store, root, cli)
             try:
                 with patch('verinote.ollama.request', side_effect=request):
                     run = service.start(doc['id'], 'ollama', 'qwen2.5:7b', stage='ontology', expected_version=1, expected_generation=1)
                     service.pool.shutdown(wait=True)
                 self.assertEqual(store.run(run['id'])['status'], 'success', store.run(run['id'])['detail'])
             finally: service.close(); cli.close()
-            cli = CLI(persistent=False); service = Service(store, root, cli)
+            cli = CLI(persistent=False, ollama_fidelity=True); service = Service(store, root, cli)
             try:
                 result = {'model': 'qwen2.5:7b', 'response': json.dumps({'answer': {'claims': [], 'unknowns': ['승인된 근거가 없습니다.']}}),
                           'done': True, 'done_reason': 'stop', 'prompt_eval_count': 100, 'eval_count': 20}
@@ -91,3 +91,41 @@ class OllamaSettings(unittest.TestCase):
             self.assertEqual(self.request('/api/providers/ollama/models', 'POST', {})['models'], rows)
         result = self.request('/api/settings', 'PUT', {'selected': 'ollama', 'models': {'ollama': 'qwen2.5:7b'}})
         self.assertEqual(result['models']['ollama'], 'qwen2.5:7b')
+
+
+class OllamaFidelityResume(unittest.TestCase):
+    def test_candidate_restarts_instead_of_reusing_baseline_prefix(self):
+        from verinote.documents import chunks
+        case = load_case('three', DATA_ROOT/'v2')
+        outputs = {offset: row['output'] for (offset, _), row in zip(chunks(case['source']), ideal_outputs(case, contract_version=2), strict=True)}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); store = Store(root/'state.sqlite3')
+            doc = store.register('fixture', 'synthetic.md', case['source'].encode(), case['source'])
+            seed = store.create_run(doc['id'], 'ollama', 'qwen2.5:7b', 'ontology', 1, 1)
+            store.run_status(seed['id'], 'running'); store.finish_run(seed['id'], dictionary=case['dictionary'])
+            item = next(i for i in store.document(doc['id'])['items'] if i['kind'] == 'ontology')
+            store.review(item['id'], item['revision'], 'approved', 'Synthetic fixture', 'Test only')
+            calls = []; first = True
+            def request(path, payload=None, **kwargs):
+                if path == '/api/tags': return {'models': [{'name': 'qwen2.5:7b', 'digest': 'a'*64}]}
+                data = json.loads(payload['prompt'].split('입력(JSON):\n')[1]); offset = data['offset']; calls.append(offset)
+                if first and offset == 8000: raise TimeoutError('test baseline interruption')
+                return {'model': 'qwen2.5:7b', 'response': json.dumps(outputs[offset]), 'done': True,
+                        'done_reason': 'stop', 'prompt_eval_count': 100, 'eval_count': 20}
+            with patch('verinote.ollama.request', side_effect=request):
+                for enabled in (False, True):
+                    cli = CLI(persistent=False, ollama_fidelity=enabled); service = Service(store, root, cli)
+                    try:
+                        run = service.start(doc['id'], 'ollama', 'qwen2.5:7b', expected_version=1, expected_generation=1)
+                        service.pool.shutdown(wait=True)
+                        saved = store.run(run['id'])
+                        self.assertEqual(saved['status'], 'success' if enabled else 'error', saved['detail'])
+                        self.assertEqual(saved['execution_options']['schema_version'], 2 if enabled else 1)
+                        if enabled:
+                            checkpoint = json.loads((root/'runs'/run['id']/'extraction-checkpoint.json').read_text())
+                            self.assertEqual(checkpoint['contract']['execution_options'], saved['execution_options'])
+                            for path in (root/'runs'/run['id']).glob('*/prompt.txt'):
+                                self.assertTrue((path.parent/'original-prompt.txt').exists())
+                    finally: service.close(); cli.close()
+                    first = False
+            self.assertEqual(calls, [0, 8000, 0, 8000, 16000])

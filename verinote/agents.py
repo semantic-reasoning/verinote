@@ -122,7 +122,7 @@ def parse_response(agent, response):
 
 class CLI:
     def __init__(self, timeout=None, max_output=1024 * 1024, rates=None, *,
-                 http_adapter=None, credentials=None, sink=None, options=None, persistent=True):
+                 http_adapter=None, credentials=None, sink=None, options=None, persistent=True, ollama_fidelity=False):
         self.timeout, self.max_output = timeout, max_output
         self.rates: Callable[[], Any] = rates or (lambda: {})
         self.http_adapter, self._credentials, self.sink = http_adapter, credentials, sink
@@ -132,6 +132,8 @@ class CLI:
             raise TypeError('options는 ExecutionOptions여야 합니다.')
         if options is not None and timeout is not None and timeout != options.timeout:
             raise ValueError('고정 옵션과 timeout override가 일치해야 합니다.')
+        if type(ollama_fidelity) is not bool: raise TypeError('ollama_fidelity는 bool이어야 합니다.')
+        self.ollama_fidelity = ollama_fidelity
         self.options = options
         from .claude_worker import ExtractionPool, Manager
         self._claude: Manager | ExtractionPool | None = Manager() if persistent else None
