@@ -1,0 +1,1781 @@
+{
+  "schema_version": 1,
+  "samples": [
+    {
+      "mode": "oneshot",
+      "case_id": "short",
+      "logical_repetition": 1,
+      "local_repetition": 1,
+      "series": "initial",
+      "report": "750/oneshot/report.json",
+      "status": "success",
+      "benchmark_seconds": 19.79198408301454,
+      "service_seconds": 19.770066791,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "requests": 1,
+      "tokens": 7896,
+      "reported_usd": 0.0324989,
+      "process_observations": [
+        "unknown"
+      ],
+      "request_seconds": 19.760036500000002
+    },
+    {
+      "mode": "oneshot",
+      "case_id": "long",
+      "logical_repetition": 1,
+      "local_repetition": 1,
+      "series": "initial",
+      "report": "750/oneshot/report.json",
+      "status": "success",
+      "benchmark_seconds": 32.780897750053555,
+      "service_seconds": 32.752902709,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "requests": 2,
+      "tokens": 18023,
+      "reported_usd": 0.0708858,
+      "process_observations": [
+        "unknown",
+        "unknown"
+      ],
+      "request_seconds": 32.741080708
+    },
+    {
+      "mode": "oneshot",
+      "case_id": "dense",
+      "logical_repetition": 1,
+      "local_repetition": 1,
+      "series": "initial",
+      "report": "750/oneshot/report.json",
+      "status": "success",
+      "benchmark_seconds": 17.638701166957617,
+      "service_seconds": 17.611469708,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 7,
+        "denominator": 7,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 7,
+        "denominator": 7,
+        "reason": null
+      },
+      "requests": 1,
+      "tokens": 8094,
+      "reported_usd": 0.0338009,
+      "process_observations": [
+        "unknown"
+      ],
+      "request_seconds": 17.598137750000003
+    },
+    {
+      "mode": "oneshot",
+      "case_id": "none",
+      "logical_repetition": 1,
+      "local_repetition": 1,
+      "series": "initial",
+      "report": "750/oneshot/report.json",
+      "status": "success",
+      "benchmark_seconds": 16.235822291928343,
+      "service_seconds": 16.203613917,
+      "quality_passed": true,
+      "recall": {
+        "value": null,
+        "numerator": 0,
+        "denominator": 0,
+        "reason": "not_applicable"
+      },
+      "precision": {
+        "value": null,
+        "numerator": 0,
+        "denominator": 0,
+        "reason": "not_applicable"
+      },
+      "requests": 1,
+      "tokens": 7518,
+      "reported_usd": 0.0291989,
+      "process_observations": [
+        "unknown"
+      ],
+      "request_seconds": 16.195107417
+    },
+    {
+      "mode": "oneshot",
+      "case_id": "boundary",
+      "logical_repetition": 1,
+      "local_repetition": 1,
+      "series": "initial",
+      "report": "750/oneshot/report.json",
+      "status": "success",
+      "benchmark_seconds": 37.77681541698985,
+      "service_seconds": 37.757595916,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 1,
+        "denominator": 1,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 1,
+        "denominator": 1,
+        "reason": null
+      },
+      "requests": 2,
+      "tokens": 18710,
+      "reported_usd": 0.0779358,
+      "process_observations": [
+        "unknown",
+        "unknown"
+      ],
+      "request_seconds": 37.746576167
+    },
+    {
+      "mode": "oneshot",
+      "case_id": "short",
+      "logical_repetition": 2,
+      "local_repetition": 2,
+      "series": "initial",
+      "report": "750/oneshot/report.json",
+      "status": "success",
+      "benchmark_seconds": 17.39605716697406,
+      "service_seconds": 17.373922542,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "requests": 1,
+      "tokens": 7894,
+      "reported_usd": 0.0324309,
+      "process_observations": [
+        "unknown"
+      ],
+      "request_seconds": 17.365358708
+    },
+    {
+      "mode": "oneshot",
+      "case_id": "long",
+      "logical_repetition": 2,
+      "local_repetition": 2,
+      "series": "initial",
+      "report": "750/oneshot/report.json",
+      "status": "success",
+      "benchmark_seconds": 33.574352958006784,
+      "service_seconds": 33.545950834,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "requests": 2,
+      "tokens": 18072,
+      "reported_usd": 0.0713038,
+      "process_observations": [
+        "unknown",
+        "unknown"
+      ],
+      "request_seconds": 33.529729376000006
+    },
+    {
+      "mode": "oneshot",
+      "case_id": "dense",
+      "logical_repetition": 2,
+      "local_repetition": 2,
+      "series": "initial",
+      "report": "750/oneshot/report.json",
+      "status": "success",
+      "benchmark_seconds": 17.806691374978982,
+      "service_seconds": 17.789228667,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 7,
+        "denominator": 7,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 7,
+        "denominator": 7,
+        "reason": null
+      },
+      "requests": 1,
+      "tokens": 8091,
+      "reported_usd": 0.0337829,
+      "process_observations": [
+        "unknown"
+      ],
+      "request_seconds": 17.779506291
+    },
+    {
+      "mode": "oneshot",
+      "case_id": "none",
+      "logical_repetition": 2,
+      "local_repetition": 2,
+      "series": "initial",
+      "report": "750/oneshot/report.json",
+      "status": "success",
+      "benchmark_seconds": 16.23718833399471,
+      "service_seconds": 16.21882625,
+      "quality_passed": true,
+      "recall": {
+        "value": null,
+        "numerator": 0,
+        "denominator": 0,
+        "reason": "not_applicable"
+      },
+      "precision": {
+        "value": null,
+        "numerator": 0,
+        "denominator": 0,
+        "reason": "not_applicable"
+      },
+      "requests": 1,
+      "tokens": 7503,
+      "reported_usd": 0.0290609,
+      "process_observations": [
+        "unknown"
+      ],
+      "request_seconds": 16.209547959
+    },
+    {
+      "mode": "document",
+      "case_id": "short",
+      "logical_repetition": 1,
+      "local_repetition": 1,
+      "series": "initial",
+      "report": "750/document/report.json",
+      "status": "success",
+      "benchmark_seconds": 4.827856291085482,
+      "service_seconds": 4.79273725,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "requests": 1,
+      "tokens": 5522,
+      "reported_usd": 0.022702899999999998,
+      "process_observations": [
+        "started"
+      ],
+      "request_seconds": 4.785249292
+    },
+    {
+      "mode": "document",
+      "case_id": "long",
+      "logical_repetition": 1,
+      "local_repetition": 1,
+      "series": "initial",
+      "report": "750/document/report.json",
+      "status": "success",
+      "benchmark_seconds": 8.307926999987103,
+      "service_seconds": 8.270063834,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "requests": 2,
+      "tokens": 13442,
+      "reported_usd": 0.046637700000000004,
+      "process_observations": [
+        "started",
+        "reused"
+      ],
+      "request_seconds": 8.253835292
+    },
+    {
+      "mode": "document",
+      "case_id": "dense",
+      "logical_repetition": 1,
+      "local_repetition": 1,
+      "series": "initial",
+      "report": "750/document/report.json",
+      "status": "success",
+      "benchmark_seconds": 5.321589000057429,
+      "service_seconds": 5.289854459,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 7,
+        "denominator": 7,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 7,
+        "denominator": 7,
+        "reason": null
+      },
+      "requests": 1,
+      "tokens": 5771,
+      "reported_usd": 0.0245629,
+      "process_observations": [
+        "started"
+      ],
+      "request_seconds": 5.280773667
+    },
+    {
+      "mode": "document",
+      "case_id": "none",
+      "logical_repetition": 1,
+      "local_repetition": 1,
+      "series": "initial",
+      "report": "750/document/report.json",
+      "status": "success",
+      "benchmark_seconds": 3.6648512500105426,
+      "service_seconds": 3.634825875,
+      "quality_passed": true,
+      "recall": {
+        "value": null,
+        "numerator": 0,
+        "denominator": 0,
+        "reason": "not_applicable"
+      },
+      "precision": {
+        "value": null,
+        "numerator": 0,
+        "denominator": 0,
+        "reason": "not_applicable"
+      },
+      "requests": 1,
+      "tokens": 5152,
+      "reported_usd": 0.0195189,
+      "process_observations": [
+        "started"
+      ],
+      "request_seconds": 3.627256
+    },
+    {
+      "mode": "document",
+      "case_id": "boundary",
+      "logical_repetition": 1,
+      "local_repetition": 1,
+      "series": "initial",
+      "report": "750/document/report.json",
+      "status": "success",
+      "benchmark_seconds": 7.066350874956697,
+      "service_seconds": 7.026180792,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 1,
+        "denominator": 1,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 1,
+        "denominator": 1,
+        "reason": null
+      },
+      "requests": 2,
+      "tokens": 13380,
+      "reported_usd": 0.0462898,
+      "process_observations": [
+        "started",
+        "reused"
+      ],
+      "request_seconds": 7.011323
+    },
+    {
+      "mode": "document",
+      "case_id": "short",
+      "logical_repetition": 2,
+      "local_repetition": 2,
+      "series": "initial",
+      "report": "750/document/report.json",
+      "status": "success",
+      "benchmark_seconds": 5.636372333043255,
+      "service_seconds": 5.595006375,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "requests": 1,
+      "tokens": 5608,
+      "reported_usd": 0.0235989,
+      "process_observations": [
+        "started"
+      ],
+      "request_seconds": 5.5856843750000005
+    },
+    {
+      "mode": "document",
+      "case_id": "long",
+      "logical_repetition": 2,
+      "local_repetition": 2,
+      "series": "initial",
+      "report": "750/document/report.json",
+      "status": "success",
+      "benchmark_seconds": 9.5845074999379,
+      "service_seconds": 9.556014,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "requests": 2,
+      "tokens": 13403,
+      "reported_usd": 0.0462558,
+      "process_observations": [
+        "started",
+        "reused"
+      ],
+      "request_seconds": 9.539581541
+    },
+    {
+      "mode": "document",
+      "case_id": "dense",
+      "logical_repetition": 2,
+      "local_repetition": 2,
+      "series": "initial",
+      "report": "750/document/report.json",
+      "status": "success",
+      "benchmark_seconds": 5.941319166915491,
+      "service_seconds": 5.909439667,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 7,
+        "denominator": 7,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 7,
+        "denominator": 7,
+        "reason": null
+      },
+      "requests": 1,
+      "tokens": 5774,
+      "reported_usd": 0.024586900000000002,
+      "process_observations": [
+        "started"
+      ],
+      "request_seconds": 5.899983417
+    },
+    {
+      "mode": "document",
+      "case_id": "none",
+      "logical_repetition": 2,
+      "local_repetition": 2,
+      "series": "initial",
+      "report": "750/document/report.json",
+      "status": "success",
+      "benchmark_seconds": 3.8310606670565903,
+      "service_seconds": 3.798610167,
+      "quality_passed": true,
+      "recall": {
+        "value": null,
+        "numerator": 0,
+        "denominator": 0,
+        "reason": "not_applicable"
+      },
+      "precision": {
+        "value": null,
+        "numerator": 0,
+        "denominator": 0,
+        "reason": "not_applicable"
+      },
+      "requests": 1,
+      "tokens": 5141,
+      "reported_usd": 0.0194029,
+      "process_observations": [
+        "started"
+      ],
+      "request_seconds": 3.7897240410000004
+    },
+    {
+      "mode": "document",
+      "case_id": "boundary",
+      "logical_repetition": 2,
+      "local_repetition": 2,
+      "series": "initial",
+      "report": "750/document/report.json",
+      "status": "success",
+      "benchmark_seconds": 7.959625417017378,
+      "service_seconds": 7.923182833,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 1,
+        "denominator": 1,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 1,
+        "denominator": 1,
+        "reason": null
+      },
+      "requests": 2,
+      "tokens": 13447,
+      "reported_usd": 0.0470276,
+      "process_observations": [
+        "started",
+        "reused"
+      ],
+      "request_seconds": 7.908006042
+    },
+    {
+      "mode": "document",
+      "case_id": "short",
+      "logical_repetition": 3,
+      "local_repetition": 3,
+      "series": "initial",
+      "report": "750/document/report.json",
+      "status": "success",
+      "benchmark_seconds": 5.187897625030018,
+      "service_seconds": 5.145998875,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "requests": 1,
+      "tokens": 5564,
+      "reported_usd": 0.0231469,
+      "process_observations": [
+        "started"
+      ],
+      "request_seconds": 5.136744667
+    },
+    {
+      "mode": "batch",
+      "case_id": "short",
+      "logical_repetition": 1,
+      "local_repetition": 1,
+      "series": "initial",
+      "report": "750/batch/report.json",
+      "status": "success",
+      "benchmark_seconds": 4.812538166996092,
+      "service_seconds": 4.784465958,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "requests": 1,
+      "tokens": 5611,
+      "reported_usd": 0.0236349,
+      "process_observations": [
+        "started"
+      ],
+      "request_seconds": 4.776688583
+    },
+    {
+      "mode": "batch",
+      "case_id": "long",
+      "logical_repetition": 1,
+      "local_repetition": 1,
+      "series": "initial",
+      "report": "750/batch/report.json",
+      "status": "success",
+      "benchmark_seconds": 6.61273070902098,
+      "service_seconds": 6.588194708,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "requests": 2,
+      "tokens": 13389,
+      "reported_usd": 0.039809800000000006,
+      "process_observations": [
+        "reused",
+        "reused"
+      ],
+      "request_seconds": 6.571705875
+    },
+    {
+      "mode": "batch",
+      "case_id": "dense",
+      "logical_repetition": 1,
+      "local_repetition": 1,
+      "series": "initial",
+      "report": "750/batch/report.json",
+      "status": "success",
+      "benchmark_seconds": 4.697917459066957,
+      "service_seconds": 4.668679916,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 7,
+        "denominator": 7,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 7,
+        "denominator": 7,
+        "reason": null
+      },
+      "requests": 1,
+      "tokens": 5821,
+      "reported_usd": 0.0187209,
+      "process_observations": [
+        "reused"
+      ],
+      "request_seconds": 4.654766458
+    },
+    {
+      "mode": "batch",
+      "case_id": "none",
+      "logical_repetition": 1,
+      "local_repetition": 1,
+      "series": "initial",
+      "report": "750/batch/report.json",
+      "status": "success",
+      "benchmark_seconds": 2.6610712080728263,
+      "service_seconds": 2.631159917,
+      "quality_passed": true,
+      "recall": {
+        "value": null,
+        "numerator": 0,
+        "denominator": 0,
+        "reason": "not_applicable"
+      },
+      "precision": {
+        "value": null,
+        "numerator": 0,
+        "denominator": 0,
+        "reason": "not_applicable"
+      },
+      "requests": 1,
+      "tokens": 5151,
+      "reported_usd": 0.013184900000000001,
+      "process_observations": [
+        "reused"
+      ],
+      "request_seconds": 2.620242375
+    },
+    {
+      "mode": "batch",
+      "case_id": "boundary",
+      "logical_repetition": 1,
+      "local_repetition": 1,
+      "series": "initial",
+      "report": "750/batch/report.json",
+      "status": "success",
+      "benchmark_seconds": 6.2542871669866145,
+      "service_seconds": 6.234870542,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 1,
+        "denominator": 1,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 1,
+        "denominator": 1,
+        "reason": null
+      },
+      "requests": 2,
+      "tokens": 13294,
+      "reported_usd": 0.0391118,
+      "process_observations": [
+        "reused",
+        "reused"
+      ],
+      "request_seconds": 6.220171667
+    },
+    {
+      "mode": "batch",
+      "case_id": "short",
+      "logical_repetition": 2,
+      "local_repetition": 2,
+      "series": "initial",
+      "report": "750/batch/report.json",
+      "status": "success",
+      "benchmark_seconds": 4.551586290937848,
+      "service_seconds": 4.521014,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "requests": 1,
+      "tokens": 5609,
+      "reported_usd": 0.0172969,
+      "process_observations": [
+        "reused"
+      ],
+      "request_seconds": 4.508613625000001
+    },
+    {
+      "mode": "batch",
+      "case_id": "long",
+      "logical_repetition": 2,
+      "local_repetition": 2,
+      "series": "initial",
+      "report": "750/batch/report.json",
+      "status": "success",
+      "benchmark_seconds": 5.993038665968925,
+      "service_seconds": 5.964481459,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "requests": 2,
+      "tokens": 13381,
+      "reported_usd": 0.0397058,
+      "process_observations": [
+        "reused",
+        "reused"
+      ],
+      "request_seconds": 5.946665124999999
+    },
+    {
+      "mode": "batch",
+      "case_id": "dense",
+      "logical_repetition": 2,
+      "local_repetition": 2,
+      "series": "initial",
+      "report": "750/batch/report.json",
+      "status": "success",
+      "benchmark_seconds": 4.549032874987461,
+      "service_seconds": 4.514102958,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 7,
+        "denominator": 7,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 7,
+        "denominator": 7,
+        "reason": null
+      },
+      "requests": 1,
+      "tokens": 5758,
+      "reported_usd": 0.018120900000000002,
+      "process_observations": [
+        "reused"
+      ],
+      "request_seconds": 4.500959625
+    },
+    {
+      "mode": "batch",
+      "case_id": "none",
+      "logical_repetition": 2,
+      "local_repetition": 2,
+      "series": "initial",
+      "report": "750/batch/report.json",
+      "status": "success",
+      "benchmark_seconds": 2.712815082981251,
+      "service_seconds": 2.682443458,
+      "quality_passed": true,
+      "recall": {
+        "value": null,
+        "numerator": 0,
+        "denominator": 0,
+        "reason": "not_applicable"
+      },
+      "precision": {
+        "value": null,
+        "numerator": 0,
+        "denominator": 0,
+        "reason": "not_applicable"
+      },
+      "requests": 1,
+      "tokens": 5151,
+      "reported_usd": 0.0131789,
+      "process_observations": [
+        "reused"
+      ],
+      "request_seconds": 2.6704619160000003
+    },
+    {
+      "mode": "batch",
+      "case_id": "boundary",
+      "logical_repetition": 2,
+      "local_repetition": 2,
+      "series": "initial",
+      "report": "750/batch/report.json",
+      "status": "success",
+      "benchmark_seconds": 7.150365417008288,
+      "service_seconds": 7.123202208,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 1,
+        "denominator": 1,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 1,
+        "denominator": 1,
+        "reason": null
+      },
+      "requests": 2,
+      "tokens": 13411,
+      "reported_usd": 0.040293800000000005,
+      "process_observations": [
+        "reused",
+        "reused"
+      ],
+      "request_seconds": 7.1048864169999995
+    },
+    {
+      "mode": "batch",
+      "case_id": "short",
+      "logical_repetition": 3,
+      "local_repetition": 3,
+      "series": "initial",
+      "report": "750/batch/report.json",
+      "status": "success",
+      "benchmark_seconds": 3.7205153750255704,
+      "service_seconds": 3.691817916,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "requests": 1,
+      "tokens": 5452,
+      "reported_usd": 0.0157089,
+      "process_observations": [
+        "reused"
+      ],
+      "request_seconds": 3.6798045
+    },
+    {
+      "mode": "oneshot",
+      "case_id": "boundary",
+      "logical_repetition": 2,
+      "local_repetition": 1,
+      "series": "supplement",
+      "report": "750-supplement/oneshot-boundary-2/report.json",
+      "status": "success",
+      "benchmark_seconds": 38.837663499987684,
+      "service_seconds": 38.805194542,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 1,
+        "denominator": 1,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 1,
+        "denominator": 1,
+        "reason": null
+      },
+      "requests": 2,
+      "tokens": 18687,
+      "reported_usd": 0.0776458,
+      "process_observations": [
+        "unknown",
+        "unknown"
+      ],
+      "request_seconds": 38.793650917
+    },
+    {
+      "mode": "oneshot",
+      "case_id": "short",
+      "logical_repetition": 3,
+      "local_repetition": 1,
+      "series": "supplement",
+      "report": "750-supplement/oneshot-3/report.json",
+      "status": "success",
+      "benchmark_seconds": 17.620763959013857,
+      "service_seconds": 17.590361417,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "requests": 1,
+      "tokens": 7962,
+      "reported_usd": 0.0331169,
+      "process_observations": [
+        "unknown"
+      ],
+      "request_seconds": 17.582278666
+    },
+    {
+      "mode": "oneshot",
+      "case_id": "long",
+      "logical_repetition": 3,
+      "local_repetition": 1,
+      "series": "supplement",
+      "report": "750-supplement/oneshot-3/report.json",
+      "status": "success",
+      "benchmark_seconds": 33.02762775006704,
+      "service_seconds": 33.006671417,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "requests": 2,
+      "tokens": 18047,
+      "reported_usd": 0.0709698,
+      "process_observations": [
+        "unknown",
+        "unknown"
+      ],
+      "request_seconds": 32.994293166
+    },
+    {
+      "mode": "oneshot",
+      "case_id": "dense",
+      "logical_repetition": 3,
+      "local_repetition": 1,
+      "series": "supplement",
+      "report": "750-supplement/oneshot-3/report.json",
+      "status": "success",
+      "benchmark_seconds": 17.698940625065006,
+      "service_seconds": 17.67726225,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 7,
+        "denominator": 7,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 7,
+        "denominator": 7,
+        "reason": null
+      },
+      "requests": 1,
+      "tokens": 8080,
+      "reported_usd": 0.0336909,
+      "process_observations": [
+        "unknown"
+      ],
+      "request_seconds": 17.66958775
+    },
+    {
+      "mode": "oneshot",
+      "case_id": "none",
+      "logical_repetition": 3,
+      "local_repetition": 1,
+      "series": "supplement",
+      "report": "750-supplement/oneshot-3/report.json",
+      "status": "success",
+      "benchmark_seconds": 15.616318583022803,
+      "service_seconds": 15.597354834,
+      "quality_passed": true,
+      "recall": {
+        "value": null,
+        "numerator": 0,
+        "denominator": 0,
+        "reason": "not_applicable"
+      },
+      "precision": {
+        "value": null,
+        "numerator": 0,
+        "denominator": 0,
+        "reason": "not_applicable"
+      },
+      "requests": 1,
+      "tokens": 7479,
+      "reported_usd": 0.0288149,
+      "process_observations": [
+        "unknown"
+      ],
+      "request_seconds": 15.588015042
+    },
+    {
+      "mode": "oneshot",
+      "case_id": "boundary",
+      "logical_repetition": 3,
+      "local_repetition": 1,
+      "series": "supplement",
+      "report": "750-supplement/oneshot-3/report.json",
+      "status": "success",
+      "benchmark_seconds": 35.98475695808884,
+      "service_seconds": 35.960661917,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 1,
+        "denominator": 1,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 1,
+        "denominator": 1,
+        "reason": null
+      },
+      "requests": 2,
+      "tokens": 18598,
+      "reported_usd": 0.0768038,
+      "process_observations": [
+        "unknown",
+        "unknown"
+      ],
+      "request_seconds": 35.94701275
+    },
+    {
+      "mode": "document",
+      "case_id": "long",
+      "logical_repetition": 3,
+      "local_repetition": 1,
+      "series": "supplement",
+      "report": "750-supplement/document-3/report.json",
+      "status": "success",
+      "benchmark_seconds": 6.364404833060689,
+      "service_seconds": 6.33245525,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "requests": 2,
+      "tokens": 13382,
+      "reported_usd": 0.0460818,
+      "process_observations": [
+        "started",
+        "reused"
+      ],
+      "request_seconds": 6.319868291000001
+    },
+    {
+      "mode": "document",
+      "case_id": "dense",
+      "logical_repetition": 3,
+      "local_repetition": 1,
+      "series": "supplement",
+      "report": "750-supplement/document-3/report.json",
+      "status": "success",
+      "benchmark_seconds": 5.383893249905668,
+      "service_seconds": 5.348520166,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 7,
+        "denominator": 7,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 7,
+        "denominator": 7,
+        "reason": null
+      },
+      "requests": 1,
+      "tokens": 5762,
+      "reported_usd": 0.0244669,
+      "process_observations": [
+        "started"
+      ],
+      "request_seconds": 5.341870458
+    },
+    {
+      "mode": "document",
+      "case_id": "none",
+      "logical_repetition": 3,
+      "local_repetition": 1,
+      "series": "supplement",
+      "report": "750-supplement/document-3/report.json",
+      "status": "success",
+      "benchmark_seconds": 3.2843397080432624,
+      "service_seconds": 3.258446833,
+      "quality_passed": true,
+      "recall": {
+        "value": null,
+        "numerator": 0,
+        "denominator": 0,
+        "reason": "not_applicable"
+      },
+      "precision": {
+        "value": null,
+        "numerator": 0,
+        "denominator": 0,
+        "reason": "not_applicable"
+      },
+      "requests": 1,
+      "tokens": 5161,
+      "reported_usd": 0.0196029,
+      "process_observations": [
+        "started"
+      ],
+      "request_seconds": 3.251997334
+    },
+    {
+      "mode": "document",
+      "case_id": "boundary",
+      "logical_repetition": 3,
+      "local_repetition": 1,
+      "series": "supplement",
+      "report": "750-supplement/document-3/report.json",
+      "status": "success",
+      "benchmark_seconds": 7.5429581250064075,
+      "service_seconds": 7.520038042,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 1,
+        "denominator": 1,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 1,
+        "denominator": 1,
+        "reason": null
+      },
+      "requests": 2,
+      "tokens": 13392,
+      "reported_usd": 0.0464896,
+      "process_observations": [
+        "started",
+        "reused"
+      ],
+      "request_seconds": 7.509729666
+    },
+    {
+      "mode": "batch",
+      "case_id": "long",
+      "logical_repetition": 3,
+      "local_repetition": 1,
+      "series": "supplement",
+      "report": "750-supplement/batch-3/report.json",
+      "status": "success",
+      "benchmark_seconds": 7.318075290997513,
+      "service_seconds": 7.290884792,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 2,
+        "denominator": 2,
+        "reason": null
+      },
+      "requests": 2,
+      "tokens": 13394,
+      "reported_usd": 0.046177800000000005,
+      "process_observations": [
+        "started",
+        "reused"
+      ],
+      "request_seconds": 7.279657624
+    },
+    {
+      "mode": "batch",
+      "case_id": "dense",
+      "logical_repetition": 3,
+      "local_repetition": 1,
+      "series": "supplement",
+      "report": "750-supplement/batch-3/report.json",
+      "status": "success",
+      "benchmark_seconds": 4.309688625042327,
+      "service_seconds": 4.282600292,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 7,
+        "denominator": 7,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 7,
+        "denominator": 7,
+        "reason": null
+      },
+      "requests": 1,
+      "tokens": 5764,
+      "reported_usd": 0.018150899999999998,
+      "process_observations": [
+        "reused"
+      ],
+      "request_seconds": 4.274385
+    },
+    {
+      "mode": "batch",
+      "case_id": "none",
+      "logical_repetition": 3,
+      "local_repetition": 1,
+      "series": "supplement",
+      "report": "750-supplement/batch-3/report.json",
+      "status": "success",
+      "benchmark_seconds": 2.542538124951534,
+      "service_seconds": 2.514769708,
+      "quality_passed": true,
+      "recall": {
+        "value": null,
+        "numerator": 0,
+        "denominator": 0,
+        "reason": "not_applicable"
+      },
+      "precision": {
+        "value": null,
+        "numerator": 0,
+        "denominator": 0,
+        "reason": "not_applicable"
+      },
+      "requests": 1,
+      "tokens": 5139,
+      "reported_usd": 0.013076899999999999,
+      "process_observations": [
+        "reused"
+      ],
+      "request_seconds": 2.506541666
+    },
+    {
+      "mode": "batch",
+      "case_id": "boundary",
+      "logical_repetition": 3,
+      "local_repetition": 1,
+      "series": "supplement",
+      "report": "750-supplement/batch-3/report.json",
+      "status": "success",
+      "benchmark_seconds": 7.388612500042655,
+      "service_seconds": 7.363355375,
+      "quality_passed": true,
+      "recall": {
+        "value": 1.0,
+        "numerator": 1,
+        "denominator": 1,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 1,
+        "denominator": 1,
+        "reason": null
+      },
+      "requests": 2,
+      "tokens": 13540,
+      "reported_usd": 0.041547799999999996,
+      "process_observations": [
+        "reused",
+        "reused"
+      ],
+      "request_seconds": 7.351783458
+    }
+  ],
+  "partial_or_failed_samples": [
+    {
+      "mode": "document",
+      "case_id": "long",
+      "logical_repetition": 3,
+      "local_repetition": 3,
+      "series": "initial",
+      "report": "750/document/report.json",
+      "status": "error",
+      "benchmark_seconds": 3.6347687089582905,
+      "service_seconds": 3.597008542,
+      "quality_passed": false,
+      "recall": {
+        "value": 0.5,
+        "numerator": 1,
+        "denominator": 2,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 1,
+        "denominator": 1,
+        "reason": null
+      },
+      "requests": 1,
+      "tokens": 8089,
+      "reported_usd": 0.0316869,
+      "process_observations": [
+        "started"
+      ],
+      "request_seconds": 3.5863761249999997
+    },
+    {
+      "mode": "batch",
+      "case_id": "long",
+      "logical_repetition": 3,
+      "local_repetition": 3,
+      "series": "initial",
+      "report": "750/batch/report.json",
+      "status": "error",
+      "benchmark_seconds": 2.7586195000912994,
+      "service_seconds": 2.726817959,
+      "quality_passed": false,
+      "recall": {
+        "value": 0.5,
+        "numerator": 1,
+        "denominator": 2,
+        "reason": null
+      },
+      "precision": {
+        "value": 1.0,
+        "numerator": 1,
+        "denominator": 1,
+        "reason": null
+      },
+      "requests": 1,
+      "tokens": 8050,
+      "reported_usd": 0.0249729,
+      "process_observations": [
+        "reused"
+      ],
+      "request_seconds": 2.712557917
+    }
+  ],
+  "modes": {
+    "oneshot": {
+      "successful_documents": 15,
+      "successful_cost_usd": 0.7319409,
+      "successful_tokens": 180654,
+      "request_fraction": 0.9995616491623937,
+      "cases": {
+        "short": {
+          "count": 3,
+          "service_seconds": [
+            19.770066791,
+            17.373922542,
+            17.590361417
+          ],
+          "service_median": 17.590361417,
+          "benchmark_median": 17.620763959013857,
+          "service_min": 17.373922542,
+          "service_max": 19.770066791,
+          "service_population_stddev": 1.082151589610641,
+          "series": [
+            "initial",
+            "initial",
+            "supplement"
+          ]
+        },
+        "long": {
+          "count": 3,
+          "service_seconds": [
+            32.752902709,
+            33.545950834,
+            33.006671417
+          ],
+          "service_median": 33.006671417,
+          "benchmark_median": 33.02762775006704,
+          "service_min": 32.752902709,
+          "service_max": 33.545950834,
+          "service_population_stddev": 0.3306804727168036,
+          "series": [
+            "initial",
+            "initial",
+            "supplement"
+          ]
+        },
+        "dense": {
+          "count": 3,
+          "service_seconds": [
+            17.611469708,
+            17.789228667,
+            17.67726225
+          ],
+          "service_median": 17.67726225,
+          "benchmark_median": 17.698940625065006,
+          "service_min": 17.611469708,
+          "service_max": 17.789228667,
+          "service_population_stddev": 0.07338133627640893,
+          "series": [
+            "initial",
+            "initial",
+            "supplement"
+          ]
+        },
+        "none": {
+          "count": 3,
+          "service_seconds": [
+            16.203613917,
+            16.21882625,
+            15.597354834
+          ],
+          "service_median": 16.203613917,
+          "benchmark_median": 16.235822291928343,
+          "service_min": 15.597354834,
+          "service_max": 16.21882625,
+          "service_population_stddev": 0.2894454874219447,
+          "series": [
+            "initial",
+            "initial",
+            "supplement"
+          ]
+        },
+        "boundary": {
+          "count": 3,
+          "service_seconds": [
+            37.757595916,
+            38.805194542,
+            35.960661917
+          ],
+          "service_median": 37.757595916,
+          "benchmark_median": 37.77681541698985,
+          "service_min": 35.960661917,
+          "service_max": 38.805194542,
+          "service_population_stddev": 1.1746299905667033,
+          "series": [
+            "initial",
+            "supplement",
+            "supplement"
+          ]
+        }
+      }
+    },
+    "document": {
+      "successful_documents": 15,
+      "successful_cost_usd": 0.4803724,
+      "successful_tokens": 129901,
+      "request_fraction": 0.9982131445289297,
+      "cases": {
+        "short": {
+          "count": 3,
+          "service_seconds": [
+            4.79273725,
+            5.595006375,
+            5.145998875
+          ],
+          "service_median": 5.145998875,
+          "benchmark_median": 5.187897625030018,
+          "service_min": 4.79273725,
+          "service_max": 5.595006375,
+          "service_population_stddev": 0.32830156524522036,
+          "series": [
+            "initial",
+            "initial",
+            "initial"
+          ]
+        },
+        "long": {
+          "count": 3,
+          "service_seconds": [
+            8.270063834,
+            9.556014,
+            6.33245525
+          ],
+          "service_median": 8.270063834,
+          "benchmark_median": 8.307926999987103,
+          "service_min": 6.33245525,
+          "service_max": 9.556014,
+          "service_population_stddev": 1.324945527975793,
+          "series": [
+            "initial",
+            "initial",
+            "supplement"
+          ]
+        },
+        "dense": {
+          "count": 3,
+          "service_seconds": [
+            5.289854459,
+            5.909439667,
+            5.348520166
+          ],
+          "service_median": 5.348520166,
+          "benchmark_median": 5.383893249905668,
+          "service_min": 5.289854459,
+          "service_max": 5.909439667,
+          "service_population_stddev": 0.27927648223227386,
+          "series": [
+            "initial",
+            "initial",
+            "supplement"
+          ]
+        },
+        "none": {
+          "count": 3,
+          "service_seconds": [
+            3.634825875,
+            3.798610167,
+            3.258446833
+          ],
+          "service_median": 3.634825875,
+          "benchmark_median": 3.6648512500105426,
+          "service_min": 3.258446833,
+          "service_max": 3.798610167,
+          "service_population_stddev": 0.2261422622452943,
+          "series": [
+            "initial",
+            "initial",
+            "supplement"
+          ]
+        },
+        "boundary": {
+          "count": 3,
+          "service_seconds": [
+            7.026180792,
+            7.923182833,
+            7.520038042
+          ],
+          "service_median": 7.520038042,
+          "benchmark_median": 7.5429581250064075,
+          "service_min": 7.026180792,
+          "service_max": 7.923182833,
+          "service_population_stddev": 0.36682320407735064,
+          "series": [
+            "initial",
+            "initial",
+            "supplement"
+          ]
+        }
+      }
+    },
+    "batch": {
+      "successful_documents": 15,
+      "successful_cost_usd": 0.3977209,
+      "successful_tokens": 129865,
+      "request_fraction": 0.9974790372972538,
+      "cases": {
+        "short": {
+          "count": 3,
+          "service_seconds": [
+            4.784465958,
+            4.521014,
+            3.691817916
+          ],
+          "service_median": 4.521014,
+          "benchmark_median": 4.551586290937848,
+          "service_min": 3.691817916,
+          "service_max": 4.784465958,
+          "service_population_stddev": 0.465576443607683,
+          "series": [
+            "initial",
+            "initial",
+            "initial"
+          ]
+        },
+        "long": {
+          "count": 3,
+          "service_seconds": [
+            6.588194708,
+            5.964481459,
+            7.290884792
+          ],
+          "service_median": 6.588194708,
+          "benchmark_median": 6.61273070902098,
+          "service_min": 5.964481459,
+          "service_max": 7.290884792,
+          "service_population_stddev": 0.5418217596347809,
+          "series": [
+            "initial",
+            "initial",
+            "supplement"
+          ]
+        },
+        "dense": {
+          "count": 3,
+          "service_seconds": [
+            4.668679916,
+            4.514102958,
+            4.282600292
+          ],
+          "service_median": 4.514102958,
+          "benchmark_median": 4.549032874987461,
+          "service_min": 4.282600292,
+          "service_max": 4.668679916,
+          "service_population_stddev": 0.1586558106852074,
+          "series": [
+            "initial",
+            "initial",
+            "supplement"
+          ]
+        },
+        "none": {
+          "count": 3,
+          "service_seconds": [
+            2.631159917,
+            2.682443458,
+            2.514769708
+          ],
+          "service_median": 2.631159917,
+          "benchmark_median": 2.6610712080728263,
+          "service_min": 2.514769708,
+          "service_max": 2.682443458,
+          "service_population_stddev": 0.07015155717573575,
+          "series": [
+            "initial",
+            "initial",
+            "supplement"
+          ]
+        },
+        "boundary": {
+          "count": 3,
+          "service_seconds": [
+            6.234870542,
+            7.123202208,
+            7.363355375
+          ],
+          "service_median": 7.123202208,
+          "benchmark_median": 7.150365417008288,
+          "service_min": 6.234870542,
+          "service_max": 7.363355375,
+          "service_population_stddev": 0.48537324821551314,
+          "series": [
+            "initial",
+            "initial",
+            "supplement"
+          ]
+        }
+      }
+    }
+  },
+  "total_requests": 65,
+  "total_tokens": 456559,
+  "reported_usd": 1.666694
+}

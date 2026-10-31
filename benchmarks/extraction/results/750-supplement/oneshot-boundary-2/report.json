@@ -1,0 +1,339 @@
+{
+  "schema_version": 2,
+  "mode": "cli",
+  "synthetic_responses": false,
+  "status": "completed",
+  "stop_reason": null,
+  "conditions": {
+    "agent": "claude",
+    "requested_model": "sonnet",
+    "scenario": "normal",
+    "package_version": "0.1.0",
+    "cli_version": "2.1.311",
+    "cli_version_source": "operator_supplied_unverified",
+    "process_mode": "oneshot",
+    "owner_scope": "document",
+    "provider_cache_state": "unknown",
+    "warmup": "none",
+    "row_seconds_includes_transport_close": true,
+    "effective_timeout_seconds": 90.0,
+    "max_output_bytes": 1048576,
+    "chunk_size": 8000,
+    "input_reuse": "fresh_store_per_repetition",
+    "limits": {
+      "requests": 30,
+      "repetitions": 1,
+      "seconds": 899.9935874170624,
+      "tokens": 200000,
+      "missing_usage": "stop"
+    },
+    "dataset_version": 1,
+    "evaluator_version": 1,
+    "extraction_contract": 1,
+    "prompt_sha256": "01f1cd0fdd8ee0d4063d7de559a6d74b2b79f27ad5b0313b2be36e365e815e65",
+    "repair_prompt_sha256": "59b4172e55f90dc32ee2f2bab351f80f6db446e79487ec74235bf7fcb3e9aea0",
+    "human_review": {
+      "status": "approved",
+      "evidence": "사용자 확인: “표를 검토했고 정답 기준이 맞습니다”. docs/extraction-evaluation-review.md 참조."
+    },
+    "cases": [
+      {
+        "id": "boundary",
+        "source_sha256": "2e7f61628ac20bea53fd48afefd07548c7f5511290d34fd4f6d038e71b8fcf80",
+        "case_sha256": "af1e36183ecd46be991dbb77473fd35bdbd190f1d5ae074fe0227ac9a248b14f",
+        "dictionary_sha256": "e5a10560901c5de8418f9ab46028ff1a53a25bba5fb9f8ab81ff9ee9a68eb31b"
+      }
+    ]
+  },
+  "repetitions": [
+    {
+      "repetition": 1,
+      "case_id": "boundary",
+      "status": "success",
+      "seconds": 38.837663499987684,
+      "quality": {
+        "validated_chunks": 2,
+        "total_chunks": 2,
+        "complete": true,
+        "passed": true,
+        "evaluation": {
+          "schema_version": 1,
+          "evaluator_version": 1,
+          "dataset_version": 1,
+          "case_id": "boundary",
+          "source_sha256": "2e7f61628ac20bea53fd48afefd07548c7f5511290d34fd4f6d038e71b8fcf80",
+          "case_sha256": "af1e36183ecd46be991dbb77473fd35bdbd190f1d5ae074fe0227ac9a248b14f",
+          "gold_count": 1,
+          "prediction_count": 1,
+          "raw_prediction_count": 1,
+          "true_positive_count": 1,
+          "false_positive_count": 0,
+          "false_negative_count": 0,
+          "grounded_true_positive_count": 1,
+          "precision": {
+            "value": 1.0,
+            "numerator": 1,
+            "denominator": 1,
+            "reason": null
+          },
+          "recall": {
+            "value": 1.0,
+            "numerator": 1,
+            "denominator": 1,
+            "reason": null
+          },
+          "grounded_precision": {
+            "value": 1.0,
+            "numerator": 1,
+            "denominator": 1,
+            "reason": null
+          },
+          "grounded_recall": {
+            "value": 1.0,
+            "numerator": 1,
+            "denominator": 1,
+            "reason": null
+          },
+          "citation_accuracy": {
+            "value": 1.0,
+            "numerator": 1,
+            "denominator": 1,
+            "reason": null
+          },
+          "true_positives": [
+            "boundary-1"
+          ],
+          "false_negatives": [],
+          "false_positives": [],
+          "grounded_missing": [],
+          "invalid_facts": [],
+          "citation_errors": [],
+          "duplicates": [],
+          "quote_ambiguities": [],
+          "no_relation_case_pass": null,
+          "passed": true
+        }
+      },
+      "document_timing": {
+        "available": true,
+        "summary": {
+          "queue_seconds": 0.000899792,
+          "total_seconds": 38.805194542,
+          "worker_seconds": 38.804294750000004,
+          "restore_seconds": 0.0005333330000000002,
+          "publish_seconds": 0.0016552919999952564,
+          "new_call_attempts": 2,
+          "chunks": [
+            {
+              "index": 1,
+              "offset": 0,
+              "length": 8000,
+              "reused": false,
+              "total_seconds": 20.6231305,
+              "request_seconds": 20.62026325,
+              "validation_with_bookkeeping_seconds": 0.0016777919999988455,
+              "repair_request_seconds": null,
+              "repair_validation_with_bookkeeping_seconds": null,
+              "repair_other_seconds": null,
+              "other_seconds": 0.0011894579999989219,
+              "new_call_attempts": 1
+            },
+            {
+              "index": 2,
+              "offset": 8000,
+              "length": 94,
+              "reused": false,
+              "total_seconds": 18.177627084,
+              "request_seconds": 18.173387667,
+              "validation_with_bookkeeping_seconds": 0.0016232079999980442,
+              "repair_request_seconds": null,
+              "repair_validation_with_bookkeeping_seconds": null,
+              "repair_other_seconds": null,
+              "other_seconds": 0.0026162090000028115,
+              "new_call_attempts": 1
+            }
+          ],
+          "worker_other_seconds": 0.0013485410000058096
+        },
+        "status": "success",
+        "error_code": null
+      },
+      "attempt_start": 1,
+      "attempt_count": 2
+    }
+  ],
+  "attempts": [
+    {
+      "attempt": 1,
+      "chunk": 1,
+      "repair": false,
+      "status": "success",
+      "tokens": {
+        "input": 10084,
+        "output": 629,
+        "cache_read": 649,
+        "cache_write": 9433,
+        "reasoning": 285
+      },
+      "usage_complete": true,
+      "reported_usd": 0.0440909,
+      "estimated_usd": null,
+      "reported_credits": null,
+      "estimated_credits": null,
+      "credit_unit_sha256": null,
+      "estimated_credit_unit_sha256": null,
+      "cli_call_id": "41db477802234eecbe75945746b45d69",
+      "cli_timing": {
+        "schema_version": 1,
+        "status": "success",
+        "error_code": null,
+        "exit_code": 0,
+        "offsets_seconds": {
+          "spawn_requested": 0.000868583,
+          "spawn_returned": 0.003448583,
+          "first_stdout": 19.971757208,
+          "exit_observed": 20.613909208,
+          "interpret_started": 20.614174375,
+          "interpret_completed": 20.615166958,
+          "finished": 20.616616
+        },
+        "durations_seconds": {
+          "spawn": 0.00258,
+          "process_observed": 20.610460624999998,
+          "interpret": 0.0009925829999986036,
+          "total": 20.616616
+        },
+        "settings": {
+          "timeout_seconds": 90.0,
+          "max_output_bytes": 1048576,
+          "stdout_poll_seconds": 0.05
+        },
+        "process_reused": null
+      },
+      "owner_id": 1,
+      "case_id": "boundary",
+      "repetition": 1,
+      "wrapper_seconds": 20.619495333987288,
+      "process_observation": "unknown"
+    },
+    {
+      "attempt": 2,
+      "chunk": 2,
+      "repair": false,
+      "status": "success",
+      "tokens": {
+        "input": 7275,
+        "output": 699,
+        "cache_read": 649,
+        "cache_write": 6624,
+        "reasoning": 322
+      },
+      "usage_complete": true,
+      "reported_usd": 0.0335549,
+      "estimated_usd": null,
+      "reported_credits": null,
+      "estimated_credits": null,
+      "credit_unit_sha256": null,
+      "estimated_credit_unit_sha256": null,
+      "cli_call_id": "81fb8e5ff2d2451a8fe23e64df0f4724",
+      "cli_timing": {
+        "schema_version": 1,
+        "status": "success",
+        "error_code": null,
+        "exit_code": 0,
+        "offsets_seconds": {
+          "spawn_requested": 0.001618416,
+          "spawn_returned": 0.005894375,
+          "first_stdout": 17.467376291,
+          "exit_observed": 18.169138291,
+          "interpret_started": 18.16926975,
+          "interpret_completed": 18.169814708,
+          "finished": 18.171024375
+        },
+        "durations_seconds": {
+          "spawn": 0.004275959,
+          "process_observed": 18.163243916,
+          "interpret": 0.0005449579999989851,
+          "total": 18.171024375
+        },
+        "settings": {
+          "timeout_seconds": 90.0,
+          "max_output_bytes": 1048576,
+          "stdout_poll_seconds": 0.05
+        },
+        "process_reused": null
+      },
+      "owner_id": 1,
+      "case_id": "boundary",
+      "repetition": 1,
+      "wrapper_seconds": 18.17255408305209,
+      "process_observation": "unknown"
+    }
+  ],
+  "budget": {
+    "requests_started": 2,
+    "observed_tokens_lower_bound": 18687,
+    "unknown_usage_calls": 0,
+    "token_usage_verified": true,
+    "token_hard_cap_guaranteed": false,
+    "stop_reason": null,
+    "elapsed_seconds": 38.84914833295625
+  },
+  "summary": {
+    "completed_case_runs": 1,
+    "successful_repetitions": 1,
+    "failed_repetitions": 0,
+    "success_seconds": {
+      "count": 1,
+      "min": 38.837663499987684,
+      "max": 38.837663499987684,
+      "mean": 38.837663499987684,
+      "median": 38.837663499987684,
+      "population_stddev": 0.0
+    },
+    "failure_seconds": {
+      "count": 0,
+      "min": null,
+      "max": null,
+      "mean": null,
+      "median": null,
+      "population_stddev": null
+    },
+    "per_case": [
+      {
+        "case_id": "boundary",
+        "success_seconds": {
+          "count": 1,
+          "min": 38.837663499987684,
+          "max": 38.837663499987684,
+          "mean": 38.837663499987684,
+          "median": 38.837663499987684,
+          "population_stddev": 0.0
+        },
+        "failure_seconds": {
+          "count": 0,
+          "min": null,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "population_stddev": null
+        }
+      }
+    ],
+    "call_timing_available": 2,
+    "document_timing_available": 1,
+    "failed_attempts": 0,
+    "credits": [],
+    "repair_attempts": 0,
+    "reported_usd": {
+      "known_calls": 2,
+      "value": 0.0776458
+    },
+    "estimated_usd": {
+      "known_calls": 0,
+      "value": null
+    }
+  },
+  "cleanup_errors": 0,
+  "batch_teardown_seconds": null
+}

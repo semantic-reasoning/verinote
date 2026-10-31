@@ -1,0 +1,990 @@
+{
+  "schema_version": 2,
+  "mode": "cli",
+  "synthetic_responses": false,
+  "status": "completed",
+  "stop_reason": null,
+  "conditions": {
+    "agent": "claude",
+    "requested_model": "sonnet",
+    "scenario": "normal",
+    "package_version": "0.1.0",
+    "cli_version": "2.1.311",
+    "cli_version_source": "operator_supplied_unverified",
+    "process_mode": "document",
+    "owner_scope": "document",
+    "provider_cache_state": "unknown",
+    "warmup": "none",
+    "row_seconds_includes_transport_close": true,
+    "effective_timeout_seconds": 90.0,
+    "max_output_bytes": 1048576,
+    "chunk_size": 8000,
+    "input_reuse": "fresh_store_per_repetition",
+    "limits": {
+      "requests": 21,
+      "repetitions": 1,
+      "seconds": 740.9936208339641,
+      "tokens": 121147,
+      "missing_usage": "stop"
+    },
+    "dataset_version": 1,
+    "evaluator_version": 1,
+    "extraction_contract": 1,
+    "prompt_sha256": "01f1cd0fdd8ee0d4063d7de559a6d74b2b79f27ad5b0313b2be36e365e815e65",
+    "repair_prompt_sha256": "59b4172e55f90dc32ee2f2bab351f80f6db446e79487ec74235bf7fcb3e9aea0",
+    "human_review": {
+      "status": "approved",
+      "evidence": "사용자 확인: “표를 검토했고 정답 기준이 맞습니다”. docs/extraction-evaluation-review.md 참조."
+    },
+    "cases": [
+      {
+        "id": "long",
+        "source_sha256": "cda309a9b6447b8d6722317a21f339327632139f185807f7ac6259abdaecc299",
+        "case_sha256": "66322380e9752c7230b8e6357e35aadc6a1996967bb90bc60c96e3f26a0c4d72",
+        "dictionary_sha256": "9f0d651c8bc9e204630edc3a5d7779d760dd411e89495c209cb25c0a6ad55d73"
+      },
+      {
+        "id": "dense",
+        "source_sha256": "72a40739d4e7795874ffe9e993b5967525b822f2511576fa2faf2512ae7315df",
+        "case_sha256": "cb6a45e0bcdc9d7caafa79529791690366734d49df92b82c01fa4f23434241ae",
+        "dictionary_sha256": "84c45bb86dab664b0c5fef0235007c4e1097357fa94018cf740f31c903b90619"
+      },
+      {
+        "id": "none",
+        "source_sha256": "09da66e9641414fb667c11e7f1e21d4ef57470a9f10904fa4cee74cfc5bfd765",
+        "case_sha256": "20d17b046cc9a2396374ca39f3b96c39adbc50807e64ed23ca749ce0ee8341a8",
+        "dictionary_sha256": "96c68114c7dfda44c5898d339082adb58317b4ade366eda65f63761b0eac65ef"
+      },
+      {
+        "id": "boundary",
+        "source_sha256": "2e7f61628ac20bea53fd48afefd07548c7f5511290d34fd4f6d038e71b8fcf80",
+        "case_sha256": "af1e36183ecd46be991dbb77473fd35bdbd190f1d5ae074fe0227ac9a248b14f",
+        "dictionary_sha256": "e5a10560901c5de8418f9ab46028ff1a53a25bba5fb9f8ab81ff9ee9a68eb31b"
+      }
+    ]
+  },
+  "repetitions": [
+    {
+      "repetition": 1,
+      "case_id": "long",
+      "status": "success",
+      "seconds": 6.364404833060689,
+      "quality": {
+        "validated_chunks": 2,
+        "total_chunks": 2,
+        "complete": true,
+        "passed": true,
+        "evaluation": {
+          "schema_version": 1,
+          "evaluator_version": 1,
+          "dataset_version": 1,
+          "case_id": "long",
+          "source_sha256": "cda309a9b6447b8d6722317a21f339327632139f185807f7ac6259abdaecc299",
+          "case_sha256": "66322380e9752c7230b8e6357e35aadc6a1996967bb90bc60c96e3f26a0c4d72",
+          "gold_count": 2,
+          "prediction_count": 2,
+          "raw_prediction_count": 2,
+          "true_positive_count": 2,
+          "false_positive_count": 0,
+          "false_negative_count": 0,
+          "grounded_true_positive_count": 2,
+          "precision": {
+            "value": 1.0,
+            "numerator": 2,
+            "denominator": 2,
+            "reason": null
+          },
+          "recall": {
+            "value": 1.0,
+            "numerator": 2,
+            "denominator": 2,
+            "reason": null
+          },
+          "grounded_precision": {
+            "value": 1.0,
+            "numerator": 2,
+            "denominator": 2,
+            "reason": null
+          },
+          "grounded_recall": {
+            "value": 1.0,
+            "numerator": 2,
+            "denominator": 2,
+            "reason": null
+          },
+          "citation_accuracy": {
+            "value": 1.0,
+            "numerator": 2,
+            "denominator": 2,
+            "reason": null
+          },
+          "true_positives": [
+            "long-1",
+            "long-2"
+          ],
+          "false_negatives": [],
+          "false_positives": [],
+          "grounded_missing": [],
+          "invalid_facts": [],
+          "citation_errors": [],
+          "duplicates": [],
+          "quote_ambiguities": [],
+          "no_relation_case_pass": null,
+          "passed": true
+        }
+      },
+      "document_timing": {
+        "available": true,
+        "summary": {
+          "queue_seconds": 0.000869875,
+          "total_seconds": 6.33245525,
+          "worker_seconds": 6.3315853749999995,
+          "restore_seconds": 0.0005306669999999999,
+          "publish_seconds": 0.002060166000000585,
+          "new_call_attempts": 2,
+          "chunks": [
+            {
+              "index": 1,
+              "offset": 0,
+              "length": 8000,
+              "reused": false,
+              "total_seconds": 3.368408083,
+              "request_seconds": 3.3653995,
+              "validation_with_bookkeeping_seconds": 0.0018247080000000082,
+              "repair_request_seconds": null,
+              "repair_validation_with_bookkeeping_seconds": null,
+              "repair_other_seconds": null,
+              "other_seconds": 0.0011838749999997233,
+              "new_call_attempts": 1
+            },
+            {
+              "index": 2,
+              "offset": 8000,
+              "length": 68,
+              "reused": false,
+              "total_seconds": 2.9594142499999996,
+              "request_seconds": 2.954468791,
+              "validation_with_bookkeeping_seconds": 0.002518249999999611,
+              "repair_request_seconds": null,
+              "repair_validation_with_bookkeeping_seconds": null,
+              "repair_other_seconds": null,
+              "other_seconds": 0.0024272089999999302,
+              "new_call_attempts": 1
+            }
+          ],
+          "worker_other_seconds": 0.0011722089999999241
+        },
+        "status": "success",
+        "error_code": null
+      },
+      "attempt_start": 1,
+      "attempt_count": 2
+    },
+    {
+      "repetition": 1,
+      "case_id": "dense",
+      "status": "success",
+      "seconds": 5.383893249905668,
+      "quality": {
+        "validated_chunks": 1,
+        "total_chunks": 1,
+        "complete": true,
+        "passed": true,
+        "evaluation": {
+          "schema_version": 1,
+          "evaluator_version": 1,
+          "dataset_version": 1,
+          "case_id": "dense",
+          "source_sha256": "72a40739d4e7795874ffe9e993b5967525b822f2511576fa2faf2512ae7315df",
+          "case_sha256": "cb6a45e0bcdc9d7caafa79529791690366734d49df92b82c01fa4f23434241ae",
+          "gold_count": 7,
+          "prediction_count": 7,
+          "raw_prediction_count": 7,
+          "true_positive_count": 7,
+          "false_positive_count": 0,
+          "false_negative_count": 0,
+          "grounded_true_positive_count": 7,
+          "precision": {
+            "value": 1.0,
+            "numerator": 7,
+            "denominator": 7,
+            "reason": null
+          },
+          "recall": {
+            "value": 1.0,
+            "numerator": 7,
+            "denominator": 7,
+            "reason": null
+          },
+          "grounded_precision": {
+            "value": 1.0,
+            "numerator": 7,
+            "denominator": 7,
+            "reason": null
+          },
+          "grounded_recall": {
+            "value": 1.0,
+            "numerator": 7,
+            "denominator": 7,
+            "reason": null
+          },
+          "citation_accuracy": {
+            "value": 1.0,
+            "numerator": 7,
+            "denominator": 7,
+            "reason": null
+          },
+          "true_positives": [
+            "dense-1",
+            "dense-2",
+            "dense-3",
+            "dense-4",
+            "dense-5",
+            "dense-6",
+            "dense-7"
+          ],
+          "false_negatives": [],
+          "false_positives": [],
+          "grounded_missing": [],
+          "invalid_facts": [],
+          "citation_errors": [],
+          "duplicates": [],
+          "quote_ambiguities": [],
+          "no_relation_case_pass": null,
+          "passed": true
+        }
+      },
+      "document_timing": {
+        "available": true,
+        "summary": {
+          "queue_seconds": 0.00107625,
+          "total_seconds": 5.348520166,
+          "worker_seconds": 5.3474439160000005,
+          "restore_seconds": 0.0007073750000000001,
+          "publish_seconds": 0.001053790999999471,
+          "new_call_attempts": 1,
+          "chunks": [
+            {
+              "index": 1,
+              "offset": 0,
+              "length": 188,
+              "reused": false,
+              "total_seconds": 5.343960333,
+              "request_seconds": 5.341870458,
+              "validation_with_bookkeeping_seconds": 0.0009825000000001083,
+              "repair_request_seconds": null,
+              "repair_validation_with_bookkeeping_seconds": null,
+              "repair_other_seconds": null,
+              "other_seconds": 0.0011073750000001326,
+              "new_call_attempts": 1
+            }
+          ],
+          "worker_other_seconds": 0.0017224170000007533
+        },
+        "status": "success",
+        "error_code": null
+      },
+      "attempt_start": 3,
+      "attempt_count": 1
+    },
+    {
+      "repetition": 1,
+      "case_id": "none",
+      "status": "success",
+      "seconds": 3.2843397080432624,
+      "quality": {
+        "validated_chunks": 1,
+        "total_chunks": 1,
+        "complete": true,
+        "passed": true,
+        "evaluation": {
+          "schema_version": 1,
+          "evaluator_version": 1,
+          "dataset_version": 1,
+          "case_id": "none",
+          "source_sha256": "09da66e9641414fb667c11e7f1e21d4ef57470a9f10904fa4cee74cfc5bfd765",
+          "case_sha256": "20d17b046cc9a2396374ca39f3b96c39adbc50807e64ed23ca749ce0ee8341a8",
+          "gold_count": 0,
+          "prediction_count": 0,
+          "raw_prediction_count": 0,
+          "true_positive_count": 0,
+          "false_positive_count": 0,
+          "false_negative_count": 0,
+          "grounded_true_positive_count": 0,
+          "precision": {
+            "value": null,
+            "numerator": 0,
+            "denominator": 0,
+            "reason": "not_applicable"
+          },
+          "recall": {
+            "value": null,
+            "numerator": 0,
+            "denominator": 0,
+            "reason": "not_applicable"
+          },
+          "grounded_precision": {
+            "value": null,
+            "numerator": 0,
+            "denominator": 0,
+            "reason": "not_applicable"
+          },
+          "grounded_recall": {
+            "value": null,
+            "numerator": 0,
+            "denominator": 0,
+            "reason": "not_applicable"
+          },
+          "citation_accuracy": {
+            "value": null,
+            "numerator": 0,
+            "denominator": 0,
+            "reason": "not_applicable"
+          },
+          "true_positives": [],
+          "false_negatives": [],
+          "false_positives": [],
+          "grounded_missing": [],
+          "invalid_facts": [],
+          "citation_errors": [],
+          "duplicates": [],
+          "quote_ambiguities": [],
+          "no_relation_case_pass": true,
+          "passed": true
+        }
+      },
+      "document_timing": {
+        "available": true,
+        "summary": {
+          "queue_seconds": 0.000815333,
+          "total_seconds": 3.258446833,
+          "worker_seconds": 3.2576315,
+          "restore_seconds": 0.0005774159999999999,
+          "publish_seconds": 0.0014953339999999038,
+          "new_call_attempts": 1,
+          "chunks": [
+            {
+              "index": 1,
+              "offset": 0,
+              "length": 67,
+              "reused": false,
+              "total_seconds": 3.254421917,
+              "request_seconds": 3.251997334,
+              "validation_with_bookkeeping_seconds": 0.00125183299999998,
+              "repair_request_seconds": null,
+              "repair_validation_with_bookkeeping_seconds": null,
+              "repair_other_seconds": null,
+              "other_seconds": 0.0011727500000002777,
+              "new_call_attempts": 1
+            }
+          ],
+          "worker_other_seconds": 0.0011368329999998927
+        },
+        "status": "success",
+        "error_code": null
+      },
+      "attempt_start": 4,
+      "attempt_count": 1
+    },
+    {
+      "repetition": 1,
+      "case_id": "boundary",
+      "status": "success",
+      "seconds": 7.5429581250064075,
+      "quality": {
+        "validated_chunks": 2,
+        "total_chunks": 2,
+        "complete": true,
+        "passed": true,
+        "evaluation": {
+          "schema_version": 1,
+          "evaluator_version": 1,
+          "dataset_version": 1,
+          "case_id": "boundary",
+          "source_sha256": "2e7f61628ac20bea53fd48afefd07548c7f5511290d34fd4f6d038e71b8fcf80",
+          "case_sha256": "af1e36183ecd46be991dbb77473fd35bdbd190f1d5ae074fe0227ac9a248b14f",
+          "gold_count": 1,
+          "prediction_count": 1,
+          "raw_prediction_count": 1,
+          "true_positive_count": 1,
+          "false_positive_count": 0,
+          "false_negative_count": 0,
+          "grounded_true_positive_count": 1,
+          "precision": {
+            "value": 1.0,
+            "numerator": 1,
+            "denominator": 1,
+            "reason": null
+          },
+          "recall": {
+            "value": 1.0,
+            "numerator": 1,
+            "denominator": 1,
+            "reason": null
+          },
+          "grounded_precision": {
+            "value": 1.0,
+            "numerator": 1,
+            "denominator": 1,
+            "reason": null
+          },
+          "grounded_recall": {
+            "value": 1.0,
+            "numerator": 1,
+            "denominator": 1,
+            "reason": null
+          },
+          "citation_accuracy": {
+            "value": 1.0,
+            "numerator": 1,
+            "denominator": 1,
+            "reason": null
+          },
+          "true_positives": [
+            "boundary-1"
+          ],
+          "false_negatives": [],
+          "false_positives": [],
+          "grounded_missing": [],
+          "invalid_facts": [],
+          "citation_errors": [],
+          "duplicates": [],
+          "quote_ambiguities": [],
+          "no_relation_case_pass": null,
+          "passed": true
+        }
+      },
+      "document_timing": {
+        "available": true,
+        "summary": {
+          "queue_seconds": 0.001159125,
+          "total_seconds": 7.520038042,
+          "worker_seconds": 7.518878917,
+          "restore_seconds": 0.0008649170000000002,
+          "publish_seconds": 0.0009756249999997024,
+          "new_call_attempts": 2,
+          "chunks": [
+            {
+              "index": 1,
+              "offset": 0,
+              "length": 8000,
+              "reused": false,
+              "total_seconds": 3.86142225,
+              "request_seconds": 3.858347708,
+              "validation_with_bookkeeping_seconds": 0.0014392910000000647,
+              "repair_request_seconds": null,
+              "repair_validation_with_bookkeeping_seconds": null,
+              "repair_other_seconds": null,
+              "other_seconds": 0.0016352509999997267,
+              "new_call_attempts": 1
+            },
+            {
+              "index": 2,
+              "offset": 8000,
+              "length": 94,
+              "reused": false,
+              "total_seconds": 3.654429542,
+              "request_seconds": 3.651381958,
+              "validation_with_bookkeeping_seconds": 0.0009276250000000985,
+              "repair_request_seconds": null,
+              "repair_validation_with_bookkeeping_seconds": null,
+              "repair_other_seconds": null,
+              "other_seconds": 0.002119958999999838,
+              "new_call_attempts": 1
+            }
+          ],
+          "worker_other_seconds": 0.0011865830000008515
+        },
+        "status": "success",
+        "error_code": null
+      },
+      "attempt_start": 5,
+      "attempt_count": 2
+    }
+  ],
+  "attempts": [
+    {
+      "attempt": 1,
+      "chunk": 1,
+      "repair": false,
+      "status": "success",
+      "tokens": {
+        "input": 7779,
+        "output": 294,
+        "cache_read": 649,
+        "cache_write": 7128,
+        "reasoning": 0
+      },
+      "usage_complete": true,
+      "reported_usd": 0.0315209,
+      "estimated_usd": null,
+      "reported_credits": null,
+      "estimated_credits": null,
+      "credit_unit_sha256": null,
+      "estimated_credit_unit_sha256": null,
+      "cli_call_id": "90387dbd4cc0403c9a46561f307ff92e",
+      "cli_timing": {
+        "schema_version": 2,
+        "status": "success",
+        "error_code": null,
+        "exit_code": null,
+        "offsets_seconds": {
+          "spawn_requested": 0.000714042,
+          "spawn_returned": 0.00352425,
+          "first_stdout": 0.567826708,
+          "exit_observed": null,
+          "interpret_started": 3.359602583,
+          "interpret_completed": 3.360191542,
+          "finished": 3.362002083,
+          "worker_acquired": 0.0006015,
+          "reset_completed": 0.554074583,
+          "request_sent": 0.554311875,
+          "response_received": 3.358731125
+        },
+        "durations_seconds": {
+          "spawn": 0.002810208,
+          "process_observed": null,
+          "interpret": 0.000588958999999889,
+          "total": 3.362002083,
+          "worker_wait": 0.0006015,
+          "reset": 0.553473083,
+          "response_wait": 2.8044192499999996
+        },
+        "settings": {
+          "timeout_seconds": 90.0,
+          "max_output_bytes": 1048576,
+          "stdout_poll_seconds": 0.05
+        },
+        "process_reused": false
+      },
+      "owner_id": 1,
+      "case_id": "long",
+      "repetition": 1,
+      "wrapper_seconds": 3.3646167080150917,
+      "process_observation": "started"
+    },
+    {
+      "attempt": 2,
+      "chunk": 2,
+      "repair": false,
+      "status": "success",
+      "tokens": {
+        "input": 4946,
+        "output": 363,
+        "cache_read": 2269,
+        "cache_write": 2675,
+        "reasoning": 0
+      },
+      "usage_complete": true,
+      "reported_usd": 0.0145609,
+      "estimated_usd": null,
+      "reported_credits": null,
+      "estimated_credits": null,
+      "credit_unit_sha256": null,
+      "estimated_credit_unit_sha256": null,
+      "cli_call_id": "3c61db41365f4345a52f1ee55da4050c",
+      "cli_timing": {
+        "schema_version": 2,
+        "status": "success",
+        "error_code": null,
+        "exit_code": null,
+        "offsets_seconds": {
+          "spawn_requested": null,
+          "spawn_returned": null,
+          "first_stdout": 0.019967542,
+          "exit_observed": null,
+          "interpret_started": 2.94922125,
+          "interpret_completed": 2.949509833,
+          "finished": 2.951470875,
+          "worker_acquired": 0.001027167,
+          "reset_completed": 0.012137167,
+          "request_sent": 0.012307875,
+          "response_received": 2.948213167
+        },
+        "durations_seconds": {
+          "spawn": null,
+          "process_observed": null,
+          "interpret": 0.00028858300000011994,
+          "total": 2.951470875,
+          "worker_wait": 0.001027167,
+          "reset": 0.01111,
+          "response_wait": 2.935905292
+        },
+        "settings": {
+          "timeout_seconds": 90.0,
+          "max_output_bytes": 1048576,
+          "stdout_poll_seconds": 0.05
+        },
+        "process_reused": true
+      },
+      "owner_id": 1,
+      "case_id": "long",
+      "repetition": 1,
+      "wrapper_seconds": 2.953481291886419,
+      "process_observation": "reused"
+    },
+    {
+      "attempt": 3,
+      "chunk": 1,
+      "repair": false,
+      "status": "success",
+      "tokens": {
+        "input": 5103,
+        "output": 659,
+        "cache_read": 649,
+        "cache_write": 4452,
+        "reasoning": 0
+      },
+      "usage_complete": true,
+      "reported_usd": 0.0244669,
+      "estimated_usd": null,
+      "reported_credits": null,
+      "estimated_credits": null,
+      "credit_unit_sha256": null,
+      "estimated_credit_unit_sha256": null,
+      "cli_call_id": "5b01c31ce9fa42c3b0ae80f5814478b9",
+      "cli_timing": {
+        "schema_version": 2,
+        "status": "success",
+        "error_code": null,
+        "exit_code": null,
+        "offsets_seconds": {
+          "spawn_requested": 0.000821958,
+          "spawn_returned": 0.003786291,
+          "first_stdout": 0.559420708,
+          "exit_observed": null,
+          "interpret_started": 5.339597,
+          "interpret_completed": 5.339730208,
+          "finished": 5.340420833,
+          "worker_acquired": 0.000667208,
+          "reset_completed": 0.540102708,
+          "request_sent": 0.540344666,
+          "response_received": 5.339219708
+        },
+        "durations_seconds": {
+          "spawn": 0.0029643329999999996,
+          "process_observed": null,
+          "interpret": 0.00013320799999938515,
+          "total": 5.340420833,
+          "worker_wait": 0.000667208,
+          "reset": 0.5394355000000001,
+          "response_wait": 4.798875042
+        },
+        "settings": {
+          "timeout_seconds": 90.0,
+          "max_output_bytes": 1048576,
+          "stdout_poll_seconds": 0.05
+        },
+        "process_reused": false
+      },
+      "owner_id": 2,
+      "case_id": "dense",
+      "repetition": 1,
+      "wrapper_seconds": 5.341269791009836,
+      "process_observation": "started"
+    },
+    {
+      "attempt": 4,
+      "chunk": 1,
+      "repair": false,
+      "status": "success",
+      "tokens": {
+        "input": 4912,
+        "output": 249,
+        "cache_read": 649,
+        "cache_write": 4261,
+        "reasoning": 0
+      },
+      "usage_complete": true,
+      "reported_usd": 0.0196029,
+      "estimated_usd": null,
+      "reported_credits": null,
+      "estimated_credits": null,
+      "credit_unit_sha256": null,
+      "estimated_credit_unit_sha256": null,
+      "cli_call_id": "4e5f3a0da3124cca874cd4b3339a0ddc",
+      "cli_timing": {
+        "schema_version": 2,
+        "status": "success",
+        "error_code": null,
+        "exit_code": null,
+        "offsets_seconds": {
+          "spawn_requested": 0.000667041,
+          "spawn_returned": 0.003241083,
+          "first_stdout": 0.619422625,
+          "exit_observed": null,
+          "interpret_started": 3.24755725,
+          "interpret_completed": 3.24795675,
+          "finished": 3.249422083,
+          "worker_acquired": 0.000549708,
+          "reset_completed": 0.604212,
+          "request_sent": 0.604485583,
+          "response_received": 3.246694583
+        },
+        "durations_seconds": {
+          "spawn": 0.002574042,
+          "process_observed": null,
+          "interpret": 0.00039950000000033015,
+          "total": 3.249422083,
+          "worker_wait": 0.000549708,
+          "reset": 0.603662292,
+          "response_wait": 2.6422090000000003
+        },
+        "settings": {
+          "timeout_seconds": 90.0,
+          "max_output_bytes": 1048576,
+          "stdout_poll_seconds": 0.05
+        },
+        "process_reused": false
+      },
+      "owner_id": 3,
+      "case_id": "none",
+      "repetition": 1,
+      "wrapper_seconds": 3.2510268749902025,
+      "process_observation": "started"
+    },
+    {
+      "attempt": 5,
+      "chunk": 1,
+      "repair": false,
+      "status": "success",
+      "tokens": {
+        "input": 7742,
+        "output": 295,
+        "cache_read": 649,
+        "cache_write": 7091,
+        "reasoning": 0
+      },
+      "usage_complete": true,
+      "reported_usd": 0.0313829,
+      "estimated_usd": null,
+      "reported_credits": null,
+      "estimated_credits": null,
+      "credit_unit_sha256": null,
+      "estimated_credit_unit_sha256": null,
+      "cli_call_id": "7678e0e3e25c48129494e12f0caf8df7",
+      "cli_timing": {
+        "schema_version": 2,
+        "status": "success",
+        "error_code": null,
+        "exit_code": null,
+        "offsets_seconds": {
+          "spawn_requested": 0.001019083,
+          "spawn_returned": 0.004375042,
+          "first_stdout": 0.575747917,
+          "exit_observed": null,
+          "interpret_started": 3.853654292,
+          "interpret_completed": 3.853918417,
+          "finished": 3.855409125,
+          "worker_acquired": 0.000860083,
+          "reset_completed": 0.55830475,
+          "request_sent": 0.558708583,
+          "response_received": 3.852775958
+        },
+        "durations_seconds": {
+          "spawn": 0.003355959,
+          "process_observed": null,
+          "interpret": 0.0002641250000001705,
+          "total": 3.855409125,
+          "worker_wait": 0.000860083,
+          "reset": 0.5574446670000001,
+          "response_wait": 3.294067375
+        },
+        "settings": {
+          "timeout_seconds": 90.0,
+          "max_output_bytes": 1048576,
+          "stdout_poll_seconds": 0.05
+        },
+        "process_reused": false
+      },
+      "owner_id": 4,
+      "case_id": "boundary",
+      "repetition": 1,
+      "wrapper_seconds": 3.857009833911434,
+      "process_observation": "started"
+    },
+    {
+      "attempt": 6,
+      "chunk": 2,
+      "repair": false,
+      "status": "success",
+      "tokens": {
+        "input": 4933,
+        "output": 422,
+        "cache_read": 2267,
+        "cache_write": 2664,
+        "reasoning": 0
+      },
+      "usage_complete": true,
+      "reported_usd": 0.0151067,
+      "estimated_usd": null,
+      "reported_credits": null,
+      "estimated_credits": null,
+      "credit_unit_sha256": null,
+      "estimated_credit_unit_sha256": null,
+      "cli_call_id": "5dc931bfa28046e9a0a92f51ed2cf0a7",
+      "cli_timing": {
+        "schema_version": 2,
+        "status": "success",
+        "error_code": null,
+        "exit_code": null,
+        "offsets_seconds": {
+          "spawn_requested": null,
+          "spawn_returned": null,
+          "first_stdout": 0.019415458,
+          "exit_observed": null,
+          "interpret_started": 3.64819675,
+          "interpret_completed": 3.648341333,
+          "finished": 3.649627625,
+          "worker_acquired": 0.001071291,
+          "reset_completed": 0.012301166,
+          "request_sent": 0.01246475,
+          "response_received": 3.64747175
+        },
+        "durations_seconds": {
+          "spawn": null,
+          "process_observed": null,
+          "interpret": 0.00014458299999997593,
+          "total": 3.649627625,
+          "worker_wait": 0.001071291,
+          "reset": 0.011229875,
+          "response_wait": 3.635007
+        },
+        "settings": {
+          "timeout_seconds": 90.0,
+          "max_output_bytes": 1048576,
+          "stdout_poll_seconds": 0.05
+        },
+        "process_reused": true
+      },
+      "owner_id": 4,
+      "case_id": "boundary",
+      "repetition": 1,
+      "wrapper_seconds": 3.6506304590729997,
+      "process_observation": "reused"
+    }
+  ],
+  "budget": {
+    "requests_started": 6,
+    "observed_tokens_lower_bound": 37697,
+    "unknown_usage_calls": 0,
+    "token_usage_verified": true,
+    "token_hard_cap_guaranteed": false,
+    "stop_reason": null,
+    "elapsed_seconds": 22.59448200010229
+  },
+  "summary": {
+    "completed_case_runs": 4,
+    "successful_repetitions": 4,
+    "failed_repetitions": 0,
+    "success_seconds": {
+      "count": 4,
+      "min": 3.2843397080432624,
+      "max": 7.5429581250064075,
+      "mean": 5.643898979004007,
+      "median": 5.874149041483179,
+      "population_stddev": 1.5621041304988341
+    },
+    "failure_seconds": {
+      "count": 0,
+      "min": null,
+      "max": null,
+      "mean": null,
+      "median": null,
+      "population_stddev": null
+    },
+    "per_case": [
+      {
+        "case_id": "long",
+        "success_seconds": {
+          "count": 1,
+          "min": 6.364404833060689,
+          "max": 6.364404833060689,
+          "mean": 6.364404833060689,
+          "median": 6.364404833060689,
+          "population_stddev": 0.0
+        },
+        "failure_seconds": {
+          "count": 0,
+          "min": null,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "population_stddev": null
+        }
+      },
+      {
+        "case_id": "dense",
+        "success_seconds": {
+          "count": 1,
+          "min": 5.383893249905668,
+          "max": 5.383893249905668,
+          "mean": 5.383893249905668,
+          "median": 5.383893249905668,
+          "population_stddev": 0.0
+        },
+        "failure_seconds": {
+          "count": 0,
+          "min": null,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "population_stddev": null
+        }
+      },
+      {
+        "case_id": "none",
+        "success_seconds": {
+          "count": 1,
+          "min": 3.2843397080432624,
+          "max": 3.2843397080432624,
+          "mean": 3.2843397080432624,
+          "median": 3.2843397080432624,
+          "population_stddev": 0.0
+        },
+        "failure_seconds": {
+          "count": 0,
+          "min": null,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "population_stddev": null
+        }
+      },
+      {
+        "case_id": "boundary",
+        "success_seconds": {
+          "count": 1,
+          "min": 7.5429581250064075,
+          "max": 7.5429581250064075,
+          "mean": 7.5429581250064075,
+          "median": 7.5429581250064075,
+          "population_stddev": 0.0
+        },
+        "failure_seconds": {
+          "count": 0,
+          "min": null,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "population_stddev": null
+        }
+      }
+    ],
+    "call_timing_available": 6,
+    "document_timing_available": 4,
+    "failed_attempts": 0,
+    "credits": [],
+    "repair_attempts": 0,
+    "reported_usd": {
+      "known_calls": 6,
+      "value": 0.1366412
+    },
+    "estimated_usd": {
+      "known_calls": 0,
+      "value": null
+    }
+  },
+  "cleanup_errors": 0,
+  "batch_teardown_seconds": null
+}
