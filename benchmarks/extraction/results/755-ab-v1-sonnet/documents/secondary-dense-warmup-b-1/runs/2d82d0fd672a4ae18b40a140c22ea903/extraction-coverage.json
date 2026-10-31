@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "run_id": "2d82d0fd672a4ae18b40a140c22ea903",
+    "document_id": "9307c53b26ce4fbba8299019a17b9047",
+    "version": 1,
+    "dictionary_id": "c97ee0bdc5974d54876033b78ccbcdee",
+    "revision": 2,
+    "sha256": "9e2dd298b3fc0d0ff72b821e26eb53a158553b1ea926b56e764631e6ebc7b137",
+    "extraction_contract": 1
+  },
+  "source_length": 127,
+  "chunks": [
+    {
+      "offset": 0,
+      "length": 127,
+      "claim_count": 4,
+      "fact_predicates": [
+        "calls",
+        "calls"
+      ],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [
+            0,
+            1
+          ],
+          "claim_indices": [
+            0,
+            1,
+            2
+          ],
+          "status": "extracted",
+          "reason": "직접 호출 2건 추출; Atlas→Ledger는 부정문이라 제외하고 claim에 보존."
+        }
+      ],
+      "dictionary_gaps": []
+    }
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "run_id": "9b71c959dc4940efbd83914c57c5e757",
+    "document_id": "9f840da8b84a47ac8cddf4ce7a1bbf6c",
+    "version": 1,
+    "dictionary_id": "7aa94384da2542eeac1c7bab0a99ef7f",
+    "revision": 2,
+    "sha256": "e5a10560901c5de8418f9ab46028ff1a53a25bba5fb9f8ab81ff9ee9a68eb31b",
+    "extraction_contract": 1
+  },
+  "source_length": 8094,
+  "chunks": [
+    {
+      "offset": 0,
+      "length": 8000,
+      "claim_count": 1,
+      "fact_predicates": [],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [],
+          "claim_indices": [
+            0
+          ],
+          "status": "not_representable",
+          "reason": "calls 정의가 가상 호출을 제외하며 원문 관계는 가상 예시로만 제시됨"
+        }
+      ],
+      "dictionary_gaps": []
+    },
+    {
+      "offset": 8000,
+      "length": 94,
+      "claim_count": 2,
+      "fact_predicates": [
+        "calls"
+      ],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [
+            0
+          ],
+          "claim_indices": [
+            0,
+            1
+          ],
+          "status": "extracted",
+          "reason": "실제 구성 문장에서 직접 호출 추출; 가정 예시 문장은 제외"
+        }
+      ],
+      "dictionary_gaps": []
+    }
+  ]
+}

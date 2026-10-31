@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "run_id": "f3f7f7087f6f4253a8a829febe4e4ec5",
+    "document_id": "ac9c667c945f4d2fa9271a42553068bd",
+    "version": 1,
+    "dictionary_id": "1568d74f36494091868606aeb00e7d57",
+    "revision": 2,
+    "sha256": "9f0d651c8bc9e204630edc3a5d7779d760dd411e89495c209cb25c0a6ad55d73",
+    "extraction_contract": 1
+  },
+  "source_length": 8068,
+  "chunks": [
+    {
+      "offset": 0,
+      "length": 8000,
+      "claim_count": 1,
+      "fact_predicates": [
+        "calls"
+      ],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [
+            0
+          ],
+          "claim_indices": [
+            0
+          ],
+          "status": "extracted",
+          "reason": "Atlas가 Billing을 직접 호출한다고 명시됨; Ledger 관련 근거는 없음"
+        }
+      ],
+      "dictionary_gaps": []
+    },
+    {
+      "offset": 8000,
+      "length": 68,
+      "claim_count": 2,
+      "fact_predicates": [
+        "calls"
+      ],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [
+            0
+          ],
+          "claim_indices": [
+            0,
+            1
+          ],
+          "status": "extracted",
+          "reason": "Billing→Ledger만 추출했고 Atlas의 부정된 호출은 제외했습니다."
+        }
+      ],
+      "dictionary_gaps": []
+    }
+  ]
+}

@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "run_id": "c8174c6c40d044dbab8417f23796218c",
+    "document_id": "bb5a873639294df087795195c042dd7a",
+    "version": 1,
+    "dictionary_id": "c0ff513906814d2ebd0ffffb5964b888",
+    "revision": 2,
+    "sha256": "e5a10560901c5de8418f9ab46028ff1a53a25bba5fb9f8ab81ff9ee9a68eb31b",
+    "extraction_contract": 1
+  },
+  "source_length": 8094,
+  "chunks": [
+    {
+      "offset": 0,
+      "length": 8000,
+      "claim_count": 1,
+      "fact_predicates": [],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [],
+          "claim_indices": [
+            0
+          ],
+          "status": "not_representable",
+          "reason": "원문이 가설적 예시임을 명시하며 calls 정의가 가설적 호출을 제외함"
+        }
+      ],
+      "dictionary_gaps": [
+        {
+          "code": "qualifier_not_representable",
+          "detail": "'가설적 예시' 조건이 붙은 호출은 calls 관계로 표현할 수 없어 claims에만 보존함",
+          "claim_indices": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "offset": 8000,
+      "length": 94,
+      "claim_count": 1,
+      "fact_predicates": [
+        "calls"
+      ],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [
+            0
+          ],
+          "claim_indices": [
+            0
+          ],
+          "status": "extracted",
+          "reason": "실제 구성 문장만 직접 호출로 추출, 가정 예시 문장은 제외"
+        }
+      ],
+      "dictionary_gaps": []
+    }
+  ]
+}

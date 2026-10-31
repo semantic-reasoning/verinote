@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "agent": "claude",
+  "requested_model": "sonnet",
+  "resolved_model": "claude-sonnet-5-5",
+  "tokens": {
+    "input": 4950,
+    "output": 373,
+    "cache_read": 649,
+    "cache_write": 4299,
+    "reasoning": 0
+  },
+  "reported_usd": 0.0209949,
+  "reported_credits": null,
+  "credit_unit": null,
+  "estimated_usd": null,
+  "estimated_credits": null,
+  "estimated_credit_unit": null,
+  "rate_snapshot": null,
+  "rate_basis": null,
+  "complete": true,
+  "status": "success",
+  "warnings": [],
+  "source": "claude JSON result",
+  "cli_call_id": "94bace9e1f974c60b15eda65bf6c97ed",
+  "started_at": "2026-10-31T06:49:33.437675+00:00",
+  "worker_scope": "extraction_pool",
+  "worker_identity": {
+    "pool_id": "c2cf91ed74394822a54b875bcecba31b",
+    "slot_id": 2,
+    "worker_id": "caa7ca6a07484abeb367d4020d3dee5b",
+    "generation": 1
+  },
+  "finished_at": "2026-10-31T06:49:36.813486+00:00"
+}

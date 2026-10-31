@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "run_id": "c2dd3f1553964fdfba75f7dd993558c3",
+  "contract": {
+    "pipeline": "approved-extraction-v1",
+    "prompt": "01f1cd0fdd8ee0d4063d7de559a6d74b2b79f27ad5b0313b2be36e365e815e65",
+    "repair_prompt": "59b4172e55f90dc32ee2f2bab351f80f6db446e79487ec74235bf7fcb3e9aea0",
+    "chunk_size": 8000,
+    "chunk_timeout": 360,
+    "document_id": "b0eebb536bac4625b12448a63e9841fb",
+    "version": 1,
+    "source_sha256": "2e7f61628ac20bea53fd48afefd07548c7f5511290d34fd4f6d038e71b8fcf80",
+    "text_sha256": "2e7f61628ac20bea53fd48afefd07548c7f5511290d34fd4f6d038e71b8fcf80",
+    "agent": "claude",
+    "model": "sonnet",
+    "dictionary": {
+      "id": "5842fdfa029d4ced813baf1dea2f620a",
+      "revision": 2,
+      "sha256": "e5a10560901c5de8418f9ab46028ff1a53a25bba5fb9f8ab81ff9ee9a68eb31b",
+      "extraction_contract": 1
+    },
+    "dictionary_payload_sha256": "e5a10560901c5de8418f9ab46028ff1a53a25bba5fb9f8ab81ff9ee9a68eb31b",
+    "extraction_options": {
+      "concurrency": 2,
+      "document_generation": 1,
+      "schema_version": 1,
+      "transport": {
+        "binary": "/Users/joykim/.local/share/claude/versions/2.1.311",
+        "model": "sonnet",
+        "capacity": 2,
+        "timeout": 90,
+        "max_output": 1048576,
+        "rate": null
+      }
+    }
+  },
+  "outputs": [
+    {
+      "title": "합성 문서: 가설 예시",
+      "claims": [
+        {
+          "heading": "가설적 서비스 호출 예시",
+          "text": "원문은 대부분 관계가 없는 중립적 채움 문장이며, 마지막 줄에 'Atlas calls Billing'이라는 문장이 있으나 '가설적 예시일 뿐'이라고 명시되어 있다. 사전의 calls 관계는 가설적 호출을 제외하므로 직접 사실로 추출하지 않는다.",
+          "quote": "Hypothetical example only: Atlas calls Billing."
+        }
+      ],
+      "facts": [],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [],
+          "claim_indices": [
+            0
+          ],
+          "status": "not_representable",
+          "reason": "Atlas→Billing 호출은 가설적 예시로 명시되어 calls 정의상 제외됨"
+        }
+      ],
+      "dictionary_gaps": []
+    },
+    {
+      "title": "Atlas와 Billing의 서비스 호출 관계",
+      "claims": [
+        {
+          "heading": "Atlas의 Billing 호출",
+          "text": "원문은 실제 구성으로서 Atlas가 Billing을 호출한다고 직접 명시한다. 이는 승인된 calls 관계(Service → Service)의 정의에 부합한다.",
+          "quote": "Actual configuration: Atlas calls Billing."
+        },
+        {
+          "heading": "가정 예시 문장의 제외",
+          "text": "두 번째 문장은 가정적 예시(hypothetical)로 표시되어 있어 calls 관계의 제외 기준에 해당하므로 사실로 추출하지 않는다. 동일한 관계는 첫 번째 문장에서 실제 구성으로 이미 추출되었다.",
+          "quote": "Another hypothetical example: Atlas calls Billing."
+        }
+      ],
+      "facts": [
+        {
+          "subject": "Atlas",
+          "predicate": "calls",
+          "object": "Billing",
+          "quote": "Actual configuration: Atlas calls Billing."
+        }
+      ],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [
+            0
+          ],
+          "claim_indices": [
+            0,
+            1
+          ],
+          "status": "extracted",
+          "reason": "실제 구성 문장에서 Atlas→Billing 직접 호출을 추출했고, 가정 예시 문장은 제외함."
+        }
+      ],
+      "dictionary_gaps": []
+    }
+  ]
+}

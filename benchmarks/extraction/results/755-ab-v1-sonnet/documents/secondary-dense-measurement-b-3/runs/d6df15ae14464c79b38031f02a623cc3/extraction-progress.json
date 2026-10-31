@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "pipeline": "approved-extraction-v1",
+  "run_id": "d6df15ae14464c79b38031f02a623cc3",
+  "calls_started": 1,
+  "resumed_from": null,
+  "resumed_chars": 0,
+  "completed_chars": 188,
+  "total_chars": 188,
+  "status": "complete"
+}

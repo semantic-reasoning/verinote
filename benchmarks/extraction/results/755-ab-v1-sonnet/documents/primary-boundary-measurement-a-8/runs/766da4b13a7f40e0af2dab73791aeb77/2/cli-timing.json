@@ -1,0 +1,31 @@
+{
+  "schema_version": 2,
+  "cli_call_id": "d5cec05500d84283bf881077e3b01379",
+  "agent": "claude",
+  "model": "sonnet",
+  "phase": null,
+  "cli_version": null,
+  "cli_version_source": "unknown",
+  "settings": {
+    "timeout_seconds": 90,
+    "max_output_bytes": 1048576,
+    "stdout_poll_seconds": 0.05
+  },
+  "status": "success",
+  "error_code": null,
+  "exit_code": null,
+  "offsets_seconds": {
+    "spawn_requested": null,
+    "spawn_returned": null,
+    "first_stdout": 0.013426209,
+    "exit_observed": null,
+    "interpret_started": 4.234536959,
+    "interpret_completed": 4.234616917,
+    "finished": 4.235275625,
+    "worker_acquired": 0.000821209,
+    "reset_completed": 0.007658459,
+    "request_sent": 0.00794275,
+    "response_received": 4.234152959
+  },
+  "process_reused": true
+}

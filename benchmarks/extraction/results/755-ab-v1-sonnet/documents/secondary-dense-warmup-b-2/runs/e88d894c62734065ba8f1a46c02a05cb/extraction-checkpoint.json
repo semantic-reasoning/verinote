@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "run_id": "e88d894c62734065ba8f1a46c02a05cb",
+  "contract": {
+    "pipeline": "approved-extraction-v1",
+    "prompt": "01f1cd0fdd8ee0d4063d7de559a6d74b2b79f27ad5b0313b2be36e365e815e65",
+    "repair_prompt": "59b4172e55f90dc32ee2f2bab351f80f6db446e79487ec74235bf7fcb3e9aea0",
+    "chunk_size": 8000,
+    "chunk_timeout": 360,
+    "document_id": "9e67a5e247954f70ad8400e515139c41",
+    "version": 1,
+    "source_sha256": "79733f4de70a615dc31ba44a3714d5e9f1778d51d37c6a1ef8dd03eb140c86d4",
+    "text_sha256": "79733f4de70a615dc31ba44a3714d5e9f1778d51d37c6a1ef8dd03eb140c86d4",
+    "agent": "claude",
+    "model": "sonnet",
+    "dictionary": {
+      "id": "3f81df457235489d9d6c8d5bcc08e12d",
+      "revision": 2,
+      "sha256": "9e2dd298b3fc0d0ff72b821e26eb53a158553b1ea926b56e764631e6ebc7b137",
+      "extraction_contract": 1
+    },
+    "dictionary_payload_sha256": "9e2dd298b3fc0d0ff72b821e26eb53a158553b1ea926b56e764631e6ebc7b137",
+    "extraction_options": {
+      "concurrency": 2,
+      "document_generation": 1,
+      "schema_version": 1,
+      "transport": {
+        "binary": "/Users/joykim/.local/share/claude/versions/2.1.311",
+        "model": "sonnet",
+        "capacity": 2,
+        "timeout": 90,
+        "max_output": 1048576,
+        "rate": null
+      }
+    }
+  },
+  "outputs": [
+    {
+      "title": "Atlas, Billing, Ledger 서비스 호출 관계",
+      "claims": [
+        {
+          "heading": "Atlas와 Billing의 직접 호출",
+          "text": "원문은 Atlas가 Billing을 직접 호출한다고 명시한다.",
+          "quote": "Atlas directly calls Billing."
+        },
+        {
+          "heading": "Billing과 Ledger의 직접 호출",
+          "text": "원문은 Billing이 Ledger를 직접 호출한다고 명시한다.",
+          "quote": "Billing directly calls Ledger."
+        },
+        {
+          "heading": "Atlas와 Ledger의 직접 호출 부정",
+          "text": "원문은 Atlas가 Ledger를 직접 호출하지 않는다고 명시한다. 부정된 관계이므로 calls 사실로 추출하지 않으며, Atlas가 Billing을 거쳐 간접적으로 Ledger에 도달하는 경로도 직접 호출 사실로 만들지 않는다.",
+          "quote": "Atlas does not directly call Ledger."
+        },
+        {
+          "heading": "Billing의 별칭",
+          "text": "원문은 Billing이 BILL이라는 이름으로도 불린다고 서술한다. 이는 승인된 별칭과 일치하며 별도 관계가 아니다.",
+          "quote": "Billing is also called BILL."
+        }
+      ],
+      "facts": [
+        {
+          "subject": "Atlas",
+          "predicate": "calls",
+          "object": "Billing",
+          "quote": "Atlas directly calls Billing."
+        },
+        {
+          "subject": "Billing",
+          "predicate": "calls",
+          "object": "Ledger",
+          "quote": "Billing directly calls Ledger."
+        }
+      ],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [
+            0,
+            1
+          ],
+          "claim_indices": [
+            0,
+            1,
+            2
+          ],
+          "status": "extracted",
+          "reason": "Atlas→Billing, Billing→Ledger 추출; Atlas→Ledger는 부정문이라 제외"
+        }
+      ],
+      "dictionary_gaps": []
+    }
+  ]
+}

@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "run_id": "80a4d23863544b048b230040da7583c5",
+  "contract": {
+    "pipeline": "approved-extraction-v1",
+    "prompt": "01f1cd0fdd8ee0d4063d7de559a6d74b2b79f27ad5b0313b2be36e365e815e65",
+    "repair_prompt": "59b4172e55f90dc32ee2f2bab351f80f6db446e79487ec74235bf7fcb3e9aea0",
+    "chunk_size": 8000,
+    "chunk_timeout": 360,
+    "document_id": "2829836df27d4ae8a7e09ab3fce7d46d",
+    "version": 1,
+    "source_sha256": "2e7f61628ac20bea53fd48afefd07548c7f5511290d34fd4f6d038e71b8fcf80",
+    "text_sha256": "2e7f61628ac20bea53fd48afefd07548c7f5511290d34fd4f6d038e71b8fcf80",
+    "agent": "claude",
+    "model": "sonnet",
+    "dictionary": {
+      "id": "82d251680d3048d7bde0558f6205af22",
+      "revision": 2,
+      "sha256": "e5a10560901c5de8418f9ab46028ff1a53a25bba5fb9f8ab81ff9ee9a68eb31b",
+      "extraction_contract": 1
+    },
+    "dictionary_payload_sha256": "e5a10560901c5de8418f9ab46028ff1a53a25bba5fb9f8ab81ff9ee9a68eb31b",
+    "extraction_options": {
+      "concurrency": 1,
+      "document_generation": 1,
+      "schema_version": 1,
+      "transport": {
+        "binary": "/Users/joykim/.local/share/claude/versions/2.1.311",
+        "model": "sonnet",
+        "capacity": 1,
+        "timeout": 90,
+        "max_output": 1048576,
+        "rate": null
+      }
+    }
+  },
+  "outputs": [
+    {
+      "title": "합성 문서: Atlas와 Billing 가정 예시",
+      "claims": [
+        {
+          "heading": "가정 예시의 서비스 호출",
+          "text": "원문은 Atlas가 Billing을 호출한다고 적지만 '가정 예시일 뿐'이라고 명시한다. 승인된 calls 관계는 가정적 호출을 제외하므로 직접 사실로 추출하지 않고 한계를 claims에 보존한다.",
+          "quote": "Hypothetical example only: Atlas calls Billing."
+        }
+      ],
+      "facts": [],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [],
+          "claim_indices": [
+            0
+          ],
+          "status": "not_representable",
+          "reason": "calls 정의가 가정적 호출을 제외하며 원문이 가정 예시임을 명시함"
+        }
+      ],
+      "dictionary_gaps": [
+        {
+          "code": "qualifier_not_representable",
+          "detail": "'가정 예시' 한정어가 붙은 호출 관계는 calls 정의상 제외되어 사실로 표현할 수 없다.",
+          "claim_indices": [
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Atlas와 Billing의 서비스 호출 관계",
+      "claims": [
+        {
+          "heading": "Atlas의 Billing 호출",
+          "text": "원문은 'Actual configuration'이라는 표현으로 Atlas가 Billing을 호출하는 실제 구성을 직접 서술한다. 이는 승인된 calls 관계(Service → Service)에 해당한다.",
+          "quote": "Actual configuration: Atlas calls Billing."
+        },
+        {
+          "heading": "가정 예시의 제외",
+          "text": "둘째 문장은 'Another hypothetical example'로 표시된 가정 예시이므로 실제 호출 사실로 추출하지 않았다. calls 관계 정의가 가정적 호출을 제외하며, 첫 번째 문장과 동일한 내용이라 별도 사실로 중복하지도 않았다.",
+          "quote": "Another hypothetical example: Atlas calls Billing."
+        }
+      ],
+      "facts": [
+        {
+          "subject": "Atlas",
+          "predicate": "calls",
+          "object": "Billing",
+          "quote": "Actual configuration: Atlas calls Billing."
+        }
+      ],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [
+            0
+          ],
+          "claim_indices": [
+            0,
+            1
+          ],
+          "status": "extracted",
+          "reason": "실제 구성 문장만 추출했고 가정 예시 문장은 정의에 따라 제외함"
+        }
+      ],
+      "dictionary_gaps": []
+    }
+  ]
+}
