@@ -38,6 +38,69 @@ class Benchmark(unittest.TestCase):
     def run_measure(self, name='out', **kwargs):
         return measure(self.root/name, limits=kwargs.pop('limits', Limits(repetitions=1)), **kwargs)
 
+    def test_owner_close_is_idempotent_and_timeout_views_do_not_own(self):
+        class Caller:
+            closes = 0
+            def close(self): self.closes += 1
+            def limited_timeout(self, *args): return self
+        base = Caller(); budget = Budget(Limits())
+        owner = BudgetCaller(base, budget, owns_caller=True)
+        clone = owner.limited_timeout('claude', 1)
+        clone.close()
+        self.assertEqual(base.closes, 0)
+        self.assertIs(clone.lifecycle, owner.lifecycle)
+        self.assertIs(clone.budget, budget)
+        owner.close(); owner.close()
+        self.assertEqual(base.closes, 1)
+
+    def test_partial_construction_and_close_errors_do_not_hide_primary_failure(self):
+        class Owned(FakeCLI):
+            closes = 0
+            def close(fake):
+                fake.closes += 1
+                super().close()
+                raise OSError('PRIVATE_CLOSE')
+        for broken, expected in ((False, 'cleanup_error'), (True, 'runner_error')):
+            fake = Owned(load_case('short'), 'normal')
+            if broken:
+                with patch('verinote.extraction_benchmark.Service', side_effect=ValueError('PRIVATE_SETUP')):
+                    result = self.run_measure('setup', cases=['short'], caller_factory=lambda _, fake=fake: fake)
+            else:
+                result = self.run_measure('close', cases=['short'], caller_factory=lambda _, fake=fake: fake)
+            self.assertEqual(result['stop_reason'], expected)
+            self.assertEqual(result['status'], 'stopped')
+            self.assertEqual(result['cleanup_errors'], 1)
+            self.assertEqual(fake.closes, 1)
+            self.assertNotIn('PRIVATE_', json.dumps(result))
+            self.assertEqual(result, json.loads((self.root/('setup' if broken else 'close')/'report.json').read_text()))
+
+    def test_process_observation_requires_verified_evidence_and_shared_owner(self):
+        caller = BudgetCaller(FakeCLI(load_case('short'), 'normal'), Budget(Limits()))
+        clone = caller.limited_timeout('claude', 1)
+        self.assertEqual(clone.process_observation(None), 'unknown')
+        self.assertEqual(clone.process_observation({'schema_version': 1}), 'unknown')
+        no_spawn = {'schema_version': 2, 'process_reused': False, 'offsets_seconds': {'spawn_returned': None}}
+        self.assertEqual(clone.process_observation(no_spawn), 'unknown')
+        started = no_spawn | {'offsets_seconds': {'spawn_returned': .01}}
+        self.assertEqual(clone.process_observation(started), 'started')
+        self.assertEqual(caller.process_observation(started | {'process_reused': True}), 'reused')
+        self.assertEqual(caller.process_observation(started), 'restarted')
+        # Missing records cannot create process-reuse evidence.
+        fresh = BudgetCaller(caller.caller, caller.budget)
+        self.assertEqual(fresh.process_observation(started), 'started')
+        caller.caller.close()
+
+    def test_modes_and_version_are_validated_before_output_creation(self):
+        invalid = [dict(process_mode='unknown'), dict(process_mode='document'),
+                   dict(process_mode='batch', mode='cli', agent='agy', model='m'),
+                   dict(process_mode='batch', mode='cli', agent='claude', model='m', caller_factory=lambda _: None),
+                   dict(cli_version='1.0'), dict(mode='cli', model='m', cli_version='bad\nvalue'),
+                   dict(mode='cli', model='m', cli_version='x'*81)]
+        for index, kwargs in enumerate(invalid):
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises(ValueError): self.run_measure(str(index), **kwargs)
+                self.assertFalse((self.root/str(index)).exists())
+
     def test_normal_fresh_repeats_all_cases_quality_and_no_user_store(self):
         sentinel = self.root/'user.sqlite3'; sentinel.write_bytes(b'PRIVATE_USER_DATA')
         roots = []

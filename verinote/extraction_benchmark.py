@@ -3,6 +3,7 @@ import copy
 import hashlib
 import json
 import math
+import re
 import statistics
 import sys
 import tempfile
@@ -143,18 +144,44 @@ def call_metrics(folder, agent, model):
     except (OSError, ValueError, TypeError, KeyError, AttributeError): pass
     timing = read_cli_timing(folder, '.')
     if timing.get('available') and timing['cli_call_id'] == clean['cli_call_id'] and timing['agent'] == agent and timing['model'] == model:
-        clean['cli_timing'] = {k: timing[k] for k in ('status', 'error_code', 'exit_code', 'offsets_seconds', 'settings')}
+        clean['cli_timing'] = {k: timing[k] for k in ('schema_version', 'status', 'error_code', 'exit_code', 'offsets_seconds', 'durations_seconds', 'settings')}
+        clean['cli_timing']['process_reused'] = timing.get('process_reused')
     return clean
 
 
 class BudgetCaller:
-    def __init__(self, caller, budget, notify=None): self.caller, self.budget, self.notify = caller, budget, notify
+    def __init__(self, caller, budget, notify=None, *, owns_caller=False, identity=None, lifecycle=None):
+        self.caller, self.budget, self.notify = caller, budget, notify
+        self.owns_caller, self.closed = owns_caller, False
+        self.identity = identity or {}
+        self.lifecycle = lifecycle if lifecycle is not None else {'observed': False}
+
+    def close(self):
+        if self.owns_caller and not self.closed:
+            self.closed = True
+            if hasattr(self.caller, 'close'): self.caller.close()
+
     def limited_timeout(self, agent, seconds):
-        return BudgetCaller(self.caller.limited_timeout(agent, seconds), self.budget, self.notify)
+        return BudgetCaller(self.caller.limited_timeout(agent, seconds), self.budget, self.notify,
+                            identity=self.identity, lifecycle=self.lifecycle)
+
+    def process_observation(self, timing):
+        if not timing or timing['schema_version'] != 2:
+            return 'unknown'
+        if timing['process_reused'] is True:
+            self.lifecycle['observed'] = True
+            return 'reused'
+        if timing['process_reused'] is False and timing['offsets_seconds']['spawn_returned'] is not None:
+            state = 'restarted' if self.lifecycle['observed'] else 'started'
+            self.lifecycle['observed'] = True
+            return state
+        return 'unknown'
+
     def complete(self, agent, model, prompt, folder):
         folder = Path(folder); repair = folder.name == 'quote-repair'
         chunk = int(folder.parent.name if repair else folder.name)
         row = self.budget.reserve(chunk, repair)
+        row.update(self.identity)
         previous = call_metrics(folder, agent, model)['cli_call_id']
         started = self.budget.clock()
         try:
@@ -178,6 +205,7 @@ class BudgetCaller:
             with self.budget.lock:
                 row['wrapper_seconds'] = max(0, self.budget.clock()-started)
                 self.budget.finish(row, metrics)
+                row['process_observation'] = self.process_observation(metrics['cli_timing'])
             if self.notify is not None: self.notify()
 
 
@@ -267,10 +295,19 @@ class _Executor(ThreadPoolExecutor):
 
 
 def measure(output, *, cases=('short', 'long'), scenario='normal', mode='fake', agent='agy', model='',
-            limits=None, timeout=30, caller_factory=None, clock=None):
+            limits=None, timeout=30, caller_factory=None, clock=None, process_mode='oneshot', cli_version=None):
     """No config/user-root parameter: only versioned bundled synthetic documents."""
     limits = limits or Limits()
     if mode not in ('fake', 'cli') or agent not in CLI_PROVIDERS: raise ValueError('측정 실행 모드·에이전트 오류')
+    if process_mode not in ('oneshot', 'document', 'batch'):
+        raise ValueError('프로세스 수명 모드 오류')
+    if process_mode != 'oneshot' and (mode != 'cli' or agent != 'claude'):
+        raise ValueError('프로세스 재사용 측정은 CLI Claude만 지원합니다.')
+    if process_mode == 'batch' and caller_factory is not None:
+        raise ValueError('배치 재사용은 문서별 caller_factory를 지원하지 않습니다.')
+    if cli_version is not None and (mode != 'cli' or not isinstance(cli_version, str)
+            or not re.fullmatch(r'[0-9A-Za-z.+_-]{1,80}', cli_version)):
+        raise ValueError('CLI 버전 선언 오류')
     model = validate_model(model, agent)
     if mode == 'cli' and not model: raise ValueError('실제 측정에는 명시적인 모델 ID가 필요합니다.')
     if scenario not in ('normal', 'repair', 'failure', 'timeout') or (mode == 'cli' and scenario != 'normal'): raise ValueError('측정 시나리오 오류')
@@ -281,21 +318,35 @@ def measure(output, *, cases=('short', 'long'), scenario='normal', mode='fake', 
     writer = ReportWriter(output); budget = Budget(limits, clock=clock)
     try: package_version = version('verinote')
     except PackageNotFoundError: package_version = None
-    report = {'schema_version': 1, 'mode': mode, 'synthetic_responses': mode == 'fake', 'status': 'running',
+    report = {'schema_version': 2, 'mode': mode, 'synthetic_responses': mode == 'fake', 'status': 'running',
               'stop_reason': None, 'conditions': {'agent': agent, 'requested_model': model, 'scenario': scenario,
-              'package_version': package_version, 'cli_version': None, 'cli_version_source': 'unknown_not_probed',
+              'package_version': package_version, 'cli_version': cli_version,
+              'cli_version_source': 'operator_supplied_unverified' if cli_version else 'unknown_not_probed',
+              'process_mode': process_mode, 'owner_scope': 'batch' if process_mode == 'batch' else 'document',
+              'provider_cache_state': 'unknown', 'warmup': 'none',
+              'row_seconds_includes_transport_close': process_mode != 'batch',
               'effective_timeout_seconds': timeout, 'max_output_bytes': 1024*1024, 'chunk_size': 8000,
               'input_reuse': 'fresh_store_per_repetition', 'limits': vars(limits),
               'dataset_version': 1, 'evaluator_version': 1, 'extraction_contract': EXTRACTION_CONTRACT_VERSION,
               'prompt_sha256': digest(EXTRACTION_PROMPT.encode()), 'repair_prompt_sha256': digest(QUOTE_REPAIR_PROMPT.encode()),
               'human_review': load_manifest()['human_review'], 'cases': [{'id': c['case_id'], 'source_sha256': c['source_sha256'],
               'case_sha256': sha(c), 'dictionary_sha256': sha(c['dictionary'])} for c in fixtures]},
-              'repetitions': [], 'attempts': budget.attempts, 'budget': budget.summary(), 'summary': None}
+              'repetitions': [], 'attempts': budget.attempts, 'budget': budget.summary(), 'summary': None,
+              'cleanup_errors': 0, 'batch_teardown_seconds': None}
     def save():
         with budget.lock:
             report['budget'] = budget.summary()
             try: writer.write(report)
             except (OSError, ValueError): budget.stop('report_write_failed'); raise Stopped('report_write_failed') from None
+    def close(resource):
+        if resource is None: return
+        try:
+            resource.close()
+        except Exception:
+            report['cleanup_errors'] += 1
+            budget.stop('cleanup_error')
+
+    batch_owner = None
     save()
     try:
         for repetition in range(1, limits.repetitions+1):
@@ -306,17 +357,25 @@ def measure(output, *, cases=('short', 'long'), scenario='normal', mode='fake', 
                 report['repetitions'].append(row); save(); start = budget.clock()
                 with tempfile.TemporaryDirectory(prefix='verinote-benchmark-') as temp:
                     root = Path(temp); store = Store(root/'state.sqlite3')
-                    service = None; run = None
+                    service = None; run = None; caller = None
                     try:
                         doc = store.register('Synthetic '+case['case_id'], 'synthetic.md', case['source'].encode(), case['source'])
                         seed = store.create_run(doc['id'], agent, model, 'ontology', 1, 1)
                         store.run_status(seed['id'], 'running'); store.finish_run(seed['id'], dictionary=case['dictionary'])
                         item = next(i for i in store.document(doc['id'])['items'] if i['kind'] == 'ontology')
                         store.review(item['id'], item['revision'], 'approved', 'Synthetic fixture', 'Versioned human-reviewed gold')
-                        # Preserve this benchmark's documented fresh-process baseline.
-                        base = caller_factory(case) if caller_factory else (FakeCLI(case, scenario) if mode == 'fake' else CLI(timeout=timeout, persistent=False))
-                        base.timeout = timeout
-                        service = Service(store, root, BudgetCaller(base, budget, save))
+                        if process_mode == 'batch':
+                            if batch_owner is None:
+                                batch_owner = BudgetCaller(CLI(timeout=timeout), budget, owns_caller=True)
+                            caller = BudgetCaller(batch_owner.caller, budget, save, lifecycle=batch_owner.lifecycle,
+                                                  identity={'owner_id': 1, 'case_id': case['case_id'], 'repetition': repetition})
+                        else:
+                            base = caller_factory(case) if caller_factory else (FakeCLI(case, scenario) if mode == 'fake'
+                                    else CLI(timeout=timeout, persistent=process_mode == 'document'))
+                            caller = BudgetCaller(base, budget, save, owns_caller=True,
+                                                  identity={'owner_id': len(report['repetitions']), 'case_id': case['case_id'], 'repetition': repetition})
+                            base.timeout = timeout
+                        service = Service(store, root, caller)
                         service.pool.shutdown(wait=True)
                         pool = _Executor(max_workers=1, thread_name_prefix='verinote-benchmark')
                         service.pool = pool
@@ -333,7 +392,9 @@ def measure(output, *, cases=('short', 'long'), scenario='normal', mode='fake', 
                         row['status'] = 'error'
                         raise
                     finally:
-                        if service is not None: service.pool.shutdown(wait=True)
+                        close(service)
+                        # Also covers constructor failure; owner close is idempotent.
+                        close(caller)
                         # Worker may validate a prefix while the main thread is interrupted.
                         # Read only after its final records exist, before removing its root.
                         if run is not None:
@@ -354,6 +415,11 @@ def measure(output, *, cases=('short', 'long'), scenario='normal', mode='fake', 
     except KeyboardInterrupt: budget.stop('interrupted')
     except Exception: budget.stop('runner_error')
     finally:
+        if batch_owner is not None:
+            teardown_started = budget.clock()
+            close(batch_owner)
+            report['batch_teardown_seconds'] = max(0, budget.clock()-teardown_started)
+        if budget.remaining() <= 0: budget.stop('time_limit')
         with budget.lock:
             report['stop_reason'] = budget.reason
             report['status'] = 'stopped' if budget.reason else 'completed'
