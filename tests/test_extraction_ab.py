@@ -3,6 +3,7 @@ import copy
 import unittest
 
 from verinote.extraction_ab import (
+    _totals,
     evaluate_report,
     experiment_plan,
     paired_statistics,
@@ -46,6 +47,15 @@ def truncate(report, documents):
 
 
 class FrozenContract(unittest.TestCase):
+    def test_cost_sum_is_stable_across_python_versions(self):
+        rows = [{'reported_usd': cost, 'tokens': {'input': 1, 'output': 2}}
+                for cost in [1e16, 1.0, 1.0]]
+        totals = _totals(rows)
+        self.assertEqual(totals['reported_usd'], 10000000000000002.0)
+        self.assertEqual(totals['tokens'], 9)
+        self.assertIs(type(totals['tokens']), int)
+        self.assertEqual(_totals([])['reported_usd'], 0)
+
     def test_actual_model_allowlist_does_not_export_aliases_or_provider_text(self):
         for value in ('sonnet', 'claude-sonnet-latest', 'claude-sonnet-4-latest', '(multiple models)', 'PRIVATE_NESTED', None):
             self.assertIsNone(resolved_model(value))

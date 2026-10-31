@@ -11,7 +11,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from verinote.extraction_ab_runner import file_index
+from verinote.extraction_ab_runner import evaluate_saved, file_index
 from verinote.extraction_diagnostics import diagnose_saved, interval_union, known_sum
 from verinote.extraction_evaluation import evaluate_case, ideal_outputs, load_case
 from verinote.ontology import extraction_quote_issues
@@ -21,12 +21,21 @@ EVIDENCE = ROOT/'benchmarks/extraction/results/755-ab-v1-sonnet'
 
 
 class Diagnostics(unittest.TestCase):
+    def test_known_sum_preserves_integer_and_unknown_contracts(self):
+        self.assertEqual(known_sum([1e16, 1.0, 1.0]), 10000000000000002.0)
+        self.assertEqual(known_sum([]), 0)
+        self.assertEqual(known_sum([10**20, 1, 1]), 10**20+2)
+        self.assertIs(type(known_sum([1, 2])), int)
+        self.assertIsNone(known_sum([1.0, None]))
+
     def test_actual_evidence_deterministic_and_read_only(self):
         before = file_index(EVIDENCE)
         with patch('subprocess.Popen', side_effect=AssertionError('no subprocess')):
             result = diagnose_saved(EVIDENCE)
             self.assertEqual(result, diagnose_saved(EVIDENCE))
         self.assertEqual(file_index(EVIDENCE), before)
+        self.assertEqual(evaluate_saved(EVIDENCE), json.loads((EVIDENCE/'evaluation.json').read_text()))
+        self.assertEqual(result, json.loads((ROOT/'benchmarks/extraction/diagnostics/755-ab-v1-sonnet.json').read_text()))
         self.assertEqual(result['accounting'], {'calls': 137, 'tokens': 880878, 'reported_usd': 2.8507081})
         self.assertEqual(len(result['timing']), 85)
         self.assertEqual(len(result['cold_long_calls']), 12)

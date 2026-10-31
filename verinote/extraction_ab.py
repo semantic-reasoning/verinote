@@ -90,7 +90,7 @@ def _known(values):
 
 
 def _totals(values):
-    return {'reported_usd': sum(v['reported_usd'] for v in values),
+    return {'reported_usd': math.fsum(v['reported_usd'] for v in values) if values else 0,
             'tokens': sum(v['tokens']['input']+v['tokens']['output'] for v in values),
             'errors': sum(v.get('status') != 'success' for v in values),
             'timeouts': sum((v.get('cli_timing') or {}).get('error_code') == 'timeout' for v in values),
