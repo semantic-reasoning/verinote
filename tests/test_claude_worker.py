@@ -245,6 +245,7 @@ class PersistentClaude(unittest.TestCase):
     def test_service_closes_transport_after_draining_pool(self):
         from verinote.service import Service
         service = Service.__new__(Service)
+        service.extraction_lock = threading.RLock(); service.extraction_owner = None; service.closed = False
         calls = []
         service.pool = Mock()
         service.pool.shutdown.side_effect = lambda **_: calls.append('drained')

@@ -109,6 +109,7 @@ class Budget:
             row = {'attempt': len(self.attempts)+1, 'chunk': chunk, 'repair': repair, 'status': 'running',
                    'purpose': purpose, 'request_kind': 'repair' if repair else ('warmup' if purpose == 'warmup' else 'initial'),
                    'admission_state': 'reserved', 'dispatch_authorized': False, 'blocked_reason': None,
+                   'worker_scope': None, 'worker_identity': None,
                    'tokens': dict.fromkeys(TOKEN_KEYS), 'usage_complete': False, 'reported_usd': None,
                    'estimated_usd': None, 'reported_credits': None, 'estimated_credits': None,
                    'credit_unit_sha256': None, 'estimated_credit_unit_sha256': None, 'cli_call_id': None, 'cli_timing': None,
@@ -142,7 +143,8 @@ class Budget:
             if status not in ('success', 'error'): raise ValueError('attempt status')
             # Only the same numeric export contract can modify usage fields.
             fields = {'tokens', 'usage_complete', 'reported_usd', 'estimated_usd', 'reported_credits',
-                      'estimated_credits', 'credit_unit_sha256', 'estimated_credit_unit_sha256', 'cli_call_id', 'cli_timing'}
+                      'estimated_credits', 'credit_unit_sha256', 'estimated_credit_unit_sha256', 'cli_call_id', 'cli_timing',
+                      'worker_scope', 'worker_identity'}
             if set(usage) - fields: raise ValueError('attempt usage fields')
             data = copy.deepcopy(usage)
             if (not isinstance(data.get('tokens'), dict) or set(data['tokens']) != set(TOKEN_KEYS)
@@ -175,7 +177,7 @@ class Budget:
 
 def call_metrics(folder, agent, model):
     """Numbers and verified identifiers only; no provider text reaches exports."""
-    clean: dict = {'tokens': dict.fromkeys(TOKEN_KEYS), 'usage_complete': False, 'reported_usd': None,
+    clean: dict = {'worker_scope': None, 'worker_identity': None, 'tokens': dict.fromkeys(TOKEN_KEYS), 'usage_complete': False, 'reported_usd': None,
              'estimated_usd': None, 'reported_credits': None, 'estimated_credits': None,
                    'credit_unit_sha256': None, 'estimated_credit_unit_sha256': None, 'cli_call_id': None, 'cli_timing': None}
     try:
@@ -186,6 +188,10 @@ def call_metrics(folder, agent, model):
                 or usage.get('agent') != agent or usage.get('requested_model') != model
                 or type(usage.get('schema_version')) is not int or usage['schema_version'] != 1
                 or not isinstance(usage.get('tokens'), dict)): return clean
+        marked = any(key in record for record in (meta, usage) for key in ('worker_scope', 'worker_identity'))
+        if marked:
+            clean['worker_scope'] = ('extraction_pool' if meta.get('worker_scope') == usage.get('worker_scope') == 'extraction_pool'
+                                     else 'unknown')
         clean.update(tokens={k: number(usage['tokens'].get(k), True) for k in TOKEN_KEYS},
                      usage_complete=usage.get('complete') is True, cli_call_id=cid,
                      reported_usd=amount(usage.get('reported_usd')), estimated_usd=amount(usage.get('estimated_usd')))
@@ -204,7 +210,21 @@ def call_metrics(folder, agent, model):
     if timing.get('available') and timing['cli_call_id'] == clean['cli_call_id'] and timing['agent'] == agent and timing['model'] == model:
         clean['cli_timing'] = {k: timing[k] for k in ('schema_version', 'status', 'error_code', 'exit_code', 'offsets_seconds', 'durations_seconds', 'settings')}
         clean['cli_timing']['process_reused'] = timing.get('process_reused')
+        if clean['worker_scope'] == 'extraction_pool':
+            clean['worker_identity'] = _worker_identity(meta, usage)
     return clean
+
+
+def _worker_identity(meta, usage):
+    value = meta.get('worker_identity')
+    if (meta.get('worker_scope') != 'extraction_pool' or usage.get('worker_scope') != 'extraction_pool'
+            or not isinstance(value, dict) or set(value) != {'pool_id', 'slot_id', 'worker_id', 'generation'}
+            or usage.get('worker_identity') != value
+            or any(not isinstance(value[k], str) or not re.fullmatch(r'[a-f0-9]{32}', value[k]) for k in ('pool_id', 'worker_id'))
+            or type(value['slot_id']) is not int or value['slot_id'] not in (1, 2)
+            or type(value['generation']) is not int or not 1 <= value['generation'] <= 10**9):
+        return None
+    return dict(value)
 
 
 class BudgetCaller:
@@ -224,9 +244,16 @@ class BudgetCaller:
         return BudgetCaller(self.caller.limited_timeout(agent, seconds), self.budget, self.notify,
                             identity=self.identity, lifecycle=self.lifecycle, purpose=self.purpose)
 
-    def process_observation(self, timing):
+    def process_observation(self, timing, worker_identity=None, worker_scope=None):
         with self.budget.lock:
             if not timing or timing['schema_version'] != 2:
+                return 'unknown'
+            if worker_scope is not None:
+                if worker_scope != 'extraction_pool' or worker_identity is None: return 'unknown'
+                # Generation is fixed at worker creation, independent of callback arrival order.
+                if timing['process_reused'] is True: return 'reused'
+                if timing['process_reused'] is False and timing['offsets_seconds']['spawn_returned'] is not None:
+                    return 'started' if worker_identity['generation'] == 1 else 'restarted'
                 return 'unknown'
             if timing['process_reused'] is True:
                 self.lifecycle['observed'] = True
@@ -265,7 +292,7 @@ class BudgetCaller:
                                'reported_usd': None, 'estimated_usd': None, 'reported_credits': None, 'estimated_credits': None,
                                'credit_unit_sha256': None, 'estimated_credit_unit_sha256': None, 'cli_call_id': None, 'cli_timing': None}
                 with self.budget.lock:
-                    observation = self.process_observation(metrics['cli_timing'])
+                    observation = self.process_observation(metrics['cli_timing'], metrics.get('worker_identity'), metrics.get('worker_scope'))
                     self.budget.finish(row, metrics, status=status, seconds=max(0, self.budget.clock()-started), observation=observation)
             else:
                 self.budget.block(row, seconds=max(0, self.budget.clock()-started))

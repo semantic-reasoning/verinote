@@ -117,3 +117,15 @@ callback 실패가 원래 호출 예외를 덮지 않는다. 정상 파일은 at
 
 검증: `python -m unittest discover -s tests -p 'test_extraction_budget*.py'` 및 기존 benchmark 테스트.
 실제 모델·추가 비용 없이 cap 경쟁, 중단 전후, 역순 완료·중복 방지, in-flight 사용량, callback/저장 경합을 검증한다.
+
+### 전용 pool의 시작·재시작 관측
+
+v3 attempt에는 선택적 worker_scope/worker_identity를 보존한다. scope가 extraction_pool이면
+run.json과 usage.json의 일치하는 pool_id/slot_id/worker_id/generation을 검증하고, 기존 timing의
+call ID·agent/model 연결이 유효할 때만 export한다. 잘못된 문자열·슬롯·세대·불일치는 unknown이다.
+run/usage 어느 한쪽에라도 worker_scope 또는 worker_identity가 있으면 전용 기록 검증 대상으로 취급한다.
+한쪽 필드가 빠졌다고 기존 single-manager로 fallback하지 않는다.
+전용 pool은 생성 시점에 확정한 generation으로 started/restarted를 구분하므로 callback 완료 순서에
+의존하지 않는다. 두 slot의 첫 spawn은 각각 started이고, 같은 slot의 새 generation만 restarted다.
+기존 단일 manager는 기존 lifecycle 관측을 유지하며 과거 결과를 전용 pool으로 소급 분류하지 않는다.
+전용 owner 생성·종료와 기본 CLI의 차이는 [worker 계약](claude-worker.md)에 있다.
