@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from .documents import chunks
-from .ontology import EXTRACTION_CONTRACT_VERSION, dictionary_fact, validate_dictionary
+from .ontology import dictionary_fact, validate_dictionary
 
 DATASET_VERSION = 1
 EVALUATOR_VERSION = 1
@@ -103,7 +103,7 @@ def load_manifest(root=None):
     if (not isinstance(manifest, dict) or set(manifest) != {'dataset_version', 'chunk_size', 'extraction_contract', 'human_review', 'cases'}
             or type(manifest['dataset_version']) is not int or manifest['dataset_version'] != DATASET_VERSION
             or type(manifest['chunk_size']) is not int or manifest['chunk_size'] != 8000
-            or type(manifest['extraction_contract']) is not int or manifest['extraction_contract'] != EXTRACTION_CONTRACT_VERSION
+            or type(manifest['extraction_contract']) is not int or manifest['extraction_contract'] != 1
             or not isinstance(manifest['cases'], list) or not 1 <= len(manifest['cases']) <= 32
             or not isinstance(manifest['human_review'], dict) or set(manifest['human_review']) != {'status', 'evidence'}
             or manifest['human_review'].get('status') not in ('pending', 'approved')):
@@ -188,7 +188,7 @@ def evaluate_case(case, chunk_outputs):
             'passed': not (missing or extras or invalid or citation_errors or duplicates)}
 
 
-def ideal_outputs(case):
+def ideal_outputs(case, *, contract_version=1):
     """Deterministic synthetic oracle for tests/runners; not an evaluator repair."""
     from .ontology import extraction_quote_issues
     from .service import validate_page
@@ -200,11 +200,18 @@ def ideal_outputs(case):
                 triple = _canonical(case, _triple(gold['variants'][0]))
                 facts.append(dict(zip(('subject', 'predicate', 'object'), triple, strict=True), quote=gold['sample_quote']))
         first_line = text.splitlines()[0] or text[:80]
-        output = {'title': 'Synthetic extraction fixture', 'claims': [{'heading': 'Fixture', 'text': first_line, 'quote': first_line}],
+        output: dict = {'title': 'Synthetic extraction fixture', 'claims': [{'heading': 'Fixture', 'text': first_line, 'quote': first_line}],
                   'facts': facts, 'coverage': [{'predicate': r['id'], 'fact_indices': [i for i, f in enumerate(facts) if f['predicate'] == r['id']],
                                                'claim_indices': [], 'status': 'extracted' if any(f['predicate'] == r['id'] for f in facts) else 'no_evidence',
                                                'reason': 'Synthetic fixture annotation'} for r in case['dictionary']['relations']], 'dictionary_gaps': []}
-        if extraction_quote_issues(output, text, case['dictionary'], require_coverage=True): raise ValueError('모범 응답 인용 오류')
+        if contract_version == 2:
+            # Synthetic v2 oracle only: the entire source chunk is explicit unique context.
+            # Never apply this to model responses or historical v1 outputs.
+            for row in output['claims']+output['facts']:
+                quote = row['quote'].strip()
+                first = text.find(quote)
+                if first >= 0 and text.find(quote, first+1) >= 0: row['quote'] = text.strip()
+        if extraction_quote_issues(output, text, case['dictionary'], require_coverage=True, contract_version=contract_version): raise ValueError('모범 응답 인용 오류')
         validate_page(output, text)
         for fact in facts: dictionary_fact(fact, text, case['dictionary'])
         result.append({'index': index, 'output': output})

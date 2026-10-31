@@ -58,7 +58,7 @@ class Diagnostics(unittest.TestCase):
         case['gold'][0]['evidence'] = [{'start': 22, 'end': 42, 'text': 'Atlas calls Billing.'}]
         outputs = ideal_outputs(case)
         outputs[0]['output']['facts'][0]['quote'] = 'Atlas calls Billing.'
-        self.assertEqual(extraction_quote_issues(outputs[0]['output'], source, case['dictionary'], require_coverage=True), [])
+        self.assertEqual(extraction_quote_issues(outputs[0]['output'], source, case['dictionary'], require_coverage=True, contract_version=1), [])
         score = evaluate_case(case, outputs)
         self.assertEqual(score['citation_errors'][0]['reason'], 'ambiguous_occurrence')
         self.assertEqual(score['grounded_true_positive_count'], 0)

@@ -33,6 +33,7 @@ from .ontology import (
     EXTRACTION_CONTRACT_VERSION,
     EXTRACTION_PROMPT,
     QUOTE_REPAIR_PROMPT,
+    extraction_prompts,
 )
 from .service import Service
 from .store import Store, digest
@@ -326,7 +327,7 @@ class FakeCLI(CLI):
     """Labeled synthetic oracle, exercising normal validation and repair paths."""
     def __init__(self, case, scenario):
         super().__init__()
-        self.outputs = ideal_outputs(case); self.scenario = scenario
+        self.outputs = ideal_outputs(case, contract_version=EXTRACTION_CONTRACT_VERSION); self.scenario = scenario
         self.state = {'calls': 0}; self.case = case
     def complete(self, agent, model, prompt, folder, *, phase=None):
         folder = Path(folder); folder.mkdir(parents=True, exist_ok=True)
@@ -363,10 +364,11 @@ def quality_report(case, root, run):
     try:
         value = _read(root/'runs'/run['id']/'extraction-checkpoint.json', CHECKPOINT_LIMIT)
         contract = value['contract']; pin = run['ontology']
+        prompt, repair_prompt = extraction_prompts(pin['extraction_contract'])
         expected = {'document_id': run['document_id'], 'version': run['version'], 'text_sha256': digest(case['source'].encode()),
                     'source_sha256': digest(case['source'].encode()), 'agent': run['agent'], 'model': run['model'],
-                    'dictionary_payload_sha256': digest(pin['payload']), 'prompt': digest(EXTRACTION_PROMPT.encode()),
-                    'repair_prompt': digest(QUOTE_REPAIR_PROMPT.encode()), 'chunk_size': 8000,
+                    'dictionary_payload_sha256': digest(pin['payload']), 'prompt': digest(prompt.encode()),
+                    'repair_prompt': digest(repair_prompt.encode()), 'chunk_size': 8000,
                     'dictionary': {k: pin[k] for k in ('id', 'revision', 'sha256', 'extraction_contract')}}
         if run.get('extraction_options') is not None: expected['extraction_options'] = run['extraction_options']
         if (value['run_id'] != run['id'] or value['schema_version'] != 1 or any(contract.get(k) != v for k, v in expected.items())

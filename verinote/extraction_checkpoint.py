@@ -4,9 +4,8 @@ import json
 
 from .documents import chunks
 from .ontology import (
-    EXTRACTION_PROMPT,
-    QUOTE_REPAIR_PROMPT,
     dictionary_fact,
+    extraction_prompts,
     extraction_quote_issues,
 )
 from .store import canonical, digest
@@ -36,9 +35,10 @@ class ExtractionCheckpoint:
         self.outputs: list[dict] = []
         self.warnings: list[str] = []
         pin = run['ontology']
+        prompt, repair_prompt = extraction_prompts(pin['extraction_contract'])
         self.contract = {
-            'pipeline': PIPELINE, 'prompt': digest(EXTRACTION_PROMPT.encode()),
-            'repair_prompt': digest(QUOTE_REPAIR_PROMPT.encode()), 'chunk_size': 8000,
+            'pipeline': PIPELINE, 'prompt': digest(prompt.encode()),
+            'repair_prompt': digest(repair_prompt.encode()), 'chunk_size': 8000,
             'chunk_timeout': CHUNK_TIMEOUT, 'document_id': run['document_id'],
             'version': run['version'], 'source_sha256': doc['sha256'],
             'text_sha256': digest(doc['text'].encode()), 'agent': run['agent'], 'model': run['model'],
@@ -82,7 +82,7 @@ class ExtractionCheckpoint:
 
     def validated(self, output, chunk):
         from .service import validate_page
-        if extraction_quote_issues(output, chunk, self.run['ontology']['payload'], require_coverage=True):
+        if extraction_quote_issues(output, chunk, self.run['ontology']['payload'], require_coverage=True, contract_version=self.run['ontology']['extraction_contract']):
             raise ValueError('checkpoint contains ungrounded quotes')
         page = validate_page(output, chunk)
         facts = [dictionary_fact(fact, chunk, self.run['ontology']['payload']) for fact in output['facts']]

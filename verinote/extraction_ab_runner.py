@@ -32,7 +32,13 @@ from .extraction_benchmark import (
 from .extraction_evaluation import _read, load_case
 from .extraction_timing import read_extraction_timing
 from .extraction_transport import ExtractionSpec, ExtractionTransport
-from .ontology import EXTRACTION_PROMPT, QUOTE_REPAIR_PROMPT
+from .ontology import (
+    EXTRACTION_CONTRACT_VERSION,
+    EXTRACTION_PROMPT,
+    QUOTE_REPAIR_PROMPT,
+    extraction_prompts,
+    extraction_version_from_hashes,
+)
 from .store import Store, canonical, digest
 from .usage import atomic_json, decode_transport
 
@@ -72,7 +78,7 @@ def capture_environment(model):
             'tree': _command(['git', 'rev-parse', 'HEAD^{tree}'], repo),
             'cli_version': match[1], 'cli_version_source': 'cli_version_command',
             'python': platform.python_version(), 'platform': platform.platform(),
-            'requested_model': model, 'transport': spec.to_dict(), 'provider_cache_state': 'unknown',
+            'requested_model': model, 'extraction_contract': EXTRACTION_CONTRACT_VERSION, 'transport': spec.to_dict(), 'provider_cache_state': 'unknown',
             'contract_sha256': _hash(repo/'docs/extraction-sonnet-baseline-completed.md'), 'plan_sha256': sha(experiment_plan()),
             'dictionary_sha256': {key: digest(load_case(key)['dictionary']) for key in ('short', 'long', 'dense', 'none', 'boundary')},
             'source_hashes': {p.relative_to(repo).as_posix(): _hash(p) for p in source_files},
@@ -87,7 +93,8 @@ def run_experiment(output, *, model, limits, owner_factory=None, clock=None, inv
         raise ValueError('A/B 모델·예산 설정 오류')
     budget = Budget(limits, clock=clock)
     synthetic = owner_factory is not None
-    environment = ({'requested_model': model, 'python': platform.python_version(), 'synthetic': True}
+    environment = ({'requested_model': model, 'python': platform.python_version(), 'synthetic': True,
+                    'extraction_contract': EXTRACTION_CONTRACT_VERSION}
                    if synthetic else capture_environment(model))
     environment['invocation'] = list(invocation) if invocation is not None else ['python_api', 'run_experiment']
     writer = ReportWriter(output); root = writer.folder
@@ -194,12 +201,17 @@ def evaluate_saved(root):
         if report.get('cold_boundary') != 'before_store_and_owner_through_evaluation_and_owner_close':
             raise ValueError('cold_boundary_contract')
         environment = report['environment']
+        contract_version = environment.get('extraction_contract', 1)
+        if type(contract_version) is not int or contract_version not in (1, 2):
+            raise ValueError('extraction_contract_version')
+        extraction_prompts(contract_version)
         if not report.get('synthetic_responses'):
+            contract_version = extraction_version_from_hashes(
+                environment.get('prompt_sha256'), environment.get('repair_prompt_sha256'),
+                environment.get('extraction_contract'))
             if (environment.get('synthetic') or environment.get('cli_version_source') != 'cli_version_command'
                     or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', environment.get('cli_version', ''))
                     or not all(re.fullmatch(r'[a-f0-9]{40}', environment.get(k, '')) for k in ('revision', 'tree'))
-                    or environment.get('prompt_sha256') != digest(EXTRACTION_PROMPT.encode())
-                    or environment.get('repair_prompt_sha256') != digest(QUOTE_REPAIR_PROMPT.encode())
                     or environment.get('plan_sha256') != sha(experiment_plan())
                     or environment.get('contract_sha256') != _hash(Path(__file__).resolve().parents[1]/'docs/extraction-sonnet-baseline-completed.md')
                     or environment.get('dictionary_sha256') != {key: digest(load_case(key)['dictionary']) for key in ('short', 'long', 'dense', 'none', 'boundary')}
@@ -227,6 +239,8 @@ def evaluate_saved(root):
             doc = store.document(run['document_id'], run['version'])
             options = run['extraction_options']
             if (doc['text'] != case['source'] or run['model'] != report['environment']['requested_model']
+                    or type(run['ontology'].get('extraction_contract')) is not int
+                    or run['ontology']['extraction_contract'] != contract_version
                     or options['concurrency'] != row['concurrency'] or run['version'] != 1
                     or run['ontology']['sha256'] != digest(case['dictionary'])):
                 raise ValueError('document_contract')

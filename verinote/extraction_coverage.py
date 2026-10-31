@@ -4,7 +4,7 @@ import json
 import re
 from pathlib import Path
 
-from .ontology import EXTRACTION_CONTRACT_VERSION, MAX_FACTS
+from .ontology import MAX_FACTS
 from .usage import atomic_json, safe_file
 
 MAX_REPORT_BYTES = 2 * 1024 * 1024
@@ -182,7 +182,8 @@ def read_report(root, store, run_id):
         pages = db.execute("SELECT payload FROM items WHERE run_id=? AND kind='page'", (run_id,)).fetchall()
         saved = db.execute("SELECT count(*) FROM items WHERE run_id=? AND kind='fact'", (run_id,)).fetchone()[0]
     if (not source or run['stage'] != 'extract' or not run['ontology']
-            or run['ontology'].get('extraction_contract') != EXTRACTION_CONTRACT_VERSION):
+            or type(run['ontology'].get('extraction_contract')) is not int
+            or run['ontology']['extraction_contract'] not in (1, 2)):
         return unavailable
     raw = safe_file(root, f'runs/{run_id}/extraction-coverage.json', MAX_REPORT_BYTES)
     if raw is None:

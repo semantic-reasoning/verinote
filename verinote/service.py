@@ -24,14 +24,12 @@ from .extraction_coverage import (
     write_report,
 )
 from .ontology import (
-    EXTRACTION_CONTRACT_VERSION,
-    EXTRACTION_PROMPT,
     MAX_QUOTE_REPAIR_CALLS,
-    QUOTE_REPAIR_PROMPT,
     apply_quote_repairs,
     bounded_prompt,
     dictionary_context,
     dictionary_fact,
+    extraction_prompts,
     extraction_quote_issues,
     quote_label,
 )
@@ -284,7 +282,9 @@ class Service:
                 self.store.finish_run(run['id'], dictionary=dictionary, detail=detail)
                 return
             timing.configure(doc)
-            current_contract = run['ontology'].get('extraction_contract', 0) == EXTRACTION_CONTRACT_VERSION
+            contract_version = run['ontology'].get('extraction_contract', 0)
+            extraction_prompt, quote_repair_prompt = extraction_prompts(contract_version)
+            current_contract = contract_version in (1, 2)
             with timing.section('restore'):
                 if current_contract:
                     report = new_report(run, len(doc['text']))
@@ -308,7 +308,7 @@ class Service:
             def prepare(raw):
                 index, (offset, chunk) = raw
                 payload = {'filename': doc['filename'], 'version': doc['version'], 'offset': offset, 'text': chunk}
-                prompt = bounded_prompt(EXTRACTION_PROMPT, payload | {'approved_dictionary': run['ontology'] | {'payload': dictionary_context(run['ontology']['payload'])}})
+                prompt = bounded_prompt(extraction_prompt, payload | {'approved_dictionary': run['ontology'] | {'payload': dictionary_context(run['ontology']['payload'])}})
                 folder = self.root / 'runs' / run['id'] / str(index)
                 return ChunkTask(index, offset, chunk, payload, prompt, folder, time.monotonic() + CHUNK_TIMEOUT)
 
@@ -349,7 +349,7 @@ class Service:
                         if time.monotonic() > deadline:
                             raise TimeoutError(f'청크 실행 시간 제한 초과 ({CHUNK_TIMEOUT}초)')
                         try:
-                            issues = extraction_quote_issues(output, chunk, run['ontology']['payload'])
+                            issues = extraction_quote_issues(output, chunk, run['ontology']['payload'], contract_version=contract_version)
                             if current_contract:
                                 normalized, accounting_changes = repair_missing_indices(output, run['ontology']['payload'])
                                 if accounting_changes:
@@ -363,11 +363,11 @@ class Service:
                                 if len(issues) > 5:
                                     locations += f' 외 {len(issues) - 5}개'
                                 if repair_calls >= MAX_QUOTE_REPAIR_CALLS:
-                                    raise ValueError(f'{locations}: 원문에 없는 인용입니다. 문서당 인용 보정 {MAX_QUOTE_REPAIR_CALLS}회 한도에 도달했습니다.')
+                                    raise ValueError(f'{locations}: 원문에 없는 인용 또는 위치가 모호한 인용입니다. 문서당 인용 보정 {MAX_QUOTE_REPAIR_CALLS}회 한도에 도달했습니다.')
                                 self.store.run_status(run['id'], 'running', f'청크 {index} · {locations}: 원문 인용 보정 중 (추가 호출 {repair_calls + 1}/{MAX_QUOTE_REPAIR_CALLS})')
                                 try:
                                     with timing.section('repair', index):
-                                        repair_prompt = bounded_prompt(QUOTE_REPAIR_PROMPT, payload | {
+                                        repair_prompt = bounded_prompt(quote_repair_prompt, payload | {
                                             'issues': issues, 'approved_dictionary': run['ontology']})
                                         repair_calls += 1
                                         repair_folder = folder / 'quote-repair'
@@ -377,8 +377,8 @@ class Service:
                                                 raise TimeoutError(f'청크 실행 시간 제한 초과 ({CHUNK_TIMEOUT}초)')
                                             output, changes = apply_quote_repairs(output, chunk, issues, response)
                                             # Recheck the whole response; a repair cannot bypass any vocabulary/shape gate.
-                                            if extraction_quote_issues(output, chunk, run['ontology']['payload'], require_coverage=current_contract):
-                                                raise ValueError('보정 후에도 원문과 일치하지 않는 인용이 있습니다.')
+                                            if extraction_quote_issues(output, chunk, run['ontology']['payload'], require_coverage=current_contract, contract_version=contract_version):
+                                                raise ValueError('보정 후에도 원문에 없거나 위치가 모호한 인용이 있습니다.')
                                             validate_page(output, chunk)
                                             for fact in output['facts']:
                                                 dictionary_fact(fact, chunk, run['ontology']['payload'])
