@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "files": [
+    {
+      "path": "batch/report.json",
+      "bytes": 75758,
+      "sha256": "1ccb9813241a0f12b92a8aeb5deb163bb51f9e30c3d2d0d9a9c8ab13bc9ae9fa"
+    },
+    {
+      "path": "batch.stdout.txt",
+      "bytes": 25,
+      "sha256": "18c3954aaadfbdc82226683fdc923ac300c3b021fbe46189d2622d59df6b2806"
+    },
+    {
+      "path": "document/report.json",
+      "bytes": 75990,
+      "sha256": "476c8aea0b4fb8f32aed7ad56ea0c8e2920789e90b81296012890db4e5b244fc"
+    },
+    {
+      "path": "document.stdout.txt",
+      "bytes": 25,
+      "sha256": "18c3954aaadfbdc82226683fdc923ac300c3b021fbe46189d2622d59df6b2806"
+    },
+    {
+      "path": "environment.json",
+      "bytes": 332,
+      "sha256": "daa55719c4ca2cc9002cd93f1a0784a59a95c7cf792a0f81778e0d70b19b5e9d"
+    },
+    {
+      "path": "ledger-initial.json",
+      "bytes": 1682,
+      "sha256": "eba0bb4f464c5050769c7c1f87232c4cf3b8475705c5e9e89863f3621c2cb7e5"
+    },
+    {
+      "path": "ledger.json",
+      "bytes": 4207,
+      "sha256": "151733b48e58946d6f850333b0dd65d1b4a00b426c572257f3f14ca4e9df188c"
+    },
+    {
+      "path": "oneshot/report.json",
+      "bytes": 55098,
+      "sha256": "404a0fd05dcf4b19f690723d1ff2af4fbb70180cc2bafd228bc2dd5b35725a3f"
+    },
+    {
+      "path": "oneshot.stdout.txt",
+      "bytes": 25,
+      "sha256": "1a3d6757860a3b23b89e8ec71b8c1c774cd24f11652ef502fd639f5f625a90a8"
+    },
+    {
+      "path": "summary.json",
+      "bytes": 5207,
+      "sha256": "1d8cfddd426d278a9babe0b7135833d6b713ed616872b9028d2fb1df88f74cd9"
+    }
+  ]
+}

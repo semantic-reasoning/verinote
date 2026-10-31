@@ -1,0 +1,224 @@
+{
+  "common_successful_pairs": [
+    {
+      "case_id": "boundary",
+      "repetition": 1
+    },
+    {
+      "case_id": "dense",
+      "repetition": 1
+    },
+    {
+      "case_id": "dense",
+      "repetition": 2
+    },
+    {
+      "case_id": "long",
+      "repetition": 1
+    },
+    {
+      "case_id": "long",
+      "repetition": 2
+    },
+    {
+      "case_id": "none",
+      "repetition": 1
+    },
+    {
+      "case_id": "none",
+      "repetition": 2
+    },
+    {
+      "case_id": "short",
+      "repetition": 1
+    },
+    {
+      "case_id": "short",
+      "repetition": 2
+    }
+  ],
+  "modes": {
+    "oneshot": {
+      "requests": 12,
+      "tokens": 101801,
+      "reported_usd": {
+        "known_calls": 12,
+        "value": 0.4108988
+      },
+      "successful_documents": 9,
+      "quality_passed_documents": 9,
+      "failed_documents": 0,
+      "repair_requests": 0,
+      "cleanup_errors": 0,
+      "process_observations": {
+        "unknown": 12
+      },
+      "request_fraction_of_successful_service_time": 0.9995287782399657,
+      "common_cases": {
+        "short": {
+          "count": 2,
+          "seconds": [
+            19.79198408301454,
+            17.39605716697406
+          ],
+          "median_seconds": 18.5940206249943
+        },
+        "long": {
+          "count": 2,
+          "seconds": [
+            32.780897750053555,
+            33.574352958006784
+          ],
+          "median_seconds": 33.17762535403017
+        },
+        "dense": {
+          "count": 2,
+          "seconds": [
+            17.638701166957617,
+            17.806691374978982
+          ],
+          "median_seconds": 17.7226962709683
+        },
+        "none": {
+          "count": 2,
+          "seconds": [
+            16.235822291928343,
+            16.23718833399471
+          ],
+          "median_seconds": 16.236505312961526
+        },
+        "boundary": {
+          "count": 1,
+          "seconds": [
+            37.77681541698985
+          ],
+          "median_seconds": 37.77681541698985
+        }
+      },
+      "common_successful_cost_usd": 0.4108988,
+      "common_successful_tokens": 101801
+    },
+    "document": {
+      "requests": 16,
+      "tokens": 100293,
+      "reported_usd": {
+        "known_calls": 16,
+        "value": 0.3754181
+      },
+      "successful_documents": 11,
+      "quality_passed_documents": 11,
+      "failed_documents": 1,
+      "repair_requests": 0,
+      "cleanup_errors": 0,
+      "process_observations": {
+        "started": 12,
+        "reused": 4
+      },
+      "request_fraction_of_successful_service_time": 0.998151340686715,
+      "common_cases": {
+        "short": {
+          "count": 2,
+          "seconds": [
+            4.827856291085482,
+            5.636372333043255
+          ],
+          "median_seconds": 5.232114312064368
+        },
+        "long": {
+          "count": 2,
+          "seconds": [
+            8.307926999987103,
+            9.5845074999379
+          ],
+          "median_seconds": 8.946217249962501
+        },
+        "dense": {
+          "count": 2,
+          "seconds": [
+            5.321589000057429,
+            5.941319166915491
+          ],
+          "median_seconds": 5.63145408348646
+        },
+        "none": {
+          "count": 2,
+          "seconds": [
+            3.6648512500105426,
+            3.8310606670565903
+          ],
+          "median_seconds": 3.7479559585335664
+        },
+        "boundary": {
+          "count": 1,
+          "seconds": [
+            7.066350874956697
+          ],
+          "median_seconds": 7.066350874956697
+        }
+      },
+      "common_successful_cost_usd": 0.27355670000000004,
+      "common_successful_tokens": 73193
+    },
+    "batch": {
+      "requests": 16,
+      "tokens": 100078,
+      "reported_usd": {
+        "known_calls": 16,
+        "value": 0.3037404
+      },
+      "successful_documents": 11,
+      "quality_passed_documents": 11,
+      "failed_documents": 1,
+      "repair_requests": 0,
+      "cleanup_errors": 0,
+      "process_observations": {
+        "started": 1,
+        "reused": 15
+      },
+      "request_fraction_of_successful_service_time": 0.9972012272110811,
+      "common_cases": {
+        "short": {
+          "count": 2,
+          "seconds": [
+            4.812538166996092,
+            4.551586290937848
+          ],
+          "median_seconds": 4.68206222896697
+        },
+        "long": {
+          "count": 2,
+          "seconds": [
+            6.61273070902098,
+            5.993038665968925
+          ],
+          "median_seconds": 6.302884687494952
+        },
+        "dense": {
+          "count": 2,
+          "seconds": [
+            4.697917459066957,
+            4.549032874987461
+          ],
+          "median_seconds": 4.623475167027209
+        },
+        "none": {
+          "count": 2,
+          "seconds": [
+            2.6610712080728263,
+            2.712815082981251
+          ],
+          "median_seconds": 2.6869431455270387
+        },
+        "boundary": {
+          "count": 1,
+          "seconds": [
+            6.2542871669866145
+          ],
+          "median_seconds": 6.2542871669866145
+        }
+      },
+      "common_successful_cost_usd": 0.22276479999999999,
+      "common_successful_tokens": 73165
+    }
+  }
+}
