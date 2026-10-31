@@ -66,6 +66,7 @@ class ExtractionTransport:
         self._spec = spec
         self._timeout = spec.timeout
         self._owns_pool = True
+        self._slot_id = None
         self._delegate = CLI(timeout=spec.timeout, max_output=spec.max_output, persistent=False,
                              rates=lambda: {'claude': json.loads(spec.rate_json)})
         self._pool = ExtractionPool(spec.binary, spec.model, spec.capacity)
@@ -81,7 +82,16 @@ class ExtractionTransport:
     def view(self):
         view = object.__new__(type(self))
         view._spec, view._timeout = self._spec, self._timeout
+        view._slot_id = self._slot_id
         view._delegate, view._pool, view._owns_pool = self._delegate, self._pool, False
+        return view
+
+    def slot_view(self, slot_id):
+        """Internal deterministic warm-up; never owns or bypasses a pool lease."""
+        if type(slot_id) is not int or not 1 <= slot_id <= self._spec.capacity:
+            raise ValueError('추출 worker slot 오류')
+        view = self.view()
+        view._slot_id = slot_id
         return view
 
     def __copy__(self): return self.view()
@@ -111,6 +121,8 @@ class ExtractionTransport:
     def complete(self, agent, model, prompt, folder, *, phase=None):
         self._check(agent, model, phase)
         delegate = self._delegate.limited_timeout(agent, self.effective_timeout(agent))
+        if self._slot_id is not None:
+            delegate._claude = _SlotView(self._pool, self._slot_id)
         return delegate.complete(agent, model, prompt, folder, phase=phase)
 
     def update_caller_validation(self, folder, call_id, status):
@@ -125,3 +137,14 @@ class ExtractionTransport:
 
     def __enter__(self): return self
     def __exit__(self, *_): self.close()
+
+
+class _SlotView:
+    def __init__(self, pool, slot_id):
+        self.pool, self.slot_id, self.closed = pool, slot_id, pool.closed
+        self.pool_id = pool.pool_id
+
+    def acquire(self, binary, model, deadline, timing):
+        return self.pool.acquire(binary, model, deadline, timing, slot_id=self.slot_id)
+
+    def close(self): pass

@@ -99,17 +99,19 @@ class Budget:
 
     def reserve(self, chunk, repair, *, identity=None, purpose='measurement'):
         identity = dict(identity or {})
-        if (set(identity) - {'owner_id', 'case_id', 'repetition'}
+        if (set(identity) - {'owner_id', 'case_id', 'repetition', 'document_key'}
                 or any(type(v) not in (int, str) for v in identity.values())
                 or purpose not in ('measurement', 'warmup')
                 or type(chunk) is not int or chunk < 1 or type(repair) is not bool):
             raise ValueError('attempt metadata')
+        if 'document_key' in identity and (not isinstance(identity['document_key'], str) or not re.fullmatch(r'[a-z0-9_-]{1,80}', identity['document_key'])):
+            raise ValueError('attempt document key')
         with self.lock:
             self.check()
             row = {'attempt': len(self.attempts)+1, 'chunk': chunk, 'repair': repair, 'status': 'running',
                    'purpose': purpose, 'request_kind': 'repair' if repair else ('warmup' if purpose == 'warmup' else 'initial'),
                    'admission_state': 'reserved', 'dispatch_authorized': False, 'blocked_reason': None,
-                   'worker_scope': None, 'worker_identity': None,
+                   'worker_scope': None, 'worker_identity': None, 'resolved_model': None, 'model_identity_source': 'unknown',
                    'tokens': dict.fromkeys(TOKEN_KEYS), 'usage_complete': False, 'reported_usd': None,
                    'estimated_usd': None, 'reported_credits': None, 'estimated_credits': None,
                    'credit_unit_sha256': None, 'estimated_credit_unit_sha256': None, 'cli_call_id': None, 'cli_timing': None,
@@ -144,13 +146,17 @@ class Budget:
             # Only the same numeric export contract can modify usage fields.
             fields = {'tokens', 'usage_complete', 'reported_usd', 'estimated_usd', 'reported_credits',
                       'estimated_credits', 'credit_unit_sha256', 'estimated_credit_unit_sha256', 'cli_call_id', 'cli_timing',
-                      'worker_scope', 'worker_identity'}
+                      'worker_scope', 'worker_identity', 'resolved_model', 'model_identity_source'}
             if set(usage) - fields: raise ValueError('attempt usage fields')
             data = copy.deepcopy(usage)
             if (not isinstance(data.get('tokens'), dict) or set(data['tokens']) != set(TOKEN_KEYS)
                     or any(n is not None and number(n, True) is None for n in data['tokens'].values())
                     or type(data.get('usage_complete')) is not bool):
                 raise ValueError('attempt usage values')
+            if data.get('resolved_model') is not None and resolved_model(data['resolved_model']) is None:
+                raise ValueError('attempt model identity')
+            if data.get('model_identity_source', 'unknown') not in ('unknown', 'claude_modelUsage'):
+                raise ValueError('attempt model source')
             counts = [data['tokens'][k] for k in ('input', 'output')]
             known = data['usage_complete'] and all(n is not None for n in counts)
             row.update(data)
@@ -175,9 +181,16 @@ class Budget:
                     'elapsed_seconds': max(0, self.clock()-self.started)}
 
 
+def resolved_model(value):
+    """Allow only versioned Claude family identifiers reported by modelUsage."""
+    return value if (isinstance(value, str) and len(value) <= 150
+                     and not value.endswith('-latest')
+                     and re.fullmatch(r'claude-(?:[0-9]+-)*(?:sonnet|opus|haiku)-[0-9]+(?:[.-][0-9a-z]+)*', value)) else None
+
+
 def call_metrics(folder, agent, model):
     """Numbers and verified identifiers only; no provider text reaches exports."""
-    clean: dict = {'worker_scope': None, 'worker_identity': None, 'tokens': dict.fromkeys(TOKEN_KEYS), 'usage_complete': False, 'reported_usd': None,
+    clean: dict = {'resolved_model': None, 'model_identity_source': 'unknown', 'worker_scope': None, 'worker_identity': None, 'tokens': dict.fromkeys(TOKEN_KEYS), 'usage_complete': False, 'reported_usd': None,
              'estimated_usd': None, 'reported_credits': None, 'estimated_credits': None,
                    'credit_unit_sha256': None, 'estimated_credit_unit_sha256': None, 'cli_call_id': None, 'cli_timing': None}
     try:
@@ -193,8 +206,9 @@ def call_metrics(folder, agent, model):
             clean['worker_scope'] = ('extraction_pool' if meta.get('worker_scope') == usage.get('worker_scope') == 'extraction_pool'
                                      else 'unknown')
         clean.update(tokens={k: number(usage['tokens'].get(k), True) for k in TOKEN_KEYS},
-                     usage_complete=usage.get('complete') is True, cli_call_id=cid,
+                     usage_complete=usage.get('complete') is True, cli_call_id=cid, resolved_model=resolved_model(usage.get('resolved_model')) if agent == 'claude' else None,
                      reported_usd=amount(usage.get('reported_usd')), estimated_usd=amount(usage.get('estimated_usd')))
+        if clean['resolved_model'] is not None: clean['model_identity_source'] = 'claude_modelUsage'
         for provenance in ('reported', 'estimated'):
             clean[provenance+'_credits'] = amount(usage.get(provenance+'_credits'))
             key = 'credit_unit' if provenance == 'reported' else 'estimated_credit_unit'
@@ -354,6 +368,7 @@ def quality_report(case, root, run):
                     'dictionary_payload_sha256': digest(pin['payload']), 'prompt': digest(EXTRACTION_PROMPT.encode()),
                     'repair_prompt': digest(QUOTE_REPAIR_PROMPT.encode()), 'chunk_size': 8000,
                     'dictionary': {k: pin[k] for k in ('id', 'revision', 'sha256', 'extraction_contract')}}
+        if run.get('extraction_options') is not None: expected['extraction_options'] = run['extraction_options']
         if (value['run_id'] != run['id'] or value['schema_version'] != 1 or any(contract.get(k) != v for k, v in expected.items())
                 or not isinstance(value['outputs'], list) or not 1 <= len(value['outputs']) <= len(list(chunks(case['source'])))):
             raise ValueError('checkpoint identity')
@@ -393,6 +408,48 @@ class _Executor(ThreadPoolExecutor):
     def submit(self, fn, /, *args, **kwargs):
         self.future = super().submit(fn, *args, **kwargs)
         return self.future
+
+
+def execute_document(root, case, make_caller, budget, row, close, *, agent, model, extraction_concurrency=None):
+    """One fresh synthetic Store and the production Service; caller controls artifact lifetime."""
+    store = Store(Path(root)/'state.sqlite3')
+    service = None; run = None; caller = None
+    try:
+        doc = store.register('Synthetic '+case['case_id'], 'synthetic.md', case['source'].encode(), case['source'])
+        seed = store.create_run(doc['id'], agent, model, 'ontology', 1, 1)
+        store.run_status(seed['id'], 'running'); store.finish_run(seed['id'], dictionary=case['dictionary'])
+        item = next(i for i in store.document(doc['id'])['items'] if i['kind'] == 'ontology')
+        store.review(item['id'], item['revision'], 'approved', 'Synthetic fixture', 'Versioned human-reviewed gold')
+        caller = make_caller()
+        service = Service(store, root, caller, extraction_caller=caller if extraction_concurrency is not None else None)
+        service.pool.shutdown(wait=True)
+        pool = _Executor(max_workers=1, thread_name_prefix='verinote-benchmark')
+        service.pool = pool
+        budget.check()
+        run = service.start(doc['id'], agent, model, expected_version=1, expected_generation=1, extraction_concurrency=extraction_concurrency)
+        row.update(run_id=run['id'], document_id=doc['id'])
+        while not pool.future.done():
+            if budget.remaining() <= 0: budget.stop('time_limit')
+            time.sleep(.01)
+        pool.future.result()
+        service.pool.shutdown(wait=True)
+    except BaseException:
+        budget.stop('interrupted' if sys.exc_info()[0] is KeyboardInterrupt else budget.reason or 'runner_error')
+        row['status'] = 'error'
+        raise
+    finally:
+        close(service)
+        close(caller)
+        if run is not None:
+            try:
+                run = store.run(run['id'])
+                if run['status'] in ('success', 'error'): row['status'] = run['status']
+                row['quality'] = quality_report(case, root, run)
+                timing = read_extraction_timing(root, store, run['id'])
+                row['document_timing'] = ({'available': True, 'summary': timing['summary'],
+                    'status': timing['status'], 'error_code': timing['error_code']} if timing['available'] else {'available': False})
+            except Exception:
+                budget.stop('result_read_failed')
 
 
 def measure(output, *, cases=('short', 'long'), scenario='normal', mode='fake', agent='agy', model='',
@@ -466,14 +523,9 @@ def measure(output, *, cases=('short', 'long'), scenario='normal', mode='fake', 
                        'quality': None, 'document_timing': None, 'attempt_start': len(budget.attempts)+1, 'attempt_count': 0}
                 report['repetitions'].append(row); save(); start = budget.clock()
                 with tempfile.TemporaryDirectory(prefix='verinote-benchmark-') as temp:
-                    root = Path(temp); store = Store(root/'state.sqlite3')
-                    service = None; run = None; caller = None
-                    try:
-                        doc = store.register('Synthetic '+case['case_id'], 'synthetic.md', case['source'].encode(), case['source'])
-                        seed = store.create_run(doc['id'], agent, model, 'ontology', 1, 1)
-                        store.run_status(seed['id'], 'running'); store.finish_run(seed['id'], dictionary=case['dictionary'])
-                        item = next(i for i in store.document(doc['id'])['items'] if i['kind'] == 'ontology')
-                        store.review(item['id'], item['revision'], 'approved', 'Synthetic fixture', 'Versioned human-reviewed gold')
+                    root = Path(temp)
+                    def make_caller(case=case, repetition=repetition):
+                        nonlocal batch_owner
                         if process_mode == 'batch':
                             if batch_owner is None:
                                 batch_owner = BudgetCaller(experiment_transport() if extraction_concurrency is not None else CLI(timeout=timeout), budget, owns_caller=True)
@@ -485,38 +537,11 @@ def measure(output, *, cases=('short', 'long'), scenario='normal', mode='fake', 
                             caller = BudgetCaller(base, budget, save, owns_caller=True,
                                                   identity={'owner_id': len(report['repetitions']), 'case_id': case['case_id'], 'repetition': repetition})
                             base.timeout = timeout
-                        service = Service(store, root, caller, extraction_caller=caller if extraction_concurrency is not None else None)
-                        service.pool.shutdown(wait=True)
-                        pool = _Executor(max_workers=1, thread_name_prefix='verinote-benchmark')
-                        service.pool = pool
-                        budget.check()
-                        run = service.start(doc['id'], agent, model, expected_version=1, expected_generation=1, extraction_concurrency=extraction_concurrency)
-                        # Poll normal Service state; cancellation closes admission before joining a worker.
-                        while not pool.future.done():
-                            if budget.remaining() <= 0: budget.stop('time_limit')
-                            time.sleep(.01)
-                        pool.future.result()
-                        service.pool.shutdown(wait=True)
-                    except BaseException:
-                        budget.stop('interrupted' if sys.exc_info()[0] is KeyboardInterrupt else 'runner_error')
-                        row['status'] = 'error'
-                        raise
+                        return caller
+                    try:
+                        execute_document(root, case, make_caller, budget, row, close,
+                                         agent=agent, model=model, extraction_concurrency=extraction_concurrency)
                     finally:
-                        close(service)
-                        # Also covers constructor failure; owner close is idempotent.
-                        close(caller)
-                        # Worker may validate a prefix while the main thread is interrupted.
-                        # Read only after its final records exist, before removing its root.
-                        if run is not None:
-                            try:
-                                run = store.run(run['id'])
-                                if run['status'] in ('success', 'error'): row['status'] = run['status']
-                                row['quality'] = quality_report(case, root, run)
-                                timing = read_extraction_timing(root, store, run['id'])
-                                row['document_timing'] = ({'available': True, 'summary': timing['summary'],
-                                    'status': timing['status'], 'error_code': timing['error_code']} if timing['available'] else {'available': False})
-                            except Exception:
-                                budget.stop('result_read_failed')
                         if budget.remaining() <= 0: budget.stop('time_limit')
                         row['seconds'] = max(0, budget.clock()-start)
                         row['attempt_count'] = len(budget.attempts)-row['attempt_start']+1

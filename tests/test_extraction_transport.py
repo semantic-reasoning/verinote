@@ -55,6 +55,24 @@ class ExtractionWorkers(unittest.TestCase):
 
     def release(self, name): (self.root/('release-hold-'+name)).write_text('go')
 
+    def test_targeted_slot_views_preserve_target_and_never_borrow_idle_slot(self):
+        second = self.owner.slot_view(2)
+        first = self.call('slot-two', 'slot-two', second)
+        record = call_metrics(self.root/'slot-two', 'claude', 'model')
+        self.assertEqual(record['worker_identity']['slot_id'], 2)
+        limited = copy.copy(second).limited_timeout('claude', 2)
+        again = self.call('slot-two-again', 'slot-two-again', limited)
+        self.assertEqual(first['pid'], again['pid'])
+        second.close(); self.assertFalse(self.owner.closed)
+        held = self.executor.submit(self.call, 'hold-target', 'target', second)
+        self.wait_file('hold-target')
+        with self.assertRaises(TimeoutError):
+            self.call('must-not-use-idle-one', 'target-timeout', second.limited_timeout('claude', .03))
+        self.assertIsNone(self.owner._pool.managers[0].worker)
+        self.release('target'); held.result(timeout=3)
+        for slot in (0, 3, True):
+            with self.assertRaises(ValueError): self.owner.slot_view(slot)
+
     def test_two_pids_overlap_third_waits_and_views_share_capacity(self):
         a, p1 = self.hold('a'); b, p2 = self.hold('b'); self.assertNotEqual(p1, p2)
         view = copy.copy(self.owner).limited_timeout('claude', 2); view.close()

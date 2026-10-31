@@ -278,7 +278,9 @@ class ExtractionPool:
         self.worker_ids: list[str | None] = [None] * capacity
 
     @contextmanager
-    def acquire(self, binary, model, deadline, timing):
+    def acquire(self, binary, model, deadline, timing, *, slot_id=None):
+        if slot_id is not None and (type(slot_id) is not int or not 1 <= slot_id <= self.capacity):
+            raise ValueError('추출 worker slot 오류')
         if (binary, model) != (self.binary, self.model): raise ValueError('고정 추출 worker 조건이 다릅니다.')
         slot = None
         with self.condition:
@@ -289,7 +291,8 @@ class ExtractionPool:
                         raise ValueError('추출 worker가 닫혔습니다.')
                     remaining = deadline - time.monotonic()
                     if remaining <= 0: raise TimeoutError('CLI 실행 시간 제한 초과 (추출 worker 대기)')
-                    slot = next((i for i in range(self.capacity) if i not in self.leased), None)
+                    slots = range(self.capacity) if slot_id is None else (slot_id-1,)
+                    slot = next((i for i in slots if i not in self.leased), None)
                     if slot is not None:
                         self.leased.add(slot)
                         break
