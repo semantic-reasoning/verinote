@@ -473,11 +473,29 @@ class Store:
                 if not row:
                     raise ValueError('스냅샷을 찾을 수 없습니다.')
                 return json.loads(row[0])
-            approved: dict[str, list[object]] = {'fact': [], 'page': [], 'ontology': []}
+            approved: dict[str, list[dict]] = {'fact': [], 'page': [], 'ontology': []}
             for row in db.execute("SELECT i.*,v.sha256 FROM items i JOIN documents d ON i.document_id=d.id AND i.version=d.current_version JOIN versions v ON v.document_id=i.document_id AND v.version=i.version WHERE i.kind IN ('fact','page','ontology') AND i.status='approved' ORDER BY i.id"):
                 approved[row['kind']].append(self.unpack(row))
             documents = [dict(r) for r in db.execute('SELECT d.id,d.current_version,d.title,v.filename,v.sha256,length(v.text) AS total_chars FROM documents d JOIN versions v ON v.document_id=d.id AND v.version=d.current_version ORDER BY d.id')]
-            body = {'facts': approved['fact'], 'pages': approved['page'], 'ontologies': approved['ontology'], 'knowledge_version': 1, 'documents': documents}
+            # A reviewed fact keeps the extraction-time meaning even after its
+            # dictionary is revised or revoked. Never substitute today's pin.
+            fact_ontologies = {}; ontology_pins = {}; run_pins = {}
+            for fact in approved['fact']:
+                if fact['run_id'] not in run_pins:
+                    origin = db.execute('SELECT document_id,version,stage,ontology FROM runs WHERE id=?', (fact['run_id'],)).fetchone()
+                    pin = None; pin_ref = None
+                    if origin and origin['stage'] == 'extract' and origin['ontology']:
+                        try: pin = json.loads(origin['ontology'])
+                        except (ValueError, TypeError): pass
+                    if pin is not None:
+                        pin_ref = digest({'document_id': origin['document_id'], 'version': origin['version'], 'pin': pin})
+                        ontology_pins[pin_ref] = pin
+                    run_pins[fact['run_id']] = (origin, pin_ref)
+                origin, pin_ref = run_pins[fact['run_id']]
+                fact_ontologies[fact['id']] = (pin_ref if origin and origin['document_id'] == fact['document_id']
+                                               and origin['version'] == fact['version'] else None)
+            body = {'facts': approved['fact'], 'pages': approved['page'], 'ontologies': approved['ontology'], 'knowledge_version': 1,
+                    'documents': documents, 'graph_identity_version': 1, 'fact_ontologies': fact_ontologies, 'ontology_pins': ontology_pins}
             key = digest(body)
             value = {'id': key, **body}
             db.execute('INSERT OR IGNORE INTO snapshots VALUES(?,?,?)', (key, canonical(value), now()))
