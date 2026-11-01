@@ -511,6 +511,7 @@ class Service:
             job['status'] = 'running'
             self.store.save_question(job)
             assistant = Assistant(self.store, cli, snapshot, job, self.root / 'questions' / job['id'], progress)
+            self.store.save_question(job)
             job['answer'] = assistant.run()
             job['status'] = 'success'
         except Exception as exc:

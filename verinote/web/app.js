@@ -425,10 +425,11 @@ $('#settings-form').onsubmit=e=>{e.preventDefault();attempt(async()=>{
 });};
 $('#query-form').onsubmit=e=>{e.preventDefault();attempt(async()=>{
   const data=Object.fromEntries(new FormData(e.target));if(!data.snapshot)delete data.snapshot;
-  const r=await api('/api/query','POST',data);renderQuery(r);await loadQueries();notice(`${r.rows.length}개 결과 · 실제 PyreWire 계산 완료`);
+  const r=await api('/api/query','POST',data);renderQuery(r);await loadQueries();notice(r.status==='ambiguous'?'의미 선택이 필요합니다. 후보를 선택한 뒤 다시 조회하세요.':`${r.rows.length}개 결과 · 실제 PyreWire 계산 완료`);
 });};
 function renderQuery(r) {
-  $('#query-result').innerHTML=`<div class="panel"><h2>${r.rows.length}개의 관계 ${r.status==='empty'?'· 일치 결과 없음':''}</h2><p class="mono">스냅샷 ${esc(r.snapshot)}</p><p class="muted">${esc(r.engine)} ${esc(r.engine_version)} · ${esc(r.rule_id)}</p>${r.proofs.map(p=>`<div class="item"><h3 class="query-row">${p.row.map(esc).join(' → ')}</h3><details open><summary>증명 경로 · ${p.fact_ids.length}개 사실</summary>${p.fact_ids.map(id=>{const f=r.facts.find(f=>f.id===id);return `<p>${esc(f.payload.subject)} → ${esc(f.payload.predicate)} → ${esc(f.payload.object)}</p><blockquote class="quote">${esc(f.payload.quote)}</blockquote><p class="mono">사실 ${esc(f.id)} · r${f.revision}</p>${sourceLink(f.document_id,f.version)}`;}).join('')}</details></div>`).join('')}<p class="muted">${esc(r.scope)}</p><details><summary>규칙과 전체 결과 JSON</summary><pre class="source">${esc(JSON.stringify(r,null,2))}</pre></details><button id="download-query">결과 JSON 다운로드</button></div>`;
+  $('#query-result').innerHTML=`<div class="panel"><h2>${r.status==='ambiguous'?'의미를 선택해 주세요':r.rows.length+'개의 관계'} ${r.status==='empty'?'· 일치 결과 없음':''}</h2><p class="mono">스냅샷 ${esc(r.snapshot)}</p><p class="muted">${esc(r.engine)} ${esc(r.engine_version)} · ${esc(r.rule_id)}</p>${renderGraphMeanings(r)}${r.proofs.map(p=>`<div class="item"><h3 class="query-row">${scopedRow(r,p.row,p.row_refs)}</h3><details open><summary>증명 경로 · ${p.fact_ids.length}개 사실</summary>${p.fact_ids.map(id=>{const f=r.facts.find(f=>f.id===id);return `<p>${scopedFact(r,f)}</p><blockquote class="quote">${esc(f.payload.quote)}</blockquote><p class="mono">사실 ${esc(f.id)} · r${f.revision}</p>${sourceLink(f.document_id,f.version)}`;}).join('')}</details></div>`).join('')}<p class="muted">${esc(r.scope)}</p><details><summary>규칙과 전체 결과 JSON</summary><pre class="source">${esc(JSON.stringify(r,null,2))}</pre></details><button id="download-query">결과 JSON 다운로드</button></div>`;
+  bindMeaningControls($('#query-result'));
   $('#download-query').onclick=()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(r,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='verinote-query.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
 }
 async function loadQueries() {
@@ -524,10 +525,44 @@ function renderEvidence(id,e){
   if(e.kind==='source')return `<details><summary>${esc(id)} · 미검토 원문 · v${e.version}</summary><blockquote class="quote">${esc(e.text)}</blockquote>${e.fallback?`<p>원문 확인 이유 · ${esc(e.fallback.detail)} <span class="muted">(${esc(e.fallback.reason)})</span></p>`:''}${sourceLink(e.document_id,e.version)}<p class="mono">SHA-256 ${esc(e.sha256)} · offset ${e.offset}</p></details>`;
   if(e.kind!=='graph')return `<p class="muted">${esc(id)} · 지원하지 않는 근거 유형</p>`;
   const r=e.result;
-  return `<details><summary>${esc(id)} · Wirelog ${esc(r.query.action)} · ${r.rows.length}개 결과</summary><p>${r.rows.map(row=>row.map(esc).join(' → ')).join('<br>')||'해당 질의에서 일치 결과 없음'}</p>${r.facts.map(f=>`<blockquote class="quote">${esc(f.payload.quote)}</blockquote>${sourceLink(f.document_id,f.version)}<p class="mono">사실 ${esc(f.id)} · r${f.revision}</p>`).join('')}<p class="muted">${esc(r.scope)}</p><pre class="source">${esc(JSON.stringify(r.proofs,null,2))}</pre></details>`;
+  return `<details><summary>${esc(id)} · Wirelog ${esc(r.query.action)} · ${r.status==='ambiguous'?'의미 선택 필요':r.rows.length+'개 결과'}</summary>${renderGraphMeanings(r)}<p>${r.rows.map((row,i)=>scopedRow(r,row,r.row_refs?.[i])).join('<br>')||'해당 질의에서 일치 결과 없음'}</p>${r.facts.map(f=>`<blockquote class="quote">${esc(f.payload.quote)}</blockquote>${sourceLink(f.document_id,f.version)}<p class="mono">사실 ${esc(f.id)} · r${f.revision}</p>`).join('')}<p class="muted">${esc(r.scope)}</p><pre class="source">${esc(JSON.stringify(r.proofs,null,2))}</pre></details>`;
 }
+function meaningStatus(m){return m.current_approved?'현재 승인 사전':m.historical_pin?'추출 당시 사전 · 현재 승인과 별개':'사전 식별 정보 없음';}
+function meaningTitle(m){return `${m.name||m.id}${m.type?'〔'+m.type+'〕':''} · ${m.document_title||m.document_id} · v${m.version}`;}
+function renderMeaning(m,snapshot,field='subject'){
+  return `<div class="item meaning-candidate" data-meaning="${esc(m.ref)}"><strong>${esc(meaningTitle(m))}</strong><p><span class="badge">${esc(meaningStatus(m))}</span> · 연결된 승인 사실 ${esc(m.fact_count)}개</p><p class="muted">사전 안내는 관계 사실의 근거가 아닙니다. 검토 대기·보류·반려 사실은 그래프에 포함되지 않습니다.</p>${m.quote_excerpt||m.quote?`<blockquote class="quote">${esc(m.quote_excerpt||m.quote)}${m.quote_truncated?' … (일부)':''}</blockquote>`:''}${(m.approved_facts||[]).map(f=>`<p>${esc(f.subject)}${f.subject_type?'〔'+esc(f.subject_type)+'〕':''} → ${esc(f.predicate)} → ${esc(f.object)}${f.object_type?'〔'+esc(f.object_type)+'〕':''}</p><blockquote class="quote">${esc(f.quote_excerpt)}${f.quote_truncated?' … (일부)':''}</blockquote><p class="mono">승인 사실 ${esc(f.id)} · r${esc(f.revision)}</p>${sourceLink(f.document_id,f.version)}`).join('')}${m.facts_truncated?'<p class="muted">연결 사실 중 일부만 표시합니다. 의미를 선택해 그래프를 조회하세요.</p>':''}<p class="mono">사전 ${esc(m.ontology_id||'미확인')} · r${esc(m.ontology_revision??'미확인')}</p>${sourceLink(m.document_id,m.version)}<button data-meaning-label="${esc(meaningTitle(m))}" data-meaning-ref="${esc(m.ref)}" data-meaning-field="${esc(field)}" data-meaning-snapshot="${esc(snapshot)}">이 의미를 ${field==='target'?'도착 개체':field==='predicate'?'관계':'기준 개체'}로 선택</button></div>`;
+}
+function bindMeaningControls(root){
+  for(const button of root.querySelectorAll('[data-meaning-ref]'))button.onclick=()=>{
+    const form=$('#query-form');form.elements[button.dataset.meaningField].value=button.dataset.meaningRef;form.elements[button.dataset.meaningField].title=button.dataset.meaningLabel||'';form.elements.snapshot.value=button.dataset.meaningSnapshot;
+    const details=form.closest('details');if(details)details.open=true;form.scrollIntoView({behavior:'smooth'});notice(`${button.dataset.meaningLabel||'의미'}를 선택했습니다. 조회 방식과 관계를 확인한 뒤 Wirelog 조회를 누르세요.`);
+  };
+}
+function renderQuestionMeanings(value,snapshot){
+  if(!value)return '';
+  if(value.contract==='legacy')return `<section class="panel"><p>${esc(value.notice)}</p></section>`;
+  if(!value.groups.length&&!value.truncated)return '';
+  return `<section class="panel question-meanings"><h3>질문에 등장하는 이름의 가능한 의미</h3><p>${esc(value.notice)}</p>${value.groups.map(g=>`<section><h4>${esc(g.term)} · ${g.ambiguous?'여러 의미 후보':'의미 후보'} ${esc(g.total_candidates)}개</h4>${g.candidates.map(m=>renderMeaning(m,snapshot)).join('')}${g.truncated?'<p class="error">이 이름의 의미 후보가 일부 생략됐습니다.</p>':''}</section>`).join('')}${value.truncated?'<p class="error">표시 한도로 일부 후보·관계 정의를 생략했습니다. 한 의미를 확정한 결과가 아닙니다. 문서나 개체 참조로 범위를 좁혀 주세요.</p>':''}</section>`;
+}
+function scopedRow(r,row,refs){
+  return row.map((label,i)=>{
+    const meaning=[...(r.entities||[]),...(r.relations||[])].find(m=>m.ref===refs?.[i]);
+    return esc(meaning?meaningTitle(meaning):label);
+  }).join(' → ');
+}
+function scopedFact(r,f){
+  const refs=(r.fact_refs||[]).find(row=>row.id===f.id);
+  return scopedRow(r,[f.payload.subject,f.payload.predicate,f.payload.object],refs?[refs.subject_ref,refs.predicate_ref,refs.object_ref]:null);
+}
+function renderGraphMeanings(r){
+  if(!r.identity_contract)return '<p class="muted">이전 그래프 계약: 같은 문자열의 서로 다른 의미를 구분하지 못합니다.</p>';
+  const groups=[['subject','기준 개체',r.entity_candidates?.subject||[]],['target','도착 개체',r.entity_candidates?.target||[]],['predicate','관계',r.predicate_candidates||[]]];
+  return `${(r.warnings||[]).map(w=>`<p class="error">${esc(w)}</p>`).join('')}${groups.filter(g=>g[2].length).map(([field,label,items])=>`<details ${items.length>1?'open':''}><summary>${label} · ${items.length}개 의미 후보</summary>${items.map(m=>renderMeaning(m,r.snapshot,field)).join('')}</details>`).join('')}`;
+}
+
 function renderAnswer(job){
-  $('#answer-result').innerHTML=`<article class="panel"><h2>${esc(job.question)}</h2>${badge(job.status)} <span>${esc(job.agent)} / ${esc(job.model||'기본 모델')}</span><p class="muted">질문 제출 시 고정한 승인 상태입니다. 이후 문서 변경·승인 철회는 반영되지 않습니다.</p><p class="mono">스냅샷 ${esc(job.snapshot)}</p>${renderUsage(job.usage)}${job.error?`<p class="error">${esc(job.error)}</p>${executionGuidance(job.agent)}`:''}${job.answer?job.answer.claims.map(c=>`<div class="item"><span class="badge">${esc({graph:'승인 그래프',wiki:'승인 위키',source:'미검토 원문',inference:'추론'}[c.kind])}</span><p>${esc(c.text)}</p>${c.citations.map(id=>renderEvidence(id,job.evidence[id])).join('')}</div>`).join('')+job.answer.unknowns.map(u=>`<div class="item answer-unknown"><span class="badge">확인 불가</span><p>${esc(u)}</p></div>`).join(''): (['queued','running'].includes(job.status)?'<p>모델의 질의 해석과 도구 실행을 기다리고 있습니다.</p>':'<p>답변이 생성되지 않았습니다.</p>')}<details><summary>실행 추적 · ${job.trace.length}개 도구 호출</summary>${job.trace.map(t=>`<p>${esc(t.name)} · ${esc(t.status)}</p><pre class="source">${esc(JSON.stringify(t.arguments,null,2))}</pre>${t.evidence_id?renderEvidence(t.evidence_id,job.evidence[t.evidence_id]):''}`).join('')}<pre class="source">${esc(JSON.stringify(job,null,2))}</pre></details><p class="muted">인용 검사는 의미적 정확성을 보증하지 않습니다. 모델 해석·답변은 비결정적이며, 같은 질의·스냅샷·규칙·엔진의 그래프 계산만 결정적입니다.</p><div class="actions"><button id="download-answer">답변 JSON 다운로드</button><button id="rerun-answer">같은 스냅샷으로 다시 질문 준비</button></div></article>`;
+  $('#answer-result').innerHTML=`<article class="panel"><h2>${esc(job.question)}</h2>${badge(job.status)} <span>${esc(job.agent)} / ${esc(job.model||'기본 모델')}</span><p class="muted">질문 제출 시 고정한 승인 상태입니다. 이후 문서 변경·승인 철회는 반영되지 않습니다.</p><p class="mono">스냅샷 ${esc(job.snapshot)}</p>${renderUsage(job.usage)}${renderQuestionMeanings(job.meanings,job.snapshot)}${job.error?`<p class="error">${esc(job.error)}</p>${executionGuidance(job.agent)}`:''}${job.answer?job.answer.claims.map(c=>`<div class="item"><span class="badge">${esc({graph:'승인 그래프',wiki:'승인 위키',source:'미검토 원문',inference:'추론'}[c.kind])}</span><p>${esc(c.text)}</p>${c.citations.map(id=>renderEvidence(id,job.evidence[id])).join('')}</div>`).join('')+job.answer.unknowns.map(u=>`<div class="item answer-unknown"><span class="badge">확인 불가</span><p>${esc(u)}</p></div>`).join(''): (['queued','running'].includes(job.status)?'<p>모델의 질의 해석과 도구 실행을 기다리고 있습니다.</p>':'<p>답변이 생성되지 않았습니다.</p>')}<details><summary>실행 추적 · ${job.trace.length}개 도구 호출</summary>${job.trace.map(t=>`<p>${esc(t.name)} · ${esc(t.status)}</p><pre class="source">${esc(JSON.stringify(t.arguments,null,2))}</pre>${t.evidence_id?renderEvidence(t.evidence_id,job.evidence[t.evidence_id]):''}`).join('')}<pre class="source">${esc(JSON.stringify(job,null,2))}</pre></details><p class="muted">인용 검사는 의미적 정확성을 보증하지 않습니다. 모델 해석·답변은 비결정적이며, 같은 질의·스냅샷·규칙·엔진의 그래프 계산만 결정적입니다.</p><div class="actions"><button id="download-answer">답변 JSON 다운로드</button><button id="rerun-answer">같은 스냅샷으로 다시 질문 준비</button></div></article>`;
+  bindMeaningControls($('#answer-result'));
   $('#download-answer').onclick=()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(job,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='verinote-answer.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
   $('#rerun-answer').onclick=()=>{$('#question-text').value=job.question;$('#ask-agent').value=job.agent;$('#ask-model').value=job.model;$('#ask-snapshot').value=job.snapshot;syncProviderControls('ask');$('#ask-form').scrollIntoView({behavior:'smooth'});};
 }
