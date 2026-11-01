@@ -5,6 +5,7 @@ from pathlib import PurePath
 
 from . import engine
 from .call_validation import caller_validation
+from .question_context import PROTOCOL, project
 from .question_meanings import context as meaning_context
 from .store import canonical
 
@@ -359,7 +360,7 @@ class Assistant:
             self.progress(self.trace, self.evidence)
 
     def validate_answer(self, answer):
-        if not any(e['kind'] == 'graph' for e in self.evidence.values()):
+        if not any(e['kind'] == 'graph' for i, e in self.evidence.items() if i in self.delivered_evidence):
             raise ValueError('실제 Wirelog 조회 없이 답할 수 없습니다.')
         if not isinstance(answer, dict) or set(answer) != {'claims', 'unknowns'}:
             raise ValueError('답변 형식 오류')
@@ -371,7 +372,7 @@ class Assistant:
                 raise ValueError('주장 형식 오류')
             string(claim['text'], 2500)
             kind, ids = claim['kind'], claim['citations']
-            if kind not in ('graph', 'wiki', 'source', 'inference') or not isinstance(ids, list) or not 1 <= len(ids) <= 10 or any(not isinstance(i, str) or i not in self.evidence for i in ids):
+            if kind not in ('graph', 'wiki', 'source', 'inference') or not isinstance(ids, list) or not 1 <= len(ids) <= 10 or any(not isinstance(i, str) or i not in self.evidence or i not in self.delivered_evidence for i in ids):
                 raise ValueError('주장 유형/인용 오류')
             usable = [self.evidence[i] for i in ids if (self.evidence[i]['kind'] in ('source', 'wiki') and self.evidence[i].get('text')) or (self.evidence[i]['kind'] == 'graph' and self.evidence[i]['result']['rows'])]
             if not usable or (kind != 'inference' and not any(e['kind'] == kind for e in usable)):
@@ -391,12 +392,13 @@ class Assistant:
             state = {'question': self.job['question'], 'snapshot': self.snapshot['id'], 'catalog': catalog, 'trace': self.trace, 'evidence': self.evidence, 'round': round_number, 'max_rounds': MAX_ROUNDS,
                      'answer_only': answer_only, 'exploration_rounds_remaining': 0 if answer_only else MAX_ROUNDS - round_number,
                      'tool_slots_remaining': remaining_tools}
-            prompt = PROMPT + canonical(state)
+            projection = project(state)
+            prompt = PROTOCOL + PROMPT + canonical(projection.state)
             if len(prompt.encode()) > MAX_CONTEXT:
                 raise ValueError('누적 프롬프트 크기 한도 초과')
-            self.delivered_evidence = set(self.evidence)
-            self.delivered_lookups = set(self.lookups)
             output = self.cli.complete(self.job['agent'], self.job['model'], prompt, self.folder / f'llm-{round_number}')
+            self.delivered_evidence.update(projection.evidence_ids)
+            self.delivered_lookups.update(projection.lookup_ids)
             with caller_validation(self.cli, self.folder / f'llm-{round_number}', self.job['agent']):
                 if len(canonical(output).encode()) > 30000 or not isinstance(output, dict):
                     raise ValueError('모델 응답 크기/형식 오류')

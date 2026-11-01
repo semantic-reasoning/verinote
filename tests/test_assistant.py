@@ -57,6 +57,48 @@ class AssistantTests(unittest.TestCase):
         service.pool.shutdown(wait=True)
         return self.store.question(job['id']), fake
 
+    def test_three_large_graph_results_are_delivered_losslessly(self):
+        from test_question_context import state
+
+        from verinote.question_context import resolve
+        expected = state()['evidence']
+        outputs = [batch(tool(subject='first'), tool(subject='second'), tool(subject='third')), answer()]
+        with patch('verinote.assistant.engine.query', side_effect=[e['result'] for e in expected.values()]):
+            job, fake = self.ask(outputs)
+        self.assertEqual(job['status'], 'success', job['error'])
+        self.assertEqual(job['evidence'], expected)
+        delivered = json.loads(fake.calls[-1][2].split('입력 상태(JSON):\n', 1)[1])
+        self.assertEqual(resolve(delivered)['evidence'], expected)
+        self.assertLess(len(fake.calls[-1][2].encode()), 60000)
+        self.assertEqual(len(job['trace']), 3)
+
+    def test_failed_model_call_does_not_deliver_new_evidence_or_lookup(self):
+        self.approve(self.extract())
+        def fail(prompt):
+            raise RuntimeError('synthetic provider failure')
+        fake = Fake([batch(tool(), tool(name='search_knowledge', query='주문')), fail])
+        assistant = Assistant(self.store, fake, self.store.snapshot(),
+                              {'question': '합성 질문', 'agent': 'fake', 'model': 'fake'},
+                              self.root, lambda *args: None)
+        with self.assertRaisesRegex(RuntimeError, 'synthetic provider failure'):
+            assistant.run()
+        self.assertEqual(set(assistant.evidence), {'E1'})
+        self.assertEqual(set(assistant.lookups), {'K1'})
+        self.assertEqual(assistant.delivered_evidence, set())
+        self.assertEqual(assistant.delivered_lookups, set())
+        with self.assertRaisesRegex(ValueError, 'Wirelog'):
+            assistant.validate_answer(answer()['answer'])
+
+    def test_stored_but_undelivered_citation_is_rejected(self):
+        self.approve(self.extract())
+        assistant = Assistant(self.store, None, self.store.snapshot(), {}, self.root, lambda *args: None)
+        assistant.execute(tool()['tools'][0])
+        deliver(assistant)
+        assistant.evidence['E2'] = {'kind': 'wiki', 'text': '아직 모델에 전달하지 않은 문서'}
+        with self.assertRaisesRegex(ValueError, '인용'):
+            assistant.validate_answer(answer(kind='wiki', ids=['E2'])['answer'])
+        self.assertEqual(assistant.validate_answer(answer()['answer']), answer()['answer'])
+
     def test_model_tool_result_and_provider_roundtrip(self):
         self.approve(self.extract())
         self.store.save_settings({'selected': 'codex', 'models': {'codex': 'chosen'}})
