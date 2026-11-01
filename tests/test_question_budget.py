@@ -62,7 +62,12 @@ class QuestionBudget(unittest.TestCase):
         self.assertEqual(result['context_budget'][0]['status'], 'exceeded')
 
     def test_later_unfit_request_preserves_evidence_and_stops_before_second_call(self):
-        raw = state()['evidence']['E1']['result']; before = copy.deepcopy(raw)
+        raw = state()['evidence']['E1']['result']
+        for meaning in raw['entities']: meaning['quote'] = '고유 인용 용량 검증'
+        # Irreducible exact quote: stronger sharing must not make this a
+        # duplicate-metadata test or accidentally allow the next call.
+        raw['facts'][0]['payload']['quote'] = ''.join(chr(0x4e00+i) for i in range(6000))
+        before = copy.deepcopy(raw)
         fake = LimitedFake([tool()], 20000); service = Service(self.store, self.root, fake)
         self.addCleanup(service.close)
         with patch('verinote.assistant.engine.query', return_value=raw):

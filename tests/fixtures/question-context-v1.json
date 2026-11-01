@@ -1,0 +1,121 @@
+{
+  "raw": {
+    "snapshot": "fixture-s1",
+    "catalog": {
+      "entity_meanings": [
+        {
+          "ref": "entity:tea",
+          "id": "tea",
+          "type": "음료",
+          "name": "차"
+        }
+      ]
+    },
+    "evidence": {
+      "E1": {
+        "kind": "graph",
+        "result": {
+          "rows": [
+            [
+              "차",
+              "likes",
+              "물"
+            ]
+          ],
+          "facts": [
+            {
+              "id": "f1",
+              "revision": 1,
+              "payload": {
+                "subject": "차",
+                "predicate": "likes",
+                "object": "물",
+                "quote": "차는 물과 연결된다."
+              }
+            }
+          ],
+          "rules": "edge(X,Y) :- fact(X,Y)."
+        }
+      }
+    },
+    "trace": [
+      {
+        "status": "success",
+        "result": {
+          "lookup_id": "K1",
+          "truncated": false
+        }
+      }
+    ]
+  },
+  "projected": {
+    "snapshot": "fixture-s1",
+    "catalog": {
+      "entity_meanings": [
+        {
+          "$context_ref": "1c3bc1c7fc012ae2aa60468a1e41f087d6e5dc6ab7da8885c73b2585906d9f76"
+        }
+      ]
+    },
+    "evidence": {
+      "E1": {
+        "kind": "graph",
+        "result": {
+          "rows": [
+            [
+              "차",
+              "likes",
+              "물"
+            ]
+          ],
+          "facts": [
+            {
+              "$context_ref": "f98ea333abba1e4a75133ebe5105323925a2fadb6d79f7e95d4785f49227abca"
+            }
+          ],
+          "rules": {
+            "$context_ref": "7ff59d66e34b91fbcddf69ae34593ba65969687dc1b5f50bfe76aed26244edde"
+          }
+        }
+      }
+    },
+    "trace": [
+      {
+        "status": "success",
+        "result": {
+          "lookup_id": "K1",
+          "truncated": false
+        }
+      }
+    ],
+    "context_projection_version": 1,
+    "context_tables": {
+      "1c3bc1c7fc012ae2aa60468a1e41f087d6e5dc6ab7da8885c73b2585906d9f76": {
+        "kind": "meaning",
+        "value": {
+          "ref": "entity:tea",
+          "id": "tea",
+          "type": "음료",
+          "name": "차"
+        }
+      },
+      "f98ea333abba1e4a75133ebe5105323925a2fadb6d79f7e95d4785f49227abca": {
+        "kind": "fact",
+        "value": {
+          "id": "f1",
+          "revision": 1,
+          "payload": {
+            "subject": "차",
+            "predicate": "likes",
+            "object": "물",
+            "quote": "차는 물과 연결된다."
+          }
+        }
+      },
+      "7ff59d66e34b91fbcddf69ae34593ba65969687dc1b5f50bfe76aed26244edde": {
+        "kind": "rules",
+        "value": "edge(X,Y) :- fact(X,Y)."
+      }
+    }
+  }
+}
