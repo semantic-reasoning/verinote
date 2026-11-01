@@ -43,6 +43,13 @@ def options(value=None):
     return value
 
 
+
+def input_byte_limit(snapshot=None):
+    """Existing conservative admission, derived from validated job options."""
+    value = options(snapshot)
+    return value['num_ctx'] - value['num_predict'] - 1024
+
+
 def request(path, payload=None, *, timeout=5, limit=1024*1024):
     """http.client ignores proxy environment and never follows redirects."""
     conn = http.client.HTTPConnection('127.0.0.1', 11434, timeout=timeout)
@@ -104,6 +111,10 @@ class Job:
         self.max_output = dispatcher.max_output
         self.rates = dispatcher.rates
 
+    def prompt_byte_limit(self, agent):
+        if agent != 'ollama': raise ValueError('Ollama 작업 제공자 오류')
+        return input_byte_limit(self.options)
+
     def effective_timeout(self, agent, phase=None):
         if agent != 'ollama' or phase not in (None, 'ontology'): raise ValueError('Ollama 작업 제공자 오류')
         return self.options['timeouts']['ontology' if phase == 'ontology' else 'default']
@@ -137,8 +148,9 @@ class Job:
         started = time.monotonic()
         try:
             # Byte admission is intentionally conservative; reserve template framing.
-            if len(prompt.encode()) > self.options['num_ctx']-self.options['num_predict']-1024:
-                raise ValueError('Ollama 입력이 context 여유 한도를 초과합니다. 문서를 나누세요.')
+            limit = self.prompt_byte_limit(agent)
+            if len(prompt.encode()) > limit:
+                raise ValueError(f'Ollama 입력 크기 한도 초과: {len(prompt.encode()):,} / {limit:,} UTF-8 바이트. 입력 또는 조회 범위를 줄이세요.')
             (folder/'prompt.txt').write_text(prompt, encoding='utf-8')
             models = catalog(timeout=min(5, timeout))
             installed = next((r for r in models if r['id'] == model), None)

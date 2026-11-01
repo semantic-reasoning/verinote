@@ -381,6 +381,24 @@ class Assistant:
             string(unknown, 1500)
         return answer
 
+    def check_context(self, prompt, round_number):
+        from .question_context import PROJECTION_VERSION
+        reader = getattr(self.cli, 'prompt_byte_limit', None)
+        transport_limit = reader(self.job['agent']) if callable(reader) else None
+        if transport_limit is not None and (type(transport_limit) is not int or transport_limit <= 0):
+            raise ValueError('질문 제공자의 입력 바이트 한도가 올바르지 않습니다.')
+        limit = min(MAX_CONTEXT, transport_limit) if transport_limit is not None else MAX_CONTEXT
+        size = len(prompt.encode('utf-8'))
+        record = {'schema_version': 1, 'projection_version': PROJECTION_VERSION, 'round': round_number,
+                  'prompt_bytes': size, 'application_limit_bytes': MAX_CONTEXT,
+                  'transport_limit_bytes': transport_limit, 'effective_limit_bytes': limit,
+                  'status': 'exceeded' if size > limit else 'within_limit'}
+        self.job.setdefault('context_budget', []).append(record)
+        self.progress(self.trace, self.evidence)
+        if size > limit:
+            raise ValueError(f'질문 프롬프트 크기 한도 초과: {size:,} / {limit:,} UTF-8 바이트. '
+                             '조회한 근거와 기록은 보존했습니다. 질문의 문서·개체·관계 범위를 좁혀 다시 질문하세요.')
+
     def run(self):
         catalog = {'documents': [{'id': d['id'], 'title': d['title'], 'filename': d['filename'], 'version': d['version'], 'total_chars': d['total_chars']} for d in self.documents.values()],
                    'entities': sorted({f['payload'][k] for f in self.snapshot['facts'] for k in ('subject', 'object')}),
@@ -394,8 +412,7 @@ class Assistant:
                      'tool_slots_remaining': remaining_tools}
             projection = project(state)
             prompt = PROTOCOL + PROMPT + canonical(projection.state)
-            if len(prompt.encode()) > MAX_CONTEXT:
-                raise ValueError('누적 프롬프트 크기 한도 초과')
+            self.check_context(prompt, round_number)
             output = self.cli.complete(self.job['agent'], self.job['model'], prompt, self.folder / f'llm-{round_number}')
             self.delivered_evidence.update(projection.evidence_ids)
             self.delivered_lookups.update(projection.lookup_ids)
