@@ -1,8 +1,8 @@
-"""Print the offline product-fitness v1 fixture verdicts and differences from dataset v2 (#788)."""
+"""Print the offline product-fitness v1 report (#788) that verify_proposal builds."""
 import argparse
-import json
+import sys
 
-from verinote.diagnostics.product_fitness_v1 import verify_proposal
+from verinote.diagnostics.product_fitness_v1 import render, verify_proposal
 
 
 def main(argv=None):
@@ -10,7 +10,7 @@ def main(argv=None):
     parser.parse_args(argv)
     try: result = verify_proposal()
     except (OSError, ValueError, KeyError, TypeError) as exc: parser.exit(2, f'Product-fitness verification failed: {exc}\n')
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    sys.stdout.write(render(result))
     return 0
 
 

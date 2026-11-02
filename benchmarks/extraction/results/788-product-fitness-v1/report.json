@@ -1,0 +1,3824 @@
+{
+  "schema_version": 1,
+  "spec_id": "extraction-product-fitness-v1",
+  "issue": 788,
+  "base_revision": "7831b96f4ec756599174200e68c6b2669d534e43",
+  "generation_requests": 0,
+  "author": "agent_proposed",
+  "human_review": "pending",
+  "assisted_review": {
+    "claude_used": false,
+    "rationale": "No separate Claude-assisted review step (the optional step issue #788 permits) was run; retained raw outputs and deterministic contrasts sufficed. The agent_proposed judgments in this spec were written by the development agent, a Claude model; they are not that step and are not human review."
+  },
+  "base_revision_definition": "The main revision this work started from (작업 출발 main revision). It is not the reproduction revision named in issue #788.",
+  "issue_reproduction_revision": "eafa841de6980dd08f2cf11a1413688038ab9fe2",
+  "review_785_sha256": "77357b149da5a7d7fe2a0c46e8070d610369893ed1a32878b542b175d578dad6",
+  "diagnostic_implementation": {
+    "scope": "Current diagnostic, not authenticated by the historical capture",
+    "source_hashes": {
+      "verinote/diagnostics/__init__.py": "67e010369f257f74cc035fdc2e358500c7771736786b07543ed1316b4b68c092",
+      "verinote/diagnostics/extraction_fidelity.py": "7426c670350b1726f9cc694e289d07a550090568e563fdbce61c97172bb5aa0b",
+      "scripts/diagnose_extraction_fidelity.py": "e9853167380edb08b353087040569234c0c0c8b98bca98128d0826273209b039",
+      "docs/extraction-fidelity-diagnosis.md": "24e8af39bf248d883b882c2d1b156fba67ad7dd2261278ea7ea088feba9bcb89"
+    }
+  },
+  "historical_authentication": {
+    "report_sha256": "72a63ca70e3cfdc9bd9a771999a65ed537bb584d5c8aacfe054c2e4ece981a5f",
+    "raw_index_sha256": "585f97fa03a1cd4c5a8e3b79f2e0641a091089e2917fb98a8e22b6158184775f"
+  },
+  "source_hashes": {
+    "benchmarks/extraction/criteria/product-fitness-v1/authored-pf1.json": "6ddee7d0d6a28fef14d2dc62818dfb188850be3aaa6e56e0f26d7d6568a087d4",
+    "benchmarks/extraction/criteria/product-fitness-v1/registry.json": "0dd3acbd1e4acb057d3c7b0421990ee89f6ad76a94ff5c3bfcf96f081467c0a2",
+    "benchmarks/extraction/criteria/product-fitness-v1/spec.json": "72cb043cb36d7df703e50cdb8cc514ab8f00bb04f6afa1515ba5f083a0863e2d",
+    "verinote/diagnostics/product_fitness_v1.py": "6180e4b2e7e707e7e699468d9e895f2595a073e71124e4988ec4b111f8afa881",
+    "scripts/verify_product_fitness_v1.py": "27b378c3b3fc6c469a59964966348bea6b6284f0ac67858abc0907fe8c27a9d8",
+    "tests/test_product_fitness_v1.py": "d0cf46618dbc65bce2a67aafd600a132f2219c0c828d8e226d42898688c4989e",
+    "tests/test_product_fitness_v1_authored.py": "57b6f28dda62027b9533677a238c123c14dee3123eba83bce6c71bb5241aab58",
+    "tests/test_product_fitness_v1_report.py": "eeb3222b2902268114a0a68419b2d3d56bd39b0a5dd54702b5d6ec1d30dccaa5"
+  },
+  "fixtures": {
+    "short": {
+      "baseline": {
+        "output_sha256": "bc1b42c05fe11542bf8e5091e9fdb337c9b8f2aa4ca0ccd1602875e4b668ffea",
+        "chunk_outputs_sha256": "88797e01a7b5e22ecba7aa495447b921d6d2f4f05fd27f21a408ecbc366b83f1",
+        "production_passed": true,
+        "deterministic": "pass",
+        "failures": [],
+        "categories": [],
+        "agent_flags": [],
+        "overall": "undecided",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported"
+            }
+          },
+          {
+            "index": 1,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "conditional": "span_supported"
+            }
+          },
+          {
+            "index": 2,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "historical": "span_supported"
+            }
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_entity": "span_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_relation": "span_supported"
+            }
+          }
+        ],
+        "v2": {
+          "production_passed": true,
+          "finite_passed": true
+        }
+      },
+      "order_remap": {
+        "output_sha256": "351dfb69bd553748a4eed6902c7b02ddb59554f7039b4bf15ab3a7e60f6b4a9e",
+        "chunk_outputs_sha256": "2672bede8146a7d9a9f944589226289f766f04d8d4a6a9aa11f09e332725da5b",
+        "production_passed": true,
+        "deterministic": "pass",
+        "failures": [],
+        "categories": [],
+        "agent_flags": [],
+        "overall": "undecided",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_relation": "span_supported"
+            }
+          },
+          {
+            "index": 1,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_entity": "span_supported"
+            }
+          },
+          {
+            "index": 2,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "historical": "span_supported"
+            }
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "conditional": "span_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported"
+            }
+          }
+        ],
+        "v2": {
+          "production_passed": true,
+          "finite_passed": true
+        }
+      },
+      "merge_contiguous": {
+        "output_sha256": "c5e2947d428deebfbcb47649a01a0501003094cf7da049534da8899398bc581a",
+        "chunk_outputs_sha256": "48eb16c8637c1a3ffb7d2d6f9d72d007e8b93d5f3d54676e92c03faae27cb53e",
+        "production_passed": true,
+        "deterministic": "pass",
+        "failures": [],
+        "categories": [],
+        "agent_flags": [],
+        "overall": "undecided",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported",
+              "conditional": "span_supported",
+              "historical": "span_supported",
+              "missing_entity": "span_supported",
+              "missing_relation": "span_supported"
+            }
+          }
+        ],
+        "v2": {
+          "production_passed": true,
+          "finite_passed": true
+        }
+      },
+      "label_free_substitutes": {
+        "output_sha256": "412865921026a00471f73312de3f241e2689bed8613c27c0325bcf68e9ec6057",
+        "chunk_outputs_sha256": "ca74931038333950207cef3745830a8516e4e3cfd91abb3dbaffa9ff67702b30",
+        "production_passed": true,
+        "deterministic": "pass",
+        "failures": [],
+        "categories": [],
+        "agent_flags": [],
+        "overall": "undecided",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "substitute_supported"
+            }
+          },
+          {
+            "index": 1,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "conditional": "substitute_supported"
+            }
+          },
+          {
+            "index": 2,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "historical": "substitute_supported"
+            }
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_entity": "substitute_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_relation": "substitute_supported"
+            }
+          }
+        ],
+        "v2": {
+          "production_passed": true,
+          "finite_passed": false
+        }
+      },
+      "longer_quote": {
+        "output_sha256": "c2b050b76b1f4e9bba1b9b85d1d684a7f732abe11580f2cf44a23e97ce0ff224",
+        "chunk_outputs_sha256": "f73c2c9e87f733b5fe917859a5a6a9869eea868b70f76c7b72fbd968a0ebb60b",
+        "production_passed": true,
+        "deterministic": "pass",
+        "failures": [],
+        "categories": [],
+        "agent_flags": [],
+        "overall": "undecided",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported",
+              "conditional": "span_supported",
+              "historical": "span_supported",
+              "missing_entity": "span_supported",
+              "missing_relation": "span_supported"
+            }
+          },
+          {
+            "index": 1,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported",
+              "conditional": "span_supported",
+              "historical": "span_supported",
+              "missing_entity": "span_supported",
+              "missing_relation": "span_supported"
+            }
+          },
+          {
+            "index": 2,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported",
+              "conditional": "span_supported",
+              "historical": "span_supported",
+              "missing_entity": "span_supported",
+              "missing_relation": "span_supported"
+            }
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported",
+              "conditional": "span_supported",
+              "historical": "span_supported",
+              "missing_entity": "span_supported",
+              "missing_relation": "span_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported",
+              "conditional": "span_supported",
+              "historical": "span_supported",
+              "missing_entity": "span_supported",
+              "missing_relation": "span_supported"
+            }
+          }
+        ],
+        "v2": {
+          "production_passed": true,
+          "finite_passed": true
+        }
+      },
+      "gap_split": {
+        "output_sha256": "b17158ef8cb781e830388b4242928c4c8bd1478b7cee9c1a851d014289b98310",
+        "chunk_outputs_sha256": "2f07c31300ebb0c0d1790c7e7b6906ebc9e2d0d95efc84ab6897a86f8acd8c3a",
+        "production_passed": true,
+        "deterministic": "pass",
+        "failures": [],
+        "categories": [],
+        "agent_flags": [],
+        "overall": "undecided",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported"
+            }
+          },
+          {
+            "index": 1,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "conditional": "span_supported"
+            }
+          },
+          {
+            "index": 2,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "historical": "span_supported"
+            }
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_entity": "span_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_relation": "span_supported"
+            }
+          }
+        ],
+        "v2": {
+          "production_passed": true,
+          "finite_passed": true
+        }
+      },
+      "gap_group": {
+        "output_sha256": "bc1b42c05fe11542bf8e5091e9fdb337c9b8f2aa4ca0ccd1602875e4b668ffea",
+        "chunk_outputs_sha256": "88797e01a7b5e22ecba7aa495447b921d6d2f4f05fd27f21a408ecbc366b83f1",
+        "production_passed": true,
+        "deterministic": "pass",
+        "failures": [],
+        "categories": [],
+        "agent_flags": [],
+        "overall": "undecided",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported"
+            }
+          },
+          {
+            "index": 1,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "conditional": "span_supported"
+            }
+          },
+          {
+            "index": 2,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "historical": "span_supported"
+            }
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_entity": "span_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_relation": "span_supported"
+            }
+          }
+        ],
+        "v2": {
+          "production_passed": true,
+          "finite_passed": true
+        }
+      },
+      "incidental_wording": {
+        "output_sha256": "f6bda94764b62e771654740a9148ed1dc8ad4bc64c3016a19c1b208469a0d923",
+        "chunk_outputs_sha256": "010ed4b40ee9dd2056d01da215a27921e178649f525653c223bfd867f36de083",
+        "production_passed": true,
+        "deterministic": "pass",
+        "failures": [],
+        "categories": [],
+        "agent_flags": [],
+        "overall": "undecided",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported"
+            }
+          },
+          {
+            "index": 1,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "conditional": "span_supported"
+            }
+          },
+          {
+            "index": 2,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "historical": "span_supported"
+            }
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_entity": "span_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_relation": "span_supported"
+            }
+          }
+        ],
+        "v2": {
+          "production_passed": true,
+          "finite_passed": true
+        }
+      },
+      "negation_deleted": {
+        "output_sha256": "c9095ce7a5fa06efb48b9912614d18ccd0d4de7278bafe7153770a359837b563",
+        "chunk_outputs_sha256": "9c4728bd11dbc906e73723b0b1a75199374bb11b2245c7da1b7c188b62f91d08",
+        "production_passed": true,
+        "deterministic": "fail",
+        "failures": [
+          [
+            "unreviewed_quote",
+            "evidence"
+          ]
+        ],
+        "categories": [
+          "product_evidence"
+        ],
+        "agent_flags": [],
+        "overall": "fail",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "out_of_scope",
+            "supports": {}
+          },
+          {
+            "index": 1,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "conditional": "span_supported"
+            }
+          },
+          {
+            "index": 2,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "historical": "span_supported"
+            }
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_entity": "span_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_relation": "span_supported"
+            }
+          }
+        ],
+        "v2": {
+          "production_passed": true,
+          "finite_passed": false
+        }
+      },
+      "condition_deleted": {
+        "output_sha256": "7cda85f0442c6c2e953b7d31dab6fae465f7c3de85468484d0e61f3194c8fa05",
+        "chunk_outputs_sha256": "66dc7cb22b93b0f97775bd4db029c6b76e0face39d8cad86cf49f06da21e65c5",
+        "production_passed": true,
+        "deterministic": "fail",
+        "failures": [
+          [
+            "missing_gap_pair",
+            "evidence"
+          ],
+          [
+            "missing_link",
+            "evidence"
+          ],
+          [
+            "unrelated_gap_link",
+            "evidence"
+          ],
+          [
+            "unreviewed_quote",
+            "evidence"
+          ]
+        ],
+        "categories": [
+          "product_evidence"
+        ],
+        "agent_flags": [],
+        "overall": "fail",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported"
+            }
+          },
+          {
+            "index": 1,
+            "semantic": "out_of_scope",
+            "supports": {}
+          },
+          {
+            "index": 2,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "historical": "span_supported"
+            }
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_entity": "span_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_relation": "span_supported"
+            }
+          }
+        ],
+        "v2": {
+          "production_passed": true,
+          "finite_passed": false
+        }
+      },
+      "time_deleted": {
+        "output_sha256": "b8ad56edbe485e6adc7f34c2be8dfe40ffaafe102cd05a39552bd9ff3cf97477",
+        "chunk_outputs_sha256": "f44bc6f4f26ddd9f96c2e833ac219331bbf5d94cdbae37fa5445ea33a5a094d8",
+        "production_passed": true,
+        "deterministic": "fail",
+        "failures": [
+          [
+            "missing_gap_pair",
+            "evidence"
+          ],
+          [
+            "missing_link",
+            "evidence"
+          ],
+          [
+            "unrelated_gap_link",
+            "evidence"
+          ],
+          [
+            "unreviewed_quote",
+            "evidence"
+          ]
+        ],
+        "categories": [
+          "product_evidence"
+        ],
+        "agent_flags": [],
+        "overall": "fail",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported"
+            }
+          },
+          {
+            "index": 1,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "conditional": "span_supported"
+            }
+          },
+          {
+            "index": 2,
+            "semantic": "out_of_scope",
+            "supports": {}
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_entity": "span_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_relation": "span_supported"
+            }
+          }
+        ],
+        "v2": {
+          "production_passed": true,
+          "finite_passed": false
+        }
+      },
+      "generic_prefix_strip": {
+        "output_sha256": "6c112b8549c0179ab4912177516ee9fa3855c4f184bf3e78eb5a55bad58bbc5d",
+        "chunk_outputs_sha256": "9eaf1cdc6665b75218e48467e1c6a21cfabe1eeac525020421439b7d5d4d5d39",
+        "production_passed": false,
+        "deterministic": "fail",
+        "failures": [
+          [
+            "production_failure",
+            null
+          ]
+        ],
+        "categories": [],
+        "agent_flags": [],
+        "overall": "fail",
+        "claims": [],
+        "v2": {
+          "production_passed": false,
+          "finite_passed": null
+        }
+      },
+      "wrong_gap_link": {
+        "output_sha256": "75ad61ab3cb785e9b477b48b8a53b48e1374a1d69dba693ecbb9188f02116572",
+        "chunk_outputs_sha256": "8bc3f950d9481d68b68ae0a33dc1e00e37492ac540073150283636effa1e453b",
+        "production_passed": true,
+        "deterministic": "fail",
+        "failures": [
+          [
+            "missing_gap_pair",
+            "label"
+          ],
+          [
+            "unrelated_gap_link",
+            "label"
+          ]
+        ],
+        "categories": [
+          "unresolved"
+        ],
+        "agent_flags": [],
+        "overall": "fail",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported"
+            }
+          },
+          {
+            "index": 1,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "conditional": "span_supported"
+            }
+          },
+          {
+            "index": 2,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "historical": "span_supported"
+            }
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_entity": "span_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_relation": "span_supported"
+            }
+          }
+        ],
+        "v2": {
+          "production_passed": true,
+          "finite_passed": false
+        }
+      },
+      "coverage_link_dropped": {
+        "output_sha256": "fdc40c76440afcb5baced23ee5964f1a1a4deccee5f76fabb7921cdcb494ec0e",
+        "chunk_outputs_sha256": "31db829fccd77c78d59af4479ce2c054a6937e9e80227208a574a173f0c900c9",
+        "production_passed": true,
+        "deterministic": "fail",
+        "failures": [
+          [
+            "missing_link",
+            "label"
+          ]
+        ],
+        "categories": [
+          "unresolved"
+        ],
+        "agent_flags": [],
+        "overall": "fail",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported"
+            }
+          },
+          {
+            "index": 1,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "conditional": "span_supported"
+            }
+          },
+          {
+            "index": 2,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "historical": "span_supported"
+            }
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_entity": "span_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_relation": "span_supported"
+            }
+          }
+        ],
+        "v2": {
+          "production_passed": true,
+          "finite_passed": false
+        }
+      },
+      "contradictory_prose": {
+        "output_sha256": "f11a7d670046b134fa89c288cca1a41c32a3fb874297f1e4898d39b70b13350d",
+        "chunk_outputs_sha256": "e4298a8d460c311cc0e0b471b74243533cd0f1fc54dff258f86968c3c0a92d1a",
+        "production_passed": true,
+        "deterministic": "pass",
+        "failures": [],
+        "categories": [],
+        "agent_flags": [
+          "short-negated-contradiction"
+        ],
+        "overall": "undecided_agent_flagged",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported"
+            }
+          },
+          {
+            "index": 1,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "conditional": "span_supported"
+            }
+          },
+          {
+            "index": 2,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "historical": "span_supported"
+            }
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_entity": "span_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_relation": "span_supported"
+            }
+          }
+        ],
+        "v2": {
+          "production_passed": true,
+          "finite_passed": true
+        }
+      },
+      "split_conditional_claim": {
+        "output_sha256": "53bfbe7c1d5fd30223775d53175da3a7ca21fa45dfeacd5d2aad72bdf2f05b0e",
+        "chunk_outputs_sha256": "63256ba82b5f276f9c513ee13191495a26a8bf3f510edfeb97733d8963b8b75a",
+        "production_passed": true,
+        "deterministic": "fail",
+        "failures": [
+          [
+            "missing_gap_pair",
+            "evidence"
+          ],
+          [
+            "missing_link",
+            "evidence"
+          ],
+          [
+            "split_across_quotes",
+            "evidence"
+          ],
+          [
+            "unrelated_gap_link",
+            "evidence"
+          ]
+        ],
+        "categories": [
+          "product_evidence"
+        ],
+        "agent_flags": [],
+        "overall": "fail",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported"
+            }
+          },
+          {
+            "index": 1,
+            "semantic": "out_of_scope",
+            "supports": {}
+          },
+          {
+            "index": 2,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "historical": "span_supported"
+            }
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_entity": "span_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_relation": "span_supported"
+            }
+          },
+          {
+            "index": 5,
+            "semantic": "out_of_scope",
+            "supports": {}
+          }
+        ],
+        "v2": {
+          "production_passed": true,
+          "finite_passed": false
+        }
+      },
+      "historical_status_no_evidence": {
+        "output_sha256": "12ab2a7cf0136d963ec8b78d43356c26def8fe026963a7d15f0270040dc4f76b",
+        "chunk_outputs_sha256": "32148473f7f404997d875d4b51124f3d88872fe8be4e84c8d06f9a164cbd2680",
+        "production_passed": true,
+        "deterministic": "fail",
+        "failures": [
+          [
+            "status_mismatch",
+            "label"
+          ]
+        ],
+        "categories": [
+          "unresolved"
+        ],
+        "agent_flags": [],
+        "overall": "fail",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported"
+            }
+          },
+          {
+            "index": 1,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "conditional": "span_supported"
+            }
+          },
+          {
+            "index": 2,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "historical": "span_supported"
+            }
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_entity": "span_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_relation": "span_supported"
+            }
+          }
+        ],
+        "v2": {
+          "production_passed": true,
+          "finite_passed": false
+        }
+      },
+      "historical_qualifier_gap_omitted": {
+        "output_sha256": "c0be9306433ea7362db31fcfb0952d86b901d00b0c722adc906bfc0d21e16e5d",
+        "chunk_outputs_sha256": "a993cb842b5aee2accb86177743f1a4cd97106468d84e94bb3722303c32fea34",
+        "production_passed": true,
+        "deterministic": "fail",
+        "failures": [
+          [
+            "missing_gap_pair",
+            "label"
+          ]
+        ],
+        "categories": [
+          "unresolved"
+        ],
+        "agent_flags": [],
+        "overall": "fail",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported"
+            }
+          },
+          {
+            "index": 1,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "conditional": "span_supported"
+            }
+          },
+          {
+            "index": 2,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "historical": "span_supported"
+            }
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_entity": "span_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_relation": "span_supported"
+            }
+          }
+        ],
+        "v2": {
+          "production_passed": true,
+          "finite_passed": false
+        }
+      },
+      "hypothetical_line_claim": {
+        "output_sha256": "8d53e187a930277db5ad138120e7c2df60e3f4ec44a08c0dd38ed6de5e086715",
+        "chunk_outputs_sha256": "ad566fddf0e4ca9fecb447bb9403e22c8cfa78d81f60997b4a7347a84587a52e",
+        "production_passed": true,
+        "deterministic": "pass",
+        "failures": [],
+        "categories": [],
+        "agent_flags": [],
+        "overall": "undecided",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported"
+            }
+          },
+          {
+            "index": 1,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "conditional": "span_supported"
+            }
+          },
+          {
+            "index": 2,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "historical": "span_supported"
+            }
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_entity": "span_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_relation": "span_supported"
+            }
+          },
+          {
+            "index": 5,
+            "semantic": "out_of_scope",
+            "supports": {}
+          }
+        ],
+        "v2": {
+          "production_passed": true,
+          "finite_passed": true
+        }
+      }
+    },
+    "authored-pf1": {
+      "baseline": {
+        "output_sha256": "712c71e80c9bca58f88199df07d74e75e5059781f25ad5951a7240c0a41b7d85",
+        "chunk_outputs_sha256": "618e1ee06b87107a31dc8b4f8273fac2bf91828e5d1d051d496a0f6f821eade9",
+        "production_passed": true,
+        "deterministic": "pass",
+        "failures": [],
+        "categories": [],
+        "agent_flags": [],
+        "overall": "undecided",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported"
+            }
+          },
+          {
+            "index": 1,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "conditional": "span_supported"
+            }
+          },
+          {
+            "index": 2,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "historical": "span_supported"
+            }
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_entity": "span_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_relation": "span_supported"
+            }
+          }
+        ]
+      },
+      "order_remap": {
+        "output_sha256": "1c2117b555e70d525329fd1688e0f25c6c5383477d49df96675d4e08d883ee2a",
+        "chunk_outputs_sha256": "d594dc05e32549ccfc32ca3ab4a85d74e994442c7e97c1dc9c2297e3fb45f522",
+        "production_passed": true,
+        "deterministic": "pass",
+        "failures": [],
+        "categories": [],
+        "agent_flags": [],
+        "overall": "undecided",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_relation": "span_supported"
+            }
+          },
+          {
+            "index": 1,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_entity": "span_supported"
+            }
+          },
+          {
+            "index": 2,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "historical": "span_supported"
+            }
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "conditional": "span_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported"
+            }
+          }
+        ]
+      },
+      "merge_contiguous": {
+        "output_sha256": "8724257e30718be636ca083e4185f64283b4cb41be25ff095ffc4ad7252f59dc",
+        "chunk_outputs_sha256": "7301b4cccd1a30584222ef19c58fe94f22395a84b0eb8e2f3eae87c1f876bbed",
+        "production_passed": true,
+        "deterministic": "pass",
+        "failures": [],
+        "categories": [],
+        "agent_flags": [],
+        "overall": "undecided",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported",
+              "conditional": "span_supported",
+              "historical": "span_supported",
+              "missing_entity": "span_supported",
+              "missing_relation": "span_supported"
+            }
+          }
+        ]
+      },
+      "label_free_substitutes": {
+        "output_sha256": "58fbaf804b0629a884536ee2a865e07825f5c64438b54cd001fcc18b0562b1d8",
+        "chunk_outputs_sha256": "98ea97096276deb3da39e641b6e3b6c90232f955e5b88b7bfd21f05995072ee6",
+        "production_passed": true,
+        "deterministic": "pass",
+        "failures": [],
+        "categories": [],
+        "agent_flags": [],
+        "overall": "undecided",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "substitute_supported"
+            }
+          },
+          {
+            "index": 1,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "conditional": "substitute_supported"
+            }
+          },
+          {
+            "index": 2,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "historical": "substitute_supported"
+            }
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_entity": "substitute_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_relation": "substitute_supported"
+            }
+          }
+        ]
+      },
+      "longer_quote": {
+        "output_sha256": "10b6eff941f1e7cf63d742346f43e60b9275d1bb4ae8f0b3237955e578d3fdc8",
+        "chunk_outputs_sha256": "b3a39590ef2bed47f5aa57dd98c44ceac988559b6355c942f4082c80db561636",
+        "production_passed": true,
+        "deterministic": "pass",
+        "failures": [],
+        "categories": [],
+        "agent_flags": [],
+        "overall": "undecided",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported",
+              "conditional": "span_supported",
+              "historical": "span_supported",
+              "missing_entity": "span_supported",
+              "missing_relation": "span_supported"
+            }
+          },
+          {
+            "index": 1,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported",
+              "conditional": "span_supported",
+              "historical": "span_supported",
+              "missing_entity": "span_supported",
+              "missing_relation": "span_supported"
+            }
+          },
+          {
+            "index": 2,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported",
+              "conditional": "span_supported",
+              "historical": "span_supported",
+              "missing_entity": "span_supported",
+              "missing_relation": "span_supported"
+            }
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported",
+              "conditional": "span_supported",
+              "historical": "span_supported",
+              "missing_entity": "span_supported",
+              "missing_relation": "span_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported",
+              "conditional": "span_supported",
+              "historical": "span_supported",
+              "missing_entity": "span_supported",
+              "missing_relation": "span_supported"
+            }
+          }
+        ]
+      },
+      "gap_split": {
+        "output_sha256": "918657cb44b914e36b6a7df953565d85d2ad5ba7802e6e409dc87bcb6391cbc6",
+        "chunk_outputs_sha256": "07e9bd21a426b12ceaefb856be489e6ae0a958f7de2014298e08dde62aecf0c3",
+        "production_passed": true,
+        "deterministic": "pass",
+        "failures": [],
+        "categories": [],
+        "agent_flags": [],
+        "overall": "undecided",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported"
+            }
+          },
+          {
+            "index": 1,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "conditional": "span_supported"
+            }
+          },
+          {
+            "index": 2,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "historical": "span_supported"
+            }
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_entity": "span_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_relation": "span_supported"
+            }
+          }
+        ]
+      },
+      "gap_group": {
+        "output_sha256": "712c71e80c9bca58f88199df07d74e75e5059781f25ad5951a7240c0a41b7d85",
+        "chunk_outputs_sha256": "618e1ee06b87107a31dc8b4f8273fac2bf91828e5d1d051d496a0f6f821eade9",
+        "production_passed": true,
+        "deterministic": "pass",
+        "failures": [],
+        "categories": [],
+        "agent_flags": [],
+        "overall": "undecided",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported"
+            }
+          },
+          {
+            "index": 1,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "conditional": "span_supported"
+            }
+          },
+          {
+            "index": 2,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "historical": "span_supported"
+            }
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_entity": "span_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_relation": "span_supported"
+            }
+          }
+        ]
+      },
+      "incidental_wording": {
+        "output_sha256": "0673dbd30d2ed9e2adf96560216f777aa74a479fac3aaa855153d104de6b09c6",
+        "chunk_outputs_sha256": "cd5191c3463b458afc90c84ca8dcca3883e551d338f40bd640ddedb062cb4256",
+        "production_passed": true,
+        "deterministic": "pass",
+        "failures": [],
+        "categories": [],
+        "agent_flags": [],
+        "overall": "undecided",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported"
+            }
+          },
+          {
+            "index": 1,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "conditional": "span_supported"
+            }
+          },
+          {
+            "index": 2,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "historical": "span_supported"
+            }
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_entity": "span_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_relation": "span_supported"
+            }
+          }
+        ]
+      },
+      "negation_deleted": {
+        "output_sha256": "ab8be15c196a201e4460df239fd4bb84593e74f747dd277cf1e8874ddf53c6a6",
+        "chunk_outputs_sha256": "d7c77a184986dbb1f1bd0a935d1a3cfd9f85dc47a579873f144475edc40c834a",
+        "production_passed": true,
+        "deterministic": "fail",
+        "failures": [
+          [
+            "unreviewed_quote",
+            "evidence"
+          ]
+        ],
+        "categories": [
+          "product_evidence"
+        ],
+        "agent_flags": [],
+        "overall": "fail",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "out_of_scope",
+            "supports": {}
+          },
+          {
+            "index": 1,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "conditional": "span_supported"
+            }
+          },
+          {
+            "index": 2,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "historical": "span_supported"
+            }
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_entity": "span_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_relation": "span_supported"
+            }
+          }
+        ]
+      },
+      "condition_deleted": {
+        "output_sha256": "e4743e6dd3f01c4f5d453da800db83cad422a3bed43ebb65046efd306c030b33",
+        "chunk_outputs_sha256": "716ce5000347a8d7fceae3addd02da5438bc26948eacd624839de1d7c0f64d8d",
+        "production_passed": true,
+        "deterministic": "fail",
+        "failures": [
+          [
+            "missing_gap_pair",
+            "evidence"
+          ],
+          [
+            "missing_link",
+            "evidence"
+          ],
+          [
+            "unrelated_gap_link",
+            "evidence"
+          ],
+          [
+            "unreviewed_quote",
+            "evidence"
+          ]
+        ],
+        "categories": [
+          "product_evidence"
+        ],
+        "agent_flags": [],
+        "overall": "fail",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported"
+            }
+          },
+          {
+            "index": 1,
+            "semantic": "out_of_scope",
+            "supports": {}
+          },
+          {
+            "index": 2,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "historical": "span_supported"
+            }
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_entity": "span_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_relation": "span_supported"
+            }
+          }
+        ]
+      },
+      "time_deleted": {
+        "output_sha256": "302311ee326c21efc6a2a10e50ba5d1686217c7460aab17b1ff5f2c1b4ff7dbf",
+        "chunk_outputs_sha256": "9a9df31da13e54c9d880ea9c0c35c9a8f95c47c51f6d9ae2cb7ca386799613b7",
+        "production_passed": true,
+        "deterministic": "fail",
+        "failures": [
+          [
+            "missing_gap_pair",
+            "evidence"
+          ],
+          [
+            "missing_link",
+            "evidence"
+          ],
+          [
+            "unrelated_gap_link",
+            "evidence"
+          ],
+          [
+            "unreviewed_quote",
+            "evidence"
+          ]
+        ],
+        "categories": [
+          "product_evidence"
+        ],
+        "agent_flags": [],
+        "overall": "fail",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported"
+            }
+          },
+          {
+            "index": 1,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "conditional": "span_supported"
+            }
+          },
+          {
+            "index": 2,
+            "semantic": "out_of_scope",
+            "supports": {}
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_entity": "span_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_relation": "span_supported"
+            }
+          }
+        ]
+      },
+      "generic_prefix_strip": {
+        "output_sha256": "df5860956f409299d47115e70f3b34911bae8987df62a5e2fce002494ba595e9",
+        "chunk_outputs_sha256": "3a2867e443605b22869ab4b91dc0900e52e168abd8e65158f7952c5363434773",
+        "production_passed": false,
+        "deterministic": "fail",
+        "failures": [
+          [
+            "production_failure",
+            null
+          ]
+        ],
+        "categories": [],
+        "agent_flags": [],
+        "overall": "fail",
+        "claims": []
+      },
+      "wrong_gap_link": {
+        "output_sha256": "1e959f717d3d31c70ee1268c4ecf4e9d241f1755017f70f1b4ce4b89face20f5",
+        "chunk_outputs_sha256": "84d180aca6e26f474429c4cd2b912965c0dc5d08be165713182a8d99a1d943b6",
+        "production_passed": true,
+        "deterministic": "fail",
+        "failures": [
+          [
+            "missing_gap_pair",
+            "label"
+          ],
+          [
+            "unrelated_gap_link",
+            "label"
+          ]
+        ],
+        "categories": [
+          "unresolved"
+        ],
+        "agent_flags": [],
+        "overall": "fail",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported"
+            }
+          },
+          {
+            "index": 1,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "conditional": "span_supported"
+            }
+          },
+          {
+            "index": 2,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "historical": "span_supported"
+            }
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_entity": "span_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_relation": "span_supported"
+            }
+          }
+        ]
+      },
+      "coverage_link_dropped": {
+        "output_sha256": "25d581a02066114c05f8c9abc58f80e6e4458accd2f90326a4c1374c2bda3f61",
+        "chunk_outputs_sha256": "3eb1499c7448fabae7f3421c03a7ae9659693db1e16329d2bef8482bf131261c",
+        "production_passed": true,
+        "deterministic": "fail",
+        "failures": [
+          [
+            "missing_link",
+            "label"
+          ]
+        ],
+        "categories": [
+          "unresolved"
+        ],
+        "agent_flags": [],
+        "overall": "fail",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported"
+            }
+          },
+          {
+            "index": 1,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "conditional": "span_supported"
+            }
+          },
+          {
+            "index": 2,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "historical": "span_supported"
+            }
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_entity": "span_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_relation": "span_supported"
+            }
+          }
+        ]
+      },
+      "contradictory_prose": {
+        "output_sha256": "6368684367dbfeab001933aad450cee33f52b61bba46809f29f9a182722588ee",
+        "chunk_outputs_sha256": "e7b94f34288cef7c68ffb3b083ee8378e0c2dccc56d5c24ae61da14757129de4",
+        "production_passed": true,
+        "deterministic": "pass",
+        "failures": [],
+        "categories": [],
+        "agent_flags": [
+          "authored-pf1-negated-contradiction"
+        ],
+        "overall": "undecided_agent_flagged",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported"
+            }
+          },
+          {
+            "index": 1,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "conditional": "span_supported"
+            }
+          },
+          {
+            "index": 2,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "historical": "span_supported"
+            }
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_entity": "span_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_relation": "span_supported"
+            }
+          }
+        ]
+      },
+      "split_conditional_claim": {
+        "output_sha256": "eb50ab6bf5f4413199c73616e4b073de5d39d8c073af35ec7a4bc491b7a43483",
+        "chunk_outputs_sha256": "5e652613cdb5bd5432a2a7e62b100e2e7b5aa0aed9502cd1ad0f516594438550",
+        "production_passed": true,
+        "deterministic": "fail",
+        "failures": [
+          [
+            "missing_gap_pair",
+            "evidence"
+          ],
+          [
+            "missing_link",
+            "evidence"
+          ],
+          [
+            "split_across_quotes",
+            "evidence"
+          ],
+          [
+            "unrelated_gap_link",
+            "evidence"
+          ]
+        ],
+        "categories": [
+          "product_evidence"
+        ],
+        "agent_flags": [],
+        "overall": "fail",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported"
+            }
+          },
+          {
+            "index": 1,
+            "semantic": "out_of_scope",
+            "supports": {}
+          },
+          {
+            "index": 2,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "historical": "span_supported"
+            }
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_entity": "span_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_relation": "span_supported"
+            }
+          },
+          {
+            "index": 5,
+            "semantic": "out_of_scope",
+            "supports": {}
+          }
+        ]
+      },
+      "historical_status_no_evidence": {
+        "output_sha256": "01162dd55921fd8fe62abb93695d751cc59d866ccf189a50c61ec26fe9400473",
+        "chunk_outputs_sha256": "2e88e1d997202ef6ed3c3bbe6d1193ca0b3741fb80e506bb56d435547f511cc0",
+        "production_passed": true,
+        "deterministic": "fail",
+        "failures": [
+          [
+            "status_mismatch",
+            "label"
+          ]
+        ],
+        "categories": [
+          "unresolved"
+        ],
+        "agent_flags": [],
+        "overall": "fail",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported"
+            }
+          },
+          {
+            "index": 1,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "conditional": "span_supported"
+            }
+          },
+          {
+            "index": 2,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "historical": "span_supported"
+            }
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_entity": "span_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_relation": "span_supported"
+            }
+          }
+        ]
+      },
+      "historical_qualifier_gap_omitted": {
+        "output_sha256": "2ea8c5a57d51b64615c407abcdda82d8ddeb5deddf9544853f63759a322d2e1a",
+        "chunk_outputs_sha256": "4d34d6a85c2a373b8bd92d9aab2772224b5bb12cca578d76f3a6aad46a8b0c3c",
+        "production_passed": true,
+        "deterministic": "fail",
+        "failures": [
+          [
+            "missing_gap_pair",
+            "label"
+          ]
+        ],
+        "categories": [
+          "unresolved"
+        ],
+        "agent_flags": [],
+        "overall": "fail",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported"
+            }
+          },
+          {
+            "index": 1,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "conditional": "span_supported"
+            }
+          },
+          {
+            "index": 2,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "historical": "span_supported"
+            }
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_entity": "span_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_relation": "span_supported"
+            }
+          }
+        ]
+      },
+      "hypothetical_line_claim": {
+        "output_sha256": "0e0c84ee5f5aa9d9170341018da8abf536d2372967a4da4a2db53c935aec2479",
+        "chunk_outputs_sha256": "27fe5954b477d34a1309f52688699d2a55abe5c5829b468e6074a1e71a52da11",
+        "production_passed": true,
+        "deterministic": "pass",
+        "failures": [],
+        "categories": [],
+        "agent_flags": [],
+        "overall": "undecided",
+        "claims": [
+          {
+            "index": 0,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "negated": "span_supported"
+            }
+          },
+          {
+            "index": 1,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "conditional": "span_supported"
+            }
+          },
+          {
+            "index": 2,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "historical": "span_supported"
+            }
+          },
+          {
+            "index": 3,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_entity": "span_supported"
+            }
+          },
+          {
+            "index": 4,
+            "semantic": "semantic_review_required",
+            "supports": {
+              "missing_relation": "span_supported"
+            }
+          },
+          {
+            "index": 5,
+            "semantic": "out_of_scope",
+            "supports": {}
+          }
+        ]
+      }
+    }
+  },
+  "differences_from_v2": [
+    {
+      "subject": "control:split_claims_baseline",
+      "output_sha256": "bc1b42c05fe11542bf8e5091e9fdb337c9b8f2aa4ca0ccd1602875e4b668ffea",
+      "chunk_outputs_sha256": "88797e01a7b5e22ecba7aa495447b921d6d2f4f05fd27f21a408ecbc366b83f1",
+      "production_passed": true,
+      "v2_finite_passed": true,
+      "v1_deterministic": "pass",
+      "v1_failures": [],
+      "v1_agent_flags": [],
+      "v1_overall": "undecided",
+      "expectation_785": "preserves_evidence",
+      "differs": false,
+      "deliberate": false,
+      "disagreement_with_785": false
+    },
+    {
+      "subject": "control:order_and_remap",
+      "output_sha256": "351dfb69bd553748a4eed6902c7b02ddb59554f7039b4bf15ab3a7e60f6b4a9e",
+      "chunk_outputs_sha256": "2672bede8146a7d9a9f944589226289f766f04d8d4a6a9aa11f09e332725da5b",
+      "production_passed": true,
+      "v2_finite_passed": true,
+      "v1_deterministic": "pass",
+      "v1_failures": [],
+      "v1_agent_flags": [],
+      "v1_overall": "undecided",
+      "expectation_785": "preserves_evidence",
+      "differs": false,
+      "deliberate": false,
+      "disagreement_with_785": false
+    },
+    {
+      "subject": "control:combined_contiguous_claim",
+      "output_sha256": "205e09298e286c31b16b9c7b4d5f52ccb63a561299c42cd1e0aac1b82e59261a",
+      "chunk_outputs_sha256": "5e64da96cff69119b81c6a49c738a81ee14b276fd64b40d55b21bd27bdd08478",
+      "production_passed": true,
+      "v2_finite_passed": true,
+      "v1_deterministic": "pass",
+      "v1_failures": [],
+      "v1_agent_flags": [],
+      "v1_overall": "undecided",
+      "expectation_785": "preserves_evidence",
+      "differs": false,
+      "deliberate": false,
+      "disagreement_with_785": false
+    },
+    {
+      "subject": "control:incidental_wording",
+      "output_sha256": "a4c0a7f8311d48c393faefffda0aae2c217703a4927093208cb6c7eab9dc217f",
+      "chunk_outputs_sha256": "59994fd8d80ca0fbd50cc7337413f4ae6e6ea1ce9f10c36a75240c05c132d84c",
+      "production_passed": true,
+      "v2_finite_passed": true,
+      "v1_deterministic": "pass",
+      "v1_failures": [],
+      "v1_agent_flags": [],
+      "v1_overall": "undecided",
+      "expectation_785": "preserves_evidence",
+      "differs": false,
+      "deliberate": false,
+      "disagreement_with_785": false
+    },
+    {
+      "subject": "control:split_gap_rows",
+      "output_sha256": "b17158ef8cb781e830388b4242928c4c8bd1478b7cee9c1a851d014289b98310",
+      "chunk_outputs_sha256": "2f07c31300ebb0c0d1790c7e7b6906ebc9e2d0d95efc84ab6897a86f8acd8c3a",
+      "production_passed": true,
+      "v2_finite_passed": true,
+      "v1_deterministic": "pass",
+      "v1_failures": [],
+      "v1_agent_flags": [],
+      "v1_overall": "undecided",
+      "expectation_785": "preserves_evidence",
+      "differs": false,
+      "deliberate": false,
+      "disagreement_with_785": false
+    },
+    {
+      "subject": "control:group_gap_rows",
+      "output_sha256": "bc1b42c05fe11542bf8e5091e9fdb337c9b8f2aa4ca0ccd1602875e4b668ffea",
+      "chunk_outputs_sha256": "88797e01a7b5e22ecba7aa495447b921d6d2f4f05fd27f21a408ecbc366b83f1",
+      "production_passed": true,
+      "v2_finite_passed": true,
+      "v1_deterministic": "pass",
+      "v1_failures": [],
+      "v1_agent_flags": [],
+      "v1_overall": "undecided",
+      "expectation_785": "preserves_evidence",
+      "differs": false,
+      "deliberate": false,
+      "disagreement_with_785": false
+    },
+    {
+      "subject": "control:short_quotes_without_fixture_labels",
+      "output_sha256": "412865921026a00471f73312de3f241e2689bed8613c27c0325bcf68e9ec6057",
+      "chunk_outputs_sha256": "ca74931038333950207cef3745830a8516e4e3cfd91abb3dbaffa9ff67702b30",
+      "production_passed": true,
+      "v2_finite_passed": false,
+      "v1_deterministic": "pass",
+      "v1_failures": [],
+      "v1_agent_flags": [],
+      "v1_overall": "undecided",
+      "expectation_785": "preserves_evidence_proposed",
+      "differs": true,
+      "deliberate": true,
+      "disagreement_with_785": false
+    },
+    {
+      "subject": "control:longer_contiguous_quotes",
+      "output_sha256": "c2b050b76b1f4e9bba1b9b85d1d684a7f732abe11580f2cf44a23e97ce0ff224",
+      "chunk_outputs_sha256": "f73c2c9e87f733b5fe917859a5a6a9869eea868b70f76c7b72fbd968a0ebb60b",
+      "production_passed": true,
+      "v2_finite_passed": true,
+      "v1_deterministic": "pass",
+      "v1_failures": [],
+      "v1_agent_flags": [],
+      "v1_overall": "undecided",
+      "expectation_785": "preserves_evidence",
+      "differs": false,
+      "deliberate": false,
+      "disagreement_with_785": false
+    },
+    {
+      "subject": "control:dangerous_conditional_dropping",
+      "output_sha256": "f5ce86b06a34215e355891e42b59c645d3b6905eaf86f525c85d82e981ddad6e",
+      "chunk_outputs_sha256": "686da397c69614c86fe6f01169f406ca34417b64204e034cb9f0ef1e00bde7d3",
+      "production_passed": true,
+      "v2_finite_passed": false,
+      "v1_deterministic": "fail",
+      "v1_failures": [
+        [
+          "missing_gap_pair",
+          "evidence"
+        ],
+        [
+          "missing_link",
+          "evidence"
+        ],
+        [
+          "unrelated_gap_link",
+          "evidence"
+        ],
+        [
+          "unreviewed_quote",
+          "evidence"
+        ]
+      ],
+      "v1_agent_flags": [],
+      "v1_overall": "fail",
+      "expectation_785": "material_failure",
+      "differs": false,
+      "deliberate": false,
+      "disagreement_with_785": false
+    },
+    {
+      "subject": "control:wrong_gap_reference",
+      "output_sha256": "75ad61ab3cb785e9b477b48b8a53b48e1374a1d69dba693ecbb9188f02116572",
+      "chunk_outputs_sha256": "8bc3f950d9481d68b68ae0a33dc1e00e37492ac540073150283636effa1e453b",
+      "production_passed": true,
+      "v2_finite_passed": false,
+      "v1_deterministic": "fail",
+      "v1_failures": [
+        [
+          "missing_gap_pair",
+          "label"
+        ],
+        [
+          "unrelated_gap_link",
+          "label"
+        ]
+      ],
+      "v1_agent_flags": [],
+      "v1_overall": "fail",
+      "expectation_785": "material_failure",
+      "differs": false,
+      "deliberate": false,
+      "disagreement_with_785": true
+    },
+    {
+      "subject": "control:missing_coverage_row",
+      "output_sha256": "66ab5e8654f486092ee9f9d211660137cb925ecf351013bb4245e41894e54128",
+      "chunk_outputs_sha256": "1d0f6a5fdbdb59154233dbc95c09f91ceed4e0413f2b45165fecbae89147249e",
+      "production_passed": false,
+      "v2_finite_passed": null,
+      "v1_deterministic": "fail",
+      "v1_failures": [
+        [
+          "production_failure",
+          null
+        ]
+      ],
+      "v1_agent_flags": [],
+      "v1_overall": "fail",
+      "expectation_785": "material_failure",
+      "differs": false,
+      "deliberate": false,
+      "disagreement_with_785": false
+    },
+    {
+      "subject": "control:status_contradicts_emitted_fact",
+      "output_sha256": "4f0ec62edbc99f99de23e76ced19f5cac20c611e66e1eab15856cad89f3b7c7d",
+      "chunk_outputs_sha256": "b35e8ce600ab6e728e0afa17cdb6b7f0a4dbae7f7e6746f195af24600fcd00c5",
+      "production_passed": false,
+      "v2_finite_passed": null,
+      "v1_deterministic": "fail",
+      "v1_failures": [
+        [
+          "production_failure",
+          null
+        ]
+      ],
+      "v1_agent_flags": [],
+      "v1_overall": "fail",
+      "expectation_785": "material_failure",
+      "differs": false,
+      "deliberate": false,
+      "disagreement_with_785": false
+    },
+    {
+      "subject": "control:historical_status_with_preserved_evidence",
+      "output_sha256": "2f0979735e1e0c218af94fe6def546654ec2fbd9d00fc0871876441bcc6fe881",
+      "chunk_outputs_sha256": "02ec0cf5664fcba88440133d0af5901a2d7bbcb37a83c76415bc53324d0c4f25",
+      "production_passed": true,
+      "v2_finite_passed": false,
+      "v1_deterministic": "fail",
+      "v1_failures": [
+        [
+          "status_mismatch",
+          "label"
+        ]
+      ],
+      "v1_agent_flags": [],
+      "v1_overall": "fail",
+      "expectation_785": "policy_unresolved",
+      "differs": false,
+      "deliberate": false,
+      "disagreement_with_785": false
+    },
+    {
+      "subject": "control:historical_gap_omitted_but_claim_retained",
+      "output_sha256": "c0be9306433ea7362db31fcfb0952d86b901d00b0c722adc906bfc0d21e16e5d",
+      "chunk_outputs_sha256": "a993cb842b5aee2accb86177743f1a4cd97106468d84e94bb3722303c32fea34",
+      "production_passed": true,
+      "v2_finite_passed": false,
+      "v1_deterministic": "fail",
+      "v1_failures": [
+        [
+          "missing_gap_pair",
+          "label"
+        ]
+      ],
+      "v1_agent_flags": [],
+      "v1_overall": "fail",
+      "expectation_785": "policy_unresolved",
+      "differs": false,
+      "deliberate": false,
+      "disagreement_with_785": false
+    },
+    {
+      "subject": "control:contradictory_prose_with_correct_quote",
+      "output_sha256": "f11a7d670046b134fa89c288cca1a41c32a3fb874297f1e4898d39b70b13350d",
+      "chunk_outputs_sha256": "e4298a8d460c311cc0e0b471b74243533cd0f1fc54dff258f86968c3c0a92d1a",
+      "production_passed": true,
+      "v2_finite_passed": true,
+      "v1_deterministic": "pass",
+      "v1_failures": [],
+      "v1_agent_flags": [
+        "short-negated-contradiction"
+      ],
+      "v1_overall": "undecided_agent_flagged",
+      "expectation_785": "material_failure",
+      "differs": true,
+      "deliberate": true,
+      "disagreement_with_785": false
+    },
+    {
+      "subject": "fixture:short:baseline",
+      "output_sha256": "bc1b42c05fe11542bf8e5091e9fdb337c9b8f2aa4ca0ccd1602875e4b668ffea",
+      "chunk_outputs_sha256": "88797e01a7b5e22ecba7aa495447b921d6d2f4f05fd27f21a408ecbc366b83f1",
+      "production_passed": true,
+      "v2_finite_passed": true,
+      "v1_deterministic": "pass",
+      "v1_failures": [],
+      "v1_agent_flags": [],
+      "v1_overall": "undecided",
+      "expectation_785": null,
+      "differs": false,
+      "deliberate": false,
+      "disagreement_with_785": false
+    },
+    {
+      "subject": "fixture:short:order_remap",
+      "output_sha256": "351dfb69bd553748a4eed6902c7b02ddb59554f7039b4bf15ab3a7e60f6b4a9e",
+      "chunk_outputs_sha256": "2672bede8146a7d9a9f944589226289f766f04d8d4a6a9aa11f09e332725da5b",
+      "production_passed": true,
+      "v2_finite_passed": true,
+      "v1_deterministic": "pass",
+      "v1_failures": [],
+      "v1_agent_flags": [],
+      "v1_overall": "undecided",
+      "expectation_785": null,
+      "differs": false,
+      "deliberate": false,
+      "disagreement_with_785": false
+    },
+    {
+      "subject": "fixture:short:merge_contiguous",
+      "output_sha256": "c5e2947d428deebfbcb47649a01a0501003094cf7da049534da8899398bc581a",
+      "chunk_outputs_sha256": "48eb16c8637c1a3ffb7d2d6f9d72d007e8b93d5f3d54676e92c03faae27cb53e",
+      "production_passed": true,
+      "v2_finite_passed": true,
+      "v1_deterministic": "pass",
+      "v1_failures": [],
+      "v1_agent_flags": [],
+      "v1_overall": "undecided",
+      "expectation_785": null,
+      "differs": false,
+      "deliberate": false,
+      "disagreement_with_785": false
+    },
+    {
+      "subject": "fixture:short:label_free_substitutes",
+      "output_sha256": "412865921026a00471f73312de3f241e2689bed8613c27c0325bcf68e9ec6057",
+      "chunk_outputs_sha256": "ca74931038333950207cef3745830a8516e4e3cfd91abb3dbaffa9ff67702b30",
+      "production_passed": true,
+      "v2_finite_passed": false,
+      "v1_deterministic": "pass",
+      "v1_failures": [],
+      "v1_agent_flags": [],
+      "v1_overall": "undecided",
+      "expectation_785": null,
+      "differs": true,
+      "deliberate": true,
+      "disagreement_with_785": false
+    },
+    {
+      "subject": "fixture:short:longer_quote",
+      "output_sha256": "c2b050b76b1f4e9bba1b9b85d1d684a7f732abe11580f2cf44a23e97ce0ff224",
+      "chunk_outputs_sha256": "f73c2c9e87f733b5fe917859a5a6a9869eea868b70f76c7b72fbd968a0ebb60b",
+      "production_passed": true,
+      "v2_finite_passed": true,
+      "v1_deterministic": "pass",
+      "v1_failures": [],
+      "v1_agent_flags": [],
+      "v1_overall": "undecided",
+      "expectation_785": null,
+      "differs": false,
+      "deliberate": false,
+      "disagreement_with_785": false
+    },
+    {
+      "subject": "fixture:short:gap_split",
+      "output_sha256": "b17158ef8cb781e830388b4242928c4c8bd1478b7cee9c1a851d014289b98310",
+      "chunk_outputs_sha256": "2f07c31300ebb0c0d1790c7e7b6906ebc9e2d0d95efc84ab6897a86f8acd8c3a",
+      "production_passed": true,
+      "v2_finite_passed": true,
+      "v1_deterministic": "pass",
+      "v1_failures": [],
+      "v1_agent_flags": [],
+      "v1_overall": "undecided",
+      "expectation_785": null,
+      "differs": false,
+      "deliberate": false,
+      "disagreement_with_785": false
+    },
+    {
+      "subject": "fixture:short:gap_group",
+      "output_sha256": "bc1b42c05fe11542bf8e5091e9fdb337c9b8f2aa4ca0ccd1602875e4b668ffea",
+      "chunk_outputs_sha256": "88797e01a7b5e22ecba7aa495447b921d6d2f4f05fd27f21a408ecbc366b83f1",
+      "production_passed": true,
+      "v2_finite_passed": true,
+      "v1_deterministic": "pass",
+      "v1_failures": [],
+      "v1_agent_flags": [],
+      "v1_overall": "undecided",
+      "expectation_785": null,
+      "differs": false,
+      "deliberate": false,
+      "disagreement_with_785": false
+    },
+    {
+      "subject": "fixture:short:incidental_wording",
+      "output_sha256": "f6bda94764b62e771654740a9148ed1dc8ad4bc64c3016a19c1b208469a0d923",
+      "chunk_outputs_sha256": "010ed4b40ee9dd2056d01da215a27921e178649f525653c223bfd867f36de083",
+      "production_passed": true,
+      "v2_finite_passed": true,
+      "v1_deterministic": "pass",
+      "v1_failures": [],
+      "v1_agent_flags": [],
+      "v1_overall": "undecided",
+      "expectation_785": null,
+      "differs": false,
+      "deliberate": false,
+      "disagreement_with_785": false
+    },
+    {
+      "subject": "fixture:short:negation_deleted",
+      "output_sha256": "c9095ce7a5fa06efb48b9912614d18ccd0d4de7278bafe7153770a359837b563",
+      "chunk_outputs_sha256": "9c4728bd11dbc906e73723b0b1a75199374bb11b2245c7da1b7c188b62f91d08",
+      "production_passed": true,
+      "v2_finite_passed": false,
+      "v1_deterministic": "fail",
+      "v1_failures": [
+        [
+          "unreviewed_quote",
+          "evidence"
+        ]
+      ],
+      "v1_agent_flags": [],
+      "v1_overall": "fail",
+      "expectation_785": null,
+      "differs": false,
+      "deliberate": false,
+      "disagreement_with_785": false
+    },
+    {
+      "subject": "fixture:short:condition_deleted",
+      "output_sha256": "7cda85f0442c6c2e953b7d31dab6fae465f7c3de85468484d0e61f3194c8fa05",
+      "chunk_outputs_sha256": "66dc7cb22b93b0f97775bd4db029c6b76e0face39d8cad86cf49f06da21e65c5",
+      "production_passed": true,
+      "v2_finite_passed": false,
+      "v1_deterministic": "fail",
+      "v1_failures": [
+        [
+          "missing_gap_pair",
+          "evidence"
+        ],
+        [
+          "missing_link",
+          "evidence"
+        ],
+        [
+          "unrelated_gap_link",
+          "evidence"
+        ],
+        [
+          "unreviewed_quote",
+          "evidence"
+        ]
+      ],
+      "v1_agent_flags": [],
+      "v1_overall": "fail",
+      "expectation_785": null,
+      "differs": false,
+      "deliberate": false,
+      "disagreement_with_785": false
+    },
+    {
+      "subject": "fixture:short:time_deleted",
+      "output_sha256": "b8ad56edbe485e6adc7f34c2be8dfe40ffaafe102cd05a39552bd9ff3cf97477",
+      "chunk_outputs_sha256": "f44bc6f4f26ddd9f96c2e833ac219331bbf5d94cdbae37fa5445ea33a5a094d8",
+      "production_passed": true,
+      "v2_finite_passed": false,
+      "v1_deterministic": "fail",
+      "v1_failures": [
+        [
+          "missing_gap_pair",
+          "evidence"
+        ],
+        [
+          "missing_link",
+          "evidence"
+        ],
+        [
+          "unrelated_gap_link",
+          "evidence"
+        ],
+        [
+          "unreviewed_quote",
+          "evidence"
+        ]
+      ],
+      "v1_agent_flags": [],
+      "v1_overall": "fail",
+      "expectation_785": null,
+      "differs": false,
+      "deliberate": false,
+      "disagreement_with_785": false
+    },
+    {
+      "subject": "fixture:short:generic_prefix_strip",
+      "output_sha256": "6c112b8549c0179ab4912177516ee9fa3855c4f184bf3e78eb5a55bad58bbc5d",
+      "chunk_outputs_sha256": "9eaf1cdc6665b75218e48467e1c6a21cfabe1eeac525020421439b7d5d4d5d39",
+      "production_passed": false,
+      "v2_finite_passed": null,
+      "v1_deterministic": "fail",
+      "v1_failures": [
+        [
+          "production_failure",
+          null
+        ]
+      ],
+      "v1_agent_flags": [],
+      "v1_overall": "fail",
+      "expectation_785": null,
+      "differs": false,
+      "deliberate": false,
+      "disagreement_with_785": false
+    },
+    {
+      "subject": "fixture:short:wrong_gap_link",
+      "output_sha256": "75ad61ab3cb785e9b477b48b8a53b48e1374a1d69dba693ecbb9188f02116572",
+      "chunk_outputs_sha256": "8bc3f950d9481d68b68ae0a33dc1e00e37492ac540073150283636effa1e453b",
+      "production_passed": true,
+      "v2_finite_passed": false,
+      "v1_deterministic": "fail",
+      "v1_failures": [
+        [
+          "missing_gap_pair",
+          "label"
+        ],
+        [
+          "unrelated_gap_link",
+          "label"
+        ]
+      ],
+      "v1_agent_flags": [],
+      "v1_overall": "fail",
+      "expectation_785": null,
+      "differs": false,
+      "deliberate": false,
+      "disagreement_with_785": false
+    },
+    {
+      "subject": "fixture:short:coverage_link_dropped",
+      "output_sha256": "fdc40c76440afcb5baced23ee5964f1a1a4deccee5f76fabb7921cdcb494ec0e",
+      "chunk_outputs_sha256": "31db829fccd77c78d59af4479ce2c054a6937e9e80227208a574a173f0c900c9",
+      "production_passed": true,
+      "v2_finite_passed": false,
+      "v1_deterministic": "fail",
+      "v1_failures": [
+        [
+          "missing_link",
+          "label"
+        ]
+      ],
+      "v1_agent_flags": [],
+      "v1_overall": "fail",
+      "expectation_785": null,
+      "differs": false,
+      "deliberate": false,
+      "disagreement_with_785": false
+    },
+    {
+      "subject": "fixture:short:contradictory_prose",
+      "output_sha256": "f11a7d670046b134fa89c288cca1a41c32a3fb874297f1e4898d39b70b13350d",
+      "chunk_outputs_sha256": "e4298a8d460c311cc0e0b471b74243533cd0f1fc54dff258f86968c3c0a92d1a",
+      "production_passed": true,
+      "v2_finite_passed": true,
+      "v1_deterministic": "pass",
+      "v1_failures": [],
+      "v1_agent_flags": [
+        "short-negated-contradiction"
+      ],
+      "v1_overall": "undecided_agent_flagged",
+      "expectation_785": null,
+      "differs": true,
+      "deliberate": true,
+      "disagreement_with_785": false
+    },
+    {
+      "subject": "fixture:short:split_conditional_claim",
+      "output_sha256": "53bfbe7c1d5fd30223775d53175da3a7ca21fa45dfeacd5d2aad72bdf2f05b0e",
+      "chunk_outputs_sha256": "63256ba82b5f276f9c513ee13191495a26a8bf3f510edfeb97733d8963b8b75a",
+      "production_passed": true,
+      "v2_finite_passed": false,
+      "v1_deterministic": "fail",
+      "v1_failures": [
+        [
+          "missing_gap_pair",
+          "evidence"
+        ],
+        [
+          "missing_link",
+          "evidence"
+        ],
+        [
+          "split_across_quotes",
+          "evidence"
+        ],
+        [
+          "unrelated_gap_link",
+          "evidence"
+        ]
+      ],
+      "v1_agent_flags": [],
+      "v1_overall": "fail",
+      "expectation_785": null,
+      "differs": false,
+      "deliberate": false,
+      "disagreement_with_785": false
+    },
+    {
+      "subject": "fixture:short:historical_status_no_evidence",
+      "output_sha256": "12ab2a7cf0136d963ec8b78d43356c26def8fe026963a7d15f0270040dc4f76b",
+      "chunk_outputs_sha256": "32148473f7f404997d875d4b51124f3d88872fe8be4e84c8d06f9a164cbd2680",
+      "production_passed": true,
+      "v2_finite_passed": false,
+      "v1_deterministic": "fail",
+      "v1_failures": [
+        [
+          "status_mismatch",
+          "label"
+        ]
+      ],
+      "v1_agent_flags": [],
+      "v1_overall": "fail",
+      "expectation_785": null,
+      "differs": false,
+      "deliberate": false,
+      "disagreement_with_785": false
+    },
+    {
+      "subject": "fixture:short:historical_qualifier_gap_omitted",
+      "output_sha256": "c0be9306433ea7362db31fcfb0952d86b901d00b0c722adc906bfc0d21e16e5d",
+      "chunk_outputs_sha256": "a993cb842b5aee2accb86177743f1a4cd97106468d84e94bb3722303c32fea34",
+      "production_passed": true,
+      "v2_finite_passed": false,
+      "v1_deterministic": "fail",
+      "v1_failures": [
+        [
+          "missing_gap_pair",
+          "label"
+        ]
+      ],
+      "v1_agent_flags": [],
+      "v1_overall": "fail",
+      "expectation_785": null,
+      "differs": false,
+      "deliberate": false,
+      "disagreement_with_785": false
+    },
+    {
+      "subject": "fixture:short:hypothetical_line_claim",
+      "output_sha256": "8d53e187a930277db5ad138120e7c2df60e3f4ec44a08c0dd38ed6de5e086715",
+      "chunk_outputs_sha256": "ad566fddf0e4ca9fecb447bb9403e22c8cfa78d81f60997b4a7347a84587a52e",
+      "production_passed": true,
+      "v2_finite_passed": true,
+      "v1_deterministic": "pass",
+      "v1_failures": [],
+      "v1_agent_flags": [],
+      "v1_overall": "undecided",
+      "expectation_785": null,
+      "differs": false,
+      "deliberate": false,
+      "disagreement_with_785": false
+    }
+  ],
+  "summary": {
+    "fixture_cases": 2,
+    "fixture_recipes": 19,
+    "controls_785": 15,
+    "differences_from_v2_rows": 34,
+    "v2_differences": 4,
+    "disagreements_with_785": 1,
+    "controls_disagreeing_with_785": [
+      "control:wrong_gap_reference"
+    ],
+    "historical_errors": 16,
+    "historical_errors_agreeing_with_785": 15,
+    "historical_errors_disagreeing_with_785": [
+      "error-6"
+    ],
+    "historical_causes": 14,
+    "sensitivity_alternatives": 9,
+    "sensitivity_executable": 5
+  },
+  "historical_mapping": {
+    "errors": [
+      {
+        "id": "error-1",
+        "frozen_error": {
+          "chunk": 1,
+          "reason": "missing_claim_evidence",
+          "id": "negated"
+        },
+        "v1_failures": [
+          {
+            "layer": "D3",
+            "reason": "unreviewed_quote",
+            "kind": "evidence",
+            "category": "product_evidence",
+            "obligation_ids": [
+              "negated"
+            ]
+          }
+        ],
+        "v1_exempted": [],
+        "causes": [
+          "c1:negated:D3"
+        ],
+        "categories": [
+          "product_evidence"
+        ],
+        "review_785": {
+          "groups": [
+            "unquoted_negation"
+          ],
+          "categories": [
+            "product_evidence_gap"
+          ],
+          "causes_only_v1": [],
+          "causes_only_785": [],
+          "categories_only_v1": [],
+          "categories_only_785": [],
+          "agrees": true
+        }
+      },
+      {
+        "id": "error-2",
+        "frozen_error": {
+          "chunk": 1,
+          "reason": "missing_claim_evidence",
+          "id": "missing_relation"
+        },
+        "v1_failures": [
+          {
+            "layer": "D3",
+            "reason": "unreviewed_quote",
+            "kind": "evidence",
+            "category": "product_evidence",
+            "obligation_ids": [
+              "missing_relation"
+            ]
+          }
+        ],
+        "v1_exempted": [],
+        "causes": [
+          "c1:missing_relation:D3"
+        ],
+        "categories": [
+          "product_evidence"
+        ],
+        "review_785": {
+          "groups": [
+            "unsupported_missing_relation"
+          ],
+          "categories": [
+            "product_evidence_gap"
+          ],
+          "causes_only_v1": [],
+          "causes_only_785": [],
+          "categories_only_v1": [],
+          "categories_only_785": [],
+          "agrees": true
+        }
+      },
+      {
+        "id": "error-3",
+        "frozen_error": {
+          "chunk": 1,
+          "reason": "coverage_semantics",
+          "predicate": "calls"
+        },
+        "v1_failures": [
+          {
+            "layer": "D4",
+            "reason": "missing_link",
+            "kind": "label",
+            "category": "unresolved",
+            "obligation_ids": [
+              "missing_entity"
+            ],
+            "predicate": "calls"
+          }
+        ],
+        "v1_exempted": [],
+        "causes": [
+          "c1:missing_entity:P-COVERAGE-LINK"
+        ],
+        "categories": [
+          "unresolved"
+        ],
+        "review_785": {
+          "groups": [
+            "coverage_navigation"
+          ],
+          "categories": [
+            "product_evidence_gap",
+            "representation_sensitive"
+          ],
+          "causes_only_v1": [],
+          "causes_only_785": [],
+          "categories_only_v1": [
+            "unresolved"
+          ],
+          "categories_only_785": [
+            "product_evidence",
+            "representation_sensitive"
+          ],
+          "agrees": true
+        }
+      },
+      {
+        "id": "error-4",
+        "frozen_error": {
+          "chunk": 1,
+          "reason": "coverage_semantics",
+          "predicate": "archives"
+        },
+        "v1_failures": [
+          {
+            "layer": "D6",
+            "reason": "status_mismatch",
+            "kind": "label",
+            "category": "unresolved",
+            "obligation_ids": [
+              "historical"
+            ],
+            "predicate": "archives"
+          }
+        ],
+        "v1_exempted": [],
+        "causes": [
+          "c1:predicate:archives:D6"
+        ],
+        "categories": [
+          "unresolved"
+        ],
+        "review_785": {
+          "groups": [
+            "historical_status_policy"
+          ],
+          "categories": [
+            "representation_sensitive",
+            "unresolved"
+          ],
+          "causes_only_v1": [],
+          "causes_only_785": [],
+          "categories_only_v1": [],
+          "categories_only_785": [
+            "representation_sensitive"
+          ],
+          "agrees": true
+        }
+      },
+      {
+        "id": "error-5",
+        "frozen_error": {
+          "chunk": 1,
+          "reason": "unexpected_gap_evidence",
+          "code": "missing_relation"
+        },
+        "v1_failures": [
+          {
+            "layer": "D5",
+            "reason": "unrelated_gap_link",
+            "kind": "evidence",
+            "category": "product_evidence",
+            "obligation_ids": [
+              "missing_relation"
+            ],
+            "code": "missing_relation"
+          }
+        ],
+        "v1_exempted": [],
+        "causes": [
+          "c1:missing_relation:D3"
+        ],
+        "categories": [
+          "product_evidence"
+        ],
+        "review_785": {
+          "groups": [
+            "unsupported_missing_relation"
+          ],
+          "categories": [
+            "product_evidence_gap"
+          ],
+          "causes_only_v1": [],
+          "causes_only_785": [],
+          "categories_only_v1": [],
+          "categories_only_785": [],
+          "agrees": true
+        }
+      },
+      {
+        "id": "error-6",
+        "frozen_error": {
+          "chunk": 1,
+          "reason": "gap_completeness"
+        },
+        "v1_failures": [
+          {
+            "layer": "D5",
+            "reason": "missing_gap_pair",
+            "kind": "label",
+            "category": "unresolved",
+            "obligation_ids": [
+              "conditional"
+            ],
+            "code": "qualifier_not_representable"
+          },
+          {
+            "layer": "D5",
+            "reason": "missing_gap_pair",
+            "kind": "label",
+            "category": "unresolved",
+            "obligation_ids": [
+              "historical"
+            ],
+            "code": "qualifier_not_representable"
+          },
+          {
+            "layer": "D5",
+            "reason": "missing_gap_pair",
+            "kind": "evidence",
+            "category": "product_evidence",
+            "obligation_ids": [
+              "missing_relation"
+            ],
+            "code": "missing_relation"
+          }
+        ],
+        "v1_exempted": [],
+        "causes": [
+          "c1:conditional:P-GAP-QUALIFIER-DUP",
+          "c1:historical:P-GAP-QUALIFIER-DUP",
+          "c1:missing_relation:D3"
+        ],
+        "categories": [
+          "product_evidence",
+          "unresolved"
+        ],
+        "review_785": {
+          "groups": [
+            "unsupported_missing_relation",
+            "qualified_gap_policy"
+          ],
+          "categories": [
+            "product_evidence_gap",
+            "representation_sensitive",
+            "unresolved"
+          ],
+          "causes_only_v1": [
+            "c1:conditional:P-GAP-QUALIFIER-DUP"
+          ],
+          "causes_only_785": [],
+          "categories_only_v1": [],
+          "categories_only_785": [
+            "representation_sensitive"
+          ],
+          "agrees": false
+        }
+      },
+      {
+        "id": "error-7",
+        "frozen_error": {
+          "chunk": 2,
+          "reason": "missing_claim_evidence",
+          "id": "negated"
+        },
+        "v1_failures": [
+          {
+            "layer": "D3",
+            "reason": "unreviewed_quote",
+            "kind": "evidence",
+            "category": "product_evidence",
+            "obligation_ids": [
+              "negated"
+            ]
+          }
+        ],
+        "v1_exempted": [],
+        "causes": [
+          "c2:negated:D3"
+        ],
+        "categories": [
+          "product_evidence"
+        ],
+        "review_785": {
+          "groups": [
+            "unquoted_negation"
+          ],
+          "categories": [
+            "product_evidence_gap"
+          ],
+          "causes_only_v1": [],
+          "causes_only_785": [],
+          "categories_only_v1": [],
+          "categories_only_785": [],
+          "agrees": true
+        }
+      },
+      {
+        "id": "error-8",
+        "frozen_error": {
+          "chunk": 2,
+          "reason": "missing_claim_evidence",
+          "id": "missing_relation"
+        },
+        "v1_failures": [
+          {
+            "layer": "D3",
+            "reason": "unreviewed_quote",
+            "kind": "evidence",
+            "category": "product_evidence",
+            "obligation_ids": [
+              "missing_relation"
+            ]
+          }
+        ],
+        "v1_exempted": [],
+        "causes": [
+          "c2:missing_relation:D3"
+        ],
+        "categories": [
+          "product_evidence"
+        ],
+        "review_785": {
+          "groups": [
+            "unsupported_missing_relation"
+          ],
+          "categories": [
+            "product_evidence_gap"
+          ],
+          "causes_only_v1": [],
+          "causes_only_785": [],
+          "categories_only_v1": [],
+          "categories_only_785": [],
+          "agrees": true
+        }
+      },
+      {
+        "id": "error-9",
+        "frozen_error": {
+          "chunk": 2,
+          "reason": "coverage_semantics",
+          "predicate": "calls"
+        },
+        "v1_failures": [
+          {
+            "layer": "D4",
+            "reason": "missing_link",
+            "kind": "label",
+            "category": "unresolved",
+            "obligation_ids": [
+              "missing_entity"
+            ],
+            "predicate": "calls"
+          }
+        ],
+        "v1_exempted": [],
+        "causes": [
+          "c2:missing_entity:P-COVERAGE-LINK"
+        ],
+        "categories": [
+          "unresolved"
+        ],
+        "review_785": {
+          "groups": [
+            "coverage_navigation"
+          ],
+          "categories": [
+            "product_evidence_gap",
+            "representation_sensitive"
+          ],
+          "causes_only_v1": [],
+          "causes_only_785": [],
+          "categories_only_v1": [
+            "unresolved"
+          ],
+          "categories_only_785": [
+            "product_evidence",
+            "representation_sensitive"
+          ],
+          "agrees": true
+        }
+      },
+      {
+        "id": "error-10",
+        "frozen_error": {
+          "chunk": 2,
+          "reason": "coverage_semantics",
+          "predicate": "archives"
+        },
+        "v1_failures": [
+          {
+            "layer": "D6",
+            "reason": "status_mismatch",
+            "kind": "label",
+            "category": "unresolved",
+            "obligation_ids": [
+              "historical"
+            ],
+            "predicate": "archives"
+          }
+        ],
+        "v1_exempted": [],
+        "causes": [
+          "c2:predicate:archives:D6"
+        ],
+        "categories": [
+          "unresolved"
+        ],
+        "review_785": {
+          "groups": [
+            "historical_status_policy"
+          ],
+          "categories": [
+            "representation_sensitive",
+            "unresolved"
+          ],
+          "causes_only_v1": [],
+          "causes_only_785": [],
+          "categories_only_v1": [],
+          "categories_only_785": [
+            "representation_sensitive"
+          ],
+          "agrees": true
+        }
+      },
+      {
+        "id": "error-11",
+        "frozen_error": {
+          "chunk": 2,
+          "reason": "unexpected_gap_evidence",
+          "code": "missing_relation"
+        },
+        "v1_failures": [
+          {
+            "layer": "D5",
+            "reason": "unrelated_gap_link",
+            "kind": "evidence",
+            "category": "product_evidence",
+            "obligation_ids": [
+              "missing_relation"
+            ],
+            "code": "missing_relation"
+          }
+        ],
+        "v1_exempted": [],
+        "causes": [
+          "c2:missing_relation:D3"
+        ],
+        "categories": [
+          "product_evidence"
+        ],
+        "review_785": {
+          "groups": [
+            "unsupported_missing_relation"
+          ],
+          "categories": [
+            "product_evidence_gap"
+          ],
+          "causes_only_v1": [],
+          "causes_only_785": [],
+          "categories_only_v1": [],
+          "categories_only_785": [],
+          "agrees": true
+        }
+      },
+      {
+        "id": "error-12",
+        "frozen_error": {
+          "chunk": 2,
+          "reason": "gap_completeness"
+        },
+        "v1_failures": [
+          {
+            "layer": "D5",
+            "reason": "missing_gap_pair",
+            "kind": "label",
+            "category": "unresolved",
+            "obligation_ids": [
+              "historical"
+            ],
+            "code": "qualifier_not_representable"
+          },
+          {
+            "layer": "D5",
+            "reason": "missing_gap_pair",
+            "kind": "evidence",
+            "category": "product_evidence",
+            "obligation_ids": [
+              "missing_relation"
+            ],
+            "code": "missing_relation"
+          }
+        ],
+        "v1_exempted": [],
+        "causes": [
+          "c2:historical:P-GAP-QUALIFIER-DUP",
+          "c2:missing_relation:D3"
+        ],
+        "categories": [
+          "product_evidence",
+          "unresolved"
+        ],
+        "review_785": {
+          "groups": [
+            "unsupported_missing_relation",
+            "qualified_gap_policy"
+          ],
+          "categories": [
+            "product_evidence_gap",
+            "representation_sensitive",
+            "unresolved"
+          ],
+          "causes_only_v1": [],
+          "causes_only_785": [],
+          "categories_only_v1": [],
+          "categories_only_785": [
+            "representation_sensitive"
+          ],
+          "agrees": true
+        }
+      },
+      {
+        "id": "error-13",
+        "frozen_error": {
+          "chunk": 3,
+          "reason": "missing_claim_evidence",
+          "id": "missing_relation"
+        },
+        "v1_failures": [
+          {
+            "layer": "D3",
+            "reason": "unreviewed_quote",
+            "kind": "evidence",
+            "category": "product_evidence",
+            "obligation_ids": [
+              "missing_relation"
+            ]
+          }
+        ],
+        "v1_exempted": [],
+        "causes": [
+          "c3:missing_relation:D3"
+        ],
+        "categories": [
+          "product_evidence"
+        ],
+        "review_785": {
+          "groups": [
+            "unsupported_missing_relation"
+          ],
+          "categories": [
+            "product_evidence_gap"
+          ],
+          "causes_only_v1": [],
+          "causes_only_785": [],
+          "categories_only_v1": [],
+          "categories_only_785": [],
+          "agrees": true
+        }
+      },
+      {
+        "id": "error-14",
+        "frozen_error": {
+          "chunk": 3,
+          "reason": "coverage_semantics",
+          "predicate": "calls"
+        },
+        "v1_failures": [
+          {
+            "layer": "D4",
+            "reason": "missing_link",
+            "kind": "label",
+            "category": "unresolved",
+            "obligation_ids": [
+              "missing_entity"
+            ],
+            "predicate": "calls"
+          }
+        ],
+        "v1_exempted": [],
+        "causes": [
+          "c3:missing_entity:P-COVERAGE-LINK"
+        ],
+        "categories": [
+          "unresolved"
+        ],
+        "review_785": {
+          "groups": [
+            "coverage_navigation"
+          ],
+          "categories": [
+            "product_evidence_gap",
+            "representation_sensitive"
+          ],
+          "causes_only_v1": [],
+          "causes_only_785": [],
+          "categories_only_v1": [
+            "unresolved"
+          ],
+          "categories_only_785": [
+            "product_evidence",
+            "representation_sensitive"
+          ],
+          "agrees": true
+        }
+      },
+      {
+        "id": "error-15",
+        "frozen_error": {
+          "chunk": 3,
+          "reason": "unexpected_gap_evidence",
+          "code": "missing_relation"
+        },
+        "v1_failures": [
+          {
+            "layer": "D5",
+            "reason": "unrelated_gap_link",
+            "kind": "evidence",
+            "category": "product_evidence",
+            "obligation_ids": [
+              "missing_relation"
+            ],
+            "code": "missing_relation"
+          }
+        ],
+        "v1_exempted": [],
+        "causes": [
+          "c3:missing_relation:D3"
+        ],
+        "categories": [
+          "product_evidence"
+        ],
+        "review_785": {
+          "groups": [
+            "unsupported_missing_relation"
+          ],
+          "categories": [
+            "product_evidence_gap"
+          ],
+          "causes_only_v1": [],
+          "causes_only_785": [],
+          "categories_only_v1": [],
+          "categories_only_785": [],
+          "agrees": true
+        }
+      },
+      {
+        "id": "error-16",
+        "frozen_error": {
+          "chunk": 3,
+          "reason": "gap_completeness"
+        },
+        "v1_failures": [
+          {
+            "layer": "D5",
+            "reason": "missing_gap_pair",
+            "kind": "label",
+            "category": "unresolved",
+            "obligation_ids": [
+              "historical"
+            ],
+            "code": "qualifier_not_representable"
+          },
+          {
+            "layer": "D5",
+            "reason": "missing_gap_pair",
+            "kind": "evidence",
+            "category": "product_evidence",
+            "obligation_ids": [
+              "missing_relation"
+            ],
+            "code": "missing_relation"
+          }
+        ],
+        "v1_exempted": [],
+        "causes": [
+          "c3:historical:P-GAP-QUALIFIER-DUP",
+          "c3:missing_relation:D3"
+        ],
+        "categories": [
+          "product_evidence",
+          "unresolved"
+        ],
+        "review_785": {
+          "groups": [
+            "unsupported_missing_relation",
+            "qualified_gap_policy"
+          ],
+          "categories": [
+            "product_evidence_gap",
+            "representation_sensitive",
+            "unresolved"
+          ],
+          "causes_only_v1": [],
+          "causes_only_785": [],
+          "categories_only_v1": [],
+          "categories_only_785": [
+            "representation_sensitive"
+          ],
+          "agrees": true
+        }
+      }
+    ],
+    "causes": [
+      {
+        "id": "c1:conditional:P-GAP-QUALIFIER-DUP",
+        "chunk": 1,
+        "target": "conditional",
+        "basis": "P-GAP-QUALIFIER-DUP",
+        "category": "unresolved",
+        "error_ids": [
+          "error-6"
+        ]
+      },
+      {
+        "id": "c1:historical:P-GAP-QUALIFIER-DUP",
+        "chunk": 1,
+        "target": "historical",
+        "basis": "P-GAP-QUALIFIER-DUP",
+        "category": "unresolved",
+        "error_ids": [
+          "error-6"
+        ]
+      },
+      {
+        "id": "c1:missing_entity:P-COVERAGE-LINK",
+        "chunk": 1,
+        "target": "missing_entity",
+        "basis": "P-COVERAGE-LINK",
+        "category": "unresolved",
+        "error_ids": [
+          "error-3"
+        ]
+      },
+      {
+        "id": "c1:missing_relation:D3",
+        "chunk": 1,
+        "target": "missing_relation",
+        "basis": "D3",
+        "category": "product_evidence",
+        "error_ids": [
+          "error-2",
+          "error-5",
+          "error-6"
+        ]
+      },
+      {
+        "id": "c1:negated:D3",
+        "chunk": 1,
+        "target": "negated",
+        "basis": "D3",
+        "category": "product_evidence",
+        "error_ids": [
+          "error-1"
+        ]
+      },
+      {
+        "id": "c1:predicate:archives:D6",
+        "chunk": 1,
+        "target": "predicate:archives",
+        "basis": "D6",
+        "category": "unresolved",
+        "error_ids": [
+          "error-4"
+        ]
+      },
+      {
+        "id": "c2:historical:P-GAP-QUALIFIER-DUP",
+        "chunk": 2,
+        "target": "historical",
+        "basis": "P-GAP-QUALIFIER-DUP",
+        "category": "unresolved",
+        "error_ids": [
+          "error-12"
+        ]
+      },
+      {
+        "id": "c2:missing_entity:P-COVERAGE-LINK",
+        "chunk": 2,
+        "target": "missing_entity",
+        "basis": "P-COVERAGE-LINK",
+        "category": "unresolved",
+        "error_ids": [
+          "error-9"
+        ]
+      },
+      {
+        "id": "c2:missing_relation:D3",
+        "chunk": 2,
+        "target": "missing_relation",
+        "basis": "D3",
+        "category": "product_evidence",
+        "error_ids": [
+          "error-8",
+          "error-11",
+          "error-12"
+        ]
+      },
+      {
+        "id": "c2:negated:D3",
+        "chunk": 2,
+        "target": "negated",
+        "basis": "D3",
+        "category": "product_evidence",
+        "error_ids": [
+          "error-7"
+        ]
+      },
+      {
+        "id": "c2:predicate:archives:D6",
+        "chunk": 2,
+        "target": "predicate:archives",
+        "basis": "D6",
+        "category": "unresolved",
+        "error_ids": [
+          "error-10"
+        ]
+      },
+      {
+        "id": "c3:historical:P-GAP-QUALIFIER-DUP",
+        "chunk": 3,
+        "target": "historical",
+        "basis": "P-GAP-QUALIFIER-DUP",
+        "category": "unresolved",
+        "error_ids": [
+          "error-16"
+        ]
+      },
+      {
+        "id": "c3:missing_entity:P-COVERAGE-LINK",
+        "chunk": 3,
+        "target": "missing_entity",
+        "basis": "P-COVERAGE-LINK",
+        "category": "unresolved",
+        "error_ids": [
+          "error-14"
+        ]
+      },
+      {
+        "id": "c3:missing_relation:D3",
+        "chunk": 3,
+        "target": "missing_relation",
+        "basis": "D3",
+        "category": "product_evidence",
+        "error_ids": [
+          "error-13",
+          "error-15",
+          "error-16"
+        ]
+      }
+    ],
+    "cause_counts": {
+      "product_evidence": 5,
+      "unresolved": 9,
+      "representation_sensitive": 0,
+      "total": 14
+    }
+  },
+  "sensitivity": [
+    {
+      "policy": "P-EQUIV",
+      "decision": "generic_prefix_strip",
+      "label": null,
+      "executable": false
+    },
+    {
+      "policy": "P-EQUIV",
+      "decision": "substring_of_evidence",
+      "label": null,
+      "executable": false
+    },
+    {
+      "policy": "P-CLAIM-MERGE",
+      "decision": "require_one_claim_per_obligation",
+      "label": null,
+      "executable": false
+    },
+    {
+      "policy": "P-CLAIM-SPLIT",
+      "decision": "accept_union_of_quotes",
+      "label": null,
+      "executable": false
+    },
+    {
+      "policy": "P-COVERAGE-LINK",
+      "decision": "links_optional",
+      "label": null,
+      "executable": true,
+      "cause_counts": {
+        "product_evidence": 5,
+        "unresolved": 6,
+        "representation_sensitive": 3,
+        "total": 14
+      },
+      "moved_errors": [
+        {
+          "id": "error-3",
+          "categories": [
+            "representation_sensitive"
+          ],
+          "causes_added": [
+            "c1:coverage_semantics:calls:v1_pass"
+          ],
+          "causes_removed": [
+            "c1:missing_entity:P-COVERAGE-LINK"
+          ]
+        },
+        {
+          "id": "error-9",
+          "categories": [
+            "representation_sensitive"
+          ],
+          "causes_added": [
+            "c2:coverage_semantics:calls:v1_pass"
+          ],
+          "causes_removed": [
+            "c2:missing_entity:P-COVERAGE-LINK"
+          ]
+        },
+        {
+          "id": "error-14",
+          "categories": [
+            "representation_sensitive"
+          ],
+          "causes_added": [
+            "c3:coverage_semantics:calls:v1_pass"
+          ],
+          "causes_removed": [
+            "c3:missing_entity:P-COVERAGE-LINK"
+          ]
+        }
+      ]
+    },
+    {
+      "policy": "P-STATUS-HISTORICAL",
+      "decision": "historical_no_evidence_linked",
+      "label": null,
+      "executable": true,
+      "cause_counts": {
+        "product_evidence": 5,
+        "unresolved": 7,
+        "representation_sensitive": 2,
+        "total": 14
+      },
+      "moved_errors": [
+        {
+          "id": "error-4",
+          "categories": [
+            "representation_sensitive"
+          ],
+          "causes_added": [
+            "c1:coverage_semantics:archives:v1_pass"
+          ],
+          "causes_removed": [
+            "c1:predicate:archives:D6"
+          ]
+        },
+        {
+          "id": "error-10",
+          "categories": [
+            "representation_sensitive"
+          ],
+          "causes_added": [
+            "c2:coverage_semantics:archives:v1_pass"
+          ],
+          "causes_removed": [
+            "c2:predicate:archives:D6"
+          ]
+        }
+      ]
+    },
+    {
+      "policy": "P-FAILURE-KIND",
+      "decision": "missing_link_always_evidence",
+      "label": null,
+      "executable": true,
+      "cause_counts": {
+        "product_evidence": 8,
+        "unresolved": 6,
+        "representation_sensitive": 0,
+        "total": 14
+      },
+      "moved_errors": [
+        {
+          "id": "error-3",
+          "categories": [
+            "product_evidence"
+          ],
+          "causes_added": [],
+          "causes_removed": []
+        },
+        {
+          "id": "error-9",
+          "categories": [
+            "product_evidence"
+          ],
+          "causes_added": [],
+          "causes_removed": []
+        },
+        {
+          "id": "error-14",
+          "categories": [
+            "product_evidence"
+          ],
+          "causes_added": [],
+          "causes_removed": []
+        }
+      ]
+    },
+    {
+      "policy": "P-GAP-QUALIFIER-DUP",
+      "decision": "exempt_linked_from_coverage",
+      "label": "A",
+      "executable": true,
+      "cause_counts": {
+        "product_evidence": 5,
+        "unresolved": 6,
+        "representation_sensitive": 0,
+        "total": 11
+      },
+      "moved_errors": [
+        {
+          "id": "error-6",
+          "categories": [
+            "product_evidence",
+            "unresolved"
+          ],
+          "causes_added": [],
+          "causes_removed": [
+            "c1:historical:P-GAP-QUALIFIER-DUP"
+          ]
+        },
+        {
+          "id": "error-12",
+          "categories": [
+            "product_evidence"
+          ],
+          "causes_added": [],
+          "causes_removed": [
+            "c2:historical:P-GAP-QUALIFIER-DUP"
+          ]
+        },
+        {
+          "id": "error-16",
+          "categories": [
+            "product_evidence"
+          ],
+          "causes_added": [],
+          "causes_removed": [
+            "c3:historical:P-GAP-QUALIFIER-DUP"
+          ]
+        }
+      ]
+    },
+    {
+      "policy": "P-GAP-QUALIFIER-DUP",
+      "decision": "exempt_linked_from_coverage",
+      "label": "B",
+      "executable": true,
+      "cause_counts": {
+        "product_evidence": 5,
+        "unresolved": 5,
+        "representation_sensitive": 0,
+        "total": 10
+      },
+      "moved_errors": [
+        {
+          "id": "error-6",
+          "categories": [
+            "product_evidence"
+          ],
+          "causes_added": [],
+          "causes_removed": [
+            "c1:conditional:P-GAP-QUALIFIER-DUP",
+            "c1:historical:P-GAP-QUALIFIER-DUP"
+          ]
+        },
+        {
+          "id": "error-12",
+          "categories": [
+            "product_evidence"
+          ],
+          "causes_added": [],
+          "causes_removed": [
+            "c2:historical:P-GAP-QUALIFIER-DUP"
+          ]
+        },
+        {
+          "id": "error-16",
+          "categories": [
+            "product_evidence"
+          ],
+          "causes_added": [],
+          "causes_removed": [
+            "c3:historical:P-GAP-QUALIFIER-DUP"
+          ]
+        }
+      ]
+    }
+  ],
+  "scope": "v1 deterministic conformance under agent-proposed policies; prose fitness is never computed."
+}

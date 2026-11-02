@@ -17,7 +17,7 @@ from verinote.documents import chunks
 from verinote.extraction_evaluation import DATA_ROOT, ideal_outputs, load_case
 
 PROSE_FIELDS = ('heading', 'text', 'reason', 'detail')
-TEST_FILES = (Path(__file__), Path(__file__).with_name('test_product_fitness_v1.py'))
+TEST_FILES = tuple(sorted(Path(__file__).parent.glob('test_product_fitness_v1*.py')))
 
 
 def _strings(value):
@@ -43,8 +43,8 @@ def authored_texts(doc):
     yield doc['case']['source']
     yield json.dumps(doc['case']['dictionary'], ensure_ascii=False)
     for obligation in doc['chunk']['obligations']:
-        # Markers are sub-token fragments; load_authored validates each as a
-        # substring of its canonical text, which is scanned here.
+        # Markers need not align with whitespace tokens; load_authored validates
+        # each as a substring of its canonical text, which is scanned here.
         yield obligation['canonical']['text']
         for substitute in obligation['substitutes']: yield substitute['text']
     for fact in doc['facts']: yield from (fact[key] for key in ('subject', 'predicate', 'object', 'quote'))
