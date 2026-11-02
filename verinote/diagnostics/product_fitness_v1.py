@@ -15,18 +15,17 @@ from ..extraction_coverage import GAP_CODES
 from ..extraction_evaluation import DATA_ROOT, ideal_outputs, load_case, load_manifest
 from ..ontology import validate_dictionary
 from ..store import digest
-from .extraction_fidelity import _production, assess_outputs
+from .extraction_fidelity import REPORT_SHA256, _production, assess_outputs, diagnose
 
 REPO = Path(__file__).resolve().parents[2]
 CRITERIA_ROOT = REPO/'benchmarks/extraction/criteria/product-fitness-v1'
 REVIEW_PATH = REPO/'benchmarks/extraction/results/785-criteria-review/review.json'
 REVIEW_SHA256 = '77357b149da5a7d7fe2a0c46e8070d610369893ed1a32878b542b175d578dad6'
+REPORT_PATH = REPO/'benchmarks/extraction/results/788-product-fitness-v1/report.json'
 REGISTRY_CASES = ('short', 'three')
 QUALIFIER_CODE = 'qualifier_not_representable'
 STATUSES = ('extracted', 'no_evidence', 'not_representable')
-# Each policy id maps to the decisions this module implements. The spec's
-# current decision must be one of them; a rejected alternative not listed here
-# is recorded in the spec but not executable.
+# Decisions this module can execute, per policy; _policies rejects a spec decision outside this set.
 IMPLEMENTED_DECISIONS = {
     'P-EQUIV': ('registry_substitutes',),
     'P-ORDER': ('index_remap_invariant',),
@@ -38,11 +37,16 @@ IMPLEMENTED_DECISIONS = {
     'P-GAP-QUALIFIER-DUP': ('every_qualified_obligation', 'exempt_linked_from_coverage'),
 }
 OBLIGATION_SCOPES = (None, 'all_qualifier_pairs')
-# Declared spec subjects are owned by a prefix. verify_proposal enforces the
-# prefixes mapped to 'differences_from_v2': every such subject must have a
-# computed row. A subject with an unmapped prefix is rejected, so a later
-# declaration kind must register its prefix together with its own check.
-DECLARATION_OWNERS = {'control:': 'differences_from_v2', 'fixture:': 'differences_from_v2'}
+# Owners of declared spec subjects (by prefix) and of declaration keys; see _check_declarations.
+DECLARATION_OWNERS = {'control:': 'differences_from_v2', 'fixture:': 'differences_from_v2',
+                      'historical:': 'historical_mapping'}
+DECLARATION_KEYS = {'deliberate_differences_from_v2': 'differences_from_v2',
+                    'disagreements_with_785': 'differences_from_v2',
+                    'historical_mapping_disagreements_with_785': 'historical_mapping'}
+# spec overall_vs_category: product materiality, separate from the overall verdict.
+CATEGORY_BY_KIND = {'evidence': 'product_evidence', 'label': 'unresolved', None: None}
+CATEGORY_NAMES_785 = {'product_evidence_gap': 'product_evidence', 'representation_sensitive': 'representation_sensitive',
+                      'unresolved': 'unresolved'}
 # Per-case prose for the contradictory_prose recipe. Its quote is unchanged.
 CONTRADICTORY_TEXT = {'short': 'S1는 S0를 현재 무조건 직접 호출한다.', 'authored-pf1': 'S4는 S3를 현재 무조건 직접 호출한다.'}
 
@@ -166,7 +170,7 @@ def _declared_view(case, index):
 
 
 def provenance_differences(registry, case_loader=None):
-    """Every registry field that differs from its v2 annotation without a declared deviation."""
+    """Undeclared differences between registry chunks and their v2 annotations."""
     case_loader = case_loader or (lambda case_id: load_case(case_id, DATA_ROOT/'v2'))
     result = []
     for case_id, entry in registry['cases'].items():
@@ -207,7 +211,7 @@ def _covered_by_union(source, occurrences, start, end):
 
 
 def evaluate_chunk(source, offset, text, row, normalized, spec):
-    """D3-D6 on one production-normalized output; never repairs or reinterprets it."""
+    """D3-D6 on one production-normalized output."""
     decisions = _policies(spec)
     gap_policy = spec['policies']['P-GAP-QUALIFIER-DUP']
     obligations = {o['id']: o for o in row['obligations']}
@@ -281,12 +285,13 @@ def evaluate_chunk(source, offset, text, row, normalized, spec):
                    'semantic': 'semantic_review_required' if s else 'out_of_scope'} for i, s in enumerate(supports)]
     for failure in failures+exemptions:
         if failure['reason'] not in spec['reasons']: raise ValueError('product_fitness_internal:reason')
+        failure['category'] = CATEGORY_BY_KIND[failure['kind']]
     return {'claims': claim_rows, 'obligations': obligation_rows, 'coverage': coverage_rows,
             'failures': failures, 'exemptions': exemptions}
 
 
 def assess(case, chunk_outputs, registry_case, spec, judgments=()):
-    """D1 via the production replay, then D3-D6, then the four-valued overall verdict."""
+    """D1 via the production replay, then D3-D6, then the overall verdict."""
     slices = list(chunks(case['source']))
     if sorted(row['index'] for row in chunk_outputs) != list(range(1, len(slices)+1)):
         raise ValueError('product_fitness_chunk_identity')
@@ -296,7 +301,7 @@ def assess(case, chunk_outputs, registry_case, spec, judgments=()):
         production = _production(case, index, item['output'])
         row = {'index': index, 'production_passed': production['production_passed']}
         if not production['production_passed']:
-            failure = {'layer': 'D1', 'reason': 'production_failure', 'kind': None, 'chunk': index,
+            failure = {'layer': 'D1', 'reason': 'production_failure', 'kind': None, 'category': None, 'chunk': index,
                        'production_error': production['production_error'], 'failed_stage': production['failed_stage']}
             row.update(failures=[failure], exemptions=[], claims=[]); failures.append(failure)
         else:
@@ -310,9 +315,9 @@ def assess(case, chunk_outputs, registry_case, spec, judgments=()):
                                         j['chunk'] == index and j['claim'] == content and j['verdict'] == 'material_failure']
         results.append(row)
     deterministic = 'fail' if failures else 'pass'
-    output_sha256 = digest(chunk_outputs)
+    chunk_outputs_sha256 = digest(chunk_outputs)
     approvals = [r for r in spec['semantic_approvals'] if r['case_id'] == case['case_id'] and
-                 r['output_sha256'] == output_sha256 and r['human_review'] == 'approved']
+                 r['chunk_outputs_sha256'] == chunk_outputs_sha256 and r['human_review'] == 'approved']
     flags = sorted({flag for row in results for claim in row['claims'] for flag in claim.get('agent_flags', [])})
     if deterministic == 'fail' or any(r['verdict'] == 'material_failure' for r in approvals):
         overall, reasons = 'fail', sorted({f['reason'] for f in failures}) or ['human_material_failure']
@@ -322,9 +327,10 @@ def assess(case, chunk_outputs, registry_case, spec, judgments=()):
         overall, reasons = 'undecided_agent_flagged', ['semantic_review_required']
     else:
         overall, reasons = 'undecided', ['semantic_review_required']
-    return {'case_id': case['case_id'], 'output_sha256': output_sha256, 'chunks': results,
+    return {'case_id': case['case_id'], 'chunk_outputs_sha256': chunk_outputs_sha256, 'chunks': results,
             'production_passed': all(row['production_passed'] for row in results),
             'deterministic': deterministic, 'failures': failures, 'agent_flags': flags,
+            'categories': sorted({f['category'] for f in failures if f['category'] is not None}),
             'human_approvals': [r['id'] for r in approvals], 'overall': overall, 'overall_reasons': reasons}
 
 
@@ -423,9 +429,13 @@ def fixtures(case, row, baseline):
     return result
 
 
-def _review_controls():
+def _load_review():
     if _hash(REVIEW_PATH) != REVIEW_SHA256: raise ValueError('product_fitness_785_review_identity')
-    controls = _load(REVIEW_PATH)['controlled_contrasts']
+    return _load(REVIEW_PATH)
+
+
+def _review_controls():
+    controls = _load_review()['controlled_contrasts']
     for row in controls['cases']:
         if digest(row['output']) != row['output_sha256']: raise ValueError('product_fitness_785_output_identity:'+row['id'])
     return controls
@@ -445,9 +455,10 @@ def _fixture_report(case, registry_case, spec, judgments, outputs, *, compare_v2
     rows = {}
     for fixture_id, output in outputs.items():
         result = assess(case, [{'index': 1, 'output': output}], registry_case, spec, judgments)
-        row = {'output_sha256': digest(output), 'production_passed': result['production_passed'],
+        row = {'output_sha256': digest(output), 'chunk_outputs_sha256': result['chunk_outputs_sha256'],
+               'production_passed': result['production_passed'],
                'deterministic': result['deterministic'], 'failures': [list(p) for p in failure_vector(result)],
-               'agent_flags': result['agent_flags'], 'overall': result['overall'],
+               'categories': result['categories'], 'agent_flags': result['agent_flags'], 'overall': result['overall'],
                'claims': [{'index': c['index'], 'semantic': c['semantic'], 'supports': c['supports']}
                           for chunk in result['chunks'] for c in chunk['claims']]}
         if compare_v2: row['v2'] = _v2_observed(case, output)
@@ -455,22 +466,187 @@ def _fixture_report(case, registry_case, spec, judgments, outputs, *, compare_v2
     return rows
 
 
-def _check_declarations(spec, rows):
-    for key in ('deliberate_differences_from_v2', 'disagreements_with_785'):
+def _check_declarations(spec, rows_by_owner):
+    """Check declared spec subjects against their owners and the computed rows; raise on a mismatch."""
+    for key, key_owner in DECLARATION_KEYS.items():
         subjects = [d['subject'] for d in spec[key]]
         if len(subjects) != len(set(subjects)): raise ValueError('product_fitness_duplicate_declaration:'+key)
         for subject in subjects:
             owner = next((owner for prefix, owner in DECLARATION_OWNERS.items() if subject.startswith(prefix)), None)
             if owner is None: raise ValueError('product_fitness_unowned_declaration:'+subject)
-            if owner == 'differences_from_v2' and subject not in rows:
-                raise ValueError('product_fitness_orphan_declaration:'+subject)
+            if owner not in rows_by_owner: raise ValueError('product_fitness_unchecked_owner:'+owner)
+            if owner != key_owner: raise ValueError('product_fitness_misfiled_declaration:'+subject)
+            if subject not in rows_by_owner[owner]: raise ValueError('product_fitness_orphan_declaration:'+subject)
+
+
+def _related_failures(error, failures):
+    """v1 failures that a frozen v2 annotation error points at, derived from the error's own fields."""
+    reason = error['reason']
+    if reason == 'missing_claim_evidence':
+        return [f for f in failures if f['layer'] == 'D3' and f['obligation_ids'] == [error['id']]]
+    if reason == 'coverage_semantics':
+        return [f for f in failures if f['layer'] in ('D4', 'D6') and f['predicate'] == error['predicate']]
+    if reason == 'unexpected_gap_evidence':
+        return [f for f in failures if f['reason'] == 'unrelated_gap_link' and f['code'] == error['code']]
+    if reason == 'gap_completeness':
+        # v2 raises gap_completeness when an expected (code, obligation) pair is absent.
+        return [f for f in failures if f['reason'] == 'missing_gap_pair']
+    raise ValueError('product_fitness_mapping_unsupported_error:'+reason)
+
+
+def _cause_keys(chunk, failure, failed_d3):
+    """Cause keys (chunk, target, basis) for one related v1 failure.
+
+    Shared-cause collapse: a failure needing an obligation that fails D3 belongs
+    to that D3 cause. An unrelated gap link needs its code's expected
+    obligations, which evaluate_chunk stores as its obligation_ids. Any other
+    failure gives a single key, formed by the branches below.
+    """
+    failing = [key for key in failure['obligation_ids'] if key in failed_d3]
+    if failing: return [(chunk, key, 'D3') for key in failing]
+    if failure['reason'] == 'missing_link': return [(chunk, failure['obligation_ids'][0], 'P-COVERAGE-LINK')]
+    if failure['reason'] == 'status_mismatch': return [(chunk, 'predicate:'+failure['predicate'], 'D6')]
+    if failure['reason'] == 'missing_gap_pair' and failure['code'] == QUALIFIER_CODE:
+        return [(chunk, failure['obligation_ids'][0], 'P-GAP-QUALIFIER-DUP')]
+    return [(chunk, 'code:'+failure['code'], 'D5:'+failure['code'])]
+
+
+def _error_target(error):
+    return ':'.join([error['reason']]+[str(error[key]) for key in ('id', 'predicate', 'code') if key in error])
+
+
+def map_errors(errors, evaluations):
+    """Map frozen v2 errors to unique v1 causes; evaluations[chunk] is evaluate_chunk's result."""
+    rows: list[dict] = []; causes: dict[tuple, dict] = {}
+    for ordinal, error in enumerate(errors, 1):
+        chunk = error['chunk']; evaluation = evaluations[chunk]
+        failed_d3 = {row['id'] for row in evaluation['obligations'] if row['failure']}
+        related = _related_failures(error, evaluation['failures'])
+        exempted = _related_failures(error, evaluation['exemptions'])
+        keys: dict[tuple, set] = {}
+        for failure in related:
+            for key in _cause_keys(chunk, failure, failed_d3): keys.setdefault(key, set()).add(failure['category'])
+        if not related: keys[(chunk, _error_target(error), 'v1_pass')] = {'representation_sensitive'}
+        error_id = f'error-{ordinal}'
+        for key, categories in keys.items():
+            cause = causes.setdefault(key, {'categories': set(), 'error_ids': []})
+            cause['categories'] |= categories; cause['error_ids'].append(error_id)
+        rows.append({'id': error_id, 'frozen_error': copy.deepcopy(error),
+                     'v1_failures': [{k: f[k] for k in ('layer', 'reason', 'kind', 'category', 'obligation_ids', 'predicate', 'code') if k in f}
+                                     for f in related],
+                     'v1_exempted': [{k: f[k] for k in ('layer', 'reason', 'policy', 'obligation_ids', 'predicate', 'code') if k in f}
+                                     for f in exempted],
+                     'cause_keys': sorted(keys)})
+    cause_rows = []
+    for (chunk, target, basis), cause in sorted(causes.items()):
+        if len(cause['categories']) != 1: raise ValueError('product_fitness_internal:mixed_cause_category')
+        category = next(iter(cause['categories']))
+        cause_rows.append({'id': f'c{chunk}:{target}:{basis}', 'chunk': chunk, 'target': target, 'basis': basis,
+                           'category': category, 'error_ids': cause['error_ids']})
+    by_key = {(c['chunk'], c['target'], c['basis']): c for c in cause_rows}
+    for row in rows:
+        row['causes'] = [by_key[key]['id'] for key in row.pop('cause_keys')]
+        row['categories'] = sorted({c['category'] for c in cause_rows if c['id'] in row['causes']})
+    counts = {category: sum(c['category'] == category for c in cause_rows)
+              for category in ('product_evidence', 'unresolved', 'representation_sensitive')}
+    return {'errors': rows, 'causes': cause_rows, 'cause_counts': counts | {'total': len(cause_rows)}}
+
+
+def _historical_evaluations(diagnosis, registry, spec):
+    case = load_case('three', DATA_ROOT/'v2'); entry = registry['cases']['three']
+    if diagnosis['source_sha256'] != entry['source_sha256'] or not diagnosis['production_passed']:
+        raise ValueError('product_fitness_historical_identity')
+    slices = list(chunks(case['source']))
+    result = {}
+    for row in diagnosis['chunks']:
+        offset, text = slices[row['index']-1]
+        result[row['index']] = evaluate_chunk(case['source'], offset, text, entry['chunks'][row['index']-1], row['normalized_output'], spec)
+    return result
+
+
+def _review_errors(errors):
+    rows = _load_review()['criteria_review']['errors']
+    if [r['id'] for r in rows] != [f'error-{i}' for i in range(1, len(errors)+1)] or \
+            [r['observations']['frozen_error'] for r in rows] != errors:
+        raise ValueError('product_fitness_785_error_identity')
+    return rows
+
+
+def historical_mapping(spec, registry, diagnosis):
+    """The frozen v2 errors of the authenticated 768 run, mapped to v1 causes and joined with #785."""
+    errors = diagnosis['finite_gold']['annotation_errors']
+    review = _review_errors(errors)
+    result = map_errors(errors, _historical_evaluations(diagnosis, registry, spec))
+    correspondence = spec['group_correspondence_785']
+    for row, reviewed in zip(result['errors'], review, strict=True):
+        chunk = row['frozen_error']['chunk']
+        groups = [j['group'] for j in reviewed['agent_proposed_review']['judgments']]
+        if any(group not in correspondence for group in groups): raise ValueError('product_fitness_785_group_unmapped')
+        expected = {f'c{chunk}:{c["target"]}:{c["basis"]}' for group in groups for c in correspondence[group]['causes']}
+        categories_785 = sorted({CATEGORY_NAMES_785[c] for c in reviewed['agent_proposed_review']['categories']})
+        row['review_785'] = {'groups': groups, 'categories': reviewed['agent_proposed_review']['categories'],
+                             'causes_only_v1': sorted(set(row['causes'])-expected),
+                             'causes_only_785': sorted(expected-set(row['causes'])),
+                             'categories_only_v1': sorted(set(row['categories'])-set(categories_785)),
+                             'categories_only_785': sorted(set(categories_785)-set(row['categories']))}
+        row['review_785']['agrees'] = not (row['review_785']['causes_only_v1'] or row['review_785']['causes_only_785'])
+    return result
+
+
+def _check_historical_disagreements(spec, mapping):
+    declared = {d['subject']: d for d in spec['historical_mapping_disagreements_with_785']}
+    for row in mapping['errors']:
+        subject = 'historical:'+row['id']
+        if not row['review_785']['agrees'] and subject not in declared:
+            raise ValueError('product_fitness_undeclared_historical_disagreement:'+subject)
+        if row['review_785']['agrees'] and subject in declared:
+            raise ValueError('product_fitness_spurious_historical_disagreement:'+subject)
+        if subject in declared and (declared[subject]['causes_only_v1'], declared[subject]['causes_only_785']) != \
+                (row['review_785']['causes_only_v1'], row['review_785']['causes_only_785']):
+            raise ValueError('product_fitness_historical_disagreement_value:'+subject)
+
+
+def sensitivity(spec, registry, diagnosis, baseline):
+    """Re-run the mapping under each executable rejected alternative; record what moves."""
+    rows = []
+    for policy_id, policy in spec['policies'].items():
+        for alternative in policy['rejected_alternatives']:
+            row = {'policy': policy_id, 'decision': alternative['decision'], 'label': alternative.get('label')}
+            if alternative['decision'] not in IMPLEMENTED_DECISIONS[policy_id]:
+                rows.append(row | {'executable': False}); continue
+            changed = with_policy(spec, policy_id, alternative['decision'], alternative.get('label'))
+            result = map_errors(diagnosis['finite_gold']['annotation_errors'], _historical_evaluations(diagnosis, registry, changed))
+            moved = []
+            for before, after in zip(baseline['errors'], result['errors'], strict=True):
+                if (before['causes'], before['categories']) != (after['causes'], after['categories']):
+                    moved.append({'id': before['id'], 'categories': after['categories'],
+                                  'causes_added': sorted(set(after['causes'])-set(before['causes'])),
+                                  'causes_removed': sorted(set(before['causes'])-set(after['causes']))})
+            rows.append(row | {'executable': True, 'cause_counts': result['cause_counts'], 'moved_errors': moved})
+    return rows
+
+
+def report_source_paths(repo=REPO):
+    """The hashed source set: criteria JSON, this module, the script and tests/test_product_fitness_v1*.py.
+
+    From the criteria directory only `*.json` files whose names do not start with '.' are taken.
+    """
+    criteria = repo/CRITERIA_ROOT.relative_to(REPO)
+    paths = sorted(p.relative_to(repo).as_posix() for p in criteria.glob('*.json') if not p.name.startswith('.'))
+    paths += ['verinote/diagnostics/product_fitness_v1.py', 'scripts/verify_product_fitness_v1.py']
+    paths += sorted(p.relative_to(repo).as_posix() for p in (repo/'tests').glob('test_product_fitness_v1*.py'))
+    return paths
+
+
+def render(report):
+    return json.dumps(report, ensure_ascii=False, indent=2)+'\n'
 
 
 def verify_proposal(spec=None, registry=None):
-    """Recompute every v1 fixture verdict and v2 contrast.
+    """Recompute the fixture verdicts, v2 contrasts and the historical mapping.
 
-    Raises on any undeclared result, and on any declared subject that has no
-    computed row or whose prefix no check owns.
+    A mismatch raises ValueError from a check in this function or in a helper it
+    calls; a report field that none of those checks compares is reported only.
     """
     spec = spec if spec is not None else load_spec()
     registry = registry if registry is not None else load_registry()
@@ -500,6 +676,7 @@ def verify_proposal(spec=None, registry=None):
         if v2 != {key: control['observed'][key] for key in ('production_passed', 'finite_passed')}:
             raise ValueError('product_fitness_785_observation:'+control['id'])
         differences.append({'subject': 'control:'+control['id'], 'output_sha256': control['output_sha256'],
+                            'chunk_outputs_sha256': result['chunk_outputs_sha256'],
                             'production_passed': result['production_passed'], 'v2_finite_passed': v2['finite_passed'],
                             'v1_deterministic': result['deterministic'], 'v1_failures': [list(p) for p in failure_vector(result)],
                             'v1_agent_flags': result['agent_flags'], 'v1_overall': result['overall'],
@@ -508,10 +685,15 @@ def verify_proposal(spec=None, registry=None):
         if case_id == 'authored-pf1': continue  # not a dataset v2 case: no v2 observation exists
         for fixture_id, row in rows.items():
             differences.append({'subject': f'fixture:{case_id}:{fixture_id}', 'output_sha256': row['output_sha256'],
+                                'chunk_outputs_sha256': row['chunk_outputs_sha256'],
                                 'production_passed': row['production_passed'], 'v2_finite_passed': row['v2']['finite_passed'],
                                 'v1_deterministic': row['deterministic'], 'v1_failures': row['failures'],
                                 'v1_agent_flags': row['agent_flags'], 'v1_overall': row['overall'], 'expectation_785': None})
-    _check_declarations(spec, {row['subject'] for row in differences})
+    diagnosis = diagnose()
+    mapping = historical_mapping(spec, registry, diagnosis)
+    _check_declarations(spec, {'differences_from_v2': {row['subject'] for row in differences},
+                               'historical_mapping': {'historical:'+row['id'] for row in mapping['errors']}})
+    _check_historical_disagreements(spec, mapping)
     declared = {d['subject']: d for d in spec['deliberate_differences_from_v2']}
     for row in differences:
         row['differs'] = _differs(row['v2_finite_passed'], row['v1_overall'])
@@ -532,8 +714,28 @@ def verify_proposal(spec=None, registry=None):
             d = disagreements[row['subject']]
             if (d['expectation_785'], d['v1_overall'], d['v1_kinds']) != (row['expectation_785'], row['v1_overall'], kinds):
                 raise ValueError('product_fitness_785_disagreement_value:'+row['subject'])
+    sensitivity_rows = sensitivity(spec, registry, diagnosis, mapping)
+    summary = {'fixture_cases': len(fixture_rows), 'fixture_recipes': len(spec['fixture_expectations']),
+               'controls_785': sum(row['subject'].startswith('control:') for row in differences),
+               'differences_from_v2_rows': len(differences), 'v2_differences': sum(row['differs'] for row in differences),
+               'disagreements_with_785': sum(row['disagreement_with_785'] for row in differences),
+               'controls_disagreeing_with_785': [row['subject'] for row in differences if row['disagreement_with_785']],
+               'historical_errors': len(mapping['errors']),
+               'historical_errors_agreeing_with_785': sum(row['review_785']['agrees'] for row in mapping['errors']),
+               'historical_errors_disagreeing_with_785': [row['id'] for row in mapping['errors'] if not row['review_785']['agrees']],
+               'historical_causes': mapping['cause_counts']['total'],
+               'sensitivity_alternatives': len(sensitivity_rows),
+               'sensitivity_executable': sum(row['executable'] for row in sensitivity_rows)}
     return {'schema_version': 1, 'spec_id': spec['spec_id'], 'issue': spec['issue'], 'base_revision': spec['base_revision'],
             'generation_requests': 0, 'author': 'agent_proposed', 'human_review': 'pending',
             'assisted_review': copy.deepcopy(spec['assisted_review']),
-            'review_785_sha256': REVIEW_SHA256, 'fixtures': fixture_rows, 'differences_from_v2': differences,
+            'base_revision_definition': spec['base_revision_definition'],
+            'issue_reproduction_revision': spec['issue_reproduction_revision'],
+            'review_785_sha256': REVIEW_SHA256,
+            'diagnostic_implementation': copy.deepcopy(diagnosis['diagnostic_implementation']),
+            'historical_authentication': {'report_sha256': REPORT_SHA256,
+                                          'raw_index_sha256': diagnosis['historical_authentication']['raw_index_sha256']},
+            'source_hashes': {path: _hash(REPO/path) for path in report_source_paths()},
+            'fixtures': fixture_rows, 'differences_from_v2': differences,
+            'summary': summary, 'historical_mapping': mapping, 'sensitivity': sensitivity_rows,
             'scope': 'v1 deterministic conformance under agent-proposed policies; prose fitness is never computed.'}
