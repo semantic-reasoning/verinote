@@ -1,0 +1,382 @@
+{
+  "fixture_id": "authored-pf1",
+  "schema_version": 1,
+  "issue": 788,
+  "authorship": {
+    "author": "agent_proposed",
+    "human_review": "pending"
+  },
+  "provenance": "Entity-substituted, line-reordered variant of the dataset v2 short template (#788). Each source line is a short line with its S#/Outside# identifiers replaced line by line (not one consistent renaming), listed in template_of.lines in authored order. Expected labels (obligation ids, coverage, gap pairs, markers) mirror the short registry row, and so the short v2 annotation, under that substitution; they were not judged independently. For this one variant, parity with short on every fixtures() recipe shows that v1 verdicts did not change under its line positions, entity names and line order; it does not show invariance for other variants, and it does not show that independently judged labels agree.",
+  "template_of": {
+    "case_id": "short",
+    "case_sha256": "7767bf109671fccaad2227b87355f26d586438e5eacc030d1152d25c38cec619",
+    "annotation_index": 1,
+    "lines": [
+      {
+        "template_line": 0,
+        "identifiers": {}
+      },
+      {
+        "template_line": 1,
+        "identifiers": {
+          "S0": "S2",
+          "S1": "S3",
+          "S2": "S4"
+        }
+      },
+      {
+        "template_line": 2,
+        "identifiers": {}
+      },
+      {
+        "template_line": 3,
+        "identifiers": {}
+      },
+      {
+        "template_line": 4,
+        "identifiers": {}
+      },
+      {
+        "template_line": 10,
+        "identifiers": {
+          "S0": "S3",
+          "S1": "S4"
+        }
+      },
+      {
+        "template_line": 9,
+        "identifiers": {
+          "S0": "S4",
+          "Outside1": "Outside2"
+        }
+      },
+      {
+        "template_line": 6,
+        "identifiers": {
+          "S1": "S4",
+          "S0": "S3"
+        }
+      },
+      {
+        "template_line": 8,
+        "identifiers": {
+          "S0": "S2",
+          "S1": "S4"
+        }
+      },
+      {
+        "template_line": 7,
+        "identifiers": {
+          "S0": "S3",
+          "S2": "S2"
+        }
+      },
+      {
+        "template_line": 5,
+        "identifiers": {
+          "S0": "S2",
+          "S1": "S3"
+        }
+      },
+      {
+        "template_line": 11,
+        "identifiers": {
+          "S0": "S2",
+          "S1": "S3"
+        }
+      },
+      {
+        "template_line": 12,
+        "identifiers": {}
+      }
+    ]
+  },
+  "case": {
+    "case_id": "authored-pf1",
+    "source": "구간 1: 현재 구성과 표현 제약을 구분한다.\n승인된 서비스 개체: S2, S3, S4.\ncalls는 현재의 무조건적 직접 호출만 나타낸다. 부정·가정·조건·과거·역방향·전이는 제외한다.\narchives는 현재의 무조건적 직접 보관만 나타낸다. 과거에 종료한 보관은 제외한다.\nmirrors는 현재의 무조건적 직접 복제를 나타낸다. 이 문서에는 직접 복제 근거가 없다.\n구간 1 소유: S3는 S4를 소유한다. 소유는 승인 관계에 없다.\n구간 1 미등록 대상: S4는 Outside2를 직접 호출한다. Outside2는 승인 개체에 없다.\n구간 1 부정: S4는 S3를 직접 호출하지 않는다.\n구간 1 과거 기록: 2020년에 S2는 S4를 직접 보관했다. 2025년부터 그 보관은 중단되었다.\n구간 1 조건: 장애가 발생할 때만 S3는 S2를 직접 호출한다. 현재 무조건 호출은 아니다.\n구간 1 가정 예시(실제 아님): S2는 S3를 직접 호출한다.\n구간 1 현재 실제 구성: S2는 S3를 직접 호출한다.\n",
+    "source_sha256": "e82d26562a5a9dfd6eb9e8935e3617b3514da4b848904b5dd0c78af6cae241b8",
+    "dictionary": {
+      "entities": [
+        {
+          "id": "S2",
+          "name": "S2",
+          "type": "Service",
+          "quote": "승인된 서비스 개체: S2, S3, S4."
+        },
+        {
+          "id": "S3",
+          "name": "S3",
+          "type": "Service",
+          "quote": "승인된 서비스 개체: S2, S3, S4."
+        },
+        {
+          "id": "S4",
+          "name": "S4",
+          "type": "Service",
+          "quote": "승인된 서비스 개체: S2, S3, S4."
+        }
+      ],
+      "aliases": [],
+      "relations": [
+        {
+          "id": "calls",
+          "description": "calls는 현재의 무조건적 직접 호출만 나타낸다. 부정·가정·조건·과거·역방향·전이는 제외한다.",
+          "subject_types": [
+            "Service"
+          ],
+          "object_types": [
+            "Service"
+          ],
+          "quote": "calls는 현재의 무조건적 직접 호출만 나타낸다. 부정·가정·조건·과거·역방향·전이는 제외한다."
+        },
+        {
+          "id": "archives",
+          "description": "archives는 현재의 무조건적 직접 보관만 나타낸다. 과거에 종료한 보관은 제외한다.",
+          "subject_types": [
+            "Service"
+          ],
+          "object_types": [
+            "Service"
+          ],
+          "quote": "archives는 현재의 무조건적 직접 보관만 나타낸다. 과거에 종료한 보관은 제외한다."
+        },
+        {
+          "id": "mirrors",
+          "description": "mirrors는 현재의 무조건적 직접 복제를 나타낸다. 이 문서에는 직접 복제 근거가 없다.",
+          "subject_types": [
+            "Service"
+          ],
+          "object_types": [
+            "Service"
+          ],
+          "quote": "mirrors는 현재의 무조건적 직접 복제를 나타낸다. 이 문서에는 직접 복제 근거가 없다."
+        }
+      ]
+    }
+  },
+  "facts": [
+    {
+      "subject": "S2",
+      "predicate": "calls",
+      "object": "S3",
+      "quote": "구간 1 현재 실제 구성: S2는 S3를 직접 호출한다."
+    }
+  ],
+  "chunk": {
+    "index": 1,
+    "derived_from": {
+      "template_case_id": "short",
+      "case_sha256": "7767bf109671fccaad2227b87355f26d586438e5eacc030d1152d25c38cec619",
+      "annotation_index": 1,
+      "relation": "Labels mirror the short registry row under the template_of identifier substitution."
+    },
+    "deviations": [],
+    "obligations": [
+      {
+        "id": "negated",
+        "canonical": {
+          "start": 302,
+          "end": 331,
+          "text": "구간 1 부정: S4는 S3를 직접 호출하지 않는다."
+        },
+        "required_markers": {
+          "markers": [
+            "하지 않는다"
+          ],
+          "rationale": "The negation is the material qualifier; a quote without it states the forbidden positive call.",
+          "author": "agent_proposed",
+          "human_review": "pending"
+        },
+        "substitutes": [
+          {
+            "id": "negated-label-free",
+            "start": 311,
+            "end": 331,
+            "text": "S4는 S3를 직접 호출하지 않는다.",
+            "review": {
+              "author": "agent_proposed",
+              "human_review": "pending",
+              "rationale": "Removes only the fixture label \"구간 1 부정: \"; the body keeps every required marker and stays unique in its chunk."
+            }
+          }
+        ]
+      },
+      {
+        "id": "conditional",
+        "canonical": {
+          "start": 389,
+          "end": 441,
+          "text": "구간 1 조건: 장애가 발생할 때만 S3는 S2를 직접 호출한다. 현재 무조건 호출은 아니다."
+        },
+        "required_markers": {
+          "markers": [
+            "장애가 발생할 때만",
+            "현재 무조건 호출은 아니다"
+          ],
+          "rationale": "Both the condition and the explicit not-currently-unconditional sentence carry the qualifier.",
+          "author": "agent_proposed",
+          "human_review": "pending"
+        },
+        "substitutes": [
+          {
+            "id": "conditional-label-free",
+            "start": 398,
+            "end": 441,
+            "text": "장애가 발생할 때만 S3는 S2를 직접 호출한다. 현재 무조건 호출은 아니다.",
+            "review": {
+              "author": "agent_proposed",
+              "human_review": "pending",
+              "rationale": "Removes only the fixture label \"구간 1 조건: \"; the body keeps every required marker and stays unique in its chunk."
+            }
+          }
+        ]
+      },
+      {
+        "id": "historical",
+        "canonical": {
+          "start": 332,
+          "end": 388,
+          "text": "구간 1 과거 기록: 2020년에 S2는 S4를 직접 보관했다. 2025년부터 그 보관은 중단되었다."
+        },
+        "required_markers": {
+          "markers": [
+            "2020년에",
+            "2025년부터",
+            "중단"
+          ],
+          "rationale": "The past date, the end date and the ended state together carry the time qualifier.",
+          "author": "agent_proposed",
+          "human_review": "pending"
+        },
+        "substitutes": [
+          {
+            "id": "historical-label-free",
+            "start": 344,
+            "end": 388,
+            "text": "2020년에 S2는 S4를 직접 보관했다. 2025년부터 그 보관은 중단되었다.",
+            "review": {
+              "author": "agent_proposed",
+              "human_review": "pending",
+              "rationale": "Removes only the fixture label \"구간 1 과거 기록: \"; the body keeps every required marker and stays unique in its chunk."
+            }
+          }
+        ]
+      },
+      {
+        "id": "missing_entity",
+        "canonical": {
+          "start": 245,
+          "end": 301,
+          "text": "구간 1 미등록 대상: S4는 Outside2를 직접 호출한다. Outside2는 승인 개체에 없다."
+        },
+        "required_markers": {
+          "markers": [
+            "Outside2를",
+            "승인 개체에 없다"
+          ],
+          "rationale": "The unregistered target and the statement that it is not an approved entity carry the dictionary restriction.",
+          "author": "agent_proposed",
+          "human_review": "pending"
+        },
+        "substitutes": [
+          {
+            "id": "missing_entity-label-free",
+            "start": 258,
+            "end": 301,
+            "text": "S4는 Outside2를 직접 호출한다. Outside2는 승인 개체에 없다.",
+            "review": {
+              "author": "agent_proposed",
+              "human_review": "pending",
+              "rationale": "Removes only the fixture label \"구간 1 미등록 대상: \"; the body keeps every required marker and stays unique in its chunk."
+            }
+          }
+        ]
+      },
+      {
+        "id": "missing_relation",
+        "canonical": {
+          "start": 207,
+          "end": 244,
+          "text": "구간 1 소유: S3는 S4를 소유한다. 소유는 승인 관계에 없다."
+        },
+        "required_markers": {
+          "markers": [
+            "소유",
+            "승인 관계에 없다"
+          ],
+          "rationale": "The unregistered relation and the statement that it is not an approved relation carry the dictionary restriction.",
+          "author": "agent_proposed",
+          "human_review": "pending"
+        },
+        "substitutes": [
+          {
+            "id": "missing_relation-label-free",
+            "start": 216,
+            "end": 244,
+            "text": "S3는 S4를 소유한다. 소유는 승인 관계에 없다.",
+            "review": {
+              "author": "agent_proposed",
+              "human_review": "pending",
+              "rationale": "Removes only the fixture label \"구간 1 소유: \"; the body keeps every required marker and stays unique in its chunk."
+            }
+          }
+        ]
+      }
+    ],
+    "coverage": [
+      {
+        "predicate": "calls",
+        "expected_status": "extracted",
+        "required_obligation_ids": [
+          "conditional",
+          "missing_entity"
+        ]
+      },
+      {
+        "predicate": "archives",
+        "expected_status": "not_representable",
+        "required_obligation_ids": [
+          "historical"
+        ]
+      },
+      {
+        "predicate": "mirrors",
+        "expected_status": "no_evidence",
+        "required_obligation_ids": []
+      }
+    ],
+    "gap_pairs": [
+      [
+        "qualifier_not_representable",
+        "conditional"
+      ],
+      [
+        "qualifier_not_representable",
+        "historical"
+      ],
+      [
+        "missing_entity",
+        "missing_entity"
+      ],
+      [
+        "missing_relation",
+        "missing_relation"
+      ]
+    ]
+  },
+  "semantic_judgments": [
+    {
+      "id": "authored-pf1-negated-contradiction",
+      "case_id": "authored-pf1",
+      "chunk": 1,
+      "claim": {
+        "text": "S4는 S3를 현재 무조건 직접 호출한다.",
+        "quote": "구간 1 부정: S4는 S3를 직접 호출하지 않는다."
+      },
+      "verdict": "material_failure",
+      "rationale": "The prose asserts an unconditional current call that its quote explicitly negates.",
+      "author": "agent_proposed",
+      "human_review": "pending"
+    }
+  ]
+}
