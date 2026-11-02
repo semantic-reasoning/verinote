@@ -1,0 +1,92 @@
+{
+  "verdict": "rejected",
+  "reasons": [
+    "quality:cold-three-measurement-b-1",
+    "incomplete_execution",
+    "missing_documents"
+  ],
+  "resolved_models": [
+    "claude-sonnet-5-5"
+  ],
+  "synthetic_responses": false,
+  "comparisons": [
+    {
+      "phase": "cold",
+      "case_id": "three",
+      "verdict": "inconclusive",
+      "reasons": [
+        "missing_or_invalid_comparison"
+      ],
+      "statistics": null,
+      "measurement_totals": null,
+      "measurement_ratios": null,
+      "warmup_totals": null,
+      "series_ratios": null
+    },
+    {
+      "phase": "cold",
+      "case_id": "four",
+      "verdict": "inconclusive",
+      "reasons": [
+        "missing_or_invalid_comparison"
+      ],
+      "statistics": null,
+      "measurement_totals": null,
+      "measurement_ratios": null,
+      "warmup_totals": null,
+      "series_ratios": null
+    },
+    {
+      "phase": "cold",
+      "case_id": "eight",
+      "verdict": "inconclusive",
+      "reasons": [
+        "missing_or_invalid_comparison"
+      ],
+      "statistics": null,
+      "measurement_totals": null,
+      "measurement_ratios": null,
+      "warmup_totals": null,
+      "series_ratios": null
+    },
+    {
+      "phase": "warm",
+      "case_id": "three",
+      "verdict": "inconclusive",
+      "reasons": [
+        "missing_or_invalid_comparison"
+      ],
+      "statistics": null,
+      "measurement_totals": null,
+      "measurement_ratios": null,
+      "warmup_totals": null,
+      "series_ratios": null
+    },
+    {
+      "phase": "warm",
+      "case_id": "four",
+      "verdict": "inconclusive",
+      "reasons": [
+        "missing_or_invalid_comparison"
+      ],
+      "statistics": null,
+      "measurement_totals": null,
+      "measurement_ratios": null,
+      "warmup_totals": null,
+      "series_ratios": null
+    },
+    {
+      "phase": "warm",
+      "case_id": "eight",
+      "verdict": "inconclusive",
+      "reasons": [
+        "missing_or_invalid_comparison"
+      ],
+      "statistics": null,
+      "measurement_totals": null,
+      "measurement_ratios": null,
+      "warmup_totals": null,
+      "series_ratios": null
+    }
+  ]
+}

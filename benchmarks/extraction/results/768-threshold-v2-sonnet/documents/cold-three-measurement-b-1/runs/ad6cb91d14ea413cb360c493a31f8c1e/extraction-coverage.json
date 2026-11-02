@@ -1,0 +1,196 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "run_id": "ad6cb91d14ea413cb360c493a31f8c1e",
+    "document_id": "c1cec46d990e425a9586afdef53a7649",
+    "version": 1,
+    "dictionary_id": "5d85eebbfb3b4f00a7b4f3a1477260a3",
+    "revision": 2,
+    "sha256": "3b8e54fa37015a3801b117f0d20100e11dd52cb4049660f4e027fd83007a66d3",
+    "extraction_contract": 2
+  },
+  "source_length": 24000,
+  "chunks": [
+    {
+      "offset": 0,
+      "length": 8000,
+      "claim_count": 4,
+      "fact_predicates": [
+        "calls"
+      ],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [
+            0
+          ],
+          "claim_indices": [
+            0,
+            1
+          ],
+          "status": "extracted",
+          "reason": "현재 실제 구성의 S0→S1만 추출, 가정·부정·조건·미등록 대상은 제외"
+        },
+        {
+          "predicate": "archives",
+          "fact_indices": [],
+          "claim_indices": [
+            2
+          ],
+          "status": "no_evidence",
+          "reason": "보관은 과거에 종료되어 현재의 직접 보관 근거가 없음"
+        },
+        {
+          "predicate": "mirrors",
+          "fact_indices": [],
+          "claim_indices": [
+            3
+          ],
+          "status": "no_evidence",
+          "reason": "문서에 직접 복제 근거가 없음"
+        }
+      ],
+      "dictionary_gaps": [
+        {
+          "code": "missing_relation",
+          "detail": "S0가 S1을 소유한다는 서술은 승인 관계에 소유가 없어 표현할 수 없다.",
+          "claim_indices": [
+            3
+          ]
+        },
+        {
+          "code": "missing_entity",
+          "detail": "Outside1은 승인 개체에 없어 호출 관계의 대상으로 쓸 수 없다.",
+          "claim_indices": [
+            3
+          ]
+        }
+      ]
+    },
+    {
+      "offset": 8000,
+      "length": 8000,
+      "claim_count": 5,
+      "fact_predicates": [
+        "calls"
+      ],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [
+            0
+          ],
+          "claim_indices": [
+            0,
+            1,
+            2
+          ],
+          "status": "extracted",
+          "reason": "현재 구성의 S1→S2만 추출. 가정·부정·조건부 호출은 제외"
+        },
+        {
+          "predicate": "archives",
+          "fact_indices": [],
+          "claim_indices": [
+            3
+          ],
+          "status": "no_evidence",
+          "reason": "보관은 과거에 종료되어 현재 직접 근거 없음"
+        },
+        {
+          "predicate": "mirrors",
+          "fact_indices": [],
+          "claim_indices": [],
+          "status": "no_evidence",
+          "reason": "직접 복제 근거가 원문에 없음"
+        }
+      ],
+      "dictionary_gaps": [
+        {
+          "code": "missing_entity",
+          "detail": "Outside2가 승인 개체에 없어 S1의 호출 대상으로 표현할 수 없다.",
+          "claim_indices": [
+            4
+          ]
+        },
+        {
+          "code": "missing_relation",
+          "detail": "소유 관계가 승인 관계에 없어 S1이 S2를 소유한다는 진술을 표현할 수 없다.",
+          "claim_indices": [
+            4
+          ]
+        },
+        {
+          "code": "qualifier_not_representable",
+          "detail": "장애 시에만 S1이 S3를 호출한다는 조건을 calls로 표현할 수 없다.",
+          "claim_indices": [
+            2
+          ]
+        }
+      ]
+    },
+    {
+      "offset": 16000,
+      "length": 8000,
+      "claim_count": 6,
+      "fact_predicates": [
+        "calls"
+      ],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [
+            0
+          ],
+          "claim_indices": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "status": "extracted",
+          "reason": "현재 실제 구성의 S2→S3만 추출; 가정·부정·조건부 진술은 제외"
+        },
+        {
+          "predicate": "archives",
+          "fact_indices": [],
+          "claim_indices": [
+            4
+          ],
+          "status": "not_representable",
+          "reason": "S2의 S3 보관은 2025년부터 중단된 과거 기록이라 현재 관계 아님"
+        },
+        {
+          "predicate": "mirrors",
+          "fact_indices": [],
+          "claim_indices": [],
+          "status": "no_evidence",
+          "reason": "원문에 직접 복제 근거가 없음"
+        }
+      ],
+      "dictionary_gaps": [
+        {
+          "code": "missing_entity",
+          "detail": "Outside3는 승인 개체에 없어 S2의 호출 대상으로 표현할 수 없다.",
+          "claim_indices": [
+            5
+          ]
+        },
+        {
+          "code": "missing_relation",
+          "detail": "S2가 S3를 소유한다는 관계는 승인 관계에 없어 표현할 수 없다.",
+          "claim_indices": [
+            5
+          ]
+        },
+        {
+          "code": "qualifier_not_representable",
+          "detail": "S2가 장애 발생 시에만 S4를 호출한다는 조건은 calls로 표현할 수 없다.",
+          "claim_indices": [
+            3
+          ]
+        }
+      ]
+    }
+  ]
+}
