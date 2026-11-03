@@ -1,0 +1,723 @@
+{
+  "schema_version": 1,
+  "issue": 785,
+  "assessment_model_requests": 0,
+  "author": "agent_proposed",
+  "human_review": "pending",
+  "inputs": {
+    "trial_index_sha256": "302c4973250f8751590fe8958e63ffcda9a417e37b40f13fb773089ca50ff36e",
+    "trial_evaluation_sha256": "67d91f1b1b182524ff1788dd476b4253ad26e6c59f068788a603a49eac927feb",
+    "trial_report_sha256": "46535d5e0b06536a6c1d066ad802ebba759e413c29b49ee880b1e4625d79dfca",
+    "criteria_sha256": {
+      "registry.json": "0dd3acbd1e4acb057d3c7b0421990ee89f6ad76a94ff5c3bfcf96f081467c0a2",
+      "spec.json": "72cb043cb36d7df703e50cdb8cc514ab8f00bb04f6afa1515ba5f083a0863e2d"
+    },
+    "report_768_sha256": "72a63ca70e3cfdc9bd9a771999a65ed537bb584d5c8aacfe054c2e4ece981a5f"
+  },
+  "trial": {
+    "revision": "99dd34c11f05f4a263117fb1e297ff4a0bb0f7ef",
+    "tree": "fef33ec542444717b33eee6e393929927fb8ddbb",
+    "cli_version": "2.1.316",
+    "binary": "/Users/joykim/.local/share/claude/versions/2.1.316",
+    "binary_sha256": "64c327e92b2c5e0f78c0a980c5a518121e1f0d140ca771ca5dd4488d1a2dcb3f",
+    "candidate_id": "evidence_links_v1",
+    "template_sha256": "ef8364f9ae0b47be33c7a92e32df69f94a6b9c4e9f6a4de2b98bd23b75ef2b58",
+    "status": "stopped",
+    "stop_reason": "document_failed",
+    "stop_reasons": [
+      "document_failed"
+    ],
+    "row_status": "success",
+    "limits": {
+      "requests": 5,
+      "repetitions": 1,
+      "seconds": 600,
+      "tokens": 300000,
+      "missing_usage": "stop"
+    },
+    "budget": {
+      "requests_started": 3,
+      "dispatch_authorized": 3,
+      "blocked_before_dispatch": 0,
+      "finished": 3,
+      "pending": 0,
+      "observed_tokens_lower_bound": 46407,
+      "unknown_usage_calls": 0,
+      "token_usage_verified": true,
+      "token_hard_cap_guaranteed": false,
+      "stop_reason": "document_failed",
+      "elapsed_seconds": 33.080922583001666
+    },
+    "attempts": [
+      {
+        "chunk": 1,
+        "repair": false,
+        "admission_state": "finished",
+        "resolved_model": "claude-sonnet-5-5",
+        "tokens": {
+          "input": 13927,
+          "output": 1536,
+          "cache_read": 649,
+          "cache_write": 13276,
+          "reasoning": 0
+        },
+        "reported_usd": 0.0685329,
+        "wrapper_seconds": 11.918186416034587
+      },
+      {
+        "chunk": 2,
+        "repair": false,
+        "admission_state": "finished",
+        "resolved_model": "claude-sonnet-5-5",
+        "tokens": {
+          "input": 13978,
+          "output": 1480,
+          "cache_read": 2240,
+          "cache_write": 11736,
+          "reasoning": 0
+        },
+        "reported_usd": 0.061972,
+        "wrapper_seconds": 9.598245166009292
+      },
+      {
+        "chunk": 3,
+        "repair": false,
+        "admission_state": "finished",
+        "resolved_model": "claude-sonnet-5-5",
+        "tokens": {
+          "input": 13978,
+          "output": 1508,
+          "cache_read": 2240,
+          "cache_write": 11736,
+          "reasoning": 0
+        },
+        "reported_usd": 0.062252,
+        "wrapper_seconds": 9.951941541978158
+      }
+    ]
+  },
+  "verdict": {
+    "verdict": "rejected",
+    "reasons": [
+      "finite_gold_failed"
+    ],
+    "candidate_id": "evidence_links_v1",
+    "quality": {
+      "validated_chunks": 3,
+      "total_chunks": 3,
+      "complete": true,
+      "passed": false,
+      "evaluation": {
+        "schema_version": 1,
+        "evaluator_version": 2,
+        "dataset_version": 2,
+        "case_id": "three",
+        "source_sha256": "5232dcdf0e93d70ba389f232053c0bccf3138b30e6c5efc27fc8bcf0e5ae8bbd",
+        "case_sha256": "b0c9b0bae8fd8f86c3434c961034c791e265810016af5f8439056d269b6bf4de",
+        "gold_count": 3,
+        "prediction_count": 3,
+        "raw_prediction_count": 3,
+        "true_positive_count": 3,
+        "false_positive_count": 0,
+        "false_negative_count": 0,
+        "grounded_true_positive_count": 3,
+        "precision": {
+          "value": 1.0,
+          "numerator": 3,
+          "denominator": 3,
+          "reason": null
+        },
+        "recall": {
+          "value": 1.0,
+          "numerator": 3,
+          "denominator": 3,
+          "reason": null
+        },
+        "grounded_precision": {
+          "value": 1.0,
+          "numerator": 3,
+          "denominator": 3,
+          "reason": null
+        },
+        "grounded_recall": {
+          "value": 1.0,
+          "numerator": 3,
+          "denominator": 3,
+          "reason": null
+        },
+        "citation_accuracy": {
+          "value": 1.0,
+          "numerator": 3,
+          "denominator": 3,
+          "reason": null
+        },
+        "true_positives": [
+          "three-call-1",
+          "three-call-2",
+          "three-call-3"
+        ],
+        "false_negatives": [],
+        "false_positives": [],
+        "grounded_missing": [],
+        "invalid_facts": [],
+        "citation_errors": [],
+        "duplicates": [],
+        "quote_ambiguities": [],
+        "no_relation_case_pass": null,
+        "passed": false,
+        "annotation_errors": [
+          {
+            "chunk": 1,
+            "reason": "coverage_semantics",
+            "predicate": "archives"
+          },
+          {
+            "chunk": 1,
+            "reason": "gap_completeness"
+          },
+          {
+            "chunk": 3,
+            "reason": "gap_completeness"
+          }
+        ],
+        "complete": true
+      }
+    },
+    "safety": {
+      "complete": true,
+      "passed": true,
+      "violations": []
+    },
+    "production": {
+      "complete": true,
+      "passed": true,
+      "verified_failure": false,
+      "responses_complete": true,
+      "chunks": [
+        {
+          "index": 1,
+          "repair": false,
+          "response_complete": true,
+          "passed": true,
+          "reason": null
+        },
+        {
+          "index": 2,
+          "repair": false,
+          "response_complete": true,
+          "passed": true,
+          "reason": null
+        },
+        {
+          "index": 3,
+          "repair": false,
+          "response_complete": true,
+          "passed": true,
+          "reason": null
+        }
+      ]
+    },
+    "requests": 3,
+    "observed_tokens": 46407,
+    "seconds": 33.080922583001666,
+    "scope": "One three-chunk finite fixture; no general fidelity, speedup or operational acceptance."
+  },
+  "v2_annotation_errors": [
+    {
+      "chunk": 1,
+      "reason": "coverage_semantics",
+      "predicate": "archives"
+    },
+    {
+      "chunk": 1,
+      "reason": "gap_completeness"
+    },
+    {
+      "chunk": 3,
+      "reason": "gap_completeness"
+    }
+  ],
+  "v1": {
+    "overall": "fail",
+    "overall_reasons": [
+      "missing_gap_pair",
+      "status_mismatch"
+    ],
+    "deterministic": "fail",
+    "categories": [
+      "unresolved"
+    ],
+    "failures": {
+      "layers": [
+        "D5",
+        "D6"
+      ],
+      "vector": [
+        [
+          "missing_gap_pair",
+          "label"
+        ],
+        [
+          "status_mismatch",
+          "label"
+        ]
+      ]
+    },
+    "mapping": {
+      "errors": [
+        {
+          "id": "error-1",
+          "frozen_error": {
+            "chunk": 1,
+            "reason": "coverage_semantics",
+            "predicate": "archives"
+          },
+          "v1_failures": [
+            {
+              "layer": "D6",
+              "reason": "status_mismatch",
+              "kind": "label",
+              "category": "unresolved",
+              "obligation_ids": [
+                "historical"
+              ],
+              "predicate": "archives"
+            }
+          ],
+          "v1_exempted": [],
+          "causes": [
+            "c1:predicate:archives:D6"
+          ],
+          "categories": [
+            "unresolved"
+          ]
+        },
+        {
+          "id": "error-2",
+          "frozen_error": {
+            "chunk": 1,
+            "reason": "gap_completeness"
+          },
+          "v1_failures": [
+            {
+              "layer": "D5",
+              "reason": "missing_gap_pair",
+              "kind": "label",
+              "category": "unresolved",
+              "obligation_ids": [
+                "historical"
+              ],
+              "code": "qualifier_not_representable"
+            }
+          ],
+          "v1_exempted": [],
+          "causes": [
+            "c1:historical:P-GAP-QUALIFIER-DUP"
+          ],
+          "categories": [
+            "unresolved"
+          ]
+        },
+        {
+          "id": "error-3",
+          "frozen_error": {
+            "chunk": 3,
+            "reason": "gap_completeness"
+          },
+          "v1_failures": [
+            {
+              "layer": "D5",
+              "reason": "missing_gap_pair",
+              "kind": "label",
+              "category": "unresolved",
+              "obligation_ids": [
+                "historical"
+              ],
+              "code": "qualifier_not_representable"
+            }
+          ],
+          "v1_exempted": [],
+          "causes": [
+            "c3:historical:P-GAP-QUALIFIER-DUP"
+          ],
+          "categories": [
+            "unresolved"
+          ]
+        }
+      ],
+      "causes": [
+        {
+          "id": "c1:historical:P-GAP-QUALIFIER-DUP",
+          "chunk": 1,
+          "target": "historical",
+          "basis": "P-GAP-QUALIFIER-DUP",
+          "category": "unresolved",
+          "error_ids": [
+            "error-2"
+          ]
+        },
+        {
+          "id": "c1:predicate:archives:D6",
+          "chunk": 1,
+          "target": "predicate:archives",
+          "basis": "D6",
+          "category": "unresolved",
+          "error_ids": [
+            "error-1"
+          ]
+        },
+        {
+          "id": "c3:historical:P-GAP-QUALIFIER-DUP",
+          "chunk": 3,
+          "target": "historical",
+          "basis": "P-GAP-QUALIFIER-DUP",
+          "category": "unresolved",
+          "error_ids": [
+            "error-3"
+          ]
+        }
+      ],
+      "cause_counts": {
+        "product_evidence": 0,
+        "unresolved": 3,
+        "representation_sensitive": 0,
+        "total": 3
+      }
+    },
+    "sensitivity": [
+      {
+        "policy": "P-EQUIV",
+        "decision": "generic_prefix_strip",
+        "label": null,
+        "executable": false
+      },
+      {
+        "policy": "P-EQUIV",
+        "decision": "substring_of_evidence",
+        "label": null,
+        "executable": false
+      },
+      {
+        "policy": "P-CLAIM-MERGE",
+        "decision": "require_one_claim_per_obligation",
+        "label": null,
+        "executable": false
+      },
+      {
+        "policy": "P-CLAIM-SPLIT",
+        "decision": "accept_union_of_quotes",
+        "label": null,
+        "executable": false
+      },
+      {
+        "policy": "P-COVERAGE-LINK",
+        "decision": "links_optional",
+        "label": null,
+        "executable": true,
+        "cause_counts": {
+          "product_evidence": 0,
+          "unresolved": 3,
+          "representation_sensitive": 0,
+          "total": 3
+        },
+        "moved_errors": []
+      },
+      {
+        "policy": "P-STATUS-HISTORICAL",
+        "decision": "historical_no_evidence_linked",
+        "label": null,
+        "executable": true,
+        "cause_counts": {
+          "product_evidence": 0,
+          "unresolved": 2,
+          "representation_sensitive": 1,
+          "total": 3
+        },
+        "moved_errors": [
+          {
+            "id": "error-1",
+            "categories": [
+              "representation_sensitive"
+            ],
+            "causes_added": [
+              "c1:coverage_semantics:archives:v1_pass"
+            ],
+            "causes_removed": [
+              "c1:predicate:archives:D6"
+            ]
+          }
+        ]
+      },
+      {
+        "policy": "P-FAILURE-KIND",
+        "decision": "missing_link_always_evidence",
+        "label": null,
+        "executable": true,
+        "cause_counts": {
+          "product_evidence": 0,
+          "unresolved": 3,
+          "representation_sensitive": 0,
+          "total": 3
+        },
+        "moved_errors": []
+      },
+      {
+        "policy": "P-GAP-QUALIFIER-DUP",
+        "decision": "exempt_linked_from_coverage",
+        "label": "A",
+        "executable": true,
+        "cause_counts": {
+          "product_evidence": 0,
+          "unresolved": 1,
+          "representation_sensitive": 2,
+          "total": 3
+        },
+        "moved_errors": [
+          {
+            "id": "error-2",
+            "categories": [
+              "representation_sensitive"
+            ],
+            "causes_added": [
+              "c1:gap_completeness:v1_pass"
+            ],
+            "causes_removed": [
+              "c1:historical:P-GAP-QUALIFIER-DUP"
+            ]
+          },
+          {
+            "id": "error-3",
+            "categories": [
+              "representation_sensitive"
+            ],
+            "causes_added": [
+              "c3:gap_completeness:v1_pass"
+            ],
+            "causes_removed": [
+              "c3:historical:P-GAP-QUALIFIER-DUP"
+            ]
+          }
+        ]
+      },
+      {
+        "policy": "P-GAP-QUALIFIER-DUP",
+        "decision": "exempt_linked_from_coverage",
+        "label": "B",
+        "executable": true,
+        "cause_counts": {
+          "product_evidence": 0,
+          "unresolved": 1,
+          "representation_sensitive": 2,
+          "total": 3
+        },
+        "moved_errors": [
+          {
+            "id": "error-2",
+            "categories": [
+              "representation_sensitive"
+            ],
+            "causes_added": [
+              "c1:gap_completeness:v1_pass"
+            ],
+            "causes_removed": [
+              "c1:historical:P-GAP-QUALIFIER-DUP"
+            ]
+          },
+          {
+            "id": "error-3",
+            "categories": [
+              "representation_sensitive"
+            ],
+            "causes_added": [
+              "c3:gap_completeness:v1_pass"
+            ],
+            "causes_removed": [
+              "c3:historical:P-GAP-QUALIFIER-DUP"
+            ]
+          }
+        ]
+      }
+    ],
+    "post_hoc_combinations": [
+      {
+        "policies": [
+          {
+            "policy": "P-STATUS-HISTORICAL",
+            "decision": "historical_no_evidence_linked",
+            "label": null
+          },
+          {
+            "policy": "P-GAP-QUALIFIER-DUP",
+            "decision": "exempt_linked_from_coverage",
+            "label": "A"
+          }
+        ],
+        "overall": "undecided",
+        "overall_reasons": [
+          "semantic_review_required"
+        ],
+        "deterministic": "pass",
+        "failures": {
+          "layers": [],
+          "vector": []
+        },
+        "cause_counts": {
+          "product_evidence": 0,
+          "unresolved": 0,
+          "representation_sensitive": 3,
+          "total": 3
+        },
+        "moved_errors": [
+          "error-1",
+          "error-2",
+          "error-3"
+        ]
+      },
+      {
+        "policies": [
+          {
+            "policy": "P-STATUS-HISTORICAL",
+            "decision": "historical_no_evidence_linked",
+            "label": null
+          },
+          {
+            "policy": "P-GAP-QUALIFIER-DUP",
+            "decision": "exempt_linked_from_coverage",
+            "label": "B"
+          }
+        ],
+        "overall": "undecided",
+        "overall_reasons": [
+          "semantic_review_required"
+        ],
+        "deterministic": "pass",
+        "failures": {
+          "layers": [],
+          "vector": []
+        },
+        "cause_counts": {
+          "product_evidence": 0,
+          "unresolved": 0,
+          "representation_sensitive": 3,
+          "total": 3
+        },
+        "moved_errors": [
+          "error-1",
+          "error-2",
+          "error-3"
+        ]
+      }
+    ]
+  },
+  "comparison_768": {
+    "annotation_errors": {
+      "trial": 3,
+      "768": 16
+    },
+    "invocation_script": {
+      "trial": "scripts/evaluate_extraction_fidelity.py",
+      "768": "scripts/benchmark_extraction_threshold_ab.py"
+    },
+    "cli_version_equal": true,
+    "transport_equal": true,
+    "binary_sha256_recorded": {
+      "trial": true,
+      "768": false
+    },
+    "base_prompt_sha256_equal": {
+      "extraction": true,
+      "repair": true
+    },
+    "chunks": [
+      {
+        "index": 1,
+        "effective_prompt_equal": false,
+        "original_payload_differences": [
+          "approved_dictionary.id"
+        ]
+      },
+      {
+        "index": 2,
+        "effective_prompt_equal": false,
+        "original_payload_differences": [
+          "approved_dictionary.id"
+        ]
+      },
+      {
+        "index": 3,
+        "effective_prompt_equal": false,
+        "original_payload_differences": [
+          "approved_dictionary.id"
+        ]
+      }
+    ],
+    "errors": [
+      {
+        "id": "error-1",
+        "equal_768_errors": [
+          "error-4"
+        ],
+        "causes": [
+          "c1:predicate:archives:D6"
+        ],
+        "causes_768": [
+          "c1:predicate:archives:D6"
+        ],
+        "causes_only_trial": [],
+        "causes_only_768": []
+      },
+      {
+        "id": "error-2",
+        "equal_768_errors": [
+          "error-6"
+        ],
+        "causes": [
+          "c1:historical:P-GAP-QUALIFIER-DUP"
+        ],
+        "causes_768": [
+          "c1:conditional:P-GAP-QUALIFIER-DUP",
+          "c1:historical:P-GAP-QUALIFIER-DUP",
+          "c1:missing_relation:D3"
+        ],
+        "causes_only_trial": [],
+        "causes_only_768": [
+          "c1:conditional:P-GAP-QUALIFIER-DUP",
+          "c1:missing_relation:D3"
+        ]
+      },
+      {
+        "id": "error-3",
+        "equal_768_errors": [
+          "error-16"
+        ],
+        "causes": [
+          "c3:historical:P-GAP-QUALIFIER-DUP"
+        ],
+        "causes_768": [
+          "c3:historical:P-GAP-QUALIFIER-DUP",
+          "c3:missing_relation:D3"
+        ],
+        "causes_only_trial": [],
+        "causes_only_768": [
+          "c3:missing_relation:D3"
+        ]
+      }
+    ],
+    "causes_only_trial": [],
+    "causes_only_768": [
+      "c1:conditional:P-GAP-QUALIFIER-DUP",
+      "c1:missing_entity:P-COVERAGE-LINK",
+      "c1:missing_relation:D3",
+      "c1:negated:D3",
+      "c2:historical:P-GAP-QUALIFIER-DUP",
+      "c2:missing_entity:P-COVERAGE-LINK",
+      "c2:missing_relation:D3",
+      "c2:negated:D3",
+      "c2:predicate:archives:D6",
+      "c3:missing_entity:P-COVERAGE-LINK",
+      "c3:missing_relation:D3"
+    ],
+    "trial_causes_within_768": true
+  },
+  "scope": "One three-chunk fixture, one sample. verdict is the trial contract's decision, re-derived offline; verdict.reasons names its cause. v1 is a separate assessment computed from the retained criteria copies; post_hoc_combinations were chosen after the trial."
+}

@@ -1,0 +1,527 @@
+{
+  "spec_id": "extraction-product-fitness-v1",
+  "schema_version": 1,
+  "issue": 788,
+  "base_revision": "7831b96f4ec756599174200e68c6b2669d534e43",
+  "base_revision_definition": "The main revision this work started from (작업 출발 main revision). It is not the reproduction revision named in issue #788.",
+  "issue_reproduction_revision": "eafa841de6980dd08f2cf11a1413688038ab9fe2",
+  "authorship": {
+    "author": "agent_proposed",
+    "human_review": "pending"
+  },
+  "assisted_review": {
+    "claude_used": false,
+    "rationale": "No separate Claude-assisted review step (the optional step issue #788 permits) was run; retained raw outputs and deterministic contrasts sufficed. The agent_proposed judgments in this spec were written by the development agent, a Claude model; they are not that step and are not human review."
+  },
+  "independence": {
+    "independent_of": "Dataset v2 evaluator code: _supported and evaluate_annotations are not imported or called by the v1 layers.",
+    "not_independent_of": "Dataset v2 annotation content: registry obligations, canonical spans, expected coverage status, required coverage obligations and gap pairs are re-declared from it, with provenance and declared deviations per chunk. authored-pf1 labels mirror the short registry row under its template_of identifier substitution."
+  },
+  "layers": {
+    "D1_production": "extraction_fidelity._production(case, index, output)['production_passed'], imported read-only. A production failure gives production_failure and skips D3-D6. D3-D6 read only normalized_output.",
+    "D3_claim_support": "Obligation o is supported by claim i iff that one quote's single chunk occurrence contains o's canonical span or a registered substitute. Joining several quotes is never accepted.",
+    "D4_coverage_link": "For each predicate, every registry required_obligation_id must be supported by some claim in that output row's claim_indices, unless a named policy exempts it. Extra links are allowed.",
+    "D5_gap": "The unit is the pair (code, obligation). Each linked claim must support some expected pair of its row's code, otherwise unrelated_gap_link. Each expected pair must be present, otherwise missing_gap_pair, unless a named policy exempts it. Rows may be split or merged.",
+    "D6_status": "actual status != registry expected_status gives status_mismatch, unless a named policy exempts it. No v1 decision exempts anything.",
+    "S1_prose_fitness": "Never computed. Every claim that supports a registered obligation is semantic_review_required; authored semantic records are listed separately."
+  },
+  "internal_invariant": "After D1 each normalized claim quote occurs exactly once in its chunk. A violation is an internal error, not a verdict reason.",
+  "reasons": [
+    "production_failure",
+    "span_supported",
+    "substitute_supported",
+    "unreviewed_quote",
+    "split_across_quotes",
+    "missing_link",
+    "unrelated_gap_link",
+    "missing_gap_pair",
+    "status_mismatch",
+    "semantic_review_required",
+    "out_of_scope"
+  ],
+  "failure_kind": "Under the v1 P-FAILURE-KIND decision: evidence iff the obligation a failure needs fails D3; otherwise label. assistant.wiki_text renders every claim of an approved page with its quote, so for an approved output D3 failure is the reachability criterion. production_failure has no kind. The rejected alternative missing_link_always_evidence makes every D4 missing_link evidence.",
+  "overall": {
+    "fail": "Any deterministic failure, or a human-approved semantic record for the assessed output with verdict material_failure.",
+    "undecided_agent_flagged": "Deterministic pass, but an authored agent_proposed semantic judgment says material_failure.",
+    "undecided": "Deterministic pass, semantics pending.",
+    "pass": "Deterministic pass and a human-approved semantic record with verdict no_material_failure whose case_id and chunk_outputs_sha256 match the assessed case and chunk-output list. No committed record is human-approved.",
+    "agent_judgments": "Agent judgments never produce fail or pass.",
+    "overall_vs_category": "The overall verdict is v1 conformance under agent-proposed policies. The product-materiality category (each failure's and each historical-mapping cause's `category`) is separate and pending human review, so a label failure can be overall fail while its category is unresolved."
+  },
+  "categories": {
+    "product_evidence": "Under the v1 P-FAILURE-KIND decision, a failure whose needed obligation fails D3, so no displayed quote supports it. A rejected P-FAILURE-KIND alternative can give this category to failures whose quote is displayed, as the sensitivity section shows.",
+    "unresolved": "A failure of kind label under the evaluated P-FAILURE-KIND decision; materiality waits for human review of the deciding policy.",
+    "representation_sensitive": "A frozen v2 annotation error with no related v1 failure, the related failures being selected from the error's own fields.",
+    "rationale": "product_evidence and unresolved are derived from failure kind; representation_sensitive marks a frozen error with no related v1 failure. Categories do not change the overall verdict.",
+    "author": "agent_proposed",
+    "human_review": "pending",
+    "note_785": "#785's category tags are not defined this way: its representation_sensitive tag marks policy or representation dependence, closer to v1's unresolved, so a categories_only_785 entry can reflect the different definitions as well as the evidence."
+  },
+  "out_of_scope": [
+    "General entailment or contradiction detection.",
+    "Claims that support no registered obligation, such as a claim quoting the hypothetical example line.",
+    "Multi-document cases."
+  ],
+  "policies": {
+    "P-EQUIV": {
+      "decision": "registry_substitutes",
+      "rationale": "Issue #788 criterion 2: quote equivalence is defined only by explicitly reviewed substitute spans, never by generic prefix removal or loose substring matching.",
+      "rejected_alternatives": [
+        {
+          "decision": "generic_prefix_strip",
+          "rationale": "Accepts label removal without review; on the short template it also makes the fact quote ambiguous, which production rejects."
+        },
+        {
+          "decision": "substring_of_evidence",
+          "rationale": "Accepts a quote that deletes a negation, condition or time qualifier whenever the remainder is a substring of the evidence, as the qualifier-deleted fixtures show."
+        }
+      ],
+      "author": "agent_proposed",
+      "human_review": "pending"
+    },
+    "P-ORDER": {
+      "decision": "index_remap_invariant",
+      "rationale": "Claim indices are local to one output; reordering with a consistent remap preserves every reference.",
+      "rejected_alternatives": [],
+      "author": "agent_proposed",
+      "human_review": "pending"
+    },
+    "P-CLAIM-MERGE": {
+      "decision": "one_quote_covers_each_span",
+      "rationale": "A reviewer sees one quote; if it contains each canonical span, merging claims loses no registered evidence span.",
+      "rejected_alternatives": [
+        {
+          "decision": "require_one_claim_per_obligation",
+          "rationale": "Would reject a contiguous quote that genuinely contains every constraint."
+        }
+      ],
+      "author": "agent_proposed",
+      "human_review": "pending"
+    },
+    "P-CLAIM-SPLIT": {
+      "decision": "reject_joined_quotes",
+      "rationale": "The page shows one quote per prose claim, so evidence spread over several quotes is never shown in the single quote beside its claim.",
+      "rejected_alternatives": [
+        {
+          "decision": "accept_union_of_quotes",
+          "rationale": "Would credit a qualifier that no single displayed quote carries."
+        }
+      ],
+      "author": "agent_proposed",
+      "human_review": "pending"
+    },
+    "P-COVERAGE-LINK": {
+      "decision": "all_required_linked",
+      "rationale": "renderCoverage lists only the linked claims, so the linked list is the per-relation navigation path; every re-declared required obligation must be on it.",
+      "rejected_alternatives": [
+        {
+          "decision": "links_optional",
+          "rationale": "Treats per-relation navigation as optional because the claim is still on the wiki page."
+        }
+      ],
+      "author": "agent_proposed",
+      "human_review": "pending"
+    },
+    "P-STATUS-HISTORICAL": {
+      "decision": "registry_expected_status",
+      "rationale": "The expected status is the registry value (equal to the v2 annotation). Where the row links a supporting claim, a no_evidence badge denies evidence that the row itself links, so D6 has no exemption.",
+      "rejected_alternatives": [
+        {
+          "decision": "historical_no_evidence_linked",
+          "rationale": "Named D6 exemption: allow no_evidence where not_representable is expected when the row links a claim supporting every required obligation."
+        }
+      ],
+      "author": "agent_proposed",
+      "human_review": "pending"
+    },
+    "P-FAILURE-KIND": {
+      "decision": "evidence_iff_obligation_fails_d3",
+      "rationale": "#785 judged a navigation omission as not loss of the claim from the wiki; only an obligation no displayed quote supports is an evidence failure. The same rule makes a wrong link (a gap row pointing at an unrelated claim while the supporting claim stays on the page) a label failure; #785 rated that case material_failure, and the disagreement is recorded in disagreements_with_785.",
+      "rejected_alternatives": [
+        {
+          "decision": "missing_link_always_evidence",
+          "rationale": "Treats per-relation navigation as the evidence path, so every D4 missing_link is an evidence failure."
+        }
+      ],
+      "author": "agent_proposed",
+      "human_review": "pending"
+    },
+    "P-GAP-QUALIFIER-DUP": {
+      "decision": "every_qualified_obligation",
+      "obligation_ids": [],
+      "rationale": "The gap list is the qualifier inventory and coverage rows do not label qualifiers, so every qualified obligation needs its qualifier pair.",
+      "rejected_alternatives": [
+        {
+          "label": "A",
+          "decision": "exempt_linked_from_coverage",
+          "obligation_ids": [
+            "historical"
+          ],
+          "rationale": "Exempt the historical obligation when a coverage row links a claim supporting it."
+        },
+        {
+          "label": "B",
+          "decision": "exempt_linked_from_coverage",
+          "rationale": "Exempt every obligation in a registry qualifier_not_representable pair when a coverage row links a claim supporting it.",
+          "obligation_scope": "all_qualifier_pairs"
+        }
+      ],
+      "author": "agent_proposed",
+      "human_review": "pending"
+    }
+  },
+  "fixture_expectations": {
+    "baseline": {
+      "overall": "undecided",
+      "failures": [],
+      "rationale": "Unchanged synthetic oracle; every obligation has its canonical quote and links.",
+      "author": "agent_proposed",
+      "human_review": "pending"
+    },
+    "order_remap": {
+      "overall": "undecided",
+      "failures": [],
+      "rationale": "Order is incidental when every reference is remapped.",
+      "author": "agent_proposed",
+      "human_review": "pending"
+    },
+    "merge_contiguous": {
+      "overall": "undecided",
+      "failures": [],
+      "rationale": "One contiguous quote contains every canonical span.",
+      "author": "agent_proposed",
+      "human_review": "pending"
+    },
+    "label_free_substitutes": {
+      "overall": "undecided",
+      "failures": [],
+      "rationale": "Each quote is a reviewed label-free substitute that keeps its qualifier markers.",
+      "author": "agent_proposed",
+      "human_review": "pending"
+    },
+    "longer_quote": {
+      "overall": "undecided",
+      "failures": [],
+      "rationale": "Longer contiguous quotes still contain each canonical span.",
+      "author": "agent_proposed",
+      "human_review": "pending"
+    },
+    "gap_split": {
+      "overall": "undecided",
+      "failures": [],
+      "rationale": "Splitting gap rows preserves every (code, obligation) pair.",
+      "author": "agent_proposed",
+      "human_review": "pending"
+    },
+    "gap_group": {
+      "overall": "undecided",
+      "failures": [],
+      "rationale": "Regrouping split gap rows by code preserves every pair.",
+      "author": "agent_proposed",
+      "human_review": "pending"
+    },
+    "incidental_wording": {
+      "overall": "undecided",
+      "failures": [],
+      "rationale": "Only heading, reason and detail wording change.",
+      "author": "agent_proposed",
+      "human_review": "pending"
+    },
+    "negation_deleted": {
+      "overall": "fail",
+      "failures": [
+        [
+          "unreviewed_quote",
+          "evidence"
+        ]
+      ],
+      "rationale": "The quote drops the negation; it is a substring of the evidence but not a reviewed substitute.",
+      "author": "agent_proposed",
+      "human_review": "pending"
+    },
+    "condition_deleted": {
+      "overall": "fail",
+      "failures": [
+        [
+          "missing_gap_pair",
+          "evidence"
+        ],
+        [
+          "missing_link",
+          "evidence"
+        ],
+        [
+          "unrelated_gap_link",
+          "evidence"
+        ],
+        [
+          "unreviewed_quote",
+          "evidence"
+        ]
+      ],
+      "rationale": "The quote drops the condition, so the conditional obligation and every link that needs it fail.",
+      "author": "agent_proposed",
+      "human_review": "pending"
+    },
+    "time_deleted": {
+      "overall": "fail",
+      "failures": [
+        [
+          "missing_gap_pair",
+          "evidence"
+        ],
+        [
+          "missing_link",
+          "evidence"
+        ],
+        [
+          "unrelated_gap_link",
+          "evidence"
+        ],
+        [
+          "unreviewed_quote",
+          "evidence"
+        ]
+      ],
+      "rationale": "The quote drops the dates and ended state, so the historical obligation and every link that needs it fail.",
+      "author": "agent_proposed",
+      "human_review": "pending"
+    },
+    "generic_prefix_strip": {
+      "overall": "fail",
+      "failures": [
+        [
+          "production_failure",
+          null
+        ]
+      ],
+      "rationale": "Here generic label stripping makes the fact quote ambiguous with the hypothetical line, which production rejects.",
+      "author": "agent_proposed",
+      "human_review": "pending"
+    },
+    "wrong_gap_link": {
+      "overall": "fail",
+      "failures": [
+        [
+          "missing_gap_pair",
+          "label"
+        ],
+        [
+          "unrelated_gap_link",
+          "label"
+        ]
+      ],
+      "rationale": "The missing_relation gap points at the missing_entity claim; the supporting quote still exists elsewhere.",
+      "author": "agent_proposed",
+      "human_review": "pending"
+    },
+    "coverage_link_dropped": {
+      "overall": "fail",
+      "failures": [
+        [
+          "missing_link",
+          "label"
+        ]
+      ],
+      "rationale": "The calls row omits the missing_entity claim, which is still on the page.",
+      "author": "agent_proposed",
+      "human_review": "pending"
+    },
+    "contradictory_prose": {
+      "overall": "undecided_agent_flagged",
+      "failures": [],
+      "rationale": "Quotes and links are intact; the prose contradicts its quote, which in v1 only the semantic layer can flag.",
+      "author": "agent_proposed",
+      "human_review": "pending"
+    },
+    "split_conditional_claim": {
+      "overall": "fail",
+      "failures": [
+        [
+          "missing_gap_pair",
+          "evidence"
+        ],
+        [
+          "missing_link",
+          "evidence"
+        ],
+        [
+          "split_across_quotes",
+          "evidence"
+        ],
+        [
+          "unrelated_gap_link",
+          "evidence"
+        ]
+      ],
+      "rationale": "P-CLAIM-SPLIT: the condition and its not-currently-unconditional sentence are never shown in one quote.",
+      "author": "agent_proposed",
+      "human_review": "pending"
+    },
+    "historical_status_no_evidence": {
+      "overall": "fail",
+      "failures": [
+        [
+          "status_mismatch",
+          "label"
+        ]
+      ],
+      "rationale": "P-STATUS-HISTORICAL: no_evidence contradicts the expected not_representable while the historical quote stays linked.",
+      "author": "agent_proposed",
+      "human_review": "pending"
+    },
+    "historical_qualifier_gap_omitted": {
+      "overall": "fail",
+      "failures": [
+        [
+          "missing_gap_pair",
+          "label"
+        ]
+      ],
+      "rationale": "P-GAP-QUALIFIER-DUP: the historical qualifier pair is missing although its claim and coverage link remain.",
+      "author": "agent_proposed",
+      "human_review": "pending"
+    },
+    "hypothetical_line_claim": {
+      "overall": "undecided",
+      "failures": [],
+      "rationale": "An extra claim quoting the hypothetical line supports no registered obligation and is out_of_scope.",
+      "author": "agent_proposed",
+      "human_review": "pending"
+    }
+  },
+  "deliberate_differences_from_v2": [
+    {
+      "subject": "control:short_quotes_without_fixture_labels",
+      "v2": "fail",
+      "v1": "undecided",
+      "rationale": "Label-free bodies are registered substitutes that keep every qualifier marker; v2 requires the labelled span.",
+      "author": "agent_proposed",
+      "human_review": "pending"
+    },
+    {
+      "subject": "control:contradictory_prose_with_correct_quote",
+      "v2": "pass",
+      "v1": "undecided_agent_flagged",
+      "rationale": "An authored agent judgment flags prose that contradicts its correct quote; v2 has no prose layer.",
+      "author": "agent_proposed",
+      "human_review": "pending"
+    },
+    {
+      "subject": "fixture:short:label_free_substitutes",
+      "v2": "fail",
+      "v1": "undecided",
+      "rationale": "Same substitution as the #785 short-quote control, built from the registry substitutes.",
+      "author": "agent_proposed",
+      "human_review": "pending"
+    },
+    {
+      "subject": "fixture:short:contradictory_prose",
+      "v2": "pass",
+      "v1": "undecided_agent_flagged",
+      "rationale": "Same contradiction as the #785 control; in v1 only the semantic layer can flag it.",
+      "author": "agent_proposed",
+      "human_review": "pending"
+    }
+  ],
+  "disagreements_with_785": [
+    {
+      "subject": "control:wrong_gap_reference",
+      "expectation_785": "material_failure",
+      "v1_overall": "fail",
+      "v1_kinds": [
+        "label"
+      ],
+      "definition": "A #785 material_failure control that v1 fails only with label-kind failures.",
+      "rationale": "#785: the missing-relation detail is supported only by an unrelated missing-entity quote. v1 still fails the output (unrelated_gap_link and missing_gap_pair), but rates both label because the ownership claim and its quote remain on the page; only the gap row's navigation is wrong. Whether a misattributed link is material is a product judgment left to human review.",
+      "author": "agent_proposed",
+      "human_review": "pending"
+    }
+  ],
+  "group_correspondence_785": {
+    "unquoted_negation": {
+      "causes": [
+        {
+          "target": "negated",
+          "basis": "D3"
+        }
+      ],
+      "rationale": "#785 group: the negation prose has no quote containing its source statement.",
+      "author": "agent_proposed",
+      "human_review": "pending"
+    },
+    "unsupported_missing_relation": {
+      "causes": [
+        {
+          "target": "missing_relation",
+          "basis": "D3"
+        }
+      ],
+      "rationale": "#785 group: the ownership constraint is never quoted; its gap links an unrelated claim.",
+      "author": "agent_proposed",
+      "human_review": "pending"
+    },
+    "coverage_navigation": {
+      "causes": [
+        {
+          "target": "missing_entity",
+          "basis": "P-COVERAGE-LINK"
+        }
+      ],
+      "rationale": "#785 group: calls coverage does not link the existing outside-target claim.",
+      "author": "agent_proposed",
+      "human_review": "pending"
+    },
+    "historical_status_policy": {
+      "causes": [
+        {
+          "target": "predicate:archives",
+          "basis": "D6"
+        }
+      ],
+      "rationale": "#785 group: archives is no_evidence while its historical quote stays linked.",
+      "author": "agent_proposed",
+      "human_review": "pending"
+    },
+    "qualified_gap_policy": {
+      "causes": [
+        {
+          "target": "historical",
+          "basis": "P-GAP-QUALIFIER-DUP"
+        }
+      ],
+      "rationale": "#785 group: assigned by its gap_completeness rule when the historical qualifier pair is missing and the historical claim is quoted, arguing that historical evidence is preserved elsewhere. Its rationale notes that the evaluator requires every conditional/historical pair, and its error observations list the missing pairs, but it names no separate cause for a missing conditional pair; this correspondence therefore maps the group to the historical pair only.",
+      "author": "agent_proposed",
+      "human_review": "pending"
+    }
+  },
+  "historical_mapping_disagreements_with_785": [
+    {
+      "subject": "historical:error-6",
+      "causes_only_v1": [
+        "c1:conditional:P-GAP-QUALIFIER-DUP"
+      ],
+      "causes_only_785": [],
+      "definition": "A frozen error whose v1 causes differ from the causes its #785 groups correspond to.",
+      "rationale": "Chunk 1 has no qualifier_not_representable row, so its conditional and historical pairs are both missing; #785's error-6 observation lists both. #785 assigned qualified_gap_policy through its rule for the missing historical pair and names no separate cause for the conditional pair, while v1's P-GAP-QUALIFIER-DUP records that pair as an additional label cause. The disagreement is measured against the agent-authored group_correspondence_785; its materiality is pending human review.",
+      "author": "agent_proposed",
+      "human_review": "pending"
+    }
+  ],
+  "semantic_judgments": [
+    {
+      "id": "short-negated-contradiction",
+      "case_id": "short",
+      "chunk": 1,
+      "claim": {
+        "text": "S1는 S0를 현재 무조건 직접 호출한다.",
+        "quote": "구간 1 부정: S1는 S0를 직접 호출하지 않는다."
+      },
+      "verdict": "material_failure",
+      "rationale": "The prose asserts an unconditional current call that its quote explicitly negates.",
+      "author": "agent_proposed",
+      "human_review": "pending"
+    }
+  ],
+  "semantic_approvals": []
+}
