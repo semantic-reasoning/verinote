@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "candidate_id": "evidence_links_v1",
+  "template_sha256": "ef8364f9ae0b47be33c7a92e32df69f94a6b9c4e9f6a4de2b98bd23b75ef2b58",
+  "compiler_sha256": "7280c29ac78b0a83ed0eeda18885605ce96a4105bfb83e9550ad5bece19f89c2",
+  "manifest_sha256": "013c0e3f2b8384b1c1083ffac1d8e432bac8b6c27489eb43a81395c6a1c88834",
+  "run_id": "aca214614a8e4472a71226a8fe860390",
+  "chunk": 2,
+  "repair": false,
+  "original_prompt_sha256": "fea29e14d47f2711b1803d292965a4e9bf08583abf17705aea9748b25727db37",
+  "effective_prompt_sha256": "a6ead6d72e56ee775722850dc7132e79148aac67d8dcc58093a6d8b6ee9a0a3a",
+  "cli_call_id": "414e7f4d421a4b08bd29af296bc7d2d1"
+}

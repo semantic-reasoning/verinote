@@ -1,0 +1,126 @@
+{
+  "verdict": "rejected",
+  "reasons": [
+    "finite_gold_failed"
+  ],
+  "candidate_id": "evidence_links_v1",
+  "quality": {
+    "validated_chunks": 3,
+    "total_chunks": 3,
+    "complete": true,
+    "passed": false,
+    "evaluation": {
+      "schema_version": 1,
+      "evaluator_version": 2,
+      "dataset_version": 2,
+      "case_id": "three",
+      "source_sha256": "5232dcdf0e93d70ba389f232053c0bccf3138b30e6c5efc27fc8bcf0e5ae8bbd",
+      "case_sha256": "b0c9b0bae8fd8f86c3434c961034c791e265810016af5f8439056d269b6bf4de",
+      "gold_count": 3,
+      "prediction_count": 3,
+      "raw_prediction_count": 3,
+      "true_positive_count": 3,
+      "false_positive_count": 0,
+      "false_negative_count": 0,
+      "grounded_true_positive_count": 3,
+      "precision": {
+        "value": 1.0,
+        "numerator": 3,
+        "denominator": 3,
+        "reason": null
+      },
+      "recall": {
+        "value": 1.0,
+        "numerator": 3,
+        "denominator": 3,
+        "reason": null
+      },
+      "grounded_precision": {
+        "value": 1.0,
+        "numerator": 3,
+        "denominator": 3,
+        "reason": null
+      },
+      "grounded_recall": {
+        "value": 1.0,
+        "numerator": 3,
+        "denominator": 3,
+        "reason": null
+      },
+      "citation_accuracy": {
+        "value": 1.0,
+        "numerator": 3,
+        "denominator": 3,
+        "reason": null
+      },
+      "true_positives": [
+        "three-call-1",
+        "three-call-2",
+        "three-call-3"
+      ],
+      "false_negatives": [],
+      "false_positives": [],
+      "grounded_missing": [],
+      "invalid_facts": [],
+      "citation_errors": [],
+      "duplicates": [],
+      "quote_ambiguities": [],
+      "no_relation_case_pass": null,
+      "passed": false,
+      "annotation_errors": [
+        {
+          "chunk": 1,
+          "reason": "coverage_semantics",
+          "predicate": "archives"
+        },
+        {
+          "chunk": 1,
+          "reason": "gap_completeness"
+        },
+        {
+          "chunk": 3,
+          "reason": "gap_completeness"
+        }
+      ],
+      "complete": true
+    }
+  },
+  "safety": {
+    "complete": true,
+    "passed": true,
+    "violations": []
+  },
+  "production": {
+    "complete": true,
+    "passed": true,
+    "verified_failure": false,
+    "responses_complete": true,
+    "chunks": [
+      {
+        "index": 1,
+        "repair": false,
+        "response_complete": true,
+        "passed": true,
+        "reason": null
+      },
+      {
+        "index": 2,
+        "repair": false,
+        "response_complete": true,
+        "passed": true,
+        "reason": null
+      },
+      {
+        "index": 3,
+        "repair": false,
+        "response_complete": true,
+        "passed": true,
+        "reason": null
+      }
+    ]
+  },
+  "requests": 3,
+  "observed_tokens": 46407,
+  "seconds": 33.080922583001666,
+  "scope": "One three-chunk finite fixture; no general fidelity, speedup or operational acceptance."
+}

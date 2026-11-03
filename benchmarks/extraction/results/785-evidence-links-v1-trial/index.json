@@ -1,0 +1,406 @@
+{
+  "documents/three-1/runs/aca214614a8e4472a71226a8fe860390/1/candidate.json": {
+    "bytes": 658,
+    "sha256": "8096be923d10a66c030c70983bf1c234a5236e2bdda35bb2ce9f1ca8562381d4"
+  },
+  "documents/three-1/runs/aca214614a8e4472a71226a8fe860390/1/cli-timing.json": {
+    "bytes": 813,
+    "sha256": "1e88e1e5e297411a1cfa125c86c3710ffec361ddde56c107bebb73ee915726ad"
+  },
+  "documents/three-1/runs/aca214614a8e4472a71226a8fe860390/1/original-prompt.txt": {
+    "bytes": 23838,
+    "sha256": "887e9ba8fca08047ee27213864b476193237d7d7b141f75638981fc4a1c7f711"
+  },
+  "documents/three-1/runs/aca214614a8e4472a71226a8fe860390/1/prompt.txt": {
+    "bytes": 25806,
+    "sha256": "12195e63bfc052e88f1f7af3c105be069b5c68e99c0096bad94598d05e9bead2"
+  },
+  "documents/three-1/runs/aca214614a8e4472a71226a8fe860390/1/run.json": {
+    "bytes": 624,
+    "sha256": "f61f7a2ca7a51412cd7a78dbb4a4c55d0148097fb68269b7c6dcac5e5ccf53c6"
+  },
+  "documents/three-1/runs/aca214614a8e4472a71226a8fe860390/1/stderr.txt": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "documents/three-1/runs/aca214614a8e4472a71226a8fe860390/1/stdout.txt": {
+    "bytes": 6165,
+    "sha256": "6566d6d4b4a142c637d209ee712081fa4f311da7afe653d8e18e5a7241b7a125"
+  },
+  "documents/three-1/runs/aca214614a8e4472a71226a8fe860390/1/stream.jsonl": {
+    "bytes": 17811,
+    "sha256": "d2f36defb4cd61d63cb04612236d49830c0a97f67987888643820ca9e92e4540"
+  },
+  "documents/three-1/runs/aca214614a8e4472a71226a8fe860390/1/usage.json": {
+    "bytes": 919,
+    "sha256": "16f1109ec7537dc4abe5bf862eec2fdedb54acfbd9276d9e5eff0df971e12af1"
+  },
+  "documents/three-1/runs/aca214614a8e4472a71226a8fe860390/2/candidate.json": {
+    "bytes": 658,
+    "sha256": "11e83e800e06397cdccaf817188fb45479267a117a4108ecc05bbc3bc4f3386f"
+  },
+  "documents/three-1/runs/aca214614a8e4472a71226a8fe860390/2/cli-timing.json": {
+    "bytes": 794,
+    "sha256": "facbc7dc219b64be21374c186200bcfcb9975513ea0cc11aabcc860fb13bf14d"
+  },
+  "documents/three-1/runs/aca214614a8e4472a71226a8fe860390/2/original-prompt.txt": {
+    "bytes": 23932,
+    "sha256": "fea29e14d47f2711b1803d292965a4e9bf08583abf17705aea9748b25727db37"
+  },
+  "documents/three-1/runs/aca214614a8e4472a71226a8fe860390/2/prompt.txt": {
+    "bytes": 25900,
+    "sha256": "a6ead6d72e56ee775722850dc7132e79148aac67d8dcc58093a6d8b6ee9a0a3a"
+  },
+  "documents/three-1/runs/aca214614a8e4472a71226a8fe860390/2/run.json": {
+    "bytes": 623,
+    "sha256": "047c7a51f0d3db658e190a21c8641b506a61fe9cf04ae0cd095fc1b84059ebd1"
+  },
+  "documents/three-1/runs/aca214614a8e4472a71226a8fe860390/2/stderr.txt": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "documents/three-1/runs/aca214614a8e4472a71226a8fe860390/2/stdout.txt": {
+    "bytes": 6047,
+    "sha256": "71794c0a6aad5031b3eb33375a078bb99953b5e7dde17f5453caabea0ade79f2"
+  },
+  "documents/three-1/runs/aca214614a8e4472a71226a8fe860390/2/stream.jsonl": {
+    "bytes": 17178,
+    "sha256": "6f73f66151f12cee57371077e80322d388034edccb984986c32c34ddbb712307"
+  },
+  "documents/three-1/runs/aca214614a8e4472a71226a8fe860390/2/usage.json": {
+    "bytes": 919,
+    "sha256": "706e014ffc17e531fb4f8738a3ad2343a725ad9a6ffbf13dd7c115551c98e769"
+  },
+  "documents/three-1/runs/aca214614a8e4472a71226a8fe860390/3/candidate.json": {
+    "bytes": 658,
+    "sha256": "70af4af96fd9a59db42273cd51cef323d449a4a8b2deb6d3e05dd5d7b0eea3a9"
+  },
+  "documents/three-1/runs/aca214614a8e4472a71226a8fe860390/3/cli-timing.json": {
+    "bytes": 790,
+    "sha256": "1f752ec3c08a17eb7a9c1f5f13cc7953324d2066c1239ce6e6d50e0e0265a158"
+  },
+  "documents/three-1/runs/aca214614a8e4472a71226a8fe860390/3/original-prompt.txt": {
+    "bytes": 23933,
+    "sha256": "30ad07dbdfc68a2720b68fbaa0ed695c41fe656a234261946e372b96f33cc474"
+  },
+  "documents/three-1/runs/aca214614a8e4472a71226a8fe860390/3/prompt.txt": {
+    "bytes": 25901,
+    "sha256": "d706786a63671a0d12e891e53540753e3ff4ba3e5b023aa4013512803260cbdf"
+  },
+  "documents/three-1/runs/aca214614a8e4472a71226a8fe860390/3/run.json": {
+    "bytes": 623,
+    "sha256": "412f0d5ec44b31abdd704a36b8a79ae0ebddb1cd9ecefc3ef965e6156071b045"
+  },
+  "documents/three-1/runs/aca214614a8e4472a71226a8fe860390/3/stderr.txt": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "documents/three-1/runs/aca214614a8e4472a71226a8fe860390/3/stdout.txt": {
+    "bytes": 6071,
+    "sha256": "ff45af2cea83d126167352101daba2372e2a2779a1732e252aa6465dca3709df"
+  },
+  "documents/three-1/runs/aca214614a8e4472a71226a8fe860390/3/stream.jsonl": {
+    "bytes": 17226,
+    "sha256": "50e10c20d02253e36e43ba778d3a7f3ead30e9abcfa4acbee411fff5933ecd7d"
+  },
+  "documents/three-1/runs/aca214614a8e4472a71226a8fe860390/3/usage.json": {
+    "bytes": 919,
+    "sha256": "ba2f0b9d96f8e0eabad8ee172b1d74c0658ade39ffd36b900974798c67d972f7"
+  },
+  "documents/three-1/runs/aca214614a8e4472a71226a8fe860390/extraction-checkpoint.json": {
+    "bytes": 15029,
+    "sha256": "7b95562be153149f1593983bdf05ee2735b84b25a2da8b90dd740dd3017e0817"
+  },
+  "documents/three-1/runs/aca214614a8e4472a71226a8fe860390/extraction-coverage.json": {
+    "bytes": 5859,
+    "sha256": "263908f73ad8b2d5901b9d90aaa6c266cee9b165424ba81d486cb549710a1740"
+  },
+  "documents/three-1/runs/aca214614a8e4472a71226a8fe860390/extraction-progress.json": {
+    "bytes": 257,
+    "sha256": "108f23893f5de693385175575958cb23f4cdcf9eea01690cb45264c3a875fde0"
+  },
+  "documents/three-1/runs/aca214614a8e4472a71226a8fe860390/extraction-timing.json": {
+    "bytes": 3244,
+    "sha256": "dc67ac23d6d375710f66ed08c03db7cb8259154aa7e0cb94010479b040f621fc"
+  },
+  "documents/three-1/state.sqlite3": {
+    "bytes": 221184,
+    "sha256": "db00d7a11c87f9ffe0c257f924b8fd6b704bc85aa788eb46eccfd626660bac3d"
+  },
+  "environment.json": {
+    "bytes": 8333,
+    "sha256": "c77365f2e3a3ceffe70572c6a97846b4d165e0299f7657108ef48ba4d6fc85aa"
+  },
+  "finalization.json": {
+    "bytes": 22,
+    "sha256": "cc1918dcd79b1d8d4b3e969c40557118a9eea0205fe9402f38b2355d6687fe48"
+  },
+  "fixtures/eight.json": {
+    "bytes": 173042,
+    "sha256": "73fd89145aa09936bace1d57d7f4588b83d159f6417e0887d7f57d022a336f2d"
+  },
+  "fixtures/four.json": {
+    "bytes": 87521,
+    "sha256": "da50e124cad12e301304da5836ce279a0e5395d2e1499e73fdfc4be1c4389759"
+  },
+  "fixtures/manifest.json": {
+    "bytes": 743,
+    "sha256": "3b0ccf2578daaeb91e4dfc0345feda0edb9b7f1f179157ede807dbc513e4a49b"
+  },
+  "fixtures/short.json": {
+    "bytes": 6289,
+    "sha256": "5eee5a117aebb414ff1115a6853c535c97ccdcf0945940bb0a891e9ef4bda94e"
+  },
+  "fixtures/three.json": {
+    "bytes": 66167,
+    "sha256": "d536e64161fe4961cc577d3a53b1c91c3a659a06d50fd8ea4775389e2267d545"
+  },
+  "implementation/docs/extraction-fidelity-candidate-contract.md": {
+    "bytes": 4947,
+    "sha256": "3276b62e5a88c3b8f3b0152c86c26f2fe0120e457ff14f0c1e538ece81c040a2"
+  },
+  "implementation/scripts/evaluate_extraction_fidelity.py": {
+    "bytes": 1246,
+    "sha256": "e9898ec209a1ca773142394ac159d76278ecf119bf698f6af15d1c978a138d0d"
+  },
+  "implementation/verinote/__init__.py": {
+    "bytes": 78,
+    "sha256": "c206293ad1b7846e7b29b55763f8534c45b6c34716b100a929733cecbc5ba126"
+  },
+  "implementation/verinote/__main__.py": {
+    "bytes": 33,
+    "sha256": "ddd60a1df996b2b744c45953165711e5afe2711f5f0249f4e98875e1342411df"
+  },
+  "implementation/verinote/agents.py": {
+    "bytes": 24792,
+    "sha256": "6fbbb6fa031074f39f3dba3bf2079766f6104a8bca33ec8a4a83b7c4c58432f3"
+  },
+  "implementation/verinote/assistant.py": {
+    "bytes": 35110,
+    "sha256": "cf3164bb6f642e4576e4509dcb164a70dd59be54b2f56a1145c3a1f3e58aaf4e"
+  },
+  "implementation/verinote/call_validation.py": {
+    "bytes": 1129,
+    "sha256": "90c1b60f5b61872815ad999f926b0206be1b60b4d4cd71464a538e4a3bf69124"
+  },
+  "implementation/verinote/claude_worker.py": {
+    "bytes": 14750,
+    "sha256": "af3c2cb28aac26bdd26bd0ecca9b2b2b01dc6299423ce278dcd2678a055d5c58"
+  },
+  "implementation/verinote/cli_timing.py": {
+    "bytes": 12669,
+    "sha256": "4f4dd29b3116fe98f41b6c2ba520bdcb79ccbdaa09ecb90cac253b8bbf80dfe3"
+  },
+  "implementation/verinote/config.py": {
+    "bytes": 8578,
+    "sha256": "56dd668b17cf7afc40953695d378bca7b96b5c29493e41e2f13fabe2304dc429"
+  },
+  "implementation/verinote/diagnostics/__init__.py": {
+    "bytes": 81,
+    "sha256": "67e010369f257f74cc035fdc2e358500c7771736786b07543ed1316b4b68c092"
+  },
+  "implementation/verinote/diagnostics/extraction_criteria_review.py": {
+    "bytes": 21855,
+    "sha256": "21c0be22e29144034ccaaa57c2f8432067549e44f0a1595c9f7bb1e1a6051b3a"
+  },
+  "implementation/verinote/diagnostics/extraction_fidelity.py": {
+    "bytes": 16333,
+    "sha256": "7426c670350b1726f9cc694e289d07a550090568e563fdbce61c97172bb5aa0b"
+  },
+  "implementation/verinote/diagnostics/extraction_fidelity_artifacts.py": {
+    "bytes": 19402,
+    "sha256": "4bc4460441f10c7b991c55ebbf7c793f26e8723260ef854176f9f0d8622b91a4"
+  },
+  "implementation/verinote/diagnostics/extraction_fidelity_candidate.py": {
+    "bytes": 3566,
+    "sha256": "7280c29ac78b0a83ed0eeda18885605ce96a4105bfb83e9550ad5bece19f89c2"
+  },
+  "implementation/verinote/diagnostics/extraction_fidelity_trial.py": {
+    "bytes": 17072,
+    "sha256": "38d58f08c000b7e11d53bb86400af3e19de7743960d688fc313c60cdb3a14ccf"
+  },
+  "implementation/verinote/diagnostics/product_fitness_v1.py": {
+    "bytes": 47876,
+    "sha256": "6180e4b2e7e707e7e699468d9e895f2595a073e71124e4988ec4b111f8afa881"
+  },
+  "implementation/verinote/dictionary_exclusions.py": {
+    "bytes": 10261,
+    "sha256": "5e565ecf6d2f331472f612972ec21bffa17db48bff9be9fbafacbeb201d583f7"
+  },
+  "implementation/verinote/dictionary_filter.py": {
+    "bytes": 8891,
+    "sha256": "756242dab5c87706a81e0b3480c4fca16ca12258124cf2d47a7bdb91eb76c3c5"
+  },
+  "implementation/verinote/dictionary_pipeline.py": {
+    "bytes": 13160,
+    "sha256": "b550c420899c6a92b1264a0946e165e3e152bc29180169f882a7f47753c08bcd"
+  },
+  "implementation/verinote/dictionary_reconciliation.py": {
+    "bytes": 15155,
+    "sha256": "6a724193b5cb65b1208dce9f2cee1eff56ed0e9cf5976e2cedc5d12c3901f2f4"
+  },
+  "implementation/verinote/dictionary_type_warnings.py": {
+    "bytes": 4068,
+    "sha256": "fc81d870aac82a66795e3aa1cdb422053033b7ff5de6eddba428864cbf859733"
+  },
+  "implementation/verinote/documents.py": {
+    "bytes": 4052,
+    "sha256": "d4f4e7bbdc1751f0a2771ed69aba236f255fd4431c9ebc913d8c9ee286b9b3dd"
+  },
+  "implementation/verinote/engine.py": {
+    "bytes": 9034,
+    "sha256": "25d2a7460387df65afe331c950e68a8be95e22d7c814bb137303bcf3588805d4"
+  },
+  "implementation/verinote/entity_identity.py": {
+    "bytes": 8950,
+    "sha256": "f57b9f27db383154a549e6adc2f659ab981c874e39e2a94ff7dedbf0342f0df0"
+  },
+  "implementation/verinote/extraction_ab.py": {
+    "bytes": 15636,
+    "sha256": "9ac6672c4e2c18c8d295d9c783d39440f53efa3697ac11c66d046c6e2ba197ef"
+  },
+  "implementation/verinote/extraction_ab_runner.py": {
+    "bytes": 20214,
+    "sha256": "d2ef1d6f2ba8c9b2302507dd994fd899efe5672377b2bb8c390b1355b0aa7bc3"
+  },
+  "implementation/verinote/extraction_benchmark.py": {
+    "bytes": 39178,
+    "sha256": "25be452e5814fd0b59f8f5603bd5760b5143d2d50047c11e38193ae34d151e42"
+  },
+  "implementation/verinote/extraction_checkpoint.py": {
+    "bytes": 6773,
+    "sha256": "e681e43cbc38ad9dbd4a63b196f8b546d5a90d7eb79cfce7af070b1977936df2"
+  },
+  "implementation/verinote/extraction_coverage.py": {
+    "bytes": 13043,
+    "sha256": "607fc39ee3b4fbb548f3e500e76ce5e46ecdc078e5728d4721bae48005ff3675"
+  },
+  "implementation/verinote/extraction_diagnostics.py": {
+    "bytes": 6485,
+    "sha256": "058d43c8b4c9b6bb9fae7d3440e80d63d59c35d701bbaeea0e6d92cd7879147e"
+  },
+  "implementation/verinote/extraction_evaluation.py": {
+    "bytes": 17117,
+    "sha256": "6d80470bdd6a4b531aa95dc2afab14a8d89e457416d98c3072a489d25b090a57"
+  },
+  "implementation/verinote/extraction_ollama_benchmark.py": {
+    "bytes": 38655,
+    "sha256": "1cb9cb6f0ab47969ea4f6b8865bf628fe963e3006c738e343b7ea95cb9ae9e61"
+  },
+  "implementation/verinote/extraction_options.py": {
+    "bytes": 3384,
+    "sha256": "b2e32ae0fc0df6a1747004621418528e9204f8a28f2bd2ded2bc205bee37aab9"
+  },
+  "implementation/verinote/extraction_scheduler.py": {
+    "bytes": 4541,
+    "sha256": "25b1d48adbf67992be42e6d87750352d0982c85e45032f6b35f70f1a6597ac33"
+  },
+  "implementation/verinote/extraction_threshold_ab.py": {
+    "bytes": 14360,
+    "sha256": "d61cbe31097184c12b3f00acd8b5f6d8654d12743b48b55a64320556ead8601f"
+  },
+  "implementation/verinote/extraction_threshold_ab_runner.py": {
+    "bytes": 25392,
+    "sha256": "06b36bcd2ab06352e387e9a314373856562f67714268d2730e763ad92e4b5c9d"
+  },
+  "implementation/verinote/extraction_threshold_artifacts.py": {
+    "bytes": 7693,
+    "sha256": "1b5d1c2502f670f721751b01ae26362a0f7728bc9a5e00fe0e2b0bcdad5fd952"
+  },
+  "implementation/verinote/extraction_threshold_evaluation.py": {
+    "bytes": 8473,
+    "sha256": "5ad13c0bb24b2f93667bfe409323d50029b1659d9043adb7fe9a1ff4e9f4772f"
+  },
+  "implementation/verinote/extraction_timing.py": {
+    "bytes": 21853,
+    "sha256": "d7f8c79cd18a12840456659c306f68f741588203bcc61baf932a70cc6d7d2d51"
+  },
+  "implementation/verinote/extraction_transport.py": {
+    "bytes": 6568,
+    "sha256": "ea286a620f3f14b2ae8b2f85d6447acdb16bde8abe3efb73def8e4e058b5059d"
+  },
+  "implementation/verinote/http_records.py": {
+    "bytes": 10852,
+    "sha256": "419dea74ffc6de327f0033ea764b78de553cdf8e99e4b944a343955945c057ce"
+  },
+  "implementation/verinote/job_transport.py": {
+    "bytes": 2675,
+    "sha256": "1d51a03104feed93e34f18234b51d508c73233012bbbb832f4c8514c677b9265"
+  },
+  "implementation/verinote/model_catalog.py": {
+    "bytes": 13960,
+    "sha256": "b1f549bcf468382d2eb14b6c0101bf0ee3bac5b12d0d13c34b3c5408734d69c7"
+  },
+  "implementation/verinote/ollama.py": {
+    "bytes": 10609,
+    "sha256": "f598420e901b9f535c45d275181b0247b6a43543fba804eefabefe0ce1addf2b"
+  },
+  "implementation/verinote/ollama_fidelity.py": {
+    "bytes": 7571,
+    "sha256": "4876af97135e4fa3d227841badd14eaac3457831c181032e6835ddb2bc888906"
+  },
+  "implementation/verinote/ollama_fidelity_evaluation.py": {
+    "bytes": 35460,
+    "sha256": "920d1ad46ad994459cc35eb05895e0ac2d168e45dfde964748c33ef743665e16"
+  },
+  "implementation/verinote/ontology.py": {
+    "bytes": 29243,
+    "sha256": "4da5dd8c996752c04a4d00c28fc1f1bb1a22cb3940ddd8976e43f32b2f42da78"
+  },
+  "implementation/verinote/openrouter.py": {
+    "bytes": 16462,
+    "sha256": "8cd16bb5f1420ca19dcfdffc19478689a8eaeb5364e8106a56996427f947c18f"
+  },
+  "implementation/verinote/progress.py": {
+    "bytes": 5471,
+    "sha256": "900593508c2fcd13c2bc0bd922eec1e15dd714611858e713e3365590380aca45"
+  },
+  "implementation/verinote/question_context.py": {
+    "bytes": 20025,
+    "sha256": "43349b5d835205222843a6d6e14f1cc723ed9978d2f129fc48f4cdd9e39ca22b"
+  },
+  "implementation/verinote/question_meanings.py": {
+    "bytes": 4360,
+    "sha256": "151f02a9baba6c8f0fc0afb872bfa65f4f7dbd8899c402a2ba2082a4c7376470"
+  },
+  "implementation/verinote/reasoning_diagnostics.py": {
+    "bytes": 1845,
+    "sha256": "30d06abef62e6e3d9a6bd6dd4cdbb974a7cc08d60f42383802a583a710be33c3"
+  },
+  "implementation/verinote/server.py": {
+    "bytes": 18163,
+    "sha256": "a9ca756fdbef7b882779233336ccf050c678f9f81215fb601319ad2fa455cc7d"
+  },
+  "implementation/verinote/service.py": {
+    "bytes": 33880,
+    "sha256": "2ee67bad858c7ae6ea34aac8de868847a1eae4cb1d40334ee8c418b541fbab7d"
+  },
+  "implementation/verinote/store.py": {
+    "bytes": 38365,
+    "sha256": "064720b931aea6a544193bbbf22a6ba35144bed258cf130c435ddb033bd1fa06"
+  },
+  "implementation/verinote/transports.py": {
+    "bytes": 6469,
+    "sha256": "932f8231cb8f258e99aed3551b6167d063a5175b16e9567411f11b05760bd8b4"
+  },
+  "implementation/verinote/usage.py": {
+    "bytes": 27150,
+    "sha256": "0ad9f7c6c6f785bf1a3a593c3e3dab652aa1d74912be97a264a172c6de54ee0d"
+  },
+  "limits.json": {
+    "bytes": 104,
+    "sha256": "1fac951d209636124e12a2939229a36eb7e283b2ee10941af16fc8a2b1ab1072"
+  },
+  "plan.json": {
+    "bytes": 808,
+    "sha256": "27d2a05b662c06d483ba4a97b5777d347a46580155ad1cabc9e19a0f58081443"
+  },
+  "prompts.json": {
+    "bytes": 8025,
+    "sha256": "a5368c2c3115738ff47c483224a981cca7ac68cfd2f6755c7819afe97a169cf8"
+  },
+  "report.json": {
+    "bytes": 29636,
+    "sha256": "46535d5e0b06536a6c1d066ad802ebba759e413c29b49ee880b1e4625d79dfca"
+  }
+}
