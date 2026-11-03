@@ -17,9 +17,9 @@
     "scope": "Current diagnostic, not authenticated by the historical capture",
     "source_hashes": {
       "verinote/diagnostics/__init__.py": "67e010369f257f74cc035fdc2e358500c7771736786b07543ed1316b4b68c092",
-      "verinote/diagnostics/extraction_fidelity.py": "7426c670350b1726f9cc694e289d07a550090568e563fdbce61c97172bb5aa0b",
+      "verinote/diagnostics/extraction_fidelity.py": "1f09cc621575b31f44d56c448f9cd4862ee9641e9b1aea7bd026fe0fb5d6eda1",
       "scripts/diagnose_extraction_fidelity.py": "e9853167380edb08b353087040569234c0c0c8b98bca98128d0826273209b039",
-      "docs/extraction-fidelity-diagnosis.md": "24e8af39bf248d883b882c2d1b156fba67ad7dd2261278ea7ea088feba9bcb89"
+      "docs/extraction-fidelity-diagnosis.md": "baa18bff3dd354f050cac6b2dfb4d0cb58be2b26361e53db79333d309b272d9b"
     }
   },
   "historical_authentication": {
@@ -34,7 +34,7 @@
     "scripts/verify_product_fitness_v1.py": "27b378c3b3fc6c469a59964966348bea6b6284f0ac67858abc0907fe8c27a9d8",
     "tests/test_product_fitness_v1.py": "d0cf46618dbc65bce2a67aafd600a132f2219c0c828d8e226d42898688c4989e",
     "tests/test_product_fitness_v1_authored.py": "57b6f28dda62027b9533677a238c123c14dee3123eba83bce6c71bb5241aab58",
-    "tests/test_product_fitness_v1_report.py": "eeb3222b2902268114a0a68419b2d3d56bd39b0a5dd54702b5d6ec1d30dccaa5"
+    "tests/test_product_fitness_v1_report.py": "41cd0666f86823630ffbfbf2692816667c5d3704d0f5d5f7180a5c18bb4b1c87"
   },
   "fixtures": {
     "short": {

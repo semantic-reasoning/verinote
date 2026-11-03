@@ -7,14 +7,13 @@ import json
 import re
 import tempfile
 import unittest
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from unittest.mock import patch
 
 from scripts.verify_product_fitness_v1 import main
 from verinote.diagnostics import extraction_fidelity as efid
 from verinote.diagnostics import product_fitness_v1 as pf
 from verinote.diagnostics.extraction_fidelity import (
-    DEFAULT_ROOT,
     REPORT_SHA256,
     diagnose,
 )
@@ -307,7 +306,7 @@ class ProductFitnessReport(unittest.TestCase):
                              ['benchmarks/extraction/criteria/product-fitness-v1/spec.json', 'verinote/diagnostics/product_fitness_v1.py',
                               'scripts/verify_product_fitness_v1.py', 'tests/test_product_fitness_v1.py'])
 
-    def test_19_every_imported_verinote_file_is_hashed_or_authenticated(self):
+    def test_19_import_closure_without_top_level_verinote_modules_is_in_the_report_or_diagnostic_hash_maps(self):
         # Static import closure of the module (lazy imports included), plus each package __init__.
         seen, todo = set(), [pf.REPO/'verinote/diagnostics/product_fitness_v1.py']
         while todo:
@@ -320,15 +319,18 @@ class ProductFitnessReport(unittest.TestCase):
         self.assertIn('verinote/documents.py', imported)
         # config.py enters the closure through a function-level import in transports.py.
         self.assertIn('verinote/config.py', imported)
-        environment = set(json.loads((DEFAULT_ROOT/'report.json').read_text(encoding='utf-8'))['environment']['source_hashes'])
+        top = {p for p in imported if PurePosixPath(p).parent == PurePosixPath('verinote')}
         diagnostic = set(self.report['diagnostic_implementation']['source_hashes'])
         hashed = set(self.report['source_hashes'])
-        self.assertEqual(sorted(imported - environment - diagnostic - hashed), [])
+        self.assertEqual(sorted(imported - top - diagnostic - hashed), [])
+
+    def test_19_verify_proposal_result_equals_the_report_with_extraction_fidelity_hash_forged_for_checkout_files_directly_under_verinote(self):
         real = efid._hash
-        def forged(path): return '0'*64 if Path(path).as_posix().endswith('verinote/documents.py') else real(path)
-        with patch.object(efid, '_hash', side_effect=forged), \
-             self.assertRaisesRegex(efid.ArtifactVerificationError, 'current_implementation_mismatch:verinote/documents.py'):
-            pf.verify_proposal()
+        def forged(path): return '0'*64 if Path(path).parent == pf.REPO/'verinote' else real(path)
+        with patch.object(efid, '_hash', side_effect=forged):
+            self.assertEqual(pf.verify_proposal(), self.report)
+
+    def test_19_registry_with_a_changed_short_case_sha_raises_product_fitness_registry_case_identity(self):
         with tempfile.TemporaryDirectory() as root:
             registry = json.loads((pf.CRITERIA_ROOT/'registry.json').read_text(encoding='utf-8'))
             registry['cases']['short']['case_sha256'] = '0'*64

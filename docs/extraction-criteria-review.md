@@ -46,8 +46,10 @@
 검토 도구 커밋 `f1dc31ed196e8be10fbac56c7215ab2e8c2843a7`, 구현 전 기준 revision `eafa841de6980dd08f2cf11a1413688038ab9fe2`다. 아티팩트는 도구/대조 정의와 실제 점검한 제품·평가기의 hash를 과거 실행 인증과 분리해 기록한다. 과거 report SHA256은 `72a63ca70e3cfdc9bd9a771999a65ed537bb584d5c8aacfe054c2e4ece981a5f`다. `review_base_revision`은 검토 도구의 새 commit을 인증하는 필드가 아니며, 새 구현은 별도 source hash와 위 commit으로 식별한다.
 
 ```sh
-PYTHONPATH=. .venv/bin/python scripts/review_extraction_criteria.py > /tmp/criteria-review.json
-cmp /tmp/criteria-review.json benchmarks/extraction/results/785-criteria-review/review.json
+R=$(git rev-parse --show-toplevel); D=$(mktemp -d)
+git -C "$R" archive 9b808a54173fd81c751f16d20f27bb262fb5ae5d | tar -x -C "$D"
+(cd "$D" && PYTHONPATH=. "$R/.venv/bin/python" scripts/review_extraction_criteria.py) > /tmp/criteria-review.json
+cmp /tmp/criteria-review.json "$R/benchmarks/extraction/results/785-criteria-review/review.json"
 ```
 
-같은 고정 코드·자료에서 JSON이 바이트 단위로 재생성된다. HTTP/subprocess를 차단하고 SQLite를 읽기 전용으로 제한한 재생성도 같으며, 기존 91개 원본 파일의 해시는 전후 동일하다. 추가 생성 요청은 0회다. 필요한 증거가 원본과 결정적 대조에서 확보되어 Claude 보조 호출은 사용하지 않았다.
+위 사본에서 JSON이 바이트 단위로 재생성된다. #792 수정이 `diagnose()` 출력과 `tests/test_extraction_criteria_review.py`를 바꿨으므로 HEAD에서는 재생성되지 않는다. HTTP/subprocess를 차단하고 SQLite를 읽기 전용으로 제한한 재생성도 같으며, 기존 91개 원본 파일의 해시는 전후 동일하다. 추가 생성 요청은 0회다. 필요한 증거가 원본과 결정적 대조에서 확보되어 Claude 보조 호출은 사용하지 않았다.

@@ -140,6 +140,6 @@ class CriteriaReview(unittest.TestCase):
             path = criteria.REPO/source['path']
             self.assertEqual(_hash(path), source['sha256'])
             self.assertEqual('\n'.join(path.read_text().splitlines()[source['line_start']-1:source['line_end']]), source['excerpt'])
-        historical = first['historical_authentication']['current_source_hashes']
+        historical = first['historical_authentication']['recorded_source_hashes']
         self.assertTrue(all(path not in historical for path in criteria.REVIEW_PATHS))
         self.assertEqual(set(first['review_implementation']['source_hashes']), set(criteria.REVIEW_PATHS))
