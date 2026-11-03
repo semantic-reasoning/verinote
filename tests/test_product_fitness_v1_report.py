@@ -21,6 +21,7 @@ from verinote.extraction_ab_runner import _hash
 from verinote.store import digest
 
 DOC_PATH = pf.REPO/'docs/extraction-product-fitness-v1.md'
+AUTHORED_TEST_PATH = pf.REPO/'tests/test_product_fitness_v1_authored.py'
 QUOTED = r'`([A-Za-z_@][\w.@-]*)=([^`]+)`'
 CATEGORIES = ('product_evidence', 'unresolved', 'representation_sensitive')
 # Counter words that may not follow a number in the doc, written as regex escapes.
@@ -116,12 +117,29 @@ def json_keys(value):
         for item in value: yield from json_keys(item)
 
 
+def json_leaves(value):
+    if isinstance(value, dict):
+        for item in value.values(): yield from json_leaves(item)
+    elif isinstance(value, list):
+        for item in value: yield from json_leaves(item)
+    else: yield value
+
+
+def doc_sentences(doc):
+    """Each line split after a period that is followed by whitespace and lies outside backtick code spans."""
+    for line in doc.splitlines():
+        masked = re.sub(r'`[^`]*`', lambda m: '`'*len(m.group()), line)
+        cuts = [0]+[m.end() for m in re.finditer(r'\.\s+', masked)]+[len(line)]
+        yield from (line[a:b] for a, b in zip(cuts, cuts[1:], strict=False) if line[a:b].strip())
+
+
 class ProductFitnessReport(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.spec = pf.load_spec(); cls.registry = pf.load_registry(); cls.diagnosis = diagnose()
         cls.report = pf.verify_proposal(); cls.mapping = cls.report['historical_mapping']
         cls.errors = cls.diagnosis['finite_gold']['annotation_errors']
+        cls.obligation_ids = sorted({o['id'] for entry in cls.registry['cases'].values() for row in entry['chunks'] for o in row['obligations']})
 
     def test_18_historical_errors_map_once_to_unique_causes(self):
         review = json.loads(pf.REVIEW_PATH.read_text(encoding='utf-8'))['criteria_review']['errors']
@@ -351,8 +369,11 @@ class ProductFitnessReport(unittest.TestCase):
                 else: expected = rendered(lookup(report, path))
                 self.assertEqual(value, expected)
         self.assertIn(('@report_sha256', report_sha), quoted)
-        # Rules for text outside verified spans are the assertions below, COUNTER_WORDS and EXEMPTIONS.
-        # Undetected forms include, for example, counts written as Korean number words.
+        # This test's rules for text outside verified spans are the assertions below, COUNTER_WORDS and EXEMPTIONS.
+        # Forms the product-fitness tests leave undetected include, for example, counts written as Korean number words,
+        # a verified span next to a subject it does not describe, a policy-table description swapped with another's, a
+        # hash-location sentence written without the word hash or its Korean form, and a hash-location sentence whose
+        # hash word appears inside a code span and not outside one.
         rest = re.sub(QUOTED, ' ', doc)
         self.assertEqual(re.findall(r'(?<![A-Za-z0-9_:.#-])\d+(?=[\uac00-\ud7a3])', rest), [])
         self.assertEqual(re.findall(r'\d+(?=\s*(?:'+COUNTER_WORDS+'))', rest), [])
@@ -409,10 +430,17 @@ class ProductFitnessReport(unittest.TestCase):
                 self.assertEqual(re.findall(r'error-\d+', row[1]), [m['id'] for m in moved])
                 categories = {c for c in CATEGORIES if f'`{c}`' in row[1]}
                 self.assertEqual(categories, {c for m in moved for c in m['categories']})
-                # The span path carries each cause's direction; the prose verb before it must agree.
+                # Enforced in each sensitivity row: cause ids appear only inside spans whose path names a moved-cause
+                # direction; the text before each cause span holds a direction verb of that direction; the first span
+                # after each direction verb in its cell is a cause span of that direction; each chunk id outside spans
+                # equals the chunk of the next cause span in its cell; each registry obligation id outside spans, after
+                # the first cell, is the target of a cause this row's moved errors add or remove. Undetected forms
+                # include, for example, a negated verb, a span whose verb is borrowed from an earlier clause, a cause
+                # paraphrased in Korean, and a swapped alternative name in the first cell.
                 self.assertEqual(re.findall(r'c\d+:[\w:-]+', re.sub(QUOTED, ' ', text)), [])
-                for cell in row:
-                    last = 0
+                targets = {c.split(':')[1] for m in moved for c in m['causes_added']+m['causes_removed']}
+                for position, cell in enumerate(row):
+                    spans, last = [], 0
                     for match in re.finditer(QUOTED, cell):
                         span_path, value = match.groups()
                         if re.match(r'c\d+:', value) or 'causes' in span_path:
@@ -420,8 +448,55 @@ class ProductFitnessReport(unittest.TestCase):
                             self.assertTrue(direction, span_path)
                             verbs = {name for name, verb in DIRECTION_VERBS.items() if re.search(verb, cell[last:match.start()])}
                             self.assertEqual(verbs, {direction.group(1)}, span_path)
+                            spans.append((match.start(), direction.group(1), value))
+                        else: spans.append((match.start(), None, value))
                         last = match.end()
+                    outside = re.sub(QUOTED, lambda m: ' '*len(m.group()), cell)
+                    for name, verb in DIRECTION_VERBS.items():
+                        for found in re.finditer(verb, outside):
+                            following = next((s for s in spans if s[0] > found.start()), None)
+                            self.assertEqual(following and following[1], name, cell)
+                    for found in re.finditer(r'(?<![A-Za-z0-9_])c\d+(?![A-Za-z0-9_])', outside):
+                        following = next((s for s in spans if s[0] > found.start() and s[1]), None)
+                        self.assertEqual(following and following[2].split(':')[0], found.group(), cell)
+                    if position:
+                        for obligation in re.findall(r'(?<![A-Za-z0-9_])('+'|'.join(map(re.escape, self.obligation_ids))+r')(?![A-Za-z0-9_])', outside):
+                            self.assertIn(obligation, targets, cell)
         self.assertEqual(sorted(indices), [i for i, r in enumerate(report['sensitivity']) if r['executable']])
+
+    def test_20_doc_sentences_with_a_hash_word_outside_code_spans_backtick_no_top_level_report_key_whose_value_lacks_the_extraction_fidelity_hash(self):
+        doc = DOC_PATH.read_text(encoding='utf-8')
+        report = json.loads(pf.REPORT_PATH.read_bytes())
+        target = _hash(pf.REPO/'verinote/diagnostics/extraction_fidelity.py')
+        holders = {key for key, value in report.items() if target in set(json_leaves(value))}
+        self.assertTrue(holders)
+        sentences = 0
+        for sentence in doc_sentences(doc):
+            if not re.search(r'(?i)hash|\ud574\uc2dc', re.sub(r'`[^`]*`', ' ', sentence)): continue
+            sentences += 1
+            for name in re.findall(r'`([^`]*)`', sentence):
+                if name in report: self.assertIn(name, holders, sentence)
+        self.assertGreater(sentences, 0)
+
+    def test_20_doc_backticked_authored_test_functions_equal_the_test_16_calls_feeding_unknown_tokens(self):
+        doc = DOC_PATH.read_text(encoding='utf-8')
+        tree = ast.parse(AUTHORED_TEST_PATH.read_text(encoding='utf-8'))
+        functions = {node.name for node in tree.body if isinstance(node, ast.FunctionDef)}
+        test = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name.startswith('test_16_'))
+        assigned = {target.id: node.value for node in ast.walk(test) if isinstance(node, ast.Assign)
+                    for target in node.targets if isinstance(target, ast.Name)}
+        def called(expression):
+            return {node.func.id for node in ast.walk(expression)
+                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in functions}
+        fed = set()
+        for node in ast.walk(test):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'unknown_tokens':
+                argument = node.args[0]; fed |= called(argument)
+                for name in ast.walk(argument):
+                    if isinstance(name, ast.Name) and name.id in assigned: fed |= called(assigned[name.id])
+        named = {name for name in re.findall(r'`([^`]*)`', doc) if name in functions}
+        self.assertTrue(fed)
+        self.assertEqual(named, fed)
 
 
 if __name__ == '__main__': unittest.main()
