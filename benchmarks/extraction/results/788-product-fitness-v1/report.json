@@ -30,7 +30,7 @@
     "benchmarks/extraction/criteria/product-fitness-v1/authored-pf1.json": "6ddee7d0d6a28fef14d2dc62818dfb188850be3aaa6e56e0f26d7d6568a087d4",
     "benchmarks/extraction/criteria/product-fitness-v1/registry.json": "0dd3acbd1e4acb057d3c7b0421990ee89f6ad76a94ff5c3bfcf96f081467c0a2",
     "benchmarks/extraction/criteria/product-fitness-v1/spec.json": "72cb043cb36d7df703e50cdb8cc514ab8f00bb04f6afa1515ba5f083a0863e2d",
-    "verinote/diagnostics/product_fitness_v1.py": "6180e4b2e7e707e7e699468d9e895f2595a073e71124e4988ec4b111f8afa881",
+    "verinote/diagnostics/product_fitness_v1.py": "631adef961150e5dd4451ba29ba79e90d66180358e32d88d53772376f978dbb4",
     "scripts/verify_product_fitness_v1.py": "27b378c3b3fc6c469a59964966348bea6b6284f0ac67858abc0907fe8c27a9d8",
     "tests/test_product_fitness_v1.py": "8022edbdf4bb4852b4e81d27f5e5c8a2bc0d9b85ab0ccae9de38449b435c6917",
     "tests/test_product_fitness_v1_authored.py": "57b6f28dda62027b9533677a238c123c14dee3123eba83bce6c71bb5241aab58",
