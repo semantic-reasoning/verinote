@@ -1,12 +1,13 @@
 """Durable v2 threshold experiment. Only run_experiment may invoke a model."""
 import copy
+import fnmatch
 import math
 import platform
 import re
 import shutil
 import sqlite3
 from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .agents import CLI
 from .extraction_ab import _identity, _known
@@ -36,6 +37,11 @@ from .usage import atomic_json
 
 CASES = ('short', 'three', 'four', 'eight')
 CONTRACT_PATH = 'docs/extraction-chunk-threshold-ab-contract.md'
+# capture_environment records a hash for each file MODULE_GLOB matches and for each FIXED_SOURCE_PATHS entry;
+# verify_manifest and run_experiment read the same constants.
+MODULE_GLOB = 'verinote/*.py'
+FIXED_SOURCE_PATHS = ('scripts/benchmark_extraction_threshold_ab.py', CONTRACT_PATH,
+                      'docs/extraction-threshold-fixture-review.md', 'docs/extraction-threshold-decision.md')
 COLD_BOUNDARY = 'before_store_and_owner_through_raw_quality_safety_evaluation_and_owner_close'
 
 
@@ -87,9 +93,7 @@ def capture_environment(model, *, synthetic=False):
         raise ValueError('real experiment requires a clean checkout')
     spec = ExtractionSpec.capture(CLI(timeout=90, persistent=False), model, 1)
     prompt, repair = extraction_prompts(2)
-    source_paths = sorted([*repo.glob('verinote/*.py'), repo/'scripts/benchmark_extraction_threshold_ab.py',
-                           repo/CONTRACT_PATH, repo/'docs/extraction-threshold-fixture-review.md',
-                           repo/'docs/extraction-threshold-decision.md'])
+    source_paths = sorted([*repo.glob(MODULE_GLOB), *(repo/p for p in FIXED_SOURCE_PATHS)])
     data = cases()
     environment = {'schema_version': 2, 'synthetic': synthetic, 'requested_model': model,
         'python': platform.python_version(), 'platform': platform.platform(), 'transport': spec.to_dict(),
@@ -128,8 +132,7 @@ def verify_manifest(root, environment, plan, limits):
             or environment.get('plan_sha256') != sha(plan)
             or environment.get('prompt_sha256') != digest(prompt.encode())
             or environment.get('repair_prompt_sha256') != digest(repair.encode())
-            or _read(root/'prompts.json') != {'extraction': prompt, 'repair': repair}
-            or environment.get('contract_sha256') != _hash(Path(__file__).resolve().parents[1]/CONTRACT_PATH)):
+            or _read(root/'prompts.json') != {'extraction': prompt, 'repair': repair}):
         raise ValueError('manifest_contract')
     if not isinstance(environment.get('invocation'), list) or not environment['invocation'] or any(not isinstance(a, str) for a in environment['invocation']):
         raise ValueError('manifest_invocation')
@@ -153,11 +156,10 @@ def verify_manifest(root, environment, plan, limits):
             raise ValueError('manifest_fixture')
     source_hashes = environment['source_hashes']
     if not isinstance(source_hashes, dict) or not source_hashes: raise ValueError('manifest_source')
-    repo = Path(__file__).resolve().parents[1]
-    required = {p.relative_to(repo).as_posix() for p in repo.glob('verinote/*.py')} | {
-        'scripts/benchmark_extraction_threshold_ab.py', CONTRACT_PATH,
-        'docs/extraction-threshold-fixture-review.md', 'docs/extraction-threshold-decision.md'}
-    if set(source_hashes) != required or set(file_index(root/'implementation')) != required:
+    recorded = set(source_hashes); pattern = PurePosixPath(MODULE_GLOB)
+    if (set(file_index(root/'implementation')) != recorded or not set(FIXED_SOURCE_PATHS) <= recorded
+            or any(PurePosixPath(p).parent != pattern.parent or not fnmatch.fnmatchcase(PurePosixPath(p).name, pattern.name)
+                   for p in recorded-set(FIXED_SOURCE_PATHS))):
         raise ValueError('manifest_source_completeness')
     if source_hashes[CONTRACT_PATH] != environment['contract_sha256']: raise ValueError('manifest_contract_linkage')
     for relative, digest_value in source_hashes.items():
@@ -185,6 +187,8 @@ def run_experiment(output, *, model, limits, owner_factory=None, clock=None, inv
     atomic_json(root/'prompts.json', {'extraction': prompt, 'repair': repair})
     atomic_json(root/'plan.json', plan); atomic_json(root/'environment.json', environment); atomic_json(root/'limits.json', vars(limits))
     spec = verify_manifest(root, environment, plan, vars(limits))
+    if {p.relative_to(repo).as_posix() for p in repo.glob(MODULE_GLOB)} != set(environment['source_hashes'])-set(FIXED_SOURCE_PATHS):
+        raise ValueError('manifest_source_completeness')
     budget.ready = True
     if owner_factory is None: owner_factory = ExtractionTransport
     report = {'schema_version': 2, 'plan': plan, 'environment': environment, 'synthetic_responses': synthetic,

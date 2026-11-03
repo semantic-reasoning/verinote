@@ -1,8 +1,11 @@
 """Frozen finite obligations and strict read-only historical authentication."""
 import copy
 import json
+import os
 import shutil
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +14,7 @@ from unittest.mock import patch
 from verinote import extraction_threshold_ab_runner as runner
 from verinote.diagnostics import extraction_fidelity as diagnostic
 from verinote.extraction_ab_runner import file_index
+from verinote.extraction_benchmark import sha
 from verinote.extraction_evaluation import (
     DATA_ROOT,
     evaluate_case,
@@ -182,8 +186,8 @@ class PinnedClaudeReplay(unittest.TestCase):
                  self.assertRaisesRegex(diagnostic.ArtifactVerificationError, '^recorded_implementation_path$'):
                 diagnostic._check_recorded_paths({'source_hashes': {'verinote/documents.py': '0'*64, relative: '0'*64}})
 
-    def test_diagnose_result_equals_its_baseline_with_extraction_fidelity_hash_forged_for_checkout_paths_of_each_non_verinote_recorded_key_verinote_documents_py_and_files_directly_under_verinote(self):
-        baseline = diagnostic.diagnose()
+    def test_diagnose_and_evaluate_saved_results_equal_their_baselines_with_both_modules_hash_forged_for_checkout_paths_of_each_non_verinote_recorded_key_verinote_documents_py_and_files_directly_under_verinote(self):
+        baseline = diagnostic.diagnose(); verified = runner.evaluate_saved(diagnostic.DEFAULT_ROOT)
         top = diagnostic.REPO/'verinote'
         fixed = sorted(p for p in RETAINED_REPORT['environment']['source_hashes'] if not p.startswith('verinote/'))
         targets = [(key, lambda path, key=key: path == diagnostic.REPO/key) for key in fixed]
@@ -194,8 +198,21 @@ class PinnedClaudeReplay(unittest.TestCase):
         for label, forged in targets:
             def altered(path, forged=forged):
                 return '0'*64 if forged(Path(path)) else original_hash(path)
-            with self.subTest(label), patch.object(diagnostic, '_hash', side_effect=altered):
+            with self.subTest(label), patch.object(diagnostic, '_hash', side_effect=altered), \
+                 patch.object(runner, '_hash', side_effect=altered):
                 self.assertEqual(diagnostic.diagnose(), baseline)
+                self.assertEqual(runner.evaluate_saved(diagnostic.DEFAULT_ROOT), verified)
+
+    def test_verify_manifest_raises_manifest_fixture_and_evaluate_saved_returns_inconclusive_with_cases_patched_to_append_a_space_to_the_four_source(self):
+        original_cases = runner.cases
+        def changed():
+            data = original_cases(); data['four'] = data['four'] | {'source': data['four']['source']+' '}
+            return data
+        environment = RETAINED_REPORT['environment']
+        with patch.object(runner, 'cases', side_effect=changed):
+            with self.assertRaisesRegex(ValueError, '^manifest_fixture$'):
+                runner.verify_manifest(diagnostic.DEFAULT_ROOT, environment, RETAINED_REPORT['plan'], RETAINED_REPORT['limits'])
+            self.assertEqual(runner.evaluate_saved(diagnostic.DEFAULT_ROOT)['verdict'], 'inconclusive')
 
     def test_raw_corruption_and_rejected_unverified_prefix_are_not_a_diagnosis(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -268,3 +285,171 @@ class RetainedCopyTampering(unittest.TestCase):
         # diagnose() rejects this edit through its REPORT_SHA256 check; verify_manifest raises nothing
         # and evaluate_saved returns verdict rejected.
         self.assertEqual(self._outcomes(tamper), ('report_identity_mismatch', 'rejected', None))
+
+    @staticmethod
+    def _append(path, data):
+        path.write_bytes(path.read_bytes()+data)
+
+    @staticmethod
+    def _add_copy_and_key(root, key):
+        """Write a retained copy at implementation/<key> and add its hash under key to both JSONs."""
+        retained = root/'implementation'/key; retained.parent.mkdir(parents=True, exist_ok=True)
+        retained.write_text('"""x"""\n', encoding='utf-8'); value = diagnostic._hash(retained)
+        def add(environment):
+            environment['source_hashes'] = dict(sorted({**environment['source_hashes'], key: value}.items()))
+        RetainedCopyTampering._rewrite_environment(root, add)
+
+    def test_service_py_copy_with_one_appended_byte_gives_historical_verification_failed_inconclusive_and_manifest_source_hash(self):
+        self.assertEqual(self._outcomes(lambda root: self._append(root/'implementation/verinote/service.py', b'#')), ('historical_verification_failed', 'inconclusive', (ValueError, 'manifest_source_hash')))
+
+    def test_contract_copy_with_an_appended_newline_gives_historical_verification_failed_inconclusive_and_manifest_source_hash(self):
+        self.assertEqual(self._outcomes(lambda root: self._append(root/'implementation'/runner.CONTRACT_PATH, b'\n')), ('historical_verification_failed', 'inconclusive', (ValueError, 'manifest_source_hash')))
+
+    def test_deleted_service_py_copy_gives_historical_verification_failed_inconclusive_and_manifest_source_completeness(self):
+        self.assertEqual(self._outcomes(lambda root: (root/'implementation/verinote/service.py').unlink()), ('historical_verification_failed', 'inconclusive', (ValueError, 'manifest_source_completeness')))
+
+    def test_added_zz_extra_py_copy_gives_historical_verification_failed_inconclusive_and_manifest_source_completeness(self):
+        self.assertEqual(self._outcomes(lambda root: (root/'implementation/verinote/zz_extra.py').write_text('"""x"""\n', encoding='utf-8')), ('historical_verification_failed', 'inconclusive', (ValueError, 'manifest_source_completeness')))
+
+    def test_report_json_with_an_appended_space_gives_report_identity_mismatch_rejected_and_no_verify_manifest_error(self):
+        self.assertEqual(self._outcomes(lambda root: self._append(root/'report.json', b' ')), ('report_identity_mismatch', 'rejected', None))
+
+    def test_four_json_source_with_its_first_character_changed_and_its_manifest_sha256_updated_gives_historical_verification_failed_inconclusive_and_manifest_dataset(self):
+        def tamper(root):
+            case = json.loads((root/'fixtures/four.json').read_text(encoding='utf-8'))
+            case['source'] = ('X' if case['source'][0] != 'X' else 'Y')+case['source'][1:]
+            (root/'fixtures/four.json').write_text(json.dumps(case, ensure_ascii=False), encoding='utf-8')
+            manifest = json.loads((root/'fixtures/manifest.json').read_text(encoding='utf-8'))
+            next(entry for entry in manifest['cases'] if entry['id'] == 'four')['sha256'] = sha(case)
+            (root/'fixtures/manifest.json').write_text(json.dumps(manifest, ensure_ascii=False), encoding='utf-8')
+        self.assertEqual(self._outcomes(tamper), ('historical_verification_failed', 'inconclusive', (ValueError, 'manifest_dataset')))
+
+    def test_second_call_stdout_with_an_appended_space_gives_historical_verification_failed_inconclusive_and_no_verify_manifest_error(self):
+        self.assertEqual(self._outcomes(lambda root: self._append(next(root.glob('documents/*/runs/*/2/stdout.txt')), b' ')), ('historical_verification_failed', 'inconclusive', None))
+
+    # Accepted loss (#792) in the contract-sentence, deleted-copies and added-zz_extra tests below: verify_manifest
+    # raises nothing for this edit of a retained copy together with both JSONs, and evaluate_saved returns verdict
+    # rejected. diagnose() rejects it through its REPORT_SHA256 check.
+    def test_contract_copy_with_a_sentence_and_both_contract_hashes_updated_in_report_and_environment_json_gives_report_identity_mismatch_rejected_and_no_verify_manifest_error(self):
+        def tamper(root):
+            retained = root/'implementation'/runner.CONTRACT_PATH
+            self._append(retained, '추가 문장.\n'.encode()); value = diagnostic._hash(retained)
+            def change(environment):
+                environment['contract_sha256'] = value; environment['source_hashes'][runner.CONTRACT_PATH] = value
+            self._rewrite_environment(root, change)
+        self.assertEqual(self._outcomes(tamper), ('report_identity_mismatch', 'rejected', None))
+
+    def test_service_py_copy_or_the_verinote_copies_deleted_with_their_keys_from_report_and_environment_json_gives_report_identity_mismatch_rejected_and_no_verify_manifest_error(self):
+        modules = [p for p in RETAINED_REPORT['environment']['source_hashes'] if p.startswith('verinote/')]
+        for label, keys in (('verinote/service.py', ['verinote/service.py']), ('every recorded verinote/ key', modules)):
+            def tamper(root, keys=keys):
+                for key in keys: (root/'implementation'/key).unlink()
+                def change(environment):
+                    for key in keys: del environment['source_hashes'][key]
+                self._rewrite_environment(root, change)
+            with self.subTest(label):
+                self.assertEqual(self._outcomes(tamper), ('report_identity_mismatch', 'rejected', None))
+
+    def test_added_zz_extra_py_copy_and_key_in_report_and_environment_json_gives_report_identity_mismatch_rejected_and_no_verify_manifest_error(self):
+        self.assertEqual(self._outcomes(lambda root: self._add_copy_and_key(root, 'verinote/zz_extra.py')), ('report_identity_mismatch', 'rejected', None))
+
+    def test_each_non_verinote_key_deleted_with_its_copy_from_report_and_environment_json_gives_report_identity_mismatch_inconclusive_and_manifest_source_completeness(self):
+        fixed = [p for p in RETAINED_REPORT['environment']['source_hashes'] if not p.startswith('verinote/')]
+        self.assertEqual(set(fixed), set(runner.FIXED_SOURCE_PATHS))
+        for key in fixed:
+            def tamper(root, key=key):
+                (root/'implementation'/key).unlink()
+                self._rewrite_environment(root, lambda environment: environment['source_hashes'].pop(key))
+            with self.subTest(key):
+                self.assertEqual(self._outcomes(tamper), ('report_identity_mismatch', 'inconclusive', (ValueError, 'manifest_source_completeness')))
+
+    def test_contract_sha256_set_to_ones_in_report_and_environment_json_gives_report_identity_mismatch_inconclusive_and_manifest_contract_linkage(self):
+        self.assertEqual(self._outcomes(lambda root: self._rewrite_environment(root, lambda environment: environment.__setitem__('contract_sha256', '1'*64))), ('report_identity_mismatch', 'inconclusive', (ValueError, 'manifest_contract_linkage')))
+
+    def test_copy_and_key_in_report_and_environment_json_outside_the_module_glob_and_fixed_paths_gives_report_identity_mismatch_inconclusive_and_manifest_source_completeness(self):
+        # Dropping the name match fails verinote/zz.md alone; PurePath.match, which matches from the right, fails
+        # docs/verinote/zz.py alone; dropping the parent match fails scripts/zz.py, verinote/web/zz.py and docs/verinote/zz.py.
+        for key in ('docs/zz.md', 'scripts/zz.py', 'verinote/web/zz.py', 'verinote/zz.md', 'docs/verinote/zz.py'):
+            with self.subTest(key):
+                outcome = self._outcomes(lambda root, key=key: self._add_copy_and_key(root, key))
+                self.assertEqual(outcome, ('report_identity_mismatch', 'inconclusive', (ValueError, 'manifest_source_completeness')))
+
+
+SPY = r"""
+import builtins, fnmatch, io, json, os, os.path
+from pathlib import Path
+
+events, state = [], {'phase': None, 'inside': 0}
+
+def spy(owner, attr, label):
+    original = getattr(owner, attr)
+    def wrapper(*args, **kwargs):
+        if state['phase'] is not None and not state['inside']:
+            events.append((state['phase'], label, args[0] if args else kwargs.get('file', kwargs.get('path', '.'))))
+        return original(*args, **kwargs)
+    setattr(owner, attr, wrapper)
+
+def uncounted(owner, attr):
+    original = getattr(owner, attr)
+    def wrapper(*args, **kwargs):
+        state['inside'] += 1
+        try: return original(*args, **kwargs)
+        finally: state['inside'] -= 1
+    setattr(owner, attr, wrapper)
+
+for attr in ('open', 'scandir', 'listdir', 'stat', 'lstat', 'access', 'readlink'): spy(os, attr, 'os.'+attr)
+spy(io, 'open', 'io.open'); spy(builtins, 'open', 'builtins.open')
+for attr in ('open', 'read_bytes', 'read_text', 'glob', 'rglob', 'iterdir', 'stat', 'lstat', 'exists', 'is_file', 'is_dir', 'is_symlink'):
+    spy(Path, attr, 'Path.'+attr)
+uncounted(os.path, 'realpath'); uncounted(Path, 'resolve')
+
+state['phase'] = 'import'
+from verinote.diagnostics import extraction_fidelity as efid
+from verinote import extraction_threshold_ab_runner as runner
+errors = {}
+for phase, call in (('diagnose', efid.diagnose), ('evaluate_saved', lambda: runner.evaluate_saved(efid.DEFAULT_ROOT))):
+    state['phase'] = phase
+    try: call()
+    except Exception as exc: errors[phase] = repr(exc)
+    finally: state['phase'] = None
+
+from verinote.extraction_evaluation import DATA_ROOT
+repo, root = efid.REPO, efid.DEFAULT_ROOT
+recorded = {repo/p for p in json.loads((root/'report.json').read_text(encoding='utf-8'))['environment']['source_hashes']}
+v2 = Path(os.path.realpath(DATA_ROOT/'v2'))
+allowed = {repo/p for p in efid.DIAGNOSTIC_PATHS} | {v2} | set(v2.glob('*.json'))
+module_dir = repo/'verinote'
+def counted(phase, path):
+    if path == root or root in path.parents: return False
+    if phase == 'import':
+        return path in recorded or path in (repo, module_dir) or (path.parent == module_dir and fnmatch.fnmatchcase(path.name, '*.py'))
+    return path not in allowed
+out = {'import': set(), 'diagnose': set(), 'evaluate_saved': set()}
+for phase, label, arg in events:
+    try: path = Path(os.path.realpath(os.path.abspath(os.fsdecode(arg))))
+    except TypeError: out[phase].add((label, type(arg).__name__)); continue
+    if counted(phase, path): out[phase].add((label, path.relative_to(repo).as_posix() if repo in path.parents or path == repo else str(path)))
+print(json.dumps({'errors': errors, 'counted': {k: sorted(v) for k, v in out.items()}}))
+"""
+
+
+class CheckoutAccess(unittest.TestCase):
+    # It counts calls of the functions patched above made outside realpath and resolve. It does not see other
+    # functions, for example io.open_code, sqlite3 URI opens and importlib's own posix calls, or subprocesses.
+    @classmethod
+    def setUpClass(cls):
+        cls.child = subprocess.run([sys.executable, '-c', SPY], cwd=diagnostic.REPO, env=os.environ | {'PYTHONPATH': str(diagnostic.REPO)},
+                                   capture_output=True, text=True, timeout=300)
+
+    def result(self):
+        self.assertEqual(self.child.returncode, 0, self.child.stderr)
+        result = json.loads(self.child.stdout.splitlines()[-1])
+        self.assertEqual(result['errors'], {})
+        return result['counted']
+
+    def test_fresh_interpreter_spy_counts_no_read_or_stat_of_a_recorded_path_the_repo_root_verinote_or_a_verinote_py_shaped_path_during_import(self):
+        self.assertEqual(self.result()['import'], [])
+
+    def test_fresh_interpreter_spy_counts_no_read_or_stat_of_checkout_paths_outside_the_768_root_and_allowlist_during_diagnose_and_evaluate_saved(self):
+        counted = self.result()
+        self.assertEqual((counted['diagnose'], counted['evaluate_saved']), ([], []))

@@ -63,4 +63,4 @@ PYTHONPATH=. .venv/bin/python scripts/benchmark_extraction_threshold_ab.py evalu
   benchmarks/extraction/results/768-threshold-v2-sonnet
 ```
 
-HTTP와 subprocess를 차단한 offline 재평가가 저장 판정과 완전히 같았고 전후 모든 원본 해시가 같았다. 재평가는 읽기 전용이며 모델을 호출하지 않는다. 실행 코드·fixture·계약이 바뀌면 위 고정 revision에서 재평가해야 한다. rejected의 CLI 종료 코드는 0이며 품질 통과를 뜻하지 않는다.
+HTTP와 subprocess를 차단한 offline 재평가가 저장 판정과 완전히 같았고 전후 모든 원본 해시가 같았다. 재평가는 읽기 전용이며 모델을 호출하지 않는다. 실행 코드나 fixture가 바뀌어 HEAD의 재평가가 inconclusive이면 위 고정 revision에서 재평가한다. `evaluate`는 기록된 hash를 보존 사본과 대조하므로 사본과 report·environment를 함께 바꾼 변조를 탐지하지 못할 수 있고, `diagnose()`는 `report.json`을 고정 SHA256과도 대조한다. rejected의 CLI 종료 코드는 0이며 품질 통과를 뜻하지 않는다.

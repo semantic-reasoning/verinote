@@ -21,6 +21,7 @@ from verinote.extraction_evaluation import DATA_ROOT, ideal_outputs, load_case
 from verinote.extraction_threshold_ab import experiment_plan
 from verinote.extraction_threshold_ab_runner import (
     EvidenceBudget,
+    capture_environment,
     evaluate_saved,
     run_experiment,
     verify_budget,
@@ -377,6 +378,33 @@ class ThresholdRunner(unittest.TestCase):
             self.run_fake()
         self.assertEqual(self.owners, [])
         self.assertFalse(list(self.output.rglob('usage.json')))
+
+    def test_run_experiment_raises_manifest_source_completeness_with_no_owner_factory_call_when_capture_drops_verinote_usage_py_or_a_later_module_glob_drops_it(self):
+        original_capture, original_glob, original_factory = capture_environment, Path.glob, self.factory
+        captured = {'done': False}
+        def dropped(*args, **kwargs):
+            environment = original_capture(*args, **kwargs); del environment['source_hashes']['verinote/usage.py']
+            return environment
+        def flagged(*args, **kwargs):
+            environment = original_capture(*args, **kwargs); captured['done'] = True
+            return environment
+        def later_glob(path, pattern, *args, **kwargs):
+            found = original_glob(path, pattern, *args, **kwargs)
+            return [p for p in found if p.name != 'usage.py'] if captured['done'] and pattern == 'verinote/*.py' else found
+        capture = 'verinote.extraction_threshold_ab_runner.capture_environment'
+        for label, patches in (('capture drops verinote/usage.py', [patch(capture, side_effect=dropped)]),
+                               ('a later verinote/*.py glob drops usage.py',
+                                [patch(capture, side_effect=flagged), patch.object(Path, 'glob', new=later_glob)])):
+            calls: list = []; captured['done'] = False; self.output = self.root/label.replace(' ', '-').replace('/', '-')
+            self.factory = lambda spec, calls=calls: (calls.append(spec), original_factory(spec))[1]
+            with self.subTest(label):
+                for started in patches: started.start()
+                try:
+                    with self.assertRaisesRegex(ValueError, '^manifest_source_completeness$'):
+                        self.run_fake(4)
+                finally:
+                    for started in patches: started.stop()
+                self.assertEqual(calls, [])
 
     def test_verified_unsafe_publication_is_not_a_successful_safety_check(self):
         original = Store.finish_run
