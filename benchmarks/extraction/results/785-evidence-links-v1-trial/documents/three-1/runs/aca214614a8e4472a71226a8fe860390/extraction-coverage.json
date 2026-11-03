@@ -1,0 +1,213 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "run_id": "aca214614a8e4472a71226a8fe860390",
+    "document_id": "2e9b375d84a64c568d2fb94b3508e420",
+    "version": 1,
+    "dictionary_id": "401eacb657a94d45a8ef60499afc62c7",
+    "revision": 2,
+    "sha256": "3b8e54fa37015a3801b117f0d20100e11dd52cb4049660f4e027fd83007a66d3",
+    "extraction_contract": 2
+  },
+  "source_length": 24000,
+  "chunks": [
+    {
+      "offset": 0,
+      "length": 8000,
+      "claim_count": 8,
+      "fact_predicates": [
+        "calls"
+      ],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [
+            0
+          ],
+          "claim_indices": [
+            1,
+            2,
+            3,
+            5
+          ],
+          "status": "extracted",
+          "reason": "현재 S0→S1 호출만 추출; 가정·부정·조건·미등록 대상은 제외"
+        },
+        {
+          "predicate": "archives",
+          "fact_indices": [],
+          "claim_indices": [
+            4
+          ],
+          "status": "no_evidence",
+          "reason": "유일한 보관 기록은 2025년부터 중단된 과거 사실이라 현재 근거 없음"
+        },
+        {
+          "predicate": "mirrors",
+          "fact_indices": [],
+          "claim_indices": [
+            7
+          ],
+          "status": "no_evidence",
+          "reason": "원문에 직접 복제 근거가 없다고 명시됨"
+        }
+      ],
+      "dictionary_gaps": [
+        {
+          "code": "missing_entity",
+          "detail": "Outside1은 승인 개체에 없어 S0→Outside1 호출을 표현할 수 없다.",
+          "claim_indices": [
+            5
+          ]
+        },
+        {
+          "code": "missing_relation",
+          "detail": "소유 관계는 승인 관계 정의(calls, archives, mirrors)에 없다.",
+          "claim_indices": [
+            6
+          ]
+        },
+        {
+          "code": "qualifier_not_representable",
+          "detail": "S0→S2 호출은 장애 발생 시에만이라는 조건이 붙어 무조건 calls로 표현할 수 없다.",
+          "claim_indices": [
+            3
+          ]
+        }
+      ]
+    },
+    {
+      "offset": 8000,
+      "length": 8000,
+      "claim_count": 7,
+      "fact_predicates": [
+        "calls"
+      ],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [
+            0
+          ],
+          "claim_indices": [
+            1,
+            2,
+            3,
+            5
+          ],
+          "status": "extracted",
+          "reason": "현재 S1→S2 호출만 추출; 가정·부정·조건·미등록 대상은 제외"
+        },
+        {
+          "predicate": "archives",
+          "fact_indices": [],
+          "claim_indices": [
+            4
+          ],
+          "status": "not_representable",
+          "reason": "보관은 2025년부터 중단된 과거 기록이라 현재 관계로 표현 불가"
+        },
+        {
+          "predicate": "mirrors",
+          "fact_indices": [],
+          "claim_indices": [],
+          "status": "no_evidence",
+          "reason": "원문에 직접 복제 근거가 없음"
+        }
+      ],
+      "dictionary_gaps": [
+        {
+          "code": "missing_entity",
+          "detail": "Outside2가 승인 개체에 없어 S1의 Outside2 호출을 표현할 수 없음",
+          "claim_indices": [
+            5
+          ]
+        },
+        {
+          "code": "missing_relation",
+          "detail": "소유 관계가 승인 관계에 없어 S1이 S2를 소유한다는 진술을 표현할 수 없음",
+          "claim_indices": [
+            6
+          ]
+        },
+        {
+          "code": "qualifier_not_representable",
+          "detail": "장애 시에만 S1이 S3을 호출한다는 조건을 calls로 표현할 수 없음",
+          "claim_indices": [
+            3
+          ]
+        },
+        {
+          "code": "qualifier_not_representable",
+          "detail": "2020~2025 기간 한정의 과거 보관을 archives로 표현할 수 없음",
+          "claim_indices": [
+            4
+          ]
+        }
+      ]
+    },
+    {
+      "offset": 16000,
+      "length": 8000,
+      "claim_count": 7,
+      "fact_predicates": [
+        "calls"
+      ],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [
+            0
+          ],
+          "claim_indices": [
+            1,
+            2,
+            3,
+            5
+          ],
+          "status": "extracted",
+          "reason": "현재 S2→S3만 추출; 가정·부정·조건·미등록 대상은 claims에 보존"
+        },
+        {
+          "predicate": "archives",
+          "fact_indices": [],
+          "claim_indices": [
+            4
+          ],
+          "status": "not_representable",
+          "reason": "S2→S3 보관은 2025년부터 중단된 과거 기록이라 현재 관계 아님"
+        },
+        {
+          "predicate": "mirrors",
+          "fact_indices": [],
+          "claim_indices": [],
+          "status": "no_evidence",
+          "reason": "원문에 직접 복제 근거가 없음"
+        }
+      ],
+      "dictionary_gaps": [
+        {
+          "code": "missing_entity",
+          "detail": "Outside3는 승인 개체에 없어 S2→Outside3 호출을 표현할 수 없다.",
+          "claim_indices": [
+            5
+          ]
+        },
+        {
+          "code": "missing_relation",
+          "detail": "소유 관계는 승인 관계에 없어 S2→S3 소유를 표현할 수 없다.",
+          "claim_indices": [
+            6
+          ]
+        },
+        {
+          "code": "qualifier_not_representable",
+          "detail": "장애 시에만 성립하는 S2→S4 조건부 호출은 무조건 calls로 표현할 수 없다.",
+          "claim_indices": [
+            3
+          ]
+        }
+      ]
+    }
+  ]
+}

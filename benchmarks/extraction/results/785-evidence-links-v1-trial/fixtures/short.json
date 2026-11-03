@@ -1,0 +1,194 @@
+{
+  "schema_version": 1,
+  "dataset_version": 2,
+  "case_id": "short",
+  "category": "threshold",
+  "source": "구간 1: 현재 구성과 표현 제약을 구분한다.\n승인된 서비스 개체: S0, S1, S2.\ncalls는 현재의 무조건적 직접 호출만 나타낸다. 부정·가정·조건·과거·역방향·전이는 제외한다.\narchives는 현재의 무조건적 직접 보관만 나타낸다. 과거에 종료한 보관은 제외한다.\nmirrors는 현재의 무조건적 직접 복제를 나타낸다. 이 문서에는 직접 복제 근거가 없다.\n구간 1 가정 예시(실제 아님): S0는 S1를 직접 호출한다.\n구간 1 부정: S1는 S0를 직접 호출하지 않는다.\n구간 1 조건: 장애가 발생할 때만 S0는 S2를 직접 호출한다. 현재 무조건 호출은 아니다.\n구간 1 과거 기록: 2020년에 S0는 S1를 직접 보관했다. 2025년부터 그 보관은 중단되었다.\n구간 1 미등록 대상: S0는 Outside1를 직접 호출한다. Outside1는 승인 개체에 없다.\n구간 1 소유: S0는 S1를 소유한다. 소유는 승인 관계에 없다.\n구간 1 현재 실제 구성: S0는 S1를 직접 호출한다.\n",
+  "source_sha256": "864fa34331fde90e74a3f86be122a35224fe9cac97c1f5b718ac3282f88d4620",
+  "dictionary": {
+    "entities": [
+      {
+        "id": "S0",
+        "name": "S0",
+        "type": "Service",
+        "quote": "승인된 서비스 개체: S0, S1, S2."
+      },
+      {
+        "id": "S1",
+        "name": "S1",
+        "type": "Service",
+        "quote": "승인된 서비스 개체: S0, S1, S2."
+      },
+      {
+        "id": "S2",
+        "name": "S2",
+        "type": "Service",
+        "quote": "승인된 서비스 개체: S0, S1, S2."
+      }
+    ],
+    "aliases": [],
+    "relations": [
+      {
+        "id": "calls",
+        "description": "calls는 현재의 무조건적 직접 호출만 나타낸다. 부정·가정·조건·과거·역방향·전이는 제외한다.",
+        "subject_types": [
+          "Service"
+        ],
+        "object_types": [
+          "Service"
+        ],
+        "quote": "calls는 현재의 무조건적 직접 호출만 나타낸다. 부정·가정·조건·과거·역방향·전이는 제외한다."
+      },
+      {
+        "id": "archives",
+        "description": "archives는 현재의 무조건적 직접 보관만 나타낸다. 과거에 종료한 보관은 제외한다.",
+        "subject_types": [
+          "Service"
+        ],
+        "object_types": [
+          "Service"
+        ],
+        "quote": "archives는 현재의 무조건적 직접 보관만 나타낸다. 과거에 종료한 보관은 제외한다."
+      },
+      {
+        "id": "mirrors",
+        "description": "mirrors는 현재의 무조건적 직접 복제를 나타낸다. 이 문서에는 직접 복제 근거가 없다.",
+        "subject_types": [
+          "Service"
+        ],
+        "object_types": [
+          "Service"
+        ],
+        "quote": "mirrors는 현재의 무조건적 직접 복제를 나타낸다. 이 문서에는 직접 복제 근거가 없다."
+      }
+    ]
+  },
+  "gold": [
+    {
+      "id": "short-call-1",
+      "variants": [
+        [
+          "S0",
+          "calls",
+          "S1"
+        ]
+      ],
+      "evidence": [
+        {
+          "start": 478,
+          "end": 509,
+          "text": "구간 1 현재 실제 구성: S0는 S1를 직접 호출한다."
+        }
+      ],
+      "sample_quote": "구간 1 현재 실제 구성: S0는 S1를 직접 호출한다."
+    }
+  ],
+  "forbidden": [
+    [
+      "S1",
+      "calls",
+      "S0"
+    ],
+    [
+      "S0",
+      "calls",
+      "S2"
+    ],
+    [
+      "S0",
+      "archives",
+      "S1"
+    ]
+  ],
+  "annotations": [
+    {
+      "index": 1,
+      "claims": [
+        {
+          "id": "negated",
+          "evidence": {
+            "start": 243,
+            "end": 272,
+            "text": "구간 1 부정: S1는 S0를 직접 호출하지 않는다."
+          }
+        },
+        {
+          "id": "conditional",
+          "evidence": {
+            "start": 273,
+            "end": 325,
+            "text": "구간 1 조건: 장애가 발생할 때만 S0는 S2를 직접 호출한다. 현재 무조건 호출은 아니다."
+          }
+        },
+        {
+          "id": "historical",
+          "evidence": {
+            "start": 326,
+            "end": 382,
+            "text": "구간 1 과거 기록: 2020년에 S0는 S1를 직접 보관했다. 2025년부터 그 보관은 중단되었다."
+          }
+        },
+        {
+          "id": "missing_entity",
+          "evidence": {
+            "start": 383,
+            "end": 439,
+            "text": "구간 1 미등록 대상: S0는 Outside1를 직접 호출한다. Outside1는 승인 개체에 없다."
+          }
+        },
+        {
+          "id": "missing_relation",
+          "evidence": {
+            "start": 440,
+            "end": 477,
+            "text": "구간 1 소유: S0는 S1를 소유한다. 소유는 승인 관계에 없다."
+          }
+        }
+      ],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "status": "extracted",
+          "claim_ids": [
+            "conditional",
+            "missing_entity"
+          ]
+        },
+        {
+          "predicate": "archives",
+          "status": "not_representable",
+          "claim_ids": [
+            "historical"
+          ]
+        },
+        {
+          "predicate": "mirrors",
+          "status": "no_evidence",
+          "claim_ids": []
+        }
+      ],
+      "gaps": [
+        {
+          "code": "qualifier_not_representable",
+          "claim_ids": [
+            "conditional",
+            "historical"
+          ]
+        },
+        {
+          "code": "missing_entity",
+          "claim_ids": [
+            "missing_entity"
+          ]
+        },
+        {
+          "code": "missing_relation",
+          "claim_ids": [
+            "missing_relation"
+          ]
+        }
+      ]
+    }
+  ],
+  "notes": "Agent-authored synthetic evidence. Gold is current unconditional direct calls only; qualifiers and missing vocabulary require grounded claims/gaps. Full actual context disambiguates the hypothetical duplicate. Human review is pending; finite automated checks do not prove arbitrary prose entailment."
+}

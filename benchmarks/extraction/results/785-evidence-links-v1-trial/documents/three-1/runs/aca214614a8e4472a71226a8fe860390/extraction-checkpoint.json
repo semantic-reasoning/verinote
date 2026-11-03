@@ -1,0 +1,364 @@
+{
+  "schema_version": 1,
+  "run_id": "aca214614a8e4472a71226a8fe860390",
+  "contract": {
+    "pipeline": "approved-extraction-v1",
+    "prompt": "39db0e9639b65d9aa2f342fdfb80934b3cfee99c54363caff55a8d4d5725fa62",
+    "repair_prompt": "d0aa5b0658b5dc42d3dcd64cb1c01e2f023e4f8fa2cfe4868e3fd361132cbc78",
+    "chunk_size": 8000,
+    "chunk_timeout": 360,
+    "document_id": "2e9b375d84a64c568d2fb94b3508e420",
+    "version": 1,
+    "source_sha256": "5232dcdf0e93d70ba389f232053c0bccf3138b30e6c5efc27fc8bcf0e5ae8bbd",
+    "text_sha256": "5232dcdf0e93d70ba389f232053c0bccf3138b30e6c5efc27fc8bcf0e5ae8bbd",
+    "agent": "claude",
+    "model": "sonnet",
+    "dictionary": {
+      "id": "401eacb657a94d45a8ef60499afc62c7",
+      "revision": 2,
+      "sha256": "3b8e54fa37015a3801b117f0d20100e11dd52cb4049660f4e027fd83007a66d3",
+      "extraction_contract": 2
+    },
+    "dictionary_payload_sha256": "3b8e54fa37015a3801b117f0d20100e11dd52cb4049660f4e027fd83007a66d3",
+    "extraction_options": {
+      "concurrency": 1,
+      "document_generation": 1,
+      "original_chunk_count": 3,
+      "policy": "chunk_threshold_v1",
+      "schema_version": 2,
+      "transport": {
+        "binary": "/Users/joykim/.local/share/claude/versions/2.1.316",
+        "model": "sonnet",
+        "capacity": 1,
+        "timeout": 90,
+        "max_output": 1048576,
+        "rate": null
+      }
+    }
+  },
+  "outputs": [
+    {
+      "title": "서비스 간 호출·보관·복제 관계 점검",
+      "claims": [
+        {
+          "heading": "현재 실제 구성: S0의 S1 직접 호출",
+          "text": "문서 마지막 줄이 현재 실제 구성으로 S0가 S1을 직접 호출한다고 명시한다. 무조건적 현재 직접 호출이므로 calls 사실로 추출한다.",
+          "quote": "구간 1 현재 실제 구성: S0는 S1를 직접 호출한다."
+        },
+        {
+          "heading": "가정 예시는 사실이 아님",
+          "text": "S0가 S1을 호출한다는 앞선 문장은 '가정 예시(실제 아님)'로 표시되어 있어 사실로 쓰지 않는다.",
+          "quote": "구간 1 가정 예시(실제 아님): S0는 S1를 직접 호출한다."
+        },
+        {
+          "heading": "부정된 호출",
+          "text": "S1이 S0를 직접 호출하지 않는다고 명시되어 있어 역방향 calls 사실은 만들지 않는다.",
+          "quote": "구간 1 부정: S1는 S0를 직접 호출하지 않는다."
+        },
+        {
+          "heading": "조건부 호출",
+          "text": "S0의 S2 호출은 장애 발생 시에만 이루어지며 현재 무조건 호출이 아니므로 calls 사실에서 제외한다.",
+          "quote": "구간 1 조건: 장애가 발생할 때만 S0는 S2를 직접 호출한다. 현재 무조건 호출은 아니다."
+        },
+        {
+          "heading": "과거에 종료된 보관",
+          "text": "S0가 S1을 직접 보관한 것은 2020년의 일이며 2025년부터 중단되었다. archives는 현재 관계만 나타내므로 사실로 추출하지 않는다.",
+          "quote": "구간 1 과거 기록: 2020년에 S0는 S1를 직접 보관했다. 2025년부터 그 보관은 중단되었다."
+        },
+        {
+          "heading": "미등록 대상 Outside1",
+          "text": "S0가 Outside1을 직접 호출한다는 서술이 있으나 Outside1은 승인 개체에 없어 사실로 표현할 수 없다.",
+          "quote": "구간 1 미등록 대상: S0는 Outside1를 직접 호출한다. Outside1는 승인 개체에 없다."
+        },
+        {
+          "heading": "소유 관계는 승인 관계 아님",
+          "text": "S0가 S1을 소유한다는 서술은 승인된 관계(calls, archives, mirrors)에 해당하지 않아 사실로 표현할 수 없다.",
+          "quote": "구간 1 소유: S0는 S1를 소유한다. 소유는 승인 관계에 없다."
+        },
+        {
+          "heading": "복제 근거 없음",
+          "text": "원문은 이 문서에 직접 복제 근거가 없다고 밝히며, 복제를 진술하는 구체적 문장이 없다.",
+          "quote": "이 문서에는 직접 복제 근거가 없다."
+        }
+      ],
+      "facts": [
+        {
+          "subject": "S0",
+          "predicate": "calls",
+          "object": "S1",
+          "quote": "구간 1 현재 실제 구성: S0는 S1를 직접 호출한다."
+        }
+      ],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [
+            0
+          ],
+          "claim_indices": [
+            1,
+            2,
+            3,
+            5
+          ],
+          "status": "extracted",
+          "reason": "현재 S0→S1 호출만 추출; 가정·부정·조건·미등록 대상은 제외"
+        },
+        {
+          "predicate": "archives",
+          "fact_indices": [],
+          "claim_indices": [
+            4
+          ],
+          "status": "no_evidence",
+          "reason": "유일한 보관 기록은 2025년부터 중단된 과거 사실이라 현재 근거 없음"
+        },
+        {
+          "predicate": "mirrors",
+          "fact_indices": [],
+          "claim_indices": [
+            7
+          ],
+          "status": "no_evidence",
+          "reason": "원문에 직접 복제 근거가 없다고 명시됨"
+        }
+      ],
+      "dictionary_gaps": [
+        {
+          "code": "missing_entity",
+          "detail": "Outside1은 승인 개체에 없어 S0→Outside1 호출을 표현할 수 없다.",
+          "claim_indices": [
+            5
+          ]
+        },
+        {
+          "code": "missing_relation",
+          "detail": "소유 관계는 승인 관계 정의(calls, archives, mirrors)에 없다.",
+          "claim_indices": [
+            6
+          ]
+        },
+        {
+          "code": "qualifier_not_representable",
+          "detail": "S0→S2 호출은 장애 발생 시에만이라는 조건이 붙어 무조건 calls로 표현할 수 없다.",
+          "claim_indices": [
+            3
+          ]
+        }
+      ]
+    },
+    {
+      "title": "구간 2: 현재 구성과 표현 제약",
+      "claims": [
+        {
+          "heading": "현재 실제 구성",
+          "text": "원문은 구간 2의 현재 실제 구성으로 S1이 S2를 직접 호출한다고 명시한다. 이는 승인된 calls 관계(Service→Service)에 해당한다.",
+          "quote": "구간 2 현재 실제 구성: S1는 S2를 직접 호출한다."
+        },
+        {
+          "heading": "가정 예시",
+          "text": "S1이 S2를 직접 호출한다는 다른 문장은 '가정 예시(실제 아님)'로 표시되어 있어 사실로 취급하지 않는다. 현재 구성은 별도 문장이 확인한다.",
+          "quote": "구간 2 가정 예시(실제 아님): S1는 S2를 직접 호출한다."
+        },
+        {
+          "heading": "부정 진술",
+          "text": "S2는 S1을 직접 호출하지 않는다는 부정 진술이므로 calls 사실로 만들지 않는다.",
+          "quote": "구간 2 부정: S2는 S1를 직접 호출하지 않는다."
+        },
+        {
+          "heading": "조건부 호출",
+          "text": "S1이 S3을 직접 호출하는 것은 장애 발생 시에만 해당하며 현재 무조건 호출이 아니다. calls는 무조건적 직접 호출만 나타내므로 fact로 만들지 않는다.",
+          "quote": "구간 2 조건: 장애가 발생할 때만 S1는 S3를 직접 호출한다. 현재 무조건 호출은 아니다."
+        },
+        {
+          "heading": "과거 보관 기록",
+          "text": "S1이 S2를 직접 보관한 것은 2020년의 일이며 2025년부터 중단되었다. archives는 현재의 보관만 나타내므로 fact로 만들지 않는다.",
+          "quote": "구간 2 과거 기록: 2020년에 S1는 S2를 직접 보관했다. 2025년부터 그 보관은 중단되었다."
+        },
+        {
+          "heading": "미등록 대상",
+          "text": "S1이 Outside2를 직접 호출한다고 하나 Outside2는 승인 개체에 없어 fact로 표현할 수 없다.",
+          "quote": "구간 2 미등록 대상: S1는 Outside2를 직접 호출한다. Outside2는 승인 개체에 없다."
+        },
+        {
+          "heading": "미등록 관계(소유)",
+          "text": "S1이 S2를 소유한다는 진술은 있으나 소유는 승인 관계에 없어 표현할 수 없다.",
+          "quote": "구간 2 소유: S1는 S2를 소유한다. 소유는 승인 관계에 없다."
+        }
+      ],
+      "facts": [
+        {
+          "subject": "S1",
+          "predicate": "calls",
+          "object": "S2",
+          "quote": "구간 2 현재 실제 구성: S1는 S2를 직접 호출한다."
+        }
+      ],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [
+            0
+          ],
+          "claim_indices": [
+            1,
+            2,
+            3,
+            5
+          ],
+          "status": "extracted",
+          "reason": "현재 S1→S2 호출만 추출; 가정·부정·조건·미등록 대상은 제외"
+        },
+        {
+          "predicate": "archives",
+          "fact_indices": [],
+          "claim_indices": [
+            4
+          ],
+          "status": "not_representable",
+          "reason": "보관은 2025년부터 중단된 과거 기록이라 현재 관계로 표현 불가"
+        },
+        {
+          "predicate": "mirrors",
+          "fact_indices": [],
+          "claim_indices": [],
+          "status": "no_evidence",
+          "reason": "원문에 직접 복제 근거가 없음"
+        }
+      ],
+      "dictionary_gaps": [
+        {
+          "code": "missing_entity",
+          "detail": "Outside2가 승인 개체에 없어 S1의 Outside2 호출을 표현할 수 없음",
+          "claim_indices": [
+            5
+          ]
+        },
+        {
+          "code": "missing_relation",
+          "detail": "소유 관계가 승인 관계에 없어 S1이 S2를 소유한다는 진술을 표현할 수 없음",
+          "claim_indices": [
+            6
+          ]
+        },
+        {
+          "code": "qualifier_not_representable",
+          "detail": "장애 시에만 S1이 S3을 호출한다는 조건을 calls로 표현할 수 없음",
+          "claim_indices": [
+            3
+          ]
+        },
+        {
+          "code": "qualifier_not_representable",
+          "detail": "2020~2025 기간 한정의 과거 보관을 archives로 표현할 수 없음",
+          "claim_indices": [
+            4
+          ]
+        }
+      ]
+    },
+    {
+      "title": "구간 3: 현재 구성과 표현 제약",
+      "claims": [
+        {
+          "heading": "현재 실제 구성: S2의 S3 직접 호출",
+          "text": "원문은 구간 3의 현재 실제 구성으로 S2가 S3를 직접 호출한다고 명시한다. 이는 무조건적 현재 직접 호출이므로 calls 관계로 추출한다.",
+          "quote": "구간 3 현재 실제 구성: S2는 S3를 직접 호출한다."
+        },
+        {
+          "heading": "가정 예시는 사실이 아님",
+          "text": "S2가 S3를 직접 호출한다는 앞부분 문장은 '가정 예시(실제 아님)'로 표시되어 있어 사실로 취급하지 않는다. 같은 관계는 마지막 문장의 현재 실제 구성으로만 뒷받침된다.",
+          "quote": "구간 3 가정 예시(실제 아님): S2는 S3를 직접 호출한다."
+        },
+        {
+          "heading": "부정: S3는 S2를 직접 호출하지 않음",
+          "text": "S3가 S2를 직접 호출하지 않는다는 부정 진술이므로 calls 사실로 만들지 않는다.",
+          "quote": "구간 3 부정: S3는 S2를 직접 호출하지 않는다."
+        },
+        {
+          "heading": "조건부 호출: S2→S4",
+          "text": "S2가 S4를 직접 호출하는 것은 장애 발생 시로 한정되며 현재 무조건 호출은 아니라고 명시되어 있다. calls는 무조건적 호출만 나타내므로 fact로 만들지 않는다.",
+          "quote": "구간 3 조건: 장애가 발생할 때만 S2는 S4를 직접 호출한다. 현재 무조건 호출은 아니다."
+        },
+        {
+          "heading": "과거 보관 기록: S2→S3",
+          "text": "2020년에 S2가 S3를 보관했으나 2025년부터 중단되었다. archives는 종료된 과거 보관을 제외하므로 fact로 만들지 않는다.",
+          "quote": "구간 3 과거 기록: 2020년에 S2는 S3를 직접 보관했다. 2025년부터 그 보관은 중단되었다."
+        },
+        {
+          "heading": "미등록 대상 Outside3",
+          "text": "S2가 Outside3를 직접 호출한다는 진술이 있으나 Outside3는 승인 개체에 없어 fact로 표현할 수 없다.",
+          "quote": "구간 3 미등록 대상: S2는 Outside3를 직접 호출한다. Outside3는 승인 개체에 없다."
+        },
+        {
+          "heading": "소유 관계는 승인 관계 아님",
+          "text": "S2가 S3를 소유한다는 진술은 있으나 소유는 승인 관계에 없어 표현할 수 없다.",
+          "quote": "구간 3 소유: S2는 S3를 소유한다. 소유는 승인 관계에 없다."
+        }
+      ],
+      "facts": [
+        {
+          "subject": "S2",
+          "predicate": "calls",
+          "object": "S3",
+          "quote": "구간 3 현재 실제 구성: S2는 S3를 직접 호출한다."
+        }
+      ],
+      "coverage": [
+        {
+          "predicate": "calls",
+          "fact_indices": [
+            0
+          ],
+          "claim_indices": [
+            1,
+            2,
+            3,
+            5
+          ],
+          "status": "extracted",
+          "reason": "현재 S2→S3만 추출; 가정·부정·조건·미등록 대상은 claims에 보존"
+        },
+        {
+          "predicate": "archives",
+          "fact_indices": [],
+          "claim_indices": [
+            4
+          ],
+          "status": "not_representable",
+          "reason": "S2→S3 보관은 2025년부터 중단된 과거 기록이라 현재 관계 아님"
+        },
+        {
+          "predicate": "mirrors",
+          "fact_indices": [],
+          "claim_indices": [],
+          "status": "no_evidence",
+          "reason": "원문에 직접 복제 근거가 없음"
+        }
+      ],
+      "dictionary_gaps": [
+        {
+          "code": "missing_entity",
+          "detail": "Outside3는 승인 개체에 없어 S2→Outside3 호출을 표현할 수 없다.",
+          "claim_indices": [
+            5
+          ]
+        },
+        {
+          "code": "missing_relation",
+          "detail": "소유 관계는 승인 관계에 없어 S2→S3 소유를 표현할 수 없다.",
+          "claim_indices": [
+            6
+          ]
+        },
+        {
+          "code": "qualifier_not_representable",
+          "detail": "장애 시에만 성립하는 S2→S4 조건부 호출은 무조건 calls로 표현할 수 없다.",
+          "claim_indices": [
+            3
+          ]
+        }
+      ]
+    }
+  ]
+}
