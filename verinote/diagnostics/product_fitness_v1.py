@@ -25,7 +25,9 @@ REPORT_PATH = REPO/'benchmarks/extraction/results/788-product-fitness-v1/report.
 REGISTRY_CASES = ('short', 'three')
 QUALIFIER_CODE = 'qualifier_not_representable'
 STATUSES = ('extracted', 'no_evidence', 'not_representable')
-# Decisions this module can execute, per policy; _policies rejects a spec decision outside this set.
+# Decisions this module can execute, per policy. _policies checks each policy's current decision, not its rejected
+# alternatives, against this set; sensitivity records a rejected alternative outside it with executable=False and
+# does not run it.
 IMPLEMENTED_DECISIONS = {
     'P-EQUIV': ('registry_substitutes',),
     'P-ORDER': ('index_remap_invariant',),
