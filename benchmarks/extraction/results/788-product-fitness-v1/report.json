@@ -32,8 +32,9 @@
     "benchmarks/extraction/criteria/product-fitness-v1/spec.json": "72cb043cb36d7df703e50cdb8cc514ab8f00bb04f6afa1515ba5f083a0863e2d",
     "verinote/diagnostics/product_fitness_v1.py": "6180e4b2e7e707e7e699468d9e895f2595a073e71124e4988ec4b111f8afa881",
     "scripts/verify_product_fitness_v1.py": "27b378c3b3fc6c469a59964966348bea6b6284f0ac67858abc0907fe8c27a9d8",
-    "tests/test_product_fitness_v1.py": "d0cf46618dbc65bce2a67aafd600a132f2219c0c828d8e226d42898688c4989e",
+    "tests/test_product_fitness_v1.py": "8022edbdf4bb4852b4e81d27f5e5c8a2bc0d9b85ab0ccae9de38449b435c6917",
     "tests/test_product_fitness_v1_authored.py": "57b6f28dda62027b9533677a238c123c14dee3123eba83bce6c71bb5241aab58",
+    "tests/test_product_fitness_v1_guards.py": "a3cd2a93e1e2245c2fd540f481281ecdb996e132ff379b713285cf8fde07a305",
     "tests/test_product_fitness_v1_report.py": "41cd0666f86823630ffbfbf2692816667c5d3704d0f5d5f7180a5c18bb4b1c87"
   },
   "fixtures": {
