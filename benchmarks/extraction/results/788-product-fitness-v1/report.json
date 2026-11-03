@@ -35,7 +35,7 @@
     "tests/test_product_fitness_v1.py": "8022edbdf4bb4852b4e81d27f5e5c8a2bc0d9b85ab0ccae9de38449b435c6917",
     "tests/test_product_fitness_v1_authored.py": "57b6f28dda62027b9533677a238c123c14dee3123eba83bce6c71bb5241aab58",
     "tests/test_product_fitness_v1_guards.py": "a3cd2a93e1e2245c2fd540f481281ecdb996e132ff379b713285cf8fde07a305",
-    "tests/test_product_fitness_v1_report.py": "41cd0666f86823630ffbfbf2692816667c5d3704d0f5d5f7180a5c18bb4b1c87"
+    "tests/test_product_fitness_v1_report.py": "676ca8d232e386fd71e4dcb7a6e68050f6c69c7aced3f06ee80cd326a9d5b9b7"
   },
   "fixtures": {
     "short": {
