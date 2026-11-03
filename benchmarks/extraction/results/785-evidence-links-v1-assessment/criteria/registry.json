@@ -1,0 +1,827 @@
+{
+  "registry_id": "extraction-product-fitness-v1-registry",
+  "schema_version": 1,
+  "authorship": {
+    "author": "agent_proposed",
+    "human_review": "pending"
+  },
+  "provenance": "Obligations, canonical spans, expected coverage status, required coverage obligations and gap pairs are re-declared from dataset v2 annotations; each chunk names its source annotation and lists its declared deviations.",
+  "cases": {
+    "short": {
+      "case_sha256": "7767bf109671fccaad2227b87355f26d586438e5eacc030d1152d25c38cec619",
+      "source_sha256": "864fa34331fde90e74a3f86be122a35224fe9cac97c1f5b718ac3282f88d4620",
+      "chunks": [
+        {
+          "index": 1,
+          "derived_from": {
+            "case_id": "short",
+            "case_sha256": "7767bf109671fccaad2227b87355f26d586438e5eacc030d1152d25c38cec619",
+            "annotation_index": 1
+          },
+          "deviations": [],
+          "obligations": [
+            {
+              "id": "negated",
+              "canonical": {
+                "start": 243,
+                "end": 272,
+                "text": "구간 1 부정: S1는 S0를 직접 호출하지 않는다."
+              },
+              "required_markers": {
+                "markers": [
+                  "하지 않는다"
+                ],
+                "rationale": "The negation is the material qualifier; a quote without it states the forbidden positive call.",
+                "author": "agent_proposed",
+                "human_review": "pending"
+              },
+              "substitutes": [
+                {
+                  "id": "negated-label-free",
+                  "start": 252,
+                  "end": 272,
+                  "text": "S1는 S0를 직접 호출하지 않는다.",
+                  "review": {
+                    "author": "agent_proposed",
+                    "human_review": "pending",
+                    "rationale": "Removes only the fixture label \"구간 1 부정: \"; the body keeps every required marker and stays unique in its chunk."
+                  }
+                }
+              ]
+            },
+            {
+              "id": "conditional",
+              "canonical": {
+                "start": 273,
+                "end": 325,
+                "text": "구간 1 조건: 장애가 발생할 때만 S0는 S2를 직접 호출한다. 현재 무조건 호출은 아니다."
+              },
+              "required_markers": {
+                "markers": [
+                  "장애가 발생할 때만",
+                  "현재 무조건 호출은 아니다"
+                ],
+                "rationale": "Both the condition and the explicit not-currently-unconditional sentence carry the qualifier.",
+                "author": "agent_proposed",
+                "human_review": "pending"
+              },
+              "substitutes": [
+                {
+                  "id": "conditional-label-free",
+                  "start": 282,
+                  "end": 325,
+                  "text": "장애가 발생할 때만 S0는 S2를 직접 호출한다. 현재 무조건 호출은 아니다.",
+                  "review": {
+                    "author": "agent_proposed",
+                    "human_review": "pending",
+                    "rationale": "Removes only the fixture label \"구간 1 조건: \"; the body keeps every required marker and stays unique in its chunk."
+                  }
+                }
+              ]
+            },
+            {
+              "id": "historical",
+              "canonical": {
+                "start": 326,
+                "end": 382,
+                "text": "구간 1 과거 기록: 2020년에 S0는 S1를 직접 보관했다. 2025년부터 그 보관은 중단되었다."
+              },
+              "required_markers": {
+                "markers": [
+                  "2020년에",
+                  "2025년부터",
+                  "중단"
+                ],
+                "rationale": "The past date, the end date and the ended state together carry the time qualifier.",
+                "author": "agent_proposed",
+                "human_review": "pending"
+              },
+              "substitutes": [
+                {
+                  "id": "historical-label-free",
+                  "start": 338,
+                  "end": 382,
+                  "text": "2020년에 S0는 S1를 직접 보관했다. 2025년부터 그 보관은 중단되었다.",
+                  "review": {
+                    "author": "agent_proposed",
+                    "human_review": "pending",
+                    "rationale": "Removes only the fixture label \"구간 1 과거 기록: \"; the body keeps every required marker and stays unique in its chunk."
+                  }
+                }
+              ]
+            },
+            {
+              "id": "missing_entity",
+              "canonical": {
+                "start": 383,
+                "end": 439,
+                "text": "구간 1 미등록 대상: S0는 Outside1를 직접 호출한다. Outside1는 승인 개체에 없다."
+              },
+              "required_markers": {
+                "markers": [
+                  "Outside1를",
+                  "승인 개체에 없다"
+                ],
+                "rationale": "The unregistered target and the statement that it is not an approved entity carry the dictionary restriction.",
+                "author": "agent_proposed",
+                "human_review": "pending"
+              },
+              "substitutes": [
+                {
+                  "id": "missing_entity-label-free",
+                  "start": 396,
+                  "end": 439,
+                  "text": "S0는 Outside1를 직접 호출한다. Outside1는 승인 개체에 없다.",
+                  "review": {
+                    "author": "agent_proposed",
+                    "human_review": "pending",
+                    "rationale": "Removes only the fixture label \"구간 1 미등록 대상: \"; the body keeps every required marker and stays unique in its chunk."
+                  }
+                }
+              ]
+            },
+            {
+              "id": "missing_relation",
+              "canonical": {
+                "start": 440,
+                "end": 477,
+                "text": "구간 1 소유: S0는 S1를 소유한다. 소유는 승인 관계에 없다."
+              },
+              "required_markers": {
+                "markers": [
+                  "소유",
+                  "승인 관계에 없다"
+                ],
+                "rationale": "The unregistered relation and the statement that it is not an approved relation carry the dictionary restriction.",
+                "author": "agent_proposed",
+                "human_review": "pending"
+              },
+              "substitutes": [
+                {
+                  "id": "missing_relation-label-free",
+                  "start": 449,
+                  "end": 477,
+                  "text": "S0는 S1를 소유한다. 소유는 승인 관계에 없다.",
+                  "review": {
+                    "author": "agent_proposed",
+                    "human_review": "pending",
+                    "rationale": "Removes only the fixture label \"구간 1 소유: \"; the body keeps every required marker and stays unique in its chunk."
+                  }
+                }
+              ]
+            }
+          ],
+          "coverage": [
+            {
+              "predicate": "calls",
+              "expected_status": "extracted",
+              "required_obligation_ids": [
+                "conditional",
+                "missing_entity"
+              ]
+            },
+            {
+              "predicate": "archives",
+              "expected_status": "not_representable",
+              "required_obligation_ids": [
+                "historical"
+              ]
+            },
+            {
+              "predicate": "mirrors",
+              "expected_status": "no_evidence",
+              "required_obligation_ids": []
+            }
+          ],
+          "gap_pairs": [
+            [
+              "qualifier_not_representable",
+              "conditional"
+            ],
+            [
+              "qualifier_not_representable",
+              "historical"
+            ],
+            [
+              "missing_entity",
+              "missing_entity"
+            ],
+            [
+              "missing_relation",
+              "missing_relation"
+            ]
+          ]
+        }
+      ]
+    },
+    "three": {
+      "case_sha256": "b0c9b0bae8fd8f86c3434c961034c791e265810016af5f8439056d269b6bf4de",
+      "source_sha256": "5232dcdf0e93d70ba389f232053c0bccf3138b30e6c5efc27fc8bcf0e5ae8bbd",
+      "chunks": [
+        {
+          "index": 1,
+          "derived_from": {
+            "case_id": "three",
+            "case_sha256": "b0c9b0bae8fd8f86c3434c961034c791e265810016af5f8439056d269b6bf4de",
+            "annotation_index": 1
+          },
+          "deviations": [],
+          "obligations": [
+            {
+              "id": "negated",
+              "canonical": {
+                "start": 251,
+                "end": 280,
+                "text": "구간 1 부정: S1는 S0를 직접 호출하지 않는다."
+              },
+              "required_markers": {
+                "markers": [
+                  "하지 않는다"
+                ],
+                "rationale": "The negation is the material qualifier; a quote without it states the forbidden positive call.",
+                "author": "agent_proposed",
+                "human_review": "pending"
+              },
+              "substitutes": [
+                {
+                  "id": "negated-label-free",
+                  "start": 260,
+                  "end": 280,
+                  "text": "S1는 S0를 직접 호출하지 않는다.",
+                  "review": {
+                    "author": "agent_proposed",
+                    "human_review": "pending",
+                    "rationale": "Removes only the fixture label \"구간 1 부정: \"; the body keeps every required marker and stays unique in its chunk."
+                  }
+                }
+              ]
+            },
+            {
+              "id": "conditional",
+              "canonical": {
+                "start": 281,
+                "end": 333,
+                "text": "구간 1 조건: 장애가 발생할 때만 S0는 S2를 직접 호출한다. 현재 무조건 호출은 아니다."
+              },
+              "required_markers": {
+                "markers": [
+                  "장애가 발생할 때만",
+                  "현재 무조건 호출은 아니다"
+                ],
+                "rationale": "Both the condition and the explicit not-currently-unconditional sentence carry the qualifier.",
+                "author": "agent_proposed",
+                "human_review": "pending"
+              },
+              "substitutes": [
+                {
+                  "id": "conditional-label-free",
+                  "start": 290,
+                  "end": 333,
+                  "text": "장애가 발생할 때만 S0는 S2를 직접 호출한다. 현재 무조건 호출은 아니다.",
+                  "review": {
+                    "author": "agent_proposed",
+                    "human_review": "pending",
+                    "rationale": "Removes only the fixture label \"구간 1 조건: \"; the body keeps every required marker and stays unique in its chunk."
+                  }
+                }
+              ]
+            },
+            {
+              "id": "historical",
+              "canonical": {
+                "start": 334,
+                "end": 390,
+                "text": "구간 1 과거 기록: 2020년에 S0는 S1를 직접 보관했다. 2025년부터 그 보관은 중단되었다."
+              },
+              "required_markers": {
+                "markers": [
+                  "2020년에",
+                  "2025년부터",
+                  "중단"
+                ],
+                "rationale": "The past date, the end date and the ended state together carry the time qualifier.",
+                "author": "agent_proposed",
+                "human_review": "pending"
+              },
+              "substitutes": [
+                {
+                  "id": "historical-label-free",
+                  "start": 346,
+                  "end": 390,
+                  "text": "2020년에 S0는 S1를 직접 보관했다. 2025년부터 그 보관은 중단되었다.",
+                  "review": {
+                    "author": "agent_proposed",
+                    "human_review": "pending",
+                    "rationale": "Removes only the fixture label \"구간 1 과거 기록: \"; the body keeps every required marker and stays unique in its chunk."
+                  }
+                }
+              ]
+            },
+            {
+              "id": "missing_entity",
+              "canonical": {
+                "start": 391,
+                "end": 447,
+                "text": "구간 1 미등록 대상: S0는 Outside1를 직접 호출한다. Outside1는 승인 개체에 없다."
+              },
+              "required_markers": {
+                "markers": [
+                  "Outside1를",
+                  "승인 개체에 없다"
+                ],
+                "rationale": "The unregistered target and the statement that it is not an approved entity carry the dictionary restriction.",
+                "author": "agent_proposed",
+                "human_review": "pending"
+              },
+              "substitutes": [
+                {
+                  "id": "missing_entity-label-free",
+                  "start": 404,
+                  "end": 447,
+                  "text": "S0는 Outside1를 직접 호출한다. Outside1는 승인 개체에 없다.",
+                  "review": {
+                    "author": "agent_proposed",
+                    "human_review": "pending",
+                    "rationale": "Removes only the fixture label \"구간 1 미등록 대상: \"; the body keeps every required marker and stays unique in its chunk."
+                  }
+                }
+              ]
+            },
+            {
+              "id": "missing_relation",
+              "canonical": {
+                "start": 448,
+                "end": 485,
+                "text": "구간 1 소유: S0는 S1를 소유한다. 소유는 승인 관계에 없다."
+              },
+              "required_markers": {
+                "markers": [
+                  "소유",
+                  "승인 관계에 없다"
+                ],
+                "rationale": "The unregistered relation and the statement that it is not an approved relation carry the dictionary restriction.",
+                "author": "agent_proposed",
+                "human_review": "pending"
+              },
+              "substitutes": [
+                {
+                  "id": "missing_relation-label-free",
+                  "start": 457,
+                  "end": 485,
+                  "text": "S0는 S1를 소유한다. 소유는 승인 관계에 없다.",
+                  "review": {
+                    "author": "agent_proposed",
+                    "human_review": "pending",
+                    "rationale": "Removes only the fixture label \"구간 1 소유: \"; the body keeps every required marker and stays unique in its chunk."
+                  }
+                }
+              ]
+            }
+          ],
+          "coverage": [
+            {
+              "predicate": "calls",
+              "expected_status": "extracted",
+              "required_obligation_ids": [
+                "conditional",
+                "missing_entity"
+              ]
+            },
+            {
+              "predicate": "archives",
+              "expected_status": "not_representable",
+              "required_obligation_ids": [
+                "historical"
+              ]
+            },
+            {
+              "predicate": "mirrors",
+              "expected_status": "no_evidence",
+              "required_obligation_ids": []
+            }
+          ],
+          "gap_pairs": [
+            [
+              "qualifier_not_representable",
+              "conditional"
+            ],
+            [
+              "qualifier_not_representable",
+              "historical"
+            ],
+            [
+              "missing_entity",
+              "missing_entity"
+            ],
+            [
+              "missing_relation",
+              "missing_relation"
+            ]
+          ]
+        },
+        {
+          "index": 2,
+          "derived_from": {
+            "case_id": "three",
+            "case_sha256": "b0c9b0bae8fd8f86c3434c961034c791e265810016af5f8439056d269b6bf4de",
+            "annotation_index": 2
+          },
+          "deviations": [],
+          "obligations": [
+            {
+              "id": "negated",
+              "canonical": {
+                "start": 8062,
+                "end": 8091,
+                "text": "구간 2 부정: S2는 S1를 직접 호출하지 않는다."
+              },
+              "required_markers": {
+                "markers": [
+                  "하지 않는다"
+                ],
+                "rationale": "The negation is the material qualifier; a quote without it states the forbidden positive call.",
+                "author": "agent_proposed",
+                "human_review": "pending"
+              },
+              "substitutes": [
+                {
+                  "id": "negated-label-free",
+                  "start": 8071,
+                  "end": 8091,
+                  "text": "S2는 S1를 직접 호출하지 않는다.",
+                  "review": {
+                    "author": "agent_proposed",
+                    "human_review": "pending",
+                    "rationale": "Removes only the fixture label \"구간 2 부정: \"; the body keeps every required marker and stays unique in its chunk."
+                  }
+                }
+              ]
+            },
+            {
+              "id": "conditional",
+              "canonical": {
+                "start": 8092,
+                "end": 8144,
+                "text": "구간 2 조건: 장애가 발생할 때만 S1는 S3를 직접 호출한다. 현재 무조건 호출은 아니다."
+              },
+              "required_markers": {
+                "markers": [
+                  "장애가 발생할 때만",
+                  "현재 무조건 호출은 아니다"
+                ],
+                "rationale": "Both the condition and the explicit not-currently-unconditional sentence carry the qualifier.",
+                "author": "agent_proposed",
+                "human_review": "pending"
+              },
+              "substitutes": [
+                {
+                  "id": "conditional-label-free",
+                  "start": 8101,
+                  "end": 8144,
+                  "text": "장애가 발생할 때만 S1는 S3를 직접 호출한다. 현재 무조건 호출은 아니다.",
+                  "review": {
+                    "author": "agent_proposed",
+                    "human_review": "pending",
+                    "rationale": "Removes only the fixture label \"구간 2 조건: \"; the body keeps every required marker and stays unique in its chunk."
+                  }
+                }
+              ]
+            },
+            {
+              "id": "historical",
+              "canonical": {
+                "start": 8145,
+                "end": 8201,
+                "text": "구간 2 과거 기록: 2020년에 S1는 S2를 직접 보관했다. 2025년부터 그 보관은 중단되었다."
+              },
+              "required_markers": {
+                "markers": [
+                  "2020년에",
+                  "2025년부터",
+                  "중단"
+                ],
+                "rationale": "The past date, the end date and the ended state together carry the time qualifier.",
+                "author": "agent_proposed",
+                "human_review": "pending"
+              },
+              "substitutes": [
+                {
+                  "id": "historical-label-free",
+                  "start": 8157,
+                  "end": 8201,
+                  "text": "2020년에 S1는 S2를 직접 보관했다. 2025년부터 그 보관은 중단되었다.",
+                  "review": {
+                    "author": "agent_proposed",
+                    "human_review": "pending",
+                    "rationale": "Removes only the fixture label \"구간 2 과거 기록: \"; the body keeps every required marker and stays unique in its chunk."
+                  }
+                }
+              ]
+            },
+            {
+              "id": "missing_entity",
+              "canonical": {
+                "start": 8202,
+                "end": 8258,
+                "text": "구간 2 미등록 대상: S1는 Outside2를 직접 호출한다. Outside2는 승인 개체에 없다."
+              },
+              "required_markers": {
+                "markers": [
+                  "Outside2를",
+                  "승인 개체에 없다"
+                ],
+                "rationale": "The unregistered target and the statement that it is not an approved entity carry the dictionary restriction.",
+                "author": "agent_proposed",
+                "human_review": "pending"
+              },
+              "substitutes": [
+                {
+                  "id": "missing_entity-label-free",
+                  "start": 8215,
+                  "end": 8258,
+                  "text": "S1는 Outside2를 직접 호출한다. Outside2는 승인 개체에 없다.",
+                  "review": {
+                    "author": "agent_proposed",
+                    "human_review": "pending",
+                    "rationale": "Removes only the fixture label \"구간 2 미등록 대상: \"; the body keeps every required marker and stays unique in its chunk."
+                  }
+                }
+              ]
+            },
+            {
+              "id": "missing_relation",
+              "canonical": {
+                "start": 8259,
+                "end": 8296,
+                "text": "구간 2 소유: S1는 S2를 소유한다. 소유는 승인 관계에 없다."
+              },
+              "required_markers": {
+                "markers": [
+                  "소유",
+                  "승인 관계에 없다"
+                ],
+                "rationale": "The unregistered relation and the statement that it is not an approved relation carry the dictionary restriction.",
+                "author": "agent_proposed",
+                "human_review": "pending"
+              },
+              "substitutes": [
+                {
+                  "id": "missing_relation-label-free",
+                  "start": 8268,
+                  "end": 8296,
+                  "text": "S1는 S2를 소유한다. 소유는 승인 관계에 없다.",
+                  "review": {
+                    "author": "agent_proposed",
+                    "human_review": "pending",
+                    "rationale": "Removes only the fixture label \"구간 2 소유: \"; the body keeps every required marker and stays unique in its chunk."
+                  }
+                }
+              ]
+            }
+          ],
+          "coverage": [
+            {
+              "predicate": "calls",
+              "expected_status": "extracted",
+              "required_obligation_ids": [
+                "conditional",
+                "missing_entity"
+              ]
+            },
+            {
+              "predicate": "archives",
+              "expected_status": "not_representable",
+              "required_obligation_ids": [
+                "historical"
+              ]
+            },
+            {
+              "predicate": "mirrors",
+              "expected_status": "no_evidence",
+              "required_obligation_ids": []
+            }
+          ],
+          "gap_pairs": [
+            [
+              "qualifier_not_representable",
+              "conditional"
+            ],
+            [
+              "qualifier_not_representable",
+              "historical"
+            ],
+            [
+              "missing_entity",
+              "missing_entity"
+            ],
+            [
+              "missing_relation",
+              "missing_relation"
+            ]
+          ]
+        },
+        {
+          "index": 3,
+          "derived_from": {
+            "case_id": "three",
+            "case_sha256": "b0c9b0bae8fd8f86c3434c961034c791e265810016af5f8439056d269b6bf4de",
+            "annotation_index": 3
+          },
+          "deviations": [],
+          "obligations": [
+            {
+              "id": "negated",
+              "canonical": {
+                "start": 16062,
+                "end": 16091,
+                "text": "구간 3 부정: S3는 S2를 직접 호출하지 않는다."
+              },
+              "required_markers": {
+                "markers": [
+                  "하지 않는다"
+                ],
+                "rationale": "The negation is the material qualifier; a quote without it states the forbidden positive call.",
+                "author": "agent_proposed",
+                "human_review": "pending"
+              },
+              "substitutes": [
+                {
+                  "id": "negated-label-free",
+                  "start": 16071,
+                  "end": 16091,
+                  "text": "S3는 S2를 직접 호출하지 않는다.",
+                  "review": {
+                    "author": "agent_proposed",
+                    "human_review": "pending",
+                    "rationale": "Removes only the fixture label \"구간 3 부정: \"; the body keeps every required marker and stays unique in its chunk."
+                  }
+                }
+              ]
+            },
+            {
+              "id": "conditional",
+              "canonical": {
+                "start": 16092,
+                "end": 16144,
+                "text": "구간 3 조건: 장애가 발생할 때만 S2는 S4를 직접 호출한다. 현재 무조건 호출은 아니다."
+              },
+              "required_markers": {
+                "markers": [
+                  "장애가 발생할 때만",
+                  "현재 무조건 호출은 아니다"
+                ],
+                "rationale": "Both the condition and the explicit not-currently-unconditional sentence carry the qualifier.",
+                "author": "agent_proposed",
+                "human_review": "pending"
+              },
+              "substitutes": [
+                {
+                  "id": "conditional-label-free",
+                  "start": 16101,
+                  "end": 16144,
+                  "text": "장애가 발생할 때만 S2는 S4를 직접 호출한다. 현재 무조건 호출은 아니다.",
+                  "review": {
+                    "author": "agent_proposed",
+                    "human_review": "pending",
+                    "rationale": "Removes only the fixture label \"구간 3 조건: \"; the body keeps every required marker and stays unique in its chunk."
+                  }
+                }
+              ]
+            },
+            {
+              "id": "historical",
+              "canonical": {
+                "start": 16145,
+                "end": 16201,
+                "text": "구간 3 과거 기록: 2020년에 S2는 S3를 직접 보관했다. 2025년부터 그 보관은 중단되었다."
+              },
+              "required_markers": {
+                "markers": [
+                  "2020년에",
+                  "2025년부터",
+                  "중단"
+                ],
+                "rationale": "The past date, the end date and the ended state together carry the time qualifier.",
+                "author": "agent_proposed",
+                "human_review": "pending"
+              },
+              "substitutes": [
+                {
+                  "id": "historical-label-free",
+                  "start": 16157,
+                  "end": 16201,
+                  "text": "2020년에 S2는 S3를 직접 보관했다. 2025년부터 그 보관은 중단되었다.",
+                  "review": {
+                    "author": "agent_proposed",
+                    "human_review": "pending",
+                    "rationale": "Removes only the fixture label \"구간 3 과거 기록: \"; the body keeps every required marker and stays unique in its chunk."
+                  }
+                }
+              ]
+            },
+            {
+              "id": "missing_entity",
+              "canonical": {
+                "start": 16202,
+                "end": 16258,
+                "text": "구간 3 미등록 대상: S2는 Outside3를 직접 호출한다. Outside3는 승인 개체에 없다."
+              },
+              "required_markers": {
+                "markers": [
+                  "Outside3를",
+                  "승인 개체에 없다"
+                ],
+                "rationale": "The unregistered target and the statement that it is not an approved entity carry the dictionary restriction.",
+                "author": "agent_proposed",
+                "human_review": "pending"
+              },
+              "substitutes": [
+                {
+                  "id": "missing_entity-label-free",
+                  "start": 16215,
+                  "end": 16258,
+                  "text": "S2는 Outside3를 직접 호출한다. Outside3는 승인 개체에 없다.",
+                  "review": {
+                    "author": "agent_proposed",
+                    "human_review": "pending",
+                    "rationale": "Removes only the fixture label \"구간 3 미등록 대상: \"; the body keeps every required marker and stays unique in its chunk."
+                  }
+                }
+              ]
+            },
+            {
+              "id": "missing_relation",
+              "canonical": {
+                "start": 16259,
+                "end": 16296,
+                "text": "구간 3 소유: S2는 S3를 소유한다. 소유는 승인 관계에 없다."
+              },
+              "required_markers": {
+                "markers": [
+                  "소유",
+                  "승인 관계에 없다"
+                ],
+                "rationale": "The unregistered relation and the statement that it is not an approved relation carry the dictionary restriction.",
+                "author": "agent_proposed",
+                "human_review": "pending"
+              },
+              "substitutes": [
+                {
+                  "id": "missing_relation-label-free",
+                  "start": 16268,
+                  "end": 16296,
+                  "text": "S2는 S3를 소유한다. 소유는 승인 관계에 없다.",
+                  "review": {
+                    "author": "agent_proposed",
+                    "human_review": "pending",
+                    "rationale": "Removes only the fixture label \"구간 3 소유: \"; the body keeps every required marker and stays unique in its chunk."
+                  }
+                }
+              ]
+            }
+          ],
+          "coverage": [
+            {
+              "predicate": "calls",
+              "expected_status": "extracted",
+              "required_obligation_ids": [
+                "conditional",
+                "missing_entity"
+              ]
+            },
+            {
+              "predicate": "archives",
+              "expected_status": "not_representable",
+              "required_obligation_ids": [
+                "historical"
+              ]
+            },
+            {
+              "predicate": "mirrors",
+              "expected_status": "no_evidence",
+              "required_obligation_ids": []
+            }
+          ],
+          "gap_pairs": [
+            [
+              "qualifier_not_representable",
+              "conditional"
+            ],
+            [
+              "qualifier_not_representable",
+              "historical"
+            ],
+            [
+              "missing_entity",
+              "missing_entity"
+            ],
+            [
+              "missing_relation",
+              "missing_relation"
+            ]
+          ]
+        }
+      ]
+    }
+  }
+}
