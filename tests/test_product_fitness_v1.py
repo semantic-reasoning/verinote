@@ -471,12 +471,24 @@ class ProductFitnessV1(unittest.TestCase):
         status = self.failed(result, 'status_mismatch')
         self.assertEqual([(f['predicate'], f['kind'], f['category']) for f in status], [('archives', 'evidence', 'product_evidence')])
         self.assertEqual(pf.failure_vector(self.run_fixture('historical_status_no_evidence')), [('status_mismatch', 'label')])
-    def test_loaders_reject_symlinks_and_incomplete_chunk_sets(self):
+    def test_load_spec_with_a_symlinked_spec_json_raises_product_fitness_file(self):
         with tempfile.TemporaryDirectory() as root:
             link = Path(root)/'spec.json'; link.symlink_to(pf.CRITERIA_ROOT/'spec.json')
-            with self.assertRaisesRegex(ValueError, 'product_fitness_file:spec.json'):
+            with self.assertRaisesRegex(ValueError, r'^product_fitness_file:spec\.json$'):
                 pf.load_spec(root)
-        with self.assertRaisesRegex(ValueError, 'product_fitness_chunk_identity'):
+
+    def test_assess_with_no_chunk_outputs_raises_product_fitness_chunk_identity(self):
+        with self.assertRaisesRegex(ValueError, r'^product_fitness_chunk_identity$'):
             pf.assess(self.case, [], self.entry, self.spec)
+
+    def test_load_registry_with_three_chunk_indices_reordered_or_its_first_chunk_removed_raises_product_fitness_registry_chunks(self):
+        def reorder(rows):
+            for row, index in zip(rows, (1, 3, 2), strict=True): row['index'] = index
+        for name, edit in (('reordered', reorder), ('first_removed', lambda rows: rows.pop(0))):
+            raw = json.loads((pf.CRITERIA_ROOT/'registry.json').read_text(encoding='utf-8')); edit(raw['cases']['three']['chunks'])
+            with self.subTest(edit=name), tempfile.TemporaryDirectory() as root:
+                (Path(root)/'registry.json').write_text(json.dumps(raw, ensure_ascii=False), encoding='utf-8')
+                with self.assertRaisesRegex(ValueError, r'^product_fitness_registry_chunks$'):
+                    pf.load_registry(root)
 
 if __name__ == '__main__': unittest.main()
