@@ -13,9 +13,8 @@ to a separate diagnostic file, never into the retained artifact directory.
 
 The supported Claude history is `768-threshold-v2-sonnet`, report SHA-256
 `72a63ca70e3cfdc9bd9a771999a65ed537bb584d5c8aacfe054c2e4ece981a5f`.
-Before interpreting it, the diagnostic compares the complete retained file index,
-checks every captured current core/script/document hash against the captured
-manifest, and calls the existing offline `evaluate_saved`. A preserved rejected
+Before interpreting it, the diagnostic compares the complete retained file index
+and calls the existing offline `evaluate_saved`. A preserved rejected
 prefix with any unverified later artifacts is insufficient here. Verification
 failure exits with status 2 and is distinct from a production or fidelity failure.
 

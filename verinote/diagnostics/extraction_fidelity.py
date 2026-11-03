@@ -164,17 +164,18 @@ def assess_outputs(case, chunk_outputs):
             'scope': 'Frozen finite source-span obligations; no general language entailment or model judge.'}
 
 
-def _authenticate_current(environment):
-    """The historical verifier checks retained copies, not current core hashes."""
-    hashes = environment['source_hashes']
-    for relative, expected in hashes.items():
+def _check_recorded_paths(environment):
+    """Raise recorded_implementation_path unless each recorded source path is relative, has no '..' part
+    and has verinote, scripts or docs as its first part; return a copy of the recorded hashes.
+
+    No hash is compared here. evaluate_saved compares the recorded hashes with the retained implementation copies.
+    """
+    recorded_hashes = environment['source_hashes']
+    for relative in recorded_hashes:
         path = Path(relative)
         if path.is_absolute() or '..' in path.parts or not path.parts or path.parts[0] not in ('verinote', 'scripts', 'docs'):
-            raise ArtifactVerificationError('current_implementation_path')
-        current = REPO/path
-        if current.is_symlink() or _hash(current) != expected:
-            raise ArtifactVerificationError('current_implementation_mismatch:'+relative)
-    return dict(hashes)
+            raise ArtifactVerificationError('recorded_implementation_path')
+    return dict(recorded_hashes)
 
 
 def diagnose(root=DEFAULT_ROOT):
@@ -190,7 +191,7 @@ def diagnose(root=DEFAULT_ROOT):
         if retained != {key: value for key, value in before.items() if key not in ('index.json', 'evaluation.json')}:
             raise ArtifactVerificationError('raw_index_mismatch')
         report = _read(root/'report.json', MAX_REPORT_BYTES)
-        current_hashes = _authenticate_current(report['environment'])
+        recorded_hashes = _check_recorded_paths(report['environment'])
         verified = evaluate_saved(root)
         if (verified.get('verdict') != 'rejected' or verified.get('unverified_other_records') or
                 any('verification_failed' in reason for reason in verified.get('reasons', []))):
@@ -241,12 +242,11 @@ def diagnose(root=DEFAULT_ROOT):
         if result['finite_gold'] != row['quality']['evaluation']:
             raise ArtifactVerificationError('frozen_evaluator_linkage')
         if before != file_index(root): raise ArtifactVerificationError('raw_artifacts_changed')
-        _authenticate_current(report['environment'])
         result.update(schema_version=SCHEMA_VERSION, diagnostic_version=DIAGNOSTIC_VERSION,
                       diagnostic_implementation={'scope': 'Current diagnostic, not authenticated by the historical capture',
                           'source_hashes': {path: _hash(REPO/path) for path in DIAGNOSTIC_PATHS}},
                       historical_authentication={'report_sha256': REPORT_SHA256, 'raw_index_sha256': digest(before),
-                          'current_source_hashes': current_hashes, 'verification': verified, 'raw_unchanged': True},
+                          'recorded_source_hashes': recorded_hashes, 'verification': verified, 'raw_unchanged': True},
                       call_linkages=linkages, source_sha256=case['source_sha256'], generation_requests=0,
                       candidate_evaluated=False)
         return result

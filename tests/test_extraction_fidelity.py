@@ -1,5 +1,6 @@
 """Frozen finite obligations and strict read-only historical authentication."""
 import copy
+import json
 import shutil
 import sqlite3
 import tempfile
@@ -7,6 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from verinote import extraction_threshold_ab_runner as runner
 from verinote.diagnostics import extraction_fidelity as diagnostic
 from verinote.extraction_ab_runner import file_index
 from verinote.extraction_evaluation import (
@@ -15,6 +17,9 @@ from verinote.extraction_evaluation import (
     ideal_outputs,
     load_case,
 )
+from verinote.usage import atomic_json
+
+RETAINED_REPORT = json.loads((diagnostic.DEFAULT_ROOT/'report.json').read_text(encoding='utf-8'))
 
 
 class FidelityObligations(unittest.TestCase):
@@ -164,17 +169,33 @@ class PinnedClaudeReplay(unittest.TestCase):
         missing = [(r['index'], c['id']) for r in result['obligations'] for c in r['claim_obligations'] if not c['passed']]
         self.assertEqual(missing, [(1, 'negated'), (1, 'missing_relation'), (2, 'negated'), (2, 'missing_relation'), (3, 'missing_relation')])
         self.assertEqual(set(result['diagnostic_implementation']['source_hashes']), set(diagnostic.DIAGNOSTIC_PATHS))
-        self.assertTrue(all(p not in result['historical_authentication']['current_source_hashes'] for p in diagnostic.DIAGNOSTIC_PATHS))
+        self.assertTrue(all(p not in result['historical_authentication']['recorded_source_hashes'] for p in diagnostic.DIAGNOSTIC_PATHS))
 
-    def test_current_core_script_or_docs_mismatch_fails_before_interpretation(self):
+    def test_recorded_source_hashes_equal_the_retained_report_environment_source_hashes(self):
+        result = diagnostic.diagnose()
+        self.assertEqual(result['historical_authentication']['recorded_source_hashes'],
+                         RETAINED_REPORT['environment']['source_hashes'])
+
+    def test_check_recorded_paths_raises_recorded_implementation_path_for_an_absolute_a_dotdot_an_empty_and_a_tests_path(self):
+        for relative in ('/verinote/x.py', 'verinote/../tests/x.py', '', 'tests/x.py'):
+            with self.subTest(relative=relative), \
+                 self.assertRaisesRegex(diagnostic.ArtifactVerificationError, '^recorded_implementation_path$'):
+                diagnostic._check_recorded_paths({'source_hashes': {'verinote/documents.py': '0'*64, relative: '0'*64}})
+
+    def test_diagnose_result_equals_its_baseline_with_extraction_fidelity_hash_forged_for_checkout_paths_of_each_non_verinote_recorded_key_verinote_documents_py_and_files_directly_under_verinote(self):
+        baseline = diagnostic.diagnose()
+        top = diagnostic.REPO/'verinote'
+        fixed = sorted(p for p in RETAINED_REPORT['environment']['source_hashes'] if not p.startswith('verinote/'))
+        targets = [(key, lambda path, key=key: path == diagnostic.REPO/key) for key in fixed]
+        targets.append(('verinote/documents.py', lambda path: path == top/'documents.py'))
+        targets.append(('non-verinote recorded keys and files directly under verinote at once',
+                        lambda path: path.parent == top or path in {diagnostic.REPO/key for key in fixed}))
         original_hash = diagnostic._hash
-        for relative in ('verinote/service.py', 'scripts/benchmark_extraction_threshold_ab.py', 'docs/extraction-threshold-decision.md'):
-            def altered(path, relative=relative):
-                return '0'*64 if Path(path) == diagnostic.REPO/relative else original_hash(path)
-            with self.subTest(relative=relative), patch.object(diagnostic, '_hash', side_effect=altered), \
-                 patch.object(diagnostic, 'evaluate_saved', side_effect=AssertionError('must authenticate first')):
-                with self.assertRaisesRegex(diagnostic.ArtifactVerificationError, 'current_implementation_mismatch'):
-                    diagnostic.diagnose()
+        for label, forged in targets:
+            def altered(path, forged=forged):
+                return '0'*64 if forged(Path(path)) else original_hash(path)
+            with self.subTest(label), patch.object(diagnostic, '_hash', side_effect=altered):
+                self.assertEqual(diagnostic.diagnose(), baseline)
 
     def test_raw_corruption_and_rejected_unverified_prefix_are_not_a_diagnosis(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -209,3 +230,41 @@ class PinnedClaudeReplay(unittest.TestCase):
         with patch.object(diagnostic, 'file_index', return_value={'report.json': {'sha256': '0'*64}}):
             with self.assertRaisesRegex(diagnostic.ArtifactVerificationError, 'report_identity_mismatch'):
                 diagnostic.diagnose()
+
+
+class RetainedCopyTampering(unittest.TestCase):
+    def _outcomes(self, tamper):
+        """Copy the 768 root, apply tamper, rebuild index.json, and return the diagnose() message
+        (None if it returns), the evaluate_saved verdict, and verify_manifest's (type, str) or None."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)/'history'; shutil.copytree(diagnostic.DEFAULT_ROOT, root)
+            tamper(root)
+            atomic_json(root/'index.json', file_index(root, excluded=('index.json', 'evaluation.json')))
+            try:
+                diagnostic.diagnose(root); diagnosis = None
+            except diagnostic.ArtifactVerificationError as exc:
+                diagnosis = str(exc)
+            verdict = runner.evaluate_saved(root)['verdict']
+            report = json.loads((root/'report.json').read_text(encoding='utf-8'))
+            try:
+                runner.verify_manifest(root, report['environment'], report['plan'], report['limits']); manifest = None
+            except (ValueError, KeyError, OSError) as exc:
+                manifest = (type(exc), str(exc))
+            return diagnosis, verdict, manifest
+
+    @staticmethod
+    def _rewrite_environment(root, change):
+        """Apply change to the environment in report.json and to environment.json."""
+        report = json.loads((root/'report.json').read_text(encoding='utf-8')); change(report['environment'])
+        (root/'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+        environment = json.loads((root/'environment.json').read_text(encoding='utf-8')); change(environment)
+        atomic_json(root/'environment.json', environment)
+
+    def test_service_py_copy_with_a_comment_and_its_hash_updated_in_report_and_environment_json_gives_report_identity_mismatch_rejected_and_no_verify_manifest_error(self):
+        def tamper(root):
+            retained = root/'implementation/verinote/service.py'
+            retained.write_bytes(retained.read_bytes()+b'# c\n'); value = diagnostic._hash(retained)
+            self._rewrite_environment(root, lambda environment: environment['source_hashes'].__setitem__('verinote/service.py', value))
+        # diagnose() rejects this edit through its REPORT_SHA256 check; verify_manifest raises nothing
+        # and evaluate_saved returns verdict rejected.
+        self.assertEqual(self._outcomes(tamper), ('report_identity_mismatch', 'rejected', None))
