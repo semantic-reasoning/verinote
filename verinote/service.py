@@ -12,6 +12,8 @@ from pathlib import Path
 
 from .agents import CLI, PROVIDERS, validate_model
 from .call_validation import caller_validation
+from .dictionary_context import prepare as prepare_dictionary_prompt
+from .dictionary_context import validate_context_bytes
 from .documents import chunks
 from .engine import query
 from .extraction_checkpoint import CHUNK_TIMEOUT, ExtractionCheckpoint
@@ -24,9 +26,9 @@ from .extraction_coverage import (
     write_report,
 )
 from .ontology import (
+    MAX_DICTIONARY_CONTEXT_BYTES,
     MAX_QUOTE_REPAIR_CALLS,
     apply_quote_repairs,
-    bounded_prompt,
     dictionary_context,
     dictionary_fact,
     extraction_prompts,
@@ -252,6 +254,7 @@ class Service:
                 if spec.model != model or (extraction_policy is None and spec.capacity != extraction_concurrency):
                     raise ValueError('추출 호출자 계약 불일치')
                 experiment = experiment_request(spec) if extraction_policy is None else policy_request(spec, extraction_policy)
+            context_limit = validate_context_bytes(self.store.settings().get('dictionary_context_bytes', MAX_DICTIONARY_CONTEXT_BYTES))
             options, transport = self.register_transport(agent, model, stage=stage, max_tokens=max_tokens, answer_reserve_tokens=answer_reserve_tokens)
             if not self.slots.acquire(blocking=False):
                 raise ValueError('작업 대기열이 가득 찼습니다.')
@@ -261,8 +264,12 @@ class Service:
             try:
                 run = self.store.create_run(document_id, agent, model, stage, expected_version, expected_generation, **({'regenerate': regenerate} if regenerate is not None else {}), **({'execution_options': options} if options is not None else {}), **({'extraction_options': experiment} if experiment is not None else {}))
                 timing.bind(run)
+                from .usage import atomic_json
+                policy_folder = self.root / 'runs' / run['id']
+                policy_folder.mkdir(parents=True, exist_ok=True)
+                atomic_json(policy_folder/'context-policy.json', {'schema_version': 1, 'run_id': run['id'], 'dictionary_context_bytes': context_limit})
                 if experiment is not None: self.registered_extractions[run['id']] = copy.deepcopy(run['extraction_options'])
-                self.pool.submit(self.extract, copy.deepcopy(run), transport, self.relation_type_warning_threshold, timing)
+                self.pool.submit(self.extract, copy.deepcopy(run), transport, self.relation_type_warning_threshold, timing, context_limit)
                 return run
             except Exception as exc:
                 try:
@@ -273,7 +280,7 @@ class Service:
                     self.slots.release()
                 raise
 
-    def extract(self, run, transport=None, relation_type_warning_threshold=None, timing=None):
+    def extract(self, run, transport=None, relation_type_warning_threshold=None, timing=None, context_limit=MAX_DICTIONARY_CONTEXT_BYTES):
         from .extraction_timing import create_timing, error_kind
         if timing is None:
             timing = create_timing(self.root, run['agent'], run['stage'], submitted=False, schema_version=2 if run.get('extraction_options') is not None else 1)
@@ -304,11 +311,12 @@ class Service:
                     cli = self._registered_extraction_transport(run, spec)
             else:
                 cli = transport if transport is not None else self.job_cli(run)
+            context_limit = validate_context_bytes(context_limit)
             self.store.run_status(run['id'], 'running')
             doc = self.store.document(run['document_id'], run['version'])
             if run['stage'] == 'ontology':
                 from .dictionary_pipeline import generate_dictionary
-                dictionary, detail = generate_dictionary(self.store, cli, self.root, run, doc, relation_type_warning_threshold=self.relation_type_warning_threshold if relation_type_warning_threshold is None else relation_type_warning_threshold)
+                dictionary, detail = generate_dictionary(self.store, cli, self.root, run, doc, relation_type_warning_threshold=self.relation_type_warning_threshold if relation_type_warning_threshold is None else relation_type_warning_threshold, context_limit=context_limit)
                 self.store.finish_run(run['id'], dictionary=dictionary, detail=detail)
                 return
             timing.configure(doc)
@@ -338,8 +346,9 @@ class Service:
             def prepare(raw):
                 index, (offset, chunk) = raw
                 payload = {'filename': doc['filename'], 'version': doc['version'], 'offset': offset, 'text': chunk}
-                prompt = bounded_prompt(extraction_prompt, payload | {'approved_dictionary': run['ontology'] | {'payload': dictionary_context(run['ontology']['payload'])}})
                 folder = self.root / 'runs' / run['id'] / str(index)
+                prompt = prepare_dictionary_prompt(cli, run['agent'], extraction_prompt,
+                            payload | {'approved_dictionary': run['ontology'] | {'payload': dictionary_context(run['ontology']['payload'])}}, context_limit, folder)
                 return ChunkTask(index, offset, chunk, payload, prompt, folder, time.monotonic() + CHUNK_TIMEOUT)
 
             def call_task(task, prompt, target):
@@ -398,10 +407,10 @@ class Service:
                                 self.store.run_status(run['id'], 'running', f'청크 {index} · {locations}: 원문 인용 보정 중 (추가 호출 {repair_calls + 1}/{MAX_QUOTE_REPAIR_CALLS})')
                                 try:
                                     with timing.section('repair', index):
-                                        repair_prompt = bounded_prompt(quote_repair_prompt, payload | {
-                                            'issues': issues, 'approved_dictionary': run['ontology']})
-                                        repair_calls += 1
                                         repair_folder = folder / 'quote-repair'
+                                        repair_prompt = prepare_dictionary_prompt(cli, run['agent'], quote_repair_prompt,
+                                            payload | {'issues': issues, 'approved_dictionary': run['ontology']}, context_limit, repair_folder)
+                                        repair_calls += 1
                                         response = complete_chunk(repair_prompt, repair_folder)
                                         with caller_validation(cli, repair_folder, run['agent']), timing.section('repair_validation_with_bookkeeping', index):
                                             if time.monotonic() > deadline:

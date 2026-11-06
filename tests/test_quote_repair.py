@@ -165,11 +165,11 @@ class QuoteRepair(unittest.TestCase):
         self.assertEqual(run['status'], 'error')
         self.assertIn('시간 제한', run['detail'])
         self.assertEqual(len(calls), 2); self.assert_no_candidates(doc)
-        def limited(instructions, payload):
+        def limited(instructions, payload, **kwargs):
             if instructions == QUOTE_REPAIR_PROMPT:
                 raise ValueError('추출 프롬프트 120,000바이트 제한 초과')
-            return bounded_prompt(instructions, payload)
-        with patch('verinote.service.bounded_prompt', side_effect=limited):
+            return bounded_prompt(instructions, payload, **kwargs)
+        with patch('verinote.ontology.bounded_prompt', side_effect=limited):
             run, doc, calls = self.execute([broken()])
         self.assertEqual(run['status'], 'error')
         self.assertIn('바이트 제한', run['detail'])

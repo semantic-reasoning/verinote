@@ -413,6 +413,7 @@ async function loadSettings() {
   $('#ask-model').value=config.models[config.selected]||'';
   syncProviderControls('ask');
   modelCatalogEpoch++;
+  $('#dictionary-context-bytes').value=config.dictionary.context_bytes;
   $('#provider-settings').innerHTML=config.providers.map(p=>`<div class="provider-row"><input type="radio" id="provider-${p.id}" name="selected" value="${p.id}" ${config.selected===p.id?'checked':''} aria-label="${esc(p.name)} 기본 선택"><label class="provider-name" for="provider-${p.id}"><strong>${esc(p.name)}</strong><span class="muted">${providerStatus(p)}</span></label><div class="model-fields"><label>모델 ID<input name="model-${p.id}" value="${esc(config.models[p.id]||'')}" maxlength="150" placeholder="${modelPlaceholder(p.id)}" ${['http','local_http'].includes(p.transport)&&config.selected===p.id?'required':''}></label>${cliModelPicker(p)}</div></div>`).join('');
   for(const radio of document.querySelectorAll('[name=selected]')){
     radio.onchange=()=>{for(const id of ['openrouter','ollama']){const model=$(`[name="model-${id}"]`);if(model)model.required=radio.value===id;}};
@@ -421,7 +422,7 @@ async function loadSettings() {
   await loadUsageRates();
 }
 $('#settings-form').onsubmit=e=>{e.preventDefault();attempt(async()=>{
-  const form=e.target;await api('/api/settings','PUT',{selected:form.elements.selected.value,models:Object.fromEntries(config.providers.map(p=>[p.id,form.elements['model-'+p.id].value]))});await loadSettings();if($('#extract-agent')){$('#extract-agent').value=config.selected;$('#extract-model').value=config.models[config.selected]||'';syncProviderControls('extract');}notice('에이전트별 모델 설정을 저장했습니다.');
+  const form=e.target;await api('/api/settings','PUT',{selected:form.elements.selected.value,models:Object.fromEntries(config.providers.map(p=>[p.id,form.elements['model-'+p.id].value])),dictionary_context_bytes:Number(form.elements.dictionary_context_bytes.value)});await loadSettings();if($('#extract-agent')){$('#extract-agent').value=config.selected;$('#extract-model').value=config.models[config.selected]||'';syncProviderControls('extract');}notice('모델과 사전 정의 입력 예산을 저장했습니다. 새 작업부터 적용됩니다.');
 });};
 $('#query-form').onsubmit=e=>{e.preventDefault();attempt(async()=>{
   const data=Object.fromEntries(new FormData(e.target));if(!data.snapshot)delete data.snapshot;

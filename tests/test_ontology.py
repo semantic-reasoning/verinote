@@ -120,8 +120,8 @@ class DictionaryContract(unittest.TestCase):
         source=' '.join(names)
         value={'entities':[{'id':name,'name':name,'type':'Thing','quote':name} for name in names],
                'aliases':[],'relations':[]}
-        with self.assertRaisesRegex(ValueError,'정의 문맥'):
-            validate_dictionary(value,source)
+        self.assertEqual(validate_dictionary(value,source),value)
+        self.assertGreater(len(json.dumps(dictionary_context(value),ensure_ascii=False).encode()),MAX_DICTIONARY_CONTEXT_BYTES)
         compact={'entities':[{'id':f'entity-{i}','name':'가','type':'T','quote':'가'*8000} for i in range(4)],
                  'aliases':[],'relations':[]}
         valid=validate_dictionary(compact,'가'*8000)
