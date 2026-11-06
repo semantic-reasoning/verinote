@@ -80,25 +80,31 @@ class QuestionBudget(unittest.TestCase):
         self.assertEqual(result['evidence']['E1']['result'], before); self.assertEqual(raw, before)
         self.assertEqual([d['status'] for d in result['context_budget']], ['within_limit', 'exceeded'])
 
-    def test_ollama_initial_oversize_is_rejected_before_generate_with_diagnostics(self):
+    def test_ollama_large_catalog_is_windowed_before_generate_with_diagnostics(self):
         for i in range(35):
             self.store.register(f'합성{i}'+('가'*180), f'd{i}.txt', b'x', 'x')
         paths = []
         def request(path, *args, **kwargs):
             paths.append(path)
-            self.assertEqual(path, '/api/tags')
-            return {'models': [{'name': MODEL, 'digest': 'a'*64}]}
+            if path == '/api/tags':
+                return {'models': [{'name': MODEL, 'digest': 'a'*64}]}
+            self.assertEqual(path, '/api/generate')
+            output = tool() if paths.count('/api/generate') == 1 else {'answer': {'claims': [], 'unknowns': ['조회한 범위에서는 확인하지 못했습니다.']}}
+            return {'model': MODEL, 'response': json.dumps(output), 'done': True, 'done_reason': 'stop', 'prompt_eval_count': 100, 'eval_count': 10}
         cli = CLI(persistent=False); self.addCleanup(cli.close)
         service = Service(self.store, self.root, cli); self.addCleanup(service.close)
         with patch('verinote.ollama.request', side_effect=request):
             job = service.ask({'question': '합성 자료의 승인 근거는?', 'agent': 'ollama', 'model': MODEL})
             service.pool.shutdown(wait=True)
         result = self.store.question(job['id']); record = result['context_budget'][0]
-        self.assertEqual(result['status'], 'error'); self.assertNotIn('/api/generate', paths)
+        self.assertEqual(result['status'], 'success', result['error']); self.assertIn('/api/generate', paths)
         self.assertEqual(record['transport_limit_bytes'], input_byte_limit(result['execution_options']))
-        self.assertGreater(record['prompt_bytes'], record['effective_limit_bytes'])
+        self.assertGreater(record['full_prompt_bytes'], record['effective_limit_bytes'])
+        self.assertLessEqual(record['prompt_bytes'], record['effective_limit_bytes'])
+        self.assertEqual(record['selection'], 'windowed')
+        self.assertEqual(record['model_token_admission'], 'unknown')
         self.assertLess(record['prompt_bytes'], record['application_limit_bytes'])
-        self.assertFalse(list((self.root/'questions'/job['id']).glob('llm-*')))
+        self.assertTrue(list((self.root/'questions'/job['id']).glob('llm-*')))
 
     def test_repeated_graphs_reach_second_request_in_actual_ollama_job(self):
         graphs = copy.deepcopy(list(state()['evidence'].values()))
