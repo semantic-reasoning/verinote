@@ -120,7 +120,7 @@ class QuoteRepair(unittest.TestCase):
             {'repairs': repair()['repairs'], 'facts': []},
             {'repairs': [repair()['repairs'][0] | {'subject': 'changed'}]},
             repair('facts.1.quote'), repair('claims.0.quote'), repair('facts.-1.quote'),
-            repair(quote='not present'), repair(quote=''), repair(quote=None),
+            repair(quote=None),
             {'repairs': [{'path': [], 'quote': SOURCE}]},
         ]
         for correction in invalid:
@@ -137,27 +137,26 @@ class QuoteRepair(unittest.TestCase):
         run, doc, calls = self.execute([value, {'repairs': repair()['repairs'] * 2}])
         self.assertEqual(run['status'], 'error'); self.assert_no_candidates(doc)
 
-    def test_wrong_chunk_evidence_is_not_accepted(self):
+    def test_reply_quoting_another_chunk_excludes_the_row(self):
         next_chunk = '다른 문단에만 있는 문장이다.'
         source = SOURCE.ljust(8000) + next_chunk
-        run, doc, calls = self.execute([broken(), repair(quote=next_chunk)], source)
-        self.assertEqual(run['status'], 'error')
-        self.assertIn('원문에 없는 인용', run['detail'])
-        self.assertEqual(len(calls), 2)
-        self.assert_no_candidates(doc)
+        second = extraction_response([], page={'title': 't', 'claims': [{'heading': 'h', 'text': 'x', 'quote': next_chunk}]})
+        run, doc, calls = self.execute([broken(), repair(quote=next_chunk), second], source)
+        self.assertEqual(run['status'], 'success', run['detail'])
+        self.assertIn('응답 관계 2개 중 1개', run['detail'])
+        self.assertEqual(len(calls), 3)
+        self.assertEqual([i['payload']['quote'] for i in doc['items'] if i['kind'] == 'fact'], [FACTS[1]['quote']])
 
-    def test_two_repairs_per_run_and_no_partial_chunks(self):
+    def test_two_and_three_chunk_runs_get_one_repair_per_chunk(self):
         chunk = SOURCE.ljust(8000)
         run, doc, calls = self.execute([broken(), repair(), broken(), repair()], chunk * 2)
         self.assertEqual(run['status'], 'success', run['detail'])
         self.assertIn('추가 호출 2회', run['detail'])
         self.assertEqual(len(calls), 4)
-        run, doc, calls = self.execute([broken(), repair(), broken(), repair(), broken()], chunk * 3)
-        self.assertEqual(run['status'], 'error')
-        self.assertIn('청크 3', run['detail'])
-        self.assertIn('2회 한도', run['detail'])
-        self.assertEqual(len(calls), 5)
-        self.assert_no_candidates(doc)
+        run, doc, calls = self.execute([broken(), repair(), broken(), repair(), broken(), repair()], chunk * 3)
+        self.assertEqual(run['status'], 'success', run['detail'])
+        self.assertIn('추가 호출 3회', run['detail'])
+        self.assertEqual(len(calls), 6)
 
     def test_repair_timeout_and_prompt_limit_stop_without_retry(self):
         run, doc, calls = self.execute([broken(), TimeoutError('CLI 실행 시간 제한 초과')])
@@ -198,14 +197,13 @@ class QuoteRepair(unittest.TestCase):
         self.assertEqual(self.store.document(old_doc['id'])['items'], [])
         self.assertEqual(json.loads(calls[1]['prompt'].split('입력(JSON):\n')[1])['text'], SOURCE)
 
-    def test_error_locates_45th_fact_without_exposing_quote(self):
+    def test_exclusion_detail_locates_45th_fact_without_exposing_quote(self):
         value = extraction_response([FACTS[0] for _ in range(48)])
         value['facts'][44]['quote'] = 'private-looking-invalid-quote'
         run, doc, calls = self.execute([value, repair('facts.44.quote', 'also-invalid')])
-        self.assertEqual(run['status'], 'error')
+        self.assertEqual(run['status'], 'success', run['detail'])
         self.assertIn('청크 1', run['detail']); self.assertIn('관계 45 인용', run['detail'])
         self.assertNotIn('private-looking', run['detail']); self.assertNotIn('also-invalid', run['detail'])
-        self.assert_no_candidates(doc)
 
 
 if __name__ == '__main__':

@@ -201,7 +201,7 @@ class Caller:
         ledger = self.ledger; ledger.check()
         folder = Path(folder); repair = folder.name == 'quote-repair'
         chunk = int(folder.parent.name if repair else folder.name)
-        if repair and (sum(a['repair'] and a['document_key'] == self.row['key'] for a in ledger.attempts) >= 2
+        if repair and (sum(a['repair'] and a['document_key'] == self.row['key'] for a in ledger.attempts) >= 2  # This benchmark's own repair stop, not a product rule.
                 or any(a['repair'] and a['document_key'] == self.row['key'] and a['chunk'] == chunk for a in ledger.attempts)):
             ledger.stop('repair_limit'); raise Stopped('repair_limit')
         row = {'attempt': len(ledger.attempts)+1, 'document_key': self.row['key'], 'chunk': chunk,
@@ -402,7 +402,7 @@ def _run(output, *, synthetic=False, clock=None, invocation=None):
                 store.run_status(seed['id'], 'running'); store.finish_run(seed['id'], dictionary=case['dictionary'])
                 item = next(i for i in store.document(doc['id'])['items'] if i['kind'] == 'ontology')
                 store.review(item['id'], item['revision'], 'approved', 'Synthetic fixture', SYNTHETIC_REVIEW_REASON_V2)
-                service = BaselineService(store, artifact, CLI(), ledger=ledger, row=row, save=save)
+                service = BaselineService(store, artifact, CLI(), ledger=ledger, row=row, save=save, quote_repair_limit=2)
                 service.pool.shutdown(wait=True); service.pool = _Executor(max_workers=1)
                 job = service.start(doc['id'], 'ollama', _profile().model, expected_version=1, expected_generation=1)
                 row.update(run_id=job['id'], document_id=doc['id'])

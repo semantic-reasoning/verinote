@@ -24,7 +24,7 @@ Another hypothetical example: Atlas calls Billing.
 
 진단은 보존된 checkpoint 응답을 그대로 재평가한다. 별도 대조군 복사본에서만 `Actual configuration: Atlas calls Billing.`으로 문맥을 확장하면 품질이 통과한다. 최소 회귀 fixture도 같은 차이를 재현한다. 기존 gold·평가 코드·실제 출력은 바꾸지 않았다. 이는 fixture 오류보다 운영의 위치 식별 요구가 평가 계약보다 약하다는 근거다. 유일 위치가 의미 정확성을 보증하는 것은 아니며, 가정 문맥을 유일하게 인용해도 사실로 주장할 수 없다.
 
-후속 [#766](https://github.com/semantic-reasoning/verinote/issues/766)은 새 품질 계약에서 충분한 인용 문맥을 요구하고 기존 quote-only 보정 한도로 처리한다. 첫 occurrence를 임의 선택하지 않고, 위치를 식별하지 못하면 실패한다. 의미·coverage·기존 경로별 게시 계약을 유지하며 재개 호환성을 명시한다.
+후속 [#766](https://github.com/semantic-reasoning/verinote/issues/766)은 새 품질 계약에서 충분한 인용 문맥을 요구하고 기존 quote-only 보정 한도로 처리한다. 첫 occurrence를 임의 선택하지 않고, 위치를 식별하지 못하면 실패한다(#813 이후 제품은 보정 뒤에도 식별하지 못한 행만 저장에서 제외한다). 의미·coverage·기존 경로별 게시 계약을 유지하며 재개 호환성을 명시한다.
 
 ## Dense 지연: 응답 대기가 지배적, 원인은 미확정
 

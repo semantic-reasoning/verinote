@@ -216,8 +216,8 @@ class Timing(unittest.TestCase):
             result = original_checkpoint(*args); clock.advance(1); return result
         def issues(*args, **kwargs):
             result = original_issues(*args, **kwargs); clock.advance(1); return result
-        def page(*args):
-            result = original_page(*args); clock.advance(1); return result
+        def page(*args, **kwargs):
+            result = original_page(*args, **kwargs); clock.advance(1); return result
         with patch('verinote.service.ExtractionCheckpoint', side_effect=restore), patch('verinote.service.extraction_quote_issues', side_effect=issues), patch('verinote.service.validate_page', side_effect=page):
             run, report, _ = self.execute(doc, [broken(), repair()], clock=clock)
         self.assertEqual(run['status'], 'success', run['detail']); self.assertTrue(report['available'])

@@ -23,12 +23,13 @@ from .extraction_coverage import (
     new_report,
     read_report,
     repair_missing_indices,
+    resolve_quote_repairs,
+    saved_quote_paths,
     write_repair_audit,
     write_report,
 )
 from .ontology import (
     MAX_DICTIONARY_CONTEXT_BYTES,
-    MAX_QUOTE_REPAIR_CALLS,
     apply_quote_repairs,
     dictionary_context,
     dictionary_fact,
@@ -42,8 +43,8 @@ from .transports import reasoning_budget, validate_job_tokens
 _UNSET_TOKENS = object()
 
 
-class NoRepresentableFacts(ValueError):
-    """Every fact of a complete extraction was refused: no candidates, no published claims, revision not consumed."""
+class NothingToPublish(ValueError):
+    """Exclusions left a complete extraction unpublishable: no candidates, no published claims, revision not consumed."""
 
 
 def text(value, name, limit=200, *, allow_cr=False):
@@ -75,8 +76,8 @@ def validate_fact(value, source):
     return {k: text(value.get(k), k) for k in ('subject', 'predicate', 'object')} | {'quote': evidence(value.get('quote'), source)}
 
 
-def validate_page(value, source):
-    if not isinstance(value, dict) or not isinstance(value.get('claims'), list) or not 1 <= len(value['claims']) <= 192:
+def validate_page(value, source, *, allow_no_claims=False):
+    if not isinstance(value, dict) or not isinstance(value.get('claims'), list) or not (0 if allow_no_claims else 1) <= len(value['claims']) <= 192:
         raise ValueError('위키 claims는 1~192개여야 합니다.')
     claims = []
     for c in value['claims']:
@@ -87,7 +88,7 @@ def validate_page(value, source):
 
 
 class Service:
-    def __init__(self, store, root, cli=None, *, credentials=None, relation_type_warning_threshold=20, extraction_caller=None, extraction_caller_factory=None):
+    def __init__(self, store, root, cli=None, *, credentials=None, relation_type_warning_threshold=20, extraction_caller=None, extraction_caller_factory=None, quote_repair_limit=None):
         if extraction_caller_factory is not None and (extraction_caller is not None or not callable(extraction_caller_factory)):
             raise ValueError('추출 호출자 공급 계약 오류')
         from .openrouter import OpenRouter
@@ -100,6 +101,9 @@ class Service:
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='verinote-extract')
         self.slots = threading.BoundedSemaphore(8)
         self.extraction_lock = threading.RLock()
+        # None is the product: one repair per chunk, row-level exclusion. An integer is a benchmark's
+        # pre-registered contract: stop before the next repair, all-or-nothing, so no exclusion happens.
+        self.quote_repair_limit = quote_repair_limit
         self.extraction_caller = extraction_caller
         self.extraction_caller_factory = extraction_caller_factory
         self.extraction_owner = None
@@ -412,9 +416,9 @@ class Service:
                                 locations = ', '.join(quote_label(issue['path']) for issue in issues[:5])
                                 if len(issues) > 5:
                                     locations += f' 외 {len(issues) - 5}개'
-                                if repair_calls >= MAX_QUOTE_REPAIR_CALLS:
-                                    raise ValueError(f'{locations}: 원문에 없는 인용 또는 위치가 모호한 인용입니다. 문서당 인용 보정 {MAX_QUOTE_REPAIR_CALLS}회 한도에 도달했습니다.')
-                                self.store.run_status(run['id'], 'running', f'청크 {index} · {locations}: 원문 인용 보정 중 (추가 호출 {repair_calls + 1}/{MAX_QUOTE_REPAIR_CALLS})')
+                                if self.quote_repair_limit is not None and repair_calls >= self.quote_repair_limit:
+                                    raise ValueError(f'{locations}: 원문에 없는 인용 또는 위치가 모호한 인용입니다. 벤치마크 인용 보정 {self.quote_repair_limit}회 한도에 도달했습니다.')
+                                self.store.run_status(run['id'], 'running', f'청크 {index} · {locations}: 원문 인용 보정 중 (이번 실행 추가 호출 {repair_calls + 1}회째 · 청크당 1회)')
                                 try:
                                     with timing.section('repair', index):
                                         repair_folder = folder / 'quote-repair'
@@ -422,23 +426,34 @@ class Service:
                                             payload | {'issues': issues, 'approved_dictionary': run['ontology']}, context_limit, repair_folder)
                                         repair_calls += 1
                                         response = complete_chunk(repair_prompt, repair_folder)
-                                        with caller_validation(cli, repair_folder, run['agent']), timing.section('repair_validation_with_bookkeeping', index):
+                                        with caller_validation(cli, repair_folder, run['agent']) as repair_validation, timing.section('repair_validation_with_bookkeeping', index):
                                             if time.monotonic() > deadline:
                                                 raise TimeoutError(f'청크 실행 시간 제한 초과 ({CHUNK_TIMEOUT}초)')
-                                            output, changes = apply_quote_repairs(output, chunk, issues, response)
+                                            refused: list[dict] = []
+                                            if current_contract and self.quote_repair_limit is None:
+                                                output, changes, refused = resolve_quote_repairs(output, chunk, issues, response, contract_version)
+                                            else:
+                                                output, changes = apply_quote_repairs(output, chunk, issues, response)
+                                            if refused:
+                                                repair_validation.reject()
+                                            no_claims = bool(output.get('excluded_claims'))
                                             # Recheck the whole response; a repair cannot bypass any vocabulary/shape gate.
-                                            if extraction_quote_issues(output, chunk, run['ontology']['payload'], require_coverage=current_contract, contract_version=contract_version):
+                                            if extraction_quote_issues(output, chunk, run['ontology']['payload'], require_coverage=current_contract, contract_version=contract_version, allow_no_claims=no_claims):
                                                 raise ValueError('보정 후에도 원문에 없거나 위치가 모호한 인용이 있습니다.')
-                                            validate_page(output, chunk)
+                                            validate_page(output, chunk, allow_no_claims=no_claims)
                                             for fact in output['facts']:
                                                 dictionary_fact(fact, chunk, run['ontology']['payload'])
                                             repair_folder.mkdir(parents=True, exist_ok=True)
                                             (repair_folder / 'changes.json').write_text(json.dumps(changes, ensure_ascii=False, indent=2), encoding='utf-8')
+                                            if refused:
+                                                (repair_folder / 'refused.json').write_text(json.dumps(refused, ensure_ascii=False, indent=2), encoding='utf-8')
                                 except Exception as exc:
                                     raise ValueError(f'{locations}: 인용 보정 실패 (청크당 1회). {exc}') from exc
                                 repaired_quotes += len(changes)
-                                repair_locations.append(f'청크 {index}: {locations}')
-                            page = validate_page(output, chunk)
+                                if changes:
+                                    saved = [quote_label(path) for path in saved_quote_paths(changes, refused)]
+                                    repair_locations.append(f'청크 {index}: ' + ', '.join(saved[:5]) + (f' 외 {len(saved) - 5}개' if len(saved) > 5 else ''))
+                            page = validate_page(output, chunk, allow_no_claims=bool(output.get('excluded_claims')))
                         except ValueError as exc:
                             raise ValueError(f'청크 {index} · {exc}') from exc
                         claims.extend(page['claims'])
@@ -454,10 +469,13 @@ class Service:
                     timing.end_chunk(index=index)
             active_chunk = None
             unique = {json.dumps(f, sort_keys=True, ensure_ascii=False): f for f in facts}
-            if checkpoint is not None and not unique and checkpoint.exclusion_counts()[1]:
-                raise NoRepresentableFacts(f'응답 관계 {checkpoint.exclusion_counts()[1]}개가 모두 승인 사전의 표기·타입과 일치하지 않아 저장할 후보가 없습니다. 이번 실행의 위키 주장과 후보는 저장하지 않았고 이 사전 revision은 다시 추출할 수 있습니다. 사전을 수정·재승인하면 모든 청크를 새로 호출합니다. 다른 모델로 바꿀 수도 있지만 그 모델의 복구 기록이 있으면 검증된 청크를 재사용하므로 같은 실패로 끝날 수 있습니다.')
-            detail = (f'원문 인용 {repaired_quotes}개 보정 · 추가 호출 {repair_calls}회 ({"; ".join(repair_locations)}). 의미가 맞는지 원문과 대조한 뒤 승인하세요.'
-                      if repair_calls else '')
+            if checkpoint is not None and (reason := checkpoint.nothing_to_publish(claims, unique)):
+                raise NothingToPublish(reason)
+            shown = '; '.join(repair_locations[:5]) + (f' 외 {len(repair_locations) - 5}개 청크' if len(repair_locations) > 5 else '')
+            detail = (f'이번 실행 원문 인용 {repaired_quotes}개 보정 · 추가 호출 {repair_calls}회 ({shown} · 번호는 제외 뒤 기준).' if repaired_quotes
+                      else f'이번 실행 인용 보정 추가 호출 {repair_calls}회: 반영된 보정 없음.' if repair_calls else '')
+            if repair_calls or (checkpoint is not None and checkpoint.resumed_chunks):
+                detail = f'{detail} 의미가 맞는지 원문과 대조한 뒤 승인하세요.'.lstrip()
             if report is not None:
                 detail = f'관계 후보 {len(unique)}개 · 관계별 점검은 실행 기록에서 확인하세요. 새 후보는 별도 승인 전까지 그래프에 포함되지 않습니다. ' + detail
                 if not report_ok:
@@ -468,6 +486,9 @@ class Service:
                 detail += f' · 이번 실행 추출 점검 인덱스 {coverage_repairs}건 로컬 보정 (보정용 모델 호출 없음)'
             if checkpoint is not None and checkpoint.exclusion_notice():
                 detail = f'{checkpoint.exclusion_notice()} · {detail}'
+            if checkpoint is not None and checkpoint.quote_exclusion_notice():
+                detail = (f'{checkpoint.quote_exclusion_notice()} 이 사전 revision과 추출 방식으로는 다시 추출할 수 없고 제외 항목만 복구하는 기능은 없습니다. '
+                          f'사전을 수정·재승인해 재추출하면 모든 청크를 새로 호출하며 같은 결과가 나올 수 있습니다. · {detail}')
             with timing.section('publish'):
                 self.store.finish_run(run['id'], {'title': doc['title'], 'claims': claims}, list(unique.values()), detail=detail[:2000])
                 published = True
@@ -491,9 +512,11 @@ class Service:
                 detail += f' · 이번 실행 추출 점검 인덱스 {coverage_repairs}건 로컬 보정 (보정용 모델 호출 없음)'
             if checkpoint is not None:
                 checkpoint.finish('error')
-                if isinstance(exc, NoRepresentableFacts):
+                if isinstance(exc, NothingToPublish):
                     detail += f' · {checkpoint.summary()}'
                 else:
+                    if checkpoint.quote_exclusion_notice():
+                        detail += f' · {checkpoint.quote_exclusion_notice()}'
                     if checkpoint.exclusion_notice():
                         detail += f' · {checkpoint.exclusion_notice()}'
                     detail += f' · {checkpoint.summary()} · 같은 문서 버전·승인 사전·에이전트·모델로 다시 추출하면 검증 완료 청크 다음부터 이어갑니다.'

@@ -1,4 +1,4 @@
-"""Persist validated extraction prefixes without publishing partial candidates."""
+"""Persist validated extraction prefixes; candidates publish only after every chunk has validated."""
 import copy
 import json
 
@@ -7,6 +7,7 @@ from .ontology import (
     dictionary_fact,
     extraction_prompts,
     extraction_quote_issues,
+    quote_label,
 )
 from .store import canonical, digest
 from .usage import atomic_json, safe_file
@@ -86,14 +87,17 @@ class ExtractionCheckpoint:
 
     def validated(self, output, chunk):
         from .service import validate_page
-        if extraction_quote_issues(output, chunk, self.run['ontology']['payload'], require_coverage=True, contract_version=self.run['ontology']['extraction_contract']):
+        no_claims = isinstance(output, dict) and bool(output.get('excluded_claims'))
+        if extraction_quote_issues(output, chunk, self.run['ontology']['payload'], require_coverage=True, contract_version=self.run['ontology']['extraction_contract'], allow_no_claims=no_claims):
             raise ValueError('checkpoint contains ungrounded quotes')
-        page = validate_page(output, chunk)
+        page = validate_page(output, chunk, allow_no_claims=no_claims)
         facts = [dictionary_fact(fact, chunk, self.run['ontology']['payload']) for fact in output['facts']]
         result = page | {'facts': facts, 'coverage': copy.deepcopy(output['coverage']),
                          'dictionary_gaps': copy.deepcopy(output['dictionary_gaps'])}
         if output.get('excluded_facts'):
             result['excluded_facts'] = copy.deepcopy(output['excluded_facts'])
+        if output.get('excluded_claims'):
+            result['excluded_claims'] = copy.deepcopy(output['excluded_claims'])
         return result
 
     def write(self, name, value, limit):
@@ -129,9 +133,49 @@ class ExtractionCheckpoint:
         self.write('extraction-progress.json', self.state, 8192)
 
     def exclusion_counts(self):
-        """(response facts, excluded facts) over validated chunks, including reused ones."""
-        excluded = sum(len(output.get('excluded_facts', ())) for output in self.outputs)
-        return excluded + sum(len(output['facts']) for output in self.outputs), excluded
+        """(response facts, facts excluded for a dictionary mismatch) over validated chunks, including reused ones."""
+        rows = [row for output in self.outputs for row in output.get('excluded_facts', ())]
+        return len(rows) + sum(len(output['facts']) for output in self.outputs), sum(row['code'] != 'unverifiable_quote' for row in rows)
+
+    def quote_exclusions(self):
+        """(claims, facts, per-chunk locations) excluded after a repair, over validated chunks, including reused ones."""
+        claims, facts, places = 0, 0, []
+        for number, output in enumerate(self.outputs, 1):
+            found = [row['path'] for row in output.get('excluded_claims', ())]
+            claims += len(found)
+            rows = [row['path'] for row in output.get('excluded_facts', ()) if row['code'] == 'unverifiable_quote']
+            facts += len(rows)
+            labels = [quote_label(path) for path in found + rows]
+            if labels:
+                places.append(f'청크 {number}: ' + ', '.join(labels[:5]) + (f' 외 {len(labels) - 5}개' if len(labels) > 5 else ''))
+        return claims, facts, places
+
+    def quote_exclusion_notice(self):
+        claims, facts, places = self.quote_exclusions()
+        if not claims and not facts:
+            return ''
+        emitted_claims = claims + sum(len(output['claims']) for output in self.outputs)
+        shown = '; '.join(places[:5]) + (f' 외 {len(places) - 5}개 청크' if len(places) > 5 else '')
+        return (f'근거 불가로 저장하지 않음: 위키 주장 {emitted_claims}개 중 {claims}개·응답 관계 {self.exclusion_counts()[0]}개 중 {facts}개 '
+                f'({shown} · 번호는 보정을 요청한 응답 기준). 보정 뒤에도 인용이 원문의 한 위치로 확인되지 않았습니다.')
+
+    def nothing_to_publish(self, claims, facts):
+        """Why a complete extraction cannot publish, or ''. No facts alone does not stop it unless a dictionary mismatch removed some."""
+        emitted, mismatched = self.exclusion_counts()
+        refused_claims, refused_facts, _ = self.quote_exclusions()
+        if not claims and refused_claims:
+            reason = (f'위키 주장 {refused_claims}개가 모두 원문 인용을 확인하지 못해 저장할 주장이 없습니다. 이번 실행의 위키 주장과 후보는 저장하지 않았고 이 사전 revision은 다시 추출할 수 있습니다. '
+                      '모든 청크의 복구 기록이 남아 있으면 같은 에이전트·모델로 다시 실행해도 새 호출 없이 같은 결과로 끝납니다. '
+                      '사전을 수정·재승인하면 모든 청크를 새로 호출하며 비용이 다시 들고 같은 결과가 나올 수 있습니다. '
+                      '다른 모델로 바꿔도 모든 청크를 새로 호출하지만 그 모델의 복구 기록이 있으면 검증된 청크를 재사용합니다.')
+            return ' · '.join(filter(None, (reason, self.quote_exclusion_notice(), self.exclusion_notice())))
+        if not facts and mismatched:
+            what = (f'응답 관계 {mismatched}개가 모두 승인 사전의 표기·타입과 일치하지 않아' if not refused_facts else
+                    f'응답 관계 {emitted}개 중 {mismatched}개는 승인 사전의 표기·타입과 일치하지 않고 {refused_facts}개는 원문 인용을 확인하지 못해')
+            reason = (f'{what} 저장할 후보가 없습니다. 이번 실행의 위키 주장과 후보는 저장하지 않았고 이 사전 revision은 다시 추출할 수 있습니다. '
+                      '사전을 수정·재승인하면 모든 청크를 새로 호출합니다. 다른 모델로 바꿀 수도 있지만 그 모델의 복구 기록이 있으면 검증된 청크를 재사용하므로 같은 실패로 끝날 수 있습니다.')
+            return ' · '.join(filter(None, (reason, self.quote_exclusion_notice())))
+        return ''
 
     def exclusion_notice(self):
         emitted, excluded = self.exclusion_counts()

@@ -108,13 +108,12 @@ class SchedulerIntegration(unittest.TestCase):
         self.assertEqual(run['status'], 'error'); self.assertTrue(drained.is_set())
         self.assertEqual(self.saved(run), []); self.assertEqual(len(caller.calls), 2)
 
-    def test_repair_limit_shared_across_chunks(self):
+    def test_three_chunks_each_get_their_repair_past_the_old_limit_of_two(self):
         caller = Caller(lambda i, r: repair() if r else broken())
         service, run = self.start(self.document(), caller); run = self.finish(service, run)
-        self.assertEqual(run['status'], 'error', run['detail'])
-        self.assertEqual(sum(r for i, r in caller.calls), 2)
-        self.assertEqual(len(self.saved(run)), 2)
-        self.assertIn('2회 한도', run['detail'])
+        self.assertEqual(run['status'], 'success', run['detail'])
+        self.assertEqual(sum(r for i, r in caller.calls), 3)
+        self.assertEqual(len(self.saved(run)), 3)
 
     def test_later_failure_during_admitted_repair_drains_without_acceptance(self):
         repairing = threading.Event(); failed = threading.Event()

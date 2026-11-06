@@ -170,7 +170,7 @@ def verify_raw(artifact, row, attempts, case, environment):
                     if not audit.is_file() or _audit(audit) != expected: raise EvidenceMismatch('accounting repair audit')
                 elif audit.exists(): raise EvidenceMismatch('unexpected accounting audit')
                 if issues_by_chunk[index]:
-                    state['reason'] = 'production_contract' if sum(r for _, r in seen) >= 2 else 'quote_repair_required'
+                    state['reason'] = 'production_contract' if sum(r for _, r in seen) >= 2 else 'quote_repair_required'  # The count is this benchmark's own repair stop, not a product rule; stored artifacts keep the label.
                     continue
             output = validator.validated(value, text)
             outputs.append(output); state.update(passed=True, reason=None)
