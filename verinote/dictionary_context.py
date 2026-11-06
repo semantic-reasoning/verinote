@@ -1,4 +1,4 @@
-"""Configurable transport budgets and lossless dictionary definition tables."""
+"""Dictionary definition wire-form threshold and lossless definition tables."""
 import copy
 import json
 
@@ -21,7 +21,7 @@ MAX_DECODE_BYTES = 24 * 1024 * 1024
 def validate_context_bytes(value):
     from .ontology import MAX_PROMPT_BYTES
     if type(value) is not int or not 1 <= value <= MAX_PROMPT_BYTES:
-        raise ValueError(f'사전 정의 입력 예산은 1~{MAX_PROMPT_BYTES:,} 정수 바이트여야 합니다.')
+        raise ValueError(f'사전 표 전환 기준은 1~{MAX_PROMPT_BYTES:,} 정수 바이트여야 합니다.')
     return value
 
 
@@ -108,7 +108,7 @@ def build(instructions, payload, *, context_limit, prompt_limit, diagnostics):
         diagnostics.update(status='within_limit', transmitted_definition_bytes=context_size, prompt_bytes=raw_size)
         return raw
     if definitions is None:
-        raise ValueError(f'전체 요청 {raw_size:,}바이트가 입력 예산 {prompt_limit:,}바이트를 초과합니다. 사전 설정만 높여 해결할 수 없습니다.')
+        raise ValueError(f'전체 요청 {raw_size:,}바이트가 입력 예산 {prompt_limit:,}바이트를 초과합니다.')
     encoded = encode(definitions)
     packed = copy.deepcopy(payload)
     if 'dictionary' in packed: packed['dictionary'] = encoded
@@ -121,8 +121,13 @@ def build(instructions, payload, *, context_limit, prompt_limit, diagnostics):
                            transmitted_definition_bytes=encoded_size, prompt_bytes=size)
         return prompt
     if min(raw_size, size) > prompt_limit:
-        raise ValueError(f'무손실 표현을 포함한 전체 요청이 입력 예산 {prompt_limit:,}바이트에 들어가지 않습니다. 검증된 사전은 보존됩니다. 사전 정의 예산만 높여 해결할 수 없습니다.')
-    raise ValueError(f'사전 정의 입력 예산 {context_limit:,}바이트가 부족합니다 (일반 {context_size:,}, 무손실 표 {encoded_size:,}바이트). 설정에서 사전 정의 입력 예산을 높여 다시 실행하세요. 검증된 사전은 보존됩니다.')
+        raise ValueError(f'무손실 표현을 포함한 전체 요청이 입력 예산 {prompt_limit:,}바이트에 들어가지 않습니다. 검증된 사전은 보존됩니다.')
+    # context_limit only selects the form; it never refuses. The smaller prompt necessarily fits prompt_limit here.
+    wire = size <= raw_size
+    diagnostics.update(status='over_context_limit', encoding='dictionary-wire-v1' if wire else 'plain',
+                       transmitted_definition_bytes=encoded_size if wire else context_size,
+                       prompt_bytes=size if wire else raw_size)
+    return prompt if wire else raw
 
 
 def prepare(cli, agent, instructions, payload, context_limit, folder):

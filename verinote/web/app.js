@@ -422,7 +422,7 @@ async function loadSettings() {
   await loadUsageRates();
 }
 $('#settings-form').onsubmit=e=>{e.preventDefault();attempt(async()=>{
-  const form=e.target;await api('/api/settings','PUT',{selected:form.elements.selected.value,models:Object.fromEntries(config.providers.map(p=>[p.id,form.elements['model-'+p.id].value])),dictionary_context_bytes:Number(form.elements.dictionary_context_bytes.value)});await loadSettings();if($('#extract-agent')){$('#extract-agent').value=config.selected;$('#extract-model').value=config.models[config.selected]||'';syncProviderControls('extract');}notice('모델과 사전 정의 입력 예산을 저장했습니다. 새 작업부터 적용됩니다.');
+  const form=e.target;await api('/api/settings','PUT',{selected:form.elements.selected.value,models:Object.fromEntries(config.providers.map(p=>[p.id,form.elements['model-'+p.id].value])),dictionary_context_bytes:Number(form.elements.dictionary_context_bytes.value)});await loadSettings();if($('#extract-agent')){$('#extract-agent').value=config.selected;$('#extract-model').value=config.models[config.selected]||'';syncProviderControls('extract');}notice('모델과 사전 표 전환 기준을 저장했습니다. 새 작업부터 적용됩니다.');
 });};
 $('#query-form').onsubmit=e=>{e.preventDefault();attempt(async()=>{
   const data=Object.fromEntries(new FormData(e.target));if(!data.snapshot)delete data.snapshot;
