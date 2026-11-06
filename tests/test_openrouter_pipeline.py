@@ -204,6 +204,21 @@ class Pipeline(unittest.TestCase):
             self.assertEqual(self.store.run(run2['id'])['status'],'error')
         self.assertEqual(len(fixture.requests),3)
 
+    def test_question_correction_preserves_failed_caller_verdict_and_usage(self):
+        bad = answer()
+        good = {'answer': {'claims': [], 'unknowns': ['조회 결과에서 확인하지 못했습니다.']}}
+        fixture = Fixture([tool(subject='없는 서비스'), bad, good])
+        with patch('verinote.openrouter._HTTPS', side_effect=fixture):
+            job = self.service.ask({'question': 'q', 'agent': 'openrouter', 'model': 'model'})
+            self.queue.drain()
+        saved = self.store.question(job['id'])
+        self.assertEqual(saved['status'], 'success', saved['error'])
+        calls = job_calls(self.root, 'questions', saved)
+        self.assertEqual([c['caller_validation_status'] for c in calls], ['success', 'failed', 'success'])
+        self.assertEqual(len(fixture.requests), 3)
+        self.assertTrue(all(c['transport_status'] == 'success' and c['reported_credits'] == .1 for c in calls))
+        self.assertEqual(saved['answer'], good['answer'])
+
     def test_checkpoint_resume_and_option_mismatch(self):
         source = SOURCE.ljust(4000)+'B'*30
         self.doc = self.store.register('long','long.md',source.encode(),source)
