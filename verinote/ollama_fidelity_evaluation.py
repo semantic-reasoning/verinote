@@ -23,7 +23,7 @@ from .extraction_benchmark import (
 )
 from .extraction_checkpoint import ExtractionCheckpoint
 from .extraction_coverage import identity as coverage_identity
-from .extraction_coverage import repair_missing_indices
+from .extraction_coverage import exclude_off_dictionary_facts, repair_missing_indices
 from .extraction_evaluation import DATA_ROOT, _read, load_case, load_manifest
 from .extraction_threshold_artifacts import EvidenceStore
 from .extraction_timing import read_extraction_timing
@@ -302,14 +302,15 @@ def verify_document(root, row, attempts, case):
         try:
             value = parse_response('ollama', _read(folder/'response.json')['response'])[0]
             if attempt['repair']:
-                normalized, _ = repair_missing_indices(original, case['dictionary'])
+                normalized, _ = repair_missing_indices(filtered, case['dictionary'])
                 value, changes = apply_quote_repairs(normalized, text, issues, value)
                 if (folder/'changes.json').exists() and _read(folder/'changes.json') != changes:
                     raise EvidenceMismatch('repair audit mismatch')
             else:
                 original = value
-                issues = extraction_quote_issues(value, text, case['dictionary'], contract_version=2)
-                value, accounting_changes = repair_missing_indices(value, case['dictionary'])
+                filtered, _ = exclude_off_dictionary_facts(value, case['dictionary'])
+                issues = extraction_quote_issues(filtered, text, case['dictionary'], contract_version=2)
+                value, accounting_changes = repair_missing_indices(filtered, case['dictionary'])
                 audit_path = folder/'coverage-repair.json'
                 if accounting_changes:
                     audit = {'schema_version': 1, 'identity': coverage_identity(run), 'chunk': 1, 'offset': 0,
@@ -324,7 +325,7 @@ def verify_document(root, row, attempts, case):
                 if issues:
                     production = {'complete': False, 'passed': None, 'reason': 'quote_repair_incomplete'}
                     continue
-            assessment = assess_output(case, value)
+            assessment = assess_output(case, value, fresh=False)
             if not assessment['production_passed']: raise ValueError('production contract')
             validated = validator.validated(value, text)
             production = {'complete': True, 'passed': True, 'reason': None}

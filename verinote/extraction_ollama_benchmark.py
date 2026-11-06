@@ -26,7 +26,7 @@ from .extraction_benchmark import (
     sha,
 )
 from .extraction_checkpoint import ExtractionCheckpoint
-from .extraction_coverage import repair_missing_indices
+from .extraction_coverage import exclude_off_dictionary_facts, repair_missing_indices
 from .extraction_evaluation import DATA_ROOT, _read, load_case, load_manifest
 from .extraction_threshold_artifacts import EvidenceStore
 from .extraction_timing import read_extraction_timing
@@ -327,6 +327,8 @@ def verify_document(root, row, attempts, case):
                 normalized, _ = repair_missing_indices(original, case['dictionary'])
                 value, changes = apply_quote_repairs(normalized, text, issues, value)
                 if _read(folder/'changes.json') != changes: raise ValueError('repair audit mismatch')
+            else:
+                value, _ = exclude_off_dictionary_facts(value, case['dictionary'])
             replay[index] = value
     if {p.relative_to(root).as_posix() for p in root.rglob('usage.json')} != expected_usage: raise ValueError('unaccounted usage')
     cp_path = root/'runs'/run['id']/'extraction-checkpoint.json'

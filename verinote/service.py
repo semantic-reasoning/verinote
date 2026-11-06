@@ -19,6 +19,7 @@ from .engine import query
 from .extraction_checkpoint import CHUNK_TIMEOUT, ExtractionCheckpoint
 from .extraction_coverage import (
     chunk_report,
+    exclude_off_dictionary_facts,
     new_report,
     read_report,
     repair_missing_indices,
@@ -39,6 +40,10 @@ from .progress import analysis_progress
 from .transports import reasoning_budget, validate_job_tokens
 
 _UNSET_TOKENS = object()
+
+
+class NoRepresentableFacts(ValueError):
+    """Every fact of a complete extraction was refused: no candidates, no published claims, revision not consumed."""
 
 
 def text(value, name, limit=200, *, allow_cr=False):
@@ -389,12 +394,17 @@ class Service:
                         if time.monotonic() > deadline:
                             raise TimeoutError(f'청크 실행 시간 제한 초과 ({CHUNK_TIMEOUT}초)')
                         try:
+                            raw_output = output
+                            if current_contract:
+                                output, excluded = exclude_off_dictionary_facts(output, run['ontology']['payload'])
+                                if excluded:
+                                    validation.reject()
                             issues = extraction_quote_issues(output, chunk, run['ontology']['payload'], contract_version=contract_version)
                             if current_contract:
                                 normalized, accounting_changes = repair_missing_indices(output, run['ontology']['payload'])
                                 if accounting_changes:
                                     validation.reject()
-                                    write_repair_audit(self.root, run, doc, index, offset, output, normalized, accounting_changes)
+                                    write_repair_audit(self.root, run, doc, index, offset, raw_output, normalized, accounting_changes)
                                     coverage_repairs += len(accounting_changes)
                                 output = normalized
                             if issues:
@@ -444,6 +454,8 @@ class Service:
                     timing.end_chunk(index=index)
             active_chunk = None
             unique = {json.dumps(f, sort_keys=True, ensure_ascii=False): f for f in facts}
+            if checkpoint is not None and not unique and checkpoint.exclusion_counts()[1]:
+                raise NoRepresentableFacts(f'응답 관계 {checkpoint.exclusion_counts()[1]}개가 모두 승인 사전의 표기·타입과 일치하지 않아 저장할 후보가 없습니다. 이번 실행의 위키 주장과 후보는 저장하지 않았고 이 사전 revision은 다시 추출할 수 있습니다. 사전을 수정·재승인하면 모든 청크를 새로 호출합니다. 다른 모델로 바꿀 수도 있지만 그 모델의 복구 기록이 있으면 검증된 청크를 재사용하므로 같은 실패로 끝날 수 있습니다.')
             detail = (f'원문 인용 {repaired_quotes}개 보정 · 추가 호출 {repair_calls}회 ({"; ".join(repair_locations)}). 의미가 맞는지 원문과 대조한 뒤 승인하세요.'
                       if repair_calls else '')
             if report is not None:
@@ -454,6 +466,8 @@ class Service:
                 detail += ' ' + checkpoint.summary()
             if coverage_repairs:
                 detail += f' · 이번 실행 추출 점검 인덱스 {coverage_repairs}건 로컬 보정 (보정용 모델 호출 없음)'
+            if checkpoint is not None and checkpoint.exclusion_notice():
+                detail = f'{checkpoint.exclusion_notice()} · {detail}'
             with timing.section('publish'):
                 self.store.finish_run(run['id'], {'title': doc['title'], 'claims': claims}, list(unique.values()), detail=detail[:2000])
                 published = True
@@ -477,7 +491,12 @@ class Service:
                 detail += f' · 이번 실행 추출 점검 인덱스 {coverage_repairs}건 로컬 보정 (보정용 모델 호출 없음)'
             if checkpoint is not None:
                 checkpoint.finish('error')
-                detail += f' · {checkpoint.summary()} · 같은 문서 버전·승인 사전·에이전트·모델로 다시 추출하면 검증 완료 청크 다음부터 이어갑니다.'
+                if isinstance(exc, NoRepresentableFacts):
+                    detail += f' · {checkpoint.summary()}'
+                else:
+                    if checkpoint.exclusion_notice():
+                        detail += f' · {checkpoint.exclusion_notice()}'
+                    detail += f' · {checkpoint.summary()} · 같은 문서 버전·승인 사전·에이전트·모델로 다시 추출하면 검증 완료 청크 다음부터 이어갑니다.'
             self.store.run_status(run['id'], 'error', detail[:2000])
         finally:
             with self.extraction_lock:

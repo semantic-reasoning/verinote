@@ -99,7 +99,6 @@ class QuoteRepair(unittest.TestCase):
     def test_all_non_quote_errors_prevent_extra_call(self):
         mutations = [
             lambda v: v['facts'][1].update(predicate='unknown'),
-            lambda v: v['facts'][1].update(subject='unknown'),
             lambda v: v['claims'][0].update(text=''),
             lambda v: v['claims'][0].update(quote=''),
             lambda v: v['facts'][1].update(quote=None),

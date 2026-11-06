@@ -17,7 +17,7 @@
     "scope": "Current diagnostic, not authenticated by the historical capture",
     "source_hashes": {
       "verinote/diagnostics/__init__.py": "67e010369f257f74cc035fdc2e358500c7771736786b07543ed1316b4b68c092",
-      "verinote/diagnostics/extraction_fidelity.py": "1f09cc621575b31f44d56c448f9cd4862ee9641e9b1aea7bd026fe0fb5d6eda1",
+      "verinote/diagnostics/extraction_fidelity.py": "5d7b8a5024c5c5f3817d8d2f4034118929d2f5f097b8a64eea147240907a135c",
       "scripts/diagnose_extraction_fidelity.py": "e9853167380edb08b353087040569234c0c0c8b98bca98128d0826273209b039",
       "docs/extraction-fidelity-diagnosis.md": "baa18bff3dd354f050cac6b2dfb4d0cb58be2b26361e53db79333d309b272d9b"
     }

@@ -90,8 +90,11 @@ class ExtractionCheckpoint:
             raise ValueError('checkpoint contains ungrounded quotes')
         page = validate_page(output, chunk)
         facts = [dictionary_fact(fact, chunk, self.run['ontology']['payload']) for fact in output['facts']]
-        return page | {'facts': facts, 'coverage': copy.deepcopy(output['coverage']),
-                       'dictionary_gaps': copy.deepcopy(output['dictionary_gaps'])}
+        result = page | {'facts': facts, 'coverage': copy.deepcopy(output['coverage']),
+                         'dictionary_gaps': copy.deepcopy(output['dictionary_gaps'])}
+        if output.get('excluded_facts'):
+            result['excluded_facts'] = copy.deepcopy(output['excluded_facts'])
+        return result
 
     def write(self, name, value, limit):
         try:
@@ -124,6 +127,17 @@ class ExtractionCheckpoint:
     def finish(self, status):
         self.state['status'] = status
         self.write('extraction-progress.json', self.state, 8192)
+
+    def exclusion_counts(self):
+        """(response facts, excluded facts) over validated chunks, including reused ones."""
+        excluded = sum(len(output.get('excluded_facts', ())) for output in self.outputs)
+        return excluded + sum(len(output['facts']) for output in self.outputs), excluded
+
+    def exclusion_notice(self):
+        emitted, excluded = self.exclusion_counts()
+        if not excluded:
+            return ''
+        return f'응답 관계 {emitted}개 중 {excluded}개는 승인 사전의 표기·타입과 일치하지 않아 저장하지 않음 · 되살리려면 사전 수정·재승인 후 재추출'
 
     def summary(self):
         parts = [f'검증 완료 {len(self.outputs)}/{len(self.slices)}청크 · 새 호출 {self.state["calls_started"]}회']

@@ -40,6 +40,19 @@ class FidelityTrial(unittest.TestCase):
                 output = {'repairs': [{'path': issue['path'], 'quote': self.ideal[issue['path'].split('.')[0]][int(issue['path'].split('.')[1])]['quote']} for issue in data['issues']]}
                 if self.mode == 'bad_repair': output = {'repairs': []}
         if self.mode == 'mechanical': output['coverage'][0]['fact_indices'] = []
+        if self.mode in ('off_dictionary', 'off_dictionary_mechanical', 'off_dictionary_repair') and 'facts' in output:
+            row = next(r for r in output['coverage'] if r['predicate'] == output['facts'][0]['predicate'])
+            output['facts'].append(output['facts'][0] | {'subject': 'entity absent from the dictionary'})
+            row['fact_indices'] = [] if self.mode == 'off_dictionary_mechanical' else [*row['fact_indices'], len(output['facts'])-1]
+        if self.mode == 'off_dictionary_sole':
+            # A kept fact of another predicate keeps the run publishable; the emptied row has no claim to lean on.
+            calls, mirrors = output['coverage'][0], output['coverage'][2]; calls['claim_indices'] = []
+            kept = output['facts'][0] | {'predicate': mirrors['predicate']}
+            output['facts'][0] = output['facts'][0] | {'subject': 'entity absent from the dictionary'}
+            output['facts'].append(kept); mirrors.update(status='extracted', fact_indices=[1])
+        if self.mode == 'off_dictionary_repair':
+            if len(self.calls) == 1: output['facts'][0]['quote'] = 'deliberately absent quotation'
+            else: output = {'repairs': [{'path': issue['path'], 'quote': self.ideal['facts'][0]['quote']} for issue in data['issues']]}
         if self.mode == 'contract': output['coverage'][0]['predicate'] = 'invented_relation'
         if self.mode in ('gold', 'gold_tokens'):
             output['facts'] = []; output['coverage'][0].update(status='not_representable', fact_indices=[])
@@ -149,6 +162,30 @@ class FidelityTrial(unittest.TestCase):
         result = self.actual_classification(report)
         self.assertEqual(result['verdict'], 'inconclusive')
         self.assertEqual(result['reasons'], ['artifact_verification_failed'])
+
+    def test_off_dictionary_fact_replays_as_production_pass_and_verified_artifact(self):
+        self.mode = 'off_dictionary'; report, result = self.run_fake()
+        self.assertEqual(report['status'], 'completed', report['stop_reason'])
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(result['reasons'], ['synthetic_only'])
+        self.assertTrue(result['production']['passed'])
+
+    def test_every_fact_of_a_predicate_off_dictionary_keeps_the_local_row_through_the_production_replay(self):
+        self.mode = 'off_dictionary_sole'; _, result = self.run_fake()
+        self.assertTrue(result['production']['passed'], result)
+        self.assertEqual(result['reasons'], ['finite_gold_failed', 'synthetic_only'])  # The gold wanted the excluded fact.
+
+    def test_off_dictionary_fact_with_index_repair_replays_the_audit_hash_of_the_raw_response(self):
+        self.mode = 'off_dictionary_mechanical'; report, result = self.run_fake()
+        self.assertEqual(report['status'], 'completed', report['stop_reason'])
+        self.assertEqual(result['reasons'], ['synthetic_only'])
+        self.assertTrue(json.loads(next(self.output.rglob('coverage-repair.json')).read_text())['changes'])
+
+    def test_off_dictionary_fact_with_quote_repair_replays_the_filtered_response(self):
+        self.mode = 'off_dictionary_repair'; report, result = self.run_fake()
+        self.assertEqual(report['status'], 'completed', report['stop_reason'])
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(result['reasons'], ['synthetic_only'])
 
     def test_mechanical_indices_audit_is_mandatory_and_bound_to_raw_output(self):
         self.mode = 'mechanical'; report, result = self.run_fake()

@@ -11,7 +11,7 @@ from ..extraction_ab_runner import _hash, file_index
 from ..extraction_benchmark import MAX_REPORT_BYTES, sha
 from ..extraction_checkpoint import CHUNK_TIMEOUT, PIPELINE, ExtractionCheckpoint
 from ..extraction_coverage import identity as coverage_identity
-from ..extraction_coverage import repair_missing_indices
+from ..extraction_coverage import exclude_off_dictionary_facts, repair_missing_indices
 from ..extraction_evaluation import DATA_ROOT, _read, load_case, load_manifest
 from ..extraction_threshold_ab_runner import verify_budget
 from ..extraction_threshold_artifacts import EvidenceStore, verify_document
@@ -155,8 +155,9 @@ def verify_raw(artifact, row, attempts, case, environment):
                 if changes_path.is_file() and _audit(changes_path) != changes: raise EvidenceMismatch('quote repair audit')
             else:
                 originals[index] = value
-                issues_by_chunk[index] = extraction_quote_issues(value, text, case['dictionary'], contract_version=2)
                 before = value
+                value, _ = exclude_off_dictionary_facts(value, case['dictionary'])
+                issues_by_chunk[index] = extraction_quote_issues(value, text, case['dictionary'], contract_version=2)
                 value, changes = repair_missing_indices(value, case['dictionary'])
                 normalized[index] = value
                 audit = call/'coverage-repair.json'

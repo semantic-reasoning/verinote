@@ -81,6 +81,23 @@ class FidelityTrial(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'allow_model_calls'):
             trial.run(self.root/'unauthorized')
 
+    def test_off_dictionary_fact_replays_as_production_pass_with_quote_repair_and_index_audit(self):
+        records = [{'output': copy.deepcopy(r['output'])} for r in self.outputs]
+        for record in records:
+            output = record['output']; first = output['facts'][0]
+            row = next(r for r in output['coverage'] if r['predicate'] == first['predicate'])
+            output['facts'].append(first | {'subject': 'entity absent from the dictionary'})
+            row['fact_indices'].append(len(output['facts'])-1)
+        quote = records[0]['output']['facts'][0]['quote']
+        records[0]['output']['facts'][0]['quote'] = 'not present in the synthetic source'
+        records[0]['repair'] = {'repairs': [{'path': 'facts.0.quote', 'quote': quote}]}
+        next(r for r in records[1]['output']['coverage'] if r['fact_indices'])['fact_indices'] = []
+        report, result = self.run_fake(records)
+        self.assertEqual(report['status'], 'completed', report['stop_reasons'])
+        self.assertEqual(len(report['attempts']), 4)
+        self.assertNotIn('artifact_verification_failed', result['reasons'], result)
+        self.assertTrue(result['production']['passed'], result)
+
     def test_production_failure_stops_without_replacement(self):
         records = [{'output': copy.deepcopy(r['output'])} for r in self.outputs]
         records[0]['output']['coverage'] = []

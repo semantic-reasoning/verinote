@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from verinote.extraction_ab_runner import file_index
+from verinote.extraction_coverage import exclude_off_dictionary_facts
 from verinote.extraction_evaluation import DATA_ROOT, ideal_outputs, load_case
 from verinote.ollama_fidelity import HISTORIES, REPO, assess_output, diagnose
 
@@ -27,6 +28,27 @@ class FidelityDiagnosis(unittest.TestCase):
         self.assertIn('gap_completeness', {e['reason'] for e in large['finite_gold']['annotation_errors']})
         self.assertEqual(before, [file_index(root) for root in roots])
         self.assertEqual(result['generation_requests'], 0)
+
+    def off_dictionary(self):
+        out = copy.deepcopy(self.output); row = next(r for r in out['coverage'] if r['predicate'] == out['facts'][0]['predicate'])
+        out['facts'].append(out['facts'][0] | {'subject': 'entity absent from the dictionary'})
+        row['fact_indices'].append(len(out['facts'])-1)
+        return out
+
+    def test_off_dictionary_fact_is_excluded_before_the_production_gate(self):
+        result = self.assess(self.off_dictionary())
+        self.assertTrue(result['production_passed'], result['production_error'])
+        self.assertTrue(result['finite_gold']['passed'])
+
+    def test_fresh_false_output_keeps_its_exclusion_record_through_the_gate(self):
+        filtered = exclude_off_dictionary_facts(self.off_dictionary(), self.case['dictionary'])[0]
+        row = next(r for r in filtered['coverage'] if r['predicate'] == filtered['excluded_facts'][0]['predicate'])
+        row.update(status='not_representable', fact_indices=[]); filtered['facts'] = [f for f in filtered['facts'] if f['predicate'] != row['predicate']]
+        for other in filtered['coverage']:
+            other['fact_indices'] = [i for i, f in enumerate(filtered['facts']) if f['predicate'] == other['predicate']]
+        row['claim_indices'] = []
+        self.assertTrue(assess_output(self.case, filtered, fresh=False)['production_passed'])
+        self.assertFalse(self.assess(filtered)['production_passed'])
 
     def test_valid_reordered_output_is_not_tied_to_oracle_order(self):
         out = copy.deepcopy(self.output); size = len(out['claims']); out['claims'].reverse()
