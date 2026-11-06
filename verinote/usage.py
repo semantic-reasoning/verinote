@@ -81,7 +81,7 @@ def _tokens(raw, keys, additive=False, no_write=False):
 
 
 def decode_transport(agent, stdout, provider_usage=None):
-    """Only outer CLI envelopes are telemetry. Never inspect the generated answer."""
+    """Only outer CLI envelopes are telemetry; classify failed provider messages only."""
     result = empty_usage(agent, '')
     answer, terminal_error = None, None
     raw = None
@@ -123,6 +123,13 @@ def decode_transport(agent, stdout, provider_usage=None):
                 result['complete'] = not raw.get('is_error', False)
                 if raw.get('is_error'):
                     terminal_error = 'Claude 실행 실패'
+                    # Classify the error envelope without exposing arbitrary provider
+                    # text (which may contain credentials) in the UI or run metadata.
+                    error_text = answer.casefold() if isinstance(answer, str) else ''
+                    if 'oauth session expired' in error_text:
+                        terminal_error = 'Claude 로그인 세션이 만료되었습니다. 터미널에서 claude auth login으로 다시 로그인한 뒤 작업을 재실행하세요.'
+                    elif raw.get('api_error_status') == 401 or 'failed to authenticate' in error_text:
+                        terminal_error = 'Claude 인증에 실패했습니다. 터미널에서 claude auth login으로 로그인한 뒤 작업을 재실행하세요.'
             else:
                 if 'status' not in raw or not isinstance(raw.get('response'), str):
                     raise ValueError('Antigravity response envelope가 없습니다.')

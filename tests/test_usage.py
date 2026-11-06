@@ -142,6 +142,65 @@ class Protocols(unittest.TestCase):
         self.assertIsNone(u['estimated_usd']);self.assertTrue(u['warnings'])
 
 
+class ClaudeAuthentication(unittest.TestCase):
+    def test_failed_envelopes_use_fixed_safe_guidance(self):
+        cases = [
+            ({'result': 'Failed to authenticate: OAuth session expired and could not be refreshed secret-token'}, '로그인 세션이 만료'),
+            ({'result': 'Failed to authenticate: secret-token'}, '인증에 실패'),
+            ({'result': None, 'api_error_status': 401}, '인증에 실패'),
+            ({'result': 'unknown error secret-token'}, 'Claude 실행 실패'),
+            ({'result': {'error': 'secret-token'}}, 'Claude 실행 실패'),
+        ]
+        for fields, expected in cases:
+            with self.subTest(expected=expected, fields=fields):
+                raw = {'type': 'result', 'subtype': 'success', 'is_error': True,
+                       'usage': {'input_tokens': 0, 'output_tokens': 0}} | fields
+                _, usage, error = decode_transport('claude', json.dumps(raw))
+                self.assertIn(expected, error)
+                self.assertNotIn('secret-token', error)
+                self.assertFalse(usage['complete'])
+                if expected != 'Claude 실행 실패':
+                    self.assertIn('claude auth login', error)
+                    self.assertIn('작업', error)
+
+    def test_one_shot_authentication_failures_preserve_exit_and_safe_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            for index, (code, result, is_error, expected) in enumerate([
+                (0, 'Failed to authenticate: OAuth session expired secret-token', True, '로그인 세션이 만료'),
+                (1, 'Failed to authenticate: OAuth session expired secret-token', True, '로그인 세션이 만료'),
+                (1, 'Failed to authenticate secret-token', True, '인증에 실패'),
+                (1, 'unknown failure secret-token', True, 'Claude 실행 실패'),
+                (1, '{}', False, 'CLI 종료 코드 1'),
+                (1, None, None, 'CLI 종료 코드 1'),
+            ]):
+                raw = json.dumps({'type': 'result', 'subtype': 'success', 'is_error': is_error,
+                                  'result': result}) if is_error is not None else 'not-json'
+                script = root / 'fake-claude'
+                script.write_text(f'#!/usr/bin/env python3\nimport sys\nprint({raw!r})\nsys.exit({code})\n')
+                script.chmod(0o755)
+                folder = root / str(index)
+                with patch('verinote.agents.executable', return_value=str(script)), self.assertRaisesRegex(ValueError, expected):
+                    CLI(persistent=False).complete('claude', 'sonnet', 'synthetic', folder)
+                meta = json.loads((folder/'run.json').read_text())
+                usage = json.loads((folder/'usage.json').read_text())
+                self.assertEqual(json.loads((folder/'cli-timing.json').read_text())['exit_code'], code)
+                self.assertEqual(meta['status'], 'error')
+                self.assertIn(expected, meta['error'])
+                self.assertNotIn('secret-token', meta['error'])
+                self.assertEqual(usage['status'], 'error')
+                self.assertFalse(usage['complete'])
+
+    def test_successful_content_about_authentication_is_not_an_error(self):
+        body = json.dumps({'text': 'Failed to authenticate: OAuth session expired'})
+        raw = {'type': 'result', 'subtype': 'success', 'is_error': False, 'result': body,
+               'usage': {'input_tokens': 1, 'output_tokens': 1, 'cache_read_input_tokens': 0, 'cache_creation_input_tokens': 0}}
+        response, usage, error = decode_transport('claude', json.dumps(raw))
+        self.assertEqual(response, body)
+        self.assertIsNone(error)
+        self.assertTrue(usage['complete'])
+
+
 class Transport(unittest.TestCase):
     def test_real_synthetic_executable_preserves_answer_and_provider_usage(self):
         with tempfile.TemporaryDirectory() as tmp:

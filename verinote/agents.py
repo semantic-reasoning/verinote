@@ -432,6 +432,8 @@ class CLI:
             captured = True
             if proc.returncode:
                 timing_error = 'exit_nonzero'
+                if agent == 'claude' and provider_error:
+                    raise ValueError(provider_error)
                 raise ValueError(f'CLI 종료 코드 {proc.returncode}. 실행 로그의 stderr를 확인하세요.')
             if provider_error or response is None:
                 raise ValueError(provider_error or 'CLI의 최종 응답을 읽지 못했습니다.')
