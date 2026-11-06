@@ -234,10 +234,10 @@ class AssistantTests(unittest.TestCase):
         with patch('verinote.assistant.MAX_CONTEXT', 60000):
             def repeat(prompt):
                 import verinote.assistant as module
-                module.MAX_CONTEXT = len(prompt.encode())
+                module.MAX_CONTEXT = 10
                 return tool()
             job, fake = self.ask([tool(), repeat])
-        self.assertEqual(job['status'], 'error'); self.assertIn('프롬프트 크기', job['error'])
+        self.assertEqual(job['status'], 'error'); self.assertIn('입력 예산', job['error'])
         self.assertEqual(len(fake.calls), 2); self.assertEqual(job['trace'][1]['reused_from'], 1)
 
     def test_graph_reuse_cannot_deliver_evidence_within_same_batch(self):
