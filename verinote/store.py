@@ -284,7 +284,7 @@ class Store:
                 for prior in db.execute("SELECT ontology FROM runs WHERE document_id=? AND version=? AND stage='extract' AND status='success'", (document_id, doc['current_version'])):
                     old = json.loads(prior[0])
                     if extraction_key(old) == extraction_key(pinned):
-                        raise Conflict('이 승인 사전 revision과 추출 방식으로 이미 추출했습니다. 사전 수정·재승인 후 다시 추출하세요.')
+                        raise Conflict('이 승인 사전 revision과 추출 방식으로 이미 추출했습니다. 사전 수정·재승인 후 다시 추출할 수 있으며, 모든 청크를 새로 호출하고 제외된 항목이 되살아난다는 보장은 없습니다.')
             if extraction_options is not None:
                 from .extraction_options import bind_extraction_options
                 source = db.execute('SELECT text FROM versions WHERE document_id=? AND version=?',

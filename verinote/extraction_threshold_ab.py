@@ -96,7 +96,7 @@ def _linked_records(rows, attempts, plan):
             invalid.add(key); reasons.append('document_plan_or_order'); continue
         try:
             values = _attempts(row, attempts)
-            if sum(v['repair'] for v in values) > min(2, row['chunks']): raise ValueError('repair_limit')
+            if sum(v['repair'] for v in values) > min(2, row['chunks']): raise ValueError('repair_limit')  # This benchmark's own repair stop, not a product rule.
             linked[key] = values
             for value in values:
                 ordinal = value['attempt']

@@ -12,7 +12,8 @@ STATUSES = {'extracted', 'no_evidence', 'not_representable', 'limit_reached'}
 GAP_CODES = {'missing_entity', 'missing_relation', 'type_mismatch', 'qualifier_not_representable'}
 MAX_REPAIR_BYTES = 64 * 1024
 MAX_EXCLUDED_QUOTE = 300
-EXCLUSION_CODES = {'unknown_entity', 'type_mismatch'}
+MAX_EXCLUDED_TEXT = 300
+EXCLUSION_CODES = {'unknown_entity', 'type_mismatch', 'unverifiable_quote'}
 
 
 def integer(value, minimum, maximum):
@@ -31,25 +32,155 @@ def validate_exclusions(rows, kept, predicates):
     if not isinstance(rows, list) or kept + len(rows) > MAX_FACTS:
         raise ValueError('추출 점검 excluded_facts 형식 오류')
     for row in rows:
-        if (not isinstance(row, dict) or set(row) != {'code', 'subject', 'predicate', 'object', 'quote'}
+        located = isinstance(row, dict) and row.get('code') == 'unverifiable_quote'
+        if (not isinstance(row, dict) or set(row) != {'code', 'subject', 'predicate', 'object', 'quote'} | ({'path'} if located else set())
                 or any(not isinstance(field, str) for field in row.values())
                 or row['code'] not in EXCLUSION_CODES or row['predicate'] not in predicates
+                or (located and not re.fullmatch(r'facts\.[0-9]{1,3}\.quote', row['path']))
                 or len(row['subject']) > 200 or len(row['object']) > 200 or len(row['quote']) > MAX_EXCLUDED_QUOTE):
             raise ValueError('추출 점검 excluded_facts 필드 오류')
     return rows
 
 
+def validate_excluded_claims(rows, kept, predicates):
+    if not isinstance(rows, list) or kept + len(rows) > 12:
+        raise ValueError('추출 점검 excluded_claims 형식 오류')
+    for row in rows:
+        if (not isinstance(row, dict) or set(row) != {'path', 'heading', 'text', 'quote', 'predicates', 'gaps'}
+                or any(not isinstance(row[key], str) for key in ('path', 'heading', 'text', 'quote'))
+                or not re.fullmatch(r'claims\.[0-9]{1,3}\.quote', row['path'])
+                or len(row['heading']) > 200 or len(row['text']) > MAX_EXCLUDED_TEXT or len(row['quote']) > MAX_EXCLUDED_QUOTE
+                or not isinstance(row['predicates'], list)
+                or any(not isinstance(predicate, str) or predicate not in predicates for predicate in row['predicates'])
+                or not isinstance(row['gaps'], list) or len(row['gaps']) > 12
+                or any(not isinstance(gap, dict) or set(gap) != {'code', 'detail'} or not isinstance(gap['code'], str)
+                       or gap['code'] not in GAP_CODES or not isinstance(gap['detail'], str) or len(gap['detail']) > 160 for gap in row['gaps'])):
+            raise ValueError('추출 점검 excluded_claims 필드 오류')
+    return rows
+
+
+def resolve_quote_repairs(value, source, issues, response, contract_version):
+    """Apply a repair response row by row: `(result, changes, refused)`.
+
+    A row whose reply passes the contract's quote check is replaced; any other string excludes that row. Only rows
+    the model was asked to repair can be excluded, and a malformed response raises, as
+    apply_quote_repairs does. `value` must already have passed shape and accounting checks.
+    """
+    from .service import quote_text
+    expected = {issue['path'] for issue in issues}
+    if not isinstance(response, dict) or set(response) != {'repairs'}:
+        raise ValueError('인용 보정 응답에는 repairs 배열만 필요합니다.')
+    rows = response['repairs']
+    if not isinstance(rows, list) or len(rows) != len(expected):
+        raise ValueError('문제가 있는 인용을 빠짐없이 한 번씩 보정해야 합니다.')
+    replies = {}
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {'path', 'quote'} or not isinstance(row['quote'], str):
+            raise ValueError('인용 보정 항목에는 문자열 path와 quote만 필요합니다.')
+        path = row['path']
+        if not isinstance(path, str) or path not in expected or path in replies:
+            raise ValueError('인용 보정 대상이 누락·중복되거나 요청과 다릅니다.')
+        replies[path] = row['quote']
+    result = copy.deepcopy(value)
+    changes, refused = [], []
+    gone: dict[str, dict[int, str]] = {'claims': {}, 'facts': {}}
+    for path, reply in replies.items():
+        kind, index, _ = path.split('.')
+        item = result[kind][int(index)]
+        try:
+            quote = quote_text(reply)
+            first = source.find(quote)
+        except ValueError:
+            first = -1
+        if first < 0 or (contract_version == 2 and source.find(quote, first + 1) >= 0):
+            gone[kind][int(index)] = path
+            refused.append({'path': path, 'before': item['quote'][:MAX_EXCLUDED_QUOTE], 'reply': reply[:MAX_EXCLUDED_QUOTE]})
+        else:
+            changes.append({'path': path, 'before': item['quote'], 'after': quote})
+            item['quote'] = quote
+    _drop_facts(result, gone['facts'])
+    _drop_claims(result, gone['claims'])
+    return result, changes, refused
+
+
+def saved_quote_paths(changes, refused):
+    """Where the replaced quotes sit once the rows this repair refused are gone."""
+    gone = [row['path'].split('.') for row in refused]
+    paths = []
+    for change in changes:
+        kind, index, field = change['path'].split('.')
+        paths.append(f'{kind}.{int(index) - sum(k == kind and int(i) < int(index) for k, i, _ in gone)}.{field}')
+    return paths
+
+
+def _drop_facts(result, gone):
+    if not gone:
+        return
+    records = result.setdefault('excluded_facts', [])
+    earlier = {record['predicate'] for record in records}
+    kept: list[dict] = []
+    renumber = {}
+    for index, fact in enumerate(result['facts']):
+        if index in gone:
+            records.append({'code': 'unverifiable_quote', 'subject': fact['subject'], 'predicate': fact['predicate'], 'object': fact['object'],
+                            'quote': fact['quote'][:MAX_EXCLUDED_QUOTE], 'path': gone[index]})
+        else:
+            renumber[index] = len(kept)
+            kept.append(fact)
+    result['facts'] = kept
+    for row in result['coverage']:
+        before = row['fact_indices']
+        row['fact_indices'] = [renumber[i] for i in before if i in renumber]
+        if before and not row['fact_indices']:  # Accounting put every fact of this predicate in this row.
+            row['status'] = 'not_representable'
+            row['reason'] = ('응답 관계가 승인 사전 불일치 또는 인용 미확인으로 모두 저장에서 제외됨 (모델 판단이 아닌 로컬 처리)' if row['predicate'] in earlier
+                             else '응답 관계의 인용을 원문에서 확인하지 못해 저장에서 제외됨 (모델 판단이 아닌 로컬 처리)')
+
+
+def _drop_claims(result, gone):
+    if not gone:
+        return
+    kept: list[dict] = []
+    renumber, records = {}, {}
+    for index, claim in enumerate(result['claims']):
+        if index in gone:
+            records[index] = {'path': gone[index], 'heading': claim['heading'], 'text': claim['text'][:MAX_EXCLUDED_TEXT],
+                              'quote': claim['quote'][:MAX_EXCLUDED_QUOTE], 'predicates': [], 'gaps': []}
+        else:
+            renumber[index] = len(kept)
+            kept.append(claim)
+    result['claims'] = kept
+    without_facts = {record['predicate'] for record in result.get('excluded_facts', ())}
+    for row in result['coverage']:
+        before = row['claim_indices']
+        row['claim_indices'] = [renumber[i] for i in before if i in renumber]
+        if row['status'] == 'not_representable' and before and not row['claim_indices']:
+            for i in before:
+                records[i]['predicates'].append(row['predicate'])
+            if row['predicate'] not in without_facts:  # Otherwise the row already gives its local reason.
+                row['reason'] = '근거 주장의 인용을 원문에서 확인하지 못해 주장을 제외함 (모델 판단이 아닌 로컬 처리)'
+    gaps = []
+    for gap in result['dictionary_gaps']:
+        after = [renumber[i] for i in gap['claim_indices'] if i in renumber]
+        if after:
+            gaps.append(gap | {'claim_indices': after})
+        else:
+            records[gap['claim_indices'][0]]['gaps'].append({'code': gap['code'], 'detail': gap['detail']})
+    result['dictionary_gaps'] = gaps
+    result['excluded_claims'] = [records[i] for i in sorted(records)]
+
+
 def exclude_off_dictionary_facts(value, dictionary):
     """Fresh responses only: remove facts whose entity spelling or types do not match the approved dictionary, keep accounting true.
 
-    `excluded_facts` is local provenance, so an inbound key is discarded before filtering. A response
-    with neither that key nor an exclusion comes back as the same object. Coverage indices in the
-    result number the kept facts.
+    `excluded_facts` and `excluded_claims` are local provenance, so inbound keys are discarded before
+    filtering. A response with neither key and no exclusion comes back as the same object. Coverage
+    indices in the result number the kept facts.
     """
     if not isinstance(value, dict):
         return value, []
-    if 'excluded_facts' in value:
-        value = {key: field for key, field in value.items() if key != 'excluded_facts'}
+    if 'excluded_facts' in value or 'excluded_claims' in value:
+        value = {key: field for key, field in value.items() if key not in ('excluded_facts', 'excluded_claims')}
     facts = value.get('facts')
     if not isinstance(facts, list) or len(facts) > MAX_FACTS:
         return value, []  # Ordinary preflight reports the real shape or count.
@@ -104,6 +235,7 @@ def validate_accounting(value, dictionary):
     seen, covered = set(), set()
     facts, claims = value['facts'], value['claims']
     excluded = validate_exclusions(value.get('excluded_facts', []), len(facts), predicates)
+    refused = validate_excluded_claims(value.get('excluded_claims', []), len(claims), predicates)
     for row in rows:
         if not isinstance(row, dict) or set(row) != {'predicate', 'fact_indices', 'claim_indices', 'status', 'reason'}:
             raise ValueError('추출 점검 coverage 필드 오류')
@@ -117,7 +249,7 @@ def validate_accounting(value, dictionary):
         ci = indices(row['claim_indices'], len(claims))
         if bool(fi) != (status == 'extracted'):
             raise ValueError('추출 점검: extracted 상태와 fact_indices가 일치하지 않습니다.')
-        if status == 'not_representable' and not ci and not any(e['predicate'] == predicate for e in excluded):
+        if status == 'not_representable' and not ci and not any(e['predicate'] == predicate for e in excluded) and not any(predicate in c['predicates'] for c in refused):
             raise ValueError('추출 점검: 표현 제약의 근거 claim_indices가 필요합니다.')
         if status == 'limit_reached' and len(facts) + len(excluded) != MAX_FACTS:
             raise ValueError('추출 점검: 사실 한도에 도달하지 않았습니다.')
@@ -214,6 +346,8 @@ def chunk_report(output, offset, length):
               'coverage': copy.deepcopy(output['coverage']), 'dictionary_gaps': copy.deepcopy(output['dictionary_gaps'])}
     if output.get('excluded_facts'):
         report['excluded_facts'] = copy.deepcopy(output['excluded_facts'])
+    if output.get('excluded_claims'):
+        report['excluded_claims'] = copy.deepcopy(output['excluded_claims'])
     return report
 
 
@@ -272,12 +406,12 @@ def read_report(root, store, run_id):
         total_chunks = (source[0] + 7999) // 8000
         if len(report['chunks']) > total_chunks:
             return unavailable
-        claims, emitted, predicates, gaps, capped, excluded = 0, 0, set(), 0, False, 0
+        claims, emitted, predicates, gaps, capped, mismatched, unverifiable, refused_claims, refused_gaps = 0, 0, set(), 0, False, 0, 0, 0, 0
         for i, chunk in enumerate(report['chunks']):
-            if (not isinstance(chunk, dict) or set(chunk) - {'excluded_facts'} != {'offset', 'length', 'claim_count', 'fact_predicates', 'coverage', 'dictionary_gaps'}
+            if (not isinstance(chunk, dict) or set(chunk) - {'excluded_facts', 'excluded_claims'} != {'offset', 'length', 'claim_count', 'fact_predicates', 'coverage', 'dictionary_gaps'}
                     or not integer(chunk['offset'], 0, 127999) or chunk['offset'] != i * 8000
                     or not integer(chunk['length'], 1, 8000) or chunk['length'] != min(8000, source[0] - i * 8000)
-                    or not integer(chunk['claim_count'], 1, 12)
+                    or not integer(chunk['claim_count'], 0 if chunk.get('excluded_claims') else 1, 12)
                     or not isinstance(chunk['fact_predicates'], list) or len(chunk['fact_predicates']) > MAX_FACTS
                     or any(not isinstance(p, str) for p in chunk['fact_predicates'])):
                 return unavailable
@@ -288,7 +422,11 @@ def read_report(root, store, run_id):
             claims += chunk['claim_count']
             refused = len(chunk.get('excluded_facts', []))
             emitted += len(chunk['fact_predicates']) + refused
-            excluded += refused
+            located = sum(row['code'] == 'unverifiable_quote' for row in chunk.get('excluded_facts', []))
+            unverifiable += located
+            mismatched += refused - located
+            refused_claims += len(chunk.get('excluded_claims', []))
+            refused_gaps += sum(len(row['gaps']) for row in chunk.get('excluded_claims', []))
             predicates.update(chunk['fact_predicates'])
             gaps += len(chunk['dictionary_gaps'])
             capped |= len(chunk['fact_predicates']) + refused == MAX_FACTS
@@ -297,7 +435,9 @@ def read_report(root, store, run_id):
             return unavailable
         return {'available': True, 'status': run['status'], 'published': run['status'] == 'success',
                 'total_chunks': total_chunks, 'validated_chunks': len(report['chunks']),
-                'emitted_fact_count': emitted, 'excluded_fact_count': excluded, 'saved_fact_count': saved if run['status'] == 'success' else 0,
+                'emitted_fact_count': emitted, 'excluded_fact_count': mismatched, 'unverifiable_fact_count': unverifiable,
+                'claim_count': claims, 'excluded_claim_count': refused_claims, 'excluded_gap_count': refused_gaps,
+                'saved_fact_count': saved if run['status'] == 'success' else 0,
                 'extracted_predicates': len(predicates), 'approved_predicates': len(run['ontology']['payload']['relations']),
                 'gap_count': gaps, 'capped': capped, 'chunks': report['chunks']}
     except (ValueError, TypeError, KeyError, RecursionError):

@@ -282,7 +282,6 @@ def validate_record(value):
         raise ValueError('timing sequential chunks')
     if version == 2:
         _validate_concurrent(spans, by_key, executed)
-    if sum(s['kind'] == 'repair_request' for s in spans) > 2: raise ValueError('timing repair cap')
     if not value['submitted_observed'] and value['worker_started'] != 0:
         raise ValueError('timing execution origin')
     if ('restore', None) not in by_key:

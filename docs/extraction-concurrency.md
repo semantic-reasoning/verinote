@@ -7,8 +7,8 @@ providers and the global document queue are unchanged. The HTTP API does not
 expose this experimental option.
 
 The coordinator alone validates responses in source order, performs at most one
-quotation repair per chunk and two per document, and saves a contiguous validated
-checkpoint prefix. Running calls plus completed responses awaiting acceptance
+quotation repair per chunk (benchmarks also stop at two per document), and saves a
+contiguous validated checkpoint prefix. Running calls plus completed responses awaiting acceptance
 never exceed the chosen concurrency. The deadline begins at initial dispatch and
 covers worker admission, request, ordering, repair and validation. A worker error
 closes admission for both new initial calls and repairs; previously admitted calls

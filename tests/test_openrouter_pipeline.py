@@ -264,7 +264,7 @@ class Pipeline(unittest.TestCase):
         self.assertEqual(len(self.calls(new)),2)
         self.assertIn('실행 옵션이 다른',self.store.run(new['id'])['detail'])
 
-    def test_question_round_limit_and_quote_repair_budget(self):
+    def test_question_round_limit_and_one_quote_repair_per_chunk(self):
         fixture = Fixture([tool(subject='없는 서비스') for _ in range(6)])
         with patch('verinote.openrouter._HTTPS', side_effect=fixture):
             job = self.service.ask({'question':'q','agent':'openrouter','model':'model'})
@@ -278,17 +278,16 @@ class Pipeline(unittest.TestCase):
         approved_dictionary(self.store,self.doc['id'])
         bad = extraction_response(); bad['facts'][0]['quote']='상기 '+FACTS[0]['quote']
         correction = {'repairs':[{'path':'facts.0.quote','quote':FACTS[0]['quote']}]}
-        fixture = Fixture([bad,correction,bad,correction,bad])
+        fixture = Fixture([bad,correction,bad,correction,bad,correction])
         self.service.cli.options = ExecutionOptions(max_tokens=333,timeout=31)
         fixture.after = lambda: setattr(self.service.cli,'options',ExecutionOptions(max_tokens=999,timeout=99))
         with patch('verinote.openrouter._HTTPS',side_effect=fixture):
             run = self.start('extract'); self.queue.drain()
         saved = self.store.run(run['id'])
-        self.assertEqual(saved['status'],'error'); self.assertIn('한도',saved['detail'])
-        self.assertEqual(len(fixture.requests),5)
+        self.assertEqual(saved['status'],'success',saved['detail']); self.assertIn('추가 호출 3회',saved['detail'])
+        self.assertEqual(len(fixture.requests),6)
         self.assertTrue(all(r['max_tokens']==333 and 30 < r['timeout'] <=31 for r in fixture.requests))
-        self.assertEqual(len(self.calls(run)),5)
-        self.assertEqual(len(self.store.document(self.doc['id'])['items']),1)
+        self.assertEqual(len(self.calls(run)),6)
 
     def test_extraction_resume_caps_each_chunk_and_checks_http_options(self):
         for changed_options in (False, True):

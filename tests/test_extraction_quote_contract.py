@@ -93,23 +93,21 @@ class QuoteContracts(unittest.TestCase):
         self.assertFalse(self.store.document(doc['id'])['can_extract'])
         with self.assertRaises(Conflict): self.run_version(doc, 2, [])
 
-    def test_still_ambiguous_repair_fails_once_without_publication(self):
+    def test_still_ambiguous_repair_excludes_that_row_after_one_call(self):
         doc = self.document(SOURCE+'\n가정 예시: '+FACTS[0]['quote'])
         repair = {'repairs': [{'path': 'facts.0.quote', 'quote': FACTS[0]['quote']}]}
         run, calls = self.run_version(doc, 2, [extraction_response(), repair])
-        self.assertEqual(run['status'], 'error')
+        self.assertEqual(run['status'], 'success', run['detail'])
         self.assertEqual(len(calls), 2)
-        self.assertEqual([i['kind'] for i in self.store.document(doc['id'])['items']], ['ontology'])
+        self.assertEqual([i['payload']['quote'] for i in self.store.document(doc['id'])['items'] if i['kind'] == 'fact'], [FACTS[1]['quote']])
 
-    def test_ambiguous_repairs_share_existing_document_limit(self):
+    def test_ambiguous_repairs_on_three_chunks_get_one_call_each(self):
         chunk = (SOURCE+'\n가정 예시: '+FACTS[0]['quote']).ljust(8000)
         doc = self.document(chunk*3)
         repair = {'repairs': [{'path': 'facts.0.quote', 'quote': SOURCE}]}
         run, calls = self.run_version(doc, 2, [extraction_response(), repair]*3)
-        self.assertEqual(run['status'], 'error')
-        self.assertEqual(len(calls), 5)
-        self.assertIn('2회 한도', run['detail'])
-        self.assertEqual([i['kind'] for i in self.store.document(doc['id'])['items']], ['ontology'])
+        self.assertEqual(run['status'], 'success', run['detail'])
+        self.assertEqual(len(calls), 6)
 
     def test_same_quote_in_other_chunks_is_valid_and_v1_prefix_is_not_reused_by_v2(self):
         doc = self.document(SOURCE.ljust(8000)+SOURCE)

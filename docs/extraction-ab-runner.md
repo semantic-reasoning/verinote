@@ -43,7 +43,7 @@ There are no retries, replacement samples, extra warm-ups or partial-result clea
 
 Each primary/secondary case owns independent A/B pools for its entire series. The
 runner targets each worker slot for exactly one short-document warm-up through
-the production Service and the same global BudgetCaller. Slot views retain their
+the production Service (`quote_repair_limit=2`) and the same global BudgetCaller. Slot views retain their
 target across copies and timeout limits and cannot borrow another idle slot.
 Subsequent warm calls must report reuse of the exact prepared pool/slot/worker/
 generation. Unknown identity or restart makes that comparison inconclusive.

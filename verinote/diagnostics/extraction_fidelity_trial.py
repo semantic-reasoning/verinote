@@ -188,7 +188,7 @@ class CandidateCaller:
         initials = [i for i, repaired in self.schedule if not repaired]
         if ((chunk, repair) in self.schedule or not repair and chunk != len(initials)+1 or
                 repair and (not self.schedule or self.schedule[-1] != (chunk, False)) or
-                repair and sum(r for _, r in self.schedule) >= 2 or
+                repair and sum(r for _, r in self.schedule) >= 2 or  # This benchmark's own repair stop, not a product rule.
                 any((folder/name).exists() for name in ('run.json', 'prompt.txt', 'candidate.json', 'original-prompt.txt'))):
             self.budget.stop('unexpected_call'); raise Stopped('unexpected_call')
         self.schedule.append((chunk, repair))

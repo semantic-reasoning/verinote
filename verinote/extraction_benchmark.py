@@ -436,10 +436,10 @@ def execute_document(root, case, make_caller, budget, row, close, *, agent, mode
                 nonlocal caller
                 caller = make_caller(spec)
                 return caller
-            service = Service(store, root, registration_cli or CLI(), extraction_caller_factory=supply)
+            service = Service(store, root, registration_cli or CLI(), extraction_caller_factory=supply, quote_repair_limit=2)
         else:
             caller = make_caller()
-            service = Service(store, root, caller, extraction_caller=caller if extraction_concurrency is not None else None)
+            service = Service(store, root, caller, extraction_caller=caller if extraction_concurrency is not None else None, quote_repair_limit=2)
         service.pool.shutdown(wait=True)
         pool = _Executor(max_workers=1, thread_name_prefix='verinote-benchmark')
         service.pool = pool
