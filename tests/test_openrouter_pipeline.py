@@ -94,6 +94,27 @@ class Pipeline(unittest.TestCase):
     def calls(self, run):
         return job_calls(self.root, 'runs', self.store.run(run['id']))
 
+    def test_split_question_http_calls_are_all_accounted_and_bad_leaf_is_rejected(self):
+        from test_question_synthesis import scripted, state
+        graph = state()['evidence']['E1']['result']
+        for bad_leaf in (False, True):
+            def response(prompt, fail=bad_leaf):
+                output = scripted(prompt)
+                if fail and 'records' in output:
+                    output['records'].pop()
+                return output
+            fixture = Fixture([response]*20)
+            with patch('verinote.openrouter._HTTPS', side_effect=fixture), patch('verinote.assistant.MAX_CONTEXT', 14000), patch('verinote.assistant.engine.query', return_value=graph):
+                job = self.service.ask({'question': '분할 처리 질문', 'agent': 'openrouter', 'model': 'vendor/model'})
+                self.queue.drain()
+            saved = self.store.question(job['id'])
+            self.assertEqual(saved['status'], 'error' if bad_leaf else 'success', saved.get('error'))
+            calls = job_calls(self.root, 'questions', saved)
+            self.assertEqual(len(calls), len(fixture.requests))
+            self.assertTrue(any(c['stage'] == 'analysis_leaf' for c in calls))
+            self.assertEqual(calls[-1]['caller_validation_status'], 'failed' if bad_leaf else 'success')
+            self.assertTrue(all(c['tokens']['input'] == 100 for c in calls))
+
     def test_dictionary_approval_extraction_question_and_secret_exclusion(self):
         fixture = Fixture([dictionary, extraction_response(), tool(action='path', subject='주문', predicate='depends_on', target='원장'), answer()])
         with patch('verinote.openrouter._HTTPS', side_effect=fixture):

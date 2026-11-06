@@ -75,12 +75,12 @@ class QuestionBudget(unittest.TestCase):
             service.pool.shutdown(wait=True)
         result = self.store.question(job['id'])
         self.assertEqual(result['status'], 'error'); self.assertEqual(len(fake.calls), 1)
-        self.assertIn('질문 프롬프트 크기 한도 초과', result['error'])
+        self.assertIn('완전한 기록 E1', result['error'])
         self.assertNotIn('문서를 나누', result['error'])
         self.assertEqual(result['evidence']['E1']['result'], before); self.assertEqual(raw, before)
         self.assertEqual([d['status'] for d in result['context_budget']], ['within_limit', 'exceeded'])
 
-    def test_ollama_large_catalog_is_windowed_before_generate_with_diagnostics(self):
+    def test_ollama_large_catalog_is_fully_batched_before_generate(self):
         for i in range(35):
             self.store.register(f'합성{i}'+('가'*180), f'd{i}.txt', b'x', 'x')
         paths = []
@@ -89,7 +89,15 @@ class QuestionBudget(unittest.TestCase):
             if path == '/api/tags':
                 return {'models': [{'name': MODEL, 'digest': 'a'*64}]}
             self.assertEqual(path, '/api/generate')
-            output = tool() if paths.count('/api/generate') == 1 else {'answer': {'claims': [], 'unknowns': ['조회한 범위에서는 확인하지 못했습니다.']}}
+            from test_question_synthesis import scripted, unpack
+            prompt = args[0]['prompt']; decoded = unpack(prompt)
+            output = scripted(prompt)
+            if 'analysis' in decoded:
+                output = tool() if decoded['round'] == 1 else {'answer': {'claims': [], 'unknowns': ['조회 결과 없음']}}
+            if 'records' in output:
+                for item in output['records']:
+                    item['citations'] = []  # This fixture contains only empty graphs/catalog.
+
             return {'model': MODEL, 'response': json.dumps(output), 'done': True, 'done_reason': 'stop', 'prompt_eval_count': 100, 'eval_count': 10}
         cli = CLI(persistent=False); self.addCleanup(cli.close)
         service = Service(self.store, self.root, cli); self.addCleanup(service.close)
@@ -99,12 +107,12 @@ class QuestionBudget(unittest.TestCase):
         result = self.store.question(job['id']); record = result['context_budget'][0]
         self.assertEqual(result['status'], 'success', result['error']); self.assertIn('/api/generate', paths)
         self.assertEqual(record['transport_limit_bytes'], input_byte_limit(result['execution_options']))
-        self.assertGreater(record['full_prompt_bytes'], record['effective_limit_bytes'])
         self.assertLessEqual(record['prompt_bytes'], record['effective_limit_bytes'])
-        self.assertEqual(record['selection'], 'windowed')
+        self.assertTrue(all(t['processed_records'] == t['planned_records'] for t in result['context_processing']))
+        self.assertTrue(all(t['status'] == 'complete' for t in result['context_processing']))
         self.assertEqual(record['model_token_admission'], 'unknown')
         self.assertLess(record['prompt_bytes'], record['application_limit_bytes'])
-        self.assertTrue(list((self.root/'questions'/job['id']).glob('llm-*')))
+        self.assertTrue(list((self.root/'questions'/job['id']).glob('context-*')))
 
     def test_repeated_graphs_reach_second_request_in_actual_ollama_job(self):
         graphs = copy.deepcopy(list(state()['evidence'].values()))

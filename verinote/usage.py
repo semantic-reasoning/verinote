@@ -338,8 +338,21 @@ def job_calls(root, kind, owner):
     key = owner['id']
     if kind not in ('runs', 'questions') or not re.fullmatch(r'[a-f0-9]{32}', key):
         return []
+    declared = set()
     if kind == 'questions':
         paths = [(f'llm-{i}', 'question') for i in range(1, 7)]
+        manifest = owner.get('call_manifest')
+        if isinstance(manifest, list):
+            paths = []
+            for entry in manifest:
+                if not isinstance(entry, dict) or entry.get('status') not in ('dispatched', 'complete', 'failed'):
+                    continue
+                path, stage = entry.get('path'), entry.get('stage')
+                if (not isinstance(path, str) or not re.fullmatch(r'(?:llm-[1-6]|context-[1-6]-(?:[1-9][0-9]*|decision))', path)
+                        or stage not in ('question', 'analysis_leaf', 'analysis_merge', 'question_synthesis') or path in declared):
+                    continue
+                declared.add(path)
+                paths.append((path, stage))
     elif owner.get('stage') == 'ontology':
         from .ontology import MAX_DICTIONARY_CALLS
         paths = [(str(i), 'ontology') for i in range(1, MAX_DICTIONARY_CALLS + 1)]
@@ -350,7 +363,7 @@ def job_calls(root, kind, owner):
         base = f'{kind}/{key}/{path}'
         data = safe_file(root, base + '/usage.json')
         meta = safe_file(root, base + '/run.json')
-        if data is None and meta is None:
+        if data is None and meta is None and path not in declared:
             continue
         usage = None
         try:
