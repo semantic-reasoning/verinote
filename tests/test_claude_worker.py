@@ -59,6 +59,9 @@ for line in sys.stdin:
     history.append(text);value=result(json.dumps(body))
     if text=='foreign':value['session_id']='foreign-session'
     if text=='error':value['is_error']=True
+    if text=='expired_auth':
+        value['is_error']=True
+        value['result']='Failed to authenticate: OAuth session expired and could not be refreshed'
     if text=='invalid_body':value['result']='bad json'
     emit(value)
     if text=='duplicate':emit(value)
@@ -84,6 +87,17 @@ class PersistentClaude(unittest.TestCase):
 
     def mode(self, mode):
         (self.root / 'mode').write_text(mode)
+
+    def test_expired_auth_reports_recovery_and_discards_worker(self):
+        with self.assertRaisesRegex(ValueError, '로그인 세션이 만료.*claude auth login'):
+            self.call('expired_auth')
+        meta = json.loads((self.root / '1' / 'run.json').read_text())
+        self.assertEqual(meta['status'], 'error')
+        self.assertIn('claude auth login', meta['error'])
+        self.assertEqual(json.loads((self.root / '1' / 'usage.json').read_text())['status'], 'error')
+        recovered = self.call('after_login')
+        self.assertEqual(recovered['history'], [])
+        self.assertNotEqual(self.transcript()[0]['pid'], recovered['pid'])
 
     def transcript(self):
         return [json.loads(line) for line in (self.root / 'transcript').read_text().splitlines()]
