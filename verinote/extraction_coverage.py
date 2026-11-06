@@ -53,7 +53,8 @@ def exclude_off_dictionary_facts(value, dictionary):
     facts = value.get('facts')
     if not isinstance(facts, list) or len(facts) > MAX_FACTS:
         return value, []  # Ordinary preflight reports the real shape or count.
-    kept, excluded, renumber, gone = [], [], {}, {}
+    kept: list[dict] = []
+    excluded, renumber, gone = [], {}, {}
     for index, fact in enumerate(facts):
         try:
             dictionary_terms(fact, dictionary)
