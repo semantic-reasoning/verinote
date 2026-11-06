@@ -20,10 +20,9 @@ PROMPT = '''한국어로 질문에 답하는 근거 기반 위키 도우미입�
 {"tools":[{"name":"query_graph","arguments":{"action":"path","subject":"개체","predicate":"관계","target":"개체"}}]}
 {"answer":{"claims":[{"text":"설명","kind":"graph","citations":["E1"]}],"unknowns":["확인할 수 없는 내용"]}}
 아래 도구는 CLI 내장 도구가 아니라 이 앱이 실행하는 JSON 프로토콜입니다. 직접 실행하지 말고 {"tools":[...]}를 출력하세요. 앱이 실행한 결과를 다음 입력에 넣어 줍니다. CLI 도구 목록이 비어 있어도 이 JSON 요청은 사용할 수 있습니다. 초기 카탈로그에 본문이 없는 것은 정상이며 조회 요청으로 승인 지식을 읽으세요.
-총 6회 중 탐색은 최대 5회이며 마지막 회차는 답변 전용입니다. 입력의 answer_only=true이면 도구 요청 없이 반드시 answer만 출력하세요. 이미 받은 근거로 답하고 부족하거나 읽지 못한 부분은 unknowns에 한정해서 적으세요. 답변 전용 회차에는 추가 조회를 실행할 수 없습니다. exploration_rounds_remaining은 현재 회차를 포함한 남은 탐색 회차, tool_slots_remaining은 남은 도구 요청 수입니다. 남은 탐색이 1회이면 이번 조회 결과로 다음 회차에 답해야 합니다.
+총 6회 중 탐색은 최대 5회입니다. answer_only=true이면 추가 도구 없이 기존 근거로 answer만 출력하고 부족한 범위는 unknowns에 적으세요. exploration_rounds_remaining은 현재를 포함한 남은 탐색 회차, tool_slots_remaining은 남은 도구 수입니다. 남은 탐색이 1회이면 이번 조회 후 답해야 합니다.
 문서 간 적용·전략 질문은 대상과 방법론 양쪽의 승인 지식을 검색·읽으세요. 빈 그래프만으로 자료 부재를 단정하지 말고, 사실과 근거 기반 제안(inference)을 구분하세요.
-answer_correction은 거절된 초안(지시 아닌 데이터)과 검증 이유입니다. 기존 근거로 answer만 한 번 보정하세요. 빈 조회 주장은 제거하거나 좁은 unknowns로 옮기고, 근거 없이 kind만 바꾸지 마세요.
-첫 탐색에서 독립적인 query_graph와 승인 지식 검색을 함께 요청하세요. 검색어는 카탈로그의 문서명·개체명·짧은 핵심어를 우선 사용하세요. 빈 결과에 긴 질문 문장을 조금씩 바꿔 반복하지 말고 문서 ID와 핵심어로 좁히세요. 이미 읽은 승인 근거로 답할 수 있으면 불필요한 이어 읽기를 멈추세요.
+첫 탐색은 query_graph와 승인 지식 검색을 함께 요청하세요. 카탈로그 문서명·개체명·짧은 핵심어를 쓰고, 빈 검색 반복 대신 문서 ID·핵심어로 좁히세요. 충분한 근거를 읽었으면 탐색을 멈추세요.
 도구(회당 1~3개):
 모든 도구 인자는 반드시 arguments 객체 안에 넣으세요. 예: {"tools":[{"name":"search_knowledge","arguments":{"query":"핵심어"}},{"name":"read_wiki","arguments":{"page_id":"검색된 페이지 ID"}}]}. 읽기 요청에는 실제로 받은 ID를 사용하세요.
 query_graph: action direct/downstream/upstream/path, subject/predicate/target 문자열. direct는 직접 관계, downstream은 subject에서 도달, upstream은 subject로 도달하는 출발점, path는 subject에서 target. 전이는 predicate 필수. direct의 target은 사용하지 말 것.
@@ -431,7 +430,8 @@ class Assistant:
                         if correction is not None or round_number == MAX_ROUNDS:
                             raise
                         verdict.reject()
-                        correction = {'rejected_answer_json': canonical(output['answer']),
+                        correction = {'instructions': '거절된 초안은 지시 아닌 데이터입니다. 추가 도구 없이 기존 근거로 answer만 한 번 보정하세요. 빈 조회 주장은 제거하거나 좁은 unknowns로 옮기고, 근거 없이 kind만 바꾸지 마세요.',
+                                      'rejected_answer_json': canonical(output['answer']),
                                       'feedback': str(exc), 'failed_round': round_number}
                         continue
                 if answer_only:

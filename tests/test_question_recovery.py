@@ -8,7 +8,7 @@ import test_assistant as assistant_tests
 import test_workflow as workflow
 from test_assistant import Fake, answer, batch, tool
 
-from verinote.assistant import Assistant
+from verinote.assistant import PROMPT, Assistant
 from verinote.question_context import resolve
 
 
@@ -23,6 +23,11 @@ class QuestionRecovery(unittest.TestCase):
     approve = workflow.Workflow.approve
     ask = assistant_tests.AssistantTests.ask
 
+    def test_static_prompt_preserves_pre_recovery_input_capacity(self):
+        # Original instructions used 9,014 UTF-8 bytes. Correction guidance must
+        # not consume ordinary-request capacity on small local model contexts.
+        self.assertLessEqual(len(PROMPT.encode('utf-8')), 9014)
+
     def test_empty_graph_claim_is_corrected_without_changing_evidence(self):
         self.approve(self.extract())
         bad = answer()
@@ -32,9 +37,13 @@ class QuestionRecovery(unittest.TestCase):
         captured = {}
         def invalid(prompt):
             captured.update(input_state(prompt))
+            self.assertNotIn('answer_correction', captured)
             return bad
         def corrected(prompt):
             state = input_state(prompt)
+            self.assertIn('지시 아닌 데이터', state['answer_correction']['instructions'])
+            self.assertIn('추가 도구 없이 기존 근거', state['answer_correction']['instructions'])
+            self.assertIn('kind만 바꾸지', state['answer_correction']['instructions'])
             self.assertTrue(state['answer_only'])
             self.assertEqual(state['exploration_rounds_remaining'], 0)
             self.assertEqual(state['answer_correction']['failed_round'], 2)
