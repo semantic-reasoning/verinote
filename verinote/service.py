@@ -45,8 +45,18 @@ def text(value, name, limit=200, *, allow_cr=False):
     return value.strip()
 
 
+def quote_text(value):
+    """Source quotation shape, not authored prose; grounding is checked separately."""
+    if (not isinstance(value, str) or len(value) > 8000 or '\x00' in value
+            or not any(ord(c) >= 32 and not c.isspace() for c in value)):
+        raise ValueError('quote: NUL 없이 본문이 포함된 8000자 이하 문자열이 필요합니다.')
+    # Ingestion admits non-NUL controls (including PDF extraction artifacts).
+    # Retain interior characters and the established boundary normalization.
+    return value.strip()
+
+
 def evidence(value, source):
-    quote = text(value, 'quote', 8000, allow_cr=True)
+    quote = quote_text(value)
     if quote not in source:
         raise ValueError('원문에 없는 인용입니다.')
     return quote

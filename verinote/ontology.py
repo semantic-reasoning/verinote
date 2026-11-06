@@ -196,7 +196,7 @@ def quote_label(path):
 
 def extraction_quote_issues(value, source, dictionary, *, require_coverage=False, contract_version=2):
     """Preflight every field before spending a call on missing literal quotations."""
-    from .service import text
+    from .service import quote_text, text
     version = contract_version
     extraction_prompts(version)
     if not isinstance(value, dict):
@@ -217,7 +217,7 @@ def extraction_quote_issues(value, source, dictionary, *, require_coverage=False
                     text(row.get('text'), 'text', 1500)
                 else:
                     dictionary_terms(row, dictionary)
-                quote = text(row.get('quote'), 'quote', 8000)
+                quote = quote_text(row.get('quote'))
             except ValueError as exc:
                 raise ValueError(f'{quote_label(path)}: {exc}') from exc
             first = source.find(quote)
