@@ -72,8 +72,8 @@ class TypePolicy(unittest.TestCase):
         self.assertEqual(excluded[0]['code'], 'definition_conflict')
         huge = dictionary(200)
         for entity in huge['entities']: entity['id'] += 'x' * 180
-        with patch('verinote.ontology.MAX_DICTIONARY_CONTEXT_BYTES', 1000), self.assertRaisesRegex(ValueError, '문맥'):
-            validate_dictionary(huge, SOURCE)
+        with patch('verinote.ontology.MAX_DICTIONARY_CONTEXT_BYTES', 1000):
+            self.assertEqual(len(validate_dictionary(huge, SOURCE)['entities']), len(huge['entities']))
 
     def test_config_defaults_range_and_secret_redaction(self):
         with tempfile.TemporaryDirectory() as folder:

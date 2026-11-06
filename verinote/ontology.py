@@ -113,9 +113,6 @@ def validate_dictionary(value, source):
     encoded = json.dumps(result, ensure_ascii=False, separators=(',', ':')).encode()
     if len(encoded) > MAX_DICTIONARY_BYTES:
         raise ValueError('사전과 원문 인용은 UTF-8 24 MiB 이내여야 합니다.')
-    context = json.dumps(dictionary_context(result), ensure_ascii=False, separators=(',', ':')).encode()
-    if len(context) > MAX_DICTIONARY_CONTEXT_BYTES:
-        raise ValueError('사전 정의 문맥은 UTF-8 60,000바이트 이내여야 합니다. 개체·별칭·관계 정의를 간결하게 줄여 주세요.')
     return result
 
 
@@ -264,11 +261,14 @@ def apply_quote_repairs(value, source, issues, response):
     return repaired, changes
 
 
-def bounded_prompt(instructions, payload):
-    prompt = instructions + json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
-    if len(prompt.encode()) > MAX_PROMPT_BYTES:
-        raise ValueError('추출 프롬프트 120,000바이트 제한 초과')
-    return prompt
+def bounded_prompt(instructions, payload, *, context_limit=None, prompt_limit=None, diagnostics=None):
+    from .dictionary_context import build, validate_context_bytes
+    context_limit = validate_context_bytes(MAX_DICTIONARY_CONTEXT_BYTES if context_limit is None else context_limit)
+    if prompt_limit is not None and (type(prompt_limit) is not int or prompt_limit <= 0):
+        raise ValueError('제공자의 입력 바이트 한도가 올바르지 않습니다.')
+    limit = min(MAX_PROMPT_BYTES, prompt_limit) if prompt_limit is not None else MAX_PROMPT_BYTES
+    return build(instructions, payload, context_limit=context_limit, prompt_limit=limit,
+                 diagnostics={} if diagnostics is None else diagnostics)
 
 
 def dictionary_context(dictionary):
@@ -327,7 +327,7 @@ entities의 name·type, aliases의 대상 entity, relations의 정의·타입을
 충돌 제안을 아무 설명 없이 덮어쓰지 마세요. 앱은 적용한 조정과 보류한 양쪽 정의·근거를 승인 전 검토용으로 남깁니다.
 sources는 원문의 연속 구간입니다. quote_ref에는 이번 sources에 있는 시작·끝 id 문자열을 순서대로 넣으세요. 한 구간이면 같은 id를 두 번 쓰세요. 앱이 그 범위의 원문을 그대로 복원합니다. quote 문자열이나 문자 위치를 생성하지 마세요. name은 선택 구간에 그대로 있어야 하며 별칭 구간에는 alias와 정규 name이 모두 있어야 합니다. 가능한 짧고 충분한 구간을 고르세요.
 기존 사전은 인용을 생략한 어휘·정의 문맥입니다. 일반 배열에 기존 항목을 반복하지 말고 수정이 필요하면 revisions를 사용하세요. 설명은 필요한 의미·조건을 간결하게 쓰고 해설이나 계획 없이 JSON만 반환하세요.
-이번 구간 응답 한도: 개체 200개, 별칭 400개, 관계 40개. 기존 사전 항목은 이 개수에 포함하지 않습니다. 문서 전체 누적 사전은 최대 64개 구간의 항목을 보존하며 인용을 제외한 사전 정의 문맥은 UTF-8 60,000바이트, 검증된 전체 사전과 인용은 UTF-8 24 MiB 이내입니다. 인용은 이번 청크에서 가져오세요.
+이번 구간 응답 한도: 개체 200개, 별칭 400개, 관계 40개. 기존 사전 항목은 이 개수에 포함하지 않습니다. 문서 전체 누적 사전은 최대 64개 구간의 항목을 보존하며 정의 문맥은 실행 설정의 입력 예산에 따라 무손실 표로 전달될 수 있으며, 검증된 전체 사전과 인용은 UTF-8 24 MiB 이내입니다. 문맥 예산 때문에 필요한 정의를 생략하거나 요약하지 마세요. 인용은 이번 청크에서 가져오세요.
 입력(JSON):
 '''
 

@@ -3,6 +3,7 @@ import json
 
 from . import dictionary_reconciliation as reconciliation
 from .call_validation import caller_validation
+from .dictionary_context import prepare
 from .dictionary_exclusions import (
     add_chunk,
     identity,
@@ -32,7 +33,6 @@ from .ontology import (
     MERGE_CONTRACT_VERSION,
     SOURCE_SPAN_MIN_SIZE,
     SOURCE_SPAN_SIZE,
-    bounded_prompt,
     dictionary_context,
     source_spans,
     validate_dictionary,
@@ -45,10 +45,11 @@ CHECKPOINT_LIMIT = MAX_DICTIONARY_BYTES + 6 * 1024 * 1024
 # The immediate predecessor differs only in describing per-chunk counts as
 # document totals. Its validated prefixes remain valid under the larger totals.
 PREVIOUS_COUNT_LIMIT_PROMPT = '566ed32738c94c60f2fa2c059683260c9859356c671b60bc73ccd2cf9ba5018f'
+PREVIOUS_CONTEXT_PROMPT = 'dc930b0db7c45441abc314bb4b7038ff55d6efae48ce276914a46e5d1eec24e3'
 PREVIOUS_IMMUTABLE_PROMPT = '0e2a3892fe24a0ca48994dfa347ee40c9dc9a06b14ed76e53a43002cdfccba63'
 
 
-def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_threshold=DEFAULT_THRESHOLD):
+def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_threshold=DEFAULT_THRESHOLD, context_limit=60000):
     threshold = validate_threshold(relation_type_warning_threshold)
     source = doc['text']
     slices = list(bounded_spans(source, DICTIONARY_CHUNK_SIZE))
@@ -96,6 +97,8 @@ def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_thr
                 expected.pop('reconciliation_policy')
                 if isinstance(value['contract'], dict) and value['contract'].get('prompt') in (PREVIOUS_COUNT_LIMIT_PROMPT, PREVIOUS_IMMUTABLE_PROMPT):
                     expected['prompt'] = value['contract']['prompt']
+            if value['schema_version'] == 3 and isinstance(value['contract'], dict) and value['contract'].get('prompt') == PREVIOUS_CONTEXT_PROMPT:
+                expected['prompt'] = PREVIOUS_CONTEXT_PROMPT
             if (isinstance(value['contract'], dict) and 'type_warning_policy' not in value['contract']
                     and 'relation_type_warning_threshold' not in value['contract'] and threshold == DEFAULT_THRESHOLD):
                 expected.pop('type_warning_policy')
@@ -198,7 +201,7 @@ def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_thr
             payload = {'filename': doc['filename'], 'version': run['version'], 'offset': offset,
                        'sources': spans, 'dictionary': dictionary_context(dictionary),
                        'relation_type_warning_threshold': threshold}
-            prompt = bounded_prompt(DICTIONARY_PROMPT, payload)
+            prompt = prepare(cli, run['agent'], DICTIONARY_PROMPT, payload, context_limit, folder / str(index))
             state['calls_started'] += 1
             write(folder / 'dictionary-progress.json', state)
             try:

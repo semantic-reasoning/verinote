@@ -207,7 +207,16 @@ class Store:
             return json.loads(row[0]) if row else {'selected': 'agy', 'models': {}}
 
     def save_settings(self, value):
+        from .dictionary_context import validate_context_bytes
+        value = dict(value)
+        if 'dictionary_context_bytes' in value:
+            validate_context_bytes(value['dictionary_context_bytes'])
         with self.connect(True) as db:
+            if 'dictionary_context_bytes' not in value:
+                previous = db.execute("SELECT value FROM settings WHERE key='agents'").fetchone()
+                previous = json.loads(previous['value']) if previous else {}
+                if 'dictionary_context_bytes' in previous:
+                    value['dictionary_context_bytes'] = validate_context_bytes(previous['dictionary_context_bytes'])
             db.execute("INSERT OR REPLACE INTO settings VALUES('agents',?)", (canonical(value),))
         return value
 

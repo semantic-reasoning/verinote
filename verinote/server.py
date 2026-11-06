@@ -18,10 +18,15 @@ from .agents import (
     validate_model,
 )
 from .config import ConfigError, Credentials, create_config, load_config
+from .dictionary_context import validate_context_bytes
 from .documents import MAX_BYTES, MAX_DOCX_XML_BYTES, MAX_TEXT, decode_document
 from .extraction_options import CHUNK_THRESHOLD_POLICY
 from .model_catalog import ModelCatalog
-from .ontology import MAX_DICTIONARY_BYTES
+from .ontology import (
+    MAX_DICTIONARY_BYTES,
+    MAX_DICTIONARY_CONTEXT_BYTES,
+    MAX_PROMPT_BYTES,
+)
 from .service import Service, text
 from .store import Conflict, Store
 from .transports import (
@@ -141,7 +146,7 @@ class Handler(BaseHTTPRequestHandler):
                             value['configured'] = self.server.credentials.public_status()['openrouter']['configured']
                         providers.append(value)
                     default_tokens = self.server.service.cli.execution_options('openrouter').max_tokens if isinstance(self.server.service.cli, CLI) else ExecutionOptions().max_tokens
-                    return self.send(store.settings() | {'dictionary': {'relation_type_warning_threshold': self.server.service.relation_type_warning_threshold}, 'document_limits': DOCUMENT_LIMITS, 'providers': providers,
+                    return self.send(store.settings() | {'dictionary': {'relation_type_warning_threshold': self.server.service.relation_type_warning_threshold, 'context_bytes': store.settings().get('dictionary_context_bytes', MAX_DICTIONARY_CONTEXT_BYTES), 'context_min': 1, 'context_max': MAX_PROMPT_BYTES}, 'document_limits': DOCUMENT_LIMITS, 'providers': providers,
                                      'extraction_policy': {'policy': self.server.claude_extraction_policy, 'agent': 'claude', 'stage': 'extract', 'source': 'server_startup'},
                                      'extraction_token_limits': {'min': MIN_JOB_TOKENS, 'max': MAX_JOB_TOKENS, 'step': 1, 'default': default_tokens},
                                      'answer_budget_policy': {'min_total': MIN_ANSWER_TOKENS + 1024,
@@ -149,13 +154,14 @@ class Handler(BaseHTTPRequestHandler):
                                                               'max_reasoning': MAX_REASONING_TOKENS}})
                 if method == 'PUT':
                     data = self.body()
-                    if not isinstance(data, dict) or set(data) != {'selected', 'models'} or not isinstance(data.get('selected'), str) or data.get('selected') not in PROVIDERS or not isinstance(data.get('models'), dict) or set(data['models']) - set(PROVIDERS):
+                    if not isinstance(data, dict) or set(data) not in ({'selected', 'models'}, {'selected', 'models', 'dictionary_context_bytes'}) or not isinstance(data.get('selected'), str) or data.get('selected') not in PROVIDERS or not isinstance(data.get('models'), dict) or set(data['models']) - set(PROVIDERS):
                         raise ValueError('에이전트 설정 형식 오류')
                     models = {key: validate_model(value) for key, value in data['models'].items()}
                     if data['selected'] in ('openrouter', 'ollama'):
                         chosen = data['selected']
                         models[chosen] = validate_model(data['models'].get(chosen, ''), chosen)
-                    return self.send(store.save_settings({'selected': data['selected'], 'models': models}))
+                    extra = {'dictionary_context_bytes': validate_context_bytes(data['dictionary_context_bytes'])} if 'dictionary_context_bytes' in data else {}
+                    return self.send(store.save_settings({'selected': data['selected'], 'models': models, **extra}))
             if route.path == '/api/usage-rates':
                 if method == 'GET':
                     return self.send(store.usage_rates())
