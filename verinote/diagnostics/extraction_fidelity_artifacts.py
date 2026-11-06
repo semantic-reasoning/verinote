@@ -10,8 +10,8 @@ from ..extraction_ab import _identity, _known
 from ..extraction_ab_runner import _hash, file_index
 from ..extraction_benchmark import MAX_REPORT_BYTES, sha
 from ..extraction_checkpoint import CHUNK_TIMEOUT, PIPELINE, ExtractionCheckpoint
-from ..extraction_coverage import identity as coverage_identity
 from ..extraction_coverage import exclude_off_dictionary_facts, repair_missing_indices
+from ..extraction_coverage import identity as coverage_identity
 from ..extraction_evaluation import DATA_ROOT, _read, load_case, load_manifest
 from ..extraction_threshold_ab_runner import verify_budget
 from ..extraction_threshold_artifacts import EvidenceStore, verify_document

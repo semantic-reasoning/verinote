@@ -22,8 +22,8 @@ from .extraction_benchmark import (
     sha,
 )
 from .extraction_checkpoint import ExtractionCheckpoint
-from .extraction_coverage import identity as coverage_identity
 from .extraction_coverage import exclude_off_dictionary_facts, repair_missing_indices
+from .extraction_coverage import identity as coverage_identity
 from .extraction_evaluation import DATA_ROOT, _read, load_case, load_manifest
 from .extraction_threshold_artifacts import EvidenceStore
 from .extraction_timing import read_extraction_timing
@@ -259,7 +259,7 @@ def verify_document(root, row, attempts, case):
     if any(i['status'] != 'pending' for i in candidates): violations.append('human_approval_contract')
     if not 1 <= len(attempts) <= 2: raise ValueError('call count')
     if [a['repair'] for a in attempts] not in ([False], [False, True]): raise ValueError('call sequence')
-    expected_usage = set(); ids = set(); original = None; issues = None; validated = None
+    expected_usage = set(); ids = set(); original = None; filtered = None; issues = None; validated = None
     production = {'complete': False, 'passed': None, 'reason': 'response_incomplete'}
     prompt, repair_prompt = extraction_prompts(2); text = case['source']
     payload = {'filename': doc['filename'], 'version': 1, 'offset': 0, 'text': text}

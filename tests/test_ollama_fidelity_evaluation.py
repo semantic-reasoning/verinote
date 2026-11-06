@@ -112,6 +112,29 @@ class FidelityTrial(unittest.TestCase):
         with patch('verinote.ollama.request', side_effect=AssertionError('offline HTTP')):
             self.assertEqual(trial.evaluate(self.output)['verdict'], 'accepted_for_further_testing')
 
+    def captured_repair_attempts(self):
+        captured = {}; real = trial.verify_document
+        def spy(root, row, attempts, case):
+            captured['args'] = (root, row, copy.deepcopy(attempts), case)
+            return real(root, row, attempts, case)
+        self.mode = 'repair'
+        with patch.object(trial, 'verify_document', spy): self.run_fake()
+        return captured['args']
+
+    def test_verify_document_raises_call_sequence_for_attempt_lists_not_starting_with_the_initial_call(self):
+        root, row, attempts, case = self.captured_repair_attempts()
+        self.assertEqual([a['repair'] for a in attempts], [False, True])
+        for bad in ([attempts[1]], [attempts[1], attempts[0]], [attempts[1], attempts[1]]):
+            with self.subTest(repair=[a['repair'] for a in bad]), self.assertRaisesRegex(ValueError, 'call sequence'):
+                trial.verify_document(root, row, bad, case)
+
+    def test_verify_document_raises_for_a_repair_attempt_when_the_initial_response_left_no_repairable_issues(self):
+        root, row, attempts, case = self.captured_repair_attempts()
+        for target, error in (('parse_response', ValueError('unparseable')), ('exclude_off_dictionary_facts', TypeError('stopped before issues'))):
+            with self.subTest(target=target), patch.object(trial, target, side_effect=error), \
+                    self.assertRaisesRegex(ValueError, 'repair without repairable'):
+                trial.verify_document(root, row, attempts, case)
+
     def test_complete_production_and_gold_failures_rejected(self):
         for mode in ('contract', 'gold', 'malformed', 'bad_repair'):
             with self.subTest(mode=mode):
