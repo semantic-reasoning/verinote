@@ -159,6 +159,13 @@ def merge_dictionary(previous, delta, source, chunk):
     return validate_dictionary(merged, source)
 
 
+class VocabularyError(ValueError):
+    """A well-formed fact whose entity spelling or types do not match the approved dictionary."""
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+
+
 def dictionary_terms(value, dictionary):
     """Check vocabulary before inspecting evidence, including during repair preflight."""
     from .service import text
@@ -168,16 +175,17 @@ def dictionary_terms(value, dictionary):
     entities = {e['id']: e for e in dictionary['entities']}
     aliases = {a['alias']: a['entity'] for a in dictionary['aliases']}
     relations = {r['id']: r for r in dictionary['relations']}
-    for key in ('subject', 'object'):
-        fact[key] = aliases.get(fact[key], fact[key])
-        if fact[key] not in entities:
-            raise ValueError(f'승인 사전에 없는 개체: {fact[key]}')
+    # Relation first: an unapproved predicate has no coverage row, so it is never a VocabularyError.
     relation = relations.get(fact['predicate'])
     if relation is None:
         raise ValueError(f'승인 사전에 없는 관계: {fact["predicate"]}')
     for key in ('subject', 'object'):
+        fact[key] = aliases.get(fact[key], fact[key])
+        if fact[key] not in entities:
+            raise VocabularyError('unknown_entity', f'승인된 개체·별칭 중 이 표기와 정확히 일치하는 것이 없습니다: {fact[key]}')
+    for key in ('subject', 'object'):
         if entities[fact[key]]['type'] not in relation[key + '_types']:
-            raise ValueError(f'승인 관계의 방향/타입 불일치: {key}')
+            raise VocabularyError('type_mismatch', f'승인 관계의 방향/타입 불일치: {key}')
     return fact
 
 

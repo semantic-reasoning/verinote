@@ -138,6 +138,16 @@ class FidelityObligations(unittest.TestCase):
         result = self.assess(output)
         self.assertEqual(result['status'], 'production_failure'); self.assertTrue(result['chunks'][0]['quote_repair_required'])
 
+    def test_off_dictionary_fact_is_excluded_before_preflight_and_kept_in_normalized_output(self):
+        output = copy.deepcopy(self.output); first = output['facts'][0]
+        output['facts'].insert(0, first | {'subject': 'entity absent from the dictionary'})
+        for row in output['coverage']:
+            row['fact_indices'] = [i+1 for i in row['fact_indices']]+([0] if row['predicate'] == first['predicate'] else [])
+        chunk = self.assess(output)['chunks'][0]
+        self.assertTrue(chunk['production_passed'], chunk['production_error'])
+        self.assertEqual(chunk['normalized_output']['excluded_facts'][0]['code'], 'unknown_entity')
+        self.assertEqual(len(chunk['normalized_output']['facts']), len(self.output['facts']))
+
     def test_mechanical_accounting_is_recorded_on_copy_in_production_order(self):
         output = copy.deepcopy(self.output); output['coverage'][0]['fact_indices'] = []
         before = copy.deepcopy(output); result = self.assess(output)

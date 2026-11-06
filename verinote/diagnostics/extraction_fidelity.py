@@ -6,7 +6,7 @@ from ..agents import parse_response
 from ..documents import chunks
 from ..extraction_ab_runner import _hash, file_index
 from ..extraction_benchmark import MAX_REPORT_BYTES
-from ..extraction_coverage import repair_missing_indices
+from ..extraction_coverage import exclude_off_dictionary_facts, repair_missing_indices
 from ..extraction_evaluation import _read, evaluate_case, validate_case
 from ..extraction_threshold_ab_runner import evaluate_saved
 from ..extraction_threshold_artifacts import EvidenceStore
@@ -60,6 +60,7 @@ def _production(case, index, original):
               'quote_repair_required': False, 'accounting_changes': [], 'stages': []}
     stage = 'shape_quote_preflight'
     try:
+        output, _ = exclude_off_dictionary_facts(output, case['dictionary'])
         issues = extraction_quote_issues(output, text, case['dictionary'], contract_version=2)
         result['stages'].append(stage)
         stage = 'mechanical_accounting'
@@ -83,6 +84,8 @@ def _production(case, index, original):
         # constructor/save methods or any database/file writes.
         normalized = page | {'facts': facts, 'coverage': copy.deepcopy(output['coverage']),
                              'dictionary_gaps': copy.deepcopy(output['dictionary_gaps'])}
+        if output.get('excluded_facts'):
+            normalized['excluded_facts'] = copy.deepcopy(output['excluded_facts'])
         result['stages'].append(stage)
         result.update(production_passed=True, normalized_output=normalized)
     except (ValueError, KeyError, TypeError, IndexError) as exc:

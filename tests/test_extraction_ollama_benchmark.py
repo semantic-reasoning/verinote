@@ -40,6 +40,14 @@ class OllamaBaseline(unittest.TestCase):
             value['facts'][0]['quote'] = 'not in source'
         elif 'issues' in data:
             value = {'repairs': [{'path': issue['path'], 'quote': value[issue['path'].split('.')[0]][int(issue['path'].split('.')[1])]['quote']} for issue in data['issues']]}
+        if self.mode in ('off_dictionary', 'off_dictionary_repair') and value.get('facts'):
+            row = next(r for r in value['coverage'] if r['predicate'] == value['facts'][0]['predicate'])
+            value['facts'].append(value['facts'][0] | {'subject': 'entity absent from the dictionary'})
+            row['fact_indices'].append(len(value['facts'])-1)
+            if self.mode == 'off_dictionary_repair' and self.generation_count == 1: value['facts'][0]['quote'] = 'not in source'
+        if self.mode == 'off_dictionary_repair' and 'issues' in data:
+            oracle = self.oracle[data['offset'], data['text']]
+            value = {'repairs': [{'path': issue['path'], 'quote': oracle['facts'][int(issue['path'].split('.')[1])]['quote']} for issue in data['issues']]}
         if self.mode == 'gold' and 'coverage' in value:
             next(row for row in value['coverage'] if row['predicate'] == 'archives')['status'] = 'no_evidence'
         if self.mode == 'failure' and self.generation_count == 3: value = {}
@@ -102,6 +110,20 @@ class OllamaBaseline(unittest.TestCase):
         self.assertEqual(benchmark.evaluate(self.output), result)
         (repair.parent/'usage.json').unlink()
         self.assertIn('artifact_verification_failed', benchmark.evaluate(self.output)['reasons'])
+
+    def test_off_dictionary_facts_replay_against_the_checkpoint(self):
+        self.mode = 'off_dictionary'
+        report, result = self.run_fake()
+        self.assertEqual(report['status'], 'completed', report['stop_reason'])
+        self.assertEqual(result['reasons'], ['synthetic_only'])
+        self.assertEqual(benchmark.evaluate(self.output), result)
+
+    def test_off_dictionary_fact_with_quote_repair_replays_the_filtered_prompt_and_checkpoint(self):
+        self.mode = 'off_dictionary_repair'
+        report, result = self.run_fake()
+        self.assertEqual(report['status'], 'completed', report['stop_reason'])
+        self.assertEqual(sum(a['repair'] for a in report['attempts']), 1)
+        self.assertEqual(result['reasons'], ['synthetic_only'])
 
     def test_failure_has_no_partial_publication(self):
         self.mode = 'failure'

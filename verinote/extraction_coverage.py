@@ -4,13 +4,15 @@ import json
 import re
 from pathlib import Path
 
-from .ontology import MAX_FACTS
+from .ontology import MAX_FACTS, VocabularyError, dictionary_terms
 from .usage import atomic_json, safe_file
 
 MAX_REPORT_BYTES = 2 * 1024 * 1024
 STATUSES = {'extracted', 'no_evidence', 'not_representable', 'limit_reached'}
 GAP_CODES = {'missing_entity', 'missing_relation', 'type_mismatch', 'qualifier_not_representable'}
 MAX_REPAIR_BYTES = 64 * 1024
+MAX_EXCLUDED_QUOTE = 300
+EXCLUSION_CODES = {'unknown_entity', 'type_mismatch'}
 
 
 def integer(value, minimum, maximum):
@@ -25,6 +27,70 @@ def indices(value, size):
     return value
 
 
+def validate_exclusions(rows, kept, predicates):
+    if not isinstance(rows, list) or kept + len(rows) > MAX_FACTS:
+        raise ValueError('추출 점검 excluded_facts 형식 오류')
+    for row in rows:
+        if (not isinstance(row, dict) or set(row) != {'code', 'subject', 'predicate', 'object', 'quote'}
+                or any(not isinstance(field, str) for field in row.values())
+                or row['code'] not in EXCLUSION_CODES or row['predicate'] not in predicates
+                or len(row['subject']) > 200 or len(row['object']) > 200 or len(row['quote']) > MAX_EXCLUDED_QUOTE):
+            raise ValueError('추출 점검 excluded_facts 필드 오류')
+    return rows
+
+
+def exclude_off_dictionary_facts(value, dictionary):
+    """Fresh responses only: remove facts whose entity spelling or types do not match the approved dictionary, keep accounting true.
+
+    `excluded_facts` is local provenance, so an inbound key is discarded before filtering. A response
+    with neither that key nor an exclusion comes back as the same object. Coverage indices in the
+    result number the kept facts.
+    """
+    if not isinstance(value, dict):
+        return value, []
+    if 'excluded_facts' in value:
+        value = {key: field for key, field in value.items() if key != 'excluded_facts'}
+    facts = value.get('facts')
+    if not isinstance(facts, list) or len(facts) > MAX_FACTS:
+        return value, []  # Ordinary preflight reports the real shape or count.
+    kept, excluded, renumber, gone = [], [], {}, {}
+    for index, fact in enumerate(facts):
+        try:
+            dictionary_terms(fact, dictionary)
+        except VocabularyError as exc:
+            quote = fact.get('quote')
+            gone[index] = fact['predicate'].strip()
+            excluded.append({'code': exc.code, 'subject': fact['subject'], 'predicate': gone[index],
+                             'object': fact['object'], 'quote': quote[:MAX_EXCLUDED_QUOTE] if isinstance(quote, str) else ''})
+        except ValueError:
+            return value, []  # Malformed, or an unapproved predicate: ordinary preflight rejects it.
+        else:
+            renumber[index] = len(kept)
+            kept.append(fact)
+    if not excluded:
+        return value, []
+    result = copy.deepcopy(value)
+    result['facts'] = copy.deepcopy(kept)
+    result['excluded_facts'] = excluded
+    remaining = {fact['predicate'] for fact in kept}
+    rows = result.get('coverage')
+    for row in rows if isinstance(rows, list) else []:
+        before = row.get('fact_indices') if isinstance(row, dict) else None
+        if not isinstance(before, list) or any(type(i) is not int for i in before) or len(set(before)) != len(before):
+            continue  # validate_accounting rejects this row unchanged.
+        predicate, after = row.get('predicate'), []
+        for i in before:
+            if i not in gone:
+                after.append(renumber.get(i, i))  # An out-of-range index stays out of range.
+            elif gone[i] != predicate:
+                after.append(len(kept) + i)  # A contradiction before removal: validate_accounting rejects it.
+        row['fact_indices'] = after
+        if not after and predicate in gone.values() and predicate not in remaining:
+            row['status'] = 'not_representable'
+            row['reason'] = '응답 관계가 승인 사전의 표기·타입과 일치하지 않아 저장에서 제외됨 (모델 판단이 아닌 로컬 처리)'
+    return result, excluded
+
+
 def validate_accounting(value, dictionary):
     """Called after ordinary shape validation, before any quote-repair request."""
     from .service import text
@@ -36,6 +102,7 @@ def validate_accounting(value, dictionary):
         raise ValueError('추출 점검 dictionary_gaps: 최대 12개 배열이 필요합니다.')
     seen, covered = set(), set()
     facts, claims = value['facts'], value['claims']
+    excluded = validate_exclusions(value.get('excluded_facts', []), len(facts), predicates)
     for row in rows:
         if not isinstance(row, dict) or set(row) != {'predicate', 'fact_indices', 'claim_indices', 'status', 'reason'}:
             raise ValueError('추출 점검 coverage 필드 오류')
@@ -49,9 +116,9 @@ def validate_accounting(value, dictionary):
         ci = indices(row['claim_indices'], len(claims))
         if bool(fi) != (status == 'extracted'):
             raise ValueError('추출 점검: extracted 상태와 fact_indices가 일치하지 않습니다.')
-        if status == 'not_representable' and not ci:
+        if status == 'not_representable' and not ci and not any(e['predicate'] == predicate for e in excluded):
             raise ValueError('추출 점검: 표현 제약의 근거 claim_indices가 필요합니다.')
-        if status == 'limit_reached' and len(facts) != MAX_FACTS:
+        if status == 'limit_reached' and len(facts) + len(excluded) != MAX_FACTS:
             raise ValueError('추출 점검: 사실 한도에 도달하지 않았습니다.')
         if any(facts[i]['predicate'] != predicate or i in covered for i in fi):
             raise ValueError('추출 점검: fact_indices의 관계가 다르거나 중복됩니다.')
@@ -141,9 +208,12 @@ def new_report(run, source_length):
 
 
 def chunk_report(output, offset, length):
-    return {'offset': offset, 'length': length, 'claim_count': len(output['claims']),
-            'fact_predicates': [f['predicate'] for f in output['facts']],
-            'coverage': copy.deepcopy(output['coverage']), 'dictionary_gaps': copy.deepcopy(output['dictionary_gaps'])}
+    report = {'offset': offset, 'length': length, 'claim_count': len(output['claims']),
+              'fact_predicates': [f['predicate'] for f in output['facts']],
+              'coverage': copy.deepcopy(output['coverage']), 'dictionary_gaps': copy.deepcopy(output['dictionary_gaps'])}
+    if output.get('excluded_facts'):
+        report['excluded_facts'] = copy.deepcopy(output['excluded_facts'])
+    return report
 
 
 def write_report(root, report):
@@ -201,9 +271,9 @@ def read_report(root, store, run_id):
         total_chunks = (source[0] + 7999) // 8000
         if len(report['chunks']) > total_chunks:
             return unavailable
-        claims, emitted, predicates, gaps, capped = 0, 0, set(), 0, False
+        claims, emitted, predicates, gaps, capped, excluded = 0, 0, set(), 0, False, 0
         for i, chunk in enumerate(report['chunks']):
-            if (not isinstance(chunk, dict) or set(chunk) != {'offset', 'length', 'claim_count', 'fact_predicates', 'coverage', 'dictionary_gaps'}
+            if (not isinstance(chunk, dict) or set(chunk) - {'excluded_facts'} != {'offset', 'length', 'claim_count', 'fact_predicates', 'coverage', 'dictionary_gaps'}
                     or not integer(chunk['offset'], 0, 127999) or chunk['offset'] != i * 8000
                     or not integer(chunk['length'], 1, 8000) or chunk['length'] != min(8000, source[0] - i * 8000)
                     or not integer(chunk['claim_count'], 1, 12)
@@ -215,16 +285,18 @@ def read_report(root, store, run_id):
             # Indices in reports are local; page claims concatenate without deduplication.
             chunk['claim_base'] = claims
             claims += chunk['claim_count']
-            emitted += len(chunk['fact_predicates'])
+            refused = len(chunk.get('excluded_facts', []))
+            emitted += len(chunk['fact_predicates']) + refused
+            excluded += refused
             predicates.update(chunk['fact_predicates'])
             gaps += len(chunk['dictionary_gaps'])
-            capped |= len(chunk['fact_predicates']) == MAX_FACTS
+            capped |= len(chunk['fact_predicates']) + refused == MAX_FACTS
         if saved > emitted or (run['status'] == 'success' and (len(report['chunks']) != total_chunks
                 or len(pages) != 1 or len(json.loads(pages[0][0])['claims']) != claims)):
             return unavailable
         return {'available': True, 'status': run['status'], 'published': run['status'] == 'success',
                 'total_chunks': total_chunks, 'validated_chunks': len(report['chunks']),
-                'emitted_fact_count': emitted, 'saved_fact_count': saved if run['status'] == 'success' else 0,
+                'emitted_fact_count': emitted, 'excluded_fact_count': excluded, 'saved_fact_count': saved if run['status'] == 'success' else 0,
                 'extracted_predicates': len(predicates), 'approved_predicates': len(run['ontology']['payload']['relations']),
                 'gap_count': gaps, 'capped': capped, 'chunks': report['chunks']}
     except (ValueError, TypeError, KeyError, RecursionError):

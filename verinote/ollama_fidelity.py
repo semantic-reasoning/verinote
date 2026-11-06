@@ -3,7 +3,7 @@ from pathlib import Path
 
 from .agents import parse_response
 from .extraction_ab_runner import file_index
-from .extraction_coverage import repair_missing_indices
+from .extraction_coverage import exclude_off_dictionary_facts, repair_missing_indices
 from .extraction_evaluation import DATA_ROOT, _read, evaluate_case, load_case
 from .extraction_ollama_benchmark import evaluate
 from .ontology import dictionary_fact, extraction_quote_issues
@@ -16,10 +16,15 @@ HISTORIES = {
 }
 
 
-def assess_output(case, output):
-    """Keep production rejection distinct from the unchanged finite gold checks."""
+def assess_output(case, output, *, fresh=True):
+    """Keep production rejection distinct from the unchanged finite gold checks.
+
+    `fresh=False` is for output that already went through the fresh-response step.
+    """
     changes = []
     try:
+        if fresh:
+            output, _ = exclude_off_dictionary_facts(output, case['dictionary'])
         extraction_quote_issues(output, case['source'], case['dictionary'], contract_version=2)
         output, changes = repair_missing_indices(output, case['dictionary'])
         issues = extraction_quote_issues(output, case['source'], case['dictionary'], require_coverage=True, contract_version=2)

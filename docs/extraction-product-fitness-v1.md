@@ -88,7 +88,7 @@ category 차이는 따로 기록한다. error-3, error-9, error-14에 #785가 �
 
 ## 원본·재현·출처
 
-보고서 [report.json](../benchmarks/extraction/results/788-product-fitness-v1/report.json) 해시: `@report_sha256=a42b5adbaa42a64c60fbfa730183a478aaaa95c39475ff1fcf5def51e8ea7007`.
+보고서 [report.json](../benchmarks/extraction/results/788-product-fitness-v1/report.json) 해시: `@report_sha256=386b837823bca45f86dcdd31d5ce2a9674a025b3afab54d4b3ab524ae336fb1a`.
 
 작업 출발 main revision은 `base_revision=7831b96f4ec756599174200e68c6b2669d534e43`이며, #788 이슈 본문이 기준 revision으로 적은 재현 revision `issue_reproduction_revision=eafa841de6980dd08f2cf11a1413688038ab9fe2`과 다르다. 보고서의 `source_hashes`가 묶는 파일은 `report_source_paths`가 정하며, 기준 디렉터리에서는 이름이 점으로 시작하지 않는 JSON 파일만 넣는다. 이 문서는 보고서 해시를 인용하므로 제외한다. 모듈이 import하는 진단 파일(`extraction_fidelity.py` 등)의 hash는 `diagnostic_implementation`에 기록된다. `verify_proposal()`이 호출하는 `diagnose()`는 그 밖에 import하는 최상위 `verinote` 모듈의 현재 파일 hash를 보존 실행 report의 environment hash와 비교하지 않고, 보존 호출을 현재 코드로 다시 처리해 보존 기록과 비교한다. 보존 실행 report는 `historical_authentication.report_sha256=72a63ca70e3cfdc9bd9a771999a65ed537bb584d5c8aacfe054c2e4ece981a5f`로, #785 [review.json](../benchmarks/extraction/results/785-criteria-review/review.json)은 `review_785_sha256=77357b149da5a7d7fe2a0c46e8070d610369893ed1a32878b542b175d578dad6`로, 평가에 쓴 dataset v2의 short·three 사례는 등록부의 `case_sha256`으로 고정한다.
 

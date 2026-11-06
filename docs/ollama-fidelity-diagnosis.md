@@ -8,7 +8,7 @@
 PYTHONPATH=. .venv/bin/python scripts/diagnose_ollama_fidelity.py replay
 ```
 
-진단은 저장 report의 알려진 SHA-256, 전체 원본 index와 기존 baseline evaluator를 먼저 검사한다. 첫 short 응답 원본을 변경하지 않고 현재 production과 같은 순서로 비coverage preflight, 기존 fact_indices 기계적 보정(복사본), 엄격한 quote/coverage/사전/위키 검증을 재생한다. 보정 내역은 별도로 반환하며 관계별 판단·누락 coverage 행을 생성하지 않는다. 추가 모델 인용 보정이 필요하면 그 필요만 기록하고 실행하지 않는다. production을 통과한 경우만 기존 v2 finite-gold 평가를 실행한다. HTTP·모델·subprocess·DB 쓰기 없이 실행하며 모든 파일 해시가 유지돼야 한다. 손상된 원본/지원하지 않는 실험은 거부한다. 보존 구현 코드를 실행하지 않는다.
+진단은 저장 report의 알려진 SHA-256, 전체 원본 index와 기존 baseline evaluator를 먼저 검사한다. 첫 short 응답 원본을 변경하지 않고 현재 production과 같은 순서로 승인 사전과 일치하지 않는 사실 제외, 비coverage preflight, 기존 fact_indices 기계적 보정(복사본), 엄격한 quote/coverage/사전/위키 검증을 재생한다. 보정 내역은 별도로 반환하며 관계별 판단·누락 coverage 행을 생성하지 않는다. 추가 모델 인용 보정이 필요하면 그 필요만 기록하고 실행하지 않는다. production을 통과한 경우만 기존 v2 finite-gold 평가를 실행한다. HTTP·모델·subprocess·DB 쓰기 없이 실행하며 모든 파일 해시가 유지돼야 한다. 손상된 원본/지원하지 않는 실험은 거부한다. 보존 구현 코드를 실행하지 않는다.
 
 | 보존 응답 | production | finite gold | 확인된 결론 |
 |---|---|---|---|
