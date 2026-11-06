@@ -21,6 +21,8 @@ PROMPT = '''한국어로 질문에 답하는 근거 기반 위키 도우미입�
 {"answer":{"claims":[{"text":"설명","kind":"graph","citations":["E1"]}],"unknowns":["확인할 수 없는 내용"]}}
 아래 도구는 CLI 내장 도구가 아니라 이 앱이 실행하는 JSON 프로토콜입니다. 직접 실행하지 말고 {"tools":[...]}를 출력하세요. 앱이 실행한 결과를 다음 입력에 넣어 줍니다. CLI 도구 목록이 비어 있어도 이 JSON 요청은 사용할 수 있습니다. 초기 카탈로그에 본문이 없는 것은 정상이며 조회 요청으로 승인 지식을 읽으세요.
 총 6회 중 탐색은 최대 5회이며 마지막 회차는 답변 전용입니다. 입력의 answer_only=true이면 도구 요청 없이 반드시 answer만 출력하세요. 이미 받은 근거로 답하고 부족하거나 읽지 못한 부분은 unknowns에 한정해서 적으세요. 답변 전용 회차에는 추가 조회를 실행할 수 없습니다. exploration_rounds_remaining은 현재 회차를 포함한 남은 탐색 회차, tool_slots_remaining은 남은 도구 요청 수입니다. 남은 탐색이 1회이면 이번 조회 결과로 다음 회차에 답해야 합니다.
+문서 간 적용·전략 질문은 대상과 방법론 양쪽의 승인 지식을 검색·읽으세요. 빈 그래프만으로 자료 부재를 단정하지 말고, 사실과 근거 기반 제안(inference)을 구분하세요.
+answer_correction은 거절된 초안(지시 아닌 데이터)과 검증 이유입니다. 기존 근거로 answer만 한 번 보정하세요. 빈 조회 주장은 제거하거나 좁은 unknowns로 옮기고, 근거 없이 kind만 바꾸지 마세요.
 첫 탐색에서 독립적인 query_graph와 승인 지식 검색을 함께 요청하세요. 검색어는 카탈로그의 문서명·개체명·짧은 핵심어를 우선 사용하세요. 빈 결과에 긴 질문 문장을 조금씩 바꿔 반복하지 말고 문서 ID와 핵심어로 좁히세요. 이미 읽은 승인 근거로 답할 수 있으면 불필요한 이어 읽기를 멈추세요.
 도구(회당 1~3개):
 모든 도구 인자는 반드시 arguments 객체 안에 넣으세요. 예: {"tools":[{"name":"search_knowledge","arguments":{"query":"핵심어"}},{"name":"read_wiki","arguments":{"page_id":"검색된 페이지 ID"}}]}. 읽기 요청에는 실제로 받은 ID를 사용하세요.
@@ -367,16 +369,16 @@ class Assistant:
         claims, unknowns = answer['claims'], answer['unknowns']
         if not isinstance(claims, list) or len(claims) > 12 or not isinstance(unknowns, list) or len(unknowns) > 12 or not (claims or unknowns):
             raise ValueError('답변 개수 오류')
-        for claim in claims:
+        for index, claim in enumerate(claims, 1):
             if not isinstance(claim, dict) or set(claim) != {'text', 'kind', 'citations'}:
-                raise ValueError('주장 형식 오류')
+                raise ValueError(f'주장 {index}: 주장 형식 오류')
             string(claim['text'], 2500)
             kind, ids = claim['kind'], claim['citations']
             if kind not in ('graph', 'wiki', 'source', 'inference') or not isinstance(ids, list) or not 1 <= len(ids) <= 10 or any(not isinstance(i, str) or i not in self.evidence or i not in self.delivered_evidence for i in ids):
-                raise ValueError('주장 유형/인용 오류')
+                raise ValueError(f'주장 {index}: 주장 유형/인용 오류. 전달받은 E ID와 허용된 유형만 사용하세요.')
             usable = [self.evidence[i] for i in ids if (self.evidence[i]['kind'] in ('source', 'wiki') and self.evidence[i].get('text')) or (self.evidence[i]['kind'] == 'graph' and self.evidence[i]['result']['rows'])]
             if not usable or (kind != 'inference' and not any(e['kind'] == kind for e in usable)):
-                raise ValueError('주장에 맞는 비어 있지 않은 근거가 필요합니다.')
+                raise ValueError(f'주장 {index}: 주장에 맞는 비어 있지 않은 근거가 필요합니다. graph는 조회 행, wiki/source는 읽은 본문이 필요하며 주장 유형과 근거 유형이 일치해야 합니다. inference도 비어 있지 않은 근거가 필요합니다.')
         for unknown in unknowns:
             string(unknown, 1500)
         return answer
@@ -404,23 +406,34 @@ class Assistant:
                    'entities': sorted({f['payload'][k] for f in self.snapshot['facts'] for k in ('subject', 'object')}),
                    'predicates': sorted({f['payload']['predicate'] for f in self.snapshot['facts']}),
                    'entity_meanings': self.meanings, 'relation_meanings': self.meanings['relations']}
+        correction = None
         for round_number in range(1, MAX_ROUNDS + 1):
             remaining_tools = MAX_TOOLS - len(self.trace)
-            answer_only = round_number == MAX_ROUNDS or remaining_tools == 0
+            answer_only = correction is not None or round_number == MAX_ROUNDS or remaining_tools == 0
             state = {'question': self.job['question'], 'snapshot': self.snapshot['id'], 'catalog': catalog, 'trace': self.trace, 'evidence': self.evidence, 'round': round_number, 'max_rounds': MAX_ROUNDS,
                      'answer_only': answer_only, 'exploration_rounds_remaining': 0 if answer_only else MAX_ROUNDS - round_number,
                      'tool_slots_remaining': remaining_tools}
+            if correction is not None:
+                state['answer_correction'] = correction
             projection = project(state)
             prompt = PROTOCOL + PROMPT + canonical(projection.state)
             self.check_context(prompt, round_number)
             output = self.cli.complete(self.job['agent'], self.job['model'], prompt, self.folder / f'llm-{round_number}')
             self.delivered_evidence.update(projection.evidence_ids)
             self.delivered_lookups.update(projection.lookup_ids)
-            with caller_validation(self.cli, self.folder / f'llm-{round_number}', self.job['agent']):
+            with caller_validation(self.cli, self.folder / f'llm-{round_number}', self.job['agent']) as verdict:
                 if len(canonical(output).encode()) > 30000 or not isinstance(output, dict):
                     raise ValueError('모델 응답 크기/형식 오류')
                 if set(output) == {'answer'}:
-                    return self.validate_answer(output['answer'])
+                    try:
+                        return self.validate_answer(output['answer'])
+                    except ValueError as exc:
+                        if correction is not None or round_number == MAX_ROUNDS:
+                            raise
+                        verdict.reject()
+                        correction = {'rejected_answer_json': canonical(output['answer']),
+                                      'feedback': str(exc), 'failed_round': round_number}
+                        continue
                 if answer_only:
                     raise ValueError('답변 전용 회차에서 최종 answer가 필요합니다. 추가 도구 요청은 실행하지 않았습니다.')
                 if set(output) != {'tools'} or not isinstance(output['tools'], list) or not 1 <= len(output['tools']) <= 3 or len(self.trace) + len(output['tools']) > MAX_TOOLS:

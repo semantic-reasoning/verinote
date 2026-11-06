@@ -172,7 +172,7 @@ class AssistantTests(unittest.TestCase):
         self.assertEqual(job['status'], 'error')
         self.assertIn('검색 결과를 먼저', job['error'])
         self.assertEqual(job['evidence'], {})
-        job, _ = self.ask([tool(), {'tools': [{'name': 'search_documents', 'query': '주문'}]}, answer(kind='source')])
+        job, _ = self.ask([tool(), {'tools': [{'name': 'search_documents', 'query': '주문'}]}, answer(kind='source'), answer(kind='source')])
         self.assertEqual(job['status'], 'error')
         self.assertIn('근거', job['error'])
 
@@ -185,7 +185,11 @@ class AssistantTests(unittest.TestCase):
                  [tool(name='search_documents',query='주문'),answer(ids=['E1'])]]
         for outputs in cases:
             with self.subTest(outputs=outputs):
-                job, _ = self.ask(outputs)
+                if set(outputs[-1]) == {'answer'}:
+                    outputs = outputs + [outputs[-1]]
+                job, fake = self.ask(outputs)
+                self.assertEqual(len(fake.calls), len(outputs))
+                self.assertTrue(job['error'])
                 self.assertEqual(job['status'], 'error')
                 self.assertIsNone(job['answer'])
 
@@ -208,7 +212,7 @@ class AssistantTests(unittest.TestCase):
         self.assertEqual(other['status'], 'success'); self.assertEqual(query.call_count, 1)
 
     def test_graph_reuse_keeps_empty_evidence_and_failed_results_unusable(self):
-        job, _ = self.ask([tool(subject='없음'), tool(subject='없음'), answer()])
+        job, _ = self.ask([tool(subject='없음'), tool(subject='없음'), answer(), answer()])
         self.assertEqual(job['status'], 'error'); self.assertIn('비어 있지 않은 근거', job['error'])
         self.assertEqual(list(job['evidence']), ['E1'])
         for result in (RuntimeError('engine failed'), {'rows': [], 'large': 'x' * 30001}):
