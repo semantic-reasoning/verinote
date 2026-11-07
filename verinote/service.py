@@ -402,13 +402,14 @@ class Service:
                     with caller_validation(cli, folder, run['agent']) as validation, timing.section('validation_with_bookkeeping', index):
                         if time.monotonic() > deadline:
                             raise TimeoutError(f'청크 실행 시간 제한 초과 ({CHUNK_TIMEOUT}초)')
+                        excluded: list[dict] = []
                         try:
                             raw_output = output
                             if current_contract:
                                 output, excluded = exclude_off_dictionary_facts(output, run['ontology']['payload'])
                                 if excluded:
                                     validation.reject()
-                            issues = extraction_quote_issues(output, chunk, run['ontology']['payload'], contract_version=contract_version)
+                            issues = extraction_quote_issues(output, chunk, run['ontology']['payload'], contract_version=contract_version, skip_off_dictionary=current_contract)
                             if current_contract:
                                 normalized, accounting_changes = repair_missing_indices(output, run['ontology']['payload'])
                                 if accounting_changes:
@@ -466,7 +467,8 @@ class Service:
                                     repair_locations.append(f'청크 {index}: ' + ', '.join(saved[:5]) + (f' 외 {len(saved) - 5}개' if len(saved) > 5 else ''))
                             page = validate_page(output, chunk, allow_no_claims=bool(output.get('excluded_claims')))
                         except ValueError as exc:
-                            raise ValueError(f'청크 {index} · {exc}') from exc
+                            basis = ' (관계 번호는 사전 불일치 제외 뒤 기준)' if excluded and re.search(r'관계 \d+ 인용', str(exc)) else ''
+                            raise ValueError(f'청크 {index} · {exc}{basis}') from exc
                         claims.extend(page['claims'])
                         facts.extend(dictionary_fact(f, chunk, run['ontology']['payload']) for f in output['facts'])
                         if time.monotonic() > deadline:
