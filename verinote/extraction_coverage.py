@@ -103,6 +103,84 @@ def resolve_quote_repairs(value, source, issues, response, contract_version):
     return result, changes, refused
 
 
+# A model quote may differ from the source only in the width of a run of these. Not regex \s or str.split(), which also
+# cross \f, \v, \x1c-\x1f, \x85 and \u2028-\u2029. A run is never removed: spacing can change meaning in Korean.
+QUOTE_SPACE = ' \t\r\n'
+
+
+def _span_end(source, start, tokens):
+    """`(end, crossed)` of the span whose words are `tokens`, starting at `start`, or `(-1, False)`.
+
+    `crossed` says a source run on the way holds two or more line breaks (CRLF is one).
+    """
+    at = start + len(tokens[0])
+    crossed = False
+    for token in tokens[1:]:
+        gap, breaks = at, 0
+        while at < len(source) and source[at] in QUOTE_SPACE:
+            breaks += source[at] == '\n' or (source[at] == '\r' and source[at + 1:at + 2] != '\n')
+            at += 1
+        if at == gap or not source.startswith(token, at):
+            return -1, False
+        crossed = crossed or breaks > 1
+        at += len(token)
+    return at, crossed
+
+
+def whitespace_variant_span(quote, source):
+    """The source passage equal to `quote` except for run widths, or None.
+
+    None unless exactly one start position matches, nested ones included, and that match crosses no source run with two or more
+    line breaks. A crossing match still counts as a position: the response may have meant it.
+    """
+    from .service import quote_text
+    tokens = re.split(f'[{QUOTE_SPACE}]+', quote_text(quote))
+    found, start = None, source.find(tokens[0])
+    while start >= 0:
+        end, crossed = _span_end(source, start, tokens)
+        if end >= 0:
+            if crossed or found is not None:
+                return None
+            found = source[start:end]
+        start = source.find(tokens[0], start + 1)
+    return found
+
+
+def locate_whitespace_variants(value, source, issues):
+    """Replace each quote that has one whitespace-variant passage: `(result, changes, issues left)`. No other field moves.
+
+    An exact but ambiguous quote stays: each of its occurrences is itself a match, and two matches refuse.
+    The stored passage is exact and unique: each occurrence of it is a match of the same words, and only one match was found.
+    """
+    result = copy.deepcopy(value)
+    changes, left = [], []
+    for issue in issues:
+        kind, index, _ = issue['path'].split('.')
+        row = result[kind][int(index)]
+        span = whitespace_variant_span(row['quote'], source)
+        if span is None:
+            left.append(issue)
+        else:
+            changes.append({'path': issue['path'], 'before': row['quote'], 'after': span})
+            row['quote'] = span
+    return result, changes, left
+
+
+def write_located_quotes(folder, changes):
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        atomic_json(folder / 'quote-located.json', changes)
+    except (OSError, ValueError) as exc:
+        raise ValueError('인용 위치 확정 기록 저장 실패: 이번 청크는 확정하지 않았습니다.') from exc
+
+
+def located_quote_notice(count, places):
+    """Run-detail clause for chunks that passed validation, numbered like the repair clause. Reused chunks are not recounted."""
+    shown = '; '.join(places[:5]) + (f' 외 {len(places) - 5}개 청크' if len(places) > 5 else '')
+    return (f'이번 실행 검증을 마친 청크에서 공백만 다른 인용 {count}개를 모델 호출 없이 원문 구간으로 확정 ({shown} · 번호는 제외 뒤 기준). '
+            '확정 구간에는 모델이 인용한 내용만 있으므로 그 항목을 뒷받침하는지 확인하세요')
+
+
 def saved_quote_paths(changes, refused):
     """Where the replaced quotes sit once the rows this repair refused are gone."""
     gone = [row['path'].split('.') for row in refused]
