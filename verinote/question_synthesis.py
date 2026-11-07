@@ -1,12 +1,9 @@
 """Mandatory whole-input analysis with verifiable processing lineage."""
 import copy
 
-from .question_batches import decision_state, leaf_prompt, merge_prompt, plan
+from .question_batches import decision_state, leaf_prompt, merge_prompt, plan, units_for
+from .question_fragments import reconstruct, usable
 from .store import canonical, digest
-
-
-def usable(item):
-    return bool(item.get('text')) if item['kind'] in ('wiki', 'source') else bool(item['result']['rows'])
 
 
 def strings(value):
@@ -27,7 +24,7 @@ def validate(output, task, allowance, nodes):
                 or not set(value['citations']) <= allowed):
             raise ValueError('분할 분석의 내용/인용 오류')
         return set(value['citations'])
-    support = set()
+    support: set[str] = set()
     if task['stage'] == 'analysis_leaf':
         if set(output) != {'records'} or not isinstance(output['records'], list):
             raise ValueError('분할 분석 records 형식 오류')
@@ -38,8 +35,11 @@ def validate(output, task, allowance, nodes):
         units = {u['id']: u for u in task['units']}
         for value in values:
             u = units[value['id']]
-            allowed = {u['id']} if u['category'] == 'evidence' and usable(u['value']) else set()
-            support.update(finding(value, allowed))
+            fragment = u['value'] if u['category'] == 'fragment' else None
+            citable = (fragment['source_category'] == 'evidence' and fragment['source_usable']
+                       if fragment else u['category'] == 'evidence' and usable(u['value']))
+            cited = finding(value, {u['id']} if citable else set())
+            support.update({fragment['source_id']} if cited and fragment else cited)
     else:
         if set(output) != {'children', 'text', 'citations', 'unknowns'}:
             raise ValueError('종합 분석 응답 형식 오류')
@@ -56,7 +56,7 @@ def public_node(node):
 def run(assistant, state, instructions, round_number):
     limit = assistant.context_limit()[0]
     prepared = plan(state, instructions, limit)
-    identity = [prepared.base, assistant.job['agent'], assistant.job['model'], 'complete-context-v1']
+    identity = [prepared.base, assistant.job['agent'], assistant.job['model'], 'complete-context-v2']
     tasks = []
     def task(stage, units=(), children=()):
         key = 'A' + digest([identity, stage, units, children])
@@ -75,7 +75,11 @@ def run(assistant, state, instructions, round_number):
     assistant.preflight_calls(len(tasks)+1)
     nodes = assistant.job.setdefault('analysis_nodes', {})
     manifest = {u['id']: {'category': u['category'], 'sha256': u['sha256']} for u in prepared.units}
+    originals = {u['id']: {'category': u['category'], 'sha256': u['sha256']} for u in units_for(state)}
+    fragments = {u['id']: u for u in prepared.units if u['category'] == 'fragment'}
+    sources = {u['id']: u['value']['source_id'] if u['category'] == 'fragment' else u['id'] for u in prepared.units}
     tree = {'round': round_number, 'status': 'running', 'manifest': manifest,
+            'partition_version': 1, 'originals': originals, 'fragments': fragments,
             'planned_records': len(manifest), 'processed_records': 0, 'planned_batches': len(prepared.batches),
             'processed_batches': 0, 'max_physical_calls': 2*len(prepared.batches),
             'output_byte_limit': prepared.allowance, 'root': root, 'nodes': []}
@@ -106,7 +110,7 @@ def run(assistant, state, instructions, round_number):
                     return validate(output, assigned, prepared.allowance, nodes)
                 output, support = assistant.invoke(prompt, item['path'], round_number, accept)
                 node = {'id': item['id'], 'stage': item['stage'], 'children': item['children'],
-                        'coverage': coverage, 'records': {key: manifest[key] for key in coverage},
+                        'coverage': coverage, 'records': {sources[key]: originals[sources[key]] for key in coverage},
                         'analysis': copy.deepcopy(output), 'analysis_sha256': digest(output),
                         'supported_evidence': support, 'status': 'complete'}
                 nodes[item['id']] = node
@@ -137,6 +141,29 @@ def run(assistant, state, instructions, round_number):
 def supports(assistant, key):
     """Recheck server-owned ancestry, exact hashes and current original evidence."""
     nodes = assistant.job.get('analysis_nodes', {})
+    tree = next((t for t in assistant.job.get('context_processing', []) if t['root'] == key), None)
+    if tree is not None and tree.get('partition_version') == 1:
+        if tree['status'] != 'complete':
+            raise ValueError('분할 분석이 완료되지 않았습니다.')
+        receipt(nodes[key]['coverage'], tree['manifest'])
+        fragments = tree['fragments']
+        if set(fragments) != {i for i, r in tree['manifest'].items() if r['category'] == 'fragment'}:
+            raise ValueError('분할 기록 범위 무결성 오류')
+        grouped: dict[str, list[dict]] = {}
+        for fragment_id, fragment in fragments.items():
+            if fragment['id'] != fragment_id or fragment['sha256'] != tree['manifest'][fragment_id]['sha256']:
+                raise ValueError('분할 기록 해시 무결성 오류')
+            grouped.setdefault(fragment['value']['source_id'], []).append(fragment)
+        for source_id, group in grouped.items():
+            original = tree['originals'].get(source_id)
+            restored = reconstruct(sorted(group, key=lambda u: u['value']['index']))
+            if (original is None or digest(restored) != original['sha256']
+                    or group[0]['value']['source_category'] != original['category']):
+                raise ValueError('분할 원본 무결성 오류')
+            if original['category'] == 'evidence' and (source_id not in assistant.evidence
+                    or digest(assistant.evidence[source_id]) != original['sha256']
+                    or group[0]['value']['source_usable'] != usable(assistant.evidence[source_id])):
+                raise ValueError('분석 원본 근거 무결성 오류')
     visited = set()
     def walk(node_id):
         if node_id in visited:
@@ -147,6 +174,8 @@ def supports(assistant, key):
             raise ValueError('분석 기록 무결성 오류')
         for child in node['children']:
             walk(child)
+        if node['children']:
+            receipt(node['coverage'], [item for child in node['children'] for item in nodes[child]['coverage']])
         for evidence_id in node['supported_evidence']:
             original = assistant.evidence.get(evidence_id)
             if original is None or not usable(original) or digest(original) != node['records'][evidence_id]['sha256']:

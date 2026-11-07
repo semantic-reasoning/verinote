@@ -123,14 +123,14 @@ class CompleteContext(unittest.TestCase):
                 if phase == 'merge':
                     self.assertTrue(a.job['analysis_nodes'])
 
-    def test_oversized_analysis_and_irreducible_record_fail_without_truncating(self):
+    def test_oversized_analysis_and_mandatory_question_fail_without_truncating(self):
         raw = state(); a = self.assistant(raw, lambda _: {'text': 'x'*20000})
         with self.assertRaisesRegex(ValueError, '예산'):
             run(a, raw, PROMPT, 2)
         self.assertEqual(len(a.cli.calls), 1)
-        raw['evidence']['E1']['result']['proofs'] = [''.join(chr(0x4e00+i) for i in range(10000))]
+        raw['question'] = ''.join(chr(0x4e00+i) for i in range(10000))
         a = self.assistant(raw)
-        with self.assertRaisesRegex(ValueError, '완전한 기록 E1'):
+        with self.assertRaisesRegex(ValueError, '입력 예산'):
             run(a, raw, PROMPT, 2)
         self.assertEqual(a.cli.calls, [])
 

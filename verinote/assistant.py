@@ -5,8 +5,8 @@ from pathlib import PurePath
 
 from . import engine, question_synthesis
 from .call_validation import caller_validation
-from .question_batches import units_for
 from .question_context import PROTOCOL, project
+from .question_fragments import MAX_PARTITION_UNITS
 from .question_meanings import context as meaning_context
 from .store import canonical
 
@@ -345,8 +345,6 @@ class Assistant:
                 result = {'matches': matches[:20], 'total_matches': len(matches), 'truncated': len(matches) > 20, 'citable': False, 'mode': mode}
                 if fallback:
                     result['fallback'] = fallback
-            if len(canonical(result).encode()) > 30000:
-                raise ValueError('도구 결과 크기 한도 초과: 더 좁은 질의가 필요합니다.')
             if name in ('query_graph', 'read_document', 'read_wiki'):
                 evidence_id = f'E{len(self.evidence) + 1}'
                 self.evidence[evidence_id] = result
@@ -458,8 +456,7 @@ class Assistant:
                    'predicates': sorted({f['payload']['predicate'] for f in self.snapshot['facts']}),
                    'entity_meanings': self.meanings, 'relation_meanings': self.meanings['relations']}
         correction = None
-        catalog_count = len(units_for({'catalog': catalog, 'trace': [], 'evidence': {}}))
-        self.job['physical_call_bound'] = 2 * MAX_ROUNDS * max(1, catalog_count + 2*MAX_TOOLS)
+        self.job['physical_call_bound'] = 2 * MAX_ROUNDS * MAX_PARTITION_UNITS
         for round_number in range(1, MAX_ROUNDS + 1):
             remaining_tools = MAX_TOOLS - len(self.trace)
             answer_only = correction is not None or round_number == MAX_ROUNDS or remaining_tools == 0
