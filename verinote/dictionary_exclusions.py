@@ -81,10 +81,12 @@ def validate_report(value, run, doc, accepted=None, *, filter_policy=FILTER_POLI
             raise ValueError('이전 정책에 없는 사전 제외 사유입니다.')
         if filter_policy < 3 and row['code'] in {'alias_existing_target', 'relation_undeclared_type'}:
             raise ValueError('이전 정책에 없는 사전 제외 사유입니다.')
+        if filter_policy < 5 and row['code'] == 'alias_spacing_only':
+            raise ValueError('이전 정책에 없는 사전 제외 사유입니다.')
         if filter_policy < 4 and row['code'] in {'definition_conflict', 'entity_alias_conflict'}:
             raise ValueError('이전 정책에 없는 사전 제외 사유입니다.')
         position = (row['chunk'], list(LIMITS).index(row['kind']), row['row'])
-        expected_kind = {'entity_evidence': 'entities', 'alias_evidence': 'aliases',
+        expected_kind = {'entity_evidence': 'entities', 'alias_evidence': 'aliases', 'alias_spacing_only': 'aliases',
                          'excluded_entity': 'aliases', 'excluded_type': 'relations',
                          'alias_existing_entity': 'aliases', 'alias_existing_target': 'aliases',
                          'entity_alias_conflict': 'entities',
