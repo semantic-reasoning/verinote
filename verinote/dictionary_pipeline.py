@@ -3,7 +3,7 @@ import json
 
 from . import dictionary_reconciliation as reconciliation
 from .call_validation import caller_validation
-from .dictionary_context import prepare
+from .dictionary_context import RequestTooLarge, prepare
 from .dictionary_exclusions import (
     add_chunk,
     identity,
@@ -49,7 +49,7 @@ PREVIOUS_CONTEXT_PROMPT = 'dc930b0db7c45441abc314bb4b7038ff55d6efae48ce276914a46
 PREVIOUS_IMMUTABLE_PROMPT = '0e2a3892fe24a0ca48994dfa347ee40c9dc9a06b14ed76e53a43002cdfccba63'
 
 
-def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_threshold=DEFAULT_THRESHOLD, context_limit=60000):
+def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_threshold=DEFAULT_THRESHOLD, context_limit=60000, other_agent_ready):
     threshold = validate_threshold(relation_type_warning_threshold)
     source = doc['text']
     slices = list(bounded_spans(source, DICTIONARY_CHUNK_SIZE))
@@ -201,7 +201,10 @@ def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_thr
             payload = {'filename': doc['filename'], 'version': run['version'], 'offset': offset,
                        'sources': spans, 'dictionary': dictionary_context(dictionary),
                        'relation_type_warning_threshold': threshold}
-            prompt = prepare(cli, run['agent'], DICTIONARY_PROMPT, payload, context_limit, folder / str(index))
+            try:
+                prompt = prepare(cli, run['agent'], DICTIONARY_PROMPT, payload, context_limit, folder / str(index))
+            except RequestTooLarge as exc:
+                raise exc.with_advice(exc.generation_advice(accepted, other_agent_ready())) from exc
             state['calls_started'] += 1
             write(folder / 'dictionary-progress.json', state)
             try:

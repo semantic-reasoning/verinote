@@ -12,8 +12,8 @@ from pathlib import Path
 
 from .agents import CLI, PROVIDERS, validate_model
 from .call_validation import caller_validation
+from .dictionary_context import RequestTooLarge, refusal, validate_context_bytes
 from .dictionary_context import prepare as prepare_dictionary_prompt
-from .dictionary_context import validate_context_bytes
 from .documents import chunks
 from .engine import query
 from .extraction_checkpoint import CHUNK_TIMEOUT, ExtractionCheckpoint
@@ -228,6 +228,20 @@ class Service:
             raise ValueError('OpenRouter 작업 입력에 자격 증명을 포함할 수 없습니다.')
         return options, JobTransport(self.cli, options, rates=rates)
 
+    def other_agent_ready(self, agent):
+        """Whether cli.ready reports a provider other than this agent and Ollama; a missing or failing check counts as no."""
+        ready = getattr(self.cli, 'ready', None)
+        if not callable(ready):
+            return False
+        for other in PROVIDERS:
+            if other not in (agent, 'ollama'):
+                try:
+                    if ready(other):
+                        return True
+                except Exception:
+                    continue
+        return False
+
     def job_cli(self, job):
         if job['agent'] == 'ollama':
             from .ollama import Job
@@ -330,7 +344,7 @@ class Service:
             doc = self.store.document(run['document_id'], run['version'])
             if run['stage'] == 'ontology':
                 from .dictionary_pipeline import generate_dictionary
-                dictionary, detail = generate_dictionary(self.store, cli, self.root, run, doc, relation_type_warning_threshold=self.relation_type_warning_threshold if relation_type_warning_threshold is None else relation_type_warning_threshold, context_limit=context_limit)
+                dictionary, detail = generate_dictionary(self.store, cli, self.root, run, doc, relation_type_warning_threshold=self.relation_type_warning_threshold if relation_type_warning_threshold is None else relation_type_warning_threshold, context_limit=context_limit, other_agent_ready=lambda: self.other_agent_ready(run['agent']))
                 self.store.finish_run(run['id'], dictionary=dictionary, detail=detail)
                 return
             timing.configure(doc)
@@ -357,12 +371,16 @@ class Service:
                          checkpoint.state['resumed_from'] if checkpoint is not None else None)
             from .extraction_scheduler import ChunkScheduler, ChunkTask
 
+            pinned = {'approved_dictionary': run['ontology'] | {'payload': dictionary_context(run['ontology']['payload'])}}
+
+            def chunk_payload(offset, chunk):
+                return {'filename': doc['filename'], 'version': doc['version'], 'offset': offset, 'text': chunk}
+
             def prepare(raw):
                 index, (offset, chunk) = raw
-                payload = {'filename': doc['filename'], 'version': doc['version'], 'offset': offset, 'text': chunk}
+                payload = chunk_payload(offset, chunk)
                 folder = self.root / 'runs' / run['id'] / str(index)
-                prompt = prepare_dictionary_prompt(cli, run['agent'], extraction_prompt,
-                            payload | {'approved_dictionary': run['ontology'] | {'payload': dictionary_context(run['ontology']['payload'])}}, context_limit, folder)
+                prompt = prepare_dictionary_prompt(cli, run['agent'], extraction_prompt, payload | pinned, context_limit, folder)
                 return ChunkTask(index, offset, chunk, payload, prompt, folder, time.monotonic() + CHUNK_TIMEOUT)
 
             def call_task(task, prompt, target):
@@ -377,6 +395,18 @@ class Service:
 
             remaining_chunks = [(i, pair) for i, pair in enumerate(chunks(doc['text']), 1)
                                 if checkpoint is None or i > checkpoint.resumed_chunks]
+            # The pin and the budget are fixed for this run, so a chunk refused here would be refused when reached:
+            # refuse before paying for the earlier ones, reporting the chunk with the largest excess.
+            admissions = [(raw, refusal(cli, run['agent'], extraction_prompt, chunk_payload(*raw[1]) | pinned, context_limit)) for raw in remaining_chunks]
+            oversized = [(raw, too_large) for raw, too_large in admissions if too_large is not None]
+            if oversized:
+                worst = max(oversized, key=lambda pair: pair[1].excess)[0]
+                active_chunk = worst[0]
+                try:
+                    prepare(worst)  # records the unfit context-budget.json
+                except RequestTooLarge as actual:
+                    raise actual.with_advice(actual.extraction_advice(self.other_agent_ready(run['agent']), run['ontology']['revision'])) from actual
+                raise AssertionError('추출 사전 검사와 요청 준비가 일치하지 않습니다.')
             iterator: Iterator[ChunkTask]
             if experiment is not None:
                 scheduler = ChunkScheduler(remaining_chunks, experiment['concurrency'], prepare, call_task, begin_call, timing)
@@ -459,6 +489,8 @@ class Service:
                                             (repair_folder / 'changes.json').write_text(json.dumps(changes, ensure_ascii=False, indent=2), encoding='utf-8')
                                             if refused:
                                                 (repair_folder / 'refused.json').write_text(json.dumps(refused, ensure_ascii=False, indent=2), encoding='utf-8')
+                                except RequestTooLarge as exc:
+                                    raise ValueError(f'{locations}: 인용 보정 실패 (청크당 1회). {exc.with_advice(exc.repair_advice(self.other_agent_ready(run["agent"]), run["ontology"]["revision"]))}') from exc
                                 except Exception as exc:
                                     raise ValueError(f'{locations}: 인용 보정 실패 (청크당 1회). {exc}') from exc
                                 repaired_quotes += len(changes)
@@ -540,7 +572,9 @@ class Service:
                         detail += f' · {checkpoint.quote_exclusion_notice()}'
                     if checkpoint.exclusion_notice():
                         detail += f' · {checkpoint.exclusion_notice()}'
-                    detail += f' · {checkpoint.summary()} · 같은 문서 버전·승인 사전·에이전트·모델로 다시 추출하면 검증 완료 청크 다음부터 이어갑니다.'
+                    detail += f' · {checkpoint.summary()}'
+                    if not isinstance(exc, RequestTooLarge):  # its advice says a re-run is refused again
+                        detail += ' · 같은 문서 버전·승인 사전·에이전트·모델로 다시 추출하면 검증 완료 청크 다음부터 이어갑니다.'
             self.store.run_status(run['id'], 'error', detail[:2000])
         finally:
             with self.extraction_lock:
