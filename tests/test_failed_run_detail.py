@@ -7,15 +7,19 @@ from pathlib import Path
 from unittest.mock import patch
 
 import test_workflow as workflow
+from test_quote_repair import broken
 from test_workflow import DICTIONARY, SOURCE, approved_dictionary, extraction_response
 
 from verinote.agents import CLI
+from verinote.extraction_scheduler import ChunkScheduler
 from verinote.extraction_transport import ExtractionSpec
-from verinote.service import Service
+from verinote.service import Service, prepare_dictionary_prompt
 from verinote.usage import atomic_json
 
 CONDITION = '문서 버전·승인 사전·에이전트·모델·병렬 설정 등 추출 조건이 이 실행과 같으면 다시 추출할 때 '
 FROM_FIRST = f'{CONDITION}첫 청크부터 호출합니다.'
+COVERAGE = ('추출 점검 coverage: 승인 관계마다 정확히 한 행이 필요합니다. (승인 관계 1개, 응답 행 0개, 행이 없는 관계: depends_on) '
+            '이 응답은 후보로 저장하지 않았습니다. 다시 추출하면 재사용할 복구 기록이 없는 청크를 새 모델 호출(비용이 들 수 있음)로 요청하며 같은 결과가 나올 수 있습니다.')
 
 
 def from_chunk(number):
@@ -58,6 +62,14 @@ def fails_at(number):
     def respond(index, repairing):
         if index == number: raise ValueError('stop')
         return extraction_response()
+    return respond
+
+
+def no_coverage_at(number):
+    def respond(index, repairing):
+        value = extraction_response()
+        if index == number: value['coverage'] = []
+        return value
     return respond
 
 
@@ -282,6 +294,60 @@ class RetrySentence(Base):
         self.parallel(doc, later_failure())
         final, called = self.parallel(doc, ok, timeout=20)
         self.assertEqual((final['status'], sorted(called)), ('success', [1, 2, 3]))
+
+
+class ChunkPrefix(Base):
+    def test_sequential_validation_failure_full_detail(self):
+        run, _ = self.sequential(self.document(), no_coverage_at(1))
+        self.assertEqual(run['detail'], f'청크 1 · {COVERAGE} · 검증 완료 0/3청크 · 새 호출 1회 · {FROM_FIRST}')
+
+    def test_sequential_repair_call_failure_full_detail(self):
+        def respond(index, repairing):
+            if index != 2: return extraction_response()
+            if repairing: raise RuntimeError('repair-down')
+            return broken()
+        run, _ = self.sequential(self.document(), respond)
+        self.assertEqual(run['detail'], f'청크 2 · 관계 1 인용: 인용 보정 실패 (청크당 1회). repair-down · 검증 완료 1/3청크 · 새 호출 3회 · {from_chunk(2)}')
+
+    def test_parallel_validation_failure_at_second_chunk_full_detail(self):
+        run, _ = self.parallel(self.document(), no_coverage_at(2))
+        self.assertEqual(run['detail'], f'청크 2 · {COVERAGE} · 검증 완료 1/3청크 · 새 호출 3회 · {from_chunk(2)}')
+
+    def test_parallel_worker_failure_at_second_with_first_in_flight_full_detail(self):
+        failed = threading.Event()
+        fail = ChunkScheduler.fail
+
+        def recorded(scheduler, index, exc):
+            result = fail(scheduler, index, exc)
+            failed.set()
+            return result
+
+        def respond(index, repairing):
+            if index == 2: raise ValueError('second')
+            self.assertTrue(failed.wait(2))
+            return extraction_response()
+        with patch.object(ChunkScheduler, 'fail', recorded):
+            run, calls = self.parallel(self.document(), respond)
+        self.assertEqual(run['detail'], f'청크 2 · second · 검증 완료 0/3청크 · 새 호출 2회 · {FROM_FIRST}')
+        self.assertCountEqual(calls, [1, 2])
+
+    def prepare_raising_at(self, number, error=OSError):
+        def prepare(cli, agent, prompt, payload, limit, folder):
+            if folder.name == str(number): raise error('prepare-down')
+            return prepare_dictionary_prompt(cli, agent, prompt, payload, limit, folder)
+        return patch('verinote.service.prepare_dictionary_prompt', side_effect=prepare)
+
+    def test_sequential_prepare_raising_names_that_chunk_not_the_previous(self):
+        for error in (OSError, ValueError):
+            with self.subTest(error=error.__name__), self.prepare_raising_at(2, error):
+                run, _ = self.sequential(self.document(), ok)
+                self.assertEqual(run['detail'], f'청크 2 · prepare-down · 검증 완료 1/3청크 · 새 호출 1회 · {from_chunk(2)}')
+
+    def test_parallel_prepare_raising_names_that_chunk_not_a_neighbour_or_zero(self):
+        for number in (1, 2, 3):
+            with self.subTest(number=number), self.prepare_raising_at(number):
+                run, _ = self.parallel(self.document(), ok)
+                self.assertTrue(run['detail'].startswith(f'청크 {number} · prepare-down · 검증 완료 '), run['detail'])
 
 
 if __name__ == '__main__':

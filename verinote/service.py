@@ -370,7 +370,7 @@ class Service:
                         report_ok = write_report(self.root, report)
             timing.reuse(checkpoint.resumed_chunks if checkpoint is not None else 0,
                          checkpoint.state['resumed_from'] if checkpoint is not None else None)
-            from .extraction_scheduler import ChunkScheduler, ChunkTask
+            from .extraction_scheduler import ChunkFailure, ChunkScheduler, ChunkTask
 
             pinned = {'approved_dictionary': run['ontology'] | {'payload': dictionary_context(run['ontology']['payload'])}}
 
@@ -383,6 +383,12 @@ class Service:
                 folder = self.root / 'runs' / run['id'] / str(index)
                 prompt = prepare_dictionary_prompt(cli, run['agent'], extraction_prompt, payload | pinned, context_limit, folder)
                 return ChunkTask(index, offset, chunk, payload, prompt, folder, time.monotonic() + CHUNK_TIMEOUT)
+
+            def prepare_next(raw):
+                try:
+                    return prepare(raw)
+                except Exception as exc:
+                    raise ChunkFailure(raw[0], exc) from exc
 
             def call_task(task, prompt, target):
                 remaining = task.deadline - time.monotonic()
@@ -410,10 +416,10 @@ class Service:
                 raise AssertionError('추출 사전 검사와 요청 준비가 일치하지 않습니다.')
             iterator: Iterator[ChunkTask]
             if experiment is not None:
-                scheduler = ChunkScheduler(remaining_chunks, experiment['concurrency'], prepare, call_task, begin_call, timing)
+                scheduler = ChunkScheduler(remaining_chunks, experiment['concurrency'], prepare_next, call_task, begin_call, timing)
                 iterator = scheduler
             else:
-                iterator = map(prepare, remaining_chunks)
+                iterator = map(prepare_next, remaining_chunks)
             with scheduler if scheduler is not None else nullcontext():
                 for task in iterator:
                     index, offset, chunk = task.index, task.offset, task.text
@@ -501,7 +507,7 @@ class Service:
                             page = validate_page(output, chunk, allow_no_claims=bool(output.get('excluded_claims')))
                         except ValueError as exc:
                             basis = ' (관계 번호는 사전 불일치 제외 뒤 기준)' if excluded and re.search(r'관계 \d+ 인용', str(exc)) else ''
-                            raise ValueError(f'청크 {index} · {exc}{basis}') from exc
+                            raise ValueError(f'{exc}{basis}') from exc
                         claims.extend(page['claims'])
                         facts.extend(dictionary_fact(f, chunk, run['ontology']['payload']) for f in output['facts'])
                         if time.monotonic() > deadline:
