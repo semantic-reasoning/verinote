@@ -16,6 +16,59 @@ object. Source quotations remain in sources/text/issues; the approved pin hash
 identifies the unchanged stored dictionary including its original quotations.
 '''
 MAX_DECODE_BYTES = 24 * 1024 * 1024
+# Serialized size of a dictionary with no rows: what no revision can remove from the transmitted definitions.
+EMPTY_DEFINITION_BYTES = len(json.dumps({kind: [] for kind in COLUMNS}, separators=(',', ':')).encode())
+
+
+class RequestTooLarge(ValueError):
+    """Both lossless forms exceed the budget; sizes are the smaller form's, and excess is how far its request is over."""
+
+    def __init__(self, request_bytes, limit, definition_bytes, advice=''):
+        self.request_bytes, self.limit, self.definition_bytes = request_bytes, limit, definition_bytes
+        super().__init__(f'무손실 표현을 포함한 전체 요청 {request_bytes:,}바이트가 입력 예산 {limit:,}바이트에 들어가지 않습니다. 검증된 사전은 보존됩니다.'
+                         + (f' {advice}' if advice else ''))
+
+    @property
+    def excess(self):
+        return self.request_bytes - self.limit
+
+    def with_advice(self, advice):
+        return RequestTooLarge(self.request_bytes, self.limit, self.definition_bytes, advice)
+
+    def _other_agent_step(self, available):
+        from .ontology import MAX_PROMPT_BYTES
+        if available and self.request_bytes <= MAX_PROMPT_BYTES:
+            return (f'입력 예산이 {MAX_PROMPT_BYTES:,}바이트인 다른 에이전트로 처음부터 실행'
+                    '(완료분을 재사용하지 않고 새로 호출, 원문과 사전이 해당 제공자에게 전달됨)')
+        return None
+
+    def _pinned_steps(self, other_agent, revision):
+        steps = [self._other_agent_step(other_agent)]
+        # Revising and approving each add one to the pin's revision, which the request carries.
+        needed = self.excess + len(str(revision + 2)) - len(str(revision))
+        if needed <= self.definition_bytes - EMPTY_DEFINITION_BYTES:
+            steps.append(f'사전을 수정해 전송 정의 {self.definition_bytes:,}바이트 중 {needed:,}바이트 이상을 줄이고 재승인'
+                         '(모든 청크를 새로 호출하며 뺀 정의는 추출에 쓸 수 없음)')
+        steps.append('문서를 나누어 각각 사전 생성·승인'
+                     '(승인된 사전은 재사용되지 않음, 한 부분 밖에만 있는 용어는 그 부분에 쓸 수 없음, 부분 간 ID는 사람이 맞춰야 함)')
+        return ' 또는 '.join(step for step in steps if step)
+
+    def generation_advice(self, accepted, other_agent):
+        size = f'앞에서 통과한 {accepted:,}자 이하로' if accepted else '더 작게'
+        split = (f'문서를 {size} 나누어 각각 사전 생성'
+                 '(검증된 구간은 재사용되지 않고 새로 호출, 한 부분 밖에만 있는 용어는 그 부분에 쓸 수 없음, 부분 간 ID는 사람이 맞춰야 함, '
+                 '추출은 완성된 사전 전체를 보내므로 별도로 거부될 수 있음)')
+        steps = [self._other_agent_step(other_agent), split]
+        return ('복구 기록이 유효하면 같은 에이전트·모델로 다시 실행해도 같은 크기로 거부됩니다. 다음 단계: '
+                + ' 또는 '.join(step for step in steps if step)
+                + '. 위 단계를 따라도 사전 생성의 뒤 구간이나 더 조밀한 부분에서 다시 거부될 수 있으며 그 전 호출 비용은 발생합니다.')
+
+    def extraction_advice(self, other_agent, revision):
+        return f'같은 문서 버전·승인 사전·에이전트로 다시 추출해도 같은 크기로 거부됩니다. 다음 단계: {self._pinned_steps(other_agent, revision)}.'
+
+    def repair_advice(self, other_agent, revision):
+        return ('보정 요청 크기는 문제 인용에 따라 달라지므로 같은 문서 버전·승인 사전·에이전트·모델로 다시 추출하면 통과할 수 있지만 보장되지 않고 이 청크를 새로 호출합니다. '
+                f'반복되면 다음 단계: {self._pinned_steps(other_agent, revision)}.')
 
 
 def validate_context_bytes(value):
@@ -121,13 +174,24 @@ def build(instructions, payload, *, context_limit, prompt_limit, diagnostics):
                            transmitted_definition_bytes=encoded_size, prompt_bytes=size)
         return prompt
     if min(raw_size, size) > prompt_limit:
-        raise ValueError(f'무손실 표현을 포함한 전체 요청이 입력 예산 {prompt_limit:,}바이트에 들어가지 않습니다. 검증된 사전은 보존됩니다.')
+        raise RequestTooLarge(min(raw_size, size), prompt_limit, encoded_size if size <= raw_size else len(serialize(selected).encode()))
     # context_limit only selects the form; it never refuses. The smaller prompt necessarily fits prompt_limit here.
     wire = size <= raw_size
     diagnostics.update(status='over_context_limit', encoding='dictionary-wire-v1' if wire else 'plain',
                        transmitted_definition_bytes=encoded_size if wire else context_size,
                        prompt_bytes=size if wire else raw_size)
     return prompt if wire else raw
+
+
+def refusal(cli, agent, instructions, payload, context_limit):
+    """Same admission as prepare, with no record written: the RequestTooLarge it would raise, or None."""
+    from .ontology import bounded_prompt
+    reader = getattr(cli, 'prompt_byte_limit', None)
+    try:
+        bounded_prompt(instructions, payload, context_limit=context_limit, prompt_limit=reader(agent) if callable(reader) else None)
+    except RequestTooLarge as exc:
+        return exc
+    return None
 
 
 def prepare(cli, agent, instructions, payload, context_limit, folder):
