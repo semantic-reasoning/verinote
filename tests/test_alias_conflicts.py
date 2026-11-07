@@ -225,6 +225,25 @@ class Pipeline(unittest.TestCase):
             second, calls = self.execute(doc, ['initial', 'collision', 'empty'])
             self.assertEqual(second['status'], 'success', second['detail']); self.assertEqual(calls, [0, 3989, 7978])
 
+    def test_policy_4_schema_3_prefix_is_discarded_and_recalled_from_zero(self):
+        doc = self.new_doc(); first, _ = self.execute(doc, ['initial', ValueError('stop')])
+        path = self.checkpoint(first); saved = json.loads(path.read_text()); self.assertEqual(saved['schema_version'], 3)
+        saved['contract']['filter_policy'] = 4; path.write_text(json.dumps(saved))
+        second, calls = self.execute(doc, ['initial', 'empty', 'empty'])
+        self.assertEqual(second['status'], 'success', second['detail']); self.assertEqual(calls, [0, 3989, 7978])
+        self.assertIn('제외', second['detail'])
+
+    def test_current_policy_prefix_resumes(self):
+        doc = self.new_doc(); first, _ = self.execute(doc, ['initial', ValueError('stop')])
+        second, calls = self.execute(doc, ['empty', 'empty']); self.assertEqual(calls, [3989, 7978])
+
+    def test_policy_4_schema_3_checkpoint_only_report_is_partial_and_keeps_its_count(self):
+        doc = self.new_doc(); first, _ = self.execute(doc, ['initial', 'collision', ValueError('stop')])
+        path = self.checkpoint(first); saved = json.loads(path.read_text()); saved['contract']['filter_policy'] = 4
+        path.write_text(json.dumps(saved)); (path.parent / 'dictionary-exclusions.json').unlink()
+        report = read_report(self.root, self.store, first['id'])
+        self.assertEqual((report['available'], report['partial'], report['total_count']), (False, True, 1))
+
     def test_v1_source_mismatch_does_not_reuse_prefix(self):
         doc = self.new_doc(); first, _ = self.execute(doc, ['initial', ValueError('stop')])
         path = self.checkpoint(first); saved = json.loads(path.read_text())

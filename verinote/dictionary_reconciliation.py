@@ -21,6 +21,62 @@ FIELDS = {'entities': {'id', 'name', 'type'}, 'aliases': {'alias', 'entity'},
           'relations': {'id', 'description', 'subject_types', 'object_types'}}
 
 
+def compact(value):
+    return ''.join(value.split())
+
+
+def spacing_link(spelling, target):
+    """Whether `spelling` differs from the target's ID only in whitespace, or from its name only in whitespace.
+
+    An exact match of the name is not a difference, unless that name itself differs from the ID only in whitespace:
+    spellings resolve to the ID, so such an alias still links two spellings. For refusing a link, never for making one.
+    """
+    return spelling != target['id'] and (compact(spelling) == compact(target['id'])
+                                         or (spelling != target['name'] and compact(spelling) == compact(target['name'])))
+
+
+def name_link(name, target):
+    """Whether a demoted entity's `name` differs from the target's ID or name only in whitespace.
+
+    Unlike an alias spelling, a name does not resolve to the ID, so the target's own name is not compared with its own ID here.
+    """
+    return name != target['name'] and spacing_link(name, target)
+
+
+def spacing_conflict(alias, entity_id, entities, aliases):
+    """Whether a model alias would tie spellings that differ only in whitespace: to its target, by demoting a same-spelled entity, or to a sibling alias."""
+    target = entities[entity_id]
+    demoted = entities.get(alias)
+    return (spacing_link(alias, target) or (demoted is not None and name_link(demoted['name'], target))
+            or (alias not in (target['id'], target['name'])
+                and any(row['entity'] == entity_id and row['alias'] != alias and compact(row['alias']) == compact(alias) for row in aliases)))
+
+
+def spacing_conflicts(dictionary):
+    """(alias, entity) pairs of `dictionary` that hold such a tie. A tie moved onto another target is a new pair."""
+    entities = {row['id']: row for row in dictionary['entities']}
+    groups: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    for row in dictionary['aliases']:
+        groups.setdefault((row['entity'], compact(row['alias'])), []).append((row['alias'], row['entity']))
+    return ({(row['alias'], row['entity']) for row in dictionary['aliases'] if spacing_link(row['alias'], entities[row['entity']])}
+            | {pair for group in groups.values() if len(group) > 1 for pair in group})
+
+
+def demoted_name_tie(redirects, entities, candidate):
+    """Whether a demoted entity's name differs only in whitespace from another spelling its final target ends up holding."""
+    for alias, target_id in redirects.items():
+        name = entities[alias]['name']
+        spellings = {r['alias'] for r in candidate['aliases'] if r['entity'] == target_id and r['alias'] != alias}
+        spellings |= {entities[other]['name'] for other, final in redirects.items() if final == target_id}
+        if any(s != name and compact(s) == compact(name) for s in spellings):
+            return True
+    return False
+
+
+SPACING_REFUSAL = ('이 묶음에 공백만 다른 표기를 모델 제안으로 연결하게 되는 제안이 있어 묶음 전체를 보류했습니다. '
+                   '이 제안 자체에는 공백 차이가 없을 수 있습니다. 같은 대상이면 사람이 사전에 추가하세요.')
+
+
 def key_field(kind):
     return 'alias' if kind == 'aliases' else 'id'
 
@@ -87,6 +143,9 @@ def revise(previous, baseline, proposals, source, blocked_keys=()):
             candidate = validate_dictionary(candidate, source)
         except ValueError:
             failure = '변경한 이름·타입·별칭의 근거 또는 의존 정의가 맞지 않아 조정 묶음을 보류했습니다.'
+        else:
+            if spacing_conflicts(candidate) - spacing_conflicts(baseline):
+                failure = SPACING_REFUSAL
     events = []
     for index, row in enumerate(proposals, 1):
         old = next((r for r in previous[row['kind']] if r[key_field(row['kind'])] == row['key']), None)
@@ -127,6 +186,8 @@ def canonicalize(dictionary, proposals, source, revised_keys=()):
             if target_id in visited:
                 failure = '순환하는 정규 이름 제안이므로 통합을 보류했습니다.'
             redirects[row['alias']] = target_id
+            if failure is None and target_id in entities and name_link(old['name'], entities[target_id]):
+                failure = SPACING_REFUSAL
         candidate = copy.deepcopy(result)
         candidate['entities'] = [r for r in candidate['entities'] if r['id'] not in redirects]
         dependent_events = []
@@ -141,6 +202,9 @@ def canonicalize(dictionary, proposals, source, revised_keys=()):
                 candidate = validate_dictionary(candidate, source)
             except ValueError:
                 failure = '기존 별칭·관계의 근거 또는 의존 정의가 유지되지 않아 통합을 보류했습니다.'
+            else:
+                if spacing_conflicts(candidate) - spacing_conflicts(result) or demoted_name_tie(redirects, entities, candidate):
+                    failure = SPACING_REFUSAL
         for row in rows:
             events.append(event('entities', row['alias'], entities[row['alias']],
                                 dict(row, entity=redirects[row['alias']]), 'deferred' if failure else 'applied',

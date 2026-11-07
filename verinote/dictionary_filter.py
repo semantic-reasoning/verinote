@@ -6,8 +6,8 @@ from .ontology import (
     validate_dictionary,
 )
 
-FILTER_POLICY = 4
-SUPPORTED_FILTER_POLICIES = (1, 2, 3, FILTER_POLICY)
+FILTER_POLICY = 5
+SUPPORTED_FILTER_POLICIES = (1, 2, 3, 4, FILTER_POLICY)
 REASONS = {
     'definition_conflict': '충돌 제안을 조정 검토 내역에 보류했습니다. 기존 정의가 옳다고 확정한 것은 아닙니다.',
     'entity_alias_conflict': '개체 ID가 별칭과 겹쳐 조정 검토 내역에 보류했습니다.',
@@ -16,6 +16,7 @@ REASONS = {
     'alias_existing_entity': '기존 개체 ID와 별칭 이름이 같아 새 별칭만 제외했습니다.',
     'alias_existing_target': '기존 별칭과 다른 개체를 가리켜 새 별칭만 제외했습니다. 기존 매핑을 보존했으므로 승인 전 동음이의 별칭의 의미와 범위를 확인하세요.',
     'relation_undeclared_type': '기존·신규 개체에 선언되지 않은 타입을 사용하는 관계 후보를 제외했습니다. 승인 전 관계 정의와 필요한 개체를 확인하세요.',
+    'alias_spacing_only': '이 별칭이 공백만 다른 표기를 연결하게 되거나, 그런 제안과 함께 통합되는 묶음에 속해 모델 제안으로 연결하지 않았습니다. 이 행 자체에는 공백 차이가 없을 수 있습니다. 같은 대상이면 사람이 사전에 추가하세요.',
     'alias_evidence': '선택한 원문에 별칭과 정규 이름의 근거가 없습니다.',
     'excluded_entity': '근거 부족으로 제외된 개체를 가리키는 별칭입니다.',
     'excluded_type': '근거 부족으로 제외된 개체의 타입에 의존하는 관계입니다.',
@@ -31,12 +32,14 @@ def merge_generated_dictionary(previous, output, spans, source, chunk):
 def reconcile_generated_dictionary(previous, output, spans, source, chunk):
     from .dictionary_reconciliation import (
         FIELDS,
+        SPACING_REFUSAL,
         canonicalize,
         event,
         key_field,
         parse_revisions,
         quote_for,
         revise,
+        spacing_conflict,
     )
     if not isinstance(output, dict) or set(output) not in (set(LIMITS), set(LIMITS) | {'revisions'}):
         raise ValueError('사전에는 entities, aliases, relations와 선택적 revisions만 필요합니다.')
@@ -82,6 +85,7 @@ def reconcile_generated_dictionary(previous, output, spans, source, chunk):
                     target_names[proposal['key']].add(proposal['after']['name'])
             for row in definitions['aliases']:
                 if (row['alias'] in entities and row['entity'] in entities and row['alias'] != row['entity']
+                        and not spacing_conflict(row['alias'], row['entity'], entities, result['aliases'])
                         and ('aliases', row['alias']) not in conflicts and row['quote'] and row['quote'] in chunk
                         and row['alias'] in row['quote'] and any(name in row['quote'] for name in target_names[row['entity']])):
                     canonical_keys.update((('entities', row['alias']), ('entities', row['entity']), ('aliases', row['alias'])))
@@ -101,6 +105,8 @@ def reconcile_generated_dictionary(previous, output, spans, source, chunk):
                 target = entities.get(row['entity'])
                 if target is None:
                     code = 'excluded_entity'
+                elif old is None and spacing_conflict(row['alias'], row['entity'], entities, result['aliases']):
+                    code = 'alias_spacing_only'
                 elif row['alias'] not in row['quote'] or (row['alias'] != row['entity'] and target['name'] not in row['quote']):
                     code = 'alias_evidence'
             elif kind == 'relations':
@@ -139,10 +145,12 @@ def reconcile_generated_dictionary(previous, output, spans, source, chunk):
     changes.extend(canonical_events)
     # Keep legacy exclusion counts for an alias proposal that could not be merged.
     deferred_ids = {e['key'] for e in canonical_events if e['status']=='deferred' and e['origin']=='canonicalization'}
+    spacing_ids = {e['key'] for e in canonical_events if e['reason']==SPACING_REFUSAL}
     previous_ids = {r['id'] for r in previous['entities']}
     for index, row in enumerate(definitions['aliases'], 1):
         if index in canonical_rows and row['alias'] in deferred_ids:
             excluded.append(dict(kind='aliases', row=index, identifier=row['alias'][:80],
-                                 code='alias_existing_entity' if row['alias'] in previous_ids else 'definition_conflict'))
+                                 code='alias_spacing_only' if row['alias'] in spacing_ids
+                                 else 'alias_existing_entity' if row['alias'] in previous_ids else 'definition_conflict'))
     excluded.sort(key=lambda row: (list(LIMITS).index(row['kind']), row['row']))
     return result, excluded, changes
