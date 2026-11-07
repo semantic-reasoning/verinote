@@ -215,13 +215,22 @@ class AssistantTests(unittest.TestCase):
         job, _ = self.ask([tool(subject='없음'), tool(subject='없음'), answer(), answer()])
         self.assertEqual(job['status'], 'error'); self.assertIn('비어 있지 않은 근거', job['error'])
         self.assertEqual(list(job['evidence']), ['E1'])
-        for result in (RuntimeError('engine failed'), {'rows': [], 'large': 'x' * 30001}):
-            assistant = Assistant(self.store, None, self.store.snapshot(), {}, self.root, lambda *a: None)
-            mock = {'side_effect': result} if isinstance(result, Exception) else {'return_value': result}
-            with patch('verinote.assistant.engine.query', **mock):
-                with self.assertRaises((RuntimeError, ValueError)): assistant.execute(tool()['tools'][0])
-            self.assertEqual(assistant.successful_graphs, {}); self.assertEqual(assistant.evidence, {})
-            self.assertEqual(assistant.trace[-1]['status'], 'error')
+        assistant = Assistant(self.store, None, self.store.snapshot(), {}, self.root, lambda *a: None)
+        with patch('verinote.assistant.engine.query', side_effect=RuntimeError('engine failed')):
+            with self.assertRaises(RuntimeError): assistant.execute(tool()['tools'][0])
+        self.assertEqual(assistant.successful_graphs, {}); self.assertEqual(assistant.evidence, {})
+        self.assertEqual(assistant.trace[-1]['status'], 'error')
+
+    def test_large_graph_result_is_preserved_and_reused_without_size_rejection(self):
+        result = {'rows': [], 'large': 'x' * 30001}
+        assistant = Assistant(self.store, None, self.store.snapshot(), {}, self.root, lambda *a: None)
+        with patch('verinote.assistant.engine.query', return_value=result) as query:
+            assistant.execute(tool()['tools'][0])
+            assistant.execute(tool()['tools'][0])
+        self.assertEqual(query.call_count, 1)
+        self.assertEqual(assistant.evidence, {'E1': {'kind': 'graph', 'result': result}})
+        self.assertEqual(assistant.trace[-1]['status'], 'success')
+        self.assertEqual(assistant.trace[-1]['evidence_id'], 'E1')
 
     def test_graph_reuse_keeps_tool_round_and_context_budgets(self):
         for outputs, error, calls, traces in [([tool()] * 6, '답변 전용 회차', 6, 5),

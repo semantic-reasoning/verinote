@@ -61,24 +61,30 @@ class QuestionBudget(unittest.TestCase):
         self.assertEqual(result['context_budget'][0]['effective_limit_bytes'], 10)
         self.assertEqual(result['context_budget'][0]['status'], 'exceeded')
 
-    def test_later_unfit_request_preserves_evidence_and_stops_before_second_call(self):
+    def test_later_large_record_preserves_evidence_and_answers_through_fragments(self):
         raw = state()['evidence']['E1']['result']
         for meaning in raw['entities']: meaning['quote'] = '고유 인용 용량 검증'
-        # Irreducible exact quote: stronger sharing must not make this a
-        # duplicate-metadata test or accidentally allow the next call.
+        # Unique exact quote must require fragment analysis after projection.
         raw['facts'][0]['payload']['quote'] = ''.join(chr(0x4e00+i) for i in range(6000))
         before = copy.deepcopy(raw)
-        fake = LimitedFake([tool()], 20000); service = Service(self.store, self.root, fake)
+        from test_tool_result_partition import respond
+        class FragmentFake(LimitedFake):
+            def complete(inner, agent, model, prompt, folder):
+                inner.calls.append((agent, model, prompt))
+                return respond(prompt)
+        fake = FragmentFake([], 20000); service = Service(self.store, self.root, fake)
         self.addCleanup(service.close)
         with patch('verinote.assistant.engine.query', return_value=raw):
             job = service.ask({'question': '차의 승인 근거는?', 'agent': 'claude', 'model': 'sonnet'})
             service.pool.shutdown(wait=True)
         result = self.store.question(job['id'])
-        self.assertEqual(result['status'], 'error'); self.assertEqual(len(fake.calls), 1)
-        self.assertIn('완전한 기록 E1', result['error'])
-        self.assertNotIn('문서를 나누', result['error'])
+        self.assertEqual(result['status'], 'success', result['error'])
+        self.assertGreater(len(fake.calls), 2)
+        self.assertEqual(result['answer']['claims'][0]['kind'], 'inference')
+        self.assertTrue(result['context_processing'][-1]['fragments'])
         self.assertEqual(result['evidence']['E1']['result'], before); self.assertEqual(raw, before)
-        self.assertEqual([d['status'] for d in result['context_budget']], ['within_limit', 'exceeded'])
+        self.assertTrue(all(d['status'] == 'within_limit' for d in result['context_budget']))
+        self.assertTrue(all(len(c[2].encode()) <= 20000 for c in fake.calls))
 
     def test_ollama_large_catalog_is_fully_batched_before_generate(self):
         for i in range(35):
