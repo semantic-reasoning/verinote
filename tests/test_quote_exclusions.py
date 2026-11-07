@@ -256,7 +256,7 @@ class Exclusions(unittest.TestCase):
         self.assertIn('다른 모델로 바꿔도 모든 청크를 새로 호출', run['detail'])
         self.assertIn('근거 불가로 저장하지 않음: 위키 주장 1개 중 1개', run['detail'])
         self.assertNotIn(CONSUMED, run['detail'])
-        self.assertNotIn('검증 완료 청크 다음부터 이어갑니다', run['detail'])
+        self.assertNotIn('추출 조건이 이 실행과 같으면', run['detail'])
         self.assertEqual(run['detail'].count('근거 불가로 저장하지 않음'), 1)
         self.assertTrue(self.store.document(doc['id'])['can_extract'])
         again, calls = self.run_it(doc, [])

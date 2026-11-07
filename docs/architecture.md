@@ -451,9 +451,13 @@ Approved-dictionary extraction defaults to 360 seconds per chunk across the init
 call and any quote repair, including jobs with larger explicit timeouts.
 Shorter explicit timeouts remain effective; ordinary provider defaults do not
 shorten the extraction budget. Timeout-only changes do not invalidate validated
-checkpoint content.
+checkpoint content on the default path. A Claude run registered with a concurrency
+or threshold policy option, even with one worker, also binds its concurrency
+settings, timeouts, binary path, output limit, rates and document generation, and a
+record under a different contract is not reused.
 Validated chunk prefixes are persisted in `extraction-checkpoint.json`, bound
-to source, dictionary revision/hash, provider/model, prompts and HTTP token/adapter options.
+to source, dictionary revision/hash, provider/model, prompts, HTTP token/adapter options
+and, for runs registered with a concurrency or threshold policy, the contract above.
 Failed/interrupted jobs can reuse a compatible prefix after revalidation;
 partial results remain unpublished until the final DB transaction succeeds.
 Register a new job after any adjustment;

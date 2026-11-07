@@ -79,6 +79,7 @@ class ExtractionCheckpoint:
         if skipped:
             self.warnings.append(f'이전 추출 복구 기록 {skipped}개가 없거나 호환·검증 조건을 충족하지 않아 제외')
         self.resumed_chunks = len(self.outputs)
+        self.saved_chunks = self.resumed_chunks  # On disk under the record this run resumed from.
         resumed_chars = sum(len(chunk) for _, chunk in self.slices[:self.resumed_chunks])
         self.state = {'schema_version': 1, 'pipeline': PIPELINE, 'run_id': run['id'],
                       'calls_started': 0, 'resumed_from': previous, 'resumed_chars': resumed_chars,
@@ -105,16 +106,18 @@ class ExtractionCheckpoint:
             if len(json.dumps(value, ensure_ascii=False, indent=2).encode()) > limit:
                 raise ValueError('checkpoint size limit')
             atomic_json(self.folder / name, value)
+            return True
         except (OSError, ValueError):
             warning = '추출 복구 기록 저장 실패: 재시도 시 일부 청크를 다시 처리할 수 있습니다.'
             if warning not in self.warnings:
                 self.warnings.append(warning)
+            return False
 
     def save(self):
-        if self.outputs:
-            self.write('extraction-checkpoint.json',
-                       {'schema_version': 1, 'run_id': self.run['id'], 'contract': self.contract,
-                        'outputs': self.outputs}, CHECKPOINT_LIMIT)
+        if self.outputs and self.write('extraction-checkpoint.json',
+                                       {'schema_version': 1, 'run_id': self.run['id'], 'contract': self.contract,
+                                        'outputs': self.outputs}, CHECKPOINT_LIMIT):
+            self.saved_chunks = len(self.outputs)
         self.write('extraction-progress.json', self.state, 8192)
 
     def begin_call(self):
@@ -127,6 +130,12 @@ class ExtractionCheckpoint:
         self.outputs.append(validated)
         self.state['completed_chars'] += len(chunk)
         self.save()
+
+    def retry_notice(self):
+        """What a retry under this run's reuse contract calls: it reads back saved_chunks, not the validated count."""
+        action = ('새 호출 없이 저장을 다시 시도합니다' if self.saved_chunks == len(self.slices)
+                  else f'청크 {self.saved_chunks + 1}부터 호출합니다' if self.saved_chunks else '첫 청크부터 호출합니다')
+        return f'문서 버전·승인 사전·에이전트·모델·병렬 설정 등 추출 조건이 이 실행과 같으면 다시 추출할 때 {action}.'
 
     def finish(self, status):
         self.state['status'] = status
