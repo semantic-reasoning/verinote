@@ -223,13 +223,32 @@ def exclude_off_dictionary_facts(value, dictionary):
     return result, excluded
 
 
+def _row_count_detail(rows, predicates):
+    """Variable content is counts and approved IDs, never a model-written string; says the response was not kept as a candidate."""
+    tail = ' 이 응답은 후보로 저장하지 않았습니다. 다시 추출하면 재사용할 복구 기록이 없는 청크를 새 모델 호출(비용이 들 수 있음)로 요청하며 같은 결과가 나올 수 있습니다.'
+    if not isinstance(rows, list):
+        return f' (승인 관계 {len(predicates)}개, coverage 배열 없음)' + tail
+    named = [row['predicate'] for row in rows if isinstance(row, dict) and isinstance(row.get('predicate'), str)]
+    missing = sorted(predicates - set(named))
+    unapproved = len(rows) - sum(name in predicates for name in named)
+    duplicated = sum(named.count(p) > 1 for p in predicates)
+    parts = [f'승인 관계 {len(predicates)}개', f'응답 행 {len(rows)}개']
+    if unapproved:
+        parts.append(f'승인되지 않은 행 {unapproved}개')
+    if duplicated:
+        parts.append(f'중복 관계 {duplicated}개')
+    if missing:
+        parts.append('행이 없는 관계: ' + ', '.join(missing[:5]) + (f' 외 {len(missing) - 5}개' if len(missing) > 5 else ''))
+    return ' (' + ', '.join(parts) + ')' + tail
+
+
 def validate_accounting(value, dictionary):
     """Called after ordinary shape validation, before any quote-repair request."""
     from .service import text
     predicates = {r['id'] for r in dictionary['relations']}
     rows, gaps = value.get('coverage'), value.get('dictionary_gaps')
     if not isinstance(rows, list) or len(rows) != len(predicates):
-        raise ValueError('추출 점검 coverage: 승인 관계마다 정확히 한 행이 필요합니다.')
+        raise ValueError('추출 점검 coverage: 승인 관계마다 정확히 한 행이 필요합니다.' + _row_count_detail(rows, predicates))
     if not isinstance(gaps, list) or len(gaps) > 12:
         raise ValueError('추출 점검 dictionary_gaps: 최대 12개 배열이 필요합니다.')
     seen, covered = set(), set()
@@ -241,7 +260,7 @@ def validate_accounting(value, dictionary):
             raise ValueError('추출 점검 coverage 필드 오류')
         predicate, status = row['predicate'], row['status']
         if not isinstance(predicate, str) or predicate not in predicates or predicate in seen:
-            raise ValueError('추출 점검: 승인 관계가 누락·중복되거나 알 수 없는 관계입니다.')
+            raise ValueError('추출 점검: 승인 관계가 누락·중복되거나 알 수 없는 관계입니다.' + _row_count_detail(rows, predicates))
         if not isinstance(status, str) or status not in STATUSES:
             raise ValueError('추출 점검 status 오류')
         text(row['reason'], '추출 점검 reason', 120)
