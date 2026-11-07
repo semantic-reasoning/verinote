@@ -20,11 +20,14 @@ from .extraction_checkpoint import CHUNK_TIMEOUT, ExtractionCheckpoint
 from .extraction_coverage import (
     chunk_report,
     exclude_off_dictionary_facts,
+    locate_whitespace_variants,
+    located_quote_notice,
     new_report,
     read_report,
     repair_missing_indices,
     resolve_quote_repairs,
     saved_quote_paths,
+    write_located_quotes,
     write_repair_audit,
     write_report,
 )
@@ -101,8 +104,8 @@ class Service:
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='verinote-extract')
         self.slots = threading.BoundedSemaphore(8)
         self.extraction_lock = threading.RLock()
-        # None is the product: one repair per chunk, row-level exclusion. An integer is a benchmark's
-        # pre-registered contract: stop before the next repair, all-or-nothing, so no exclusion happens.
+        # None is the product: whitespace-variant location, then one repair per chunk, row-level exclusion. An integer is a
+        # benchmark's pre-registered contract: stop before the next repair, all-or-nothing, so no location or exclusion happens.
         self.quote_repair_limit = quote_repair_limit
         self.extraction_caller = extraction_caller
         self.extraction_caller_factory = extraction_caller_factory
@@ -300,6 +303,8 @@ class Service:
         checkpoint = None
         active_chunk = None
         coverage_repairs = 0
+        located_quotes = 0
+        located_places: list[str] = []
         published = False
         scheduler = None
         try:
@@ -413,6 +418,13 @@ class Service:
                                 output = normalized
                             if issues:
                                 validation.reject()
+                            located: list[dict] = []
+                            refused: list[dict] = []
+                            if issues and contract_version == 2 and self.quote_repair_limit is None:
+                                output, located, issues = locate_whitespace_variants(output, chunk, issues)
+                                if located:
+                                    write_located_quotes(folder, located)
+                            if issues:
                                 locations = ', '.join(quote_label(issue['path']) for issue in issues[:5])
                                 if len(issues) > 5:
                                     locations += f' 외 {len(issues) - 5}개'
@@ -429,7 +441,6 @@ class Service:
                                         with caller_validation(cli, repair_folder, run['agent']) as repair_validation, timing.section('repair_validation_with_bookkeeping', index):
                                             if time.monotonic() > deadline:
                                                 raise TimeoutError(f'청크 실행 시간 제한 초과 ({CHUNK_TIMEOUT}초)')
-                                            refused: list[dict] = []
                                             if current_contract and self.quote_repair_limit is None:
                                                 output, changes, refused = resolve_quote_repairs(output, chunk, issues, response, contract_version)
                                             else:
@@ -466,6 +477,10 @@ class Service:
                                 report_ok = write_report(self.root, report)
                             if checkpoint is not None:
                                 checkpoint.accept(output, chunk, before_accept=(lambda task=task: scheduler.check(task)) if scheduler is not None else None)
+                        if located:  # Counted here, not at location: a repair or check that fails after it leaves nothing saved.
+                            located_quotes += len(located)
+                            saved = [quote_label(path) for path in saved_quote_paths(located, refused)]
+                            located_places.append(f'청크 {index}: ' + ', '.join(saved[:5]) + (f' 외 {len(saved) - 5}개' if len(saved) > 5 else ''))
                     timing.end_chunk(index=index)
             active_chunk = None
             unique = {json.dumps(f, sort_keys=True, ensure_ascii=False): f for f in facts}
@@ -474,7 +489,9 @@ class Service:
             shown = '; '.join(repair_locations[:5]) + (f' 외 {len(repair_locations) - 5}개 청크' if len(repair_locations) > 5 else '')
             detail = (f'이번 실행 원문 인용 {repaired_quotes}개 보정 · 추가 호출 {repair_calls}회 ({shown} · 번호는 제외 뒤 기준).' if repaired_quotes
                       else f'이번 실행 인용 보정 추가 호출 {repair_calls}회: 반영된 보정 없음.' if repair_calls else '')
-            if repair_calls or (checkpoint is not None and checkpoint.resumed_chunks):
+            if located_quotes:
+                detail = f'{detail} {located_quote_notice(located_quotes, located_places)}.'.lstrip()
+            if repair_calls or located_quotes or (checkpoint is not None and checkpoint.resumed_chunks):
                 detail = f'{detail} 의미가 맞는지 원문과 대조한 뒤 승인하세요.'.lstrip()
             if report is not None:
                 detail = f'관계 후보 {len(unique)}개 · 관계별 점검은 실행 기록에서 확인하세요. 새 후보는 별도 승인 전까지 그래프에 포함되지 않습니다. ' + detail
@@ -510,6 +527,8 @@ class Service:
                 detail = f'청크 {active_chunk} · {detail}'
             if coverage_repairs:
                 detail += f' · 이번 실행 추출 점검 인덱스 {coverage_repairs}건 로컬 보정 (보정용 모델 호출 없음)'
+            if located_quotes:
+                detail += f' · {located_quote_notice(located_quotes, located_places)}'
             if checkpoint is not None:
                 checkpoint.finish('error')
                 if isinstance(exc, NothingToPublish):
