@@ -198,8 +198,13 @@ def quote_label(path):
     return f'{"위키 주장" if kind == "claims" else "관계"} {int(index) + 1} 인용'
 
 
-def extraction_quote_issues(value, source, dictionary, *, require_coverage=False, contract_version=2, allow_no_claims=False):
-    """Preflight every field before spending a call on missing literal quotations."""
+def extraction_quote_issues(value, source, dictionary, *, require_coverage=False, contract_version=2, allow_no_claims=False, skip_off_dictionary=False):
+    """Preflight every field before spending a call on missing literal quotations.
+
+    `skip_off_dictionary` is for a fresh response just passed through exclude_off_dictionary_facts: a fact it would
+    exclude is passed over, its quote included, so a fact-numbered error never names one. That function leaves such a
+    fact only beside a fact this check rejects, or over the fact limit, so the call still raises.
+    """
     from .service import quote_text, text
     version = contract_version
     extraction_prompts(version)
@@ -220,7 +225,12 @@ def extraction_quote_issues(value, source, dictionary, *, require_coverage=False
                     text(row.get('heading'), 'heading')
                     text(row.get('text'), 'text', 1500)
                 else:
-                    dictionary_terms(row, dictionary)
+                    try:
+                        dictionary_terms(row, dictionary)
+                    except VocabularyError:
+                        if skip_off_dictionary:
+                            continue
+                        raise
                 quote = quote_text(row.get('quote'))
             except ValueError as exc:
                 raise ValueError(f'{quote_label(path)}: {exc}') from exc
