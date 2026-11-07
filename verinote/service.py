@@ -41,6 +41,7 @@ from .ontology import (
     quote_label,
 )
 from .progress import analysis_progress
+from .store import Conflict
 from .transports import reasoning_budget, validate_job_tokens
 
 _UNSET_TOKENS = object()
@@ -573,8 +574,8 @@ class Service:
                     if checkpoint.exclusion_notice():
                         detail += f' · {checkpoint.exclusion_notice()}'
                     detail += f' · {checkpoint.summary()}'
-                    if not isinstance(exc, RequestTooLarge):  # its advice says a re-run is refused again
-                        detail += ' · 같은 문서 버전·승인 사전·에이전트·모델로 다시 추출하면 검증 완료 청크 다음부터 이어갑니다.'
+                    if not isinstance(exc, (RequestTooLarge, Conflict)):  # a refusal is refused again; a Conflict ended on a changed run, document or dictionary
+                        detail += f' · {checkpoint.retry_notice()}'
             self.store.run_status(run['id'], 'error', detail[:2000])
         finally:
             with self.extraction_lock:

@@ -26,7 +26,7 @@ from verinote.store import Store
 from verinote.transports import Credentials
 from verinote.usage import atomic_json
 
-TAIL = ' · 같은 문서 버전·승인 사전·에이전트·모델로 다시 추출하면 검증 완료 청크 다음부터 이어갑니다.'
+TAIL = ' · 문서 버전·승인 사전·에이전트·모델·병렬 설정 등 추출 조건이 이 실행과 같으면 다시 추출할 때 첫 청크부터 호출합니다.'
 OTHER = '입력 예산이 120,000바이트인 다른 에이전트로 처음부터 실행(완료분을 재사용하지 않고 새로 호출, 원문과 사전이 해당 제공자에게 전달됨)'
 SPLIT = '문서를 나누어 각각 사전 생성·승인(승인된 사전은 재사용되지 않음, 한 부분 밖에만 있는 용어는 그 부분에 쓸 수 없음, 부분 간 ID는 사람이 맞춰야 함)'
 RERUN = '같은 문서 버전·승인 사전·에이전트로 다시 추출해도 같은 크기로 거부됩니다. 다음 단계: '
@@ -382,7 +382,7 @@ class ExtractionRefusal(ServiceCase):
         self.assertEqual(stub.calls, [])
         self.assertTrue(result['detail'].startswith(f'청크 3 · {refused_text(sizes[2], limit)}{RERUN}'), result['detail'])
         self.assertIn('검증 완료 1/3청크 · 새 호출 0회 · 1청크 재사용', result['detail'])
-        self.assertNotIn('이어갑니다', result['detail'])
+        self.assertNotIn('추출 조건이 이 실행과 같으면', result['detail'])
         smaller = {**dictionary, 'entities': dictionary['entities'][:-10]}
         self.revise_and_approve(doc, smaller)
         stub = Stub(chunk_response(smaller), limit)

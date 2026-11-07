@@ -378,7 +378,7 @@ class Pipeline(unittest.TestCase):
         self.assertIn('사전을 수정·재승인하면 모든 청크를 새로 호출', run['detail'])
         self.assertIn('그 모델의 복구 기록이 있으면 검증된 청크를 재사용하므로 같은 실패로 끝날 수 있습니다', run['detail'])
         self.assertNotIn('어느 쪽이든', run['detail'])
-        self.assertNotIn('이어갑니다', run['detail'])
+        self.assertNotIn('추출 조건이 이 실행과 같으면', run['detail'])
         self.assertEqual([i for i in self.store.document(doc['id'])['items'] if i.get('run_id') == run['id']], [])
 
     def test_all_facts_excluded_leaves_the_revision_extractable_and_a_model_with_no_prior_record_calls_every_chunk(self):
