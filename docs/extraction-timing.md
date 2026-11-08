@@ -2,7 +2,7 @@
 
 `read_extraction_timing(root, store, run_id)`를
 `verinote.extraction_timing`에서 가져와 읽는다. 파일은
-`runs/<run_id>/extraction-timing.json`이며 128 KiB, 16청크, 96개 span으로 제한한다.
+`runs/<run_id>/extraction-timing.json`이며 128 KiB, 16청크, 98개 span(`restore`·`publish`와 청크당 최대 6개)으로 제한한다.
 CLI의 `stage=extract`에만 기록한다. HTTP와 사전 생성, 운영 추출 규칙은 바꾸지
 않는다. 화면/API 추가 없이 #727 반복 측정 도구가 사용할 파일·reader 계약이다.
 
@@ -98,8 +98,8 @@ ID/hash와 청크 길이는 예시이므로 실제 reader에는 해당 저장소
 ## 명시적 동시 기록 형식 2
 
 기본 `ExtractionTiming(..., schema_version=1)`와 Service의 순차 실행은 유지한다.
-후속 scheduler는 `ExtractionTiming(..., schema_version=2)` 또는
-`create_timing(..., schema_version=2)`로 선택한다. 이 변경만으로 실제 추출이 병렬화되지는 않는다.
+Service는 병렬 수(1 포함)나 청크 임계 정책을 등록한 Claude 실행에 형식 2를, 그 밖에 시간을 기록하는 실행에 형식 1을 쓴다.
+형식 2는 `ExtractionTiming(..., schema_version=2)` 또는 `create_timing(..., schema_version=2)`로 선택한다.
 형식 1의 reader는 기존 비중첩·순차 규칙을 그대로 적용한다. 형식 2는 128 KiB·16청크·128 span으로 제한한다.
 
 초기화·bind·configure·restore·reuse 후 coordinator가 청크 번호 순으로
@@ -117,7 +117,10 @@ ID/hash와 청크 길이는 예시이므로 실제 reader에는 해당 저장소
 | `repair_worker_wait` | `repair_request` 내부 | 보정 요청의 lease 획득 대기 |
 | `order_wait` | `chunk` 내부, 최초 request 뒤·validation 앞 | 번호순 확정 차례 대기 |
 
-실제 lease/scheduler는 후속 #753/#754에서 연결한다. 이번 Service에는 가짜 대기를 기록하지 않는다.
+이 세 구간 중 Service와 scheduler가 쓰는 것은 `order_wait`뿐이다. `worker_wait`와 `repair_worker_wait`는 reader가 받아들이지만
+쓰는 코드가 없어 해당 summary 필드는 null이다. lease 대기를 포함하는 호출별 `worker_wait`는 [CLI 시간 기록](cli-timing.md)에 있다.
+형식 2에서 모든 청크가 보정되는 최악 경로는 114 span으로 128 한도 안이다. 이 두 kind 중 하나만 모든 청크에 써도 130으로
+한도를 넘고 둘 다면 146이며, 한도를 넘으면 기록이 사라지므로 그 kind를 쓰기 전에 한도를 다시 계산해야 한다.
 restore는 모든 새 청크 전에 끝나고 publish는 시작한 모든 청크가 끝난 후 시작해야 한다.
 청크 시작 번호는 재사용 prefix 다음부터 연속한다. 서로 다른 청크는 겹치거나 역순 종료할 수 있다.
 같은 청크의 단계 중첩·부모 포함·상태·중복 call ID와 단계 중복(청크당 보정 요청 1회 포함)은 검증한다.

@@ -12,7 +12,7 @@ from .documents import chunks
 from .usage import AGENTS, safe_file
 
 MAX_BYTES = 128 * 1024
-MAX_SPANS = 96
+MAX_SPANS = 2 + 16 * 6  # restore and publish, then up to six spans for each of 16 chunks
 MAX_SPANS_V2 = 128
 WAIT_KINDS = {'order_wait', 'worker_wait', 'repair_worker_wait'}
 KINDS = {'restore', 'chunk', 'request', 'validation_with_bookkeeping', 'repair',

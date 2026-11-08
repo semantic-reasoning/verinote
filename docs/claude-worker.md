@@ -85,6 +85,6 @@ Benchmark는 run/usage/timing의 call ID·agent/model이 검증된 경우만 허
 process_reused=false와 실제 spawn 관측이 있고 generation=1이면 started, 이후 generation이면 restarted다.
 process_reused=true이면 reused다. 누락·불일치는 unknown이며 callback 도착 순서로 재시작을 추정하지 않는다.
 
-문서 timing의 worker_wait/repair_worker_wait 연결과 최대 2청크 scheduler는 #754의 범위다.
+최대 2청크 scheduler는 #754의 범위다. 문서 timing에는 worker_wait/repair_worker_wait를 쓰는 코드가 없다.
 검증은 `python -m unittest discover -s tests -p test_extraction_transport.py`로 가짜 subprocess만 호출한다.
 이는 자원·수명 검증이며 실제 모델 지연 개선의 증거가 아니다.
