@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .extraction_timing import error_kind
+
 
 class ChunkFailure(Exception):
     def __init__(self, index, cause):
@@ -120,8 +122,11 @@ class ChunkScheduler:
             self.closed = True
         self.executor.shutdown(wait=True)
         with self.condition:
+            failure = self.failure
             for task in self.pending:
                 if task.wait is not None: task.wait.__exit__(None, None, None)
-                self.timing.end_chunk('error', index=task.index)
+                # The failing chunk ends as its cause did; the others end because it failed.
+                status = error_kind(failure.cause) if failure is not None and task.index == failure.index else 'error'
+                self.timing.end_chunk(status, index=task.index)
             self.pending.clear()
             if self.failure is not None: raise self.failure

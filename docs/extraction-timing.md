@@ -108,6 +108,7 @@ Service는 병렬 수(1 포함)나 청크 임계 정책을 등록한 Claude 실�
 생략하면 계측을 무효화한다. `(kind, chunk)`가 span identity이며 동일 조합은 중복할 수 없다.
 원문 경계·재사용 prefix·run identity와 검증된 CLI call ID 연결은 형식 1과 같다.
 앞 청크 실패 뒤 이미 시작한 뒤 청크의 성공도 기록할 수 있지만, 이는 checkpoint prefix 정책을 바꾸지 않는다.
+실행을 실패시킨 청크의 `chunk` span은 그 원인의 상태(시간 초과면 `timeout`)로 끝나고, 그 실패로 함께 종료된 다른 미완료 청크의 `chunk` span은 `error`로 끝난다.
 
 형식 2가 추가하는 `section(kind, index)` 구간:
 
