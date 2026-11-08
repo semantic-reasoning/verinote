@@ -115,6 +115,7 @@ class Matrix(unittest.TestCase):
             self.assertIn('지금 바꾸면 호출 비용을 쓴 결과를 저장하지 못합니다.', body['error'])
             self.assertEqual('앞선 실행이나 질문이 끝나야 시작합니다.' in body['error'], state == 'queued')
             self.assertNotIn('다른 문서의', body['error'])
+            self.assertEqual('무엇을 기다리는지는 실행 기록에 표시됩니다. 기다리려면' in body['error'], state == 'queued')
             self.assertIn('기다리려면 실행 기록에서 끝난 것을 확인한 뒤 다시 시도하세요.', body['error'])
             self.assertIn('기다리지 않으려면 실행 기록에서 이 실행을 취소하세요. 취소하면 바로 다시 시도할 수 있고, 다른 실행과 질문은 계속됩니다.', body['error'])
             self.assertNotIn('서버를 재시작하세요', body['error'])
@@ -122,7 +123,7 @@ class Matrix(unittest.TestCase):
             self.assertEqual(f'처리 중이던 호출은 끝날 때까지 계속되지만 그 결과로 {result} 저장하지는 않습니다.' in body['error'], state == 'running')
             self.assertEqual(body['error'],
                              f"이 문서 버전의 {label} 실행 {run['id']}(agy / 기본 모델 · {dict(queued='대기 중', running='처리 중')[state]})이 끝나지 않아 사전을 바꿀 수 없습니다. "
-                             f"지금 바꾸면 호출 비용을 쓴 결과를 저장하지 못합니다. {'대기 중인 실행은 앞선 실행이나 질문이 끝나야 시작합니다. ' if state == 'queued' else ''}"
+                             f"지금 바꾸면 호출 비용을 쓴 결과를 저장하지 못합니다. {'대기 중인 실행은 앞선 실행이나 질문이 끝나야 시작합니다. 무엇을 기다리는지는 실행 기록에 표시됩니다. ' if state == 'queued' else ''}"
                              '기다리려면 실행 기록에서 끝난 것을 확인한 뒤 다시 시도하세요. 기다리지 않으려면 실행 기록에서 이 실행을 취소하세요. 취소하면 바로 다시 시도할 수 있고, 다른 실행과 질문은 계속됩니다.'
                              + (f' 처리 중이던 호출은 끝날 때까지 계속되지만 그 결과로 {result} 저장하지는 않습니다.' if state == 'running' else ''))
             stale = case.review(item | {'revision': item['revision'] - 1}, action, EDITED if action == 'revise' else None)

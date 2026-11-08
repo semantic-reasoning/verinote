@@ -368,6 +368,22 @@ class Store:
                 if db.execute("SELECT 1 FROM runs WHERE id=? AND status IN ('cancelling','cancelled')", (run_id,)).fetchone():
                     raise RunCancelled('실행이 취소되었습니다.')
 
+    def queue_rows(self, entries):
+        """What the queue list entries, as (kind, id) pairs, are now, read in one transaction: the status of each and what names it. An entry
+        whose row is gone is left out."""
+        rows = []
+        with self.connect() as db:
+            for kind, key in entries:
+                if kind == 'run':
+                    row = db.execute('SELECT r.id,r.stage,r.status,r.document_id,d.title FROM runs r LEFT JOIN documents d ON d.id=r.document_id WHERE r.id=?', (key,)).fetchone()
+                    if row: rows.append({'kind': 'run', 'id': row['id'], 'status': row['status'], 'stage': row['stage'], 'document_id': row['document_id'], 'title': row['title']})
+                else:
+                    row = db.execute('SELECT payload FROM questions WHERE id=?', (key,)).fetchone()
+                    if row:
+                        job = json.loads(row[0])
+                        rows.append({'kind': 'question', 'id': key, 'status': job['status'], 'question': job['question'][:40]})
+        return rows
+
     def run_progress(self, run_id, detail):
         with self.connect(True) as db:
             db.execute("UPDATE runs SET detail=? WHERE id=? AND status='running'", (detail, run_id))
@@ -476,7 +492,7 @@ class Store:
         """The sentences shared by the refusals that tell a user to wait for a queued or running run or to cancel it: the queue note (queued
         only), where to see it end, the cancel alternative, and, for a running run, that its call in flight continues without saving a result.
         retry is the user's next step as a stem, such as '다시 시도': the sentences end it with '하세요.' and '할 수 있고'."""
-        waits = '대기 중인 실행은 앞선 실행이나 질문이 끝나야 시작합니다. ' if status == 'queued' else ''
+        waits = '대기 중인 실행은 앞선 실행이나 질문이 끝나야 시작합니다. 무엇을 기다리는지는 실행 기록에 표시됩니다. ' if status == 'queued' else ''
         keeps = f' 처리 중이던 호출은 끝날 때까지 계속되지만 그 결과로 {cancel_result(stage, False)} 저장하지는 않습니다.' if status == 'running' else ''
         return (f'{waits}기다리려면 실행 기록에서 끝난 것을 확인한 뒤 {retry}하세요. 기다리지 않으려면 실행 기록에서 이 실행을 취소하세요. '
                 f'취소하면 바로 {retry}할 수 있고, 다른 실행과 질문은 계속됩니다.{keeps}')

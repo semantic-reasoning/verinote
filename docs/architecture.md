@@ -75,7 +75,7 @@ fallback은 lookup_id, reason, detail, wiki_evidence_ids로 구성한다. reason
 
 새 스냅샷 pages/ontologies는 facts 및 documents와 동일 트랜잭션에서 승인된 현재 버전 내용만 고정한다. 기존 스냅샷의 누락 필드를 최신 데이터로 채우지 않는다. 자연어 질문에서만 문서 100/사실 500/위키 500/사전 100개와 지식 8 MiB 한도를 적용하며 직접 그래프 조회 한도는 바꾸지 않는다. 검색 20개/위키·원문 읽기 2,000자/결과 30,000바이트/프롬프트 60,000바이트, 모델 6회·도구 10회 예산을 유지한다. 잘린 지식 검색으로 fallback을 허용하지 않으므로 검색 범위를 좁혀야 한다. 삭제는 기존 documents 참조를 따라 새 지식 payload를 포함한 스냅샷 전체와 관련 질문을 제거한다.
 
-`questions` 테이블은 제출 시 고정한 snapshot, agent/model, 질문, 상태, 누적 trace/evidence, 답변과 오류를 저장한다. 검색·읽기는 snapshot의 문서 버전만 사용하고 그래프는 snapshot의 승인 payload만 사용한다. 기존 runs와 같은 worker/8개 슬롯을 사용하며 재시작 시 미완료 질문도 interrupted로 복구한다.
+`questions` 테이블은 제출 시 고정한 snapshot, agent/model, 질문, 상태, 누적 trace/evidence, 답변과 오류를 저장한다. 검색·읽기는 snapshot의 문서 버전만 사용하고 그래프는 snapshot의 승인 payload만 사용한다. 기존 runs와 같은 worker/8개 슬롯을 사용하며 재시작 시 미완료 질문도 interrupted로 복구한다. `Service.queue`는 실행과 질문을 worker 풀에 넣은 순서대로 담는 프로세스 메모리 목록이다(넣기와 목록 추가는 하나의 `queue_lock` 안에서 한다). 끝났거나 풀에서 빠진 항목은 목록에서 지우며, 서버를 다시 시작하면 대기·처리 중 실행은 interrupted가 되므로 목록을 복원하지 않는다. 대기 중인 실행의 응답은 이 목록에서 자기보다 앞선 항목을 `queue.ahead`로 싣고, 각 항목의 상태는 응답 시점의 DB 값이다.
 
 POST `/api/questions`는 `{question,agent?,model?,snapshot?}`를 받아 202로 작업을 반환한다. GET `/api/questions`는 최근 30개, GET `/api/questions/{id}`는 저장 결과와 진행 상태를 반환한다. UI polling은 선택 질문 ID를 확인하여 이전 실행이 새 화면을 덮어쓰지 않는다. 고급 구조화 질의 API는 유지한다.
 

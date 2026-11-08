@@ -141,6 +141,8 @@ class Service:
         self.registered_extractions = {}
         self.futures = {}
         self.cancel_lock = threading.Lock()
+        self.queue = []
+        self.queue_lock = threading.Lock()
         self.cleanup_lock = threading.Lock()
         self.cleanup_logs()
 
@@ -202,6 +204,8 @@ class Service:
             result['relation_type_warnings'] = read_run_warnings(self.root, self.store, owner['id'], include_items=coverage_details)
         if kind == 'runs':
             result['progress'] = analysis_progress(self.root, self.store, owner['id'], report)
+            ahead = self.queue_ahead(owner['id']) if owner['status'] == 'queued' else None
+            if ahead is not None: result['queue'] = {'ahead': ahead}
         if report is not None and not coverage_details:
             report.pop('chunks', None)
         return result
@@ -335,7 +339,13 @@ class Service:
                 policy_folder.mkdir(parents=True, exist_ok=True)
                 atomic_json(policy_folder/'context-policy.json', {'schema_version': 1, 'run_id': run['id'], 'dictionary_context_bytes': context_limit})
                 if experiment is not None: self.registered_extractions[run['id']] = copy.deepcopy(run['extraction_options'])
-                self.futures[run['id']] = self.pool.submit(self.extract, copy.deepcopy(run), transport, self.relation_type_warning_threshold, timing, context_limit)
+                with self.queue_lock:
+                    self.queue.append(('run', run['id']))
+                    try:
+                        self.futures[run['id']] = self.pool.submit(self.extract, copy.deepcopy(run), transport, self.relation_type_warning_threshold, timing, context_limit)
+                    except BaseException:
+                        self.queue.remove(('run', run['id']))
+                        raise
                 return run
             except Exception as exc:
                 failed = exc
@@ -649,6 +659,7 @@ class Service:
                 try:
                     self.slots.release()
                 finally:
+                    self.dequeue('run', run['id'])
                     timing.finish()
 
     CANCEL_FALLBACK = '취소된 실행이 멈췄지만 취소 상세를 저장하지 못했습니다.'
@@ -688,7 +699,10 @@ class Service:
                 if future is not None and future.cancel():
                     self.futures.pop(run_id, None)
                     self.registered_extractions.pop(run_id, None)
-                    self.slots.release()
+                    try:
+                        self.slots.release()
+                    finally:
+                        self.dequeue('run', run_id)
         return previous
 
     FAILURE_FALLBACK = '실행이 실패했지만 실패 상세를 저장하지 못했습니다.'
@@ -730,7 +744,13 @@ class Service:
         try:
             snapshot = self.store.snapshot(snapshot_id)
             job = self.store.create_question(question, agent, model, snapshot['id'], **({'execution_options': options} if options is not None else {}))
-            self.pool.submit(self.answer, copy.deepcopy(job), snapshot, transport)
+            with self.queue_lock:
+                self.queue.append(('question', job['id']))
+                try:
+                    self.pool.submit(self.answer, copy.deepcopy(job), snapshot, transport)
+                except BaseException:
+                    self.queue.remove(('question', job['id']))
+                    raise
             return job
         except Exception as exc:
             failed = exc
@@ -763,7 +783,24 @@ class Service:
             try:
                 self.finish_question(job)
             finally:
-                self.slots.release()
+                try:
+                    self.slots.release()
+                finally:
+                    self.dequeue('question', job['id'])
+
+    def dequeue(self, kind, key):
+        """Remove a run or question from the queue list once it has ended or been taken off the pool; a no-op if it is not listed."""
+        with self.queue_lock:
+            if (kind, key) in self.queue: self.queue.remove((kind, key))
+
+    def queue_ahead(self, run_id):
+        """The runs and questions listed before this run, in the order the single pool worker takes them, with the status each has now.
+        append and submit happen under one queue_lock, so the list order is the pool order. None when the run is not listed (not yet
+        appended, or already removed): nothing is known about what it waits for, which is not the same as nothing being ahead."""
+        with self.queue_lock:
+            entries = list(self.queue)
+        if ('run', run_id) not in entries: return None
+        return self.store.queue_rows(entries[:entries.index(('run', run_id))])
 
     QUESTION_FAILURE_FALLBACK = '질문이 실패했지만 실패 상세를 저장하지 못했습니다.'
     ANSWER_FALLBACK = '답변을 만들었지만 저장하지 못했습니다.'
