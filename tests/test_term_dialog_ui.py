@@ -278,7 +278,7 @@ groups.approval_escaping=async()=>{
 };
 groups.item_passes_judgements=async()=>{
  const h=make();
- Object.assign(h.ctx,{renderRelationTypeWarnings:()=>'',renderDictionaryReconciliations:()=>'',renderDictionaryExclusions:()=>'',bulkItemLabel:()=>'',badge:()=>''});
+ Object.assign(h.ctx,{renderRelationTypeWarnings:()=>'',renderDictionaryReconciliations:()=>'',renderDictionaryExclusions:()=>'',renderExtractionAdmission:()=>'',bulkItemLabel:()=>'',badge:()=>''});
  vm.runInContext(source.slice(source.indexOf('function renderItem('),source.indexOf('function openReview(')).split('\nfunction ')[0],h.ctx);
  const payload={entities:[{id:'plan',name:'납품 계획',type:'t',quote:'eq'}],aliases:[{alias:'별칭',entity:'plan',quote:'aq',judged_alias:'별칭',judged_entity:'plan',judged_name:'납품 계획'}],relations:[]};
  h.ctx.item={id:'o',kind:'ontology',status:'approved',revision:1,run_id:'r',payload,alias_judgements:{'별칭':{actor:'검토자갑',reason:'이유을',revision:3}}};

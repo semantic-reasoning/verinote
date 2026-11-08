@@ -226,8 +226,43 @@ def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_thr
             write(folder / 'dictionary-progress.json', state)
         state['status'] = 'complete'
         write(folder / 'dictionary-progress.json', state)
-        return dictionary, summary()
+        notice = admission_notice(cli, root, run, doc, dictionary, context_limit, other_agent_ready)
+        return dictionary, (f'{notice} · ' if notice else '') + summary()
     except Exception as exc:
         state['status'] = 'error'
         write(folder / 'dictionary-progress.json', state)
         raise ValueError(f'{exc} · {summary()}') from exc
+
+
+def admission_notice(cli, root, run, doc, dictionary, context_limit, other_agent_ready):
+    """The same-agent extraction admission for approving this dictionary unchanged; never raises, never calls a model."""
+    from .agents import PROVIDERS
+    from .dictionary_context import (
+        ADMISSION_RECORD,
+        admission_policy,
+        chunk_requests,
+        worst_refusal,
+    )
+    from .documents import chunks
+    from .ontology import EXTRACTION_CONTRACT_VERSION, extraction_prompts
+    from .store import ident
+    try:
+        payload = validate_dictionary(dictionary, doc['text'])  # what finish_run stores
+        target = run.get('ontology')
+        # finish_run stores a new item at revision 1 and a regeneration at the rejected revision + 1; approving adds one.
+        approval = (target['revision'] + 1 if target else 1) + 1
+        pin = {'id': target['id'] if target else ident(), 'revision': approval, 'payload': payload,
+               'sha256': digest(payload), 'extraction_contract': EXTRACTION_CONTRACT_VERSION}
+        worst = worst_refusal(cli, run['agent'], extraction_prompts(EXTRACTION_CONTRACT_VERSION)[0],
+                              chunk_requests(doc, pin, list(enumerate(chunks(doc['text']), 1))), context_limit)
+        warning = worst[1].approval_warning(PROVIDERS[run['agent']], other_agent_ready(), approval) if worst else None
+        record = {'schema_version': 1, 'run_id': run['id'], 'dictionary_sha256': digest(payload),
+                  'admission_policy': admission_policy(), 'warning': warning}
+    except Exception:
+        return '추출 입력 한도를 미리 계산하지 못했습니다. 추출을 시작하면 첫 호출 전에 검사합니다.'
+    try:
+        atomic_json(root / 'runs' / run['id'] / ADMISSION_RECORD, record)
+    except Exception:
+        return (f'{warning} 이 경고의 기록을 저장하지 못해 문서 화면에는 표시되지 않습니다.' if warning
+                else '추출 입력 한도 검사 기록을 저장하지 못했습니다.')
+    return warning
