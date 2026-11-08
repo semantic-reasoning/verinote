@@ -1,5 +1,6 @@
 """Dictionary definition wire-form threshold and lossless definition tables."""
 import copy
+import functools
 import json
 
 from .store import canonical, digest
@@ -35,12 +36,36 @@ class RequestTooLarge(ValueError):
     def with_advice(self, advice):
         return RequestTooLarge(self.request_bytes, self.limit, self.definition_bytes, advice)
 
+    def _other_agent_fits(self, available):
+        from .ontology import MAX_PROMPT_BYTES
+        return available and self.request_bytes <= MAX_PROMPT_BYTES
+
     def _other_agent_step(self, available):
         from .ontology import MAX_PROMPT_BYTES
-        if available and self.request_bytes <= MAX_PROMPT_BYTES:
+        if self._other_agent_fits(available):
             return (f'입력 예산이 {MAX_PROMPT_BYTES:,}바이트인 다른 에이전트로 처음부터 실행'
                     '(완료분을 재사용하지 않고 새로 호출, 원문과 사전이 해당 제공자에게 전달됨)')
         return None
+
+    def approval_warning(self, agent_name, other_agent, approval_revision):
+        """This refusal was computed for approving the generated dictionary unchanged at approval_revision."""
+        from .ontology import MAX_PROMPT_BYTES
+        steps = []
+        if self._other_agent_fits(other_agent):
+            steps.append(f'입력 예산이 {MAX_PROMPT_BYTES:,}바이트인 다른 에이전트로 추출(원문과 사전이 해당 제공자에게 전달됨)')
+        # Revising then approving adds two to approval_revision for an item that is already approved, one for a pending
+        # one; the figure covers the larger growth, so it is exact in the first case and sufficient in the second.
+        needed = self.excess + len(str(approval_revision + 2)) - len(str(approval_revision))
+        if needed <= self.definition_bytes - EMPTY_DEFINITION_BYTES:
+            steps.append(f'사전을 수정해 전송 정의 {self.definition_bytes:,}바이트 중 약 {needed:,}바이트 이상을 줄인 뒤 승인(뺀 정의는 추출에 쓸 수 없음)')
+        steps.append('문서를 나누어 각각 사전 생성·승인(이 사전은 재사용되지 않음, 한 부분 밖에만 있는 용어는 그 부분에 쓸 수 없음, 부분 간 ID는 사람이 맞춰야 함)')
+        others = (f'입력 예산은 에이전트에 따라 다르므로(앱 정책 최대 {MAX_PROMPT_BYTES:,}바이트) 다른 에이전트로는 거부되지 않을 수 있습니다.'
+                  if self.request_bytes <= MAX_PROMPT_BYTES else
+                  f'어느 에이전트의 입력 예산도 앱 정책 {MAX_PROMPT_BYTES:,}바이트를 넘지 않으므로 다른 에이전트로도 거부됩니다.')
+        # Any later unedited approval has a revision at least this one, so request_bytes is a lower bound.
+        return (f'추출 입력 한도 경고: 이 사전을 수정하지 않고 이 실행과 같은 에이전트({agent_name})로 추출하면 '
+                f'전체 요청이 {self.request_bytes:,}바이트 이상으로 입력 예산 {self.limit:,}바이트를 넘어 첫 호출 전에 거부됩니다. {others} '
+                f'다음 단계: {" 또는 ".join(steps)}.')
 
     def _pinned_steps(self, other_agent, revision):
         steps = [self._other_agent_step(other_agent)]
@@ -206,3 +231,109 @@ def prepare(cli, agent, instructions, payload, context_limit, folder):
                               prompt_limit=transport_limit, diagnostics=report)
     finally:
         atomic_json(folder/'context-budget.json', report)
+
+
+ADMISSION_RECORD = 'extraction-admission.json'
+
+
+def worst_refusal(cli, agent, instructions, payloads, context_limit):
+    """Among (key, payload) pairs, the one admission refuses with the largest excess, as (key, RequestTooLarge), or None."""
+    refused = [(key, exc) for key, payload in payloads
+               if (exc := refusal(cli, agent, instructions, payload, context_limit)) is not None]
+    return max(refused, key=lambda pair: pair[1].excess) if refused else None
+
+
+def chunk_payload(doc, offset, chunk):
+    return {'filename': doc['filename'], 'version': doc['version'], 'offset': offset, 'text': chunk}
+
+
+def pinned_dictionary(pin):
+    """The approved-dictionary part of every extraction chunk request; quotes are not guidance."""
+    from .ontology import dictionary_context
+    return {'approved_dictionary': pin | {'payload': dictionary_context(pin['payload'])}}
+
+
+def chunk_requests(doc, pin, raw_chunks):
+    """Extraction chunk requests built by the same two functions Service.extract dispatches with."""
+    pinned = pinned_dictionary(pin)
+    return [(raw, chunk_payload(doc, *raw[1]) | pinned) for raw in raw_chunks]
+
+
+def _canary_dictionaries():
+    """Fixed dictionaries: one whose plain form is the smaller request, one whose table form is."""
+    kind = 'T' + 't' * 119
+    plain = {'entities': [{'id': 'p-entity', 'name': '표본', 'type': 'Pt', 'quote': '표본 인용'}],
+             'aliases': [{'alias': '별칭', 'entity': 'p-entity', 'quote': '별칭 인용', 'judged_alias': '별칭',
+                          'judged_entity': 'p-entity', 'judged_name': '표본'}],
+             'relations': [{'id': 'p-rel', 'description': '관계', 'subject_types': ['Pt'], 'object_types': ['Pt'], 'quote': '관계 인용'}]}
+    table = {'entities': [{'id': f't-entity-{i:02}', 'name': f'표본 {i:02}', 'type': kind, 'quote': f'표본 인용 {i:02}'} for i in range(40)],
+             'aliases': [{'alias': f't-alias-{i:02}', 'entity': f't-entity-{i:02}', 'quote': f'별칭 인용 {i:02}', 'judged_alias': f't-alias-{i:02}',
+                          'judged_entity': f't-entity-{i:02}', 'judged_name': f'표본 {i:02}'} for i in range(10)],
+             'relations': [{'id': f't-rel-{i}', 'description': '관계', 'subject_types': [kind, kind], 'object_types': [kind], 'quote': f'관계 인용 {i}'}
+                           for i in range(5)]}
+    return plain, table
+
+
+@functools.cache
+def _admission_canary():
+    """Refusal sizes (regime, chunk index, request bytes, definition bytes) of a fixed document of more than one chunk, per dictionary above."""
+    from .documents import chunks
+    from .ontology import EXTRACTION_CONTRACT_VERSION, MAX_DICTIONARY_CONTEXT_BYTES
+
+    class Budget:  # a budget no request fits, so every chunk is refused and reports its size
+        prompt_byte_limit = staticmethod(lambda agent: 1)
+
+    doc = {'filename': 'canary.md', 'version': 1, 'text': ''.join(f'문장 {i:04} sentence. ' for i in range(700))}
+    sizes = []
+    for regime, dictionary in zip(('plain', 'table'), _canary_dictionaries(), strict=True):
+        pin = {'id': 'c' * 32, 'revision': 2, 'payload': dictionary, 'sha256': digest(dictionary),
+               'extraction_contract': EXTRACTION_CONTRACT_VERSION}
+        for (index, _), payload in chunk_requests(doc, pin, list(enumerate(chunks(doc['text']), 1))):
+            exc = refusal(Budget(), 'canary', 'canary instructions\n', payload, MAX_DICTIONARY_CONTEXT_BYTES)
+            sizes.append([regime, index, exc.request_bytes, exc.definition_bytes])
+    return sizes
+
+
+def admission_policy():
+    """Digest of PROTOCOL, the current extraction prompt text, the extraction contract version, MAX_PROMPT_BYTES,
+    the Ollama input budget, and the canary: the sizes of the refusals chunk_requests and build report for a fixed
+    document and two fixed dictionaries (one per smaller-form regime), which move with the chunk size of
+    documents.chunks, NOT_GUIDANCE, the keys chunk_payload adds, and build, encode and serialization.
+    The canary builds its own pin, so it does not follow the pin keys store.create_run builds.
+    A change that leaves those canary sizes unchanged is not detected, and the document, the dictionary and the agent are not in it."""
+    from .ollama import input_byte_limit
+    from .ontology import (
+        EXTRACTION_CONTRACT_VERSION,
+        MAX_PROMPT_BYTES,
+        extraction_prompts,
+    )
+    return digest([PROTOCOL, extraction_prompts(EXTRACTION_CONTRACT_VERSION)[0], EXTRACTION_CONTRACT_VERSION,
+                   MAX_PROMPT_BYTES, input_byte_limit(), _admission_canary()])
+
+
+def read_admission(root, item):
+    """None when the item's generation run kept no record, or the dictionary or admission_policy() differs from the record's; else whether it was readable and its warning.
+    Hidden records are not recomputed; that is #850."""
+    from .usage import safe_file
+    path = root / 'runs' / item['run_id'] / ADMISSION_RECORD
+    try:
+        path.stat()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return {'available': False}
+    try:
+        value = json.loads(safe_file(root, f'runs/{item["run_id"]}/{ADMISSION_RECORD}', 64 * 1024) or b'')
+        if (not isinstance(value, dict) or set(value) != {'schema_version', 'run_id', 'dictionary_sha256', 'admission_policy', 'warning'}
+                or value['schema_version'] != 1 or value['run_id'] != item['run_id']
+                or not isinstance(value['dictionary_sha256'], str) or not (value['warning'] is None or isinstance(value['warning'], str))):
+            raise ValueError('admission record shape')
+    except (OSError, ValueError, TypeError):
+        return {'available': False}
+    try:
+        policy = admission_policy()
+    except Exception:
+        return None  # A policy that cannot be computed cannot vouch for the record, so it is not shown.
+    if value['dictionary_sha256'] != digest(item['payload']) or value['admission_policy'] != policy:
+        return None  # Edited dictionary or changed extraction policy: not recomputed, so not shown.
+    return {'available': True, 'warning': value['warning']}

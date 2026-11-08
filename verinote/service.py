@@ -12,7 +12,14 @@ from pathlib import Path
 
 from .agents import CLI, PROVIDERS, validate_model
 from .call_validation import caller_validation
-from .dictionary_context import RequestTooLarge, refusal, validate_context_bytes
+from .dictionary_context import (
+    RequestTooLarge,
+    chunk_payload,
+    chunk_requests,
+    pinned_dictionary,
+    validate_context_bytes,
+    worst_refusal,
+)
 from .dictionary_context import prepare as prepare_dictionary_prompt
 from .documents import chunks
 from .engine import query
@@ -34,7 +41,6 @@ from .extraction_coverage import (
 from .ontology import (
     MAX_DICTIONARY_CONTEXT_BYTES,
     apply_quote_repairs,
-    dictionary_context,
     dictionary_fact,
     extraction_prompts,
     extraction_quote_issues,
@@ -354,7 +360,7 @@ class Service:
             if run['stage'] == 'ontology':
                 from .dictionary_pipeline import generate_dictionary
                 dictionary, detail = generate_dictionary(self.store, cli, self.root, run, doc, relation_type_warning_threshold=self.relation_type_warning_threshold if relation_type_warning_threshold is None else relation_type_warning_threshold, context_limit=context_limit, other_agent_ready=lambda: self.other_agent_ready(run['agent']))
-                self.store.finish_run(run['id'], dictionary=dictionary, detail=detail)
+                self.store.finish_run(run['id'], dictionary=dictionary, detail=detail[:2000])
                 return
             timing.configure(doc)
             contract_version = run['ontology'].get('extraction_contract', 0)
@@ -380,14 +386,11 @@ class Service:
                          checkpoint.state['resumed_from'] if checkpoint is not None else None)
             from .extraction_scheduler import ChunkFailure, ChunkScheduler, ChunkTask
 
-            pinned = {'approved_dictionary': run['ontology'] | {'payload': dictionary_context(run['ontology']['payload'])}}
-
-            def chunk_payload(offset, chunk):
-                return {'filename': doc['filename'], 'version': doc['version'], 'offset': offset, 'text': chunk}
+            pinned = pinned_dictionary(run['ontology'])
 
             def prepare(raw):
                 index, (offset, chunk) = raw
-                payload = chunk_payload(offset, chunk)
+                payload = chunk_payload(doc, offset, chunk)
                 folder = self.root / 'runs' / run['id'] / str(index)
                 prompt = prepare_dictionary_prompt(cli, run['agent'], extraction_prompt, payload | pinned, context_limit, folder)
                 return ChunkTask(index, offset, chunk, payload, prompt, folder, time.monotonic() + CHUNK_TIMEOUT)
@@ -413,10 +416,9 @@ class Service:
                                 if checkpoint is None or i > checkpoint.resumed_chunks]
             # The pin and the budget are fixed for this run, so a chunk refused here would be refused when reached:
             # refuse before paying for the earlier ones, reporting the chunk with the largest excess.
-            admissions = [(raw, refusal(cli, run['agent'], extraction_prompt, chunk_payload(*raw[1]) | pinned, context_limit)) for raw in remaining_chunks]
-            oversized = [(raw, too_large) for raw, too_large in admissions if too_large is not None]
+            oversized = worst_refusal(cli, run['agent'], extraction_prompt, chunk_requests(doc, run['ontology'], remaining_chunks), context_limit)
             if oversized:
-                worst = max(oversized, key=lambda pair: pair[1].excess)[0]
+                worst = oversized[0]
                 active_chunk = worst[0]
                 try:
                     prepare(worst)  # records the unfit context-budget.json

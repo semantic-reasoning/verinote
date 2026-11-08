@@ -202,6 +202,8 @@ class Handler(BaseHTTPRequestHandler):
                             item['dictionary_reconciliations'] = self.server.service.dictionary_reconciliations(
                                 item['run_id'], document_id=doc_id, version=doc['version'])
                             item['alias_judgements'] = store.alias_judgements(item['id'], item['payload'])
+                            from .dictionary_context import read_admission
+                            item['extraction_admission'] = read_admission(self.server.service.root, item)
                     return self.send(doc)
                 if len(parts) == 4 and parts[3] == 'passages' and method == 'GET':
                     if version is None or 'text' not in params:
