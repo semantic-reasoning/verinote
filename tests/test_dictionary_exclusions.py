@@ -337,7 +337,7 @@ class PublicWarnings(unittest.TestCase):
 class WarningUI(unittest.TestCase):
     def test_warning_details_escape_and_missing_truncated_states(self):
         source = Path('verinote/web/app.js').read_text()
-        helper = source[source.index('function renderDictionaryExclusions('):source.index('function renderDictionary(p)')]
+        helper = source[source.index('function renderDictionaryExclusions('):source.index('function judgedAlias(')]
         script = r'''
 const assert=require('node:assert/strict');const esc=v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
 ''' + helper + r'''

@@ -138,8 +138,14 @@ function renderDictionaryExclusions(report) {
   const items=report.items||[];
   return `<section class="panel" role="status"><strong>사전 항목 ${report.total_count.toLocaleString()}개 제외</strong><p>직접 제외 ${report.direct_count.toLocaleString()}개 · 의존 항목 ${report.dependent_count.toLocaleString()}개. 검증된 항목으로 생성을 계속했습니다. 빠진 개체·관계가 없는지 원문과 비교하고 사전을 수정한 뒤 승인하세요.</p>${items.length?`<details><summary>제외 항목과 이유 보기</summary><ul>${items.map(row=>`<li>구간 ${esc(row.chunk)} · ${esc(kinds[row.kind]||row.kind)}[${esc(row.row)}] ${esc(row.identifier)}: ${esc(row.reason)}</li>`).join('')}</ul></details>`:report.details_loaded?'':'<p>문서의 사전에서 제외 상세를 확인하세요.</p>'}${report.truncated_count?`<p>전체 건수는 위 집계에 포함했습니다. 상세 표시 한도로 ${report.truncated_count.toLocaleString()}개 항목의 상세는 생략했습니다.</p>`:''}</section>`;
 }
-function renderDictionary(p) {
-  return `<h3>2. 추출 기준 사전 검토</h3><p>개체의 정규 ID, 별칭의 동일성, 관계의 의미·방향·타입을 원문과 대조하세요. 사전 승인 후에도 추출된 사실은 별도로 승인합니다.</p><h3>개체 · ${p.entities.length}</h3><p>각 항목이 하나의 개체입니다. <strong>개체 ID</strong>가 관계의 주어·목적어와 조회에 사용됩니다. <strong>원문 명칭</strong>은 문서에 쓰인 이름이고, <strong>개체 유형</strong>은 분류입니다. 같은 ID는 같은 개체로 연결되므로 원문 근거와 함께 확인하세요.</p>${p.entities.map(e=>`<section class="panel"><h4>원문 명칭: ${esc(e.name)}</h4><p class="query-row"><strong>개체 ID:</strong> <code>${esc(e.id)}</code></p><p><strong>개체 유형:</strong> ${esc(e.type)}</p><strong>원문 근거</strong><blockquote class="quote">${esc(e.quote)}</blockquote></section>`).join('')}<h3>별칭 · ${p.aliases.length}</h3>${p.aliases.map(a=>`<details><summary>${esc(a.alias)} → ${esc(a.entity)}</summary><blockquote class="quote">${esc(a.quote)}</blockquote></details>`).join('')}<h3>관계 · ${p.relations.length}</h3>${p.relations.map(r=>`<div><strong>${esc(r.id)}</strong><p>${r.subject_types.map(esc).join(', ')} → ${r.object_types.map(esc).join(', ')}<br>${esc(r.description)}</p><details><summary>원문 근거</summary><blockquote class="quote">${esc(r.quote)}</blockquote></details></div>`).join('')}`;
+function judgedAlias(a,p,judgements){
+  const e=p.entities.find(x=>x.id===a.entity),name=e?e.name:a.judged_name,who=judgements?.[a.alias];
+  const label=a.quote.includes(name)?'이 구간에 두 표기가 함께 있지만 검토자 판단으로 기록된 별칭':'원문이 두 표기를 한 구간에서 연결하지 않음 · 검토자 판단';
+  return `<section class="panel judged-alias"><h4>${visibleSpelling(a.alias)} → ${esc(a.entity)}</h4><p><strong>${label}</strong></p><strong>별칭의 원문 근거</strong><blockquote class="quote">${esc(a.quote)}</blockquote><strong>개체의 원문 근거</strong>${e?`<blockquote class="quote">${esc(e.quote)}</blockquote>`:'<p class="muted">개체를 찾을 수 없습니다.</p>'}<p>고정된 개체 이름: ${visibleSpelling(a.judged_name)}</p>${who?`<p>판단한 검토자: ${esc(who.actor)} · r${esc(who.revision)}<br>이유: ${esc(who.reason)}</p>`:'<p class="muted">판단 기록을 찾을 수 없습니다.</p>'}</section>`;
+}
+function renderDictionary(p,judgements) {
+  const isJudged=a=>['judged_alias','judged_entity','judged_name'].some(k=>k in a),judged=p.aliases.filter(isJudged),plain=p.aliases.filter(a=>!isJudged(a));
+  return `<h3>2. 추출 기준 사전 검토</h3><p>개체의 정규 ID, 별칭의 동일성, 관계의 의미·방향·타입을 원문과 대조하세요. 사전 승인 후에도 추출된 사실은 별도로 승인합니다.</p><h3>개체 · ${p.entities.length}</h3><p>각 항목이 하나의 개체입니다. <strong>개체 ID</strong>가 관계의 주어·목적어와 조회에 사용됩니다. <strong>원문 명칭</strong>은 문서에 쓰인 이름이고, <strong>개체 유형</strong>은 분류입니다. 같은 ID는 같은 개체로 연결되므로 원문 근거와 함께 확인하세요.</p>${p.entities.map(e=>`<section class="panel"><h4>원문 명칭: ${esc(e.name)}</h4><p class="query-row"><strong>개체 ID:</strong> <code>${esc(e.id)}</code></p><p><strong>개체 유형:</strong> ${esc(e.type)}</p><strong>원문 근거</strong><blockquote class="quote">${esc(e.quote)}</blockquote></section>`).join('')}<h3>별칭 · ${p.aliases.length}</h3>${judged.length?`<h4>검토자 판단으로 기록된 별칭 · ${judged.length}</h4>${judged.map(a=>judgedAlias(a,p,judgements)).join('')}`:''}${plain.map(a=>`<details><summary>${esc(a.alias)} → ${esc(a.entity)}</summary><blockquote class="quote">${esc(a.quote)}</blockquote></details>`).join('')}<h3>관계 · ${p.relations.length}</h3>${p.relations.map(r=>`<div><strong>${esc(r.id)}</strong><p>${r.subject_types.map(esc).join(', ')} → ${r.object_types.map(esc).join(', ')}<br>${esc(r.description)}</p><details><summary>원문 근거</summary><blockquote class="quote">${esc(r.quote)}</blockquote></details></div>`).join('')}`;
 }
 async function openDoc(id, version) {
   const request = ++documentRequest;
@@ -175,7 +181,7 @@ async function openDoc(id, version) {
 }
 function renderItem(item) {
   const p=item.payload;
-  const body=item.kind==='ontology'?renderRelationTypeWarnings(item.relation_type_warnings)+renderDictionaryReconciliations(item.dictionary_reconciliations)+renderDictionaryExclusions(item.dictionary_exclusions)+renderDictionary(p):item.kind==='page'?`<h3>${esc(p.title)}</h3>${p.claims.map((c,i)=>`<h3>#${i+1} · ${esc(c.heading)}</h3><p>${esc(c.text)}</p><details><summary>원문 근거</summary><blockquote class="quote">${esc(c.quote)}</blockquote></details>`).join('')}`:`<h3 class="query-row">${esc(p.subject)} → <small>${esc(p.predicate)}</small> → ${esc(p.object)}</h3><blockquote class="quote">${esc(p.quote)}</blockquote>`;
+  const body=item.kind==='ontology'?renderRelationTypeWarnings(item.relation_type_warnings)+renderDictionaryReconciliations(item.dictionary_reconciliations)+renderDictionaryExclusions(item.dictionary_exclusions)+renderDictionary(p,item.alias_judgements):item.kind==='page'?`<h3>${esc(p.title)}</h3>${p.claims.map((c,i)=>`<h3>#${i+1} · ${esc(c.heading)}</h3><p>${esc(c.text)}</p><details><summary>원문 근거</summary><blockquote class="quote">${esc(c.quote)}</blockquote></details>`).join('')}`:`<h3 class="query-row">${esc(p.subject)} → <small>${esc(p.predicate)}</small> → ${esc(p.object)}</h3><blockquote class="quote">${esc(p.quote)}</blockquote>`;
   return `<article class="item">${item.status==='pending'&&['page','fact'].includes(item.kind)?`<label class="bulk-choice"><input type="checkbox" data-bulk-item="${esc(item.id)}" aria-label="${esc(bulkItemLabel(item))} 일괄 승인에 포함">일괄 승인에 포함</label>`:''}${badge(item.status)} <span class="muted">${{ontology:'사전 초안',page:'위키 초안',fact:'관계 사실'}[item.kind]} · r${item.revision}</span><p class="mono">실행 ${esc(item.run_id)}</p>${item.dictionary?`<p class="muted">추출 기준 사전 r${item.dictionary.revision} · ${esc(item.dictionary.sha256.slice(0,12))}</p>`:''}${body}<div class="actions">${['approved','held','rejected','pending',...(['fact','ontology'].includes(item.kind)?['revise']:[])].filter(a=>a!==item.status).map(a=>`<button data-review="${item.id}" data-action="${a}">${a==='revise'?'내용 수정':a==='pending'?'승인 철회 / 재검토':labels[a]}</button>`).join('')}<button data-history="${item.id}">이력</button></div><div id="history-${item.id}"></div></article>`;
 }
 function renderProgress(percent, label, detail='', failed=false) {
@@ -348,6 +354,8 @@ $('#bulk-review-form').onsubmit=e=>{e.preventDefault();attempt(async()=>{
 });};
 function openReview(id,action) {
   const item=selectedDoc.items.find(i=>i.id===id);reviewTarget={item,action};$('#review-form').reset();$('#review-error').textContent='';
+  const judgedCount=item.kind==='ontology'&&action==='approved'?item.payload.aliases.filter(a=>['judged_alias','judged_entity','judged_name'].some(k=>k in a)).length:0;
+  $('#review-judged-note').textContent=judgedCount?`이 사전에는 검토자 판단으로 기록된 별칭이 ${judgedCount}개 있습니다. 승인하기 전에 각 별칭의 원문 근거와 판단 기록을 확인하세요.`:'';$('#review-judged-note').hidden=!judgedCount;
   const runNote=item.kind==='ontology'&&['queued','running'].includes(selectedDoc.latest_run?.status)?'이 문서 버전의 실행이 대기·처리 중으로 표시되어 있습니다. 끝나기 전에 저장하면 거부됩니다.':'';$('#review-run-note').textContent=runNote;$('#review-run-note').hidden=!runNote;
   $('#review-heading').textContent=action==='revise'?'후보 수정 → 재검토':action==='pending'?'승인 철회 / 재검토':`${labels[action]} 기록`;
   $('#revision-fields').innerHTML=action==='revise'&&item.kind==='ontology'?`<label>개체·별칭·관계 사전 JSON<textarea name="dictionary" rows="18" required>${esc(JSON.stringify(item.payload,null,2))}</textarea></label><p>id는 문서 간에도 의미 있는 정규 명칭을 쓰세요. 개체·별칭의 원문 인용과 관계의 방향·타입·포함 및 제외 기준을 확인하세요. 수정하면 다시 승인이 필요합니다.</p>`:action==='revise'?['subject','predicate','object','quote'].map(k=>`<label>${k}<textarea name="${k}" required>${esc(item.payload[k])}</textarea></label>`).join(''):'';
@@ -463,12 +471,13 @@ function renderCoverage(c) {
     return !quote?'승인 사전과 일치하지 않아 제외':quote===rows.length?'원문 인용을 확인하지 못해 제외':'승인 사전 불일치·원문 인용 미확인으로 제외';
   };
   const chunkExclusions=chunk=>(chunk.excluded_claims||[]).length+(chunk.excluded_facts||[]).filter(e=>e.code==='unverifiable_quote').length;
-  return `<section class="coverage"><h3>관계별 추출 점검 · 모델 자체 판단${anyFact||anyQuote?' · 제외로 바뀐 행은 로컬 처리':''}</h3><p>검증 구간 ${esc(c.validated_chunks)}/${esc(c.total_chunks)} · ${anyFact?'제외 후 관계가 남은 종류':'관계가 나온 종류'} ${esc(c.extracted_predicates)}/${esc(c.approved_predicates)} · 청크 응답 관계 ${esc(c.emitted_fact_count)}개${c.excluded_fact_count?` · 제외 ${esc(c.excluded_fact_count)}개`:''}${c.unverifiable_fact_count?` · 근거 불가 제외 ${esc(c.unverifiable_fact_count)}개`:''} · 저장 후보 ${esc(c.saved_fact_count)}개${c.excluded_claim_count?` · 청크 응답 위키 주장 ${esc(c.claim_count+c.excluded_claim_count)}개 중 근거 불가 제외 ${esc(c.excluded_claim_count)}개`:''}</p>${c.excluded_fact_count?`<p>사전 불일치 제외 중 개체 ID·별칭에 없는 표기로 제외 ${esc(c.excluded_spelling_count)}개 · 타입 불일치로 제외 ${esc(c.excluded_type_count)}개(두 문제가 함께 있으면 표기로 셉니다).${c.version_current?'':' 이 실행은 현재 문서 버전이 아닙니다.'}${c.current_dictionary_revision!==c.dictionary_revision?` 아래 판정은 실행 당시 사전 r${esc(c.dictionary_revision)} 기준이며 이 버전의 사전은 지금 ${c.current_dictionary_revision==null?'확인할 수 없습니다':`r${esc(c.current_dictionary_revision)}입니다`}.`:''}</p>`:''}<p>${c.published?'저장 후보는 별도 검토·승인이 필요합니다.':'진행 중이거나 실패한 실행의 부분 점검입니다. 후보는 저장되지 않았습니다.'}${c.excluded_fact_count?` 제외 ${esc(c.excluded_fact_count)}개는 승인 사전의 표기·타입과 일치하지 않아 저장 대상에서 뺀 응답 관계입니다.`:''}${anyQuote?` 근거 불가 제외는 보정 뒤에도 인용이 원문의 한 위치로 확인되지 않아 저장하지 않은 항목입니다.${c.published?' 이 사전 revision과 추출 방식으로는 다시 추출할 수 없고 제외 항목만 복구하는 기능은 없습니다.':''}`:''} 같은 관계·인용의 청크 간 중복은 저장 시 합쳐집니다. 의미적 완전성을 보증하지 않습니다.</p>${c.capped?'<p>청크의 80개 사실 한도에 도달했습니다. 누락 여부를 확인하세요.</p>':''}<p>${anyFact?'모델이 보고한 사전 제약':'사전 제약'} ${esc(c.gap_count)}개${anyFact?' (제외한 응답 관계는 이 수에 포함되지 않음)':''}${c.excluded_gap_count?` · 제외한 위키 주장에 딸린 사전 제약 ${esc(c.excluded_gap_count)}개는 이 수에 포함되지 않음`:''}</p>${(c.chunks||[]).map((chunk,i)=>`<details><summary>구간 ${i+1} · 원문 ${esc(chunk.offset)}~${esc(chunk.offset+chunk.length)}자${chunkExclusions(chunk)?` · 근거 불가 제외 ${esc(chunkExclusions(chunk))}개`:''}</summary>${chunk.coverage.map(row=>`<p><strong>${esc(row.predicate)}</strong> · ${esc(rowLabel(chunk,row))} · 응답 관계 ${esc(row.fact_indices.length+excludedRows(chunk,row.predicate).length)}개${excludedRows(chunk,row.predicate).length?` (제외 ${esc(excludedRows(chunk,row.predicate).length)}개)`:''}<br>${esc(row.reason)} · ${esc(refs(row.claim_indices,chunk))}</p>`).join('')}${chunk.dictionary_gaps.map(g=>`<p><strong>${esc(gap[g.code])}</strong> · ${esc(g.detail)} · ${esc(refs(g.claim_indices,chunk))}</p>`).join('')}${renderExcludedFacts(chunk,c)}${renderExcludedClaims(chunk,gap)}</details>`).join('')}</section>`;
+  return `<section class="coverage"><h3>관계별 추출 점검 · 모델 자체 판단${anyFact||anyQuote?' · 제외로 바뀐 행은 로컬 처리':''}</h3><p>검증 구간 ${esc(c.validated_chunks)}/${esc(c.total_chunks)} · ${anyFact?'제외 후 관계가 남은 종류':'관계가 나온 종류'} ${esc(c.extracted_predicates)}/${esc(c.approved_predicates)} · 청크 응답 관계 ${esc(c.emitted_fact_count)}개${c.excluded_fact_count?` · 제외 ${esc(c.excluded_fact_count)}개`:''}${c.unverifiable_fact_count?` · 근거 불가 제외 ${esc(c.unverifiable_fact_count)}개`:''} · 저장 후보 ${esc(c.saved_fact_count)}개${c.excluded_claim_count?` · 청크 응답 위키 주장 ${esc(c.claim_count+c.excluded_claim_count)}개 중 근거 불가 제외 ${esc(c.excluded_claim_count)}개`:''}</p>${c.excluded_fact_count?`<p>사전 불일치 제외 중 개체 ID·별칭에 없는 표기로 제외 ${esc(c.excluded_spelling_count)}개 · 타입 불일치로 제외 ${esc(c.excluded_type_count)}개(두 문제가 함께 있으면 표기로 셉니다).${c.version_current?'':' 이 실행은 현재 문서 버전이 아닙니다.'}${c.current_dictionary_revision!==c.dictionary_revision?` 아래 판정은 실행 당시 사전 r${esc(c.dictionary_revision)} 기준이며 이 버전의 사전은 지금 ${c.current_dictionary_revision==null?'확인할 수 없습니다':`r${esc(c.current_dictionary_revision)}입니다`}.`:''}</p>`:''}<p>${c.published?'저장 후보는 별도 검토·승인이 필요합니다.':'진행 중이거나 실패한 실행의 부분 점검입니다. 후보는 저장되지 않았습니다.'}${c.excluded_fact_count?` 제외 ${esc(c.excluded_fact_count)}개는 승인 사전의 표기·타입과 일치하지 않아 저장 대상에서 뺀 응답 관계입니다.`:''}${anyQuote?` 근거 불가 제외는 보정 뒤에도 인용이 원문의 한 위치로 확인되지 않아 저장하지 않은 항목입니다.${c.published?' 이 사전 revision과 추출 방식으로는 다시 추출할 수 없고 제외 항목만 복구하는 기능은 없습니다.':''}`:''} 같은 관계·인용의 청크 간 중복은 저장 시 합쳐집니다. 의미적 완전성을 보증하지 않습니다.</p>${c.capped?'<p>청크의 80개 사실 한도에 도달했습니다. 누락 여부를 확인하세요.</p>':''}<p>${anyFact?'모델이 보고한 사전 제약':'사전 제약'} ${esc(c.gap_count)}개${anyFact?' (제외한 응답 관계는 이 수에 포함되지 않음)':''}${c.excluded_gap_count?` · 제외한 위키 주장에 딸린 사전 제약 ${esc(c.excluded_gap_count)}개는 이 수에 포함되지 않음`:''}</p>${(c.chunks||[]).map((chunk,i)=>`<details><summary>구간 ${i+1} · 원문 ${esc(chunk.offset)}~${esc(chunk.offset+chunk.length)}자${chunkExclusions(chunk)?` · 근거 불가 제외 ${esc(chunkExclusions(chunk))}개`:''}</summary>${chunk.coverage.map(row=>`<p><strong>${esc(row.predicate)}</strong> · ${esc(rowLabel(chunk,row))} · 응답 관계 ${esc(row.fact_indices.length+excludedRows(chunk,row.predicate).length)}개${excludedRows(chunk,row.predicate).length?` (제외 ${esc(excludedRows(chunk,row.predicate).length)}개)`:''}<br>${esc(row.reason)} · ${esc(refs(row.claim_indices,chunk))}</p>`).join('')}${chunk.dictionary_gaps.map(g=>`<p><strong>${esc(gap[g.code])}</strong> · ${esc(g.detail)} · ${esc(refs(g.claim_indices,chunk))}</p>`).join('')}${renderExcludedFacts(chunk,c,i)}${renderExcludedClaims(chunk,gap)}</details>`).join('')}</section>`;
 }
 function excludedRows(chunk,predicate){return (chunk.excluded_facts||[]).filter(e=>e.predicate===predicate);}
-function renderExcludedFacts(chunk,c){
+function renderExcludedFacts(chunk,c,chunkIndex){
   const all=chunk.excluded_facts||[],terms=chunk.excluded_fact_terms||[],allowed=chunk.excluded_fact_allowed||{};
-  const rows=all.map((e,i)=>({...e,terms:terms[i],allowed:allowed[e.predicate],versionCurrent:c.version_current})).filter(e=>e.code!=='unverifiable_quote'),quoted=all.filter(e=>e.code==='unverifiable_quote');
+  const canAdd=!['queued','running'].includes(c.status)&&c.version_current&&c.current_dictionary_status&&c.current_dictionary_status!=='rejected'&&c.run_id;
+  const rows=all.map((e,i)=>({...e,terms:terms[i],allowed:allowed[e.predicate],versionCurrent:c.version_current,add:canAdd?{run:c.run_id,chunk:chunkIndex,row:i}:null})).filter(e=>e.code!=='unverifiable_quote'),quoted=all.filter(e=>e.code==='unverifiable_quote');
   const reason={unknown_entity:'승인된 개체·별칭 중 이 표기와 정확히 일치하는 것 없음',type_mismatch:'승인 관계의 방향/타입 불일치'};
   const dictionary=rows.length?`<p><strong>제외한 응답 관계 ${esc(rows.length)}개</strong> · 저장하지 않았습니다. 인용은 원문과 대조하지 않은 모델 작성 문구입니다.</p>${rows.map(r=>`<p>${esc(r.subject)} → ${esc(r.predicate)} → ${esc(r.object)} · ${esc(reason[r.code])}<br>${renderExclusionTerms(r)}미검증 모델 인용: ${esc(r.quote||'없음')}</p>`).join('')}`:'';
   const unverifiable=quoted.length?`<p><strong>근거 불가로 제외한 응답 관계 ${esc(quoted.length)}개</strong> · 저장하지 않았습니다. 보정 뒤에도 인용이 원문의 한 위치로 확인되지 않았으며, 아래 문구는 근거로 쓰지 않습니다.</p>${quoted.map(r=>`<p>${esc(r.subject)} → ${esc(r.predicate)} → ${esc(r.object)}<br>원문의 한 위치로 확인되지 않은 모델 문구: ${esc(r.quote)}</p>`).join('')}`:'';
@@ -479,7 +488,7 @@ function renderExclusionTerms(row){
   const part={subject:'주어',object:'목적어'},types=t=>row.allowed[t.field].map(esc).join(', ');
   const mistyped=row.terms.filter(t=>t.known&&!t.type_fits).map(t=>`${part[t.field]} ${esc(t.spelling)}: 타입 ${esc(t.type)}, 허용 타입 ${types(t)}`).join(' · ');
   if(row.code==='type_mismatch')return `${mistyped}. 별칭이나 새 개체를 추가해도 해결되지 않습니다. ${row.versionCurrent?' 사전의 개체 타입을 바꾸거나 관계의 허용 타입을 넓혀 다시 승인한 뒤 재추출하면 저장될 수 있습니다. 재추출은 모든 청크를 새로 호출하며 되살아난다는 보장은 없습니다.':''}<br>`;
-  const unknown=row.terms.filter(t=>!t.known).map(t=>`${part[t.field]} ${esc(t.spelling)}: 개체 ID·별칭에 없는 표기${t.name_of.length?`(개체 이름과는 같지만 ID나 별칭이 아닙니다. ID ${t.name_of.map(esc).join(', ')}${t.name_of_total>t.name_of.length?` 외 ${esc(t.name_of_total-t.name_of.length)}개`:''})`:''}, 허용 타입 ${types(t)}`).join(' · ');
+  const unknown=row.terms.filter(t=>!t.known).map(t=>`${part[t.field]} ${esc(t.spelling)}: 개체 ID·별칭에 없는 표기${t.name_of.length?`(개체 이름과는 같지만 ID나 별칭이 아닙니다. ID ${t.name_of.map(esc).join(', ')}${t.name_of_total>t.name_of.length?` 외 ${esc(t.name_of_total-t.name_of.length)}개`:''})`:''}, 허용 타입 ${types(t)}${row.add?` <button type="button" data-term-add data-run="${esc(row.add.run)}" data-chunk="${esc(row.add.chunk)}" data-row="${esc(row.add.row)}" data-field="${esc(t.field)}">사전에 추가</button>`:''}`).join(' · ');
   return `${unknown}.${mistyped?` 이 표기를 추가해도 다음 타입 때문에 저장되지 않습니다. ${mistyped}.`:''}<br>`;
 }
 function renderExcludedClaims(chunk,gap){
@@ -521,8 +530,131 @@ document.addEventListener('click',e=>{
   if(b.dataset.doc)attempt(()=>openDoc(b.dataset.doc));
   if(b.dataset.source)attempt(()=>openDoc(b.dataset.source,Number(b.dataset.version)));
   if(b.dataset.review)openReview(b.dataset.review,b.dataset.action);
+  if(b.dataset.termAdd!==undefined)attempt(()=>openTermDialog(b.dataset.run,Number(b.dataset.chunk),Number(b.dataset.row),b.dataset.field));
   if(b.dataset.history)attempt(async()=>{const rows=await api(`/api/items/${b.dataset.history}/history`);$('#history-'+b.dataset.history).innerHTML=rows.map(r=>`<div class="history-line"><strong>r${r.revision} · ${esc(r.action)}</strong> · ${esc(r.actor)}<br>${esc(r.reason)}<br><span class="muted">${esc(date(r.created_at))}</span><details><summary>당시 내용</summary><pre class="source">${esc(JSON.stringify(r.payload,null,2))}</pre></details></div>`).join('');});
 });
+function visibleSpelling(s){
+  return esc(s).replace(/[\s\u0085\p{Cf}]/gu,ch=>{
+    if(ch===' ')return '<span class="ws" title="공백">␣</span>';
+    if(ch==='\n')return '<span class="ws" title="줄바꿈">↵</span>';
+    if(ch==='\t')return '<span class="ws" title="탭">⇥</span>';
+    return `<span class="ws" title="보이지 않는 문자">[U+${ch.codePointAt(0).toString(16).toUpperCase().padStart(4,'0')}]</span>`;
+  });
+}
+let termState=null,termRequest=0,termQuerySeq=0,termTimer;
+function termPicked(state){
+  const entities=state.item.payload.entities;
+  return {target:state.kind==='alias'&&state.target!=null?entities[state.target]:null,passage:state.found&&state.passage!=null?state.found.list[state.passage]:null};
+}
+function termNotes(state){
+  const n=state.totalChunks;
+  const credits=(state.run.usage?.details||[]).filter(d=>d.stage==='extract'&&d.reported_credits!=null);
+  const units=new Set(credits.map(d=>d.credit_unit));
+  const estimate=credits.length&&units.size===1?`${usageNumber(credits.reduce((sum,d)=>sum+d.reported_credits,0)/credits.length*n)} ${esc([...units][0])} · 이 실행의 에이전트·모델 기준 추정 · 보정 제외`:'미확인';
+  const picked=termPicked(state),judged=state.kind==='alias'&&picked.target&&picked.passage&&!picked.passage.quote.includes(picked.target.name);
+  return [
+    `승인 후 재추출하면 ${esc(n)}개 청크를 모두 새로 호출합니다(인용 보정 별도). 이전 결과를 재사용하지 않고, 제외된 관계가 되살아난다는 보장은 없으며, 재추출 결과 전체가 검토 대기 후보로 다시 추가됩니다. 여러 표기를 고치면 모두 추가한 뒤 한 번만 승인하세요.`,
+    `예상 비용(재추출 한 번): ${estimate}`,
+    judged?`원문의 이 구간에는 대상 개체의 이름(${visibleSpelling(picked.target.name)})이 없습니다. 같은 대상이라는 연결은 이 검토자의 판단으로 기록됩니다.`:'',
+    '승인 전까지 이 사전의 정의는 질문의 사전 검색에서 빠집니다. 이미 승인된 사실에 고정된 의미는 그대로 보입니다.',
+    '재승인 뒤 이전에 승인된 사실이 있는 개체는 의미 후보 두 개로 보일 수 있습니다.',
+    state.run.coverage.published?'':'같은 revision으로 다시 실행하면 이어갈 수 있었던 기록은 새 revision에서 쓰이지 않습니다.',
+    '추가를 되돌리는 버튼은 없습니다. 내용 수정에서 지우세요.',
+    '사전을 반려하고 다시 생성하면 추가한 항목은 이력에만 남습니다.'
+  ].filter(Boolean).map(t=>`<p class="muted">${t}</p>`).join('');
+}
+function renderTermPanels(){
+  const s=termState;if(!s)return;
+  const entities=s.item.payload.entities,part={subject:'주어',object:'목적어'}[s.field],alias=s.kind==='alias';
+  $('#term-alias-fields').hidden=!alias;$('#term-entity-fields').hidden=alias;
+  const first=new Set(entities.filter(e=>e.name===s.spelling).map(e=>e.id)),query=s.search;
+  const matches=entities.map((e,i)=>({e,i})).filter(({e})=>e.id.includes(query)||e.name.includes(query));
+  const row=({e,i})=>`<label class="term-row"><input type="radio" name="target" value="${i}" ${s.target===i?'checked':''}> <code>${visibleSpelling(e.id)}</code> · ${visibleSpelling(e.name)} · ${esc(e.type)}</label>`;
+  const named=matches.filter(({e})=>first.has(e.id)),rest=matches.filter(({e})=>!first.has(e.id));
+  $('#term-targets').innerHTML=(named.length?`<p><strong>이름이 같은 개체</strong> · 이름만 같습니다. 같은 대상인지는 직접 고르세요.</p>${named.map(row).join('')}`:'')+(rest.length?`${named.length?'<p><strong>그 밖의 개체</strong></p>':''}${rest.map(row).join('')}`:named.length?'':'<p class="muted">검색어가 들어간 개체 ID·이름이 없습니다.</p>');
+  $('#term-types').innerHTML=[...new Set(entities.map(e=>e.type))].map(t=>`<label class="term-row"><input type="radio" name="etype" value="${esc(t)}" ${s.type===t?'checked':''}> ${esc(t)}</label>`).join('');
+  $('#term-kind-alias').disabled=s.spellingTotal===0;
+  $('#term-alias-absent').textContent=s.spellingTotal===0?'이 표기는 원문에 그대로 나오지 않아 별칭 근거를 만들 수 없습니다.':'';
+  const f=s.found;let passages;
+  if(!f)passages='<p class="muted">원문 구간을 찾는 중입니다.</p>';
+  else if(f.invalid)passages='<p class="muted">이름은 비어 있지 않은 200자 이하여야 합니다.</p>';
+  else if(!f.list.length)passages=`<p class="error">${alias?'이 표기는 원문에 그대로 나오지 않습니다.':s.spellingTotal===0?'이 이름도 원문에 그대로 나오지 않아 근거로 쓸 구간이 없습니다.':'이 이름은 원문에 그대로 나오지 않아 근거로 쓸 구간이 없습니다.'}</p>`;
+  else passages=`<p><strong>원문 구간 고르기</strong> · 총 ${esc(f.total)}곳 중 ${esc(f.list.length)}곳</p>${f.list.map((p,i)=>`<label class="term-row"><input type="radio" name="passage" value="${i}" ${s.passage===i?'checked':''}> <blockquote class="quote">${esc(p.quote)}</blockquote></label>`).join('')}`;
+  $('#term-passages').innerHTML=passages;
+  const type=alias?(s.target!=null?entities[s.target].type:null):s.type,allowed=s.item.payload.relations.find(r=>r.id===s.predicate)?.[`${s.field}_types`];
+  let preview='';
+  if(type!=null&&Array.isArray(allowed))preview=allowed.includes(type)?`<p class="muted">개체 유형: ${esc(type)} · 이 관계 ${part}의 허용 타입에 들어갑니다.</p>`:`<p class="error">경고: 개체 유형: ${esc(type)} · 이 관계 ${part}의 허용 타입(${allowed.map(esc).join(', ')})에 없습니다. 추가해도 이 자리 때문에 관계는 저장되지 않습니다. 추가는 막지 않습니다.</p>`;
+  if(!alias&&entities.some(e=>e.name===s.name.trim()))preview+='<p class="error">경고: 같은 이름의 개체가 이미 있습니다. 같은 대상이면 새 개체가 아니라 별칭으로 추가하세요.</p>';
+  $('#term-preview').innerHTML=preview;
+  $('#term-disclosures').innerHTML=termNotes(s);
+  $('#term-submit').disabled=!(f&&f.list.length&&s.passage!=null&&(alias?s.target!=null:s.type&&s.name.trim()));
+}
+async function termQuery(text){
+  const s=termState,seq=++termQuerySeq;
+  if(!text.trim()||text.length>200){s.found={text,list:[],total:0,invalid:true};s.passage=null;renderTermPanels();return;}
+  s.found=null;s.passage=null;renderTermPanels();
+  const result=await api(`/api/documents/${s.doc.id}/passages?version=${s.doc.version}&text=${encodeURIComponent(text)}`);
+  if(seq!==termQuerySeq||termState!==s)return;
+  s.found={text,list:result.passages,total:result.total,invalid:false};s.passage=null;renderTermPanels();
+}
+async function openTermDialog(runId,chunk,row,field){
+  const request=++termRequest;
+  const run=await api(`/api/runs/${runId}`);
+  const c=run.coverage,excluded=c?.chunks?.[chunk]?.excluded_facts?.[row],term=c?.chunks?.[chunk]?.excluded_fact_terms?.[row]?.find(t=>t.field===field);
+  if(!term||!excluded)throw new Error('이 제외 항목을 다시 찾을 수 없습니다. 실행 기록을 새로 고치세요.');
+  const doc=await api(`/api/documents/${run.document_id}`);
+  if(request!==termRequest)return;
+  const item=doc.items.find(i=>i.id===run.ontology?.id);
+  if(!item)throw new Error('이 실행이 쓴 사전을 이 문서에서 찾을 수 없습니다.');
+  const spelling=term.spelling,known=item.payload.entities.some(e=>e.id===spelling)||item.payload.aliases.some(a=>a.alias===spelling);
+  const s=termState={run,doc,item,spelling,field,known,kind:'alias',target:null,type:null,name:spelling,search:'',passage:null,found:null,spellingTotal:null,kindTouched:false,predicate:excluded.predicate,totalChunks:c.total_chunks};
+  $('#term-form').reset();$('#term-error').textContent='';$('#term-heading').innerHTML=`사전에 추가 · ${visibleSpelling(spelling)}`;
+  const runNote=['queued','running'].includes(doc.latest_run?.status)?'이 문서 버전의 실행이 대기·처리 중으로 표시되어 있습니다. 끝나기 전에 저장하면 거부됩니다.':'';
+  $('#term-run-note').textContent=runNote;$('#term-run-note').hidden=!runNote;
+  $('#term-known').hidden=!known;$('#term-fields').hidden=known;
+  $('#term-known').textContent=known?'이 표기는 현재 사전에 이미 개체 ID 또는 별칭으로 있습니다. 이 점검은 실행 당시 사전 기준입니다.':'';
+  $('#term-submit').disabled=true;
+  $('#term-dialog').showModal();
+  if(known)return;
+  const first=await api(`/api/documents/${doc.id}/passages?version=${doc.version}&text=${encodeURIComponent(spelling)}`);
+  if(request!==termRequest)return;
+  s.spellingTotal=first.total;
+  const forced=s.kindTouched&&s.kind==='alias'&&!first.total;
+  if(!s.kindTouched||forced)s.kind=first.total?'alias':'entity';
+  $('#term-kind-alias').checked=s.kind==='alias';$('#term-kind-entity').checked=s.kind==='entity';$('#term-name').value=s.name;
+  if(!s.kindTouched&&first.total){s.found={text:spelling,list:first.passages,total:first.total,invalid:false};renderTermPanels();}
+  else if(!s.kindTouched||forced)await termQuery(s.name);
+  else renderTermPanels();
+}
+function termInput(e){
+  const s=termState,t=e.target;if(!s)return;
+  if(t.name==='search'){s.search=t.value;renderTermPanels();}
+  else if(t.name==='name'){
+    s.name=t.value;renderTermPanels();
+    if(s.kind==='entity'){clearTimeout(termTimer);const text=t.value;termTimer=setTimeout(()=>attempt(()=>termQuery(text)),250);}
+  }
+}
+function termChange(e){
+  const s=termState,t=e.target;if(!s)return;
+  if(t.name==='kind'){s.kind=t.value;s.kindTouched=true;clearTimeout(termTimer);attempt(()=>termQuery(s.kind==='alias'?s.spelling:s.name));}
+  else if(t.name==='target'){s.target=Number(t.value);renderTermPanels();}
+  else if(t.name==='etype'){s.type=t.value;renderTermPanels();}
+  else if(t.name==='passage'){s.passage=Number(t.value);renderTermPanels();}
+}
+async function submitTerm(e){
+  const s=termState,form=e.target,{target,passage}=termPicked(s);$('#term-error').textContent='';
+  const data={revision:s.item.revision,expected_version:s.doc.current_version,expected_generation:s.doc.generation,kind:s.kind,spelling:s.spelling,quote:passage.quote,
+    actor:form.elements.actor.value,reason:form.elements.reason.value};
+  if(s.kind==='alias')data.entity=target.id;else{data.name=s.name;data.entity_type=s.type;}
+  $('#term-submit').disabled=true;
+  try {await api(`/api/items/${s.item.id}/dictionary-terms`,'POST',data);}
+  catch(error){$('#term-error').textContent=error.message;$('#term-submit').disabled=false;return;}
+  termRequest++;$('#term-dialog').close();
+  await openDoc(s.doc.id,s.doc.version);notice('사전에 추가했습니다. 사전은 승인할 때까지 검토 대기 상태입니다.');
+}
+$('#term-form').oninput=termInput;$('#term-form').onchange=termChange;
+$('#term-form').onsubmit=e=>{e.preventDefault();attempt(()=>submitTerm(e));};
+$('#cancel-term').onclick=()=>{termRequest++;termQuerySeq++;clearTimeout(termTimer);$('#term-dialog').close();};
 let searchTimer;$('#search').oninput=()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>attempt(renderDocs),250);};
 attempt(async()=>{await loadSettings();await loadLibrary();});
 

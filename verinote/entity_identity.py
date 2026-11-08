@@ -9,7 +9,7 @@ PREFIXES = ('entity:', 'relation:')
 def _pin(pin):
     # A matching checksum proves retention, not a valid dictionary. Validate
     # source-independent invariants before assigning any pinned identity.
-    from .ontology import _dictionary_definition, _dictionary_shape
+    from .ontology import JUDGED_FIELDS, _dictionary_definition, _dictionary_shape
     from .service import quote_text
     if (not isinstance(pin, dict) or not isinstance(pin.get('id'), str) or not pin['id']
             or type(pin.get('revision')) is not int or pin['revision'] < 1
@@ -25,6 +25,8 @@ def _pin(pin):
             for row in payload[kind]:
                 definition = _dictionary_definition(kind, row)
                 expected = definition | {'quote': quote_text(row.get('quote'))}
+                if kind == 'aliases' and any(field in row for field in JUDGED_FIELDS):
+                    expected |= {field: row.get(field) for field in JUDGED_FIELDS}
                 if row != expected: return None  # Retained dictionaries must already be normalized.
                 parsed[kind].append(definition)
         entity_ids = [r['id'] for r in parsed['entities']]

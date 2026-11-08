@@ -14,6 +14,8 @@ SOURCE_SPAN_SIZE = 400
 SOURCE_SPAN_MIN_SIZE = 32
 LIMITS = {'entities': 200, 'aliases': 400, 'relations': 40}
 DICTIONARY_TOTAL_LIMITS = {kind: limit * MAX_DICTIONARY_CALLS for kind, limit in LIMITS.items()}
+JUDGED_FIELDS = ('judged_alias', 'judged_entity', 'judged_name')
+NOT_GUIDANCE = ('quote', *JUDGED_FIELDS)
 
 
 def _dictionary_shape(value, *, per_chunk=False):
@@ -46,6 +48,15 @@ def _dictionary_definition(kind, row):
     return relation
 
 
+def _stale_judgement(row, entities):
+    """Whether a judged alias row no longer matches the spelling, entity and name a person judged. Plain rows are never stale."""
+    if not any(field in row for field in JUDGED_FIELDS):
+        return False
+    alias, target = row.get('alias'), row.get('entity')
+    return (row.get('judged_alias') != (alias.strip() if isinstance(alias, str) else alias) or row.get('judged_entity') != target
+            or not isinstance(target, str) or target not in entities or row.get('judged_name') != entities[target]['name'])
+
+
 def _dictionary_row(kind, row, source, entities):
     """Normalize and ground a row before it can be retained or discarded."""
     from .service import evidence
@@ -66,6 +77,9 @@ def _dictionary_row(kind, row, source, entities):
             # Identity adds no mapping. The canonical name is independently
             # grounded by the declared entity, so need not co-occur here.
             return None
+        if any(field in row for field in JUDGED_FIELDS):
+            # A person judged this link, so the source need not tie the spellings. validate_dictionary has refused a stale judgement.
+            return {'alias': alias, 'entity': target, 'quote': quote, **{field: row[field] for field in JUDGED_FIELDS}}
         if entities[target]['name'] not in quote:
             raise ValueError('별칭 인용에는 별칭과 개체 name이 함께 있어야 합니다.')
         return {'alias': alias, 'entity': target, 'quote': quote}
@@ -88,6 +102,11 @@ def validate_dictionary(value, source):
     names: dict[str, str] = {}
     predicates: set[str] = set()
     for kind in LIMITS:
+        if kind == 'aliases':
+            stale = [str(row.get('alias'))[:200] for row in value[kind] if _stale_judgement(row, entities)]
+            if stale:
+                shown = ', '.join(stale[:5]) + (f' 외 {len(stale) - 5}개' if len(stale) > 5 else '')
+                raise ValueError(f'다시 판단해야 하는 별칭 {len(stale)}개: {shown}. 판단한 표기·개체·이름이 달라졌습니다. judged_alias, judged_entity, judged_name을 고치세요.')
         for index, row in enumerate(value[kind], 1):
             try:
                 parsed = _dictionary_row(kind, row, source, entities)
@@ -130,6 +149,8 @@ def merge_dictionary(previous, delta, source, chunk):
         for index, row in enumerate(delta[kind], 1):
             location = f'{kind}[{index}]'
             try:
+                if kind == 'aliases' and any(field in row for field in JUDGED_FIELDS):
+                    raise ValueError('사람의 판단을 기록한 별칭은 병합으로 추가할 수 없습니다.')
                 parsed = _dictionary_row(kind, row, source, entities)
                 if parsed is None:
                     # No prior identity-alias row survives validation, so this
@@ -289,7 +310,7 @@ def bounded_prompt(instructions, payload, *, context_limit=None, prompt_limit=No
 
 
 def dictionary_context(dictionary):
-    return {kind: [{k: v for k, v in row.items() if k != 'quote'} for row in rows]
+    return {kind: [{k: v for k, v in row.items() if k not in NOT_GUIDANCE} for row in rows]
             for kind, rows in dictionary.items()}
 
 

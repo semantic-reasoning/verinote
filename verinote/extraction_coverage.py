@@ -305,7 +305,16 @@ def dictionary_index(dictionary):
     """The lookups both readings use, built once per report read."""
     return {'entities': {row['id']: row for row in dictionary['entities']},
             'aliases': {row['alias']: row['entity'] for row in dictionary['aliases']},
-            'relations': {row['id']: row for row in dictionary['relations']}}
+            'relations': {row['id']: row for row in dictionary['relations']},
+            'names': _names(dictionary['entities'])}
+
+
+def _names(entities):
+    """Entity IDs by exact name, in dictionary order. For reporting a name match only; nothing is connected by it."""
+    names: dict[str, list[str]] = {}
+    for row in entities:
+        names.setdefault(row.get('name'), []).append(row['id'])
+    return names
 
 
 def _allowed_types(index, predicate, field):
@@ -338,7 +347,7 @@ def exclusion_terms(rows, dictionary, index=None):
         entity = aliases.get(spelling, spelling)
         known = entity in entities
         allowed = _allowed_types(index, row['predicate'], field)
-        named = [i for i, e in entities.items() if e.get('name') == spelling] if not known else []
+        named = index['names'].get(spelling, []) if not known else []
         return {'field': field, 'spelling': spelling, 'known': known, 'entity': entity if known else None,
                 'type': entities[entity]['type'] if known else None, 'name_of': named[:5], 'name_of_total': len(named),
                 'type_fits': entities[entity]['type'] in allowed if known else None}
@@ -585,13 +594,14 @@ def read_report(root, store, run_id):
             return unavailable
         with store.connect() as db:
             current_version = db.execute('SELECT current_version FROM documents WHERE id=?', (run['document_id'],)).fetchone()
-            dictionary_item = db.execute('SELECT revision FROM items WHERE id=?', (run['ontology']['id'],)).fetchone()
+            dictionary_item = db.execute('SELECT revision,status FROM items WHERE id=?', (run['ontology']['id'],)).fetchone()
         return {'available': True, 'status': run['status'], 'published': run['status'] == 'success',
                 'total_chunks': total_chunks, 'validated_chunks': len(report['chunks']),
                 'emitted_fact_count': emitted, 'excluded_fact_count': mismatched, 'unverifiable_fact_count': unverifiable,
                 'excluded_spelling_count': spellings, 'excluded_type_count': mismatched - spellings,
                 'dictionary_revision': run['ontology']['revision'],
                 'current_dictionary_revision': dictionary_item[0] if dictionary_item else None,
+                'current_dictionary_status': dictionary_item[1] if dictionary_item else None, 'run_id': run_id,
                 'version_current': bool(current_version) and current_version[0] == run['version'],
                 'claim_count': claims, 'excluded_claim_count': refused_claims, 'excluded_gap_count': refused_gaps,
                 'saved_fact_count': saved if run['status'] == 'success' else 0,

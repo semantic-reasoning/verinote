@@ -451,6 +451,77 @@ class Store:
         db.execute('INSERT INTO events(item_id,revision,action,actor,reason,payload,created_at) VALUES(?,?,?,?,?,?,?)', (item_id, revision + 1, action, actor.strip(), reason.strip(), canonical(value), now()))
         return {'id': item_id, 'revision': revision + 1, 'status': status}
 
+    def add_dictionary_term(self, item_id, revision, expected_version, expected_generation, kind, spelling, quote, actor, reason, *, entity=None, name=None, entity_type=None):
+        from .service import evidence, text
+        self.validate_reviewer(actor, reason)
+        if kind not in ('alias', 'entity'):
+            raise ValueError('별칭 또는 새 개체만 추가할 수 있습니다.')
+        spelling = text(spelling, '표기')
+        with self.connect(True) as db:
+            row = db.execute("SELECT * FROM items WHERE id=? AND kind='ontology'", (item_id,)).fetchone()
+            if not row:
+                raise ValueError('사전 후보를 찾을 수 없습니다.')
+            doc = db.execute('SELECT * FROM documents WHERE id=?', (row['document_id'],)).fetchone()
+            self.check_document_token(doc, expected_version, expected_generation)
+            if row['version'] != doc['current_version'] or row['status'] == 'rejected':
+                raise Conflict('현재 문서 버전의 반려되지 않은 사전에만 추가할 수 있습니다.')
+            source = db.execute('SELECT text FROM versions WHERE document_id=? AND version=?', (row['document_id'], row['version'])).fetchone()[0]
+            quote = evidence(quote, source)
+            payload = json.loads(row['payload'])
+            entities = {e['id']: e for e in payload['entities']}
+            if spelling in entities or any(a['alias'] == spelling for a in payload['aliases']):
+                raise Conflict('이미 사전에 있는 표기입니다.')
+            if spelling.startswith(('entity:', 'relation:')):
+                raise ValueError('이 표기는 조회 참조 형식이라 사전에 추가할 수 없습니다.')
+            if kind == 'alias':
+                target = entities.get(entity) if isinstance(entity, str) else None
+                if target is None:
+                    raise ValueError('별칭이 가리킬 기존 개체를 고르세요.')
+                added = {'alias': spelling, 'entity': entity, 'quote': quote}
+                if target['name'] not in quote:
+                    added |= {'judged_alias': spelling, 'judged_entity': entity, 'judged_name': target['name']}
+                payload['aliases'].append(added)
+                note = f'사전 추가(별칭): {spelling} → {entity}'
+            else:
+                if '\n' in spelling or '\t' in spelling:
+                    raise ValueError('줄바꿈이나 탭이 있는 표기는 개체 ID로 쓸 수 없습니다. 별칭으로 추가하세요.')
+                if not isinstance(entity_type, str) or entity_type not in {e['type'] for e in payload['entities']}:
+                    raise ValueError('사전에 있는 개체 유형을 고르세요.')
+                payload['entities'].append({'id': spelling, 'name': text(name if name is not None else spelling, 'name'), 'type': entity_type, 'quote': quote})
+                note = f'사전 추가(새 개체): {spelling} · {entity_type}'
+            return self._review_item(db, row, revision, 'revise', actor, f'{note} · {reason.strip()}', payload)
+
+    def spelling_passages(self, document_id, version, spelling, *, radius=80, limit=20):
+        """Exact occurrences of `spelling` in one stored version, overlapping ones included: (passages, total). Never whitespace-tolerant."""
+        from .service import text
+        spelling = text(spelling, '표기')
+        with self.connect() as db:
+            row = db.execute('SELECT text FROM versions WHERE document_id=? AND version=?', (document_id, version)).fetchone()
+        if not row:
+            raise ValueError('버전을 찾을 수 없습니다.')
+        source, found, at = row[0], [], row[0].find(spelling)
+        while at >= 0:
+            found.append(at)
+            at = source.find(spelling, at + 1)
+        return [{'offset': at, 'quote': source[max(0, at - radius):at + len(spelling) + radius]} for at in found[:limit]], len(found)
+
+    def alias_judgements(self, item_id, payload):
+        """Who last judged each judged alias row, from the item's events. Empty and unread when the payload has none."""
+        judged = {row['alias']: row for row in payload['aliases'] if 'judged_name' in row}
+        fields = ('judged_alias', 'judged_entity', 'judged_name')
+        if not judged:
+            return {}
+        result: dict[str, dict] = {}
+        previous: dict[str, dict] = {}
+        with self.connect() as db:
+            for event in db.execute('SELECT revision,actor,reason,payload,created_at FROM events WHERE item_id=? ORDER BY seq', (item_id,)):
+                rows = {row['alias']: row for row in json.loads(event['payload'])['aliases']}
+                for alias, row in rows.items():
+                    if 'judged_name' in row and any(previous.get(alias, {}).get(field) != row[field] for field in fields):
+                        result[alias] = {'actor': event['actor'], 'reason': event['reason'], 'revision': event['revision'], 'created_at': event['created_at']}
+                previous = rows
+        return {alias: result[alias] for alias in judged if alias in result}
+
     def bulk_approve(self, document_id, version, expected_version, expected_generation, items, actor, reason):
         self.validate_reviewer(actor, reason)
         if type(version) is not int or version < 1:
