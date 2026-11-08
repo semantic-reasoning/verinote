@@ -7,9 +7,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 import test_workflow as workflow
+from test_quote_exclusions import OFF_DICTIONARY
 from test_quote_repair import broken
 from test_workflow import (
     DICTIONARY,
+    FACTS,
     SOURCE,
     approved_dictionary,
     change_dictionary_behind_review,
@@ -18,6 +20,7 @@ from test_workflow import (
 
 from verinote.agents import CLI
 from verinote.extraction_scheduler import ChunkScheduler
+from verinote.extraction_timing import read_extraction_timing
 from verinote.extraction_transport import ExtractionSpec
 from verinote.service import Service, prepare_dictionary_prompt
 from verinote.usage import atomic_json
@@ -352,6 +355,61 @@ class ChunkPrefix(Base):
             with self.subTest(number=number), self.prepare_raising_at(number):
                 run, _ = self.parallel(self.document(), ok)
                 self.assertTrue(run['detail'].startswith(f'청크 {number} · prepare-down · 검증 완료 '), run['detail'])
+
+    def repair_call_fails(self, exc, at=2):
+        def respond(index, repairing):
+            if index != at: return extraction_response()
+            if repairing: raise exc
+            return broken()
+        return respond
+
+    def test_repair_call_failure_detail_is_the_same_on_sequential_and_parallel_paths(self):
+        run, _ = self.sequential(self.document(), self.repair_call_fails(RuntimeError('repair-down')))
+        self.assertEqual(run['detail'], f'청크 2 · 관계 1 인용: 인용 보정 실패 (청크당 1회). repair-down · 검증 완료 1/3청크 · 새 호출 3회 · {from_chunk(2)}')
+        for capacity, calls in ((1, 3), (2, 4)):
+            with self.subTest(capacity=capacity):
+                doc = self.document()
+                run, _ = self.parallel(doc, self.repair_call_fails(RuntimeError('repair-down')), capacity=capacity)
+                self.assertEqual(run['detail'], f'청크 2 · 관계 1 인용: 인용 보정 실패 (청크당 1회). repair-down · 검증 완료 1/3청크 · 새 호출 {calls}회 · {from_chunk(2)}')
+                final, called = self.parallel(doc, ok, capacity=capacity)
+                self.assertEqual((final['status'], sorted(called)), ('success', [2, 3]))
+
+    def test_parallel_repair_timeout_keeps_the_worded_detail_and_the_timeout_code(self):
+        run, _ = self.parallel(self.document(), self.repair_call_fails(TimeoutError('late')))
+        self.assertIn('청크 2 · 관계 1 인용: 인용 보정 실패 (청크당 1회). late', run['detail'])
+        report = read_extraction_timing(self.root, self.store, run['id'])
+        self.assertEqual((report['available'], report['error_code']), (True, 'timeout'))
+
+    def test_repair_call_failure_keeps_the_exclusion_numbering_note_on_both_paths(self):
+        def respond(index, repairing):
+            if repairing: raise RuntimeError('repair-down')
+            value = extraction_response()
+            value['facts'] = [OFF_DICTIONARY] + copy.deepcopy(value['facts'])
+            value['facts'][1]['quote'] = '상기 ' + FACTS[0]['quote']
+            return value
+        for label, go in (('sequential', self.sequential), ('parallel', self.parallel)):
+            with self.subTest(label):
+                run, _ = go(self.document(), respond)
+                self.assertIn('repair-down (관계 번호는 사전 불일치 제외 뒤 기준) ·', run['detail'])
+
+    def test_a_later_chunk_failure_recorded_before_a_repair_failure_is_the_one_reported(self):
+        third_failed = threading.Event()
+        fail = ChunkScheduler.fail
+
+        def recorded(scheduler, index, exc):
+            result = fail(scheduler, index, exc)
+            third_failed.set()
+            return result
+
+        def respond(index, repairing):
+            if index == 3: raise ValueError('third-down')
+            if index == 2 and repairing:
+                self.assertTrue(third_failed.wait(5))
+                raise RuntimeError('repair-down')
+            return broken() if index == 2 else extraction_response()
+        with patch.object(ChunkScheduler, 'fail', recorded):
+            run, _ = self.parallel(self.document(), respond)
+        self.assertEqual(run['detail'], f'청크 3 · third-down · 검증 완료 1/3청크 · 새 호출 3회 · {from_chunk(2)}')
 
 
 if __name__ == '__main__':

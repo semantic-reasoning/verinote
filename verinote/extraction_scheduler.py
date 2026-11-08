@@ -110,10 +110,7 @@ class ChunkScheduler:
 
     def repair(self, task, prompt, folder):
         self.admit(task)
-        try:
-            return self.call(task, prompt, folder)
-        except Exception as exc:
-            raise self.fail(task.index, exc) from exc
+        return self.call(task, prompt, folder)  # The consumer words this failure; __exit__ records it unless an earlier failure is already recorded.
 
     def __enter__(self): return self
 
