@@ -409,9 +409,24 @@ class Store:
                 raise ValueError('후보를 찾을 수 없습니다.')
             return self._review_item(db, row, revision, action, actor, reason, payload)
 
+    @staticmethod
+    def refuse_while_run_holds_dictionary(db, document_id, version):
+        """Inside the caller's write transaction: a queued or running run on this document version pins its dictionary, so a change is refused until the run ends."""
+        run = db.execute("SELECT id,stage,agent,model,status FROM runs WHERE document_id=? AND version=? AND status IN ('queued','running')",
+                         (document_id, version)).fetchone()
+        if run:
+            job = '관계 추출' if run['stage'] == 'extract' else '사전 재생성'
+            state = '대기 중' if run['status'] == 'queued' else '처리 중'
+            waits = '대기 중인 실행은 앞서 등록된 다른 문서의 실행이나 질문이 끝나야 시작합니다. ' if run['status'] == 'queued' else ''
+            raise Conflict(f"이 문서 버전의 {job} 실행 {run['id']}({run['agent']} / {run['model'] or '기본 모델'} · {state})이 끝나지 않아 사전을 바꿀 수 없습니다. "
+                           f'지금 바꾸면 호출 비용을 쓴 결과를 저장하지 못합니다. {waits}실행 기록에서 끝난 것을 확인한 뒤 다시 시도하세요. '
+                           '실행이 멈춰 끝나지 않을 때만 서버를 재시작하세요. 재시작하면 대기·처리 중인 모든 실행과 질문이 중단으로 표시됩니다.')
+
     def _review_item(self, db, row, revision, action, actor, reason, payload=None):
         """Shared validation and audit mutation inside the caller's transaction."""
         item_id = row['id']
+        if row['kind'] == 'ontology':
+            self.refuse_while_run_holds_dictionary(db, row['document_id'], row['version'])
         if row['revision'] != revision:
             raise Conflict('후보가 변경되었습니다. 새로고침 후 검토하세요.')
         value = json.loads(row['payload']) if payload is None else payload

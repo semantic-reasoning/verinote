@@ -10,10 +10,12 @@ from urllib.error import HTTPError
 import test_workflow as workflow
 from test_workflow import (
     DICTIONARY,
+    EDITED,
     FACTS,
     PAGE,
     SOURCE,
     approved_dictionary,
+    change_dictionary_behind_review,
     extraction_response,
     legacy_run,
 )
@@ -190,7 +192,7 @@ class OntologyWorkflow(unittest.TestCase):
                 item=approved_dictionary(self.store,self.doc['id'])
                 run=self.start();self.store.run_status(run['id'],'running')
                 if change!='bad_fact':
-                    self.store.review(item['id'],item['revision'],change,'R','change',DICTIONARY if change=='revise' else None)
+                    change_dictionary_behind_review(self.store,item,status='pending',revision=item['revision']+1,payload=EDITED if change=='revise' else None)
                 with self.assertRaises(ValueError):
                     self.store.finish_run(run['id'],PAGE,[FACTS[0] | {'predicate':'calls'}] if change=='bad_fact' else FACTS)
                 self.assertEqual([i['kind'] for i in self.store.document(self.doc['id'])['items']],['ontology'])
@@ -239,10 +241,10 @@ class OntologyWorkflow(unittest.TestCase):
         run=service.start(self.doc['id'],'agy','',expected_version=1,expected_generation=1)
         self.assertTrue(entered.wait(3))
         with self.assertRaises(Conflict):self.start()
-        self.store.review(item['id'],2,'pending','R','withdraw')
+        with self.assertRaises(Conflict):self.store.review(item['id'],2,'pending','R','withdraw')
         release.set();service.pool.shutdown(wait=True)
-        self.assertEqual(self.store.run(run['id'])['status'],'error')
-        self.assertEqual(len(self.store.document(self.doc['id'])['items']),1)
+        self.assertEqual(self.store.run(run['id'])['status'],'success')
+        self.assertEqual(next(i for i in self.store.document(self.doc['id'])['items'] if i['kind']=='ontology')['status'],'approved')
 
     def test_real_orchestration_two_stages_and_fact_limit(self):
         prompts=[]

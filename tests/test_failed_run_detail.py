@@ -8,7 +8,13 @@ from unittest.mock import patch
 
 import test_workflow as workflow
 from test_quote_repair import broken
-from test_workflow import DICTIONARY, SOURCE, approved_dictionary, extraction_response
+from test_workflow import (
+    DICTIONARY,
+    SOURCE,
+    approved_dictionary,
+    change_dictionary_behind_review,
+    extraction_response,
+)
 
 from verinote.agents import CLI
 from verinote.extraction_scheduler import ChunkScheduler
@@ -235,9 +241,7 @@ class RetrySentence(Base):
 
         def reapprove():
             item = next(i for i in self.store.document(doc['id'])['items'] if i['kind'] == 'ontology')
-            self.store.review(item['id'], item['revision'], 'revise', 'R', 'change', DICTIONARY)
-            item = next(i for i in self.store.document(doc['id'])['items'] if i['kind'] == 'ontology')
-            self.store.review(item['id'], item['revision'], 'approved', 'R', 'approve')
+            change_dictionary_behind_review(self.store, item, revision=item['revision'] + 2, payload=DICTIONARY)  # revise then approve
         run, _ = self.sequential(doc, once_at_third(reapprove))
         self.assertEqual(run['status'], 'error')
         self.assertEqual(run['detail'], '추출 중 사전이 변경되거나 승인이 철회되었습니다. 다시 승인 후 추출하세요. · 검증 완료 3/3청크 · 새 호출 3회')
