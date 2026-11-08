@@ -251,17 +251,15 @@ class RetrySentence(Base):
         final, called = self.sequential(doc, ok)
         self.assertEqual((final['status'], called), ('success', [1, 2, 3]))
 
-    def test_document_version_uploaded_during_parallel_run_says_nothing_about_the_retry_and_next_run_calls_all(self):
+    def test_sql_generation_bump_during_parallel_run_says_nothing_about_the_retry_and_next_run_calls_all(self):
         doc = self.document()
 
-        def upload_version():
-            version, generation = self.current(doc)
-            self.store.register('detail', 'detail.md', b'z' * 20, 'z' * 20, document_id=doc['id'], expected_version=version, expected_generation=generation)
-        run, _ = self.parallel(doc, once_at_third(upload_version))
+        def bump_generation():
+            with self.store.connect(True) as db:
+                db.execute('UPDATE documents SET generation=generation+2 WHERE id=?', (doc['id'],))
+        run, _ = self.parallel(doc, once_at_third(bump_generation))
         self.assertEqual(run['status'], 'error')
-        self.assertEqual(run['detail'], '추출 중 문서 버전이 변경되었습니다. 다시 추출하세요. · 검증 완료 3/3청크 · 새 호출 3회')
-        version, generation = self.current(doc)
-        self.store.delete_document(doc['id'], True, version, generation)
+        self.assertEqual(run['detail'], '실행이 요청된 뒤 이 문서의 원문 버전 기록이 바뀌어(문서 세대 1 → 3) 결과를 저장하지 않았습니다. 현재 버전이 실행 버전과 같으므로 같은 버전에서 다시 실행할 수 있습니다. · 검증 완료 3/3청크 · 새 호출 3회')
         final, called = self.parallel(doc, ok)
         self.assertEqual((final['status'], sorted(called)), ('success', [1, 2, 3]))
 

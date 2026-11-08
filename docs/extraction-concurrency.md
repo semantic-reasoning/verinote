@@ -33,6 +33,7 @@ published extractions still cannot be repeated merely by changing concurrency.
 Experimental publication is one transaction after all chunks pass. It checks the current
 document version, experiment generation and approved dictionary revision/hash.
 The default path retains its existing historical-version publication behavior.
+While such a run is queued or running, `Store.register` refuses a new source version of its document in the same write transaction, so the version and generation checks fail only after an out-of-store change.
 Checkpoint completion follows the successful transaction; optional recording
 failure after commit cannot overwrite the committed run status. All new facts
 remain pending human approval.
@@ -72,6 +73,7 @@ Clients cannot set or override it through request JSON.
 Remove the flag and restart to restore the default for subsequent registrations.
 Already registered runs retain their frozen contracts. Opt-in extraction uses the
 experimental publication checks for the current document version and generation.
+While such a run is queued or running, `Store.register` refuses a new source version of its document in the same write transaction, so the version and generation checks fail only after an out-of-store change.
 Local activation does not establish measured performance or general adoption;
 the separate frozen experiment and real-call approval requirements still apply.
 
