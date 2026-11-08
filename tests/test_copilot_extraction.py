@@ -38,7 +38,17 @@ run_id = folder.parent.parent.name if is_repair else folder.parent.name
 record = root/run_id
 record.mkdir(exist_ok=True)
 key = str(index) + ('-repair' if is_repair else '-initial')
-(record/(key+'.start')).write_text(json.dumps({'at': time.monotonic_ns(), 'argv': sys.argv, 'binary': __file__}))
+started = record/(key+'.start')
+writing = record/(key+'.tmp')
+writing.write_text(json.dumps({'at': time.monotonic_ns(), 'argv': sys.argv, 'binary': __file__}))
+writing.replace(started)
+if not is_repair:
+    for pair in config.get('barriers', []):
+        if index in pair:
+            deadline = time.monotonic()+12
+            while not all((record/(str(i)+'-initial.start')).exists() for i in pair):
+                if time.monotonic()>deadline: sys.exit(13)
+                time.sleep(.005)
 if not is_repair and index in config.get('gates', []):
     deadline = time.monotonic()+12
     while not (root/('release-'+str(index))).exists():
@@ -135,7 +145,7 @@ class CopilotIntegration(unittest.TestCase):
         self.assertEqual(len(self.started(run)), 3)
 
     def test_overlap_reverse_completion_contiguous_prefix_and_one_publication(self):
-        self.setup_cli(gates=[1, 3]); doc = self.document()
+        self.setup_cli(gates=[1, 3], barriers=[[1, 2], [3, 4]]); doc = self.document()
         with patch.object(self.store, 'finish_run', wraps=self.store.finish_run) as publish:
             run = self.start(doc, extraction_concurrency=2)
             self.wait(lambda: self.marker(run, 2, 'end').exists())
@@ -272,6 +282,7 @@ class CopilotIntegration(unittest.TestCase):
     def test_owner_close_blocks_new_calls_and_drains_active_views(self):
         self.setup_cli(gates=[1]); run = self.start(self.document(2), extraction_concurrency=2)
         self.wait(lambda: self.marker(run, 1).exists())
+        self.wait(lambda: self.marker(run, 2).exists())
         owner = self.service.extraction_owner; view = owner.view()
         with ThreadPoolExecutor() as pool:
             closing = pool.submit(owner.close)
