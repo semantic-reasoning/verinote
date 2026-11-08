@@ -199,12 +199,19 @@ function renderProgress(percent, label, detail='', failed=false) {
   const stopped=failed&&value===null;
   return `<section class="job-progress ${failed?'failed':''}" role="status"><strong>${esc(label)}</strong>${stopped?'':`<progress max="100" ${value===null?'':`value="${value}"`} aria-label="${esc(label)}">${value===null?'처리 중':value+'%'}</progress>`}<p>${stopped?'처리 중단':value===null?'진행률 확인 중':value+'%'}${detail?' · '+esc(detail):''}</p></section>`;
 }
+function renderQueueAhead(run) {
+  if(run.status!=='queued'||!run.queue)return '';
+  const ahead=run.queue.ahead,kind={ontology:'사전 생성',extract:'관계 추출',legacy:'기존 추출'};
+  const item=entry=>entry.kind==='question'?`질문 ${entry.id} 「${entry.question}」 · ${labels[entry.status]||entry.status}`:`${kind[entry.stage]||entry.stage} 실행 ${entry.id} · 문서 「${entry.title}」 · ${labels[entry.status]||entry.status}`;
+  const text=ahead.length?`앞선 작업 ${ahead.length}개가 끝나야 시작합니다: ${ahead.slice(0,5).map(item).join('; ')}${ahead.length>5?` 외 ${ahead.length-5}개`:''}`:'앞선 작업 없음';
+  return `<p class="muted">${esc(text)}</p>`;
+}
 function renderAnalysisProgress(run) {
   const p=run.progress||{},stage=run.stage==='ontology'?'사전 생성':'위키·관계 추출';
   const phase={queued:'대기 중',running:'분석 중',saving:'검증 완료 · 저장 중',success:'저장 완료',error:'실패',interrupted:'중단',cancelling:'취소 중 · 허용한 호출이 끝나면 멈춤',cancelled:'취소됨',unknown:'진행 정보 없음'}[p.phase]||labels[run.status]||'진행 정보 없음';
   const counts=p.known?`검증 ${p.completed_chars.toLocaleString()}/${p.total_chars.toLocaleString()}자 · 구간 ${p.completed_chunks}/${p.total_chunks}${p.resumed_chars?' · 재사용 '+p.resumed_chars.toLocaleString()+'자':''}`:'검증 진행 기록을 확인할 수 없습니다.';
   const cancel=['queued','running'].includes(run.status)?`<button class="danger" data-cancel-run="${esc(run.id)}" data-cancel-status="${esc(run.status)}" data-cancel-stage="${esc(run.stage)}">실행 취소</button>`:'';
-  return renderProgress(p.percent,`${stage} · ${phase}`,counts+ (run.detail?' · '+run.detail:''),['error','interrupted','cancelled'].includes(run.status))+cancel;
+  return renderProgress(p.percent,`${stage} · ${phase}`,counts+ (run.detail?' · '+run.detail:''),['error','interrupted','cancelled'].includes(run.status))+renderQueueAhead(run)+cancel;
 }
 function watchRun(id, docId, version, initialStatus) {
   if(runWatchers.has(id))return;
