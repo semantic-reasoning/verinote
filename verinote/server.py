@@ -51,9 +51,12 @@ WEB = Path(__file__).with_name('web')
 class Server(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, store, service, *, credentials=None, claude_extraction_policy=None):
+    def __init__(self, address, store, service, *, credentials=None, claude_extraction_policy=None, copilot_extraction_concurrency=None):
         if claude_extraction_policy not in (None, CHUNK_THRESHOLD_POLICY):
             raise ValueError('지원하지 않는 서버 추출 정책')
+        if copilot_extraction_concurrency is not None and (type(copilot_extraction_concurrency) is not int or copilot_extraction_concurrency != 2):
+            raise ValueError('Copilot 서버 추출 동시성은 2만 지원합니다.')
+        self.copilot_extraction_concurrency = copilot_extraction_concurrency
         self.claude_extraction_policy = claude_extraction_policy
         self.store, self.service = store, service
         self.model_catalog = ModelCatalog()
@@ -148,6 +151,7 @@ class Handler(BaseHTTPRequestHandler):
                     default_tokens = self.server.service.cli.execution_options('openrouter').max_tokens if isinstance(self.server.service.cli, CLI) else ExecutionOptions().max_tokens
                     return self.send(store.settings() | {'dictionary': {'relation_type_warning_threshold': self.server.service.relation_type_warning_threshold, 'context_bytes': store.settings().get('dictionary_context_bytes', MAX_DICTIONARY_CONTEXT_BYTES), 'context_min': 1, 'context_max': MAX_PROMPT_BYTES}, 'document_limits': DOCUMENT_LIMITS, 'providers': providers,
                                      'extraction_policy': {'policy': self.server.claude_extraction_policy, 'agent': 'claude', 'stage': 'extract', 'source': 'server_startup'},
+                                     'copilot_extraction': {'enabled': self.server.copilot_extraction_concurrency is not None, 'concurrency': self.server.copilot_extraction_concurrency or 1, 'agent': 'copilot', 'stage': 'extract', 'source': 'server_startup'},
                                      'extraction_token_limits': {'min': MIN_JOB_TOKENS, 'max': MAX_JOB_TOKENS, 'step': 1, 'default': default_tokens},
                                      'answer_budget_policy': {'min_total': MIN_ANSWER_TOKENS + 1024,
                                                               'default_reserve': DEFAULT_ANSWER_TOKENS,
@@ -226,6 +230,8 @@ class Handler(BaseHTTPRequestHandler):
                     override = {key: data[key] for key in ('max_tokens', 'answer_reserve_tokens', 'regenerate') if key in data}
                     if data.get('agent') == 'claude' and parts[3] == 'extract' and self.server.claude_extraction_policy is not None:
                         override['extraction_policy'] = self.server.claude_extraction_policy
+                    if data.get('agent') == 'copilot' and parts[3] == 'extract' and self.server.copilot_extraction_concurrency is not None:
+                        override['extraction_concurrency'] = self.server.copilot_extraction_concurrency
                     return self.send(self.server.service.start(doc_id, data.get('agent'), data.get('model', ''), parts[3], data.get('expected_version'), data.get('expected_generation'), **override), 202)
             if len(parts) == 4 and parts[:2] == ['api', 'items']:
                 if parts[3] == 'review' and method == 'POST':
@@ -273,6 +279,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description='Verinote — versioned evidence wiki')
     parser.add_argument('--port', type=int, default=8765)
     parser.add_argument('--claude-extraction-policy', choices=[CHUNK_THRESHOLD_POLICY], help='Claude 웹 추출에 적용할 명시적 실험 정책 (기본 비활성)')
+    parser.add_argument('--copilot-extraction-concurrency', type=int, choices=[2], help='Copilot 승인 사전 추출 동시 2 옵트인 (기본 순차). 공유 상태·인증 갱신 충돌, 실제 동시성·요율·동시 과금·auto 라우팅은 미확인. --no-auto-update는 버전 고정이 아니며 대기 호출 비용이 추가될 수 있음; 자동 재시도/백오프 없음')
     parser.add_argument('--data-dir', type=Path, default=Path('data'))
     parser.add_argument('--config', type=Path, help='서버 전용 TOML 설정 파일 경로')
     parser.add_argument('--init-config', action='store_true', help='빈 비밀 설정 파일을 안전하게 생성하고 종료')
@@ -291,9 +298,10 @@ def main(argv=None):
     service = Service(store, root, credentials=credentials, relation_type_warning_threshold=credentials.relation_type_warning_threshold)
     server = None
     try:
-        server = Server(('127.0.0.1', args.port), store, service, credentials=credentials, claude_extraction_policy=args.claude_extraction_policy)
+        server = Server(('127.0.0.1', args.port), store, service, credentials=credentials, claude_extraction_policy=args.claude_extraction_policy, copilot_extraction_concurrency=args.copilot_extraction_concurrency)
         print(f'Verinote: http://127.0.0.1:{server.server_port}', flush=True)
         print(f'Extraction policy: {args.claude_extraction_policy or "disabled"} (agent=claude, stage=extract, source=server_startup)', flush=True)
+        print(f'Copilot extraction concurrency: {args.copilot_extraction_concurrency or "disabled (sequential 1)"} (agent=copilot, stage=extract, source=server_startup)', flush=True)
         server.serve_forever()
     except KeyboardInterrupt:
         pass

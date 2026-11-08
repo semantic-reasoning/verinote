@@ -2,8 +2,9 @@
 
 The default extraction path remains sequential. `Service.start(...,
 extraction_concurrency=1|2)` opts a Claude extraction run into the same bounded
-scheduler with one or two independent workers. Dictionary generation, other
-providers and the global document queue are unchanged. The HTTP API does not
+scheduler with one or two independent workers. Copilot has a separate explicit
+concurrency-2 opt-in described below. Dictionary generation, other providers and
+the global document queue are unchanged. The HTTP API does not
 expose this experimental option.
 
 The coordinator alone validates responses in source order, performs at most one
@@ -108,3 +109,73 @@ those extractions again. A pre-upgrade SQLite backup can restore the prior schem
 and data, but discards all work written since the backup; never restore over a
 running service. Tests exercise rollback of interrupted DDL, repeated upgrades,
 old/new row compatibility and backup restore in disposable databases only.
+
+
+## Copilot explicit concurrency 2
+
+`Service.start(document_id, 'copilot', model, extraction_concurrency=2)` enables
+at most two admitted initial chunks for that document. `None` preserves the
+existing sequential Copilot argv, call count and ordering. Capacity 1, a threshold
+policy, and dictionary generation are not accepted for this opt-in. Other
+providers and the single global document executor remain unchanged.
+
+For local web extraction, start with:
+
+```sh
+python -m verinote --data-dir data --port 8765 --copilot-extraction-concurrency 2
+```
+
+The default is disabled (sequential 1). The separate startup log and read-only
+`GET /api/settings` field `copilot_extraction` report enabled state, effective
+concurrency, `agent=copilot`, `stage=extract` and `source=server_startup`. Only
+Copilot `/extract` registrations inherit it. HTTP request bodies and settings PUT
+cannot enable or override it. The existing Claude flag and `extraction_policy`
+settings object retain their meaning. Remove this flag and restart to return
+future registrations to sequential operation; already registered runs retain
+their frozen contract.
+
+Schema 3 records the Copilot agent, absolute executable path, model, capacity 2,
+timeout policy, output limit, copied Copilot rates, `no_auto_update=true` and
+transactionally assigned document generation. The model may be empty or `auto`,
+as in ordinary Copilot calls; the chosen route remains unknown until reported.
+Every initial and quote-repair call uses the captured path and
+`--no-auto-update`, even if PATH or the original CLI configuration later changes.
+Each call starts a separate process with its own work/output/usage directory.
+There is no Claude persistent worker, `/clear` or Copilot HOME isolation.
+A pinned path is not a pinned binary version: the file at that path can change,
+and `--no-auto-update` may select a different installed version from the default
+sequential invocation. No version subprocess runs during registration.
+
+The existing bounded scheduler validates and saves only a contiguous prefix,
+then publishes once after all chunks pass. Later completed outputs waiting for
+an earlier chunk remain in memory, so failure/restart can require paying for
+them again. After a recorded failure no new initial or repair call is admitted;
+already admitted calls are awaited within their deadlines and their observed
+usage remains included. A generic nonzero exit is reported as such, without
+claiming it was a rate limit. There is no automatic retry or backoff.
+
+Copilot reports GitHub AI credits. Aggregation uses `reported_credits` grouped by
+`credit_unit`; `reported_usd` remains null. Optional configured USD estimates are
+separate. Missing provider usage or unreadable/missing usage records are
+incomplete, never known zero. Failed or unaccepted calls may still incur costs.
+
+These items remain **unverified**: actual Copilot concurrent-process behavior,
+shared `$HOME/.copilot`/`COPILOT_HOME` state and credential-refresh collisions,
+provider concurrency/rate limits, simultaneous billing behavior, `auto` routing,
+and comparative latency/credits. Two processes can cost more after failure.
+Local stub tests demonstrate orchestration, immutable configuration and usage
+accounting only; they do not establish real-provider performance. Real-model
+measurement requires separate approval specifying model, call count, duration
+and credits budget. Existing Claude USD/modelUsage A/B judgments cannot assess
+Copilot credits and are not reused as evidence.
+
+Schema 1 and 2 remain byte-compatible Claude contracts and retain existing
+checkpoint reuse. Schema 3 uses the same nullable JSON column; no migration or
+backfill is performed and existing records are not rewritten. Its entire
+contract participates in checkpoint identity: a different pinned binary or
+other contract change restarts from chunk one. Old code without schema-3 support
+cannot read schema-3 runs; merely removing the startup flag does not make those
+records readable by old code. For a code downgrade, stop/drain the service and
+restore a pre-feature SQLite backup in an isolated/stopped environment, accepting
+loss of subsequent work, or retain a reader supporting schema 3. Disabling the
+flag while keeping this version is the non-destructive configuration rollback.

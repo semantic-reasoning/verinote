@@ -138,6 +138,7 @@ class CLI:
         from .claude_worker import ExtractionPool, Manager
         self._claude: Manager | ExtractionPool | None = Manager() if persistent else None
         self._pinned_claude_binary: str | None = None
+        self._pinned_copilot_binary: str | None = None
 
     def close(self):
         """Close the shared worker, including workers used by limited_timeout copies."""
@@ -364,6 +365,8 @@ class CLI:
         usage_path = folder / 'provider-usage.json'
         if agent == 'copilot':
             args[1:1] = ['--usage-output-file', str(usage_path.resolve())]
+            if self._pinned_copilot_binary is not None:
+                args[1:1] = ['--no-auto-update']
         usage = empty_usage(agent, model, self.rates().get(agent))
         usage['cli_call_id'] = timing.call_id
         timeout = self.effective_timeout(agent, phase)
@@ -394,7 +397,7 @@ class CLI:
         captured = False
         timing_error = 'executable_missing'
         try:
-            args[0] = executable(agent)
+            args[0] = self._pinned_copilot_binary if agent == 'copilot' and self._pinned_copilot_binary is not None else executable(agent)
             if not args[0]:
                 raise ValueError(f'{PROVIDERS[agent]} CLI가 설치되지 않았습니다.')
             timing_error = 'preparation'

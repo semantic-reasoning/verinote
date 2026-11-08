@@ -16,6 +16,8 @@ def threshold_concurrency(count):
 
 
 def extraction_options(value, *, registered=True, agent='claude', stage='extract', model=None):
+    if isinstance(value, dict) and type(value.get('schema_version')) is int and value['schema_version'] == 3:
+        return copilot_options(value, registered=registered, agent=agent, stage=stage, model=model)
     if not isinstance(value, dict) or type(value.get('schema_version')) is not int or value['schema_version'] not in (1, 2):
         raise ValueError('추출 실험 실행 계약 오류')
     policy = value['schema_version'] == 2
@@ -59,9 +61,36 @@ def bind_extraction_options(value, source, generation):
         spec = replace(ExtractionSpec.from_dict(result['transport']), capacity=concurrency)
         result.update(original_chunk_count=count, concurrency=concurrency, transport=spec.to_dict())
     result['document_generation'] = generation
-    return extraction_options(result)
+    return extraction_options(result, agent=result.get('agent', 'claude'))
 
 
 def validate_extraction_source(value, source):
     if value['schema_version'] == 2 and value['original_chunk_count'] != sum(1 for _ in chunks(source)):
         raise ValueError('등록된 원문 청크 수 불일치')
+
+
+def extraction_spec(options):
+    if options['schema_version'] == 3:
+        from .copilot_extraction import CopilotExtractionSpec
+        return CopilotExtractionSpec.from_dict(options['transport'])
+    return ExtractionSpec.from_dict(options['transport'])
+
+
+def copilot_options(value, *, registered, agent, stage, model):
+    keys = {'schema_version', 'agent', 'concurrency', 'transport'}
+    if registered: keys.add('document_generation')
+    if (set(value) != keys or value['agent'] != 'copilot' or agent != 'copilot' or stage != 'extract'
+            or type(value['concurrency']) is not int or value['concurrency'] != 2
+            or (registered and (type(value['document_generation']) is not int or value['document_generation'] < 1))):
+        raise ValueError('Copilot 추출 실행 계약 오류')
+    if len(json.dumps(value, ensure_ascii=False, allow_nan=False).encode()) > MAX_OPTIONS_BYTES:
+        raise ValueError('추출 실험 실행 계약 크기 제한')
+    spec = extraction_spec(value)
+    if spec.capacity != value['concurrency'] or (model is not None and spec.model != model):
+        raise ValueError('추출 실험 모델·동시성 계약 불일치')
+    return copy.deepcopy(value) | {'transport': spec.to_dict()}
+
+
+def copilot_request(spec):
+    return extraction_options({'schema_version': 3, 'agent': 'copilot', 'concurrency': spec.capacity,
+                               'transport': spec.to_dict()}, registered=False, agent='copilot', model=spec.model)

@@ -19,6 +19,11 @@ python -m verinote
 
 브라우저에서 <http://localhost:8765>를 엽니다. 데이터 위치와 포트를 바꾸려면 `python -m verinote --data-dir /path/to/storage --port 8766`을 사용합니다. `verinote` 명령도 동일합니다. 프로그램은 `127.0.0.1`에만 바인딩됩니다.
 
+Copilot 승인 사전 추출에만 청크 최대 2개 동시 호출을 명시적으로 적용하려면
+`python -m verinote --copilot-extraction-concurrency 2`로 시작합니다. 기본은 순차 실행입니다.
+공유 상태·인증 갱신 충돌, 실제 동시 호출·요율·과금·`auto` 라우팅은 미확인이며,
+실패 시 이미 시작한 호출의 비용이 더해질 수 있습니다. [계약·사용량·미확인 항목과 되돌리기](docs/extraction-concurrency.md#copilot-explicit-concurrency-2)를 확인하세요.
+
 ### 서버 전용 비밀 설정 파일
 
 서버 자격 증명은 SQLite의 에이전트·모델·단가 설정과 별도로 TOML 파일에 보관합니다. 설정 화면에서 로컬 CLI 5종 또는 **OpenRouter (API)**를 선택해 사전·추출·인용 보정·질문을 실행합니다. API에는 실행 파일 설치가 필요하지 않습니다. 기본 위치는 다음과 같습니다. macOS에서 두 위치 모두 파일이 없으면 `--init-config`는 `~/Library/Application Support/verinote/config.toml`을 생성합니다. 우선 경로에 파일이 있으면 빈 키·형식·권한 오류가 있어도 다른 파일로 대체하지 않습니다.
