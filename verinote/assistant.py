@@ -5,6 +5,7 @@ from pathlib import PurePath
 
 from . import engine, question_synthesis
 from .call_validation import caller_validation
+from .ontology import NOT_GUIDANCE
 from .question_context import PROTOCOL, project
 from .question_fragments import MAX_PARTITION_UNITS
 from .question_meanings import context as meaning_context
@@ -181,7 +182,7 @@ class Assistant:
                 for section in ('entities', 'aliases', 'relations'):
                     for entry in ontology['payload'][section]:
                         # Quotes are not a second raw-document search surface.
-                        guidance = {n: v for n, v in entry.items() if n != 'quote'}
+                        guidance = {n: v for n, v in entry.items() if n not in NOT_GUIDANCE}
                         if fields or matches_text(canonical(guidance)):
                             matches.append({'kind': 'ontology', 'ontology_id': ontology['id'], 'revision': ontology['revision'], 'document_id': k, 'version': ontology['version'], 'section': section, 'guidance': guidance})
         matches.sort(key=lambda m: (m['kind'] != 'wiki', m['document_id'], m.get('page_id', ''), m.get('ontology_id', ''), m.get('section', ''), canonical(m.get('guidance', {}))))

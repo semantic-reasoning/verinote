@@ -201,7 +201,13 @@ class Handler(BaseHTTPRequestHandler):
                                 item['run_id'], document_id=doc_id, version=doc['version'])
                             item['dictionary_reconciliations'] = self.server.service.dictionary_reconciliations(
                                 item['run_id'], document_id=doc_id, version=doc['version'])
+                            item['alias_judgements'] = store.alias_judgements(item['id'], item['payload'])
                     return self.send(doc)
+                if len(parts) == 4 and parts[3] == 'passages' and method == 'GET':
+                    if version is None or 'text' not in params:
+                        raise ValueError('version과 text가 필요합니다.')
+                    passages, total = store.spelling_passages(doc_id, version, params['text'][0])
+                    return self.send({'passages': passages, 'total': total})
                 if len(parts) == 4 and parts[3] == 'raw' and method == 'GET':
                     raw, _ = store.raw(doc_id, version or store.document(doc_id)['version'])
                     return self.send(raw, mime='application/octet-stream', headers={'Content-Disposition': 'attachment; filename="original"'})
@@ -231,6 +237,13 @@ class Handler(BaseHTTPRequestHandler):
                 if parts[3] == 'review' and method == 'POST':
                     d = self.body(MAX_DICTIONARY_JSON_BYTES)
                     return self.send(store.review(parts[2], d.get('revision'), d.get('action'), d.get('actor'), d.get('reason'), d.get('payload')))
+                if parts[3] == 'dictionary-terms' and method == 'POST':
+                    d = self.body()
+                    if set(d) - {'revision', 'expected_version', 'expected_generation', 'kind', 'spelling', 'quote', 'actor', 'reason', 'entity', 'name', 'entity_type'}:
+                        raise ValueError('알 수 없는 사전 추가 필드')
+                    return self.send(store.add_dictionary_term(parts[2], d.get('revision'), d.get('expected_version'), d.get('expected_generation'), d.get('kind'),
+                                                               d.get('spelling'), d.get('quote'), d.get('actor'), d.get('reason'),
+                                                               entity=d.get('entity'), name=d.get('name'), entity_type=d.get('entity_type')))
                 if parts[3] == 'history' and method == 'GET':
                     return self.send(store.history(parts[2]))
             if route.path == '/api/cleanup':

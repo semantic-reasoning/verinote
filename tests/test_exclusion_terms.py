@@ -154,6 +154,14 @@ class Report(unittest.TestCase):
         path.write_text(json.dumps(stored))
         self.assertFalse(read_report(self.root, self.store, run['id'])['available'])
 
+    def test_status_and_run_id_are_reported_for_the_add_control(self):
+        doc, run, _ = self.run_with(self.facts())
+        report = read_report(self.root, self.store, run['id'])
+        self.assertEqual((report['current_dictionary_status'], report['run_id']), ('approved', run['id']))
+        item = next(i for i in self.store.document(doc['id'])['items'] if i['kind'] == 'ontology')
+        self.store.review(item['id'], item['revision'], 'rejected', 'R', '반려')
+        self.assertEqual(read_report(self.root, self.store, run['id'])['current_dictionary_status'], 'rejected')
+
     def test_revision_and_version_are_reported_as_they_change(self):
         doc, run, _ = self.run_with(self.facts())
         report = read_report(self.root, self.store, run['id'])
