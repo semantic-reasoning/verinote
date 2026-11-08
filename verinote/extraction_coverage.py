@@ -301,6 +301,50 @@ def exclude_off_dictionary_facts(value, dictionary):
     return result, excluded
 
 
+def dictionary_index(dictionary):
+    """The lookups both readings use, built once per report read."""
+    return {'entities': {row['id']: row for row in dictionary['entities']},
+            'aliases': {row['alias']: row['entity'] for row in dictionary['aliases']},
+            'relations': {row['id']: row for row in dictionary['relations']}}
+
+
+def _allowed_types(index, predicate, field):
+    allowed = index['relations'][predicate][field + '_types']
+    if not isinstance(allowed, list) or any(not isinstance(t, str) for t in allowed):
+        raise ValueError('allowed types must be a list of strings')
+    return allowed
+
+
+def exclusion_allowed(rows, dictionary, index=None):
+    """The allowed types of each predicate the excluded rows use, sent once per chunk instead of inside every reading."""
+    index = index or dictionary_index(dictionary)
+    return {row['predicate']: {field: _allowed_types(index, row['predicate'], field) for field in ('subject', 'object')}
+            for row in rows if row['code'] != 'unverifiable_quote'}
+
+
+def exclusion_terms(rows, dictionary, index=None):
+    """One reading per excluded fact against the dictionary that excluded it, None for a quote exclusion.
+
+    `dictionary_terms` stops at its first failure. This reads both fields, so a row excluded for one unknown spelling still
+    shows a type the other field would fail on. Spellings match exactly; only surrounding whitespace is removed, as there.
+    `name_of` lists the first 5 entity IDs whose name equals an unknown spelling exactly and `name_of_total` counts all of them;
+    it only reports, nothing is connected by it.
+    """
+    index = index or dictionary_index(dictionary)
+    entities, aliases = index['entities'], index['aliases']
+
+    def term(row, field):
+        spelling = row[field].strip()
+        entity = aliases.get(spelling, spelling)
+        known = entity in entities
+        allowed = _allowed_types(index, row['predicate'], field)
+        named = [i for i, e in entities.items() if e.get('name') == spelling] if not known else []
+        return {'field': field, 'spelling': spelling, 'known': known, 'entity': entity if known else None,
+                'type': entities[entity]['type'] if known else None, 'name_of': named[:5], 'name_of_total': len(named),
+                'type_fits': entities[entity]['type'] in allowed if known else None}
+    return [None if row['code'] == 'unverifiable_quote' else [term(row, 'subject'), term(row, 'object')] for row in rows]
+
+
 def _row_count_detail(rows, predicates):
     """Variable content is counts and approved IDs, never a model-written string; says the response was not kept as a candidate."""
     tail = ' 이 응답은 후보로 저장하지 않았습니다. 다시 추출하면 재사용할 복구 기록이 없는 청크를 새 모델 호출(비용이 들 수 있음)로 요청하며 같은 결과가 나올 수 있습니다.'
@@ -504,6 +548,7 @@ def read_report(root, store, run_id):
         if len(report['chunks']) > total_chunks:
             return unavailable
         claims, emitted, predicates, gaps, capped, mismatched, unverifiable, refused_claims, refused_gaps = 0, 0, set(), 0, False, 0, 0, 0, 0
+        spellings, index = 0, None
         for i, chunk in enumerate(report['chunks']):
             if (not isinstance(chunk, dict) or set(chunk) - {'excluded_facts', 'excluded_claims'} != {'offset', 'length', 'claim_count', 'fact_predicates', 'coverage', 'dictionary_gaps'}
                     or not integer(chunk['offset'], 0, 127999) or chunk['offset'] != i * 8000
@@ -520,6 +565,11 @@ def read_report(root, store, run_id):
             refused = len(chunk.get('excluded_facts', []))
             emitted += len(chunk['fact_predicates']) + refused
             located = sum(row['code'] == 'unverifiable_quote' for row in chunk.get('excluded_facts', []))
+            spellings += sum(row['code'] == 'unknown_entity' for row in chunk.get('excluded_facts', []))
+            if chunk.get('excluded_facts'):
+                index = index or dictionary_index(run['ontology']['payload'])
+                chunk['excluded_fact_terms'] = exclusion_terms(chunk['excluded_facts'], None, index)
+                chunk['excluded_fact_allowed'] = exclusion_allowed(chunk['excluded_facts'], None, index)
             unverifiable += located
             mismatched += refused - located
             refused_claims += len(chunk.get('excluded_claims', []))
@@ -530,9 +580,19 @@ def read_report(root, store, run_id):
         if saved > emitted or (run['status'] == 'success' and (len(report['chunks']) != total_chunks
                 or len(pages) != 1 or len(json.loads(pages[0][0])['claims']) != claims)):
             return unavailable
+        # After validation, so a pin that fails it stays unavailable instead of failing the read.
+        if not isinstance(run['ontology']['id'], str):
+            return unavailable
+        with store.connect() as db:
+            current_version = db.execute('SELECT current_version FROM documents WHERE id=?', (run['document_id'],)).fetchone()
+            dictionary_item = db.execute('SELECT revision FROM items WHERE id=?', (run['ontology']['id'],)).fetchone()
         return {'available': True, 'status': run['status'], 'published': run['status'] == 'success',
                 'total_chunks': total_chunks, 'validated_chunks': len(report['chunks']),
                 'emitted_fact_count': emitted, 'excluded_fact_count': mismatched, 'unverifiable_fact_count': unverifiable,
+                'excluded_spelling_count': spellings, 'excluded_type_count': mismatched - spellings,
+                'dictionary_revision': run['ontology']['revision'],
+                'current_dictionary_revision': dictionary_item[0] if dictionary_item else None,
+                'version_current': bool(current_version) and current_version[0] == run['version'],
                 'claim_count': claims, 'excluded_claim_count': refused_claims, 'excluded_gap_count': refused_gaps,
                 'saved_fact_count': saved if run['status'] == 'success' else 0,
                 'extracted_predicates': len(predicates), 'approved_predicates': len(run['ontology']['payload']['relations']),
