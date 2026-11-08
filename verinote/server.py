@@ -26,6 +26,7 @@ from .ontology import (
     MAX_DICTIONARY_BYTES,
     MAX_DICTIONARY_CONTEXT_BYTES,
     MAX_PROMPT_BYTES,
+    lookup_spelling_problems,
 )
 from .service import Service, text
 from .store import Conflict, Store
@@ -208,6 +209,7 @@ class Handler(BaseHTTPRequestHandler):
                             item['alias_judgements'] = store.alias_judgements(item['id'], item['payload'])
                             from .dictionary_context import read_admission
                             item['extraction_admission'] = read_admission(self.server.service.root, item)
+                            item['lookup_spelling_problems'] = lookup_spelling_problems(item['payload'])
                     return self.send(doc)
                 if len(parts) == 4 and parts[3] == 'passages' and method == 'GET':
                     if version is None or 'text' not in params:

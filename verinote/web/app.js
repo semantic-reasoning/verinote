@@ -184,9 +184,14 @@ async function openDoc(id, version) {
     });
   }
 }
+function renderLookupSpellingProblems(problems) {
+  if(!problems?.length)return '';
+  const reason={prefix:'entity: 또는 relation:으로 시작하면 조회가 개체·관계 참조로 해석하므로, 이 표기로는 이 개체를 찾지 못합니다.',control:'새 개체 ID에는 줄바꿈이나 탭을 쓸 수 없습니다.'};
+  return `<section class="panel"><strong>새로 넣을 수 없는 개체 ID·별칭 ${problems.length}개</strong><ul>${problems.map(p=>`<li>${esc(p.kind)}[${p.index}] ${esc(JSON.stringify(p.spelling))}: ${esc(reason[p.reason])}</li>`).join('')}</ul><p>이미 저장된 행이므로 이 행 때문에 승인이나 다른 내용 수정이 거부되지는 않습니다. 내용 수정으로 이 행을 지우거나 표기를 바꾸면 같은 표기를 내용 수정으로 다시 넣을 수 없습니다.</p></section>`;
+}
 function renderItem(item) {
   const p=item.payload;
-  const body=item.kind==='ontology'?renderRelationTypeWarnings(item.relation_type_warnings)+renderDictionaryReconciliations(item.dictionary_reconciliations)+renderDictionaryExclusions(item.dictionary_exclusions)+renderExtractionAdmission(item.extraction_admission)+renderDictionary(p,item.alias_judgements):item.kind==='page'?`<h3>${esc(p.title)}</h3>${p.claims.map((c,i)=>`<h3>#${i+1} · ${esc(c.heading)}</h3><p>${esc(c.text)}</p><details><summary>원문 근거</summary><blockquote class="quote">${esc(c.quote)}</blockquote></details>`).join('')}`:`<h3 class="query-row">${esc(p.subject)} → <small>${esc(p.predicate)}</small> → ${esc(p.object)}</h3><blockquote class="quote">${esc(p.quote)}</blockquote>`;
+  const body=item.kind==='ontology'?renderRelationTypeWarnings(item.relation_type_warnings)+renderDictionaryReconciliations(item.dictionary_reconciliations)+renderDictionaryExclusions(item.dictionary_exclusions)+renderExtractionAdmission(item.extraction_admission)+renderLookupSpellingProblems(item.lookup_spelling_problems)+renderDictionary(p,item.alias_judgements):item.kind==='page'?`<h3>${esc(p.title)}</h3>${p.claims.map((c,i)=>`<h3>#${i+1} · ${esc(c.heading)}</h3><p>${esc(c.text)}</p><details><summary>원문 근거</summary><blockquote class="quote">${esc(c.quote)}</blockquote></details>`).join('')}`:`<h3 class="query-row">${esc(p.subject)} → <small>${esc(p.predicate)}</small> → ${esc(p.object)}</h3><blockquote class="quote">${esc(p.quote)}</blockquote>`;
   return `<article class="item">${item.status==='pending'&&['page','fact'].includes(item.kind)?`<label class="bulk-choice"><input type="checkbox" data-bulk-item="${esc(item.id)}" aria-label="${esc(bulkItemLabel(item))} 일괄 승인에 포함">일괄 승인에 포함</label>`:''}${badge(item.status)} <span class="muted">${{ontology:'사전 초안',page:'위키 초안',fact:'관계 사실'}[item.kind]} · r${item.revision}</span><p class="mono">실행 ${esc(item.run_id)}</p>${item.dictionary?`<p class="muted">추출 기준 사전 r${item.dictionary.revision} · ${esc(item.dictionary.sha256.slice(0,12))}</p>`:''}${body}<div class="actions">${['approved','held','rejected','pending',...(['fact','ontology'].includes(item.kind)?['revise']:[])].filter(a=>a!==item.status).map(a=>`<button data-review="${item.id}" data-action="${a}">${a==='revise'?'내용 수정':a==='pending'?'승인 철회 / 재검토':labels[a]}</button>`).join('')}<button data-history="${item.id}">이력</button></div><div id="history-${item.id}"></div></article>`;
 }
 function renderProgress(percent, label, detail='', failed=false) {
@@ -362,6 +367,7 @@ function openReview(id,action) {
   const judgedCount=item.kind==='ontology'&&action==='approved'?item.payload.aliases.filter(a=>['judged_alias','judged_entity','judged_name'].some(k=>k in a)).length:0;
   $('#review-judged-note').textContent=judgedCount?`이 사전에는 검토자 판단으로 기록된 별칭이 ${judgedCount}개 있습니다. 승인하기 전에 각 별칭의 원문 근거와 판단 기록을 확인하세요.`:'';$('#review-judged-note').hidden=!judgedCount;
   const runNote=item.kind==='ontology'&&['queued','running'].includes(selectedDoc.latest_run?.status)?'이 문서 버전의 실행이 대기·처리 중으로 표시되어 있습니다. 끝나기 전에 저장하면 거부됩니다.':'';$('#review-run-note').textContent=runNote;$('#review-run-note').hidden=!runNote;
+  const lookupNote=item.kind==='ontology'?renderLookupSpellingProblems(item.lookup_spelling_problems):'';$('#review-lookup-note').innerHTML=lookupNote;$('#review-lookup-note').hidden=!lookupNote;
   $('#review-heading').textContent=action==='revise'?'후보 수정 → 재검토':action==='pending'?'승인 철회 / 재검토':`${labels[action]} 기록`;
   $('#revision-fields').innerHTML=action==='revise'&&item.kind==='ontology'?`<label>개체·별칭·관계 사전 JSON<textarea name="dictionary" rows="18" required>${esc(JSON.stringify(item.payload,null,2))}</textarea></label><p>id는 문서 간에도 의미 있는 정규 명칭을 쓰세요. 개체·별칭의 원문 인용과 관계의 방향·타입·포함 및 제외 기준을 확인하세요. 수정하면 다시 승인이 필요합니다.</p>`:action==='revise'?['subject','predicate','object','quote'].map(k=>`<label>${k}<textarea name="${k}" required>${esc(item.payload[k])}</textarea></label>`).join(''):'';
   $('#review-dialog').showModal();

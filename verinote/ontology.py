@@ -57,6 +57,45 @@ def _stale_judgement(row, entities):
             or not isinstance(target, str) or target not in entities or row.get('judged_name') != entities[target]['name'])
 
 
+def lookup_spelling_problem(kind, spelling):
+    """Why lookup cannot select by this spelling, for an entity ID (kind 'entities') or an alias (kind 'aliases') a human adds: 'prefix', 'control' or None."""
+    from .entity_identity import PREFIXES
+    if spelling.startswith(PREFIXES):
+        return 'prefix'
+    if kind == 'entities' and ('\n' in spelling or '\t' in spelling):
+        return 'control'
+    return None
+
+
+def lookup_spelling_problems(dictionary):
+    """Rows of a shape-valid dictionary whose spelling lookup cannot select: [{kind, index, spelling, reason}], index = 1-based position in the given rows, spelling stripped as text() stores it."""
+    found = []
+    for kind, field in (('entities', 'id'), ('aliases', 'alias')):
+        for index, row in enumerate(dictionary[kind], 1):
+            spelling = row[field].strip()
+            if kind == 'aliases' and spelling == row['entity'].strip():
+                continue  # validate_dictionary drops an identity alias, so it is never stored
+            reason = lookup_spelling_problem(kind, spelling)
+            if reason:
+                found.append({'kind': kind, 'index': index, 'spelling': spelling, 'reason': reason})
+    return found
+
+
+LOOKUP_SPELLING_REASONS = {
+    'prefix': 'entity: 또는 relation:으로 시작하면 조회가 개체·관계 참조로 해석하므로, 이 표기로는 이 개체를 찾지 못합니다. 접두사 없이 쓰세요.',
+    'control': '개체 ID에는 줄바꿈이나 탭을 쓸 수 없습니다. 원문 표기에 줄바꿈이나 탭이 있으면 별칭으로 넣으세요.',
+}
+
+
+def refuse_new_lookup_spelling_problems(stored, revised):
+    """Raise ValueError for rows of the revised dictionary that lookup cannot select and that the stored one does not already hold under the same kind and spelling."""
+    held = {(p['kind'], p['spelling']) for p in lookup_spelling_problems(stored)}
+    new = [p for p in lookup_spelling_problems(revised) if (p['kind'], p['spelling']) not in held]
+    if new:
+        rows = '; '.join(f"{p['kind']}[{p['index']}] {json.dumps(p['spelling'], ensure_ascii=False)}: {LOOKUP_SPELLING_REASONS[p['reason']]}" for p in new[:5])
+        raise ValueError(f"새로 넣을 수 없는 개체 ID·별칭이 있습니다. {rows}" + (f' 외 {len(new) - 5}개' if len(new) > 5 else ''))
+
+
 def _dictionary_row(kind, row, source, entities):
     """Normalize and ground a row before it can be retained or discarded."""
     from .service import evidence
