@@ -148,13 +148,17 @@ class Service:
             return self._extraction_transport(spec)
 
     def _extraction_transport(self, spec):
+        from .copilot_extraction import (
+            CopilotExtractionSpec,
+            CopilotExtractionTransport,
+        )
         from .extraction_transport import ExtractionTransport
         if self.extraction_owner is not None:
             if self.extraction_owner.identity == spec and not self.extraction_owner.closed:
                 return self.extraction_owner.view()
             self.extraction_owner.retire_if_idle()
             self.extraction_owner = None
-        self.extraction_owner = ExtractionTransport(spec)
+        self.extraction_owner = CopilotExtractionTransport(spec) if isinstance(spec, CopilotExtractionSpec) else ExtractionTransport(spec)
         return self.extraction_owner.view()
 
     def close(self):
@@ -284,17 +288,26 @@ class Service:
             if extraction_concurrency is not None and extraction_policy is not None:
                 raise ValueError('추출 동시성과 정책은 함께 지정할 수 없습니다.')
             if extraction_concurrency is not None or extraction_policy is not None:
-                from .extraction_options import experiment_request, policy_request
+                from .copilot_extraction import CopilotExtractionSpec
+                from .extraction_options import (
+                    copilot_request,
+                    experiment_request,
+                    policy_request,
+                )
                 from .extraction_transport import ExtractionSpec
-                if agent != 'claude' or stage != 'extract':
-                    raise ValueError('병렬 추출은 Claude 추출에서만 지원합니다.')
+                if agent not in ('claude', 'copilot') or stage != 'extract':
+                    raise ValueError('병렬 추출은 Claude 또는 Copilot 추출에서만 지원합니다.')
+                if agent == 'copilot' and (extraction_policy is not None or type(extraction_concurrency) is not int or extraction_concurrency != 2):
+                    raise ValueError('Copilot 병렬 추출은 명시적 동시성 2만 지원합니다.')
                 if extraction_policy is None and (type(extraction_concurrency) is not int or extraction_concurrency not in (1, 2)):
                     raise ValueError('추출 worker 수는 1 또는 2여야 합니다.')
+                spec_type = CopilotExtractionSpec if agent == 'copilot' else ExtractionSpec
                 spec = (self.extraction_caller.extraction_spec if self.extraction_caller is not None
-                        else ExtractionSpec.capture(self.cli, model, extraction_concurrency if extraction_policy is None else 1))
+                        else spec_type.capture(self.cli, model, extraction_concurrency if extraction_policy is None else 1))
                 if spec.model != model or (extraction_policy is None and spec.capacity != extraction_concurrency):
                     raise ValueError('추출 호출자 계약 불일치')
-                experiment = experiment_request(spec) if extraction_policy is None else policy_request(spec, extraction_policy)
+                experiment = (copilot_request(spec) if agent == 'copilot' else
+                              experiment_request(spec) if extraction_policy is None else policy_request(spec, extraction_policy))
             context_limit = validate_context_bytes(self.store.settings().get('dictionary_context_bytes', MAX_DICTIONARY_CONTEXT_BYTES))
             options, transport = self.register_transport(agent, model, stage=stage, max_tokens=max_tokens, answer_reserve_tokens=answer_reserve_tokens)
             if not self.slots.acquire(blocking=False):
@@ -341,12 +354,12 @@ class Service:
             if experiment is not None:
                 from .extraction_options import (
                     extraction_options,
+                    extraction_spec,
                     validate_extraction_source,
                 )
-                from .extraction_transport import ExtractionSpec
                 experiment = extraction_options(experiment, agent=run['agent'], stage=run['stage'], model=run['model'])
                 validate_extraction_source(experiment, self.store.document(run['document_id'], run['version'])['text'])
-                spec = ExtractionSpec.from_dict(experiment['transport'])
+                spec = extraction_spec(experiment)
                 if self.extraction_caller_factory is not None or self.extraction_caller is not None:
                     cli = self.extraction_caller_factory(spec) if self.extraction_caller_factory is not None else self.extraction_caller
                     if cli.extraction_spec != spec: raise ValueError('추출 호출자 계약 불일치')
