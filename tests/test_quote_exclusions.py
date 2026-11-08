@@ -253,7 +253,7 @@ class Exclusions(unittest.TestCase):
         self.assertNotIn(DICTIONARY_WORDING, run['detail'])
         self.assertIn('저장할 주장이 없습니다', run['detail'])
         self.assertIn('사전을 수정·재승인하면 모든 청크를 새로 호출하며 비용이 다시 들고', run['detail'])
-        self.assertIn('다른 모델로 바꿔도 모든 청크를 새로 호출', run['detail'])
+        self.assertIn('다른 모델로 바꾸면 그 모델의 호환되는 복구 기록을 찾지 못한 청크는 새로 호출', run['detail'])
         self.assertIn('근거 불가로 저장하지 않음: 위키 주장 1개 중 1개', run['detail'])
         self.assertNotIn(CONSUMED, run['detail'])
         self.assertNotIn('추출 조건이 이 실행과 같으면', run['detail'])

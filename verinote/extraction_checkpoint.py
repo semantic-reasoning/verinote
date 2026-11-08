@@ -174,15 +174,15 @@ class ExtractionCheckpoint:
         refused_claims, refused_facts, _ = self.quote_exclusions()
         if not claims and refused_claims:
             reason = (f'위키 주장 {refused_claims}개가 모두 원문 인용을 확인하지 못해 저장할 주장이 없습니다. 이번 실행의 위키 주장과 후보는 저장하지 않았고 이 사전 revision은 다시 추출할 수 있습니다. '
-                      '모든 청크의 복구 기록이 남아 있으면 같은 에이전트·모델로 다시 실행해도 새 호출 없이 같은 결과로 끝납니다. '
+                      '이 실행과 추출 조건(문서 버전·승인 사전·에이전트·모델·병렬 설정 등)이 같은 재실행이 모든 청크의 호환되는 복구 기록을 찾으면 새 호출 없이 같은 결과로 끝납니다. '
                       '사전을 수정·재승인하면 모든 청크를 새로 호출하며 비용이 다시 들고 같은 결과가 나올 수 있습니다. '
-                      '다른 모델로 바꿔도 모든 청크를 새로 호출하지만 그 모델의 복구 기록이 있으면 검증된 청크를 재사용합니다.')
+                      '다른 모델로 바꾸면 그 모델의 호환되는 복구 기록을 찾지 못한 청크는 새로 호출하고 찾은 청크는 검증된 청크를 재사용합니다.')
             return ' · '.join(filter(None, (reason, self.quote_exclusion_notice(), self.exclusion_notice())))
         if not facts and mismatched:
             what = (f'응답 관계 {mismatched}개가 모두 승인 사전의 표기·타입과 일치하지 않아' if not refused_facts else
                     f'응답 관계 {emitted}개 중 {mismatched}개는 승인 사전의 표기·타입과 일치하지 않고 {refused_facts}개는 원문 인용을 확인하지 못해')
             reason = (f'{what} 저장할 후보가 없습니다. 이번 실행의 위키 주장과 후보는 저장하지 않았고 이 사전 revision은 다시 추출할 수 있습니다. '
-                      '사전을 수정·재승인하면 모든 청크를 새로 호출합니다. 다른 모델로 바꿀 수도 있지만 그 모델의 복구 기록이 있으면 검증된 청크를 재사용하므로 같은 실패로 끝날 수 있습니다.')
+                      '사전을 수정·재승인하면 모든 청크를 새로 호출합니다. 다른 모델로 바꿀 수도 있지만 그 모델의 호환되는 복구 기록을 찾으면 검증된 청크를 재사용하므로 같은 실패로 끝날 수 있습니다.')
             return ' · '.join(filter(None, (reason, self.quote_exclusion_notice())))
         return ''
 
