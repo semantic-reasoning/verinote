@@ -293,12 +293,22 @@ class ResponseFraming(unittest.TestCase):
         for agent in ('agy', 'claude', 'cursor', 'codex', 'copilot'):
             for raw in (body, '\x1b[32m```json\n' + body + '\n```\x1b[0m'):
                 self.assertEqual(parse_response(agent, raw), (json.loads(body), []))
-        for raw in (body + body, ' \n' + body + '\n ' + body + '\n'):
-            self.assertEqual(parse_response('cursor', raw), (json.loads(body), ['cursor_duplicate_json_object']))
+        for agent in ('cursor', 'copilot'):
+            for raw in (body + body, ' \n' + body + ' \n' + body + '\n\n\n'):
+                self.assertEqual(parse_response(agent, raw), (json.loads(body), [f'{agent}_duplicate_json_object']))
         self.assertEqual(parse_response('copilot', '<final_answer>\n\n</final_answer>' + body),
                          (json.loads(body), ['copilot_empty_final_answer_prefix']))
         literal = {'text': '<final_answer>keep me</final_answer>', 'tools': [{}, {}]}
         self.assertEqual(parse_response('copilot', json.dumps(literal)), (literal, []))
+
+    def test_copilot_duplicate_unicode_tool_request_and_prefix_composition(self):
+        expected = {'tools': [{'name': 'query_graph', 'arguments': {'subject': '합성 단계'}},
+                              {'name': 'search_knowledge', 'arguments': {'query': '합성 안내'}}]}
+        body = json.dumps(expected, ensure_ascii=False, separators=(',', ':'))
+        raw = body + ' \n' + body + '\n\n\n'
+        self.assertEqual(parse_response('copilot', raw), (expected, ['copilot_duplicate_json_object']))
+        self.assertEqual(parse_response('copilot', '<final_answer>\n</final_answer>' + raw),
+                         (expected, ['copilot_empty_final_answer_prefix', 'copilot_duplicate_json_object']))
 
     def test_rejects_ambiguous_or_unrecognized_framing(self):
         body = '{"ok":true}'
@@ -311,7 +321,7 @@ class ResponseFraming(unittest.TestCase):
                        '<final_answer></final_answer>' * 2 + body,
                        '<final_answer>' + body, '<final_answer>' + body + '</final_answer>',
                        '<final_answer></final_answer>' + body + ' trailing']
-        for agent, values in [('cursor', cursor_bad), ('copilot', copilot_bad)]:
+        for agent, values in [('cursor', cursor_bad), ('copilot', cursor_bad + copilot_bad)]:
             for raw in values:
                 with self.subTest(agent=agent, raw=raw), self.assertRaises(ValueError):
                     parse_response(agent, raw)
@@ -319,7 +329,7 @@ class ResponseFraming(unittest.TestCase):
             for raw in ('[]', 'true', '1', 'null'):
                 with self.subTest(agent=agent, raw=raw), self.assertRaises(ValueError):
                     parse_response(agent, raw)
-            if agent != 'cursor':
+            if agent not in ('cursor', 'copilot'):
                 with self.assertRaises(ValueError): parse_response(agent, body * 2)
             if agent != 'copilot':
                 with self.assertRaises(ValueError): parse_response(agent, '<final_answer></final_answer>' + body)
@@ -328,8 +338,10 @@ class ResponseFraming(unittest.TestCase):
         body = '{"ok":true}'
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            for agent in ('cursor', 'copilot'):
-                raw = body * 2 if agent == 'cursor' else '<final_answer>\n\n</final_answer>' + body
+            cases = [('cursor', 'duplicate', body * 2),
+                     ('copilot', 'prefix', '<final_answer>\n\n</final_answer>' + body),
+                     ('copilot', 'duplicate', body + ' \n' + body + '\n\n')]
+            for agent, framing, raw in cases:
                 sidecar = json.loads(fixture(agent)) if agent == 'copilot' else None
                 for state in ('normal', 'recovered', 'exit', 'provider_error'):
                     if agent == 'copilot' and state == 'provider_error': continue
@@ -339,7 +351,7 @@ class ResponseFraming(unittest.TestCase):
                         events[-1]['result'] = output
                         if state == 'provider_error': events[-1].update(subtype='error', is_error=True)
                         output = '\n'.join(json.dumps(event) for event in events)
-                    folder = root / (agent + '-' + state)
+                    folder = root / (agent + '-' + framing + '-' + state)
                     script = root / 'fake-cli'
                     code = '#!/usr/bin/env python3\nimport sys,pathlib\n'
                     if sidecar:
@@ -360,7 +372,9 @@ class ResponseFraming(unittest.TestCase):
                     for key in ('tokens', 'reported_usd', 'reported_credits'):
                         self.assertEqual(usage[key], expected[key])
                     self.assertEqual(usage['status'], 'success' if state in ('normal', 'recovered') else 'error')
-                    if state == 'recovered': self.assertEqual(len(meta['response_normalizations']), 1)
+                    if state == 'recovered':
+                        expected_normalization = f'{agent}_duplicate_json_object' if framing == 'duplicate' else 'copilot_empty_final_answer_prefix'
+                        self.assertEqual(meta['response_normalizations'], [expected_normalization])
                     if state == 'normal': self.assertEqual(meta['response_normalizations'], [])
 
 

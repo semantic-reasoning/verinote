@@ -107,14 +107,14 @@ def parse_response(agent, response):
     try:
         result = json.loads(response)
     except json.JSONDecodeError:
-        if agent != 'cursor':
+        if agent not in ('cursor', 'copilot'):
             raise
         # Exact text equality avoids conflating e.g. true and 1, or choosing
         # between conflicting answers. A third object or trailing prose fails.
         result, end = json.JSONDecoder().raw_decode(response)
         if not isinstance(result, dict) or response[end:].strip() != response[:end]:
             raise
-        normalizations.append('cursor_duplicate_json_object')
+        normalizations.append(f'{agent}_duplicate_json_object')
     if not isinstance(result, dict):
         raise ValueError('CLI 최종 응답은 JSON 객체여야 합니다.')
     return result, normalizations
