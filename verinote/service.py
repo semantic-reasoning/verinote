@@ -656,11 +656,16 @@ class Service:
             self.pool.submit(self.answer, copy.deepcopy(job), snapshot, transport)
             return job
         except Exception as exc:
-            if job:
-                job.update(status='error', error=str(exc))
-                self.store.save_question(job)
+            failed = exc
+        try:
+            if job is not None:
+                job.update(status='error', error=error_text(failed)[:2000])
+                self.finish_question(job)
+        except Exception as saving:
+            raise saving from failed
+        finally:
             self.slots.release()
-            raise
+        raise failed
 
     def answer(self, job, snapshot, transport=None):
         from .assistant import Assistant
@@ -676,12 +681,39 @@ class Service:
             job['answer'] = assistant.run()
             job['status'] = 'success'
         except Exception as exc:
-            job.update(status='error', error=str(exc)[:2000])
+            job.update(status='error', error=error_text(exc)[:2000])
         finally:
             try:
-                self.store.save_question(job)
+                self.finish_question(job)
             finally:
                 self.slots.release()
+
+    QUESTION_FAILURE_FALLBACK = '질문이 실패했지만 실패 상세를 저장하지 못했습니다.'
+    ANSWER_FALLBACK = '답변을 만들었지만 저장하지 못했습니다.'
+
+    def finish_question(self, job):
+        """Save a question that ended as success or error. While a question is stored as queued or running, the deletion of every document is
+        refused. Tries the job twice, then an error job with characters SQLite cannot store escaped in its error, cut at 2000 characters
+        before any escape would be split, then, in one transaction, the stored question moved to error with a fixed sentence unless it is
+        already stored as ended, and gives up silently after that."""
+        attempts = [job, job]
+        if job['status'] == 'error':
+            escaped = ''
+            for char in job['error']:
+                piece = char.encode('utf-8', 'backslashreplace').decode('utf-8')
+                if len(escaped) + len(piece) > 2000: break
+                escaped += piece
+            if escaped != job['error']: attempts.append(job | {'error': escaped})
+        for attempt in attempts:
+            try:
+                self.store.save_question(attempt)
+                return
+            except Exception:
+                continue
+        try:
+            self.store.end_unstored_question(job['id'], self.ANSWER_FALLBACK if job['status'] == 'success' else self.QUESTION_FAILURE_FALLBACK)
+        except Exception:
+            pass
 
     def cleanup_logs(self):
         # Obligations are persisted before DB rows disappear. Never follow a log-root symlink.
