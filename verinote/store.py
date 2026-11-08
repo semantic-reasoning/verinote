@@ -133,6 +133,7 @@ class Store:
                 if not row:
                     raise ValueError('문서를 찾을 수 없습니다.')
                 self.check_document_token(row, expected_version, expected_generation)
+                self.refuse_while_run_needs_unchanged_document(db, document_id)
                 version = row['next_version']
                 db.execute('UPDATE documents SET current_version=?,next_version=?,generation=generation+1 WHERE id=?', (version, version + 1, document_id))
             else:
@@ -341,14 +342,7 @@ class Store:
             run = db.execute('SELECT * FROM runs WHERE id=?', (run_id,)).fetchone()
             if not run or run['status'] != 'running':
                 raise Conflict('실행 상태가 변경되었습니다.')
-            if run['extraction_options'] is not None:
-                from .extraction_options import extraction_options as checked_extraction
-                options = checked_extraction(json.loads(run['extraction_options']), agent=run['agent'], stage=run['stage'], model=run['model'])
-                current_doc = db.execute('SELECT current_version,generation FROM documents WHERE id=?', (run['document_id'],)).fetchone()
-                if current_doc is None or current_doc['current_version'] != run['version']:
-                    raise Conflict('추출 중 문서 버전이 변경되었습니다. 다시 추출하세요.')
-                if options['document_generation'] != current_doc['generation']:
-                    raise Conflict('추출 중 문서가 변경되었습니다. 다시 추출하세요.')
+            self.refuse_publish_after_document_change(db, run)
             from .service import text, validate_fact, validate_page
             detail = text(detail, '실행 상세', 2000) if detail else ''
             from .ontology import dictionary_fact, validate_dictionary
@@ -357,8 +351,6 @@ class Store:
                 value = validate_dictionary(dictionary, source)
                 target = json.loads(run['ontology']) if run['ontology'] else None
                 if target:
-                    doc = db.execute('SELECT * FROM documents WHERE id=?', (run['document_id'],)).fetchone()
-                    self.check_document_token(doc, run['version'], target['generation'])
                     current = db.execute("SELECT * FROM items WHERE id=? AND document_id=? AND version=? AND kind='ontology'",
                                          (target['id'], run['document_id'], run['version'])).fetchone()
                     if (not current or current['status'] != 'rejected' or current['revision'] != target['revision']
@@ -410,6 +402,13 @@ class Store:
             return self._review_item(db, row, revision, action, actor, reason, payload)
 
     @staticmethod
+    def run_wait_advice(status, retry):
+        """The sentences shared by the refusals that tell a user to wait for a queued or running run: the queue note (queued only), where to see it end, and the restart escape."""
+        waits = '대기 중인 실행은 앞서 등록된 다른 문서의 실행이나 질문이 끝나야 시작합니다. ' if status == 'queued' else ''
+        return (f'{waits}실행 기록에서 끝난 것을 확인한 뒤 {retry} '
+                '실행이 멈춰 끝나지 않을 때만 서버를 재시작하세요. 재시작하면 대기·처리 중인 모든 실행과 질문이 중단으로 표시됩니다.')
+
+    @staticmethod
     def refuse_while_run_holds_dictionary(db, document_id, version):
         """Inside the caller's write transaction: a queued or running run on this document version pins its dictionary, so a change is refused until the run ends."""
         run = db.execute("SELECT id,stage,agent,model,status FROM runs WHERE document_id=? AND version=? AND status IN ('queued','running')",
@@ -417,10 +416,44 @@ class Store:
         if run:
             job = '관계 추출' if run['stage'] == 'extract' else '사전 재생성'
             state = '대기 중' if run['status'] == 'queued' else '처리 중'
-            waits = '대기 중인 실행은 앞서 등록된 다른 문서의 실행이나 질문이 끝나야 시작합니다. ' if run['status'] == 'queued' else ''
             raise Conflict(f"이 문서 버전의 {job} 실행 {run['id']}({run['agent']} / {run['model'] or '기본 모델'} · {state})이 끝나지 않아 사전을 바꿀 수 없습니다. "
-                           f'지금 바꾸면 호출 비용을 쓴 결과를 저장하지 못합니다. {waits}실행 기록에서 끝난 것을 확인한 뒤 다시 시도하세요. '
-                           '실행이 멈춰 끝나지 않을 때만 서버를 재시작하세요. 재시작하면 대기·처리 중인 모든 실행과 질문이 중단으로 표시됩니다.')
+                           f"지금 바꾸면 호출 비용을 쓴 결과를 저장하지 못합니다. {Store.run_wait_advice(run['status'], '다시 시도하세요.')}")
+
+    @staticmethod
+    def needs_unchanged_document(run):
+        """True for a run that saves its result only if no source version of its document is registered or deleted between its request and its end."""
+        return run['extraction_options'] is not None or (run['stage'] == 'ontology' and run['ontology'] is not None)
+
+    @staticmethod
+    def refuse_while_run_needs_unchanged_document(db, document_id):
+        """Inside the caller's write transaction: a queued or running run of this document that needs it unchanged makes a new source version refused until the run ends."""
+        run = db.execute("SELECT * FROM runs WHERE document_id=? AND status IN ('queued','running')", (document_id,)).fetchone()
+        if run and Store.needs_unchanged_document(run):
+            job = '병렬 수나 청크 임계 정책을 등록한 관계 추출' if run['stage'] == 'extract' else '사전 재생성'
+            state = '대기 중' if run['status'] == 'queued' else '처리 중'
+            raise Conflict(f"이 문서의 {job} 실행 {run['id']}({run['agent']} / {run['model'] or '기본 모델'} · {state})이 끝나지 않아 새 원문 버전을 등록할 수 없습니다. "
+                           '이 실행은 요청된 때부터 끝날 때까지 이 문서에 원문 버전 등록이나 삭제가 없어야 결과를 저장하므로, 지금 등록하면 호출 비용을 쓴 결과를 저장하지 못합니다. '
+                           + Store.run_wait_advice(run['status'], '다시 등록하세요.'))
+
+    @staticmethod
+    def refuse_publish_after_document_change(db, run):
+        """Inside finish_run's write transaction: a run that needs its document unchanged saves nothing once the current version or the generation differs from the one pinned at its request."""
+        if not Store.needs_unchanged_document(run):
+            return
+        if run['extraction_options'] is not None:
+            from .extraction_options import extraction_options as checked_extraction
+            pinned = checked_extraction(json.loads(run['extraction_options']), agent=run['agent'], stage=run['stage'], model=run['model'])['document_generation']
+        else:
+            pinned = json.loads(run['ontology'])['generation']
+        doc = db.execute('SELECT current_version,generation FROM documents WHERE id=?', (run['document_id'],)).fetchone()
+        if doc is None:
+            raise Conflict('실행이 요청된 뒤 문서가 삭제되어 결과를 저장하지 않았습니다.')
+        if doc['current_version'] != run['version']:
+            raise Conflict(f"실행이 요청된 뒤 이 문서의 현재 원문 버전이 바뀌어(실행 버전 {run['version']}, 현재 버전 {doc['current_version']}) 결과를 저장하지 않았습니다. "
+                           f"새 실행은 현재 버전에서만 시작하므로 버전 {run['version']}에서는 다시 실행할 수 없습니다. 현재 버전에서 사전부터 다시 진행하세요.")
+        if doc['generation'] != pinned:
+            raise Conflict(f"실행이 요청된 뒤 이 문서의 원문 버전 기록이 바뀌어(문서 세대 {pinned} → {doc['generation']}) 결과를 저장하지 않았습니다. "
+                           '현재 버전이 실행 버전과 같으므로 같은 버전에서 다시 실행할 수 있습니다.')
 
     def _review_item(self, db, row, revision, action, actor, reason, payload=None):
         """Shared validation and audit mutation inside the caller's transaction."""

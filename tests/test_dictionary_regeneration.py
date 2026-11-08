@@ -95,7 +95,12 @@ class Regeneration(unittest.TestCase):
         self.store.run_status(run['id'], 'error')
         self.store.review(current['id'], current['revision'], 'rejected', 'Reviewer', '다시 생성')
         run = self.start(self.dictionary()); self.store.run_status(run['id'], 'running')
-        self.store.register('new', 'new.md', SOURCE.encode(), SOURCE, self.doc['id'], expected_version=1, expected_generation=1)
+        with self.assertRaises(Conflict) as refused:
+            self.store.register('new', 'new.md', SOURCE.encode(), SOURCE, self.doc['id'], expected_version=1, expected_generation=1)
+        self.assertIn(f"이 문서의 사전 재생성 실행 {run['id']}(agy / 기본 모델 · 처리 중)이 끝나지 않아 새 원문 버전을 등록할 수 없습니다.", str(refused.exception))
+        self.assertEqual(self.store.document(self.doc['id'])['version'], 1)
+        with self.store.connect(True) as db:  # a change from outside the store, which register above refuses
+            db.execute('UPDATE documents SET current_version=2,next_version=3,generation=generation+1 WHERE id=?', (self.doc['id'],))
         with self.assertRaises(Conflict): self.store.finish_run(run['id'], dictionary=DICTIONARY)
         self.assertEqual(self.store.document(self.doc['id'], 1)['items'][0]['status'], 'rejected')
 
