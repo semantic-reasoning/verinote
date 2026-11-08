@@ -410,5 +410,35 @@ class ChunkPrefix(Base):
         self.assertEqual(run['detail'], f'청크 3 · third-down · 검증 완료 1/3청크 · 새 호출 3회 · {from_chunk(2)}')
 
 
+    def deadline_during_first_call(self, capacity):
+        """The monotonic clock moves past chunk 1's deadline during its initial call; with two workers chunk 2's call is in flight and returns
+        only once the failure is recorded. Sequential words the deadline in Service, parallel in ChunkScheduler.check. The limit is patched to 7 seconds in
+        Service, where every chunk deadline is set, so a text that states another binding's value fails."""
+        import time
+        shift, real, second, recorded = [0.0], time.monotonic, threading.Event(), threading.Event()
+        fail = ChunkScheduler.fail
+        def failed(scheduler, index, exc):
+            try: return fail(scheduler, index, exc)
+            finally: recorded.set()
+        def respond(index, repairing):
+            if index == 2 and capacity == 2:
+                second.set()
+                self.assertTrue(recorded.wait(5))
+            if index == 1:
+                if capacity == 2: self.assertTrue(second.wait(5))
+                shift[0] = 8
+            return extraction_response()
+        doc = self.document()
+        with patch('time.monotonic', lambda: real() + shift[0]), patch.object(ChunkScheduler, 'fail', failed), patch('verinote.service.CHUNK_TIMEOUT', 7):
+            return self.sequential(doc, respond) if capacity is None else self.parallel(doc, respond, capacity)
+
+    def test_initial_call_deadline_detail_is_the_same_on_sequential_and_parallel_paths(self):
+        for capacity, calls in ((None, [1]), (1, [1]), (2, [1, 2])):
+            with self.subTest(capacity=capacity):
+                self.tearDown(); self.setUp()
+                run, called = self.deadline_during_first_call(capacity)
+                self.assertEqual(run['detail'], f'청크 1 · 청크 실행 시간 제한 초과 (7초) · 검증 완료 0/3청크 · 새 호출 {len(calls)}회 · {FROM_FIRST}')
+                self.assertEqual((sorted(called), read_extraction_timing(self.root, self.store, run['id'])['error_code']), (calls, 'timeout'))
+
 if __name__ == '__main__':
     unittest.main()

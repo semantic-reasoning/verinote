@@ -25,6 +25,7 @@ class ChunkTask:
     prompt: str
     folder: Path
     deadline: float
+    limit: float  # the seconds the deadline was set from, stated when it passes
     output: Any = None
     done: bool = False
     wait: object = None
@@ -52,7 +53,7 @@ class ChunkScheduler:
         if self.failure is not None: raise self.failure
         if self.closed: raise RuntimeError('추출 스케줄러가 닫혔습니다.')
         if task is not None and time.monotonic() >= task.deadline:
-            raise self.fail(task.index, TimeoutError('청크 실행 시간 제한 초과'))
+            raise self.fail(task.index, TimeoutError(f'청크 실행 시간 제한 초과 ({task.limit}초)'))
 
     def admit(self, task):
         with self.condition:
