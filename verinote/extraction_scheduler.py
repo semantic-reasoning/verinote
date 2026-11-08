@@ -111,8 +111,13 @@ class ChunkScheduler:
             self.pending.pop(0)
 
     def repair(self, task, prompt, folder):
-        self.admit(task)
-        return self.call(task, prompt, folder)  # The consumer words this failure; __exit__ records it unless an earlier failure is already recorded.
+        def admit():
+            with self.condition:
+                self.check()
+                self.begin_call()
+        # The deadline is checked by call before admit, unrecorded: the consumer words this failure, and __exit__
+        # records it unless an earlier failure is already recorded.
+        return self.call(task, prompt, folder, admit)
 
     def __enter__(self): return self
 

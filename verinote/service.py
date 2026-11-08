@@ -398,9 +398,10 @@ class Service:
                 except Exception as exc:
                     raise ChunkFailure(raw[0], exc) from exc
 
-            def call_task(task, prompt, target):
+            def call_task(task, prompt, target, admit=None):
                 remaining = task.deadline - time.monotonic()
                 if remaining <= 0: raise TimeoutError(f'청크 실행 시간 제한 초과 ({CHUNK_TIMEOUT}초)')
+                if admit is not None: admit()  # counted only once the deadline check above lets this call go
                 limited = cli.limited_timeout(run['agent'], remaining) if hasattr(cli, 'limited_timeout') else cli
                 with timing.call(task.index, target != task.folder):
                     return limited.complete(run['agent'], run['model'], prompt, target)
@@ -440,8 +441,7 @@ class Service:
 
                     def complete_chunk(prompt, target):
                         if scheduler is not None: return scheduler.repair(task, prompt, target)  # noqa: B023
-                        begin_call()
-                        return call_task(task, prompt, target)  # noqa: B023
+                        return call_task(task, prompt, target, begin_call)  # noqa: B023
 
                     output = task.output if scheduler is not None else complete_chunk(task.prompt, folder)
                     with caller_validation(cli, folder, run['agent']) as validation, timing.section('validation_with_bookkeeping', index):
