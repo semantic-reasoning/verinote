@@ -115,6 +115,18 @@ class Store:
             if not db.execute('UPDATE questions SET payload=? WHERE id=?', (canonical(job), job['id'])).rowcount:
                 raise Conflict('질문이 삭제되었습니다.')
 
+    def end_unstored_question(self, key, error):
+        """Moves a question stored as queued or running to error in one write transaction; a question stored as anything else is left as it is. Returns whether it moved."""
+        with self.connect(True) as db:
+            row = db.execute('SELECT payload FROM questions WHERE id=?', (key,)).fetchone()
+            if not row:
+                raise ValueError('질문을 찾을 수 없습니다.')
+            job = json.loads(row[0])
+            if job['status'] not in ('queued', 'running'):
+                return False
+            db.execute('UPDATE questions SET payload=? WHERE id=?', (canonical(job | {'status': 'error', 'error': error}), key))
+            return True
+
     def question(self, key):
         with self.connect() as db:
             row = db.execute('SELECT payload FROM questions WHERE id=?', (key,)).fetchone()
