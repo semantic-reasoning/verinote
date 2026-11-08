@@ -265,6 +265,12 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(self.server.service.cleanup_logs())
             if route.path == '/api/runs' and method == 'GET':
                 return self.send([self.server.service.with_usage('runs', row, coverage_details=False) for row in store.runs()])
+            if len(parts) == 4 and parts[:2] == ['api', 'runs'] and parts[3] == 'cancel' and method == 'POST':
+                data = self.body()
+                if set(data) != {'expected_status'}:
+                    raise ValueError('취소에는 expected_status(queued 또는 running)만 필요합니다.')
+                previous = self.server.service.cancel(parts[2], data['expected_status'])
+                return self.send(self.server.service.with_usage('runs', store.run(parts[2])) | {'cancel': {'previous': previous}})
             if len(parts) == 3 and parts[:2] == ['api', 'runs'] and method == 'GET':
                 return self.send(self.server.service.with_usage('runs', store.run(parts[2])))
             if route.path == '/api/questions':

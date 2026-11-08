@@ -124,13 +124,15 @@ class RegisterDuringRun(Base):
                         self.assertEqual(store.run(run['id'])['status'], 'queued' if queued else 'running')
                         code, body = self.post_document(self.serve(store), doc['id'])
                         agent = 'claude / model' if kind == 'policy_extract' else 'agy / 기본 모델'
-                        waits = '대기 중인 실행은 앞서 등록된 다른 문서의 실행이나 질문이 끝나야 시작합니다. ' if queued else ''
+                        waits = '대기 중인 실행은 앞선 실행이나 질문이 끝나야 시작합니다. ' if queued else ''
+                        result = '사전 초안을' if kind == 'regenerate' else '위키·관계 후보를'
+                        keeps = '' if queued else f' 처리 중이던 호출은 끝날 때까지 계속되지만 그 결과로 {result} 저장하지는 않습니다.'
                         self.assertEqual(code, 409, body)
                         self.assertEqual(body['error'],
                                          f"이 문서의 {JOB[kind]} 실행 {run['id']}({agent} · {state})이 끝나지 않아 새 원문 버전을 등록할 수 없습니다. "
                                          '이 실행은 요청된 때부터 끝날 때까지 이 문서에 원문 버전 등록이나 삭제가 없어야 결과를 저장하므로, 지금 등록하면 호출 비용을 쓴 결과를 저장하지 못합니다. '
-                                         f'{waits}실행 기록에서 끝난 것을 확인한 뒤 다시 등록하세요. '
-                                         '실행이 멈춰 끝나지 않을 때만 서버를 재시작하세요. 재시작하면 대기·처리 중인 모든 실행과 질문이 중단으로 표시됩니다.')
+                                         f'{waits}기다리려면 실행 기록에서 끝난 것을 확인한 뒤 다시 등록하세요. '
+                                         '기다리지 않으려면 실행 기록에서 이 실행을 취소하세요. 취소하면 바로 다시 등록할 수 있고, 다른 실행과 질문은 계속됩니다.' + keeps)
                         self.assertEqual(store.document(doc['id'])['version'], 1)
                         self.finish(service, gate)
                         final = store.run(run['id'])

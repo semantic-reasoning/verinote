@@ -47,10 +47,20 @@ from .ontology import (
     quote_label,
 )
 from .progress import analysis_progress
-from .store import Conflict
+from .store import Conflict, RunCancelled, cancel_result
 from .transports import reasoning_budget, validate_job_tokens
 
 _UNSET_TOKENS = object()
+
+
+def escaped_within(text, limit):
+    """The text with characters SQLite cannot store escaped, cut before the escape that would pass limit characters."""
+    escaped = ''
+    for char in text:
+        piece = char.encode('utf-8', 'backslashreplace').decode('utf-8')
+        if len(escaped) + len(piece) > limit: break
+        escaped += piece
+    return escaped
 
 
 class NothingToPublish(ValueError):
@@ -129,6 +139,8 @@ class Service:
         self.draining = False
         self.close_lock = threading.Lock()
         self.registered_extractions = {}
+        self.futures = {}
+        self.cancel_lock = threading.Lock()
         self.cleanup_lock = threading.Lock()
         self.cleanup_logs()
 
@@ -323,7 +335,7 @@ class Service:
                 policy_folder.mkdir(parents=True, exist_ok=True)
                 atomic_json(policy_folder/'context-policy.json', {'schema_version': 1, 'run_id': run['id'], 'dictionary_context_bytes': context_limit})
                 if experiment is not None: self.registered_extractions[run['id']] = copy.deepcopy(run['extraction_options'])
-                self.pool.submit(self.extract, copy.deepcopy(run), transport, self.relation_type_warning_threshold, timing, context_limit)
+                self.futures[run['id']] = self.pool.submit(self.extract, copy.deepcopy(run), transport, self.relation_type_warning_threshold, timing, context_limit)
                 return run
             except Exception as exc:
                 failed = exc
@@ -348,6 +360,8 @@ class Service:
         located_places: list[str] = []
         published = failing = False
         scheduler = None
+        dictionary_summary = None
+        cancel_detail = None
         try:
             timing.worker_start()
             experiment = run.get('extraction_options')
@@ -372,7 +386,7 @@ class Service:
             doc = self.store.document(run['document_id'], run['version'])
             if run['stage'] == 'ontology':
                 from .dictionary_pipeline import generate_dictionary
-                dictionary, detail = generate_dictionary(self.store, cli, self.root, run, doc, relation_type_warning_threshold=self.relation_type_warning_threshold if relation_type_warning_threshold is None else relation_type_warning_threshold, context_limit=context_limit, other_agent_ready=lambda: self.other_agent_ready(run['agent']))
+                dictionary, detail, dictionary_summary = generate_dictionary(self.store, cli, self.root, run, doc, relation_type_warning_threshold=self.relation_type_warning_threshold if relation_type_warning_threshold is None else relation_type_warning_threshold, context_limit=context_limit, other_agent_ready=lambda: self.other_agent_ready(run['agent']), before_call=lambda: self.admit_call(run['id']))
                 self.store.finish_run(run['id'], dictionary=dictionary, detail=detail[:2000])
                 return
             timing.configure(doc)
@@ -423,7 +437,9 @@ class Service:
                     return limited.complete(run['agent'], run['model'], prompt, target)
 
             def begin_call():
-                if checkpoint is not None: checkpoint.begin_call()
+                with self.cancel_lock:
+                    self.store.raise_if_cancelled(run['id'])
+                    if checkpoint is not None: checkpoint.begin_call()
 
             remaining_chunks = [(i, pair) for i, pair in enumerate(chunks(doc['text']), 1)
                                 if checkpoint is None or i > checkpoint.resumed_chunks]
@@ -450,7 +466,7 @@ class Service:
                     payload, folder, deadline = task.payload, task.folder, task.deadline
                     active_chunk = index
                     if scheduler is None: timing.begin_chunk(index)
-                    self.store.run_status(run['id'], 'running', f'승인 사전으로 추출 · 청크 {index}/{(len(doc["text"]) + 7999) // 8000} · 청크 제한 {CHUNK_TIMEOUT}초'
+                    self.store.run_progress(run['id'], f'승인 사전으로 추출 · 청크 {index}/{(len(doc["text"]) + 7999) // 8000} · 청크 제한 {CHUNK_TIMEOUT}초'
                                           + (f' · {checkpoint.summary()}' if checkpoint is not None else '')
                                           + (f' · {experiment["policy"]} · 전체 {experiment["original_chunk_count"]}청크 · 동시 {experiment["concurrency"]}' if experiment and experiment['schema_version']==2 else ''))
 
@@ -519,6 +535,8 @@ class Service:
                                             (repair_folder / 'changes.json').write_text(json.dumps(changes, ensure_ascii=False, indent=2), encoding='utf-8')
                                             if refused:
                                                 (repair_folder / 'refused.json').write_text(json.dumps(refused, ensure_ascii=False, indent=2), encoding='utf-8')
+                                except RunCancelled:
+                                    raise
                                 except RequestTooLarge as exc:
                                     raise ValueError(f'{locations}: 인용 보정 실패 (청크당 1회). {exc.with_advice(exc.repair_advice(self.other_agent_ready(run["agent"]), run["ontology"]["revision"]))}') from exc
                                 except Exception as exc:
@@ -583,6 +601,18 @@ class Service:
             if isinstance(exc, ChunkFailure):
                 active_chunk, exc = exc.index, exc.cause
             detail, failing = error_text(exc), True  # the finally below writes the error status even if this bookkeeping raises
+            cancelled = isinstance(exc, RunCancelled)
+            if not cancelled:
+                try: cancelled = self.store.run(run['id'])['status'] in ('cancelling', 'cancelled')
+                except Exception: pass
+            if cancelled:
+                parts = [f"처리 중에 취소되었습니다. 취소 요청 뒤로는 새 호출을 허용하지 않았고 {cancel_result(run['stage'])} 저장하지 않았습니다."]
+                if not isinstance(exc, (RunCancelled, Conflict)):
+                    parts.append(f'멈추기 전 마지막 오류: {error_text(exc)}')
+                if run['stage'] == 'ontology':
+                    summary = getattr(exc, 'summary', '') or dictionary_summary or ''
+                    if summary: parts.append(summary)
+                cancel_detail = ' · '.join(parts)
             timing.end_chunk(error_kind(exc))
             timing.outcome('error', error_kind(exc))
             if report is not None:
@@ -605,27 +635,74 @@ class Service:
                     detail += f' · {checkpoint.summary()}'
                     if not isinstance(exc, (RequestTooLarge, Conflict)):  # a refusal is refused again; a Conflict ended on a changed run, document or dictionary
                         detail += f' · {checkpoint.retry_notice()}'
+                if cancel_detail is not None:
+                    cancel_detail += f' · {checkpoint.summary()}' + ('' if isinstance(exc, RequestTooLarge) else f' · {checkpoint.retry_notice()}')
         finally:
-            if failing: self.record_failure(run['id'], detail)
+            try:
+                if failing:
+                    if cancel_detail is not None: self.end_cancelled(run['id'], cancel_detail)
+                    else: self.record_failure(run['id'], detail, stage=run['stage'])
+                with self.extraction_lock:
+                    self.registered_extractions.pop(run['id'], None)
+                    self.futures.pop(run['id'], None)
+            finally:
+                try:
+                    self.slots.release()
+                finally:
+                    timing.finish()
+
+    CANCEL_FALLBACK = '취소된 실행이 멈췄지만 취소 상세를 저장하지 못했습니다.'
+
+    def admit_call(self, run_id):
+        """Raise RunCancelled if the run is cancelling or cancelled; the model call after it is the admission."""
+        with self.cancel_lock:
+            self.store.raise_if_cancelled(run_id)
+
+    def _ladder(self, write, detail, fallback):
+        """Calls write with the detail cut at 2000 characters twice, then with characters SQLite cannot store escaped (cut before an escape
+        would be split), then with the fixed fallback sentence. Stops at the first write that does not raise and gives up silently after the
+        last. A RunCancelled from write is not swallowed."""
+        escaped = escaped_within(detail, 2000)
+        for text in [detail[:2000], detail[:2000]] + ([escaped] if escaped != detail[:2000] else []) + [fallback]:
+            try:
+                write(text)
+                return
+            except RunCancelled:
+                raise
+            except Exception:
+                continue
+
+    def end_cancelled(self, run_id, detail):
+        self._ladder(lambda text: self.store.finish_cancel(run_id, text), detail, self.CANCEL_FALLBACK)
+
+    def cancel(self, run_id, expected_status):
+        """Cancel a queued or running run and return the status it had (see Store.cancel_run). Holding cancel_lock makes the admission of a
+        call and the cancel commit happen in one order: in an extraction run a call counted before the cancel returns is admitted and none
+        after (a dictionary run checks before it counts, so its count may trail by one). A queued run whose
+        job has not started is removed from the pool here and its slot released; a job a worker already took ends through extract."""
+        with self.cancel_lock:
+            previous = self.store.cancel_run(run_id, expected_status)
+        if previous == 'queued':
             with self.extraction_lock:
-                self.registered_extractions.pop(run['id'], None)
-            self.slots.release()
-            timing.finish()
+                future = self.futures.get(run_id)
+                if future is not None and future.cancel():
+                    self.futures.pop(run_id, None)
+                    self.registered_extractions.pop(run_id, None)
+                    self.slots.release()
+        return previous
 
     FAILURE_FALLBACK = '실행이 실패했지만 실패 상세를 저장하지 못했습니다.'
 
-    def record_failure(self, run_id, detail):
-        """Move a failed run to error. Only a restart (Store.recover) moves a run left queued or running: until then a new run of its
-        document, a dictionary change for its version and the deletion of every document are refused. Tries the detail twice, then the
-        detail with characters SQLite cannot store escaped, then a fixed sentence, and gives up silently after that."""
-        escaped = detail.encode('utf-8', 'backslashreplace').decode('utf-8')
-        texts = [detail[:2000], detail[:2000]] + ([escaped[:2000]] if escaped != detail else []) + [self.FAILURE_FALLBACK]
-        for text in texts:
-            try:
-                self.store.run_status(run_id, 'error', text)
-                return
-            except Exception:
-                continue
+    def record_failure(self, run_id, detail, stage=None):
+        """Move a failed run to error. Only a restart (Store.recover) moves a run left queued or running, apart from a cancel: until then a
+        new run of its document, a dictionary change for its version and the deletion of every document are refused. Tries the detail twice,
+        then the detail with characters SQLite cannot store escaped, then a fixed sentence, and gives up silently after that. A run whose
+        status is cancelling or cancelled is never moved to error: a cancelling run becomes cancelled with the detail as its last error, and
+        a cancelled run keeps the detail it has."""
+        try:
+            self._ladder(lambda text: self.store.run_status(run_id, 'error', text), detail, self.FAILURE_FALLBACK)
+        except RunCancelled:
+            self.end_cancelled(run_id, f"처리 중에 취소되었습니다. 취소 요청 뒤로는 새 호출을 허용하지 않았고 {cancel_result(stage)} 저장하지 않았습니다. · 멈추기 전 마지막 오류: {detail}")
 
     def query(self, request):
         if not isinstance(request, dict) or set(request) - {'snapshot', 'action', 'subject', 'predicate', 'target'}:
@@ -698,11 +775,7 @@ class Service:
         already stored as ended, and gives up silently after that."""
         attempts = [job, job]
         if job['status'] == 'error':
-            escaped = ''
-            for char in job['error']:
-                piece = char.encode('utf-8', 'backslashreplace').decode('utf-8')
-                if len(escaped) + len(piece) > 2000: break
-                escaped += piece
+            escaped = escaped_within(job['error'], 2000)
             if escaped != job['error']: attempts.append(job | {'error': escaped})
         for attempt in attempts:
             try:

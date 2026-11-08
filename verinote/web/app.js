@@ -1,7 +1,7 @@
 'use strict';
 const $ = (s, root = document) => root.querySelector(s);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const labels = {pending:'검토 대기', approved:'승인', rejected:'반려', held:'보류', queued:'대기 중', running:'처리 중', success:'완료', error:'실패', interrupted:'중단'};
+const labels = {pending:'검토 대기', approved:'승인', rejected:'반려', held:'보류', queued:'대기 중', running:'처리 중', success:'완료', error:'실패', interrupted:'중단', cancelling:'취소 중', cancelled:'취소됨'};
 const badge = status => `<span class="badge ${esc(status)}">${esc(labels[status] || status)}</span>`;
 let docs = [], config, selectedDoc, uploadTarget, reviewTarget;
 let documentRequest = 0, bulkReviewTarget = null, bulkSubmitting = false;
@@ -201,13 +201,14 @@ function renderProgress(percent, label, detail='', failed=false) {
 }
 function renderAnalysisProgress(run) {
   const p=run.progress||{},stage=run.stage==='ontology'?'사전 생성':'위키·관계 추출';
-  const phase={queued:'대기 중',running:'분석 중',saving:'검증 완료 · 저장 중',success:'저장 완료',error:'실패',interrupted:'중단',unknown:'진행 정보 없음'}[p.phase]||labels[run.status]||'진행 정보 없음';
+  const phase={queued:'대기 중',running:'분석 중',saving:'검증 완료 · 저장 중',success:'저장 완료',error:'실패',interrupted:'중단',cancelling:'취소 중 · 허용한 호출이 끝나면 멈춤',cancelled:'취소됨',unknown:'진행 정보 없음'}[p.phase]||labels[run.status]||'진행 정보 없음';
   const counts=p.known?`검증 ${p.completed_chars.toLocaleString()}/${p.total_chars.toLocaleString()}자 · 구간 ${p.completed_chunks}/${p.total_chunks}${p.resumed_chars?' · 재사용 '+p.resumed_chars.toLocaleString()+'자':''}`:'검증 진행 기록을 확인할 수 없습니다.';
-  return renderProgress(p.percent,`${stage} · ${phase}`,counts+ (run.detail?' · '+run.detail:''),['error','interrupted'].includes(run.status));
+  const cancel=['queued','running'].includes(run.status)?`<button class="danger" data-cancel-run="${esc(run.id)}" data-cancel-status="${esc(run.status)}" data-cancel-stage="${esc(run.stage)}">실행 취소</button>`:'';
+  return renderProgress(p.percent,`${stage} · ${phase}`,counts+ (run.detail?' · '+run.detail:''),['error','interrupted','cancelled'].includes(run.status))+cancel;
 }
 function watchRun(id, docId, version, initialStatus) {
   if(runWatchers.has(id))return;
-  const watcher={timer:null,wasActive:['queued','running'].includes(initialStatus)};runWatchers.set(id,watcher);
+  const watcher={timer:null,wasActive:['queued','running','cancelling'].includes(initialStatus)};runWatchers.set(id,watcher);
   const selected=()=>selectedDoc?.id===docId&&selectedDoc?.version===version&&selectedDoc?.latest_run?.id===id&&!$('#library').hidden;
   const stop=()=>{clearTimeout(watcher.timer);if(runWatchers.get(id)===watcher)runWatchers.delete(id);};
   async function poll() {
@@ -223,7 +224,7 @@ function watchRun(id, docId, version, initialStatus) {
       if(current&&$('#document-progress'))$('#document-progress').innerHTML=renderAnalysisProgress(r);
       const panel=document.querySelector(`[data-run-panel="${id}"]`);
       if(panel&&!$('#activity').hidden)panel.outerHTML=renderRun(r);
-      if(['queued','running'].includes(r.status)){
+      if(['queued','running','cancelling'].includes(r.status)){
         watcher.wasActive=true;watcher.timer=setTimeout(poll,1500);return;
       }
       stop();
@@ -465,7 +466,7 @@ async function loadRuns() {
   $('#download-usage').onclick=()=>downloadJSON(report,'verinote-usage.json');
   const rows=await api('/api/runs');
   $('#runs').innerHTML=rows.map(renderRun).join('')||'<div class="empty">아직 실행 기록이 없습니다.</div>';
-  for(const r of rows)if(['queued','running'].includes(r.status))watchRun(r.id,r.document_id,r.version,r.status);
+  for(const r of rows)if(['queued','running','cancelling'].includes(r.status))watchRun(r.id,r.document_id,r.version,r.status);
 }
 function renderRun(r){return `<div class="panel" data-run-panel="${esc(r.id)}">${badge(r.status)} <strong>${esc({ontology:'사전 생성',extract:'관계 추출',legacy:'기존 추출'}[r.stage])} · ${esc(r.agent)} / ${esc(r.model||'기본 모델')}</strong>${r.ontology?`<p>${r.stage==='ontology'?'재생성 대상 사전':'기준 사전'} r${r.ontology.revision} · ${esc(r.ontology.sha256.slice(0,12))}</p>`:''}${renderRelationTypeWarnings(r.relation_type_warnings)}${renderDictionaryReconciliations(r.dictionary_reconciliations)}${renderDictionaryExclusions(r.dictionary_exclusions)}${renderAnalysisProgress(r)}<div data-coverage-result="${esc(r.id)}">${renderCoverage(r.coverage)}</div>${r.coverage?.available?`<button data-coverage="${esc(r.id)}">관계별 판단·사전 제약 보기</button>`:''}${renderUsage(r.usage)}${r.status==='error'?`<p class="error">${esc(r.detail)}</p>${executionGuidance(r.agent)}`:''}<p class="muted">${esc(date(r.created_at))}</p>${sourceLink(r.document_id,r.version)}<details><summary>실행 메타데이터</summary><pre class="source">${esc(JSON.stringify(r,null,2))}</pre><p class="muted">${providerById(r.agent)?.transport==='http'?'검사된 응답·실행·사용량은 서버 로컬에만 보관:':'프롬프트·stdout·stderr:'} data/runs/${esc(r.id)}/</p></details></div>`;}
 function renderCoverage(c) {
@@ -537,6 +538,7 @@ $('#usage-rates-form').onsubmit=e=>{e.preventDefault();attempt(async()=>{
 document.addEventListener('click',e=>{
   const b=e.target.closest('button');if(!b)return;
   if(b.dataset.coverage)attempt(async()=>{const run=await api(`/api/runs/${b.dataset.coverage}`);document.querySelector(`[data-coverage-result="${b.dataset.coverage}"]`).innerHTML=renderCoverage(run.coverage);});
+  if(b.dataset.cancelRun)openCancelRun(b.dataset.cancelRun,b.dataset.cancelStatus,b.dataset.cancelStage);
   if(b.dataset.view)showView(b.dataset.view);
   if(b.dataset.doc)attempt(()=>openDoc(b.dataset.doc));
   if(b.dataset.source)attempt(()=>openDoc(b.dataset.source,Number(b.dataset.version)));
@@ -763,6 +765,38 @@ function openDelete(doc,latestOnly){
   $('#delete-dialog').showModal();
 }
 $('#cancel-delete').onclick=()=>$('#delete-dialog').close();
+let cancelTarget;
+const CANCEL_RUN_BODY={
+  queued:()=>'대기 중인 실행은 모델을 호출하기 전에 취소됩니다. 그사이 처리가 시작되면 취소하지 않고 다시 확인을 요청합니다. 다른 실행과 질문은 계속됩니다.',
+  running:stage=>`이미 허용한 호출은 중단하지 않으므로 끝날 때까지 기다린 뒤 멈추며, 그 호출의 비용은 줄지 않습니다. 이 실행은 ${stage==='ontology'?'사전 초안을':'위키·관계 후보를'} 저장하지 않습니다. 검증을 마친 구간은 같은 조건으로 다시 실행할 때 재사용할 수 있습니다. 다른 실행과 질문은 계속됩니다.`
+};
+function openCancelRun(id,status,stage){
+  cancelTarget={id,status,stage};
+  $('#cancel-run-body').textContent=CANCEL_RUN_BODY[status](stage);
+  $('#cancel-run-error').textContent='';$('#confirm-cancel-run').disabled=false;
+  if(!$('#cancel-run-dialog').open)$('#cancel-run-dialog').showModal();
+}
+function renderRunViews(r){
+  const panel=document.querySelector(`[data-run-panel="${r.id}"]`);
+  if(panel)panel.outerHTML=renderRun(r);
+  if(selectedDoc?.latest_run?.id===r.id&&$('#document-progress'))$('#document-progress').innerHTML=renderAnalysisProgress(r);
+}
+$('#close-cancel-run').onclick=()=>$('#cancel-run-dialog').close();
+$('#confirm-cancel-run').onclick=()=>attempt(async()=>{
+  const {id,status,stage}=cancelTarget;$('#confirm-cancel-run').disabled=true;
+  try{
+    const {cancel,...r}=await api(`/api/runs/${id}/cancel`,'POST',{expected_status:status});
+    $('#cancel-run-dialog').close();renderRunViews(r);
+    if(r.status==='cancelling')watchRun(r.id,r.document_id,r.version,r.status);
+    notice(cancel.previous==='queued'?'대기 중인 실행을 취소했습니다.':'취소를 요청했습니다. 이미 허용한 호출이 끝나면 멈춥니다.');
+  }catch(error){
+    if(error.status!==409){$('#cancel-run-error').textContent=error.message;$('#confirm-cancel-run').disabled=false;return;}
+    $('#cancel-run-dialog').close();
+    const r=await api(`/api/runs/${id}`);renderRunViews(r);
+    if(status==='queued'&&r.status==='running'){openCancelRun(id,'running',stage);$('#cancel-run-error').textContent=error.message;}
+    else notice(error.message,true);
+  }
+});
 $('#confirm-delete').onclick=()=>attempt(async()=>{
   const {doc,latestOnly}=deleteTarget;$('#confirm-delete').disabled=true;
   try{

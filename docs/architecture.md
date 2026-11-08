@@ -4,7 +4,7 @@
 
 `documents`는 논리 문서 ID와 현재 버전을, `versions`는 불변 원본 바이트·텍스트·파일명·해시를 저장한다. 새 버전 등록은 낙관적 `expected_version` 확인과 한 트랜잭션으로 진행한다. 문서 제목은 논리 문서의 제목이며 파일명은 버전별로 보존한다. 명시적인 최신 리비전/전체 문서 삭제를 제공한다. 과거 버전 덮어쓰기는 제공하지 않는다.
 
-`runs`는 에이전트·모델·대상 문서 버전을 고정한다. 사전 첫 생성과 기본 관계 추출은 실행 중 원문 버전이 올라가도 결과를 원래 버전에만 저장한다. 사전 재생성과 `extraction_options`를 쓰는 추출은 요청부터 완료까지 원문 버전 등록·삭제가 없을 때만 저장하므로, 이런 실행이 대기·처리 중이면 `register`가 같은 쓰기 트랜잭션에서 새 버전 등록을 거부한다. 문서별 동시 실행은 DB unique index로 차단한다. 사전 생성과 관계 추출을 구분한다. 성공한 동일 사전 revision·추출 방식 버전의 재추출은 거부한다. 새 승인 revision 또는 개선된 추출 방식의 실행은 기존 검토를 보존하고 새 pending 후보를 추가한다. 실패한 실행은 부분 후보를 남기지 않으며 재시도 가능하다.
+`runs`는 에이전트·모델·대상 문서 버전을 고정한다. 사전 첫 생성과 기본 관계 추출은 실행 중 원문 버전이 올라가도 결과를 원래 버전에만 저장한다. 사전 재생성과 `extraction_options`를 쓰는 추출은 요청부터 완료까지 원문 버전 등록·삭제가 없을 때만 저장하므로, 이런 실행이 대기·처리 중이면 `register`가 같은 쓰기 트랜잭션에서 새 버전 등록을 거부한다. 문서별 동시 실행은 DB unique index로 차단한다. 대기·처리 중인 실행은 `cancel_run`으로 취소한다: 대기 중이면 곧바로 `cancelled`, 처리 중이면 `cancelling`이 되고, 워커가 새 호출 허용을 멈춘 뒤 `cancelled`로 바꾼다. `cancelling`과 `cancelled`는 대기·처리 중 거부 조건(`active_extraction`, 사전 변경과 새 버전 등록 거부)에 들지 않지만 `cancelling`은 문서 삭제를 거부한다. `Store.recover`는 `cancelling` 실행을 `cancelled`로 끝낸다. 취소한 실행은 후보를 저장하지 않는다. 사전 생성과 관계 추출을 구분한다. 성공한 동일 사전 revision·추출 방식 버전의 재추출은 거부한다. 새 승인 revision 또는 개선된 추출 방식의 실행은 기존 검토를 보존하고 새 pending 후보를 추가한다. 실패한 실행은 부분 후보를 남기지 않으며 재시도 가능하다.
 
 `items`는 ontology(추출 사전), page, fact를 같은 검토 계약으로 저장한다. 상태는 pending/approved/held/rejected다. `revision`은 내용 수정 및 판정마다 증가하고 요청자가 본 revision을 제출해야 한다. `events`는 생성·승인·보류·반려·철회·수정의 당시 payload, 행위자, 이유, 시각을 보존한다. 사전 및 사실 수정은 반드시 pending으로 전환한다. 위키 승인만으로 관계가 승인되지는 않는다.
 
@@ -114,7 +114,7 @@ POST `/api/documents/{id}/delete-latest`, `/delete`는 정확히 `{expected_vers
 
 사전 호출만 `CLI.complete(..., phase='ontology')`로 600초 기본 제한을 적용한다. 명시적 CLI timeout은 우선하며 다른 단계 기본값은 바꾸지 않는다. 자동 재시도는 없다. 성공적으로 병합·검증한 구간만 `runs/{id}/dictionary-checkpoint.json`에 atomic replace로 저장한다. `dictionary-progress.json`에는 완료/재사용 글자 수, 이전 실행 ID, 실제 시작 호출 수를 별도로 기록한다. schema 3 체크포인트는 사전·offset·제외·조정 감사 상태를 함께 저장한다. 저장에 실패한 구간은 진행률이나 최종 후보에 반영하지 않는다. 선택적 진행 표시 파일 쓰기는 경고로 처리한다.
 
-재시도는 DB에서 같은 문서 버전·에이전트·요청 모델의 error/interrupted 실행 최대 8개를 조회한다. symlink 경로/파일 및 30 MiB 초과 파일을 거부한다. 스키마·소유 실행·문서/원문 해시·프롬프트/처리 버전·분할 크기와 결정적 완료 경계를 확인하고, 완료 prefix 전체로 사전을 다시 검증한다. 호환되지 않는 기록은 제외하고 그 이유를 상세에 남긴다. 상속한 진행도 새 실행에 저장하여 반복 재시도를 지원한다. 삭제된 DB 실행은 파일 정리가 지연되어도 재사용할 수 없다. SQL 마이그레이션은 없으며 과거 실행에 복구 파일이 없으면 새로 처리한다. 요청 모델이 빈 문자열인 경우 제공자의 실제 기본 모델 변경은 검출하지 못한다.
+재시도는 DB에서 같은 문서 버전·에이전트·요청 모델의 error/interrupted/cancelled 실행 최대 8개를 조회한다. 대기 중에 취소되어 상세가 `QUEUED_CANCEL_DETAIL`인 cancelled 실행은 모델을 호출하지 않았으므로 조회에서 제외한다. symlink 경로/파일 및 30 MiB 초과 파일을 거부한다. 스키마·소유 실행·문서/원문 해시·프롬프트/처리 버전·분할 크기와 결정적 완료 경계를 확인하고, 완료 prefix 전체로 사전을 다시 검증한다. 호환되지 않는 기록은 제외하고 그 이유를 상세에 남긴다. 상속한 진행도 새 실행에 저장하여 반복 재시도를 지원한다. 삭제된 DB 실행은 파일 정리가 지연되어도 재사용할 수 없다. SQL 마이그레이션은 없으며 과거 실행에 복구 파일이 없으면 새로 처리한다. 요청 모델이 빈 문자열인 경우 제공자의 실제 기본 모델 변경은 검출하지 못한다.
 
 완료된 prefix의 재사용은 추가 모델 호출이 아니며 기존 호출 로그를 복사하지 않는다. 모든 실제 호출은 현재 실행의 구간 번호 폴더에 기록한다. 전체 완료 prefix만 재사용한 성공 실행은 명시적인 완료 marker로 새 호출 0회를 확인한다. marker가 없거나 손상되면 미확인으로 남긴다. 최종 `finish_run`은 전체 원문 검증·실행 상태·사전 유일성을 재검사한 후 하나의 pending 사전을 저장한다. 관계 추출은 모든 청크에 동일한 승인 사전을 보내며 청크당 80개 사실까지 검증한다. 프롬프트 UTF-8 상한은 120,000바이트다.
 
@@ -167,7 +167,7 @@ POST `/api/documents/{id}/delete-latest`, `/delete`는 정확히 `{expected_vers
 
 `extraction_coverage.py`는 검증된 청크의 인덱스/판단을 `runs/<id>/extraction-coverage.json`에 최대 2 MiB로 저장한다. 원문 전체와 저장 사실은 복제하지 않고, 제외한 응답 관계는 `excluded_facts`에 주어·목적어·관계 ID와 최대 300자 인용으로, 제외한 위키 주장은 `excluded_claims`에 남긴다. 이 상한을 넘는 쓰기는 버려진다. 그 실행에서 먼저 상한 안에 쓴 파일이 있으면 그 접두 구간이 남고, 없으면(예: 재개 실행의 재사용 청크가 첫 쓰기에서 이미 상한을 넘은 경우) 파일이 없다. 파일이 없으면 실행 결과와 무관하게 unavailable이다. 접두 구간이 남은 경우 성공 실행의 보고서는 청크 수가 맞지 않아 unavailable이고, 실패 실행의 보고서는 그 접두 구간만 집계하므로 실행 상세의 수보다 작을 수 있다. 전체 제외 수는 실행 상세에 표시하되, 상세는 2,000자에서 잘리므로 실패 실행의 오류 문구가 길면 빠질 수 있다. schema/실행/문서 버전/사전 pin과 source 길이, 청크 offset/length, 개수 및 인덱스를 검사한다. symlink/초과 크기/손상/identity 불일치는 unavailable이다. 청크 응답 관계 수(남은 사실과 제외 사실의 합), 사전 불일치 제외 수(`excluded_fact_count`), 근거 불가 제외 수(`unverifiable_fact_count`, `excluded_claim_count`)와 DB의 실제 저장 후보 수(관계와 인용이 모두 같을 때 중복 제거)를 구분한다. 위키 주장 인덱스는 청크별 claim_base로 전역 번호에 대응한다. `read_report`는 검증 뒤 파일에 없는 값(`excluded_fact_terms`, 판정에 쓴 관계별 허용 타입 `excluded_fact_allowed`, 표기·타입 제외 수, 현재 사전 revision과 상태 `current_dictionary_status`, 현재 문서 버전 여부, 실행 ID `run_id`)을 덧붙이고, 판정은 개체 이름에서 ID로 가는 색인(앞뒤 공백만 정리한 표기와 정확히 일치하는 이름만)으로 이름이 같은 개체를 알리되 그 개체로 연결하지는 않는다. 파일은 바꾸지 않는다. 목록 API는 요약만, 실행 상세 API는 구간별 점검을 반환한다.
 
-보고서는 DB 완료 전에 best effort로 저장하며 DB 실행 상태만 게시 여부를 결정한다. 보고서 저장 실패는 후보 저장을 취소하지 않는다. 실패·중단 실행의 보고서는 검증된 접두 구간일 뿐 저장 후보가 아니다. 소유 run을 DB에서 재확인하므로 삭제 이후 파일 정리가 지연되어도 보고서를 노출하지 않는다. 기존 실행의 보고서가 없으면 unavailable이며 0개나 완전 추출을 뜻하지 않는다. 추가 SQL migration이나 승인 자동화는 없다.
+보고서는 DB 완료 전에 best effort로 저장하며 DB 실행 상태만 게시 여부를 결정한다. 보고서 저장 실패는 후보 저장을 취소하지 않는다. 실패·중단·취소 실행의 보고서는 검증된 접두 구간일 뿐 저장 후보가 아니다. 소유 run을 DB에서 재확인하므로 삭제 이후 파일 정리가 지연되어도 보고서를 노출하지 않는다. 기존 실행의 보고서가 없으면 unavailable이며 0개나 완전 추출을 뜻하지 않는다. 추가 SQL migration이나 승인 자동화는 없다.
 
 ## 큰 원본 업로드와 분석 진행률
 
@@ -374,7 +374,7 @@ JSON payload. The strict option allowlist rejects malformed/missing OpenRouter
 snapshots before any resumed transmission. No credentials or key hashes are
 stored. Backup/restore of the SQLite file remains the rollback path; migration
 is additive and preserves old rows. Startup recovery marks queued/running jobs
-interrupted and preserves their snapshots; it never automatically retransmits.
+interrupted, ends cancelling runs as cancelled, and preserves their snapshots; it never automatically retransmits.
 
 Registration also captures a job-local dispatcher: adapter, credentials, sink,
 output limit and a copied rate snapshot. Agent/model and persisted options are
@@ -458,7 +458,7 @@ record under a different contract is not reused.
 Validated chunk prefixes are persisted in `extraction-checkpoint.json`, bound
 to source, dictionary revision/hash, provider/model, prompts, HTTP token/adapter options
 and, for runs registered with a concurrency or threshold policy, the contract above.
-Failed/interrupted jobs can reuse a compatible prefix after revalidation;
+Failed/interrupted/cancelled jobs can reuse a compatible prefix after revalidation;
 partial results remain unpublished until the final DB transaction succeeds.
 Register a new job after any adjustment;
 queued jobs retain their old snapshot. No automatic resend or fallback is added.
