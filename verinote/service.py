@@ -406,7 +406,7 @@ class Service:
                 payload = chunk_payload(doc, offset, chunk)
                 folder = self.root / 'runs' / run['id'] / str(index)
                 prompt = prepare_dictionary_prompt(cli, run['agent'], extraction_prompt, payload | pinned, context_limit, folder)
-                return ChunkTask(index, offset, chunk, payload, prompt, folder, time.monotonic() + CHUNK_TIMEOUT)
+                return ChunkTask(index, offset, chunk, payload, prompt, folder, time.monotonic() + CHUNK_TIMEOUT, CHUNK_TIMEOUT)
 
             def prepare_next(raw):
                 try:
