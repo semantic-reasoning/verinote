@@ -91,6 +91,14 @@ def validate_page(value, source, *, allow_no_claims=False):
     return {'title': text(value.get('title'), 'title'), 'claims': claims}
 
 
+def error_text(exc):
+    """str(exc), or the exception's type name when its own __str__ raises."""
+    try:
+        return str(exc)
+    except Exception:
+        return type(exc).__name__
+
+
 class Service:
     def __init__(self, store, root, cli=None, *, credentials=None, relation_type_warning_threshold=20, extraction_caller=None, extraction_caller_factory=None, quote_repair_limit=None):
         if extraction_caller_factory is not None and (extraction_caller is not None or not callable(extraction_caller_factory)):
@@ -287,7 +295,7 @@ class Service:
                 raise ValueError('작업 대기열이 가득 찼습니다.')
             from .extraction_timing import create_timing
             timing = create_timing(self.root, agent, stage, schema_version=2 if experiment else 1)
-            run = None
+            run = failed = None
             try:
                 run = self.store.create_run(document_id, agent, model, stage, expected_version, expected_generation, **({'regenerate': regenerate} if regenerate is not None else {}), **({'execution_options': options} if options is not None else {}), **({'extraction_options': experiment} if experiment is not None else {}))
                 timing.bind(run)
@@ -299,20 +307,19 @@ class Service:
                 self.pool.submit(self.extract, copy.deepcopy(run), transport, self.relation_type_warning_threshold, timing, context_limit)
                 return run
             except Exception as exc:
-                try:
-                    if run is not None:
-                        self.registered_extractions.pop(run['id'], None)
-                        self.store.run_status(run['id'], 'error', str(exc)[:2000])
-                finally:
-                    self.slots.release()
-                raise
+                failed = exc
+                if run is not None: self.registered_extractions.pop(run['id'], None)
+        try:  # outside extraction_lock: the status writes can each wait for a locked database, and a start of another document must not wait on them
+            if run is not None: self.record_failure(run['id'], error_text(failed))
+        finally:
+            self.slots.release()
+        raise failed
 
     def extract(self, run, transport=None, relation_type_warning_threshold=None, timing=None, context_limit=MAX_DICTIONARY_CONTEXT_BYTES):
         from .extraction_timing import create_timing, error_kind
         if timing is None:
             timing = create_timing(self.root, run['agent'], run['stage'], submitted=False, schema_version=2 if run.get('extraction_options') is not None else 1)
             timing.bind(run)
-        timing.worker_start()
         report = None
         report_ok = True
         checkpoint = None
@@ -320,9 +327,10 @@ class Service:
         coverage_repairs = 0
         located_quotes = 0
         located_places: list[str] = []
-        published = False
+        published = failing = False
         scheduler = None
         try:
+            timing.worker_start()
             experiment = run.get('extraction_options')
             if experiment is not None:
                 from .extraction_options import (
@@ -559,11 +567,11 @@ class Service:
             from .extraction_scheduler import ChunkFailure
             if isinstance(exc, ChunkFailure):
                 active_chunk, exc = exc.index, exc.cause
+            detail, failing = error_text(exc), True  # the finally below writes the error status even if this bookkeeping raises
             timing.end_chunk(error_kind(exc))
             timing.outcome('error', error_kind(exc))
             if report is not None:
                 write_report(self.root, report)
-            detail = str(exc)
             if active_chunk is not None:
                 detail = f'청크 {active_chunk} · {detail}'
             if coverage_repairs:
@@ -582,12 +590,27 @@ class Service:
                     detail += f' · {checkpoint.summary()}'
                     if not isinstance(exc, (RequestTooLarge, Conflict)):  # a refusal is refused again; a Conflict ended on a changed run, document or dictionary
                         detail += f' · {checkpoint.retry_notice()}'
-            self.store.run_status(run['id'], 'error', detail[:2000])
         finally:
+            if failing: self.record_failure(run['id'], detail)
             with self.extraction_lock:
                 self.registered_extractions.pop(run['id'], None)
             self.slots.release()
             timing.finish()
+
+    FAILURE_FALLBACK = '실행이 실패했지만 실패 상세를 저장하지 못했습니다.'
+
+    def record_failure(self, run_id, detail):
+        """Move a failed run to error. Only a restart (Store.recover) moves a run left queued or running: until then a new run of its
+        document, a dictionary change for its version and the deletion of every document are refused. Tries the detail twice, then the
+        detail with characters SQLite cannot store escaped, then a fixed sentence, and gives up silently after that."""
+        escaped = detail.encode('utf-8', 'backslashreplace').decode('utf-8')
+        texts = [detail[:2000], detail[:2000]] + ([escaped[:2000]] if escaped != detail else []) + [self.FAILURE_FALLBACK]
+        for text in texts:
+            try:
+                self.store.run_status(run_id, 'error', text)
+                return
+            except Exception:
+                continue
 
     def query(self, request):
         if not isinstance(request, dict) or set(request) - {'snapshot', 'action', 'subject', 'predicate', 'target'}:
