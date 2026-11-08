@@ -29,6 +29,7 @@ function make(over={}){
  vm.runInContext('let reviewTarget,selectedDoc=null;const labels={pending:"검토 대기",approved:"승인",rejected:"반려",held:"보류"};',ctx);
  vm.runInContext(cut('function renderCoverage(','function renderReasoningDiagnostic('),ctx);
  vm.runInContext(cut('function judgedAlias(','async function openDoc('),ctx);
+ vm.runInContext(cut('function renderLookupSpellingProblems(','function renderItem('),ctx);
  vm.runInContext(cut('function openReview(',"$('#cancel-review')"),ctx);
  vm.runInContext(cut("document.addEventListener('click',e=>{\n  const b=e.target.closest('button');",'let searchTimer'),ctx);
  const call=code=>vm.runInContext(code,ctx);

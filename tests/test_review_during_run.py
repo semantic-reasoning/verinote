@@ -333,6 +333,7 @@ const dictionary={id:'o',revision:2,status:'approved',kind:'ontology',payload:{}
 const doc={id:'a',version:1,items:[dictionary,fact],latest_run:{id:'r',status:'running',version:1}};
 const context=vm.createContext({console,$:el,selectedDoc:doc,JSON,labels:{},esc:String,attempt:fn=>{const t=fn();tasks.push(t);return t;},openDoc:async()=>{},notice(){},api:async()=>{throw new Error('refused by the server');}});
 vm.runInContext('let reviewTarget=null;',context);
+vm.runInContext(source.slice(source.indexOf('function renderLookupSpellingProblems('),source.indexOf('function renderItem(')),context);
 vm.runInContext(source.slice(source.indexOf('function openReview('),source.indexOf('let modelCatalogEpoch')),context);
 const open=id=>vm.runInContext(`openReview(${JSON.stringify(id)},'revise')`,context);
 const note=()=>el('#review-run-note');

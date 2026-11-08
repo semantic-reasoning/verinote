@@ -468,10 +468,16 @@ class Store:
         if action == 'revise' and payload is None:
             raise ValueError('수정할 사실이 필요합니다.')
         source = db.execute('SELECT text FROM versions WHERE document_id=? AND version=?', (row['document_id'], row['version'])).fetchone()[0]
-        from .ontology import dictionary_fact, validate_dictionary
+        from .ontology import (
+            dictionary_fact,
+            refuse_new_lookup_spelling_problems,
+            validate_dictionary,
+        )
         from .service import validate_fact, validate_page
         if row['kind'] == 'ontology':
             value = validate_dictionary(value, source)
+            if action == 'revise':
+                refuse_new_lookup_spelling_problems(json.loads(row['payload']), payload)
         elif row['kind'] == 'fact':
             run = db.execute('SELECT stage,ontology FROM runs WHERE id=?', (row['run_id'],)).fetchone()
             value = dictionary_fact(value, source, json.loads(run['ontology'])['payload']) if run and run['stage'] == 'extract' else validate_fact(value, source)
@@ -485,6 +491,7 @@ class Store:
         return {'id': item_id, 'revision': revision + 1, 'status': status}
 
     def add_dictionary_term(self, item_id, revision, expected_version, expected_generation, kind, spelling, quote, actor, reason, *, entity=None, name=None, entity_type=None):
+        from .ontology import lookup_spelling_problem
         from .service import evidence, text
         self.validate_reviewer(actor, reason)
         if kind not in ('alias', 'entity'):
@@ -504,7 +511,8 @@ class Store:
             entities = {e['id']: e for e in payload['entities']}
             if spelling in entities or any(a['alias'] == spelling for a in payload['aliases']):
                 raise Conflict('이미 사전에 있는 표기입니다.')
-            if spelling.startswith(('entity:', 'relation:')):
+            problem = lookup_spelling_problem('aliases' if kind == 'alias' else 'entities', spelling)
+            if problem == 'prefix':
                 raise ValueError('이 표기는 조회 참조 형식이라 사전에 추가할 수 없습니다.')
             if kind == 'alias':
                 target = entities.get(entity) if isinstance(entity, str) else None
@@ -516,7 +524,7 @@ class Store:
                 payload['aliases'].append(added)
                 note = f'사전 추가(별칭): {spelling} → {entity}'
             else:
-                if '\n' in spelling or '\t' in spelling:
+                if problem == 'control':
                     raise ValueError('줄바꿈이나 탭이 있는 표기는 개체 ID로 쓸 수 없습니다. 별칭으로 추가하세요.')
                 if not isinstance(entity_type, str) or entity_type not in {e['type'] for e in payload['entities']}:
                     raise ValueError('사전에 있는 개체 유형을 고르세요.')
