@@ -400,7 +400,7 @@ def job_calls(root, kind, owner):
                 clean['warnings'].append(warning[:500])
         except (ValueError, UnicodeError):
             pass
-        if clean['status'] in ('starting', 'running') and owner['status'] not in ('queued', 'running'):
+        if clean['status'] in ('starting', 'running') and owner['status'] not in ('queued', 'running', 'cancelling'):
             clean['complete'] = False
             clean['warnings'].append('작업은 종료되었지만 호출의 최종 사용량 기록을 확인하지 못했습니다.')
         try:
@@ -419,7 +419,7 @@ def job_calls(root, kind, owner):
             clean.update(http_public_fields(metadata))
             if usage.get('status') != 'unknown' and metadata.get('status') in ('running', 'success', 'error', 'not_started'):
                 clean['status'] = metadata['status']
-                if clean['status'] == 'running' and owner['status'] not in ('queued', 'running'):
+                if clean['status'] == 'running' and owner['status'] not in ('queued', 'running', 'cancelling'):
                     clean['complete'] = False
                     clean['warnings'].append('HTTP 호출 기록이 종료 상태로 저장되지 않았습니다.')
         if owner['agent'] != 'openrouter':

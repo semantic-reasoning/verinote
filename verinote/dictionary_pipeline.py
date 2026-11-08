@@ -37,7 +37,7 @@ from .ontology import (
     source_spans,
     validate_dictionary,
 )
-from .store import canonical, digest
+from .store import RunCancelled, canonical, digest
 from .usage import atomic_json, safe_file
 
 PIPELINE = 'source-spans-v1'
@@ -49,7 +49,7 @@ PREVIOUS_CONTEXT_PROMPT = 'dc930b0db7c45441abc314bb4b7038ff55d6efae48ce276914a46
 PREVIOUS_IMMUTABLE_PROMPT = '0e2a3892fe24a0ca48994dfa347ee40c9dc9a06b14ed76e53a43002cdfccba63'
 
 
-def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_threshold=DEFAULT_THRESHOLD, context_limit=60000, other_agent_ready):
+def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_threshold=DEFAULT_THRESHOLD, context_limit=60000, other_agent_ready, before_call=None):
     threshold = validate_threshold(relation_type_warning_threshold)
     source = doc['text']
     slices = list(bounded_spans(source, DICTIONARY_CHUNK_SIZE))
@@ -205,6 +205,7 @@ def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_thr
                 prompt = prepare(cli, run['agent'], DICTIONARY_PROMPT, payload, context_limit, folder / str(index))
             except RequestTooLarge as exc:
                 raise exc.with_advice(exc.generation_advice(accepted, other_agent_ready())) from exc
+            if before_call is not None: before_call()
             state['calls_started'] += 1
             write(folder / 'dictionary-progress.json', state)
             try:
@@ -227,7 +228,13 @@ def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_thr
         state['status'] = 'complete'
         write(folder / 'dictionary-progress.json', state)
         notice = admission_notice(cli, root, run, doc, dictionary, context_limit, other_agent_ready)
-        return dictionary, (f'{notice} · ' if notice else '') + summary()
+        done = summary()
+        return dictionary, (f'{notice} · ' if notice else '') + done, done
+    except RunCancelled as exc:
+        state['status'] = 'error'
+        write(folder / 'dictionary-progress.json', state)
+        exc.summary = summary()
+        raise
     except Exception as exc:
         state['status'] = 'error'
         write(folder / 'dictionary-progress.json', state)

@@ -33,6 +33,20 @@ class Conflict(ValueError):
     pass
 
 
+class RunCancelled(Exception):
+    """The run's status is cancelling or cancelled: its worker admits no further call. `summary` carries the stage's progress text when known."""
+    summary = ''
+
+
+QUEUED_CANCEL_DETAIL = '대기 중에 취소되었습니다. 이 실행은 모델을 호출하지 않았습니다.'
+
+
+def cancel_result(stage, topic=True):
+    """What a cancelled run does not save, by stage, with the topic particle (은/는) or the object particle (을/를)."""
+    noun, vowel = ('사전 초안', False) if stage == 'ontology' else ('위키·관계 후보', True) if stage == 'extract' else ('결과', True)
+    return noun + (('는' if vowel else '은') if topic else ('를' if vowel else '을'))
+
+
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS documents(id TEXT PRIMARY KEY,title TEXT NOT NULL,current_version INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS versions(document_id TEXT,version INTEGER,filename TEXT,text TEXT,raw BLOB,sha256 TEXT,created_at TEXT,PRIMARY KEY(document_id,version));
@@ -89,6 +103,8 @@ class Store:
     def recover(self):
         with self.connect(True) as db:
             db.execute("UPDATE runs SET status='interrupted',detail='서버가 재시작되었습니다. 다시 추출하세요.' WHERE status IN ('queued','running')")
+            for row in db.execute("SELECT id,stage FROM runs WHERE status='cancelling'").fetchall():
+                db.execute("UPDATE runs SET status='cancelled',detail=? WHERE id=?", (f"취소를 요청한 뒤 실행이 멈춘 것을 기록하기 전에 서버가 재시작되었습니다. {cancel_result(row['stage'])} 저장하지 않았습니다.", row['id']))
 
         with self.connect(True) as db:
             for row in db.execute('SELECT id,payload FROM questions').fetchall():
@@ -334,20 +350,62 @@ class Store:
             return [self.unpack_run(r) for r in db.execute('SELECT * FROM runs ORDER BY created_at DESC LIMIT 100')]
 
     def dictionary_retries(self, run):
+        """A run cancelled while queued (its detail is QUEUED_CANCEL_DETAIL) never called a model or saved a checkpoint, so it is not one of the eight candidates; extraction_retries leaves it out the same way."""
         with self.connect() as db:
             return [self.unpack_run(r) for r in db.execute(
-                "SELECT * FROM runs WHERE document_id=? AND version=? AND agent=? AND model=? AND stage='ontology' AND status IN ('error','interrupted') AND id<>? AND ontology IS ? ORDER BY created_at DESC,id DESC LIMIT 8",
-                (run['document_id'], run['version'], run['agent'], run['model'], run['id'], canonical(run['ontology']) if run['ontology'] else None))]
+                "SELECT * FROM runs WHERE document_id=? AND version=? AND agent=? AND model=? AND stage='ontology' AND status IN ('error','interrupted','cancelled') AND NOT (status='cancelled' AND detail=?) AND id<>? AND ontology IS ? ORDER BY created_at DESC,id DESC LIMIT 8",
+                (run['document_id'], run['version'], run['agent'], run['model'], QUEUED_CANCEL_DETAIL, run['id'], canonical(run['ontology']) if run['ontology'] else None))]
 
     def extraction_retries(self, run):
         with self.connect() as db:
             return [self.unpack_run(r) for r in db.execute(
-                "SELECT * FROM runs WHERE document_id=? AND version=? AND agent=? AND model=? AND stage='extract' AND status IN ('error','interrupted') AND id<>? ORDER BY created_at DESC,id DESC LIMIT 8",
-                (run['document_id'], run['version'], run['agent'], run['model'], run['id']))]
+                "SELECT * FROM runs WHERE document_id=? AND version=? AND agent=? AND model=? AND stage='extract' AND status IN ('error','interrupted','cancelled') AND NOT (status='cancelled' AND detail=?) AND id<>? ORDER BY created_at DESC,id DESC LIMIT 8",
+                (run['document_id'], run['version'], run['agent'], run['model'], QUEUED_CANCEL_DETAIL, run['id']))]
 
     def run_status(self, run_id, status, detail=''):
         with self.connect(True) as db:
-            db.execute('UPDATE runs SET status=?,detail=? WHERE id=?', (status, detail, run_id))
+            if not db.execute("UPDATE runs SET status=?,detail=? WHERE id=? AND status NOT IN ('cancelling','cancelled')", (status, detail, run_id)).rowcount:
+                if db.execute("SELECT 1 FROM runs WHERE id=? AND status IN ('cancelling','cancelled')", (run_id,)).fetchone():
+                    raise RunCancelled('실행이 취소되었습니다.')
+
+    def run_progress(self, run_id, detail):
+        with self.connect(True) as db:
+            db.execute("UPDATE runs SET detail=? WHERE id=? AND status='running'", (detail, run_id))
+
+    def raise_if_cancelled(self, run_id):
+        with self.connect() as db:
+            if db.execute("SELECT 1 FROM runs WHERE id=? AND status IN ('cancelling','cancelled')", (run_id,)).fetchone():
+                raise RunCancelled('실행이 취소되었습니다.')
+
+    STATUS_LABELS = {'queued': '대기 중', 'running': '처리 중', 'success': '완료', 'error': '실패', 'interrupted': '중단', 'cancelling': '취소 중', 'cancelled': '취소됨'}
+
+    def cancel_run(self, run_id, expected_status):
+        """Cancel a run in one write transaction and return the status it had. A queued run becomes cancelled at once and keeps the detail it
+        is given here for good: finish_cancel acts only on a cancelling run, so the detail of a run cancelled while queued, which says it never
+        called a model, stays as it is (#857 relies on this marker). A running run becomes cancelling, and its worker moves it to cancelled when it stops. expected_status is what the
+        caller saw; a run that has since changed is refused with a Conflict instead of being cancelled the other way."""
+        if expected_status not in ('queued', 'running'):
+            raise ValueError('expected_status는 queued 또는 running이어야 합니다.')
+        with self.connect(True) as db:
+            row = db.execute('SELECT status,stage FROM runs WHERE id=?', (run_id,)).fetchone()
+            if not row: raise ValueError('실행을 찾을 수 없습니다.')
+            status = row['status']
+            if status == 'cancelling':
+                raise Conflict('이미 취소를 요청한 실행입니다. 아직 멈추지 않았습니다.')
+            if status not in ('queued', 'running'):
+                raise Conflict(f"이미 끝난 실행이라 취소하지 않았습니다 (상태: {self.STATUS_LABELS.get(status, status)}).")
+            if status != expected_status:
+                raise Conflict('대기 중이던 실행이 처리 중으로 바뀌어 취소하지 않았습니다. 처리 중인 실행을 취소할지 다시 확인하세요.' if (expected_status, status) == ('queued', 'running')
+                               else '실행 상태가 바뀌어 취소하지 않았습니다. 실행 기록을 새로고침하세요.')
+            if status == 'queued':
+                db.execute("UPDATE runs SET status='cancelled',detail=? WHERE id=?", (QUEUED_CANCEL_DETAIL, run_id))
+            else:
+                db.execute("UPDATE runs SET status='cancelling',detail=? WHERE id=?", ('취소 요청됨: 이미 허용한 호출은 중단하지 않고 끝날 때까지 기다린 뒤, 새 호출 없이 멈춥니다. 멈출 때까지 이 실행 뒤의 실행과 질문은 기다립니다.', run_id))
+            return status
+
+    def finish_cancel(self, run_id, detail):
+        with self.connect(True) as db:
+            db.execute("UPDATE runs SET status='cancelled',detail=? WHERE id=? AND status='cancelling'", (detail, run_id))
 
     def finish_run(self, run_id, page=None, facts=None, dictionary=None, detail=''):
         with self.connect(True) as db:
@@ -414,22 +472,25 @@ class Store:
             return self._review_item(db, row, revision, action, actor, reason, payload)
 
     @staticmethod
-    def run_wait_advice(status, retry):
-        """The sentences shared by the refusals that tell a user to wait for a queued or running run: the queue note (queued only), where to see it end, and the restart escape."""
-        waits = '대기 중인 실행은 앞서 등록된 다른 문서의 실행이나 질문이 끝나야 시작합니다. ' if status == 'queued' else ''
-        return (f'{waits}실행 기록에서 끝난 것을 확인한 뒤 {retry} '
-                '실행이 멈춰 끝나지 않을 때만 서버를 재시작하세요. 재시작하면 대기·처리 중인 모든 실행과 질문이 중단으로 표시됩니다.')
+    def run_wait_advice(status, retry, stage):
+        """The sentences shared by the refusals that tell a user to wait for a queued or running run or to cancel it: the queue note (queued
+        only), where to see it end, the cancel alternative, and, for a running run, that its call in flight continues without saving a result.
+        retry is the user's next step as a stem, such as '다시 시도': the sentences end it with '하세요.' and '할 수 있고'."""
+        waits = '대기 중인 실행은 앞선 실행이나 질문이 끝나야 시작합니다. ' if status == 'queued' else ''
+        keeps = f' 처리 중이던 호출은 끝날 때까지 계속되지만 그 결과로 {cancel_result(stage, False)} 저장하지는 않습니다.' if status == 'running' else ''
+        return (f'{waits}기다리려면 실행 기록에서 끝난 것을 확인한 뒤 {retry}하세요. 기다리지 않으려면 실행 기록에서 이 실행을 취소하세요. '
+                f'취소하면 바로 {retry}할 수 있고, 다른 실행과 질문은 계속됩니다.{keeps}')
 
     @staticmethod
     def refuse_while_run_holds_dictionary(db, document_id, version):
-        """Inside the caller's write transaction: a queued or running run on this document version pins its dictionary, so a change is refused until the run ends."""
+        """Inside the caller's write transaction: a queued or running run on this document version pins its dictionary, so a change is refused until the run ends or is cancelled."""
         run = db.execute("SELECT id,stage,agent,model,status FROM runs WHERE document_id=? AND version=? AND status IN ('queued','running')",
                          (document_id, version)).fetchone()
         if run:
             job = '관계 추출' if run['stage'] == 'extract' else '사전 재생성'
             state = '대기 중' if run['status'] == 'queued' else '처리 중'
             raise Conflict(f"이 문서 버전의 {job} 실행 {run['id']}({run['agent']} / {run['model'] or '기본 모델'} · {state})이 끝나지 않아 사전을 바꿀 수 없습니다. "
-                           f"지금 바꾸면 호출 비용을 쓴 결과를 저장하지 못합니다. {Store.run_wait_advice(run['status'], '다시 시도하세요.')}")
+                           f"지금 바꾸면 호출 비용을 쓴 결과를 저장하지 못합니다. {Store.run_wait_advice(run['status'], '다시 시도', run['stage'])}")
 
     @staticmethod
     def needs_unchanged_document(run):
@@ -438,14 +499,14 @@ class Store:
 
     @staticmethod
     def refuse_while_run_needs_unchanged_document(db, document_id):
-        """Inside the caller's write transaction: a queued or running run of this document that needs it unchanged makes a new source version refused until the run ends."""
+        """Inside the caller's write transaction: a queued or running run of this document that needs it unchanged makes a new source version refused until the run ends or is cancelled."""
         run = db.execute("SELECT * FROM runs WHERE document_id=? AND status IN ('queued','running')", (document_id,)).fetchone()
         if run and Store.needs_unchanged_document(run):
             job = '병렬 수나 청크 임계 정책을 등록한 관계 추출' if run['stage'] == 'extract' else '사전 재생성'
             state = '대기 중' if run['status'] == 'queued' else '처리 중'
             raise Conflict(f"이 문서의 {job} 실행 {run['id']}({run['agent']} / {run['model'] or '기본 모델'} · {state})이 끝나지 않아 새 원문 버전을 등록할 수 없습니다. "
                            '이 실행은 요청된 때부터 끝날 때까지 이 문서에 원문 버전 등록이나 삭제가 없어야 결과를 저장하므로, 지금 등록하면 호출 비용을 쓴 결과를 저장하지 못합니다. '
-                           + Store.run_wait_advice(run['status'], '다시 등록하세요.'))
+                           + Store.run_wait_advice(run['status'], '다시 등록', run['stage']))
 
     @staticmethod
     def refuse_publish_after_document_change(db, run):
@@ -678,7 +739,13 @@ class Store:
             if not doc:
                 raise ValueError('문서를 찾을 수 없습니다.')
             self.check_document_token(doc, expected_version, expected_generation)
-            if db.execute("SELECT 1 FROM runs WHERE status IN ('queued','running') LIMIT 1").fetchone() or any(json.loads(r[0])['status'] in ('queued', 'running') for r in db.execute('SELECT payload FROM questions')):
+            cancelling = db.execute("SELECT 1 FROM runs WHERE status='cancelling' LIMIT 1").fetchone()
+            waiting = (db.execute("SELECT 1 FROM runs WHERE status IN ('queued','running') LIMIT 1").fetchone()
+                       or any(json.loads(r[0])['status'] in ('queued', 'running') for r in db.execute('SELECT payload FROM questions')))
+            if cancelling and not waiting:
+                raise Conflict('취소한 실행이 아직 멈추지 않았습니다. 실행 기록에서 취소됨으로 바뀐 뒤 삭제하세요. '
+                               '제한 시간(추출 청크 360초, 기본 사전 생성 호출 600초)이 지나도 바뀌지 않으면 서버를 재시작하세요. 재시작하면 대기·처리 중인 모든 실행과 질문이 중단으로 표시됩니다.')
+            if waiting:
                 raise Conflict('추출 또는 질문 작업이 진행 중입니다. 모든 작업 완료 후 삭제하세요.')
             versions = [r[0] for r in db.execute('SELECT version FROM versions WHERE document_id=? ORDER BY version', (document_id,))]
             if latest_only and len(versions) == 1:

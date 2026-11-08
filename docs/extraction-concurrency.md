@@ -104,7 +104,9 @@ Repeated startup is idempotent. Legacy writers that name existing columns contin
 to insert NULL, and legacy readers selecting their existing columns remain valid.
 
 Before downgrading, stop admission and drain active jobs, or restart with normal
-recovery to mark queued/running jobs interrupted. Do not hand a queued experiment
+recovery to mark queued/running jobs interrupted. Code that predates run cancel leaves a
+`cancelling` row as it is, so restart the new code once first: its recovery ends that row
+as cancelled. Do not hand a queued experiment
 to old code that cannot enforce its contract. The additive column may remain on
 downgrade. Old code cannot reuse experimental checkpoint contracts and must start
 those extractions again. A pre-upgrade SQLite backup can restore the prior schema
@@ -153,7 +155,11 @@ then publishes once after all chunks pass. Later completed outputs waiting for
 an earlier chunk remain in memory, so failure/restart can require paying for
 them again. After a recorded failure no new initial or repair call is admitted;
 already admitted calls are awaited within their deadlines and their observed
-usage remains included. A generic nonzero exit is reported as such, without
+usage remains included. A cancel behaves the same way: after it commits no new initial or
+repair call is admitted, calls already admitted are awaited within their deadlines, and
+completed later outputs still waiting for an earlier chunk when the scheduler stops are
+not saved (#855), so a cancel can also require paying for them again. Claude with a concurrency or threshold policy and Copilot
+concurrency 2 share this scheduler and therefore these semantics. A generic nonzero exit is reported as such, without
 claiming it was a rate limit. There is no automatic retry or backoff.
 
 Copilot reports GitHub AI credits. Aggregation uses `reported_credits` grouped by

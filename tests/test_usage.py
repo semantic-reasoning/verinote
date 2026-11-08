@@ -512,6 +512,17 @@ class Accounting(unittest.TestCase):
         self.assertEqual(self.store.usage_rates(),{'agy':RATE})
         self.store.save_usage_rates({});self.assertEqual(self.store.settings()['selected'],'copilot')
 
+    def test_a_cancelling_run_is_still_waiting_for_its_call_and_a_cancelled_run_is_not(self):
+        key, call = 'b' * 32, 'a' * 32
+        folder = self.root / 'runs' / key / '1'
+        folder.mkdir(parents=True)
+        atomic_json(folder / 'run.json', {'agent': 'openrouter', 'transport': 'http', 'provider_call_id': call, 'status': 'running'})
+        atomic_json(folder / 'usage.json', record('openrouter', 'm', status='running', provider_call_id=call))
+        ended = ['작업은 종료되었지만 호출의 최종 사용량 기록을 확인하지 못했습니다.', 'HTTP 호출 기록이 종료 상태로 저장되지 않았습니다.']
+        for status, warnings in (('queued', []), ('running', []), ('cancelling', []), ('cancelled', ended), ('error', ended)):
+            owner = {'id': key, 'agent': 'openrouter', 'model': 'm', 'status': status, 'stage': 'extract'}
+            self.assertEqual(job_calls(self.root, 'runs', owner)[0]['warnings'], warnings, status)
+
 
 class UsageHTTP(unittest.TestCase):
     setUp=workflow.HTTP.setUp
