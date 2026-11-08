@@ -7,9 +7,11 @@ from unittest.mock import patch
 import test_workflow as workflow
 from test_workflow import (
     DICTIONARY,
+    EDITED,
     FACTS,
     SOURCE,
     approved_dictionary,
+    change_dictionary_behind_review,
     extraction_response,
 )
 
@@ -177,7 +179,8 @@ class QuoteRepair(unittest.TestCase):
         for action in ('pending', 'revise'):
             def revoke():
                 d = self.dictionary
-                self.store.review(d['id'], d['revision'], action, 'Reviewer', 'changed during repair', DICTIONARY if action == 'revise' else None)  # noqa: B023 (intentional: same-iteration action)
+                change_dictionary_behind_review(self.store, d, status='pending', revision=d['revision'] + 1,
+                                                payload=EDITED if action == 'revise' else None)  # noqa: B023 (intentional: same-iteration action)
                 return repair()
             with self.subTest(action=action):
                 run, doc, calls = self.execute([broken(), revoke])

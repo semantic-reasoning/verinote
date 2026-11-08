@@ -11,6 +11,7 @@ from test_workflow import (
     FACTS,
     SOURCE,
     approved_dictionary,
+    change_dictionary_behind_review,
     extraction_response,
 )
 
@@ -283,7 +284,7 @@ class ExtractionRecovery(unittest.TestCase):
         self.execute(doc, [extraction_response(), TimeoutError('timeout')])
         dictionary = next(item for item in self.store.document(doc['id'])['items'] if item['kind'] == 'ontology')
         def revoke(cli):
-            self.store.review(dictionary['id'], dictionary['revision'], 'pending', 'R', 'recheck')
+            change_dictionary_behind_review(self.store, dictionary, status='pending', revision=dictionary['revision'] + 1)
             return extraction_response()
         result, calls = self.execute(doc, [revoke])
         self.assertEqual(result['status'], 'error')

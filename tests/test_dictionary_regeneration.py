@@ -9,7 +9,14 @@ from urllib.error import HTTPError
 
 import test_workflow as workflow
 from test_ontology import wire_dictionary
-from test_workflow import DICTIONARY, FACTS, PAGE, SOURCE, approved_dictionary
+from test_workflow import (
+    DICTIONARY,
+    FACTS,
+    PAGE,
+    SOURCE,
+    approved_dictionary,
+    change_dictionary_behind_review,
+)
 
 from verinote.service import Service
 from verinote.store import Conflict, Store, canonical
@@ -81,7 +88,7 @@ class Regeneration(unittest.TestCase):
         item = self.rejected(); run = self.start(item)
         with self.assertRaises(Conflict): self.start(item)
         self.store.run_status(run['id'], 'running')
-        self.store.review(item['id'], item['revision'], 'pending', 'Reviewer', '수동 검토')
+        change_dictionary_behind_review(self.store, item, status='pending', revision=item['revision'] + 1)
         current = self.dictionary()
         with self.assertRaises(Conflict): self.store.finish_run(run['id'], dictionary=DICTIONARY)
         self.assertEqual(self.dictionary(), current)

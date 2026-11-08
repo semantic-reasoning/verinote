@@ -2,6 +2,7 @@ import concurrent.futures
 import copy
 import io
 import json
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -17,7 +18,7 @@ from verinote.documents import MAX_DOCX_XML_BYTES, decode_document
 from verinote.engine import query
 from verinote.server import Server
 from verinote.service import Service, validate_fact
-from verinote.store import Conflict, Store, ident, now
+from verinote.store import Conflict, Store, canonical, ident, now
 
 SOURCE = '주문은 결제에 의존한다. 결제는 원장에 의존한다.'
 FACTS = [dict(subject='주문', predicate='depends_on', object='결제', quote='주문은 결제에 의존한다.'), dict(subject='결제', predicate='depends_on', object='원장', quote='결제는 원장에 의존한다.')]
@@ -58,6 +59,24 @@ def approved_dictionary(store, doc_id, payload=DICTIONARY):
     item = next(i for i in store.document(doc_id)['items'] if i['kind']=='ontology')
     store.review(item['id'], 1, 'approved', 'Reviewer', '사전 검증')
     return next(i for i in store.document(doc_id)['items'] if i['kind']=='ontology')
+
+
+EDITED = copy.deepcopy(DICTIONARY)
+EDITED['relations'][0]['description'] += ' 수정'
+
+
+def change_dictionary_behind_review(store, item, *, status=None, revision=None, payload=None, run_id=None):
+    """Write only the given fields of a dictionary row, outside Store.
+
+    Review refuses a dictionary change while a run on its document version is queued or running,
+    so a test reaches the dictionary checks in finish_run this way, one field at a time.
+    """
+    fields = {k: v for k, v in (('status', status), ('revision', revision), ('run_id', run_id),
+                                ('payload', None if payload is None else canonical(payload))) if v is not None}
+    db = sqlite3.connect(store.path)
+    try:
+        with db: db.execute(f"UPDATE items SET {','.join(k + '=?' for k in fields)} WHERE id=?", (*fields.values(), item['id']))
+    finally: db.close()
 
 
 class Workflow(unittest.TestCase):
