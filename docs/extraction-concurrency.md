@@ -191,3 +191,5 @@ records readable by old code. For a code downgrade, stop/drain the service and
 restore a pre-feature SQLite backup in an isolated/stopped environment, accepting
 loss of subsequent work, or retain a reader supporting schema 3. Disabling the
 flag while keeping this version is the non-destructive configuration rollback.
+
+계약 3의 [손실 점검](extraction-loss.md)은 관계가 0개인 청크를 승인 순서대로 보충 호출합니다. 보충은 기존 청크의 남은 제한 시간과 실패·취소 차단을 공유합니다. 파일별 보충 예약 한도는 재시도를 포함해 4회이며, 각 파일의 기록과 한도는 독립적입니다. 다른 청크가 이미 실패했다면 보충을 새로 시작하지 않습니다.

@@ -30,7 +30,6 @@ from .extraction_evaluation import (
 from .extraction_timing import read_extraction_timing
 from .job_scheduler import JobScheduler
 from .ontology import (
-    EXTRACTION_CONTRACT_VERSION,
     EXTRACTION_PROMPT,
     QUOTE_REPAIR_PROMPT,
     extraction_prompts,
@@ -329,7 +328,7 @@ class FakeCLI(CLI):
     """Labeled synthetic oracle, exercising normal validation and repair paths."""
     def __init__(self, case, scenario):
         super().__init__()
-        self.outputs = ideal_outputs(case, contract_version=EXTRACTION_CONTRACT_VERSION); self.scenario = scenario
+        self.outputs = ideal_outputs(case, contract_version=2); self.scenario = scenario
         self.state = {'calls': 0}; self.case = case
     def complete(self, agent, model, prompt, folder, *, phase=None):
         folder = Path(folder); folder.mkdir(parents=True, exist_ok=True)
@@ -445,7 +444,7 @@ def execute_document(root, case, make_caller, budget, row, close, *, agent, mode
         service.pool = pool
         budget.check()
         run = service.start(doc['id'], agent, model, expected_version=1, expected_generation=1,
-                            extraction_concurrency=extraction_concurrency, extraction_policy=extraction_policy)
+                            extraction_concurrency=extraction_concurrency, extraction_policy=extraction_policy, extraction_contract=2)
         row.update(run_id=run['id'], document_id=doc['id'])
         if extraction_policy is not None: row['extraction_options'] = copy.deepcopy(run['extraction_options'])
         if case['dataset_version'] == 2:
@@ -520,7 +519,7 @@ def measure(output, *, cases=('short', 'long'), scenario='normal', mode='fake', 
               'row_seconds_includes_previous_owner_close': extraction_policy is not None and process_mode == 'batch',
               'effective_timeout_seconds': timeout, 'max_output_bytes': 1024*1024, 'chunk_size': 8000,
               'input_reuse': 'fresh_store_per_repetition', 'limits': vars(limits),
-              'dataset_version': 1, 'evaluator_version': 1, 'extraction_contract': EXTRACTION_CONTRACT_VERSION,
+              'dataset_version': 1, 'evaluator_version': 1, 'extraction_contract': 2,
               'prompt_sha256': digest(EXTRACTION_PROMPT.encode()), 'repair_prompt_sha256': digest(QUOTE_REPAIR_PROMPT.encode()),
               'human_review': load_manifest()['human_review'], 'cases': [{'id': c['case_id'], 'source_sha256': c['source_sha256'],
               'case_sha256': sha(c), 'dictionary_sha256': sha(c['dictionary'])} for c in fixtures]},

@@ -5,6 +5,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -159,7 +160,11 @@ class Consumers(unittest.TestCase):
 
 
 class Flow(unittest.TestCase):
-    setUp = workflow.Workflow.setUp
+    def setUp(self):
+        workflow.Workflow.setUp(self)
+        # These historical fixtures assert contract-2 call counts and persistence semantics.
+        contract = patch('verinote.store.EXTRACTION_CONTRACT_VERSION', 2)
+        contract.start(); self.addCleanup(contract.stop)
     tearDown = workflow.Workflow.tearDown
 
     def start(self):
@@ -367,7 +372,11 @@ class Flow(unittest.TestCase):
 
 
 class Passages(unittest.TestCase):
-    setUp = workflow.Workflow.setUp
+    def setUp(self):
+        workflow.Workflow.setUp(self)
+        # These historical fixtures assert contract-2 call counts and persistence semantics.
+        contract = patch('verinote.store.EXTRACTION_CONTRACT_VERSION', 2)
+        contract.start(); self.addCleanup(contract.stop)
     tearDown = workflow.Workflow.tearDown
 
     def test_exact_occurrences_with_overlaps_and_a_true_total(self):

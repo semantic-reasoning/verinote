@@ -92,7 +92,7 @@ def resolve_quote_repairs(value, source, issues, response, contract_version):
             first = source.find(quote)
         except ValueError:
             first = -1
-        if first < 0 or (contract_version == 2 and source.find(quote, first + 1) >= 0):
+        if first < 0 or (contract_version in (2, 3) and source.find(quote, first + 1) >= 0):
             gone[kind][int(index)] = path
             refused.append({'path': path, 'before': item['quote'][:MAX_EXCLUDED_QUOTE], 'reply': reply[:MAX_EXCLUDED_QUOTE]})
         else:
@@ -538,7 +538,7 @@ def read_report(root, store, run_id):
         saved = db.execute("SELECT count(*) FROM items WHERE run_id=? AND kind='fact'", (run_id,)).fetchone()[0]
     if (not source or run['stage'] != 'extract' or not run['ontology']
             or type(run['ontology'].get('extraction_contract')) is not int
-            or run['ontology']['extraction_contract'] not in (1, 2)):
+            or run['ontology']['extraction_contract'] not in (1, 2, 3)):
         return unavailable
     raw = safe_file(root, f'runs/{run_id}/extraction-coverage.json', MAX_REPORT_BYTES)
     if raw is None:

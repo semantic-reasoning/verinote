@@ -482,7 +482,7 @@ async function loadRuns() {
   $('#runs').innerHTML=rows.map(renderRun).join('')||'<div class="empty">아직 실행 기록이 없습니다.</div>';
   for(const r of rows)if(['queued','running','cancelling'].includes(r.status))watchRun(r.id,r.document_id,r.version,r.status);
 }
-function renderRun(r){return `<div class="panel" data-run-panel="${esc(r.id)}">${badge(r.status)} <strong>${esc({ontology:'사전 생성',extract:'관계 추출',legacy:'기존 추출'}[r.stage])} · ${esc(r.agent)} / ${esc(r.model||'기본 모델')}</strong>${r.ontology?`<p>${r.stage==='ontology'?'재생성 대상 사전':'기준 사전'} r${r.ontology.revision} · ${esc(r.ontology.sha256.slice(0,12))}</p>`:''}${renderRelationTypeWarnings(r.relation_type_warnings)}${renderDictionaryReconciliations(r.dictionary_reconciliations)}${renderDictionaryExclusions(r.dictionary_exclusions)}${renderAnalysisProgress(r)}<div data-coverage-result="${esc(r.id)}">${renderCoverage(r.coverage)}</div>${r.coverage?.available?`<button data-coverage="${esc(r.id)}">관계별 판단·사전 제약 보기</button>`:''}${renderUsage(r.usage)}${r.status==='error'?`<p class="error">${esc(r.detail)}</p>${executionGuidance(r.agent)}`:''}<p class="muted">${esc(date(r.created_at))}</p>${sourceLink(r.document_id,r.version)}<details><summary>실행 메타데이터</summary><pre class="source">${esc(JSON.stringify(r,null,2))}</pre><p class="muted">${providerById(r.agent)?.transport==='http'?'검사된 응답·실행·사용량은 서버 로컬에만 보관:':'프롬프트·stdout·stderr:'} data/runs/${esc(r.id)}/</p></details></div>`;}
+function renderRun(r){return `<div class="panel" data-run-panel="${esc(r.id)}">${badge(r.status)} <strong>${esc({ontology:'사전 생성',extract:'관계 추출',legacy:'기존 추출'}[r.stage])} · ${esc(r.agent)} / ${esc(r.model||'기본 모델')}</strong>${r.ontology?`<p>${r.stage==='ontology'?'재생성 대상 사전':'기준 사전'} r${r.ontology.revision} · ${esc(r.ontology.sha256.slice(0,12))}</p>`:''}${renderRelationTypeWarnings(r.relation_type_warnings)}${renderDictionaryReconciliations(r.dictionary_reconciliations)}${renderDictionaryExclusions(r.dictionary_exclusions)}${renderAnalysisProgress(r)}<div data-coverage-result="${esc(r.id)}">${renderCoverage(r.coverage)}${renderLossAudit(r.loss_audit)}</div>${r.coverage?.available||r.loss_audit?.available?`<button data-coverage="${esc(r.id)}">관계별 판단·사전 제약·손실 점검 보기</button>`:''}${renderUsage(r.usage)}${r.status==='error'?`<p class="error">${esc(r.detail)}</p>${executionGuidance(r.agent)}`:''}<p class="muted">${esc(date(r.created_at))}</p>${sourceLink(r.document_id,r.version)}<details><summary>실행 메타데이터</summary><pre class="source">${esc(JSON.stringify(r,null,2))}</pre><p class="muted">${providerById(r.agent)?.transport==='http'?'검사된 응답·실행·사용량은 서버 로컬에만 보관:':'프롬프트·stdout·stderr:'} data/runs/${esc(r.id)}/</p></details></div>`;}
 function renderCoverage(c) {
   if(!c)return '';
   if(!c.available)return `<p class="muted">${esc(c.warning)}</p>`;
@@ -521,7 +521,7 @@ function renderExcludedClaims(chunk,gap){
   const rows=chunk.excluded_claims||[];if(!rows.length)return '';
   return `<p><strong>근거 불가로 제외한 위키 주장 ${esc(rows.length)}개</strong> · 저장하지 않았습니다. 보정 뒤에도 인용이 원문의 한 위치로 확인되지 않았으며, 아래 문구는 근거로 쓰지 않습니다. 번호는 보정을 요청한 응답 기준이고 본문과 문구는 최대 300자입니다.</p>${rows.map(r=>`<p>위키 주장 ${esc(Number(r.path.split('.')[1])+1)} · ${esc(r.heading)} · ${esc(r.text)}<br>원문의 한 위치로 확인되지 않은 모델 문구: ${esc(r.quote)}${r.predicates.length?`<br>이 주장 제외로 표현 제약 근거가 남지 않은 관계: ${esc(r.predicates.join(', '))}`:''}${r.gaps.map(g=>`<br>${esc(gap[g.code])} · ${esc(g.detail)}`).join('')}</p>`).join('')}`;
 }
-function usageStage(stage){return {ontology:'사전 생성',extract:'관계 추출',quote_repair:'인용 보정',question:'질문',legacy:'기존 추출'}[stage]||stage;}
+function usageStage(stage){return {ontology:'사전 생성',extract:'관계 추출',quote_repair:'인용 보정',extraction_recovery:'누락 보충 점검',question:'질문',legacy:'기존 추출'}[stage]||stage;}
 function usageNumber(value){if(value==null)return '미확인';if(value>0&&value<1e-8)return '<0.00000001';return Number(value).toLocaleString('ko-KR',{maximumFractionDigits:8});}
 function renderReasoningDiagnostic(call) {
   if(call.transport!=='http')return '';
@@ -551,7 +551,7 @@ $('#usage-rates-form').onsubmit=e=>{e.preventDefault();attempt(async()=>{
 });};
 document.addEventListener('click',e=>{
   const b=e.target.closest('button');if(!b)return;
-  if(b.dataset.coverage)attempt(async()=>{const run=await api(`/api/runs/${b.dataset.coverage}`);document.querySelector(`[data-coverage-result="${b.dataset.coverage}"]`).innerHTML=renderCoverage(run.coverage);});
+  if(b.dataset.coverage)attempt(async()=>{const run=await api(`/api/runs/${b.dataset.coverage}`);document.querySelector(`[data-coverage-result="${b.dataset.coverage}"]`).innerHTML=renderCoverage(run.coverage)+renderLossAudit(run.loss_audit);});
   if(b.dataset.cancelRun)openCancelRun(b.dataset.cancelRun,b.dataset.cancelStatus,b.dataset.cancelStage);
   if(b.dataset.cancelQuestion)openCancelQuestion(b.dataset.cancelQuestion,b.dataset.cancelStatus);
   if(b.dataset.view)showView(b.dataset.view);
@@ -860,3 +860,10 @@ async function loadCleanup(){
 
 // Guidance links also navigate out of the current application view.
 document.addEventListener('click',e=>{if(e.target.closest('[data-open-settings]')){e.preventDefault();showView('settings');$('#openrouter-setup').scrollIntoView({behavior:'smooth'});}});
+
+function renderLossAudit(a){
+  if(!a)return '';
+  if(!a.available)return `<p class="error">${esc(a.warning)}</p>`;
+  const labels={not_eligible:'보충 대상 아님',completed:'보충 점검 완료',budget_exhausted:'4회 한도로 미점검',previous_attempt:'이전 시도 결과 불확실: 반복 호출 안 함',budget_unknown:'이전 호출 기록 불명: 추가 호출 안 함',no_capacity:'후보 한도로 미점검'};
+  return `<section class="coverage"><h3>손실 점검 · 원문 대조 필요</h3><p>처리 구간 ${esc(a.processed_chunks)}/${esc(a.total_chunks)} · 초기 관계 ${esc(a.initial_fact_count)}개 · 보충 후보 ${esc(a.recovered_fact_count)}개 · 원문 위치 확인된 미해결 ${esc(a.located_unresolved_count)}개 · 인용 미확인 ${esc(a.unverified_count)}개 · 최종 관계 0개 구간 ${esc(a.zero_fact_chunks)}개</p><p>보충 완료 ${esc(a.recovery_completed)}구간 · 보충 미실행 ${esc(a.recovery_skipped)}구간. 원문 위치 확인은 관계의 의미가 맞다는 판정이 아닙니다. 처리 완료·보충 완료도 누락 없음을 보증하지 않습니다. 미해결 후보는 그래프에 포함되지 않으며 사전 수정·재승인 후 재추출하여 검토해야 합니다.</p>${(a.chunks||[]).map((c,i)=>`<details><summary>구간 ${i+1} · ${esc(labels[c.recovery_status])} · 최종 후보 ${esc(c.retained_fact_count)}개</summary><p>점검 신호: ${esc(c.flags.join(', ')||'없음')} (0개·no_evidence는 누락 의심 신호이며 사실 존재의 증거가 아닙니다)</p>${c.unresolved.map(r=>`<details><summary>${esc(r.subject)} → ${esc(r.predicate)} → ${esc(r.object)} · ${esc(r.reason)}</summary><p>${esc(r.origin)} 응답 ${r.row+1}번 · ${r.span?`원문 ${esc(r.span[0])}~${esc(r.span[1])}자 위치 확인`:'원문 위치 미확인'}</p><pre class="source">${esc(r.quote)}</pre></details>`).join('')}</details>`).join('')}</section>`;
+}

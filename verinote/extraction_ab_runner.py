@@ -33,7 +33,6 @@ from .extraction_evaluation import _read, load_case
 from .extraction_timing import read_extraction_timing
 from .extraction_transport import ExtractionSpec, ExtractionTransport
 from .ontology import (
-    EXTRACTION_CONTRACT_VERSION,
     EXTRACTION_PROMPT,
     QUOTE_REPAIR_PROMPT,
     extraction_prompts,
@@ -78,7 +77,7 @@ def capture_environment(model):
             'tree': _command(['git', 'rev-parse', 'HEAD^{tree}'], repo),
             'cli_version': match[1], 'cli_version_source': 'cli_version_command',
             'python': platform.python_version(), 'platform': platform.platform(),
-            'requested_model': model, 'extraction_contract': EXTRACTION_CONTRACT_VERSION, 'transport': spec.to_dict(), 'provider_cache_state': 'unknown',
+            'requested_model': model, 'extraction_contract': 2, 'transport': spec.to_dict(), 'provider_cache_state': 'unknown',
             'contract_sha256': _hash(repo/'docs/extraction-sonnet-baseline-completed.md'), 'plan_sha256': sha(experiment_plan()),
             'dictionary_sha256': {key: digest(load_case(key)['dictionary']) for key in ('short', 'long', 'dense', 'none', 'boundary')},
             'source_hashes': {p.relative_to(repo).as_posix(): _hash(p) for p in source_files},
@@ -94,7 +93,7 @@ def run_experiment(output, *, model, limits, owner_factory=None, clock=None, inv
     budget = Budget(limits, clock=clock)
     synthetic = owner_factory is not None
     environment = ({'requested_model': model, 'python': platform.python_version(), 'synthetic': True,
-                    'extraction_contract': EXTRACTION_CONTRACT_VERSION}
+                    'extraction_contract': 2}
                    if synthetic else capture_environment(model))
     environment['invocation'] = list(invocation) if invocation is not None else ['python_api', 'run_experiment']
     writer = ReportWriter(output); root = writer.folder
