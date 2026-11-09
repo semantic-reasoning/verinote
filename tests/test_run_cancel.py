@@ -403,6 +403,35 @@ class Queued(Base):
         self.assertEqual(self.store.run(b['id'])['detail'], C1)
         self.assertEqual(service.slots._value, 8)
 
+    def test_a_run_cancelled_while_queued_shows_zero_calls_on_the_run_and_in_the_usage_report(self):
+        first, second = self.two()
+        gate = Gate(hold=(1,))
+        service = self.service(gate)
+        self.start(service, first)
+        self.assertTrue(gate.wait_entered(1))
+        b = self.start(service, second)
+        service.cancel(b['id'], 'queued')
+        self.finish(service, gate)
+        usage = service.with_usage('runs', self.store.run(b['id']))['usage']
+        self.assertEqual((usage['calls'], usage['unknown_call_count_jobs'], usage['details']), (0, 0, []))
+        from verinote.usage import job_calls
+        owner = next(o for o in self.store.usage_owners()[0] if o['id'] == b['id'])  # the owner usage_report reads
+        self.assertEqual(job_calls(self.root, 'runs', owner), [])
+
+    def test_only_the_queued_cancel_marker_reads_as_zero_calls(self):
+        from verinote.usage import job_calls
+        for stage in ('extract', 'ontology'):
+            for status, detail, unknown in (('cancelled', C1, False), ('cancelled', EXTRACT_HEAD, True), ('error', C1, True)):
+                with self.subTest(stage=stage, status=status, detail=detail):
+                    owner = {'id': 'c' * 32, 'agent': 'agy', 'model': '', 'stage': stage, 'status': status, 'detail': detail}
+                    calls = job_calls(self.root, 'runs', owner)
+                    self.assertEqual([c['call_count_known'] for c in calls], [False] if unknown else [])
+        folder = self.root / 'runs' / ('d' * 32) / '1'
+        folder.mkdir(parents=True)
+        (folder / 'usage.json').write_text('{}')
+        owner = {'id': 'd' * 32, 'agent': 'agy', 'model': '', 'stage': 'extract', 'status': 'cancelled', 'detail': C1}
+        self.assertEqual([c['call_id'] for c in job_calls(self.root, 'runs', owner)], [f"runs/{'d' * 32}/1"])  # a log outranks the marker
+
     def test_a_queued_run_whose_worker_already_started_keeps_the_queued_detail_and_releases_its_slot(self):
         first, second = self.two()
         gate = Gate(hold=(1,))
@@ -420,6 +449,7 @@ class Queued(Base):
         self.assertEqual((row['status'], row['detail']), ('cancelled', C1))
         self.assertEqual(gate.calls, [(1, False)])
         self.assertEqual(service.slots._value, 8)
+        self.assertEqual(service.with_usage('runs', row)['usage']['calls'], 0)
 
     def test_runs_cancelled_while_queued_do_not_fill_the_window_of_retry_candidates(self):
         target, blocker = self.document(3, 'target'), self.document(2, 'blocker')
