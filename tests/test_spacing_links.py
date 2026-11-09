@@ -390,9 +390,9 @@ class InheritedTie(unittest.TestCase):
 
 
 class Policy(unittest.TestCase):
-    def test_filter_policy_is_5_and_older_policies_stay_readable(self):
-        self.assertEqual(FILTER_POLICY, 5)
-        self.assertEqual(SUPPORTED_FILTER_POLICIES, (1, 2, 3, 4, 5))
+    def test_filter_policy_is_6_and_older_policies_stay_readable(self):
+        self.assertEqual(FILTER_POLICY, 6)
+        self.assertEqual(SUPPORTED_FILTER_POLICIES, (1, 2, 3, 4, 5, 6))
 
     def test_code_refused_under_older_policy_and_wrong_kind(self):
         run = {'id': 'r', 'document_id': 'd', 'version': 1}

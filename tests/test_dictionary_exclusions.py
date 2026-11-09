@@ -99,6 +99,57 @@ class FilterRules(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 merge_generated_dictionary(EMPTY, output, spans, source, source)
 
+    def test_missing_reference_excludes_each_kind_without_mutating_response(self):
+        for kind in ('entities', 'aliases', 'relations'):
+            with self.subTest(kind=kind):
+                source, spans, output = self.sample(shared_type=True)
+                output['entities'][1]['quote_ref'] = [spans[-1]['id']] * 2
+                row = output[kind][-1]
+                row.pop('quote_ref')
+                before = json.dumps(output, sort_keys=True)
+                merged, excluded = merge_generated_dictionary(EMPTY, output, spans, source, source)
+                direct = next(r for r in excluded if r['kind'] == kind)
+                self.assertEqual(direct, {'kind': kind, 'row': len(output[kind]),
+                    'identifier': row.get('id', row.get('alias')), 'code': 'reference'})
+                self.assertEqual(merged['entities'][0]['id'], 'a')
+                self.assertEqual(json.dumps(output, sort_keys=True), before)
+                self.assertNotIn(row.get('id', row.get('alias')),
+                    [r.get('id', r.get('alias')) for r in merged[kind]])
+
+    def test_missing_reference_entity_excludes_dependencies_and_keeps_prior_definition(self):
+        source, spans, output = self.sample()
+        output['entities'][1].pop('quote_ref')
+        merged, excluded = merge_generated_dictionary(EMPTY, output, spans, source, source)
+        self.assertEqual([r['code'] for r in excluded], ['reference', 'excluded_entity', 'excluded_type'])
+        previous = {'entities': [{'id': 'b', 'name': 'Beta', 'type': 'Device', 'quote': spans[-1]['text']}],
+                    'aliases': [], 'relations': []}
+        merged, excluded = merge_generated_dictionary(previous, output, spans, source, source)
+        self.assertIn(previous['entities'][0], merged['entities'])
+        self.assertEqual([r['code'] for r in excluded], ['reference'])
+        self.assertEqual(len(merged['aliases']), 1)
+        self.assertEqual(len(merged['relations']), 1)
+
+    def test_missing_reference_conflict_does_not_override_duplicate_checks(self):
+        source, spans, output = self.sample()
+        output['entities'].append({'id': 'a', 'name': 'Alpha', 'type': 'Changed'})
+        merged, excluded = merge_generated_dictionary(EMPTY, output, spans, source, source)
+        self.assertNotIn('a', [r['id'] for r in merged['entities']])
+        self.assertIn('definition_conflict', [r['code'] for r in excluded])
+        self.assertIn({'kind': 'entities', 'row': 3, 'identifier': 'a', 'code': 'reference'}, excluded)
+
+    def test_missing_reference_does_not_relax_other_structure_checks(self):
+        for kind in ('entities', 'aliases', 'relations'):
+            for change in ('null', 'missing_definition', 'extra'):
+                with self.subTest(kind=kind, change=change):
+                    source, spans, output = self.sample()
+                    row = output[kind][0]
+                    row.pop('quote_ref')
+                    if change == 'null': row['quote_ref'] = None
+                    elif change == 'extra': row['extra'] = 'value'
+                    else: row.pop(next(iter(row)))
+                    with self.assertRaises(ValueError):
+                        merge_generated_dictionary(EMPTY, output, spans, source, source)
+
     def test_unknown_and_reversed_refs_are_recoverable(self):
         for ref in (['missing', 'missing'], None):
             source, spans, output = self.sample()
@@ -165,6 +216,62 @@ class Generation(unittest.TestCase):
         self.assertEqual(read_report(self.root, self.store, second['id'])['total_count'], 1)
         saved = json.loads(self.checkpoint(second).read_text())
         self.assertEqual(saved['exclusions']['identity']['run_id'], second['id'])
+
+    def test_missing_relation_reference_checkpoint_continues_and_resumes_once(self):
+        doc = self.new_doc(SOURCE.ljust(4000) * 2 + SOURCE)
+        def missing(payload):
+            ref = [payload['sources'][0]['id']] * 2
+            return {'entities': [{'id': 'kept', 'name': SOURCE.split()[0], 'type': 'Thing', 'quote_ref': ref}],
+                    'aliases': [], 'relations': [{'id': 'missing_evidence', 'description': 'No evidence',
+                    'subject_types': ['Thing'], 'object_types': ['Thing']}]}
+        first, calls = self.run_job(doc, [DICTIONARY, missing, TimeoutError('later chunk')])
+        self.assertEqual(first['status'], 'error')
+        self.assertEqual([r['offset'] for r in calls], [0, 4000, 8000])
+        saved = json.loads(self.checkpoint(first).read_text())
+        self.assertEqual(saved['offset'], 8000)
+        self.assertIn('kept', [r['id'] for r in saved['dictionary']['entities']])
+        self.assertNotIn('missing_evidence', [r['id'] for r in saved['dictionary']['relations']])
+        report = read_report(self.root, self.store, first['id'])
+        self.assertEqual((report['total_count'], report['direct_count'], report['dependent_count']), (1, 1, 0))
+        self.assertEqual(report['items'][0]['chunk'], 2)
+        self.assertEqual(report['items'][0]['row'], 1)
+        second, calls = self.run_job(doc, [DICTIONARY])
+        self.assertEqual(second['status'], 'success', second['detail'])
+        self.assertEqual([r['offset'] for r in calls], [8000])
+        self.assertEqual(read_report(self.root, self.store, second['id'])['total_count'], 1)
+        self.assertEqual(self.store.document(doc['id'])['items'][0]['status'], 'pending')
+        self.assertEqual(self.store.snapshot()['facts'], [])
+
+    def test_policy5_prefix_reused_without_rewriting_old_checkpoint(self):
+        doc = self.new_doc(SOURCE.ljust(4000) + SOURCE)
+        first, _ = self.run_job(doc, [bad_name, TimeoutError('fixture')])
+        path = self.checkpoint(first); saved = json.loads(path.read_text())
+        saved['contract']['filter_policy'] = 5
+        path.write_text(json.dumps(saved)); before = path.read_bytes()
+        second, calls = self.run_job(doc, [DICTIONARY])
+        self.assertEqual(second['status'], 'success', second['detail'])
+        self.assertEqual([r['offset'] for r in calls], [4000])
+        self.assertEqual(path.read_bytes(), before)
+        new = json.loads(self.checkpoint(second).read_text())
+        self.assertEqual(new['contract']['filter_policy'], 6)
+        self.assertEqual(new['resumed_from'], first['id'])
+        self.assertEqual(read_report(self.root, self.store, second['id'])['total_count'], 1)
+
+    def test_policy5_corruption_and_policy4_do_not_reuse_schema3_prefix(self):
+        for change in ('identity', 'report', 'reconciliation', 'policy4', 'future', 'float'):
+            with self.subTest(change=change):
+                doc = self.new_doc(SOURCE.ljust(4000) + SOURCE)
+                first, _ = self.run_job(doc, [bad_name, TimeoutError('fixture')])
+                path = self.checkpoint(first); saved = json.loads(path.read_text())
+                saved['contract']['filter_policy'] = 5
+                if change == 'identity': saved['contract']['document_id'] = 'wrong'
+                elif change == 'report': saved['exclusions']['items'].clear()
+                elif change == 'reconciliation': saved['reconciliations']['identity']['version'] = 99
+                else: saved['contract']['filter_policy'] = {'policy4': 4, 'future': 99, 'float': 5.0}[change]
+                path.write_text(json.dumps(saved))
+                second, calls = self.run_job(doc, [DICTIONARY, DICTIONARY])
+                self.assertEqual(second['status'], 'success', second['detail'])
+                self.assertEqual([r['offset'] for r in calls], [0, 4000])
 
     def test_fatal_chunk_rolls_back_exclusions_and_candidate_changes(self):
         doc = self.new_doc(SOURCE.ljust(4000) + SOURCE)

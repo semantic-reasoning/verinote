@@ -6,12 +6,12 @@ from .ontology import (
     validate_dictionary,
 )
 
-FILTER_POLICY = 5
-SUPPORTED_FILTER_POLICIES = (1, 2, 3, 4, FILTER_POLICY)
+FILTER_POLICY = 6
+SUPPORTED_FILTER_POLICIES = (1, 2, 3, 4, 5, FILTER_POLICY)
 REASONS = {
     'definition_conflict': '충돌 제안을 조정 검토 내역에 보류했습니다. 기존 정의가 옳다고 확정한 것은 아닙니다.',
     'entity_alias_conflict': '개체 ID가 별칭과 겹쳐 조정 검토 내역에 보류했습니다.',
-    'reference': '선택한 원문 구간이 없거나 순서가 잘못되었습니다.',
+    'reference': '원문 구간 참조가 누락되었거나, 선택한 구간이 없거나 순서가 잘못되었습니다.',
     'entity_evidence': '선택한 원문에 개체 이름이 없습니다.',
     'alias_existing_entity': '기존 개체 ID와 별칭 이름이 같아 새 별칭만 제외했습니다.',
     'alias_existing_target': '기존 별칭과 다른 개체를 가리켜 새 별칭만 제외했습니다. 기존 매핑을 보존했으므로 승인 전 동음이의 별칭의 의미와 범위를 확인하세요.',
@@ -54,10 +54,11 @@ def reconcile_generated_dictionary(previous, output, spans, source, chunk):
     for kind in LIMITS:
         seen: dict[str, dict] = {}
         for index, row in enumerate(output[kind], 1):
-            if set(row) != FIELDS[kind] | {'quote_ref'}:
+            if set(row) not in (FIELDS[kind], FIELDS[kind] | {'quote_ref'}):
                 raise ValueError(f'{kind}[{index}]: quote_ref와 지정된 필드만 필요합니다.')
             definition = _dictionary_definition(kind, row)
-            quote = quote_for(row['quote_ref'], spans)
+            # An absent reference supplies no evidence; malformed supplied refs still fail.
+            quote = quote_for(row['quote_ref'], spans) if 'quote_ref' in row else ''
             key = definition[key_field(kind)]
             if key in seen and seen[key] != definition:
                 conflicts.add((kind, key))
