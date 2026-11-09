@@ -2,6 +2,7 @@
 import copy
 import json
 import re
+from collections import Counter
 
 MAX_FACTS = 80
 MAX_DICTIONARY_BYTES = 24 * 1024 * 1024
@@ -58,7 +59,7 @@ def _stale_judgement(row, entities):
 
 
 def lookup_spelling_problem(kind, spelling):
-    """Why lookup cannot select by this spelling, for an entity ID (kind 'entities') or an alias (kind 'aliases') a human adds: 'prefix', 'control' or None."""
+    """Why lookup cannot select an entity by this spelling of an entity ID (kind 'entities'), an entity name (kind 'names') or an alias (kind 'aliases'): 'prefix', 'control' (entity IDs only) or None. Human paths refuse such a spelling when it is new; stored rows are listed."""
     from .entity_identity import PREFIXES
     if spelling.startswith(PREFIXES):
         return 'prefix'
@@ -68,10 +69,10 @@ def lookup_spelling_problem(kind, spelling):
 
 
 def lookup_spelling_problems(dictionary):
-    """Rows of a shape-valid dictionary whose spelling lookup cannot select: [{kind, index, spelling, reason}], index = 1-based position in the given rows, spelling stripped as text() stores it."""
+    """Rows of a shape-valid dictionary whose spelling lookup cannot select: [{kind, index, spelling, reason}], kind 'entities' (ID), 'names' (entity name) or 'aliases', index = 1-based position in the entities or aliases rows, spelling stripped as text() stores it."""
     found = []
-    for kind, field in (('entities', 'id'), ('aliases', 'alias')):
-        for index, row in enumerate(dictionary[kind], 1):
+    for kind, rows, field in (('entities', 'entities', 'id'), ('names', 'entities', 'name'), ('aliases', 'aliases', 'alias')):
+        for index, row in enumerate(dictionary[rows], 1):
             spelling = row[field].strip()
             if kind == 'aliases' and spelling == row['entity'].strip():
                 continue  # validate_dictionary drops an identity alias, so it is never stored
@@ -81,6 +82,7 @@ def lookup_spelling_problems(dictionary):
     return found
 
 
+LOOKUP_SPELLING_LABELS = {'entities': 'entities[{}]', 'names': 'entities[{}].name', 'aliases': 'aliases[{}]'}
 LOOKUP_SPELLING_REASONS = {
     'prefix': 'entity: 또는 relation:으로 시작하면 조회가 개체·관계 참조로 해석하므로, 이 표기로는 이 개체를 찾지 못합니다. 접두사 없이 쓰세요.',
     'control': '개체 ID에는 줄바꿈이나 탭을 쓸 수 없습니다. 원문 표기에 줄바꿈이나 탭이 있으면 별칭으로 넣으세요.',
@@ -88,12 +90,34 @@ LOOKUP_SPELLING_REASONS = {
 
 
 def refuse_new_lookup_spelling_problems(stored, revised):
-    """Raise ValueError for rows of the revised dictionary that lookup cannot select and that the stored one does not already hold under the same kind and spelling."""
-    held = {(p['kind'], p['spelling']) for p in lookup_spelling_problems(stored)}
-    new = [p for p in lookup_spelling_problems(revised) if (p['kind'], p['spelling']) not in held]
+    """Raise ValueError for rows of the revised dictionary that lookup cannot select beyond the number of rows the stored one holds under the same kind and exact spelling.
+
+    Entity IDs and aliases are unique, so this keeps or moves a stored row; entity names are not, so a further row with a held name is new.
+    Within one revise a held spelling may move to another row (as an alias may change its target), since the count does not grow."""
+    held = Counter((p['kind'], p['spelling']) for p in lookup_spelling_problems(stored))
+    # A name is credited first to a revised row that is the same (id, name) pair as a stored one, so the refusal names the added row, not the kept one.
+    pairs = Counter((e['id'].strip(), e['name'].strip()) for e in stored['entities'] if lookup_spelling_problem('names', e['name'].strip()))
+    problems = lookup_spelling_problems(revised)
+    kept = set()
+    for number, p in enumerate(problems):
+        if p['kind'] == 'names':
+            row = revised['entities'][p['index'] - 1]
+            pair = (row['id'].strip(), p['spelling'])
+            if pairs[pair]:
+                pairs[pair] -= 1
+                held['names', p['spelling']] -= 1
+                kept.add(number)
+    new = []
+    for number, p in enumerate(problems):
+        if number in kept:
+            continue
+        if held[p['kind'], p['spelling']]:
+            held[p['kind'], p['spelling']] -= 1
+        else:
+            new.append(p)
     if new:
-        rows = '; '.join(f"{p['kind']}[{p['index']}] {json.dumps(p['spelling'], ensure_ascii=False)}: {LOOKUP_SPELLING_REASONS[p['reason']]}" for p in new[:5])
-        raise ValueError(f"새로 넣을 수 없는 개체 ID·별칭이 있습니다. {rows}" + (f' 외 {len(new) - 5}개' if len(new) > 5 else ''))
+        rows = '; '.join(f"{LOOKUP_SPELLING_LABELS[p['kind']].format(p['index'])} {json.dumps(p['spelling'], ensure_ascii=False)}: {LOOKUP_SPELLING_REASONS[p['reason']]}" for p in new[:5])
+        raise ValueError(f"새로 넣을 수 없는 개체 ID·이름·별칭이 있습니다. {rows}" + (f' 외 {len(new) - 5}개' if len(new) > 5 else ''))
 
 
 def _dictionary_row(kind, row, source, entities):
