@@ -137,7 +137,9 @@ def identity_graph(snapshot):
 
 
 def candidates(graph, value, kind='entity'):
-    """Resolve exact id/name/alias or a ref. Unknown explicit refs fail closed."""
+    """Resolve exact id/name/alias or a ref. Unknown explicit refs fail closed.
+
+    A value starting with entity: or relation: is matched only as a ref, so an id, name or alias with that prefix never selects by that spelling."""
     if kind not in ('entity', 'relation'): raise ValueError('개체 또는 관계 후보가 필요합니다.')
     rows = graph['entities' if kind == 'entity' else 'relations']
     if value.startswith(PREFIXES):

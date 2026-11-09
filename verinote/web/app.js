@@ -187,7 +187,8 @@ async function openDoc(id, version) {
 function renderLookupSpellingProblems(problems) {
   if(!problems?.length)return '';
   const reason={prefix:'entity: 또는 relation:으로 시작하면 조회가 개체·관계 참조로 해석하므로, 이 표기로는 이 개체를 찾지 못합니다.',control:'새 개체 ID에는 줄바꿈이나 탭을 쓸 수 없습니다.'};
-  return `<section class="panel"><strong>새로 넣을 수 없는 개체 ID·별칭 ${problems.length}개</strong><ul>${problems.map(p=>`<li>${esc(p.kind)}[${p.index}] ${esc(JSON.stringify(p.spelling))}: ${esc(reason[p.reason])}</li>`).join('')}</ul><p>이미 저장된 행이므로 이 행 때문에 승인이나 다른 내용 수정이 거부되지는 않습니다. 내용 수정으로 이 행을 지우거나 표기를 바꾸면 같은 표기를 내용 수정으로 다시 넣을 수 없습니다.</p></section>`;
+  const label={entities:i=>`entities[${i}]`,names:i=>`entities[${i}].name`,aliases:i=>`aliases[${i}]`};
+  return `<section class="panel"><strong>새로 넣을 수 없는 개체 ID·이름·별칭 ${problems.length}개</strong><ul>${problems.map(p=>`<li>${esc(Object.hasOwn(label,p.kind)?label[p.kind](p.index):`${p.kind}[${p.index}]`)} ${esc(JSON.stringify(p.spelling))}: ${esc(reason[p.reason])}</li>`).join('')}</ul><p>이미 저장된 행이므로 이 행 때문에 승인이나 다른 내용 수정이 거부되지는 않습니다. 내용 수정으로 이 행을 지우거나 표기를 바꾸면 같은 표기를 내용 수정으로 다시 넣을 수 없습니다.</p></section>`;
 }
 function renderItem(item) {
   const p=item.payload;

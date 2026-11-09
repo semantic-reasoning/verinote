@@ -626,9 +626,12 @@ class Store:
             else:
                 if problem == 'control':
                     raise ValueError('줄바꿈이나 탭이 있는 표기는 개체 ID로 쓸 수 없습니다. 별칭으로 추가하세요.')
+                name = text(name if name is not None else spelling, 'name')
+                if lookup_spelling_problem('names', name):
+                    raise ValueError('이 이름은 entity: 또는 relation:으로 시작해 조회가 개체·관계 참조로 해석하므로, 이 이름으로는 이 개체를 찾지 못합니다. 접두사 없이 쓰세요.')
                 if not isinstance(entity_type, str) or entity_type not in {e['type'] for e in payload['entities']}:
                     raise ValueError('사전에 있는 개체 유형을 고르세요.')
-                payload['entities'].append({'id': spelling, 'name': text(name if name is not None else spelling, 'name'), 'type': entity_type, 'quote': quote})
+                payload['entities'].append({'id': spelling, 'name': name, 'type': entity_type, 'quote': quote})
                 note = f'사전 추가(새 개체): {spelling} · {entity_type}'
             return self._review_item(db, row, revision, 'revise', actor, f'{note} · {reason.strip()}', payload)
 
