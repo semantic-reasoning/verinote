@@ -433,9 +433,7 @@ def job_calls(root, kind, owner):
         calls.append(clean)
     if not calls and kind == 'runs' and owner.get('stage') in ('ontology', 'extract') and owner['status'] == 'success':
         # Positive evidence of a fully resumed run, never infer zero from absent logs.
-        filename, pipeline = (('dictionary-progress.json', 'source-spans-v1') if owner['stage'] == 'ontology'
-                              else ('extraction-progress.json', 'approved-extraction-v1'))
-        raw = safe_file(root, f'runs/{key}/{filename}')
+        raw, pipeline = progress_marker(root, key, owner['stage'])
         try:
             marker = json.loads(raw) if raw else {}
             if (isinstance(marker, dict) and type(marker.get('schema_version')) is int and marker['schema_version'] == 1
@@ -448,6 +446,19 @@ def job_calls(root, kind, owner):
                 return []
         except (ValueError, TypeError, UnicodeError):
             pass
+    if not calls and kind == 'runs' and owner.get('stage') in ('ontology', 'extract') and owner['status'] in ('error', 'cancelled'):
+        # The marker's error status is written when the run ends, from the in-memory count that is raised before every model call; a marker
+        # still at running may lag, so it is not trusted. It checks the schema version, pipeline, run id, status and zero
+        # count, and leaves out the resumed-success check's resume and size fields, which a zero error marker does not need. A new model call path must raise calls_started before the call.
+        raw, pipeline = progress_marker(root, key, owner['stage'])
+        try:
+            marker = json.loads(raw) if raw else {}
+            if (isinstance(marker, dict) and type(marker.get('schema_version')) is int and marker['schema_version'] == 1
+                    and marker.get('pipeline') == pipeline and marker.get('run_id') == key
+                    and marker.get('status') == 'error' and type(marker.get('calls_started')) is int and marker['calls_started'] == 0):
+                return []
+        except (ValueError, TypeError, UnicodeError):
+            pass
     if not calls and kind == 'runs' and owner['status'] == 'cancelled':
         from .store import QUEUED_CANCEL_DETAIL
         if owner.get('detail') == QUEUED_CANCEL_DETAIL:  # Store.cancel_run's marker: the run was cancelled before it started
@@ -457,6 +468,13 @@ def job_calls(root, kind, owner):
         missing.update(call_id=f'{kind}/{key}/unknown', stage='question' if kind == 'questions' else owner.get('stage', 'legacy'), status='unknown', call_count_known=False, warnings=['호출 로그가 없어 사용량과 호출 횟수를 확인할 수 없습니다.'])
         calls.append(missing)
     return calls
+
+
+def progress_marker(root, key, stage):
+    """The raw text of a run's progress marker (None if it cannot be read) and the pipeline name the marker must carry for stage."""
+    filename, pipeline = (('dictionary-progress.json', 'source-spans-v1') if stage == 'ontology'
+                          else ('extraction-progress.json', 'approved-extraction-v1'))
+    return safe_file(root, f'runs/{key}/{filename}'), pipeline
 
 
 def summarize(calls):
