@@ -540,6 +540,10 @@ class Service:
                                     locations += f' 외 {len(issues) - 5}개'
                                 if self.quote_repair_limit is not None and repair_calls >= self.quote_repair_limit:
                                     raise ValueError(f'{locations}: 원문에 없는 인용 또는 위치가 모호한 인용입니다. 벤치마크 인용 보정 {self.quote_repair_limit}회 한도에 도달했습니다.')
+                                # After a recorded failure the repair would be a new call. This narrows, and does not close, the window in which
+                                # a repair is announced and then refused: a failure recorded after this check still reaches the status write
+                                # below, and the strict admit in scheduler.repair() refuses the call as the backstop.
+                                if scheduler is not None: scheduler.check()
                                 self.store.run_status(run['id'], 'running', f'청크 {index} · {locations}: 원문 인용 보정 중 (이번 실행 추가 호출 {repair_calls + 1}회째 · 청크당 1회)')
                                 try:
                                     with timing.section('repair', index):

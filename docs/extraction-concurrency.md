@@ -15,7 +15,7 @@ contiguous validated checkpoint prefix. Running calls plus completed responses a
 never exceed the chosen concurrency. The deadline begins at initial dispatch and
 covers worker admission, request, ordering, repair and validation. A worker error
 closes admission for both new initial calls and repairs; previously admitted calls
-are drained and their observed usage remains counted. Consequently a failed
+are drained and their observed usage remains counted. A chunk before the failing one whose admitted call (initial or repair) answers is still validated in source order and saved to the checkpoint when it passes without a new call after the failure; validation stops at the first chunk that fails validation, would need a repair call not yet admitted, or reaches its deadline. Consequently a failed
 parallel document can cost more than a failed sequential document. A document
 failure does not close a shared batch transport. Service shutdown rejects new
 registration and public factory calls, drains already registered work using its
@@ -155,13 +155,14 @@ sequential invocation. No version subprocess runs during registration.
 
 The existing bounded scheduler validates and saves only a contiguous prefix,
 then publishes once after all chunks pass. Later completed outputs waiting for
-an earlier chunk remain in memory, so failure/restart can require paying for
-them again. After a recorded failure no new initial or repair call is admitted;
+an earlier chunk remain in memory, so a restart, or a failure at that earlier
+chunk, can require paying for them again. After a recorded failure no new initial or repair call is admitted;
 already admitted calls are awaited within their deadlines and their observed
 usage remains included. A cancel behaves the same way: after it commits no new initial or
 repair call is admitted, calls already admitted are awaited within their deadlines, and
-completed later outputs still waiting for an earlier chunk when the scheduler stops are
-not saved (#855), so a cancel can also require paying for them again. Claude with a concurrency or threshold policy and Copilot
+their responses are validated and saved in source order up to the first chunk that would
+need a repair call not yet admitted, fails validation, or reaches its deadline; that chunk and the later ones
+are called again by a rerun. Claude with a concurrency or threshold policy and Copilot
 concurrency 2 share this scheduler and therefore these semantics. A generic nonzero exit is reported as such, without
 claiming it was a rate limit. There is no automatic retry or backoff.
 
