@@ -143,6 +143,7 @@ class Service:
         self.cancel_lock = threading.Lock()
         self.queue = []
         self.queue_lock = threading.Lock()
+        self.unsubmitted = set()
         self.cleanup_lock = threading.Lock()
         self.cleanup_logs()
 
@@ -345,6 +346,7 @@ class Service:
                         self.futures[run['id']] = self.pool.submit(self.extract, copy.deepcopy(run), transport, self.relation_type_warning_threshold, timing, context_limit)
                     except BaseException:
                         self.queue.remove(('run', run['id']))
+                        self.unsubmitted.add(('run', run['id']))
                         raise
                 return run
             except Exception as exc:
@@ -357,6 +359,7 @@ class Service:
         raise failed
 
     def extract(self, run, transport=None, relation_type_warning_threshold=None, timing=None, context_limit=MAX_DICTIONARY_CONTEXT_BYTES):
+        if not self.submitted('run', run['id']): return
         from .extraction_timing import create_timing, error_kind
         if timing is None:
             timing = create_timing(self.root, run['agent'], run['stage'], submitted=False, schema_version=2 if run.get('extraction_options') is not None else 1)
@@ -753,6 +756,7 @@ class Service:
                     self.pool.submit(self.answer, copy.deepcopy(job), snapshot, transport)
                 except BaseException:
                     self.queue.remove(('question', job['id']))
+                    self.unsubmitted.add(('question', job['id']))
                     raise
             return job
         except Exception as exc:
@@ -768,6 +772,7 @@ class Service:
         raise failed
 
     def answer(self, job, snapshot, transport=None):
+        if not self.submitted('question', job['id']): return
         from .assistant import Assistant
         def progress(trace, evidence):
             job.update(trace=trace, evidence=evidence)
@@ -790,6 +795,15 @@ class Service:
                     self.slots.release()
                 finally:
                     self.dequeue('question', job['id'])
+
+    def submitted(self, kind, key):
+        """False, once, for a run or question whose pool.submit raised. ThreadPoolExecutor.submit puts the job in the pool before it starts a
+        worker thread, so when the thread cannot start, the job stays in the pool after start or ask tried to record it as failed and
+        returned its slot, and a worker that a later submit starts takes it. Such a job must end without doing anything."""
+        with self.queue_lock:
+            if (kind, key) not in self.unsubmitted: return True
+            self.unsubmitted.discard((kind, key))
+            return False
 
     def dequeue(self, kind, key):
         """Remove a run or question from the queue list once it has ended or been taken off the pool; a no-op if it is not listed."""
