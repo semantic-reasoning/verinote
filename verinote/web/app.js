@@ -202,11 +202,11 @@ function renderProgress(percent, label, detail='', failed=false) {
 }
 function renderQueueAhead(run) {
   if(run.status!=='queued'||!run.queue)return '';
-  const ahead=run.queue.ahead,kind={ontology:'사전 생성',extract:'관계 추출',legacy:'기존 추출'};
+  const ahead=run.queue.ahead,kind={ontology:'사전 생성',extract:'관계 추출',legacy:'기존 추출',question:'질문'};
   const item=entry=>entry.kind==='question'?`질문 ${entry.id} 「${entry.question}」 · ${labels[entry.status]||entry.status}`:`${kind[entry.stage]||entry.stage} 실행 ${entry.id} · 문서 「${entry.title}」 · ${labels[entry.status]||entry.status}`;
   const blockers=run.queue.document_blockers||[];
   const text=blockers.length?`이 문서의 이전 실행이 호출·정리를 마칠 때까지 기다립니다: ${blockers.map(item).join('; ')}`:
-    ahead.length?`${kind[run.queue.stage||run.stage]||'작업'} 동시 실행 ${run.queue.capacity||2}개 한도에서 자리 배정을 기다립니다. 같은 단계 작업 ${ahead.length}개: ${ahead.slice(0,5).map(item).join('; ')}${ahead.length>5?` 외 ${ahead.length-5}개`:''}`:'실행 작업자 배정 대기';
+    ahead.length?`${kind[run.queue.stage||run.stage]||'작업'} 동시 실행 ${run.queue.capacity||2}개 한도에서 자리 배정을 기다립니다. 같은 단계 작업 ${ahead.length}개: ${ahead.slice(0,5).map(item).join('; ')}${ahead.length>5?` 외 ${ahead.length-5}개`:''}`:run.queue.stage==='question'?'질문 작업자 배정 대기':'실행 작업자 배정 대기';
   return `<p class="muted">${esc(text)}</p>`;
 }
 function renderAnalysisProgress(run) {
@@ -549,6 +549,7 @@ document.addEventListener('click',e=>{
   const b=e.target.closest('button');if(!b)return;
   if(b.dataset.coverage)attempt(async()=>{const run=await api(`/api/runs/${b.dataset.coverage}`);document.querySelector(`[data-coverage-result="${b.dataset.coverage}"]`).innerHTML=renderCoverage(run.coverage);});
   if(b.dataset.cancelRun)openCancelRun(b.dataset.cancelRun,b.dataset.cancelStatus,b.dataset.cancelStage);
+  if(b.dataset.cancelQuestion)openCancelQuestion(b.dataset.cancelQuestion,b.dataset.cancelStatus);
   if(b.dataset.view)showView(b.dataset.view);
   if(b.dataset.doc)attempt(()=>openDoc(b.dataset.doc));
   if(b.dataset.source)attempt(()=>openDoc(b.dataset.source,Number(b.dataset.version)));
@@ -701,7 +702,7 @@ async function watchQuestion(id){
     const job=await api('/api/questions/'+id);
     if(activeQuestion!==id)return;
     renderAnswer(job);
-    if(['queued','running'].includes(job.status))setTimeout(()=>watchQuestion(id),1500);
+    if(['queued','running','cancelling'].includes(job.status))setTimeout(()=>watchQuestion(id),1500);
     else await loadQuestions();
   }catch(e){if(activeQuestion===id)notice(e.message,true);}
 }
@@ -759,7 +760,7 @@ function renderAnalysis(job,id){
 }
 
 function renderAnswer(job){
-  $('#answer-result').innerHTML=`<article class="panel"><h2>${esc(job.question)}</h2>${badge(job.status)} <span>${esc(job.agent)} / ${esc(job.model||'기본 모델')}</span><p class="muted">질문 제출 시 고정한 승인 상태입니다. 이후 문서 변경·승인 철회는 반영되지 않습니다.</p><p class="mono">스냅샷 ${esc(job.snapshot)}</p>${renderUsage(job.usage)}${renderQuestionWindow(job)}${renderQuestionMeanings(job.meanings,job.snapshot)}${job.error?`<p class="error">${esc(job.error)}</p>${executionGuidance(job.agent)}`:''}${job.answer?job.answer.claims.map(c=>`<div class="item"><span class="badge">${esc({graph:'승인 그래프',wiki:'승인 위키',source:'미검토 원문',inference:'추론'}[c.kind])}</span><p>${esc(c.text)}</p>${c.citations.map(id=>job.analysis_nodes?.[id]?renderAnalysis(job,id):renderEvidence(id,job.evidence[id])).join('')}</div>`).join('')+job.answer.unknowns.map(u=>`<div class="item answer-unknown"><span class="badge">확인 불가</span><p>${esc(u)}</p></div>`).join(''): (['queued','running'].includes(job.status)?'<p>모델의 질의 해석과 도구 실행을 기다리고 있습니다.</p>':'<p>저장된 답변이 없습니다.</p>')}<details><summary>실행 추적 · ${job.trace.length}개 도구 호출</summary>${job.trace.map(t=>`<p>${esc(t.name)} · ${esc(t.status)}</p><pre class="source">${esc(JSON.stringify(t.arguments,null,2))}</pre>${t.evidence_id?renderEvidence(t.evidence_id,job.evidence[t.evidence_id]):''}`).join('')}<pre class="source">${esc(JSON.stringify(job,null,2))}</pre></details><p class="muted">인용 검사는 의미적 정확성을 보증하지 않습니다. 모델 해석·답변은 비결정적이며, 같은 질의·스냅샷·규칙·엔진의 그래프 계산만 결정적입니다.</p><div class="actions"><button id="download-answer">답변 JSON 다운로드</button><button id="rerun-answer">같은 스냅샷으로 다시 질문 준비</button></div></article>`;
+  $('#answer-result').innerHTML=`<article class="panel"><h2>${esc(job.question)}</h2>${badge(job.status)} <span>${esc(job.agent)} / ${esc(job.model||'기본 모델')}</span><p class="muted">질문 제출 시 고정한 승인 상태입니다. 이후 문서 변경·승인 철회는 반영되지 않습니다.</p><p class="mono">스냅샷 ${esc(job.snapshot)}</p>${renderUsage(job.usage)}${renderQueueAhead(job)}${['queued','running'].includes(job.status)?`<button class="danger" data-cancel-question="${esc(job.id)}" data-cancel-status="${esc(job.status)}">질문 취소</button>`:''}${renderQuestionWindow(job)}${renderQuestionMeanings(job.meanings,job.snapshot)}${job.error?(['cancelling','cancelled'].includes(job.status)?`<p class="muted">${esc(job.error)}</p>`:`<p class="error">${esc(job.error)}</p>${executionGuidance(job.agent)}`):''}${job.answer?job.answer.claims.map(c=>`<div class="item"><span class="badge">${esc({graph:'승인 그래프',wiki:'승인 위키',source:'미검토 원문',inference:'추론'}[c.kind])}</span><p>${esc(c.text)}</p>${c.citations.map(id=>job.analysis_nodes?.[id]?renderAnalysis(job,id):renderEvidence(id,job.evidence[id])).join('')}</div>`).join('')+job.answer.unknowns.map(u=>`<div class="item answer-unknown"><span class="badge">확인 불가</span><p>${esc(u)}</p></div>`).join(''): (['queued','running'].includes(job.status)?'<p>모델의 질의 해석과 도구 실행을 기다리고 있습니다.</p>':'<p>저장된 답변이 없습니다.</p>')}<details><summary>실행 추적 · ${job.trace.length}개 도구 호출</summary>${job.trace.map(t=>`<p>${esc(t.name)} · ${esc(t.status)}</p><pre class="source">${esc(JSON.stringify(t.arguments,null,2))}</pre>${t.evidence_id?renderEvidence(t.evidence_id,job.evidence[t.evidence_id]):''}`).join('')}<pre class="source">${esc(JSON.stringify(job,null,2))}</pre></details><p class="muted">인용 검사는 의미적 정확성을 보증하지 않습니다. 모델 해석·답변은 비결정적이며, 같은 질의·스냅샷·규칙·엔진의 그래프 계산만 결정적입니다.</p><div class="actions"><button id="download-answer">답변 JSON 다운로드</button><button id="rerun-answer">같은 스냅샷으로 다시 질문 준비</button></div></article>`;
   bindMeaningControls($('#answer-result'));
   $('#download-answer').onclick=()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(job,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='verinote-answer.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
   $('#rerun-answer').onclick=()=>{$('#question-text').value=job.question;$('#ask-agent').value=job.agent;$('#ask-model').value=job.model;$('#ask-snapshot').value=job.snapshot;syncProviderControls('ask');$('#ask-form').scrollIntoView({behavior:'smooth'});};
@@ -780,11 +781,36 @@ const CANCEL_RUN_BODY={
   queued:()=>'대기 중인 실행은 모델을 호출하기 전에 취소됩니다. 그사이 처리가 시작되면 취소하지 않고 다시 확인을 요청합니다. 다른 실행과 질문은 계속됩니다.',
   running:stage=>`이미 허용한 호출은 중단하지 않으므로 끝날 때까지 기다린 뒤 멈추며, 그 호출의 비용은 줄지 않습니다. 이 실행은 ${stage==='ontology'?'사전 초안을':'위키·관계 후보를'} 저장하지 않습니다. 검증을 마친 구간은 같은 조건으로 다시 실행할 때 재사용할 수 있습니다. 다른 실행과 질문은 계속됩니다.`
 };
-function openCancelRun(id,status,stage){
-  cancelTarget={id,status,stage};
-  $('#cancel-run-body').textContent=CANCEL_RUN_BODY[status](stage);
+const CANCEL_QUESTION_BODY={
+  queued:'대기 중인 질문은 모델을 호출하기 전에 취소됩니다. 그사이 처리가 시작되면 취소하지 않고 다시 확인을 요청합니다. 실행과 다른 질문은 계속됩니다.',
+  running:'이미 허용한 모델 호출은 중단하지 않으므로 끝날 때까지 기다린 뒤 멈추며, 그 호출의 비용은 줄지 않습니다. 이 질문은 답변을 저장하지 않습니다. 실행은 계속되고, 다음 질문은 이 질문이 멈춘 뒤 처리됩니다.'
+};
+function openCancelDialog(target,heading,body){
+  cancelTarget=target;
+  $('#cancel-run-heading').textContent=heading;$('#confirm-cancel-run').textContent=target.kind==='question'?'질문 취소':'실행 취소';
+  $('#cancel-run-body').textContent=body;
   $('#cancel-run-error').textContent='';$('#confirm-cancel-run').disabled=false;
   if(!$('#cancel-run-dialog').open)$('#cancel-run-dialog').showModal();
+}
+function openCancelRun(id,status,stage){openCancelDialog({kind:'run',id,status,stage},'이 실행을 취소할까요?',CANCEL_RUN_BODY[status](stage));}
+function openCancelQuestion(id,status){openCancelDialog({kind:'question',id,status},'이 질문을 취소할까요?',CANCEL_QUESTION_BODY[status]);}
+async function renderQuestionViews(job){
+  if(activeQuestion===job.id)renderAnswer(job);
+  await loadQuestions();
+}
+async function confirmCancelQuestion(){
+  const {id,status}=cancelTarget;$('#confirm-cancel-run').disabled=true;
+  try{
+    const {cancel,...job}=await api(`/api/questions/${id}/cancel`,'POST',{expected_status:status});
+    $('#cancel-run-dialog').close();await renderQuestionViews(job);
+    notice(cancel.previous==='queued'?'대기 중인 질문을 취소했습니다.':'취소를 요청했습니다. 이미 허용한 호출이 끝나면 멈춥니다.');
+  }catch(error){
+    if(error.status!==409){$('#cancel-run-error').textContent=error.message;$('#confirm-cancel-run').disabled=false;return;}
+    $('#cancel-run-dialog').close();
+    const job=await api(`/api/questions/${id}`);await renderQuestionViews(job);
+    if(status==='queued'&&job.status==='running'){openCancelQuestion(id,'running');$('#cancel-run-error').textContent=error.message;}
+    else notice(error.message,true);
+  }
 }
 function renderRunViews(r){
   const panel=document.querySelector(`[data-run-panel="${r.id}"]`);
@@ -793,6 +819,7 @@ function renderRunViews(r){
 }
 $('#close-cancel-run').onclick=()=>$('#cancel-run-dialog').close();
 $('#confirm-cancel-run').onclick=()=>attempt(async()=>{
+  if(cancelTarget.kind==='question')return confirmCancelQuestion();
   const {id,status,stage}=cancelTarget;$('#confirm-cancel-run').disabled=true;
   try{
     const {cancel,...r}=await api(`/api/runs/${id}/cancel`,'POST',{expected_status:status});

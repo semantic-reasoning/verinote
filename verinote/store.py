@@ -34,11 +34,16 @@ class Conflict(ValueError):
 
 
 class RunCancelled(Exception):
-    """The run's status is cancelling or cancelled: its worker admits no further call. `summary` carries the stage's progress text when known."""
+    """The run's or question's status is cancelling or cancelled: its worker admits no further call. `summary` carries the stage's progress text
+    when known."""
     summary = ''
 
 
 QUEUED_CANCEL_DETAIL = '대기 중에 취소되었습니다. 이 실행은 모델을 호출하지 않았습니다.'
+QUESTION_QUEUED_CANCEL = '대기 중에 취소되었습니다. 이 질문은 모델을 호출하지 않았습니다.'
+QUESTION_CANCEL_REQUESTED = ('취소 요청됨: 이미 허용한 모델 호출은 중단하지 않고 끝날 때까지 기다린 뒤, 새 호출 없이 멈춥니다. 답변은 저장하지 않습니다. '
+                             '멈출 때까지 다음 질문은 기다리며, 실행은 각 실행 한도 안에서 계속됩니다.')
+QUESTION_RESTART_CANCEL = '취소를 요청한 뒤 질문이 멈춘 것을 기록하기 전에 서버가 재시작되었습니다. 답변은 저장하지 않았습니다.'
 
 
 def cancel_result(stage, topic=True):
@@ -112,6 +117,9 @@ class Store:
                 if job['status'] in ('queued', 'running'):
                     job.update(status='interrupted', error='서버 재시작으로 중단되었습니다.')
                     db.execute('UPDATE questions SET payload=? WHERE id=?', (canonical(job), row['id']))
+                elif job['status'] == 'cancelling':
+                    job.update(status='cancelled', error=QUESTION_RESTART_CANCEL)
+                    db.execute('UPDATE questions SET payload=? WHERE id=?', (canonical(job), row['id']))
 
     def create_question(self, question, agent, model, snapshot, *, execution_options=None):
         job = {'id': ident(), 'question': question, 'agent': agent, 'model': model,
@@ -126,18 +134,62 @@ class Store:
         return job
 
     def save_question(self, job):
+        """Replace the stored question with job in one write transaction. A question stored as cancelling or cancelled is left as it is and
+        RunCancelled is raised: the save of a call's dispatched record comes before the call, so no model call starts after a cancel commits,
+        and an answer that arrives after it is not stored."""
         with self.connect(True) as db:
             self.require_snapshot(db, job['snapshot'])
+            row = db.execute('SELECT payload FROM questions WHERE id=?', (job['id'],)).fetchone()
+            if row and json.loads(row[0])['status'] in ('cancelling', 'cancelled'):
+                raise RunCancelled('질문이 취소되었습니다.')
             if not db.execute('UPDATE questions SET payload=? WHERE id=?', (canonical(job), job['id'])).rowcount:
                 raise Conflict('질문이 삭제되었습니다.')
 
+    def cancel_question(self, key, expected_status):
+        """Cancel a question in one write transaction and return the status it had. A queued question becomes cancelled at once with
+        QUESTION_QUEUED_CANCEL, which stays: finish_question_cancel acts only on a cancelling question, and usage.job_calls reads the text as
+        zero calls. A running question becomes cancelling, and its worker moves it to cancelled when it stops. A question stored as anything
+        else, a saved answer included, is refused with a Conflict, as is one whose status is no longer expected_status."""
+        if expected_status not in ('queued', 'running'):
+            raise ValueError('expected_status는 queued 또는 running이어야 합니다.')
+        with self.connect(True) as db:
+            row = db.execute('SELECT payload FROM questions WHERE id=?', (key,)).fetchone()
+            if not row: raise ValueError('질문을 찾을 수 없습니다.')
+            job = json.loads(row[0])
+            status = job['status']
+            if status == 'cancelling':
+                raise Conflict('이미 취소를 요청한 질문입니다. 아직 멈추지 않았습니다.')
+            if status not in ('queued', 'running'):
+                raise Conflict(f"이미 끝난 질문이라 취소하지 않았습니다 (상태: {self.STATUS_LABELS.get(status, status)}).")
+            if status != expected_status:
+                raise Conflict('대기 중이던 질문이 처리 중으로 바뀌어 취소하지 않았습니다. 처리 중인 질문을 취소할지 다시 확인하세요.' if (expected_status, status) == ('queued', 'running')
+                               else '질문 상태가 바뀌어 취소하지 않았습니다. 질문 이력을 새로고침하세요.')
+            if status == 'queued':
+                job.update(status='cancelled', error=QUESTION_QUEUED_CANCEL)
+            else:
+                job.update(status='cancelling', error=QUESTION_CANCEL_REQUESTED)
+            db.execute('UPDATE questions SET payload=? WHERE id=?', (canonical(job), key))
+            return status
+
+    def finish_question_cancel(self, key, error):
+        """Move a question stored as cancelling to cancelled with error, keeping the rest of its stored payload; any other is left as it is."""
+        with self.connect(True) as db:
+            row = db.execute('SELECT payload FROM questions WHERE id=?', (key,)).fetchone()
+            if not row: return
+            job = json.loads(row[0])
+            if job['status'] == 'cancelling':
+                db.execute('UPDATE questions SET payload=? WHERE id=?', (canonical(job | {'status': 'cancelled', 'error': error}), key))
+
     def end_unstored_question(self, key, error):
-        """Moves a question stored as queued or running to error in one write transaction; a question stored as anything else is left as it is. Returns whether it moved."""
+        """Moves a question stored as queued or running to error in one write transaction and returns True. A question stored as cancelling or
+        cancelled raises RunCancelled, as save_question does; a question stored as anything else is left as it is and False is returned."""
         with self.connect(True) as db:
             row = db.execute('SELECT payload FROM questions WHERE id=?', (key,)).fetchone()
             if not row:
                 raise ValueError('질문을 찾을 수 없습니다.')
             job = json.loads(row[0])
+            if job['status'] in ('cancelling', 'cancelled'):
+                raise RunCancelled('질문이 취소되었습니다.')
             if job['status'] not in ('queued', 'running'):
                 return False
             db.execute('UPDATE questions SET payload=? WHERE id=?', (canonical(job | {'status': 'error', 'error': error}), key))
@@ -772,11 +824,15 @@ class Store:
                 raise ValueError('문서를 찾을 수 없습니다.')
             self.check_document_token(doc, expected_version, expected_generation)
             cancelling = db.execute("SELECT 1 FROM runs WHERE status='cancelling' LIMIT 1").fetchone()
+            statuses = [json.loads(r[0])['status'] for r in db.execute('SELECT payload FROM questions')]
             waiting = (db.execute("SELECT 1 FROM runs WHERE status IN ('queued','running') LIMIT 1").fetchone()
-                       or any(json.loads(r[0])['status'] in ('queued', 'running') for r in db.execute('SELECT payload FROM questions')))
+                       or any(status in ('queued', 'running') for status in statuses))
             if cancelling and not waiting:
                 raise Conflict('취소한 실행이 아직 멈추지 않았습니다. 실행 기록에서 취소됨으로 바뀐 뒤 삭제하세요. '
                                '제한 시간(추출 청크 360초, 기본 사전 생성 호출 600초)이 지나도 바뀌지 않으면 서버를 재시작하세요. 재시작하면 대기·처리 중인 모든 실행과 질문이 중단으로 표시됩니다.')
+            if 'cancelling' in statuses and not waiting:
+                raise Conflict('취소한 질문이 아직 멈추지 않았습니다. 질문 이력에서 취소됨으로 바뀐 뒤 삭제하세요. 이미 허용한 모델 호출의 제한 시간이 지나도 '
+                               '바뀌지 않으면 서버를 재시작하세요. 재시작하면 대기·처리 중인 모든 실행과 질문이 중단으로 표시됩니다.')
             if waiting:
                 raise Conflict('추출 또는 질문 작업이 진행 중입니다. 모든 작업 완료 후 삭제하세요.')
             versions = [r[0] for r in db.execute('SELECT version FROM versions WHERE document_id=? ORDER BY version', (document_id,))]
