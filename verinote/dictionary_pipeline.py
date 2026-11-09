@@ -106,6 +106,11 @@ def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_thr
             if (value['schema_version'] in (1, 2) and isinstance(value['contract'], dict) and type(value['contract'].get('filter_policy')) is int
                     and value['contract']['filter_policy'] in SUPPORTED_FILTER_POLICIES):
                 expected['filter_policy'] = value['contract']['filter_policy']  # Revalidate known older prefixes.
+            # Policy 6 only adds audited exclusion of rows missing quote_ref.
+            # A validated policy-5 prefix remains valid; older schema-3 policies do not.
+            if (value['schema_version'] == 3 and isinstance(value['contract'], dict)
+                    and type(value['contract'].get('filter_policy')) is int and value['contract']['filter_policy'] == 5):
+                expected['filter_policy'] = 5
             if value['schema_version'] == 1:
                 expected.pop('filter_policy')  # Strict legacy prefixes excluded no rows.
             if type(value['schema_version']) is not int or value['schema_version'] not in (1, 2, 3) or value['run_id'] != prior['id'] or canonical(value['contract']) != canonical(expected) or type(offset) is not int or offset not in boundaries:

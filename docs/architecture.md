@@ -551,7 +551,8 @@ Readers enforce identity, boundaries, count consistency, size and symlink checks
 The current dictionary item is connected to its origin run without a DB change.
 Warnings shown with an edited dictionary describe generation-time exclusions.
 
-The original filter used checkpoint schema 2 with filter_policy=1. Current generation writes schema 3 with filter_policy=5 and reconciliation_policy=1, embedding both audits.
+The original filter used checkpoint schema 2 with filter_policy=1. Current generation writes schema 3 with filter_policy=6 and reconciliation_policy=1, embedding both audits.
+Policy 6 excludes otherwise valid ordinary rows missing only quote_ref with the existing reference audit reason; supplied malformed references and revisions remain strict. Validated schema-3 policy-5 prefixes are reusable because the new behavior only handles previously failing rows; policies 4 and earlier remain incompatible. Old checkpoint files are not rewritten.
 Resume inherits exclusions without double counting or charging old calls. Strict
 legacy schema 1 is compatible only when its original full contract and dictionary
 validate; zero-exclusion chunk state is synthesized for its prefix. Unknown policy
@@ -571,9 +572,9 @@ unavailable. The existing explicit approval and strict final validation are kept
 
 ### 기존 개체와 새 별칭 이름 충돌
 
-생성 필터 v5는 구조·참조 preflight와 근거 제외를 유지하면서 의미 충돌을 보류 제안으로 기록한다. 명시적 revisions는 구간 시작 시점의 불변 before와 비교하고, 모든 변경·의존 항목이 함께 엄격 검증될 때만 한 묶음으로 반영한다. 개체 ID를 가리키는 명시적 alias는 같은 타입·양쪽 이름의 근거가 있으면 연결 성분 단위로 중복 개체를 정규화한다. 순환·경쟁 대상·조정과 겹친 대상·유효하지 않은 의존 별칭은 보류하며 문자열 유사성으로 통합하지 않는다. v5부터 모델이 제안한 별칭이 대상 개체의 ID·이름이나 같은 개체의 다른 별칭과 공백(스페이스·탭·줄바꿈, 런 폭 차이 포함)만 다르면 그 행에서 바로 드러나는 별칭과 통합 제안은 그 행만 제외하고(`alias_spacing_only`), 여러 행이 함께 통합되어야 드러나는 경우와 `revisions`의 대상 변경·이름 변경·정규 이동은 묶음 단위로 보류한다. 묶음 단위로 보류할 때는 같은 묶음의 공백 차이가 없는 행도 보류되며 이유가 이를 밝힌다(`revisions`는 조정 내역의 이유에만 나타난다). 별칭이 대상의 `name`과 정확히 같으면 유지하지만, 그 `name`이 대상의 ID와 공백만 다르면 제외한다. 이름으로 통합된 개체의 이름과 공백만 다른 표기가 이후 청크에서 같은 대상에 들어오는 경우는 사전만으로 감지할 수 없어 막지 못한다(#828). 공백을 뺀 비교는 거부에만 쓰며 사람이 직접 추가하는 경로는 막지 않는다. 개체 행의 표기와 추출 시점의 연결은 이 범위 밖이다(#828).
+생성 필터 v6는 구조·참조 preflight와 근거 제외를 유지하면서 의미 충돌을 보류 제안으로 기록한다. 명시적 revisions는 구간 시작 시점의 불변 before와 비교하고, 모든 변경·의존 항목이 함께 엄격 검증될 때만 한 묶음으로 반영한다. 개체 ID를 가리키는 명시적 alias는 같은 타입·양쪽 이름의 근거가 있으면 연결 성분 단위로 중복 개체를 정규화한다. 순환·경쟁 대상·조정과 겹친 대상·유효하지 않은 의존 별칭은 보류하며 문자열 유사성으로 통합하지 않는다. v5부터 모델이 제안한 별칭이 대상 개체의 ID·이름이나 같은 개체의 다른 별칭과 공백(스페이스·탭·줄바꿈, 런 폭 차이 포함)만 다르면 그 행에서 바로 드러나는 별칭과 통합 제안은 그 행만 제외하고(`alias_spacing_only`), 여러 행이 함께 통합되어야 드러나는 경우와 `revisions`의 대상 변경·이름 변경·정규 이동은 묶음 단위로 보류한다. 묶음 단위로 보류할 때는 같은 묶음의 공백 차이가 없는 행도 보류되며 이유가 이를 밝힌다(`revisions`는 조정 내역의 이유에만 나타난다). 별칭이 대상의 `name`과 정확히 같으면 유지하지만, 그 `name`이 대상의 ID와 공백만 다르면 제외한다. 이름으로 통합된 개체의 이름과 공백만 다른 표기가 이후 청크에서 같은 대상에 들어오는 경우는 사전만으로 감지할 수 없어 막지 못한다(#828). 공백을 뺀 비교는 거부에만 쓰며 사람이 직접 추가하는 경로는 막지 않는다. 개체 행의 표기와 추출 시점의 연결은 이 범위 밖이다(#828).
 
-새 schema 3 체크포인트에 filter_policy=5와 reconciliation_policy=1, 적용/보류 감사 기록을 사전과 함께 저장한다. v1/v2는 기존 정책·허용된 이전 프롬프트·원문·옵션·재생성 대상을 검증한 뒤 재사용하며 이전 구간의 조정 이력은 미확인 범위로 표시한다. 기존 체크포인트·승인 사전·snapshot을 다시 쓰지 않는다. 이전 정책(v4 이하)으로 저장된 schema 3 체크포인트는 재사용하지 않으므로, 정책 v5로 올린 뒤 실패한 생성을 다시 시작하면, 호환되는 다른 기록이 없을 때 모든 구간을 처음부터 다시 호출한다. API/UI는 실행 출처별 변경 전후와 근거를 제공하며, 최대 20개 상세와 전체 건수·생략 건수를 구분한다. [상세 조정 계약](dictionary-reconciliation.md)을 참조한다.
+새 schema 3 체크포인트에 filter_policy=6와 reconciliation_policy=1, 적용/보류 감사 기록을 사전과 함께 저장한다. v1/v2는 기존 정책·허용된 이전 프롬프트·원문·옵션·재생성 대상을 검증한 뒤 재사용하며 이전 구간의 조정 이력은 미확인 범위로 표시한다. 기존 체크포인트·승인 사전·snapshot을 다시 쓰지 않는다. 이전 정책(v4 이하)으로 저장된 schema 3 체크포인트는 재사용하지 않으므로, 정책 v6로 올린 뒤 실패한 생성을 다시 시작하면, 호환되는 다른 기록이 없을 때 모든 구간을 처음부터 다시 호출한다. API/UI는 실행 출처별 변경 전후와 근거를 제공하며, 최대 20개 상세와 전체 건수·생략 건수를 구분한다. [상세 조정 계약](dictionary-reconciliation.md)을 참조한다.
 
 ### 추론 예산 관측 진단
 
