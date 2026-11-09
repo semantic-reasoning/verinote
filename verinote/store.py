@@ -368,6 +368,17 @@ class Store:
                 if db.execute("SELECT 1 FROM runs WHERE id=? AND status IN ('cancelling','cancelled')", (run_id,)).fetchone():
                     raise RunCancelled('실행이 취소되었습니다.')
 
+    def end_unstored_run(self, run_id, detail):
+        """Moves a run stored as queued or running to error with detail in one write transaction and returns True. A run stored as cancelling
+        or cancelled raises RunCancelled, as run_status does; a run stored as anything else is left as it is and False is returned."""
+        with self.connect(True) as db:
+            row = db.execute('SELECT status FROM runs WHERE id=?', (run_id,)).fetchone()
+            if not row: raise ValueError('실행을 찾을 수 없습니다.')
+            if row['status'] in ('cancelling', 'cancelled'): raise RunCancelled('실행이 취소되었습니다.')
+            if row['status'] not in ('queued', 'running'): return False
+            db.execute("UPDATE runs SET status='error',detail=? WHERE id=?", (detail, run_id))
+            return True
+
     def queue_rows(self, entries):
         """What the queue list entries, as (kind, id) pairs, are now, read in one transaction: the status of each and what names it. An entry
         whose row is gone is left out."""

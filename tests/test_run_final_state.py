@@ -1,6 +1,7 @@
 """Synthetic calls only: a worker that ends leaves its run in a final state and returns its slot."""
 import threading
 import unittest
+from contextlib import contextmanager
 from unittest.mock import patch
 
 from test_failed_run_detail import (
@@ -47,14 +48,95 @@ class RunFinalState(Base):
         run, _ = self.sequential(doc, ok)
         self.assertEqual(run['status'], 'success', run['detail'])
 
-    def failing_error_writes(self, refuse):
-        real, seen = self.store.run_status, []
+    def failing_error_writes(self, refuse, commit_first=False):
+        """Patches run_status and end_unstored_run: every error write is recorded, and raises when refuse(n, detail) is true (after
+        committing when commit_first); the fixed-sentence write of end_unstored_run is recorded only when the stored run is queued or
+        running, and when refused, not applied."""
+        real, real_end, seen = self.store.run_status, self.store.end_unstored_run, []
         def write(run_id, status, detail=''):
             if status == 'error':
                 seen.append(detail)
-                if refuse(len(seen), detail): raise OSError('database')
+                if refuse(len(seen), detail):
+                    if commit_first: real(run_id, status, detail)
+                    raise OSError('database')
             return real(run_id, status, detail)
-        return patch.object(self.store, 'run_status', write), seen
+        def end(run_id, detail):
+            if self.store.run(run_id)['status'] not in ('queued', 'running'): return real_end(run_id, detail)  # nothing is written: not recorded
+            seen.append(detail)
+            if refuse(len(seen), detail): raise OSError('database')
+            return real_end(run_id, detail)
+        @contextmanager
+        def patched():
+            with patch.object(self.store, 'run_status', write), patch.object(self.store, 'end_unstored_run', end): yield
+        return patched(), seen
+
+    def test_error_write_that_committed_before_raising_is_not_overwritten(self):
+        doc = self.document()
+        writes, seen = self.failing_error_writes(lambda n, detail: True, commit_first=True)
+        with writes: run, _ = self.sequential(doc, fails_at(2))
+        self.assertEqual(run['status'], 'error')
+        self.assertTrue(run['detail'].endswith(' · ' + from_chunk(2)), run['detail'])
+        self.assertEqual(seen, [run['detail']] * 2)
+
+    def test_registration_error_that_cannot_be_written_falls_back_to_the_fixed_sentence(self):
+        run, seen, free, error = self.registration_failure(lambda n, detail: detail != Service.FAILURE_FALLBACK)
+        self.assertEqual((run['status'], run['detail'], seen, free, str(error)), ('error', Service.FAILURE_FALLBACK, ['disk', 'disk', Service.FAILURE_FALLBACK], 8, 'disk'))
+
+    def test_a_run_cancelled_before_the_fixed_sentence_ends_cancelled_with_its_last_error(self):
+        doc = self.document()
+        holder = {}
+        def refuse(n, detail):
+            if n == 2: self.store.cancel_run(holder['id'], 'running')
+            return detail != Service.FAILURE_FALLBACK
+        writes, seen = self.failing_error_writes(refuse)
+        real_create = self.store.create_run
+        def create(*a, **k):
+            run = real_create(*a, **k); holder['id'] = run['id']; return run
+        with writes, patch.object(self.store, 'create_run', create): run, _ = self.sequential(doc, fails_at(2))
+        self.assertEqual(run['status'], 'cancelled', run['detail'])
+        self.assertTrue(run['detail'].startswith('처리 중에 취소되었습니다. '), run['detail'])
+        self.assertIn('멈추기 전 마지막 오류: 청크 2 · stop', run['detail'])
+        self.assertEqual(len(seen), 2)
+
+    def test_fallback_sees_a_cancel_committed_before_its_write_transaction_opens(self):
+        doc = self.document()
+        run = self.store.create_run(doc['id'], 'copilot', 'chosen', 'extract', *self.current(doc))
+        self.store.run_status(run['id'], 'running')
+        real, armed = self.store.connect, [True]
+        def connect(write=False):  # a cancel commits just before the fallback's first write transaction opens
+            if write and armed[0]:
+                armed[0] = False
+                self.store.cancel_run(run['id'], 'running')
+            return real(write)
+        from verinote.store import RunCancelled
+        with patch.object(self.store, 'connect', connect), self.assertRaises(RunCancelled):
+            self.store.end_unstored_run(run['id'], Service.FAILURE_FALLBACK)
+        self.assertEqual(self.store.run(run['id'])['status'], 'cancelling')
+
+    def test_fallback_reads_the_status_and_writes_in_one_write_transaction(self):
+        doc = self.document()
+        run = self.store.create_run(doc['id'], 'copilot', 'chosen', 'extract', *self.current(doc))
+        self.store.run_status(run['id'], 'running')
+        real, opened, cancelling = self.store.connect, [], [False]
+        def connect(write=False):  # a cancel would commit between two transactions, so a second connection is where it could slip in
+            if cancelling[0]: return real(write)
+            opened.append(write)
+            if len(opened) > 1:
+                cancelling[0] = True
+                self.store.cancel_run(run['id'], 'running')
+                cancelling[0] = False
+            return real(write)
+        with patch.object(self.store, 'connect', connect):
+            ended = self.store.end_unstored_run(run['id'], Service.FAILURE_FALLBACK)
+        self.assertEqual((ended, opened), (True, [True]))
+        self.assertEqual((self.store.run(run['id'])['status'], self.store.run(run['id'])['detail']), ('error', Service.FAILURE_FALLBACK))
+
+    def test_fallback_keeps_a_run_stored_as_ended(self):
+        doc = self.document()
+        run = self.store.create_run(doc['id'], 'copilot', 'chosen', 'extract', *self.current(doc))
+        self.store.run_status(run['id'], 'error', 'kept')
+        self.assertFalse(self.store.end_unstored_run(run['id'], Service.FAILURE_FALLBACK))
+        self.assertEqual((self.store.run(run['id'])['status'], self.store.run(run['id'])['detail']), ('error', 'kept'))
 
     def test_error_write_raising_once_is_retried_with_the_same_detail(self):
         doc = self.document()
