@@ -203,7 +203,9 @@ function renderQueueAhead(run) {
   if(run.status!=='queued'||!run.queue)return '';
   const ahead=run.queue.ahead,kind={ontology:'사전 생성',extract:'관계 추출',legacy:'기존 추출'};
   const item=entry=>entry.kind==='question'?`질문 ${entry.id} 「${entry.question}」 · ${labels[entry.status]||entry.status}`:`${kind[entry.stage]||entry.stage} 실행 ${entry.id} · 문서 「${entry.title}」 · ${labels[entry.status]||entry.status}`;
-  const text=ahead.length?`앞선 작업 ${ahead.length}개가 끝나야 시작합니다: ${ahead.slice(0,5).map(item).join('; ')}${ahead.length>5?` 외 ${ahead.length-5}개`:''}`:'앞선 작업 없음';
+  const blockers=run.queue.document_blockers||[];
+  const text=blockers.length?`이 문서의 이전 실행이 호출·정리를 마칠 때까지 기다립니다: ${blockers.map(item).join('; ')}`:
+    ahead.length?`${kind[run.queue.stage||run.stage]||'작업'} 동시 실행 ${run.queue.capacity||2}개 한도에서 자리 배정을 기다립니다. 같은 단계 작업 ${ahead.length}개: ${ahead.slice(0,5).map(item).join('; ')}${ahead.length>5?` 외 ${ahead.length-5}개`:''}`:'실행 작업자 배정 대기';
   return `<p class="muted">${esc(text)}</p>`;
 }
 function renderAnalysisProgress(run) {

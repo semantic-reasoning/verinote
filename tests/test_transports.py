@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -202,6 +203,8 @@ class Transports(unittest.TestCase):
 
     def test_service_rejects_empty_http_model_before_queueing(self):
         service = Service.__new__(Service)
+        service.extraction_lock = threading.RLock()
+        service.closed = False
         service.slots = Mock()
         service.store = Mock()
         service.store.settings.return_value = {'selected': 'openrouter', 'models': {}}

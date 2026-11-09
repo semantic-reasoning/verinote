@@ -10,6 +10,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from test_ontology import wire_dictionary
+from test_run_cancel import occupy_worker
 from test_workflow import DICTIONARY, SOURCE, approved_dictionary, extraction_response
 
 from verinote.extraction_transport import ExtractionSpec
@@ -76,6 +77,9 @@ class Base(unittest.TestCase):
             approved_dictionary(store, doc['id'])
             stage = 'extract'
             if kind == 'policy_extract': kw['extraction_policy'] = 'chunk_threshold_v1'
+        if queued:
+            for i in range(2 if stage == 'ontology' else 1):
+                occupy_worker(service, gate.release, stage, key=f'register-reserve-{i}')
         current = store.document(doc['id'])
         with patch('verinote.extraction_transport.executable', return_value=sys.executable):
             run = service.start(doc['id'], 'claude' if kind == 'policy_extract' else 'agy', 'model' if kind == 'policy_extract' else '', stage, current['version'], current['generation'], **kw)
@@ -124,7 +128,7 @@ class RegisterDuringRun(Base):
                         self.assertEqual(store.run(run['id'])['status'], 'queued' if queued else 'running')
                         code, body = self.post_document(self.serve(store), doc['id'])
                         agent = 'claude / model' if kind == 'policy_extract' else 'agy / 기본 모델'
-                        waits = '대기 중인 실행은 앞선 실행이나 질문이 끝나야 시작합니다. 무엇을 기다리는지는 실행 기록에 표시됩니다. ' if queued else ''
+                        waits = '대기 중인 실행은 같은 단계의 실행 자리나 같은 문서의 이전 실행 정리를 기다립니다. 무엇을 기다리는지는 실행 기록에 표시됩니다. ' if queued else ''
                         result = '사전 초안을' if kind == 'regenerate' else '위키·관계 후보를'
                         keeps = '' if queued else f' 처리 중이던 호출은 끝날 때까지 계속되지만 그 결과로 {result} 저장하지는 않습니다.'
                         self.assertEqual(code, 409, body)

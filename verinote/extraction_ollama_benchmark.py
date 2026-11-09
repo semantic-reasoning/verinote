@@ -403,10 +403,10 @@ def _run(output, *, synthetic=False, clock=None, invocation=None):
                 item = next(i for i in store.document(doc['id'])['items'] if i['kind'] == 'ontology')
                 store.review(item['id'], item['revision'], 'approved', 'Synthetic fixture', SYNTHETIC_REVIEW_REASON_V2)
                 service = BaselineService(store, artifact, CLI(), ledger=ledger, row=row, save=save, quote_repair_limit=2)
-                service.pool.shutdown(wait=True); service.pool = _Executor(max_workers=1)
+                service.pool.shutdown(wait=True); pool = _Executor(); service.pool = pool
                 job = service.start(doc['id'], 'ollama', _profile().model, expected_version=1, expected_generation=1)
                 row.update(run_id=job['id'], document_id=doc['id'])
-                service.pool.future.result()
+                pool.future.result()
             finally:
                 if service is not None:
                     try: service.close()

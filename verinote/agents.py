@@ -140,6 +140,13 @@ class CLI:
         self._pinned_claude_binary: str | None = None
         self._pinned_copilot_binary: str | None = None
 
+    def fork_job(self):
+        """Copy configuration, owning a fresh process manager for this job only."""
+        from .claude_worker import Manager
+        job = copy.copy(self)
+        job._claude = Manager() if self._claude is not None else None
+        return job
+
     def close(self):
         """Close the shared worker, including workers used by limited_timeout copies."""
         if self._claude is not None:

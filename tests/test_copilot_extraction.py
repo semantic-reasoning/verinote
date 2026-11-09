@@ -119,7 +119,7 @@ class CopilotIntegration(unittest.TestCase):
                                   expected_generation=doc['generation'], **kwargs)
 
     def finish(self, run):
-        self.service.pool.submit(lambda: None).result(timeout=12)
+        self.service.pool.wait_idle()
         return self.store.run(run['id'])
 
     def checkpoint(self, run):
@@ -174,7 +174,8 @@ class CopilotIntegration(unittest.TestCase):
     def test_registration_pins_path_and_mutable_settings_for_initial_and_repair(self):
         self.setup_cli(broken=[1]); doc = self.document(2)
         release = threading.Event()
-        self.service.pool.submit(lambda: release.wait(8))
+        from test_run_cancel import occupy_worker
+        for i in range(2): occupy_worker(self.service, release, key=f'pin-{i}')
         old_rates = copy.deepcopy(self.rates['copilot'])
         run = self.start(doc, extraction_concurrency=2)
         saved = run['extraction_options']
@@ -283,7 +284,7 @@ class CopilotIntegration(unittest.TestCase):
         self.setup_cli(gates=[1]); run = self.start(self.document(2), extraction_concurrency=2)
         self.wait(lambda: self.marker(run, 1).exists())
         self.wait(lambda: self.marker(run, 2).exists())
-        owner = self.service.extraction_owner; view = owner.view()
+        owner = self.service.run_owners[run['id']]; view = owner.view()
         with ThreadPoolExecutor() as pool:
             closing = pool.submit(owner.close)
             self.wait(lambda: owner.closed)
@@ -296,7 +297,7 @@ class CopilotIntegration(unittest.TestCase):
         self.setup_cli(gates=[1]); doc = self.document(2)
         run = self.start(doc, extraction_concurrency=2)
         self.wait(lambda: self.marker(run, 1).exists())
-        owner = self.service.extraction_owner; view = owner.view(); view.close()
+        owner = self.service.run_owners[run['id']]; view = owner.view(); view.close()
         self.assertFalse(owner.closed)
         with self.assertRaises(ValueError): owner.retire_if_idle()
         with ThreadPoolExecutor() as pool:

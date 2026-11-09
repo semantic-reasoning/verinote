@@ -6,7 +6,6 @@ import shutil
 import threading
 import time
 from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -126,7 +125,8 @@ class Service:
         self.relation_type_warning_threshold = validate_threshold(relation_type_warning_threshold)
         self.store, self.root, self.cli = store, Path(root).resolve(), cli or CLI(
             rates=store.usage_rates, http_adapter=OpenRouter(), credentials=configured)
-        self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='verinote-extract')
+        from .job_scheduler import JobScheduler
+        self.pool = JobScheduler()
         self.slots = threading.BoundedSemaphore(8)
         self.extraction_lock = threading.RLock()
         # None is the product: whitespace-variant location, then one repair per chunk, row-level exclusion. An integer is a
@@ -135,6 +135,8 @@ class Service:
         self.extraction_caller = extraction_caller
         self.extraction_caller_factory = extraction_caller_factory
         self.extraction_owner = None
+        self.run_owners = {}
+        self.failed_owners = []
         self.closed = False
         self.draining = False
         self.close_lock = threading.Lock()
@@ -160,7 +162,14 @@ class Service:
                     or self.registered_extractions[run['id']] != run['extraction_options']
                     or (self.closed and not self.draining)):
                 raise ValueError('등록된 추출 실행이 아닙니다.')
-            return self._extraction_transport(spec)
+            from .copilot_extraction import (
+                CopilotExtractionSpec,
+                CopilotExtractionTransport,
+            )
+            from .extraction_transport import ExtractionTransport
+            owner = CopilotExtractionTransport(spec) if isinstance(spec, CopilotExtractionSpec) else ExtractionTransport(spec)
+            self.run_owners[run['id']] = owner
+            return owner.view()
 
     def _extraction_transport(self, spec):
         from .copilot_extraction import (
@@ -186,7 +195,14 @@ class Service:
             with self.extraction_lock:
                 self.draining = False
                 try:
-                    if self.extraction_owner is not None: self.extraction_owner.close()
+                    owners = list(self.failed_owners) + list(self.run_owners.values())
+                    if self.extraction_owner is not None: owners.append(self.extraction_owner)
+                    failure = None
+                    for owner in owners:
+                        try: owner.close()
+                        except Exception as exc: failure = failure or exc
+                    if failure is not None: raise failure
+                    self.failed_owners.clear()
                 finally:
                     if hasattr(self.cli, 'close'): self.cli.close()
 
@@ -205,8 +221,8 @@ class Service:
             result['relation_type_warnings'] = read_run_warnings(self.root, self.store, owner['id'], include_items=coverage_details)
         if kind == 'runs':
             result['progress'] = analysis_progress(self.root, self.store, owner['id'], report)
-            ahead = self.queue_ahead(owner['id']) if owner['status'] == 'queued' else None
-            if ahead is not None: result['queue'] = {'ahead': ahead}
+            context = self.queue_context(owner['id']) if owner['status'] == 'queued' else None
+            if context is not None: result['queue'] = context
         if report is not None and not coverage_details:
             report.pop('chunks', None)
         return result
@@ -346,7 +362,7 @@ class Service:
                         self.futures[run['id']] = self.pool.submit(self.extract, copy.deepcopy(run), transport, self.relation_type_warning_threshold, timing, context_limit)
                     except BaseException:
                         self.queue.remove(('run', run['id']))
-                        self.unsubmitted.add(('run', run['id']))
+                        if self.pool.contains('run', run['id']): self.unsubmitted.add(('run', run['id']))
                         raise
                 return run
             except Exception as exc:
@@ -375,6 +391,7 @@ class Service:
         scheduler = None
         dictionary_summary = None
         cancel_detail = None
+        owned_cli = None
         try:
             timing.worker_start()
             experiment = run.get('extraction_options')
@@ -389,11 +406,14 @@ class Service:
                 spec = extraction_spec(experiment)
                 if self.extraction_caller_factory is not None or self.extraction_caller is not None:
                     cli = self.extraction_caller_factory(spec) if self.extraction_caller_factory is not None else self.extraction_caller
+                    if self.extraction_caller_factory is not None: owned_cli = cli
                     if cli.extraction_spec != spec: raise ValueError('추출 호출자 계약 불일치')
                 else:
                     cli = self._registered_extraction_transport(run, spec)
             else:
                 cli = transport if transport is not None else self.job_cli(run)
+                if isinstance(cli, CLI):
+                    cli = owned_cli = cli.fork_job()
             context_limit = validate_context_bytes(context_limit)
             self.store.run_status(run['id'], 'running')
             doc = self.store.document(run['document_id'], run['version'])
@@ -655,6 +675,7 @@ class Service:
                 if failing:
                     if cancel_detail is not None: self.end_cancelled(run['id'], cancel_detail)
                     else: self.record_failure(run['id'], detail, stage=run['stage'])
+                self.close_job_owner(run['id'], owned_cli)
                 with self.extraction_lock:
                     self.registered_extractions.pop(run['id'], None)
                     self.futures.pop(run['id'], None)
@@ -664,6 +685,16 @@ class Service:
                 finally:
                     self.dequeue('run', run['id'])
                     timing.finish()
+
+    def close_job_owner(self, run_id, owned_cli):
+        with self.extraction_lock:
+            owner = self.run_owners.pop(run_id, None)
+        for value in (owner, owned_cli):
+            if value is not None and hasattr(value, 'close'):
+                try: value.close()
+                except Exception:
+                    # Retain failed owners for shutdown retry, without blocking unrelated jobs.
+                    with self.extraction_lock: self.failed_owners.append(value)
 
     CANCEL_FALLBACK = '취소된 실행이 멈췄지만 취소 상세를 저장하지 못했습니다.'
 
@@ -732,6 +763,11 @@ class Service:
         return result | {'query_id': self.store.save_query(result)}
 
     def ask(self, request):
+        with self.extraction_lock:
+            if self.closed: raise ValueError('Service가 닫혔습니다.')
+            return self._ask(request)
+
+    def _ask(self, request):
         if not isinstance(request, dict) or set(request) - {'question', 'agent', 'model', 'snapshot'}:
             raise ValueError('알 수 없는 질문 필드')
         question = text(request.get('question'), '질문', 2000)
@@ -756,7 +792,7 @@ class Service:
                     self.pool.submit(self.answer, copy.deepcopy(job), snapshot, transport)
                 except BaseException:
                     self.queue.remove(('question', job['id']))
-                    self.unsubmitted.add(('question', job['id']))
+                    if self.pool.contains('question', job['id']): self.unsubmitted.add(('question', job['id']))
                     raise
             return job
         except Exception as exc:
@@ -777,8 +813,11 @@ class Service:
         def progress(trace, evidence):
             job.update(trace=trace, evidence=evidence)
             self.store.save_question(job)
+        owned_cli = None
         try:
             cli = transport if transport is not None else self.job_cli(job)
+            if isinstance(cli, CLI):
+                cli = owned_cli = cli.fork_job()
             job['status'] = 'running'
             self.store.save_question(job)
             assistant = Assistant(self.store, cli, snapshot, job, self.root / 'questions' / job['id'], progress)
@@ -791,15 +830,16 @@ class Service:
             try:
                 self.finish_question(job)
             finally:
+                self.close_job_owner(job['id'], owned_cli)
                 try:
                     self.slots.release()
                 finally:
                     self.dequeue('question', job['id'])
 
     def submitted(self, kind, key):
-        """False, once, for a run or question whose pool.submit raised. ThreadPoolExecutor.submit puts the job in the pool before it starts a
-        worker thread, so when the thread cannot start, the job stays in the pool after start or ask tried to record it as failed and
-        returned its slot, and a worker that a later submit starts takes it. Such a job must end without doing anything."""
+        """Suppress a job if a submit wrapper raised after enqueueing it.
+        The scheduler itself enqueues only after worker startup succeeds.
+        """
         with self.queue_lock:
             if (kind, key) not in self.unsubmitted: return True
             self.unsubmitted.discard((kind, key))
@@ -810,14 +850,16 @@ class Service:
         with self.queue_lock:
             if (kind, key) in self.queue: self.queue.remove((kind, key))
 
+    def queue_context(self, run_id):
+        context = self.pool.context(run_id)
+        if context is None: return None
+        return {'stage': context['lane'], 'capacity': context['capacity'],
+                'ahead': self.store.queue_rows(context['contenders']),
+                'document_blockers': self.store.queue_rows(context['document_blockers'])}
+
     def queue_ahead(self, run_id):
-        """The runs and questions listed before this run, in the order the single pool worker takes them, with the status each has now.
-        append and submit happen under one queue_lock, so the list order is the pool order. None when the run is not listed (not yet
-        appended, or already removed): nothing is known about what it waits for, which is not the same as nothing being ahead."""
-        with self.queue_lock:
-            entries = list(self.queue)
-        if ('run', run_id) not in entries: return None
-        return self.store.queue_rows(entries[:entries.index(('run', run_id))])
+        context = self.queue_context(run_id)
+        return context['ahead'] if context is not None else None
 
     QUESTION_FAILURE_FALLBACK = '질문이 실패했지만 실패 상세를 저장하지 못했습니다.'
     ANSWER_FALLBACK = '답변을 만들었지만 저장하지 못했습니다.'

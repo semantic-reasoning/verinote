@@ -173,7 +173,8 @@ class Generation(unittest.TestCase):
             def complete(adapter, agent, model, prompt, folder, *, phase=None):
                 return wire(json.loads(prompt.split('입력(JSON):\n', 1)[1]))
         service = Service(self.store, self.root, Fake(), relation_type_warning_threshold=20)
-        service.pool.submit(lambda: gate.wait(5))
+        from test_run_cancel import occupy_worker
+        for i in range(2): occupy_worker(service, gate, 'ontology', key=f'threshold-{i}')
         try:
             run = service.start(doc['id'], 'agy', '', 'ontology', 1, 1)
             service.relation_type_warning_threshold = 40

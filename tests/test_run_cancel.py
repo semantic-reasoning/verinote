@@ -28,7 +28,7 @@ from verinote.service import Service
 from verinote.store import Conflict, Store
 
 C1 = '대기 중에 취소되었습니다. 이 실행은 모델을 호출하지 않았습니다.'
-C2 = '취소 요청됨: 이미 허용한 호출은 중단하지 않고 끝날 때까지 기다린 뒤, 새 호출 없이 멈춥니다. 멈출 때까지 이 실행 뒤의 실행과 질문은 기다립니다.'
+C2 = '취소 요청됨: 이미 허용한 호출은 중단하지 않고 끝날 때까지 기다린 뒤, 새 호출 없이 멈춥니다. 멈출 때까지 같은 문서의 다음 실행은 기다리며, 다른 문서와 질문은 각 실행 한도 안에서 계속됩니다.'
 HEAD = '처리 중에 취소되었습니다. 취소 요청 뒤로는 새 호출을 허용하지 않았고 {} 저장하지 않았습니다.'
 EXTRACT_HEAD = HEAD.format('위키·관계 후보는')
 DICTIONARY_HEAD = HEAD.format('사전 초안은')
@@ -63,6 +63,17 @@ class Gate:
         return False
 
     def close(self): pass
+
+
+def occupy_worker(service, release, stage='extract', key='reserved-worker'):
+    """Occupy one real lane worker so queued-state tests have a deterministic full lane."""
+    entered = threading.Event()
+    def hold(job):
+        entered.set()
+        if not release.wait(20): raise TimeoutError('reserved worker')
+    future = service.pool.submit(hold, {'id': key, 'stage': stage, 'document_id': key})
+    if not entered.wait(3): raise AssertionError('worker did not start')
+    return future
 
 
 class Base(unittest.TestCase):
@@ -301,6 +312,11 @@ class Parallel(Base):
 
 
 class Queued(Base):
+    def service(self, gate, **kw):
+        service = super().service(gate, **kw)
+        occupy_worker(service, gate.release)
+        return service
+
     def two(self):
         first = self.document(1, 'first')
         second = self.document(1, 'second')
@@ -627,6 +643,7 @@ class Route(Base):
         super().setUp()
         self.gate = Gate(hold=(1,))
         self.service = Service(self.store, self.root, self.gate)
+        occupy_worker(self.service, self.gate.release)
         self.server = Server(('127.0.0.1', 0), self.store, self.service)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.url = f'http://127.0.0.1:{self.server.server_port}'

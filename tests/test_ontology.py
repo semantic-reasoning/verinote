@@ -374,13 +374,13 @@ class OntologyHTTP(unittest.TestCase):
             self.assertEqual(err.exception.code,status);err.exception.close()
         with patch.object(self.service.cli,'complete',side_effect=lambda a,m,p,f,**kw:wire_dictionary(DICTIONARY,p)):
             run=self.request(base+'/ontology','POST',args)
-            self.service.pool.submit(lambda:None).result(timeout=3)
+            self.service.pool.wait_idle()
         item=self.request(base)['items'][0]
         self.request(f'/api/items/{item["id"]}/review','POST',{'revision':1,'action':'revise','actor':'R','reason':'edit','payload':DICTIONARY})
         self.request(f'/api/items/{item["id"]}/review','POST',{'revision':2,'action':'approved','actor':'R','reason':'checked'})
         with patch.object(self.service.cli,'complete',return_value=extraction_response()):
             run=self.request(base+'/extract','POST',args)
-            self.service.pool.submit(lambda:None).result(timeout=3)
+            self.service.pool.wait_idle()
         self.assertEqual(self.request('/api/runs/'+run['id'])['ontology']['revision'],3)
         self.assertFalse(self.request(base)['can_extract'])
         self.request('/api/documents','POST',{'title':'test','filename':'x.md','text':SOURCE,'document_id':doc['id'],'expected_version':1,'expected_generation':1})

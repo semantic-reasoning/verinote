@@ -9,7 +9,6 @@ import sys
 import tempfile
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -29,6 +28,7 @@ from .extraction_evaluation import (
     load_manifest,
 )
 from .extraction_timing import read_extraction_timing
+from .job_scheduler import JobScheduler
 from .ontology import (
     EXTRACTION_CONTRACT_VERSION,
     EXTRACTION_PROMPT,
@@ -409,7 +409,7 @@ class ReportWriter:
             atomic_json(self.path, report)
 
 
-class _Executor(ThreadPoolExecutor):
+class _Executor(JobScheduler):
     future: Any = None
 
     def submit(self, fn, /, *args, **kwargs):
@@ -441,7 +441,7 @@ def execute_document(root, case, make_caller, budget, row, close, *, agent, mode
             caller = make_caller()
             service = Service(store, root, caller, extraction_caller=caller if extraction_concurrency is not None else None, quote_repair_limit=2)
         service.pool.shutdown(wait=True)
-        pool = _Executor(max_workers=1, thread_name_prefix='verinote-benchmark')
+        pool = _Executor()
         service.pool = pool
         budget.check()
         run = service.start(doc['id'], agent, model, expected_version=1, expected_generation=1,
