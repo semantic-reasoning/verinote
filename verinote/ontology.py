@@ -319,10 +319,10 @@ def extraction_quote_issues(value, source, dictionary, *, require_coverage=False
             except ValueError as exc:
                 raise ValueError(f'{quote_label(path)}: {exc}') from exc
             first = source.find(quote)
-            reason = 'missing' if first < 0 else 'ambiguous' if version == 2 and source.find(quote, first+1) >= 0 else None
+            reason = 'missing' if first < 0 else 'ambiguous' if version in (2, 3) and source.find(quote, first+1) >= 0 else None
             if reason:
                 issue = {'path': path, 'item': row}
-                if version == 2: issue['reason'] = reason
+                if version in (2, 3): issue['reason'] = reason
                 issues.append(issue)
     if require_coverage:
         from .extraction_coverage import validate_accounting
@@ -432,7 +432,7 @@ sources는 원문의 연속 구간입니다. quote_ref에는 이번 sources에 �
 입력(JSON):
 '''
 
-EXTRACTION_CONTRACT_VERSION = 2
+EXTRACTION_CONTRACT_VERSION = 3
 
 
 def extraction_key(pin):
@@ -479,16 +479,16 @@ QUOTE_REPAIR_PROMPT = QUOTE_REPAIR_PROMPT_V1.replace(
 
 def extraction_prompts(version):
     """Pinned contract; legacy 0 uses the preserved pre-v2 prompt and checks."""
-    if type(version) is not int or version not in (0, 1, 2):
+    if type(version) is not int or version not in (0, 1, 2, 3):
         raise ValueError('지원하지 않는 추출 계약 버전입니다.')
-    return (EXTRACTION_PROMPT, QUOTE_REPAIR_PROMPT) if version == 2 else (EXTRACTION_PROMPT_V1, QUOTE_REPAIR_PROMPT_V1)
+    return (EXTRACTION_PROMPT, QUOTE_REPAIR_PROMPT) if version in (2, 3) else (EXTRACTION_PROMPT_V1, QUOTE_REPAIR_PROMPT_V1)
 
 
 def extraction_version_from_hashes(prompt_hash, repair_hash, version=None):
     """Only the exact historical v1 pair can identify a version-less record."""
     import hashlib
     selected = 1 if version is None else version
-    if type(selected) is not int or selected not in (1, 2): raise ValueError('추출 기록 계약 버전 오류')
+    if type(selected) is not int or selected not in (1, 2, 3): raise ValueError('추출 기록 계약 버전 오류')
     prompts = extraction_prompts(selected)
     if tuple(hashlib.sha256(p.encode()).hexdigest() for p in prompts) != (prompt_hash, repair_hash):
         raise ValueError('추출 기록 prompt 계약 불일치')

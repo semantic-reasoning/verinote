@@ -68,7 +68,7 @@ class QuoteContracts(unittest.TestCase):
         self.assertEqual(extraction_quote_issues(output, SOURCE+' aaaa', DICTIONARY)[0]['reason'], 'ambiguous')
         output['claims'][0]['quote'] = 'absent'
         self.assertEqual(extraction_quote_issues(output, SOURCE, DICTIONARY)[0]['reason'], 'missing')
-        for version in (True, False, None, '2', 3, -1):
+        for version in (True, False, None, '2', 4, -1):
             with self.assertRaises(ValueError): extraction_prompts(version)
             with self.assertRaises(ValueError): extraction_quote_issues(output, SOURCE, DICTIONARY, contract_version=version)
         output['claims'][0]['quote'] = 'x'*8001
@@ -90,7 +90,7 @@ class QuoteContracts(unittest.TestCase):
         self.assertTrue(calls[1][0].startswith(extraction_prompts(2)[1]))
         payload = json.loads(calls[1][0].split('입력(JSON):\n')[1])
         self.assertEqual(payload['issues'][0]['reason'], 'ambiguous')
-        self.assertFalse(self.store.document(doc['id'])['can_extract'])
+        self.assertTrue(self.store.document(doc['id'])['can_extract'])  # Contract 3 is a distinct upgrade.
         with self.assertRaises(Conflict): self.run_version(doc, 2, [])
 
     def test_still_ambiguous_repair_excludes_that_row_after_one_call(self):

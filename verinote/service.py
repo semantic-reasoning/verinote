@@ -214,6 +214,8 @@ class Service:
         if kind == 'runs' and owner.get('stage') == 'extract':
             report = read_report(self.root, self.store, owner['id'])
             result['coverage'] = report
+            from .extraction_loss import read_loss
+            result['loss_audit'] = read_loss(self.root, self.store, owner, coverage_details)
         if kind == 'runs' and owner.get('stage') == 'ontology':
             result['dictionary_exclusions'] = self.dictionary_exclusions(owner['id'], include_items=coverage_details)
             result['dictionary_reconciliations'] = self.dictionary_reconciliations(owner['id'], include_items=coverage_details)
@@ -308,7 +310,7 @@ class Service:
             raise ValueError('OpenRouter 자격 증명이 구성되지 않았습니다.')
         return JobTransport(self.cli, job.get('execution_options'))
 
-    def start(self, document_id, agent, model, stage='extract', expected_version=None, expected_generation=None, *, max_tokens=_UNSET_TOKENS, answer_reserve_tokens=_UNSET_TOKENS, regenerate=None, extraction_concurrency=None, extraction_policy=None):
+    def start(self, document_id, agent, model, stage='extract', expected_version=None, expected_generation=None, *, max_tokens=_UNSET_TOKENS, answer_reserve_tokens=_UNSET_TOKENS, regenerate=None, extraction_concurrency=None, extraction_policy=None, extraction_contract=None):
         if agent not in PROVIDERS:
             raise ValueError('지원하지 않는 에이전트')
         model = validate_model(model, agent)
@@ -352,7 +354,7 @@ class Service:
             timing = create_timing(self.root, agent, stage, schema_version=2 if experiment else 1)
             run = failed = None
             try:
-                run = self.store.create_run(document_id, agent, model, stage, expected_version, expected_generation, **({'regenerate': regenerate} if regenerate is not None else {}), **({'execution_options': options} if options is not None else {}), **({'extraction_options': experiment} if experiment is not None else {}))
+                run = self.store.create_run(document_id, agent, model, stage, expected_version, expected_generation, **({'extraction_contract': extraction_contract} if extraction_contract is not None else {}), **({'regenerate': regenerate} if regenerate is not None else {}), **({'execution_options': options} if options is not None else {}), **({'extraction_options': experiment} if experiment is not None else {}))
                 timing.bind(run)
                 from .usage import atomic_json
                 policy_folder = self.root / 'runs' / run['id']
@@ -428,7 +430,7 @@ class Service:
             timing.configure(doc)
             contract_version = run['ontology'].get('extraction_contract', 0)
             extraction_prompt, quote_repair_prompt = extraction_prompts(contract_version)
-            current_contract = contract_version in (1, 2)
+            current_contract = contract_version in (1, 2, 3)
             with timing.section('restore'):
                 if current_contract:
                     report = new_report(run, len(doc['text']))
@@ -445,6 +447,11 @@ class Service:
                         report['chunks'].append(chunk_report(output, offset, len(chunk)))
                     if checkpoint.outputs:
                         report_ok = write_report(self.root, report)
+            loss_budget = None
+            if contract_version == 3:
+                from .extraction_loss import RecoveryBudget
+                assert checkpoint is not None
+                loss_budget = RecoveryBudget(self.store, self.root, run, checkpoint.contract)
             timing.reuse(checkpoint.resumed_chunks if checkpoint is not None else 0,
                          checkpoint.state['resumed_from'] if checkpoint is not None else None)
             from .extraction_scheduler import ChunkFailure, ChunkScheduler, ChunkTask
@@ -532,8 +539,9 @@ class Service:
                             if issues:
                                 validation.reject()
                             located: list[dict] = []
+                            changes: list[dict] = []
                             refused: list[dict] = []
-                            if issues and contract_version == 2 and self.quote_repair_limit is None:
+                            if issues and contract_version in (2, 3) and self.quote_repair_limit is None:
                                 output, located, issues = locate_whitespace_variants(output, chunk, issues)
                                 if located:
                                     write_located_quotes(folder, located)
@@ -589,6 +597,44 @@ class Service:
                         except ValueError as exc:
                             basis = ' (관계 번호는 사전 불일치 제외 뒤 기준)' if excluded and re.search(r'관계 \d+ 인용', str(exc)) else ''
                             raise ValueError(f'{exc}{basis}') from exc
+                        if contract_version == 3:
+                            from .extraction_loss import (
+                                RECOVERY_PROMPT,
+                                finish_audit,
+                                initial_quote_repairs,
+                                merge_recovery,
+                                new_audit,
+                            )
+                            output['facts'] = [dictionary_fact(f, chunk, run['ontology']['payload']) for f in output['facts']]
+                            audit = new_audit(raw_output, output, chunk, offset, run['ontology']['payload'],
+                                              initial_quote_repairs(raw_output, run['ontology']['payload'], located+changes))
+                            if not output['facts']:
+                                assert loss_budget is not None
+                                capacity = min(20, 80-len(output.get('excluded_facts', [])))
+                                if capacity == 0:
+                                    audit['recovery_status'] = 'no_capacity'
+                                elif loss_budget.status(index) != 'reserved':
+                                    audit['recovery_status'] = loss_budget.status(index)
+                                else:
+                                    if scheduler is not None: scheduler.check()
+                                    self.store.raise_if_cancelled(run['id'])
+                                    if time.monotonic() >= deadline: raise TimeoutError('보충 추출 전 청크 실행 시간 제한 초과')
+                                    recovery_folder = folder / 'recovery'
+                                    recovery_prompt = prepare_dictionary_prompt(cli, run['agent'], RECOVERY_PROMPT,
+                                        payload | pinned | {'capacity':capacity, 'previous_coverage':output['coverage'],
+                                                            'dictionary_gaps':output['dictionary_gaps'],
+                                                            'rejected_candidates':audit['unresolved']}, context_limit, recovery_folder)
+                                    assert loss_budget is not None
+                                    audit['recovery_status'] = loss_budget.reserve(index)
+                                    if audit['recovery_status'] == 'reserved':
+                                        self.store.run_progress(run['id'], f'관계 누락 보충 점검 · 청크 {index} · 문서당 최대 4회')
+                                        response = complete_chunk(recovery_prompt, recovery_folder)
+                                        with caller_validation(cli, recovery_folder, run['agent']) as recovery_validation:
+                                            output = merge_recovery(audit, output, response, chunk, run['ontology']['payload'])
+                                            if any(r['origin'] == 'recovery' for r in audit['unresolved']): recovery_validation.reject()
+                                            if extraction_quote_issues(output, chunk, run['ontology']['payload'], require_coverage=True, contract_version=3, allow_no_claims=bool(output.get('excluded_claims'))):
+                                                raise ValueError('보충 추출 인용 오류')
+                            output['loss_audit'] = finish_audit(audit, output)
                         claims.extend(page['claims'])
                         facts.extend(dictionary_fact(f, chunk, run['ontology']['payload']) for f in output['facts'])
                         if time.monotonic() > deadline:
@@ -616,6 +662,8 @@ class Service:
             if repair_calls or located_quotes or (checkpoint is not None and checkpoint.resumed_chunks):
                 detail = f'{detail} 의미가 맞는지 원문과 대조한 뒤 승인하세요.'.lstrip()
             if report is not None:
+                if contract_version == 3:
+                    detail += ' 손실 점검 기록에서 보충·미해결·미점검 구간을 확인하세요. 처리 완료는 의미적 완전성을 보증하지 않습니다.'
                 detail = f'관계 후보 {len(unique)}개 · 관계별 점검은 실행 기록에서 확인하세요. 새 후보는 별도 승인 전까지 그래프에 포함되지 않습니다. ' + detail
                 if not report_ok:
                     detail += ' 관계별 추출 점검 기록 저장 실패: 보고서를 사용할 수 없습니다.'

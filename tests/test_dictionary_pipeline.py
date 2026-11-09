@@ -174,7 +174,7 @@ class Pipeline(unittest.TestCase):
                                    'quote':chunks[0][:100]}],
                         'facts':[],'coverage':[],'dictionary_gaps':[]}
         service=Service(self.store,self.root,Extractor())
-        run=service.start(doc['id'],'agy','','extract',doc['version'],doc['generation'])
+        run=service.start(doc['id'],'agy','','extract',doc['version'],doc['generation'],extraction_contract=2)
         service.pool.shutdown(wait=True)
         self.assertEqual(self.store.run(run['id'])['status'],'success',self.store.run(run['id'])['detail'])
 

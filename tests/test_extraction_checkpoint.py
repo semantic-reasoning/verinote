@@ -219,7 +219,7 @@ class ExtractionRecovery(unittest.TestCase):
             if Path(path).name == 'extraction-checkpoint.json':
                 raise OSError('disk unavailable')
             atomic_json(path, value)
-        with patch('verinote.extraction_checkpoint.atomic_json', side_effect=write):
+        with patch('verinote.store.EXTRACTION_CONTRACT_VERSION', 2), patch('verinote.extraction_checkpoint.atomic_json', side_effect=write):
             final, _ = self.execute(doc, [extraction_response(), extraction_response()])
         self.assertEqual(final['status'], 'success', final['detail'])
         self.assertIn('복구 기록 저장 실패', final['detail'])

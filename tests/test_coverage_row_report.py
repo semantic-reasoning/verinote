@@ -97,7 +97,11 @@ class RowCountReport(unittest.TestCase):
 
 class RowCountRetry(unittest.TestCase):
     # Borrowed, not inherited: inheriting would re-run every ExtractionRecovery test here.
-    setUp = workflow.Workflow.setUp
+    def setUp(self):
+        workflow.Workflow.setUp(self)
+        # These historical fixtures assert contract-2 call counts and persistence semantics.
+        contract = patch('verinote.store.EXTRACTION_CONTRACT_VERSION', 2)
+        contract.start(); self.addCleanup(contract.stop)
     tearDown = workflow.Workflow.tearDown
     document = checkpoint.ExtractionRecovery.document
     execute = checkpoint.ExtractionRecovery.execute

@@ -404,7 +404,7 @@ def _run(output, *, synthetic=False, clock=None, invocation=None):
                 store.review(item['id'], item['revision'], 'approved', 'Synthetic fixture', SYNTHETIC_REVIEW_REASON_V2)
                 service = BaselineService(store, artifact, CLI(), ledger=ledger, row=row, save=save, quote_repair_limit=2)
                 service.pool.shutdown(wait=True); pool = _Executor(); service.pool = pool
-                job = service.start(doc['id'], 'ollama', _profile().model, expected_version=1, expected_generation=1)
+                job = service.start(doc['id'], 'ollama', _profile().model, expected_version=1, expected_generation=1, extraction_contract=2)
                 row.update(run_id=job['id'], document_id=doc['id'])
                 pool.future.result()
             finally:

@@ -324,7 +324,7 @@ class Store:
         owners = sorted(runs + questions, key=lambda r: (r['created_at'], r['id']), reverse=True)
         return owners[:limit], total
 
-    def create_run(self, document_id, agent, model, stage='extract', expected_version=None, expected_generation=None, *, execution_options=None, extraction_options=None, regenerate=None):
+    def create_run(self, document_id, agent, model, stage='extract', expected_version=None, expected_generation=None, *, execution_options=None, extraction_options=None, regenerate=None, extraction_contract=None):
         if stage not in ('ontology', 'extract'):
             raise ValueError('지원하지 않는 추출 단계')
         if execution_options is not None:
@@ -339,6 +339,9 @@ class Store:
                     or not isinstance(regenerate['id'], str) or not regenerate['id'] or len(regenerate['id']) > 200
                     or type(regenerate['revision']) is not int or regenerate['revision'] < 1):
                 raise ValueError('사전 재생성에는 id와 양의 정수 revision이 필요합니다.')
+        if extraction_contract is None: extraction_contract = EXTRACTION_CONTRACT_VERSION
+        if type(extraction_contract) is not int or extraction_contract not in (0, 1, 2, 3):
+            raise ValueError('추출 계약 버전 오류')
         run_id = ident()
         with self.connect(True) as db:
             doc = db.execute('SELECT * FROM documents WHERE id=?', (document_id,)).fetchone()
@@ -362,7 +365,7 @@ class Store:
                     raise Conflict('이 문서 버전의 개체·별칭·관계 사전을 먼저 승인하세요.')
                 payload = json.loads(dictionary['payload'])
                 from .dictionary_context import extraction_pin
-                pinned = extraction_pin(dictionary['id'], dictionary['revision'], payload, EXTRACTION_CONTRACT_VERSION)
+                pinned = extraction_pin(dictionary['id'], dictionary['revision'], payload, extraction_contract)
                 for prior in db.execute("SELECT ontology FROM runs WHERE document_id=? AND version=? AND stage='extract' AND status='success'", (document_id, doc['current_version'])):
                     old = json.loads(prior[0])
                     if extraction_key(old) == extraction_key(pinned):

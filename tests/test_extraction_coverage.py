@@ -213,11 +213,11 @@ class CoverageWorkflow(unittest.TestCase):
 
     def test_zero_fact_and_empty_dictionary_are_valid_extractions(self):
         for dictionary in (DICTIONARY, DICTIONARY | {'relations': []}):
-            run, doc, calls = self.execute([extraction_response([], dictionary)], dictionary=dictionary)
+            run, doc, calls = self.execute([extraction_response([], dictionary), {'facts':[]}], dictionary=dictionary)
             self.assertEqual(run['status'], 'success', run['detail'])
             report = self.report(run)
             self.assertTrue(report['available']); self.assertTrue(report['published'])
-            self.assertEqual(report['saved_fact_count'], 0); self.assertEqual(len(calls), 1)
+            self.assertEqual(report['saved_fact_count'], 0); self.assertEqual(len(calls), 2)
             self.assertEqual([i['kind'] for i in doc['items']], ['ontology', 'page'])
 
     def test_invalid_report_does_not_spend_repair_or_save(self):

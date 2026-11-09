@@ -56,6 +56,9 @@ class ExtractionCheckpoint:
             )
             self.contract['extraction_options'] = extraction_options(run['extraction_options'], agent=run['agent'], stage=run['stage'], model=run['model'])
             validate_extraction_source(self.contract['extraction_options'], doc['text'])
+        if pin['extraction_contract'] == 3:
+            from .extraction_loss import RECOVERY_PROMPT
+            self.contract['loss_policy'] = {'version': 1, 'recovery_prompt': digest(RECOVERY_PROMPT.encode()), 'max_calls': 4, 'max_facts': 20}
         previous, skipped = None, 0
         for prior in store.extraction_retries(run):
             raw = safe_file(root, f'runs/{prior["id"]}/extraction-checkpoint.json', CHECKPOINT_LIMIT)
@@ -70,6 +73,11 @@ class ExtractionCheckpoint:
                         or not isinstance(value['outputs'], list)
                         or not 1 <= len(value['outputs']) <= len(self.slices)):
                     raise ValueError('checkpoint identity/contract')
+                if pin['extraction_contract'] == 3:
+                    from .extraction_loss import verify_saved_audit
+                    for i, output in enumerate(value['outputs'], 1):
+                        if not isinstance(output, dict): raise ValueError('checkpoint output must be an object')
+                        verify_saved_audit(root, prior, i, output.get('loss_audit'))
                 outputs = [self.validated(output, self.slices[i][1])
                            for i, output in enumerate(value['outputs'])]
                 if len(outputs) > len(self.outputs):
@@ -78,6 +86,10 @@ class ExtractionCheckpoint:
                 skipped += 1
         if skipped:
             self.warnings.append(f'이전 추출 복구 기록 {skipped}개가 없거나 호환·검증 조건을 충족하지 않아 제외')
+        if pin['extraction_contract'] == 3:
+            from .extraction_loss import save_audit
+            for i, output in enumerate(self.outputs, 1):
+                save_audit(root, run, i, output['loss_audit'])
         self.resumed_chunks = len(self.outputs)
         self.saved_chunks = self.resumed_chunks  # On disk under the record this run resumed from.
         resumed_chars = sum(len(chunk) for _, chunk in self.slices[:self.resumed_chunks])
@@ -99,9 +111,16 @@ class ExtractionCheckpoint:
             result['excluded_facts'] = copy.deepcopy(output['excluded_facts'])
         if output.get('excluded_claims'):
             result['excluded_claims'] = copy.deepcopy(output['excluded_claims'])
+        if self.run['ontology']['extraction_contract'] == 3:
+            from .extraction_loss import validate_audit
+            result['loss_audit'] = validate_audit(output.get('loss_audit'), result, chunk, self.run['ontology']['payload'])
         return result
 
     def write(self, name, value, limit):
+        if self.run['ontology']['extraction_contract'] == 3:
+            from .extraction_loss import strict_write
+            strict_write(self.folder / name, value, limit)
+            return True
         try:
             if len(json.dumps(value, ensure_ascii=False, indent=2).encode()) > limit:
                 raise ValueError('checkpoint size limit')
@@ -127,6 +146,10 @@ class ExtractionCheckpoint:
     def accept(self, output, chunk, *, before_accept=None):
         validated = self.validated(output, chunk)
         if before_accept is not None: before_accept()
+        if self.run['ontology']['extraction_contract'] == 3:
+            from .extraction_loss import save_audit
+            if validated['loss_audit']['offset'] != len(self.outputs)*8000: raise ValueError('손실 점검 구간 오류')
+            save_audit(self.root, self.run, len(self.outputs)+1, validated['loss_audit'])
         self.outputs.append(validated)
         self.state['completed_chars'] += len(chunk)
         self.save()

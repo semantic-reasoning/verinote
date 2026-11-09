@@ -285,7 +285,7 @@ class Generation(unittest.TestCase):
                 self.assertEqual(restored(raw['approved_dictionary']['payload']), dictionary_context(dictionary))
                 return {'repairs': [{'path': 'claims.0.quote', 'quote': source}]} if len(seen) == 2 else copy.deepcopy(output)
         service = Service(self.store, self.root, Fake()); self.addCleanup(service.close)
-        run = service.start(doc['id'], 'copilot', 'auto', 'extract', doc['version'], doc['generation'])
+        run = service.start(doc['id'], 'copilot', 'auto', 'extract', doc['version'], doc['generation'], extraction_contract=2)
         service.pool.shutdown(wait=True); saved = self.store.run(run['id'])
         self.assertEqual(saved['status'], 'success', saved['detail']); self.assertEqual(len(seen), 2)
         self.assertEqual(saved['ontology']['payload'], dictionary)
@@ -304,7 +304,7 @@ class Generation(unittest.TestCase):
                 self.assertEqual(restored(raw['approved_dictionary']['payload']), dictionary_context(dictionary))
                 return {'repairs': [{'path': 'claims.0.quote', 'quote': source}]} if len(seen) == 2 else copy.deepcopy(output)
         service = Service(self.store, self.root, Fake()); self.addCleanup(service.close)
-        run = service.start(doc['id'], 'copilot', 'auto', 'extract', doc['version'], doc['generation'])
+        run = service.start(doc['id'], 'copilot', 'auto', 'extract', doc['version'], doc['generation'], extraction_contract=2)
         service.pool.shutdown(wait=True); saved = self.store.run(run['id'])
         self.assertEqual(saved['status'], 'success', saved['detail']); self.assertEqual(len(seen), 2)
         folder = self.root/'runs'/run['id']

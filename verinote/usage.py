@@ -357,7 +357,7 @@ def job_calls(root, kind, owner):
         from .ontology import MAX_DICTIONARY_CALLS
         paths = [(str(i), 'ontology') for i in range(1, MAX_DICTIONARY_CALLS + 1)]
     else:
-        paths = [(p, stage) for i in range(1, 17) for p, stage in ((str(i), owner.get('stage', 'legacy')), (f'{i}/quote-repair', 'quote_repair'))]
+        paths = [(p, stage) for i in range(1, 17) for p, stage in ((str(i), owner.get('stage', 'legacy')), (f'{i}/quote-repair', 'quote_repair'), (f'{i}/recovery', 'extraction_recovery'))]
     calls = []
     for path, stage in paths:
         base = f'{kind}/{key}/{path}'

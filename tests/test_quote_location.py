@@ -137,7 +137,11 @@ class Span(unittest.TestCase):
 
 
 class Located(unittest.TestCase):
-    setUp = workflow.Workflow.setUp
+    def setUp(self):
+        workflow.Workflow.setUp(self)
+        # These historical fixtures assert contract-2 call counts and persistence semantics.
+        contract = patch('verinote.store.EXTRACTION_CONTRACT_VERSION', 2)
+        contract.start(); self.addCleanup(contract.stop)
     tearDown = workflow.Workflow.tearDown
 
     def document(self, source=TEXT):

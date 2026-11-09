@@ -107,6 +107,9 @@ def generation_source(count):
 
 class ServiceCase(unittest.TestCase):
     def setUp(self):
+        # This protocol measures the exact contract-2 request bytes and call counts.
+        contract = mock.patch('verinote.store.EXTRACTION_CONTRACT_VERSION', 2)
+        contract.start(); self.addCleanup(contract.stop)
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
