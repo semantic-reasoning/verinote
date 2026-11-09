@@ -223,6 +223,9 @@ class Service:
             result['progress'] = analysis_progress(self.root, self.store, owner['id'], report)
             context = self.queue_context(owner['id']) if owner['status'] == 'queued' else None
             if context is not None: result['queue'] = context
+        if kind == 'questions' and owner['status'] == 'queued':
+            context = self.queue_context(owner['id'], 'question')
+            if context is not None: result['queue'] = context
         if report is not None and not coverage_details:
             report.pop('chunks', None)
         return result
@@ -801,7 +804,7 @@ class Service:
             with self.queue_lock:
                 self.queue.append(('question', job['id']))
                 try:
-                    self.pool.submit(self.answer, copy.deepcopy(job), snapshot, transport)
+                    self.futures[job['id']] = self.pool.submit(self.answer, copy.deepcopy(job), snapshot, transport)
                 except BaseException:
                     self.queue.remove(('question', job['id']))
                     if self.pool.contains('question', job['id']): self.unsubmitted.add(('question', job['id']))
@@ -825,7 +828,7 @@ class Service:
         def progress(trace, evidence):
             job.update(trace=trace, evidence=evidence)
             self.store.save_question(job)
-        owned_cli = None
+        owned_cli = cancel_detail = None
         try:
             cli = transport if transport is not None else self.job_cli(job)
             if isinstance(cli, CLI):
@@ -837,11 +840,23 @@ class Service:
             job['answer'] = assistant.run()
             job['status'] = 'success'
         except Exception as exc:
-            job.update(status='error', error=error_text(exc)[:2000])
+            cancelled = isinstance(exc, RunCancelled)
+            if not cancelled:
+                try: cancelled = self.store.question(job['id'])['status'] in ('cancelling', 'cancelled')
+                except Exception: pass
+            if cancelled:
+                # Only the cancel refusal itself adds no detail. save_question's Conflicts (a deleted snapshot or question) are not expected
+                # beside a stored cancel, since deletion is refused while a question is queued, running or cancelling; one that does occur is
+                # kept as the last error rather than hidden.
+                cancel_detail = self.QUESTION_CANCEL_HEAD + ('' if isinstance(exc, RunCancelled) else f' · 멈추기 전 마지막 오류: {error_text(exc)}')
+            else:
+                job.update(status='error', error=error_text(exc)[:2000])
         finally:
             try:
-                self.finish_question(job)
+                if cancel_detail is not None: self.end_question_cancelled(job['id'], cancel_detail)
+                else: self.finish_question(job)
             finally:
+                with self.extraction_lock: self.futures.pop(job['id'], None)
                 self.close_job_owner(job['id'], owned_cli)
                 try:
                     self.slots.release()
@@ -862,8 +877,8 @@ class Service:
         with self.queue_lock:
             if (kind, key) in self.queue: self.queue.remove((kind, key))
 
-    def queue_context(self, run_id):
-        context = self.pool.context(run_id)
+    def queue_context(self, key, kind='run'):
+        context = self.pool.context(key, kind)
         if context is None: return None
         return {'stage': context['lane'], 'capacity': context['capacity'],
                 'ahead': self.store.queue_rows(context['contenders']),
@@ -875,24 +890,54 @@ class Service:
 
     QUESTION_FAILURE_FALLBACK = '질문이 실패했지만 실패 상세를 저장하지 못했습니다.'
     ANSWER_FALLBACK = '답변을 만들었지만 저장하지 못했습니다.'
+    QUESTION_CANCEL_HEAD = '처리 중에 취소되었습니다. 취소 요청 뒤로는 새 모델 호출을 허용하지 않았고 답변은 저장하지 않았습니다.'
+    QUESTION_CANCEL_AFTER_ANSWER = '처리 중에 취소되었습니다. 취소 요청 전에 허용한 호출로 답변을 만들었지만 취소 요청 뒤라 저장하지 않았습니다.'
+    QUESTION_CANCEL_FALLBACK = '취소된 질문이 멈췄지만 취소 상세를 저장하지 못했습니다.'
+
+    def cancel_question(self, key, expected_status):
+        """Cancel a queued or running question and return the status it had (see Store.cancel_question). A queued question whose job has not
+        started is removed from the pool here and its slot released; a job a worker already took ends through answer, whose first save is
+        refused before any model call."""
+        previous = self.store.cancel_question(key, expected_status)
+        if previous == 'queued':
+            with self.extraction_lock:
+                future = self.futures.get(key)
+                if future is not None and future.cancel():
+                    self.futures.pop(key, None)
+                    try:
+                        self.slots.release()
+                    finally:
+                        self.dequeue('question', key)
+        return previous
+
+    def end_question_cancelled(self, key, detail):
+        self._ladder(lambda text: self.store.finish_question_cancel(key, text), detail, self.QUESTION_CANCEL_FALLBACK)
 
     def finish_question(self, job):
         """Save a question that ended as success or error. While a question is stored as queued or running, the deletion of every document is
         refused. Tries the job twice, then an error job with characters SQLite cannot store escaped in its error, cut at 2000 characters
         before any escape would be split, then, in one transaction, the stored question moved to error with a fixed sentence unless it is
-        already stored as ended, and gives up silently after that."""
+        already stored as ended, and gives up silently after that. A question stored as cancelling or cancelled refuses the save
+        (Store.save_question) and the fixed-sentence write (Store.end_unstored_question): a cancelling one becomes cancelled, with the error as its last error, or, for an answer, a sentence that says
+        the answer was not stored; a cancelled one keeps the error it has."""
         attempts = [job, job]
         if job['status'] == 'error':
             escaped = escaped_within(job['error'], 2000)
             if escaped != job['error']: attempts.append(job | {'error': escaped})
+        cancel_detail = (self.QUESTION_CANCEL_AFTER_ANSWER if job['status'] == 'success'
+                         else f"{self.QUESTION_CANCEL_HEAD} · 멈추기 전 마지막 오류: {job['error']}")
         for attempt in attempts:
             try:
                 self.store.save_question(attempt)
                 return
+            except RunCancelled:
+                return self.end_question_cancelled(job['id'], cancel_detail)
             except Exception:
                 continue
         try:
             self.store.end_unstored_question(job['id'], self.ANSWER_FALLBACK if job['status'] == 'success' else self.QUESTION_FAILURE_FALLBACK)
+        except RunCancelled:
+            self.end_question_cancelled(job['id'], cancel_detail)
         except Exception:
             pass
 

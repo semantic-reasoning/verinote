@@ -50,16 +50,17 @@ class JobScheduler:
         with self.condition:
             return any(j.key == (kind, key) for j in self.pending + self.active)
 
-    def context(self, run_id):
-        """Snapshot of lane contenders and a document lease; no database access."""
+    def context(self, key, kind='run'):
+        """Snapshot of lane contenders and a document lease; no database access. A question has no document, so it has no document
+        blockers: it waits only for the questions in its own lane."""
         with self.condition:
             pending = [j for j in self.pending if not j.future.cancelled()]
             jobs = self.active + pending
-            target = next((j for j in jobs if j.key == ('run', run_id)), None)
+            target = next((j for j in jobs if j.key == (kind, key)), None)
             if target is None: return None
             earlier = pending[:pending.index(target)] if target in pending else []
             contenders = [j.key for j in self.active + earlier if j is not target and j.lane == target.lane]
-            blockers = [j.key for j in self.active if j is not target and j.document == target.document]
+            blockers = [] if target.document is None else [j.key for j in self.active if j is not target and j.document == target.document]
             return {'lane': target.lane, 'capacity': self.capacities[target.lane],
                     'contenders': contenders, 'document_blockers': blockers}
 

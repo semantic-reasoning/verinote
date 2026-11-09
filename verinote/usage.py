@@ -463,6 +463,10 @@ def job_calls(root, kind, owner):
         from .store import QUEUED_CANCEL_DETAIL
         if owner.get('detail') == QUEUED_CANCEL_DETAIL:  # Store.cancel_run's marker: the run was cancelled before it started
             return []
+    if not calls and kind == 'questions' and owner['status'] == 'cancelled':
+        from .store import QUESTION_QUEUED_CANCEL
+        if owner.get('error') == QUESTION_QUEUED_CANCEL:  # Store.cancel_question's marker: cancelled while queued; a worker that took it anyway is refused its first save, before any call
+            return []
     if not calls and owner['status'] != 'queued':
         missing = empty_usage(owner['agent'], owner.get('model', ''))
         missing.update(call_id=f'{kind}/{key}/unknown', stage='question' if kind == 'questions' else owner.get('stage', 'legacy'), status='unknown', call_count_known=False, warnings=['호출 로그가 없어 사용량과 호출 횟수를 확인할 수 없습니다.'])
