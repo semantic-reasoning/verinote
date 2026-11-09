@@ -318,7 +318,7 @@ class ChunkPrefix(Base):
         run, _ = self.parallel(self.document(), no_coverage_at(2))
         self.assertEqual(run['detail'], f'청크 2 · {COVERAGE} · 검증 완료 1/3청크 · 새 호출 3회 · {from_chunk(2)}')
 
-    def test_parallel_worker_failure_at_second_with_first_in_flight_full_detail(self):
+    def test_parallel_worker_failure_at_second_saves_the_first_whose_call_was_in_flight(self):
         failed = threading.Event()
         fail = ChunkScheduler.fail
 
@@ -331,10 +331,116 @@ class ChunkPrefix(Base):
             if index == 2: raise ValueError('second')
             self.assertTrue(failed.wait(2))
             return extraction_response()
+        doc = self.document()
         with patch.object(ChunkScheduler, 'fail', recorded):
+            run, calls = self.parallel(doc, respond)
+        self.assertEqual(run['detail'], f'청크 2 · second · 검증 완료 1/3청크 · 새 호출 2회 · {from_chunk(2)}')
+        self.assertCountEqual(calls, [1, 2])
+        final, again = self.parallel(doc, ok)
+        self.assertEqual((final['status'], sorted(again)), ('success', [2, 3]))
+
+    def held_in_validation(self, chunk, released):
+        """Holds the coordinator's validation of chunk's answered response until released is set."""
+        import verinote.service as service_module
+        real, entered = service_module.caller_validation, threading.Event()
+        def held(cli, folder, agent):
+            if folder.name == str(chunk):
+                entered.set(); self.assertTrue(released.wait(5))
+            return real(cli, folder, agent)
+        return entered, patch('verinote.service.caller_validation', held)
+
+    def test_parallel_failure_while_the_first_answered_response_awaits_validation_saves_it(self):
+        failed = threading.Event(); fail = ChunkScheduler.fail
+        def recorded(scheduler, index, exc):
+            try: return fail(scheduler, index, exc)
+            finally: failed.set()
+        entered, held = self.held_in_validation(1, failed)
+        def respond(index, repairing):
+            if index == 2:
+                self.assertTrue(entered.wait(5)); raise ValueError('second')
+            return extraction_response()
+        doc = self.document()
+        with patch.object(ChunkScheduler, 'fail', recorded), held:
+            run, calls = self.parallel(doc, respond)
+        self.assertEqual(run['detail'], f'청크 2 · second · 검증 완료 1/3청크 · 새 호출 2회 · {from_chunk(2)}')
+        final, again = self.parallel(doc, ok)
+        self.assertEqual((final['status'], sorted(again)), ('success', [2, 3]))
+
+    def test_parallel_failure_recorded_before_the_repair_check_admits_no_repair_and_announces_none(self):
+        """The failure is recorded while chunk 1's answered response awaits validation, so the repair it needs is not a call
+        the run may start: no '보정 중' status and no repair span. This pins the interleaving where the failure comes first; a
+        failure recorded after the check is refused later by the strict admit in the scheduler."""
+        failed = threading.Event(); fail = ChunkScheduler.fail
+        def recorded(scheduler, index, exc):
+            try: return fail(scheduler, index, exc)
+            finally: failed.set()
+        entered, held = self.held_in_validation(1, failed)
+        def respond(index, repairing):
+            if index == 2:
+                self.assertTrue(entered.wait(5)); raise ValueError('second')
+            return broken()
+        statuses, real_status = [], self.store.run_status
+        def spy(run_id, status, detail=''):
+            statuses.append(detail); return real_status(run_id, status, detail)
+        with patch.object(ChunkScheduler, 'fail', recorded), held, patch.object(self.store, 'run_status', spy):
             run, calls = self.parallel(self.document(), respond)
         self.assertEqual(run['detail'], f'청크 2 · second · 검증 완료 0/3청크 · 새 호출 2회 · {FROM_FIRST}')
         self.assertCountEqual(calls, [1, 2])
+        self.assertEqual([d for d in statuses if '보정 중' in d], [])
+        import json
+        spans = json.loads((self.root / 'runs' / run['id'] / 'extraction-timing.json').read_text())['spans']
+        self.assertEqual([s for s in spans if s['kind'].startswith('repair')], [])
+
+    def test_parallel_failure_recorded_after_the_repair_announcement_still_admits_no_repair_call(self):
+        """The failure is recorded after the service-level check and the '보정 중' write, so only the strict admit inside
+        scheduler.repair() can refuse the repair: the call list stays at the two initial calls and the detail counts two calls."""
+        announced, failed = threading.Event(), threading.Event(); fail = ChunkScheduler.fail
+        def recorded(scheduler, index, exc):
+            try: return fail(scheduler, index, exc)
+            finally: failed.set()
+        def respond(index, repairing):
+            if index == 2:
+                self.assertTrue(announced.wait(5)); raise ValueError('second')
+            return broken() if not repairing else extraction_response()
+        real_status = self.store.run_status
+        def spy(run_id, status, detail=''):
+            result = real_status(run_id, status, detail)
+            if '보정 중' in detail:
+                announced.set(); self.assertTrue(failed.wait(5))
+            return result
+        with patch.object(ChunkScheduler, 'fail', recorded), patch.object(self.store, 'run_status', spy):
+            run, calls = self.parallel(self.document(), respond)
+        self.assertCountEqual(calls, [1, 2])
+        self.assertIn('새 호출 2회', run['detail'])
+
+    def test_parallel_chunk_whose_deadline_passed_before_its_admission_is_not_counted_as_a_call(self):
+        """The clock passes chunk 2's deadline just before its admission: admit() refuses it at the deadline check, so only chunk 1's
+        call is made and the detail counts one call, not two."""
+        import time
+        shift, real, admit = [0], time.monotonic, ChunkScheduler.admit
+        def late(scheduler, task):
+            if task.index == 2: shift[0] = 400
+            return admit(scheduler, task)
+        with patch('time.monotonic', lambda: real() + shift[0]), patch.object(ChunkScheduler, 'admit', late):
+            run, calls = self.parallel(self.document(), ok)
+        self.assertEqual(sorted(calls), [1])
+        self.assertIn('새 호출 1회', run['detail'])
+
+    def test_parallel_drained_chunk_whose_own_call_then_fails_ends_with_the_first_failure_before_its_deadline(self):
+        """A drained earlier chunk whose own call raises ends the run with the first failure at once instead of waiting out its deadline."""
+        import time
+        failed = threading.Event(); fail = ChunkScheduler.fail
+        def recorded(scheduler, index, exc):
+            try: return fail(scheduler, index, exc)
+            finally: failed.set()
+        def respond(index, repairing):
+            if index == 2: raise ValueError('second')
+            self.assertTrue(failed.wait(5)); raise ValueError('first-after')
+        began = time.monotonic()
+        with patch.object(ChunkScheduler, 'fail', recorded), patch('verinote.service.CHUNK_TIMEOUT', 30):
+            run, calls = self.parallel(self.document(), respond)
+        self.assertLess(time.monotonic() - began, 15)
+        self.assertEqual(run['detail'], f'청크 2 · second · 검증 완료 0/3청크 · 새 호출 2회 · {FROM_FIRST}')
 
     def prepare_raising_at(self, number, error=OSError):
         def prepare(cli, agent, prompt, payload, limit, folder):
@@ -347,6 +453,19 @@ class ChunkPrefix(Base):
             with self.subTest(error=error.__name__), self.prepare_raising_at(2, error):
                 run, _ = self.sequential(self.document(), ok)
                 self.assertEqual(run['detail'], f'청크 2 · prepare-down · 검증 완료 1/3청크 · 새 호출 1회 · {from_chunk(2)}')
+
+    def test_parallel_prepare_raising_at_the_third_saves_the_admitted_second(self):
+        second = threading.Event()
+        def respond(index, repairing):
+            if index == 2: second.set()
+            return extraction_response()
+        def prepare(cli, agent, p, payload, limit, folder):
+            if folder.name == '3': self.assertTrue(second.wait(5)); raise OSError('prepare-down')
+            return prepare_dictionary_prompt(cli, agent, p, payload, limit, folder)
+        doc = self.document()
+        with patch('verinote.service.prepare_dictionary_prompt', side_effect=prepare):
+            run, calls = self.parallel(doc, respond)
+        self.assertEqual(run['detail'], f'청크 3 · prepare-down · 검증 완료 2/3청크 · 새 호출 2회 · {from_chunk(3)}')
 
     def test_parallel_prepare_raising_names_that_chunk_not_a_neighbour_or_zero(self):
         for number in (1, 2, 3):

@@ -301,8 +301,70 @@ class Parallel(Base):
         row = self.store.run(run['id'])
         self.assertEqual(row['status'], 'cancelled', row['detail'])
         self.assertEqual(sorted(gate.calls), [(1, False), (2, False)])
-        self.assertEqual(self.checkpoint_chunks(run['id']), 1)
+        self.assertEqual(self.checkpoint_chunks(run['id']), 2)
+        self.assertIn('검증 완료 2/4청크 · 새 호출 2회 · ', row['detail'])
+        self.assertTrue(row['detail'].endswith('다시 추출할 때 청크 3부터 호출합니다.'), row['detail'])
         self.assertEqual(service.slots._value, 8)
+
+    def test_cancel_saves_nothing_from_a_chunk_that_needs_a_repair(self):
+        """Pins behaviour that is not new: the cancel commits before chunk 1's response is released, so store.run_status raises
+        RunCancelled at the repair announcement of chunk 1 (not the scheduler's drain). No repair call is admitted, and the chunk
+        that needed one is not saved."""
+        class Broken(Gate):
+            def complete(self, agent, model, prompt, folder, **kw):
+                value = super().complete(agent, model, prompt, folder, **kw)
+                return broken() if Path(folder).name == '1' else value
+        doc, gate = self.document(4), Broken(hold=(1, 2), spec=ExtractionSpec('/fake/claude', 'model', 2, 10, 1048576, 'null'))
+        service = self.service(gate, extraction_caller=gate)
+        run = self.start(service, doc, agent='claude', model='model', extraction_concurrency=2)
+        self.assertTrue(gate.wait_entered(1) and gate.wait_entered(2))
+        service.cancel(run['id'], 'running')
+        self.assertEqual(self.store.run(run['id'])['status'], 'cancelling')
+        self.finish(service, gate)
+        row = self.store.run(run['id'])
+        self.assertEqual(row['status'], 'cancelled', row['detail'])
+        self.assertEqual(sorted(gate.calls), [(1, False), (2, False)])
+        self.assertEqual(self.checkpoint_chunks(run['id']), 0)
+        self.assertIn('검증 완료 0/4청크 · 새 호출 2회', row['detail'])
+        self.assertIn('첫 청크부터', row['detail'])
+        timing = self.root / 'runs' / run['id'] / 'extraction-timing.json'
+        spans = json.loads(timing.read_text())['spans'] if timing.exists() else []
+        self.assertEqual([s for s in spans if s['kind'].startswith('repair')], [])
+
+    def test_one_worker_cancel_ends_at_the_refused_chunk_without_waiting_for_its_deadline(self):
+        """With one worker the cancel refuses chunk 2's admission while chunk 1 is pending: the run saves chunk 1 and ends at once
+        instead of waiting out chunk 2's deadline."""
+        from unittest.mock import patch
+        doc, gate = self.document(3), Gate(hold=(1,), spec=ExtractionSpec('/fake/claude', 'model', 1, 10, 1048576, 'null'))
+        service = self.service(gate, extraction_caller=gate)
+        with patch('verinote.service.CHUNK_TIMEOUT', 30):
+            run = self.start(service, doc, agent='claude', model='model', extraction_concurrency=1)
+            self.assertTrue(gate.wait_entered(1))
+            service.cancel(run['id'], 'running')
+            began = time.monotonic()
+            self.finish(service, gate)
+        self.assertLess(time.monotonic() - began, 15)
+        row = self.store.run(run['id'])
+        self.assertEqual((row['status'], gate.calls, self.checkpoint_chunks(run['id'])), ('cancelled', [(1, False)], 1), row['detail'])
+
+    def test_claude_threshold_policy_cancel_saves_the_admitted_second_chunk(self):
+        import sys
+        from unittest.mock import patch
+
+        from verinote.extraction_options import CHUNK_THRESHOLD_POLICY
+        doc, gate = self.document(4), Gate(hold=(1, 2))
+        def factory(spec):
+            gate.extraction_spec = spec
+            return gate
+        service = Service(self.store, self.root, CLI(), extraction_caller_factory=factory)
+        self.addCleanup(lambda: (gate.release.set(), service.pool.shutdown(wait=True)))
+        with patch('verinote.extraction_transport.executable', return_value=sys.executable):
+            run = self.start(service, doc, agent='claude', model='model', extraction_policy=CHUNK_THRESHOLD_POLICY)
+        self.assertTrue(gate.wait_entered(1) and gate.wait_entered(2))
+        service.cancel(run['id'], 'running')
+        self.finish(service, gate)
+        row = self.store.run(run['id'])
+        self.assertEqual((row['status'], sorted(gate.calls), self.checkpoint_chunks(run['id'])), ('cancelled', [(1, False), (2, False)], 2), row['detail'])
 
     def test_claude_two_chunk_cancel_admits_no_third_call(self):
         self.run_case('claude', 'model', 2, ExtractionSpec('/fake/claude', 'model', 2, 10, 1048576, 'null'))

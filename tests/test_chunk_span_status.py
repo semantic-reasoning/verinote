@@ -40,7 +40,7 @@ class ChunkSpanStatus(Base):
             ((None, True), {1: 'success', 2: 'timeout'}),
             ((1, False), {1: 'success', 2: 'timeout'}),
             ((1, True), {1: 'success', 2: 'timeout'}),
-            ((2, False), {1: 'error', 2: 'timeout'}),
+            ((2, False), {1: 'success', 2: 'timeout'}),
             ((2, True), {1: 'success', 2: 'timeout', 3: 'error'}),
         ]
         for (capacity, repair), expected in cases:

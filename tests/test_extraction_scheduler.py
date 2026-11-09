@@ -115,7 +115,7 @@ class SchedulerIntegration(unittest.TestCase):
         self.assertEqual(sum(r for i, r in caller.calls), 3)
         self.assertEqual(len(self.saved(run)), 3)
 
-    def test_later_failure_during_admitted_repair_drains_without_acceptance(self):
+    def test_later_failure_during_admitted_repair_saves_the_repaired_earlier_chunk(self):
         repairing = threading.Event(); failed = threading.Event()
         def call(index, is_repair):
             if index == 2:
@@ -126,7 +126,7 @@ class SchedulerIntegration(unittest.TestCase):
         caller = Caller(call); service, run = self.start(self.document(), caller)
         run = self.finish(service, run)
         self.assertEqual(run['status'], 'error'); self.assertIn('later-original', run['detail'])
-        self.assertEqual(self.saved(run), [])
+        self.assertEqual(len(self.saved(run)), 1)
         self.assertCountEqual(caller.calls, [(1, False), (2, False), (1, True)])
 
     def test_repair_and_checkpoint_validation_share_initial_deadline(self):
