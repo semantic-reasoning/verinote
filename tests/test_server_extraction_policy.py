@@ -66,7 +66,7 @@ class LocalPolicy(unittest.TestCase):
             with patch('verinote.extraction_transport.executable', return_value=sys.executable):
                 run = self.request(f'/api/documents/{doc["id"]}/extract', 'POST',
                     {'agent': 'claude', 'model': 'model', 'expected_version': 1, 'expected_generation': 1})
-            self.service.pool.submit(lambda: None).result(timeout=5)
+            self.service.pool.wait_idle()
             stored = self.store.run(run['id'])
             self.assertEqual(stored['status'], 'success', stored['detail'])
             self.assertEqual(stored['extraction_options']['original_chunk_count'], count)

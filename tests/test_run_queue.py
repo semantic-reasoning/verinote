@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.request import urlopen
 
-from test_run_cancel import Base, Gate
+from test_run_cancel import Base, Gate, occupy_worker
 
 from verinote.server import Server
 
@@ -28,13 +28,18 @@ class HoldsQuestions(Gate):
 
 
 class Queue(Base):
+    def service(self, gate, **kw):
+        service = super().service(gate, **kw)
+        if gate.hold: occupy_worker(service, gate.release)
+        return service
+
     def documents(self, count):
         return [self.document(1, f'doc{i}') for i in range(count)]
 
     def ask(self, service, text):
         return service.ask({'question': text, 'agent': 'agy', 'model': ''})
 
-    def test_a_queued_run_lists_the_running_run_and_the_question_ahead_in_order(self):
+    def test_a_queued_run_lists_only_its_stage_not_the_question(self):
         first, second = self.documents(2)
         gate = Gate(hold=(1,))
         service = self.service(gate)
@@ -43,23 +48,25 @@ class Queue(Base):
         question = self.ask(service, 'x' * 60)
         b = self.start(service, second)
         ahead = service.queue_ahead(b['id'])
-        self.assertEqual([(entry['kind'], entry['id'], entry['status']) for entry in ahead], [('run', a['id'], 'running'), ('question', question['id'], 'queued')])
+        self.assertEqual([(entry['kind'], entry['id'], entry['status']) for entry in ahead], [('run', a['id'], 'running')])
         self.assertEqual(ahead[0] | {'status': None}, {'kind': 'run', 'id': a['id'], 'status': None, 'stage': 'extract', 'document_id': first['id'], 'title': 'doc0'})
-        self.assertEqual(ahead[1]['question'], 'x' * 40)
+        self.assertNotIn(question['id'], [entry['id'] for entry in ahead])
         shown = service.with_usage('runs', self.store.run(b['id']))
-        self.assertEqual(shown['queue'], {'ahead': ahead})
+        self.assertEqual(shown['queue'], {'ahead': ahead, 'stage': 'extract', 'capacity': 2, 'document_blockers': []})
         self.assertEqual(service.queue_ahead(a['id']), [])
         self.finish(service, gate)
 
-    def test_a_question_in_flight_ahead_of_a_run_shows_the_status_it_has_now(self):
+    def test_a_question_in_flight_does_not_block_a_document_run(self):
         doc, gate = self.document(1), HoldsQuestions(hold=())
         service = self.service(gate)
         self.addCleanup(gate.question_release.set)
         question = self.ask(service, 'q')
         self.assertTrue(gate.question_entered.wait(5))
         run = self.start(service, doc)
-        self.assertEqual(self.store.run(run['id'])['status'], 'queued')
-        self.assertEqual([(entry['kind'], entry['id'], entry['status']) for entry in service.queue_ahead(run['id'])], [('question', question['id'], 'running')])
+        deadline = time.monotonic() + 3
+        while self.store.run(run['id'])['status'] != 'success' and time.monotonic() < deadline: time.sleep(.005)
+        self.assertEqual(self.store.run(run['id'])['status'], 'success')
+        self.assertEqual(self.store.question(question['id'])['status'], 'running')
         gate.question_release.set()
         self.finish(service)
         self.assertEqual(self.store.run(run['id'])['status'], 'success')
@@ -152,6 +159,8 @@ class Queue(Base):
         service = self.service(gate)
         self.start(service, doc)
         self.assertTrue(gate.wait_entered(1))
+        question_release = threading.Event(); self.addCleanup(question_release.set)
+        service.pool.submit(lambda: question_release.wait(5))
         executed, answer = [], service.answer
         service.answer = lambda job, *a, **k: (executed.append(job['id']), answer(job, *a, **k))[1]
         real, submitted = service.pool.submit, threading.Event()
@@ -171,11 +180,12 @@ class Queue(Base):
         first.join(5)
         second.join(5)
         listed = [key for kind, key in service.queue if kind == 'question']
+        question_release.set()
         self.finish(service, gate)
         self.assertEqual(len(executed), 2)
         self.assertEqual(listed, executed)
 
-    def test_a_question_asked_while_a_run_submit_is_still_returning_is_listed_after_the_run(self):
+    def test_cross_lane_registration_during_submit_loses_no_jobs(self):
         first_doc, second_doc = self.documents(2)
         gate = Gate(hold=(1,))
         service = self.service(gate)
@@ -203,7 +213,10 @@ class Queue(Base):
         listed = [entry for entry in service.queue if entry != ('run', a['id'])]
         self.finish(service, gate)
         self.assertEqual(len(executed), 2)
-        self.assertEqual(listed, executed)
+        expected = {('run', self.store.document(second_doc['id'])['latest_run']['id']),
+                    ('question', self.store.questions()[0]['id'])}
+        self.assertEqual(set(executed), expected)
+        self.assertTrue(set(listed) <= expected)
 
     def test_questions_that_end_before_their_submit_returns_leave_no_entry(self):
         gate = Gate(hold=())
@@ -254,12 +267,14 @@ const elements=new Map();const $=s=>{if(!elements.has(s))elements.set(s,{addEven
 const run=(status,ahead)=>({id:'run',stage:'extract',status,detail:'',progress:{known:false,phase:status,percent:null},...(ahead?{queue:{ahead}}:{})});
 const document_=(id,status,stage='extract')=>({kind:'run',id,status,stage,document_id:'d',title:'계약 <b>'});
 const question=(id,status)=>({kind:'question',id,status,question:'무엇을 <i>묻나'});
-assert(renderAnalysisProgress(run('queued',[])).includes('<p class="muted">앞선 작업 없음</p>'));
+assert(renderAnalysisProgress(run('queued',[])).includes('<p class="muted">실행 작업자 배정 대기</p>'));
 const two=renderAnalysisProgress(run('queued',[document_('a','running','ontology'),question('q','queued')]));
-assert(two.includes('앞선 작업 2개가 끝나야 시작합니다: 사전 생성 실행 a · 문서 「계약 &lt;b&gt;」 · 처리 중; 질문 q 「무엇을 &lt;i&gt;묻나」 · 대기 중'));
+assert(two.includes('관계 추출 동시 실행 2개 한도에서 자리 배정을 기다립니다. 같은 단계 작업 2개: 사전 생성 실행 a · 문서 「계약 &lt;b&gt;」 · 처리 중; 질문 q 「무엇을 &lt;i&gt;묻나」 · 대기 중'));
 assert(!two.includes('<b>')&&!two.includes('<i>'));
+const blocked=run('queued',[]);blocked.queue.document_blockers=[document_('old','cancelling','ontology')];
+const blocking=renderAnalysisProgress(blocked);assert(blocking.includes('이 문서의 이전 실행')&&blocking.includes('계약 &lt;b&gt;')&&!blocking.includes('<b>'));
 const seven=renderAnalysisProgress(run('queued',Array.from({length:7},(_,i)=>document_('r'+i,'queued'))));
-assert(seven.includes('앞선 작업 7개가 끝나야 시작합니다: ')&&seven.includes('관계 추출 실행 r4')&&!seven.includes('실행 r5')&&seven.includes(' 외 2개'));
+assert(seven.includes('관계 추출 동시 실행 2개 한도에서 자리 배정을 기다립니다. 같은 단계 작업 7개: ')&&seven.includes('관계 추출 실행 r4')&&!seven.includes('실행 r5')&&seven.includes(' 외 2개'));
 assert(renderAnalysisProgress(run('queued',[{...document_('a','cancelling')}])).includes('· 취소 중'));
 for(const status of ['running','cancelling','cancelled','success'])assert(!renderAnalysisProgress(run(status,[document_('a','running')])).includes('앞선 작업'),status);
 assert(!renderAnalysisProgress(run('queued')).includes('앞선 작업'));

@@ -427,7 +427,7 @@ class Store:
             if status == 'queued':
                 db.execute("UPDATE runs SET status='cancelled',detail=? WHERE id=?", (QUEUED_CANCEL_DETAIL, run_id))
             else:
-                db.execute("UPDATE runs SET status='cancelling',detail=? WHERE id=?", ('취소 요청됨: 이미 허용한 호출은 중단하지 않고 끝날 때까지 기다린 뒤, 새 호출 없이 멈춥니다. 멈출 때까지 이 실행 뒤의 실행과 질문은 기다립니다.', run_id))
+                db.execute("UPDATE runs SET status='cancelling',detail=? WHERE id=?", ('취소 요청됨: 이미 허용한 호출은 중단하지 않고 끝날 때까지 기다린 뒤, 새 호출 없이 멈춥니다. 멈출 때까지 같은 문서의 다음 실행은 기다리며, 다른 문서와 질문은 각 실행 한도 안에서 계속됩니다.', run_id))
             return status
 
     def finish_cancel(self, run_id, detail):
@@ -503,7 +503,7 @@ class Store:
         """The sentences shared by the refusals that tell a user to wait for a queued or running run or to cancel it: the queue note (queued
         only), where to see it end, the cancel alternative, and, for a running run, that its call in flight continues without saving a result.
         retry is the user's next step as a stem, such as '다시 시도': the sentences end it with '하세요.' and '할 수 있고'."""
-        waits = '대기 중인 실행은 앞선 실행이나 질문이 끝나야 시작합니다. 무엇을 기다리는지는 실행 기록에 표시됩니다. ' if status == 'queued' else ''
+        waits = '대기 중인 실행은 같은 단계의 실행 자리나 같은 문서의 이전 실행 정리를 기다립니다. 무엇을 기다리는지는 실행 기록에 표시됩니다. ' if status == 'queued' else ''
         keeps = f' 처리 중이던 호출은 끝날 때까지 계속되지만 그 결과로 {cancel_result(stage, False)} 저장하지는 않습니다.' if status == 'running' else ''
         return (f'{waits}기다리려면 실행 기록에서 끝난 것을 확인한 뒤 {retry}하세요. 기다리지 않으려면 실행 기록에서 이 실행을 취소하세요. '
                 f'취소하면 바로 {retry}할 수 있고, 다른 실행과 질문은 계속됩니다.{keeps}')

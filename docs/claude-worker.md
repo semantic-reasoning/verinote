@@ -1,8 +1,8 @@
 # Claude 프로세스 재사용
 
-`CLI()`는 Claude 요청에 처음 쓰일 때 subprocess 하나를 시작하고 같은 실행 파일·모델의 후속 요청에서 재사용한다. 애플리케이션의 사전 생성·추출·질문이 이 경로를 사용한다. 다른 CLI 제공자와 OpenRouter는 기존 전송 방식을 유지한다. 별도 OS 서비스나 포트를 만들지 않으며 서버 종료 시 worker도 종료한다.
+`CLI()`는 Claude 요청에 처음 쓰일 때 subprocess 하나를 시작하고 같은 실행 파일·모델의 후속 요청에서 재사용한다. 애플리케이션의 사전 생성·추출·질문이 이 경로를 사용한다. 다른 CLI 제공자와 OpenRouter는 기존 전송 방식을 유지한다. 별도 OS 서비스나 포트를 만들지 않으며 실행 종료 시 그 실행의 worker를 닫고 서버 종료 시 남은 worker도 정리한다.
 
-`CLI(persistent=False)`는 기존 단발 실행을 선택한다. `CLI.close()` 또는 `with CLI() as cli:`로 자원을 닫는다. `copy.copy`와 `limited_timeout` 복사본은 manager를 공유하므로 하나를 닫으면 모두 닫힌다. Service는 주입한 CLI도 종료 시 `close()`가 있으면 닫는다. 기존 추출 benchmark는 명시적으로 `persistent=False`를 사용해 이전의 새 프로세스 기준선을 유지한다.
+`CLI(persistent=False)`는 기존 단발 실행을 선택한다. `CLI.close()` 또는 `with CLI() as cli:`로 자원을 닫는다. `copy.copy`와 `limited_timeout` 복사본은 manager를 공유하므로 하나를 닫으면 모두 닫힌다. Service는 `fork_job()`으로 실행마다 새 manager를 소유하며 그 실행이 끝나면 닫는다. 주입한 원본 CLI도 서버 종료 시 `close()`가 있으면 닫는다. 기존 추출 benchmark는 명시적으로 `persistent=False`를 사용해 이전의 새 프로세스 기준선을 유지한다.
 
 ## 요청 격리와 실패
 
@@ -24,7 +24,7 @@
 
 ## 추출 전용 bounded owner (#753)
 
-기본 CLI의 single manager와 질의·사전 생성·순차 추출 선택은 유지한다. 다음 인터페이스는
+각 실행 안의 기본 CLI single manager와 질의·사전 생성·청크 순차 추출 선택은 유지한다. 서로 다른 실행은 manager를 공유하지 않는다. 다음 인터페이스는
 후속 scheduler가 명시적으로 사용하는 자원 기반이며 그 자체로 청크를 병렬 제출하지 않는다.
 
 ```python
@@ -72,7 +72,7 @@ admission 폐쇄를 원자적으로 수행한 뒤 기존 owner를 닫고 교체�
 Service.close는 기존 executor를 drain한 뒤 전용 owner와 기본 CLI 모두의 정리를 시도한다.
 기본 start/job_cli 경로에는 아직 이 factory를 자동 연결하지 않는다.
 
-상한은 **Service당 전용 최대 2 + 기존 공유 최대 1 = 최대 3 subprocess**다. 여러 Service나 외부에서
+문서 실행은 사전 생성 2개와 추출 2개까지이며 질문은 별도 1개다. 추출 파일마다 전용 worker 2개를 쓰면 일반 Service 작업의 Claude 상한은 **추출 4 + 사전 생성 2 + 질문 1 = 최대 7 subprocess**다. public benchmark용 factory를 별도로 호출하는 것은 이 제품 작업 한도 밖이다. 여러 Service나 외부에서
 별도로 만든 owner를 합친 전역 OS 상한이 아니다. 외부 benchmark owner의 수명은 benchmark가 책임진다.
 
 ### Worker identity와 기록 순서

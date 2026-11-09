@@ -1,10 +1,12 @@
 # Bounded extraction experiment
 
-The default extraction path remains sequential. `Service.start(...,
+Chunks within each default extraction run remain sequential. `Service.start(...,
 extraction_concurrency=1|2)` opts a Claude extraction run into the same bounded
 scheduler with one or two independent workers. Copilot has a separate explicit
-concurrency-2 opt-in described below. Dictionary generation, other providers and
-the global document queue are unchanged. The HTTP API does not
+concurrency-2 opt-in described below. Document scheduling is independent: up to
+two dictionary-generation files and two extraction files can run at once, with
+one separate serialized question lane. The per-call contracts of other providers
+are unchanged. The HTTP API does not
 expose this experimental option.
 
 The coordinator alone validates responses in source order, performs at most one
@@ -17,7 +19,8 @@ are drained and their observed usage remains counted. Consequently a failed
 parallel document can cost more than a failed sequential document. A document
 failure does not close a shared batch transport. Service shutdown rejects new
 registration and public factory calls, drains already registered work using its
-frozen transport contract, and only then closes owned workers. Concurrent close
+frozen transport contract. Each run closes its own workers after its admitted
+calls drain; shutdown also retries remaining owner cleanup. Concurrent close
 calls share one cleanup owner; interrupted waiting retains resources for retry.
 
 Each run stores a separate versioned `extraction_options` contract: concurrency,
@@ -121,7 +124,7 @@ old/new row compatibility and backup restore in disposable databases only.
 at most two admitted initial chunks for that document. `None` preserves the
 existing sequential Copilot argv, call count and ordering. Capacity 1, a threshold
 policy, and dictionary generation are not accepted for this opt-in. Other
-providers and the single global document executor remain unchanged.
+providers retain their transport contracts. Document scheduling independently permits two dictionary-generation files and two extraction files, plus one serialized question. Each registered extraction owns its transport; two files with chunk concurrency two may make four extraction calls at once.
 
 For local web extraction, start with:
 
