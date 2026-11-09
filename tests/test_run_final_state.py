@@ -1,4 +1,5 @@
 """Synthetic calls only: a worker that ends leaves its run in a final state and returns its slot."""
+import json
 import threading
 import unittest
 from contextlib import contextmanager
@@ -13,11 +14,13 @@ from test_failed_run_detail import (
     from_chunk,
     ok,
 )
+from test_large_dictionary_refusal import ServiceCase as OntologyCase
+from test_large_dictionary_refusal import Stub, generated, generation_source
 
 from verinote.extraction_checkpoint import ExtractionCheckpoint
 from verinote.extraction_timing import ExtractionTiming
 from verinote.service import Service
-from verinote.store import Store
+from verinote.store import Conflict, Store
 
 
 class RunFinalState(Base):
@@ -277,6 +280,83 @@ class RunFinalState(Base):
     def test_registration_failure_with_every_error_write_raising_reraises_the_original_error(self):
         run, seen, free, error = self.registration_failure(lambda n, detail: True)
         self.assertEqual((run['status'], seen, free, str(error)), ('queued', ['disk', 'disk', Service.FAILURE_FALLBACK], 8, 'disk'))
+
+
+def commit_then_raise(real):
+    """A finish_run whose commit lands and whose close then raises."""
+    def finish(*args, **kwargs):
+        real(*args, **kwargs)
+        raise OSError('close')
+    return finish
+
+
+class CommittedSuccessIsKept(Base):
+    def read_status(self):
+        with self.store.connect() as db:
+            return tuple(db.execute("SELECT status, detail FROM runs WHERE stage='extract'").fetchone())
+
+    def assert_kept(self, run):
+        folder = self.root / 'runs' / run['id']
+        self.assertEqual(run['status'], 'success')
+        self.assertTrue(run['detail'].startswith('관계 후보 2개'), run['detail'])
+        self.assertEqual(json.loads((folder / 'extraction-progress.json').read_text(encoding='utf-8'))['status'], 'complete')
+        self.assertEqual(json.loads((folder / 'extraction-timing.json').read_text(encoding='utf-8'))['status'], 'success')
+
+    def test_finish_run_raising_after_its_commit_leaves_a_sequential_run_as_success(self):
+        doc = self.document()
+        with patch.object(self.store, 'finish_run', commit_then_raise(self.store.finish_run)):
+            run, _ = self.sequential(doc, ok)
+        self.assert_kept(run)
+        version, generation = self.current(doc)
+        service = Service(self.store, self.root, Sequential(ok))
+        self.addCleanup(service.close)
+        with self.assertRaises(Conflict):
+            service.start(doc['id'], 'copilot', 'chosen', expected_version=version, expected_generation=generation)
+        self.assertEqual(len([i for i in self.store.document(doc['id'])['items'] if i['kind'] != 'ontology']), 3)
+
+    def test_finish_run_raising_after_its_commit_leaves_a_parallel_run_as_success(self):
+        doc = self.document()
+        with patch.object(self.store, 'finish_run', commit_then_raise(self.store.finish_run)):
+            run, _ = self.parallel(doc, ok)
+        self.assert_kept(run)
+
+    def test_the_stored_row_stays_success_when_the_status_read_after_the_raise_also_fails(self):
+        doc = self.document()
+        real_run, real_finish, raised = self.store.run, self.store.finish_run, []
+        def finish(*args, **kwargs):
+            real_finish(*args, **kwargs)
+            raised.append(True)
+            raise OSError('close')
+        def read(run_id):
+            if raised: raise OSError('read')
+            return real_run(run_id)
+        service = Service(self.store, self.root, Sequential(ok))
+        self.addCleanup(service.close)
+        version, generation = self.current(doc)
+        with patch.object(self.store, 'finish_run', finish), patch.object(self.store, 'run', read):
+            service.start(doc['id'], 'copilot', 'chosen', expected_version=version, expected_generation=generation)
+            service.pool.shutdown(wait=True)
+        status, detail = self.read_status()
+        self.assertEqual(status, 'success')
+        self.assertTrue(detail.startswith('관계 후보 2개'), detail)
+
+    def test_record_failure_leaves_a_run_stored_as_success_as_it_is(self):
+        run, _ = self.sequential(self.document(), ok)
+        service = Service(self.store, self.root, Sequential(ok))
+        self.addCleanup(service.close)
+        service.record_failure(run['id'], 'later')
+        after = self.store.run(run['id'])
+        self.assertEqual((after['status'], after['detail']), ('success', run['detail']))
+
+
+class CommittedOntologySuccessIsKept(OntologyCase):
+    def test_finish_run_raising_after_its_commit_leaves_a_dictionary_run_as_success(self):
+        doc = self.register(generation_source(2))
+        with patch.object(self.store, 'finish_run', commit_then_raise(self.store.finish_run)):
+            run = self.run_job(doc, Stub(generated), 'ontology')
+        self.assertEqual(run['status'], 'success')
+        self.assertTrue(run['detail'].startswith('검증 완료'), run['detail'])
+        self.assertEqual(len([i for i in self.store.document(doc['id'])['items'] if i['kind'] == 'ontology']), 1)
 
 if __name__ == '__main__':
     unittest.main()

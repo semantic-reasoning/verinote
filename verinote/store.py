@@ -363,8 +363,10 @@ class Store:
                 (run['document_id'], run['version'], run['agent'], run['model'], QUEUED_CANCEL_DETAIL, run['id']))]
 
     def run_status(self, run_id, status, detail=''):
+        """Moves a run to status with detail unless it is stored as cancelling, cancelled or success: a cancelling or cancelled run raises
+        RunCancelled, a success run is left as it is (finish_run committed it, and nothing else moves a success run)."""
         with self.connect(True) as db:
-            if not db.execute("UPDATE runs SET status=?,detail=? WHERE id=? AND status NOT IN ('cancelling','cancelled')", (status, detail, run_id)).rowcount:
+            if not db.execute("UPDATE runs SET status=?,detail=? WHERE id=? AND status NOT IN ('cancelling','cancelled','success')", (status, detail, run_id)).rowcount:
                 if db.execute("SELECT 1 FROM runs WHERE id=? AND status IN ('cancelling','cancelled')", (run_id,)).fetchone():
                     raise RunCancelled('실행이 취소되었습니다.')
 

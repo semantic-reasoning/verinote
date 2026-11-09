@@ -626,7 +626,11 @@ class Service:
                 detail = (f'{checkpoint.quote_exclusion_notice()} 이 사전 revision과 추출 방식으로는 다시 추출할 수 없고 제외 항목만 복구하는 기능은 없습니다. '
                           f'사전을 수정·재승인해 재추출하면 모든 청크를 새로 호출하며 같은 결과가 나올 수 있습니다. · {detail}')
             with timing.section('publish'):
-                self.store.finish_run(run['id'], {'title': doc['title'], 'claims': claims}, list(unique.values()), detail=detail[:2000])
+                try:
+                    self.store.finish_run(run['id'], {'title': doc['title'], 'claims': claims}, list(unique.values()), detail=detail[:2000])
+                except Exception:
+                    # finish_run may raise after its commit; a stored success is the success.
+                    if not self.stored_success(run['id']): raise
                 published = True
             if checkpoint is not None: checkpoint.finish('complete')
             timing.outcome('success')
@@ -690,6 +694,10 @@ class Service:
                     self.dequeue('run', run['id'])
                     timing.finish()
 
+    def stored_success(self, run_id):
+        try: return self.store.run(run_id)['status'] == 'success'
+        except Exception: return False
+
     def close_job_owner(self, run_id, owned_cli):
         with self.extraction_lock:
             owner = self.run_owners.pop(run_id, None)
@@ -752,7 +760,7 @@ class Service:
         then the detail with characters SQLite cannot store escaped, then, in one transaction, the stored run moved to error with a fixed
         sentence unless it is already stored as ended, and gives up silently after that. A run whose
         status is cancelling or cancelled is never moved to error: a cancelling run becomes cancelled with the detail as its last error, and
-        a cancelled run keeps the detail it has."""
+        a cancelled run keeps the detail it has. A run stored as success is never moved to error: Store.run_status leaves it as it is."""
         try:
             self._ladder(lambda text: self.store.run_status(run_id, 'error', text), detail, self.FAILURE_FALLBACK,
                          fallback_write=lambda text: self.store.end_unstored_run(run_id, text))
