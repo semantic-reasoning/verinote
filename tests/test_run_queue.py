@@ -5,6 +5,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from urllib.request import urlopen
 
 from test_run_cancel import Base, Gate
@@ -265,6 +266,78 @@ assert(!renderAnalysisProgress(run('queued')).includes('앞선 작업'));
 console.log('ok');
 """
         self.assertIn('ok', self.run_js(script))
+
+
+class ThreadStartFailure(Base):
+    """ThreadPoolExecutor.submit puts the job in the pool before it starts the worker thread; the first worker thread here cannot start."""
+
+    def first_thread_cannot_start(self):
+        real, armed = threading.Thread.start, [True]
+        def start(thread):
+            if armed[0] and thread.name.startswith('verinote-extract'):
+                armed[0] = False
+                raise RuntimeError("can't start new thread")
+            return real(thread)
+        return patch.object(threading.Thread, 'start', start)
+
+    def counting_releases(self, service):
+        real, errors = service.slots.release, []
+        def release(*a):
+            try: return real(*a)
+            except ValueError as exc:
+                errors.append(str(exc)); raise
+        service.slots.release = release
+        return errors
+
+    def free_slots(self, service):
+        taken = 0
+        while service.slots.acquire(blocking=False): taken += 1
+        for _ in range(taken): service.slots.release()
+        return taken
+
+    def test_a_question_whose_worker_thread_could_not_start_never_runs(self):
+        gate = Answers(hold=())
+        service = self.service(gate)
+        errors = self.counting_releases(service)
+        with self.first_thread_cannot_start(), self.assertRaisesRegex(RuntimeError, "can't start"):
+            service.ask({'question': 'first', 'agent': 'agy', 'model': ''})
+        (first,) = self.store.questions()
+        self.assertEqual((first['status'], first['error']), ('error', "can't start new thread"))
+        second = service.ask({'question': 'second', 'agent': 'agy', 'model': ''})
+        self.finish(service, gate)
+        self.assertEqual(self.store.question(first['id']), first)
+        self.assertEqual(gate.questions, [second['id']])
+        self.assertEqual((errors, self.free_slots(service), service.queue, service.unsubmitted), ([], 8, [], set()))
+
+    def test_a_run_whose_worker_thread_could_not_start_never_runs(self):
+        a, b = self.document(1, 'a'), self.document(1, 'b')
+        gate = Gate(hold=())
+        service = self.service(gate)
+        errors = self.counting_releases(service)
+        with self.first_thread_cannot_start(), self.assertRaisesRegex(RuntimeError, "can't start"):
+            self.start(service, a)
+        (failed,) = [r for r in self.store.runs() if r['document_id'] == a['id'] and r['stage'] == 'extract']
+        self.assertEqual((failed['status'], failed['detail']), ('error', "can't start new thread"))
+        later = self.start(service, b)
+        self.finish(service, gate)
+        self.assertEqual(self.store.run(failed['id']), failed)
+        self.assertEqual((self.store.run(later['id'])['status'], gate.calls), ('success', [(1, False)]))
+        self.assertEqual((errors, self.free_slots(service), service.queue, service.unsubmitted, service.futures), ([], 8, [], set(), {}))
+
+
+class Answers(Gate):
+    """Records which question each question call belongs to and fails it; runs are answered as Gate answers them."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.questions = []
+
+    def complete(self, agent, model, prompt, folder, **kw):
+        folder = Path(folder)
+        if not folder.name.startswith('llm-'): return super().complete(agent, model, prompt, folder, **kw)
+        with self.lock:
+            if folder.parent.name not in self.questions: self.questions.append(folder.parent.name)
+        raise ValueError('stub')
 
 
 if __name__ == '__main__':
