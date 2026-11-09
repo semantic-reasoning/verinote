@@ -263,7 +263,7 @@ class Store:
 
     def usage_owners(self, limit=1000):
         with self.connect() as db:
-            runs = [dict(r) | {'kind': 'runs'} for r in db.execute('SELECT id,agent,model,stage,status,created_at FROM runs ORDER BY created_at DESC,id LIMIT ?', (limit + 1,))]
+            runs = [dict(r) | {'kind': 'runs'} for r in db.execute('SELECT id,agent,model,stage,status,detail,created_at FROM runs ORDER BY created_at DESC,id LIMIT ?', (limit + 1,))]
             questions = []
             for row in db.execute('SELECT payload FROM questions ORDER BY created_at DESC,id LIMIT ?', (limit + 1,)):
                 job = json.loads(row[0])
@@ -409,7 +409,7 @@ class Store:
     def cancel_run(self, run_id, expected_status):
         """Cancel a run in one write transaction and return the status it had. A queued run becomes cancelled at once and keeps the detail it
         is given here for good: finish_cancel acts only on a cancelling run, so the detail of a run cancelled while queued, which says it never
-        called a model, stays as it is (#857 relies on this marker). A running run becomes cancelling, and its worker moves it to cancelled when it stops. expected_status is what the
+        called a model, stays as it is: usage.job_calls reads it as zero calls, and the retry windows leave such a run out. A running run becomes cancelling, and its worker moves it to cancelled when it stops. expected_status is what the
         caller saw; a run that has since changed is refused with a Conflict instead of being cancelled the other way."""
         if expected_status not in ('queued', 'running'):
             raise ValueError('expected_status는 queued 또는 running이어야 합니다.')
