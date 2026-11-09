@@ -669,14 +669,15 @@ class Service:
         with self.cancel_lock:
             self.store.raise_if_cancelled(run_id)
 
-    def _ladder(self, write, detail, fallback):
+    def _ladder(self, write, detail, fallback, *, fallback_write=None):
         """Calls write with the detail cut at 2000 characters twice, then with characters SQLite cannot store escaped (cut before an escape
-        would be split), then with the fixed fallback sentence. Stops at the first write that does not raise and gives up silently after the
-        last. A RunCancelled from write is not swallowed."""
+        would be split), then fallback_write (write when not given) with the fixed fallback sentence. Stops at the first write that does not
+        raise and gives up silently after the last. A RunCancelled from a write is not swallowed."""
         escaped = escaped_within(detail, 2000)
-        for text in [detail[:2000], detail[:2000]] + ([escaped] if escaped != detail[:2000] else []) + [fallback]:
+        texts = [detail[:2000], detail[:2000]] + ([escaped] if escaped != detail[:2000] else [])
+        for text, call in [(text, write) for text in texts] + [(fallback, fallback_write or write)]:
             try:
-                write(text)
+                call(text)
                 return
             except RunCancelled:
                 raise
@@ -710,11 +711,13 @@ class Service:
     def record_failure(self, run_id, detail, stage=None):
         """Move a failed run to error. Only a restart (Store.recover) moves a run left queued or running, apart from a cancel: until then a
         new run of its document, a dictionary change for its version and the deletion of every document are refused. Tries the detail twice,
-        then the detail with characters SQLite cannot store escaped, then a fixed sentence, and gives up silently after that. A run whose
+        then the detail with characters SQLite cannot store escaped, then, in one transaction, the stored run moved to error with a fixed
+        sentence unless it is already stored as ended, and gives up silently after that. A run whose
         status is cancelling or cancelled is never moved to error: a cancelling run becomes cancelled with the detail as its last error, and
         a cancelled run keeps the detail it has."""
         try:
-            self._ladder(lambda text: self.store.run_status(run_id, 'error', text), detail, self.FAILURE_FALLBACK)
+            self._ladder(lambda text: self.store.run_status(run_id, 'error', text), detail, self.FAILURE_FALLBACK,
+                         fallback_write=lambda text: self.store.end_unstored_run(run_id, text))
         except RunCancelled:
             self.end_cancelled(run_id, f"처리 중에 취소되었습니다. 취소 요청 뒤로는 새 호출을 허용하지 않았고 {cancel_result(stage)} 저장하지 않았습니다. · 멈추기 전 마지막 오류: {detail}")
 
