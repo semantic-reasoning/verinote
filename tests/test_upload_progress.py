@@ -171,7 +171,7 @@ class AnalysisProgress(unittest.TestCase):
         self.assertEqual(captured[2]['phase'],'saving');self.assertEqual(captured[2]['percent'],99)
         self.assertEqual(service.with_usage('runs',self.store.run(run['id']))['progress']['percent'],100)
         # The report reaching the end cannot claim success after DB rejection.
-        self.store.run_status(run['id'],'error','synthetic rollback state')
+        with self.store.connect(True) as db: db.execute("UPDATE runs SET status='error',detail=? WHERE id=?", ('synthetic rollback state', run['id']))
         self.assertEqual(analysis_progress(self.root,self.store,run['id'])['phase'],'error')
         self.assertLess(analysis_progress(self.root,self.store,run['id'])['percent'],100)
 

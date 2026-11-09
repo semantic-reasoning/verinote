@@ -154,7 +154,9 @@ class DurableExperiment(unittest.TestCase):
                     original(store, run_id, *args, **kwargs)
                     run = store.run(run_id)
                     if run['stage'] != 'extract': return
-                    if mode=='partial': raise ValueError('synthetic failure after unsafe commit')
+                    if mode=='partial':
+                        with store.connect(True) as db: db.execute("UPDATE runs SET status='error' WHERE id=?", (run_id,))
+                        raise ValueError('synthetic failure after unsafe commit')
                     with store.connect(True) as db:
                         if mode=='approval': db.execute("UPDATE items SET status='approved' WHERE run_id=? AND kind='fact'", (run_id,))
                         elif mode=='candidate':
