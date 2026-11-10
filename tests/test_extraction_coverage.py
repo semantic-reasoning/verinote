@@ -34,7 +34,49 @@ from verinote.service import Service
 from verinote.store import Conflict, canonical, digest
 
 
+def shifted_coverage_response():
+    """Synthetic equivalent of the observed 28-fact boundary shift; no live document content."""
+    groups = [('applies_to', 1), ('defines', 1), ('separates_into', 4), ('precedes', 1),
+              ('based_on', 1), ('has_component', 3), ('supports_activity', 5),
+              ('has_stage', 4), ('has_activity', 8)]
+    dictionary = DICTIONARY | {'relations': [DICTIONARY['relations'][0] | {'id': p} for p, _ in groups]}
+    facts = [FACTS[0] | {'predicate': p} for p, count in groups for _ in range(count)]
+    value = extraction_response(facts, dictionary)
+    wrong = {'supports_activity': list(range(11, 17)), 'has_stage': list(range(17, 21)),
+             'has_activity': list(range(21, 28))}
+    for row in value['coverage']:
+        if row['predicate'] in wrong:
+            row['fact_indices'] = wrong[row['predicate']]
+    return value, dictionary
+
+
 class Accounting(unittest.TestCase):
+    def test_shifted_boundaries_repair_only_fresh_index_membership(self):
+        value, dictionary = shifted_coverage_response()
+        original = copy.deepcopy(value)
+        with self.assertRaises(ValueError): validate_accounting(value, dictionary)
+        result, changes = repair_missing_indices(value, dictionary)
+        self.assertEqual(value, original)
+        self.assertEqual([c['predicate'] for c in changes], ['supports_activity', 'has_stage', 'has_activity'])
+        self.assertEqual([c['after'] for c in changes], [list(range(11, 16)), [17, 18, 19, 16], list(range(21, 28)) + [20]])
+        restored = copy.deepcopy(result)
+        for change in changes:
+            self.assertEqual(change['before'], original['coverage'][change['row']]['fact_indices'])
+            restored['coverage'][change['row']]['fact_indices'] = change['before']
+        self.assertEqual(restored, original)
+        self.assertEqual(repair_missing_indices(result, dictionary), (result, []))
+        validate_accounting(result, dictionary)
+
+    def test_wrong_only_references_and_cross_row_overlap_use_existing_facts(self):
+        dictionary = DICTIONARY | {'relations': [DICTIONARY['relations'][0], DICTIONARY['relations'][0] | {'id':'other'}]}
+        for supplied in ([1], [0, 1]):
+            value = extraction_response([FACTS[0], FACTS[1] | {'predicate':'other'}], dictionary)
+            value['coverage'][0]['fact_indices'] = supplied
+            result, changes = repair_missing_indices(value, dictionary)
+            self.assertEqual(result['coverage'][0]['fact_indices'], [0])
+            self.assertEqual(result['coverage'][1]['fact_indices'], [1])
+            self.assertEqual(len(changes), 1)
+
     def test_missing_subset_indices_only_append_and_preserve_everything_else(self):
         for supplied in ([], [2], [2, 0], [2, 0, 1]):
             value = extraction_response([FACTS[0]] * 3)
@@ -149,6 +191,49 @@ class CoverageWorkflow(unittest.TestCase):
 
     def report(self, run):
         return read_report(self.root, self.store, run['id'])
+
+    def test_shifted_indices_are_audited_before_quote_repair_and_checkpoint(self):
+        value, dictionary = shifted_coverage_response()
+        value['facts'][6]['quote'] = 'absent'
+        original = copy.deepcopy(value)
+        normalized, changes = repair_missing_indices(value, dictionary)
+        repair = {'repairs':[{'path':'facts.6.quote', 'quote':FACTS[0]['quote']}]}
+        run, doc, calls = self.execute([value, repair], dictionary=dictionary)
+        self.assertEqual(run['status'], 'success', run['detail'])
+        self.assertEqual(len(calls), 2)
+        self.assertIn('인덱스 3건 로컬 보정', run['detail'])
+        folder = self.root/'runs'/run['id']
+        audit = json.loads((folder/'1/coverage-repair.json').read_text())
+        self.assertEqual(audit['changes'], changes)
+        self.assertEqual(audit['before_sha256'], digest(original))
+        self.assertEqual(audit['after_sha256'], digest(normalized))
+        saved = json.loads((folder/'extraction-checkpoint.json').read_text())['outputs'][0]
+        self.assertEqual(saved['coverage'], normalized['coverage'])
+        self.assertEqual(len(saved['facts']), 28)
+        self.assertEqual(saved['facts'][6]['quote'], FACTS[0]['quote'])
+        self.assertTrue(self.report(run)['available'])
+        self.assertTrue(all(i['status']=='pending' for i in doc['items'] if i['kind']!='ontology'))
+        self.assertEqual(self.store.snapshot()['facts'], [])
+        # Persisted reports stay strict: fresh normalization must not silently repair them.
+        path = folder/'extraction-coverage.json'
+        report = json.loads(path.read_text())
+        report['chunks'][0]['coverage'] = original['coverage']
+        path.write_text(json.dumps(report))
+        self.assertFalse(self.report(run)['available'])
+
+    def test_shifted_indices_cannot_be_accepted_without_mandatory_audit(self):
+        value, dictionary = shifted_coverage_response()
+        from verinote.usage import atomic_json
+        def write(path, data):
+            if Path(path).name == 'coverage-repair.json': raise OSError('disk unavailable')
+            atomic_json(path, data)
+        with patch('verinote.extraction_coverage.atomic_json', side_effect=write):
+            run, doc, calls = self.execute([value], dictionary=dictionary)
+        self.assertEqual(run['status'], 'error')
+        self.assertIn('인덱스 보정 기록 저장 실패', run['detail'])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual([i['kind'] for i in doc['items']], ['ontology'])
+        self.assertFalse((self.root/'runs'/run['id']/'extraction-checkpoint.json').exists())
 
     def test_local_repair_audits_original_response_without_an_extra_call(self):
         value = extraction_response(); value['coverage'][0]['fact_indices'] = []

@@ -433,8 +433,10 @@ def repair_missing_indices(value, dictionary):
                 continue
             before = indices(row.get('fact_indices'), len(result['facts']))
             expected = [i for i, fact in enumerate(result['facts']) if fact['predicate'] == row['predicate']]
-            if set(before) < set(expected):
-                after = before + [i for i in expected if i not in before]
+            # Fresh facts determine membership; do not infer statuses or repair malformed indices.
+            # Keep correctly supplied ordering, including the existing missing-subset behavior.
+            if expected and set(before) != set(expected):
+                after = [i for i in before if i in expected] + [i for i in expected if i not in before]
                 row['fact_indices'] = after
                 changes.append({'row': index, 'predicate': row['predicate'], 'before': before, 'after': after})
     # No partial repair may hide another malformed or contradictory field.
