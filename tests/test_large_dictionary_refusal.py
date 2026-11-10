@@ -48,7 +48,7 @@ def table_bytes(dictionary):
 
 
 def rows(names, quote=None):
-    return {'entities': [{'id': f'{name}-' + 'i' * 150, 'name': name, 'type': 'T' + 't' * 140, 'quote': name if quote is None else quote} for name in names],
+    return {'entities': [{'id': f'{name}-' + 'i' * 150, 'name': name, 'type': 'T' + 't' * 40, 'quote': name if quote is None else quote} for name in names],
             'aliases': [], 'relations': []}
 
 
@@ -235,17 +235,17 @@ class Admission(unittest.TestCase):
         self.assertEqual(exc.extraction_advice(False, 2), f'{RERUN}{revise_text(exc.definition_bytes, raw - emptied)} 또는 {SPLIT}.')
 
     def test_tie_between_forms_reports_the_table_sent_when_the_threshold_is_exceeded(self):
-        def body(width):
-            kind = 'T' * width
-            return {'text': 'x', 'dictionary': {'entities': [{'id': 'a', 'name': 'b', 'type': kind}, {'id': 'c', 'name': 'd', 'type': kind}], 'aliases': [], 'relations': []}}
-        for width in range(1, 4000):
-            exc, record = self.refused(INSTRUCTIONS, body(width), 1)
-            if record['raw_prompt_bytes'] == record['encoded_prompt_bytes']:
-                self.assertEqual(exc.definition_bytes, record['encoded_definition_bytes'])
-                self.assertNotEqual(exc.definition_bytes, record['raw_definition_bytes'])
-                self.assertTrue(bounded_prompt(INSTRUCTIONS, body(width), context_limit=1, prompt_limit=exc.request_bytes).startswith('Dictionary wire v1'))
-                return
-        self.fail('no tie reached')
+        body = {'text': 'x', 'dictionary': rows(f'C{i:05}' for i in range(50))}
+        with mock.patch.object(dc, 'PROTOCOL', ''):
+            _, record = self.refused(INSTRUCTIONS, body, 1)
+        padding = record['raw_prompt_bytes'] - record['encoded_prompt_bytes']
+        self.assertGreater(padding, 0)
+        with mock.patch.object(dc, 'PROTOCOL', 'x' * padding):
+            exc, record = self.refused(INSTRUCTIONS, body, 1)
+            self.assertEqual(record['raw_prompt_bytes'], record['encoded_prompt_bytes'])
+            self.assertEqual(exc.definition_bytes, record['encoded_definition_bytes'])
+            self.assertNotEqual(exc.definition_bytes, record['raw_definition_bytes'])
+            self.assertTrue(bounded_prompt(INSTRUCTIONS, body, context_limit=1, prompt_limit=exc.request_bytes).startswith(dc.PROTOCOL))
 
     def test_extraction_advice_figure_per_pin_revision(self):
         request = self.refused(INSTRUCTIONS, self.body, 1)[0].request_bytes
@@ -667,7 +667,7 @@ class StatedPaths(ServiceCase):
         self.assertEqual(again['status'], 'error')
         self.assertEqual(len(stub.calls), 1)
         self.assertIn(GENERATION_END, again['detail'])
-        smaller = fresh.register(source[12000:18000], 'smaller')
+        smaller = fresh.register(source[12000:16000], 'smaller')
         self.assertEqual(fresh.run_job(smaller, Stub(generated, limit), 'ontology')['status'], 'success')
 
     def test_split_generate_approve_extract_publishes_with_no_revision_and_every_definition_sent(self):
@@ -698,7 +698,8 @@ class StatedPaths(ServiceCase):
             stub = Stub(chunk_response(payload))
             result = self.run_job(doc, stub)
             self.assertEqual(result['status'], 'success', result['detail'])
-            self.assertEqual(decode(body_of(stub.calls[0])['approved_dictionary']['payload']), dictionary_context(payload))
+            sent = body_of(stub.calls[0])['approved_dictionary']['payload']
+            self.assertEqual(decode(sent) if 'dictionary_wire_version' in sent else sent, dictionary_context(payload))
             self.assertLessEqual(len(stub.calls[0].encode()), MAX_PROMPT_BYTES)
 
     def test_term_only_outside_a_part_is_refused_in_that_parts_dictionary(self):

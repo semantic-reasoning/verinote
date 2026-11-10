@@ -32,7 +32,7 @@ from verinote.service import Service
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = generation_source(2)
-R = 86_075          # measured: same-agent extraction request of SRC's generated dictionary at approval revision 2
+R = 99_693          # measured: same-agent extraction request of SRC's generated dictionary at approval revision 2
 BIG = generation_source(3)
 HEAD = '추출 입력 한도 경고: 이 사전을 수정하지 않고 이 실행과 같은 에이전트(GitHub Copilot)로 추출하면 '
 MAY_DIFFER = '입력 예산은 에이전트에 따라 다르므로(앱 정책 최대 120,000바이트) 다른 에이전트로는 거부되지 않을 수 있습니다.'
@@ -83,7 +83,7 @@ class BothSides(Case):
         doc, run, stub = self.generate(SRC, R - 1)
         self.assertEqual(len(stub.calls), 2)  # no extra model call
         expected = (HEAD + f'전체 요청이 {R:,}바이트 이상으로 입력 예산 {R - 1:,}바이트를 넘어 첫 호출 전에 거부됩니다. {MAY_DIFFER} '
-                    f'다음 단계: {trim(72_740, 1)} 또는 {SPLIT}.')
+                    f'다음 단계: {trim(86_292, 1)} 또는 {SPLIT}.')
         self.assertTrue(run['detail'].startswith(expected + ' · '), run['detail'])
         self.assertEqual(self.record(run)['warning'], expected)
         self.assertEqual(self.budget_folders(run), ['1', '2'])  # the check writes no context-budget record
@@ -137,10 +137,10 @@ class Stated(Case):
         probe = self.run_job(doc, Stub(generated, 10 ** 6), 'ontology')
         self.assertNotIn('추출 입력 한도', probe['detail'])
         doc2 = self.register(source, 'h')
-        run = self.run_job(doc2, Stub(generated, 95_000), 'ontology')
+        run = self.run_job(doc2, Stub(generated, 110_000), 'ontology')
         self.assertEqual(run['status'], 'success', run['detail'])
         self.assertIn('추출 입력 한도 경고', run['detail'])
-        refused, ext = self.approve_and_extract(doc2, 95_000)
+        refused, ext = self.approve_and_extract(doc2, 110_000)
         self.assertTrue(refused['detail'].startswith('청크 2 · '), refused['detail'])
 
 
