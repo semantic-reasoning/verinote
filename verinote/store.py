@@ -122,22 +122,37 @@ class Store:
         """Startup repair. Runs stored as queued or running become interrupted and runs stored as cancelling become cancelled. Questions stored
         as queued or running become interrupted and questions stored as cancelling become cancelled; then every question stored as cancelled,
         interrupted or error, including one stored so before this start, has its split-processing rounds stored as running or analyzed set
-        to cancelled, interrupted or failed (end_open_rounds). A question row is written only when one of these changes it."""
+        to cancelled, interrupted or failed (end_open_rounds). A question row is written only when one of these changes it.
+
+        A question row whose payload recover cannot read this way (not strict UTF-8, not JSON, not a JSON object, no usable status,
+        split-processing rounds that are not objects, JSON nested too deep to decode) or whose repaired payload cannot be stored as UTF-8 text is skipped: it is not written,
+        so it keeps its stored status (a skipped running or cancelling question still reads running or cancelling), and the other rows are
+        still repaired. Returns the ids of the skipped rows in rowid order. A database error is not skipped: it aborts the question repair."""
         with self.connect(True) as db:
             db.execute("UPDATE runs SET status='interrupted',detail='서버가 재시작되었습니다. 다시 추출하세요.' WHERE status IN ('queued','running')")
             for row in db.execute("SELECT id,stage FROM runs WHERE status='cancelling'").fetchall():
                 db.execute("UPDATE runs SET status='cancelled',detail=? WHERE id=?", (f"취소를 요청한 뒤 실행이 멈춘 것을 기록하기 전에 서버가 재시작되었습니다. {cancel_result(row['stage'])} 저장하지 않았습니다.", row['id']))
 
+        skipped = []
         with self.connect(True) as db:
-            for row in db.execute('SELECT id,payload FROM questions').fetchall():
-                job = json.loads(row['payload'])
-                if job['status'] in ('queued', 'running'):
-                    job.update(status='interrupted', error='서버 재시작으로 중단되었습니다.')
-                elif job['status'] == 'cancelling':
-                    job.update(status='cancelled', error=QUESTION_RESTART_CANCEL)
-                job = end_open_rounds(job)
-                if job != json.loads(row['payload']):
-                    db.execute('UPDATE questions SET payload=? WHERE id=?', (canonical(job), row['id']))
+            for row in db.execute('SELECT id,CAST(payload AS BLOB) AS payload FROM questions ORDER BY rowid').fetchall():
+                try:
+                    stored = bytes(row['payload']).decode('utf-8')
+                    job = json.loads(stored)
+                    if job['status'] in ('queued', 'running'):
+                        job.update(status='interrupted', error='서버 재시작으로 중단되었습니다.')
+                    elif job['status'] == 'cancelling':
+                        job.update(status='cancelled', error=QUESTION_RESTART_CANCEL)
+                    job = end_open_rounds(job)
+                    payload = canonical(job) if job != json.loads(stored) else None
+                    if payload is not None:
+                        payload.encode('utf-8')
+                except (ValueError, TypeError, KeyError, AttributeError, RecursionError):
+                    skipped.append(row['id'])
+                    continue
+                if payload is not None:
+                    db.execute('UPDATE questions SET payload=? WHERE id=?', (payload, row['id']))
+        return skipped
 
     def create_question(self, question, agent, model, snapshot, *, execution_options=None):
         job = {'id': ident(), 'question': question, 'agent': agent, 'model': model,
@@ -910,10 +925,10 @@ class Store:
                        or any(status in ('queued', 'running') for status in statuses))
             if cancelling and not waiting:
                 raise Conflict('취소한 실행이 아직 멈추지 않았습니다. 실행 기록에서 취소됨으로 바뀐 뒤 삭제하세요. '
-                               '제한 시간(추출 청크 360초, 기본 사전 생성 호출 600초)이 지나도 바뀌지 않으면 서버를 재시작하세요. 재시작하면 대기·처리 중인 모든 실행과 질문이 중단으로 표시됩니다.')
+                               '제한 시간(추출 청크 360초, 기본 사전 생성 호출 600초)이 지나도 바뀌지 않으면 서버를 재시작하세요. 재시작하면 대기·처리 중인 실행과 질문이 중단으로 표시됩니다. 재시작 복구가 읽거나 고칠 수 없는 질문 기록은 저장된 상태 그대로 남습니다.')
             if 'cancelling' in statuses and not waiting:
                 raise Conflict('취소한 질문이 아직 멈추지 않았습니다. 질문 이력에서 취소됨으로 바뀐 뒤 삭제하세요. 이미 허용한 모델 호출의 제한 시간이 지나도 '
-                               '바뀌지 않으면 서버를 재시작하세요. 재시작하면 대기·처리 중인 모든 실행과 질문이 중단으로 표시됩니다.')
+                               '바뀌지 않으면 서버를 재시작하세요. 재시작하면 대기·처리 중인 실행과 질문이 중단으로 표시됩니다. 재시작 복구가 읽거나 고칠 수 없는 질문 기록은 저장된 상태 그대로 남습니다.')
             if waiting:
                 raise Conflict('추출 또는 질문 작업이 진행 중입니다. 모든 작업 완료 후 삭제하세요.')
             versions = [r[0] for r in db.execute('SELECT version FROM versions WHERE document_id=? ORDER BY version', (document_id,))]
