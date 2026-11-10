@@ -664,11 +664,11 @@ class Service:
             if repair_calls or located_quotes or (checkpoint is not None and checkpoint.resumed_chunks):
                 detail = f'{detail} 의미가 맞는지 원문과 대조한 뒤 승인하세요.'.lstrip()
             if report is not None:
-                if contract_version == 3:
-                    detail += ' 손실 점검 기록에서 보충·미해결·미점검 구간을 확인하세요. 처리 완료는 의미적 완전성을 보증하지 않습니다.'
-                detail = f'관계 후보 {len(unique)}개 · 관계별 점검은 실행 기록에서 확인하세요. 새 후보는 별도 승인 전까지 그래프에 포함되지 않습니다. ' + detail
-                if not report_ok:
-                    detail += ' 관계별 추출 점검 기록 저장 실패: 보고서를 사용할 수 없습니다.'
+                detail = ' '.join(filter(None, (
+                    f'관계 후보 {len(unique)}개 · 관계별 점검은 실행 기록에서 확인하세요. 새 후보는 별도 승인 전까지 그래프에 포함되지 않습니다.',
+                    detail,
+                    '손실 점검 기록에서 보충·미해결·미점검 구간을 확인하세요. 처리 완료는 의미적 완전성을 보증하지 않습니다.' if contract_version == 3 else '',
+                    '' if report_ok else '관계별 추출 점검 기록 저장 실패: 보고서를 사용할 수 없습니다.')))
             if checkpoint is not None:
                 detail += ' ' + checkpoint.summary()
             if coverage_repairs:
