@@ -287,7 +287,7 @@ class StoredState(Base):
         stored = self.store.question(job['id'])
         self.assertEqual((stored['status'], stored['error']), ('cancelled', QUESTION_RESTART_CANCEL))
 
-    def test_usage_shows_zero_calls_only_for_the_queued_cancel_text(self):
+    def test_a_cancelled_question_without_a_call_manifest_shows_zero_calls_only_for_the_queued_cancel_text(self):
         owner = {'id': 'a' * 32, 'agent': 'codex', 'model': '', 'status': 'cancelled', 'error': QUESTION_QUEUED_CANCEL}
         self.assertEqual(job_calls(self.root, 'questions', owner), [])
         [unknown] = job_calls(self.root, 'questions', owner | {'error': HEAD})
