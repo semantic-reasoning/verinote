@@ -53,87 +53,148 @@ def public_node(node):
     return {k: node[k] for k in ('id', 'analysis', 'supported_evidence')}
 
 
+MAX_LEAF_RESPONSE_BYTES = 1024 * 1024
+SYNTHESIS_VERSION = 3
+
+
+def partition_response(output, allowance):
+    """Whole, already validated records only; never trim text or unknowns."""
+    batches: list[dict] = []
+    current: list[dict] = []
+    for record in output['records']:
+        if len(canonical({'records': [record]}).encode()) > allowance:
+            raise ValueError('단일 분할 분석 기록이 바이트 예산을 초과했습니다.')
+        if current and len(canonical({'records': [*current, record]}).encode()) > allowance:
+            batches.append({'records': current}); current = []
+        current.append(copy.deepcopy(record))
+    if current:
+        batches.append({'records': current})
+    return batches
+
+
 def run(assistant, state, instructions, round_number):
     limit = assistant.context_limit()[0]
     prepared = plan(state, instructions, limit)
-    identity = [prepared.base, assistant.job['agent'], assistant.job['model'], 'complete-context-v2']
-    tasks = []
-    def task(stage, units=(), children=()):
-        key = 'A' + digest([identity, stage, units, children])
-        result = {'id': key, 'stage': stage, 'units': list(units), 'children': list(children), 'status': 'planned'}
-        tasks.append(result)
-        return key
-    level = [task('analysis_leaf', batch) for batch in prepared.batches]
-    while len(level) > 1:
-        following = []
-        for i in range(0, len(level), 2):
-            following.append(task('analysis_merge', children=level[i:i+2]) if i+1 < len(level) else level[i])
-        level = following
-    root = level[0]
-    if len(tasks)+1 > 2*len(prepared.batches):
-        raise ValueError('분할 처리 호출 계획 오류')
-    assistant.preflight_calls(len(tasks)+1)
+    identity = [prepared.base, assistant.job['agent'], assistant.job['model'],
+                'complete-context-v3', prepared.allowance, MAX_LEAF_RESPONSE_BYTES]
+    # Every input unit can become at most one bounded local leaf. Local leaves are not calls.
+    bound = len(prepared.batches) + len(prepared.units)
+    assistant.preflight_calls(bound)
     nodes = assistant.job.setdefault('analysis_nodes', {})
+    responses = assistant.job.setdefault('analysis_leaf_responses', {})
     manifest = {u['id']: {'category': u['category'], 'sha256': u['sha256']} for u in prepared.units}
     originals = {u['id']: {'category': u['category'], 'sha256': u['sha256']} for u in units_for(state)}
     fragments = {u['id']: u for u in prepared.units if u['category'] == 'fragment'}
     sources = {u['id']: u['value']['source_id'] if u['category'] == 'fragment' else u['id'] for u in prepared.units}
     tree = {'round': round_number, 'status': 'running', 'manifest': manifest,
-            'partition_version': 1, 'originals': originals, 'fragments': fragments,
+            'partition_version': 1, 'synthesis_version': SYNTHESIS_VERSION,
+            'originals': originals, 'fragments': fragments, 'leaf_partitions': {},
             'planned_records': len(manifest), 'processed_records': 0, 'planned_batches': len(prepared.batches),
-            'processed_batches': 0, 'max_physical_calls': 2*len(prepared.batches),
-            'output_byte_limit': prepared.allowance, 'root': root, 'nodes': []}
+            'processed_batches': 0, 'max_physical_calls': bound,
+            'output_byte_limit': prepared.allowance, 'root': None, 'nodes': []}
     assistant.job.setdefault('context_processing', []).append(tree)
-    # Save the entire call plan before dispatching its first physical call.
-    for i, item in enumerate(tasks, 1):
-        item['path'] = f'context-{round_number}-{i}'
-        tree['nodes'].append({k: item[k] for k in ('id', 'stage', 'children', 'status', 'path')})
-        assistant.register_call(item['path'], item['stage'], round_number, node=item['id'])
-    decision_path = f'context-{round_number}-decision'
-    assistant.register_call(decision_path, 'question_synthesis', round_number, node=root)
+    counter = 0
+    def register(stage, key, children=()):
+        nonlocal counter
+        counter += 1
+        path = f'context-{round_number}-{counter}'
+        assistant.preflight_calls(1)
+        assistant.register_call(path, stage, round_number, node=key)
+        status = {'id': key, 'stage': stage, 'children': list(children), 'status': 'planned', 'path': path}
+        tree['nodes'].append(status)
+        return status
+
+    def save_node(key, stage, analysis, support, coverage, children=(), **extra):
+        nodes[key] = {'id': key, 'stage': stage, 'children': list(children), 'coverage': coverage,
+                      'records': {sources[k]: originals[sources[k]] for k in coverage},
+                      'analysis': copy.deepcopy(analysis), 'analysis_sha256': digest(analysis),
+                      'supported_evidence': support, 'status': 'complete', **extra}
+
+    leaves = []
+    for batch in prepared.batches:
+        key = 'A' + digest([identity, 'analysis_leaf', batch])
+        leaves.append((key, batch, register('analysis_leaf', key)))
     assistant.progress(assistant.trace, assistant.evidence)
     try:
-        for item, status in zip(tasks, tree['nodes'], strict=True):
-            if item['id'] in nodes:
-                status['status'] = 'cached'
-                assistant.call_record(item['path'])['status'] = 'cached'
-                node = nodes[item['id']]
+        level = []
+        for key, batch, status in leaves:
+            assigned = {'stage': 'analysis_leaf', 'units': batch}
+            def accept(output, task=assigned):
+                validate(output, task, MAX_LEAF_RESPONSE_BYTES, nodes)
+                return partition_response(output, prepared.allowance)
+            if key in responses:
+                source = responses[key]
+                if digest(source['analysis']) != source['analysis_sha256']:
+                    raise ValueError('분석 원본 응답 무결성 오류')
+                receipt(source['assigned_ids'], [u['id'] for u in batch])
+                output = source['analysis']; pieces = accept(output)
+                status['status'] = 'cached'; assistant.call_record(status['path'])['status'] = 'cached'
             else:
                 status['status'] = 'dispatched'
-                if item['stage'] == 'analysis_leaf':
-                    prompt = leaf_prompt(prepared.base, item['units'], prepared.allowance)
-                    coverage = [u['id'] for u in item['units']]
-                else:
-                    prompt = merge_prompt(prepared.base, [public_node(nodes[c]) for c in item['children']], prepared.allowance)
-                    coverage = [key for c in item['children'] for key in nodes[c]['coverage']]
-                def accept(output, assigned=item):
-                    return validate(output, assigned, prepared.allowance, nodes)
-                output, support = assistant.invoke(prompt, item['path'], round_number, accept)
-                node = {'id': item['id'], 'stage': item['stage'], 'children': item['children'],
-                        'coverage': coverage, 'records': {sources[key]: originals[sources[key]] for key in coverage},
-                        'analysis': copy.deepcopy(output), 'analysis_sha256': digest(output),
-                        'supported_evidence': support, 'status': 'complete'}
-                nodes[item['id']] = node
+                output, pieces = assistant.invoke(leaf_prompt(prepared.base, batch, prepared.allowance),
+                                                  status['path'], round_number, accept)
+                responses[key] = {'analysis': copy.deepcopy(output), 'analysis_sha256': digest(output),
+                                  'assigned_ids': [u['id'] for u in batch], 'path': status['path']}
                 status['status'] = 'complete'
-            if item['stage'] == 'analysis_leaf':
-                tree['processed_records'] += len(item['units'])
-                tree['processed_batches'] += 1
+            unit_map = {u['id']: u for u in batch}
+            parts = []
+            for i, piece in enumerate(pieces):
+                part_key = key if len(pieces) == 1 else 'A' + digest([identity, key, i, piece])
+                coverage = [r['id'] for r in piece['records']]
+                support = validate(piece, {'stage':'analysis_leaf', 'units':[unit_map[k] for k in coverage]},
+                                   prepared.allowance, nodes)
+                save_node(part_key, 'analysis_leaf', piece, support, coverage, source_response=key)
+                parts.append(part_key)
+            tree['leaf_partitions'][key] = parts
+            level.extend(parts)
+            tree['processed_records'] += len(batch); tree['processed_batches'] += 1
             assistant.progress(assistant.trace, assistant.evidence)
+        tree['bounded_leaves'] = len(level)
+        while len(level) > 1:
+            following = []
+            for i in range(0, len(level), 2):
+                children = level[i:i+2]
+                if len(children) == 1:
+                    following.extend(children); continue
+                key = 'A' + digest([identity, 'analysis_merge', children])
+                status = register('analysis_merge', key, children)
+                assistant.progress(assistant.trace, assistant.evidence)
+                assigned = {'stage':'analysis_merge', 'children':children}
+                def accept_merge(output, task=assigned):
+                    return validate(output, task, prepared.allowance, nodes)
+                if key in nodes:
+                    node = nodes[key]
+                    if digest(node['analysis']) != node['analysis_sha256']:
+                        raise ValueError('분석 기록 무결성 오류')
+                    output = node['analysis']; support = accept_merge(output)
+                    status['status'] = 'cached'; assistant.call_record(status['path'])['status'] = 'cached'
+                else:
+                    status['status'] = 'dispatched'
+                    output, support = assistant.invoke(merge_prompt(prepared.base, [public_node(nodes[c]) for c in children], prepared.allowance),
+                                                       status['path'], round_number, accept_merge)
+                    status['status'] = 'complete'
+                coverage = [k for c in children for k in nodes[c]['coverage']]
+                save_node(key, 'analysis_merge', output, support, coverage, children)
+                following.append(key)
+                assistant.progress(assistant.trace, assistant.evidence)
+            level = following
+        root = level[0]; tree['root'] = root
         receipt(nodes[root]['coverage'], manifest)
         tree['status'] = 'analyzed'
+        decision_path = f'context-{round_number}-decision'
+        assistant.preflight_calls(1)
+        assistant.register_call(decision_path, 'question_synthesis', round_number, node=root)
+        assistant.progress(assistant.trace, assistant.evidence)
         prompt = instructions + canonical(decision_state(prepared.base, public_node(nodes[root])))
         output, _ = assistant.invoke(prompt, decision_path, round_number)
-        assistant.delivered_evidence = set()
-        assistant.delivered_lookups = set()
-        assistant.delivered_analysis = {root}
+        assistant.delivered_evidence = set(); assistant.delivered_lookups = set(); assistant.delivered_analysis = {root}
         tree['status'] = 'complete'
         assistant.progress(assistant.trace, assistant.evidence)
         return output, decision_path
     except Exception:
         tree['status'] = 'failed'
         for status in tree['nodes']:
-            if status['status'] == 'dispatched':
-                status['status'] = 'failed'
+            if status['status'] == 'dispatched': status['status'] = 'failed'
         assistant.progress(assistant.trace, assistant.evidence)
         raise
 
@@ -164,6 +225,38 @@ def supports(assistant, key):
                     or digest(assistant.evidence[source_id]) != original['sha256']
                     or group[0]['value']['source_usable'] != usable(assistant.evidence[source_id])):
                 raise ValueError('분석 원본 근거 무결성 오류')
+        if tree.get('synthesis_version') == SYNTHESIS_VERSION:
+            responses = assistant.job.get('analysis_leaf_responses', {})
+            assigned_all = []
+            partition_keys: set[str] = set()
+            for source_id, parts in tree['leaf_partitions'].items():
+                source = responses[source_id]
+                if digest(source['analysis']) != source['analysis_sha256']:
+                    raise ValueError('분석 원본 응답 무결성 오류')
+                units = []
+                for unit_id in source['assigned_ids']:
+                    meta = tree['manifest'][unit_id]
+                    category = meta['category']
+                    value = (tree['fragments'][unit_id]['value'] if category == 'fragment'
+                             else assistant.evidence[unit_id] if category == 'evidence' else {})
+                    if category == 'evidence' and digest(value) != meta['sha256']:
+                        raise ValueError('분석 원본 근거 무결성 오류')
+                    units.append({'id': unit_id, 'category': category, 'value': value})
+                validate(source['analysis'], {'stage':'analysis_leaf', 'units':units}, MAX_LEAF_RESPONSE_BYTES, nodes)
+                expected = partition_response(source['analysis'], tree['output_byte_limit'])
+                if len(parts) != len(expected) or len(set(parts)) != len(parts) or partition_keys.intersection(parts):
+                    raise ValueError('분석 응답 분할 범위 무결성 오류')
+                partition_keys.update(parts); assigned_all.extend(source['assigned_ids'])
+                unit_map = {u['id']: u for u in units}
+                for part_id, analysis in zip(parts, expected, strict=True):
+                    node = nodes[part_id]
+                    coverage = [r['id'] for r in analysis['records']]
+                    supported = validate(analysis, {'stage':'analysis_leaf', 'units':[unit_map[k] for k in coverage]},
+                                         tree['output_byte_limit'], nodes)
+                    if (node.get('source_response') != source_id or node['analysis'] != analysis
+                            or node['coverage'] != coverage or node['children'] or node['supported_evidence'] != supported):
+                        raise ValueError('분석 응답 조각 무결성 오류')
+            receipt(assigned_all, tree['manifest'])
     visited = set()
     def walk(node_id):
         if node_id in visited:
@@ -176,9 +269,17 @@ def supports(assistant, key):
             walk(child)
         if node['children']:
             receipt(node['coverage'], [item for child in node['children'] for item in nodes[child]['coverage']])
+            if tree is not None and tree.get('synthesis_version') == SYNTHESIS_VERSION:
+                supported = validate(node['analysis'], {'stage':'analysis_merge', 'children':node['children']},
+                                     tree['output_byte_limit'], nodes)
+                if node['supported_evidence'] != supported:
+                    raise ValueError('종합 분석 인용 무결성 오류')
         for evidence_id in node['supported_evidence']:
             original = assistant.evidence.get(evidence_id)
             if original is None or not usable(original) or digest(original) != node['records'][evidence_id]['sha256']:
                 raise ValueError('분석 원본 근거 무결성 오류')
     walk(key)
+    if tree is not None and tree.get('synthesis_version') == SYNTHESIS_VERSION:
+        if {k for k in visited if not nodes[k]['children']} != partition_keys:
+            raise ValueError('분석 응답 조각 연결 무결성 오류')
     return nodes[key]['supported_evidence']
