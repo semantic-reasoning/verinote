@@ -44,6 +44,19 @@ QUESTION_QUEUED_CANCEL = '대기 중에 취소되었습니다. 이 질문은 모
 QUESTION_CANCEL_REQUESTED = ('취소 요청됨: 이미 허용한 모델 호출은 중단하지 않고 끝날 때까지 기다린 뒤, 새 호출 없이 멈춥니다. 답변은 저장하지 않습니다. '
                              '멈출 때까지 다음 질문은 기다리며, 실행은 각 실행 한도 안에서 계속됩니다.')
 QUESTION_RESTART_CANCEL = '취소를 요청한 뒤 질문이 멈춘 것을 기록하기 전에 서버가 재시작되었습니다. 답변은 저장하지 않았습니다.'
+OPEN_ROUND = ('running', 'analyzed')
+ROUND_END = {'cancelled': 'cancelled', 'interrupted': 'interrupted', 'error': 'failed'}
+
+
+def end_open_rounds(job):
+    """Return job with each split-processing round (context_processing) stored as running or analyzed set to the end that matches the job's
+    status: cancelled, interrupted, or failed for error. A job in any other status, and rounds in any other status, are returned as they are.
+    job itself is not changed, and step statuses are not touched."""
+    end = ROUND_END.get(job.get('status'))
+    trees = job.get('context_processing')
+    if end is None or not trees or not any(t.get('status') in OPEN_ROUND for t in trees):
+        return job
+    return job | {'context_processing': [t | {'status': end} if t.get('status') in OPEN_ROUND else t for t in trees]}
 
 
 def cancel_result(stage, topic=True):
@@ -106,6 +119,10 @@ class Store:
             db.close()
 
     def recover(self):
+        """Startup repair. Runs stored as queued or running become interrupted and runs stored as cancelling become cancelled. Questions stored
+        as queued or running become interrupted and questions stored as cancelling become cancelled; then every question stored as cancelled,
+        interrupted or error, including one stored so before this start, has its split-processing rounds stored as running or analyzed set
+        to cancelled, interrupted or failed (end_open_rounds). A question row is written only when one of these changes it."""
         with self.connect(True) as db:
             db.execute("UPDATE runs SET status='interrupted',detail='서버가 재시작되었습니다. 다시 추출하세요.' WHERE status IN ('queued','running')")
             for row in db.execute("SELECT id,stage FROM runs WHERE status='cancelling'").fetchall():
@@ -116,9 +133,10 @@ class Store:
                 job = json.loads(row['payload'])
                 if job['status'] in ('queued', 'running'):
                     job.update(status='interrupted', error='서버 재시작으로 중단되었습니다.')
-                    db.execute('UPDATE questions SET payload=? WHERE id=?', (canonical(job), row['id']))
                 elif job['status'] == 'cancelling':
                     job.update(status='cancelled', error=QUESTION_RESTART_CANCEL)
+                job = end_open_rounds(job)
+                if job != json.loads(row['payload']):
                     db.execute('UPDATE questions SET payload=? WHERE id=?', (canonical(job), row['id']))
 
     def create_question(self, question, agent, model, snapshot, *, execution_options=None):
@@ -134,7 +152,8 @@ class Store:
         return job
 
     def save_question(self, job):
-        """Replace the stored question with job in one write transaction. A question stored as cancelling or cancelled is left as it is and
+        """Replace the stored question with job in one write transaction, after end_open_rounds: when job's status is error, for one, its
+        split-processing rounds left running or analyzed are stored as failed. A question stored as cancelling or cancelled is left as it is and
         RunCancelled is raised: the save of a call's dispatched record comes before the call, so no model call starts after a cancel commits,
         and an answer that arrives after it is not stored."""
         with self.connect(True) as db:
@@ -142,7 +161,7 @@ class Store:
             row = db.execute('SELECT payload FROM questions WHERE id=?', (job['id'],)).fetchone()
             if row and json.loads(row[0])['status'] in ('cancelling', 'cancelled'):
                 raise RunCancelled('질문이 취소되었습니다.')
-            if not db.execute('UPDATE questions SET payload=? WHERE id=?', (canonical(job), job['id'])).rowcount:
+            if not db.execute('UPDATE questions SET payload=? WHERE id=?', (canonical(end_open_rounds(job)), job['id'])).rowcount:
                 raise Conflict('질문이 삭제되었습니다.')
 
     def cancel_question(self, key, expected_status):
@@ -172,16 +191,18 @@ class Store:
             return status
 
     def finish_question_cancel(self, key, error):
-        """Move a question stored as cancelling to cancelled with error, keeping the rest of its stored payload; any other is left as it is."""
+        """Move a question stored as cancelling to cancelled with error, with its split-processing rounds stored as running or analyzed set to
+        cancelled (end_open_rounds) and the rest of its stored payload kept; any other is left as it is."""
         with self.connect(True) as db:
             row = db.execute('SELECT payload FROM questions WHERE id=?', (key,)).fetchone()
             if not row: return
             job = json.loads(row[0])
             if job['status'] == 'cancelling':
-                db.execute('UPDATE questions SET payload=? WHERE id=?', (canonical(job | {'status': 'cancelled', 'error': error}), key))
+                db.execute('UPDATE questions SET payload=? WHERE id=?', (canonical(end_open_rounds(job | {'status': 'cancelled', 'error': error})), key))
 
     def end_unstored_question(self, key, error):
-        """Moves a question stored as queued or running to error in one write transaction and returns True. A question stored as cancelling or
+        """Moves a question stored as queued or running to error in one write transaction, with its split-processing rounds stored as running or
+        analyzed set to failed (end_open_rounds), and returns True. A question stored as cancelling or
         cancelled raises RunCancelled, as save_question does; a question stored as anything else is left as it is and False is returned."""
         with self.connect(True) as db:
             row = db.execute('SELECT payload FROM questions WHERE id=?', (key,)).fetchone()
@@ -192,7 +213,7 @@ class Store:
                 raise RunCancelled('질문이 취소되었습니다.')
             if job['status'] not in ('queued', 'running'):
                 return False
-            db.execute('UPDATE questions SET payload=? WHERE id=?', (canonical(job | {'status': 'error', 'error': error}), key))
+            db.execute('UPDATE questions SET payload=? WHERE id=?', (canonical(end_open_rounds(job | {'status': 'error', 'error': error})), key))
             return True
 
     def question(self, key):
