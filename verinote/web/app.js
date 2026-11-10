@@ -889,7 +889,7 @@ function renderGraphMeanings(r){
 function renderQuestionWindow(job){
   const trees=job.context_processing||[];
   if(!trees.length)return '';
-  return `<p class="muted">입력을 모두 분할 분석한 뒤 종합합니다. 처리 수는 전달·응답 형식 검증이며 의미적 완전성 보증이 아닙니다. 중간 분석은 미승인 모델 해석입니다. 최대 물리 호출 ${esc(job.physical_call_bound)}회이며 실제 분할 수에 따라 추가 비용이 발생합니다.</p>${trees.map(t=>`<details><summary>회차 ${esc(t.round)} · ${esc(t.status)} · 기록 ${esc(t.processed_records)}/${esc(t.planned_records)} · 묶음 ${esc(t.processed_batches)}/${esc(t.planned_batches)}</summary>${t.nodes.map(n=>`<p>${esc(n.stage)} · ${esc(n.status)}</p>${job.analysis_nodes?.[n.id]?renderAnalysis(job,n.id):''}`).join('')}</details>`).join('')}`;
+  return `<p class="muted">입력을 모두 분할 분석한 뒤 종합합니다. 처리 수는 전달·응답 형식 검증이며 의미적 완전성 보증이 아닙니다. 중간 분석은 미승인 모델 해석입니다. 최대 물리 호출 ${esc(job.physical_call_bound)}회이며 실제 분할 수에 따라 추가 비용이 발생합니다.</p>${trees.map(t=>`<details><summary>회차 ${esc(t.round)} · ${esc({cancelled:labels.cancelled,interrupted:labels.interrupted}[t.status]||t.status)} · 기록 ${esc(t.processed_records)}/${esc(t.planned_records)} · 묶음 ${esc(t.processed_batches)}/${esc(t.planned_batches)}</summary>${t.nodes.map(n=>`<p>${esc(n.stage)} · ${esc(n.status)}</p>${job.analysis_nodes?.[n.id]?renderAnalysis(job,n.id):''}`).join('')}</details>`).join('')}`;
 }
 
 function renderAnalysis(job,id){
