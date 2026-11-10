@@ -253,6 +253,7 @@ def admission_notice(cli, root, run, doc, dictionary, context_limit, other_agent
         ADMISSION_RECORD,
         admission_policy,
         chunk_requests,
+        extraction_pin,
         worst_refusal,
     )
     from .documents import chunks
@@ -263,8 +264,7 @@ def admission_notice(cli, root, run, doc, dictionary, context_limit, other_agent
         target = run.get('ontology')
         # finish_run stores a new item at revision 1 and a regeneration at the rejected revision + 1; approving adds one.
         approval = (target['revision'] + 1 if target else 1) + 1
-        pin = {'id': target['id'] if target else ident(), 'revision': approval, 'payload': payload,
-               'sha256': digest(payload), 'extraction_contract': EXTRACTION_CONTRACT_VERSION}
+        pin = extraction_pin(target['id'] if target else ident(), approval, payload, EXTRACTION_CONTRACT_VERSION)
         worst = worst_refusal(cli, run['agent'], extraction_prompts(EXTRACTION_CONTRACT_VERSION)[0],
                               chunk_requests(doc, pin, list(enumerate(chunks(doc['text']), 1))), context_limit)
         warning = worst[1].approval_warning(PROVIDERS[run['agent']], other_agent_ready(), approval) if worst else None
@@ -275,6 +275,6 @@ def admission_notice(cli, root, run, doc, dictionary, context_limit, other_agent
     try:
         atomic_json(root / 'runs' / run['id'] / ADMISSION_RECORD, record)
     except Exception:
-        return (f'{warning} 이 경고의 기록을 저장하지 못해 문서 화면에는 표시되지 않습니다.' if warning
+        return (f'{warning} 이 경고의 기록을 저장하지 못했습니다. 문서 화면은 현재 문서 버전의 반려되지 않은 사전이면 이 기록 없이 다시 계산하며, 반려된 사전이나 이전 문서 버전에서는 이 경고를 표시하지 않습니다.' if warning
                 else '추출 입력 한도 검사 기록을 저장하지 못했습니다.')
     return warning

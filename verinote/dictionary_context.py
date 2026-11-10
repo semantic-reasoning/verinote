@@ -259,6 +259,56 @@ def chunk_requests(doc, pin, raw_chunks):
     return [(raw, chunk_payload(doc, *raw[1]) | pinned) for raw in raw_chunks]
 
 
+def extraction_pin(item_id, revision, payload, contract):
+    """The approved-dictionary pin store.create_run stores on an extraction run; the caller passes its contract version."""
+    return {'id': item_id, 'revision': revision, 'payload': payload, 'sha256': digest(payload), 'extraction_contract': contract}
+
+
+def _largest_chunk(doc, raw_chunks):
+    """The (index, (offset, text)) whose serialized chunk_payload fields are longest in UTF-8 bytes, first on ties.
+    In build, both request forms of a chunk are a form-dependent constant plus these bytes (the pin, the prompt and
+    the table encoding do not depend on the chunk), so whether a chunk is refused and its request and definition
+    sizes are monotone in this length: this chunk is refused exactly when any chunk is, with the largest excess.
+    This is a property of build and chunk_payload, not checked here. A test compares this choice with worst_refusal over all
+    chunks on fixed documents where it differs from the first chunk and from ranking by characters, by \\u-escaped JSON
+    or by text bytes without the offset; it does not cover every input."""
+    return max(raw_chunks, key=lambda raw: len(json.dumps(chunk_payload(doc, *raw[1]), ensure_ascii=False, separators=(',', ':')).encode()))
+
+
+def current_admission(cli, agent, other_agent, doc, item, context_limit):
+    """The warning extraction admission gives, before its first call, for approving this current dictionary item unchanged
+    and extracting with `agent` under the current policy; None when it fits. Writes no file and calls no model.
+    An approved item is pinned at its revision, any other at revision + 1 (approving adds one)."""
+    from types import SimpleNamespace
+
+    from .agents import PROVIDERS
+    from .documents import chunks
+    from .ontology import EXTRACTION_CONTRACT_VERSION, extraction_prompts
+    if agent == 'ollama':  # Ollama's options are fixed to the defaults, so its budget does not depend on the job.
+        from .ollama import input_byte_limit
+        cli = SimpleNamespace(prompt_byte_limit=lambda _agent: input_byte_limit())
+    revision = item['revision'] if item['status'] == 'approved' else item['revision'] + 1
+    pin = extraction_pin(item['id'], revision, item['payload'], EXTRACTION_CONTRACT_VERSION)
+    largest = _largest_chunk(doc, list(enumerate(chunks(doc['text']), 1)))
+    worst = worst_refusal(cli, agent, extraction_prompts(EXTRACTION_CONTRACT_VERSION)[0], chunk_requests(doc, pin, [largest]), context_limit)
+    return worst[1].approval_warning(PROVIDERS[agent], other_agent, revision) if worst else None
+
+
+def document_admission(service, doc, item):
+    """The document API's extraction admission panel: recomputed for a non-rejected dictionary of the current version,
+    otherwise the generation record through read_admission."""
+    if item['version'] != doc['current_version'] or item['status'] == 'rejected':
+        return read_admission(service.root, item)
+    from .ontology import MAX_DICTIONARY_CONTEXT_BYTES
+    try:
+        agent = service.store.run(item['run_id'])['agent']
+        context_limit = validate_context_bytes(service.store.settings().get('dictionary_context_bytes', MAX_DICTIONARY_CONTEXT_BYTES))
+        warning = current_admission(service.cli, agent, service.other_agent_ready(agent), doc, item, context_limit)
+    except Exception:
+        return {'available': False, 'recomputed': True}
+    return {'available': True, 'warning': warning, 'recomputed': True}
+
+
 def _canary_dictionaries():
     """Fixed dictionaries: one whose plain form is the smaller request, one whose table form is."""
     kind = 'T' + 't' * 119
@@ -313,7 +363,8 @@ def admission_policy():
 
 def read_admission(root, item):
     """None when the item's generation run kept no record, or the dictionary or admission_policy() differs from the record's; else whether it was readable and its warning.
-    Hidden records are not recomputed; that is #850."""
+    A hidden record is not recomputed here; the document API reads records only for rejected items and items of earlier
+    versions, and recomputes the others with current_admission."""
     from .usage import safe_file
     path = root / 'runs' / item['run_id'] / ADMISSION_RECORD
     try:

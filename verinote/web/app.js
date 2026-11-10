@@ -116,6 +116,10 @@ function extractionControls(d) {
 }
 function renderExtractionAdmission(record) {
   if(!record)return '';
+  if(record.recomputed){
+    if(!record.available)return '<section class="panel" role="status"><strong>추출 입력 한도 미확인</strong><p>현재 사전과 현재 추출 정책으로 다시 계산하지 못했습니다. 경고가 없다는 뜻은 아닙니다. 추출을 시작하면 첫 호출 전에 검사합니다.</p></section>';
+    return record.warning?`<section class="panel" role="status"><strong>추출 입력 한도 경고</strong><p>${esc(record.warning)}</p><p class="muted">이 경고는 화면을 불러올 때 현재 사전과 현재 추출 정책으로 다시 계산했습니다. 실행 상세에 경고가 있다면 생성 당시 기준입니다.</p></section>`:'';
+  }
   if(!record.available)return '<section class="panel" role="status"><strong>추출 입력 한도 경고 기록 미확인</strong><p>기록을 읽을 수 없습니다. 경고가 없었다는 뜻은 아닙니다. 추출을 시작하면 첫 호출 전에 검사합니다.</p></section>';
   return record.warning?`<section class="panel" role="status"><strong>추출 입력 한도 경고</strong><p>${esc(record.warning)}</p></section>`:'';
 }
