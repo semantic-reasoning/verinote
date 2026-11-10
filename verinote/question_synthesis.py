@@ -130,12 +130,10 @@ def run(assistant, state, instructions, round_number):
                 output = source['analysis']; pieces = accept(output)
                 status['status'] = 'cached'; assistant.call_record(status['path'])['status'] = 'cached'
             else:
-                status['status'] = 'dispatched'
                 output, pieces = assistant.invoke(leaf_prompt(prepared.base, batch, prepared.allowance),
-                                                  status['path'], round_number, accept)
+                                                  status['path'], round_number, accept, mirror=status)
                 responses[key] = {'analysis': copy.deepcopy(output), 'analysis_sha256': digest(output),
                                   'assigned_ids': [u['id'] for u in batch], 'path': status['path']}
-                status['status'] = 'complete'
             unit_map = {u['id']: u for u in batch}
             parts = []
             for i, piece in enumerate(pieces):
@@ -169,10 +167,8 @@ def run(assistant, state, instructions, round_number):
                     output = node['analysis']; support = accept_merge(output)
                     status['status'] = 'cached'; assistant.call_record(status['path'])['status'] = 'cached'
                 else:
-                    status['status'] = 'dispatched'
                     output, support = assistant.invoke(merge_prompt(prepared.base, [public_node(nodes[c]) for c in children], prepared.allowance),
-                                                       status['path'], round_number, accept_merge)
-                    status['status'] = 'complete'
+                                                       status['path'], round_number, accept_merge, mirror=status)
                 coverage = [k for c in children for k in nodes[c]['coverage']]
                 save_node(key, 'analysis_merge', output, support, coverage, children)
                 following.append(key)
@@ -193,8 +189,6 @@ def run(assistant, state, instructions, round_number):
         return output, decision_path
     except Exception:
         tree['status'] = 'failed'
-        for status in tree['nodes']:
-            if status['status'] == 'dispatched': status['status'] = 'failed'
         assistant.progress(assistant.trace, assistant.evidence)
         raise
 
