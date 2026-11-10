@@ -124,7 +124,7 @@ class Store:
     def create_question(self, question, agent, model, snapshot, *, execution_options=None):
         job = {'id': ident(), 'question': question, 'agent': agent, 'model': model,
                'snapshot': snapshot, 'status': 'queued', 'trace': [], 'evidence': {},
-               'answer': None, 'error': '', 'created_at': now()}
+               'answer': None, 'error': '', 'created_at': now(), 'call_manifest': []}
         if execution_options is not None:
             from .transports import job_options
             job['execution_options'] = job_options(execution_options)
@@ -319,7 +319,8 @@ class Store:
             questions = []
             for row in db.execute('SELECT payload FROM questions ORDER BY created_at DESC,id LIMIT ?', (limit + 1,)):
                 job = json.loads(row[0])
-                questions.append({k: job[k] for k in ('id', 'agent', 'model', 'status', 'created_at')} | {'kind': 'questions', 'stage': 'question'})
+                questions.append({k: job[k] for k in ('id', 'agent', 'model', 'status', 'created_at')} | {k: job[k] for k in ('error', 'call_manifest') if k in job}
+                                 | {'kind': 'questions', 'stage': 'question'})
             total = db.execute('SELECT (SELECT count(*) FROM runs)+(SELECT count(*) FROM questions)').fetchone()[0]
         owners = sorted(runs + questions, key=lambda r: (r['created_at'], r['id']), reverse=True)
         return owners[:limit], total

@@ -463,6 +463,14 @@ def job_calls(root, kind, owner):
         from .store import QUEUED_CANCEL_DETAIL
         if owner.get('detail') == QUEUED_CANCEL_DETAIL:  # Store.cancel_run's marker: the run was cancelled before it started
             return []
+    if not calls and kind == 'questions' and owner['status'] in ('error', 'cancelled', 'interrupted'):
+        # Store.create_question starts every question with an empty call_manifest, and Assistant.invoke saves a call's dispatched record
+        # before the call, skipping the call if that save fails. A list of planned records alone therefore means no model call started.
+        # A new question model call path must go through Assistant.invoke. A question without the list (created before) falls back to
+        # the llm-1..6 logs above and, with none, to the queued-cancel text below.
+        manifest = owner.get('call_manifest')
+        if isinstance(manifest, list) and all(isinstance(entry, dict) and entry.get('status') == 'planned' for entry in manifest):
+            return []
     if not calls and kind == 'questions' and owner['status'] == 'cancelled':
         from .store import QUESTION_QUEUED_CANCEL
         if owner.get('error') == QUESTION_QUEUED_CANCEL:  # Store.cancel_question's marker: cancelled while queued; a worker that took it anyway is refused its first save, before any call

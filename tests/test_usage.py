@@ -464,6 +464,7 @@ class Accounting(unittest.TestCase):
         for i in (1,2,3):
             folder=self.root/'questions'/job['id']/f'llm-{i}';folder.mkdir(parents=True)
             atomic_json(folder/'usage.json',record())
+        self.store.save_question(job|{'status':'error','call_manifest':[{'path':f'llm-{i}','stage':'question','round':i,'status':'complete'} for i in (1,2,3)]})
         service=Service(self.store,self.root)
         try:
             a=service.usage_report();self.assertEqual(a,service.usage_report())

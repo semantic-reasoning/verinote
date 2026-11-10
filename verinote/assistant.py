@@ -435,8 +435,12 @@ class Assistant:
             self.register_call(path, 'question', round_number)
         record = self.call_record(path)
         self.check_context(prompt, round_number)
-        record['status'] = 'dispatched'
-        self.progress(self.trace, self.evidence)  # Persistence failure prevents dispatch.
+        previous, record['status'] = record['status'], 'dispatched'
+        try:
+            self.progress(self.trace, self.evidence)  # Persistence failure prevents dispatch.
+        except Exception:
+            record['status'] = previous  # The call is skipped; a later save of this job must not record it as dispatched.
+            raise
         try:
             output = self.cli.complete(self.job['agent'], self.job['model'], prompt, self.folder / path)
             result = None

@@ -521,7 +521,7 @@ function renderExcludedClaims(chunk,gap){
   const rows=chunk.excluded_claims||[];if(!rows.length)return '';
   return `<p><strong>근거 불가로 제외한 위키 주장 ${esc(rows.length)}개</strong> · 저장하지 않았습니다. 보정 뒤에도 인용이 원문의 한 위치로 확인되지 않았으며, 아래 문구는 근거로 쓰지 않습니다. 번호는 보정을 요청한 응답 기준이고 본문과 문구는 최대 300자입니다.</p>${rows.map(r=>`<p>위키 주장 ${esc(Number(r.path.split('.')[1])+1)} · ${esc(r.heading)} · ${esc(r.text)}<br>원문의 한 위치로 확인되지 않은 모델 문구: ${esc(r.quote)}${r.predicates.length?`<br>이 주장 제외로 표현 제약 근거가 남지 않은 관계: ${esc(r.predicates.join(', '))}`:''}${r.gaps.map(g=>`<br>${esc(gap[g.code])} · ${esc(g.detail)}`).join('')}</p>`).join('')}`;
 }
-function usageStage(stage){return {ontology:'사전 생성',extract:'관계 추출',quote_repair:'인용 보정',extraction_recovery:'누락 보충 점검',question:'질문',legacy:'기존 추출'}[stage]||stage;}
+function usageStage(stage){return {ontology:'사전 생성',extract:'관계 추출',quote_repair:'인용 보정',extraction_recovery:'누락 보충 점검',question:'질문',analysis_leaf:'질문 분할 분석',analysis_merge:'질문 이진 종합',question_synthesis:'질문 최종 결정',legacy:'기존 추출'}[stage]||stage;}
 function usageNumber(value){if(value==null)return '미확인';if(value>0&&value<1e-8)return '<0.00000001';return Number(value).toLocaleString('ko-KR',{maximumFractionDigits:8});}
 function renderReasoningDiagnostic(call) {
   if(call.transport!=='http')return '';
