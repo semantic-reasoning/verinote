@@ -12,8 +12,14 @@ from test_question_budget import LimitedFake
 from verinote.assistant import PROMPT, Assistant
 from verinote.question_batches import MARKER, leaf_prompt, plan, units_for
 from verinote.question_context import resolve
-from verinote.question_synthesis import run, supports, validate
-from verinote.store import Store, digest
+from verinote.question_synthesis import (
+    MAX_LEAF_RESPONSE_BYTES,
+    partition_response,
+    run,
+    supports,
+    validate,
+)
+from verinote.store import RunCancelled, Store, canonical, digest
 from verinote.usage import UNCONFIRMED, job_calls
 
 
@@ -124,7 +130,10 @@ class CompleteContext(unittest.TestCase):
                     self.assertTrue(a.job['analysis_nodes'])
 
     def test_oversized_analysis_and_mandatory_question_fail_without_truncating(self):
-        raw = state(); a = self.assistant(raw, lambda _: {'text': 'x'*20000})
+        def oversized(prompt):
+            output = scripted(prompt); output['records'][0]['text'] = 'x'*20000
+            return output
+        raw = state(); a = self.assistant(raw, oversized)
         with self.assertRaisesRegex(ValueError, '예산'):
             run(a, raw, PROMPT, 2)
         self.assertEqual(len(a.cli.calls), 1)
@@ -133,6 +142,139 @@ class CompleteContext(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '입력 예산'):
             run(a, raw, PROMPT, 2)
         self.assertEqual(a.cli.calls, [])
+
+    def crowded_state(self):
+        raw = state()
+        raw['evidence'] = {'E1': {'kind':'graph', 'result':{'rows':[['a','p','b']]}}}
+        raw['trace'] = []
+        raw['catalog'] = {'entities':[f'항목{i}' for i in range(302)]}
+        return raw
+
+    def verbose_leaf(self, prompt):
+        output = scripted(prompt)
+        if 'records' in output:
+            for row in output['records']: row['text'] = '관련 기록 분석. ' * 80
+        return output
+
+    def test_303_records_finish_after_lossless_local_response_partition_without_repeated_calls(self):
+        raw = self.crowded_state(); before = copy.deepcopy(raw)
+        prepared = plan(raw, PROMPT, 60000)
+        self.assertLess(max(map(len, prepared.batches)), 246)
+        a = self.assistant(raw, self.verbose_leaf, limit=60000)
+        output, _ = run(a, raw, PROMPT, 2)
+        tree = a.job['context_processing'][0]
+        self.assertEqual(tree['processed_records'], 303)
+        self.assertEqual(tree['status'], 'complete')
+        self.assertGreater(tree['bounded_leaves'], tree['planned_batches'])
+        leaves = [c for c in a.cli.calls if 'assigned_ids' in unpack(c[2])]
+        self.assertEqual(len(leaves), tree['planned_batches'])
+        self.assertLessEqual(len(a.cli.calls), tree['max_physical_calls'])
+        self.assertEqual(len(a.cli.calls), tree['planned_batches'] + tree['bounded_leaves'])
+        self.assertEqual(len(a.job['call_manifest']), len(a.cli.calls))
+        for source_id, part_ids in tree['leaf_partitions'].items():
+            source = a.job['analysis_leaf_responses'][source_id]
+            records = [r for key in part_ids for r in a.job['analysis_nodes'][key]['analysis']['records']]
+            self.assertEqual(records, source['analysis']['records'])
+            for key in part_ids:
+                self.assertLessEqual(len(canonical(a.job['analysis_nodes'][key]['analysis']).encode()), prepared.allowance)
+        self.assertTrue(all(len(c[2].encode()) <= 60000 for c in a.cli.calls))
+        self.assertEqual(a.validate_answer(output['answer']), output['answer'])
+        self.assertEqual(supports(a, tree['root']), ['E1'])
+        self.assertEqual(raw, before); self.assertEqual(a.evidence, before['evidence'])
+        # Raw validated responses and their local partitions survive actual SQLite persistence.
+        stored = self.store.create_question(raw['question'], 'claude', 'sonnet', self.store.snapshot()['id'])
+        saved = dict(a.job, id=stored['id'], snapshot=stored['snapshot'], status='success',
+                     created_at=stored['created_at'], answer=output['answer'], evidence=a.evidence, trace=a.trace)
+        self.store.save_question(saved)
+        a.job = Store(self.store.path).question(stored['id'])
+        self.assertEqual(a.job['analysis_leaf_responses'], saved['analysis_leaf_responses'])
+        self.assertEqual(supports(a, tree['root']), ['E1'])
+
+    def test_oversized_response_cannot_hide_bad_receipts_or_citations(self):
+        for defect in ('missing', 'duplicate', 'citation', 'format', 'cap'):
+            def bad(prompt, defect=defect):
+                output = self.verbose_leaf(prompt)
+                if defect == 'missing': output['records'].pop()
+                elif defect == 'duplicate': output['records'].append(copy.deepcopy(output['records'][0]))
+                elif defect == 'citation': output['records'][-1]['citations'] = ['E1']
+                elif defect == 'format': output['records'][-1]['extra'] = 'bad'
+                else: output['records'][0]['text'] = 'x' * MAX_LEAF_RESPONSE_BYTES
+                return output
+            a = self.assistant(self.crowded_state(), bad, limit=60000)
+            with self.subTest(defect=defect), self.assertRaises(ValueError): run(a, self.crowded_state(), PROMPT, 2)
+            self.assertEqual(len(a.cli.calls), 1); self.assertFalse(a.job['analysis_nodes'])
+            self.assertFalse(a.delivered_analysis)
+
+    def test_partition_ancestry_rejects_content_membership_hash_and_sibling_authority_tampering(self):
+        raw = self.crowded_state(); a = self.assistant(raw, self.verbose_leaf, limit=60000)
+        run(a, raw, PROMPT, 2); original = copy.deepcopy(a.job)
+        for defect in ('text', 'duplicate', 'omit', 'hash', 'source', 'authority'):
+            a.job = copy.deepcopy(original); tree = a.job['context_processing'][0]
+            source_id, parts = next((k,v) for k,v in tree['leaf_partitions'].items() if len(v)>1)
+            node = a.job['analysis_nodes'][parts[-1]]
+            if defect == 'text':
+                node['analysis']['records'][0]['text'] = 'tampered'; node['analysis_sha256'] = digest(node['analysis'])
+            elif defect == 'duplicate': parts.append(parts[0])
+            elif defect == 'omit': parts.pop()
+            elif defect == 'hash': a.job['analysis_leaf_responses'][source_id]['analysis_sha256'] = 'bad'
+            elif defect == 'source': a.job['analysis_leaf_responses'][source_id]['analysis']['records'].pop()
+            else: node['supported_evidence'] = ['E1']
+            with self.subTest(defect=defect), self.assertRaises(ValueError): supports(a, tree['root'])
+
+    def test_persisted_local_partitions_cache_only_with_same_allowance(self):
+        raw = self.crowded_state(); first = self.assistant(raw, self.verbose_leaf, limit=60000)
+        run(first, raw, PROMPT, 2)
+        for limit in (60000, 50000):
+            a = self.assistant(raw, self.verbose_leaf, limit=limit)
+            a.job['analysis_nodes'] = copy.deepcopy(first.job['analysis_nodes'])
+            a.job['analysis_leaf_responses'] = copy.deepcopy(first.job['analysis_leaf_responses'])
+            output, _ = run(a, raw, PROMPT, 2)
+            self.assertEqual(a.validate_answer(output['answer']), output['answer'])
+            self.assertEqual(len(a.cli.calls)==1, limit==60000)
+
+    def test_worst_case_call_reservation_prevents_any_dispatch(self):
+        raw = self.crowded_state(); a = self.assistant(raw, self.verbose_leaf, limit=60000)
+        prepared = plan(raw, PROMPT, 60000)
+        a.job['physical_call_bound'] = len(prepared.batches) + len(prepared.units) - 1
+        with self.assertRaisesRegex(ValueError, '호출 상한'):
+            run(a, raw, PROMPT, 2)
+        self.assertEqual(a.cli.calls, [])
+        self.assertFalse(a.job.get('call_manifest'))
+
+    def test_dynamic_merge_dispatch_is_preceded_by_persistence_and_cancellation(self):
+        for error in (OSError('save failed'), RunCancelled('cancelled')):
+            raw = self.crowded_state(); a = self.assistant(raw, self.verbose_leaf, limit=60000)
+            def stop(*args, a=a, error=error):
+                if any(c['stage']=='analysis_merge' for c in a.job.get('call_manifest', [])): raise error
+            a.progress = stop
+            with self.subTest(error=error), self.assertRaises(type(error)): run(a, raw, PROMPT, 2)
+            self.assertTrue(all('assigned_ids' in unpack(c[2]) for c in a.cli.calls))
+            self.assertEqual(a.job['call_manifest'][-1]['status'], 'planned')
+
+    def test_output_partition_utf8_and_oversized_merge_are_strict(self):
+        output = {'records':[{'id':str(i),'text':'한글'*20,'citations':[],'unknowns':[]} for i in range(3)]}
+        one = len(canonical({'records':output['records'][:1]}).encode())
+        self.assertEqual(len(partition_response(output, one)), 3)
+        with self.assertRaises(ValueError): partition_response(output, one-1)
+        raw = state()
+        def bad_merge(prompt):
+            result = scripted(prompt)
+            if 'children' in result: result['text'] = 'x'*20000
+            return result
+        a = self.assistant(raw, bad_merge)
+        with self.assertRaisesRegex(ValueError, '예산'): run(a, raw, PROMPT, 2)
+        self.assertFalse(a.delivered_analysis)
+
+    def test_legacy_completed_tree_remains_strictly_readable(self):
+        raw = state(); a = self.assistant(raw)
+        run(a, raw, PROMPT, 2); tree = a.job['context_processing'][0]
+        expected = supports(a, tree['root'])
+        for field in ('synthesis_version', 'leaf_partitions', 'bounded_leaves'): tree.pop(field)
+        a.job.pop('analysis_leaf_responses')
+        for node in a.job['analysis_nodes'].values(): node.pop('source_response', None)
+        self.assertEqual(supports(a, tree['root']), expected)
+        a.job['analysis_nodes'][tree['root']]['analysis']['text'] = 'modified'
+        with self.assertRaisesRegex(ValueError, '무결성'): supports(a, tree['root'])
 
     def test_catalog_and_empty_evidence_cannot_support_claims_or_fallback(self):
         empty = {'kind': 'graph', 'result': {'rows': []}}
