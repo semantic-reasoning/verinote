@@ -463,7 +463,7 @@ def job_calls(root, kind, owner):
         if not started:
             clean['status'] = 'not_started'
             clean['warnings'].append(NS_WARNING)
-        if owner['agent'] == 'openrouter':
+        if owner['agent'] == 'openrouter' and started:
             from .reasoning_diagnostics import reasoning_diagnostic
             clean['reasoning_diagnostic'] = reasoning_diagnostic(clean)
         clean.update(call_id=f'{kind}/{key}/{path}', stage=stage, call_count_known=True, call_started=started)

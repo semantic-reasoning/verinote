@@ -1,7 +1,9 @@
 """Synthetic usage records only: renderUsage from app.js, given a usage summary whose calls is 0 (no started call recorded and no job
 of unknown call count), shows one zero-total line instead of the four 미확인 metric lines and leaves 미확인은 0이 아니며 out of the
 note; a summary with calls above 0, an unknown-count job included, renders the metric lines and the note as before. The summaries
-are built by the real usage.job_calls and usage.summarize; the usage JSON itself is not changed."""
+are built by the real usage.job_calls and usage.summarize; the zero-total line changes only the rendering, not the usage JSON. A
+not-started OpenRouter call (call_started False) carries no reasoning diagnostic, in the usage JSON or the box; a started one keeps
+it, including one whose run.json records not_sent but which is counted as started because its usage.json is missing."""
 import json
 import subprocess
 import tempfile
@@ -14,7 +16,7 @@ from test_workflow import legacy_run
 
 from verinote.service import Service
 from verinote.store import QUESTION_QUEUED_CANCEL
-from verinote.usage import atomic_json, job_calls, summarize
+from verinote.usage import NS_WARNING, atomic_json, job_calls, summarize
 
 ROOT = Path(__file__).resolve().parents[1]
 KEY = 'a' * 32
@@ -80,20 +82,32 @@ class ZeroCallBox(unittest.TestCase):
         self.assert_zero_box(html)
         self.assertIn('<details>', html)
 
-    def test_a_run_with_only_a_not_started_openrouter_call_shows_zero_totals_and_records_the_per_call_diagnostic(self):
-        """The totals before <details> carry no 미확인. The per-call reasoning diagnostic inside <details> still prints 미확인 for the
-        call that never sent its request; that is follow-up #906, recorded here as it is, not fixed by #898."""
+    def test_a_run_with_only_a_not_started_openrouter_call_shows_zero_totals_and_no_reasoning_diagnostic(self):
+        """run.json records not_sent with a not_started or timeout transport status and usage.json is accepted, for a v1 and a v2
+        request: the call's usage JSON has no reasoning_diagnostic key and the whole rendered box, <details> included, has no 미확인;
+        the row's not_started status and warning are what explain the call."""
         call = 'e' * 32
-        self.write(f'runs/{KEY}/1/run.json', {'agent': 'openrouter', 'transport': 'http', 'provider_call_id': call, 'status': 'error',
-                                              'transport_status': 'not_started', 'transmission_state': 'not_sent'})
-        self.write(f'runs/{KEY}/1/usage.json', {'schema_version': 1, 'agent': 'openrouter', 'status': 'error', 'provider_call_id': call,
-                                                'tokens': {}})
-        usage = self.detail('runs', {'id': KEY, 'agent': 'openrouter', 'model': 'x/y', 'status': 'error', 'stage': 'extract'})
-        self.assertEqual((usage['calls'], usage['unknown_call_count_jobs'], usage['not_started_calls']), (0, 0, 1))
-        html = render_usage(usage)
-        self.assert_zero_box(html)
-        details = html.split('<details>', 1)[1]
-        self.assertIn('보고된 출력 미확인 · 그중 추론 미확인 · 비추론 출력 미확인 토큰', details)
+        v2 = {'adapter_contract_version': 2, 'max_tokens': 16384, 'reasoning_max_tokens': 4096, 'answer_reserve_tokens': 8192}
+        for name, transport_status, request in (('v1', 'not_started', {}), ('v2', 'not_started', v2), ('v1 timeout', 'timeout', {}),
+                                                ('v2 timeout', 'timeout', v2)):
+            with self.subTest(name):
+                self.write(f'runs/{KEY}/1/run.json', {'agent': 'openrouter', 'transport': 'http', 'provider_call_id': call,
+                                                      'status': 'error', 'transport_status': transport_status,
+                                                      'transmission_state': 'not_sent'} | request)
+                self.write(f'runs/{KEY}/1/usage.json', {'schema_version': 1, 'agent': 'openrouter', 'status': 'error',
+                                                        'provider_call_id': call, 'tokens': {}})
+                usage = self.detail('runs', {'id': KEY, 'agent': 'openrouter', 'model': 'x/y', 'status': 'error', 'stage': 'extract'})
+                self.assertEqual((usage['calls'], usage['unknown_call_count_jobs'], usage['not_started_calls']), (0, 0, 1))
+                self.assertEqual((usage['details'][0]['call_started'], usage['details'][0]['status']), (False, 'not_started'))
+                self.assertNotIn('reasoning_diagnostic', usage['details'][0])
+                html = render_usage(usage)
+                self.assert_zero_box(html)
+                details = html.split('<details>', 1)[1]
+                for text in ('<section class="panel"', '보고된 출력', '종료 사유', '추론 요청 예산'):
+                    self.assertNotIn(text, details)
+                self.assertNotIn('미확인', html)
+                self.assertIn(' · not_started · ', details)
+                self.assertIn(NS_WARNING, details)
 
     def test_the_overview_of_no_jobs_shows_zero_totals(self):
         html = render_usage(summarize([]))
@@ -125,6 +139,35 @@ class StartedOrUnknownCallBox(unittest.TestCase):
                       '<p>출력 중 추론 미확인 · 보고된 비추론 출력 미확인</p><p>제공자 보고 비용 미확인 · 설정 단가 추정 비용 미확인</p>'
                       '<p>크레딧: 미확인</p>' + NOTE, head)
         self.assertNotIn(ZERO, head)
+
+    def test_a_started_openrouter_call_keeps_its_reasoning_diagnostic(self):
+        """A v2 call whose request may have been sent, and a v2 call whose run.json records not_sent but whose usage.json is missing
+        (so it is counted as started), both keep the diagnostic dict and its rendered panel."""
+        call = 'e' * 32
+        request = {'agent': 'openrouter', 'transport': 'http', 'provider_call_id': call, 'status': 'error',
+                   'adapter_contract_version': 2, 'max_tokens': 16384, 'reasoning_max_tokens': 4096, 'answer_reserve_tokens': 8192}
+        for name, state, usage_record in (
+                ('sent', {'transport_status': 'error', 'transmission_state': 'sent_unknown'},
+                 {'schema_version': 1, 'agent': 'openrouter', 'status': 'error', 'provider_call_id': call, 'tokens': {}}),
+                ('not sent, no usage.json', {'transport_status': 'not_started', 'transmission_state': 'not_sent'}, None)):
+            with self.subTest(name):
+                self.write(f'runs/{KEY}/1/run.json', request | state)
+                if usage_record is None:
+                    (self.root / f'runs/{KEY}/1/usage.json').unlink(missing_ok=True)
+                else:
+                    self.write(f'runs/{KEY}/1/usage.json', usage_record)
+                usage = self.detail('runs', {'id': KEY, 'agent': 'openrouter', 'model': 'x/y', 'status': 'error', 'stage': 'extract'})
+                self.assertIs(usage['details'][0]['call_started'], True)
+                self.assertEqual(usage['details'][0]['reasoning_diagnostic'],
+                                 {'status': 'unknown', 'total_limit': 16384, 'requested_reasoning': 4096, 'answer_target': 8192,
+                                  'reported_reasoning': None, 'reported_output': None, 'non_reasoning_output': None,
+                                  'excess_tokens': None})
+                self.assertIn('<section class="panel" role="status"><strong>추론 요청 예산 준수 여부 미확인</strong>'
+                              '<p>총 출력 한도 16,384 · 추론 요청 예산 4,096 · 답변 목표 여유 8,192</p>'
+                              '<p>보고된 출력 미확인 · 그중 추론 미확인 · 비추론 출력 미확인 토큰</p><p>종료 사유 미확인</p>'
+                              '<p class="muted">비추론 출력은 보고된 출력에서 추론을 뺀 값이며 완성된 답변 길이나 예약된 토큰이 아닙니다. '
+                              '예산 이하라는 관측도 다음 호출의 준수를 보장하지 않습니다.</p></section>',
+                              render_usage(usage).split('<details>', 1)[1])
 
 
 class UsageReportGroups(unittest.TestCase):
