@@ -65,6 +65,12 @@ class Server(ThreadingHTTPServer):
         self.credentials = credentials if credentials is not None else Credentials()
         super().__init__(address, Handler)
 
+    def copilot_extraction_settings(self, settings):
+        saved = 'copilot_extraction_concurrency' in settings
+        concurrency = settings['copilot_extraction_concurrency'] if saved else self.copilot_extraction_concurrency or 1
+        return {'enabled': concurrency == 2, 'concurrency': concurrency, 'agent': 'copilot',
+                'stage': 'extract', 'source': 'settings' if saved else 'server_startup'}
+
 
 class Handler(BaseHTTPRequestHandler):
     server: Server
@@ -151,22 +157,25 @@ class Handler(BaseHTTPRequestHandler):
                             value['configured'] = self.server.credentials.public_status()['openrouter']['configured']
                         providers.append(value)
                     default_tokens = self.server.service.cli.execution_options('openrouter').max_tokens if isinstance(self.server.service.cli, CLI) else ExecutionOptions().max_tokens
-                    return self.send(store.settings() | {'dictionary': {'relation_type_warning_threshold': self.server.service.relation_type_warning_threshold, 'context_bytes': store.settings().get('dictionary_context_bytes', MAX_DICTIONARY_CONTEXT_BYTES), 'context_min': 1, 'context_max': MAX_PROMPT_BYTES}, 'document_limits': DOCUMENT_LIMITS, 'providers': providers,
+                    settings = store.settings()
+                    return self.send(settings | {'dictionary': {'relation_type_warning_threshold': self.server.service.relation_type_warning_threshold, 'context_bytes': settings.get('dictionary_context_bytes', MAX_DICTIONARY_CONTEXT_BYTES), 'context_min': 1, 'context_max': MAX_PROMPT_BYTES}, 'document_limits': DOCUMENT_LIMITS, 'providers': providers,
                                      'extraction_policy': {'policy': self.server.claude_extraction_policy, 'agent': 'claude', 'stage': 'extract', 'source': 'server_startup'},
-                                     'copilot_extraction': {'enabled': self.server.copilot_extraction_concurrency is not None, 'concurrency': self.server.copilot_extraction_concurrency or 1, 'agent': 'copilot', 'stage': 'extract', 'source': 'server_startup'},
+                                     'copilot_extraction': self.server.copilot_extraction_settings(settings),
                                      'extraction_token_limits': {'min': MIN_JOB_TOKENS, 'max': MAX_JOB_TOKENS, 'step': 1, 'default': default_tokens},
                                      'answer_budget_policy': {'min_total': MIN_ANSWER_TOKENS + 1024,
                                                               'default_reserve': DEFAULT_ANSWER_TOKENS,
                                                               'max_reasoning': MAX_REASONING_TOKENS}})
                 if method == 'PUT':
                     data = self.body()
-                    if not isinstance(data, dict) or set(data) not in ({'selected', 'models'}, {'selected', 'models', 'dictionary_context_bytes'}) or not isinstance(data.get('selected'), str) or data.get('selected') not in PROVIDERS or not isinstance(data.get('models'), dict) or set(data['models']) - set(PROVIDERS):
+                    if not isinstance(data, dict) or not {'selected', 'models'} <= set(data) or set(data) - {'selected', 'models', 'dictionary_context_bytes', 'copilot_extraction_concurrency'} or not isinstance(data.get('selected'), str) or data.get('selected') not in PROVIDERS or not isinstance(data.get('models'), dict) or set(data['models']) - set(PROVIDERS):
                         raise ValueError('에이전트 설정 형식 오류')
                     models = {key: validate_model(value) for key, value in data['models'].items()}
                     if data['selected'] in ('openrouter', 'ollama'):
                         chosen = data['selected']
                         models[chosen] = validate_model(data['models'].get(chosen, ''), chosen)
                     extra = {'dictionary_context_bytes': validate_context_bytes(data['dictionary_context_bytes'])} if 'dictionary_context_bytes' in data else {}
+                    if 'copilot_extraction_concurrency' in data:
+                        extra['copilot_extraction_concurrency'] = data['copilot_extraction_concurrency']
                     return self.send(store.save_settings({'selected': data['selected'], 'models': models, **extra}))
             if route.path == '/api/usage-rates':
                 if method == 'GET':
@@ -242,8 +251,9 @@ class Handler(BaseHTTPRequestHandler):
                     override = {key: data[key] for key in ('max_tokens', 'answer_reserve_tokens', 'regenerate') if key in data}
                     if data.get('agent') == 'claude' and parts[3] == 'extract' and self.server.claude_extraction_policy is not None:
                         override['extraction_policy'] = self.server.claude_extraction_policy
-                    if data.get('agent') == 'copilot' and parts[3] == 'extract' and self.server.copilot_extraction_concurrency is not None:
-                        override['extraction_concurrency'] = self.server.copilot_extraction_concurrency
+                    if data.get('agent') == 'copilot' and parts[3] == 'extract':
+                        if self.server.copilot_extraction_settings(store.settings())['enabled']:
+                            override['extraction_concurrency'] = 2
                     return self.send(self.server.service.start(doc_id, data.get('agent'), data.get('model', ''), parts[3], data.get('expected_version'), data.get('expected_generation'), **override), 202)
             if len(parts) == 4 and parts[:2] == ['api', 'items']:
                 if parts[3] == 'review' and method == 'POST':
@@ -338,7 +348,8 @@ def main(argv=None):
         server = Server(('127.0.0.1', args.port), store, service, credentials=credentials, claude_extraction_policy=args.claude_extraction_policy, copilot_extraction_concurrency=args.copilot_extraction_concurrency)
         print(f'Verinote: http://127.0.0.1:{server.server_port}', flush=True)
         print(f'Extraction policy: {args.claude_extraction_policy or "disabled"} (agent=claude, stage=extract, source=server_startup)', flush=True)
-        print(f'Copilot extraction concurrency: {args.copilot_extraction_concurrency or "disabled (sequential 1)"} (agent=copilot, stage=extract, source=server_startup)', flush=True)
+        copilot = server.copilot_extraction_settings(store.settings())
+        print(f'Copilot extraction concurrency at startup: {copilot["concurrency"]} (agent=copilot, stage=extract, source={copilot["source"]}; web settings apply to new runs)', flush=True)
         server.serve_forever()
     except KeyboardInterrupt:
         pass

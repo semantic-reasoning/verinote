@@ -292,12 +292,17 @@ class Store:
         value = dict(value)
         if 'dictionary_context_bytes' in value:
             validate_context_bytes(value['dictionary_context_bytes'])
+        if 'copilot_extraction_concurrency' in value:
+            concurrency = value['copilot_extraction_concurrency']
+            if type(concurrency) is not int or concurrency not in (1, 2):
+                raise ValueError('Copilot 청크 동시성은 정수 1 또는 2여야 합니다.')
         with self.connect(True) as db:
-            if 'dictionary_context_bytes' not in value:
-                previous = db.execute("SELECT value FROM settings WHERE key='agents'").fetchone()
-                previous = json.loads(previous['value']) if previous else {}
-                if 'dictionary_context_bytes' in previous:
-                    value['dictionary_context_bytes'] = validate_context_bytes(previous['dictionary_context_bytes'])
+            previous = db.execute("SELECT value FROM settings WHERE key='agents'").fetchone()
+            previous = json.loads(previous['value']) if previous else {}
+            if 'dictionary_context_bytes' not in value and 'dictionary_context_bytes' in previous:
+                value['dictionary_context_bytes'] = validate_context_bytes(previous['dictionary_context_bytes'])
+            if 'copilot_extraction_concurrency' not in value and 'copilot_extraction_concurrency' in previous:
+                value['copilot_extraction_concurrency'] = previous['copilot_extraction_concurrency']
             db.execute("INSERT OR REPLACE INTO settings VALUES('agents',?)", (canonical(value),))
         return value
 
