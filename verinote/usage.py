@@ -335,6 +335,7 @@ def http_public_fields(meta):
 
 
 UNCONFIRMED = '호출 계획 목록에 읽을 수 있는 호출 로그가 없는 항목이 있어, 그 호출이 시작됐는지와 사용량을 확인할 수 없습니다.'
+LOST_ATTEMPT = '남은 호출 기록보다 호출 시도가 많았거나 시도 수를 확인할 수 없어, OpenRouter가 기록 없이 보냈을 수 있는 요청의 횟수와 사용량을 확인할 수 없습니다.'
 NS_WARNING = '모델 요청을 보내기 전에 실패한 호출이라 확인된 호출과 사용량 합계에 넣지 않았습니다.'
 
 
@@ -468,6 +469,25 @@ def job_calls(root, kind, owner):
             clean['reasoning_diagnostic'] = reasoning_diagnostic(clean)
         clean.update(call_id=f'{kind}/{key}/{path}', stage=stage, call_count_known=True, call_started=started)
         calls.append(clean)
+    if calls and owner['agent'] == 'openrouter' and owner['status'] in ('error', 'cancelled', 'interrupted'):
+        # OpenRouter sends a request even when its record writes fail, so a failed job can have a sent call with no log at all; the
+        # transports that write their first log before the request and raise if it fails cannot, and are left out. A run compares the
+        # attempts its trusted error marker counts with every logged entry, started or not: an excess counts attempts, which can
+        # include ones that raised before sending (a missing credential, a refused model ID, a failed marker write after the count
+        # was raised), so it makes the count unknown rather than claiming a lost request. Without a trusted marker only a run whose
+        # every logged call did not start is made unknown. A question without a call manifest runs its rounds one after another and
+        # logs round N under llm-N, so a round below the highest present one with no log has lost it; a context-N-* folder (split
+        # processing, which registers a manifest) also counts round N as present. A missing last round stays invisible, and a question
+        # with a manifest is covered by its unconfirmed entry.
+        lost = False
+        if kind == 'runs':
+            attempts = error_marker_attempts(root, key, owner.get('stage'))
+            lost = (all(c['call_started'] is False for c in calls) if attempts is None else attempts > len(calls))
+        elif not isinstance(owner.get('call_manifest'), list):
+            rounds = {int(c['call_id'].rsplit('llm-', 1)[1]) for c in calls} | split_rounds(root, key)
+            lost = rounds != set(range(1, max(rounds) + 1))
+        if lost:
+            calls.append(unknown_count(kind, key, owner, LOST_ATTEMPT))
     if unconfirmed:
         calls.append(unknown_count(kind, key, owner, UNCONFIRMED))
     if not calls and kind == 'runs' and owner.get('stage') in ('ontology', 'extract') and owner['status'] == 'success':
@@ -489,15 +509,8 @@ def job_calls(root, kind, owner):
         # The marker's error status is written when the run ends, from the in-memory count that is raised before every model call; a marker
         # still at running may lag, so it is not trusted. It checks the schema version, pipeline, run id, status and zero
         # count, and leaves out the resumed-success check's resume and size fields, which a zero error marker does not need. A new model call path must raise calls_started before the call.
-        raw, pipeline = progress_marker(root, key, owner['stage'])
-        try:
-            marker = json.loads(raw) if raw else {}
-            if (isinstance(marker, dict) and type(marker.get('schema_version')) is int and marker['schema_version'] == 1
-                    and marker.get('pipeline') == pipeline and marker.get('run_id') == key
-                    and marker.get('status') == 'error' and type(marker.get('calls_started')) is int and marker['calls_started'] == 0):
-                return []
-        except (ValueError, TypeError, UnicodeError):
-            pass
+        if error_marker_attempts(root, key, owner['stage']) == 0:
+            return []
     if not calls and kind == 'runs' and owner['status'] == 'cancelled':
         from .store import QUEUED_CANCEL_DETAIL
         if owner.get('detail') == QUEUED_CANCEL_DETAIL:  # Store.cancel_run's marker: the run was cancelled before it started
@@ -530,6 +543,37 @@ def progress_marker(root, key, stage):
     filename, pipeline = (('dictionary-progress.json', 'source-spans-v1') if stage == 'ontology'
                           else ('extraction-progress.json', 'approved-extraction-v1'))
     return safe_file(root, f'runs/{key}/{filename}'), pipeline
+
+
+def error_marker_attempts(root, key, stage):
+    """calls_started of a dictionary or extraction run's error marker (schema version 1, the stage's pipeline, this run id, status
+    error, a non-negative int), or None when there is no such marker. The marker is the in-memory count saved when the run fails or
+    is cancelled; a marker still at running may lag, so it is not trusted."""
+    if stage not in ('ontology', 'extract'):
+        return None
+    raw, pipeline = progress_marker(root, key, stage)
+    try:
+        marker = json.loads(raw) if raw else {}
+        if (isinstance(marker, dict) and type(marker.get('schema_version')) is int and marker['schema_version'] == 1
+                and marker.get('pipeline') == pipeline and marker.get('run_id') == key and marker.get('status') == 'error'
+                and type(marker.get('calls_started')) is int and marker['calls_started'] >= 0):
+            return marker['calls_started']
+    except (ValueError, TypeError, UnicodeError, RecursionError):
+        pass
+    return None
+
+
+def split_rounds(root, key):
+    """The rounds N with a context-N-* call folder (a real directory, no symlink on its path) in a question's log folder."""
+    folder = Path(root) / 'questions' / key
+    if any(p.is_symlink() for p in (Path(root), folder.parent, folder)):
+        return set()
+    try:
+        return {int(match[1]) for entry in folder.iterdir()
+                if (match := re.fullmatch(r'context-([1-6])-(?:[1-9][0-9]*|decision)', entry.name))
+                and not entry.is_symlink() and entry.is_dir()}
+    except OSError:
+        return set()
 
 
 def summarize(calls):
