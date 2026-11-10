@@ -4,6 +4,7 @@ import base64
 import binascii
 import difflib
 import json
+import re
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -341,7 +342,13 @@ def main(argv=None):
         parser.error(str(exc))
     root = args.data_dir.resolve()
     store = Store(root / 'verinote.sqlite3')
-    store.recover()
+    skipped = list(store.recover())
+    if skipped:
+        ids = [i for i in skipped if isinstance(i, str) and re.fullmatch('[0-9a-f]{32}', i)]
+        hidden = f' ({len(skipped) - len(ids)} more with an id not shown)' if len(ids) < len(skipped) else ''
+        print(f'Startup recovery skipped {len(skipped)} question row(s) it could not read or repair and left them unchanged, so a skipped question '
+              f'keeps its stored status and may still show as in progress though nothing runs. Ids: {", ".join(ids) or "none shown"}{hidden}',
+              file=sys.stderr, flush=True)
     service = Service(store, root, credentials=credentials, relation_type_warning_threshold=credentials.relation_type_warning_threshold)
     server = None
     try:
