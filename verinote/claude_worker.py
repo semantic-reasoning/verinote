@@ -47,9 +47,14 @@ class Worker:
         options = {'creationflags': getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0)} if os.name == 'nt' else {'start_new_session': True}
         try:
             timing.mark('spawn_requested')
-            self.proc = subprocess.Popen(command(binary, model), stdin=subprocess.PIPE,
-                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                         cwd=self.directory.name, env=env, bufsize=0, **options)
+            timing.process_requested = True
+            try:
+                self.proc = subprocess.Popen(command(binary, model), stdin=subprocess.PIPE,
+                                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                             cwd=self.directory.name, env=env, bufsize=0, **options)
+            except OSError:
+                timing.process_requested = False
+                raise
             timing.mark('spawn_returned')
         except BaseException:
             self.directory.cleanup()

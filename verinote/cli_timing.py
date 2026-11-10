@@ -22,6 +22,7 @@ class CallTiming:
         self.call_id = uuid4().hex
         self.clock = clock or time.monotonic_ns
         self.disabled = False
+        self.process_requested = False
         self.value = {'schema_version': 1, 'cli_call_id': self.call_id, 'agent': agent, 'model': model,
                       'phase': phase, 'cli_version': None, 'cli_version_source': 'unknown',
                       'settings': {'timeout_seconds': timeout, 'max_output_bytes': max_output,
@@ -217,6 +218,7 @@ def read_cli_timing(root, relative_folder):
 
 class _UnavailableTiming:
     call_id = None
+    process_requested = False
 
     def mark(self, name): pass
     def observe_stdout(self, path): pass

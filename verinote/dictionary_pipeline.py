@@ -173,7 +173,7 @@ def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_thr
             raise ValueError('사전 조정·복구 기록 저장 실패: 이번 구간은 확정하지 않았습니다. 재시도하세요.') from exc
 
     def summary():
-        parts = [f'검증 완료 {accepted:,}/{len(source):,}자 · 새 호출 {state["calls_started"]}회']
+        parts = [f'검증 완료 {accepted:,}/{len(source):,}자 · 새 호출 시도 {state["calls_started"]}회']
         audit = public_report(exclusions, False)
         changes = reconciliation.public_report(reconciliations, False)
         if changes['total_count']:

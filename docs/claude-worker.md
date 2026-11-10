@@ -16,7 +16,7 @@
 
 ## 로그·사용량·시간
 
-기존 호출별 `prompt.txt`, `run.json`, `usage.json`을 유지한다. `stream.jsonl`은 초기화와 요청의 원시 stdout 스트림, `stderr.txt`는 stderr, `stdout.txt`는 실제 요청의 최종 result envelope다. 초기화 result는 모델 호출 수나 사용량에 더하지 않는다. `usage`는 해당 turn의 토큰이며, 누적 비용과 modelUsage는 확인된 초기화 기준선 이후 한 요청의 값이다. 초기화 기준선이 불명확하면 진행하지 않는다. 모델 응답 오류·JSON 본문 오류도 확인된 사용량은 남긴다. result가 없으면 토큰/비용은 미확인이다.
+기존 호출별 `prompt.txt`, `run.json`, `usage.json`을 유지한다. `stream.jsonl`은 초기화와 요청의 원시 stdout 스트림, `stderr.txt`는 stderr, `stdout.txt`는 실제 요청의 최종 result envelope다. 초기화 result는 모델 호출 수나 사용량에 더하지 않는다. `usage`는 해당 turn의 토큰이며, 누적 비용과 modelUsage는 확인된 초기화 기준선 이후 한 요청의 값이다. 초기화 기준선이 불명확하면 진행하지 않는다. 모델 응답 오류·JSON 본문 오류도 확인된 사용량은 남긴다. result가 없으면 토큰/비용은 미확인이다. 이 호출이 worker를 얻지 못했고 이 호출을 위해 프로세스를 띄우지도 않았으면(실행 파일 없음, OS가 프로세스 시작을 거부함, 잠금·pool 대기 시간 초과 등) usage.json에 `not_started`로 기록하고, 그 usage.json을 읽고 해석할 수 있으면 사용량에서 시작하지 않은 호출로 센다. 대기 시간 초과는 호출자에게 여전히 timeout 오류로 전달되고 run.json `error`에 남는다. 프로세스를 띄운 뒤의 실패(예: 출력 읽기 thread 시작 실패)는 `error`로 센다.
 
 `cli-timing.json` 형식 2는 프로세스 재사용 여부, worker 획득·초기화·입력 전송·응답 완료를 기록한다. 정상 응답을 프로세스 종료로 기록하지 않는다. 재사용 호출의 spawn, 정상 호출의 exit_code/exit_observed는 null이다. 형식 1의 단발 실행 기록도 계속 읽을 수 있다. [시간 기록 계약](cli-timing.md)을 참고한다.
 

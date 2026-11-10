@@ -137,10 +137,10 @@ class Job:
             prompt = compile_prompt(prompt)
         call_id = uuid4().hex
         usage = empty_usage('ollama', model, self.rates().get('ollama'))
-        usage.update(provider_call_id=call_id, cli_call_id=call_id, started_at=now(), source='ollama_api')
+        usage.update(provider_call_id=call_id, cli_call_id=call_id, started_at=now(), source='ollama_api', generate_requested=False)
         meta = {'agent': 'ollama', 'model': model, 'transport': 'local_http', 'provider_call_id': call_id,
                 'cli_call_id': call_id, 'prompt_sha256': digest(prompt.encode()), 'started_at': usage['started_at'],
-                'status': 'running', 'execution_options': copy.deepcopy(self.options)}
+                'status': 'running', 'generate_requested': False, 'execution_options': copy.deepcopy(self.options)}
         if self.options['schema_version'] == 2:
             meta['original_prompt_sha256'] = digest(original_prompt.encode())
             if original_prompt != prompt: (folder/'original-prompt.txt').write_text(original_prompt, encoding='utf-8')
@@ -160,6 +160,8 @@ class Job:
             meta['model_digest'] = installed['digest']
             remaining = timeout-(time.monotonic()-started)
             if remaining <= 0: raise TimeoutError('Ollama 요청 시간 초과')
+            # Usage counts a failed call with this still False as not started; /api/tags above is not a generate request.
+            meta['generate_requested'] = usage['generate_requested'] = True
             value = request('/api/generate', {'model': model, 'prompt': prompt, 'stream': False, 'format': 'json',
                 'keep_alive': self.options['keep_alive'], 'options': {k: self.options[k] for k in
                     ('num_ctx', 'num_predict', 'temperature')}}, timeout=remaining, limit=self.max_output)

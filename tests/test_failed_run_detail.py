@@ -230,7 +230,7 @@ class RetrySentence(Base):
         doc = self.document()
         with patch.object(self.store, 'finish_run', side_effect=ValueError('publish-down')):
             run, _ = self.sequential(doc, ok)
-        self.assertEqual(run['detail'], f'publish-down · 검증 완료 3/3청크 · 새 호출 3회 · {CONDITION}새 호출 없이 저장을 다시 시도합니다.')
+        self.assertEqual(run['detail'], f'publish-down · 검증 완료 3/3청크 · 새 호출 시도 3회 · {CONDITION}새 호출 없이 저장을 다시 시도합니다.')
         final, called = self.sequential(doc, ok)
         self.assertEqual((final['status'], called), ('success', []))
 
@@ -251,7 +251,7 @@ class RetrySentence(Base):
             change_dictionary_behind_review(self.store, item, revision=item['revision'] + 2, payload=DICTIONARY)  # revise then approve
         run, _ = self.sequential(doc, once_at_third(reapprove))
         self.assertEqual(run['status'], 'error')
-        self.assertEqual(run['detail'], '추출 중 사전이 변경되거나 승인이 철회되었습니다. 다시 승인 후 추출하세요. · 검증 완료 3/3청크 · 새 호출 3회')
+        self.assertEqual(run['detail'], '추출 중 사전이 변경되거나 승인이 철회되었습니다. 다시 승인 후 추출하세요. · 검증 완료 3/3청크 · 새 호출 시도 3회')
         final, called = self.sequential(doc, ok)
         self.assertEqual((final['status'], called), ('success', [1, 2, 3]))
 
@@ -263,21 +263,21 @@ class RetrySentence(Base):
                 db.execute('UPDATE documents SET generation=generation+2 WHERE id=?', (doc['id'],))
         run, _ = self.parallel(doc, once_at_third(bump_generation))
         self.assertEqual(run['status'], 'error')
-        self.assertEqual(run['detail'], '실행이 요청된 뒤 이 문서의 원문 버전 기록이 바뀌어(문서 세대 1 → 3) 결과를 저장하지 않았습니다. 현재 버전이 실행 버전과 같으므로 같은 버전에서 다시 실행할 수 있습니다. · 검증 완료 3/3청크 · 새 호출 3회')
+        self.assertEqual(run['detail'], '실행이 요청된 뒤 이 문서의 원문 버전 기록이 바뀌어(문서 세대 1 → 3) 결과를 저장하지 않았습니다. 현재 버전이 실행 버전과 같으므로 같은 버전에서 다시 실행할 수 있습니다. · 검증 완료 3/3청크 · 새 호출 시도 3회')
         final, called = self.parallel(doc, ok)
         self.assertEqual((final['status'], sorted(called)), ('success', [1, 2, 3]))
 
     def test_condition_names_parallel_setting_and_next_run_at_changed_capacity_calls_all(self):
         doc = self.document()
         run, _ = self.parallel(doc, later_failure())
-        self.assertEqual(run['detail'], f'청크 2 · stop · 검증 완료 1/3청크 · 새 호출 3회 · {from_chunk(2)}')
+        self.assertEqual(run['detail'], f'청크 2 · stop · 검증 완료 1/3청크 · 새 호출 시도 3회 · {from_chunk(2)}')
         final, called = self.parallel(doc, ok, capacity=1)
         self.assertEqual((final['status'], called), ('success', [1, 2, 3]))
 
     def test_one_worker_run_transport_timeout_change_next_run_calls_all(self):
         doc = self.document()
         run, _ = self.parallel(doc, fails_at(2), capacity=1)
-        self.assertEqual(run['detail'], f'청크 2 · stop · 검증 완료 1/3청크 · 새 호출 2회 · {from_chunk(2)}')
+        self.assertEqual(run['detail'], f'청크 2 · stop · 검증 완료 1/3청크 · 새 호출 시도 2회 · {from_chunk(2)}')
         final, called = self.parallel(doc, ok, capacity=1, timeout=20)
         self.assertEqual((final['status'], called), ('success', [1, 2, 3]))
 
@@ -308,7 +308,7 @@ class RetrySentence(Base):
 class ChunkPrefix(Base):
     def test_sequential_validation_failure_full_detail(self):
         run, _ = self.sequential(self.document(), no_coverage_at(1))
-        self.assertEqual(run['detail'], f'청크 1 · {COVERAGE} · 검증 완료 0/3청크 · 새 호출 1회 · {FROM_FIRST}')
+        self.assertEqual(run['detail'], f'청크 1 · {COVERAGE} · 검증 완료 0/3청크 · 새 호출 시도 1회 · {FROM_FIRST}')
 
     def test_sequential_repair_call_failure_full_detail(self):
         def respond(index, repairing):
@@ -316,11 +316,11 @@ class ChunkPrefix(Base):
             if repairing: raise RuntimeError('repair-down')
             return broken()
         run, _ = self.sequential(self.document(), respond)
-        self.assertEqual(run['detail'], f'청크 2 · 관계 1 인용: 인용 보정 실패 (청크당 1회). repair-down · 검증 완료 1/3청크 · 새 호출 3회 · {from_chunk(2)}')
+        self.assertEqual(run['detail'], f'청크 2 · 관계 1 인용: 인용 보정 실패 (청크당 1회). repair-down · 검증 완료 1/3청크 · 새 호출 시도 3회 · {from_chunk(2)}')
 
     def test_parallel_validation_failure_at_second_chunk_full_detail(self):
         run, _ = self.parallel(self.document(), no_coverage_at(2))
-        self.assertEqual(run['detail'], f'청크 2 · {COVERAGE} · 검증 완료 1/3청크 · 새 호출 3회 · {from_chunk(2)}')
+        self.assertEqual(run['detail'], f'청크 2 · {COVERAGE} · 검증 완료 1/3청크 · 새 호출 시도 3회 · {from_chunk(2)}')
 
     def test_parallel_worker_failure_at_second_saves_the_first_whose_call_was_in_flight(self):
         failed = threading.Event()
@@ -338,7 +338,7 @@ class ChunkPrefix(Base):
         doc = self.document()
         with patch.object(ChunkScheduler, 'fail', recorded):
             run, calls = self.parallel(doc, respond)
-        self.assertEqual(run['detail'], f'청크 2 · second · 검증 완료 1/3청크 · 새 호출 2회 · {from_chunk(2)}')
+        self.assertEqual(run['detail'], f'청크 2 · second · 검증 완료 1/3청크 · 새 호출 시도 2회 · {from_chunk(2)}')
         self.assertCountEqual(calls, [1, 2])
         final, again = self.parallel(doc, ok)
         self.assertEqual((final['status'], sorted(again)), ('success', [2, 3]))
@@ -366,7 +366,7 @@ class ChunkPrefix(Base):
         doc = self.document()
         with patch.object(ChunkScheduler, 'fail', recorded), held:
             run, calls = self.parallel(doc, respond)
-        self.assertEqual(run['detail'], f'청크 2 · second · 검증 완료 1/3청크 · 새 호출 2회 · {from_chunk(2)}')
+        self.assertEqual(run['detail'], f'청크 2 · second · 검증 완료 1/3청크 · 새 호출 시도 2회 · {from_chunk(2)}')
         final, again = self.parallel(doc, ok)
         self.assertEqual((final['status'], sorted(again)), ('success', [2, 3]))
 
@@ -388,7 +388,7 @@ class ChunkPrefix(Base):
             statuses.append(detail); return real_status(run_id, status, detail)
         with patch.object(ChunkScheduler, 'fail', recorded), held, patch.object(self.store, 'run_status', spy):
             run, calls = self.parallel(self.document(), respond)
-        self.assertEqual(run['detail'], f'청크 2 · second · 검증 완료 0/3청크 · 새 호출 2회 · {FROM_FIRST}')
+        self.assertEqual(run['detail'], f'청크 2 · second · 검증 완료 0/3청크 · 새 호출 시도 2회 · {FROM_FIRST}')
         self.assertCountEqual(calls, [1, 2])
         self.assertEqual([d for d in statuses if '보정 중' in d], [])
         import json
@@ -415,7 +415,7 @@ class ChunkPrefix(Base):
         with patch.object(ChunkScheduler, 'fail', recorded), patch.object(self.store, 'run_status', spy):
             run, calls = self.parallel(self.document(), respond)
         self.assertCountEqual(calls, [1, 2])
-        self.assertIn('새 호출 2회', run['detail'])
+        self.assertIn('새 호출 시도 2회', run['detail'])
 
     def test_parallel_chunk_whose_deadline_passed_before_its_admission_is_not_counted_as_a_call(self):
         """The clock passes chunk 2's deadline just before its admission: admit() refuses it at the deadline check, so only chunk 1's
@@ -428,7 +428,7 @@ class ChunkPrefix(Base):
         with patch('time.monotonic', lambda: real() + shift[0]), patch.object(ChunkScheduler, 'admit', late):
             run, calls = self.parallel(self.document(), ok)
         self.assertEqual(sorted(calls), [1])
-        self.assertIn('새 호출 1회', run['detail'])
+        self.assertIn('새 호출 시도 1회', run['detail'])
 
     def test_parallel_drained_chunk_whose_own_call_then_fails_ends_with_the_first_failure_before_its_deadline(self):
         """A drained earlier chunk whose own call raises ends the run with the first failure at once instead of waiting out its deadline."""
@@ -444,7 +444,7 @@ class ChunkPrefix(Base):
         with patch.object(ChunkScheduler, 'fail', recorded), patch('verinote.service.CHUNK_TIMEOUT', 30):
             run, calls = self.parallel(self.document(), respond)
         self.assertLess(time.monotonic() - began, 15)
-        self.assertEqual(run['detail'], f'청크 2 · second · 검증 완료 0/3청크 · 새 호출 2회 · {FROM_FIRST}')
+        self.assertEqual(run['detail'], f'청크 2 · second · 검증 완료 0/3청크 · 새 호출 시도 2회 · {FROM_FIRST}')
 
     def prepare_raising_at(self, number, error=OSError):
         def prepare(cli, agent, prompt, payload, limit, folder):
@@ -456,7 +456,7 @@ class ChunkPrefix(Base):
         for error in (OSError, ValueError):
             with self.subTest(error=error.__name__), self.prepare_raising_at(2, error):
                 run, _ = self.sequential(self.document(), ok)
-                self.assertEqual(run['detail'], f'청크 2 · prepare-down · 검증 완료 1/3청크 · 새 호출 1회 · {from_chunk(2)}')
+                self.assertEqual(run['detail'], f'청크 2 · prepare-down · 검증 완료 1/3청크 · 새 호출 시도 1회 · {from_chunk(2)}')
 
     def test_parallel_prepare_raising_at_the_third_saves_the_admitted_second(self):
         second = threading.Event()
@@ -469,7 +469,7 @@ class ChunkPrefix(Base):
         doc = self.document()
         with patch('verinote.service.prepare_dictionary_prompt', side_effect=prepare):
             run, calls = self.parallel(doc, respond)
-        self.assertEqual(run['detail'], f'청크 3 · prepare-down · 검증 완료 2/3청크 · 새 호출 2회 · {from_chunk(3)}')
+        self.assertEqual(run['detail'], f'청크 3 · prepare-down · 검증 완료 2/3청크 · 새 호출 시도 2회 · {from_chunk(3)}')
 
     def test_parallel_prepare_raising_names_that_chunk_not_a_neighbour_or_zero(self):
         for number in (1, 2, 3):
@@ -486,12 +486,12 @@ class ChunkPrefix(Base):
 
     def test_repair_call_failure_detail_is_the_same_on_sequential_and_parallel_paths(self):
         run, _ = self.sequential(self.document(), self.repair_call_fails(RuntimeError('repair-down')))
-        self.assertEqual(run['detail'], f'청크 2 · 관계 1 인용: 인용 보정 실패 (청크당 1회). repair-down · 검증 완료 1/3청크 · 새 호출 3회 · {from_chunk(2)}')
+        self.assertEqual(run['detail'], f'청크 2 · 관계 1 인용: 인용 보정 실패 (청크당 1회). repair-down · 검증 완료 1/3청크 · 새 호출 시도 3회 · {from_chunk(2)}')
         for capacity, calls in ((1, 3), (2, 4)):
             with self.subTest(capacity=capacity):
                 doc = self.document()
                 run, _ = self.parallel(doc, self.repair_call_fails(RuntimeError('repair-down')), capacity=capacity)
-                self.assertEqual(run['detail'], f'청크 2 · 관계 1 인용: 인용 보정 실패 (청크당 1회). repair-down · 검증 완료 1/3청크 · 새 호출 {calls}회 · {from_chunk(2)}')
+                self.assertEqual(run['detail'], f'청크 2 · 관계 1 인용: 인용 보정 실패 (청크당 1회). repair-down · 검증 완료 1/3청크 · 새 호출 시도 {calls}회 · {from_chunk(2)}')
                 final, called = self.parallel(doc, ok, capacity=capacity)
                 self.assertEqual((final['status'], sorted(called)), ('success', [2, 3]))
 
@@ -530,7 +530,7 @@ class ChunkPrefix(Base):
             return broken() if index == 2 else extraction_response()
         with patch.object(ChunkScheduler, 'fail', recorded):
             run, _ = self.parallel(self.document(), respond)
-        self.assertEqual(run['detail'], f'청크 3 · third-down · 검증 완료 1/3청크 · 새 호출 3회 · {from_chunk(2)}')
+        self.assertEqual(run['detail'], f'청크 3 · third-down · 검증 완료 1/3청크 · 새 호출 시도 3회 · {from_chunk(2)}')
 
 
     def deadline_during_first_call(self, capacity):
@@ -560,7 +560,7 @@ class ChunkPrefix(Base):
             with self.subTest(capacity=capacity):
                 self.tearDown(); self.setUp()
                 run, called = self.deadline_during_first_call(capacity)
-                self.assertEqual(run['detail'], f'청크 1 · 청크 실행 시간 제한 초과 (7초) · 검증 완료 0/3청크 · 새 호출 {len(calls)}회 · {FROM_FIRST}')
+                self.assertEqual(run['detail'], f'청크 1 · 청크 실행 시간 제한 초과 (7초) · 검증 완료 0/3청크 · 새 호출 시도 {len(calls)}회 · {FROM_FIRST}')
                 self.assertEqual((sorted(called), read_extraction_timing(self.root, self.store, run['id'])['error_code']), (calls, 'timeout'))
 
 if __name__ == '__main__':

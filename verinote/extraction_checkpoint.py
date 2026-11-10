@@ -216,7 +216,7 @@ class ExtractionCheckpoint:
         return f'응답 관계 {emitted}개 중 {excluded}개는 승인 사전의 표기·타입과 일치하지 않아 저장하지 않음 · 되살리려면 사전 수정·재승인 후 재추출'
 
     def summary(self):
-        parts = [f'검증 완료 {len(self.outputs)}/{len(self.slices)}청크 · 새 호출 {self.state["calls_started"]}회']
+        parts = [f'검증 완료 {len(self.outputs)}/{len(self.slices)}청크 · 새 호출 시도 {self.state["calls_started"]}회']
         if self.resumed_chunks:
             parts.append(f'{self.resumed_chunks}청크 재사용 · 이전 실행 {self.state["resumed_from"]}')
         return ' · '.join(parts + self.warnings)

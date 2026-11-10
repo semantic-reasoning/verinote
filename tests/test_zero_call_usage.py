@@ -70,7 +70,7 @@ class ExtractBeforeTheFirstCall(Base):
             return real(checkpoint, name, value, limit)
         with patch.object(ExtractionCheckpoint, 'write', write):
             service, run, calls = self.go(fail)
-        self.assertIn('새 호출 0회', run['detail'])
+        self.assertIn('새 호출 시도 0회', run['detail'])
         self.assertEqual((calls, usage_of(service, self.store, run['id'])[:2]), ([], (1, 1)))
 
 
