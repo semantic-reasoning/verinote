@@ -420,8 +420,12 @@ def validate_accounting(value, dictionary):
     return copy.deepcopy({'coverage': rows, 'dictionary_gaps': gaps})
 
 
-def repair_missing_indices(value, dictionary):
-    """Normalize only fresh, shape-preflighted output; persisted data stays strict."""
+def repair_missing_indices(value, dictionary, *, allow_model_range=False):
+    """Normalize fresh, preflighted output; allow_model_range requires no local exclusions.
+
+    Exclusion remapping uses out-of-range sentinels for contradictions, so callers must keep
+    the default strict mode after any exclusion. Persisted data always uses validate_accounting.
+    """
     result = copy.deepcopy(value)
     changes = []
     rows = result.get('coverage')
@@ -431,7 +435,12 @@ def repair_missing_indices(value, dictionary):
             if (not isinstance(row, dict) or row.get('status') != 'extracted'
                     or not isinstance(row.get('predicate'), str) or row['predicate'] not in predicates):
                 continue
-            before = indices(row.get('fact_indices'), len(result['facts']))
+            before = indices(row.get('fact_indices'), MAX_FACTS + 1 if allow_model_range else len(result['facts']))
+            if allow_model_range:
+                # A model may count past the actual array end, up to the 80-fact contract boundary.
+                # Still reject malformed/duplicate references before deriving membership.
+                if len(before) > MAX_FACTS:
+                    raise ValueError('추출 점검: fact_indices는 최대 80개입니다.')
             expected = [i for i, fact in enumerate(result['facts']) if fact['predicate'] == row['predicate']]
             # Fresh facts determine membership; do not infer statuses or repair malformed indices.
             # Keep correctly supplied ordering, including the existing missing-subset behavior.

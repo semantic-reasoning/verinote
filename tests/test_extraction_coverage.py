@@ -50,7 +50,57 @@ def shifted_coverage_response():
     return value, dictionary
 
 
+def overflow_coverage_response():
+    """56 synthetic facts: the last two coverage groups were counted one slot too far."""
+    groups = [('other', 28), ('contains_process', 23), ('has_evaluation_area', 5)]
+    dictionary = DICTIONARY | {'relations': [DICTIONARY['relations'][0] | {'id': p} for p, _ in groups]}
+    facts = [FACTS[0] | {'predicate': p} for p, count in groups for _ in range(count)]
+    value = extraction_response(facts, dictionary)
+    value['coverage'][1]['fact_indices'] = list(range(28, 52))
+    value['coverage'][2]['fact_indices'] = list(range(52, 57))
+    return value, dictionary
+
+
 class Accounting(unittest.TestCase):
+    def test_model_range_opt_in_repairs_56_fact_boundary_without_changing_content(self):
+        value, dictionary = overflow_coverage_response()
+        original = copy.deepcopy(value)
+        with self.assertRaises(ValueError): repair_missing_indices(value, dictionary)
+        with self.assertRaises(ValueError): validate_accounting(value, dictionary)
+        result, changes = repair_missing_indices(value, dictionary, allow_model_range=True)
+        self.assertEqual(value, original)
+        self.assertEqual([c['before'] for c in changes], [list(range(28, 52)), list(range(52, 57))])
+        self.assertEqual([c['after'] for c in changes], [list(range(28, 51)), [52, 53, 54, 55, 51]])
+        restored = copy.deepcopy(result)
+        for c in changes: restored['coverage'][c['row']]['fact_indices'] = c['before']
+        self.assertEqual(restored, original)
+        self.assertEqual(repair_missing_indices(result, dictionary, allow_model_range=True), (result, []))
+        validate_accounting(result, dictionary)
+
+    def test_model_range_bounds_do_not_relax_claims_statuses_or_shapes(self):
+        value = extraction_response(); value['coverage'][0]['fact_indices'] = [80]
+        result, changes = repair_missing_indices(value, DICTIONARY, allow_model_range=True)
+        self.assertEqual(result['coverage'][0]['fact_indices'], [0, 1])
+        self.assertEqual(changes[0]['before'], [80])
+        for bad in ([81], [-1], [True], [1.0], ['1'], [2, 2], list(range(81)), None):
+            value = extraction_response(); value['coverage'][0]['fact_indices'] = bad
+            original = copy.deepcopy(value)
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                repair_missing_indices(value, DICTIONARY, allow_model_range=True)
+            self.assertEqual(value, original)
+        for mutate in (
+            lambda v: v['coverage'][0].update(status='no_evidence'),
+            lambda v: v['coverage'][0].update(claim_indices=[1]),
+            lambda v: v['coverage'][0].update(reason=''),
+            lambda v: v['coverage'][0].update(predicate='unknown'),
+            lambda v: v['coverage'].append(copy.deepcopy(v['coverage'][0])),
+            lambda v: v.update(facts=[]),
+        ):
+            value = extraction_response(); value['coverage'][0]['fact_indices'] = [2]
+            mutate(value)
+            with self.subTest(mutate=mutate), self.assertRaises(ValueError):
+                repair_missing_indices(value, DICTIONARY, allow_model_range=True)
+
     def test_shifted_boundaries_repair_only_fresh_index_membership(self):
         value, dictionary = shifted_coverage_response()
         original = copy.deepcopy(value)
@@ -191,6 +241,44 @@ class CoverageWorkflow(unittest.TestCase):
 
     def report(self, run):
         return read_report(self.root, self.store, run['id'])
+
+    def test_fresh_out_of_range_references_are_audited_without_extra_calls(self):
+        value, dictionary = overflow_coverage_response()
+        normalized, changes = repair_missing_indices(value, dictionary, allow_model_range=True)
+        run, doc, calls = self.execute([value], dictionary=dictionary)
+        self.assertEqual(run['status'], 'success', run['detail'])
+        self.assertEqual(len(calls), 1)
+        self.assertIn('인덱스 2건 로컬 보정', run['detail'])
+        folder = self.root/'runs'/run['id']
+        audit = json.loads((folder/'1/coverage-repair.json').read_text())
+        self.assertEqual(audit['changes'], changes)
+        self.assertEqual(audit['before_sha256'], digest(value))
+        self.assertEqual(audit['after_sha256'], digest(normalized))
+        saved = json.loads((folder/'extraction-checkpoint.json').read_text())['outputs'][0]
+        self.assertEqual(saved['facts'], value['facts'])
+        self.assertEqual(saved['coverage'], normalized['coverage'])
+        self.assertEqual(len(saved['facts']), 56)
+        self.assertTrue(self.report(run)['available'])
+        self.assertTrue(all(i['status']=='pending' for i in doc['items'] if i['kind']!='ontology'))
+        self.assertEqual(self.store.snapshot()['facts'], [])
+        path = folder/'extraction-coverage.json'; report = json.loads(path.read_text())
+        report['chunks'][0]['coverage'] = value['coverage']
+        path.write_text(json.dumps(report))
+        self.assertFalse(self.report(run)['available'])
+
+    def test_range_repair_audit_failure_prevents_acceptance(self):
+        value, dictionary = overflow_coverage_response()
+        from verinote.usage import atomic_json
+        def write(path, data):
+            if Path(path).name == 'coverage-repair.json': raise OSError('disk unavailable')
+            atomic_json(path, data)
+        with patch('verinote.extraction_coverage.atomic_json', side_effect=write):
+            run, doc, calls = self.execute([value], dictionary=dictionary)
+        self.assertEqual(run['status'], 'error')
+        self.assertIn('인덱스 보정 기록 저장 실패', run['detail'])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual([i['kind'] for i in doc['items']], ['ontology'])
+        self.assertFalse((self.root/'runs'/run['id']/'extraction-checkpoint.json').exists())
 
     def test_shifted_indices_are_audited_before_quote_repair_and_checkpoint(self):
         value, dictionary = shifted_coverage_response()

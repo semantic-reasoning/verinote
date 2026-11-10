@@ -376,6 +376,34 @@ class Pipeline(unittest.TestCase):
     def saved(self, doc, run):
         return [i['payload'] for i in self.store.document(doc['id'])['items'] if i['kind'] == 'fact' and i['run_id'] == run['id']]
 
+    def test_range_repair_stays_disabled_after_real_exclusions(self):
+        for refs in ([0, 2], [2, 3]):
+            value = fresh([MISTYPED, GOOD, PHASE])
+            # First case becomes an exclusion sentinel; second was already out of range.
+            row_of(value, 'has_phase')['fact_indices'] = refs
+            value['excluded_facts'] = []  # Untrusted model metadata cannot opt into the relaxed path.
+            doc = self.document()
+            with patch('verinote.service.repair_missing_indices', wraps=repair_missing_indices) as repair:
+                run, calls = self.execute(doc, [value])
+            self.assertEqual(run['status'], 'error', run['detail'])
+            self.assertFalse(repair.call_args.kwargs['allow_model_range'])
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(self.saved(doc, run), [])
+            self.assertFalse((self.root/'runs'/run['id']/'1/coverage-repair.json').exists())
+
+    def test_empty_exclusions_do_not_bypass_vocabulary_preflight(self):
+        value = fresh([GOOD, PHASE | {'predicate':'unapproved'}])
+        row_of(value, 'has_activity')['fact_indices'] = [80]
+        self.assertEqual(exclude_off_dictionary_facts(value, D)[1], [])
+        doc = self.document()
+        with patch('verinote.service.repair_missing_indices', wraps=repair_missing_indices) as repair:
+            run, calls = self.execute(doc, [value])
+        self.assertEqual(run['status'], 'error')
+        self.assertIn('승인 사전에 없는 관계', run['detail'])
+        repair.assert_not_called()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(self.saved(doc, run), [])
+
     def test_mistyped_fact_is_excluded_and_detail_and_report_state_the_counts(self):
         doc = self.document()
         run, calls = self.execute(doc, [fresh([MISTYPED, GOOD, PHASE])])
