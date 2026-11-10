@@ -206,7 +206,8 @@ class Refused(unittest.TestCase):
         self.assertEqual(c[0]['status'], 'deferred')
 
     def test_entity_whose_own_id_and_name_differ_only_in_spacing_still_merges(self):
-        # The ID/name pair is the entity row itself (out of scope); the merge links nothing new.
+        # The ID/name pair is the entity row itself: never refused, and listed for review only when spacing_kind is 'spacing'
+        # (the line-break case here is 'layout'). The merge links nothing new.
         for entity_id, name in ((A, '납품\n계획'), (B, A)):
             d, x, c = reconcile(f'{entity_id} {name} 갑 끝', {'entities': [entity(entity_id, name), entity('갑'), entity('끝')],
                                                            'aliases': [{'alias': entity_id, 'entity': '갑'}, {'alias': '끝', 'entity': '갑'}]})

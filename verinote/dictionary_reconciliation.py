@@ -25,6 +25,51 @@ def compact(value):
     return ''.join(value.split())
 
 
+LINE_BREAKS = set('\n\r\v\f\x1c\x1d\x1e\x85  ')
+
+
+def _runs(value):
+    """The non-whitespace characters of the stripped `value`, and the whitespace run between each consecutive pair."""
+    chars: list[str] = []
+    gaps: list[str] = []
+    run = ''
+    for char in value.strip():
+        if char.isspace():
+            run += char
+        else:
+            if chars:
+                gaps.append(run)
+            chars.append(char)
+            run = ''
+    return chars, gaps
+
+
+def spacing_kind(a, b):
+    """'spacing' if `a` and `b` differ only in whitespace and some position has a run on one side and none on the other.
+
+    'layout' if they differ only in whitespace and no position does. A position with a line break on either side is
+    layout: a line break in extracted text erases whether a space was there. A position where both sides hold a run of
+    a different width or kind is layout too. None if they are equal or differ in any other character. For refusing or
+    listing, never for linking.
+    """
+    if a == b:
+        return None
+    chars_a, gaps_a = _runs(a)
+    chars_b, gaps_b = _runs(b)
+    if chars_a != chars_b:
+        return None
+    for x, y in zip(gaps_a, gaps_b, strict=True):
+        if x != y and not LINE_BREAKS & set(x + y) and not (x and y):
+            return 'spacing'
+    return 'layout'
+
+
+def spacing_name_rows(dictionary):
+    """Entities (1-based position, ID, name) whose ID and name differ only in spacing, as `spacing_kind` defines it."""
+    return [{'index': index, 'id': row['id'], 'name': row['name']} for index, row in enumerate(dictionary['entities'], 1)
+            if spacing_kind(row['id'], row['name']) == 'spacing']
+
+
 def spacing_link(spelling, target):
     """Whether `spelling` differs from the target's ID only in whitespace, or from its name only in whitespace.
 
@@ -75,6 +120,8 @@ def demoted_name_tie(redirects, entities, candidate):
 
 SPACING_REFUSAL = ('이 묶음에 공백만 다른 표기를 모델 제안으로 연결하게 되는 제안이 있어 묶음 전체를 보류했습니다. '
                    '이 제안 자체에는 공백 차이가 없을 수 있습니다. 같은 대상이면 사람이 사전에 추가하세요.')
+SPACING_RENAME_REFUSAL = ('이 묶음에 개체 이름을 그 개체 ID와 띄어쓰기만 다른 표기로 바꾸는 제안이 있어 묶음 전체를 보류했습니다. '
+                          '이 제안 자체에는 그런 변경이 없을 수 있습니다. 같은 대상이면 사람이 내용 수정으로 이름을 바꾸세요.')
 
 
 def key_field(kind):
@@ -146,6 +193,9 @@ def revise(previous, baseline, proposals, source, blocked_keys=()):
         else:
             if spacing_conflicts(candidate) - spacing_conflicts(baseline):
                 failure = SPACING_REFUSAL
+            elif ({(r['id'], r['name']) for r in spacing_name_rows(candidate)}
+                  - {(r['id'], r['name']) for r in spacing_name_rows(baseline)}):
+                failure = SPACING_RENAME_REFUSAL
     events = []
     for index, row in enumerate(proposals, 1):
         old = next((r for r in previous[row['kind']] if r[key_field(row['kind'])] == row['key']), None)

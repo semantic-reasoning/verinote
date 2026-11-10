@@ -19,6 +19,7 @@ from .agents import (
 )
 from .config import ConfigError, Credentials, create_config, load_config
 from .dictionary_context import validate_context_bytes
+from .dictionary_reconciliation import spacing_name_rows
 from .documents import MAX_BYTES, MAX_DOCX_XML_BYTES, MAX_TEXT, decode_document
 from .extraction_options import CHUNK_THRESHOLD_POLICY
 from .model_catalog import ModelCatalog
@@ -210,6 +211,7 @@ class Handler(BaseHTTPRequestHandler):
                             from .dictionary_context import document_admission
                             item['extraction_admission'] = document_admission(self.server.service, doc, item)
                             item['lookup_spelling_problems'] = lookup_spelling_problems(item['payload'])
+                            item['spacing_name_rows'] = spacing_name_rows(item['payload'])
                     return self.send(doc)
                 if len(parts) == 4 and parts[3] == 'passages' and method == 'GET':
                     if version is None or 'text' not in params:
