@@ -420,11 +420,13 @@ def validate_accounting(value, dictionary):
     return copy.deepcopy({'coverage': rows, 'dictionary_gaps': gaps})
 
 
-def repair_missing_indices(value, dictionary, *, allow_model_range=False):
+def repair_missing_indices(value, dictionary, *, allow_model_range=False, prune_claim_references=False):
     """Normalize fresh, preflighted output; allow_model_range requires no local exclusions.
 
     Exclusion remapping uses out-of-range sentinels for contradictions, so callers must keep
     the default strict mode after any exclusion. Persisted data always uses validate_accounting.
+    Claim pruning is separate: fact exclusions do not renumber claims. It removes dangling
+    references only when valid references survive, never guesses their intended targets.
     """
     result = copy.deepcopy(value)
     changes = []
@@ -448,6 +450,22 @@ def repair_missing_indices(value, dictionary, *, allow_model_range=False):
                 after = [i for i in before if i in expected] + [i for i in expected if i not in before]
                 row['fact_indices'] = after
                 changes.append({'row': index, 'predicate': row['predicate'], 'before': before, 'after': after})
+    if prune_claim_references:
+        for collection in ('coverage', 'dictionary_gaps'):
+            rows = result.get(collection)
+            for index, row in enumerate(rows if isinstance(rows, list) else []):
+                if not isinstance(row, dict):
+                    continue  # Strict accounting reports malformed rows.
+                before = indices(row.get('claim_indices'), 13)
+                if len(before) > 12:
+                    raise ValueError('추출 점검: claim_indices는 최대 12개입니다.')
+                after = [i for i in before if i < len(result['claims'])]
+                if after != before:
+                    if not after:
+                        raise ValueError('추출 점검: claim_indices에 유효한 설명 참조가 남지 않습니다.')
+                    row['claim_indices'] = after
+                    changes.append({'collection': collection, 'field': 'claim_indices', 'row': index,
+                                    'before': before, 'after': after})
     # No partial repair may hide another malformed or contradictory field.
     validate_accounting(result, dictionary)
     return result, changes
@@ -457,7 +475,9 @@ def write_repair_audit(root, run, doc, chunk, offset, before, after, changes):
     """Mandatory provenance for a mechanical repair, not acceptance of its facts."""
     from .store import digest
     try:
-        if not 1 <= len(changes) <= MAX_FACTS:
+        claim_changes = any(change.get('field') == 'claim_indices' for change in changes)
+        limit = MAX_FACTS + len(run['ontology']['payload']['relations']) + 12 if claim_changes else MAX_FACTS
+        if not 1 <= len(changes) <= limit:
             raise ValueError('coverage repair count')
         folder = Path(root)
         for part in (None, 'runs', run['id'], str(chunk)):
@@ -468,10 +488,12 @@ def write_repair_audit(root, run, doc, chunk, offset, before, after, changes):
         path = folder / 'coverage-repair.json'
         if path.is_symlink() or path.with_suffix('.json.tmp').is_symlink():
             raise ValueError('coverage repair symlink')
-        audit = {'schema_version': 1, 'identity': identity(run), 'chunk': chunk, 'offset': offset,
+        # Version 1 remains byte-compatible for existing fact-only audit readers.
+        entries = [({'collection': 'coverage', 'field': 'fact_indices'} | change) for change in changes] if claim_changes else changes
+        audit = {'schema_version': 2 if claim_changes else 1, 'identity': identity(run), 'chunk': chunk, 'offset': offset,
                  'source_sha256': doc['sha256'], 'text_sha256': digest(doc['text'].encode()),
                  'before_sha256': digest(before), 'after_sha256': digest(after),
-                 'scope': 'mechanical_indices_only_not_chunk_acceptance', 'changes': changes}
+                 'scope': 'mechanical_indices_only_not_chunk_acceptance', 'changes': entries}
         raw = safe_file(folder, 'run.json', 16384)
         try:
             meta = json.loads(raw) if raw else None

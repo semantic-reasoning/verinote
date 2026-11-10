@@ -62,6 +62,47 @@ def overflow_coverage_response():
 
 
 class Accounting(unittest.TestCase):
+    def test_fresh_claim_references_prune_only_dangling_links_and_keep_content(self):
+        value = extraction_response(); value['claims'] *= 5
+        value['coverage'][0]['claim_indices'] = [0, 2, 3, 4, 5]
+        value['dictionary_gaps'] = [{'code':'missing_entity', 'detail':'합성 누락', 'claim_indices':[4, 12, 1]}]
+        original = copy.deepcopy(value)
+        with self.assertRaises(ValueError): repair_missing_indices(value, DICTIONARY)
+        result, changes = repair_missing_indices(value, DICTIONARY, prune_claim_references=True)
+        self.assertEqual(result['coverage'][0]['claim_indices'], [0, 2, 3, 4])
+        self.assertEqual(result['dictionary_gaps'][0]['claim_indices'], [4, 1])
+        restored = copy.deepcopy(result)
+        for change in changes:
+            self.assertEqual(change['field'], 'claim_indices')
+            restored[change['collection']][change['row']][change['field']] = change['before']
+        self.assertEqual(restored, original); self.assertEqual(value, original)
+        self.assertEqual(repair_missing_indices(result, DICTIONARY, prune_claim_references=True), (result, []))
+        validate_accounting(result, DICTIONARY)
+
+    def test_claim_pruning_rejects_malformed_or_entirely_missing_links(self):
+        for collection in ('coverage', 'dictionary_gaps'):
+            for refs in ([1], [0, 0, 1], [0, True], [0, -1], [0, 13], [0, 1.0], [0, '1'], list(range(13)), None):
+                value = extraction_response()
+                if collection == 'dictionary_gaps':
+                    value[collection] = [{'code':'missing_entity', 'detail':'합성 누락', 'claim_indices':refs}]
+                else: value[collection][0]['claim_indices'] = refs
+                original = copy.deepcopy(value)
+                with self.subTest(collection=collection, refs=refs), self.assertRaises(ValueError):
+                    repair_missing_indices(value, DICTIONARY, prune_claim_references=True)
+                self.assertEqual(value, original)
+        for mutate in (
+            lambda v: v['coverage'][0].update(status='no_evidence'),
+            lambda v: v['coverage'][0].update(predicate='unknown'),
+            lambda v: v['coverage'][0].update(reason=''),
+            lambda v: v['coverage'].append(copy.deepcopy(v['coverage'][0])),
+            lambda v: v.update(dictionary_gaps=[{'code':'missing_entity','detail':'x','claim_indices':[]}]),
+            lambda v: v.update(dictionary_gaps=[{'code':'unknown','detail':'x','claim_indices':[0,1]}]),
+        ):
+            value = extraction_response(); value['coverage'][0]['claim_indices'] = [0, 1]
+            mutate(value)
+            with self.subTest(mutate=mutate), self.assertRaises(ValueError):
+                repair_missing_indices(value, DICTIONARY, prune_claim_references=True)
+
     def test_model_range_opt_in_repairs_56_fact_boundary_without_changing_content(self):
         value, dictionary = overflow_coverage_response()
         original = copy.deepcopy(value)
@@ -241,6 +282,65 @@ class CoverageWorkflow(unittest.TestCase):
 
     def report(self, run):
         return read_report(self.root, self.store, run['id'])
+
+    def test_claim_pruning_after_fact_exclusion_has_typed_mixed_audit_and_keeps_all_claims(self):
+        value = extraction_response([FACTS[0] | {'object':'unknown'}, *FACTS]); value['claims'] *= 5
+        value['coverage'][0].update(fact_indices=[], claim_indices=[0, 2, 3, 4, 5])
+        value['dictionary_gaps'] = [{'code':'missing_entity','detail':'합성 누락','claim_indices':[1,5]}]
+        original = copy.deepcopy(value)
+        from verinote.extraction_coverage import exclude_off_dictionary_facts
+        filtered, _ = exclude_off_dictionary_facts(value, DICTIONARY)
+        normalized, changes = repair_missing_indices(filtered, DICTIONARY, prune_claim_references=True)
+        run, doc, calls = self.execute([value])
+        self.assertEqual(run['status'], 'success', run['detail']); self.assertEqual(len(calls), 1)
+        folder = self.root/'runs'/run['id']
+        audit = json.loads((folder/'1/coverage-repair.json').read_text())
+        self.assertEqual(audit['schema_version'], 2)
+        self.assertEqual(audit['changes'], [({'collection':'coverage','field':'fact_indices'} | c) for c in changes])
+        self.assertEqual([(c['collection'],c['field']) for c in audit['changes']],
+                         [('coverage','fact_indices'),('coverage','claim_indices'),('dictionary_gaps','claim_indices')])
+        self.assertEqual(audit['before_sha256'], digest(original)); self.assertEqual(audit['after_sha256'], digest(normalized))
+        saved = json.loads((folder/'extraction-checkpoint.json').read_text())['outputs'][0]
+        self.assertEqual(saved['facts'], FACTS); self.assertEqual(saved['claims'], original['claims'])
+        self.assertEqual(saved['coverage'], normalized['coverage'])
+        self.assertEqual(self.store.snapshot()['facts'], [])
+        self.assertTrue(all(i['status']=='pending' for i in doc['items'] if i['kind']!='ontology'))
+        self.assertTrue(self.report(run)['available'])
+        path = folder/'extraction-coverage.json'; report = json.loads(path.read_text())
+        report['chunks'][0]['coverage'][0]['claim_indices'] = original['coverage'][0]['claim_indices']
+        path.write_text(json.dumps(report)); self.assertFalse(self.report(run)['available'])
+
+    def test_claim_pruning_requires_audit_before_quote_repair_or_checkpoint(self):
+        value = extraction_response(); value['coverage'][0]['claim_indices'] = [0, 1]
+        value['facts'][0]['quote'] = 'absent'
+        repair = {'repairs':[{'path':'facts.0.quote','quote':FACTS[0]['quote']}]}
+        run, _, calls = self.execute([value, repair])
+        self.assertEqual(run['status'], 'success', run['detail']); self.assertEqual(len(calls), 2)
+        from verinote.usage import atomic_json
+        def write(path, data):
+            if Path(path).name == 'coverage-repair.json': raise OSError('disk unavailable')
+            atomic_json(path, data)
+        with patch('verinote.extraction_coverage.atomic_json', side_effect=write):
+            run, doc, calls = self.execute([value, repair])
+        self.assertEqual(run['status'], 'error'); self.assertIn('인덱스 보정 기록 저장 실패', run['detail'])
+        self.assertEqual(len(calls), 1); self.assertEqual([i['kind'] for i in doc['items']], ['ontology'])
+        self.assertFalse((self.root/'runs'/run['id']/'extraction-checkpoint.json').exists())
+
+    def test_mixed_audit_count_bound_includes_both_fields_and_gaps(self):
+        dictionary = DICTIONARY | {'relations':[DICTIONARY['relations'][0] | {'id':f'r{i}'} for i in range(40)]}
+        facts = [FACTS[0] | {'predicate':f'r{i % 40}'} for i in range(80)]
+        value = extraction_response(facts, dictionary)
+        for row in value['coverage']: row.update(fact_indices=[], claim_indices=[0, 1])
+        value['dictionary_gaps'] = [{'code':'missing_entity','detail':'합성 누락','claim_indices':[0,1]} for _ in range(12)]
+        run, doc, calls = self.execute([value], dictionary=dictionary)
+        self.assertEqual(run['status'], 'success', run['detail']); self.assertEqual(len(calls), 1)
+        path = self.root/'runs'/run['id']/'1/coverage-repair.json'
+        raw = path.read_bytes(); audit = json.loads(raw)
+        self.assertEqual(audit['schema_version'], 2); self.assertEqual(len(audit['changes']), 92)
+        from verinote.extraction_coverage import write_repair_audit
+        with self.assertRaisesRegex(ValueError, '인덱스 보정 기록 저장 실패'):
+            write_repair_audit(self.root, run, doc, 1, 0, value, value, [audit['changes'][-1]] * 133)
+        self.assertEqual(path.read_bytes(), raw)
 
     def test_fresh_out_of_range_references_are_audited_without_extra_calls(self):
         value, dictionary = overflow_coverage_response()
