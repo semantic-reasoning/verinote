@@ -286,7 +286,7 @@ class ExtractionRefusal(ServiceCase):
         self.assertEqual(result['status'], 'error')
         request, table = budget_sizes(self.budget(result, '3'))
         self.assertEqual((request, table), (sizes[2], table_bytes(dictionary)))
-        self.assertEqual(result['detail'], f'청크 3 · {refused_text(request, limit)}{RERUN}{revise_text(table, 1)} 또는 {SPLIT}. · 검증 완료 0/3청크 · 새 호출 0회')
+        self.assertEqual(result['detail'], f'청크 3 · {refused_text(request, limit)}{RERUN}{revise_text(table, 1)} 또는 {SPLIT}. · 검증 완료 0/3청크 · 새 호출 시도 0회')
         self.assertEqual(self.budget(result, '3')['status'], 'unfit')
         self.assertEqual(self.budget_folders(result), ['3'])
         self.assertEqual(self.item(doc)['status'], 'approved')
@@ -297,7 +297,7 @@ class ExtractionRefusal(ServiceCase):
         limit = sizes[1] - 1
         result = self.run_job(doc, Stub(chunk_response(dictionary), limit))
         excess = sizes[2] - limit
-        self.assertEqual(result['detail'], f'청크 3 · {refused_text(sizes[2], limit)}{RERUN}{revise_text(table_bytes(dictionary), excess)} 또는 {SPLIT}. · 검증 완료 0/3청크 · 새 호출 0회')
+        self.assertEqual(result['detail'], f'청크 3 · {refused_text(sizes[2], limit)}{RERUN}{revise_text(table_bytes(dictionary), excess)} 또는 {SPLIT}. · 검증 완료 0/3청크 · 새 호출 시도 0회')
         smaller = copy.deepcopy(dictionary)
         while table_bytes(dictionary) - table_bytes(smaller) < excess:
             smaller['entities'].pop()
@@ -384,7 +384,7 @@ class ExtractionRefusal(ServiceCase):
         result = self.run_job(doc, stub)
         self.assertEqual(stub.calls, [])
         self.assertTrue(result['detail'].startswith(f'청크 3 · {refused_text(sizes[2], limit)}{RERUN}'), result['detail'])
-        self.assertIn('검증 완료 1/3청크 · 새 호출 0회 · 1청크 재사용', result['detail'])
+        self.assertIn('검증 완료 1/3청크 · 새 호출 시도 0회 · 1청크 재사용', result['detail'])
         self.assertNotIn('추출 조건이 이 실행과 같으면', result['detail'])
         smaller = {**dictionary, 'entities': dictionary['entities'][:-10]}
         self.revise_and_approve(doc, smaller)
@@ -419,7 +419,7 @@ class ExtractionRefusal(ServiceCase):
                                    ('another ready', Stub(chunk_response(dictionary), limit, {'claude'}), expected_with)):
             with self.subTest(name):
                 result = self.run_job(doc, stub)
-                self.assertTrue(result['detail'].startswith(f'청크 3 · {refused_text(sizes[2], limit)}{advice} · 검증 완료 0/3청크 · 새 호출 0회'), result['detail'])
+                self.assertTrue(result['detail'].startswith(f'청크 3 · {refused_text(sizes[2], limit)}{advice} · 검증 완료 0/3청크 · 새 호출 시도 0회'), result['detail'])
 
     def test_real_cli_readiness_decides_availability_with_executables_patched(self):
         cli = CLI(persistent=False)
@@ -509,7 +509,7 @@ class ExtractionRefusal(ServiceCase):
                 result = self.run_job(doc, stub)
                 self.assertEqual(stub.calls, [])
                 request = budget_sizes(self.budget(result, '1'))[0]
-                self.assertTrue(result['detail'].startswith(f'청크 1 · {refused_text(request, limit)}{advice} · 검증 완료 0/1청크 · 새 호출 0회'), result['detail'])
+                self.assertTrue(result['detail'].startswith(f'청크 1 · {refused_text(request, limit)}{advice} · 검증 완료 0/1청크 · 새 호출 시도 0회'), result['detail'])
 
     def test_scheduler_path_dispatches_nothing_and_records_the_same_detail(self):
         sizes = self.request_sizes(RISING)
@@ -533,7 +533,7 @@ class ExtractionRefusal(ServiceCase):
         service.pool.shutdown(wait=True)
         result = self.store.run(job['id'])
         self.assertEqual(Caller.calls, [])
-        self.assertEqual(result['detail'], f'청크 3 · {refused_text(budget_sizes(self.budget(result, "3"))[0], limit)}{RERUN}{revise_text(table_bytes(dictionary), 1)} 또는 {SPLIT}. · 검증 완료 0/3청크 · 새 호출 0회')
+        self.assertEqual(result['detail'], f'청크 3 · {refused_text(budget_sizes(self.budget(result, "3"))[0], limit)}{RERUN}{revise_text(table_bytes(dictionary), 1)} 또는 {SPLIT}. · 검증 완료 0/3청크 · 새 호출 시도 0회')
 
 
 class RepairRefusal(ServiceCase):
@@ -568,7 +568,7 @@ class RepairRefusal(ServiceCase):
         for ready, other in ((None, ''), ({'claude'}, f'{OTHER} 또는 ')):
             with self.subTest(ready=ready):
                 result, limit, (request, definitions) = self.repair_run(dictionary, source + (' ' if ready else ''), ready)
-                self.assertIn(f'인용 보정 실패 (청크당 1회). {refused_text(request, limit)}{RETRY}{other}{revise_text(definitions, request - limit)} 또는 {SPLIT}. · 검증 완료 0/1청크 · 새 호출 1회{TAIL}', result['detail'])
+                self.assertIn(f'인용 보정 실패 (청크당 1회). {refused_text(request, limit)}{RETRY}{other}{revise_text(definitions, request - limit)} 또는 {SPLIT}. · 검증 완료 0/1청크 · 새 호출 시도 1회{TAIL}', result['detail'])
 
     def test_repair_refusal_figure_at_pin_revision_eight_adds_the_digit(self):
         dictionary, source = self.large()
@@ -580,7 +580,7 @@ class RepairRefusal(ServiceCase):
         dictionary = {'entities': [{'id': 'e', 'name': '나다라마', 'type': 'T', 'quote': '나다라마'}], 'aliases': [], 'relations': []}
         result, limit, (request, definitions) = self.repair_run(dictionary, '표지 ' + '나다라마 ' * 300)
         self.assertGreater(request - limit, definitions)
-        self.assertIn(f'인용 보정 실패 (청크당 1회). {refused_text(request, limit)}{RETRY}{SPLIT}. · 검증 완료 0/1청크 · 새 호출 1회{TAIL}', result['detail'])
+        self.assertIn(f'인용 보정 실패 (청크당 1회). {refused_text(request, limit)}{RETRY}{SPLIT}. · 검증 완료 0/1청크 · 새 호출 시도 1회{TAIL}', result['detail'])
 
 
 class GenerationRefusal(ServiceCase):
@@ -592,7 +592,7 @@ class GenerationRefusal(ServiceCase):
         self.assertEqual(len(stub.calls), 3)
         request = budget_sizes(self.budget(result, '4'))[0]
         self.assertGreater(request, MAX_PROMPT_BYTES)
-        self.assertEqual(result['detail'], f'{refused_text(request, MAX_PROMPT_BYTES)}{GENERATION_RERUN}문서를 앞에서 통과한 12,000자 이하로 나누어 각각 사전 생성{GENERATION_END} · 검증 완료 12,000/32,000자 · 새 호출 3회')
+        self.assertEqual(result['detail'], f'{refused_text(request, MAX_PROMPT_BYTES)}{GENERATION_RERUN}문서를 앞에서 통과한 12,000자 이하로 나누어 각각 사전 생성{GENERATION_END} · 검증 완료 12,000/32,000자 · 새 호출 시도 3회')
 
     def test_rerun_refuses_again_on_the_same_model_and_calls_again_on_another(self):
         doc = self.register(generation_source(8))
@@ -618,7 +618,7 @@ class GenerationRefusal(ServiceCase):
                 self.assertEqual(len(stub.calls), 1)
                 request = budget_sizes(self.budget(result, '2'))[0]
                 self.assertLess(request, MAX_PROMPT_BYTES)
-                self.assertEqual(result['detail'], f'{refused_text(request, limit)}{GENERATION_RERUN}{other}문서를 앞에서 통과한 4,000자 이하로 나누어 각각 사전 생성{GENERATION_END} · 검증 완료 4,000/{len(generation_source(3)) + 1:,}자 · 새 호출 1회')
+                self.assertEqual(result['detail'], f'{refused_text(request, limit)}{GENERATION_RERUN}{other}문서를 앞에서 통과한 4,000자 이하로 나누어 각각 사전 생성{GENERATION_END} · 검증 완료 4,000/{len(generation_source(3)) + 1:,}자 · 새 호출 시도 1회')
 
     def test_refusal_on_the_first_section_names_no_prefix(self):
         doc = self.register(generation_source(1))
@@ -627,7 +627,7 @@ class GenerationRefusal(ServiceCase):
         stub = Stub(generated, request - 1, {'claude'})
         result = self.run_job(doc, stub, 'ontology')
         self.assertEqual(stub.calls, [])
-        self.assertTrue(result['detail'].startswith(f'{refused_text(request, request - 1)}{GENERATION_RERUN}{OTHER} 또는 문서를 더 작게 나누어 각각 사전 생성{GENERATION_END} · 검증 완료 0/4,000자 · 새 호출 0회'), result['detail'])
+        self.assertTrue(result['detail'].startswith(f'{refused_text(request, request - 1)}{GENERATION_RERUN}{OTHER} 또는 문서를 더 작게 나누어 각각 사전 생성{GENERATION_END} · 검증 완료 0/4,000자 · 새 호출 시도 0회'), result['detail'])
 
 
 class StatedPaths(ServiceCase):
@@ -642,7 +642,7 @@ class StatedPaths(ServiceCase):
         self.assertEqual(len(stub.calls), 3)
         self.assertGreater(budget_sizes(self.budget(followed, '4'))[0], MAX_PROMPT_BYTES)
         self.assertIn(GENERATION_END, followed['detail'])
-        self.assertIn('새 호출 3회', followed['detail'])
+        self.assertIn('새 호출 시도 3회', followed['detail'])
 
     def test_part_of_the_stated_size_can_be_refused_again_after_a_call_and_a_smaller_part_passes(self):
         sparse = lambda letter: (' '.join(f'{letter}{i:05}' for i in range(40))).ljust(4000, 'x')  # noqa: E731

@@ -8,6 +8,6 @@ Ollama 서버를 실행하고 사용할 모델을 미리 설치한 뒤 설정에
 
 `prompt.txt`, `response.json`, `run.json`, `usage.json`을 호출별 데이터 폴더에 보존합니다. provider_call_id·모델 tag·설치 digest·고정 옵션으로 원본을 연결합니다. 입력/출력 토큰은 Ollama가 보고한 값이며 누락은 unknown입니다. 별도 cache·금액은 이 어댑터가 산출하지 않으므로 unknown으로 남기며 0으로 추정하지 않습니다. 로컬 전력·하드웨어 비용도 포함하지 않습니다. 모델 tag가 같은 내용으로 재설치될 수 있으므로 실험에서는 digest도 확인해야 합니다.
 
-서버 미실행·모델 미설치·응답 크기 초과·timeout·잘림·JSON 오류는 실패로 기록합니다. 자동 재시도나 모델 교체는 하지 않습니다. timeout은 원격 생성의 취소를 보증하지 않습니다. 추출은 기존 문서 전체 성공과 사전 확인을 거쳐서만 검토 후보를 게시합니다. OpenRouter의 키·추론 예산 UI와 Claude 전용 병렬 정책은 Ollama에 적용하지 않습니다.
+서버 미실행·모델 미설치·응답 크기 초과·timeout·잘림·JSON 오류는 실패로 기록합니다. `run.json`과 `usage.json`의 `generate_requested`는 생성 요청(`/api/generate`) 직전에 true가 됩니다. 이 값이 false인 채 실패한 호출(서버 미실행·모델 미설치 등. 모델 목록 `/api/tags` 요청은 생성 요청이 아닙니다)은 사용량에서 시작하지 않은 호출로 표시하고 확인된 호출과 합계에서 뺍니다. usage.json이 없거나 읽을 수 없거나 run.json과 맞지 않으면 확인된 호출로 셉니다. 이 필드가 없는 예전 기록은 확인된 호출로 셉니다. 자동 재시도나 모델 교체는 하지 않습니다. timeout은 원격 생성의 취소를 보증하지 않습니다. 추출은 기존 문서 전체 성공과 사전 확인을 거쳐서만 검토 후보를 게시합니다. OpenRouter의 키·추론 예산 UI와 Claude 전용 병렬 정책은 Ollama에 적용하지 않습니다.
 
 API 형식은 [공식 Ollama API 문서](https://github.com/ollama/ollama/blob/main/docs/api.md)를 따릅니다. 로컬 실측은 별도 Ollama baseline으로 기록하며 Sonnet A/B 수용 결과로 간주하지 않습니다.

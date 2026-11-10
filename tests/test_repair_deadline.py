@@ -38,7 +38,7 @@ class RepairDeadline(Base):
                 self.assertEqual(calls.count(2), 1)  # chunk 2's first call only: the repair was never sent
                 self.assertEqual(run['status'], 'error')
                 self.assertEqual(run['detail'], f'청크 2 · 관계 1 인용: 인용 보정 실패 (청크당 1회). 청크 실행 시간 제한 초과 ({service.CHUNK_TIMEOUT}초)'
-                                                f' · 검증 완료 1/3청크 · 새 호출 {len(calls)}회 · {from_chunk(2)}')
+                                                f' · 검증 완료 1/3청크 · 새 호출 시도 {len(calls)}회 · {from_chunk(2)}')
                 value = json.loads((self.root / 'runs' / run['id'] / 'extraction-timing.json').read_text())
                 self.assertEqual(value['error_code'], 'timeout')
 

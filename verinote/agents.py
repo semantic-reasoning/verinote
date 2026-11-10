@@ -341,8 +341,9 @@ class CLI:
                     atomic_json(folder / 'run.json', meta)
                     return result
         except BaseException as exc:
-            status = 'timeout' if isinstance(exc, TimeoutError) else 'error' if worker is not None else 'not_started'
-            if isinstance(exc, TimeoutError):
+            started = worker is not None or getattr(timing, 'process_requested', False)
+            status = 'not_started' if not started else 'timeout' if isinstance(exc, TimeoutError) else 'error'
+            if isinstance(exc, TimeoutError) and started:
                 error_code = 'timeout'
             elif '크기 제한' in str(exc):
                 error_code = 'output_limit'

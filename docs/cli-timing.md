@@ -41,6 +41,10 @@ reader의 `durations_seconds`는 spawn 전후 차이, 프로세스 관측 구간
 않는다. 모델 ID와 agent, phase, 유효 timeout·출력 한도·poll 간격만 기록한다.
 CLI 버전은 별도 확인 자료가 없어 `cli_version:null`, `cli_version_source:unknown`이다.
 버전을 알아내기 위해 호출마다 추가 프로그램을 띄우지 않는다.
+지속 연결 Claude에서 이 호출에 worker도 새 프로세스도 없던 실패는 `not_started`이며 오류 코드는
+그 시점까지 진행한 단계(`preparation`, `executable_missing`, `process` 등)다. 잠금·pool 대기 시간 초과도
+`not_started`·`process`로 기록하는데, 여기서 `process`는 프로세스 실패가 아니라 이 호출의 프로세스가
+없었다는 뜻이다. 시간 초과 사유는 run.json `error`와 호출자가 받는 `TimeoutError`에 남는다.
 
 측정 생성·시계·쓰기 실패는 원래 반환값/예외/프로세스 정리를 바꾸지 않는다.
 역행한 시계는 0으로 보정하지 않고 측정 미확인으로 둔다. HTTP 경로에는 이

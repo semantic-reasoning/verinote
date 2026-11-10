@@ -335,6 +335,27 @@ def http_public_fields(meta):
 
 
 UNCONFIRMED = '호출 계획 목록에 읽을 수 있는 호출 로그가 없는 항목이 있어, 그 호출이 시작됐는지와 사용량을 확인할 수 없습니다.'
+NS_WARNING = '모델 요청을 보내기 전에 실패한 호출이라 확인된 호출과 사용량 합계에 넣지 않았습니다.'
+
+
+def not_started(agent, usage, metadata):
+    """Whether a logged call has positive evidence that its model request never reached the provider.
+
+    usage is the accepted usage record, or None when none was accepted. Each transport records its own evidence:
+    the local CLI transports (the persistent Claude worker too) write usage status not_started when the call was given no CLI process;
+    OpenRouter's run.json keeps transmission_state not_sent, decided at the first HTTP request byte, with a not_started or
+    timeout transport status; Ollama keeps generate_requested False in both logs until just before the generate request.
+    A record without the evidence, including an Ollama record written before the field existed, is counted as a call.
+    """
+    if usage is None:
+        return False
+    if agent == 'openrouter':
+        return (isinstance(metadata, dict) and metadata.get('transmission_state') == 'not_sent'
+                and metadata.get('transport_status') in ('not_started', 'timeout'))
+    if agent == 'ollama':
+        return (isinstance(metadata, dict) and metadata.get('status') == usage.get('status') == 'error'
+                and metadata.get('generate_requested') is False and usage.get('generate_requested') is False)
+    return usage.get('status') == 'not_started'
 
 
 def job_calls(root, kind, owner):
@@ -394,6 +415,7 @@ def job_calls(root, kind, owner):
                     usage = value
         except (ValueError, UnicodeError):
             pass
+        accepted = usage
         if usage is None:
             usage = empty_usage(owner['agent'], owner.get('model', ''))
             usage.update(status='unknown', warnings=['이 호출에는 읽을 수 있는 사용량 기록이 없습니다.'])
@@ -437,10 +459,14 @@ def job_calls(root, kind, owner):
             cli_id = usage.get('cli_call_id')
             clean['cli_call_id'] = cli_id if (isinstance(cli_id, str) and re.fullmatch(r'[a-f0-9]{32}', cli_id)
                                              and isinstance(metadata, dict) and metadata.get('cli_call_id') == cli_id) else None
+        started = not not_started(owner['agent'], accepted, metadata)
+        if not started:
+            clean['status'] = 'not_started'
+            clean['warnings'].append(NS_WARNING)
         if owner['agent'] == 'openrouter':
             from .reasoning_diagnostics import reasoning_diagnostic
             clean['reasoning_diagnostic'] = reasoning_diagnostic(clean)
-        clean.update(call_id=f'{kind}/{key}/{path}', stage=stage, call_count_known=True)
+        clean.update(call_id=f'{kind}/{key}/{path}', stage=stage, call_count_known=True, call_started=started)
         calls.append(clean)
     if unconfirmed:
         calls.append(unknown_count(kind, key, owner, UNCONFIRMED))
@@ -495,7 +521,7 @@ def job_calls(root, kind, owner):
 
 def unknown_count(kind, key, owner, warning):
     missing = empty_usage(owner['agent'], owner.get('model', ''))
-    missing.update(call_id=f'{kind}/{key}/unknown', stage='question' if kind == 'questions' else owner.get('stage', 'legacy'), status='unknown', call_count_known=False, warnings=[warning])
+    missing.update(call_id=f'{kind}/{key}/unknown', stage='question' if kind == 'questions' else owner.get('stage', 'legacy'), status='unknown', call_count_known=False, call_started=True, warnings=[warning])
     return missing
 
 
@@ -507,7 +533,10 @@ def progress_marker(root, key, stage):
 
 
 def summarize(calls):
+    """Totals over the calls that started or whose start cannot be ruled out; not-started calls appear only in not_started_calls."""
     from .reasoning_diagnostics import non_reasoning_output
+    logged = calls
+    calls = [c for c in logged if c.get('call_started') is not False]
     def subtotal(values):
         known = [v for v in values if v is not None]
         return {'value': sum(known) if known else None, 'known_calls': len(known)}
@@ -524,4 +553,5 @@ def summarize(calls):
             'tokens': {k: subtotal([c['tokens'].get(k) for c in calls]) for k in TOKEN_KEYS},
             'non_reasoning_output': subtotal([non_reasoning_output(c['tokens']) for c in calls]),
             'reported_usd': subtotal([c.get('reported_usd') for c in calls]),
-            'estimated_usd': subtotal([c.get('estimated_usd') for c in calls]), 'credits': credits}
+            'estimated_usd': subtotal([c.get('estimated_usd') for c in calls]), 'credits': credits,
+            'not_started_calls': len(logged) - len(calls)}

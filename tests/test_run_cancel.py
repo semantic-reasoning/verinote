@@ -132,7 +132,7 @@ class Sequential(Base):
         self.assertEqual(row['status'], 'cancelled')
         self.assertTrue(row['detail'].startswith(EXTRACT_HEAD + ' · '), row['detail'])
         self.assertNotIn('멈추기 전 마지막 오류', row['detail'])
-        self.assertIn('검증 완료 1/3청크 · 새 호출 1회', row['detail'])
+        self.assertIn('검증 완료 1/3청크 · 새 호출 시도 1회', row['detail'])
         self.assertIn('다시 추출할 때 청크 2부터 호출합니다', row['detail'])
         self.assertEqual(gate.calls, [(1, False)])
         self.assertEqual(self.checkpoint_chunks(run['id']), 1)
@@ -286,7 +286,7 @@ class Sequential(Base):
         row = self.store.run(run['id'])
         self.assertEqual((row['status'], gate.calls), ('cancelled', []), row['detail'])
         self.assertTrue(row['detail'].startswith(EXTRACT_HEAD + ' · 멈추기 전 마지막 오류: '), row['detail'])
-        self.assertIn('검증 완료 0/2청크 · 새 호출 0회', row['detail'])
+        self.assertIn('검증 완료 0/2청크 · 새 호출 시도 0회', row['detail'])
         self.assertNotIn('다시 추출할 때', row['detail'])
 
 
@@ -302,7 +302,7 @@ class Parallel(Base):
         self.assertEqual(row['status'], 'cancelled', row['detail'])
         self.assertEqual(sorted(gate.calls), [(1, False), (2, False)])
         self.assertEqual(self.checkpoint_chunks(run['id']), 2)
-        self.assertIn('검증 완료 2/4청크 · 새 호출 2회 · ', row['detail'])
+        self.assertIn('검증 완료 2/4청크 · 새 호출 시도 2회 · ', row['detail'])
         self.assertTrue(row['detail'].endswith('다시 추출할 때 청크 3부터 호출합니다.'), row['detail'])
         self.assertEqual(service.slots._value, 8)
 
@@ -325,7 +325,7 @@ class Parallel(Base):
         self.assertEqual(row['status'], 'cancelled', row['detail'])
         self.assertEqual(sorted(gate.calls), [(1, False), (2, False)])
         self.assertEqual(self.checkpoint_chunks(run['id']), 0)
-        self.assertIn('검증 완료 0/4청크 · 새 호출 2회', row['detail'])
+        self.assertIn('검증 완료 0/4청크 · 새 호출 시도 2회', row['detail'])
         self.assertIn('첫 청크부터', row['detail'])
         timing = self.root / 'runs' / run['id'] / 'extraction-timing.json'
         spans = json.loads(timing.read_text())['spans'] if timing.exists() else []
@@ -521,7 +521,7 @@ class Dictionary(Base):
         self.assertEqual((row['status'], gate.calls), ('cancelled', [(1, False)]), row['detail'])
         self.assertTrue(row['detail'].startswith(DICTIONARY_HEAD + ' · 검증 완료 '), row['detail'])
         self.assertNotIn('멈추기 전 마지막 오류', row['detail'])
-        self.assertIn('새 호출 1회', row['detail'])
+        self.assertIn('새 호출 시도 1회', row['detail'])
         again, second = self.rerun(self.store.document(doc['id']), stage='ontology', ontology=True)
         self.assertEqual((again['status'], sorted(second.calls)), ('success', [(2, False), (3, False)]), again['detail'])
         self.assertIn('4,000자 재사용', again['detail'])
@@ -565,7 +565,7 @@ class Dictionary(Base):
         doc = self.source(SOURCE)
         row = self.finish_first(doc)
         self.assertEqual(row['status'], 'cancelled', row['detail'])
-        self.assertEqual(row['detail'], DICTIONARY_HEAD + f' · 검증 완료 {len(SOURCE):,}/{len(SOURCE):,}자 · 새 호출 1회')
+        self.assertEqual(row['detail'], DICTIONARY_HEAD + f' · 검증 완료 {len(SOURCE):,}/{len(SOURCE):,}자 · 새 호출 시도 1회')
         self.assertEqual(self.drafts(doc), [])
 
     def test_the_admission_notice_of_an_unsaved_draft_stays_out_of_a_cancelled_run(self):
@@ -578,7 +578,7 @@ class Dictionary(Base):
         finally:
             dictionary_context.worst_refusal = original
         self.assertEqual(row['status'], 'cancelled')
-        self.assertEqual(row['detail'], DICTIONARY_HEAD + f' · 검증 완료 {len(SOURCE):,}/{len(SOURCE):,}자 · 새 호출 1회')
+        self.assertEqual(row['detail'], DICTIONARY_HEAD + f' · 검증 완료 {len(SOURCE):,}/{len(SOURCE):,}자 · 새 호출 시도 1회')
         self.assertNotIn('추출', row['detail'].partition('저장하지 않았습니다.')[2])
 
 
