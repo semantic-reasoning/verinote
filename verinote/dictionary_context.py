@@ -7,15 +7,16 @@ from .store import canonical, digest
 
 COLUMNS = {'entities': ['id', 'name', 'type'], 'aliases': ['alias', 'entity'],
            'relations': ['id', 'description', 'subject_types', 'object_types']}
-PROTOCOL = '''Dictionary wire v1: a dictionary object marked dictionary_wire_version=1
-is an exact table encoding of definitions, not a summary. For each kind, pair
-columns[kind] with each row in rows[kind]. Every integer is a zero-based index
-into strings; arrays of integers restore ordered type arrays. Expand all values
-before reasoning. Use original string IDs/types in responses, never table indices.
-Definitions and their order are complete; sha256 binds the expanded definition
-object. Source quotations remain in sources/text/issues; the approved pin hash
-identifies the unchanged stored dictionary including its original quotations.
-'''
+PROTOCOL = """Dictionary wire v2: a dictionary object marked dictionary_wire_version=2
+is an exact positional table of definitions, not a summary. For each kind, pair
+columns[kind] with each row in rows[kind]. Every scalar cell is its original
+literal string; type arrays contain original literal strings. There is no string
+reference table. Copy the id/alias strings exactly in responses, including numeric-
+looking IDs. Row positions are not identifiers. Preserve definitions, order,
+direction and allowed types; sha256 binds the expanded definition object.
+Source quotations remain in sources/text/issues; the approved pin hash identifies
+the unchanged stored dictionary including its original quotations.
+"""
 MAX_DECODE_BYTES = 24 * 1024 * 1024
 # Serialized size of a dictionary with no rows: what no revision can remove from the transmitted definitions.
 EMPTY_DEFINITION_BYTES = len(json.dumps({kind: [] for kind in COLUMNS}, separators=(',', ':')).encode())
@@ -104,22 +105,15 @@ def validate_context_bytes(value):
 
 
 def encode(definitions):
-    strings: list[str] = []
-    positions = {}
-    def ref(value):
-        if isinstance(value, list): return [ref(v) for v in value]
-        if not isinstance(value, str): raise ValueError('사전 문맥 문자열 형식 오류')
-        if value not in positions:
-            positions[value] = len(strings); strings.append(value)
-        return positions[value]
+    """Keep semantic values literal; only repeated object field names are compressed."""
     if set(definitions) != set(COLUMNS): raise ValueError('사전 문맥 종류 오류')
     rows: dict[str, list] = {}
     for kind, columns in COLUMNS.items():
         rows[kind] = []
         for row in definitions[kind]:
             if set(row) != set(columns): raise ValueError('사전 문맥 필드 오류')
-            rows[kind].append([ref(row[c]) for c in columns])
-    result = {'dictionary_wire_version': 1, 'columns': copy.deepcopy(COLUMNS), 'strings': strings,
+            rows[kind].append([copy.deepcopy(row[c]) for c in columns])
+    result = {'dictionary_wire_version': 2, 'columns': copy.deepcopy(COLUMNS),
               'rows': rows, 'sha256': digest(definitions)}
     if decode(result) != definitions: raise ValueError('사전 문맥 무손실 복원 불일치')
     return result
@@ -127,21 +121,29 @@ def encode(definitions):
 
 def decode(value):
     from .ontology import DICTIONARY_TOTAL_LIMITS
-    if (not isinstance(value, dict) or set(value) != {'dictionary_wire_version', 'columns', 'strings', 'rows', 'sha256'}
-            or type(value['dictionary_wire_version']) is not int or value['dictionary_wire_version'] != 1
-            or value['columns'] != COLUMNS or not isinstance(value['strings'], list)
-            or any(not isinstance(s, str) for s in value['strings'])
-            or not isinstance(value['rows'], dict) or set(value['rows']) != set(COLUMNS)):
+    version = value.get('dictionary_wire_version') if isinstance(value, dict) else None
+    fields = {'dictionary_wire_version', 'columns', 'rows', 'sha256'} | ({'strings'} if version == 1 else set())
+    if (not isinstance(value, dict) or type(version) is not int or version not in (1, 2) or set(value) != fields
+            or value['columns'] != COLUMNS or not isinstance(value['rows'], dict) or set(value['rows']) != set(COLUMNS)):
         raise ValueError('사전 문맥 표 형식 오류')
     if len(canonical(value).encode()) > MAX_DECODE_BYTES:
         raise ValueError('사전 문맥 표 크기 초과')
-    table = value['strings']; used_bytes = 0
-    if len(table) > MAX_DECODE_BYTES or sum(len(s.encode()) for s in table) > MAX_DECODE_BYTES:
-        raise ValueError('사전 문맥 복원 크기 초과')
-    def expand(index):
+    table = value.get('strings'); used_bytes = 0
+    if version == 1:
+        if not isinstance(table, list) or any(not isinstance(s, str) for s in table):
+            raise ValueError('사전 문맥 문자열 표 오류')
+        if len(table) > MAX_DECODE_BYTES or sum(len(s.encode()) for s in table) > MAX_DECODE_BYTES:
+            raise ValueError('사전 문맥 복원 크기 초과')
+    def expand(item):
         nonlocal used_bytes
-        if type(index) is not int or not 0 <= index < len(table): raise ValueError('사전 문맥 참조 오류')
-        result = table[index]; used_bytes += len(result.encode())
+        if version == 1:
+            assert isinstance(table, list)
+            if type(item) is not int or not 0 <= item < len(table): raise ValueError('사전 문맥 참조 오류')
+            result = table[item]
+        else:
+            if not isinstance(item, str): raise ValueError('사전 문맥 리터럴 문자열 오류')
+            result = item
+        used_bytes += len(result.encode())
         if used_bytes > MAX_DECODE_BYTES: raise ValueError('사전 문맥 복원 크기 초과')
         return result
     result: dict[str, list] = {}
@@ -195,14 +197,14 @@ def build(instructions, payload, *, context_limit, prompt_limit, diagnostics):
     encoded_size, size = len(serialize(encoded).encode()), len(prompt.encode())
     diagnostics.update(encoded_definition_bytes=encoded_size, encoded_prompt_bytes=size, definition_sha256=digest(definitions))
     if encoded_size <= context_limit and size <= prompt_limit:
-        diagnostics.update(status='within_limit', encoding='dictionary-wire-v1',
+        diagnostics.update(status='within_limit', encoding='dictionary-wire-v2',
                            transmitted_definition_bytes=encoded_size, prompt_bytes=size)
         return prompt
     if min(raw_size, size) > prompt_limit:
         raise RequestTooLarge(min(raw_size, size), prompt_limit, encoded_size if size <= raw_size else len(serialize(selected).encode()))
     # context_limit only selects the form; it never refuses. The smaller prompt necessarily fits prompt_limit here.
     wire = size <= raw_size
-    diagnostics.update(status='over_context_limit', encoding='dictionary-wire-v1' if wire else 'plain',
+    diagnostics.update(status='over_context_limit', encoding='dictionary-wire-v2' if wire else 'plain',
                        transmitted_definition_bytes=encoded_size if wire else context_size,
                        prompt_bytes=size if wire else raw_size)
     return prompt if wire else raw

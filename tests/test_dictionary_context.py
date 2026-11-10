@@ -2,10 +2,12 @@
 import copy
 import json
 import unittest
+from unittest.mock import patch
 from urllib.error import HTTPError
 
 import test_dictionary_pipeline as pipeline
 import test_workflow as workflow
+from test_dictionary_wire_ids import historical_wire
 from test_workflow import approved_dictionary, extraction_response
 
 from verinote.dictionary_context import PROTOCOL, decode, encode, validate_context_bytes
@@ -48,7 +50,7 @@ class Codec(unittest.TestCase):
                      lambda w:w['rows']['entities'][0].append(0),
                      lambda w:w['rows']['entities'].append(w['rows']['entities'][0]),
                      lambda w:w['rows']['relations'][0].__setitem__(3, 0),
-                     lambda w:w.update(sha256='0'*64), lambda w:w['strings'].__setitem__(0, 'changed')]
+                     lambda w:w.update(sha256='0'*64), lambda w:w['rows']['entities'][0].__setitem__(0, 'changed')]
         for mutate in mutations:
             bad = copy.deepcopy(wire); mutate(bad)
             with self.assertRaises(ValueError): decode(bad)
@@ -56,26 +58,26 @@ class Codec(unittest.TestCase):
     def test_both_limits_exact_utf8_and_user_setting_effect(self):
         definitions = dictionary_context(rows(0, 240, 'unused'))
         body = {'dictionary': definitions, 'sources': [{'id': 's', 'text': '가'*100}]}
-        raw_bytes = len(canonical(definitions).encode()); self.assertGreater(raw_bytes, 60000)
+        raw_bytes = len(canonical(definitions).encode()); self.assertGreater(raw_bytes, 80000)
         plain = bounded_prompt('input\n', body, context_limit=100000)
         self.assertFalse(plain.startswith(PROTOCOL))
-        report = {}; packed = bounded_prompt('input\n', body, context_limit=60000, diagnostics=report)
-        self.assertTrue(packed.startswith(PROTOCOL)); self.assertLess(report['transmitted_definition_bytes'], 60000)
+        report = {}; packed = bounded_prompt('input\n', body, context_limit=80000, diagnostics=report)
+        self.assertTrue(packed.startswith(PROTOCOL)); self.assertLess(report['transmitted_definition_bytes'], 80000)
         self.assertEqual(decode(json.loads(packed.split('input\n')[1])['dictionary']), definitions)
         size = len(packed.encode())
-        self.assertEqual(bounded_prompt('input\n', body, context_limit=60000, prompt_limit=size), packed)
+        self.assertEqual(bounded_prompt('input\n', body, context_limit=80000, prompt_limit=size), packed)
         with self.assertRaisesRegex(ValueError, '전체 요청'):
-            bounded_prompt('input\n', body, context_limit=60000, prompt_limit=size-1)
+            bounded_prompt('input\n', body, context_limit=80000, prompt_limit=size-1)
         report = {}; forced = bounded_prompt('input\n', body, context_limit=100, diagnostics=report)
         self.assertEqual(decode(json.loads(forced.split('input\n')[1])['dictionary']), definitions)
         self.assertEqual(report['status'], 'over_context_limit'); self.assertGreater(report['transmitted_definition_bytes'], 100)
-        for value in (True, False, 0, -1, 120001, 1.5, '60000', None):
+        for value in (True, False, 0, -1, 120001, 1.5, '80000', None):
             with self.assertRaises(ValueError): validate_context_bytes(value)
         self.assertEqual(validate_context_bytes(120000), 120000)
         with self.assertRaises(ValueError): bounded_prompt('', body, prompt_limit=True)
 
     def test_codec_may_fit_definition_threshold_despite_protocol_overhead(self):
-        definitions = dictionary_context(rows(0, 3, 'unused'))
+        definitions = dictionary_context(rows(0, 20, 'unused'))
         body = {'dictionary': definitions}
         limit = len(json.dumps(encode(definitions), ensure_ascii=False, separators=(',', ':')).encode())
         raw = 'input\n'+json.dumps(body, ensure_ascii=False, separators=(',', ':'))
@@ -115,7 +117,7 @@ class FormSelection(unittest.TestCase):
         tiny = {'dictionary': dictionary_context(rows(0, 1, 'unused'))}
         pin = {'approved_dictionary': {'id': 'pin', 'payload': rows(0, 40, 'quote'*1000), 'sha256': 'pin-hash'},
                'text': 'source', 'issues': [{'path': 'facts.0.quote', 'item': {'quote': 'offending'}}]}
-        protocol_pushes_table_over = {'dictionary': {'entities': [{'id': f'E{i}', 'name': 'N'*50, 'type': 'T'*50} for i in range(6)],
+        protocol_pushes_table_over = {'dictionary': {'entities': [{'id': f'E{i}', 'name': 'N'*50, 'type': 'T'*50} for i in range(20)],
                                                      'aliases': [], 'relations': []}}
         return {'generation': generation, 'tiny': tiny, 'long-pin-repair': pin, 'protocol-pushes-table-over': protocol_pushes_table_over}
 
@@ -149,7 +151,7 @@ class FormSelection(unittest.TestCase):
                         field, is_table = sent_definitions(sent)
                         self.assertEqual(restored(field), n['definitions'])
                         self.assertEqual(sent.startswith(PROTOCOL), is_table)
-                        self.assertEqual(report['encoding'], 'dictionary-wire-v1' if is_table else 'plain')
+                        self.assertEqual(report['encoding'], 'dictionary-wire-v2' if is_table else 'plain')
                         self.assertEqual(report['prompt_bytes'], len(sent.encode())); self.assertLessEqual(report['prompt_bytes'], prompt_limit)
                         self.assertEqual(report['transmitted_definition_bytes'],
                                          len(SERIALIZE(field if is_table else dictionary_context(field)).encode()))
@@ -178,7 +180,7 @@ class FormSelection(unittest.TestCase):
         self.assertEqual((report['encoding'], report['status']), ('plain', 'over_context_limit'))
         body = self.fixtures()['generation']; n = self.sizes(body); report = {}
         sent = bounded_prompt('input\n', body, context_limit=1, prompt_limit=n['raw_prompt'], diagnostics=report)
-        self.assertTrue(sent.startswith(PROTOCOL)); self.assertEqual(report['encoding'], 'dictionary-wire-v1')
+        self.assertTrue(sent.startswith(PROTOCOL)); self.assertEqual(report['encoding'], 'dictionary-wire-v2')
 
     def test_table_within_threshold_but_over_the_prompt_limit_sends_plain_and_reports_over_threshold(self):
         body = self.fixtures()['protocol-pushes-table-over']; n = self.sizes(body)
@@ -211,12 +213,18 @@ class Generation(unittest.TestCase):
         chunks = [' '.join(f'Component{i:04}' for i in range(start, start+30)).ljust(4000, 'x') for start in range(0, 180, 30)]
         source = ''.join(chunks)+'마지막 구간'; doc = self.new_doc(source)
         deltas = [rows(i*30, 30, chunk) for i, chunk in enumerate(chunks)]
-        failed, _ = self.run_job(doc, deltas[:5]+[RuntimeError('old context cap')])
+        self.store.save_settings({'selected':'copilot','models':{},'dictionary_context_bytes':1})
+        with patch('verinote.dictionary_context.encode', side_effect=historical_wire), patch('verinote.dictionary_context.PROTOCOL','Historical wire v1\n'):
+            failed, old_calls = self.run_job(doc, deltas[:5]+[RuntimeError('old context cap')])
+        self.assertEqual(old_calls[1]['dictionary']['dictionary_wire_version'],1)
+        self.store.save_settings({'selected':'copilot','models':{},'dictionary_context_bytes':60000})
         checkpoint = json.loads(self.checkpoint(failed).read_text())
         self.assertEqual(checkpoint['offset'], 20000)
         checkpoint['contract']['prompt'] = PREVIOUS_CONTEXT_PROMPT
         self.checkpoint(failed).write_text(json.dumps(checkpoint))
+        original_record = self.checkpoint(failed).read_bytes()
         retried, calls = self.run_job(doc, [deltas[5], EMPTY])
+        self.assertEqual(self.checkpoint(failed).read_bytes(),original_record)
         self.assertEqual(retried['status'], 'success', retried['detail'])
         self.assertEqual([c['offset'] for c in calls], [20000, 24000])
         value = next(i['payload'] for i in self.store.document(doc['id'])['items'] if i['kind'] == 'ontology')
@@ -224,7 +232,7 @@ class Generation(unittest.TestCase):
         self.assertGreater(len(canonical(dictionary_context(value)).encode()), 60000)
         self.assertEqual(restored(calls[1]['dictionary']), dictionary_context(value))
         report = json.loads((self.root/'runs'/retried['id']/'7/context-budget.json').read_text())
-        self.assertEqual(report['encoding'], 'dictionary-wire-v1')
+        self.assertEqual(report['encoding'], 'dictionary-wire-v2')
         self.assertLessEqual(report['transmitted_definition_bytes'], 60000)
         self.assertEqual(self.store.source_text(doc['id'], 1), source)
 
