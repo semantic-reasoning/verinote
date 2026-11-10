@@ -649,6 +649,18 @@ class Store:
         db.execute('INSERT INTO events(item_id,revision,action,actor,reason,payload,created_at) VALUES(?,?,?,?,?,?,?)', (item_id, revision + 1, action, actor.strip(), reason.strip(), canonical(value), now()))
         return {'id': item_id, 'revision': revision + 1, 'status': status}
 
+    def _open_current_dictionary(self, db, item_id, expected_version, expected_generation, refusal):
+        """Inside the caller's write transaction: the dictionary row of the document's current version, unless it is rejected. Returns (row, source, payload)."""
+        row = db.execute("SELECT * FROM items WHERE id=? AND kind='ontology'", (item_id,)).fetchone()
+        if not row:
+            raise ValueError('사전 후보를 찾을 수 없습니다.')
+        doc = db.execute('SELECT * FROM documents WHERE id=?', (row['document_id'],)).fetchone()
+        self.check_document_token(doc, expected_version, expected_generation)
+        if row['version'] != doc['current_version'] or row['status'] == 'rejected':
+            raise Conflict(refusal)
+        source = db.execute('SELECT text FROM versions WHERE document_id=? AND version=?', (row['document_id'], row['version'])).fetchone()[0]
+        return row, source, json.loads(row['payload'])
+
     def add_dictionary_term(self, item_id, revision, expected_version, expected_generation, kind, spelling, quote, actor, reason, *, entity=None, name=None, entity_type=None):
         from .ontology import lookup_spelling_problem
         from .service import evidence, text
@@ -657,16 +669,8 @@ class Store:
             raise ValueError('별칭 또는 새 개체만 추가할 수 있습니다.')
         spelling = text(spelling, '표기')
         with self.connect(True) as db:
-            row = db.execute("SELECT * FROM items WHERE id=? AND kind='ontology'", (item_id,)).fetchone()
-            if not row:
-                raise ValueError('사전 후보를 찾을 수 없습니다.')
-            doc = db.execute('SELECT * FROM documents WHERE id=?', (row['document_id'],)).fetchone()
-            self.check_document_token(doc, expected_version, expected_generation)
-            if row['version'] != doc['current_version'] or row['status'] == 'rejected':
-                raise Conflict('현재 문서 버전의 반려되지 않은 사전에만 추가할 수 있습니다.')
-            source = db.execute('SELECT text FROM versions WHERE document_id=? AND version=?', (row['document_id'], row['version'])).fetchone()[0]
+            row, source, payload = self._open_current_dictionary(db, item_id, expected_version, expected_generation, '현재 문서 버전의 반려되지 않은 사전에만 추가할 수 있습니다.')
             quote = evidence(quote, source)
-            payload = json.loads(row['payload'])
             entities = {e['id']: e for e in payload['entities']}
             if spelling in entities or any(a['alias'] == spelling for a in payload['aliases']):
                 raise Conflict('이미 사전에 있는 표기입니다.')
@@ -692,6 +696,52 @@ class Store:
                     raise ValueError('사전에 있는 개체 유형을 고르세요.')
                 payload['entities'].append({'id': spelling, 'name': name, 'type': entity_type, 'quote': quote})
                 note = f'사전 추가(새 개체): {spelling} · {entity_type}'
+            return self._review_item(db, row, revision, 'revise', actor, f'{note} · {reason.strip()}', payload)
+
+    def change_dictionary_type(self, item_id, revision, expected_version, expected_generation, kind, relation, field, entity, entity_type, actor, reason):
+        """One exact type change for a relation that excluded a fact for a type mismatch: widen adds the entity's current type to the relation's
+        allowed types for the field; retype sets the entity's type to one of those allowed types. Nothing else in the payload changes, and the
+        result is a pending revision. Types compare as exact strings: a type that differs only by whitespace is a different type."""
+        self.validate_reviewer(actor, reason)
+        if kind not in ('widen', 'retype'):
+            raise ValueError('관계 허용 타입 넓히기 또는 개체 타입 바꾸기만 할 수 있습니다.')
+        with self.connect(True) as db:
+            row, _, payload = self._open_current_dictionary(db, item_id, expected_version, expected_generation, '현재 문서 버전의 반려되지 않은 사전만 고칠 수 있습니다.')
+            # Before any content check, so a change made since the user's screen is reported as such.
+            if row['revision'] != revision:
+                raise Conflict('후보가 변경되었습니다. 새로고침 후 검토하세요.')
+            target = next((r for r in payload['relations'] if r['id'] == relation), None) if isinstance(relation, str) else None
+            if target is None:
+                raise ValueError('현재 사전에 없는 관계입니다.')
+            if field not in ('subject', 'object'):
+                raise ValueError('주어 또는 목적어를 고르세요.')
+            entities = {e['id']: e for e in payload['entities']}
+            if not isinstance(entity, str) or entity not in entities:
+                raise ValueError('개체 ID를 고르세요.')
+            # Not the only guard: widen's equality check and retype's allowed-type check below also refuse every value this refuses. It names the reason.
+            if type(entity_type) is not str or entity_type not in {e['type'] for e in payload['entities']}:
+                raise ValueError('사전에 있는 개체 유형을 고르세요.')
+            allowed, current = target[f'{field}_types'], entities[entity]['type']
+            if kind == 'widen':
+                if entity_type != current:
+                    raise Conflict('현재 사전에서 이 개체의 타입이 달라졌습니다. 새로고침 후 다시 고르세요.')
+                if entity_type in allowed:
+                    raise Conflict('이미 허용 타입에 있습니다.')
+                target[f'{field}_types'] = sorted(set(allowed) | {entity_type})
+                note = f'타입 수정(관계 허용 타입): {relation} {field}_types + {entity_type}'
+            else:
+                if current in allowed:
+                    raise Conflict('이미 허용 타입에 들어갑니다.')
+                if entity_type not in allowed:
+                    raise ValueError('이 관계의 허용 타입 중에서 고르세요.')
+                if not any(e['type'] == current for e in payload['entities'] if e['id'] != entity):
+                    using = [r['id'] for r in payload['relations'] if current in r['subject_types'] or current in r['object_types']]
+                    if using:
+                        names = ', '.join(using[:5]) + (f' 외 {len(using) - 5}개' if len(using) > 5 else '')
+                        raise ValueError(f'개체 {entity}: 타입 {current}의 마지막 개체입니다. 관계 {names}에서 이 타입을 허용하므로 바꿀 수 없습니다. '
+                                         '대신 허용 타입 넓히기를 고르거나 내용 수정에서 관계 정의를 먼저 고치세요.')
+                entities[entity]['type'] = entity_type
+                note = f'타입 수정(개체 타입): {entity} {current} → {entity_type}'
             return self._review_item(db, row, revision, 'revise', actor, f'{note} · {reason.strip()}', payload)
 
     def spelling_passages(self, document_id, version, spelling, *, radius=80, limit=20):

@@ -282,7 +282,7 @@ class Screen(unittest.TestCase):
         rows = [row('type_mismatch', '검수 활동', '정산 문서')]
         html = render(report(rows))
         self.assertIn('관계의 허용 타입을 넓혀 다시 승인한 뒤 재추출하면 저장될 수 있습니다', html)
-        self.assertIn('모든 청크를 새로 호출하며 되살아난다는 보장은 없습니다', html)
+        self.assertIn('모든 청크를 새로 호출하고 보충 점검 호출이 더 있을 수 있으며 되살아난다는 보장은 없습니다', html)
         self.assertNotIn('재추출', render(report(rows, version_current=False)))
 
     def test_old_version_note_only_on_an_old_version(self):

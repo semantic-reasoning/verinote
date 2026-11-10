@@ -210,7 +210,7 @@ groups.cost=async()=>{
  await h.open();
  const n=h.el('#term-disclosures').innerHTML;
  assert(n.includes('11개 청크를 모두 새로 호출합니다'));
- assert(n.includes('27.5 OpenRouter credits'),n);assert(n.includes('이 실행의 에이전트·모델 기준 추정 · 보정 제외'));assert(!n.includes('999'));
+ assert(n.includes('27.5 OpenRouter credits'),n);assert(n.includes('이 실행의 에이전트·모델 기준 추정 · 인용 보정·보충 점검 제외'));assert(!n.includes('999'));
  const u=make({usage:{credits:[{value:999,unit:'x'}],details:[d('extract',null),d('extract',null)]}});await u.open();
  const m=u.el('#term-disclosures').innerHTML;assert(m.includes('예상 비용(재추출 한 번): 미확인'));assert(!m.includes('999'));
 };

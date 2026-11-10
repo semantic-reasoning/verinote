@@ -254,6 +254,12 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(store.add_dictionary_term(parts[2], d.get('revision'), d.get('expected_version'), d.get('expected_generation'), d.get('kind'),
                                                                d.get('spelling'), d.get('quote'), d.get('actor'), d.get('reason'),
                                                                entity=d.get('entity'), name=d.get('name'), entity_type=d.get('entity_type')))
+                if parts[3] == 'dictionary-types' and method == 'POST':
+                    d = self.body()
+                    if set(d) - {'revision', 'expected_version', 'expected_generation', 'kind', 'relation', 'field', 'entity', 'entity_type', 'actor', 'reason'}:
+                        raise ValueError('알 수 없는 사전 타입 수정 필드')
+                    return self.send(store.change_dictionary_type(parts[2], d.get('revision'), d.get('expected_version'), d.get('expected_generation'), d.get('kind'),
+                                                                  d.get('relation'), d.get('field'), d.get('entity'), d.get('entity_type'), d.get('actor'), d.get('reason')))
                 if parts[3] == 'history' and method == 'GET':
                     return self.send(store.history(parts[2]))
             if route.path == '/api/cleanup':
