@@ -4,12 +4,15 @@ import json
 import threading
 import time
 import unittest
+from contextlib import ExitStack, contextmanager
 from unittest.mock import patch
 
 import test_workflow as workflow
 from test_quote_repair import broken, repair
 from test_workflow import SOURCE, approved_dictionary, extraction_response
 
+from verinote.extraction_checkpoint import CHUNK_TIMEOUT
+from verinote.extraction_scheduler import ChunkScheduler
 from verinote.extraction_transport import ExtractionSpec
 from verinote.service import Service
 
@@ -129,22 +132,59 @@ class SchedulerIntegration(unittest.TestCase):
         self.assertEqual(len(self.saved(run)), 1)
         self.assertCountEqual(caller.calls, [(1, False), (2, False), (1, True)])
 
-    def test_repair_and_checkpoint_validation_share_initial_deadline(self):
-        caller = Caller(lambda i, r: (time.sleep(.06) or repair()) if r else broken(), 1)
-        with patch('verinote.service.CHUNK_TIMEOUT', .03):
-            service, run = self.start(self.document(1), caller); run = self.finish(service, run)
-        self.assertEqual(run['status'], 'error'); self.assertEqual(self.saved(run), [])
-        self.assertEqual(caller.calls, [(1, False), (1, True)])
+    @contextmanager
+    def jumping_clock(self, dispatch_delay):
+        """Yield the offset that the patched time.monotonic adds to the real clock; the fake caller raises it to pass the real
+        CHUNK_TIMEOUT. With dispatch_delay, every initial and repair call also waits 50 ms of real time before it is sent: more
+        than the 30 ms these tests once used as the whole deadline, so a 30 ms real-time deadline would expire before dispatch."""
+        offset, real_clock = [0.0], time.monotonic
+        def delayed(method):
+            def wrapper(*args, **kwargs):
+                time.sleep(.05)
+                return method(*args, **kwargs)
+            return wrapper
+        with ExitStack() as stack:
+            stack.enter_context(patch('time.monotonic', lambda: real_clock() + offset[0]))
+            if dispatch_delay:
+                stack.enter_context(patch.object(ChunkScheduler, '_run', delayed(ChunkScheduler._run)))
+                stack.enter_context(patch.object(ChunkScheduler, 'repair', delayed(ChunkScheduler.repair)))
+            yield offset
 
-    def test_deadline_includes_order_wait_and_does_not_accept_late_response(self):
-        def call(i, r):
-            if i == 1: time.sleep(.06)
-            return extraction_response()
-        caller = Caller(call)
-        with patch('verinote.service.CHUNK_TIMEOUT', .03):
-            service, run = self.start(self.document(), caller); run = self.finish(service, run)
-        self.assertEqual(run['status'], 'error'); self.assertEqual(self.saved(run), [])
-        self.assertEqual(len(caller.calls), 2)
+    def test_repair_and_checkpoint_validation_share_initial_deadline(self):
+        for dispatch_delay in (False, True):
+            with self.subTest(dispatch_delay=dispatch_delay):
+                self.tearDown(); self.setUp()
+                with self.jumping_clock(dispatch_delay) as offset:
+                    def call(index, repairing, offset=offset):
+                        # Each call takes 0.6 × CHUNK_TIMEOUT: the repair answers past the deadline set when chunk 1 started
+                        # (1.2×), but within one that started at the repair call (0.6× + 1×).
+                        offset[0] += .6 * CHUNK_TIMEOUT
+                        return repair() if repairing else broken()
+                    caller = Caller(call, 1)
+                    service, run = self.start(self.document(1), caller); run = self.finish(service, run)
+                self.assertEqual(run['status'], 'error'); self.assertEqual(self.saved(run), [])
+                self.assertIn(f'인용 보정 실패 (청크당 1회). 청크 실행 시간 제한 초과 ({CHUNK_TIMEOUT}초)', run['detail'])
+                self.assertIn('새 호출 시도 2회', run['detail'])
+                self.assertEqual(caller.calls, [(1, False), (1, True)])
+
+    def test_first_chunk_response_past_deadline_after_both_calls_sent_is_refused(self):
+        for dispatch_delay in (False, True):
+            with self.subTest(dispatch_delay=dispatch_delay):
+                self.tearDown(); self.setUp()
+                second_sent = threading.Event()
+                with self.jumping_clock(dispatch_delay) as offset:
+                    def call(index, repairing, offset=offset, second_sent=second_sent):
+                        if index == 1:
+                            self.assertTrue(second_sent.wait(2))  # raise the clock only once chunk 2's call is recorded
+                            offset[0] += CHUNK_TIMEOUT + 1
+                        if index == 2: second_sent.set()
+                        return extraction_response()
+                    caller = Caller(call)
+                    service, run = self.start(self.document(), caller); run = self.finish(service, run)
+                self.assertEqual(run['status'], 'error'); self.assertEqual(self.saved(run), [])
+                self.assertTrue(run['detail'].startswith(f'청크 1 · 청크 실행 시간 제한 초과 ({CHUNK_TIMEOUT}초)'), run['detail'])
+                self.assertIn('새 호출 시도 2회', run['detail'])
+                self.assertCountEqual(caller.calls, [(1, False), (2, False)])
 
     def test_db_failure_never_marks_checkpoint_complete(self):
         caller = Caller(lambda i, r: extraction_response(), 1); doc = self.document(1)
