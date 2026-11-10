@@ -168,6 +168,32 @@ class Accounting(unittest.TestCase):
         self.assertEqual(result['facts'], [GOOD, PHASE])
         validate_accounting(result, D)
 
+    def test_cross_predicate_repair_uses_post_exclusion_fact_numbers(self):
+        value = fresh([MISTYPED, GOOD, PHASE])
+        row_of(value, 'has_activity')['fact_indices'] = [0, 2]
+        row_of(value, 'has_phase')['fact_indices'] = [1]
+        result, excluded = exclude_off_dictionary_facts(value, D)
+        self.assertEqual(len(excluded), 1)
+        self.assertEqual(row_of(result, 'has_activity')['fact_indices'], [1])
+        self.assertEqual(row_of(result, 'has_phase')['fact_indices'], [0])
+        repaired, changes = repair_missing_indices(result, D)
+        self.assertEqual(repaired['facts'], [GOOD, PHASE])
+        self.assertEqual(repaired['excluded_facts'], excluded)
+        self.assertEqual(row_of(repaired, 'has_activity')['fact_indices'], [0])
+        self.assertEqual(row_of(repaired, 'has_phase')['fact_indices'], [1])
+        self.assertEqual([(c['before'], c['after']) for c in changes], [([1], [0]), ([0], [1])])
+        validate_accounting(repaired, D)
+
+    def test_exclusion_sentinel_rejects_even_beside_repairable_cross_predicate_indices(self):
+        value = fresh([MISTYPED, GOOD, PHASE])
+        row_of(value, 'has_activity')['fact_indices'] = [0, 2]
+        row_of(value, 'has_phase')['fact_indices'] = [0, 1]
+        result, _ = exclude_off_dictionary_facts(value, D)
+        self.assertTrue(any(i >= len(result['facts']) for i in row_of(result, 'has_phase')['fact_indices']))
+        original = copy.deepcopy(result)
+        with self.assertRaises(ValueError): repair_missing_indices(result, D)
+        self.assertEqual(result, original)
+
     def test_row_extracted_naming_only_the_excluded_fact_becomes_not_representable(self):
         self.assert_excluded_row(fresh([MISTYPED, PHASE]))
 
