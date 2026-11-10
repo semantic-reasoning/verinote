@@ -531,7 +531,8 @@ class Service:
                             issues = extraction_quote_issues(output, chunk, run['ontology']['payload'], contract_version=contract_version, skip_off_dictionary=current_contract)
                             if current_contract:
                                 normalized, accounting_changes = repair_missing_indices(
-                                    output, run['ontology']['payload'], allow_model_range=not excluded)
+                                    output, run['ontology']['payload'], allow_model_range=not excluded,
+                                    prune_claim_references=True)
                                 if accounting_changes:
                                     validation.reject()
                                     write_repair_audit(self.root, run, doc, index, offset, raw_output, normalized, accounting_changes)

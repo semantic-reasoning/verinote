@@ -229,6 +229,10 @@ class FidelityTrial(unittest.TestCase):
         self.assertTrue(result['quality']['passed'], result)
         artifact = self.output/report['documents'][0]['artifact']
         audit = next(artifact.rglob('coverage-repair.json')); original = audit.read_bytes()
+        value = json.loads(original); value['schema_version'] = 2
+        audit.write_text(json.dumps(value)); self.refresh(report)
+        self.assertIn('artifact_verification_failed', artifacts.evaluate(self.output)['reasons'])
+        audit.write_bytes(original); self.refresh(report)
         value = json.loads(original); value['changes'][0]['after'] = []
         audit.write_text(json.dumps(value)); self.refresh(report)
         self.assertIn('artifact_verification_failed', artifacts.evaluate(self.output)['reasons'])

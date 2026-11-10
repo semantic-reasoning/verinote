@@ -94,6 +94,24 @@ class ExtractionRecovery(unittest.TestCase):
         self.assertEqual([c['payload']['offset'] for c in calls], [0, 8000])
         self.assertFalse((self.root/'runs'/final['id']/'1/coverage-repair.json').exists())
 
+    def test_pruned_claim_references_resume_but_corrupted_checkpoint_is_not_repaired(self):
+        for corrupt in (False, True):
+            doc = self.document()
+            value = extraction_response(); value['coverage'][0]['claim_indices'] = [0, 1]
+            first, _ = self.execute(doc, [value, TimeoutError('stop')])
+            audit = self.root/'runs'/first['id']/'1/coverage-repair.json'
+            original = audit.read_bytes()
+            saved = json.loads(self.checkpoint(first).read_text())
+            self.assertEqual(saved['outputs'][0]['coverage'][0]['claim_indices'], [0])
+            if corrupt:
+                saved['outputs'][0]['coverage'][0]['claim_indices'] = [0, 1]
+                self.checkpoint(first).write_text(json.dumps(saved))
+            final, calls = self.execute(doc, [extraction_response()] * (2 if corrupt else 1))
+            self.assertEqual(final['status'], 'success', final['detail'])
+            self.assertEqual([c['payload']['offset'] for c in calls], [0, 8000] if corrupt else [8000])
+            self.assertEqual(audit.read_bytes(), original)
+            self.assertNotIn('로컬 보정', final['detail'])
+
     def test_repeated_failures_resume_failed_chunk_and_publish_once(self):
         doc = self.document(3)
         first, calls = self.execute(doc, [extraction_response(), TimeoutError('timeout')])
