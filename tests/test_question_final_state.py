@@ -128,7 +128,7 @@ class QuestionFinalState(unittest.TestCase):
 
     def test_exception_whose_text_cannot_be_read_still_ends_the_question_as_error(self):
         job, service = self.ask([raising(Unreadable())])
-        self.assertEqual((job['status'], job['error'], self.free_slots(service)), ('error', 'Unreadable', 8))
+        self.assertEqual((job['status'], job['error'], self.free_slots(service)), ('error', 'Unreadable (오류 문구를 읽을 수 없음)', 8))
 
     def registration_failure(self, refuse, error=None):
         error = error or RuntimeError('submit')
@@ -150,8 +150,12 @@ class QuestionFinalState(unittest.TestCase):
 
     def test_registration_failure_whose_text_cannot_be_read_still_ends_the_question_as_error(self):
         job, seen, free, error = self.registration_failure(lambda n, job: False, Unreadable())
-        self.assertEqual((job['status'], job['error'], free), ('error', 'Unreadable', 8))
+        self.assertEqual((job['status'], job['error'], free), ('error', 'Unreadable (오류 문구를 읽을 수 없음)', 8))
         self.assertIsInstance(error, Unreadable)
+
+    def test_registration_failure_with_empty_error_text_stores_the_type(self):
+        job, seen, free, error = self.registration_failure(lambda n, job: False, RuntimeError())
+        self.assertEqual((job['status'], job['error'], free), ('error', 'RuntimeError (오류 문구 없음)', 8))
 
     def test_final_save_raising_still_returns_the_slot(self):  # finish_question swallows its own errors; this pins the slot release apart from that
         def boom(service, job): raise OSError('final')

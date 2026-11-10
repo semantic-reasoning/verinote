@@ -241,7 +241,7 @@ class RunFinalState(Base):
             return extraction_response()
         run, _ = self.sequential(doc, respond)
         self.assertEqual(run['status'], 'error')
-        self.assertTrue(run['detail'].startswith('청크 2 · Unreadable · '), run['detail'])
+        self.assertTrue(run['detail'].startswith('청크 2 · Unreadable (오류 문구를 읽을 수 없음) · '), run['detail'])
 
     def test_registration_failure_whose_text_cannot_be_read_still_ends_the_run_as_error(self):
         class Unreadable(OSError):
@@ -255,7 +255,19 @@ class RunFinalState(Base):
         with patch.object(usage, 'atomic_json', disk), self.assertRaises(Unreadable):
             service.start(doc['id'], 'copilot', 'model', expected_version=version, expected_generation=generation)
         (run,) = [r for r in self.store.runs() if r['document_id'] == doc['id'] and r['stage'] == 'extract']
-        self.assertEqual((run['status'], run['detail'], self.free_slots(service)), ('error', 'Unreadable', 8))
+        self.assertEqual((run['status'], run['detail'], self.free_slots(service)), ('error', 'Unreadable (오류 문구를 읽을 수 없음)', 8))
+
+    def test_registration_failure_with_empty_error_text_stores_the_type(self):
+        doc = self.document()
+        from verinote import usage
+        def disk(path, value): raise OSError()
+        service = Service(self.store, self.root, Sequential(ok))
+        self.addCleanup(service.close)
+        version, generation = self.current(doc)
+        with patch.object(usage, 'atomic_json', disk), self.assertRaises(OSError):
+            service.start(doc['id'], 'copilot', 'model', expected_version=version, expected_generation=generation)
+        (run,) = [r for r in self.store.runs() if r['document_id'] == doc['id'] and r['stage'] == 'extract']
+        self.assertEqual((run['status'], run['detail'], self.free_slots(service)), ('error', 'OSError (오류 문구 없음)', 8))
 
     def registration_failure(self, refuse):
         doc = self.document()

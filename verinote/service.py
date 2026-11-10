@@ -107,11 +107,14 @@ def validate_page(value, source, *, allow_no_claims=False):
 
 
 def error_text(exc):
-    """str(exc), or the exception's type name when its own __str__ raises."""
+    """str(exc) without the leading and trailing whitespace that str.strip() removes, inner spacing unchanged; the type name
+    with '(오류 문구 없음)' when nothing is left, and with '(오류 문구를 읽을 수 없음)' when str(exc) raises. Zero-width
+    characters such as U+200B and U+FEFF are not whitespace to str.strip(), so text made only of them is kept as it is."""
     try:
-        return str(exc)
+        text = str(exc).strip()
     except Exception:
-        return type(exc).__name__
+        return f'{type(exc).__name__} (오류 문구를 읽을 수 없음)'
+    return text or f'{type(exc).__name__} (오류 문구 없음)'
 
 
 class Service:
@@ -590,7 +593,7 @@ class Service:
                                 except RequestTooLarge as exc:
                                     raise ValueError(f'{locations}: 인용 보정 실패 (청크당 1회). {exc.with_advice(exc.repair_advice(self.other_agent_ready(run["agent"]), run["ontology"]["revision"]))}') from exc
                                 except Exception as exc:
-                                    raise ValueError(f'{locations}: 인용 보정 실패 (청크당 1회). {exc}') from exc
+                                    raise ValueError(f'{locations}: 인용 보정 실패 (청크당 1회). {error_text(exc)}') from exc
                                 repaired_quotes += len(changes)
                                 if changes:
                                     saved = [quote_label(path) for path in saved_quote_paths(changes, refused)]
