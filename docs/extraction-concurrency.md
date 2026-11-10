@@ -126,20 +126,17 @@ existing sequential Copilot argv, call count and ordering. Capacity 1, a thresho
 policy, and dictionary generation are not accepted for this opt-in. Other
 providers retain their transport contracts. Document scheduling independently permits two dictionary-generation files and two extraction files, plus one serialized question. Each registered extraction owns its transport; two files with chunk concurrency two may make four extraction calls at once.
 
-For local web extraction, start with:
+For local web extraction, use **에이전트 설정 → Copilot 승인 사전 추출 · 파일당 청크 처리** and save either sequential 1 or parallel 2. The persisted `copilot_extraction_concurrency` integer takes precedence over startup configuration, including saved 1 overriding startup 2. It applies to newly submitted Copilot extraction jobs without a restart. Already registered jobs, including queued jobs, retain their captured configuration. Dictionary generation and other providers are unaffected.
+
+When no preference has been saved, the startup fallback can be enabled with:
 
 ```sh
 python -m verinote --data-dir data --port 8765 --copilot-extraction-concurrency 2
 ```
 
-The default is disabled (sequential 1). The separate startup log and read-only
-`GET /api/settings` field `copilot_extraction` report enabled state, effective
-concurrency, `agent=copilot`, `stage=extract` and `source=server_startup`. Only
-Copilot `/extract` registrations inherit it. HTTP request bodies and settings PUT
-cannot enable or override it. The existing Claude flag and `extraction_policy`
-settings object retain their meaning. Remove this flag and restart to return
-future registrations to sequential operation; already registered runs retain
-their frozen contract.
+The default is sequential 1. `GET /api/settings` reports the effective `copilot_extraction` state and its source (`settings` or `server_startup`). The startup log reports the effective state at that time; subsequent web changes affect new registrations. Settings PUT accepts optional `copilot_extraction_concurrency` alongside required `selected` and `models`, with exact integer values 1 or 2 only. Omission preserves an existing preference, so older clients updating model or dictionary settings do not erase it. The optional field uses the existing agents JSON row and needs no migration.
+
+Per-job HTTP request bodies cannot override concurrency. To return to sequential execution, select 1 and save; removing the startup flag alone does not override a saved preference. This does not change the separate Claude policy or file admission limits: two extraction files with two chunks each may make four simultaneous extraction calls.
 
 Schema 3 records the Copilot agent, absolute executable path, model, capacity 2,
 timeout policy, output limit, copied Copilot rates, `no_auto_update=true` and

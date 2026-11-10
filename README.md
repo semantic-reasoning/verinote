@@ -19,8 +19,8 @@ python -m verinote
 
 브라우저에서 <http://localhost:8765>를 엽니다. 데이터 위치와 포트를 바꾸려면 `python -m verinote --data-dir /path/to/storage --port 8766`을 사용합니다. `verinote` 명령도 동일합니다. 프로그램은 `127.0.0.1`에만 바인딩됩니다.
 
-Copilot 승인 사전 추출에만 청크 최대 2개 동시 호출을 명시적으로 적용하려면
-`python -m verinote --copilot-extraction-concurrency 2`로 시작합니다. 기본은 파일 내부 청크 순차 실행이며, 파일 간 동시 실행 한도와는 별개입니다.
+웹의 **에이전트 설정 → Copilot 승인 사전 추출 · 파일당 청크 처리**에서 순차 1개 또는 병렬 최대 2개를 선택하고 **설정 저장**을 누릅니다. 재시작 없이 새 Copilot 추출부터 적용되며, 실행 중·대기 중인 작업은 등록 당시 설정을 유지합니다. 저장한 값은 재시작 후에도 유지되고 서버 시작 옵션보다 우선합니다.
+저장한 설정이 없으면 `python -m verinote --copilot-extraction-concurrency 2`로 병렬 기본값을 지정할 수 있으며, 이 옵션도 없으면 순차 실행합니다. 파일 간 동시 실행 한도와는 별개입니다.
 공유 상태·인증 갱신 충돌, 실제 동시 호출·요율·과금·`auto` 라우팅은 미확인이며,
 실패 시 이미 시작한 호출의 비용이 더해질 수 있습니다. [계약·사용량·미확인 항목과 되돌리기](docs/extraction-concurrency.md#copilot-explicit-concurrency-2)를 확인하세요.
 
