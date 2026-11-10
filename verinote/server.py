@@ -5,6 +5,7 @@ import binascii
 import difflib
 import json
 import re
+import sqlite3
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -297,6 +298,14 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send([self.server.service.with_usage('questions', row) for row in store.questions()])
                 if method == 'POST':
                     return self.send(self.server.service.ask(self.body()), 202)
+            if parts == ['api', 'questions', 'unreadable'] and method == 'GET':
+                return self.send(self.server.service.unreadable_questions())
+            if len(parts) == 4 and parts[:2] == ['api', 'questions'] and parts[3] == 'delete-unreadable' and method == 'POST':
+                if self.body():
+                    raise ValueError('손상된 질문 기록 삭제에는 빈 JSON 객체를 보내세요.')
+                if not re.fullmatch('[0-9a-f]{32}', parts[2]):
+                    raise ValueError('질문 ID 형식이 맞지 않습니다.')
+                return self.send(self.server.service.delete_unreadable_question(parts[2]))
             if len(parts) == 4 and parts[:2] == ['api', 'questions'] and parts[3] == 'cancel' and method == 'POST':
                 data = self.body()
                 if set(data) != {'expected_status'}:
@@ -316,6 +325,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send({'error': str(exc)}, 409)
         except (ValueError, TypeError, KeyError, binascii.Error) as exc:
             self.send({'error': str(exc)}, 400)
+        except sqlite3.Error as exc:
+            # A decode error's message quotes the stored text, so only the type and the SQLite code are shown.
+            self.send({'error': f"처리 실패: 데이터베이스 오류 {type(exc).__name__} ({getattr(exc, 'sqlite_errorname', None) or '코드 미확인'}). 저장된 내용은 오류 문구에 표시하지 않습니다."}, 500)
         except Exception as exc:
             self.send({'error': f'처리 실패: {type(exc).__name__}: {exc}'}, 500)
 
@@ -346,8 +358,9 @@ def main(argv=None):
     if skipped:
         ids = [i for i in skipped if isinstance(i, str) and re.fullmatch('[0-9a-f]{32}', i)]
         hidden = f' ({len(skipped) - len(ids)} more with an id not shown)' if len(ids) < len(skipped) else ''
-        print(f'Startup recovery skipped {len(skipped)} question row(s) it could not read or repair and left them unchanged, so a skipped question '
-              f'keeps its stored status and may still show as in progress though nothing runs. Ids: {", ".join(ids) or "none shown"}{hidden}',
+        print(f'Startup recovery skipped {len(skipped)} question row(s) it could not read or repair and left them unchanged; they keep their stored '
+              'content, are shown under 손상된 질문 기록 in the question history (by id when the id is stored as text of 32 lowercase hex characters, and '
+              f'such a row can be deleted there; otherwise only counted), and do not block document deletion. Ids: {", ".join(ids) or "none shown"}{hidden}',
               file=sys.stderr, flush=True)
     service = Service(store, root, credentials=credentials, relation_type_warning_threshold=credentials.relation_type_warning_threshold)
     server = None
