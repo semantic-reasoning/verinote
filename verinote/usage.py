@@ -334,11 +334,15 @@ def http_public_fields(meta):
     return clean
 
 
+UNCONFIRMED = '호출 계획 목록에 읽을 수 있는 호출 로그가 없는 항목이 있어, 그 호출이 시작됐는지와 사용량을 확인할 수 없습니다.'
+
+
 def job_calls(root, kind, owner):
     key = owner['id']
     if kind not in ('runs', 'questions') or not re.fullmatch(r'[a-f0-9]{32}', key):
         return []
-    declared = set()
+    declared = {}
+    unconfirmed = False
     if kind == 'questions':
         paths = [(f'llm-{i}', 'question') for i in range(1, 7)]
         manifest = owner.get('call_manifest')
@@ -351,7 +355,7 @@ def job_calls(root, kind, owner):
                 if (not isinstance(path, str) or not re.fullmatch(r'(?:llm-[1-6]|context-[1-6]-(?:[1-9][0-9]*|decision))', path)
                         or stage not in ('question', 'analysis_leaf', 'analysis_merge', 'question_synthesis') or path in declared):
                     continue
-                declared.add(path)
+                declared[path] = entry['status']
                 paths.append((path, stage))
     elif owner.get('stage') == 'ontology':
         from .ontology import MAX_DICTIONARY_CALLS
@@ -364,6 +368,13 @@ def job_calls(root, kind, owner):
         data = safe_file(root, base + '/usage.json')
         meta = safe_file(root, base + '/run.json')
         if data is None and meta is None and path not in declared:
+            continue
+        if data is None and meta is None and declared[path] in ('dispatched', 'failed') and owner['status'] in ('error', 'cancelled', 'interrupted'):
+            # Assistant.invoke saves the dispatched record before the call, so a later failed save or a restart can leave it with no
+            # call behind it. The local CLI transports (the persistent Claude worker too) and Ollama write their first log before the
+            # request and raise if that fails, but OpenRouter sends the request even when its record writes fail, so a missing log is
+            # not evidence of zero calls either: the job's call count is unknown. An entry with either log is counted as before.
+            unconfirmed = True
             continue
         usage = None
         try:
@@ -431,6 +442,8 @@ def job_calls(root, kind, owner):
             clean['reasoning_diagnostic'] = reasoning_diagnostic(clean)
         clean.update(call_id=f'{kind}/{key}/{path}', stage=stage, call_count_known=True)
         calls.append(clean)
+    if unconfirmed:
+        calls.append(unknown_count(kind, key, owner, UNCONFIRMED))
     if not calls and kind == 'runs' and owner.get('stage') in ('ontology', 'extract') and owner['status'] == 'success':
         # Positive evidence of a fully resumed run, never infer zero from absent logs.
         raw, pipeline = progress_marker(root, key, owner['stage'])
@@ -476,10 +489,14 @@ def job_calls(root, kind, owner):
         if owner.get('error') == QUESTION_QUEUED_CANCEL:  # Store.cancel_question's marker: cancelled while queued; a worker that took it anyway is refused its first save, before any call
             return []
     if not calls and owner['status'] != 'queued':
-        missing = empty_usage(owner['agent'], owner.get('model', ''))
-        missing.update(call_id=f'{kind}/{key}/unknown', stage='question' if kind == 'questions' else owner.get('stage', 'legacy'), status='unknown', call_count_known=False, warnings=['호출 로그가 없어 사용량과 호출 횟수를 확인할 수 없습니다.'])
-        calls.append(missing)
+        calls.append(unknown_count(kind, key, owner, '호출 로그가 없어 사용량과 호출 횟수를 확인할 수 없습니다.'))
     return calls
+
+
+def unknown_count(kind, key, owner, warning):
+    missing = empty_usage(owner['agent'], owner.get('model', ''))
+    missing.update(call_id=f'{kind}/{key}/unknown', stage='question' if kind == 'questions' else owner.get('stage', 'legacy'), status='unknown', call_count_known=False, warnings=[warning])
+    return missing
 
 
 def progress_marker(root, key, stage):

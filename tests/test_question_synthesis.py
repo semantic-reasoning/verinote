@@ -14,7 +14,7 @@ from verinote.question_batches import MARKER, leaf_prompt, plan, units_for
 from verinote.question_context import resolve
 from verinote.question_synthesis import run, supports, validate
 from verinote.store import Store, digest
-from verinote.usage import job_calls
+from verinote.usage import UNCONFIRMED, job_calls
 
 
 def unpack(prompt):
@@ -160,7 +160,8 @@ class CompleteContext(unittest.TestCase):
             {'path': '../outside', 'stage': 'analysis_leaf', 'status': 'failed'},
             {'path': 'context-1-2', 'stage': 'analysis_leaf', 'status': 'planned'}]}
         calls = job_calls(self.root, 'questions', owner)
-        self.assertEqual(len(calls), 1); self.assertEqual(calls[0]['status'], 'unknown')
+        self.assertEqual([(c['call_id'].rsplit('/', 1)[1], c['status'], c['call_count_known'], c['warnings']) for c in calls],
+                         [('unknown', 'unknown', False, [UNCONFIRMED])])
 
     def test_whole_assistant_overflow_automatically_processes_every_record(self):
         raw = state(); a = self.assistant(raw)
