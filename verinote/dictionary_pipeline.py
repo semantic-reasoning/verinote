@@ -50,6 +50,7 @@ PREVIOUS_IMMUTABLE_PROMPT = '0e2a3892fe24a0ca48994dfa347ee40c9dc9a06b14ed76e53a4
 
 
 def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_threshold=DEFAULT_THRESHOLD, context_limit=60000, other_agent_ready, before_call=None):
+    from .service import error_text
     threshold = validate_threshold(relation_type_warning_threshold)
     source = doc['text']
     slices = list(bounded_spans(source, DICTIONARY_CHUNK_SIZE))
@@ -223,7 +224,7 @@ def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_thr
                     next_reconciliations = reconciliation.add_chunk(reconciliations, offset, len(chunk), changes)
                     checkpoint(merged, next_exclusions, next_reconciliations, offset + len(chunk))
             except Exception as exc:
-                raise ValueError(f'사전 구간 {index}/{len(slices)} · {exc}') from exc
+                raise ValueError(f'사전 구간 {index}/{len(slices)} · {error_text(exc)}') from exc
             dictionary, accepted = merged, offset + len(chunk)
             exclusions = next_exclusions
             reconciliations = next_reconciliations
@@ -243,7 +244,7 @@ def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_thr
     except Exception as exc:
         state['status'] = 'error'
         write(folder / 'dictionary-progress.json', state)
-        raise ValueError(f'{exc} · {summary()}') from exc
+        raise ValueError(f'{error_text(exc)} · {summary()}') from exc
 
 
 def admission_notice(cli, root, run, doc, dictionary, context_limit, other_agent_ready):
