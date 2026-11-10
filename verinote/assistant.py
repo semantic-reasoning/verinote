@@ -429,17 +429,21 @@ class Assistant:
     def call_record(self, path):
         return next(c for c in self.job['call_manifest'] if c['path'] == path)
 
-    def invoke(self, prompt, path, round_number, validate=None):
+    def invoke(self, prompt, path, round_number, validate=None, mirror=None):
         if not any(c['path'] == path for c in self.job.get('call_manifest', [])):
             self.preflight_calls(1)
             self.register_call(path, 'question', round_number)
         record = self.call_record(path)
+        targets = [record] if mirror is None else [record, mirror]
+        def mark(value):
+            for target in targets: target['status'] = value
         self.check_context(prompt, round_number)
-        previous, record['status'] = record['status'], 'dispatched'
+        previous = [t['status'] for t in targets]
+        mark('dispatched')
         try:
             self.progress(self.trace, self.evidence)  # Persistence failure prevents dispatch.
         except Exception:
-            record['status'] = previous  # The call is skipped; a later save of this job must not record it as dispatched.
+            for target, value in zip(targets, previous, strict=True): target['status'] = value  # The call is skipped; a later save must not record it as dispatched.
             raise
         try:
             output = self.cli.complete(self.job['agent'], self.job['model'], prompt, self.folder / path)
@@ -447,11 +451,11 @@ class Assistant:
             if validate is not None:
                 with caller_validation(self.cli, self.folder / path, self.job['agent']):
                     result = validate(output)
-            record['status'] = 'complete'
+            mark('complete')
             self.progress(self.trace, self.evidence)
             return output, result
         except Exception:
-            record['status'] = 'failed'
+            mark('failed')
             self.progress(self.trace, self.evidence)
             raise
 
