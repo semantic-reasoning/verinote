@@ -361,7 +361,8 @@ class Store:
                 if not dictionary or dictionary['status'] != 'approved':
                     raise Conflict('이 문서 버전의 개체·별칭·관계 사전을 먼저 승인하세요.')
                 payload = json.loads(dictionary['payload'])
-                pinned = {'id': dictionary['id'], 'revision': dictionary['revision'], 'payload': payload, 'sha256': digest(payload), 'extraction_contract': EXTRACTION_CONTRACT_VERSION}
+                from .dictionary_context import extraction_pin
+                pinned = extraction_pin(dictionary['id'], dictionary['revision'], payload, EXTRACTION_CONTRACT_VERSION)
                 for prior in db.execute("SELECT ontology FROM runs WHERE document_id=? AND version=? AND stage='extract' AND status='success'", (document_id, doc['current_version'])):
                     old = json.loads(prior[0])
                     if extraction_key(old) == extraction_key(pinned):

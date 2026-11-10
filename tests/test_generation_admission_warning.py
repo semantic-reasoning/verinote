@@ -1,7 +1,9 @@
-"""Generation-end warning (#825) when extraction by the same agent would be refused by the input budget; recomputing it after an edit or a policy change is #850."""
+"""Generation-end warning (#825) when extraction by the same agent would be refused by the input budget, and its recomputation
+by the document API for the current, non-rejected dictionary after an edit or a policy change (#850)."""
 import contextlib
 import json
 import os
+import re
 import subprocess
 import threading
 import unittest
@@ -36,6 +38,8 @@ HEAD = '추출 입력 한도 경고: 이 사전을 수정하지 않고 이 실�
 MAY_DIFFER = '입력 예산은 에이전트에 따라 다르므로(앱 정책 최대 120,000바이트) 다른 에이전트로는 거부되지 않을 수 있습니다.'
 ALL_REFUSE = '어느 에이전트의 입력 예산도 앱 정책 120,000바이트를 넘지 않으므로 다른 에이전트로도 거부됩니다.'
 OTHER = '입력 예산이 120,000바이트인 다른 에이전트로 추출(원문과 사전이 해당 제공자에게 전달됨)'
+UNSAVED = (' 이 경고의 기록을 저장하지 못했습니다. 문서 화면은 현재 문서 버전의 반려되지 않은 사전이면 이 기록 없이 다시 계산하며, '
+           '반려된 사전이나 이전 문서 버전에서는 이 경고를 표시하지 않습니다.')
 SPLIT = '문서를 나누어 각각 사전 생성·승인(이 사전은 재사용되지 않음, 한 부분 밖에만 있는 용어는 그 부분에 쓸 수 없음, 부분 간 ID는 사람이 맞춰야 함)'
 
 
@@ -59,6 +63,19 @@ class Case(ServiceCase):
 
     def record(self, run):
         return json.loads((self.root / 'runs' / run['id'] / ADMISSION_RECORD).read_text(encoding='utf-8'))
+
+    def serve(self, cli=None):
+        """GET for a document API whose service transport is `cli` (default: no budget reader, so 120,000 bytes)."""
+        from verinote.config import Credentials
+        from verinote.server import Server
+        service = Service(self.store, self.root, Stub(generated) if cli is None else cli)
+        server = Server(('127.0.0.1', 0), self.store, service, credentials=Credentials())
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        self.addCleanup(lambda: (server.shutdown(), server.server_close(), thread.join(), service.close()))
+        return lambda path: json.loads(urlopen(f'http://127.0.0.1:{server.server_port}{path}', timeout=5).read())
+
+    def admission(self, get, doc, query=''):
+        return get('/api/documents/' + doc['id'] + query)['items'][0]['extraction_admission']
 
 
 class BothSides(Case):
@@ -219,26 +236,18 @@ class Copy(unittest.TestCase):
 
 
 class Screen(Case):
-    def serve(self):
-        from verinote.config import Credentials
-        from verinote.server import Server
-        service = Service(self.store, self.root, Stub(generated))
-        server = Server(('127.0.0.1', 0), self.store, service, credentials=Credentials())
-        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
-        self.addCleanup(lambda: (server.shutdown(), server.server_close(), thread.join(), service.close()))
-        return lambda path: json.loads(urlopen(f'http://127.0.0.1:{server.server_port}{path}', timeout=5).read())
-
-    def test_pending_and_approved_items_carry_the_warning_until_the_dictionary_changes(self):
+    def test_pending_and_approved_items_are_recomputed_and_a_shrinking_edit_clears_the_warning(self):
         doc, run, _ = self.generate(SRC, R - 1)
-        get = self.serve()
-        item = get('/api/documents/' + doc['id'])['items'][0]
-        self.assertEqual(item['extraction_admission'], {'available': True, 'warning': self.record(run)['warning']})
+        get = self.serve(Stub(generated, R - 1))
+        recomputed = {'available': True, 'warning': self.record(run)['warning'], 'recomputed': True}
+        self.assertEqual(self.admission(get, doc), recomputed)  # pending r1 is computed at r2, as generation did
+        item = self.item(doc)
         self.store.review(item['id'], item['revision'], 'approved', 'R', 'ok')
-        self.assertEqual(get('/api/documents/' + doc['id'])['items'][0]['extraction_admission']['warning'], self.record(run)['warning'])
+        self.assertEqual(self.admission(get, doc), recomputed)  # approved at r2
         item = self.item(doc)
         smaller = {**item['payload'], 'entities': item['payload']['entities'][:-1]}
         self.store.review(item['id'], item['revision'], 'revise', 'R', 'trim', payload=smaller)
-        self.assertIsNone(get('/api/documents/' + doc['id'])['items'][0]['extraction_admission'])
+        self.assertEqual(self.admission(get, doc), {'available': True, 'warning': None, 'recomputed': True})
 
     def hidden_under(self, patches, canary_changes=True):
         """The record of one generation is shown, then hidden while `patches` is active; the canary is recomputed under them."""
@@ -346,7 +355,7 @@ class NeverFails(Case):
     def test_an_unsaved_record_is_named_in_the_detail_with_or_without_a_warning(self):
         with self.failing_record(OSError('disk')):
             _, run, _ = self.generate(SRC, R - 1)
-        self.assertIn(' 이 경고의 기록을 저장하지 못해 문서 화면에는 표시되지 않습니다. · ', run['detail'])
+        self.assertIn(UNSAVED + ' · ', run['detail'])
         with self.failing_record(OSError('disk')):
             _, run, _ = self.generate(SRC, R)
         self.assertTrue(run['detail'].startswith('추출 입력 한도 검사 기록을 저장하지 못했습니다. · '), run['detail'])
@@ -355,7 +364,7 @@ class NeverFails(Case):
         with self.failing_record(TypeError('not serialisable')):
             doc, run, _ = self.generate(SRC, R - 1)
         self.assertEqual(self.item(doc)['status'], 'pending')
-        self.assertIn('이 경고의 기록을 저장하지 못해', run['detail'])
+        self.assertIn('이 경고의 기록을 저장하지 못했습니다.', run['detail'])
 
 
 class DetailAndAgent(Case):
@@ -375,6 +384,197 @@ class DetailAndAgent(Case):
         self.assertIn('이 실행과 같은 에이전트(Ollama (로컬 API))로 추출하면', notice)
         self.assertIn(f'입력 예산 {limit:,}바이트를 넘어', notice)
         self.assertIn(MAY_DIFFER, notice)
+
+
+def refused_size(run):
+    """The request size an extraction run's pre-call refusal states."""
+    return int(re.search(r'전체 요청 ([\d,]+)바이트가 입력 예산', run['detail']).group(1).replace(',', ''))
+
+
+def warned_size(warning):
+    return int(re.search(r'전체 요청이 ([\d,]+)바이트 이상으로', warning).group(1).replace(',', ''))
+
+
+class Recomputed(Case):
+    """The document API recomputes the panel of a current, non-rejected dictionary; sizes are compared with real extraction refusals."""
+    failing_record = NeverFails.failing_record
+
+    def grow(self, doc):
+        item = self.item(doc)
+        first = item['payload']['entities'][0]
+        grown = {**item['payload'], 'entities': item['payload']['entities'] + [dict(first, id='grown-' + first['id'])]}
+        self.store.review(item['id'], item['revision'], 'revise', 'R', 'grow', payload=grown)
+
+    def toggle_to(self, doc, status, revision):
+        item = self.item(doc)
+        while (item['status'], item['revision']) != (status, revision):
+            self.store.review(item['id'], item['revision'], 'held' if item['status'] != 'held' else 'pending', 'R', 'x')
+            item = self.item(doc)
+
+    def test_a_growing_edit_warns_at_the_size_extraction_then_refuses_and_not_at_that_size(self):
+        probe, _, _ = self.generate(SRC, 10 ** 6)
+        self.grow(probe)
+        refused, _ = self.approve_and_extract(probe, 1)
+        n = refused_size(refused)
+        self.assertGreater(n, R)
+        doc, run, _ = self.generate(SRC, 10 ** 6)
+        self.assertIsNone(self.record(run)['warning'])
+        self.grow(doc)
+        warning = self.admission(self.serve(Stub(generated, n - 1)), doc)['warning']
+        self.assertIn(f'전체 요청이 {n:,}바이트 이상으로 입력 예산 {n - 1:,}바이트를 넘어', warning or '')
+        self.assertEqual(self.admission(self.serve(Stub(generated, n)), doc), {'available': True, 'warning': None, 'recomputed': True})
+        refused, ext = self.approve_and_extract(doc, n - 1)
+        self.assertEqual((refused['status'], ext.calls), ('error', []))
+        self.assertIn(f'전체 요청 {n:,}바이트가 입력 예산 {n - 1:,}바이트', refused['detail'])
+        done = self.run_job(doc, Stub(chunk_response(self.item(doc)['payload']), n))
+        self.assertEqual(done['status'], 'success', done['detail'])
+
+    def test_a_pending_item_at_revision_9_is_sized_at_the_approval_revision_10(self):
+        doc, _, _ = self.generate(SRC, 10 ** 6)
+        self.toggle_to(doc, 'pending', 9)
+        warned = warned_size(self.admission(self.serve(Stub(generated, 1)), doc)['warning'])
+        held, _, _ = self.generate(SRC, 10 ** 6)
+        item = self.item(held)
+        self.store.review(item['id'], item['revision'], 'revise', 'R', 'same', payload=item['payload'])  # pending r2, so held lands on r9
+        self.toggle_to(held, 'held', 9)
+        held_warned = warned_size(self.admission(self.serve(Stub(generated, 1)), held)['warning'])
+        refused, ext = self.approve_and_extract(doc, 1)
+        self.assertEqual((self.item(doc)['revision'], ext.calls), (10, []))
+        self.assertEqual((warned, held_warned), (refused_size(refused), refused_size(refused)))
+
+    def test_an_approved_item_at_revision_9_is_sized_at_revision_9(self):
+        doc, _, _ = self.generate(SRC, 10 ** 6)
+        self.toggle_to(doc, 'held', 8)
+        item = self.item(doc)
+        self.store.review(item['id'], item['revision'], 'approved', 'R', 'ok')
+        self.assertEqual(self.item(doc)['revision'], 9)
+        warned = warned_size(self.admission(self.serve(Stub(generated, 1)), doc)['warning'])
+        refused = self.run_job(doc, Stub(chunk_response(self.item(doc)['payload']), 1))
+        self.assertEqual(warned, refused_size(refused))
+
+    def test_a_policy_change_between_two_gets_is_applied_on_the_second(self):
+        from verinote import ontology
+        real = ontology.extraction_prompts
+        def longer(version):
+            prompt, repair = real(version)
+            return prompt + 'p' * 100, repair
+        # MAX_PROMPT_BYTES stays at or above the 60,000-byte context setting, which validate_context_bytes checks against it.
+        for name, limit, patches, size, budget in (
+                ('MAX_PROMPT_BYTES', 10 ** 6, lambda: [mock.patch('verinote.ontology.MAX_PROMPT_BYTES', R - 1)], R, R - 1),
+                ('extraction prompt', R, lambda: [mock.patch('verinote.ontology.extraction_prompts', longer),
+                                                  mock.patch('verinote.service.extraction_prompts', longer)], R + 100, R)):
+            with self.subTest(name):
+                doc, _, _ = self.generate(SRC, 10 ** 6)
+                get = self.serve(Stub(generated, limit))
+                self.assertEqual(self.admission(get, doc), {'available': True, 'warning': None, 'recomputed': True})
+                with contextlib.ExitStack() as stack:
+                    for patch in patches():
+                        stack.enter_context(patch)
+                    self.assertIn(f'전체 요청이 {size:,}바이트 이상으로 입력 예산 {budget:,}바이트를 넘어', self.admission(get, doc)['warning'] or '')
+                    refused, ext = self.approve_and_extract(doc, limit)
+                self.assertEqual((refused['status'], ext.calls), ('error', []))
+                self.assertIn(f'전체 요청 {size:,}바이트가 입력 예산 {budget:,}바이트', refused['detail'])
+
+    def test_an_ollama_generation_run_is_recomputed_with_the_ollama_budget_and_a_copilot_one_is_not(self):
+        copilot, _, _ = self.generate(SRC, 10 ** 6)
+        doc = self.register(SRC, 'o')
+        run = self.store.create_run(doc['id'], 'ollama', 'm', 'ontology', doc['version'], doc['generation'])
+        self.store.run_status(run['id'], 'running')
+        self.store.finish_run(run['id'], dictionary=self.item(copilot)['payload'])
+        get = self.serve(Stub(generated, 10 ** 6))
+        warning = self.admission(get, doc)['warning'] or ''
+        self.assertIn('이 실행과 같은 에이전트(Ollama (로컬 API))로 추출하면 ', warning)
+        self.assertIn('입력 예산 27,648바이트를 넘어', warning)
+        self.assertEqual(self.admission(get, copilot), {'available': True, 'warning': None, 'recomputed': True})
+
+    def test_the_other_agent_step_follows_readiness_at_the_get_not_at_generation(self):
+        doc, run, _ = self.generate(SRC, R - 1)
+        self.assertNotIn(OTHER, run['detail'])
+        warning = self.admission(self.serve(Stub(generated, R - 1, ready={'claude'})), doc)['warning'] or ''
+        self.assertIn(f'다음 단계: {OTHER} 또는 ', warning)
+
+    def test_two_gets_record_no_transport_call_and_leave_the_runs_listing_unchanged(self):
+        doc, _, _ = self.generate(SRC, R - 1)
+        cli = Stub(generated, R - 1)
+        get = self.serve(cli)
+        listing = lambda: sorted(str(path.relative_to(self.root)) for path in (self.root / 'runs').rglob('*'))  # noqa: E731
+        before = listing()
+        for _ in range(2):
+            self.assertIsNotNone(self.admission(get, doc)['warning'])
+        self.assertEqual((listing(), cli.calls), (before, []))
+
+    def test_a_raising_recomputation_is_reported_unavailable_and_the_get_succeeds(self):
+        doc, _, _ = self.generate(SRC, R - 1)
+        get = self.serve(Stub(generated, R - 1))
+        with mock.patch.object(dc, 'current_admission', side_effect=RuntimeError('x')):
+            self.assertEqual(self.admission(get, doc), {'available': False, 'recomputed': True})
+
+    def test_rejected_and_earlier_version_items_keep_the_generation_record(self):
+        doc, run, _ = self.generate(SRC, R - 1)
+        recorded = {'available': True, 'warning': self.record(run)['warning']}
+        get = self.serve()  # 120,000 bytes: a recomputation would show no warning
+        item = self.item(doc)
+        self.store.review(item['id'], item['revision'], 'rejected', 'R', 'no')
+        self.assertEqual(self.admission(get, doc), recorded)
+        with mock.patch.object(dc, 'PROTOCOL', dc.PROTOCOL + 'x'):
+            self.assertIsNone(self.admission(get, doc))
+        doc, run, _ = self.generate(SRC, R - 1)
+        self.store.register('d', 'd.md', b'v2', 'v2', doc['id'], doc['version'], doc['generation'])
+        self.assertEqual(self.admission(get, doc, '?version=1'), {'available': True, 'warning': self.record(run)['warning']})
+
+    def test_create_run_pins_through_extraction_pin_with_its_own_contract_binding(self):
+        import verinote.store as store_module
+        from verinote.dictionary_context import extraction_pin
+        for version in (store_module.EXTRACTION_CONTRACT_VERSION, 1):
+            with self.subTest(version=version):
+                doc = self.register(SRC, name=f'd{version}')
+                self.run_job(doc, Stub(generated, 10 ** 6), 'ontology')
+                item = self.item(doc)
+                self.store.review(item['id'], item['revision'], 'approved', 'R', 'ok')
+                item = self.item(doc)
+                with mock.patch('verinote.store.EXTRACTION_CONTRACT_VERSION', version):
+                    pinned = self.store.create_run(doc['id'], 'copilot', 'auto', 'extract', doc['version'], doc['generation'])['ontology']
+                self.assertEqual(pinned, extraction_pin(item['id'], item['revision'], item['payload'], version))
+                self.assertEqual(pinned['extraction_contract'], version)
+
+    def test_an_unsaved_record_is_recomputed_on_the_current_item_and_hidden_once_rejected(self):
+        with self.failing_record(OSError('disk')):
+            doc, run, _ = self.generate(SRC, R - 1)
+        self.assertIn(UNSAVED + ' · ', run['detail'])
+        get = self.serve(Stub(generated, R - 1))
+        self.assertEqual(self.admission(get, doc), {'available': True, 'warning': run['detail'].split(UNSAVED)[0], 'recomputed': True})
+        item = self.item(doc)
+        self.store.review(item['id'], item['revision'], 'rejected', 'R', 'no')
+        self.assertIsNone(self.admission(get, doc))
+
+
+class Selector(unittest.TestCase):
+    def test_the_longest_serialized_chunk_gives_the_result_of_every_chunk(self):
+        from verinote.agents import PROVIDERS
+        from verinote.documents import chunks
+        from verinote.ontology import EXTRACTION_CONTRACT_VERSION, extraction_prompts
+        dictionary = T.rows(['C00001', 'C00002'])
+        item = {'id': 'x' * 32, 'revision': 1, 'status': 'pending', 'payload': dictionary}
+        pin = dc.extraction_pin(item['id'], 2, dictionary, EXTRACTION_CONTRACT_VERSION)
+        prompt = extraction_prompts(EXTRACTION_CONTRACT_VERSION)[0]
+        for name, text, largest in (
+                ('escaped characters, equal lengths', 'a' * 8000 + '"\\' * 4000 + 'b' * 8000, 2),
+                ('offset digits, equal texts', 'a' * 8000 + 'b' * 16000, 3),
+                ('fewer characters, more bytes', 'a' * 8000 + '가' * 5000, 2),
+                ('Hangul counted in UTF-8, not escapes', 'a' * 8000 + '가' * 2600, 1)):
+            with self.subTest(name):
+                doc = {'filename': 'd.md', 'version': 1, 'text': text}
+                requests = dc.chunk_requests(doc, pin, list(enumerate(chunks(text), 1)))
+                worst = lambda limit: dc.worst_refusal(Stub(None, limit), 'copilot', prompt, requests, 60000)  # noqa: E731,B023
+                top = worst(1)
+                self.assertEqual(top[0][0], largest)
+                top = top[1].request_bytes
+                for limit in (top - 1, top, top + 1, 10 ** 6):
+                    expected = worst(limit)
+                    expected = expected[1].approval_warning(PROVIDERS['copilot'], False, 2) if expected else None
+                    self.assertEqual(dc.current_admission(Stub(None, limit), 'copilot', False, doc, item, 60000), expected, limit)
+                    if limit == top - 1:
+                        self.assertIsNotNone(expected)
 
 
 class UI(unittest.TestCase):
@@ -404,6 +604,21 @@ process.stdout.write(vm.runInContext('renderExtractionAdmission('+process.argv[1
         self.assertIn('renderExtractionAdmission(item.extraction_admission)', source)
         self.assertIn("'관계별 점검이 포함된 방식으로 다시 추출을 시작할 수 있으며, 청크 요청이 입력 예산을 넘으면 첫 호출 전에 거부됩니다. 이전 승인 이력은 유지되며 중복 관계가 새 검토 후보로 추가될 수 있습니다.'", source)
         self.assertNotIn('다시 추출할 수 있습니다', source[source.index('function extractionControls('):source.index('function renderRelationTypeWarnings(')])
+
+    def test_recomputed_panels_state_their_basis_and_record_panels_are_unchanged(self):
+        self.assertEqual(self.render({'available': True, 'warning': '<b>w</b>', 'recomputed': True}),
+                         '<section class="panel" role="status"><strong>추출 입력 한도 경고</strong><p>&lt;b&gt;w&lt;/b&gt;</p>'
+                         '<p class="muted">이 경고는 화면을 불러올 때 현재 사전과 현재 추출 정책으로 다시 계산했습니다. '
+                         '실행 상세에 경고가 있다면 생성 당시 기준입니다.</p></section>')
+        self.assertEqual(self.render({'available': True, 'warning': None, 'recomputed': True}), '')
+        self.assertEqual(self.render({'available': False, 'recomputed': True}),
+                         '<section class="panel" role="status"><strong>추출 입력 한도 미확인</strong><p>현재 사전과 현재 추출 정책으로 '
+                         '다시 계산하지 못했습니다. 경고가 없다는 뜻은 아닙니다. 추출을 시작하면 첫 호출 전에 검사합니다.</p></section>')
+        self.assertEqual(self.render({'available': True, 'warning': 'w'}),
+                         '<section class="panel" role="status"><strong>추출 입력 한도 경고</strong><p>w</p></section>')
+        self.assertEqual(self.render({'available': False}),
+                         '<section class="panel" role="status"><strong>추출 입력 한도 경고 기록 미확인</strong><p>기록을 읽을 수 없습니다. '
+                         '경고가 없었다는 뜻은 아닙니다. 추출을 시작하면 첫 호출 전에 검사합니다.</p></section>')
 
 
 if __name__ == '__main__':
