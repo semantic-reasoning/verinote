@@ -84,9 +84,11 @@ class ZeroCallBox(unittest.TestCase):
 
     def test_a_run_with_only_a_not_started_openrouter_call_shows_zero_totals_and_no_reasoning_diagnostic(self):
         """run.json records not_sent with a not_started or timeout transport status and usage.json is accepted, for a v1 and a v2
-        request: the call's usage JSON has no reasoning_diagnostic key and the whole rendered box, <details> included, has no 미확인;
-        the row's not_started status and warning are what explain the call."""
+        request, and the run's error marker records one call attempt: the call's usage JSON has no reasoning_diagnostic key and the
+        whole rendered box, <details> included, has no 미확인; the row's not_started status and warning are what explain the call."""
         call = 'e' * 32
+        self.write(f'runs/{KEY}/extraction-progress.json', {'schema_version': 1, 'pipeline': 'approved-extraction-v1', 'run_id': KEY,
+                                                            'status': 'error', 'calls_started': 1})
         v2 = {'adapter_contract_version': 2, 'max_tokens': 16384, 'reasoning_max_tokens': 4096, 'answer_reserve_tokens': 8192}
         for name, transport_status, request in (('v1', 'not_started', {}), ('v2', 'not_started', v2), ('v1 timeout', 'timeout', {}),
                                                 ('v2 timeout', 'timeout', v2)):

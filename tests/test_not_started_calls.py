@@ -198,13 +198,17 @@ class Transports(unittest.TestCase):
 
 
 class OpenRouterBoundary(unittest.TestCase):
-    """T2b/T7/T7b: OpenRouter's not-started evidence is decided at the first HTTP request byte."""
+    """T2b/T7/T7b: OpenRouter's not-started evidence is decided at the first HTTP request byte. The run's error marker records one
+    call attempt, as a run with this one call writes it."""
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
         self.folder = self.root / 'runs' / KEY / '1'
         self.events = []
+        self.folder.mkdir(parents=True)
+        atomic_json(self.folder.parent / 'extraction-progress.json', {'schema_version': 1, 'pipeline': 'approved-extraction-v1',
+                                                                      'run_id': KEY, 'status': 'error', 'calls_started': 1})
 
     def call(self, connect):
         holder, real_init = {}, openrouter._HTTPS.__init__
