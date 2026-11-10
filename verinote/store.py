@@ -1,6 +1,7 @@
 """Transactional immutable document versions and optimistic human review."""
 import hashlib
 import json
+import re
 import sqlite3
 import uuid
 from contextlib import contextmanager
@@ -33,6 +34,10 @@ class Conflict(ValueError):
     pass
 
 
+class UnreadableQuestion(Conflict):
+    """A question row that startup recovery skips (question_job returns None): its stored bytes are not shown, guessed at or written."""
+
+
 class RunCancelled(Exception):
     """The run's or question's status is cancelling or cancelled: its worker admits no further call. `summary` carries the stage's progress text
     when known."""
@@ -44,6 +49,9 @@ QUESTION_QUEUED_CANCEL = '대기 중에 취소되었습니다. 이 질문은 모
 QUESTION_CANCEL_REQUESTED = ('취소 요청됨: 이미 허용한 모델 호출은 중단하지 않고 끝날 때까지 기다린 뒤, 새 호출 없이 멈춥니다. 답변은 저장하지 않습니다. '
                              '멈출 때까지 다음 질문은 기다리며, 실행은 각 실행 한도 안에서 계속됩니다.')
 QUESTION_RESTART_CANCEL = '취소를 요청한 뒤 질문이 멈춘 것을 기록하기 전에 서버가 재시작되었습니다. 답변은 저장하지 않았습니다.'
+QUESTION_UNREADABLE = '손상되어 읽을 수 없는 질문 기록입니다. 내용을 추측해 고치지 않으므로 질문·상태·답변을 표시하지 않습니다.'
+QUESTION_UNREADABLE_CANCEL = '손상되어 읽을 수 없는 질문 기록이라 취소하지 않았습니다.'
+QUESTION_READABLE_DELETE = '읽을 수 있는 질문 기록은 삭제하지 않습니다. 손상되어 읽을 수 없는 기록만 삭제할 수 있습니다.'
 OPEN_ROUND = ('running', 'analyzed')
 ROUND_END = {'cancelled': 'cancelled', 'interrupted': 'interrupted', 'error': 'failed'}
 
@@ -57,6 +65,39 @@ def end_open_rounds(job):
     if end is None or not trees or not any(t.get('status') in OPEN_ROUND for t in trees):
         return job
     return job | {'context_processing': [t | {'status': end} if t.get('status') in OPEN_ROUND else t for t in trees]}
+
+
+# What _recovered raises for a row startup recovery skips; recover and question_job both catch exactly this, so they cannot drift.
+SKIPPED_ROW_ERRORS = (ValueError, TypeError, KeyError, AttributeError, RecursionError)
+
+
+def _recovered(raw):
+    """Startup recovery's computation for one question row, given its payload as stored bytes (CAST(payload AS BLOB)). Returns the stored
+    JSON (original) and the canonical text recover writes for it, or None when recover leaves the row as it is. Raises ValueError, TypeError,
+    KeyError, AttributeError or RecursionError for a row recover skips; a NULL payload (None) raises TypeError. job is a shallow copy of
+    original of the same type (original.copy()), so a stored top-level array stays an array and raises on job['status'] as it does
+    unparsed; the repair updates only that copy, and end_open_rounds builds new objects, so original stays as stored."""
+    stored = bytes(raw).decode('utf-8')
+    original = json.loads(stored)
+    job = original.copy()
+    if job['status'] in ('queued', 'running'):
+        job.update(status='interrupted', error='서버 재시작으로 중단되었습니다.')
+    elif job['status'] == 'cancelling':
+        job.update(status='cancelled', error=QUESTION_RESTART_CANCEL)
+    job = end_open_rounds(job)
+    payload = canonical(job) if job != original else None
+    if payload is not None:
+        payload.encode('utf-8')
+    return original, payload
+
+
+def question_job(raw):
+    """The stored question for a payload read as bytes, or None when startup recovery skips that row (_recovered raises). The API readers of
+    the questions table classify a row with this, so a row recover skips is unreadable to each of them too."""
+    try:
+        return _recovered(raw)[0]
+    except SKIPPED_ROW_ERRORS:
+        return None
 
 
 def cancel_result(stage, topic=True):
@@ -126,8 +167,13 @@ class Store:
 
         A question row whose payload recover cannot read this way (not strict UTF-8, not JSON, not a JSON object, no usable status,
         split-processing rounds that are not objects, JSON nested too deep to decode) or whose repaired payload cannot be stored as UTF-8 text is skipped: it is not written,
-        so it keeps its stored status (a skipped running or cancelling question still reads running or cancelling), and the other rows are
-        still repaired. Returns the ids of the skipped rows in rowid order. A database error is not skipped: it aborts the question repair."""
+        so its stored bytes are kept; the API readers question, questions, unreadable_questions, cancel_question, queue_rows, usage_owners and
+        delete_document classify a row with the same computation (question_job), so they never read a skipped row as running or cancelling
+        (the worker writers save_question, finish_question_cancel and end_unstored_question still use json.loads): the list leaves it out,
+        unreadable_questions lists its id when the id is stored as text of 32 lowercase hex characters and otherwise counts it in hidden,
+        question and cancel_question raise UnreadableQuestion, and delete_document neither waits for nor deletes
+        it. The other rows are still repaired. Returns the ids of the skipped rows in rowid order. A database error is not skipped: it aborts
+        the question repair."""
         with self.connect(True) as db:
             db.execute("UPDATE runs SET status='interrupted',detail='서버가 재시작되었습니다. 다시 추출하세요.' WHERE status IN ('queued','running')")
             for row in db.execute("SELECT id,stage FROM runs WHERE status='cancelling'").fetchall():
@@ -137,17 +183,8 @@ class Store:
         with self.connect(True) as db:
             for row in db.execute('SELECT id,CAST(payload AS BLOB) AS payload FROM questions ORDER BY rowid').fetchall():
                 try:
-                    stored = bytes(row['payload']).decode('utf-8')
-                    job = json.loads(stored)
-                    if job['status'] in ('queued', 'running'):
-                        job.update(status='interrupted', error='서버 재시작으로 중단되었습니다.')
-                    elif job['status'] == 'cancelling':
-                        job.update(status='cancelled', error=QUESTION_RESTART_CANCEL)
-                    job = end_open_rounds(job)
-                    payload = canonical(job) if job != json.loads(stored) else None
-                    if payload is not None:
-                        payload.encode('utf-8')
-                except (ValueError, TypeError, KeyError, AttributeError, RecursionError):
+                    payload = _recovered(row['payload'])[1]
+                except SKIPPED_ROW_ERRORS:
                     skipped.append(row['id'])
                     continue
                 if payload is not None:
@@ -183,13 +220,16 @@ class Store:
         """Cancel a question in one write transaction and return the status it had. A queued question becomes cancelled at once with
         QUESTION_QUEUED_CANCEL, which stays: finish_question_cancel acts only on a cancelling question, and usage.job_calls reads the text as
         zero calls. A running question becomes cancelling, and its worker moves it to cancelled when it stops. A question stored as anything
-        else, a saved answer included, is refused with a Conflict, as is one whose status is no longer expected_status."""
+        else, a saved answer included, is refused with a Conflict, as is one whose status is no longer expected_status. A row startup
+        recovery skips (question_job) raises UnreadableQuestion before any write."""
         if expected_status not in ('queued', 'running'):
             raise ValueError('expected_status는 queued 또는 running이어야 합니다.')
         with self.connect(True) as db:
-            row = db.execute('SELECT payload FROM questions WHERE id=?', (key,)).fetchone()
+            row = db.execute('SELECT CAST(payload AS BLOB) FROM questions WHERE id=?', (key,)).fetchone()
             if not row: raise ValueError('질문을 찾을 수 없습니다.')
-            job = json.loads(row[0])
+            job = question_job(row[0])
+            if job is None:
+                raise UnreadableQuestion(QUESTION_UNREADABLE_CANCEL)
             status = job['status']
             if status == 'cancelling':
                 raise Conflict('이미 취소를 요청한 질문입니다. 아직 멈추지 않았습니다.')
@@ -232,15 +272,57 @@ class Store:
             return True
 
     def question(self, key):
+        """The stored question; a row startup recovery skips (question_job) raises UnreadableQuestion, which names no id or content."""
         with self.connect() as db:
-            row = db.execute('SELECT payload FROM questions WHERE id=?', (key,)).fetchone()
+            row = db.execute('SELECT CAST(payload AS BLOB) FROM questions WHERE id=?', (key,)).fetchone()
             if not row:
                 raise ValueError('질문을 찾을 수 없습니다.')
-            return json.loads(row[0])
+            job = question_job(row[0])
+            if job is None:
+                raise UnreadableQuestion(QUESTION_UNREADABLE)
+            return job
 
     def questions(self):
+        """The 30 most recent readable questions: rows startup recovery skips (question_job) are left out before the 30 are counted."""
+        jobs = []
         with self.connect() as db:
-            return [json.loads(r[0]) for r in db.execute('SELECT payload FROM questions ORDER BY created_at DESC LIMIT 30')]
+            for row in db.execute('SELECT CAST(payload AS BLOB) FROM questions ORDER BY created_at DESC'):
+                job = question_job(row[0])
+                if job is not None:
+                    jobs.append(job)
+                    if len(jobs) == 30:
+                        break
+        return jobs
+
+    def unreadable_questions(self):
+        """Every question row startup recovery skips (question_job), from a full scan in rowid order with no limit, so neither the list's
+        30-row window nor a missing or corrupt created_at hides one. ids holds those whose id is stored as text of 32 lowercase hex characters,
+        the ids delete_unreadable_question can match; hidden counts the others (an id stored as a BLOB included), whose id is not shown. No
+        stored content is returned."""
+        ids, hidden = [], 0
+        with self.connect() as db:
+            for row in db.execute('SELECT typeof(id),CAST(id AS BLOB),CAST(payload AS BLOB) FROM questions ORDER BY rowid'):
+                if question_job(row[2]) is not None:
+                    continue
+                if row[0] == 'text' and re.fullmatch(rb'[0-9a-f]{32}', row[1]):
+                    ids.append(row[1].decode('ascii'))
+                else:
+                    hidden += 1
+        return {'ids': ids, 'hidden': hidden}
+
+    def delete_unreadable_question(self, key):
+        """Delete one question row that startup recovery skips (question_job), in one write transaction that classifies the row again and
+        stores the obligation to remove its local logs (log_cleanup) before the row goes. A missing row raises ValueError; a readable row is
+        refused with a Conflict and kept."""
+        with self.connect(True) as db:
+            row = db.execute('SELECT CAST(payload AS BLOB) FROM questions WHERE id=?', (key,)).fetchone()
+            if not row:
+                raise ValueError('질문을 찾을 수 없습니다.')
+            if question_job(row[0]) is not None:
+                raise Conflict(QUESTION_READABLE_DELETE)
+            db.execute('INSERT OR IGNORE INTO log_cleanup VALUES(?,?)', ('questions', key))
+            db.execute('DELETE FROM questions WHERE id=?', (key,))
+        return {'deleted_question': key}
 
     def register(self, title, filename, raw, text, document_id=None, expected_version=None, expected_generation=None):
         with self.connect(True) as db:
@@ -358,8 +440,10 @@ class Store:
         with self.connect() as db:
             runs = [dict(r) | {'kind': 'runs'} for r in db.execute('SELECT id,agent,model,stage,status,detail,created_at FROM runs ORDER BY created_at DESC,id LIMIT ?', (limit + 1,))]
             questions = []
-            for row in db.execute('SELECT payload FROM questions ORDER BY created_at DESC,id LIMIT ?', (limit + 1,)):
-                job = json.loads(row[0])
+            for row in db.execute('SELECT CAST(payload AS BLOB) FROM questions ORDER BY created_at DESC,id LIMIT ?', (limit + 1,)):
+                job = question_job(row[0])
+                if job is None:
+                    continue
                 questions.append({k: job[k] for k in ('id', 'agent', 'model', 'status', 'created_at')} | {k: job[k] for k in ('error', 'call_manifest') if k in job}
                                  | {'kind': 'questions', 'stage': 'question'})
             total = db.execute('SELECT (SELECT count(*) FROM runs)+(SELECT count(*) FROM questions)').fetchone()[0]
@@ -481,7 +565,8 @@ class Store:
 
     def queue_rows(self, entries):
         """What the queue list entries, as (kind, id) pairs, are now, read in one transaction: the status of each and what names it. An entry
-        whose row is gone is left out."""
+        whose row is gone is left out. A question row startup recovery skips (question_job) is shown with status None, unreadable True and
+        no question text."""
         rows = []
         with self.connect() as db:
             for kind, key in entries:
@@ -489,9 +574,12 @@ class Store:
                     row = db.execute('SELECT r.id,r.stage,r.status,r.document_id,d.title FROM runs r LEFT JOIN documents d ON d.id=r.document_id WHERE r.id=?', (key,)).fetchone()
                     if row: rows.append({'kind': 'run', 'id': row['id'], 'status': row['status'], 'stage': row['stage'], 'document_id': row['document_id'], 'title': row['title']})
                 else:
-                    row = db.execute('SELECT payload FROM questions WHERE id=?', (key,)).fetchone()
+                    row = db.execute('SELECT CAST(payload AS BLOB) FROM questions WHERE id=?', (key,)).fetchone()
                     if row:
-                        job = json.loads(row[0])
+                        job = question_job(row[0])
+                        if job is None:
+                            rows.append({'kind': 'question', 'id': key, 'status': None, 'unreadable': True, 'question': ''})
+                            continue
                         rows.append({'kind': 'question', 'id': key, 'status': job['status'], 'question': job['question'][:40]})
         return rows
 
@@ -914,21 +1002,26 @@ class Store:
             raise Conflict('문서가 변경되었습니다. 새로고침 후 다시 선택하세요.')
 
     def delete_document(self, document_id, latest_only, expected_version, expected_generation):
+        """Delete a document, or its latest version, with every snapshot holding a removed version and the readable questions and the queries
+        on those snapshots. A readable question (question_job) stored as queued or running refuses it, as does one stored as cancelling.
+        A question row startup recovery skips is neither waited for nor deleted, because which snapshot it used cannot be read; the number of
+        such rows in the table is returned as unreadable_questions_kept."""
         with self.connect(True) as db:
             doc = db.execute('SELECT * FROM documents WHERE id=?', (document_id,)).fetchone()
             if not doc:
                 raise ValueError('문서를 찾을 수 없습니다.')
             self.check_document_token(doc, expected_version, expected_generation)
             cancelling = db.execute("SELECT 1 FROM runs WHERE status='cancelling' LIMIT 1").fetchone()
-            statuses = [json.loads(r[0])['status'] for r in db.execute('SELECT payload FROM questions')]
+            questions = [(r[0], question_job(r[1])) for r in db.execute('SELECT id,CAST(payload AS BLOB) FROM questions')]
+            statuses = [job['status'] for _, job in questions if job is not None]
             waiting = (db.execute("SELECT 1 FROM runs WHERE status IN ('queued','running') LIMIT 1").fetchone()
                        or any(status in ('queued', 'running') for status in statuses))
             if cancelling and not waiting:
                 raise Conflict('취소한 실행이 아직 멈추지 않았습니다. 실행 기록에서 취소됨으로 바뀐 뒤 삭제하세요. '
-                               '제한 시간(추출 청크 360초, 기본 사전 생성 호출 600초)이 지나도 바뀌지 않으면 서버를 재시작하세요. 재시작하면 대기·처리 중인 실행과 질문이 중단으로 표시됩니다. 재시작 복구가 읽거나 고칠 수 없는 질문 기록은 저장된 상태 그대로 남습니다.')
+                               '제한 시간(추출 청크 360초, 기본 사전 생성 호출 600초)이 지나도 바뀌지 않으면 서버를 재시작하세요. 재시작하면 대기·처리 중인 실행과 질문은 중단으로, 취소 중인 실행과 질문은 취소됨으로 표시됩니다.')
             if 'cancelling' in statuses and not waiting:
                 raise Conflict('취소한 질문이 아직 멈추지 않았습니다. 질문 이력에서 취소됨으로 바뀐 뒤 삭제하세요. 이미 허용한 모델 호출의 제한 시간이 지나도 '
-                               '바뀌지 않으면 서버를 재시작하세요. 재시작하면 대기·처리 중인 실행과 질문이 중단으로 표시됩니다. 재시작 복구가 읽거나 고칠 수 없는 질문 기록은 저장된 상태 그대로 남습니다.')
+                               '바뀌지 않으면 서버를 재시작하세요. 재시작하면 대기·처리 중인 실행과 질문은 중단으로, 취소 중인 실행과 질문은 취소됨으로 표시됩니다.')
             if waiting:
                 raise Conflict('추출 또는 질문 작업이 진행 중입니다. 모든 작업 완료 후 삭제하세요.')
             versions = [r[0] for r in db.execute('SELECT version FROM versions WHERE document_id=? ORDER BY version', (document_id,))]
@@ -936,7 +1029,7 @@ class Store:
                 raise Conflict('리비전이 하나뿐입니다. 문서 전체 삭제를 사용하세요.')
             removed = [doc['current_version']] if latest_only else versions
             snapshots = {r['id'] for r in db.execute('SELECT id,payload FROM snapshots') if any(d['id'] == document_id and d['current_version'] in removed for d in json.loads(r['payload'])['documents'])}
-            question_ids = [r['id'] for r in db.execute('SELECT id,payload FROM questions') if json.loads(r['payload'])['snapshot'] in snapshots]
+            question_ids = [key for key, job in questions if job is not None and job['snapshot'] in snapshots]
             query_ids = [r['id'] for r in db.execute('SELECT id,payload FROM queries') if json.loads(r['payload'])['snapshot'] in snapshots]
             run_ids = [r['id'] for r in db.execute('SELECT id,version FROM runs WHERE document_id=?', (document_id,)) if r['version'] in removed]
             db.executemany('INSERT OR IGNORE INTO log_cleanup VALUES(?,?)', [('runs', key) for key in run_ids] + [('questions', key) for key in question_ids])
@@ -952,7 +1045,8 @@ class Store:
             else:
                 db.execute('DELETE FROM documents WHERE id=?', (document_id,))
         return {'document_id': document_id, 'removed_versions': removed, 'current_version': current,
-                'removed_snapshots': len(snapshots), 'removed_questions': len(question_ids), 'removed_queries': len(query_ids)}
+                'removed_snapshots': len(snapshots), 'removed_questions': len(question_ids), 'removed_queries': len(query_ids),
+                'unreadable_questions_kept': sum(job is None for _, job in questions)}
 
     def pending_cleanup(self):
         with self.connect() as db:

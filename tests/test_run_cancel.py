@@ -689,7 +689,7 @@ class Refusals(Base):
         self.assertEqual(self.attempt(register), 'allowed')
         current = self.store.document(doc['id'])
         self.assertEqual(self.attempt(delete), '취소한 실행이 아직 멈추지 않았습니다. 실행 기록에서 취소됨으로 바뀐 뒤 삭제하세요. '
-                         '제한 시간(추출 청크 360초, 기본 사전 생성 호출 600초)이 지나도 바뀌지 않으면 서버를 재시작하세요. 재시작하면 대기·처리 중인 실행과 질문이 중단으로 표시됩니다. 재시작 복구가 읽거나 고칠 수 없는 질문 기록은 저장된 상태 그대로 남습니다.')
+                         '제한 시간(추출 청크 360초, 기본 사전 생성 호출 600초)이 지나도 바뀌지 않으면 서버를 재시작하세요. 재시작하면 대기·처리 중인 실행과 질문은 중단으로, 취소 중인 실행과 질문은 취소됨으로 표시됩니다.')
         self.finish(service, gate)
         self.assertEqual(self.store.run(run['id'])['status'], 'cancelled')
         current = self.store.document(doc['id'])

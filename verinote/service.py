@@ -899,7 +899,7 @@ class Service:
                 except Exception: pass
             if cancelled:
                 # Only the cancel refusal itself adds no detail. save_question's Conflicts (a deleted snapshot or question) are not expected
-                # beside a stored cancel, since deletion is refused while a question is queued, running or cancelling; one that does occur is
+                # beside a stored cancel, since deletion is refused while a readable question is queued, running or cancelling; one that does occur is
                 # kept as the last error rather than hidden.
                 cancel_detail = self.QUESTION_CANCEL_HEAD + ('' if isinstance(exc, RunCancelled) else f' · 멈추기 전 마지막 오류: {error_text(exc)}')
             else:
@@ -967,8 +967,8 @@ class Service:
         self._ladder(lambda text: self.store.finish_question_cancel(key, text), detail, self.QUESTION_CANCEL_FALLBACK)
 
     def finish_question(self, job):
-        """Save a question that ended as success or error. While a question is stored as queued or running, the deletion of every document is
-        refused. Tries the job twice, then an error job with characters SQLite cannot store escaped in its error, cut at 2000 characters
+        """Save a question that ended as success or error. While a readable question (store.question_job) is stored as queued or running, the
+        deletion of every document is refused. Tries the job twice, then an error job with characters SQLite cannot store escaped in its error, cut at 2000 characters
         before any escape would be split, then, in one transaction, the stored question moved to error with a fixed sentence unless it is
         already stored as ended, and gives up silently after that. A question stored as cancelling or cancelled refuses the save
         (Store.save_question) and the fixed-sentence write (Store.end_unstored_question): a cancelling one becomes cancelled, with the error as its last error, or, for an answer, a sentence that says
@@ -1015,6 +1015,13 @@ class Service:
                     continue
             pending = len(self.store.pending_cleanup())
             return {'cleanup_pending': pending, 'cleanup_status': 'pending' if pending else 'complete'}
+
+    def unreadable_questions(self):
+        return self.store.unreadable_questions()
+
+    def delete_unreadable_question(self, key):
+        """Delete one question row startup recovery skips (Store.delete_unreadable_question), then try to remove its local logs."""
+        return self.store.delete_unreadable_question(key) | self.cleanup_logs()
 
     def delete_document(self, document_id, latest_only, request):
         if not isinstance(request, dict) or set(request) != {'expected_version', 'expected_generation'}:

@@ -211,7 +211,7 @@ function renderProgress(percent, label, detail='', failed=false) {
 function renderQueueAhead(run) {
   if(run.status!=='queued'||!run.queue)return '';
   const ahead=run.queue.ahead,kind={ontology:'사전 생성',extract:'관계 추출',legacy:'기존 추출',question:'질문'};
-  const item=entry=>entry.kind==='question'?`질문 ${entry.id} 「${entry.question}」 · ${labels[entry.status]||entry.status}`:`${kind[entry.stage]||entry.stage} 실행 ${entry.id} · 문서 「${entry.title}」 · ${labels[entry.status]||entry.status}`;
+  const item=entry=>entry.kind==='question'?(entry.unreadable?`질문 ${entry.id} · 손상되어 읽을 수 없음`:`질문 ${entry.id} 「${entry.question}」 · ${labels[entry.status]||entry.status}`):`${kind[entry.stage]||entry.stage} 실행 ${entry.id} · 문서 「${entry.title}」 · ${labels[entry.status]||entry.status}`;
   const blockers=run.queue.document_blockers||[];
   const text=blockers.length?`이 문서의 이전 실행이 호출·정리를 마칠 때까지 기다립니다: ${blockers.map(item).join('; ')}`:
     ahead.length?`${kind[run.queue.stage||run.stage]||'작업'} 동시 실행 ${run.queue.capacity||2}개 한도에서 자리 배정을 기다립니다. 같은 단계 작업 ${ahead.length}개: ${ahead.slice(0,5).map(item).join('; ')}${ahead.length>5?` 외 ${ahead.length-5}개`:''}`:run.queue.stage==='question'?'질문 작업자 배정 대기':'실행 작업자 배정 대기';
@@ -819,7 +819,7 @@ $('#type-form').onchange=typeChange;
 $('#type-form').onsubmit=e=>{e.preventDefault();attempt(()=>submitType(e));};
 $('#cancel-type').onclick=()=>{typeRequest++;$('#type-dialog').close();};
 let searchTimer;$('#search').oninput=()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>attempt(renderDocs),250);};
-attempt(async()=>{await loadSettings();await loadLibrary();});
+attempt(async()=>{await loadSettings();await loadLibrary();await loadUnreadableQuestions();});
 
 let activeQuestion;
 $('#ask-agent').onchange=()=>syncProviderControls('ask',true);
@@ -979,12 +979,43 @@ $('#confirm-delete').onclick=()=>attempt(async()=>{
     const result=await api(`/api/documents/${doc.id}/${latestOnly?'delete-latest':'delete'}`,'POST',{expected_version:doc.current_version,expected_generation:doc.generation});
     $('#delete-dialog').close();activeQuestion=null;selectedDoc=null;
     for(const selector of ['#document-detail','#query-result','#answer-result','#runs'])$(selector).innerHTML='';
-    await loadLibrary();await loadQueries();await loadQuestions();await loadCleanup();
+    await loadLibrary();await loadQueries();await loadQuestions();await loadUnreadableQuestions();await loadCleanup();
     if(result.current_version)await openDoc(doc.id,result.current_version);
-    notice(result.cleanup_pending?'원문과 연결된 DB 기록을 삭제했습니다. 일부 로컬 로그 정리가 남았습니다. 실행 기록에서 재시도하세요.':(latestOnly?'최신 리비전을 삭제하고 이전 리비전으로 돌아갔습니다.':'문서와 모든 리비전을 삭제했습니다.'),Boolean(result.cleanup_pending));
+    notice(deleteNotice(result,latestOnly),Boolean(result.cleanup_pending));
   }catch(error){
     if(error.status===409){$('#delete-dialog').close();await loadLibrary();await openDoc(doc.id);notice(error.message+' 삭제하려면 다시 선택하세요.',true);}
     else{$('#delete-error').textContent=error.message;$('#confirm-delete').disabled=false;}
+  }
+});
+function deleteNotice(result,latestOnly){
+  const done=result.cleanup_pending?'원문과 연결된 DB 기록을 삭제했습니다. 일부 로컬 로그 정리가 남았습니다. 실행 기록에서 재시도하세요.':(latestOnly?'최신 리비전을 삭제하고 이전 리비전으로 돌아갔습니다.':'문서와 모든 리비전을 삭제했습니다.');
+  return done+(result.unreadable_questions_kept?` 읽을 수 없는 질문 기록 ${result.unreadable_questions_kept}개는 이 문서와 관련 있는지 확인할 수 없어 지우지 않았습니다. 질문 이력의 손상된 질문 기록 목록에서 확인하세요.`:'');
+}
+function renderUnreadableQuestions(list){
+  const ids=list.ids||[],hidden=list.hidden||0;
+  if(!ids.length&&!hidden)return '';
+  return `<section class="panel"><h3>손상된 질문 기록 ${ids.length+hidden}개</h3><p>저장된 질문 기록이 손상되어 읽을 수 없습니다. 내용을 추측해 고치지 않으므로 질문·상태·답변을 표시하지 않습니다. 이 기록은 문서를 삭제해도 함께 지워지지 않으며 삭제한 문서의 내용이 들어 있을 수 있습니다. ID가 표시된 기록은 문서 삭제를 막지 않습니다.</p>`+
+    ids.map(id=>`<div class="history-line">질문 기록 ${esc(id)} <button class="danger" data-delete-unreadable="${esc(id)}">삭제</button></div>`).join('')+
+    (hidden?`<p class="muted">ID 형식이 맞지 않는 손상 기록 ${hidden}개는 화면에서 삭제할 수 없습니다.</p>`:'')+'</section>';
+}
+let unreadableTarget;
+async function loadUnreadableQuestions(){
+  $('#unreadable-questions').innerHTML=renderUnreadableQuestions(await api('/api/questions/unreadable'));
+  for(const b of document.querySelectorAll('[data-delete-unreadable]'))b.onclick=()=>{
+    unreadableTarget=b.dataset.deleteUnreadable;$('#unreadable-error').textContent='';$('#confirm-unreadable').disabled=false;$('#unreadable-dialog').showModal();
+  };
+}
+$('#cancel-unreadable').onclick=()=>$('#unreadable-dialog').close();
+$('#confirm-unreadable').onclick=()=>attempt(async()=>{
+  $('#confirm-unreadable').disabled=true;
+  try{
+    const result=await api(`/api/questions/${unreadableTarget}/delete-unreadable`,'POST',{});
+    $('#unreadable-dialog').close();
+    await loadUnreadableQuestions();await loadCleanup();
+    notice('손상된 질문 기록을 삭제했습니다.'+(result.cleanup_pending?' 일부 로컬 로그 정리가 남았습니다.':''),Boolean(result.cleanup_pending));
+  }catch(error){
+    if(error.status!==409&&error.status!==400){$('#unreadable-error').textContent=error.message;$('#confirm-unreadable').disabled=false;return;}
+    $('#unreadable-dialog').close();await loadUnreadableQuestions();notice(error.message,true);
   }
 });
 async function loadCleanup(){

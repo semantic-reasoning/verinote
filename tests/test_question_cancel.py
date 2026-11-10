@@ -277,7 +277,8 @@ class StoredState(Base):
         doc = self.store.document(self.doc['id'])
         with self.assertRaises(Conflict) as refused:
             self.store.delete_document(doc['id'], False, doc['current_version'], doc['generation'])
-        self.assertTrue(str(refused.exception).startswith('취소한 질문이 아직 멈추지 않았습니다.'), str(refused.exception))
+        self.assertEqual(str(refused.exception), '취소한 질문이 아직 멈추지 않았습니다. 질문 이력에서 취소됨으로 바뀐 뒤 삭제하세요. 이미 허용한 모델 호출의 제한 시간이 지나도 '
+                         '바뀌지 않으면 서버를 재시작하세요. 재시작하면 대기·처리 중인 실행과 질문은 중단으로, 취소 중인 실행과 질문은 취소됨으로 표시됩니다.')
         self.store.finish_question_cancel(job['id'], HEAD)
         self.store.delete_document(doc['id'], False, doc['current_version'], doc['generation'])
 

@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from verinote.server import main
-from verinote.store import QUESTION_RESTART_CANCEL, Store, ident
+from verinote.store import QUESTION_RESTART_CANCEL, Store, UnreadableQuestion, ident
 
 SENTINEL = 'SENTINEL911'
 ROUND = [{'round': 1, 'status': 'running', 'nodes': []}]
@@ -105,12 +105,17 @@ class RecoverCorruptRows(unittest.TestCase):
     def test_three_issue_shapes_mixed_with_valid_rows_return_their_ids_in_rowid_order(self):
         self.check(['not json{', json.dumps({'id': 'x'}), json.dumps({'status': 'cancelled', 'context_processing': ['x']})])
 
-    def test_skipped_running_and_cancelling_rows_keep_their_stored_status(self):
+    def test_skipped_running_and_cancelling_rows_keep_their_bytes_and_are_not_read_as_in_progress(self):
         running = json.dumps({'status': 'running', 'context_processing': 'ab'})
         cancelling = json.dumps({'status': 'cancelling', 'context_processing': ['x']})
         bad = self.seed([running, cancelling])
+        before = [self.raw(key) for key in bad]
         self.assertEqual(self.store.recover(), bad)
-        self.assertEqual([self.store.question(key)['status'] for key in bad], ['running', 'cancelling'])
+        self.assertEqual([self.raw(key) for key in bad], before)
+        for key in bad:
+            with self.assertRaises(UnreadableQuestion):
+                self.store.question(key)
+        self.assertEqual(self.store.unreadable_questions()['ids'], bad)
 
     def test_success_row_with_a_string_round_is_neither_written_nor_returned(self):
         key = ident()
@@ -154,7 +159,10 @@ class StartupReport(unittest.TestCase):
                 (SENTINEL, json.dumps({'status': 'cancelled', 'context_processing': [SENTINEL]})), (ident(), json.dumps({'status': 'running'}))]
         err = self.start(rows)
         self.assertIn('Startup recovery skipped 3 question row(s)', err)
-        self.assertIn('may still show as in progress', err)
+        self.assertIn('they keep their stored content, are shown under 손상된 질문 기록 in the question history (by id when the id is stored as '
+                      'text of 32 lowercase hex characters, and such a row can be deleted there; otherwise only counted), and do not block '
+                      'document deletion.', err)
+        self.assertNotIn('may still show as in progress', err)
         self.assertIn(f'Ids: {bad[0]}, {bad[1]} (1 more with an id not shown)', err)
         self.assertNotIn(SENTINEL, err)
 
