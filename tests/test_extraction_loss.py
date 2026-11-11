@@ -1,6 +1,8 @@
 """Synthetic loss-prevention contracts; these do not measure model semantic recall."""
 import copy
 import json
+import re
+import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -14,6 +16,7 @@ from test_workflow import (
     extraction_response,
 )
 
+from verinote.extraction_coverage import read_report
 from verinote.extraction_loss import (
     RecoveryBudget,
     merge_recovery,
@@ -23,6 +26,15 @@ from verinote.extraction_loss import (
 )
 from verinote.service import Service
 from verinote.store import Conflict
+
+
+def render_loss(report):
+    app = (Path(__file__).resolve().parents[1]/'verinote/web/app.js').read_text()
+    renderer = app[app.index('function renderLossAudit('):]
+    script = re.search(r'^const esc = .*$', app, re.M)[0] + '\n' + renderer
+    script += "\nconsole.log(renderLossAudit(JSON.parse(require('fs').readFileSync(0,'utf8'))));"
+    return subprocess.run(['node', '-e', script], input=json.dumps(report),
+                          capture_output=True, text=True, check=True).stdout
 
 
 class LossWorkflow(unittest.TestCase):
@@ -74,6 +86,51 @@ class LossWorkflow(unittest.TestCase):
         self.assertEqual(rows[0]['quote'],source); self.assertEqual(rows[0]['span'],[0,len(source)])
         self.assertEqual(rows[0]['reason'],'type_mismatch'); self.assertEqual(rows[0]['row'],1)
         self.assertEqual(self.store.snapshot()['facts'],[])
+
+    def test_supplemental_dictionary_mismatch_explains_missing_shortcuts_and_counts(self):
+        dictionary = copy.deepcopy(DICTIONARY)
+        dictionary['entities'][-1]['type'] = 'Other'
+        approved_dictionary(self.store, self.doc['id'], dictionary)
+        candidates = [FACTS[0], FACTS[1], FACTS[0] | {'subject':'<없는 표기>'},
+                      FACTS[0] | {'predicate':'unknown'}, FACTS[0] | {'quote':'fabricated'}]
+        run, calls = self.execute([extraction_response([], dictionary), {'facts':candidates}])
+        self.assertEqual(run['status'], 'success', run['detail']); self.assertEqual(len(calls), 2)
+        report = read_loss(self.root, self.store, run)
+        coverage = read_report(self.root, self.store, run['id'])
+        self.assertTrue(report['available']); self.assertTrue(coverage['available'])
+        self.assertEqual(coverage['excluded_fact_count'], 0)
+        self.assertTrue(all(not c.get('excluded_facts') for c in coverage['chunks']))
+        rows = report['chunks'][0]['unresolved']
+        self.assertEqual([r['reason'] for r in rows],
+                         ['type_mismatch', 'unknown_entity', 'unknown_relation', 'unverifiable_quote'])
+        self.assertEqual([r['row'] for r in rows], [1, 2, 3, 4])
+        self.assertTrue(all(r['origin']=='recovery' for r in rows))
+        self.assertEqual([r['quote'] for r in rows], [c['quote'] for c in candidates[1:]])
+        facts = [i for i in self.store.document(self.doc['id'])['items'] if i['kind']=='fact']
+        self.assertEqual(len(facts), 1); self.assertEqual(facts[0]['status'], 'pending')
+        self.assertEqual(facts[0]['payload']['subject'], FACTS[0]['subject'])
+        self.assertEqual(facts[0]['payload']['object'], FACTS[0]['object'])
+        html = render_loss(report)
+        self.assertIn('&lt;없는 표기&gt;', html); self.assertNotIn('<없는 표기>', html)
+        for row in rows[:3]:
+            one = copy.deepcopy(report); one['chunks'][0]['unresolved'] = [row]
+            visible = render_loss(one).split('<details>', 1)[0]
+            for message in ('주어·목적어별 사전 판정 정보가 없어', '사전에 추가 / 타입 고치기',
+                            '제외 건수와 타입 수정의 영향 수에 포함되지 않습니다',
+                            '원문 위치 확인된 미해결', '인용 미확인',
+                            '내용 수정 → 재승인 → 승인 사전으로 추출 → 새 후보 검토',
+                            '후보 복원을 보장하지 않습니다'):
+                self.assertIn(message, visible)
+        self.assertNotIn('data-term-add', html); self.assertNotIn('data-type-fix', html)
+        for origin, reason in [('initial','type_mismatch'), ('initial','unknown_entity'),
+                               ('initial','unknown_relation'), ('recovery','unverifiable_quote')]:
+            one = copy.deepcopy(report)
+            one['chunks'][0]['unresolved'] = [rows[0] | {'origin':origin, 'reason':reason}]
+            self.assertNotIn('단축 버튼을 제공하지 않습니다', render_loss(one))
+        for chunks in ([], None):
+            one = copy.deepcopy(report); one.pop('chunks')
+            if chunks is not None: one['chunks'] = chunks
+            self.assertNotIn('단축 버튼을 제공하지 않습니다', render_loss(one))
 
     def test_eleven_chunks_budget_preserves_unexamined_tail(self):
         source=SOURCE.ljust(8000)*10+SOURCE
