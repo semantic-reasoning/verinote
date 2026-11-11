@@ -14,6 +14,19 @@ from verinote.store import QUESTION_RESTART_CANCEL, Store, UnreadableQuestion, i
 
 SENTINEL = 'SENTINEL911'
 ROUND = [{'round': 1, 'status': 'running', 'nodes': []}]
+DROP = object()
+
+
+def full(key, raw=None, **override):
+    """A payload shaped as create_question writes it, for a row whose id is key, as JSON text, with override applied (DROP removes a field),
+    so a fixture's one defect is the only one (#917). With raw (bytes), the question value's JSON text is replaced by raw byte for byte and
+    bytes are returned."""
+    job = {'id': key, 'question': 'q', 'agent': 'agy', 'model': '', 'snapshot': 's', 'status': 'running', 'trace': [], 'evidence': {},
+           'answer': None, 'error': '', 'created_at': '2026-01-01', 'call_manifest': []} | override
+    job = {k: v for k, v in job.items() if v is not DROP}
+    if raw is None:
+        return json.dumps(job)
+    return json.dumps(job | {'question': '@RAW@'}).encode().replace(b'"@RAW@"', raw)
 
 
 def insert(db, key, payload):
@@ -32,17 +45,14 @@ class RecoverCorruptRows(unittest.TestCase):
 
     def seed(self, corrupt):
         """Insert the corrupt rows first (lower rowids), then a running, a cancelling, a cancelled-with-running-round and a success row,
-        and an AFTER UPDATE trigger that records each written id. Returns the corrupt ids in insertion order."""
+        and an AFTER UPDATE trigger that records each written id. Returns the corrupt ids in insertion order. A callable corrupt entry is called with its row id."""
         bad = [ident() for _ in corrupt]
         self.valid = {name: ident() for name in ('running', 'cancelling', 'cancelled', 'success')}
         with self.store.connect(True) as db:
             for key, payload in zip(bad, corrupt, strict=True):
-                insert(db, key, payload)
+                insert(db, key, payload(key) if callable(payload) else payload)
             for name, key in self.valid.items():
-                job = {'id': key, 'status': name, 'question': name}
-                if name == 'cancelled':
-                    job['context_processing'] = ROUND
-                insert(db, key, json.dumps(job))
+                insert(db, key, full(key, status=name, question=name, **({'context_processing': ROUND} if name == 'cancelled' else {})))
             db.execute('CREATE TABLE writes(id TEXT)')
             db.execute('CREATE TRIGGER counted AFTER UPDATE ON questions BEGIN INSERT INTO writes VALUES(NEW.id); END')
         return bad
@@ -73,10 +83,10 @@ class RecoverCorruptRows(unittest.TestCase):
         self.check(['not json{'])
 
     def test_payload_without_status_is_skipped(self):
-        self.check([json.dumps({'id': 'x', 'question': 'q'})])
+        self.check([lambda k: full(k, status=DROP)])
 
     def test_cancelled_question_with_a_string_round_is_skipped(self):
-        self.check([json.dumps({'status': 'cancelled', 'context_processing': ['x']})])
+        self.check([lambda k: full(k, status='cancelled', context_processing=['x'])])
 
     def test_null_payload_is_skipped(self):
         self.check([None])
@@ -85,30 +95,28 @@ class RecoverCorruptRows(unittest.TestCase):
         self.check(['[]'])
 
     def test_invalid_utf8_byte_is_skipped(self):
-        self.check([b'{"status":"running","q":"\xff"}'])
+        self.check([lambda k: full(k, raw=b'"q\xff"')])
 
     def test_utf8_encoded_surrogate_is_skipped(self):
-        self.check([b'{"status":"running","q":"\xed\xa0\x80"}'])
+        self.check([lambda k: full(k, raw=b'"q\xed\xa0\x80"')])
 
     def test_utf8_bom_before_json_is_skipped(self):
-        self.check([b'\xef\xbb\xbf{"status":"running"}'])
+        self.check([lambda k: b'\xef\xbb\xbf' + full(k).encode()])
 
     def test_escaped_lone_surrogate_whose_repair_cannot_be_stored_as_utf8_is_skipped(self):
-        self.check([b'{"status":"running","q":"\\ud800"}'])
+        self.check([lambda k: full(k, raw=b'"q\\ud800"')])
 
     def test_too_deeply_nested_json_is_skipped(self):
         self.check([b'[' * 200000])
 
     def test_success_row_with_utf8_encoded_surrogate_is_returned_though_recover_would_not_change_it(self):
-        self.check([b'{"status":"success","q":"\xed\xa0\x80"}'])
+        self.check([lambda k: full(k, status='success', raw=b'"q\xed\xa0\x80"')])
 
     def test_three_issue_shapes_mixed_with_valid_rows_return_their_ids_in_rowid_order(self):
-        self.check(['not json{', json.dumps({'id': 'x'}), json.dumps({'status': 'cancelled', 'context_processing': ['x']})])
+        self.check(['not json{', lambda k: full(k, status=DROP), lambda k: full(k, status='cancelled', context_processing=['x'])])
 
     def test_skipped_running_and_cancelling_rows_keep_their_bytes_and_are_not_read_as_in_progress(self):
-        running = json.dumps({'status': 'running', 'context_processing': 'ab'})
-        cancelling = json.dumps({'status': 'cancelling', 'context_processing': ['x']})
-        bad = self.seed([running, cancelling])
+        bad = self.seed([lambda k: full(k, context_processing='ab'), lambda k: full(k, status='cancelling', context_processing=['x'])])
         before = [self.raw(key) for key in bad]
         self.assertEqual(self.store.recover(), bad)
         self.assertEqual([self.raw(key) for key in bad], before)
@@ -120,7 +128,7 @@ class RecoverCorruptRows(unittest.TestCase):
     def test_success_row_with_a_string_round_is_neither_written_nor_returned(self):
         key = ident()
         with self.store.connect(True) as db:
-            insert(db, key, json.dumps({'status': 'success', 'context_processing': ['x']}))
+            insert(db, key, full(key, status='success', context_processing=['x']))
             db.execute('CREATE TABLE writes(id TEXT)')
             db.execute('CREATE TRIGGER counted AFTER UPDATE ON questions BEGIN INSERT INTO writes VALUES(NEW.id); END')
         self.assertEqual(self.store.recover(), [])
@@ -129,7 +137,7 @@ class RecoverCorruptRows(unittest.TestCase):
     def test_update_failure_raised_by_a_trigger_propagates_and_writes_no_row(self):
         key = ident()
         with self.store.connect(True) as db:
-            insert(db, key, json.dumps({'status': 'running'}))
+            insert(db, key, full(key))
             db.execute("CREATE TRIGGER refuse BEFORE UPDATE ON questions BEGIN SELECT RAISE(ABORT,'refused'); END")
         with self.assertRaises(sqlite3.IntegrityError):
             self.store.recover()
@@ -155,8 +163,9 @@ class StartupReport(unittest.TestCase):
 
     def test_skipped_rows_are_reported_by_count_and_hex_id_without_content_path_or_unreadable_id(self):
         bad = [ident(), ident()]
-        rows = [(bad[0], '{"question":"%s"' % SENTINEL), (bad[1], json.dumps({'question': SENTINEL})),
-                (SENTINEL, json.dumps({'status': 'cancelled', 'context_processing': [SENTINEL]})), (ident(), json.dumps({'status': 'running'}))]
+        running = ident()
+        rows = [(bad[0], '{"question":"%s"' % SENTINEL), (bad[1], full(bad[1], question=SENTINEL, status=DROP)),
+                (SENTINEL, full(SENTINEL, status='cancelled', context_processing=[SENTINEL])), (running, full(running))]
         err = self.start(rows)
         self.assertIn('Startup recovery skipped 3 question row(s)', err)
         self.assertIn('they keep their stored content, are shown under 손상된 질문 기록 in the question history (by id when the id is stored as '
@@ -167,7 +176,8 @@ class StartupReport(unittest.TestCase):
         self.assertNotIn(SENTINEL, err)
 
     def test_clean_store_prints_no_recovery_line(self):
-        self.assertEqual(self.start([(ident(), json.dumps({'status': 'running'}))]), '')
+        key = ident()
+        self.assertEqual(self.start([(key, full(key))]), '')
 
 
 if __name__ == '__main__':

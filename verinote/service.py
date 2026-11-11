@@ -999,7 +999,12 @@ class Service:
         with self.cleanup_lock:
             for task in self.store.pending_cleanup():
                 kind, key = task['kind'], task['id']
-                if kind not in ('runs', 'questions') or not re.fullmatch(r'[a-f0-9]{32}', key):
+                if kind not in ('runs', 'questions'):
+                    continue
+                if not isinstance(key, str) or not re.fullmatch(r'[a-f0-9]{32}', key):
+                    # The server names log folders only with ident() ids (32 lowercase hex), so this obligation names no folder: it is
+                    # removed without touching any file.
+                    self.store.finish_cleanup(kind, key)
                     continue
                 root = self.root.resolve()
                 parent = root / kind
