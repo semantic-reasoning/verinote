@@ -989,12 +989,12 @@ $('#confirm-delete').onclick=()=>attempt(async()=>{
 });
 function deleteNotice(result,latestOnly){
   const done=result.cleanup_pending?'원문과 연결된 DB 기록을 삭제했습니다. 일부 로컬 로그 정리가 남았습니다. 실행 기록에서 재시도하세요.':(latestOnly?'최신 리비전을 삭제하고 이전 리비전으로 돌아갔습니다.':'문서와 모든 리비전을 삭제했습니다.');
-  return done+(result.unreadable_questions_kept?` 읽을 수 없는 질문 기록 ${result.unreadable_questions_kept}개는 이 문서와 관련 있는지 확인할 수 없어 지우지 않았습니다. 질문 이력의 손상된 질문 기록 목록에서 확인하세요.`:'');
+  return done+(result.unreadable_questions_kept?` 손상된 질문 기록 ${result.unreadable_questions_kept}개는 어느 스냅샷의 것인지 읽지 않으므로 지우지 않았습니다. 질문 이력의 손상된 질문 기록 목록에서 확인하세요.`:'');
 }
 function renderUnreadableQuestions(list){
   const ids=list.ids||[],hidden=list.hidden||0;
   if(!ids.length&&!hidden)return '';
-  return `<section class="panel"><h3>손상된 질문 기록 ${ids.length+hidden}개</h3><p>저장된 질문 기록이 손상되어 읽을 수 없습니다. 내용을 추측해 고치지 않으므로 질문·상태·답변을 표시하지 않습니다. 이 기록은 문서를 삭제해도 함께 지워지지 않으며 삭제한 문서의 내용이 들어 있을 수 있습니다. ID가 표시된 기록은 문서 삭제를 막지 않습니다.</p>`+
+  return `<section class="panel"><h3>손상된 질문 기록 ${ids.length+hidden}개</h3><p>저장된 질문 기록이 손상되어 읽을 수 없습니다. 내용을 추측해 고치지 않으므로 질문·상태·답변을 표시하지 않습니다. 이 기록은 문서를 삭제해도 함께 지워지지 않으며 삭제한 문서의 내용이 들어 있을 수 있습니다. 이 기록은 문서 삭제를 막지 않습니다.</p>`+
     ids.map(id=>`<div class="history-line">질문 기록 ${esc(id)} <button class="danger" data-delete-unreadable="${esc(id)}">삭제</button></div>`).join('')+
     (hidden?`<p class="muted">ID 형식이 맞지 않는 손상 기록 ${hidden}개는 화면에서 삭제할 수 없습니다.</p>`:'')+'</section>';
 }

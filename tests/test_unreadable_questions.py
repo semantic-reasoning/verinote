@@ -13,7 +13,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from test_recover_corrupt_rows import insert
+from test_recover_corrupt_rows import DROP, full, insert
 
 from verinote.server import Server
 from verinote.service import Service
@@ -30,32 +30,40 @@ WAITING = '추출 또는 질문 작업이 진행 중입니다. 모든 작업 완
 QUESTION_CANCELLING = ('취소한 질문이 아직 멈추지 않았습니다. 질문 이력에서 취소됨으로 바뀐 뒤 삭제하세요. 이미 허용한 모델 호출의 제한 시간이 지나도 '
                        '바뀌지 않으면 서버를 재시작하세요. 재시작하면 대기·처리 중인 실행과 질문은 중단으로, 취소 중인 실행과 질문은 취소됨으로 표시됩니다.')
 
-# The issue's five shapes; each holds SECRET.
+# The issue's five shapes; each holds SECRET. A callable is called with the row id, so each object payload is a full question (full) whose
+# one defect is the shape's (#917).
 SHAPES = {
-    'running_round_x': json.dumps({'status': 'running', 'question': SECRET, 'context_processing': ['x']}),
+    'running_round_x': lambda k: full(k, question=SECRET, context_processing=['x']),
     'not_json': '{"question":"%s"' % SECRET,
-    'no_status': json.dumps({'question': SECRET, 'agent': 'agy', 'snapshot': 'x'}),
-    'invalid_utf8': b'{"status":"running","question":"' + SECRET.encode() + b'\xff"}',
-    'cancelling_round_x': json.dumps({'status': 'cancelling', 'question': SECRET, 'context_processing': ['x']}),
+    'no_status': lambda k: full(k, question=SECRET, status=DROP),
+    'invalid_utf8': lambda k: full(k, raw=b'"' + SECRET.encode() + b'\xff"'),
+    'cancelling_round_x': lambda k: full(k, status='cancelling', question=SECRET, context_processing=['x']),
 }
+
+
+def pairs(status):
+    return lambda k: json.dumps(list(map(list, json.loads(full(k, status=status)).items())))
+
 
 # name -> (payload, expected unreadable). Expected values are written here by hand, not derived from the code under test.
 ALL_SHAPES = {
-    'not_json': (b'not json{', True), 'no_status': (json.dumps({'id': 'x', 'question': 'q'}), True),
-    'cancelled_str_round': (json.dumps({'status': 'cancelled', 'context_processing': ['x']}), True), 'null': (None, True),
-    'array': (b'[]', True), 'bad_utf8': (b'{"status":"running","q":"\xff"}', True),
-    'utf8_surrogate': (b'{"status":"running","q":"\xed\xa0\x80"}', True), 'bom': (b'\xef\xbb\xbf{"status":"running"}', True),
-    'escaped_surrogate_running': (b'{"status":"running","q":"\\ud800"}', True), 'deep': (b'[' * 200000, True),
-    'success_utf8_surrogate': (b'{"status":"success","q":"\xed\xa0\x80"}', True),
-    'running_str_round': (json.dumps({'status': 'running', 'context_processing': ['x']}), True),
-    'cancelling_str_round': (json.dumps({'status': 'cancelling', 'context_processing': ['x']}), True),
-    'running_str_cp': (json.dumps({'status': 'running', 'context_processing': 'ab'}), True),
-    'status_list': (json.dumps({'status': []}), True), 'status_dict': (json.dumps({'status': {}}), True),
-    'pairs_running': (json.dumps([['status', 'running']]), True), 'pairs_success': (json.dumps([['status', 'success']]), True),
-    'success_str_round': (json.dumps({'status': 'success', 'context_processing': ['x']}), False),
-    'escaped_surrogate_success': (b'{"status":"success","q":"\\ud800"}', False),
-    'live_running': (json.dumps({'status': 'running', 'context_processing': ROUND}), False),
-    'live_queued': (json.dumps({'status': 'queued'}), False), 'status_int': (json.dumps({'status': 5}), False),
+    'not_json': (b'not json{', True), 'no_status': (lambda k: full(k, status=DROP), True),
+    'cancelled_str_round': (lambda k: full(k, status='cancelled', context_processing=['x']), True), 'null': (None, True),
+    'array': (b'[]', True), 'bad_utf8': (lambda k: full(k, raw=b'"q\xff"'), True),
+    'utf8_surrogate': (lambda k: full(k, raw=b'"q\xed\xa0\x80"'), True), 'bom': (lambda k: b'\xef\xbb\xbf' + full(k).encode(), True),
+    'escaped_surrogate_running': (lambda k: full(k, raw=b'"q\\ud800"'), True), 'deep': (b'[' * 200000, True),
+    'success_utf8_surrogate': (lambda k: full(k, status='success', raw=b'"q\xed\xa0\x80"'), True),
+    'running_str_round': (lambda k: full(k, context_processing=['x']), True),
+    'cancelling_str_round': (lambda k: full(k, status='cancelling', context_processing=['x']), True),
+    'running_str_cp': (lambda k: full(k, context_processing='ab'), True),
+    'status_list': (lambda k: full(k, status=[]), True), 'status_dict': (lambda k: full(k, status={}), True),
+    'pairs_running': (pairs('running'), True), 'pairs_success': (pairs('success'), True),
+    'success_str_round': (lambda k: full(k, status='success', context_processing=['x']), False),
+    'escaped_surrogate_success': (lambda k: full(k, status='success', raw=b'"q\\ud800"'), False),
+    'live_running': (lambda k: full(k, context_processing=ROUND), False),
+    'live_queued': (lambda k: full(k, status='queued'), False),
+    # Expected value changed by #917 (was False): a status that is not one of the seven question statuses is now unreadable.
+    'status_int': (lambda k: full(k, status=5), True),
 }
 
 
@@ -77,6 +85,7 @@ class Base(unittest.TestCase):
 
     def corrupt(self, payload, key=None, created_at='2026-01-01'):
         key = key or ident()
+        payload = payload(key) if callable(payload) else payload
         with self.store.connect(True) as db:
             if created_at == '2026-01-01':
                 insert(db, key, payload)
@@ -127,7 +136,7 @@ class Classification(Base):
         for i in range(31):
             key = ident()
             with self.store.connect(True) as db:
-                db.execute('INSERT INTO questions VALUES(?,?,?)', (key, json.dumps({'id': key, 'status': 'success'}), f'2026-02-{i:02d}'))
+                db.execute('INSERT INTO questions VALUES(?,?,?)', (key, full(key, status='success', created_at=f'2026-02-{i:02d}'), f'2026-02-{i:02d}'))
             readable.append(key)
         for payload in SHAPES.values():
             self.corrupt(payload, created_at='2026-12-31')
@@ -140,7 +149,7 @@ class Classification(Base):
         for i in range(31):
             key = ident()
             with self.store.connect(True) as db:
-                db.execute('INSERT INTO questions VALUES(?,?,?)', (key, json.dumps({'id': key, 'status': 'success'}), f'2026-02-{i:02d}'))
+                db.execute('INSERT INTO questions VALUES(?,?,?)', (key, full(key, status='success', created_at=f'2026-02-{i:02d}'), f'2026-02-{i:02d}'))
         self.assertEqual(self.store.unreadable_questions(), {'ids': [old, null], 'hidden': 0})
 
     def test_an_unreadable_row_whose_id_is_not_32_lowercase_hex_text_is_counted_in_hidden_without_its_id(self):
@@ -352,12 +361,12 @@ vm.runInContext(source.slice(source.indexOf('function deleteNotice('),source.ind
         self.run_js(r'''
 const html=vm.runInContext('renderUnreadableQuestions({ids:["%s"],hidden:1})',ctx);
 assert(html.includes('<h3>손상된 질문 기록 2개</h3>'),html);
-assert(html.includes('저장된 질문 기록이 손상되어 읽을 수 없습니다. 내용을 추측해 고치지 않으므로 질문·상태·답변을 표시하지 않습니다. 이 기록은 문서를 삭제해도 함께 지워지지 않으며 삭제한 문서의 내용이 들어 있을 수 있습니다. ID가 표시된 기록은 문서 삭제를 막지 않습니다.'),html);
+assert(html.includes('저장된 질문 기록이 손상되어 읽을 수 없습니다. 내용을 추측해 고치지 않으므로 질문·상태·답변을 표시하지 않습니다. 이 기록은 문서를 삭제해도 함께 지워지지 않으며 삭제한 문서의 내용이 들어 있을 수 있습니다. 이 기록은 문서 삭제를 막지 않습니다.'),html);
 assert(html.includes('질문 기록 %s <button class="danger" data-delete-unreadable="%s">삭제</button>'),html);
 assert(html.includes('ID 형식이 맞지 않는 손상 기록 1개는 화면에서 삭제할 수 없습니다.'),html);
 assert.equal(vm.runInContext('renderUnreadableQuestions({ids:[],hidden:0})',ctx),'');
 assert.equal(vm.runInContext('deleteNotice({cleanup_pending:0,unreadable_questions_kept:2},false)',ctx),
-  '문서와 모든 리비전을 삭제했습니다. 읽을 수 없는 질문 기록 2개는 이 문서와 관련 있는지 확인할 수 없어 지우지 않았습니다. 질문 이력의 손상된 질문 기록 목록에서 확인하세요.');
+  '문서와 모든 리비전을 삭제했습니다. 손상된 질문 기록 2개는 어느 스냅샷의 것인지 읽지 않으므로 지우지 않았습니다. 질문 이력의 손상된 질문 기록 목록에서 확인하세요.');
 assert.equal(vm.runInContext('deleteNotice({cleanup_pending:0,unreadable_questions_kept:0},true)',ctx),'최신 리비전을 삭제하고 이전 리비전으로 돌아갔습니다.');
 const queue=vm.runInContext('renderQueueAhead({status:"queued",stage:"question",queue:{stage:"question",capacity:1,ahead:[{kind:"question",id:"%s",status:null,unreadable:true,question:""}]}})',ctx);
 assert(queue.includes('질문 %s · 손상되어 읽을 수 없음'),queue);
@@ -389,7 +398,7 @@ const source=fs.readFileSync('verinote/web/app.js','utf8');
         html = (ROOT / 'verinote' / 'web' / 'index.html').read_text()
         dialog = html[html.index('<dialog id="delete-dialog"'):]
         dialog = dialog[:dialog.index('</dialog>')]
-        self.assertIn('질문 이력의 손상된 질문 기록 목록에 ID가 표시된 기록과 그 로그는 이 문서와 관련 있는지 확인할 수 없어 지우지 않고 수를 알립니다.', dialog)
+        self.assertIn('질문 이력의 손상된 질문 기록과 그 로그는 어느 스냅샷의 것인지 읽지 않으므로 지우지 않고 수를 알립니다.', dialog)
         unreadable = html[html.index('<dialog id="unreadable-dialog"'):]
         unreadable = unreadable[:unreadable.index('</dialog>')]
         for part in ('이 손상된 질문 기록과 그 로컬 호출 로그를 삭제합니다. 되돌릴 수 없습니다.', 'id="unreadable-error"', 'id="confirm-unreadable"', 'id="cancel-unreadable"'):
