@@ -11,8 +11,12 @@ license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = ["pyrewire>=1.1.2,<2", "pypdf>=5,<7"]
 
+[project.optional-dependencies]
+mcp = ["mcp>=1.26,<2"]
+
 [project.scripts]
 verinote = "verinote.server:main"
+verinote-mcp = "verinote.mcp_server:main"
 
 [tool.setuptools.package-data]
 verinote = ["rules.dl", "web/*", "benchmark_data/v1/*.json", "benchmark_data/v2/*.json", "benchmark_data/repair-cases/*.json"]

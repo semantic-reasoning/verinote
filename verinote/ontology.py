@@ -437,7 +437,7 @@ EXTRACTION_CONTRACT_VERSION = 3
 
 def extraction_key(pin):
     """Shared eligibility key; absent version is the legacy extraction contract."""
-    return pin['id'], pin['revision'], pin.get('extraction_contract', 0)
+    return pin['id'], pin['revision'], pin.get('extraction_contract', 0), pin.get('workflow', 'cli')
 
 
 EXTRACTION_PROMPT_V1 = f'''승인된 사전만 사용하여 원문을 한국어 위키 초안과 직접 관계로 추출하세요.
