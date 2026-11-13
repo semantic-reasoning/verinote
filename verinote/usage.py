@@ -2,6 +2,7 @@
 import copy
 import json
 import math
+import os
 import re
 from pathlib import Path
 
@@ -359,12 +360,38 @@ def not_started(agent, usage, metadata):
     return usage.get('status') == 'not_started'
 
 
-def job_calls(root, kind, owner):
+def chunk_directories(root, key, maximum):
+    """Discover canonical owned chunk directories with bounded work and no links."""
+    folder = Path(root)
+    for part in (None, 'runs', key):
+        if part is not None:
+            folder = folder / part
+        if folder.is_symlink():
+            return [], True
+    found: list[int] = []
+    try:
+        with os.scandir(folder) as entries:
+            for scanned, entry in enumerate(entries, 1):
+                if scanned > maximum + 128:
+                    return sorted(found), True
+                name = entry.name
+                if (len(name) <= len(str(maximum)) and re.fullmatch('[1-9][0-9]*', name)
+                        and int(name) <= maximum and entry.is_dir(follow_symlinks=False)):
+                    found.append(int(name))
+    except FileNotFoundError:
+        return [], False
+    except OSError:
+        return sorted(found), True
+    return sorted(found), False
+
+
+def job_calls(root, kind, owner, *, source_length=None):
     key = owner['id']
     if kind not in ('runs', 'questions') or not re.fullmatch(r'[a-f0-9]{32}', key):
         return []
     declared = {}
     unconfirmed = False
+    discovery_incomplete = False
     if kind == 'questions':
         paths = [(f'llm-{i}', 'question') for i in range(1, 7)]
         manifest = owner.get('call_manifest')
@@ -379,11 +406,18 @@ def job_calls(root, kind, owner):
                     continue
                 declared[path] = entry['status']
                 paths.append((path, stage))
-    elif owner.get('stage') == 'ontology':
-        from .ontology import MAX_DICTIONARY_CALLS
-        paths = [(str(i), 'ontology') for i in range(1, MAX_DICTIONARY_CALLS + 1)]
     else:
-        paths = [(p, stage) for i in range(1, 17) for p, stage in ((str(i), owner.get('stage', 'legacy')), (f'{i}/quote-repair', 'quote_repair'), (f'{i}/recovery', 'extraction_recovery'))]
+        from .documents import MAX_TEXT_BYTES, extraction_chunks
+        dictionary = owner.get('stage') == 'ontology'
+        if source_length is None:
+            maximum = 64 if dictionary else 16  # Legacy/offline callers without a pinned source.
+        elif type(source_length) is not int or not 1 <= source_length <= MAX_TEXT_BYTES:
+            return [unknown_count(kind, key, owner, '고정 원문 길이를 확인할 수 없습니다.')]
+        else:
+            maximum = (source_length + 1999) // 2000 if dictionary else extraction_chunks(source_length)
+        indices, discovery_incomplete = chunk_directories(root, key, maximum)
+        paths = ([(str(i), 'ontology') for i in indices] if dictionary else
+                 [(p, stage) for i in indices for p, stage in ((str(i), owner.get('stage', 'legacy')), (f'{i}/quote-repair', 'quote_repair'), (f'{i}/recovery', 'extraction_recovery'))])
     calls = []
     for path, stage in paths:
         base = f'{kind}/{key}/{path}'
@@ -490,6 +524,8 @@ def job_calls(root, kind, owner):
             calls.append(unknown_count(kind, key, owner, LOST_ATTEMPT))
     if unconfirmed:
         calls.append(unknown_count(kind, key, owner, UNCONFIRMED))
+    if discovery_incomplete:
+        calls.append(unknown_count(kind, key, owner, '호출 폴더 조회가 안전하게 완료되지 않아 전체 사용량을 확인할 수 없습니다.'))
     if not calls and kind == 'runs' and owner.get('stage') in ('ontology', 'extract') and owner['status'] == 'success':
         # Positive evidence of a fully resumed run, never infer zero from absent logs.
         raw, pipeline = progress_marker(root, key, owner['stage'])
@@ -499,7 +535,8 @@ def job_calls(root, kind, owner):
                     and marker.get('pipeline') == pipeline and marker.get('run_id') == key
                     and marker.get('status') == 'complete' and type(marker.get('calls_started')) is int and marker['calls_started'] == 0
                     and isinstance(marker.get('resumed_from'), str) and re.fullmatch(r'[a-f0-9]{32}', marker['resumed_from'])
-                    and marker['resumed_from'] != key and type(marker.get('total_chars')) is int and 0 < marker['total_chars'] <= 128_000
+                    and marker['resumed_from'] != key and type(marker.get('total_chars')) is int and 0 < marker['total_chars'] <= MAX_TEXT_BYTES
+                    and (source_length is None or marker['total_chars'] == source_length)
                     and type(marker.get('resumed_chars')) is int and type(marker.get('completed_chars')) is int
                     and marker['resumed_chars'] == marker['completed_chars'] == marker['total_chars']):
                 return []

@@ -171,6 +171,8 @@ def validate_audit(audit, output, source, dictionary):
 class RecoveryBudget:
     """Reserve before dispatch; interrupted/unknown attempts never get a free retry."""
     def __init__(self, store, root, run, contract):
+        from .documents import extraction_chunks
+        maximum = extraction_chunks(store.document_metadata(run['document_id'], run['version'])['total_chars'])
         self.path = root/'runs'/run['id']/'recovery-attempts.json'
         self.key = digest(reuse_contract(contract).encode())
         self.attempts = set()
@@ -189,7 +191,7 @@ class RecoveryBudget:
                 if (not isinstance(saved, dict) or set(saved) != {'contract','run_id','attempts','unknown'} or saved['contract'] != self.key
                         or saved['run_id'] != prior['id'] or type(saved['unknown']) is not bool
                         or not isinstance(saved['attempts'], list) or len(saved['attempts']) > MAX_RECOVERY_CALLS
-                        or any(type(i) is not int or not 1 <= i <= 16 for i in saved['attempts'])):
+                        or any(type(i) is not int or not 1 <= i <= maximum for i in saved['attempts'])):
                     raise ValueError('budget')
                 if len(set(saved['attempts'])) != len(saved['attempts']): raise ValueError('budget duplicates')
                 self.attempts.update(saved['attempts']); self.unknown |= saved['unknown']

@@ -63,15 +63,15 @@ class LargeUpload(unittest.TestCase):
         self.assertEqual(self.store.raw(d['id'],1)[0],raw)
         self.assertEqual(self.store.runs(),[])
         limits=self.request('/api/settings')['document_limits']
-        self.assertEqual(limits,{'original_bytes':MAX_BYTES,'text_chars':128000,'pdf_pages':200,'docx_expanded_bytes':16*1024*1024})
+        self.assertEqual(limits,{'original_bytes':MAX_BYTES,'text_bytes':32*1024*1024,'pdf_pages':200,'docx_expanded_bytes':16*1024*1024})
 
-    def test_raw_exact_boundary_and_unchanged_text_budget(self):
+    def test_raw_exact_boundary_and_long_text(self):
         small=docx()
         # ZIP allows a self-extracting preamble; expanded content remains short.
         exact=b'x'*(MAX_BYTES-len(small))+small
         self.assertEqual(decode_document('exact.docx',exact),SOURCE)
         with self.assertRaisesRegex(ValueError,'32 MiB'):decode_document('too-large.docx',exact+b'x')
-        with self.assertRaisesRegex(ValueError,'128,000'):decode_document('long.txt',b'x'*128001)
+        self.assertEqual(decode_document('long.txt',b'x'*128001),'x'*128001)
 
     def test_encoded_bounds_types_malformed_and_origin(self):
         body={'title':'bad','filename':'bad.docx'}

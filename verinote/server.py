@@ -22,7 +22,13 @@ from .agents import (
 from .config import ConfigError, Credentials, create_config, load_config
 from .dictionary_context import validate_context_bytes
 from .dictionary_reconciliation import spacing_name_rows
-from .documents import MAX_BYTES, MAX_DOCX_XML_BYTES, MAX_TEXT, decode_document
+from .documents import (
+    MAX_BYTES,
+    MAX_DOCX_XML_BYTES,
+    MAX_TEXT_BYTES,
+    decode_document,
+    validate_text,
+)
 from .extraction_options import CHUNK_THRESHOLD_POLICY
 from .model_catalog import ModelCatalog
 from .ontology import (
@@ -47,7 +53,7 @@ MAX_DICTIONARY_JSON_BYTES = MAX_DICTIONARY_BYTES + 2 * 1024 * 1024
 MAX_BASE64_CHARS = ((MAX_BYTES + 2) // 3) * 4
 MAX_UPLOAD_JSON_BYTES = MAX_BASE64_CHARS + 64 * 1024
 # Keep the existing API key; the limit applies only to word/document.xml.
-DOCUMENT_LIMITS = {'original_bytes': MAX_BYTES, 'text_chars': MAX_TEXT, 'pdf_pages': 200, 'docx_expanded_bytes': MAX_DOCX_XML_BYTES}
+DOCUMENT_LIMITS = {'original_bytes': MAX_BYTES, 'text_bytes': MAX_TEXT_BYTES, 'pdf_pages': 200, 'docx_expanded_bytes': MAX_DOCX_XML_BYTES}
 
 WEB = Path(__file__).with_name('web')
 
@@ -199,7 +205,7 @@ class Handler(BaseHTTPRequestHandler):
                             raise ValueError('파일 base64는 32 MiB 이내 원본을 인코딩한 문자열이어야 합니다.')
                         raw = base64.b64decode(encoded, validate=True)
                     else:
-                        text(data.get('text'), '본문', MAX_TEXT)
+                        validate_text(data.get('text'))
                         raw = data['text'].encode()
                     if len(raw) > MAX_BYTES:
                         raise ValueError('파일 크기 제한 초과')

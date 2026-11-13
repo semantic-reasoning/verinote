@@ -258,8 +258,7 @@ class ImportAndCLI(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '엔티티'):
             decode_document('entity.docx', raw)
         xml = '<p xmlns="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><t>' + 'x' * 128001 + '</t></p>'
-        with self.assertRaisesRegex(ValueError, '128,000'):
-            decode_document('text.docx', packed('word/document.xml', xml))
+        self.assertEqual(decode_document('text.docx', packed('word/document.xml', xml)), 'x' * 128001)
         raw = packed('word/document.xml', b'<document/>')
         for error in [RuntimeError('encrypted'), NotImplementedError('compression'), EOFError('truncated')]:
             with patch.object(zipfile.ZipFile, 'open', side_effect=error):

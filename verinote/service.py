@@ -96,8 +96,10 @@ def validate_fact(value, source):
 
 
 def validate_page(value, source, *, allow_no_claims=False):
-    if not isinstance(value, dict) or not isinstance(value.get('claims'), list) or not (0 if allow_no_claims else 1) <= len(value['claims']) <= 192:
-        raise ValueError('위키 claims는 1~192개여야 합니다.')
+    from .documents import aggregate_limits
+    maximum = aggregate_limits(source)['claims']
+    if not isinstance(value, dict) or not isinstance(value.get('claims'), list) or not (0 if allow_no_claims else 1) <= len(value['claims']) <= maximum:
+        raise ValueError(f'위키 claims는 1~{maximum}개여야 합니다.')
     claims = []
     for c in value['claims']:
         if not isinstance(c, dict):
@@ -211,7 +213,13 @@ class Service:
 
     def with_usage(self, kind, owner, *, coverage_details=True):
         from .usage import job_calls, summarize
-        calls = job_calls(self.root, kind, owner)
+        length = None
+        if kind == 'runs':
+            try:
+                length = self.store.document_metadata(owner['document_id'], owner['version'])['total_chars']
+            except ValueError:
+                length = 0  # A deleted pinned source makes accounting unknown.
+        calls = job_calls(self.root, kind, owner, source_length=length)
         result = owner | {'usage': summarize(calls) | {'details': calls}}
         report = None
         if kind == 'runs' and owner.get('stage') == 'extract':
@@ -249,7 +257,8 @@ class Service:
         calls: list[object] = []
         groups: dict[tuple, list[object]] = {}
         for owner in owners:
-            for call in job_calls(self.root, owner['kind'], owner):
+            length = (owner.get('source_length') or 0) if owner['kind'] == 'runs' else None
+            for call in job_calls(self.root, owner['kind'], owner, source_length=length):
                 calls.append(call)
                 key = (owner['agent'], call.get('resolved_model') or owner['model'] or '', call['stage'])
                 groups.setdefault(key, []).append(call)

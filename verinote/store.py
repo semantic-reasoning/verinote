@@ -464,7 +464,7 @@ class Store:
 
     def usage_owners(self, limit=1000):
         with self.connect() as db:
-            runs = [dict(r) | {'kind': 'runs'} for r in db.execute('SELECT id,agent,model,stage,status,detail,created_at FROM runs ORDER BY created_at DESC,id LIMIT ?', (limit + 1,))]
+            runs = [dict(r) | {'kind': 'runs'} for r in db.execute('SELECT id,agent,model,stage,status,detail,created_at,(SELECT length(text) FROM versions v WHERE v.document_id=r.document_id AND v.version=r.version) AS source_length FROM runs r ORDER BY created_at DESC,id LIMIT ?', (limit + 1,))]
             questions = []
             for row in db.execute('SELECT typeof(id),CAST(id AS BLOB),CAST(payload AS BLOB) FROM questions ORDER BY created_at DESC,id LIMIT ?', (limit + 1,)):
                 job = question_job(row[2], row_key(row[0], row[1]))
@@ -701,8 +701,10 @@ class Store:
             candidates = [('ontology', value)]
         else:
             page = validate_page(page, source)
-            if not isinstance(facts, list) or len(facts) > 1280:
-                raise ValueError('관계는 최대 1280개입니다.')
+            from .documents import aggregate_limits
+            maximum = aggregate_limits(source)['facts']
+            if not isinstance(facts, list) or len(facts) > maximum:
+                raise ValueError(f'관계는 최대 {maximum}개입니다.')
             if run['stage'] == 'extract':
                 pinned = json.loads(run['ontology'])
                 current = db.execute('SELECT * FROM items WHERE id=?', (pinned['id'],)).fetchone()
