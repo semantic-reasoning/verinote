@@ -457,6 +457,8 @@ class Accounting(unittest.TestCase):
         return folder
 
     def test_all_stages_retries_questions_and_repeat_read(self):
+        source=SOURCE.ljust(8000)+SOURCE
+        self.doc=self.store.register('two chunks','two.txt',source.encode(),source)
         first=self.add_run();self.store.run_status(first['id'],'error')
         self.write_call(first);self.write_call(first,'2');self.write_call(first,'2/quote-repair')
         second=self.add_run();self.store.run_status(second['id'],'success');self.write_call(second)

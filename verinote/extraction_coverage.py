@@ -583,8 +583,8 @@ def read_report(root, store, run_id):
                 or report['identity'] != identity(run)
                 or not isinstance(report['identity'], dict)
                 or any(type(report['identity'].get(k)) is not int for k in ('version', 'revision', 'extraction_contract'))
-                or not integer(report['source_length'], 1, 128000) or report['source_length'] != source[0]
-                or not isinstance(report['chunks'], list) or len(report['chunks']) > 16):
+                or not integer(report['source_length'], 1, source[0]) or report['source_length'] != source[0]
+                or not isinstance(report['chunks'], list)):
             return unavailable
         total_chunks = (source[0] + 7999) // 8000
         if len(report['chunks']) > total_chunks:
@@ -593,7 +593,7 @@ def read_report(root, store, run_id):
         spellings, index = 0, None
         for i, chunk in enumerate(report['chunks']):
             if (not isinstance(chunk, dict) or set(chunk) - {'excluded_facts', 'excluded_claims'} != {'offset', 'length', 'claim_count', 'fact_predicates', 'coverage', 'dictionary_gaps'}
-                    or not integer(chunk['offset'], 0, 127999) or chunk['offset'] != i * 8000
+                    or not integer(chunk['offset'], 0, source[0] - 1) or chunk['offset'] != i * 8000
                     or not integer(chunk['length'], 1, 8000) or chunk['length'] != min(8000, source[0] - i * 8000)
                     or not integer(chunk['claim_count'], 0 if chunk.get('excluded_claims') else 1, 12)
                     or not isinstance(chunk['fact_predicates'], list) or len(chunk['fact_predicates']) > MAX_FACTS

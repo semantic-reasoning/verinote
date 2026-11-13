@@ -2,8 +2,8 @@
 import json
 import re
 
-from .documents import MAX_TEXT, bounded_spans
-from .ontology import DICTIONARY_CHUNK_SIZE, MAX_DICTIONARY_CALLS
+from .documents import MAX_TEXT_BYTES, bounded_spans
+from .ontology import DICTIONARY_CHUNK_SIZE
 from .usage import safe_file
 
 
@@ -19,7 +19,7 @@ def analysis_progress(root, store, run_id, coverage=None):
         return unknown
     run = store.unpack_run(row)
     status, source = run['status'], run['source']
-    if not 0 < len(source) <= MAX_TEXT or run['stage'] not in ('ontology', 'extract'):
+    if not 0 < len(source) <= MAX_TEXT_BYTES or run['stage'] not in ('ontology', 'extract'):
         return unknown | {'phase': status}
     slices = (list(bounded_spans(source, DICTIONARY_CHUNK_SIZE)) if run['stage'] == 'ontology'
               else [(offset, source[offset:offset+8000]) for offset in range(0, len(source), 8000)])
@@ -41,7 +41,7 @@ def analysis_progress(root, store, run_id, coverage=None):
                     or marker['status'] not in ('running', 'complete', 'error')
                     or any(type(marker[k]) is not int for k in ('calls_started', 'resumed_chars', 'completed_chars', 'total_chars'))
                     or marker['total_chars'] != len(source)
-                    or not 0 <= marker['calls_started'] <= MAX_DICTIONARY_CALLS
+                    or not 0 <= marker['calls_started'] <= len(ends)
                     or not 0 <= marker['resumed_chars'] <= marker['completed_chars'] <= len(source)
                     or marker['completed_chars'] not in ends | {0}
                     or marker['resumed_chars'] not in ends | {0}):

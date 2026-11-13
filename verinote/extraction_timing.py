@@ -8,7 +8,7 @@ import time
 from contextlib import contextmanager
 
 from .cli_timing import read_cli_timing
-from .documents import chunks
+from .documents import MAX_TEXT_BYTES, chunks, extraction_chunks
 from .usage import AGENTS, safe_file
 
 MAX_BYTES = 128 * 1024
@@ -17,6 +17,10 @@ MAX_SPANS_V2 = 128
 WAIT_KINDS = {'order_wait', 'worker_wait', 'repair_worker_wait'}
 KINDS = {'restore', 'chunk', 'request', 'validation_with_bookkeeping', 'repair',
          'repair_request', 'repair_validation_with_bookkeeping', 'publish'}
+
+
+def span_limit(count, version):
+    return max(MAX_SPANS, 2 + count * 6) if version == 1 else MAX_SPANS_V2 + max(0, count - 16) * 8
 
 
 def error_kind(exc):
@@ -85,7 +89,7 @@ class ExtractionTiming:
             try:
                 start = self._now()
                 if start is None: return None
-                limit = MAX_SPANS if self.value['schema_version'] == 1 else MAX_SPANS_V2
+                limit = span_limit(len(self.value['chunks']), self.value['schema_version'])
                 if len(self.value['spans']) >= limit: raise ValueError('span limit')
                 span = {'kind': kind, 'chunk': index, 'start': start, 'end': None, 'status': 'success', 'cli_call_id': None}
                 self.value['spans'].append(span)
@@ -223,7 +227,7 @@ def validate_record(value):
             or (value['status'] == 'success') != (value['error_code'] is None)):
         raise ValueError('timing identity/state')
     rows, spans = value['chunks'], value['spans']
-    if not isinstance(rows, list) or not 1 <= len(rows) <= 16 or not isinstance(spans, list) or len(spans) > (MAX_SPANS if version == 1 else MAX_SPANS_V2):
+    if not isinstance(rows, list) or not 1 <= len(rows) <= extraction_chunks(MAX_TEXT_BYTES) or not isinstance(spans, list) or len(spans) > span_limit(len(rows), version):
         raise ValueError('timing size')
     offset, new_seen = 0, False
     for index, row in enumerate(rows, 1):
@@ -234,6 +238,8 @@ def validate_record(value):
                 or type(row['reused']) is not bool or (row['reused'] and new_seen)):
             raise ValueError('timing chunk')
         new_seen |= not row['reused']; offset += row['length']
+    if offset > MAX_TEXT_BYTES:
+        raise ValueError('timing source size')
     if any(row['reused'] for row in rows) != (value['resumed_from'] is not None) or (value['resumed_from'] is not None and not _id(value['resumed_from'])):
         raise ValueError('timing resume')
     seen, last_start = set(), value['worker_started']

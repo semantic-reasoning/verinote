@@ -55,7 +55,7 @@ def generate_dictionary(store, cli, root, run, doc, *, relation_type_warning_thr
     source = doc['text']
     slices = list(bounded_spans(source, DICTIONARY_CHUNK_SIZE))
     if len(slices) > MAX_DICTIONARY_CALLS:
-        raise ValueError('사전 생성은 최대 64개 구간까지 지원합니다.')
+        raise ValueError('사전 생성 구간 수가 본문 바이트 한도로부터 계산한 범위를 초과합니다.')
     boundaries = {offset + len(chunk) for offset, chunk in slices}
     contract = {'pipeline': PIPELINE, 'prompt': digest(DICTIONARY_PROMPT.encode()), 'merge_contract': MERGE_CONTRACT_VERSION,
                 'chunk_size': DICTIONARY_CHUNK_SIZE, 'span_size': SOURCE_SPAN_SIZE, 'span_min_size': SOURCE_SPAN_MIN_SIZE,

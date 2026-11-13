@@ -4,13 +4,17 @@ import json
 import re
 from collections import Counter
 
+from .documents import MAX_TEXT_BYTES
+
 MAX_FACTS = 80
 MAX_DICTIONARY_BYTES = 24 * 1024 * 1024
 MAX_DICTIONARY_CONTEXT_BYTES = 60_000
 MAX_PROMPT_BYTES = 120_000
 MERGE_CONTRACT_VERSION = 2
 DICTIONARY_CHUNK_SIZE = 4000
-MAX_DICTIONARY_CALLS = 64
+# A boundary-preferred 4,000-character span consumes at least 2,000 characters,
+# except the final span. UTF-8 bytes are a safe upper bound on character count.
+MAX_DICTIONARY_CALLS = (MAX_TEXT_BYTES + 1999) // 2000
 SOURCE_SPAN_SIZE = 400
 SOURCE_SPAN_MIN_SIZE = 32
 LIMITS = {'entities': 200, 'aliases': 400, 'relations': 40}
@@ -19,10 +23,15 @@ JUDGED_FIELDS = ('judged_alias', 'judged_entity', 'judged_name')
 NOT_GUIDANCE = ('quote', *JUDGED_FIELDS)
 
 
-def _dictionary_shape(value, *, per_chunk=False):
+def dictionary_limits(source):
+    count = max(64, (len(source) + 1999) // 2000)
+    return {kind: min(DICTIONARY_TOTAL_LIMITS[kind], limit * count) for kind, limit in LIMITS.items()}
+
+
+def _dictionary_shape(value, *, per_chunk=False, source=None):
     if not isinstance(value, dict) or set(value) != set(LIMITS):
         raise ValueError('사전에는 entities, aliases, relations 배열이 필요합니다.')
-    limits = LIMITS if per_chunk else DICTIONARY_TOTAL_LIMITS
+    limits = LIMITS if per_chunk else dictionary_limits(source) if source is not None else DICTIONARY_TOTAL_LIMITS
     scope = '구간 응답' if per_chunk else '누적 사전'
     for key, limit in limits.items():
         if not isinstance(value[key], list) or len(value[key]) > limit:
@@ -159,7 +168,7 @@ def _dictionary_row(kind, row, source, entities):
 
 
 def validate_dictionary(value, source):
-    _dictionary_shape(value)
+    _dictionary_shape(value, source=source)
     result: dict[str, list[object]] = {key: [] for key in LIMITS}
     entities: dict[str, object] = {}
     names: dict[str, str] = {}
@@ -428,7 +437,7 @@ entities의 name·type, aliases의 대상 entity, relations의 정의·타입을
 충돌 제안을 아무 설명 없이 덮어쓰지 마세요. 앱은 적용한 조정과 보류한 양쪽 정의·근거를 승인 전 검토용으로 남깁니다.
 sources는 원문의 연속 구간입니다. quote_ref에는 이번 sources에 있는 시작·끝 id 문자열을 순서대로 넣으세요. 한 구간이면 같은 id를 두 번 쓰세요. 앱이 그 범위의 원문을 그대로 복원합니다. quote 문자열이나 문자 위치를 생성하지 마세요. name은 선택 구간에 그대로 있어야 하며 별칭 구간에는 alias와 정규 name이 모두 있어야 합니다. 가능한 짧고 충분한 구간을 고르세요.
 기존 사전은 인용을 생략한 어휘·정의 문맥입니다. 일반 배열에 기존 항목을 반복하지 말고 수정이 필요하면 revisions를 사용하세요. 설명은 필요한 의미·조건을 간결하게 쓰고 해설이나 계획 없이 JSON만 반환하세요.
-이번 구간 응답 한도: 개체 200개, 별칭 400개, 관계 40개. 기존 사전 항목은 이 개수에 포함하지 않습니다. 문서 전체 누적 사전은 최대 64개 구간의 항목을 보존하며 정의 문맥은 실행 설정의 입력 예산에 따라 무손실 표로 전달될 수 있으며, 검증된 전체 사전과 인용은 UTF-8 24 MiB 이내입니다. 문맥 예산 때문에 필요한 정의를 생략하거나 요약하지 마세요. 인용은 이번 청크에서 가져오세요.
+이번 구간 응답 한도: 개체 200개, 별칭 400개, 관계 40개. 기존 사전 항목은 이 개수에 포함하지 않습니다. 문서 전체 누적 사전 한도는 원문 길이에서 계산한 구간 수에 따라 늘어나며 정의 문맥은 실행 설정의 입력 예산에 따라 무손실 표로 전달될 수 있으며, 검증된 전체 사전과 인용은 UTF-8 24 MiB 이내입니다. 문맥 예산 때문에 필요한 정의를 생략하거나 요약하지 마세요. 인용은 이번 청크에서 가져오세요.
 입력(JSON):
 '''
 

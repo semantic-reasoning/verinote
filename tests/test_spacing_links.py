@@ -26,7 +26,8 @@ EMPTY = {'entities': [], 'aliases': [], 'relations': []}
 SPACING = '공백만 다른'
 A, B = '납품 계획', '납품계획'
 PROMPT_SHA256 = {
-    'DICTIONARY_PROMPT': '22370cf02987e110d642d195fc37cc50e9688f6e97ae8c9441eb5c83b01d9c2f',
+    # Source-derived total budget replaces the historical 64-chunk instruction.
+    'DICTIONARY_PROMPT': '05048ca07a67d0f11b560bd75bc9990a5a8c7ee17afe783d43d8513516e00292',
     'EXTRACTION_PROMPT': '39db0e9639b65d9aa2f342fdfb80934b3cfee99c54363caff55a8d4d5725fa62',
     'EXTRACTION_PROMPT_V1': '01f1cd0fdd8ee0d4063d7de559a6d74b2b79f27ad5b0313b2be36e365e815e65',
     'QUOTE_REPAIR_PROMPT': 'd0aa5b0658b5dc42d3dcd64cb1c01e2f023e4f8fa2cfe4868e3fd361132cbc78',

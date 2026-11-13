@@ -7,8 +7,29 @@ import zlib
 from pathlib import Path
 
 MAX_BYTES = 32 * 1024 * 1024
-MAX_TEXT = 128_000
+MAX_TEXT_BYTES = 32 * 1024 * 1024
 MAX_DOCX_XML_BYTES = 16 * 1024 * 1024
+
+
+def validate_text(text):
+    """Bound decoded data by UTF-8 bytes, independently of container size."""
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError('텍스트가 없습니다. 스캔 문서는 OCR 후 등록하세요.')
+    if '\x00' in text:
+        raise ValueError('텍스트는 NUL 문자를 포함할 수 없습니다.')
+    if len(text.encode('utf-8')) > MAX_TEXT_BYTES:
+        raise ValueError('추출 본문은 UTF-8 32 MiB 이하여야 합니다. 문서를 나누어 등록하세요.')
+    return text
+
+
+def extraction_chunks(length):
+    return (length + 7999) // 8000
+
+
+def aggregate_limits(source):
+    """Keep old human-edit allowances; scale publication with the pinned source."""
+    count = max(16, extraction_chunks(len(source)))
+    return {'claims': count * 12, 'facts': count * 80}
 
 
 def decode_document(filename, raw):
@@ -46,21 +67,20 @@ def decode_document(filename, raw):
                 raise ValueError('암호화 PDF는 지원하지 않습니다.')
             if len(reader.pages) > 200:
                 raise ValueError('PDF는 200쪽까지 지원합니다.')
-            parts = []
+            parts: list[str] = []
+            text_bytes = 0
             for page in reader.pages:
-                parts.append(page.extract_text() or '')
-                if sum(map(len, parts)) > MAX_TEXT:
-                    raise ValueError('추출 본문은 128,000자까지 분석할 수 있습니다. 문서를 나누어 등록하세요.')
+                part = page.extract_text() or ''
+                text_bytes += len(part.encode('utf-8')) + bool(parts)
+                if text_bytes > MAX_TEXT_BYTES:
+                    raise ValueError('추출 본문은 UTF-8 32 MiB 이하여야 합니다. 문서를 나누어 등록하세요.')
+                parts.append(part)
             text = '\n'.join(parts)
         else:
             raise ValueError('지원 형식: TXT, MD, CSV, JSON, RST, LOG, PDF, DOCX')
     except (UnicodeError, zipfile.BadZipFile, KeyError, ET.ParseError) as exc:
         raise ValueError('문서 형식이 손상되었거나 UTF-8이 아닙니다.') from exc
-    if not text.strip():
-        raise ValueError('텍스트가 없습니다. 스캔 문서는 OCR 후 등록하세요.')
-    if len(text) > MAX_TEXT or '\x00' in text:
-        raise ValueError('텍스트는 128,000자 이내이며 NUL 문자를 포함할 수 없습니다.')
-    return text
+    return validate_text(text)
 
 
 def chunks(text, size=8000):
