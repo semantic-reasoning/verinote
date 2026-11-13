@@ -138,6 +138,7 @@ CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT);
 CREATE TABLE IF NOT EXISTS snapshots(id TEXT PRIMARY KEY,payload TEXT,created_at TEXT);
 CREATE TABLE IF NOT EXISTS questions(id TEXT PRIMARY KEY,payload TEXT,created_at TEXT);
 CREATE TABLE IF NOT EXISTS queries(id TEXT PRIMARY KEY,payload TEXT,created_at TEXT);
+CREATE TABLE IF NOT EXISTS external_sessions(run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,payload TEXT NOT NULL);
 CREATE UNIQUE INDEX IF NOT EXISTS active_extraction ON runs(document_id) WHERE status IN ('queued','running');
 '''
 
@@ -181,7 +182,8 @@ class Store:
             db.close()
 
     def recover(self):
-        """Startup repair. Runs stored as queued or running become interrupted and runs stored as cancelling become cancelled. Questions stored
+        """Startup repair. CLI runs stored as queued or running become interrupted; durable external sessions remain resumable.
+        Runs stored as cancelling become cancelled. Questions stored
         as queued or running become interrupted and questions stored as cancelling become cancelled; then every question stored as cancelled,
         interrupted or error, including one stored so before this start, has its split-processing rounds stored as running or analyzed set
         to cancelled, interrupted or failed (end_open_rounds). A question row is written only when one of these changes it.
@@ -198,7 +200,7 @@ class Store:
         it. The other rows are still repaired. Returns the ids of the skipped rows in rowid order, None for a row whose id is not stored as
         strict UTF-8 text. A database error is not skipped: it aborts the question repair."""
         with self.connect(True) as db:
-            db.execute("UPDATE runs SET status='interrupted',detail='서버가 재시작되었습니다. 다시 추출하세요.' WHERE status IN ('queued','running')")
+            db.execute("UPDATE runs SET status='interrupted',detail='서버가 재시작되었습니다. 다시 추출하세요.' WHERE status IN ('queued','running') AND id NOT IN (SELECT run_id FROM external_sessions)")
             for row in db.execute("SELECT id,stage FROM runs WHERE status='cancelling'").fetchall():
                 db.execute("UPDATE runs SET status='cancelled',detail=? WHERE id=?", (f"취소를 요청한 뒤 실행이 멈춘 것을 기록하기 전에 서버가 재시작되었습니다. {cancel_result(row['stage'])} 저장하지 않았습니다.", row['id']))
 
@@ -474,7 +476,9 @@ class Store:
         owners = sorted(runs + questions, key=lambda r: (r['created_at'], r['id']), reverse=True)
         return owners[:limit], total
 
-    def create_run(self, document_id, agent, model, stage='extract', expected_version=None, expected_generation=None, *, execution_options=None, extraction_options=None, regenerate=None, extraction_contract=None):
+    def create_run(self, document_id, agent, model, stage='extract', expected_version=None, expected_generation=None, *, execution_options=None, extraction_options=None, regenerate=None, extraction_contract=None, external=False):
+        if external and (agent != 'mcp' or execution_options is not None or extraction_options is not None or regenerate is not None):
+            raise ValueError('MCP 실행 옵션 오류')
         if stage not in ('ontology', 'extract'):
             raise ValueError('지원하지 않는 추출 단계')
         if execution_options is not None:
@@ -516,6 +520,8 @@ class Store:
                 payload = json.loads(dictionary['payload'])
                 from .dictionary_context import extraction_pin
                 pinned = extraction_pin(dictionary['id'], dictionary['revision'], payload, extraction_contract)
+                if external:
+                    pinned['workflow'] = 'mcp-v1'
                 for prior in db.execute("SELECT ontology FROM runs WHERE document_id=? AND version=? AND stage='extract' AND status='success'", (document_id, doc['current_version'])):
                     old = json.loads(prior[0])
                     if extraction_key(old) == extraction_key(pinned):
@@ -525,11 +531,19 @@ class Store:
                 source = db.execute('SELECT text FROM versions WHERE document_id=? AND version=?',
                                     (document_id, doc['current_version'])).fetchone()
                 extraction_options = bind_extraction_options(extraction_options, source['text'], doc['generation'])
+            session = None
+            if external:
+                from .mcp_workflow import initial_state
+                source = db.execute('SELECT text FROM versions WHERE document_id=? AND version=?', (document_id, doc['current_version'])).fetchone()
+                session = initial_state(source['text'], doc['generation'], stage, pinned)
             try:
                 db.execute('INSERT INTO runs(id,document_id,version,agent,model,status,detail,created_at,stage,ontology,execution_options,extraction_options) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
                            (run_id, document_id, doc['current_version'], agent, model, 'queued', '', now(), stage, canonical(pinned) if pinned else None, canonical(execution_options) if execution_options is not None else None, canonical(extraction_options) if extraction_options is not None else None))
             except sqlite3.IntegrityError as exc:
                 raise Conflict('이 문서는 이미 추출 중입니다.') from exc
+            if session is not None:
+                db.execute('INSERT INTO external_sessions VALUES(?,?)', (run_id, canonical(session)))
+                db.execute("UPDATE runs SET status='running',detail='MCP 앱의 분석 결과를 기다립니다. get_analysis_task로 이어서 처리하거나 취소하세요.' WHERE id=?", (run_id,))
         return self.run(run_id)
 
     @staticmethod
@@ -622,7 +636,8 @@ class Store:
         """Cancel a run in one write transaction and return the status it had. A queued run becomes cancelled at once and keeps the detail it
         is given here for good: finish_cancel acts only on a cancelling run, so the detail of a run cancelled while queued, which says it never
         called a model, stays as it is: usage.job_calls reads it as zero calls, and the retry windows leave such a run out. A running run becomes cancelling, and its worker moves it to cancelled when it stops. expected_status is what the
-        caller saw; a run that has since changed is refused with a Conflict instead of being cancelled the other way."""
+        caller saw; a run that has since changed is refused with a Conflict instead of being cancelled the other way.
+        External sessions become cancelled immediately because no local model worker owns them."""
         if expected_status not in ('queued', 'running'):
             raise ValueError('expected_status는 queued 또는 running이어야 합니다.')
         with self.connect(True) as db:
@@ -636,7 +651,9 @@ class Store:
             if status != expected_status:
                 raise Conflict('대기 중이던 실행이 처리 중으로 바뀌어 취소하지 않았습니다. 처리 중인 실행을 취소할지 다시 확인하세요.' if (expected_status, status) == ('queued', 'running')
                                else '실행 상태가 바뀌어 취소하지 않았습니다. 실행 기록을 새로고침하세요.')
-            if status == 'queued':
+            if db.execute('SELECT 1 FROM external_sessions WHERE run_id=?', (run_id,)).fetchone():
+                db.execute("UPDATE runs SET status='cancelled',detail='MCP 분석을 취소했습니다. 제출한 청크는 승인 후보로 게시하지 않았습니다.' WHERE id=?", (run_id,))
+            elif status == 'queued':
                 db.execute("UPDATE runs SET status='cancelled',detail=? WHERE id=?", (QUEUED_CANCEL_DETAIL, run_id))
             else:
                 db.execute("UPDATE runs SET status='cancelling',detail=? WHERE id=?", ('취소 요청됨: 이미 허용한 호출은 중단하지 않고 끝날 때까지 기다린 뒤, 새 호출 없이 멈춥니다. 멈출 때까지 같은 문서의 다음 실행은 기다리며, 다른 문서와 질문은 각 실행 한도 안에서 계속됩니다.', run_id))
@@ -648,52 +665,58 @@ class Store:
 
     def finish_run(self, run_id, page=None, facts=None, dictionary=None, detail=''):
         with self.connect(True) as db:
-            run = db.execute('SELECT * FROM runs WHERE id=?', (run_id,)).fetchone()
-            if not run or run['status'] != 'running':
-                raise Conflict('실행 상태가 변경되었습니다.')
-            self.refuse_publish_after_document_change(db, run)
-            from .service import text, validate_fact, validate_page
-            detail = text(detail, '실행 상세', 2000) if detail else ''
-            from .ontology import dictionary_fact, validate_dictionary
-            source = db.execute('SELECT text FROM versions WHERE document_id=? AND version=?', (run['document_id'], run['version'])).fetchone()[0]
-            if run['stage'] == 'ontology':
-                value = validate_dictionary(dictionary, source)
-                target = json.loads(run['ontology']) if run['ontology'] else None
-                if target:
-                    current = db.execute("SELECT * FROM items WHERE id=? AND document_id=? AND version=? AND kind='ontology'",
-                                         (target['id'], run['document_id'], run['version'])).fetchone()
-                    if (not current or current['status'] != 'rejected' or current['revision'] != target['revision']
-                            or digest(json.loads(current['payload'])) != target['sha256'] or current['run_id'] != target['run_id']):
-                        raise Conflict('재생성 중 사전이 변경되었습니다. 새로고침 후 다시 생성하세요.')
-                    revision = current['revision'] + 1
-                    db.execute("UPDATE items SET payload=?,status='pending',revision=?,run_id=? WHERE id=?",
-                               (canonical(value), revision, run_id, target['id']))
-                    reason = f"사전 재생성 · 이전 실행 {target['run_id']} → 새 실행 {run_id}"
-                    db.execute('INSERT INTO events(item_id,revision,action,actor,reason,payload,created_at) VALUES(?,?,?,?,?,?,?)',
-                               (target['id'], revision, 'regenerated', 'agent:' + run['agent'], reason, canonical(value), now()))
-                    db.execute("UPDATE runs SET status='success',detail=? WHERE id=?", (detail, run_id))
-                    return
-                if db.execute("SELECT 1 FROM items WHERE document_id=? AND version=? AND kind='ontology'", (run['document_id'], run['version'])).fetchone():
-                    raise Conflict('이미 사전 초안이 있습니다.')
-                candidates = [('ontology', value)]
+            if db.execute('SELECT 1 FROM external_sessions WHERE run_id=?', (run_id,)).fetchone():
+                raise Conflict('MCP 실행은 finalize_run으로 완료하세요.')
+            return self._finish_run(db, run_id, page, facts, dictionary, detail)
+
+    def _finish_run(self, db, run_id, page=None, facts=None, dictionary=None, detail=''):
+        """Publication within the caller's write transaction; MCP checks its session first."""
+        run = db.execute('SELECT * FROM runs WHERE id=?', (run_id,)).fetchone()
+        if not run or run['status'] != 'running':
+            raise Conflict('실행 상태가 변경되었습니다.')
+        self.refuse_publish_after_document_change(db, run)
+        from .service import text, validate_fact, validate_page
+        detail = text(detail, '실행 상세', 2000) if detail else ''
+        from .ontology import dictionary_fact, validate_dictionary
+        source = db.execute('SELECT text FROM versions WHERE document_id=? AND version=?', (run['document_id'], run['version'])).fetchone()[0]
+        if run['stage'] == 'ontology':
+            value = validate_dictionary(dictionary, source)
+            target = json.loads(run['ontology']) if run['ontology'] else None
+            if target:
+                current = db.execute("SELECT * FROM items WHERE id=? AND document_id=? AND version=? AND kind='ontology'",
+                                     (target['id'], run['document_id'], run['version'])).fetchone()
+                if (not current or current['status'] != 'rejected' or current['revision'] != target['revision']
+                        or digest(json.loads(current['payload'])) != target['sha256'] or current['run_id'] != target['run_id']):
+                    raise Conflict('재생성 중 사전이 변경되었습니다. 새로고침 후 다시 생성하세요.')
+                revision = current['revision'] + 1
+                db.execute("UPDATE items SET payload=?,status='pending',revision=?,run_id=? WHERE id=?",
+                           (canonical(value), revision, run_id, target['id']))
+                reason = f"사전 재생성 · 이전 실행 {target['run_id']} → 새 실행 {run_id}"
+                db.execute('INSERT INTO events(item_id,revision,action,actor,reason,payload,created_at) VALUES(?,?,?,?,?,?,?)',
+                           (target['id'], revision, 'regenerated', 'agent:' + run['agent'], reason, canonical(value), now()))
+                db.execute("UPDATE runs SET status='success',detail=? WHERE id=?", (detail, run_id))
+                return
+            if db.execute("SELECT 1 FROM items WHERE document_id=? AND version=? AND kind='ontology'", (run['document_id'], run['version'])).fetchone():
+                raise Conflict('이미 사전 초안이 있습니다.')
+            candidates = [('ontology', value)]
+        else:
+            page = validate_page(page, source)
+            if not isinstance(facts, list) or len(facts) > 1280:
+                raise ValueError('관계는 최대 1280개입니다.')
+            if run['stage'] == 'extract':
+                pinned = json.loads(run['ontology'])
+                current = db.execute('SELECT * FROM items WHERE id=?', (pinned['id'],)).fetchone()
+                if not current or current['status'] != 'approved' or current['revision'] != pinned['revision'] or digest(json.loads(current['payload'])) != pinned['sha256']:
+                    raise Conflict('추출 중 사전이 변경되거나 승인이 철회되었습니다. 다시 승인 후 추출하세요.')
+                facts = [dictionary_fact(f, source, pinned['payload']) for f in facts]
             else:
-                page = validate_page(page, source)
-                if not isinstance(facts, list) or len(facts) > 1280:
-                    raise ValueError('관계는 최대 1280개입니다.')
-                if run['stage'] == 'extract':
-                    pinned = json.loads(run['ontology'])
-                    current = db.execute('SELECT * FROM items WHERE id=?', (pinned['id'],)).fetchone()
-                    if not current or current['status'] != 'approved' or current['revision'] != pinned['revision'] or digest(json.loads(current['payload'])) != pinned['sha256']:
-                        raise Conflict('추출 중 사전이 변경되거나 승인이 철회되었습니다. 다시 승인 후 추출하세요.')
-                    facts = [dictionary_fact(f, source, pinned['payload']) for f in facts]
-                else:
-                    facts = [validate_fact(f, source) for f in facts]
-                candidates = [('page', page), *[('fact', f) for f in facts]]
-            for kind, payload in candidates:
-                item_id = ident()
-                db.execute('INSERT INTO items VALUES(?,?,?,?,?,?,?,?)', (item_id, run['document_id'], run['version'], kind, canonical(payload), 'pending', 1, run_id))
-                db.execute('INSERT INTO events(item_id,revision,action,actor,reason,payload,created_at) VALUES(?,?,?,?,?,?,?)', (item_id, 1, 'created', 'agent:' + run['agent'], '추출 후보', canonical(payload), now()))
-            db.execute("UPDATE runs SET status='success',detail=? WHERE id=?", (detail, run_id))
+                facts = [validate_fact(f, source) for f in facts]
+            candidates = [('page', page), *[('fact', f) for f in facts]]
+        for kind, payload in candidates:
+            item_id = ident()
+            db.execute('INSERT INTO items VALUES(?,?,?,?,?,?,?,?)', (item_id, run['document_id'], run['version'], kind, canonical(payload), 'pending', 1, run_id))
+            db.execute('INSERT INTO events(item_id,revision,action,actor,reason,payload,created_at) VALUES(?,?,?,?,?,?,?)', (item_id, 1, 'created', 'agent:' + run['agent'], '추출 후보', canonical(payload), now()))
+        db.execute("UPDATE runs SET status='success',detail=? WHERE id=?", (detail, run_id))
 
     @staticmethod
     def validate_reviewer(actor, reason):
