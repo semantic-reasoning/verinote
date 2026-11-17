@@ -88,6 +88,75 @@ def row_key(kind, stored):
         return None
 
 
+def _no_constant(name):
+    raise ValueError(name)
+
+
+def _finite(text):
+    value = float(text)
+    if value in (float('inf'), float('-inf')):
+        raise ValueError(text)
+    return value
+
+
+def stored_json(raw):
+    """The JSON value of a payload read as CAST(payload AS BLOB), or None when it is NULL, not strict UTF-8, not JSON, or holds NaN or an infinity
+    (which a browser cannot parse)."""
+    if raw is None:
+        return None
+    try:
+        return json.loads(bytes(raw).decode('utf-8'), parse_constant=_no_constant, parse_float=_finite)
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return None
+
+
+def _triple(row):
+    return isinstance(row, list) and len(row) == 3 and all(isinstance(part, str) for part in row)
+
+
+def query_row(kind, raw_id, raw, created):
+    """A queries row as the history list shows it and deletion reads it: {'id','payload','created_at'}, or None when the id or created_at is not
+    strict UTF-8 text or the payload is not a query result (status success, empty or ambiguous, a text snapshot and engine, a list of [subject, predicate, object] text rows, of proofs with such a row and a list of text fact_ids, and of facts with a text id and a payload object,
+    and a query object holding a text action and only text or null subject, predicate and target), or when it cannot be sent as UTF-8. Such a row is unreadable: kept by deletion, counted, never returned."""
+    key = row_key(kind, raw_id); payload = stored_json(raw)
+    query = payload.get('query') if isinstance(payload, dict) else None
+    if (key is None or not isinstance(query, dict) or not isinstance(query.get('action'), str) or not isinstance(payload.get('snapshot'), str)
+            or payload.get('status') not in ('success', 'empty', 'ambiguous') or not all(isinstance(payload.get(name), list) for name in ('rows', 'proofs', 'facts'))
+            or not all(_triple(row) for row in payload['rows'])
+            or not all(isinstance(fact, dict) and isinstance(fact.get('id'), str) and isinstance(fact.get('payload'), dict) for fact in payload['facts'])
+            or not all(isinstance(proof, dict) and _triple(proof.get('row')) and isinstance(proof.get('fact_ids'), list)
+                       and all(isinstance(fact_id, str) for fact_id in proof['fact_ids']) for proof in payload['proofs'])
+            or not isinstance(payload.get('engine'), str) or set(query) - {'action', 'subject', 'predicate', 'target'}
+            or not all(query.get(name) is None or isinstance(query[name], str) for name in ('subject', 'predicate', 'target'))):
+        return None
+    stamp = row_key('text', created) if created is not None else None
+    try:
+        json.dumps([key, payload, stamp], ensure_ascii=False, allow_nan=False).encode('utf-8')
+    except (UnicodeEncodeError, ValueError):
+        return None
+    return {'id': key, 'payload': payload, 'created_at': stamp}
+
+
+def snapshot_removes(raw, document_id, removed):
+    """Whether a stored snapshot holds a removed version of the document: True or False, or None when the row does not say
+    (not JSON, no documents list, or an entry that names the document without a usable current_version, or has no id)."""
+    value = stored_json(raw)
+    documents = value.get('documents') if isinstance(value, dict) else None
+    if not isinstance(documents, list):
+        return None
+    unknown = False
+    for entry in documents:
+        if not isinstance(entry, dict) or not isinstance(entry.get('id'), str):
+            unknown = True
+        elif entry['id'] == document_id:
+            version = entry.get('current_version')
+            if type(version) is not int:
+                unknown = True
+            elif version in removed:
+                return True
+    return None if unknown else False
+
+
 def run_columns(db, alias=''):
     """The runs columns for a SELECT that never reads the id as text: the id comes back as id_type (typeof) and id_raw (CAST AS BLOB), so a
     BLOB, NULL or non-UTF-8 id cannot make the read raise or return bytes. Rows are decoded with decode_run or readable_runs."""
@@ -1069,10 +1138,13 @@ class Store:
     def snapshot(self, snapshot_id=None):
         with self.connect(True) as db:
             if snapshot_id:
-                row = db.execute('SELECT payload FROM snapshots WHERE id=?', (snapshot_id,)).fetchone()
+                row = db.execute('SELECT CAST(payload AS BLOB) FROM snapshots WHERE typeof(id)=? AND id=?', ('text', snapshot_id)).fetchone()
                 if not row:
                     raise ValueError('스냅샷을 찾을 수 없습니다.')
-                return json.loads(row[0])
+                value = stored_json(row[0])
+                if not isinstance(value, dict):
+                    raise ValueError('저장된 스냅샷을 읽을 수 없습니다.')
+                return value
             approved: dict[str, list[dict]] = {'fact': [], 'page': [], 'ontology': []}
             for row in db.execute("SELECT i.*,v.sha256 FROM items i JOIN documents d ON i.document_id=d.id AND i.version=d.current_version JOIN versions v ON v.document_id=i.document_id AND v.version=i.version WHERE i.kind IN ('fact','page','ontology') AND i.status='approved' ORDER BY i.id"):
                 approved[row['kind']].append(self.unpack(row))
@@ -1098,7 +1170,10 @@ class Store:
                     'documents': documents, 'graph_identity_version': 1, 'fact_ontologies': fact_ontologies, 'ontology_pins': ontology_pins}
             key = digest(body)
             value = {'id': key, **body}
-            db.execute('INSERT OR IGNORE INTO snapshots VALUES(?,?,?)', (key, canonical(value), now()))
+            # The id is the hash of the content, so a stored row of this id that does not read as this content is replaced rather than bound.
+            stored = db.execute('SELECT CAST(payload AS BLOB) FROM snapshots WHERE typeof(id)=? AND id=?', ('text', key)).fetchone()
+            if stored is None or bytes(stored[0] or b'') != canonical(value).encode('utf-8'):
+                db.execute('INSERT OR REPLACE INTO snapshots VALUES(?,?,?)', (key, canonical(value), now()))
             return value
 
     def save_query(self, result):
@@ -1108,9 +1183,23 @@ class Store:
             db.execute('INSERT INTO queries VALUES(?,?,?)', (key, canonical(result), now()))
         return key
 
+    QUERY_ROWS = 'SELECT typeof(id),CAST(id AS BLOB),CAST(payload AS BLOB),CAST(created_at AS BLOB) FROM queries ORDER BY created_at DESC,rowid DESC'
+
     def queries(self):
         with self.connect() as db:
-            return [self.unpack(r) for r in db.execute('SELECT * FROM queries ORDER BY created_at DESC LIMIT 30')]
+            rows = []
+            for row in db.execute(self.QUERY_ROWS):
+                listed = query_row(*row)
+                if listed is not None:
+                    rows.append(listed)
+                    if len(rows) == 30:
+                        break
+            return rows
+
+    def unreadable_queries(self):
+        """The number of queries rows, however old, that the history list leaves out because they are not readable (stored content is never returned)."""
+        with self.connect() as db:
+            return {'count': sum(query_row(*row) is None for row in db.execute(self.QUERY_ROWS))}
 
     @staticmethod
     def require_snapshot(db, snapshot_id):
@@ -1153,9 +1242,41 @@ class Store:
             if latest_only and len(versions) == 1:
                 raise Conflict('리비전이 하나뿐입니다. 문서 전체 삭제를 사용하세요.')
             removed = [doc['current_version']] if latest_only else versions
-            snapshots = {r['id'] for r in db.execute('SELECT id,payload FROM snapshots') if any(d['id'] == document_id and d['current_version'] in removed for d in json.loads(r['payload'])['documents'])}
-            question_ids = [key for key, job in questions if job is not None and job['snapshot'] in snapshots]
-            query_ids = [r['id'] for r in db.execute('SELECT id,payload FROM queries') if json.loads(r['payload'])['snapshot'] in snapshots]
+            snapshots = set(); unreadable_snapshots = set(); anonymous_snapshots = 0; known_snapshots = set(); blob_names = set()
+            for kind, raw_id, raw in db.execute('SELECT typeof(id),CAST(id AS BLOB),CAST(payload AS BLOB) FROM snapshots'):
+                key = row_key(kind, raw_id)
+                if key is not None:
+                    known_snapshots.add(key)
+                elif kind == 'blob':
+                    try: blob_names.add(bytes(raw_id).decode('utf-8'))
+                    except UnicodeDecodeError: pass
+                verdict = snapshot_removes(raw, document_id, removed)
+                if verdict is True and key is not None:
+                    snapshots.add(key)
+                elif verdict is not False or key is None:
+                    # Which documents the row holds is not read, so it is kept; the rows that name it are kept with it.
+                    if key is None:
+                        anonymous_snapshots += 1
+                    else:
+                        unreadable_snapshots.add(key)
+            # A BLOB snapshot id with the same bytes as a text id is ambiguous for the rows that name it, whether or not the text snapshot is
+            # deleted, so they are kept and counted.
+            ambiguous = known_snapshots & blob_names
+            def kept_with_snapshot(snapshot):
+                return snapshot in unreadable_snapshots or snapshot in ambiguous or (anonymous_snapshots and snapshot not in known_snapshots)
+            def deletes(snapshot):
+                return snapshot in snapshots and snapshot not in ambiguous
+            question_ids = [key for key, job in questions if job is not None and deletes(job['snapshot'])]
+            query_ids = []; unreadable_queries = 0; queries_kept = 0
+            for row in db.execute(self.QUERY_ROWS):
+                query = query_row(*row)
+                if query is None:
+                    unreadable_queries += 1
+                elif deletes(query['payload']['snapshot']):
+                    query_ids.append(query['id'])
+                elif kept_with_snapshot(query['payload']['snapshot']):
+                    queries_kept += 1
+            questions_kept = sum(job is not None and kept_with_snapshot(job['snapshot']) for _, job in questions)
             doomed = [(r[0], row_key(r[1], r[2]), r[1], bytes(r[2]) if r[2] is not None else None)
                       for r in db.execute('SELECT rowid,typeof(id),CAST(id AS BLOB),version FROM runs WHERE document_id=?', (document_id,)) if r[3] in removed]
             db.executemany('INSERT OR IGNORE INTO log_cleanup VALUES(?,?)', [('questions', key) for key in question_ids])
@@ -1188,7 +1309,9 @@ class Store:
                 db.execute('DELETE FROM documents WHERE id=?', (document_id,))
         return {'document_id': document_id, 'removed_versions': removed, 'current_version': current,
                 'removed_snapshots': len(snapshots), 'removed_questions': len(question_ids), 'removed_queries': len(query_ids),
-                'unreadable_questions_kept': sum(job is None for _, job in questions), 'unlocated_run_logs': unlocated}
+                'unreadable_questions_kept': sum(job is None for _, job in questions), 'unlocated_run_logs': unlocated,
+                'unreadable_snapshots_kept': len(unreadable_snapshots) + anonymous_snapshots, 'unreadable_queries_kept': unreadable_queries,
+                'questions_kept_with_snapshot': questions_kept, 'queries_kept_with_snapshot': queries_kept}
 
     def pending_cleanup(self):
         """The pending log obligations in rowid order as {'rowid', 'kind', 'id'}; kind or id is None when it is not stored as strict UTF-8 text (never read as text, so no stored value can make this raise)."""

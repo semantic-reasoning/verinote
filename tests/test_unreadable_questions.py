@@ -301,13 +301,20 @@ class Routes(Base):
                 self.doc = self.store.register('문서', 'a.md', b'source', 'source')
                 self.snapshot = self.store.snapshot()
 
-    def test_document_delete_with_an_invalid_utf8_queries_row_returns_500_without_stored_text(self):
+    def test_document_delete_with_an_invalid_utf8_queries_row_keeps_it_without_stored_text(self):
         with self.store.connect(True) as db:
             db.execute('INSERT INTO queries VALUES(?,CAST(? AS TEXT),?)', (ident(), b'{"snapshot":"' + SECRET.encode() + b'\xff"}', 'c'))
         doc = self.store.document(self.doc['id'])
         status, body = self.call(f"/api/documents/{doc['id']}/delete", 'POST',
                                  {'expected_version': doc['current_version'], 'expected_generation': doc['generation']})
-        self.assertEqual((status, body), (500, {'error': DB_ERROR}))
+        self.assertEqual((status, body['unreadable_queries_kept']), (200, 1))
+        self.assertNotIn(SECRET, json.dumps(body))
+
+    def test_unreadable_queries_route_returns_only_a_count(self):
+        with self.store.connect(True) as db:
+            db.execute('INSERT INTO queries VALUES(?,CAST(? AS TEXT),?)', (ident(), b'{"snapshot":"' + SECRET.encode() + b'\xff"}', 'c'))
+        self.assertEqual(self.call('/api/queries/unreadable'), (200, {'count': 1}))
+        self.assertEqual(self.call('/api/queries'), (200, []))
 
     def test_a_route_raising_a_sqlite_error_that_quotes_stored_text_answers_500_without_it(self):
         with patch.object(self.store, 'documents', side_effect=sqlite3.OperationalError(f"Could not decode to UTF-8 column 'x' with text '{SECRET}'")):
